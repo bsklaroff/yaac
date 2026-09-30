@@ -1,8 +1,8 @@
 # Mobile layout
 
 Below 767px the webapp's three desktop regions — the project rail, the
-worktree list, and the pane — become three full-screen views the user walks
-through: **projects → worktrees → pane**. Above it nothing changes; the same
+workspace list, and the pane — become three full-screen views the user walks
+through: **projects → workspaces → pane**. Above it nothing changes; the same
 three regions sit side by side.
 
 ## The breakpoint
@@ -24,25 +24,25 @@ exactly what the constant means. Keep them in step.
 and is inert above the breakpoint — the desktop render path never reads it.
 
 It is explicit rather than derived from `activeProjectSlug` /
-`selectedWorktreeId`, which it looks like it could be. App fills the pane on
+`selectedWorkspaceId`, which it looks like it could be. App fills the pane on
 the user's behalf whenever the selection is emptied by something other than a
-tap — a project switch, a deleted worktree — so a derived screen would fling
-the user past the worktree list on every project tap. **Navigation
+tap — a project switch, a deleted workspace — so a derived screen would fling
+the user past the workspace list on every project tap. **Navigation
 follows user intent**, and the store encodes that as a pair of actions per
 change:
 
 | A tap goes through | The app choosing goes through |
 |---|---|
-| `setActiveProject` → `worktrees` | `restoreActiveProject` (no move) |
-| `selectWorktree` → `pane` | `autoSelectWorktree` (no move) |
-| `openWorktree` → `pane` (a tray/notification jump, a just-created worktree) | — |
+| `setActiveProject` → `workspaces` | `restoreActiveProject` (no move) |
+| `selectWorkspace` → `pane` | `autoSelectWorkspace` (no move) |
+| `openWorkspace` → `pane` (a tray/notification jump, a just-created workspace) | — |
 
 An eslint rule confines the two effect-side names to `App.tsx` and the delete
-flow (deleting the open worktree selects the row below it — the app choosing,
-not a walk onto that worktree), so reaching for one from a component is a lint
+flow (deleting the open workspace selects the row below it — the app choosing,
+not a walk onto that workspace), so reaching for one from a component is a lint
 failure rather than a silently stranded user.
 
-A shared `?project=…&worktree=…` link does not go through `openWorktree` —
+A shared `?project=…&workspace=…` link does not go through `openWorkspace` —
 `loadSelection` reads it straight into the initial state — so `loadMobileScreen`
 handles that case: with **nothing persisted**, those params mean a link opened
 somewhere for the first time and it starts on the screen they point at. The two
@@ -50,7 +50,7 @@ conditions go together, because `persistSelection` mirrors the selection into
 the URL on every change: after any use the params are always present, and on
 their own they would drag every reload back to the pane.
 
-`selectWorktree(null)` is a deselect (dismissing a failed provisioning row), so
+`selectWorkspace(null)` is a deselect (dismissing a failed provisioning row), so
 it stays put. Clearing the project entirely — its removal — falls back to
 `projects`, the only screen with anything left to do.
 
@@ -63,12 +63,12 @@ All three screens stay mounted **and stay laid out**; one is visible.
 `MobileScreenLayer` hides the others with `invisible pointer-events-none` plus
 `inert`.
 
-This is a correctness requirement, not an optimization. `WorktreeView`
+This is a correctness requirement, not an optimization. `WorkspaceView`
 positions every terminal by measured pixels — a `ResizeObserver` feeds
 `computeColumns`, which feeds each pane's absolute rect — so a `display: none`
 ancestor would collapse every rect to zero and make returning cost a full
 resize round-trip to the pod. `visibility: hidden` keeps the box measured. It
-is the same trick `WorktreeView` already uses for its own off-screen panes.
+is the same trick `WorkspaceView` already uses for its own off-screen panes.
 
 For the same reason the shell is *not* a translated `300vw` strip, tempting as
 the slide animation is: a transformed ancestor becomes the containing block for
@@ -77,7 +77,7 @@ overlay inside a screen.
 
 The three regions also keep their slots in App's JSX across the breakpoint, so
 the pane's wrapper stays the same `<div>` and merely changes class. That is
-what keeps `WorktreeView` — and every kept-alive terminal under it — mounted
+what keeps `WorkspaceView` — and every kept-alive terminal under it — mounted
 when a phone is rotated into landscape (844px wide, past the breakpoint). Only
 the two navigation regions swap component, and they are cheap.
 
@@ -107,7 +107,7 @@ The exception `goBackScreen` does handle is a cold load that restored, say,
 `back()` there would walk out of the app. The chevron steps up by hand instead,
 replacing the entry rather than pushing — going up is undoing a level.
 
-A deep jump — `openWorktree` from a notification landing straight on the pane —
+A deep jump — `openWorkspace` from a notification landing straight on the pane —
 pushes one entry, so back returns to whichever screen the user was on rather
 than stepping through a list they never saw.
 
@@ -124,9 +124,9 @@ letters. Same identity color (`lib/projectIdentity.ts`), plus the rail's footer
 affordances as rows (`NewProjectButton` / `SettingsButton` take a
 `variant="row"`).
 
-**Worktrees** is the desktop sidebar's body — `WorktreeList`, shared verbatim,
+**Workspaces** is the desktop sidebar's body — `WorkspaceList`, shared verbatim,
 which is what makes the mobile list order and the Alt+K/J cycle order provably
-the same — under a mobile header with the project menu, skills and new-worktree.
+the same — under a mobile header with the project menu, skills and new-workspace.
 No sidebar toggle: `sidebarOpen` is a desktop concept.
 
 Touch has no hover, so below `md` each row's rename, group and delete actions
@@ -136,7 +136,7 @@ header shows it in full). Dragging a row between groups is mouse-only for the
 same reason a pointerdown that preventDefaults would fight the scroll; the
 group dialog's "move it to" list is the touch path to the same thing.
 
-**Pane** is `WorktreeView` with a back chevron in place of the sidebar toggle.
+**Pane** is `WorkspaceView` with a back chevron in place of the sidebar toggle.
 Three things change:
 
 - **Tabs mode is forced** — at render, never written to the store, so a user
@@ -194,18 +194,18 @@ hidden textarea would dismiss the keyboard, and the point is to press these
 while typing.
 
 The bar reaches the PTY through `lib/ptyInput.ts`, a small registry of mounted
-panes: the socket is private to the `WorktreeTerminal` that owns it, and the
-bar lives in `WorktreeView`'s chrome, so they meet there rather than by
+panes: the socket is private to the `WorkspaceTerminal` that owns it, and the
+bar lives in `WorkspaceView`'s chrome, so they meet there rather than by
 threading a ref through the pane layout. The registered sender routes through
 xterm's own `input()`, the same path a real keypress takes.
 
-An **`acp` worktree needs none of this** — its pane is a chat composer, not a
+An **`acp` workspace needs none of this** — its pane is a chat composer, not a
 terminal (`docs/agent-modes.md`) — which makes it the mode that works best on a
 phone.
 
 ## The chat composer
 
-Two rules keep `WorktreeChat` usable at 390px, on top of the 16px floor every
+Two rules keep `WorkspaceChat` usable at 390px, on top of the 16px floor every
 control gets (below). Both are about width: on a phone there is nowhere for
 content to go but the pane.
 
@@ -306,7 +306,7 @@ on its padding box and inherit clearance from the notch and home indicator.
 
 The fixed-size dialogs go full-screen below `md`: Settings loses its two-column
 split (the left nav becomes a scrolling row of chips), and the `inset-4`
-overlays (skills, stopped worktrees, image builds) go edge to edge.
+overlays (skills, stopped workspaces, image builds) go edge to edge.
 
 Going edge to edge is not enough for the three that are **master/detail** — a
 20rem list beside a detail pane leaves the detail a few dozen pixels at 390px.
@@ -342,7 +342,7 @@ box re-filters the list, walking the stand-in through every match on the way to
 the one the user wants; and `useIsMobile` is live, so rotating a phone into
 landscape materializes a stand-in and acknowledges that.
 
-The **stopped-worktrees entry point** under the list is the one control that
+The **stopped-workspaces entry point** under the list is the one control that
 changes shape rather than size: a thin group-header-style line on the desktop,
 a full-width tap-sized card on touch, so it reads as one more list row.
 
@@ -356,11 +356,11 @@ field about 70px once both inputs are at the 16px floor, so it stacks below
 
 `packages/frontend/test/`: `viewport.test.ts` (the hook and the visual-viewport
 plumbing), `mobile-nav.test.ts` (the store's tap-vs-app-choosing split — the
-`autoSelectWorktree` case is the regression the whole design exists to
+`autoSelectWorkspace` case is the regression the whole design exists to
 prevent), `mobile-shell.test.tsx` (layer visibility and the history stack),
 `mobile-overlays.test.tsx` (the master/detail drill-down: no auto-pick, no
 detail-side fetch, and no death acknowledged until a row is tapped),
-`worktree-list.test.tsx`, `pty-input.test.ts`, `terminal-key-bar.test.tsx`.
+`workspace-list.test.tsx`, `pty-input.test.ts`, `terminal-key-bar.test.tsx`.
 
 **The geometry is not covered by CI.** jsdom has no layout, so the behaviors
 this design rests on — the hidden pane layer still measuring full-viewport, the
@@ -369,14 +369,14 @@ surviving a widen, tap-target sizes — are verified only by
 `test-playwright-scripts/mobile-three-screens-test.js`, a standalone `node`
 program nothing in `pnpm test` runs. A regression in exactly those behaviors
 lands green. Re-run it by hand against a live server after any change to
-`MobileScreenLayer` or `WorktreeView`'s layout math.
+`MobileScreenLayer` or `WorkspaceView`'s layout math.
 
 The keyboard's effect on the shell is the same kind of gap, and no desktop
 browser produces one: `test-playwright-scripts/mobile-keyboard-slide-test.js`
 installs a drivable stand-in for `window.visualViewport` before the app loads
 and moves it the way a keyboard does, then measures whether `#root` still
 covers the visible band — and whether a pinch-zoom pan leaves it alone. It
-needs no worktree.
+needs no workspace.
 
 The 16px floor is the same kind of gap — a computed style, over a whole UI —
 and is covered by `test-playwright-scripts/mobile-input-zoom-test.js`, which
@@ -387,7 +387,7 @@ its "never opened" line) is what shows that.
 
 The chat composer's rules are the same kind of gap, and are covered by
 `test-playwright-scripts/acp-chat-mobile-layout-test.js`: it needs a live
-`acp` worktree, sends it one message carrying an unbreakable token, and
+`acp` workspace, sends it one message carrying an unbreakable token, and
 measures the pane's horizontal overflow, the input's font size and how the box
 grows. It drives the built app rather than the Vite dev server, because
 `React.StrictMode` double-mounts in development and the chat pane's second ACP

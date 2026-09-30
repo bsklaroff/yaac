@@ -11,11 +11,11 @@ describe('persistSelection', () => {
   it('writes localStorage and mirrors into the URL query', () => {
     persistSelection('proj', 'sess')
     expect(JSON.parse(localStorage.getItem('yaac.selection.v1')!)).toEqual({
-      projectSlug: 'proj', worktreeId: 'sess',
+      projectSlug: 'proj', workspaceId: 'sess',
     })
     const params = new URLSearchParams(window.location.search)
     expect(params.get('project')).toBe('proj')
-    expect(params.get('worktree')).toBe('sess')
+    expect(params.get('workspace')).toBe('sess')
   })
 
   it('drops the query params (and stores nulls) when both values are null', () => {
@@ -23,16 +23,16 @@ describe('persistSelection', () => {
     persistSelection(null, null)
     expect(window.location.search).toBe('')
     expect(JSON.parse(localStorage.getItem('yaac.selection.v1')!)).toEqual({
-      projectSlug: null, worktreeId: null,
+      projectSlug: null, workspaceId: null,
     })
   })
 
-  it('keeps the project but clears the worktree when only the worktree is null', () => {
+  it('keeps the project but clears the workspace when only the workspace is null', () => {
     persistSelection('proj', 'sess')
     persistSelection('proj', null)
     const params = new URLSearchParams(window.location.search)
     expect(params.get('project')).toBe('proj')
-    expect(params.has('worktree')).toBe(false)
+    expect(params.has('workspace')).toBe(false)
   })
 
   it('preserves unrelated query params such as token', () => {
@@ -41,7 +41,7 @@ describe('persistSelection', () => {
     const params = new URLSearchParams(window.location.search)
     expect(params.get('token')).toBe('abc')
     expect(params.get('project')).toBe('proj')
-    expect(params.get('worktree')).toBe('sess')
+    expect(params.get('workspace')).toBe('sess')
   })
 
   it('is a no-op without localStorage', () => {
@@ -57,42 +57,42 @@ describe('persistSelection', () => {
 
 describe('loadSelection', () => {
   it('reads the URL query first, ignoring localStorage', () => {
-    window.history.replaceState({}, '', '/?project=urlproj&worktree=urlsess')
+    window.history.replaceState({}, '', '/?project=urlproj&workspace=urlsess')
     localStorage.setItem('yaac.selection.v1', JSON.stringify({
-      projectSlug: 'lsproj', worktreeId: 'lssess',
+      projectSlug: 'lsproj', workspaceId: 'lssess',
     }))
-    expect(loadSelection()).toEqual({ projectSlug: 'urlproj', worktreeId: 'urlsess' })
+    expect(loadSelection()).toEqual({ projectSlug: 'urlproj', workspaceId: 'urlsess' })
   })
 
-  it('treats a URL project with no worktree as a null worktree', () => {
+  it('treats a URL project with no workspace as a null workspace', () => {
     window.history.replaceState({}, '', '/?project=urlproj')
-    expect(loadSelection()).toEqual({ projectSlug: 'urlproj', worktreeId: null })
+    expect(loadSelection()).toEqual({ projectSlug: 'urlproj', workspaceId: null })
   })
 
   it('falls back to localStorage when the URL has no project', () => {
     localStorage.setItem('yaac.selection.v1', JSON.stringify({
-      projectSlug: 'lsproj', worktreeId: 'lssess',
+      projectSlug: 'lsproj', workspaceId: 'lssess',
     }))
-    expect(loadSelection()).toEqual({ projectSlug: 'lsproj', worktreeId: 'lssess' })
+    expect(loadSelection()).toEqual({ projectSlug: 'lsproj', workspaceId: 'lssess' })
   })
 
   it('returns nulls when nothing is persisted', () => {
-    expect(loadSelection()).toEqual({ projectSlug: null, worktreeId: null })
+    expect(loadSelection()).toEqual({ projectSlug: null, workspaceId: null })
   })
 
   it('survives malformed or partial localStorage', () => {
     localStorage.setItem('yaac.selection.v1', '{{{')
-    expect(loadSelection()).toEqual({ projectSlug: null, worktreeId: null })
+    expect(loadSelection()).toEqual({ projectSlug: null, workspaceId: null })
     localStorage.setItem('yaac.selection.v1', JSON.stringify({ projectSlug: 'p' }))
-    expect(loadSelection()).toEqual({ projectSlug: 'p', worktreeId: null })
+    expect(loadSelection()).toEqual({ projectSlug: 'p', workspaceId: null })
     localStorage.setItem('yaac.selection.v1', '"a string"')
-    expect(loadSelection()).toEqual({ projectSlug: null, worktreeId: null })
+    expect(loadSelection()).toEqual({ projectSlug: null, workspaceId: null })
   })
 
   it('round-trips through persistSelection', () => {
     persistSelection('proj', 'sess')
     // A bare reload (no URL params) should restore from localStorage.
     window.history.replaceState({}, '', '/')
-    expect(loadSelection()).toEqual({ projectSlug: 'proj', worktreeId: 'sess' })
+    expect(loadSelection()).toEqual({ projectSlug: 'proj', workspaceId: 'sess' })
   })
 })

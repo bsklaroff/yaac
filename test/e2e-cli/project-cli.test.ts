@@ -121,7 +121,7 @@ describe('yaac project (real CLI + real server)', () => {
     const { stdout, exitCode } = await runYaac(testEnv.env, 'project', 'list')
     expect(exitCode).toBe(0)
     expect(stdout).toContain('PROJECT')
-    expect(stdout).toContain('WORKTREES')
+    expect(stdout).toContain('WORKSPACES')
     expect(stdout).toContain('repo-alpha')
     expect(stdout).toContain('repo-beta')
     expect(stdout).toContain('https://github.com/test-org/repo-alpha.git')

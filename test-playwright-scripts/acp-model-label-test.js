@@ -1,5 +1,5 @@
 /*
- * Verifies that an ACP-mode worktree surfaces the model it is answering as,
+ * Verifies that an ACP-mode workspace surfaces the model it is answering as,
  * in both places the label appears — the sidebar row and the chat pane's tab.
  *
  * The tui path is covered by unit tests and is easy to drive by hand; the acp
@@ -23,21 +23,21 @@
  * from $YAAC_DATA_DIR/.server.lock — so run `pnpm build` +
  * `yaac server restart` first, or you are looking at the frontend as it was.
  *
- * Needs a running `yaac server` with a live ACP-mode worktree of the selected
- * project — `yaac worktree create <project> --tool claude --mode acp` — whose
+ * Needs a running `yaac server` with a live ACP-mode workspace of the selected
+ * project — `yaac workspace create <project> --tool claude --mode acp` — whose
  * agent has NOT yet answered (check 1 asserts the empty state), and spends one
  * small prompt turn on it.
  *
- * NOTE: a worktree created while the server was already up may be watched by
+ * NOTE: a workspace created while the server was already up may be watched by
  * the tui driver instead of the acp one — `StatusWatcherManager.sync` keeps the
- * first watcher it made for a worktree, so a mode learned later never takes
+ * first watcher it made for a workspace, so a mode learned later never takes
  * effect. `yaac server restart` re-syncs from the recorded marker and attaches
- * the ACP driver. Symptom: no socat process against the worktree's acpd
+ * the ACP driver. Symptom: no socat process against the workspace's acpd
  * socket, and the pane never leaves "No messages yet".
  *
  * Run: node test-playwright-scripts/acp-model-label-test.js
  * (SCREENSHOT_DIR to capture the surfaces; defaults to /tmp/yaac-shots.
- *  WORKTREE_ID to pick one when the project has several.)
+ *  WORKSPACE_ID to pick one when the project has several.)
  * (playwright is resolved from the global npm root; browsers live under
  * /opt/playwright-browsers)
  */
@@ -99,21 +99,21 @@ const SHOTS = process.env.SCREENSHOT_DIR ?? '/tmp/yaac-shots'
 const lock = readServerLock()
 const origin = `http://127.0.0.1:${lock.port}`
 
-/** The live ACP worktree to drive: the one named, else the first the server
+/** The live ACP workspace to drive: the one named, else the first the server
  *  reports whose primary conversation is acp-mode. */
-async function pickWorktree() {
-  const res = await fetch(`${origin}/api/worktree/list`)
-  if (!res.ok) throw new Error(`worktree list failed: HTTP ${res.status}`)
-  const { worktrees } = await res.json()
-  const acp = worktrees.filter((w) => w.agentSessions.some((a) => a.mode === 'acp' && a.active))
-  const wanted = process.env.WORKTREE_ID
+async function pickWorkspace() {
+  const res = await fetch(`${origin}/api/workspace/list`)
+  if (!res.ok) throw new Error(`workspace list failed: HTTP ${res.status}`)
+  const { workspaces } = await res.json()
+  const acp = workspaces.filter((w) => w.agentSessions.some((a) => a.mode === 'acp' && a.active))
+  const wanted = process.env.WORKSPACE_ID
   const found = wanted
-    ? acp.find((w) => w.worktreeId.startsWith(wanted))
+    ? acp.find((w) => w.workspaceId.startsWith(wanted))
     : acp[0]
   if (!found) {
     throw new Error(
-      `no live acp worktree found${wanted ? ` matching ${wanted}` : ''} — create one with `
-      + '`yaac worktree create <project> --mode acp`',
+      `no live acp workspace found${wanted ? ` matching ${wanted}` : ''} — create one with `
+      + '`yaac workspace create <project> --mode acp`',
     )
   }
   return found
@@ -147,15 +147,15 @@ function readLabels() {
 const { chromium } = requirePlaywright()
 const browser = await chromium.launch()
 try {
-  const worktree = await pickWorktree()
-  console.log(`driving acp worktree ${worktree.worktreeId}`)
+  const workspace = await pickWorkspace()
+  console.log(`driving acp workspace ${workspace.workspaceId}`)
 
   const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
   const page = await ctx.newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
 
   await page.goto(
-    `${origin}/?project=${worktree.projectSlug}&worktree=${worktree.worktreeId}`,
+    `${origin}/?project=${workspace.projectSlug}&workspace=${workspace.workspaceId}`,
   )
   await page.locator('textarea[placeholder]').first().waitFor({ state: 'visible', timeout: 30_000 })
   await page.waitForTimeout(2000)

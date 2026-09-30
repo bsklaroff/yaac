@@ -146,7 +146,7 @@ export function ProjectEnv({ slug, mediatedEgress }: {
     <div>
       <div className="text-xs font-medium text-text">Environment</div>
       <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
-        Variables every worktree of this project starts with. Applies to worktrees
+        Variables every workspace of this project starts with. Applies to workspaces
         created after saving.
       </p>
 
@@ -223,8 +223,8 @@ export function ProjectEnv({ slug, mediatedEgress }: {
           />
           Secret — stored encrypted
           {mediatedEgress
-            ? ', injected into outbound requests by the proxy so it never enters the worktree'
-            : '. This server runs worktrees on the host, with no proxy, so the value is placed in the worktree environment'}
+            ? ', injected into outbound requests by the proxy so it never enters the workspace'
+            : '. This server runs workspaces on the host, with no proxy, so the value is placed in the workspace environment'}
         </label>
 
         {draft.secret && (

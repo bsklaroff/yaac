@@ -92,7 +92,7 @@ afterEach(async () => {
 
 /**
  * A cluster where the project's registry has its ClusterIP, one node
- * answers, no worktree pod is holding a generation, and every pod run
+ * answers, no workspace pod is holding a generation, and every pod run
  * succeeds.
  */
 function stageLiveCluster(opts: { podVolumes?: unknown[] } = {}): void {
@@ -423,7 +423,7 @@ describe('ensureNodeImageStore', () => {
     expect(pulled).toContain(`${CLUSTER_IP}:5000/myapp:v1`)
     expect(pulled).toContain(`${CLUSTER_IP}:5000/myapp:${CACHE_TAG_PREFIX}v1-1`)
     expect(pulled).toContain(gen('myapp', 'old'))
-    // Named before chain, so the image a worktree refers to is warmed
+    // Named before chain, so the image a workspace refers to is warmed
     // before the intermediates that only accelerate a rebuild.
     expect(pulled.indexOf(gen('yaac-tools', 'new')))
       .toBeLessThan(pulled.indexOf(`${CLUSTER_IP}:5000/yaac-tools:${CACHE_TAG_PREFIX}${GENERATIONS.new}-1`))
@@ -582,7 +582,7 @@ describe('nodeImageStoreMount', () => {
     for (const g of [older, newer]) await fs.writeFile(path.join(parent, g, DONE_MARKER), 'x')
 
     // `partial` sorts newest but has no marker: a build that crashed
-    // mid-pull must never become a worktree's store.
+    // mid-pull must never become a workspace's store.
     await expect(nodeImageStoreMount(ID)).resolves.toEqual({
       source: { kind: 'hostPath', path: path.join(parent, newer), type: 'DirectoryOrCreate' },
       mountPath: SHARED_IMAGES_MOUNT,

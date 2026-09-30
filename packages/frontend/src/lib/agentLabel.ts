@@ -2,7 +2,7 @@ import { TOOL_LABEL } from '#lib/icons'
 import type { AgentSessionEntry, AgentTool } from '@yaac/shared/types'
 
 /**
- * How a worktree's agent is named wherever it is named: the tool, and the
+ * How a workspace's agent is named wherever it is named: the tool, and the
  * model it is answering as when the server knows one ("Claude · Opus 5").
  *
  * The model arrives verbatim in the tool's own spelling, which is the right
@@ -58,21 +58,21 @@ export function agentLabel(
 }
 
 /**
- * The model a whole worktree is running, for the one line a row has to say it
+ * The model a whole workspace is running, for the one line a row has to say it
  * on. A live conversation is the honest answer, so those are preferred over
- * history; among several, the earliest is the worktree's primary agent
+ * history; among several, the earliest is the workspace's primary agent
  * (ordinal 0 is the window a restart brings up first).
  *
- * A worktree whose live conversations have not reported a model yet still
+ * A workspace whose live conversations have not reported a model yet still
  * shows one from its history rather than nothing: the transcript it came from
- * is the same one the live agent is appending to. On a stopped worktree the
+ * is the same one the live agent is appending to. On a stopped workspace the
  * same rule names the model its primary conversation last answered as — not
  * necessarily what a restart resumes with, which is up to each tool.
  */
-export function worktreeModel(
-  worktree: { agentSessions: AgentSessionEntry[] },
+export function workspaceModel(
+  workspace: { agentSessions: AgentSessionEntry[] },
 ): AgentSessionEntry | undefined {
-  const byOrdinal = [...worktree.agentSessions].sort((a, b) => a.ordinal - b.ordinal)
+  const byOrdinal = [...workspace.agentSessions].sort((a, b) => a.ordinal - b.ordinal)
   const named = (s: AgentSessionEntry): boolean => s.model !== undefined
   return byOrdinal.find((s) => s.active && named(s)) ?? byOrdinal.find(named)
 }

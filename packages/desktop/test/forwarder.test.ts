@@ -10,32 +10,32 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { snapshotForwards, startForwarder } from '#forwarder'
 import type { ForwardSpec } from '@yaac/shared/port-tunnel'
 import type { ServerTarget } from '@yaac/shared/server-api'
-import type { ServerSnapshot, WorktreeListEntry } from '@yaac/shared/types'
+import type { ServerSnapshot, WorkspaceListEntry } from '@yaac/shared/types'
 
 const LOCAL: ServerTarget = { baseUrl: 'http://127.0.0.1:8787' }
 const OTHER: ServerTarget = { baseUrl: 'https://srv.ts.net' }
 
-function worktree(worktreeId: string, ports: Array<[number, number]>): WorktreeListEntry {
+function workspace(workspaceId: string, ports: Array<[number, number]>): WorkspaceListEntry {
   return {
-    worktreeId,
+    workspaceId,
     projectSlug: 'proj',
     tool: 'claude',
     mode: 'tui',
     status: 'running',
     createdAt: '2026-01-01T00:00:00.000Z',
-    jobName: `yaac-proj-${worktreeId}`,
+    jobName: `yaac-proj-${workspaceId}`,
     agentSessions: [],
     blockedHosts: [],
     unforwardedPorts: [],
     forwardedPorts: ports.map(([containerPort, hostPort]) => ({ containerPort, hostPort })),
-  } as unknown as WorktreeListEntry
+  } as unknown as WorkspaceListEntry
 }
 
 function snapshot(
-  worktrees: WorktreeListEntry[],
+  workspaces: WorkspaceListEntry[],
   driver: ServerSnapshot['driver'] = 'k8s',
 ): ServerSnapshot {
-  return { driver, worktrees } as unknown as ServerSnapshot
+  return { driver, workspaces } as unknown as ServerSnapshot
 }
 
 /** A fake reconciler standing in for the shared one: records every desired
@@ -78,11 +78,11 @@ beforeEach(() => {
 })
 
 describe('snapshotForwards', () => {
-  it('flattens every worktree\'s offered mappings into one desired set', () => {
+  it('flattens every workspace\'s offered mappings into one desired set', () => {
     expect(snapshotForwards(snapshot([
-      worktree('a', [[3000, 3000], [5432, 15432]]),
-      worktree('b', [[3000, 3001]]),
-      worktree('c', []),
+      workspace('a', [[3000, 3000], [5432, 15432]]),
+      workspace('b', [[3000, 3001]]),
+      workspace('c', []),
     ]), LOCAL.baseUrl)).toEqual([
       { session: 'a', containerPort: 3000, hostPort: 3000 },
       { session: 'a', containerPort: 5432, hostPort: 15432 },
@@ -96,7 +96,7 @@ describe('snapshotForwards', () => {
     // themselves, so binding them is a retry loop that can never settle
     // (docs/port-forward-tunnel.md).
     expect(snapshotForwards(snapshot([
-      worktree('a', [[3000, 3000]]),
+      workspace('a', [[3000, 3000]]),
     ], 'containerless'), LOCAL.baseUrl)).toEqual([])
   })
 
@@ -104,7 +104,7 @@ describe('snapshotForwards', () => {
     // From here the server host's loopback is as unreachable as a pod's;
     // the identity mapping is bound on this machine and tunnelled back.
     expect(snapshotForwards(snapshot([
-      worktree('a', [[3000, 3000]]),
+      workspace('a', [[3000, 3000]]),
     ], 'containerless'), OTHER.baseUrl)).toEqual([
       { session: 'a', containerPort: 3000, hostPort: 3000 },
     ])
@@ -115,7 +115,7 @@ describe('startForwarder', () => {
   it('reconciles the snapshot against the resolved server', async () => {
     const forwarder = startForwarder({ resolveTarget, createSet: set.create as never })
 
-    forwarder.apply(snapshot([worktree('a', [[3000, 3000]])]))
+    forwarder.apply(snapshot([workspace('a', [[3000, 3000]])]))
     await settle()
 
     expect(set.targets).toEqual([LOCAL.baseUrl])
@@ -128,9 +128,9 @@ describe('startForwarder', () => {
     // and rebinding ports for no reason.
     const forwarder = startForwarder({ resolveTarget, createSet: set.create as never })
 
-    forwarder.apply(snapshot([worktree('a', [[3000, 3000]])]))
-    forwarder.apply(snapshot([worktree('a', [[3001, 3001]])]))
-    forwarder.apply(snapshot([worktree('a', [[3002, 3002]])]))
+    forwarder.apply(snapshot([workspace('a', [[3000, 3000]])]))
+    forwarder.apply(snapshot([workspace('a', [[3001, 3001]])]))
+    forwarder.apply(snapshot([workspace('a', [[3002, 3002]])]))
     await settle()
 
     expect(set.reconciled).toEqual([[{ session: 'a', containerPort: 3002, hostPort: 3002 }]])
@@ -141,11 +141,11 @@ describe('startForwarder', () => {
     // ones over would leave the tray tunnelling to a server nobody is
     // looking at.
     const forwarder = startForwarder({ resolveTarget, createSet: set.create as never })
-    forwarder.apply(snapshot([worktree('a', [[3000, 3000]])]))
+    forwarder.apply(snapshot([workspace('a', [[3000, 3000]])]))
     await settle()
 
     resolveTarget.mockResolvedValue(OTHER)
-    forwarder.apply(snapshot([worktree('a', [[3000, 3000]])]))
+    forwarder.apply(snapshot([workspace('a', [[3000, 3000]])]))
     await settle()
 
     expect(set.targets).toEqual([LOCAL.baseUrl, OTHER.baseUrl])
@@ -155,7 +155,7 @@ describe('startForwarder', () => {
   it('decides what to bind from the origin it resolved, not the page', async () => {
     resolveTarget.mockResolvedValue(OTHER)
     const f = startForwarder({ resolveTarget, createSet: set.create as never })
-    f.apply(snapshot([worktree('a', [[3000, 3000]])], 'containerless'))
+    f.apply(snapshot([workspace('a', [[3000, 3000]])], 'containerless'))
     await settle()
     expect(set.reconciled).toEqual([[{ session: 'a', containerPort: 3000, hostPort: 3000 }]])
     f.stop()
@@ -163,9 +163,9 @@ describe('startForwarder', () => {
 
   it('reuses the set while the server is unchanged', async () => {
     const forwarder = startForwarder({ resolveTarget, createSet: set.create as never })
-    forwarder.apply(snapshot([worktree('a', [[3000, 3000]])]))
+    forwarder.apply(snapshot([workspace('a', [[3000, 3000]])]))
     await settle()
-    forwarder.apply(snapshot([worktree('a', [[3000, 3000]])]))
+    forwarder.apply(snapshot([workspace('a', [[3000, 3000]])]))
     await settle()
 
     expect(set.create).toHaveBeenCalledTimes(1)
@@ -182,22 +182,22 @@ describe('startForwarder', () => {
       onMessage: (t) => said.push(t),
     })
 
-    forwarder.apply(snapshot([worktree('a', [[3000, 3000]])]))
+    forwarder.apply(snapshot([workspace('a', [[3000, 3000]])]))
     await settle()
     expect(said.join(' ')).toContain('yaac server is not running')
 
-    forwarder.apply(snapshot([worktree('a', [[3000, 3000]])]))
+    forwarder.apply(snapshot([workspace('a', [[3000, 3000]])]))
     await settle()
     expect(set.reconciled).toHaveLength(1)
   })
 
   it('lets every forward go on stop, and takes no more snapshots', async () => {
     const forwarder = startForwarder({ resolveTarget, createSet: set.create as never })
-    forwarder.apply(snapshot([worktree('a', [[3000, 3000]])]))
+    forwarder.apply(snapshot([workspace('a', [[3000, 3000]])]))
     await settle()
 
     forwarder.stop()
-    forwarder.apply(snapshot([worktree('a', [[3000, 3000]])]))
+    forwarder.apply(snapshot([workspace('a', [[3000, 3000]])]))
     await settle()
 
     expect(set.closes).toBe(1)

@@ -81,12 +81,12 @@ export function setDataDir(dir: string): void {
  * Every yaac path hangs off one of four roots, chosen by ONE question:
  * who has to be able to read these bytes?
  *
- *  - GLOBAL (`globalRoot`)        the server AND worktree pods — which on a
+ *  - GLOBAL (`globalRoot`)        the server AND workspace pods — which on a
  *                                multi-node cluster may land on any node.
  *                                `<dataDir>/global` on a host; the RWX
  *                                claim `yaac-global` mounted at
  *                                `/yaac/global` in the server pod, and
- *                                subPaths of it in every worktree pod.
+ *                                subPaths of it in every workspace pod.
  *  - NODE-LOCAL (`nodeLocalRoot`) one node's scratch: re-derivable caches
  *                                and working copies of a GLOBAL checkpoint.
  *                                Nobody off that node reads it, so it never
@@ -98,7 +98,7 @@ export function setDataDir(dir: string): void {
  *                                the secret key. `<dataDir>/server-local`
  *                                on a host; the RWO claim `yaac-server-local`
  *                                at `/yaac/server-local` in the pod. No
- *                                worktree pod may mount it.
+ *                                workspace pod may mount it.
  *  - CLIENT-LOCAL (`clientLocalRoot`) only processes on the USER's machine
  *                                — the CLI, the auth daemon, the desktop
  *                                shell, and `yaac cluster install` acting
@@ -176,7 +176,7 @@ export function serverLocalPath(...rest: string[]): string {
  * over budget, while `os.tmpdir()` is the shortest writable place on every
  * platform. Keyed by the install IDENTITY — not a tier root, which the pod
  * re-roots — so two servers on one host (a test run beside a real one, two
- * data dirs) never collide, and a running worktree's socket dir keeps its
+ * data dirs) never collide, and a running workspace's socket dir keeps its
  * name across an upgrade. It costs nothing durable: a reboot clears it, and
  * every socket it named is gone by then.
  */
@@ -220,8 +220,8 @@ export function getProjectsDir(): string {
 }
 
 /**
- * Path inside the worktree container where the tmux server socket lives.
- * Backed by a pod-local emptyDir (see the worktree Job's mount list): a UNIX
+ * Path inside the workspace container where the tmux server socket lives.
+ * Backed by a pod-local emptyDir (see the workspace Job's mount list): a UNIX
  * socket only rendezvouses within the kernel that bound it, and every
  * consumer — attach, the `tmux -C` status stream, the liveness and
  * pane-content probes — reaches tmux through `kubectl exec` in the pod, so
@@ -238,7 +238,7 @@ export const CONTAINER_TMUX_SOCK = `${CONTAINER_TMUX_DIR}/server`
  * status store keys that conversation by.
  *
  * Pod-local on purpose, unlike the tmux dir: nothing on the host connects to
- * it. The server reaches it the way it reaches everything else in a worktree
+ * it. The server reaches it the way it reaches everything else in a workspace
  * pod, over a streamd `ctrl` stream (`socat - UNIX-CONNECT:<path>`), so the
  * socket needs no host mount and no port — which also keeps it out of the
  * auto-forward port scan a TCP listener would land in.
@@ -246,7 +246,7 @@ export const CONTAINER_TMUX_SOCK = `${CONTAINER_TMUX_DIR}/server`
 export const CONTAINER_ACP_DIR = '/tmp/yaac-acp'
 
 /**
- * Where opencode keeps its per-worktree SQLite database inside the
+ * Where opencode keeps its per-workspace SQLite database inside the
  * workspace — the NODE-LOCAL working copy under a pod, the global
  * checkpoint itself under containerless (`opencodeCheckpointDir`).
  */
@@ -255,21 +255,21 @@ export const CONTAINER_OPENCODE_DATA = '/home/yaac/.local/share/opencode'
 /**
  * In-pod path of the GLOBAL opencode checkpoint (`opencodeCheckpointDir`),
  * which `yaac-opencode-checkpoint` copies the working copy into on a timer
- * and at `preStop`, and `yaac-worktree-init` restores from at start.
+ * and at `preStop`, and `yaac-workspace-init` restores from at start.
  */
 export const CONTAINER_OPENCODE_CHECKPOINT = '/home/yaac/.yaac/opencode-checkpoint'
 
 /**
- * Where a worktree's ACP conversation logs are mounted in its session — the
+ * Where a workspace's ACP conversation logs are mounted in its session — the
  * host side is `acpLogDir()`. Unlike the socket dir above this one IS
  * host-mounted, because the log is what the server reads to rebuild a
- * conversation, including for a worktree whose pod is long gone.
+ * conversation, including for a workspace whose pod is long gone.
  */
 export const CONTAINER_ACP_LOG_DIR = '/home/yaac/.yaac-acp'
 
 /**
  * Where the images a user pastes into a terminal pane are mounted in its
- * session, read-only — the host side is `worktreeAttachmentsDir()`, which
+ * session, read-only — the host side is `workspaceAttachmentsDir()`, which
  * the server writes.
  */
 export const CONTAINER_ATTACHMENTS_DIR = '/home/yaac/.yaac-attachments'

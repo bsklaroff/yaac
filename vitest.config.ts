@@ -11,7 +11,7 @@ import { kindByoLayout } from './packages/test-utils/src/kind-byo-layout.js'
 // vitest-setup strips inherited git env and points the default data dir at
 // a temp path so no test can touch the developer's real repo or ~/.yaac;
 // unit-setup additionally strips an ambient YAAC_DATA_DIR so unit runs are
-// identical on a host and inside a yaac worktree.
+// identical on a host and inside a yaac workspace.
 // File paths, not @yaac/test-utils specifiers: vitest resolves setupFiles
 // with plain Node semantics, which can't substitute .ts sources for the
 // output-form (.js) targets in the package's exports map.
@@ -52,7 +52,7 @@ const CONTAINERLESS_API = [
   'test/api/identity-flow.test.ts',
   // Driver-neutral: it guards the WebSocket compression pass-through, which
   // a dependency bump could drop for every install. That makes it worth
-  // running where developers actually run things — a worktree with no
+  // running where developers actually run things — a workspace with no
   // cluster — rather than only in the host column.
   'test/api/websocket-compression.test.ts',
 ]
@@ -150,7 +150,7 @@ export default defineConfig({
       // api + e2e live in the root test/ tree (inherently cross-package).
       // The route matrix has two columns, and so does this tier: one
       // project per driver, split so the half that needs no cluster can run
-      // where there isn't one (inside a worktree pod, or on a host with no
+      // where there isn't one (inside a workspace pod, or on a host with no
       // kind). `api-k8s` carries everything that runs against the real k8s
       // driver its setup installs; `api-containerless` carries what runs
       // against the containerless one.
@@ -191,7 +191,7 @@ export default defineConfig({
         },
       },
       // The containerless tier: the same CLI, driven against a server that
-      // runs worktrees as tmux sessions on this host. It shares no cluster,
+      // runs workspaces as tmux sessions on this host. It shares no cluster,
       // builds no images and needs no namespace, so its global setup is just
       // the CLI build.
       {

@@ -16,8 +16,8 @@ interface ScreenState { yaacScreen?: MobileScreen; yaacDepth?: number }
 /** The screen a back gesture from each screen lands on. */
 const PARENT: Record<MobileScreen, MobileScreen> = {
   projects: 'projects',
-  worktrees: 'projects',
-  pane: 'worktrees',
+  workspaces: 'projects',
+  pane: 'workspaces',
 }
 
 function stampOf(state: unknown): ScreenState {
@@ -78,7 +78,7 @@ export function goBackScreen(): void {
  * that is a no-op whenever a pop lands on a same-screen entry, and a stranded
  * one swallows the next real navigation's push.
  *
- * A deep jump — `openWorktree` from a notification landing straight on the
+ * A deep jump — `openWorkspace` from a notification landing straight on the
  * pane — pushes a single entry, so back returns to whichever screen the user
  * was on rather than stepping through a list they never saw.
  */

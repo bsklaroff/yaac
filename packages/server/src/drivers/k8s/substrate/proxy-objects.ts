@@ -15,7 +15,7 @@ import { claudeOAuthBundleSchema, codexOAuthBundleSchema } from '@yaac/shared/ty
 
 /** Everything the proxy records about what it denied or saw rejected. */
 export interface ProxyState {
-  /** worktreeId -> blocked hostnames */
+  /** workspaceId -> blocked hostnames */
   blockedHosts: Record<string, string[]>
   /** projectSlug -> failures */
   gitAuthFailures: Record<string, GitAuthFailure[]>

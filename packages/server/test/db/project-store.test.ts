@@ -10,7 +10,7 @@ import {
   setProjectGitCredential,
 } from '#db/project-store'
 import { insertGitCredential } from '#db/git-credential-store'
-import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
+import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#notify'
 
 describe('recordProject', () => {
   let tmpDir: string
@@ -18,12 +18,12 @@ describe('recordProject', () => {
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
-    _resetWorktreeListChangedForTests()
+    _resetWorkspaceListChangedForTests()
     pushes = 0
-    onWorktreeListChanged(() => { pushes += 1 })
+    onWorkspaceListChanged(() => { pushes += 1 })
   })
   afterEach(async () => {
-    _resetWorktreeListChangedForTests()
+    _resetWorkspaceListChangedForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
   })
@@ -99,7 +99,7 @@ describe('deleteProjectRow', () => {
 
   beforeEach(async () => { tmpDir = await createTempDataDir() })
   afterEach(async () => {
-    _resetWorktreeListChangedForTests()
+    _resetWorkspaceListChangedForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
   })
@@ -107,9 +107,9 @@ describe('deleteProjectRow', () => {
   it('removes the row and its create memory, and pushes a fresh snapshot', async () => {
     await recordProject({ slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' })
     await recordProjectCreate('app', 'codex', { model: 'gpt-6-sol' })
-    _resetWorktreeListChangedForTests()
+    _resetWorkspaceListChangedForTests()
     let pushes = 0
-    onWorktreeListChanged(() => { pushes += 1 })
+    onWorkspaceListChanged(() => { pushes += 1 })
 
     await deleteProjectRow('app')
     expect(await getProjectRow('app')).toBeUndefined()
@@ -152,10 +152,10 @@ describe('recordProjectCreate', () => {
   let tmpDir: string
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
-    _resetWorktreeListChangedForTests()
+    _resetWorkspaceListChangedForTests()
   })
   afterEach(async () => {
-    _resetWorktreeListChangedForTests()
+    _resetWorkspaceListChangedForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
   })
@@ -164,7 +164,7 @@ describe('recordProjectCreate', () => {
     await recordProject({ slug: 'p', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
     await recordProject({ slug: 'q', remoteUrl: 'git@h:o/s.git', addedAt: 'now' })
     let pushes = 0
-    onWorktreeListChanged(() => { pushes += 1 })
+    onWorkspaceListChanged(() => { pushes += 1 })
 
     await recordProjectCreate('p', 'claude', { model: 'claude-opus-5-5', permissionMode: 'plan', mode: 'acp' })
     await recordProjectCreate('p', 'codex', { model: 'gpt-6-sol' })

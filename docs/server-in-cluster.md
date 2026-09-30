@@ -4,7 +4,7 @@ Current-state reference for how the yaac server runs under the `k8s`
 driver: a single-replica in-cluster Deployment, applied by `yaac cluster
 install`, reached from the host at a fixed loopback origin.
 
-The move exists so that server and worktree pods can be given the *same*
+The move exists so that server and workspace pods can be given the *same*
 storage. A host process beside the cluster can only ever share a
 filesystem with its pods by way of hostPath and the node==host assumption;
 a pod can mount a claim, and this one mounts two (see "Storage is two
@@ -131,7 +131,7 @@ The port mapping is written when the cluster is **created**; kind cannot
 add one to a running cluster. So a cluster made before this existed cannot
 be converged into publishing the server, and install says so by name rather
 than hanging: `yaac cluster delete`, then `yaac cluster install`. That loses
-running worktrees (as any cluster delete does) and nothing else — the data
+running workspaces (as any cluster delete does) and nothing else — the data
 dir is on the host, and the pod mounts it at the identical absolute path, so
 `dataDirHash()`, every label and the database carry over. A cluster whose
 Service is still the NodePort an earlier yaac applied converges in place:
@@ -188,7 +188,7 @@ The server identifies a caller the way a host server does
 serve` and names a loopback `Host` is the owner. On kind the forwarder
 behind the host's `127.0.0.1` port mapping is TCP, so what reaches the pod
 is exactly what a host process sent. That makes this policy load-bearing
-for AUTHENTICATION, not only for reachability: a worktree pod that reached
+for AUTHENTICATION, not only for reachability: a workspace pod that reached
 the bind could send `Host: 127.0.0.1` and be the owner, so every path onto
 it has to be the node's or the fronting's.
 
@@ -216,9 +216,9 @@ composed by NetworkPolicy's union of allow rules:
 
 What must never reach the server is a pod, and the explicit form says so by
 omission: no `podSelector` in the install namespace, no pod CIDR anywhere. A
-worktree pod dialing the Service or the pod IP presents its own address —
+workspace pod dialing the Service or the pod IP presents its own address —
 Calico enforces a workload's source — and matches nothing. Nothing
-in-cluster wants this port anyway: a worktree's own `yaac-mama` calls go to
+in-cluster wants this port anyway: a workspace's own `yaac-mama` calls go to
 the egress proxy's queue, which the server drains.
 
 The node half has one blind spot, and it is on the other side of the
@@ -226,10 +226,10 @@ wire. On kind the fronting forwarder is a hostNetwork listener on the node
 port the port mapping targets, which no pod policy covers, and its dial into
 the server is node-sourced — so a pod that reached `<node>:<that port>` would
 reach the server as the node, and with a loopback `Host` be its owner.
-Worktree pods cannot: their egress reaches node addresses on the netd
+Workspace pods cannot: their egress reaches node addresses on the netd
 listener range alone. The two kinds of pod that may dial node addresses —
 builder pods, which run `RUN` steps from agent-editable Dockerfiles, and the
-egress proxy, whose upstream is whatever a worktree's allowlist names — carry
+egress proxy, whose upstream is whatever a workspace's allowlist names — carry
 egress policies that admit every node port but that one
 (`egressAllButServerFront`). The proxy's is applied on every server start
 as well as with the proxy, since a proxy that is already current is never
@@ -237,9 +237,9 @@ redeployed; the builders' with each build. Every other pod in the
 namespace is under the world default-deny, and `cluster check`'s `egress`
 gate fails when a deployed proxy has no such policy.
 
-Together with the worktree egress default-deny, that is the whole of what
+Together with the workspace egress default-deny, that is the whole of what
 keeps untrusted code from being the server's owner — so `yaac cluster
-check`'s `egress` gate proves it on every install, with a worktree-labelled
+check`'s `egress` gate proves it on every install, with a workspace-labelled
 probe pod that must fail to dial the server, alongside the apiserver,
 registry and forgery-lock denials it already proved. The `server` e2e suite
 proves the same from a per-file deployment.
@@ -280,7 +280,7 @@ namespace needs none.
   placement this driver has.
 - **The proxy control API** is the same Service's control port. The proxy's
   ingress policy admits both ports from the server's pod selector and from
-  nothing else pod-shaped, so a worktree can reach neither.
+  nothing else pod-shaped, so a workspace can reach neither.
 
 One caller of these modules is not a pod: the **e2e harness**, which drives
 them from the host against a real cluster, where a ClusterIP names nothing.
@@ -310,7 +310,7 @@ no attach exclusivity, so the lease IS the single-writer guard PGlite gets.
 Under gVisor there is no user namespace, so a file on a claim is presented
 at its real uid and every writer of a shared path has to name the same
 number. Here that is one number for the whole install: the server pod,
-every worktree pod, the proxy and the check's probe pods all run as **the
+every workspace pod, the proxy and the check's probe pods all run as **the
 install uid**. `installSecurityContext` is the one place that renders it,
 straight into a manifest — no image build arg, and nothing baked (see
 below).
@@ -341,8 +341,8 @@ other side of the gofer.
 
 Everything in the cluster derives the number from the server pod's own
 `process.getuid()`, which is the install uid because the pod runs as what
-install stamped — so every path the server pre-creates for a worktree lands
-owned by the number that worktree's pod runs as. The host-side callers that
+install stamped — so every path the server pre-creates for a workspace lands
+owned by the number that workspace's pod runs as. The host-side callers that
 are not install — `cluster check`'s probe pods — read it back off the live
 Deployment (`deployedInstallIdentity`), as they read the fronting off the
 live Service and Ingress. With no Deployment to ask they take what install
@@ -486,14 +486,14 @@ process never sets the variables, so under containerless the split is
 inert (three folders of one directory, no volume machinery).
 
 NODE-LOCAL is the tier nothing durable lives in: per project, the pnpm
-store and the per-worktree module dirs under it, the image-store
-generations (docs/nested-containers.md), and each opencode worktree's
-working copy (docs/worktree-storage.md "opencode"). On a multi-node
-cluster those bytes are on whichever node the worktree ran on, so the
+store and the per-workspace module dirs under it, the image-store
+generations (docs/nested-containers.md), and each opencode workspace's
+working copy (docs/workspace-storage.md "opencode"). On a multi-node
+cluster those bytes are on whichever node the workspace ran on, so the
 server never reads or writes them from its own filesystem: a pod's init
 container creates and chowns what the pod mounts, a node-side writer pod
 fills the image store, and `reapNodeLocal` runs one root pod per node to
-remove what no live worktree owns.
+remove what no live workspace owns.
 
 The claims are **named**, and the volumes are **hashed**. A claim is
 namespaced and belongs to one install, so `yaac-global` is the same name
@@ -508,7 +508,7 @@ the objects with the cluster and leaves the bytes under `~/.yaac`, so
 Kubernetes enforces no access mode on a hostPath, so the same claim spec
 is what a cloud backend binds through a real RWX class.
 
-Worktree pods mount **subPaths** of `yaac-global`, never the claim whole,
+Workspace pods mount **subPaths** of `yaac-global`, never the claim whole,
 and never the server's claim at all: the k8s driver resolves each declared
 mount from the tier root its path lives under (`resolveMountSource`), a
 GLOBAL path becoming a claim subPath, a NODE-LOCAL one the matching path
@@ -567,14 +567,14 @@ refused rather than applied. The RWX class must be NFS-family —
 csi-driver-nfs, EFS, or Azure Files over NFS — because that is what the
 storage spike measured, and `cluster check`'s `storage` gate holds the
 volume to all of the above on every run. Its `egress` gate adds one leg on
-such a volume: a worktree-labelled pod must fail to reach the NFS server
+such a volume: a workspace-labelled pod must fail to reach the NFS server
 the volume names. That server speaks AUTH_SYS and trusts whatever uid a
 client claims, so a sandbox that reached it could read and write every
 project as anyone; the session policy is what stops that, and the probe
 proves it holds on the cluster at hand.
 
 The proxy mounts nothing at all: what it needs it is handed as objects
-(docs/worktree-egress.md "What the proxy is told, and how"), so
+(docs/workspace-egress.md "What the proxy is told, and how"), so
 `.credentials/` is the server's alone.
 
 ## Client state lives beside the data dir, not in it
@@ -615,8 +615,8 @@ PGlite and belongs on the same volume as the database.
 ## The credential sweep is inert in here
 
 Credential convergence (docs/containerless-driver.md) carries a token a
-worktree's agent refreshed in place back up to the host store, and pushes it
-down to projects left behind. All of that is about an UNMEDIATED worktree —
+workspace's agent refreshed in place back up to the host store, and pushes it
+down to projects left behind. All of that is about an UNMEDIATED workspace —
 one holding the real bundle because there is no proxy to swap it. Under this
 driver there always is one, so the sweep has nothing to carry, and it is
 inert here for reasons rather than by luck:
@@ -625,7 +625,7 @@ inert here for reasons rather than by luck:
   when the driver is `containerless`.
 - The two call sites that are not driver-gated stop on their own. Seeding a
   create takes the mediated branch, which writes sentinels and returns before
-  either half runs; the harvest on worktree stop returns at once under a
+  either half runs; the harvest on workspace stop returns at once under a
   mediated runtime, since a pod-writable tool home has nothing legitimate to
   offer there and a planted bundle must never be adopted install-wide.
 - The Keychain half never applies. It is `darwin`-only, and this server is a
@@ -636,21 +636,21 @@ against: a host with a login keychain and the user's own tool directories. It
 has neither, and the answer is that it never asks for them.
 
 What reaches the host store instead is the `credential-adopt` reconcile
-step: a refresh a worktree drives transits the proxy, which captures the
+step: a refresh a workspace drives transits the proxy, which captures the
 rotation into `yaac-proxy-refreshed`, and the step adopts it from the
 server's watch of that object — the same newest-wins compare, driven by
 the object's delta rather than a sweep of tool homes.
 
 ## What a cluster install cannot do for you
 
-- **Worktree port-forwarding needs a client running.** A port the server
+- **Workspace port-forwarding needs a client running.** A port the server
   bound would be on the pod's loopback, so it binds none: it declares the
   mapping and serves the near end of each connection, and the listener is
   held by `yaac forward` or the desktop app (docs/port-forward-tunnel.md).
   With neither running the webapp's `127.0.0.1:<port>` links refuse to
   connect — which is the honest state, and the one thing a pod-side bind
   would have hidden.
-- **The git identity is a server setting, not a host's.** Worktrees commit
+- **The git identity is a server setting, not a host's.** Workspaces commit
   under an identity kept in the database — which the pod already mounts —
   rather than one install snapshots off whichever machine it ran on. The
   auth server seeds it from your own machine's git config when it starts
@@ -658,7 +658,7 @@ the object's delta rather than a sweep of tool homes.
   sign-in — `yaac cluster install` does not start it), and Settings →
   General or `yaac config git-identity` edits it, so changing your name
   needs no re-install and no shell on the host. A
-  server that has none refuses to create a worktree and says where to set
+  server that has none refuses to create a workspace and says where to set
   one. A prewarmed spare bakes its identity in at warm time, so a claim
   re-keys the checkout it hands over; the pool is never left committing
   under an identity that has since been changed.

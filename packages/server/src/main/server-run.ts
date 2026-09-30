@@ -13,9 +13,9 @@ import {
 import { closeDb, listProjectRows, openDb } from '#db'
 import { clearGitScratch, startGitSshAgent, stopGitSshAgent } from '#domain/git'
 import { EventHub, type WsLike } from '#api/events'
-import { convertLinkedCheckouts, resolveWorktreeContainer } from '#domain/worktrees'
+import { convertLinkedCheckouts, resolveWorkspaceContainer } from '#domain/workspaces'
 import { attachConvergence, releaseConvergence, stopConvergence } from '#main/convergence'
-import { coalesceCalls, onWorktreeListChanged } from '#notify'
+import { coalesceCalls, onWorkspaceListChanged } from '#notify'
 import { refreshClaudeBundledSkills } from '#domain/skills'
 import { attachPty, type SocketLike } from '#runtime/terminals'
 import { TUNNEL_DIAL_FAILED, attachPortTunnel } from '#runtime/ports'
@@ -33,8 +33,8 @@ import { LEASE_HEARTBEAT_MS, isLockLive } from '@yaac/shared/server-lock-file'
 import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-port'
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { startReconciler } from '#main/reconciler'
-import { setWorktreeDriver, worktreeDriver } from '#drivers/driver'
-import { resolveProjectEnv } from '#domain/projects'
+import { setWorkspaceDriver, workspaceDriver } from '#drivers/driver'
+import { moveLegacyWorkspacesDirs, resolveProjectEnv } from '#domain/projects'
 import { createK8sDriver } from '#drivers/k8s'
 import { createContainerlessDriver } from '#drivers/containerless'
 import { assertHostServerAllowed, resolveDriverKind } from '#main/driver-choice'
@@ -125,7 +125,7 @@ export function torCoverageWarning(driver: DriverKind): string | undefined {
   if (!env.useTor || driver !== 'containerless') return undefined
   return 'YAAC_USE_TOR is set, but the containerless driver runs workspaces '
     + 'directly on the host with no egress proxy, so agent traffic and '
-    + 'anything a worktree does itself will NOT go through Tor. Only the '
+    + 'anything a workspace does itself will NOT go through Tor. Only the '
     + "server's own git operations are routed through it. A cluster install "
     + '(`yaac cluster install`) is what gives Tor-covered workspaces.'
 }
@@ -229,7 +229,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // a null branch downstream.
   await assertHostServerAllowed()
   const driverKind = resolveDriverKind()
-  setWorktreeDriver(
+  setWorkspaceDriver(
     driverKind === 'containerless' ? createContainerlessDriver() : createK8sDriver(),
   )
   serverLog(`[server] runtime driver: ${driverKind}`)
@@ -262,7 +262,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // and this is the sole consumer of that channel: rebuild, diff, push. The
   // first notification publishes immediately; bursts (server start seeding N
   // pods) coalesce into one trailing rebuild.
-  onWorktreeListChanged(coalesceCalls(() => { void hub.publishSnapshot() }, 150))
+  onWorkspaceListChanged(coalesceCalls(() => { void hub.publishSnapshot() }, 150))
   // The plan-usage readouts are the one thing here with no edge to ride:
   // the upstream usage endpoints have no push, so freshness can only come
   // from asking. Gated on a connected client, which is what keeps a closed
@@ -393,12 +393,12 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     },
   })))
 
-  // Every attach names its worktree by EXACT id — clients hold full ids from
+  // Every attach names its workspace by EXACT id — clients hold full ids from
   // the snapshot, and the CLI pre-resolves what a user typed — so one with
   // none is refused before any lookup rather than matched against anything.
   // A conversation id is checked too: it is joined into a path downstream.
   const attachQuery = (opts: { session?: boolean } = {}): MiddlewareHandler => async (c, next) => {
-    if (!c.req.query('id')) throw new ServerError('VALIDATION', 'a worktree id is required')
+    if (!c.req.query('id')) throw new ServerError('VALIDATION', 'a workspace id is required')
     if (opts.session && !agentSessionIdSchema.safeParse(c.req.query('session')).success) {
       throw new ServerError('VALIDATION', 'a valid conversation id is required')
     }
@@ -406,8 +406,8 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   }
 
   // PTY bridge: one embedded terminal per connection, attached to the
-  // worktree's tmux. Path is /pty/attach (not /worktree/...) to avoid
-  // colliding with the GET /worktree/:id route. Auth rides the upgrade.
+  // workspace's tmux. Path is /pty/attach (not /workspace/...) to avoid
+  // colliding with the GET /workspace/:id route. Auth rides the upgrade.
   app.get('/api/pty/attach', attachQuery(), nodeWs.upgradeWebSocket((c) => {
     const id = c.req.query('id') ?? ''
     // Which window to attach and the browser's reported grid — validated by
@@ -423,7 +423,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
         void (async () => {
           let jobName: string
           try {
-            const resolved = await resolveWorktreeContainer(id, { requireRunning: true, exact: true })
+            const resolved = await resolveWorkspaceContainer(id, { requireRunning: true, exact: true })
             jobName = resolved.jobName
           } catch {
             try {
@@ -474,7 +474,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
           }
           let workspaceId: string
           try {
-            workspaceId = (await resolveWorktreeContainer(id, { requireRunning: true, exact: true })).worktreeId
+            workspaceId = (await resolveWorkspaceContainer(id, { requireRunning: true, exact: true })).workspaceId
           } catch (err) {
             serverLog(`[server] forward tunnel to ${id.slice(0, 8)}:${String(port)} refused: `
               + (err instanceof Error ? err.message : String(err)))
@@ -518,7 +518,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
           }
           let projectSlug: string
           try {
-            projectSlug = (await resolveWorktreeContainer(id, { requireRunning: true, exact: true })).projectSlug
+            projectSlug = (await resolveWorkspaceContainer(id, { requireRunning: true, exact: true })).projectSlug
           } catch {
             fail('session not found or not running')
             return
@@ -593,6 +593,8 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     await removeLock(lease.instance)
     process.exit(1)
   }
+  // Before anything resolves a checkout path (docs/legacy-compat-shims.md).
+  await moveLegacyWorkspacesDirs()
   // What a killed predecessor's git calls left in scratch. Under the lock and
   // before anything can run git, so no live call's dir is in there.
   await clearGitScratch()
@@ -627,10 +629,10 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     // forwarder goes, reap ticks land — and rebuilding a snapshot against a
     // substrate we are in the middle of letting go of buys nothing: the
     // clients are about to be disconnected, and reconnect to a full one.
-    onWorktreeListChanged(() => {})
+    onWorkspaceListChanged(() => {})
     // Stop the push-fed state layer first, before the loop drain below:
     // its watches hold open substrate connections and a long-lived
-    // process per worktree, which would otherwise outlive the server.
+    // process per workspace, which would otherwise outlive the server.
     //
     // Caught rather than awaited bare: everything below this line — the
     // drain, the release of the host's ports and tunnels, and the lock
@@ -655,7 +657,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     }
     // Then let go of what was borrowed from the host — port forwarders,
     // the proxy control tunnel, the relay's port-forward child. After the
-    // drain, because a reap tick still tears its worktree's forwards down.
+    // drain, because a reap tick still tears its workspace's forwards down.
     try {
       releaseConvergence()
     } catch (err) {
@@ -703,13 +705,13 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
       // Started before the startup GCs drain (they run detached), so the
       // server serves the reconcile path right away.
       loopDone = startReconciler({ signal: abortCtrl.signal })
-      // Finish moving an older install's stopped worktrees onto clones, and
+      // Finish moving an older install's stopped workspaces onto clones, and
       // take their projects' main clones back from the pods (docs/server-git.md).
-      // After attach, since only a worktree with no running workspace may be
+      // After attach, since only a workspace with no running workspace may be
       // converted. Detached: nothing waits on it.
       void convertLinkedCheckouts()
         .catch((err: unknown) => serverLog(`[server] linked checkout conversion failed: ${String(err)}`))
-      // Adopt whatever the last server's worktrees refreshed before anything
+      // Adopt whatever the last server's workspaces refreshed before anything
       // reads the host store — the mirror of the k8s driver's placeholder
       // re-seed, which repairs the same split from the other side. Detached:
       // it is a repair, not a precondition.
@@ -745,7 +747,7 @@ async function convergeRuntimeCredentials(): Promise<void> {
   for (const { slug } of await listProjectRows()) {
     try {
       const { secrets } = await resolveProjectEnv(slug)
-      await worktreeDriver().syncProjectSecrets(
+      await workspaceDriver().syncProjectSecrets(
         slug,
         Object.fromEntries(Object.entries(secrets).map(([name, { value }]) => [name, value])),
       )

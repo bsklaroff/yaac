@@ -5,7 +5,7 @@ import { readRepoConfig, runGit } from './run'
 import { NEVER_PRUNE_KEYS, ensureNeverPrune, initClone, mainRefs, stagingGitDir } from './repo'
 
 /**
- * The conversion of a checkout made before worktrees were clones — a `git
+ * The conversion of a checkout made before workspaces were clones — a `git
  * worktree add` linked checkout whose git state lives in the main clone's
  * `worktrees/<id>` — into one (docs/legacy-compat-shims.md). Everything here
  * reads state a legacy pod could write, so it goes through the hardened
@@ -20,22 +20,22 @@ const adopting = createKeyedMutex()
 const LINK_FILES = new Set(['gitdir', 'commondir', 'locked'])
 
 /**
- * Convert the stopped linked checkout at `worktreePath` into a clone, in
+ * Convert the stopped linked checkout at `workspacePath` into a clone, in
  * place, keeping its index, HEAD, reflog and any in-progress merge or rebase.
  * A no-op for a checkout that already is one. Idempotent at every step, so a
  * crash anywhere is finished by the next call. Must not run while a pod
  * still has the checkout.
  *
- * The admin dir is found by worktree id, never through the `.git` file,
+ * The admin dir is found by workspace id, never through the `.git` file,
  * which names it as whichever substrate last launched the checkout saw it —
  * for one last run in a pod, a path that resolves nowhere here.
  *
- * Local branches were one namespace shared by every worktree of the project
+ * Local branches were one namespace shared by every workspace of the project
  * and cannot be attributed, so each converted clone gets all of them — bar
  * the `agent/<id>` of the project's OTHER rows (`rowIds`), which their own
  * conversion carries — and a copy of the stash. Every other `agent/*`
  * comes along too: an agent's `agent/<id>-wip`, a user's `agent/foo`, and
- * the branches of worktrees deleted before the upgrade, which nothing else
+ * the branches of workspaces deleted before the upgrade, which nothing else
  * still names. The agent's commits stay in the main clone's objects,
  * borrowed like everything else — safe because `ensureNeverPrune` has run
  * first.
@@ -47,35 +47,35 @@ const LINK_FILES = new Set(['gitdir', 'commondir', 'locked'])
  */
 export function adoptLinkedCheckout(
   repoPath: string,
-  worktreePath: string,
-  worktreeId: string,
+  workspacePath: string,
+  workspaceId: string,
   remoteUrl: string,
   rowIds: ReadonlySet<string>,
 ): Promise<void> {
-  return adopting(worktreePath, () => adopt(repoPath, worktreePath, worktreeId, remoteUrl, rowIds))
+  return adopting(workspacePath, () => adopt(repoPath, workspacePath, workspaceId, remoteUrl, rowIds))
 }
 
 async function adopt(
   repoPath: string,
-  worktreePath: string,
-  worktreeId: string,
+  workspacePath: string,
+  workspaceId: string,
   remoteUrl: string,
   rowIds: ReadonlySet<string>,
 ): Promise<void> {
-  const dotGit = path.join(worktreePath, '.git')
-  const linked = path.join(worktreePath, '.git.linked')
+  const dotGit = path.join(workspacePath, '.git')
+  const linked = path.join(workspacePath, '.git.linked')
   const kind = async (p: string): Promise<'dir' | 'file' | null> => {
     const st = await fs.lstat(p).catch(() => null)
     return st === null ? null : st.isDirectory() ? 'dir' : 'file'
   }
-  const admin = path.join(repoPath, '.git', 'worktrees', worktreeId)
+  const admin = path.join(repoPath, '.git', 'worktrees', workspaceId)
   if (await kind(dotGit) === 'dir') {
     // Converted; a crash between the swap and the cleanup leaves this.
     await fs.rm(linked, { force: true })
   } else if (await kind(dotGit) !== null || await kind(linked) !== null) {
     await ensureNeverPrune(repoPath)
-    const branch = `agent/${worktreeId}`
-    const gitDir = stagingGitDir(worktreePath)
+    const branch = `agent/${workspaceId}`
+    const gitDir = stagingGitDir(workspacePath)
     await fs.rm(path.dirname(gitDir), { recursive: true, force: true })
     await fs.mkdir(path.dirname(gitDir), { recursive: true })
     try {
@@ -91,16 +91,16 @@ async function adopt(
         baseBranch: base,
         refs: refs.filter((l) => {
           const other = /^refs\/heads\/agent\/(.+)$/.exec(l.slice(l.indexOf(' ') + 1))?.[1]
-          return other === undefined || other === worktreeId || !rowIds.has(other)
+          return other === undefined || other === workspaceId || !rowIds.has(other)
         }),
         originHead,
       })
-      // HEAD as the admin dir has it, else on the worktree's own branch.
+      // HEAD as the admin dir has it, else on the workspace's own branch.
       await runGit({ kind: 'private', gitDir }, ['symbolic-ref', 'HEAD', `refs/heads/${branch}`])
       if (!await copyRegularFiles(admin, gitDir, '')) {
         // No admin dir, so no index: one read from HEAD, rather than a
         // checkout whose every tracked file reads as deleted.
-        await runGit({ kind: 'private', gitDir, workTree: worktreePath }, ['read-tree', 'HEAD'])
+        await runGit({ kind: 'private', gitDir, workTree: workspacePath }, ['read-tree', 'HEAD'])
       }
       await copyRegularFiles(path.join(repoPath, '.git', 'logs', 'refs'), path.join(gitDir, 'logs', 'refs'), '', (rel) =>
         rel === 'stash' || rel === `heads/${branch}`)
@@ -119,7 +119,7 @@ async function adopt(
   if (await kind(admin) === null) return
   await fs.rm(admin, { recursive: true, force: true })
   if (await kind(dotGit) !== 'dir') return
-  await runGit({ kind: 'repo', repoPath }, ['update-ref', '-d', `refs/heads/agent/${worktreeId}`]).catch(() => {})
+  await runGit({ kind: 'repo', repoPath }, ['update-ref', '-d', `refs/heads/agent/${workspaceId}`]).catch(() => {})
 }
 
 /**

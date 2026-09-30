@@ -48,7 +48,7 @@ import {
   getActiveClusterCache,
   k8sNamespace,
   setActiveClusterCache,
-  worktreeIdLabels,
+  workspaceIdLabels,
 } from '#drivers/k8s/substrate'
 // Internals, for setup only: the client reset hook, the informer surface the
 // fake implements, and the job-name label the raw pod fixtures carry.
@@ -110,7 +110,7 @@ function rawPod(name: string, project = 'proj'): unknown {
       name,
       labels: {
         [JOB_NAME_LABEL]: `yaac-${project}-${name}`,
-        ...worktreeIdLabels(`sid-${name}`),
+        ...workspaceIdLabels(`sid-${name}`),
         [LABEL_PROJECT]: project,
         [LABEL_TOOL]: 'claude',
       },
@@ -189,7 +189,7 @@ describe('ClusterCache', () => {
     listNamespacedJobMock.mockImplementation(() => listOf({
       metadata: {
         name: 'yaac-alpha-p1',
-        labels: { ...worktreeIdLabels('sid-p1'), [LABEL_PROJECT]: 'alpha' },
+        labels: { ...workspaceIdLabels('sid-p1'), [LABEL_PROJECT]: 'alpha' },
         creationTimestamp: created,
       },
       status: {},
@@ -201,7 +201,7 @@ describe('ClusterCache', () => {
     const pods = informers.get(`/api/v1/namespaces/${ns}/pods`)
     const jobs = informers.get(`/apis/batch/v1/namespaces/${ns}/jobs`)
     expect(pods?.informer.startCalls).toBe(1)
-    expect(pods?.selector).toContain('yaac.worktree-id')
+    expect(pods?.selector).toContain('yaac.workspace-id')
     expect(jobs?.informer.startCalls).toBe(1)
     expect(jobs?.selector).toContain('yaac.data-dir-hash')
 
@@ -215,11 +215,11 @@ describe('ClusterCache', () => {
       namespace: ns,
       labelSelector: jobs?.selector,
     })
-    expect(cache.worktreePods()).toEqual([expect.objectContaining({
+    expect(cache.workspacePods()).toEqual([expect.objectContaining({
       podName: 'p1', createdAtMs: created.getTime(),
     })])
-    expect(cache.worktreeJobs()).toEqual([{
-      jobName: 'yaac-alpha-p1', worktreeId: 'sid-p1', projectSlug: 'alpha',
+    expect(cache.workspaceJobs()).toEqual([{
+      jobName: 'yaac-alpha-p1', workspaceId: 'sid-p1', projectSlug: 'alpha',
       createdAtMs: created.getTime(),
     }])
     cache.stop()
@@ -278,8 +278,8 @@ describe('ClusterCache', () => {
     // A Job without the session labels is not ours (nor is a shapeless one).
     jobs.emit('add', { metadata: { name: 'some-other-job', creationTimestamp: '2026-07-21T00:00:00Z' } })
     jobs.emit('add', {})
-    expect(cache.worktreeJobs()).toEqual([])
-    expect(deltas.filter((d) => d === 'worktree-jobs')).toHaveLength(0)
+    expect(cache.workspaceJobs()).toEqual([])
+    expect(deltas.filter((d) => d === 'workspace-jobs')).toHaveLength(0)
     cache.stop()
   })
 
@@ -292,19 +292,19 @@ describe('ClusterCache', () => {
     pods.emit('add', rawPod('p2', 'beta'))
     // A pod with no yaac labels is not ours — dropped, not fatal.
     pods.emit('add', { metadata: { name: 'kube-proxy' } })
-    expect(deltas.filter((d) => d === 'worktree-pods')).toHaveLength(2)
-    expect(cache.worktreePods().map((p) => p.podName).sort()).toEqual(['p1', 'p2'])
-    expect(cache.worktreePods('alpha').map((p) => p.podName)).toEqual(['p1'])
+    expect(deltas.filter((d) => d === 'workspace-pods')).toHaveLength(2)
+    expect(cache.workspacePods().map((p) => p.podName).sort()).toEqual(['p1', 'p2'])
+    expect(cache.workspacePods('alpha').map((p) => p.podName)).toEqual(['p1'])
 
     // An update that maps to the identical row is not a delta; a delete is.
     pods.emit('update', rawPod('p1', 'alpha'))
-    expect(deltas.filter((d) => d === 'worktree-pods')).toHaveLength(2)
+    expect(deltas.filter((d) => d === 'workspace-pods')).toHaveLength(2)
     pods.emit('delete', rawPod('p1', 'alpha'))
-    expect(cache.worktreePods().map((p) => p.podName)).toEqual(['p2'])
-    expect(deltas.filter((d) => d === 'worktree-pods')).toHaveLength(3)
+    expect(cache.workspacePods().map((p) => p.podName)).toEqual(['p2'])
+    expect(deltas.filter((d) => d === 'workspace-pods')).toHaveLength(3)
     // Deleting a row the cache never held is a no-op.
     pods.emit('delete', rawPod('ghost'))
-    expect(deltas.filter((d) => d === 'worktree-pods')).toHaveLength(3)
+    expect(deltas.filter((d) => d === 'workspace-pods')).toHaveLength(3)
     cache.stop()
   })
 
@@ -312,14 +312,14 @@ describe('ClusterCache', () => {
     const { cache, informers } = makeCache()
     cache.start()
     await flush() // seeds both from their (empty) lists
-    expect(cache.healthy('worktree-pods')).toBe(false)
+    expect(cache.healthy('workspace-pods')).toBe(false)
     informers.get(`/api/v1/namespaces/${ns}/pods`)!.informer.emit('connect')
-    expect(cache.healthy('worktree-pods')).toBe(true)
-    expect(cache.healthy('worktree-jobs')).toBe(false)
+    expect(cache.healthy('workspace-pods')).toBe(true)
+    expect(cache.healthy('workspace-jobs')).toBe(false)
     informers.get(`/apis/batch/v1/namespaces/${ns}/jobs`)!.informer.emit('connect')
-    expect(cache.healthy('worktree-jobs')).toBe(true)
+    expect(cache.healthy('workspace-jobs')).toBe(true)
     cache.stop()
-    expect(cache.healthy('worktree-pods')).toBe(false)
+    expect(cache.healthy('workspace-pods')).toBe(false)
   })
 
   it('isolates a throwing delta listener', async () => {
@@ -330,7 +330,7 @@ describe('ClusterCache', () => {
     cache.start()
     await flush()
     informers.get(`/api/v1/namespaces/${ns}/pods`)!.informer.emit('add', rawPod('p1'))
-    expect(seen).toContain('worktree-pods')
+    expect(seen).toContain('workspace-pods')
     expect(log.some((l) => l.includes('listener failed'))).toBe(true)
     cache.stop()
   })
@@ -345,7 +345,7 @@ describe('ClusterCache', () => {
 
     pods.emit('connect')
     pods.emit('error', new Error('watch died'))
-    expect(cache.healthy('worktree-pods')).toBe(false)
+    expect(cache.healthy('workspace-pods')).toBe(false)
     await vi.advanceTimersByTimeAsync(1_000)
     expect(pods.startCalls).toBe(2)
 
@@ -392,18 +392,18 @@ describe('ClusterCache', () => {
     const { cache, deltas, log } = makeCache({ relistIntervalMs: 60_000 })
     cache.start()
     await flush()
-    expect(cache.worktreePods().map((p) => p.podName)).toEqual(['p1'])
+    expect(cache.workspacePods().map((p) => p.podName)).toEqual(['p1'])
 
     // A missed DELETE + missed ADD: the next relist replaces the whole set.
     listNamespacedPodMock.mockImplementation(() => listOf(rawPod('p2')))
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(cache.worktreePods().map((p) => p.podName)).toEqual(['p2'])
-    expect(deltas.filter((d) => d === 'worktree-pods')).toHaveLength(2)
+    expect(cache.workspacePods().map((p) => p.podName)).toEqual(['p2'])
+    expect(deltas.filter((d) => d === 'workspace-pods')).toHaveLength(2)
 
     // A failed relist is a cluster hiccup: keep what we have, log, retry later.
     listNamespacedPodMock.mockImplementation(() => Promise.reject(new Error('apiserver down')))
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(cache.worktreePods().map((p) => p.podName)).toEqual(['p2'])
+    expect(cache.workspacePods().map((p) => p.podName)).toEqual(['p2'])
     expect(log.some((l) => l.includes('relist failed'))).toBe(true)
     cache.stop()
   })

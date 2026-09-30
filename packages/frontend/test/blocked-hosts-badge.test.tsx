@@ -32,7 +32,7 @@ function openPopover(): void {
 
 describe('BlockedHostsBadge', () => {
   it('shows the count and no hover tooltip on the trigger', () => {
-    render(<BlockedHostsBadge hosts={HOSTS} worktreeId="sess-1" iconSize={12} />)
+    render(<BlockedHostsBadge hosts={HOSTS} workspaceId="sess-1" iconSize={12} />)
 
     const trigger = screen.getByRole('button', { name: '2 blocked hosts' })
     expect(trigger.textContent).toBe('2 blocked hosts')
@@ -41,7 +41,7 @@ describe('BlockedHostsBadge', () => {
   })
 
   it('lists the blocked hosts in a popover on click', () => {
-    render(<BlockedHostsBadge hosts={HOSTS} worktreeId="sess-1" iconSize={12} />)
+    render(<BlockedHostsBadge hosts={HOSTS} workspaceId="sess-1" iconSize={12} />)
 
     expect(screen.queryByText('registry.npmjs.org')).toBeNull()
 
@@ -52,23 +52,23 @@ describe('BlockedHostsBadge', () => {
   })
 
   it('reveals the two allow actions only for the clicked host', () => {
-    render(<BlockedHostsBadge hosts={HOSTS} worktreeId="sess-1" iconSize={12} />)
+    render(<BlockedHostsBadge hosts={HOSTS} workspaceId="sess-1" iconSize={12} />)
     openPopover()
 
     // Collapsed by default — no actions shown.
-    expect(screen.queryByText('Allow for this worktree')).toBeNull()
+    expect(screen.queryByText('Allow for this workspace')).toBeNull()
 
     fireEvent.click(screen.getByText('registry.npmjs.org'))
 
-    expect(screen.getByText('Allow for this worktree')).toBeTruthy()
+    expect(screen.getByText('Allow for this workspace')).toBeTruthy()
     expect(screen.getByText('Allow permanently for this project')).toBeTruthy()
   })
 
-  it('allows a host for just this worktree (persist:false)', async () => {
-    render(<BlockedHostsBadge hosts={HOSTS} worktreeId="sess-1" iconSize={12} />)
+  it('allows a host for just this workspace (persist:false)', async () => {
+    render(<BlockedHostsBadge hosts={HOSTS} workspaceId="sess-1" iconSize={12} />)
     openPopover()
     fireEvent.click(screen.getByText('registry.npmjs.org'))
-    fireEvent.click(screen.getByText('Allow for this worktree'))
+    fireEvent.click(screen.getByText('Allow for this workspace'))
 
     await waitFor(() => {
       expect(allowBlockedHost).toHaveBeenCalledWith('sess-1', 'registry.npmjs.org', { persist: false })
@@ -76,7 +76,7 @@ describe('BlockedHostsBadge', () => {
   })
 
   it('allows a host permanently for the project (persist:true)', async () => {
-    render(<BlockedHostsBadge hosts={HOSTS} worktreeId="sess-1" iconSize={12} />)
+    render(<BlockedHostsBadge hosts={HOSTS} workspaceId="sess-1" iconSize={12} />)
     openPopover()
     fireEvent.click(screen.getByText('evil.example.com'))
     fireEvent.click(screen.getByText('Allow permanently for this project'))

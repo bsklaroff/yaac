@@ -5,7 +5,7 @@ import { getApiClient } from './server-api'
  * Give the server a git identity from the machine the user is actually on,
  * when it has none.
  *
- * The identity a worktree commits under is a server setting, because a value
+ * The identity a workspace commits under is a server setting, because a value
  * only a host shell can set is a value a remote user cannot (see
  * the server's `getGitIdentity`). But nobody wants to type their
  * own name into a settings page the first time they use yaac, and the answer

@@ -20,7 +20,7 @@ import {
 
 // The builder-role admission guard (the image feature installs it around its
 // runsc builder pods) and the registration ConfigMap (the egress feature
-// writes one per worktree) are what the folder exports of its manifests.
+// writes one per workspace) are what the folder exports of its manifests.
 // The proxy's own Deployment, Service, ServiceAccount, RBAC and outer-CA
 // ConfigMap are internal to the feature and asserted where they are applied,
 // through `ensureProxyResources`.
@@ -104,14 +104,14 @@ describe('buildBuilderRoleGuardBindingManifest', () => {
 })
 
 describe('proxyRegistrationName', () => {
-  it('names a worktree’s registration by its id — a UUID fits without hashing', () => {
+  it('names a workspace’s registration by its id — a UUID fits without hashing', () => {
     expect(proxyRegistrationName('3f0c9b8e-1d2a-4c5b-9e7f-8a6b5c4d3e2f'))
       .toBe('yaac-proxy-reg-3f0c9b8e-1d2a-4c5b-9e7f-8a6b5c4d3e2f')
   })
 })
 
 describe('buildRegistrationConfigMapManifest', () => {
-  it('labels the object for the proxy’s informer, its worktree and its project', () => {
+  it('labels the object for the proxy’s informer, its workspace and its project', () => {
     const cm = buildRegistrationConfigMapManifest('w1', 'demo', { rules: [], allowedHosts: ['h'] }) as {
       kind: string
       metadata: { name: string; namespace: string; labels: Record<string, string> }
@@ -124,7 +124,7 @@ describe('buildRegistrationConfigMapManifest', () => {
       labels: {
         'app': 'yaac-proxy',
         'yaac.proxy-input': 'registration',
-        'yaac.worktree-id': 'w1',
+        'yaac.workspace-id': 'w1',
         'yaac.project': 'demo',
       },
     })

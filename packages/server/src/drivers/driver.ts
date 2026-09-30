@@ -1,12 +1,12 @@
-import type { WorktreeDriver } from './contract'
+import type { WorkspaceDriver } from './contract'
 
 /**
- * The registered `WorktreeDriver`, and the only door to it from above the
+ * The registered `WorkspaceDriver`, and the only door to it from above the
  * runtime layer (docs/layered-server.md).
  *
  * Registered once by the composition root, which is the one place that
  * knows WHICH runtime this process runs. Everything above calls
- * `worktreeDriver()` and names no substrate.
+ * `workspaceDriver()` and names no substrate.
  *
  * The indirection is what makes the layering pay: this module imports only
  * `./contract`, which is types, so a mediator that reaches the runtime
@@ -15,10 +15,10 @@ import type { WorktreeDriver } from './contract'
  * identically and cost every domain unit test the client's load time.
  */
 
-let registered: WorktreeDriver | null = null
+let registered: WorkspaceDriver | null = null
 
 /** Install the process's runtime, or clear it on shutdown. */
-export function setWorktreeDriver(runtime: WorktreeDriver | null): void {
+export function setWorkspaceDriver(runtime: WorkspaceDriver | null): void {
   registered = runtime
 }
 
@@ -28,17 +28,17 @@ export function setWorktreeDriver(runtime: WorktreeDriver | null): void {
  * runtime is a wiring bug, and a test that reaches the substrate without
  * installing a fake should say so loudly instead of taking a null branch.
  */
-export function worktreeDriver(): WorktreeDriver {
+export function workspaceDriver(): WorkspaceDriver {
   if (!registered) {
     throw new Error(
-      'No WorktreeDriver registered. The server registers one at startup; '
-      + 'a test needs installFakeWorktreeDriver() from @yaac/test-utils.',
+      'No WorkspaceDriver registered. The server registers one at startup; '
+      + 'a test needs installFakeWorkspaceDriver() from @yaac/test-utils.',
     )
   }
   return registered
 }
 
 /** Whether one is installed — for shutdown paths that must not construct one. */
-export function hasWorktreeDriver(): boolean {
+export function hasWorkspaceDriver(): boolean {
   return registered !== null
 }

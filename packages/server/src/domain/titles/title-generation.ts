@@ -6,7 +6,7 @@
  * Eligibility is checked again by the write itself: a rename that lands
  * while the model is still running wins.
  *
- * Draft and queued worktrees are titled from their prompt the same way,
+ * Draft and queued workspaces are titled from their prompt the same way,
  * unless the user gave one a title of their own. Such a generated title is
  * cleared when its prompt changes, so the write is conditional on the draft
  * or entry still holding the prompt it was made from.
@@ -20,12 +20,12 @@
  */
 import {
   firstAgentSessionsFor,
-  listDraftWorktreeRows,
-  listQueuedWorktreeRows,
-  listWorktreeRows,
-  setDraftWorktreeTitle,
-  setQueuedWorktreeTitle,
-  setWorktreeTitle,
+  listDraftWorkspaceRows,
+  listQueuedWorkspaceRows,
+  listWorkspaceRows,
+  setDraftWorkspaceTitle,
+  setQueuedWorkspaceTitle,
+  setWorkspaceTitle,
 } from '#db'
 import { shouldGenerateTitle, summarizeTitle } from './title-summarizer'
 import { serverLog } from '#log'
@@ -35,30 +35,30 @@ import { env } from '@yaac/shared/env'
  *  task's first await so a concurrent tick can't double-fire. */
 const attempted = new Set<string>()
 
-/** Sweep live worktrees, drafts and queued entries once, firing detached title-generation
+/** Sweep live workspaces, drafts and queued entries once, firing detached title-generation
  *  tasks. The candidates are the rows alone — a title and a founding prompt
  *  are both recorded state, so there is nothing to ask the runtime. */
 export async function reconcileGeneratedTitles(): Promise<void> {
   if (!env.autoTitles) return
 
-  const untitled = (await listWorktreeRows())
+  const untitled = (await listWorkspaceRows())
     .filter((r) => r.stoppedAt === undefined && r.title === undefined)
   const firsts = await firstAgentSessionsFor(untitled)
-  for (const { projectSlug, worktreeId } of untitled) {
-    const key = `${projectSlug}/${worktreeId}`
+  for (const { projectSlug, workspaceId } of untitled) {
+    const key = `${projectSlug}/${workspaceId}`
     const prompt = firsts.get(key)?.firstPrompt
     if (prompt === undefined) continue
-    void generateOnce(key, key, prompt, (t) => setWorktreeTitle(projectSlug, worktreeId, t, { ifUntitled: true }))
+    void generateOnce(key, key, prompt, (t) => setWorkspaceTitle(projectSlug, workspaceId, t, { ifUntitled: true }))
   }
   // A draft or entry is keyed on its prompt too: editing the prompt clears
   // the title, and the new prompt is worth one attempt of its own.
-  for (const { id, prompt, title, generatedTitle } of await listDraftWorktreeRows()) {
+  for (const { id, prompt, title, generatedTitle } of await listDraftWorkspaceRows()) {
     if (title !== undefined || generatedTitle !== undefined) continue
-    void generateOnce(`draft:${id}:${prompt}`, `draft ${id}`, prompt, (t) => setDraftWorktreeTitle(id, prompt, t))
+    void generateOnce(`draft:${id}:${prompt}`, `draft ${id}`, prompt, (t) => setDraftWorkspaceTitle(id, prompt, t))
   }
-  for (const { id, prompt, title, generatedTitle, launchWorktreeId } of await listQueuedWorktreeRows()) {
-    if (title !== undefined || generatedTitle !== undefined || launchWorktreeId !== undefined) continue
-    void generateOnce(`queued:${id}:${prompt}`, `queued ${id}`, prompt, (t) => setQueuedWorktreeTitle(id, prompt, t))
+  for (const { id, prompt, title, generatedTitle, launchWorkspaceId } of await listQueuedWorkspaceRows()) {
+    if (title !== undefined || generatedTitle !== undefined || launchWorkspaceId !== undefined) continue
+    void generateOnce(`queued:${id}:${prompt}`, `queued ${id}`, prompt, (t) => setQueuedWorkspaceTitle(id, prompt, t))
   }
 }
 

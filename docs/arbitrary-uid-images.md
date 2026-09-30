@@ -91,7 +91,7 @@ a uid with no name and no home. The consumers do not degrade gracefully:
 | `zsh`, `git`, node's `os.userInfo()` | report a bare number |
 
 So the entry is re-pointed at the running uid at pod start, by
-`worktree-bin/yaac-worktree-init` for worktree pods (the postStart hook they
+`workspace-bin/yaac-workspace-init` for workspace pods (the postStart hook they
 already run) and by `dockerfiles/server-entrypoint.sh` for the server, whose
 Deployment has no hook to carry it. Both do the same thing and must keep the
 same two properties:
@@ -104,7 +104,7 @@ same two properties:
   `/etc/passwd`, which needs write permission on `/etc`. The file is ours;
   the directory is not.
 
-A failure to write it warns rather than exits: most of a worktree works
+A failure to write it warns rather than exits: most of a workspace works
 without the entry, and a pod that will not start is worse. On a uid-1000
 host the whole thing is a no-op.
 
@@ -121,9 +121,9 @@ docs/server-in-cluster.md, "The uid everything runs as".
 ## Verifying a change to it
 
 Unit tests cover the Dockerfile text and the manifest, and `test/e2e/
-arbitrary-uid.test.ts` runs a real worktree pod at a uid that is nobody's,
+arbitrary-uid.test.ts` runs a real workspace pod at a uid that is nobody's,
 which is the only automated check that the machinery does anything on a
 uid-1000 developer host. What neither can prove is the hostPath half: that
-needs a `yaac cluster install` on a macOS host, a worktree that starts and
+needs a `yaac cluster install` on a macOS host, a workspace that starts and
 writes its checkout, and the observation that the tags it resolves are the
 tags a Linux host already pushed.

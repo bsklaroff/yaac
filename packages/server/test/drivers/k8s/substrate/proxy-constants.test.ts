@@ -7,7 +7,7 @@ import { PROXY_PORT, RELAY_PORT, proxyServiceHost } from '#drivers/k8s/substrate
  */
 describe('proxyServiceHost', () => {
   it('names the proxy Service by its full cluster-DNS name and port', () => {
-    // The FQDN is load-bearing, not stylistic: a worktree resolves this
+    // The FQDN is load-bearing, not stylistic: a workspace resolves this
     // through the proxy's split-horizon DNS, which forwards only
     // `.cluster.local` to CoreDNS — a short name would go unanswered.
     expect(proxyServiceHost('yaac', PROXY_PORT))

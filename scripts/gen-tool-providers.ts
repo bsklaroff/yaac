@@ -127,12 +127,12 @@ async function fetchModelsDev(): Promise<Record<string, ModelsDevProvider>> {
  * Pick the api-key env var for a provider, preferring an `*_API_KEY`-shaped
  * candidate over a bearer-token one.
  *
- * The chosen var is seeded with the api-key *placeholder* into a worktree pod
+ * The chosen var is seeded with the api-key *placeholder* into a workspace pod
  * that carries every credentialed tool's placeholders at once (the pod spec is
  * immutable, so a prewarmed spare can be retooled). Bearer-token vars are read
  * by other tools with a different precedence: Claude Code ranks
  * ANTHROPIC_AUTH_TOKEN above its OAuth credential, so seeding it for a pi
- * anthropic credential would shadow the login of a claude worktree sharing the
+ * anthropic credential would shadow the login of a claude workspace sharing the
  * pod. Providers list both shapes (pi's anthropic registry offers
  * ANTHROPIC_AUTH_TOKEN, ANTHROPIC_OAUTH_TOKEN, ANTHROPIC_API_KEY) and the tool
  * reads whichever is set, so preferring the api-key var costs nothing.
@@ -153,15 +153,15 @@ function pickEnvVar(env: string[]): string | undefined {
  * templates the account id into the *path* behind a fixed host
  * (`api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1`).
  * Matching on the host alone would emit it with a usable-looking host and a
- * path segment the worktree can never fill in, so every request would fail —
+ * path segment the workspace can never fill in, so every request would fail —
  * it needs per-account config beyond a bare key, like the multi-config
  * providers excluded above.
  *
  * Loopback hosts are rejected for a related reason: they name a server on the
  * *user's own machine* (models.dev lists several local-inference providers
- * this way), which a worktree pod's localhost is not. The transparent proxy
+ * this way), which a workspace pod's localhost is not. The transparent proxy
  * only intercepts egress, so it never sees loopback traffic and could not swap
- * the placeholder key there anyway — the provider is unusable from a worktree
+ * the placeholder key there anyway — the provider is unusable from a workspace
  * either way, so it is skipped rather than offered in the credential picker.
  */
 function isLoopbackHost(host: string): boolean {
@@ -215,7 +215,7 @@ function buildOpencodeRows(
 /**
  * Each models.dev provider's TOOL-CALLING model ids, keyed by provider id.
  * Baked in so `yaac-mama models` can report usable `--model` values with no
- * worktree-time fetch: claude → `anthropic`, codex → `openai`, opencode → its
+ * workspace-time fetch: claude → `anthropic`, codex → `openai`, opencode → its
  * configured provider. Filtered to `tool_call` models because every agent tool
  * drives models via tool calls — this drops embedding/image/tts/realtime
  * entries (e.g. text-embedding-3-large) that an agent can't run, so the list is
@@ -484,7 +484,7 @@ ${pi.map(rowLiteral).join('\n')}
 
 // ── Provider host lookups (derived from the rows above) ──────────────────
 // The host each provider's api key authenticates against; the proxy swaps the
-// placeholder key only on this host for a worktree registered as that tool.
+// placeholder key only on this host for a workspace registered as that tool.
 
 ${hostMap('OPENCODE_PROVIDER_HOSTS', opencode)}
 
@@ -493,8 +493,8 @@ ${hostMap('PI_PROVIDER_HOSTS', pi)}
 ${piDefaultModelsMap(pi)}
 
 // ── Model catalogs: candidate --model values per provider ────────────────
-// Served to a worktree asking \`yaac-mama models\` so a
-// worktree can discover valid \`--model\` values without a network fetch; also
+// Served to a workspace asking \`yaac-mama models\` so a
+// workspace can discover valid \`--model\` values without a network fetch; also
 // available to the app (e.g. a model picker). MODELS_BY_PROVIDER is models.dev's
 // tool-calling models (claude → anthropic, codex → openai, opencode → provider),
 // newest first with dated snapshots of a listed alias dropped;

@@ -13,7 +13,7 @@ import {
   refFromJobName,
   tmuxSockDir,
   workspaceHome,
-  workspaceStateDir,
+  containerlessStateDir,
 } from './paths'
 import {
   rememberWorkspace,
@@ -35,7 +35,7 @@ import type { RuntimeHandle, WorkspaceMount, WorkspaceSpec } from '#drivers/cont
  * and which deliberately outlives the yaac server that started it — a `yaac
  * server restart` must not stop anyone's agent.
  *
- * The session's shape is the same one `worktree-bin/yaac-worktree-init`
+ * The session's shape is the same one `workspace-bin/yaac-workspace-init`
  * creates in a pod, and has to be: the placeholder window the stale reaper
  * recognizes, the window naming the status watcher parses, and the tmux
  * options the webapp's terminal rendering depends on are all read by
@@ -44,7 +44,7 @@ import type { RuntimeHandle, WorkspaceMount, WorkspaceSpec } from '#drivers/cont
 
 /** Server-owned environment that must not leak into a workspace: the
  *  agents run as this user, and handing them the server's own wiring
- *  invites a worktree to reconfigure the server that launched it. */
+ *  invites a workspace to reconfigure the server that launched it. */
 const ENV_DENY_PREFIXES = ['YAAC_']
 
 /**
@@ -148,7 +148,7 @@ function gitconfigPathFor(home: string): string {
  * The environment a command the server runs in a workspace gets — `exec`,
  * the streams it dials, the changes diff — and never the server's own: that
  * carries the server's wiring and the host's HOME, so a command run with it
- * reads the SERVER user's configuration instead of the worktree's.
+ * reads the SERVER user's configuration instead of the workspace's.
  *
  * The launch's whole copy while this server holds it. After a restart, the
  * floor a launch builds from, with the launch's own entries from the marker
@@ -158,16 +158,16 @@ function gitconfigPathFor(home: string): string {
  * registry has forgotten gets the floor alone.
  */
 export function workspaceRunEnvironment(jobName: string): NodeJS.ProcessEnv {
-  const { projectSlug, worktreeId } = refFromJobName(jobName)
-  const held = workspaceEnv(worktreeId)
+  const { projectSlug, workspaceId } = refFromJobName(jobName)
+  const held = workspaceEnv(workspaceId)
   if (held !== undefined) return held
-  const home = workspaceHome(projectSlug, worktreeId)
+  const home = workspaceHome(projectSlug, workspaceId)
   const env = workspaceEnvironment(
     { env: [], mounts: [] },
     home,
     containerlessWorkspacePaths(jobName),
   )
-  Object.assign(env, workspaceLaunchEnv(worktreeId))
+  Object.assign(env, workspaceLaunchEnv(workspaceId))
   env.GIT_CONFIG_GLOBAL = gitconfigPathFor(home)
   return env
 }
@@ -210,13 +210,13 @@ function workspaceBinDir(home: string): string {
  * driver made pointing at it.
  *
  * Both name the same files, and the difference is the string. A tool that
- * keys anything on the string it was handed sees a per-worktree home if it
- * gets the link, because the private home is per worktree, and a per-project
+ * keys anything on the string it was handed sees a per-workspace home if it
+ * gets the link, because the private home is per workspace, and a per-project
  * one if it gets the source, because the staged dir is per project. claude is
  * the case that proves it — its macOS Keychain item is named after a hash of
  * this exact value, and the first token refresh migrates the credential into
- * that item and deletes the file it came from, so a per-worktree name would
- * let one worktree take the credential away from its siblings. Handing over
+ * that item and deletes the file it came from, so a per-workspace name would
+ * let one workspace take the credential away from its siblings. Handing over
  * the real directory makes that impossible to get wrong from a call site,
  * instead of correct only where someone remembered.
  *
@@ -262,15 +262,15 @@ function remapMountedPath(
  *
  * The contract anticipates this: "a host-process driver reads a hostPath as
  * a bind or a symlink". A symlink, here — a real bind mount needs root, and
- * asking a developer to run yaac as root to open a worktree is not a trade
+ * asking a developer to run yaac as root to open a workspace is not a trade
  * this mode is for.
  *
  * Which is also the one thing symlinks cannot do that mounts can: NEST. A
  * pod mounts the project's claude dir at `/home/yaac/.claude` and then a
  * builtin skill at `/home/yaac/.claude/skills/<name>` on top of it, and the
  * two compose. Here the first is a symlink into the project's shared dir,
- * so writing the second would reach THROUGH it and leave one worktree's
- * staging in a directory every other worktree of the project reads. Those
+ * so writing the second would reach THROUGH it and leave one workspace's
+ * staging in a directory every other workspace of the project reads. Those
  * are skipped and reported rather than written (see `MountOutcome`).
  *
  * A caller that wants a nested path delivered anyway states it as host
@@ -308,7 +308,7 @@ async function realizeMount(
   // lands in the review diff, and `git add -A` commits an absolute host
   // path), and the ephemeral-modules guard — which exists to stop a
   // committed `foo -> /anywhere` becoming a host-side mkdir — trips on the
-  // driver's own link, which made a stopped worktree unrestartable.
+  // driver's own link, which made a stopped workspace unrestartable.
   //
   // Nothing is lost that this substrate needs: the checkout is on the
   // host's own disk, so a cache living in it is exactly where a developer
@@ -355,7 +355,7 @@ function destinationFor(
   const inHome = underPrefix(mountPath, '/home/yaac/') ?? underPrefix(mountPath, `${home}/`)
   if (inHome !== null) return path.join(home, inHome)
   // The pod's `/usr/local/bin` is where the server stages the helper
-  // scripts a worktree's agent can run (`yaac-mama`, the init script).
+  // scripts a workspace's agent can run (`yaac-mama`, the init script).
   // There is no writable system bin here, so they go in the workspace's own
   // bin dir, which the launch puts on its PATH.
   const inBin = underPrefix(mountPath, '/usr/local/bin/')
@@ -396,7 +396,7 @@ async function resolveShell(): Promise<string> {
   return 'sh'
 }
 
-/** See `WorktreeDriver.launch`. */
+/** See `WorkspaceDriver.launch`. */
 export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandle> {
   const jobName = containerlessJobName(spec.projectSlug, spec.workspaceId)
   const paths = containerlessWorkspacePaths(jobName)
@@ -408,12 +408,12 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   assertSocketPathsFit(paths)
   assertShellSafePaths(paths)
 
-  spec.onProgress?.('Preparing the worktree environment...')
+  spec.onProgress?.('Preparing the workspace environment...')
   await fs.mkdir(home, { recursive: true })
   await fs.mkdir(paths.scratchDir, { recursive: true })
   await fs.mkdir(paths.acpLogDir, { recursive: true })
   await fs.mkdir(paths.acpSockDir, { recursive: true })
-  // 0700: the socket dir is shared with every other worktree's on this
+  // 0700: the socket dir is shared with every other workspace's on this
   // host, and a tmux socket is a full command channel into the workspace.
   await fs.mkdir(tmuxSockDir(), { recursive: true, mode: 0o700 })
 
@@ -455,7 +455,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   const overridden = overriddenToolHomeVars().filter((key) => env[key] === undefined)
   if (overridden.length > 0) {
     const message = `Ignoring ${overridden.join(', ')} from this host's environment `
-      + "— a worktree's agent reads this project's tool config, under its own HOME."
+      + "— a workspace's agent reads this project's tool config, under its own HOME."
     spec.onProgress?.(message)
     serverLog(`[server] containerless ${spec.workspaceId}: ${message}`)
   }
@@ -463,7 +463,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   // Git identity, trust and authentication, in the workspace's OWN home —
   // the pod driver writes the same settings from its postStart hook, into a
   // home that is per-pod for exactly the same reason this one is
-  // per-worktree: a `--global` write must never race another worktree's.
+  // per-workspace: a `--global` write must never race another workspace's.
   //
   // Authentication is the half a pod does NOT write, because a pod never
   // holds a credential to write; here the workspace is handed the real one
@@ -475,7 +475,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     knownHostsFile: spec.ssh?.knownHostsFile,
     agentSock: paths.sshAgentSock,
     // A relaunch (a retried create, a restart) must end the agent the last
-    // one left running rather than orphan it holding this worktree's key.
+    // one left running rather than orphan it holding this workspace's key.
     ...(priorAgentPid !== undefined ? { priorAgentPid } : {}),
   })
   const gitName = env.YAAC_GIT_NAME ?? env.GIT_AUTHOR_NAME
@@ -507,7 +507,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   const shell = await resolveShell()
   const statusRight = env.YAAC_STATUS_RIGHT ?? ''
 
-  spec.onProgress?.('Starting the worktree session...')
+  spec.onProgress?.('Starting the workspace session...')
   // The session opens on a `sleep infinity` placeholder rather than the
   // agent, exactly as the pod's init hook does: the agent is respawned in
   // once setup finishes, and a fast-failing command here would end the tmux
@@ -558,21 +558,21 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     'bind-key', 'k', 'confirm-before', '-p', 'kill this yaac session? (y/n)', 'kill-server',
   ], { env, timeoutMs: 30_000 }).catch((err: unknown) => {
     // Cosmetic to a fault: every one of these is a display or input-handling
-    // preference, and a worktree whose bells do not ring is far better than
+    // preference, and a workspace whose bells do not ring is far better than
     // a create that failed after the session came up.
     serverLog(`[server] containerless ${spec.workspaceId}: tmux options failed: ${String(err)}`)
   })
 
   const marker: WorkspaceMarker = {
     projectSlug: spec.projectSlug,
-    worktreeId: spec.workspaceId,
+    workspaceId: spec.workspaceId,
     tool: spec.tool,
     declaredTool: spec.tool,
     mode: spec.mode,
     prewarm: spec.prewarm,
     createdAtMs: Date.now(),
     ...(await tmuxServerPid(paths.tmuxSock, env)),
-    // Recorded so teardown can end the agent holding this worktree's ssh
+    // Recorded so teardown can end the agent holding this workspace's ssh
     // key. Absent for a project with no SSH remote, which starts none.
     ...(gitAuth.agentPid !== undefined ? { sshAgentPid: gitAuth.agentPid } : {}),
     launchEnv: persistableLaunchEnv(env, spec, gitAuth.env),
@@ -613,7 +613,7 @@ export function prepareSubstrate(): Promise<{ readonly kind: 'workspace-substrat
   return Promise.resolve({ kind: 'workspace-substrate' } as const)
 }
 
-/** See `WorktreeDriver.awaitReady`. The session exists the moment `launch`
+/** See `WorkspaceDriver.awaitReady`. The session exists the moment `launch`
  *  resolved — there is no scheduler, no image pull and no kubelet between
  *  the two — so readiness is already proven. */
 export function awaitReady(): Promise<void> {
@@ -622,7 +622,7 @@ export function awaitReady(): Promise<void> {
 
 /** Where the workspace's state dir lives, for a teardown that must remove
  *  it. Re-exported so teardown need not reach into `paths` for one name. */
-export { workspaceStateDir }
+export { containerlessStateDir }
 
 /**
  * `value` as a git-config value that reads back verbatim: quoted, so `#`,

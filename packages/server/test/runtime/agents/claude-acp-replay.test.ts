@@ -210,11 +210,11 @@ describe('claudeTranscriptAsAcp', () => {
 })
 
 describe('the pinned adapter', () => {
-  it('is the same version the worktree image installs', async () => {
+  it('is the same version the workspace image installs', async () => {
     // The two translations must be one. A live acp conversation is recorded by
     // the adapter baked into the tools image; a stopped tui one is replayed by
     // the copy the server imports. Same function, same version — otherwise the
-    // transcript a user reads after stopping a worktree can differ from what
+    // transcript a user reads after stopping a workspace can differ from what
     // they watched, which is the whole failure this module exists to avoid.
     const dockerfile = await fs.readFile(
       new URL('../../../../../dockerfiles/Dockerfile.tools', import.meta.url), 'utf8',

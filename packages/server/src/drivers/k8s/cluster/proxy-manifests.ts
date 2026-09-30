@@ -7,7 +7,7 @@ import {
   LABEL_PROXY_INPUT,
   LABEL_PROXY_OUTPUT,
   LABEL_ROLE,
-  LABEL_WORKTREE_ID,
+  LABEL_WORKSPACE_ID,
   POD_STREAM_PORT,
   PRIORITY_CLASS_INFRA,
   PROXY_APP_NAME,
@@ -69,7 +69,7 @@ export function proxyRunAsSecurityContext(): Record<string, unknown> {
  */
 export function buildProxyDeploymentManifest(imageRef: string): Record<string, unknown> {
   // Every proxy pod carries the install identity — the same data-dir-hash
-  // label worktree pods carry.
+  // label workspace pods carry.
   const podLabels = {
     app: PROXY_APP_NAME,
     [LABEL_DATA_DIR_HASH]: dataDirHash(),
@@ -86,23 +86,23 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
       replicas: 1,
       // Recreate, not RollingUpdate: the transparent listeners are
       // addressed by the Service, and an overlap window would split one
-      // worktree's connections across two pods whose blocked-host records
+      // workspace's connections across two pods whose blocked-host records
       // and captured rotations would each overwrite the other's.
       strategy: { type: 'Recreate' },
       selector: { matchLabels: { app: PROXY_APP_NAME } },
       template: {
         metadata: { labels: podLabels },
         spec: {
-          // The proxy watches pods (source-IP → worktree) and its input
+          // The proxy watches pods (source-IP → workspace) and its input
           // objects via the in-cluster API, and writes its three outputs
           // there, so it needs its SA token mounted — the access is
           // granted by buildProxyRoleManifest.
           serviceAccountName: PROXY_SA_NAME,
           automountServiceAccountToken: true,
           enableServiceLinks: false,
-          // Infra tier: losing the proxy costs every worktree on the cluster
+          // Infra tier: losing the proxy costs every workspace on the cluster
           // its DNS and its entire route to the world, so it outranks the
-          // worktrees under node pressure and can preempt one when a full
+          // workspaces under node pressure and can preempt one when a full
           // node leaves it nowhere to run.
           priorityClassName: PRIORITY_CLASS_INFRA,
           // No runtimeClassName: the proxy is trusted yaac infra and runs on
@@ -133,14 +133,14 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
                 { name: 'TRANSPARENT_HTTP_PORT', value: String(TRANSPARENT_HTTP_PORT) },
                 { name: 'TRANSPARENT_TUNNEL_PORT', value: String(TRANSPARENT_TUNNEL_PORT) },
                 // Stream relay (docs/stream-relay.md): the authenticated
-                // CONNECT into worktree pods' streamd. Same env for outer and
+                // CONNECT into workspace pods' streamd. Same env for outer and
                 // inner proxies — only the addressing differs (NodePort vs
                 // pod-IP dial).
                 { name: 'RELAY_PORT', value: String(RELAY_PORT) },
                 { name: 'POD_STREAM_PORT', value: String(POD_STREAM_PORT) },
                 { name: 'DNS_STUB_PORT', value: String(DNS_STUB_PORT) },
                 // ssh-agent forwarding: the proxy splices this port to its
-                // own in-memory agent for entitled worktree pods, which
+                // own in-memory agent for entitled workspace pods, which
                 // re-expose it as SSH_AUTH_SOCK's UNIX socket in-pod.
                 { name: 'SSH_AGENT_PORT', value: String(SSH_AGENT_PORT) },
                 {
@@ -159,7 +159,7 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
                 { name: 'HOME', value: '/home/proxy' },
                 ...(env.useTor ? [{ name: 'USE_TOR', value: '1' }] : []),
                 // Split-horizon DNS: the proxy resolves internal names
-                // (`*.svc`) against the cluster CoreDNS so worktree pods
+                // (`*.svc`) against the cluster CoreDNS so workspace pods
                 // learn live ClusterIPs (no IP pinning).
                 { name: 'DNS_FORWARD_INTERNAL', value: '1' },
               ],
@@ -176,7 +176,7 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
           ],
           // Nothing from the host: the proxy is stateless. Its inputs are
           // objects it watches and its outputs objects it writes
-          // (docs/worktree-egress.md), so a pod replacement — anywhere in
+          // (docs/workspace-egress.md), so a pod replacement — anywhere in
           // the cluster — restores itself from the apiserver alone.
           volumes: [
             // Tor's state and readiness marker, per pod: a circuit is
@@ -185,7 +185,7 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
             // Writable HOME for the proxy's ssh-agent socket, ssh-add and
             // known_hosts. emptyDir so fsGroup can make it group-writable
             // by the non-root proxy uid. The agent socket is pod-local:
-            // worktree pods reach the agent over SSH_AGENT_PORT.
+            // workspace pods reach the agent over SSH_AGENT_PORT.
             { name: 'home', emptyDir: {} },
           ],
         },
@@ -202,7 +202,7 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
  * ServiceAccount of its install namespace — so the guard admits that
  * username shape (`system:serviceaccount:<any-ns>:yaac-server`) and denies
  * every other identity, whether another ServiceAccount (the identity class
- * untrusted code can hold; worktree pods carry no token at all) or a cert
+ * untrusted code can hold; workspace pods carry no token at all) or a cert
  * user such as a cluster operator.
  *
  * The shape, deliberately not one install's exact username: this policy is
@@ -278,7 +278,7 @@ export function buildBuilderRoleGuardBindingManifest(): Record<string, unknown> 
   }
 }
 
-/** ServiceAccount the proxy runs as so it can watch pods (source-IP→worktree). */
+/** ServiceAccount the proxy runs as so it can watch pods (source-IP→workspace). */
 export function buildProxyServiceAccountManifest(): Record<string, unknown> {
   return {
     apiVersion: 'v1',
@@ -413,21 +413,21 @@ export function buildProjectSecretsManifest(
   }
 }
 
-/** Name of a worktree's registration ConfigMap (ids are UUIDs, so the
+/** Name of a workspace's registration ConfigMap (ids are UUIDs, so the
  *  name fits without hashing). */
-export function proxyRegistrationName(worktreeId: string): string {
-  return `${PROXY_REGISTRATION_PREFIX}-${worktreeId}`
+export function proxyRegistrationName(workspaceId: string): string {
+  return `${PROXY_REGISTRATION_PREFIX}-${workspaceId}`
 }
 
 /**
- * One worktree's registration: rules (with `secretRef`s, never values),
+ * One workspace's registration: rules (with `secretRef`s, never values),
  * allowed hosts, repo URL, tool, project and test redirects — a ConfigMap
- * precisely because it carries no secret. Labelled with its worktree and
- * project so the proxy indexes it by worktree and a fan-out finds a
+ * precisely because it carries no secret. Labelled with its workspace and
+ * project so the proxy indexes it by workspace and a fan-out finds a
  * project's set.
  */
 export function buildRegistrationConfigMapManifest(
-  worktreeId: string,
+  workspaceId: string,
   projectSlug: string,
   registration: object,
 ): Record<string, unknown> {
@@ -435,11 +435,11 @@ export function buildRegistrationConfigMapManifest(
     apiVersion: 'v1',
     kind: 'ConfigMap',
     metadata: {
-      name: proxyRegistrationName(worktreeId),
+      name: proxyRegistrationName(workspaceId),
       namespace: k8sNamespace(),
       labels: proxyLabels({
         [LABEL_PROXY_INPUT]: 'registration',
-        [LABEL_WORKTREE_ID]: worktreeId,
+        [LABEL_WORKSPACE_ID]: workspaceId,
         [LABEL_PROJECT]: projectSlug,
       }),
     },
@@ -493,7 +493,7 @@ export function buildProxyServiceManifest(): Record<string, unknown> {
     },
     spec: {
       type: 'ClusterIP',
-      // Allocator-assigned ClusterIP (no longer pinned): worktree-create reads
+      // Allocator-assigned ClusterIP (no longer pinned): workspace-create reads
       // it live at pod-create (proxyServiceClusterIp) for the pod's dnsConfig.
       // The Service is never deleted/recreated, so its ClusterIP is stable for
       // the cluster's lifetime; the egress redirect is EDS-backed (endpoints,
@@ -514,7 +514,7 @@ export function buildProxyServiceManifest(): Record<string, unknown> {
         { name: 'transparent-https', port: TRANSPARENT_HTTPS_PORT, targetPort: TRANSPARENT_HTTPS_PORT },
         { name: 'transparent-http', port: TRANSPARENT_HTTP_PORT, targetPort: TRANSPARENT_HTTP_PORT },
         { name: 'transparent-tunnel', port: TRANSPARENT_TUNNEL_PORT, targetPort: TRANSPARENT_TUNNEL_PORT },
-        // ssh-agent forwarding: worktree pods dial this on the Service
+        // ssh-agent forwarding: workspace pods dial this on the Service
         // ClusterIP (the address they already carry as their resolver), so
         // the agent moves with the proxy pod, node and all.
         { name: 'ssh-agent', port: SSH_AGENT_PORT, targetPort: SSH_AGENT_PORT },

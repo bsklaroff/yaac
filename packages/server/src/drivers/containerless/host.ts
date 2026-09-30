@@ -32,8 +32,8 @@ export interface RunOpts {
  * RAN and exited nonzero rejects with `WorkspaceExecError`, and everything
  * else — the binary missing, a timeout, a spawn failure — rejects as a
  * plain `Error`. The stale reaper reads a `WorkspaceExecError` from a tmux
- * probe as proof the worktree is dead and tears it down, so widening this
- * would let a host hiccup reap live worktrees.
+ * probe as proof the workspace is dead and tears it down, so widening this
+ * would let a host hiccup reap live workspaces.
  */
 export function runHost(argv: string[], opts: RunOpts = {}): Promise<RunResult> {
   const [cmd, ...args] = argv
@@ -151,7 +151,7 @@ export function runHostWithInput(
  * the agent itself rather than a parent that forked and exited — which is
  * what makes the pid recorded in the workspace marker the one teardown can
  * signal. Detached and `unref`ed for the same reason the tmux server is: it
- * belongs to the worktree, not to the server that created it, and must
+ * belongs to the workspace, not to the server that created it, and must
  * survive a server restart.
  *
  * Resolves once the socket exists, so the `ssh-add` that follows cannot race
@@ -221,7 +221,7 @@ export async function onPath(binary: string): Promise<boolean> {
 
 /**
  * Every descendant of `roots`, roots included — the workspace's process
- * tree, which is what "this worktree's ports" and "kill what is left" both
+ * tree, which is what "this workspace's ports" and "kill what is left" both
  * mean here.
  *
  * Read from `ps` rather than `/proc` so one implementation serves Linux and
@@ -262,7 +262,7 @@ export async function descendantPids(roots: number[]): Promise<number[]> {
  *
  * `lsof` on both platforms: it is the one tool that answers "which of THESE
  * processes is listening" in a single call, which is the question — a
- * worktree's ports are its own process tree's, not the host's. A host
+ * workspace's ports are its own process tree's, not the host's. A host
  * without lsof reports nothing rather than failing, and the host check says
  * so up front.
  */
@@ -336,7 +336,7 @@ export function killPids(pids: number[], signal: NodeJS.Signals): void {
  * A recorded pid is advisory — the same reason the tmux one is — but "do not
  * signal it" is the wrong conclusion for this one: the process holds a
  * private key in memory, and leaving it alive until the host reboots is the
- * failure the per-worktree agent exists to prevent. So the identity is
+ * failure the per-workspace agent exists to prevent. So the identity is
  * checked instead of assumed, against the socket path no other agent binds.
  *
  * Never throws: a `ps` that fails answers "not ours", which loses only a

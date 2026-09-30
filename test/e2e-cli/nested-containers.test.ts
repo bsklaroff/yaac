@@ -6,7 +6,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { git } from '@yaac/test-utils/git'
 import { cloneRepo } from '@yaac/server/domain/git'
-import { listWorktreePods, type PodInfo } from '@yaac/server/drivers/k8s/substrate/pods'
+import { listWorkspacePods, type PodInfo } from '@yaac/server/drivers/k8s/substrate/pods'
 import {
   k8sNamespace,
   kubectlGetJson,
@@ -38,7 +38,7 @@ import {
   requirePodman,
   requireCluster,
   execInJob,
-  cleanupWorktreeJobs,
+  cleanupWorkspaceJobs,
   testContainerOwnerLabel,
 } from '@yaac/test-utils/setup'
 import {
@@ -203,22 +203,22 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     )
   }
 
-  async function findWorktreePod(slug: string, exclude: Set<string> = new Set()): Promise<PodInfo> {
-    const pods = (await listWorktreePods(slug))
-      .filter((p) => !exclude.has(p.worktreeId))
+  async function findWorkspacePod(slug: string, exclude: Set<string> = new Set()): Promise<PodInfo> {
+    const pods = (await listWorkspacePods(slug))
+      .filter((p) => !exclude.has(p.workspaceId))
       .sort((a, b) => a.createdAtMs - b.createdAtMs)
     if (!pods[0]) throw new Error(`no session pod found for project ${slug}`)
     return pods[0]
   }
 
-  async function createWorktree(slug: string): Promise<PodInfo> {
+  async function createWorkspace(slug: string): Promise<PodInfo> {
     const { stdout, stderr, exitCode } = await runYaac(
-      serverEnv, 'worktree', 'create', slug, '--tool', 'claude',
+      serverEnv, 'workspace', 'create', slug, '--tool', 'claude',
     )
     if (exitCode !== 0) {
       throw new Error(`session create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
     }
-    const pod = await findWorktreePod(slug)
+    const pod = await findWorkspacePod(slug)
     if (!pod.projectId) throw new Error(`session pod ${pod.jobName} carries no project id`)
     createdRegistries.push(pod.projectId)
     return pod
@@ -268,19 +268,19 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     await setTestGitIdentity(serverEnv)
 
     await setupProject('nested-shared')
-    const shared = await createWorktree('nested-shared')
+    const shared = await createWorkspace('nested-shared')
     sharedJob = shared.jobName
-    sharedSessionId = shared.worktreeId
+    sharedSessionId = shared.workspaceId
     sharedProjectId = shared.projectId!
   }, 900_000)
 
   afterAll(async () => {
     if (sharedSessionId) {
-      await runYaac(serverEnv, 'worktree', 'stop', sharedSessionId).catch(() => { /* best-effort */ })
+      await runYaac(serverEnv, 'workspace', 'stop', sharedSessionId).catch(() => { /* best-effort */ })
     }
     if (server) await server.stop()
     server = null
-    await cleanupWorktreeJobs()
+    await cleanupWorkspaceJobs()
     for (const id of createdRegistries.splice(0)) {
       await removeProjectRegistry(id).catch(() => { /* already gone */ })
     }
@@ -363,7 +363,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     await setupProject(slug)
 
     // --- Session 1 ---
-    const session1 = await createWorktree(slug)
+    const session1 = await createWorkspace(slug)
     const name1 = session1.jobName
 
     // Architectural wiring: the docker CLI speaks to the ROOTFUL in-pod
@@ -432,7 +432,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     // pipeline ran.
     // Where session 1 ran, for a failure below: its pod is gone by then.
     const session1Placement = await podPlacement(name1)
-    const { exitCode: delExit } = await runYaac(serverEnv, 'worktree', 'stop', session1.worktreeId)
+    const { exitCode: delExit } = await runYaac(serverEnv, 'workspace', 'stop', session1.workspaceId)
     expect(delExit).toBe(0)
     await waitForJobGone(name1, 300_000)
 
@@ -445,8 +445,8 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     await waitForStoreGeneration(session1.projectId!, 600_000)
 
     // --- Session 2 ---
-    const session2 = await createWorktree(slug)
-    expect(session2.worktreeId).not.toBe(session1.worktreeId)
+    const session2 = await createWorkspace(slug)
+    expect(session2.workspaceId).not.toBe(session1.workspaceId)
 
     // The store is mounted, and genuinely read-only to the session —
     // enforced host-side by the gofer rather than by anything in-sandbox:
@@ -537,7 +537,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     expect(v3Out, `divergent rebuild reused no prefix:\n${v3Out}`).toContain('Using cache')
     expect(await inspect(session2.jobName, 'yaac-cache-probe:v3', 'Parent')).toBe(s2Parent)
 
-    await runYaac(serverEnv, 'worktree', 'stop', session2.worktreeId)
+    await runYaac(serverEnv, 'workspace', 'stop', session2.workspaceId)
   }, 900_000)
 
   it('pulls through the proxy, serves on localhost, runs compose builds, and denies non-allowlisted pulls', async () => {
@@ -679,8 +679,8 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     ])
     expect(hostsOut).toContain(regVip)
 
-    // The per-project worktrees NetworkPolicy is the SOLE hole through the
-    // worktree-egress policy's default-deny (no blanket in-cluster allowance
+    // The per-project workspaces NetworkPolicy is the SOLE hole through the
+    // workspace-egress policy's default-deny (no blanket in-cluster allowance
     // anymore): plain-HTTP :5000 answers from inside the session.
     const { stdout: ping } = await execInJob(name, [
       'sh', '-c', `curl -fsS --max-time 5 http://${regHost}/v2/ >/dev/null && echo REG_OK`,
@@ -690,8 +690,8 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     // --- Cross-project isolation (issue #17) ---
     // Stand up a SECOND project's registry (no session needed) and assert
     // this project's session cannot reach it: nothing admits the flow —
-    // the worktree-egress policy has no in-cluster allowance, the other
-    // project's worktrees NetworkPolicy does not select this pod, and the
+    // the workspace-egress policy has no in-cluster allowance, the other
+    // project's workspaces NetworkPolicy does not select this pod, and the
     // other registry's ingress policy does not admit it. curl must time out
     // (policy drop), not answer.
     const other = { slug: 'nested-registry-other', id: crypto.randomUUID() }
@@ -859,15 +859,15 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
 
   // Runs last on purpose: it stops the shared session and removes the
   // project, which every test above needs intact.
-  it('keeps the project registry across worktree stop, and never hands it to a re-added project', async () => {
+  it('keeps the project registry across workspace stop, and never hands it to a re-added project', async () => {
     const slug = 'nested-shared'
     const regName = projectRegistryName(sharedProjectId)
 
-    const { exitCode } = await runYaac(serverEnv, 'worktree', 'stop', sharedSessionId)
+    const { exitCode } = await runYaac(serverEnv, 'workspace', 'stop', sharedSessionId)
     expect(exitCode).toBe(0)
     sharedSessionId = ''
 
-    // --- The registry is per-PROJECT, so it outlives the worktree ---
+    // --- The registry is per-PROJECT, so it outlives the workspace ---
     const depAfterDelete = await kubectlGetJson<{ metadata?: { name?: string } }>([
       'get', 'deployment', regName, '-n', k8sNamespace(),
     ])
@@ -882,7 +882,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     const removed = await makeServerApiClient(server!).project[':slug'].$delete({ param: { slug } })
     expect(removed.ok, await removed.text()).toBe(true)
     await setupProject(slug, { seeded: true })
-    const readded = await createWorktree(slug)
+    const readded = await createWorkspace(slug)
     expect(readded.projectId).toBeTruthy()
     expect(readded.projectId).not.toBe(sharedProjectId)
     const newRegName = projectRegistryName(readded.projectId!)
@@ -910,6 +910,6 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     expect(await kubectlGetJson(['get', 'deployment', otherName, '-n', k8sNamespace()])).toBeNull()
     expect(await kubectlGetJson(['get', 'service', newRegName, '-n', k8sNamespace()]))
       .toMatchObject({ metadata: { name: newRegName } })
-    await runYaac(serverEnv, 'worktree', 'stop', readded.worktreeId).catch(() => { /* best-effort */ })
+    await runYaac(serverEnv, 'workspace', 'stop', readded.workspaceId).catch(() => { /* best-effort */ })
   }, 900_000)
 })

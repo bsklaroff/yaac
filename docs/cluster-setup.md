@@ -34,7 +34,7 @@ containerless; this command means k8s.
 Nothing in it is destructive: a cluster that already exists is converged,
 never recreated, so it is also what an upgrade runs (`npm update`, then
 `yaac cluster install`). Teardown happens only through an explicit `yaac
-cluster delete`, which is the one command that can lose running worktrees.
+cluster delete`, which is the one command that can lose running workspaces.
 `--nodes` therefore applies only to a cluster this run creates; against an
 existing one it is a no-op with a note.
 
@@ -53,7 +53,7 @@ nothing.
 
 ## Images are built here, and only here
 
-Every image yaac itself ships — the base/tools/nestable worktree chain, the
+Every image yaac itself ships — the base/tools/nestable workspace chain, the
 egress proxy, netd, and the server — is built by `podman build` on the
 machine running the yaac CLI and pushed to the in-cluster registry, together
 with the mirrors of the digest-pinned upstreams it uses (registry:2, Envoy,
@@ -74,11 +74,11 @@ pods.
 
 yaac splits the container runtime in two:
 
-- **Podman** builds worktree images (`podman build` / `podman push`) and
+- **Podman** builds workspace images (`podman build` / `podman push`) and
   hosts the kind node container.
-- **Kubernetes** runs the worktrees — one Job (single-pod) per worktree, plus
+- **Kubernetes** runs the workspaces — one Job (single-pod) per workspace, plus
   a shared proxy Deployment. yaac targets a **local kind cluster** of one or
-  more nodes (see "Multi-node" below). Worktree pods run under gVisor (runsc): the gofer
+  more nodes (see "Multi-node" below). Workspace pods run under gVisor (runsc): the gofer
   performs hostPath I/O as node root while the sentry enforces file
   permissions on the ownership the backing filesystem reports, so that
   filesystem must report **real file ownership**. Any normal Linux
@@ -95,7 +95,7 @@ virtiofs reports, so the VM's file sharing must report real ownership.
 Apple's Virtualization.framework (applehv/vz) cannot — its virtiofs reports
 the accessing process as every file's owner ("dynamic ownership",
 [lima#1513](https://github.com/lima-vm/lima/issues/1513)), so the root
-gofer sees root-owned files and worktree uids can never write hostPath
+gofer sees root-owned files and workspace uids can never write hostPath
 mounts; chown is silently swallowed and idmapped mounts fail EINVAL, so
 there is no remap escape hatch either. Stock krunkit (<= 1.3.x) fails the
 same way for a different reason: it hardcodes libkrun's `Simplified`
@@ -104,7 +104,7 @@ virtiofs semantics, which also squash ownership to the accessor.
 that forces `LinuxComplete` semantics, which report real host ownership
 (and advertise FUSE `ALLOW_IDMAP` — the `MOUNT_ATTR_IDMAP` EINVAL that
 first surfaced this, [#27](https://github.com/bsklaroff/yaac/issues/27),
-dates from when worktree pods used user namespaces instead of gVisor).
+dates from when workspace pods used user namespaces instead of gVisor).
 `yaac cluster install` applies both settings: it writes a `containers.conf.d`
 drop-in selecting libkrun and drives `podman machine init --rootful` +
 start. Use podman >= 6.0 — it passes krunkit's `--timesync` flag itself
@@ -236,7 +236,7 @@ older one. There are two reasons:
 
    An install upgrading from the older node-hostPath store converts on its
    next server start and comes up on a **fresh, empty claim**: nothing
-   migrates blobs, so the first worktree create afterwards pays one round of
+   migrates blobs, so the first workspace create afterwards pays one round of
    re-pushes and rebuilds. That is the same self-healing a cluster recreate
    has always relied on. The old hostPath data stays on the nodes under
    `/var/lib/yaac/main-registry/<install-hash>`, recoverable by hand.
@@ -249,7 +249,7 @@ older one. There are two reasons:
    `/var/lib/yaac/node/<hash>`: the NODE-LOCAL tier — package caches, image
    stores, opencode working copies — lives there, so on kind it is host
    disk and survives a cluster delete rather than dying with the node
-   container. Both ride every node, so they hold wherever a worktree is
+   container. Both ride every node, so they hold wherever a workspace is
    scheduled. The second is per install (the hash).
 3. **The kind node fixups** — the two settings a node *container* has and
    a real node does not, applied through podman: a raised pids-limit on the
@@ -257,7 +257,7 @@ older one. There are two reasons:
    otherwise hit as `fork: resource temporarily unavailable`), and
    `--housekeeping-interval=300s` in the kubelet flags (kubeadm-flags.env):
    at the 10s default, cAdvisor's per-container process stats readlink
-   every open fd of every process each tick, and gVisor worktree sandboxes
+   every open fd of every process each tick, and gVisor workspace sandboxes
    concentrate ~9k fds per sentry — kubelet alone burned 1.5–2 cores on a
    busy node before this. On a cluster yaac did not create the kubelet
    config is the pool's, so the flag is a pool setting there.
@@ -288,7 +288,7 @@ older one. There are two reasons:
    a podman machine restart, a host reboot, a recycled cloud node — gets
    its sysctls back with no `yaac cluster install` re-run. A node the pass
    cannot tune fails the pass, and so never gets the runtime label: a node
-   whose worktrees would die late is a node yaac does not schedule onto.
+   whose workspaces would die late is a node yaac does not schedule onto.
 
    A DaemonSet rather than a loop over `podman exec <node>` for two reasons:
    it works on nodes yaac has no shell on (a managed pool, a remote control
@@ -304,25 +304,25 @@ older one. There are two reasons:
    The installer image is upstream `curlimages/curl`,
    digest-pinned and mirrored into the local registry like Envoy and
    registry:2. See docs/plans/cloud-k8s.md for why the privilege is
-   accepted and where a dedicated worktrees node pool fits.
+   accepted and where a dedicated workspaces node pool fits.
 
    Every pod hosting untrusted code carries a RuntimeClass explicitly:
-   plain worktrees run on `gvisor`, and nested-containers worktrees run the
+   plain workspaces run on `gvisor`, and nested-containers workspaces run the
    rootful in-pod engine on `gvisor-nested`. Trusted yaac infra (the proxy,
    registries, node-write pods) runs on runc — a sentry per infra pod
    starves the node for no containment gain.
 5. **PriorityClasses** — `yaac-infra` (1000000) > `yaac-builder` (100000) >
-   `yaac-worktree` (1000). The proxy and per-project registries take the
-   infra tier, ephemeral image builders the builder tier, worktree pods the
-   worktree tier. The split is about who dies when a node fills up — losing
-   the egress proxy costs *every* worktree its DNS and its route to the
-   world, while losing one worktree costs one worktree, and kubelet's
+   `yaac-workspace` (1000). The proxy and per-project registries take the
+   infra tier, ephemeral image builders the builder tier, workspace pods the
+   workspace tier. The split is about who dies when a node fills up — losing
+   the egress proxy costs *every* workspace its DNS and its route to the
+   world, while losing one workspace costs one workspace, and kubelet's
    node-pressure eviction orders by priority.
 
-   Only infra may **preempt**; builders and worktrees set `preemptionPolicy:
-   Never`. A preempted pod is deleted and a worktree Job (`backoffLimit: 0`)
+   Only infra may **preempt**; builders and workspaces set `preemptionPolicy:
+   Never`. A preempted pod is deleted and a workspace Job (`backoffLimit: 0`)
    never comes back, so nothing below the infra tier is allowed to buy its
-   own scheduling with a worktree's life — a build that waits costs a worktree
+   own scheduling with a workspace's life — a build that waits costs a workspace
    create some latency instead.
 
    One deliberate omission: netd stays on `system-node-critical` — it is
@@ -339,12 +339,12 @@ older one. There are two reasons:
    the ~235 MB one-time rather than per-recreate. `k8s/calico/README.md`
    has the repin recipe.
 7. **The npm cache** — one Verdaccio (`yaac-npm-cache`) in the install
-   namespace, which every worktree's `pnpm install` goes through
-   (docs/worktree-storage.md "Package installs"). A Recreate Deployment of
+   namespace, which every workspace's `pnpm install` goes through
+   (docs/workspace-storage.md "Package installs"). A Recreate Deployment of
    one replica over an RWO claim, like the main registry; digest-pinned and
-   mirrored like Envoy. A new worktree is pointed at it only while a cache
+   mirrored like Envoy. A new workspace is pointed at it only while a cache
    pod is ready, so a cluster installed before the cache existed, or one
-   whose cache is down, leaves new worktrees' pnpm on npmjs. Install
+   whose cache is down, leaves new workspaces' pnpm on npmjs. Install
    carries on without it rather than failing — installs are slower without
    it, nothing worse.
 
@@ -360,20 +360,20 @@ not a capacity one). It is create-time only: an existing cluster's node
 count is fixed and install never recreates one, so against one the flag is
 a no-op with a note.
 
-**Worktrees land on the workers.** kind keeps the control-plane's
+**Workspaces land on the workers.** kind keeps the control-plane's
 `node-role.kubernetes.io/control-plane:NoSchedule` taint as soon as a cluster
-has workers (it only clears it on worker-less ones), and worktree pods declare
-no tolerations. So `--nodes 2` leaves exactly one worktree-eligible node and
+has workers (it only clears it on worker-less ones), and workspace pods declare
+no tolerations. So `--nodes 2` leaves exactly one workspace-eligible node and
 `--nodes 3` leaves two — **3 is the smallest topology that actually
 exercises multi-node scheduling.** `yaac cluster check` reports both numbers
-(`3 nodes, 2 able to schedule worktrees`).
+(`3 nodes, 2 able to schedule workspaces`).
 
 The rendering is the whole mechanism. `k8s/kind-config.yaml` holds one
 control-plane node entry carrying the `$HOME → $HOME` extraMount, install
 adds the node-local one beside it, and setup copies that entry into `N-1`
 `role: worker` entries — so **every** node binds both. Since all kind nodes
 are containers on this one host, the claims' volumes keep resolving to the
-same bytes no matter which node a worktree lands on, and the NODE-LOCAL
+same bytes no matter which node a workspace lands on, and the NODE-LOCAL
 tier — per node in name — is one host folder in fact; the storage model
 survives unchanged while real multi-node *scheduling* is exercised. The rest
 of the config is cluster-scoped and kind applies it to every node itself:
@@ -494,14 +494,14 @@ path would create a kind cluster here and switch the current context to it
 **A dead NFS server hangs, rather than fails.** The shared claim is mounted
 `hard` unless its class says `soft` (Linux's default, and yaac leaves the
 choice to the class): while the server is gone, every I/O on the global
-tier blocks — the server pod's, every worktree's — and so does the
+tier blocks — the server pod's, every workspace's — and so does the
 kubelet's unmount, so those pods sit `Terminating` and the node usually
 needs a reboot (or cordon it and replace it) once the server is back or
 gone for good. `soft` turns the hang into an EIO after its retries, which
 a git checkout or a half-written file then has to survive; that is the
 trade the class owner makes. yaac does set `actimeo=1` on the volume,
 whatever the class says: a GETATTR per file per second of use — on EFS,
-billed latency — is what bounds how long a worktree can act on a file the
+billed latency — is what bounds how long a workspace can act on a file the
 server has already changed.
 
 **`yaac cluster delete` refuses on a byo install** — the cluster is not
@@ -517,7 +517,7 @@ remove them deliberately, selected by the install id.
 The Calico a byo cluster runs may be self-managed or provider-managed (GKE
 Dataplane V1, AKS `--network-policy calico`, Calico policy-only over the AWS
 VPC CNI on EKS). There is no datapath change for it — the netd redirect
-(docs/worktree-egress.md) works unmodified on any CNI whose pod egress
+(docs/workspace-egress.md) works unmodified on any CNI whose pod egress
 traverses host netfilter and that leaves ClusterIP translation to
 kube-proxy. What changes is that what the owned-cluster path guarantees by
 construction becomes something this mode **verifies**, and every one of
@@ -526,8 +526,8 @@ not a warning:
 
 | Verified | Why a refusal |
 |---|---|
-| calico-node present and fully rolled out | policy is the enforcement plane; a node without Felix is a node with no worktree egress lockdown. Absent Calico is also how a Cilium cluster reads, and no Cilium configuration survives the veth-peer redirect |
-| **not** the eBPF dataplane — `spec.bpfEnabled` on **any** FelixConfiguration, or `FELIX_BPFENABLED` on the container | eBPF host-routing short-circuits host netfilter exactly as Cilium does: the redirect chain exists, counts zero packets, and every worktree silently loses the internet |
+| calico-node present and fully rolled out | policy is the enforcement plane; a node without Felix is a node with no workspace egress lockdown. Absent Calico is also how a Cilium cluster reads, and no Cilium configuration survives the veth-peer redirect |
+| **not** the eBPF dataplane — `spec.bpfEnabled` on **any** FelixConfiguration, or `FELIX_BPFENABLED` on the container | eBPF host-routing short-circuits host netfilter exactly as Cilium does: the redirect chain exists, counts zero packets, and every workspace silently loses the internet |
 | kube-proxy running, and not replaced (`bpfKubeProxyIptablesCleanupEnabled`) | netd's Envoy dials the yaac proxy by ClusterIP from the host netns, and appending below `KUBE-SERVICES` is what keeps ClusterIP traffic out of the redirect |
 | a pod-CIDR set that is non-empty and wholly parseable | those CIDRs lead netd's chain as RETURNs; with none it would DNAT pod-to-pod 443/80 into the proxy, and a silently-dropped `YAAC_POD_CIDRS` entry narrows the set below what was configured. The per-apply path falls back to kind's default — `--byo` refuses instead |
 | `system-node-critical` exists | netd names it, and the apiserver rejects a pod naming a missing class: the DaemonSet then creates no pod and no node has a redirect |
@@ -544,12 +544,12 @@ nodes are named.
 The pod → veth and kube-proxy checks are **per node**, not per cluster. On a
 heterogeneous fleet — mixed node pools or AMIs, the realistic EKS shape —
 one node's routing table says nothing about the others', and a node whose
-veths are named differently is a node whose worktrees get no redirect.
+veths are named differently is a node whose workspaces get no redirect.
 
 **NetworkPolicy enforcement is probed, never inferred.** "Calico is
 installed" is not evidence that plain `networking.k8s.io/v1` policy is
 enforced — policy-only Calico over a foreign IPAM is a supported topology and
-a misconfigured one looks identical until a worktree escapes. The `egress`
+a misconfigured one looks identical until a workspace escapes. The `egress`
 gate of the cluster check that finishes every setup is that probe (see
 "Verifying"), and its failure makes the command exit non-zero.
 
@@ -557,10 +557,10 @@ gate of the cluster check that finishes every setup is that probe (see
 it verifies, so the failure's only artifact is the non-zero exit code —
 nothing uninstalls, and nothing re-checks between explicit `yaac cluster
 check` runs. That matters most for the `egress` gate: a cluster that fails
-it runs worktrees whose egress lockdown is *advisory*, since the policy is
+it runs workspaces whose egress lockdown is *advisory*, since the policy is
 applied but not enforced, and the proxy allowlist then covers only the
 ports the redirect steers (443/80/the ssh sentinel). Setup says so
-explicitly when that gate fails. **Do not start worktrees until a re-run
+explicitly when that gate fails. **Do not start workspaces until a re-run
 passes.**
 
 **The veth check is re-run by every `yaac cluster check`**, not only at
@@ -596,7 +596,7 @@ Three knobs exist for what a foreign cluster does not publish:
   the kubelet, so there is no pod, DaemonSet or label to detect, and
   self-managed k3s is a primary target rather than an exotic one. Getting it
   wrong costs egress rather than opening it — netd's Envoy simply fails to
-  dial the proxy's ClusterIP, and the worktree NetworkPolicy still denies
+  dial the proxy's ClusterIP, and the workspace NetworkPolicy still denies
   every world-ward destination but the node's listener range. Recorded in the
   audit trail, since it is the one check an operator can wave through.
 
@@ -628,7 +628,7 @@ Linux machine, by hand or by the `e2e-byo` tier
 
 | Piece | What | Why this one |
 |---|---|---|
-| Cluster | kind `yaac-byo`: a control-plane and two workers, `disableDefaultCNI`, none of yaac's kind-config patches, its own kubeconfig in the install's client-local dir | two worktree-eligible nodes, so every NFS number is cross-node; no containerd patch, so the installer's own `config_path` handling is what runs |
+| Cluster | kind `yaac-byo`: a control-plane and two workers, `disableDefaultCNI`, none of yaac's kind-config patches, its own kubeconfig in the install's client-local dir | two workspace-eligible nodes, so every NFS number is cross-node; no containerd patch, so the installer's own `config_path` handling is what runs |
 | Node mounts | one extraMount on every node: kind-byo's data dir, at its own path | the backing store for both classes; nothing else of the host is visible to the nodes |
 | CNI | the pinned Calico manifest, applied by the script | the CNI gate's happy path, on a CNI yaac did not install |
 | RWX | nfs-ganesha on the control-plane node behind csi-driver-nfs, class `kind-byo-nfs` | the self-managed target's shape: an NFS server you run, provisioned by `nfs.csi.k8s.io` |
@@ -744,46 +744,46 @@ answer, and then converges as usual. Until calico-node is back the pods'
 recorded status is the one from before the reboot, so the registry step
 waits on an actual dial rather than on its rollout reading done.
 
-## What a worktree reserves
+## What a workspace reserves
 
-Each worktree container requests **250m cpu, 1Gi memory, 2Gi
+Each workspace container requests **250m cpu, 1Gi memory, 2Gi
 ephemeral-storage**, and is limited to **8 cores, 8Gi memory and 16Gi
 ephemeral-storage** (plus the podman graphroot's own volume cap on a
-nested-containers worktree, which kubelet charges to the same limit). A
-worktree with module dirs (the default, `node_modules`) adds 2Gi to the
+nested-containers workspace, which kubelet charges to the same limit). A
+workspace with module dirs (the default, `node_modules`) adds 2Gi to the
 ephemeral-storage request — the install it really holds — and one module
 dir's 9Gi volume cap to the limit. Requests
 are the scheduler's reservation and sit well under the limits: the node is
-deliberately overcommitted, the way many mostly-idle worktrees want.
+deliberately overcommitted, the way many mostly-idle workspaces want.
 
-Memory and disk are capped because they are not compressible: one worktree
+Memory and disk are capped because they are not compressible: one workspace
 must not be able to take the node down with it. The cpu ceiling is there for
 a second reason specific to gVisor. runsc sizes the sandbox's virtual cpu
 count from the container's cpu quota (`-cpu-num-from-quota`, on by default),
 and the systrap platform spawns one stub process per virtual cpu — so with no
 limit there is no quota, every sandbox falls back to the *host's* core count,
-and one worktree running syscall-heavy work (an e2e suite: image builds,
+and one workspace running syscall-heavy work (an e2e suite: image builds,
 container starts, every syscall trapping through the sentry) drives that many
 stubs at once and starves the node.
 
 The ceiling is set far above the request — 8 cores against 250m — so it
 bounds that burst without becoming a CFS quota that throttles an interactive
-agent on an idle node. Ordinary worktree work never approaches it.
+agent on an idle node. Ordinary workspace work never approaches it.
 
-The practical effect is a ceiling on concurrent worktrees, whichever of cpu or
+The practical effect is a ceiling on concurrent workspaces, whichever of cpu or
 memory runs out first — roughly `cores × 4` and `GB ÷ 1` respectively. At
 4 GB per core the two ceilings coincide; above that, cpu binds first, and a
-worktree that no longer fits sits `Pending` with an `Insufficient cpu`
+workspace that no longer fits sits `Pending` with an `Insufficient cpu`
 event rather than failing outright.
 
 ## Runtimes and uids
 
-Worktree containment is the **gVisor sentry**: every pod running untrusted
-code (worktrees, the check's probe pods) runs under the `gvisor`
+Workspace containment is the **gVisor sentry**: every pod running untrusted
+code (workspaces, the check's probe pods) runs under the `gvisor`
 RuntimeClass, where in-container root — the image grants
-passwordless sudo so agents can `apt-get install` mid-worktree — is a sandbox
+passwordless sudo so agents can `apt-get install` mid-workspace — is a sandbox
 fiction with no host authority, and no user namespace is used.
-Nested-containers worktrees run their in-pod container engine as **real root
+Nested-containers workspaces run their in-pod container engine as **real root
 inside the sentry** on the `gvisor-nested` RuntimeClass (the sentry is the
 containment). Trusted yaac infra (proxy, registries, node-write pods) runs
 unsandboxed on runc: it only executes yaac-shipped code, and the sentries'
@@ -797,7 +797,7 @@ uid of the machine that ran the install — on macOS it cannot be anything
 else, since virtiofs makes the host user's uid a ceiling. On a byo install
 it is a fixed 1000: an NFS server passes uids through raw, and a constant
 keeps ownership stable whichever machine re-installs. Every yaac pod — the
-server, the worktrees, the proxy, the probes — runs at it
+server, the workspaces, the proxy, the probes — runs at it
 (docs/server-in-cluster.md "The uid everything runs as").
 
 The images know nothing about that number: they bake a fixed `yaac` user
@@ -822,9 +822,9 @@ carries the `yaac.gvisor` label they schedule on, and that a `gvisor`-class
 pod really runs inside the sentry, reads the node tuning back through the
 installer's pod on every node (`node-tuning`, warn-level: a node whose
 installer pod is not Running is reported unverified, never passed), then
-runs an end-to-end probe pod — on the gvisor tier, like worktree pods —
+runs an end-to-end probe pod — on the gvisor tier, like workspace pods —
 that mounts the `yaac-global` claim and exercises all of the wiring above,
-including a **write** at the worktree uid. Its other end is a *peer* pod —
+including a **write** at the workspace uid. Its other end is a *peer* pod —
 runc, at the install uid, the claim mounted whole, which is the server's
 footing — that writes the nonce the probe must read, checks the probe's
 write reached it, and times a second nonce round-tripped while both run.
@@ -836,13 +836,13 @@ machine at all. `storage-semantics` runs the POSIX probe in
 `k8s/probes/fsprobe.py` (ownership, O_EXCL, atomic rename, hardlinks,
 locks, fsync, mmap, append, xattrs) against the claim from a sandboxed pod
 and fails naming any that fail — fail-level on every backend, since a
-worktree runs the same code on each. `npm-cache` has a
-worktree-labelled pod fetch a package through the npm cache's Service: a
-warn when the install has no cache or no ready cache pod (new worktrees
+workspace runs the same code on each. `npm-cache` has a
+workspace-labelled pod fetch a package through the npm cache's Service: a
+warn when the install has no cache or no ready cache pod (new workspaces
 then install from npmjs), a fail when a ready one does not serve, since
-every new worktree installs through it. It ends with a sweep
-warning about any untrusted (worktree-labeled) pod running without a
-gvisor-tier `runtimeClassName`. Run it whenever worktrees fail to start.
+every new workspace installs through it. It ends with a sweep
+warning about any untrusted (workspace-labeled) pod running without a
+gvisor-tier `runtimeClassName`. Run it whenever workspaces fail to start.
 
 Two gates cover the redirect, and they fail differently on purpose.
 `datapath` says calico-node and netd are Ready — policy is enforced and a
@@ -851,24 +851,24 @@ anything: it execs each netd pod for its own node's routing table and
 checks that workload host routes match the configured veth prefix. Ready
 netd does not imply that — netd's readiness is Envoy's config ack, which
 goes green with zero pod → veth mappings — so without this gate a wrong
-prefix presents only as worktrees with no egress.
+prefix presents only as workspaces with no egress.
 
-### Which nodes count as worktree-eligible
+### Which nodes count as workspace-eligible
 
 The node inventory line, the per-node sweep below, and `--byo`'s
-per-node kube-proxy coverage all narrow to the nodes a worktree could
-actually land on: Ready, uncordoned, and carrying no taint the worktree pod
+per-node kube-proxy coverage all narrow to the nodes a workspace could
+actually land on: Ready, uncordoned, and carrying no taint the workspace pod
 fails to tolerate. That last clause is real per-taint matching, not "carries
-no taint at all" — a worktree pod's tolerations are whatever the `gvisor`
+no taint at all" — a workspace pod's tolerations are whatever the `gvisor`
 RuntimeClass declares in `scheduling.tolerations`, which the RuntimeClass
 admission controller merges into every pod naming the class. One definition,
 shared: a second one would drift, and on a tainted pool the blanket rule
 reads as *zero* eligible nodes, so a coverage check built on it would
 silently verify nothing.
 
-That is also how a **dedicated worktrees node pool** works: taint the pool so
+That is also how a **dedicated workspaces node pool** works: taint the pool so
 other workloads stay off it, declare the matching toleration once on the
-RuntimeClass, and worktree pods, builder pods and this check's own pinned
+RuntimeClass, and workspace pods, builder pods and this check's own pinned
 probes all inherit it — the probes included because they
 bypass the scheduler but are still admitted by kubelet, and a `NoExecute`
 pool taint would evict one that tolerated nothing. Scope the toleration to
@@ -879,17 +879,17 @@ are carrying.
 Because the toleration rides the RuntimeClass rather than the workload, the
 pool is really an **untrusted-sandboxed-workload** pool: builder pods name
 the same class, so untrusted image builds land there too and compete with
-worktrees for its capacity. Separating them would take a second RuntimeClass,
+workspaces for its capacity. Separating them would take a second RuntimeClass,
 which does not exist today. Trusted infra (the proxy, the registries) names
 no RuntimeClass, inherits no toleration, and so stays off the pool by
 construction. The one-shot **node-write pods** are the deliberate exception:
 they are pinned by `nodeName` to every node and blanket-tolerate, because a
 pool node that never receives its containerd `hosts.toml` cannot pull the
-images its worktrees need. Being `nodeName`-pinned, the toleration buys them
+images its workspaces need. Being `nodeName`-pinned, the toleration buys them
 no scheduling freedom.
 
 Nothing declares a toleration on a local cluster, where the only tainted
-node is the control plane a worktree genuinely cannot use. When no node
+node is the control plane a workspace genuinely cannot use. When no node
 qualifies, the check names each node and the taint that excluded it, and the
 fix points at declaring the pool's toleration on the RuntimeClass — not at
 removing the taint, which would dismantle the isolation the pool exists for.
@@ -905,7 +905,7 @@ previously owned. Neither is a home for it: check after an install until the
 pool's own config knob exists.
 
 On a cluster with more than one node it also runs a **per-node readiness
-sweep** over those worktree-eligible nodes, pinning one probe pod to each and
+sweep** over those workspace-eligible nodes, pinning one probe pod to each and
 reporting three warn-level gates —
 
 - `runsc-nodes`: that node can host a sandboxed pod. A node the installer
@@ -920,7 +920,7 @@ reporting three warn-level gates —
   probe pulls `Always`, so a layer already on the node cannot mask an
   unreachable one).
 - `volume-nodes`: the `yaac-global` claim is the same bytes the server
-  sees from that node, and the worktree uid can write it.
+  sees from that node, and the workspace uid can write it.
 
 They are warnings, not failures: a single-node cluster is still a legitimate
 topology, and each carries the fix for its own cause — the installer
@@ -932,7 +932,7 @@ others, so no gate ever passes on a node it could not actually check.
 
 Every gate also names what it did **not** sweep, and why (`not swept:
 yaac-worker3 (untolerated taint node.kubernetes.io/disk-pressure:NoSchedule)`).
-Narrowing is right; narrowing silently is not — an "all N worktree-eligible
+Narrowing is right; narrowing silently is not — an "all N workspace-eligible
 nodes" pass otherwise reads identically whether the node that dropped out
 was a control plane or a worker that just went under disk pressure.
 
@@ -953,9 +953,9 @@ The teardown counterpart to `install`, and one `kind delete` is the whole
 of it: everything yaac deploys lives inside the cluster — Calico, netd, the
 main and per-project registries, the two storage claims and their
 volumes — and so does the registries' storage on every node, including
-every pushed image. Running worktree pods stop, but nothing under the yaac
+every pushed image. Running workspace pods stop, but nothing under the yaac
 data dir is touched: the volumes are `Retain` and their bytes are the data
-dir's own folders, so on-disk worktrees, the database and the node-local
+dir's own folders, so on-disk workspaces, the database and the node-local
 caches all survive, and a later `yaac cluster install` recreates the
 cluster, re-binds the same folders and re-pushes images on demand. It
 leaves the podman machine and its shared image store alone (that's the

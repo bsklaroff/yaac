@@ -44,7 +44,7 @@ const FORWARD_PORT_MAX = 21999
 /** Where {@link freeLocalPort} records its picks: one file per port, holding
  *  the drawing process's pid. HOST-wide on purpose — a pick is only proven
  *  free, not held, and it can sit unbound for minutes (a suite's forward
- *  ports wait out a whole worktree create), so every process that draws
+ *  ports wait out a whole workspace create), so every process that draws
  *  from the range, in any worker and any test rig, has to see it. */
 const PORT_CLAIM_DIR = path.join(os.tmpdir(), 'yaac-test-ports')
 

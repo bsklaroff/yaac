@@ -4,7 +4,7 @@ import type { PodToleration } from './taints'
 
 /**
  * gVisor (runsc) is the runtime for every pod that hosts UNTRUSTED code:
- * worktree pods (agents run arbitrary commands; in-container root via the
+ * workspace pods (agents run arbitrary commands; in-container root via the
  * image's passwordless sudo is a feature).
  * The sentry is the containment layer for in-container root, which drops
  * the idmapped-mount prerequisite that ruled shared filesystems (NFS) out
@@ -40,7 +40,7 @@ export const GVISOR_RELEASE_BASE =
  *  - `gvisor`: the default sandboxed tier — runsc with systrap; no user
  *    namespace.
  *  - `gvisor-nested`: runsc with raw-socket allowances for the in-sandbox
- *    container engine that nested worktrees run.
+ *    container engine that nested workspaces run.
  */
 export const RUNTIME_CLASS_GVISOR = 'gvisor'
 export const RUNTIME_CLASS_GVISOR_NESTED = 'gvisor-nested'
@@ -55,7 +55,7 @@ export const RUNTIME_CLASS_GVISOR_NESTED = 'gvisor-nested'
  *
  * Keyed on the runtime, NOT on a node pool: the installer decides where it
  * runs (its own `nodeSelector`), and pods follow wherever it succeeded.
- * Restricting sandboxed workloads to a worktrees-only pool is then a change
+ * Restricting sandboxed workloads to a workspaces-only pool is then a change
  * to the installer's selector alone, with nothing here to touch.
  */
 export const GVISOR_NODE_LABEL = 'yaac.gvisor'
@@ -73,7 +73,7 @@ export function gvisorNodeLabels(): Record<string, string> {
  * THE runtime-class policy for SESSION-TIER pods (pods that run untrusted
  * agent workloads, and the check probes that emulate them), as a spreadable
  * pod-spec fragment — the single encoding of which sandbox tier such a pod
- * runs on, used by the worktree manifest builder and by the checks that
+ * runs on, used by the workspace manifest builder and by the checks that
  * compare against what it would stamp:
  *  - `nested`: the pod hosts the in-sandbox container engine — the
  *    gvisor-nested tier (raw/packet sockets).
@@ -199,9 +199,9 @@ export function gvisorInstallerHostMounts(): {
  *    sandbox's host process stays unprivileged.
  *  - overlay2 root:self: back the container ROOTFS's writable layer with a
  *    sentry-internal overlay paged against a filestore in the rootfs dir,
- *    so rootfs writes (/tmp, in-worktree apt installs, …) never round-trip
+ *    so rootfs writes (/tmp, in-workspace apt installs, …) never round-trip
  *    the gofer. Rootfs-only on purpose: `all:` would wrap hostPath volumes
- *    too, making worktree-dir and shared-image-store writes ephemeral.
+ *    too, making workspace-dir and shared-image-store writes ephemeral.
  *    Rootfs writes were already ephemeral (containerd discards the
  *    snapshot), so this changes performance, not semantics.
  *  - nested additionally allows raw/packet sockets, which the in-sandbox
@@ -288,20 +288,20 @@ export function gvisorContainerdRuntimesToml(pluginKey: string): string {
  * `scheduling.nodeSelector` is the reason the installer labels nodes: the
  * RuntimeClass admission controller merges it into every pod that names the
  * class, so a sandboxed pod can only land where the shim actually exists.
- * Without it a worktree pod scheduled onto an un-installed node fails at
+ * Without it a workspace pod scheduled onto an un-installed node fails at
  * container create with a bare "failed to get sandbox runtime" — and on a
  * pool being recycled, intermittently. With it, such a pod sits Pending
  * with an unsatisfied-node-selector event, which says what is wrong.
  *
  * `scheduling.tolerations` rides the same merge, and is how a dedicated
- * worktree pool works at all. The pool is tainted so nothing else drifts
+ * workspace pool works at all. The pool is tainted so nothing else drifts
  * onto it; declaring that taint's toleration HERE — once — reaches every
- * pod that names the class: worktree pods, builder pods,
+ * pod that names the class: workspace pods, builder pods,
  * tenant pods, and cluster check's pinned probes (which bypass the
  * scheduler, but are still admitted by kubelet, and a `NoExecute` pool taint
  * would evict them). Nothing per-pod has to know the pool exists. Empty by
  * default — an untainted cluster (every local one) needs none, and cluster
- * check reads this same field to decide which nodes a worktree can use.
+ * check reads this same field to decide which nodes a workspace can use.
  */
 export function buildRuntimeClassManifests(
   opts: { tolerations?: PodToleration[] } = {},

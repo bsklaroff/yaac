@@ -39,18 +39,18 @@ conflict error it can search for. It just loses the recipe.
 **How to tell it is safe to remove:** a season after the first release
 that depends on core `kind`. The redirect and the prose go together.
 
-## Queueing under a worktree with no recorded base branch
+## Queueing under a workspace with no recorded base branch
 
-`queueWorktree` (`domain/worktrees/queued-worktrees.ts`) stores a queued
-worktree's branch concretely, defaulting to the parent's
-`worktrees.baseBranch`. A create now records that column with the row, but a
+`queueWorkspace` (`domain/workspaces/queued-workspaces.ts`) stores a queued
+workspace's branch concretely, defaulting to the parent's
+`workspaces.baseBranch`. A create now records that column with the row, but a
 row written before it was recorded at creation may have none: an interrupted
 create, or a claimed spare whose upstream could not be read. For such a
 parent, the remote's default branch answers what a create in the project
 would fork from. (The same function also serves a parent whose create is still in
 flight and has no row yet; that use is not legacy and stays.)
 
-**What it reads:** `worktrees.baseBranch IS NULL` on the parent row.
+**What it reads:** `workspaces.baseBranch IS NULL` on the parent row.
 
 **What breaks silently if it goes too early:** queueing under such a parent
 fails (or, depending on how it is removed, stores an empty branch that fails
@@ -58,8 +58,8 @@ at launch).
 
 **How to tell it is safe to remove:** nothing retires a legacy null — a
 resume never writes `baseBranch` and no stop deletes a row — so it is safe
-once `SELECT count(*) FROM worktrees WHERE base_branch IS NULL AND NOT spare`
-is 0 on the installs we support (they have deleted those worktrees or their
+once `SELECT count(*) FROM workspaces WHERE base_branch IS NULL AND NOT spare`
+is 0 on the installs we support (they have deleted those workspaces or their
 projects).
 
 ## The `YAAC_REQUIRE_AUTH` refusal
@@ -95,7 +95,7 @@ exists only if it was seeded from a very old on-disk CA.
 old CA, and every strict verifier (Python 3.13+ by default) rejects every
 proxied HTTPS request, while curl, Node and Python 3.12 keep working, so it
 reads as a Python bug rather than a yaac one. Changing it to mint a new
-key instead breaks every running worktree at upgrade: its agent and nested
+key instead breaks every running workspace at upgrade: its agent and nested
 containers loaded the old root at startup and reject the new key's leaves
 until the pod restarts. Keeping the key is what makes the swap invisible.
 
@@ -104,27 +104,27 @@ the critical flag. Then drop the condition and load any stored CA.
 
 ## A codex/opencode pin beside a conversation of its tool
 
-`recordAgentSessions` hands a codex or opencode worktree's worktree-id pin to
-the first conversation of its tool a pane names (docs/worktree-storage.md,
-"Agent worktrees") — but not when the worktree already links another
+`recordAgentSessions` hands the workspace-id pin of a codex or opencode workspace to
+the first conversation of its tool a pane names (docs/workspace-storage.md,
+"Agent workspaces") — but not when the workspace already links another
 conversation of that tool. The takeover replaces the pin in the same
 transaction that records its first sibling, so under current code the two
 never coexist and the guard never fires.
 
-**What it reads:** a worktree recorded before the takeover existed: the pin at
+**What it reads:** a workspace recorded before the takeover existed: the pin at
 ordinal 0 (with the `--prompt` ask, if one was given) and its real first
 codex/opencode conversation at ordinal 1 or later.
 
 **What breaks silently if it goes too early:** the first conversation new to
-such a worktree — its next `/new` or `/clear` — takes over the pin. It inherits
+such a workspace — its next `/new` or `/clear` — takes over the pin. It inherits
 the founding ask over its own opening message, the pin's birth time, and
-ordinal 0, so it relabels the worktree and a restart puts it in the primary
+ordinal 0, so it relabels the workspace and a restart puts it in the primary
 `yaac:<tool>` window ahead of the conversation that really came first.
 
 **How to tell it is safe to remove:** no row matches
-`select 1 from worktree_agent_sessions p join worktree_agent_sessions s using
-(project_slug, worktree_id, tool) where p.tool in ('codex', 'opencode') and
-p.agent_session_id = p.worktree_id and s.agent_session_id <> s.worktree_id`
+`select 1 from workspace_agent_sessions p join workspace_agent_sessions s using
+(project_slug, workspace_id, tool) where p.tool in ('codex', 'opencode') and
+p.agent_session_id = p.workspace_id and s.agent_session_id <> s.workspace_id`
 on the installs that matter. Removing it then changes nothing.
 
 ## A note on evidence
@@ -136,13 +136,13 @@ all. That is the reason this is a list rather than a check.
 
 ## The attachments-dir gate on pasted images
 
-`saveWorktreeAttachment` refuses an upload, with "restart this worktree to
-paste images into it", when the worktree's `worktreeAttachmentsDir` does not
+`saveWorkspaceAttachment` refuses an upload, with "restart this workspace to
+paste images into it", when the workspace's `workspaceAttachmentsDir` does not
 exist. Every launch makes that directory beside the read-only mount that
 shows it to the workspace, so on anything launched by a current server the
 check never fires.
 
-**What it reads:** a worktree (or warm spare) whose pod or tmux server was
+**What it reads:** a workspace (or warm spare) whose pod or tmux server was
 launched before the attachments mount existed — it has no
 `/home/yaac/.yaac-attachments` mount and no directory.
 
@@ -151,8 +151,8 @@ pane pastes `/home/yaac/.yaac-attachments/<hash>.png`, a path that does not
 exist in that pod; the agent reports "no such file" with nothing pointing at a
 restart as the fix.
 
-**How to tell it is safe to remove:** once no worktree launched before the
-mount can still be running — every such worktree has been stopped or
+**How to tell it is safe to remove:** once no workspace launched before the
+mount can still be running — every such workspace has been stopped or
 restarted. Removing it then leaves the upload's behavior unchanged.
 
 ## A containerless marker with no `launchEnv`
@@ -164,9 +164,9 @@ itself is not a shim: it is also the permanent answer for a workspace the
 registry has forgotten.
 
 **What it reads:** a workspace marker written before the marker carried
-`launchEnv`, recovered by a restarted server. Such a worktree's tmux server
+`launchEnv`, recovered by a restarted server. Such a workspace's tmux server
 also predates the emptied `update-environment`; that half is deliberately not
-repaired, and a worktree restart fixes both.
+repaired, and a workspace restart fixes both.
 
 **What breaks silently if it goes too early:** the type stops telling the
 truth about those markers. Today's one reader tolerates a missing value
@@ -174,7 +174,7 @@ truth about those markers. Today's one reader tolerates a missing value
 required field — reading a tool home out of it, say — would find nothing
 after a restart and fall through to the floor's `$HOME`-relative defaults.
 
-**How to tell it is safe to remove:** once no containerless worktree launched
+**How to tell it is safe to remove:** once no containerless workspace launched
 before the marker carried `launchEnv` can still be running — each has been
 stopped or restarted. Then make the field required.
 
@@ -220,24 +220,24 @@ since the upgrade, which re-points its store at `projects/<id>/`.
 ## pi's shared session dir
 
 pi's logs used to go to the project's `pi/agent/sessions/` (`piSessionsDir`);
-every create now points pi at the worktree's own `history/<wt>/pi/`. Two
+every create now points pi at the workspace's own `history/<wt>/pi/`. Two
 things still read the old place: `movePi` in `#domain/agent-history`, which
-moves a worktree's logs out of it on each create, and the `pi` entry in
+moves a workspace's logs out of it on each create, and the `pi` entry in
 `TRANSCRIPT_LAYOUT` (`runtime/agents/transcripts.ts`), whose shared half makes
 every pi reader search it after the history. Nothing writes there any more on
 either driver, unlike claude's and codex's shared dirs, where a host run keeps
 landing new files and the fallback is permanent.
 
 **What it reads:** `pi/agent/sessions/**/<ts>_<sid>.jsonl` written before the
-change — by a worktree not restarted since, or a stopped one.
+change — by a workspace not restarted since, or a stopped one.
 
-**What breaks silently if it goes too early:** those worktrees lose their pi
+**What breaks silently if it goes too early:** those workspaces lose their pi
 history. A stopped one shows no founding ask, and a restart launches pi with
 `--session-id` against an empty session dir, starting the conversation over.
 
 **How to tell it is safe to remove:** `pi/agent/sessions/` holds no `.jsonl`
-in any project dir (a create empties it of its own worktree's logs, so only
-worktrees never restarted since the upgrade keep any there). Then drop
+in any project dir (a create empties it of its own workspace's logs, so only
+workspaces never restarted since the upgrade keep any there). Then drop
 `movePi` and point the `pi` layout at the history alone, and delete
 `piSessionsDir`.
 
@@ -246,8 +246,8 @@ worktrees never restarted since the upgrade keep any there). Then drop
 `ensureNeverPrune` (`domain/git/repo.ts`) writes `gc.pruneExpire`,
 `gc.reflogExpire` and `gc.reflogExpireUnreachable` = `never` into a project's
 main clone's own `.git/config` before it creates or converts a checkout there,
-whenever the main clone still has a `worktrees/` dir. That dir is how an
-install from before worktrees were clones is recognized: its pods mount the
+whenever the main clone still has a `.git/worktrees/` dir. That dir is how an
+install from before workspaces were clones is recognized: its pods mount the
 main clone read-write and auto-gc it with their own git, which reads this
 file and sees none of the clones' refs.
 
@@ -257,7 +257,7 @@ file and sees none of the clones' refs.
 with git's two-week default, objects a clone borrows, and that clone fails
 weeks later with missing-object errors.
 
-**How to tell it is safe to remove:** no main clone has a `worktrees/` dir.
+**How to tell it is safe to remove:** no main clone has a `.git/worktrees/` dir.
 Order: `adoptLinkedCheckout` calls `ensureNeverPrune` before it converts, so
 `ensureNeverPrune` goes with the conversion (next entry), never before it.
 Only the write for older main clones is legacy: `cloneRepo` writes the same
@@ -272,25 +272,25 @@ One entry, because the two must go together. `adoptLinkedCheckout` and
 checkout it restarts and by the `convertLinkedCheckouts` startup sweep for
 every stopped one, turn an older install's `git worktree add` checkouts into
 clones and, once a project has none left, strip the main clone of whatever a
-pod ever wrote into it. `deleteWorktreeState` still removes a reaped
-worktree's admin dir for the same installs. Until then `runGit` keeps
+pod ever wrote into it. `deleteWorkspaceState` still removes a reaped
+workspace's admin dir for the same installs. Until then `runGit` keeps
 building a throwaway git dir for every call on a main clone
 (docs/server-git.md), because a legacy pod can still write that clone's
 config.
 
-**What it reads:** `worktrees/<id>/.git` files (and `.git.linked`, a crashed
+**What it reads:** `workspaces/<id>/.git` files (and `.git.linked`, a crashed
 conversion's), `repo/.git/worktrees/<id>/`, the main clone's refs and its
 `branch.agent/<id>.merge`.
 
-**What breaks if it goes too early:** loudly for the worktree — its restart
+**What breaks if it goes too early:** loudly for the workspace — its restart
 writes an alternates line into a `.git` that is a file — but silently for the
 server if the hardening goes too: it would run git against a config legacy
 pods can still write.
 
 **How to tell it is safe to remove:** no row's checkout has a `.git` file or a
-`.git.linked`, and no main clone has a `worktrees/` dir. Then the conversion,
+`.git.linked`, and no main clone has a `.git/worktrees/` dir. Then the conversion,
 its startup sweep, `readRepoConfig`, the admin-dir removal in
-`deleteWorktreeState`, and the throwaway git dir (`buildGitDir`, `readOnce`,
+`deleteWorkspaceState`, and the throwaway git dir (`buildGitDir`, `readOnce`,
 `configEntries`, `KEPT_KEYS`, `LINKED`, `clearGitScratch` and its startup
 call) all go in one change, leaving `runGit` a plain `GIT_DIR` call with its
 pins. An install that carries a linked checkout past that change runs
@@ -320,3 +320,86 @@ next install, which records the field and unlocks them; nothing is lost.
 release before the first one that writes `clusterUid` (the release after
 0.0.8) is no longer supported. Every supported install has then run a
 `yaac cluster install` that wrote the field.
+
+## Checkouts under `worktrees/`
+
+`moveLegacyWorkspacesDirs` (`domain/projects/legacy-workspaces-dir.ts`),
+run once per server start before anything resolves a checkout path, renames
+a project's `worktrees/` — where an install from before workspaces were named
+keeps its checkouts — to `workspaces/`, and leaves `worktrees` behind as a
+relative link to it. The link is made first as `worktrees.link` and renamed
+into place last, so a start that dies between the steps finishes the move on
+the next one. `removeAgentHistory` (`domain/agent-history/history.ts`) also
+unlinks the shared claude folder named for a checkout's `worktrees/<id>`
+spelling, which a create before the rename linked into its history.
+
+**What it reads:** a real `projects/<slug>/worktrees/` dir, a waiting
+`worktrees.link`, and the claude folder named for the old path.
+
+**What breaks silently if it goes too early:** every checkout in it, stopped
+or running, drops out of sight: restarts, diffs and cleanup look under
+`workspaces/<id>` and find nothing. The LINK matters for as long as a
+workspace launched before the move runs — its pod's hostPath mount, its cwd,
+its containerless marker, and a linked checkout's admin-dir back-pointer all
+spell the old path. It is not deleted by anything, and costs nothing left.
+Without the history half, deleting a pre-upgrade workspace leaves a dangling
+link in the `projects/` dir every sibling's claude lists.
+
+**How to tell it is safe to remove:** no project dir holds a real
+`worktrees/` dir, i.e. every install has started a server since the rename.
+The links can stay when the code goes.
+
+## Workspace objects labelled `yaac.worktree-id`
+
+`relabelLegacyWorkspaces` (`drivers/k8s/cluster/proxy-apply.ts`), run by the
+k8s driver's startup before its informers, gives every pod, Job and proxy
+registration ConfigMap carrying `yaac.worktree-id` a `yaac.workspace-id`
+too, and rolls the proxy at once when it found any. `ensureProxyResources`
+relabels again — so a create racing startup, or a start whose relabel
+failed, cannot skip it — and only then deletes `yaac-worktree-egress` and
+`yaac-worktree-ingress-lock`, and
+`ensureNpmCache` deletes `yaac-npm-cache-worktree-egress` — each after
+applying the policy that replaces it.
+
+**What it reads:** objects in this install's namespace with the old label and
+not the new one; the three NetworkPolicies by name.
+
+**What breaks silently if it goes too early:** a workspace an older install
+left running is invisible to the informers, so the stale reaper records it
+dead, the proxy refuses its egress, and it falls outside the workspace
+NetworkPolicies — under the world-deny meant for infrastructure instead.
+The relabel must run before the old policies go: a relabelled pod is
+governed by the new ones, an unrelabelled one only by the old ones.
+
+**How to tell it is safe to remove:** `kubectl get pods,jobs,configmaps -n
+<ns> -l yaac.worktree-id` is empty on every install — every workspace
+launched before the rename has stopped — and `kubectl get networkpolicy -n
+<ns>` lists none of the three old names. The `yaac-worktree` PriorityClass
+is deliberately never deleted (see `ensurePriorityClasses`).
+
+## `yaac-mama` and `YAAC_WORKTREE_ID` in a workspace launched before the rename
+
+A workspace keeps the `yaac-mama` its create staged and the environment it
+was launched with. Three things accept what an older one sends: the
+`LEGACY_ARGS` renames (`--worktree`, `--parent-worktree`) in `runMamaCommand`
+(`domain/workspaces/mama.ts`) and in the proxy's `parseMamaEnvelope`
+(`k8s/proxy/mama-queue.ts`); the `/api/worktree/mama` mount of `mamaApp`
+(`main/server.ts`), where a containerless one posts; and the
+`YAAC_WORKTREE_ID` fallback of `env.workspaceId`
+(`packages/shared/src/env.ts`), for a yaac server run inside one — the dev
+loop of a yaac checkout.
+
+**What it reads:** those two option names, that path, that variable.
+
+**What breaks silently if it goes too early:** `yaac-mama` in such a
+workspace fails every command that names a workspace, or (containerless)
+every command at all; an inner server stops recognizing that it runs in a
+workspace, which changes who `identify()` treats as local. A containerless
+workspace's builtin skills are LINKED, not staged, so they already describe
+the new names — `yaac-mama queue` there needs a restart either way.
+
+**How to tell it is safe to remove:** no workspace launched before the
+rename is still running (the relabel entry's `kubectl` check for k8s; no
+`YAAC_WORKTREE_ID` in any containerless marker's `launchEnv`). Then drop the
+two maps, the route mount and its route-matrix row, and the fallback with
+the `YAAC_WORKTREE_ID` the test setup strips beside it.

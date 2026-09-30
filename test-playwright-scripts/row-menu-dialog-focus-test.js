@@ -4,13 +4,13 @@
  * `…` visible (focus-visible) on a row the pointer had already left:
  *
  *  1. A draft's `…` > Open… (the same RowMenu -> create-dialog path as a
- *     worktree's "Queue worktree after this…"), closed by Escape and by ×,
+ *     workspace's "Queue workspace after this…"), closed by Escape and by ×,
  *     leaves the trigger unfocused and hidden once the pointer moves away.
  *  2. Its `…` > Discard… > Cancel (ConfirmDialog) does the same, and so
  *     does Discard… picked by press-drag-release (press `…`, release on the
  *     item — a pointer gesture Base UI completes with a programmatic click).
  *  3. A dialog opened from a focused element still returns focus to it:
- *     the New worktree button, activated by keyboard, is refocused on Escape.
+ *     the New workspace button, activated by keyboard, is refocused on Escape.
  *  4. By keyboard through the row menu (focus `…`, Enter, arrow to an item,
  *     Enter), Open… and Discard… hand focus back to the `…` trigger on
  *     Escape, visible — a keyboard user keeps their place.
@@ -78,7 +78,7 @@ try {
   const aside = page.locator('aside')
   const prompt = page.getByLabel('Prompt')
   const question = page.getByRole('alertdialog')
-  const newButton = aside.getByRole('button', { name: 'New worktree' })
+  const newButton = aside.getByRole('button', { name: 'New workspace' })
   await newButton.waitFor({ timeout: 15_000 })
 
   // Save a draft to hang the row menu off.

@@ -10,7 +10,7 @@ import type { ServerSnapshot } from '@yaac/shared/types'
  * pod, so a port it bound would be on the pod's loopback — so the listener
  * has to live in a client. This process is the natural one: it is
  * long-lived, tray-scoped, and already holds `/events`, which carries the
- * mapping (`forwardedPorts` on every worktree) in every snapshot. So the
+ * mapping (`forwardedPorts` on every workspace) in every snapshot. So the
  * same stream that drives the badge drives the forwards, and the webapp's
  * `127.0.0.1:<port>` links are true whenever the app is running.
  *
@@ -21,7 +21,7 @@ import type { ServerSnapshot } from '@yaac/shared/types'
  */
 
 /**
- * Every forward the snapshot says is on offer, across every worktree.
+ * Every forward the snapshot says is on offer, across every workspace.
  *
  * Empty against a containerless server on this machine, where the
  * workspace's own processes already hold the ports and binding them would
@@ -33,9 +33,9 @@ import type { ServerSnapshot } from '@yaac/shared/types'
 export function snapshotForwards(snapshot: ServerSnapshot, baseUrl: string): ForwardSpec[] {
   if (!serverNeedsForwarder(snapshot.driver, baseUrl)) return []
   const specs: ForwardSpec[] = []
-  for (const w of snapshot.worktrees) {
+  for (const w of snapshot.workspaces) {
     for (const { containerPort, hostPort } of w.forwardedPorts) {
-      specs.push({ session: w.worktreeId, containerPort, hostPort })
+      specs.push({ session: w.workspaceId, containerPort, hostPort })
     }
   }
   return specs

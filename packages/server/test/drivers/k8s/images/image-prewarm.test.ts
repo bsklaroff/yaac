@@ -31,7 +31,7 @@ import {
   hasBlockingFailure,
   registerImageBuild,
 } from '#drivers/k8s/image-engine/image-builds'
-import { _resetWorktreeListChangedForTests } from '#notify'
+import { _resetWorkspaceListChangedForTests } from '#notify'
 import { serverLog } from '#log'
 
 // The pass's own accessor, which is what the step is handed in production.
@@ -68,7 +68,7 @@ describe('reconcileImagePrewarm', () => {
   afterEach(() => {
     vi.unstubAllEnvs()
     clearAllImageBuildsForTests()
-    _resetWorktreeListChangedForTests()
+    _resetWorkspaceListChangedForTests()
   })
 
   it('is a no-op when YAAC_IMAGE_PREWARM=0', async () => {
@@ -210,7 +210,7 @@ describe('retryImageBuild', () => {
   })
   afterEach(() => {
     clearAllImageBuildsForTests()
-    _resetWorktreeListChangedForTests()
+    _resetWorkspaceListChangedForTests()
   })
 
   it('forgets a failed project build and re-triggers its chain', () => {
@@ -264,7 +264,7 @@ describe('retryImageBuild', () => {
   })
 
   // A project build rebuilds through its own chain; nothing touches the
-  // sidecar, which would redeploy the datapath under running worktrees.
+  // sidecar, which would redeploy the datapath under running workspaces.
   it('leaves the sidecar alone for a project build', () => {
     const id = registerImageBuild({
       tag: 'yaac-tools:abc', layer: 'tools', action: 'build', project: PROJ_A, reason: 'prewarm',

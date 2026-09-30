@@ -4,16 +4,16 @@
  * `data` and the proxy's in-memory views.
  *
  * Everything the proxy needs arrives as objects it watches (the credentials
- * Secret, one Secret per project's secret values, one ConfigMap per worktree
+ * Secret, one Secret per project's secret values, one ConfigMap per workspace
  * registration) and everything it reports goes out as objects the server
  * watches (the refreshed OAuth bundles, the CA, the blocked-host and
  * git-auth-failure records). One writer per object: the server writes the
  * inputs, this process writes the outputs, and nothing is ever read back
- * from the process that wrote it (docs/worktree-egress.md).
+ * from the process that wrote it (docs/workspace-egress.md).
  *
  * Pure and unit-tested: a decoder that goes wrong
  * fails SILENTLY — the credential simply does not arrive, or a registration
- * is dropped and the worktree fails closed — so the shapes are pinned here
+ * is dropped and the workspace fails closed — so the shapes are pinned here
  * rather than inside the listener that cannot be imported.
  *
  * Names and labels must match packages/server/src/drivers/k8s/substrate/
@@ -29,9 +29,9 @@ export const LABEL_PROXY_INPUT = 'yaac.proxy-input'
  *  Pre-created by the server (RBAC cannot scope `create` by name), written
  *  here, watched there. */
 export const LABEL_PROXY_OUTPUT = 'yaac.proxy-output'
-/** The worktree a registration ConfigMap belongs to — the same key every
- *  worktree pod carries (pod-watch.ts). */
-export const LABEL_WORKTREE_ID = 'yaac.worktree-id'
+/** The workspace a registration ConfigMap belongs to — the same key every
+ *  workspace pod carries (pod-watch.ts). */
+export const LABEL_WORKSPACE_ID = 'yaac.workspace-id'
 
 export const CREDENTIALS_SECRET_NAME = 'yaac-proxy-credentials'
 export const REFRESHED_SECRET_NAME = 'yaac-proxy-refreshed'
@@ -70,7 +70,7 @@ export type OpencodeCreds = { kind: 'api-key'; apiKey: string; provider: string 
 export type PiCreds = { kind: 'api-key'; apiKey: string; provider: string }
 
 /** One HTTPS token and the slugs of the projects it is assigned to — a
- *  worktree is handed it only when its registration names one of them. */
+ *  workspace is handed it only when its registration names one of them. */
 export type HttpsCredentialEntry = { token: string; projects: string[] }
 
 /** One project an ssh key is assigned to: the host its remote names, and the
@@ -103,7 +103,7 @@ export const EMPTY_CREDENTIALS: ProxyCredentials = {
  * `secretRef` naming one of the values in a project's secrets Secret (plus
  * an optional header `prefix`, e.g. "Bearer "). References keep
  * registrations secret-free; the value is resolved per request from the
- * secrets map, which also means a rotation applies to live worktrees
+ * secrets map, which also means a rotation applies to live workspaces
  * immediately.
  */
 export type RegisteredInjection = {
@@ -121,7 +121,7 @@ export type HostInjectionRule = {
 }
 
 /**
- * Per-worktree upstream redirect: when the proxy MITMs `hostname`, forward
+ * Per-workspace upstream redirect: when the proxy MITMs `hostname`, forward
  * the inner HTTP request to this target instead of the real upstream. Only
  * applied inside the MITM path — the client still sees a TLS handshake for
  * the original hostname, and credential injection still runs before
@@ -129,8 +129,8 @@ export type HostInjectionRule = {
  */
 export type UpstreamRedirect = { host: string; port: number; tls?: boolean }
 
-/** One worktree's registration — the payload of its ConfigMap. */
-export type WorktreeRegistration = {
+/** One workspace's registration — the payload of its ConfigMap. */
+export type ProxyRegistration = {
   rules: HostInjectionRule[]
   /** Absent means block all — fail closed. */
   allowedHosts: string[]
@@ -150,7 +150,7 @@ export interface GitAuthFailureRecord {
 }
 
 export type ProxyState = {
-  /** worktreeId -> blocked hostnames */
+  /** workspaceId -> blocked hostnames */
   blockedHosts: Record<string, string[]>
   /** projectSlug -> failures by host */
   gitAuthFailures: Record<string, Array<{ host: string } & GitAuthFailureRecord>>
@@ -380,24 +380,24 @@ function decodeRedirects(raw: unknown): Record<string, UpstreamRedirect> | undef
 }
 
 /**
- * A registration ConfigMap: the worktree id from its label and the payload
+ * A registration ConfigMap: the workspace id from its label and the payload
  * from `registration.json`. `tool` and `projectSlug` are required — all
  * agent-credential injection is gated on the tool, and git-auth-failure
  * records are keyed by the owning project — so a registration without them
- * is dropped, which fails that worktree closed rather than half-open.
+ * is dropped, which fails that workspace closed rather than half-open.
  */
 export function decodeRegistration(
   cm: RawObject,
-): { worktreeId: string; registration: WorktreeRegistration } | null {
-  const worktreeId = cm.metadata?.labels?.[LABEL_WORKTREE_ID]
-  if (!worktreeId) return null
+): { workspaceId: string; registration: ProxyRegistration } | null {
+  const workspaceId = cm.metadata?.labels?.[LABEL_WORKSPACE_ID]
+  if (!workspaceId) return null
   const o = parseJson(cm.data?.['registration.json'])
   if (!o) return null
   if (!Array.isArray(o.rules) || !Array.isArray(o.allowedHosts)) return null
   if (typeof o.tool !== 'string' || !o.tool) return null
   if (typeof o.projectSlug !== 'string' || !o.projectSlug) return null
   return {
-    worktreeId,
+    workspaceId,
     registration: {
       rules: o.rules as HostInjectionRule[],
       allowedHosts: (o.allowedHosts as unknown[]).filter((h): h is string => typeof h === 'string'),

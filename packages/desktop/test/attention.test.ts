@@ -8,16 +8,16 @@ import {
   parseSnapshotMessage,
   AttentionMonitor,
 } from '#attention'
-import type { ServerSnapshot, WorktreeListEntry } from '@yaac/shared/types'
+import type { ServerSnapshot, WorkspaceListEntry } from '@yaac/shared/types'
 
-const snap = (entries: Array<Partial<WorktreeListEntry>>): ServerSnapshot => ({
+const snap = (entries: Array<Partial<WorkspaceListEntry>>): ServerSnapshot => ({
   driver: 'k8s',
-  worktreeGroups: [],
-  queuedWorktrees: [],
-  heldWorktrees: [],
-  draftWorktrees: [],
-  worktrees: entries.map((s, i): WorktreeListEntry => ({
-    worktreeId: s.worktreeId ?? `s${i}`,
+  workspaceGroups: [],
+  queuedWorkspaces: [],
+  heldWorkspaces: [],
+  draftWorkspaces: [],
+  workspaces: entries.map((s, i): WorkspaceListEntry => ({
+    workspaceId: s.workspaceId ?? `s${i}`,
     projectSlug: s.projectSlug ?? 'proj',
     tool: s.tool ?? 'claude',
     status: s.status ?? 'running',
@@ -39,45 +39,45 @@ const snap = (entries: Array<Partial<WorktreeListEntry>>): ServerSnapshot => ({
 })
 
 describe('selectWaiting', () => {
-  it('keeps only waiting worktrees', () => {
+  it('keeps only waiting workspaces', () => {
     const out = selectWaiting(snap([
-      { worktreeId: 'a', status: 'waiting' },
-      { worktreeId: 'b', status: 'running' },
+      { workspaceId: 'a', status: 'waiting' },
+      { workspaceId: 'b', status: 'running' },
     ]))
-    expect(out.map((s) => s.worktreeId)).toEqual(['a'])
+    expect(out.map((s) => s.workspaceId)).toEqual(['a'])
   })
   it('falls back title → prompt → id', () => {
     const out = selectWaiting(snap([
-      { worktreeId: 'a', status: 'waiting', title: 'T' },
-      { worktreeId: 'b', status: 'waiting', prompt: 'P' },
-      { worktreeId: 'c', status: 'waiting' },
+      { workspaceId: 'a', status: 'waiting', title: 'T' },
+      { workspaceId: 'b', status: 'waiting', prompt: 'P' },
+      { workspaceId: 'c', status: 'waiting' },
     ]))
     expect(out.map((s) => s.title)).toEqual(['T', 'P', 'c'])
   })
 })
 
 describe('waitingKey', () => {
-  it('encodes the worktree and the waiting spell', () => {
-    expect(waitingKey({ worktreeId: 'a', projectSlug: 'p', tool: 'claude', title: 't', waitingSinceMs: 5 }))
+  it('encodes the workspace and the waiting spell', () => {
+    expect(waitingKey({ workspaceId: 'a', projectSlug: 'p', tool: 'claude', title: 't', waitingSinceMs: 5 }))
       .toBe('a#5')
   })
   it('is stable when there is no stamp', () => {
-    expect(waitingKey({ worktreeId: 'a', projectSlug: 'p', tool: 'claude', title: 't' })).toBe('a#')
+    expect(waitingKey({ workspaceId: 'a', projectSlug: 'p', tool: 'claude', title: 't' })).toBe('a#')
   })
 })
 
 describe('diffNewlyWaiting', () => {
   const w = (id: string, since?: number): ReturnType<typeof selectWaiting>[number] =>
-    ({ worktreeId: id, projectSlug: 'p', tool: 'claude', title: id, waitingSinceMs: since })
+    ({ workspaceId: id, projectSlug: 'p', tool: 'claude', title: id, waitingSinceMs: since })
 
-  it('reports worktrees absent from prevKeys as newly waiting', () => {
+  it('reports workspaces absent from prevKeys as newly waiting', () => {
     const { toNotify, nextKeys } = diffNewlyWaiting(new Set(['a#1']), [w('a', 1), w('b', 2)])
-    expect(toNotify.map((s) => s.worktreeId)).toEqual(['b'])
+    expect(toNotify.map((s) => s.workspaceId)).toEqual(['b'])
     expect([...nextKeys].sort()).toEqual(['a#1', 'b#2'])
   })
-  it('re-notifies a new spell of the same worktree', () => {
+  it('re-notifies a new spell of the same workspace', () => {
     const { toNotify } = diffNewlyWaiting(new Set(['a#1']), [w('a', 2)])
-    expect(toNotify.map((s) => s.worktreeId)).toEqual(['a'])
+    expect(toNotify.map((s) => s.workspaceId)).toEqual(['a'])
   })
 })
 
@@ -87,16 +87,16 @@ describe('badgeText', () => {
 })
 
 describe('notificationFor', () => {
-  it('names the project and worktree', () => {
-    expect(notificationFor({ worktreeId: 'a', projectSlug: 'proj', tool: 'claude', title: 'Fix bug' }))
-      .toEqual({ title: 'Worktree waiting for you', body: 'proj · Fix bug' })
+  it('names the project and workspace', () => {
+    expect(notificationFor({ workspaceId: 'a', projectSlug: 'proj', tool: 'claude', title: 'Fix bug' }))
+      .toEqual({ title: 'Workspace waiting for you', body: 'proj · Fix bug' })
   })
 })
 
 describe('parseSnapshotMessage', () => {
   it('returns the data of a snapshot frame', () => {
-    const s = snap([{ worktreeId: 'a', status: 'waiting' }])
-    expect(parseSnapshotMessage(JSON.stringify({ type: 'snapshot', data: s }))?.worktrees).toHaveLength(1)
+    const s = snap([{ workspaceId: 'a', status: 'waiting' }])
+    expect(parseSnapshotMessage(JSON.stringify({ type: 'snapshot', data: s }))?.workspaces).toHaveLength(1)
   })
   it('returns null for a non-snapshot frame', () => {
     expect(parseSnapshotMessage(JSON.stringify({ type: 'other', data: {} }))).toBeNull()
@@ -109,22 +109,22 @@ describe('parseSnapshotMessage', () => {
 describe('AttentionMonitor', () => {
   it('seeds silently on the first snapshot but still counts', () => {
     const m = new AttentionMonitor()
-    const r = m.update(snap([{ worktreeId: 'a', status: 'waiting', waitingSinceMs: 1 }]))
+    const r = m.update(snap([{ workspaceId: 'a', status: 'waiting', waitingSinceMs: 1 }]))
     expect(r.waitingCount).toBe(1)
     expect(r.toNotify).toEqual([])
   })
-  it('notifies on a worktree that enters waiting after seeding', () => {
+  it('notifies on a workspace that enters waiting after seeding', () => {
     const m = new AttentionMonitor()
-    m.update(snap([{ worktreeId: 'a', status: 'running' }]))
-    const r = m.update(snap([{ worktreeId: 'a', status: 'waiting', waitingSinceMs: 1 }]))
-    expect(r.toNotify.map((s) => s.worktreeId)).toEqual(['a'])
+    m.update(snap([{ workspaceId: 'a', status: 'running' }]))
+    const r = m.update(snap([{ workspaceId: 'a', status: 'waiting', waitingSinceMs: 1 }]))
+    expect(r.toNotify.map((s) => s.workspaceId)).toEqual(['a'])
     expect(r.waitingCount).toBe(1)
   })
   it('does not re-notify an ongoing wait', () => {
     const m = new AttentionMonitor()
-    m.update(snap([{ worktreeId: 'a', status: 'running' }]))
-    m.update(snap([{ worktreeId: 'a', status: 'waiting', waitingSinceMs: 1 }]))
-    const r = m.update(snap([{ worktreeId: 'a', status: 'waiting', waitingSinceMs: 1 }]))
+    m.update(snap([{ workspaceId: 'a', status: 'running' }]))
+    m.update(snap([{ workspaceId: 'a', status: 'waiting', waitingSinceMs: 1 }]))
+    const r = m.update(snap([{ workspaceId: 'a', status: 'waiting', waitingSinceMs: 1 }]))
     expect(r.toNotify).toEqual([])
     expect(r.waitingCount).toBe(1)
   })

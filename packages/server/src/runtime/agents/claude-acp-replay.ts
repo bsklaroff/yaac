@@ -9,7 +9,7 @@
  * session JSONL. Something has to translate one into the other.
  *
  * That translation is NOT written here. `claude-agent-acp` — the very adapter
- * an acp worktree runs, pinned to the version dockerfiles/Dockerfile.tools
+ * an acp workspace runs, pinned to the version dockerfiles/Dockerfile.tools
  * installs — exposes as a library the two halves its own `session/load`
  * handler is built from: the SDK's `getSessionMessages` to read a session's
  * messages, and `toAcpNotifications` to turn each one into `session/update`
@@ -20,14 +20,14 @@
  * projector is the whole point: a hand-written one would be a *second*
  * translation of the same data, and the two would disagree the moment claude
  * gained a tool or the adapter changed how it titles one — the transcript a
- * user reads after stopping a worktree would not match what they watched live.
+ * user reads after stopping a workspace would not match what they watched live.
  * Here there is only one translation, and yaac supplies none of it. What is
  * left is plumbing: read the file, hand over the lines, serialize what comes
  * back. `packages/server/test/runtime/agents/claude-acp-replay.test.ts` pins
  * the version equality that makes the reuse honest.
  *
  * No adapter *process* is involved, which is what makes this work for a
- * worktree that is gone: no pod to schedule, no credentials, no claude binary,
+ * workspace that is gone: no pod to schedule, no credentials, no claude binary,
  * and the same answer under both drivers.
  */
 
@@ -43,7 +43,7 @@ import type { SessionStore, SessionStoreEntry } from '@anthropic-ai/claude-agent
 /**
  * The SDK validates the session id it is handed and answers with nothing at
  * all for one that is not a UUID. Every claude conversation id yaac records
- * is one (the founding conversation is pinned to the worktree id, and a
+ * is one (the founding conversation is pinned to the workspace id, and a
  * `/clear` mints another), so this is a guard against a malformed row rather
  * than an expected shape — but "no messages" would be an invisible way to
  * fail, so an id that cannot pass is replaced with one that can.
@@ -102,7 +102,7 @@ async function synthesizeAcpRecord(raw: string, agentSessionId: string): Promise
     messages = await getSessionMessages(sessionId, { sessionStore })
   } catch (err) {
     // A transcript this SDK cannot parse costs the transcript view, never the
-    // request: the stopped worktree still lists, with an empty conversation.
+    // request: the stopped workspace still lists, with an empty conversation.
     serverLog(`[server] claude transcript replay failed: ${String(err)}`)
     return ''
   }

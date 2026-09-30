@@ -21,7 +21,7 @@ if (sep < 0) usage('missing `--` separator before the agent argv')
 
 let sockPath
 let logPath
-// The agent's working directory — the worktree checkout, which is a
+// The agent's working directory — the workspace checkout, which is a
 // different path under every runtime. Optional because the window tmux
 // spawned this in is already the right one; passing it makes the launch
 // command say so rather than depending on what it inherited.

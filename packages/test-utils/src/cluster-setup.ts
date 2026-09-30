@@ -4,7 +4,7 @@ import { afterAll, beforeAll } from 'vitest'
 import { TEST_NAMESPACE } from './setup'
 import { deleteTestServerClusterRbac } from './deployed-server'
 import { deleteTestStorage } from './storage-claims'
-import { installRealWorktreeDriver } from './real-driver'
+import { installRealWorkspaceDriver } from './real-driver'
 
 const execFileAsync = promisify(execFile)
 
@@ -19,7 +19,7 @@ const execFileAsync = promisify(execFile)
  * this project's stand-in for that root, and it installs the REAL runtime
  * because these tests talk to a real cluster.
  */
-installRealWorktreeDriver()
+installRealWorkspaceDriver()
 
 /**
  * The install namespace, which the composition root's attach ensures
@@ -46,7 +46,7 @@ beforeAll(async () => {
  *
  * Drops this file's test namespace as soon as the file finishes instead
  * of leaving every one of them to the global teardown. The namespace is
- * per FILE (see `TEST_NAMESPACE`), and a worktree-backed file leaves a
+ * per FILE (see `TEST_NAMESPACE`), and a workspace-backed file leaves a
  * netd DaemonSet and a proxy Deployment running in it. Held to the end of
  * the run, a full suite accumulates a dozen-odd netd pods — each running
  * an Envoy and reconciling the SAME single node's iptables — competing

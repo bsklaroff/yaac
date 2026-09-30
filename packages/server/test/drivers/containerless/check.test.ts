@@ -80,7 +80,7 @@ const specOf = (binary: string): string =>
   `${AGENT_PACKAGES[binary].package}@${AGENT_PACKAGES[binary].version}`
 
 describe('runHostCheck', () => {
-  it('passes a host that has everything a worktree needs', async () => {
+  it('passes a host that has everything a workspace needs', async () => {
     const results = await runHostCheck()
     expect(results.some((r) => r.status === 'fail')).toBe(false)
     expect(byName(results, 'tmux')?.status).toBe('pass')
@@ -101,7 +101,7 @@ describe('runHostCheck', () => {
     mockOnPath.mockImplementation((bin: string) =>
       Promise.resolve(bin !== 'lsof' && bin !== 'socat'))
     const results = await runHostCheck()
-    // Worktrees run fine without either: you lose port links and ACP mode.
+    // Workspaces run fine without either: you lose port links and ACP mode.
     expect(byName(results, 'lsof')?.status).toBe('warn')
     expect(byName(results, 'socat')?.status).toBe('warn')
     expect(results.some((r) => r.status === 'fail')).toBe(false)
@@ -129,7 +129,7 @@ describe('runHostCheck', () => {
   it('warns about curl, which only the in-session helper needs', async () => {
     mockOnPath.mockImplementation((bin: string) => Promise.resolve(bin !== 'curl'))
     const results = await runHostCheck()
-    // yaac-mama posts to the server with it; a worktree with no curl still
+    // yaac-mama posts to the server with it; a workspace with no curl still
     // runs its agent, so this can never be what fails a host.
     expect(byName(results, 'curl')?.status).toBe('warn')
     expect(byName(results, 'curl')?.fix).toMatch(/yaac-mama/)
@@ -142,7 +142,7 @@ describe('runHostCheck', () => {
     expect(row?.status).toBe('pass')
     expect(row?.detail).toContain(`codex ${AGENT_PACKAGES.codex.version}`)
     expect(row?.detail).not.toContain('claude')
-    expect(row?.detail).toMatch(/first time a worktree needs it/)
+    expect(row?.detail).toMatch(/first time a workspace needs it/)
 
     // Without npm, a create naming anything not yet installed is refused.
     mockOnPath.mockImplementation((bin: string) => Promise.resolve(bin !== 'npm'))
@@ -152,8 +152,8 @@ describe('runHostCheck', () => {
   })
 
   it('reports a host whose own environment re-points a tool home', async () => {
-    // Worktrees drop these, which is right and invisible: nothing inside a
-    // worktree looks different, so a user whose shell has said for years
+    // Workspaces drop these, which is right and invisible: nothing inside a
+    // workspace looks different, so a user whose shell has said for years
     // that opencode lives elsewhere would never learn yaac disagrees.
     const saved = { ...process.env }
     for (const key of TOOL_HOME_VARS) delete process.env[key]
@@ -200,7 +200,7 @@ describe('runHostCheck', () => {
 
 /**
  * The create's preflight. Everything here is the same failure — a launch
- * command that execs nothing, exits 127, and takes the worktree with it
+ * command that execs nothing, exits 127, and takes the workspace with it
  * seconds after a create that already reported success — caught before
  * anything is provisioned instead of after.
  */
@@ -326,7 +326,7 @@ describe('assertHostCanLaunch', () => {
   })
 
   it('asks for socat under acp, whose absence hangs a pane instead of failing', async () => {
-    // The adapter alone gets a worktree that launches and never attaches:
+    // The adapter alone gets a workspace that launches and never attaches:
     // the chat transport dials acpd's socket by spawning socat on this host,
     // so without it there is no handshake, no conversation and no pane —
     // which reads as a wedged agent rather than a missing tool.

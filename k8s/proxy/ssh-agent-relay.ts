@@ -1,30 +1,30 @@
 /**
- * ssh-agent forwarding: the transport that lets a worktree pod use the
+ * ssh-agent forwarding: the transport that lets a workspace pod use the
  * proxy's in-memory agent without a shared filesystem.
  *
  * The agent runs in THIS pod, holding keys loaded from the credentials
  * Secret (agent-keys.ts) — key bytes are never written to the proxy's disk
- * and never leave it at all. A worktree pod runs a small local forwarder that exposes
+ * and never leave it at all. A workspace pod runs a small local forwarder that exposes
  * this listener as the UNIX socket its SSH_AUTH_SOCK names, so an in-pod
  * `git push` gets signatures, never a key.
  *
- * TCP rather than a hostPath UNIX socket shared with the worktree pod: a
+ * TCP rather than a hostPath UNIX socket shared with the workspace pod: a
  * UNIX socket only rendezvous between pods on the SAME node, which was the
- * last hard single-node assumption in the worktree datapath. Everything else
- * a worktree pod needs from the proxy is already a network hop.
+ * last hard single-node assumption in the workspace datapath. Everything else
+ * a workspace pod needs from the proxy is already a network hop.
  *
  * Fail-closed, in independent layers:
- *  1. NetworkPolicy admits this port from worktree pods only (the proxy
+ *  1. NetworkPolicy admits this port from workspace pods only (the proxy
  *     ingress policy), so nothing else in the cluster can even connect.
- *  2. The source pod IP must resolve to a worktree through the proxy's
+ *  2. The source pod IP must resolve to a workspace through the proxy's
  *     pod-watch — the same identity the transparent listeners trust, and one
  *     a sandboxed workload cannot forge (Calico policies the workload
  *     endpoint's source address).
- *  3. That worktree's registered remote must be an SSH one — exactly the
+ *  3. That workspace's registered remote must be an SSH one — exactly the
  *     condition under which the server provisions SSH_AUTH_SOCK in the pod.
  *     It is read from the registration the proxy already holds, so nothing
  *     new rides the wire.
- *  4. A connection only ever sees the keys assigned to its worktree's
+ *  4. A connection only ever sees the keys assigned to its workspace's
  *     project. The agent holds every project's keys, so both directions are
  *     parsed: an identities answer is rewritten to list only that project's
  *     keys, and a sign request naming any other key is answered with
@@ -43,11 +43,11 @@
  * which an ssh client tells the agent which host it is talking to before it
  * asks for a signature. An agent will not sign with a constrained key on a
  * session that was never bound, so refusing the bind would leave every key
- * here permanently unsignable from a worktree; forwarding it narrows the
+ * here permanently unsignable from a workspace; forwarding it narrows the
  * oracle rather than widening it. Everything else (add, remove, lock, any
  * other extension) is answered with the agent's own SSH_AGENT_FAILURE and
- * never reaches the agent, so one worktree cannot lock or empty an agent
- * every other worktree shares.
+ * never reaches the agent, so one workspace cannot lock or empty an agent
+ * every other workspace shares.
  */
 
 import net from 'node:net'
@@ -78,7 +78,7 @@ const FAILURE_MESSAGE = Buffer.from([0, 0, 0, 1, SSH_AGENT_FAILURE])
  */
 const AGENT_MAX_MESSAGE_BYTES = 256 * 1024
 /** In-flight connections the listener will hold; beyond it, new dials are
- *  dropped so one worktree cannot exhaust the proxy's fds. */
+ *  dropped so one workspace cannot exhaust the proxy's fds. */
 const DEFAULT_MAX_CONNECTIONS = 64
 /** Idle time after which a connection is reaped (both directions). An agent
  *  exchange is a sub-second request/response; anything quiet for this long
@@ -86,23 +86,23 @@ const DEFAULT_MAX_CONNECTIONS = 64
 const DEFAULT_IDLE_TIMEOUT_MS = 120_000
 
 export type AgentGateVerdict =
-  | { ok: true; worktreeId: string }
+  | { ok: true; workspaceId: string }
   | { ok: false; reason: string }
 
 /**
- * Decide whether a connection from `worktree` may talk to the agent, given
- * the repo URL that worktree is registered with. Pure, so the policy is
+ * Decide whether a connection from `workspace` may talk to the agent, given
+ * the repo URL that workspace is registered with. Pure, so the policy is
  * testable without a socket; the listener below is the only caller.
  */
 export function sshAgentGate(
-  worktreeId: string | undefined,
+  workspaceId: string | undefined,
   repoUrl: string | undefined,
 ): AgentGateVerdict {
-  if (!worktreeId) return { ok: false, reason: 'source is not a known worktree pod' }
+  if (!workspaceId) return { ok: false, reason: 'source is not a known workspace pod' }
   if (!isSshRemote(repoUrl)) {
-    return { ok: false, reason: 'worktree has no SSH remote registered' }
+    return { ok: false, reason: 'workspace has no SSH remote registered' }
   }
-  return { ok: true, worktreeId }
+  return { ok: true, workspaceId }
 }
 
 /**
@@ -120,13 +120,13 @@ export function isSshRemote(remoteUrl: string | undefined): boolean {
 export interface SshAgentServerDeps {
   /** Filesystem path of the pod-local ssh-agent socket. */
   agentSock: string
-  /** Source IP → worktree, via the proxy's pod-watch index. */
-  resolveWorktree: (ip: string) => Promise<string | undefined>
-  /** The repo URL a worktree is registered with, if any. */
-  repoUrlFor: (worktreeId: string) => string | undefined
-  /** The keys (base64 key blobs) a worktree may list and sign with — its
+  /** Source IP → workspace, via the proxy's pod-watch index. */
+  resolveWorkspace: (ip: string) => Promise<string | undefined>
+  /** The repo URL a workspace is registered with, if any. */
+  repoUrlFor: (workspaceId: string) => string | undefined
+  /** The keys (base64 key blobs) a workspace may list and sign with — its
    *  project's. Asked per message, so an assignment change is live. */
-  allowedKeysFor: (worktreeId: string) => Set<string>
+  allowedKeysFor: (workspaceId: string) => Set<string>
   log?: (message: string) => void
   /** Overridable for tests; defaults above. */
   maxConnections?: number
@@ -283,7 +283,7 @@ export function createSshAgentServer(deps: SshAgentServerDeps): net.Server {
       }
     })
     void (async () => {
-      const resolved = peer ? await deps.resolveWorktree(peer) : undefined
+      const resolved = peer ? await deps.resolveWorkspace(peer) : undefined
       const verdict = sshAgentGate(resolved, resolved ? deps.repoUrlFor(resolved) : undefined)
       if (!verdict.ok) {
         log(`[proxy] BLOCKED ssh-agent from ${peer || '(unknown)'}: ${verdict.reason}`)
@@ -291,14 +291,14 @@ export function createSshAgentServer(deps: SshAgentServerDeps): net.Server {
         return
       }
       if (socket.destroyed) return
-      const worktree = verdict.worktreeId.slice(0, 8)
+      const workspace = verdict.workspaceId.slice(0, 8)
       const agent = net.connect({ path: deps.agentSock, allowHalfOpen: true })
       agent.setTimeout(idleTimeoutMs, () => agent.destroy())
       let connected = false
       const allowKey = (blob: Buffer): boolean =>
-        deps.allowedKeysFor(verdict.worktreeId).has(blob.toString('base64'))
+        deps.allowedKeysFor(verdict.workspaceId).has(blob.toString('base64'))
       const fail = (reason: string): void => {
-        log(`[proxy] ssh-agent: dropping worktree ${worktree}... — ${reason}`)
+        log(`[proxy] ssh-agent: dropping workspace ${workspace}... — ${reason}`)
         socket.destroy()
       }
       // Both directions are FILTERED, not piped (see the module doc).
@@ -310,7 +310,7 @@ export function createSshAgentServer(deps: SshAgentServerDeps): net.Server {
           if (!agent.write(message)) socket.pause()
         },
         refuse: (type, reason) => {
-          log(`[proxy] ssh-agent: refused message type ${type} from worktree ${worktree}... — ${reason}`)
+          log(`[proxy] ssh-agent: refused message type ${type} from workspace ${workspace}... — ${reason}`)
           socket.write(FAILURE_MESSAGE)
         },
         fail,
@@ -336,7 +336,7 @@ export function createSshAgentServer(deps: SshAgentServerDeps): net.Server {
       })
       agent.on('error', (err: NodeJS.ErrnoException) => {
         if (!connected) {
-          log(`[proxy] ssh-agent dial failed for worktree ${worktree}...: ${err.code ?? err.message}`)
+          log(`[proxy] ssh-agent dial failed for workspace ${workspace}...: ${err.code ?? err.message}`)
         }
         socket.destroy()
       })

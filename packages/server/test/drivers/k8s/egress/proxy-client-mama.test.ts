@@ -10,7 +10,7 @@ import { drainPendingMamaRequests, proxyClient } from '#drivers/k8s/egress/proxy
 import type { PendingMamaRequest } from '@yaac/shared/types'
 
 const PENDING: PendingMamaRequest[] = [
-  { requestId: 'r1', worktreeId: 'caller', command: 'create', args: {}, body: 'write the report' },
+  { requestId: 'r1', workspaceId: 'caller', command: 'create', args: {}, body: 'write the report' },
 ]
 
 beforeEach(() => {
@@ -25,8 +25,8 @@ describe('drainPendingMamaRequests', () => {
     await expect(drainPendingMamaRequests()).resolves.toEqual(PENDING)
   })
 
-  // The proxy deploys lazily on the first worktree create, so no proxy means
-  // no worktrees means nothing queued. Attaching rather than ensuring is what
+  // The proxy deploys lazily on the first workspace create, so no proxy means
+  // no workspaces means nothing queued. Attaching rather than ensuring is what
   // stops a background drain from standing one up on a fresh install.
   it('reports an empty queue rather than bootstrapping an absent proxy', async () => {
     mockAttach.mockResolvedValue(false)
@@ -35,7 +35,7 @@ describe('drainPendingMamaRequests', () => {
   })
 
   // A drain is a claim: the caller has to know it failed, because a request
-  // taken and never answered leaves its worktree waiting for the timeout.
+  // taken and never answered leaves its workspace waiting for the timeout.
   it('propagates a failed fetch', async () => {
     mockFetchPending.mockRejectedValue(new Error('tunnel down'))
     await expect(drainPendingMamaRequests()).rejects.toThrow('tunnel down')

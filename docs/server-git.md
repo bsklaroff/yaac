@@ -1,7 +1,7 @@
 # Server-side git
 
 A project has one **main clone**, at `global/projects/<slug>/repo`, and every
-worktree's checkout is a **clone of its own** that borrows the main clone's
+workspace's checkout is a **clone of its own** that borrows the main clone's
 objects. The main clone is the server's; a checkout's git dir is its
 workspace's.
 
@@ -10,15 +10,15 @@ workspace's.
 | Path (server view) | What it is | Who writes it | In a k8s pod |
 |---|---|---|---|
 | `repo/.git` | The main clone: origin's refs as `refs/remotes/origin/*`, origin's objects, and no `worktrees/` | the server only | the whole `.git`, **read-only**, at the path the server sees it at |
-| `worktrees/<id>/` | The checkout | the workspace | `/workspace` |
-| `worktrees/<id>/.git/` | A full git dir whose `objects/info/alternates` names the main clone's objects | the workspace (created by the server) | inside `/workspace` |
+| `workspaces/<id>/` | The checkout | the workspace | `/workspace` |
+| `workspaces/<id>/.git/` | A full git dir whose `objects/info/alternates` names the main clone's objects | the workspace (created by the server) | inside `/workspace` |
 
 A containerless workspace sees the server's paths as they are.
 
 **A checkout's git dir** (`createCheckout` in `#domain/git`) holds no object of
 its own. It starts with a snapshot of the main clone's `origin/*` and tags,
 written as `packed-refs`, so a repository with thousands of branches does not
-cost thousands of files per worktree; `agent/<id>` at `origin/<base>`, checked
+cost thousands of files per workspace; `agent/<id>` at `origin/<base>`, checked
 out; and a config the server writes: the object format, `remote.origin` (the
 project row's URL, tokenless), and `agent/<id>`'s upstream. It is assembled in
 a staging dir beside the checkout, where no pod looks, populated from there,
@@ -37,9 +37,9 @@ including a pod's boot before any launch step has run. The launch rewrites it
 on every create and restart, on both drivers (`buildCloneLinkExec`), which
 heals a checkout last launched by a server that saw the data dir elsewhere.
 
-Worktrees share no git state: branches, tags, the stash, hooks and config
+Workspaces share no git state: branches, tags, the stash, hooks and config
 are per checkout, so one agent's `git config`, `gc --prune=now` or
-`branch -D` reaches no sibling. An agent that wants another worktree's
+`branch -D` reaches no sibling. An agent that wants another workspace's
 unpushed branch has to push it first. Under k8s that is enforced: a pod sees
 only its own checkout and the main clone, read-only. Under containerless it is
 not — every workspace runs as the server's user with no mount namespace, so an
@@ -84,7 +84,7 @@ something copies the refs over (`#domain/projects`, `origin.ts`):
   runs marks the project, and the running one goes round once more, so a
   burst of creates costs at most two rounds of execs.
 - **The server fetches on a timer.** The `origin-refresh` reconcile step
-  fetches every project that has a running worktree and has not been fetched
+  fetches every project that has a running workspace and has not been fetched
   for five minutes, so a project nobody creates in still trails origin by
   minutes. A failure is logged and tried an interval later; a stale
   `origin/*` is all it costs.
@@ -127,7 +127,7 @@ building it and no workspace can see it (the runner's `private` target).
 state runs inside its workspace, and so only while it runs: the Changes pane's
 diff, the file explorer's listing and the git status bar's ahead/behind count
 (docs/file-editor.md), a spare's HEAD and re-branch at claim time, and the
-refresh above. The worktree's base branch is its row's, never read back out
+refresh above. The workspace's base branch is its row's, never read back out
 of the checkout's config, which the agent can rewrite.
 
 ## The runner
@@ -165,7 +165,7 @@ Converting a project's last linked checkout sanitizes its main clone
 rewritten from the allowlist plus the row's `remote.origin.url` and the
 never-prune keys, and `hooks/`, `info/attributes`, `objects/info/alternates`
 and `worktrees/` go. Branches stay: an `agent/*` no clone received (a deleted
-worktree's, an agent's side branch, a checkout whose `.git` vanished) is the
+workspace's, an agent's side branch, a checkout whose `.git` vanished) is the
 only name its commits have. From then on no pod can write it, and the
 throwaway dir guards nothing; it goes once no install can still have a linked
 checkout.

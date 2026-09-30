@@ -8,7 +8,7 @@
  * shell only, and the server keeps running (it was never ours to stop).
  * With no server reachable the window shows the picker (`#connect-page`)
  * rather than an error dialog over nothing. While in the tray it follows
- * the `/events` stream to surface waiting worktrees
+ * the `/events` stream to surface waiting workspaces
  * (dock badge, tray status, notifications). Each window
  * open also ensures the auth-daemon best-effort — and
  * like the server, Quit leaves it running (machine-scoped, shared with the
@@ -25,7 +25,7 @@ import {
   normalizeServerUrl, probeServer, readServerConfig, withServerSelected, writeServerConfig,
 } from '@yaac/shared/server-config'
 import { env } from '@yaac/shared/env'
-import { AttentionMonitor, badgeText, notificationFor, type WaitingWorktree } from '#attention'
+import { AttentionMonitor, badgeText, notificationFor, type WaitingWorkspace } from '#attention'
 import { startEventsMonitor, type EventsSocket } from '#events'
 import { startForwarder, type DesktopForwarder } from '#forwarder'
 import { probeIdentity, runFlow } from '#flow'
@@ -99,9 +99,9 @@ async function createWindow(): Promise<BrowserWindow> {
       sandbox: true,
       preload: path.join(path.dirname(fileURLToPath(import.meta.url)), 'preload.cjs'),
       // Let the attention chime play without a prior click (it fires on a
-      // background event — a worktree flipping to waiting), not a user gesture.
+      // background event — a workspace flipping to waiting), not a user gesture.
       autoplayPolicy: 'no-user-gesture-required',
-      // Enable the <webview> the worktree preview embeds. Guests are hardened
+      // Enable the <webview> the workspace preview embeds. Guests are hardened
       // and pinned to loopback below (will-attach-webview + web-contents-created).
       webviewTag: true,
     },
@@ -187,7 +187,7 @@ async function openWindow(): Promise<boolean> {
 /**
  * Put the window on the picker. Everything that follows a server goes
  * quiet first — there is no server to follow, and a stale badge would
- * claim worktrees are waiting on a server this shell cannot reach.
+ * claim workspaces are waiting on a server this shell cannot reach.
  */
 async function showConnectPage(w: BrowserWindow, error: LaunchError): Promise<void> {
   onConnectPage = true
@@ -236,7 +236,7 @@ function updateTray(waitingCount: number): void {
     { label: 'Open yaac', click: () => showWindow() },
     { type: 'separator' },
     {
-      label: waitingCount > 0 ? `${waitingCount} waiting for input` : 'No worktrees waiting',
+      label: waitingCount > 0 ? `${waitingCount} waiting for input` : 'No workspaces waiting',
       enabled: false,
     },
     { type: 'separator' },
@@ -244,7 +244,7 @@ function updateTray(waitingCount: number): void {
   ]))
 }
 
-function applyAttention(waitingCount: number, toNotify: WaitingWorktree[]): void {
+function applyAttention(waitingCount: number, toNotify: WaitingWorkspace[]): void {
   if (process.platform === 'darwin') app.dock?.setBadge(badgeText(waitingCount))
   updateTray(waitingCount)
   if (!Notification.isSupported()) return

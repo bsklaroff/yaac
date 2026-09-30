@@ -331,7 +331,7 @@ describe('Settings → Credentials → git', () => {
     publicKey: 'ssh-ed25519 AAAAkey gitlab-key', projects: [],
   }
   const project = (slug: string, remoteUrl: string, gitCredential: ProjectSummary['gitCredential']): ProjectSummary =>
-    ({ slug, remoteUrl, addedAt: '', worktreeCount: 0, createDefaults: {}, gitCredential })
+    ({ slug, remoteUrl, addedAt: '', workspaceCount: 0, createDefaults: {}, gitCredential })
   const ALPHA = project('alpha', 'https://github.com/o/alpha.git', { id: 'c-token', name: 'alpha-token' })
   const BETA = project('beta', 'git@gitlab.com:o/beta.git', null)
   const GAMMA = project('gamma', 'https://github.com/o/gamma', null)

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FocusEvent, type KeyboardEvent, type RefObject } from 'react'
-import { renameWorktree } from '#lib/createWorktree'
+import { renameWorkspace } from '#lib/createWorkspace'
 
 /** Collapse whitespace to a single line, mirroring the server's title
  *  normalization — so the seeded field and the unchanged-check below agree
@@ -19,7 +19,7 @@ export interface InlineEdit {
 }
 
 /**
- * State machine behind every inline label editor in the sidebar (worktree
+ * State machine behind every inline label editor in the sidebar (workspace
  * titles, group names): snapshot the current value on open so an unchanged
  * commit is detected exactly, focus the field with the cursor at the end (not
  * a full select, which would wipe the label on the first keystroke), commit on
@@ -80,11 +80,11 @@ export function useInlineEdit(displayed: string, commit: (next: string) => void)
   return { editing, setEditing, seed, inputRef, start, handleKeyDown, handleBlur }
 }
 
-/** The worktree-title editor: `useInlineEdit` committing through the rename
+/** The workspace-title editor: `useInlineEdit` committing through the rename
  *  route. The header title and every sidebar row share it. */
-export function useInlineRename(worktreeId: string, displayed: string): InlineEdit {
+export function useInlineRename(workspaceId: string, displayed: string): InlineEdit {
   return useInlineEdit(displayed, (next) => {
-    void renameWorktree(worktreeId, next)
+    void renameWorkspace(workspaceId, next)
       .catch((e: unknown) => console.error('rename failed', e))
   })
 }

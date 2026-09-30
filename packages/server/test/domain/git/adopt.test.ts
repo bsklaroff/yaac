@@ -19,9 +19,9 @@ let base: string
 const ID = 'w1'
 const CRASHED = 'w2'
 const GONE = 'w4'
-/** The project's worktree rows. */
+/** The project's workspace rows. */
 const ROWS = new Set([ID, CRASHED, 'w3', GONE])
-const wt = (id: string): string => path.join(tmp, 'worktrees', id)
+const wt = (id: string): string => path.join(tmp, 'workspaces', id)
 const identity = ['-c', 'user.email=t@t', '-c', 'user.name=T']
 const subject = async (repo: string, ref: string): Promise<string> =>
   (await git(repo, ['log', '-1', '--format=%s', ref])).trim()
@@ -37,13 +37,13 @@ beforeAll(async () => {
   main = path.join(tmp, 'repo')
   await cloneRepo(source, main, null)
   base = await getDefaultBranch(main)
-  await fs.mkdir(path.join(tmp, 'worktrees'))
+  await fs.mkdir(path.join(tmp, 'workspaces'))
   for (const id of [ID, CRASHED]) {
     await git(main, ['worktree', 'add', '-q', '-b', `agent/${id}`, wt(id), `origin/${base}`])
     await git(main, ['config', `branch.agent/${id}.merge`, `refs/heads/${base}`])
   }
   await git(main, ['branch', 'user-feature'])
-  // No row names it: an agent's side branch, or a worktree deleted before
+  // No row names it: an agent's side branch, or a workspace deleted before
   // the upgrade, whose commits nothing else names.
   await git(main, ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit-tree', '-m', 'orphaned work', `origin/${base}^{tree}`])
     .then((sha) => git(main, ['branch', 'agent/someone-else', sha.trim()]))

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
-vi.mock('#domain/worktrees/list', () => ({
-  listActiveWorktrees: vi.fn().mockResolvedValue({ worktrees: [], stale: [], gitAuthFailures: {} }),
+vi.mock('#domain/workspaces/list', () => ({
+  listActiveWorkspaces: vi.fn().mockResolvedValue({ workspaces: [], stale: [], gitAuthFailures: {} }),
 }))
 
 vi.mock('#domain/projects/list', () => ({
@@ -17,19 +17,19 @@ vi.mock('#domain/auth/plan-usage', () => ({
 
 import { EventHub, buildSnapshot, serializeEvent } from '#api/events'
 import type { WsLike } from '#api/events'
-import { listActiveWorktrees } from '#domain/worktrees/list'
+import { listActiveWorkspaces } from '#domain/workspaces/list'
 import {
   claimProvisioning, failProvisioning, registerProvisioning, removeProvisioning,
   clearAllProvisioningForTests,
-} from '#domain/worktrees/provisioning'
-import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+} from '#domain/workspaces/provisioning'
+import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import type { ServerSnapshot } from '@yaac/shared/types'
 
 function emptySnapshot(): ServerSnapshot {
   return {
     driver: 'k8s',
-    worktrees: [], worktreeGroups: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {},
-    queuedWorktrees: [], heldWorktrees: [], draftWorktrees: [],
+    workspaces: [], workspaceGroups: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {},
+    queuedWorkspaces: [], heldWorkspaces: [], draftWorkspaces: [],
     imageBuilds: [],
     planUsage: null,
     codexPlanUsage: null,
@@ -40,7 +40,7 @@ function emptySnapshot(): ServerSnapshot {
 function snapshotWithProject(slug: string): ServerSnapshot {
   return {
     ...emptySnapshot(),
-    projects: [{ slug, remoteUrl: 'https://example.com/r.git', addedAt: '2026-01-01', worktreeCount: 0, createDefaults: {}, gitCredential: null }],
+    projects: [{ slug, remoteUrl: 'https://example.com/r.git', addedAt: '2026-01-01', workspaceCount: 0, createDefaults: {}, gitCredential: null }],
   }
 }
 
@@ -64,7 +64,7 @@ describe('serializeEvent', () => {
       data: ServerSnapshot
     }
     expect(parsed.type).toBe('snapshot')
-    expect(parsed.data.worktrees).toEqual([])
+    expect(parsed.data.workspaces).toEqual([])
   })
 })
 
@@ -194,11 +194,11 @@ describe('EventHub', () => {
 // a snapshot build with no runtime registered is a wiring bug, and says so.
 
 describe('buildSnapshot', () => {
-  beforeEach(() => { installFakeWorktreeDriver() })
+  beforeEach(() => { installFakeWorkspaceDriver() })
 
   it('returns all state slices', async () => {
     const snap = await buildSnapshot()
-    expect(Array.isArray(snap.worktrees)).toBe(true)
+    expect(Array.isArray(snap.workspaces)).toBe(true)
     expect(Array.isArray(snap.stale)).toBe(true)
     expect(Array.isArray(snap.projects)).toBe(true)
     expect(Array.isArray(snap.provisioning)).toBe(true)
@@ -211,7 +211,7 @@ describe('buildSnapshot', () => {
 
 describe('buildSnapshot image builds', () => {
   it('includes the builds the runtime reports', async () => {
-    installFakeWorktreeDriver({
+    installFakeWorkspaceDriver({
       listImageBuilds: () => [{
         id: 'b1',
         tag: 'yaac-base:abc',
@@ -229,92 +229,92 @@ describe('buildSnapshot image builds', () => {
 })
 
 describe('buildSnapshot provisioning', () => {
-  beforeEach(() => { installFakeWorktreeDriver() })
+  beforeEach(() => { installFakeWorkspaceDriver() })
   beforeEach(() => { clearAllProvisioningForTests() })
   afterEach(() => { clearAllProvisioningForTests() })
 
   it('includes a provisioning entry that has no live session yet', async () => {
-    registerProvisioning({ worktreeId: 'prov-1', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    registerProvisioning({ workspaceId: 'prov-1', projectSlug: 'p', tool: 'claude', kind: 'create' })
     const snap = await buildSnapshot()
-    expect(snap.provisioning.map((e) => e.worktreeId)).toEqual(['prov-1'])
+    expect(snap.provisioning.map((e) => e.workspaceId)).toEqual(['prov-1'])
   })
 
   it('hides a listed session that is still provisioning, keeping the row', async () => {
     // A pod lists as an active session mid-setup (Running + tmux up, but no
     // agent/init windows yet) — the provisioning row must win until the
     // create route removes it, or clients attach to a half-built session.
-    vi.mocked(listActiveWorktrees).mockResolvedValueOnce({
-      worktrees: [{
-        worktreeId: 'prov-2', projectSlug: 'p', tool: 'claude',
+    vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
+      workspaces: [{
+        workspaceId: 'prov-2', projectSlug: 'p', tool: 'claude',
         status: 'waiting', createdAt: '2026-01-01 00:00:00', agentSessions: [],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
       gitAuthFailures: {},
     })
-    registerProvisioning({ worktreeId: 'prov-2', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    registerProvisioning({ workspaceId: 'prov-2', projectSlug: 'p', tool: 'claude', kind: 'create' })
     const snap = await buildSnapshot()
-    expect(snap.worktrees).toEqual([])
-    expect(snap.provisioning.map((e) => e.worktreeId)).toEqual(['prov-2'])
+    expect(snap.workspaces).toEqual([])
+    expect(snap.provisioning.map((e) => e.workspaceId)).toEqual(['prov-2'])
   })
 
   it('hides a claimed spare under the create row that claimed it', async () => {
     // A claim unhides the spare's own row long before the create resolves;
     // listing it then would put it in the sidebar beside the row still
     // creating it.
-    vi.mocked(listActiveWorktrees).mockResolvedValueOnce({
-      worktrees: [{
-        worktreeId: 'spare-1', projectSlug: 'p', tool: 'claude',
+    vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
+      workspaces: [{
+        workspaceId: 'spare-1', projectSlug: 'p', tool: 'claude',
         status: 'waiting', createdAt: '2026-01-01 00:00:00', agentSessions: [],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
       gitAuthFailures: {},
     })
-    registerProvisioning({ worktreeId: 'req-1', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    registerProvisioning({ workspaceId: 'req-1', projectSlug: 'p', tool: 'claude', kind: 'create' })
     claimProvisioning('req-1', 'spare-1')
     const snap = await buildSnapshot()
-    expect(snap.worktrees).toEqual([])
-    expect(snap.provisioning).toMatchObject([{ worktreeId: 'req-1', claimedId: 'spare-1' }])
+    expect(snap.workspaces).toEqual([])
+    expect(snap.provisioning).toMatchObject([{ workspaceId: 'req-1', claimedId: 'spare-1' }])
   })
 
   it('lists a claimed spare once the create that claimed it fails', async () => {
     // The claim went through, then the route failed after it (filing its
     // group, delivering its prompt): the failed row lingers until dismissed,
-    // and the running worktree it claimed must not linger hidden with it.
-    vi.mocked(listActiveWorktrees).mockResolvedValueOnce({
-      worktrees: [{
-        worktreeId: 'spare-2', projectSlug: 'p', tool: 'claude',
+    // and the running workspace it claimed must not linger hidden with it.
+    vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
+      workspaces: [{
+        workspaceId: 'spare-2', projectSlug: 'p', tool: 'claude',
         status: 'waiting', createdAt: '2026-01-01 00:00:00', agentSessions: [],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
       gitAuthFailures: {},
     })
-    registerProvisioning({ worktreeId: 'req-2', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    registerProvisioning({ workspaceId: 'req-2', projectSlug: 'p', tool: 'claude', kind: 'create' })
     claimProvisioning('req-2', 'spare-2')
     failProvisioning('req-2', 'prompt delivery timed out')
     const snap = await buildSnapshot()
-    expect(snap.worktrees.map((w) => w.worktreeId)).toEqual(['spare-2'])
-    expect(snap.provisioning).toMatchObject([{ worktreeId: 'req-2', error: 'prompt delivery timed out' }])
+    expect(snap.workspaces.map((w) => w.workspaceId)).toEqual(['spare-2'])
+    expect(snap.provisioning).toMatchObject([{ workspaceId: 'req-2', error: 'prompt delivery timed out' }])
     expect(snap.provisioning[0].claimedId).toBeUndefined()
   })
 
   it('lists the session once its provisioning entry is removed (the hand-off)', async () => {
-    vi.mocked(listActiveWorktrees).mockResolvedValue({
-      worktrees: [{
-        worktreeId: 'prov-3', projectSlug: 'p', tool: 'claude',
+    vi.mocked(listActiveWorkspaces).mockResolvedValue({
+      workspaces: [{
+        workspaceId: 'prov-3', projectSlug: 'p', tool: 'claude',
         status: 'waiting', createdAt: '2026-01-01 00:00:00', agentSessions: [],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
       gitAuthFailures: {},
     })
-    registerProvisioning({ worktreeId: 'prov-3', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    registerProvisioning({ workspaceId: 'prov-3', projectSlug: 'p', tool: 'claude', kind: 'create' })
     removeProvisioning('prov-3')
     const snap = await buildSnapshot()
-    expect(snap.worktrees.map((s) => s.worktreeId)).toEqual(['prov-3'])
+    expect(snap.workspaces.map((s) => s.workspaceId)).toEqual(['prov-3'])
     expect(snap.provisioning).toEqual([])
-    vi.mocked(listActiveWorktrees).mockResolvedValue({ worktrees: [], stale: [], gitAuthFailures: {} })
+    vi.mocked(listActiveWorkspaces).mockResolvedValue({ workspaces: [], stale: [], gitAuthFailures: {} })
   })
 })

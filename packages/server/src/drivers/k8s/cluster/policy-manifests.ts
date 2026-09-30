@@ -2,7 +2,7 @@ import {
   DNS_STUB_PORT,
   EGRESS_WORLD_DENY_NAME,
   LABEL_ROLE,
-  LABEL_WORKTREE_ID,
+  LABEL_WORKSPACE_ID,
   NETD_LISTENER_PORT_BASE,
   NETD_LISTENER_PORT_END,
   POD_STREAM_PORT,
@@ -17,8 +17,8 @@ import {
   SERVER_FRONT_PORT,
   SERVER_INGRESS_NP_NAME,
   SERVER_POD_PORT,
-  WORKTREE_EGRESS_NP_NAME,
-  WORKTREE_INGRESS_LOCK_NP_NAME,
+  WORKSPACE_EGRESS_NP_NAME,
+  WORKSPACE_INGRESS_LOCK_NP_NAME,
   SSH_AGENT_PORT,
   TRANSPARENT_HTTPS_PORT,
   TRANSPARENT_HTTP_PORT,
@@ -28,7 +28,7 @@ import {
 
 /**
  * Every yaac egress/ingress policy, as plain `networking.k8s.io/v1`
- * NetworkPolicy. The datapath these police is docs/worktree-egress.md.
+ * NetworkPolicy. The datapath these police is docs/workspace-egress.md.
  *
  * Plain NP only, deliberately: it is the one policy dialect every
  * enforcement backend speaks. Locally that is the Calico `yaac cluster
@@ -71,17 +71,17 @@ function np(
   }
 }
 
-/** Selector matching every worktree pod (the label the worktree builder stamps). */
-const worktreePodSelector = {
-  matchExpressions: [{ key: LABEL_WORKTREE_ID, operator: 'Exists' }],
+/** Selector matching every workspace pod (the label the workspace builder stamps). */
+const workspacePodSelector = {
+  matchExpressions: [{ key: LABEL_WORKSPACE_ID, operator: 'Exists' }],
 }
 
 /**
- * Worktree-pod EGRESS.
+ * Workspace-pod EGRESS.
  *
- * This is the containment floor for every worktree, and its shape is the
+ * This is the containment floor for every workspace, and its shape is the
  * whole fail-closed story: the ONLY world-ward rule is "the node, on
- * netd's reserved listener range". A worktree pod cannot address the
+ * netd's reserved listener range". A workspace pod cannot address the
  * internet at all — 443/80 to world matches nothing here, so if netd has
  * not installed that pod's redirect (it is starting, restarting, or
  * broken), the pod's traffic keeps its original destination, takes the
@@ -92,33 +92,33 @@ const worktreePodSelector = {
  * Envoy, which stamps the connection's real peer address into the
  * PROXY-protocol header regardless of how the connection arrived. A pod
  * dialing a listener directly therefore gets exactly the treatment its own
- * redirected traffic would get — it cannot impersonate another worktree,
+ * redirected traffic would get — it cannot impersonate another workspace,
  * and it still cannot reach the proxy's transparent ports (those are
  * node-only, see buildProxyIngressNpManifest).
  *
  * Two direct dials to the proxy, both to the pod itself rather than the
- * world: its DNS stub on 53/udp (which worktree pods point `dnsPolicy: None`
+ * world: its DNS stub on 53/udp (which workspace pods point `dnsPolicy: None`
  * at) and its ssh-agent listener on SSH_AGENT_PORT, which the in-pod
  * forwarder re-exposes as SSH_AUTH_SOCK's UNIX socket. Neither reaches
  * anything outside the cluster, and the agent port is a signing oracle for
  * destination-constrained keys only — the proxy re-checks that the source
- * pod IP resolves to a worktree whose registered remote is SSH, and admits
+ * pod IP resolves to a workspace whose registered remote is SSH, and admits
  * only list/sign messages onto the shared agent.
  *
- * Nothing here for the install's npm cache: which worktrees may dial it is
+ * Nothing here for the install's npm cache: which workspaces may dial it is
  * per project, so its rule selects on a label the server stamps
  * (npm-cache.ts), and NetworkPolicy unions it with this one.
  *
  * Deliberately NO in-cluster allowance for the per-project registry (5000):
- * this policy is install-wide, so it cannot express "the worktree's OWN
- * project" — a blanket rule would open every registry to every worktree
+ * this policy is install-wide, so it cannot express "the workspace's OWN
+ * project" — a blanket rule would open every registry to every workspace
  * (cross-project image overwrite, issue #17). NetworkPolicy unions allow
  * rules, so those flows are admitted instead by the exactly-scoped
  * per-project policies applied at create time.
  */
-export function buildWorktreeEgressNpManifest(nodeCidrs: string[]): Record<string, unknown> {
-  return np(WORKTREE_EGRESS_NP_NAME, k8sNamespace(), {
-    podSelector: worktreePodSelector,
+export function buildWorkspaceEgressNpManifest(nodeCidrs: string[]): Record<string, unknown> {
+  return np(WORKSPACE_EGRESS_NP_NAME, k8sNamespace(), {
+    podSelector: workspacePodSelector,
     policyTypes: ['Egress'],
     egress: [
       {
@@ -138,14 +138,14 @@ export function buildWorktreeEgressNpManifest(nodeCidrs: string[]): Record<strin
 }
 
 /**
- * Worktree-pod INGRESS: only the proxy's relay dials into streamd. Before
- * the relay nothing dialed worktree pods at all, so their ingress was
+ * Workspace-pod INGRESS: only the proxy's relay dials into streamd. Before
+ * the relay nothing dialed workspace pods at all, so their ingress was
  * default-allow by omission; selecting them with any ingress rule makes it
  * default-deny, which is the point.
  */
-export function buildWorktreeIngressLockNpManifest(): Record<string, unknown> {
-  return np(WORKTREE_INGRESS_LOCK_NP_NAME, k8sNamespace(), {
-    podSelector: worktreePodSelector,
+export function buildWorkspaceIngressLockNpManifest(): Record<string, unknown> {
+  return np(WORKSPACE_INGRESS_LOCK_NP_NAME, k8sNamespace(), {
+    podSelector: workspacePodSelector,
     policyTypes: ['Ingress'],
     ingress: [
       {
@@ -170,7 +170,7 @@ export function buildWorktreeIngressLockNpManifest(): Record<string, unknown> {
  * pod netns and never traverses this policy at all — the network-side
  * allowance exists for a node-local server using the direct-TCP override.
  *
- * Two pod-facing ports, and only for worktree pods in this namespace: the
+ * Two pod-facing ports, and only for workspace pods in this namespace: the
  * DNS stub, and the ssh-agent listener.
  */
 export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string, unknown> {
@@ -179,7 +179,7 @@ export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string,
     policyTypes: ['Ingress'],
     ingress: [
       {
-        // netd's Envoy (host netns) delivering redirected worktree egress,
+        // netd's Envoy (host netns) delivering redirected workspace egress,
         // plus the kubelet readiness probe and any node-local server.
         from: ipBlocks(nodeCidrs),
         ports: [
@@ -191,7 +191,7 @@ export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string,
         ],
       },
       {
-        from: [{ podSelector: worktreePodSelector }],
+        from: [{ podSelector: workspacePodSelector }],
         ports: [udp(DNS_STUB_PORT), tcp(SSH_AGENT_PORT)],
       },
       {
@@ -199,7 +199,7 @@ export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string,
         // host-side server reached through its port-forward — the control
         // API and the stream relay — but as an ordinary pod-to-pod dial
         // (docs/server-in-cluster.md). Selected by its app label rather
-        // than admitted through the node CIDRs above, so a worktree pod
+        // than admitted through the node CIDRs above, so a workspace pod
         // still cannot address either port.
         from: [{ podSelector: { matchLabels: { app: SERVER_APP_NAME } } }],
         ports: [tcp(PROXY_PORT), tcp(RELAY_PORT)],
@@ -211,7 +211,7 @@ export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string,
 /**
  * Egress rules for a pod that may dial anything EXCEPT the kind fronting's
  * node port: builder pods, whose `RUN` steps come from agent-editable
- * Dockerfiles, and the proxy, whose upstream is whatever a worktree's
+ * Dockerfiles, and the proxy, whose upstream is whatever a workspace's
  * allowlist names.
  *
  * The fronting forwarder is a hostNetwork listener, which no pod policy
@@ -220,7 +220,7 @@ export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string,
  * loopback `Host` that got there would be the server's owner
  * (docs/remote-hosting.md). The only place to stop a pod is on its way
  * out: every node address on every port but that one, and everything else
- * as before. Worktree pods need none of this — their own egress policy
+ * as before. Workspace pods need none of this — their own egress policy
  * reaches node addresses on the netd listener range alone.
  */
 export function egressAllButServerFront(nodeCidrs: string[]): Array<Record<string, unknown>> {
@@ -254,7 +254,7 @@ export function buildProxyEgressNpManifest(nodeCidrs: string[]): Record<string, 
  * loopback Host without passing through `tailscale serve` is its owner
  * (docs/remote-hosting.md), so the two policies over its pod selector — this
  * one and `buildServerFrontIngressNpManifest` — are what keep an untrusted
- * pod from being that owner. Together with the worktree egress lockdown,
+ * pod from being that owner. Together with the workspace egress lockdown,
  * and `egressAllButServerFront` for the pods that may dial node addresses,
  * they are the whole wall, which is why `yaac cluster check` proves it on
  * every install rather than trusting that it was applied.
@@ -316,7 +316,7 @@ export function buildServerFrontIngressNpManifest(
 
 /**
  * Install-namespace world-egress default-deny for everything that is
- * neither the proxy nor a worktree pod nor a builder.
+ * neither the proxy nor a workspace pod nor a builder.
  *
  * Plain NP has no deny verb, so this is expressed the way NP does it: an
  * empty `egress` list over a selector, which default-denies every selected
@@ -325,8 +325,8 @@ export function buildServerFrontIngressNpManifest(
  * below are about which pods need NO egress at all, not about escaping a
  * deny.
  *
- *  - the proxy: the one pod that reaches the internet on a worktree's
- *    behalf with the worktree's own allowlist applied. It
+ *  - the proxy: the one pod that reaches the internet on a workspace's
+ *    behalf with the workspace's own allowlist applied. It
  *    also reads every Secret in this namespace (its Role, in
  *    proxy-manifests.ts — `list`/`watch` cannot be name-scoped), which is
  *    fine while the namespace holds only yaac's objects: anything else
@@ -336,7 +336,7 @@ export function buildServerFrontIngressNpManifest(
  *    calls out for titles directly, and routing its own traffic through
  *    the egress proxy is not what the proxy is for (the proxy mediates
  *    UNTRUSTED code, and the server is the thing doing the mediating).
- *  - worktree pods: governed by buildWorktreeEgressNpManifest.
+ *  - workspace pods: governed by buildWorkspaceEgressNpManifest.
  *  - builder pods: trust-split image builds fetch upstream packages and
  *    push to a registry (docs/trust-split-builds.md); their own scoped
  *    policy governs them.
@@ -345,15 +345,15 @@ export function buildServerFrontIngressNpManifest(
  * registries, mocks, and anything added later stay covered by default. The
  * npm cache is one of those, and the one other pod with a way out: its own
  * policy (npm-cache.ts) admits 443 off-cluster, and what it fetches reaches
- * worktrees outside their allowlists — an accepted exception, bounded to
- * public npm content coming in (docs/worktree-egress.md).
+ * workspaces outside their allowlists — an accepted exception, bounded to
+ * public npm content coming in (docs/workspace-egress.md).
  */
 export function buildEgressWorldDenyNpManifest(): Record<string, unknown> {
   return np(EGRESS_WORLD_DENY_NAME, k8sNamespace(), {
     podSelector: {
       matchExpressions: [
         { key: 'app', operator: 'NotIn', values: [PROXY_APP_NAME, SERVER_APP_NAME] },
-        { key: LABEL_WORKTREE_ID, operator: 'DoesNotExist' },
+        { key: LABEL_WORKSPACE_ID, operator: 'DoesNotExist' },
         { key: LABEL_ROLE, operator: 'NotIn', values: [ROLE_BUILDER] },
       ],
     },

@@ -6,12 +6,12 @@ import { serverLog } from '#log'
 import type { ProjectRef } from '#drivers/contract'
 
 /**
- * The PUSH half of the cross-worktree image cache for nested worktrees: a
- * worktree salvages the images its in-pod engine built or pulled into the
+ * The PUSH half of the cross-workspace image cache for nested workspaces: a
+ * workspace salvages the images its in-pod engine built or pulled into the
  * project's own in-cluster registry. The registry is the source of truth
- * and the only thing that travels between nodes; what a later worktree
+ * and the only thing that travels between nodes; what a later workspace
  * READS is a per-node materialization of it, mounted read-only
- * (store-writer.ts), so nothing here pins a worktree to the node its
+ * (store-writer.ts), so nothing here pins a workspace to the node its
  * predecessor ran on.
  *
  * WHY THE PUSH RUNS INSIDE THE SANDBOX (measured, 2026-07): the salvage's
@@ -27,7 +27,7 @@ import type { ProjectRef } from '#drivers/contract'
  *
  * What travels:
  *  - every NAMED image, under its own name (`<registry>/<repo>:<tag>`), so
- *    the read side can restore the name a worktree referred to it by —
+ *    the read side can restore the name a workspace referred to it by —
  *    canonicalized first, see LOCAL_REGISTRY_PREFIX;
  *  - each named image's ANCESTOR chain, under `<repo>:yaac-cache-<tag>-<n>`
  *    in the SAME repo (so its blobs are already there and only manifests
@@ -42,18 +42,18 @@ import type { ProjectRef } from '#drivers/contract'
  *
  * Destinations carry NO content hash — they are name-for-name, and the
  * chain tags are slots keyed by (repo, tag, depth). That is what bounds
- * the tag set, and it means concurrent worktrees of one project are
+ * the tag set, and it means concurrent workspaces of one project are
  * last-salvage-wins on a shared name. Nothing corrupts (layers are content-addressed blobs
  * and a manifest PUT is atomic), and a chain left interleaved between two
- * worktrees costs a wasted pull, never a wrong cache hit: buildah matches a
+ * workspaces costs a wasted pull, never a wrong cache hit: buildah matches a
  * candidate on layer parentage AND history, so a foreign intermediate
  * never matches. Clobbered manifests become untagged, which is what
  * reconcileProjectRegistryGc reclaims.
  *
  * Self-gating: every leg runs through sudoExecCommand, which does nothing
- * in a pod that carries no engine, so a non-nested worktree costs a single
+ * in a pod that carries no engine, so a non-nested workspace costs a single
  * cheap exec that reports nothing — and the reconcile loop skips even that
- * (worktrees/salvage-reconcile.ts).
+ * (workspaces/salvage-reconcile.ts).
  */
 
 /**
@@ -67,7 +67,7 @@ export const CACHE_TAG_PREFIX = 'yaac-cache-'
  * What a consumer counts as a generation, in the two halves the
  * registry's retention pass (buildRegistryRetentionScript) uses: a
  * yaac-built repo, optionally under a push prefix, carrying a content-hash
- * tag. Both must be mirrored — the repo glob is what keeps a worktree's own
+ * tag. Both must be mirrored — the repo glob is what keeps a workspace's own
  * repo out of a policy only yaac's chain is subject to, and the tag shape
  * is what tells a generation from a hand-written `v1` or `latest`.
  *
@@ -114,7 +114,7 @@ export const MAX_CHAIN_DEPTH = 64
  * A repo carries up to REGISTRY_GENERATIONS_KEPT generations (as wide as
  * the concurrently-live fleet), and the catalog walk has no inherent
  * reason to reach the current one first, so without this a node would
- * warm generations no build will ever cache-hit. Two, not one: a worktree
+ * warm generations no build will ever cache-hit. Two, not one: a workspace
  * on a branch that has since moved still wants its own generation, and the
  * second slot is what keeps the newest push from evicting it.
  */
@@ -123,7 +123,7 @@ export const CACHED_GENERATIONS_KEPT = 2
 const IMAGE_ID = /^[0-9a-f]{64}$/
 /**
  * Conservative image-ref shape (`host[:port]/path…:tag`, the
- * podman-normalized form). Refs come from the worktree engine —
+ * podman-normalized form). Refs come from the workspace engine —
  * agent-influenced — so anything outside this set is dropped rather than
  * quoted into a push command. The optional `:port` is recognized so that
  * refs pointing INTO this registry parse and can be filtered by name;
@@ -139,7 +139,7 @@ const IMAGE_REF_MAX = 255
  * destination. Every name the engine holds that is not registry-qualified
  * is stored under it — `podman tag x foo:v1` reads back as
  * `localhost/foo:v1` — while everything the SERVER pushes into this same
- * registry (`registryRef`, and inside a nested worktree that is this very
+ * registry (`registryRef`, and inside a nested workspace that is this very
  * registry) uses the bare tag. Same image, two repo paths, and the ledger
  * keys on the destination string, so leaving the prefix on puts every
  * image the two sides share in the catalog twice: `<repo>` and
@@ -164,7 +164,7 @@ const IMAGE_REF_MAX = 255
  * again would rename it, so the planner drops it instead.
  *
  * Only this prefix: `docker.io/…`, `quay.io/…` and friends are real
- * upstream refs whose host is part of the name a worktree pulls them by.
+ * upstream refs whose host is part of the name a workspace pulls them by.
  */
 const LOCAL_REGISTRY_PREFIX = 'localhost/'
 
@@ -185,7 +185,7 @@ export interface EngineImage {
    * store — i.e. it arrived from this very registry (store-writer.ts
    * materializes nothing else), so pushing it back would re-compress the
    * project's whole working set inside the sandbox for bytes the registry
-   * already has. An id the worktree ALSO holds writably (it rebuilt or
+   * already has. An id the workspace ALSO holds writably (it rebuilt or
    * re-tagged it) is not read-only here: that name is new and does travel.
    */
   readOnly: boolean
@@ -204,7 +204,7 @@ export interface ChainRetire {
   depth: number
 }
 
-/** What one salvage hands the worktree pod. */
+/** What one salvage hands the workspace pod. */
 export interface SalvagePlan {
   pairs: PushPair[]
   retire: ChainRetire[]
@@ -260,7 +260,7 @@ export function parseSurveyReport(stdout: string): SurveyReport {
       parent: IMAGE_ID.test(parent) ? parent : null,
       // Canonicalized before the sort, so a multi-named image's PRIMARY
       // name — the one its chain slots hang off — is the same in every
-      // worktree that sees it, whichever side put the image there.
+      // workspace that sees it, whichever side put the image there.
       refs: rawRefs.split(',').map((r) => r.trim()).filter(validRef).map(canonicalRef).sort(),
     })
   }
@@ -299,7 +299,7 @@ export function buildSurveyScript(): string {
  * A push MUST NOT change an image's MANIFEST TYPE. buildah only considers
  * a cache candidate whose manifest type equals the format the running
  * build emits, so an image that changed type on the way through the
- * registry is invisible to the build it was salvaged for. The worktree's
+ * registry is invisible to the build it was salvaged for. The workspace's
  * `docker` is the real Docker CLI against podman's Docker-compatible API,
  * which emits docker-schema2, while a bare `podman build` emits OCI — the
  * store holds both, and each has to come back as what it was.
@@ -307,15 +307,15 @@ export function buildSurveyScript(): string {
  * zstd forces exactly that conversion: schema2 has no zstd layer media
  * type, so a zstd push rewrites a schema2 image as OCI (silently — the
  * push succeeds and the layers are intact), and every `docker build` in
- * the next worktree then skips the entire cache. gzip has media types
+ * the next workspace then skips the entire cache. gzip has media types
  * in both schemas, so it preserves either one in place, and the image id
  * survives the round trip unchanged with it.
  *
  * Level 1 within gzip: CPU is the scarce resource here, not disk. The
- * compression runs INSIDE the worktree sandbox, competing with the agent's
+ * compression runs INSIDE the workspace sandbox, competing with the agent's
  * own work under the sentry, whereas the bytes land in a node-local
  * registry — so the cheapest gzip is the right one. (For scale, measured
- * in a worktree pod on a 576MB layer of real binaries, default-level gzip
+ * in a workspace pod on a 576MB layer of real binaries, default-level gzip
  * costs 20.6s of CPU to push and 15.2s wall to pull back.)
  *
  * The consequence to know: a level-1 blob does not dedupe against the
@@ -339,7 +339,7 @@ export const SALVAGE_COMPRESSION_LEVEL = 1
  *
  * `nice -n 19` because this is background work sharing a sandbox with an
  * interactive agent: the sentry honors nice in its own scheduling, so the
- * worktree's foreground work wins the CPU, and the host sees the softened
+ * workspace's foreground work wins the CPU, and the host sees the softened
  * priority too since the sandbox threads carry it.
  */
 export function buildPushScript(): string {
@@ -382,7 +382,7 @@ const MANIFEST_ACCEPT = [
  * which drops every tag in the repo pointing at it. Two names in one repo
  * share their prefix intermediates, so retiring `app:v1`'s tail can untag
  * a slot `app:v2` still fills. That costs the next generation a cold slot
- * — a rebuild, never a wrong hit — and a later worktree refills it; the pod
+ * — a rebuild, never a wrong hit — and a later workspace refills it; the pod
  * that pushed it will not, since its ledger already lists the pair.
  *
  * Failures are counted, not swallowed. The registry refuses DELETE with a
@@ -436,7 +436,7 @@ export function buildRetireScript(registryHost: string): string {
  * CACHED_GENERATIONS_KEPT dropped, along with the chain slots of the
  * generations dropped — an old generation's intermediates cache-hit
  * nothing once its named image is gone. Within what survives, a named tag
- * comes before its chain slots, so the image a worktree actually refers to
+ * comes before its chain slots, so the image a workspace actually refers to
  * is warmed before the intermediates that only accelerate a rebuild.
  *
  * Catalog/tag JSON is scraped with `tr`/`sed` rather than a JSON parser:
@@ -472,7 +472,7 @@ export function rankedRegistryTagsScript(): string {
     //
     // Gated on BOTH halves of that pass's guard, repo shape and tag shape,
     // so the two agree on what a generation is. Tag shape alone would rank
-    // a worktree's own `myapp:$(git rev-parse --short=16 HEAD)` as
+    // a workspace's own `myapp:$(git rev-parse --short=16 HEAD)` as
     // generations and leave its older tags cold — this deletes nothing, so
     // that costs a warm-up, but it is a repo retention has no say over
     // either.
@@ -523,8 +523,8 @@ export function rankedRegistryTagsScript(): string {
  * `$@`.
  *
  * The engine test is the pod's own YAAC_NESTED_ENGINE — set by
- * worktree-create for exactly the pods whose init script starts an engine
- * (`domain/worktrees/create.ts`, read again by worktree-bin/yaac-worktree-init)
+ * workspace-create for exactly the pods whose init script starts an engine
+ * (`domain/workspaces/create.ts`, read again by workspace-bin/yaac-workspace-init)
  * — and NOT `command -v podman`. A binary's presence never answered the
  * question being asked: an image can ship podman and run no engine, which
  * every pod built before podman left the base image does. Running it there
@@ -532,7 +532,7 @@ export function rankedRegistryTagsScript(): string {
  * podman under sudo resolves its runtime dir to a RELATIVE `libpod/tmp`, and
  * an exec inherits the container's workingDir — so the probe plants a
  * root-owned 0700 directory in the user's checkout, where it breaks any tool
- * that walks the repo and leaves the worktree undeletable.
+ * that walks the repo and leaves the workspace undeletable.
  */
 export function sudoExecCommand(script: string, argv: string[] = []): string {
   const args = argv.map((a) => ` ${shellQuote(a)}`).join('')
@@ -572,18 +572,18 @@ export function sudoExecCommand(script: string, argv: string[] = []): string {
  * Refs arrive already canonicalized (LOCAL_REGISTRY_PREFIX), which is what
  * keeps one image to one repo no matter which side pushed it first. Three
  * kinds never become a destination, all of them "there is no name to push
- * this under": one already inside this registry (an image the worktree
+ * this under": one already inside this registry (an image the workspace
  * pulled from it by ref); one whose repo carries a `host:port`, which
  * a destination repo path cannot hold; and one still prefixed after
  * canonicalization, i.e. an engine name of `localhost/localhost/…`, whose
  * only canonical destination is a repo path the registry GC treats as a
  * stale alias and deletes.
  *
- * Canonicalizing lands a worktree's local names on the same repos the
- * server's own pushes use, so a worktree that locally tags a mirror's name
+ * Canonicalizing lands a workspace's local names on the same repos the
+ * server's own pushes use, so a workspace that locally tags a mirror's name
  * can now overwrite that repo. Bounded to the project's own registry and
  * already the documented semantic (last salvage wins on a shared name);
- * a worktree could always push those repos directly, so this grants no
+ * a workspace could always push those repos directly, so this grants no
  * authority it did not have.
  */
 export function planSalvagePushes(report: SurveyReport, registryHost: string): SalvagePlan {
@@ -628,7 +628,7 @@ export function planSalvagePushes(report: SurveyReport, registryHost: string): S
     for (; cursor && depth < MAX_CHAIN_DEPTH; ) {
       // Stop at an ancestor that already travelled: one with a name of its
       // own (it gets its own push, and the restore side re-links it), or
-      // one the node store provided — the next worktree's store carries
+      // one the node store provided — the next workspace's store carries
       // that ancestor too, so a slot tag for it would buy nothing.
       if (named.has(cursor)) break
       if (byId.get(cursor)?.readOnly) {
@@ -656,12 +656,12 @@ export function parsePushReport(stdout: string): { pushed: number; failed: numbe
   return { pushed: Number(m?.[1] ?? 0), failed: Number(m?.[2] ?? 0) }
 }
 
-/** Per-worktree in-flight guard so the background reconciler and a teardown
- *  never run two salvages for one worktree concurrently. */
+/** Per-workspace in-flight guard so the background reconciler and a teardown
+ *  never run two salvages for one workspace concurrently. */
 const salvageInflight = new Map<string, Promise<boolean>>()
 
-/** Per-worktree chain shape whose stale slots have already been retired —
- *  one short string per worktree this process has salvaged. */
+/** Per-workspace chain shape whose stale slots have already been retired —
+ *  one short string per workspace this process has salvaged. */
 const lastRetiredShape = new Map<string, string>()
 
 /** Test hook: forget which chain shapes have been retired. */
@@ -682,35 +682,35 @@ export interface SalvageOptions {
 }
 
 /**
- * Run one salvage for a worktree: survey in-pod, plan, push the new images
+ * Run one salvage for a workspace: survey in-pod, plan, push the new images
  * into the project registry. Best-effort — any failure is logged and
  * swallowed, because teardown must never be blocked on cache salvage.
  * Returns true when the salvage ran cleanly (including the no-op cases).
- * Concurrent calls for the same worktree coalesce.
+ * Concurrent calls for the same workspace coalesce.
  */
-export async function salvageWorktreeImages(params: {
+export async function salvageJobImages(params: {
   jobName: string
   project: ProjectRef
-  worktreeId: string
+  workspaceId: string
   opts?: SalvageOptions
 }): Promise<boolean> {
-  const { worktreeId } = params
-  const existing = salvageInflight.get(worktreeId)
+  const { workspaceId } = params
+  const existing = salvageInflight.get(workspaceId)
   if (existing) return existing
-  const run = salvageWorktreeImagesUncoalesced(params).finally(() => {
-    salvageInflight.delete(worktreeId)
+  const run = salvageJobImagesUncoalesced(params).finally(() => {
+    salvageInflight.delete(workspaceId)
   })
-  salvageInflight.set(worktreeId, run)
+  salvageInflight.set(workspaceId, run)
   return run
 }
 
-async function salvageWorktreeImagesUncoalesced(params: {
+async function salvageJobImagesUncoalesced(params: {
   jobName: string
   project: ProjectRef
-  worktreeId: string
+  workspaceId: string
   opts?: SalvageOptions
 }): Promise<boolean> {
-  const { jobName, project, worktreeId, opts } = params
+  const { jobName, project, workspaceId, opts } = params
   const registryHost = projectRegistryHost(project.id)
 
   let report: SurveyReport
@@ -731,7 +731,7 @@ async function salvageWorktreeImagesUncoalesced(params: {
   // salvage no-ops before reaching it. Gating on the shape instead keeps
   // the steady-state no-op cycle at one exec.
   const shape = retire.map((r) => `${r.repo}:${r.tag}=${r.depth}`).sort().join(',')
-  const retireNeeded = retire.length > 0 && lastRetiredShape.get(worktreeId) !== shape
+  const retireNeeded = retire.length > 0 && lastRetiredShape.get(workspaceId) !== shape
   if (pairs.length === 0 && !retireNeeded) return true
 
   let pushed = 0
@@ -771,18 +771,18 @@ async function salvageWorktreeImagesUncoalesced(params: {
       // project's own blob-collect window gets 405 on every DELETE, and
       // recording the shape then would strand those slots until the chain
       // changed shape on its own.
-      if (report.failed === 0) lastRetiredShape.set(worktreeId, shape)
+      if (report.failed === 0) lastRetiredShape.set(workspaceId, shape)
     }
   }
 
   serverLog(
-    `[server] image salvage: session=${worktreeId} planned=${pairs.length} `
+    `[server] image salvage: session=${workspaceId} planned=${pairs.length} `
     + `pushed=${pushed} failed=${failed} retired=${retired} registry=${registryHost}`,
   )
 
   // A push that landed is the one moment this project's registry gained
   // content, so it is the moment worth rebuilding the node image store on —
-  // otherwise the next worktree would mount a generation predating the work
+  // otherwise the next workspace would mount a generation predating the work
   // its predecessor just salvaged, and wait out the reconcile throttle for
   // it. Detached and forced past that throttle; the store builder still
   // serializes per project.

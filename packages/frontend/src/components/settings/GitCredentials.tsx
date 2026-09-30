@@ -17,7 +17,7 @@ import type { GitCredentialSummary, ProjectSummary } from '@yaac/shared/types'
 /**
  * Settings → Credentials → git (docs/git-credentials.md): the stored
  * credentials with the projects each serves, a form for a new one, and the
- * projects that have none — which cannot create worktrees until one is
+ * projects that have none — which cannot create workspaces until one is
  * assigned. Replacing a credential's secret keeps its name and projects;
  * deleting it leaves its projects with none.
  *
@@ -101,7 +101,7 @@ export function GitCredentials(): JSX.Element {
       </Group>
 
       {unassigned.length > 0 && (
-        <Group label="Projects without git authentication" hint="Assign each a credential to create worktrees in it.">
+        <Group label="Projects without git authentication" hint="Assign each a credential to create workspaces in it.">
           <div className="space-y-2 text-xs">
             {unassigned.map((p) => (
               <ProjectRow key={p.slug} slug={p.slug} focused={focus === p.slug}>
@@ -273,7 +273,7 @@ function CredentialRow({ credential: c, projects, focus, trusted, newKey, onAssi
         onOpenChange={(open) => { if (!open) setConfirm(null) }}
         title={`Delete ${c.name}?`}
         description={c.projects.length === 0 ? 'No project uses it.'
-          : `${using} will be left with no git credential, and cannot create worktrees until assigned another.`}
+          : `${using} will be left with no git credential, and cannot create workspaces until assigned another.`}
         busy={busy}
         requireClick
         onConfirm={() => void run(async () => { await deleteGitCredential(c.id); onChanged() }, 'failed to delete')}

@@ -27,17 +27,17 @@ export interface Chord {
  * commands likewise split into left/right.
  */
 export type ShortcutId =
-  | 'new-worktree'
+  | 'new-workspace'
   | 'new-shell'
-  | 'delete-worktree'
+  | 'delete-workspace'
   | 'kill-terminal'
   | 'open-changes'
   | 'open-files'
   | 'open-preview'
   | 'view-tabs'
   | 'view-tiles'
-  | 'prev-worktree'
-  | 'next-worktree'
+  | 'prev-workspace'
+  | 'next-workspace'
   | 'prev-terminal'
   | 'next-terminal'
   | 'move-terminal-left'
@@ -71,12 +71,12 @@ function altShift(code: string): Chord {
  * terminal.
  */
 export const SHORTCUTS: ShortcutDef[] = [
-  { id: 'new-worktree', label: 'New worktree',
+  { id: 'new-workspace', label: 'New workspace',
     description: 'Open the create dialog in the active project, prompt focused.', defaultChord: alt('KeyN') },
   { id: 'new-shell', label: 'New shell',
-    description: 'Open a scratch-shell terminal in the selected worktree.', defaultChord: alt('KeyT') },
-  { id: 'delete-worktree', label: 'Stop worktree',
-    description: 'Stop the selected worktree (asks to confirm).', defaultChord: alt('KeyD') },
+    description: 'Open a scratch-shell terminal in the selected workspace.', defaultChord: alt('KeyT') },
+  { id: 'delete-workspace', label: 'Stop workspace',
+    description: 'Stop the selected workspace (asks to confirm).', defaultChord: alt('KeyD') },
   { id: 'kill-terminal', label: 'Kill terminal',
     description: 'Close the active terminal (asks to confirm).', defaultChord: alt('KeyW') },
   { id: 'open-changes', label: 'Open changes',
@@ -89,10 +89,10 @@ export const SHORTCUTS: ShortcutDef[] = [
     description: 'Show the workspace as one tab strip.', defaultChord: alt('Comma') },
   { id: 'view-tiles', label: 'Window view',
     description: 'Show the workspace as side-by-side windows.', defaultChord: alt('Period') },
-  { id: 'prev-worktree', label: 'Previous worktree',
-    description: 'Select the previous worktree in the sidebar.', defaultChord: alt('KeyK') },
-  { id: 'next-worktree', label: 'Next worktree',
-    description: 'Select the next worktree in the sidebar.', defaultChord: alt('KeyJ') },
+  { id: 'prev-workspace', label: 'Previous workspace',
+    description: 'Select the previous workspace in the sidebar.', defaultChord: alt('KeyK') },
+  { id: 'next-workspace', label: 'Next workspace',
+    description: 'Select the next workspace in the sidebar.', defaultChord: alt('KeyJ') },
   { id: 'prev-terminal', label: 'Previous terminal',
     description: 'Focus the previous terminal in the tab strip.', defaultChord: alt('KeyH') },
   { id: 'next-terminal', label: 'Next terminal',
@@ -119,7 +119,7 @@ export const DEFAULT_BINDINGS: BindingMap = Object.fromEntries(
  * bytes to the PTY.
  */
 export const CYCLE_IDS: ReadonlySet<ShortcutId> = new Set<ShortcutId>([
-  'prev-worktree', 'next-worktree', 'prev-terminal', 'next-terminal',
+  'prev-workspace', 'next-workspace', 'prev-terminal', 'next-terminal',
 ])
 
 /** True when `id` is one of the known rebindable commands. */
@@ -237,14 +237,14 @@ function discardStray(e: Event): void {
 
 /** The cycle direction a command implies, or null if it isn't a cycler. */
 export function cycleDeltaFor(id: ShortcutId): CycleDelta | null {
-  if (id === 'prev-worktree' || id === 'prev-terminal') return -1
-  if (id === 'next-worktree' || id === 'next-terminal') return 1
+  if (id === 'prev-workspace' || id === 'prev-terminal') return -1
+  if (id === 'next-workspace' || id === 'next-terminal') return 1
   return null
 }
 
 /**
  * The target a cycle lands on, given the candidates in display order (the
- * workspace's terminals in tab-strip order, or the sidebar's worktree rows
+ * workspace's terminals in tab-strip order, or the sidebar's workspace rows
  * top-to-bottom) and the currently active one. Wraps at both ends; with no
  * (valid) active target it enters the list from the end it's headed toward.
  * Null when there's nothing to switch to.

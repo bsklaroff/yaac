@@ -42,7 +42,7 @@ import {
  * Every image yaac itself ships, produced on the machine running the yaac
  * CLI — the image half of `yaac cluster install`.
  *
- * Two kinds. The yaac-built ones (the base/tools/nestable worktree chain,
+ * Two kinds. The yaac-built ones (the base/tools/nestable workspace chain,
  * the egress proxy, netd) are `podman build` over build contexts the npm
  * artifact carries, tagged by content hash so an unchanged source tree
  * costs one registry HEAD. The rest are digest-pinned upstreams
@@ -60,7 +60,7 @@ import {
 /**
  * Compression for the trusted-layer pushes that feed builder-pod parent
  * pulls: zstd cuts a pod's empty-graphroot parent pull from 65.6s to 40.4s
- * (measured). Node containerd zstd pulls are validated live — worktree pods
+ * (measured). Node containerd zstd pulls are validated live — workspace pods
  * pull product manifests referencing these blobs.
  */
 export const TRUSTED_PARENT_COMPRESSION = 'zstd' as const
@@ -166,7 +166,7 @@ export async function mirrorPinnedUpstreams(): Promise<void> {
  * Build/mirror and push every built-in image, then sweep the host store.
  *
  * Every step is build-or-skip against the registry, so a re-run after an
- * upgrade that changed nothing costs a handful of HEADs. The worktree
+ * upgrade that changed nothing costs a handful of HEADs. The workspace
  * chain leads because it is the long pole — base is a full apt/Node build
  * on a cold store, and the layers above it are serial by construction
  * (each is the next one's FROM).
@@ -184,7 +184,7 @@ export async function buildBuiltinImages(deps: BuiltinImageDeps): Promise<void> 
   const prefix = testEnv.imagePrefix ?? 'yaac'
   const { base, tools, nestable } = await resolveTrustedLayers(prefix)
 
-  deps.log('Ensuring the worktree image chain (base → tools → nestable)...')
+  deps.log('Ensuring the workspace image chain (base → tools → nestable)...')
   for (const layer of [base, tools, nestable]) {
     // The registry, not the host store, is what a create resolves — so a
     // tag already there is done, however this host's store looks.

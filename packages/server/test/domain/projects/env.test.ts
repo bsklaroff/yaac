@@ -88,7 +88,7 @@ describe('setProjectEnvVar', () => {
 
   it('requires a value for a new secret, and a rule for any secret', async () => {
     // A secret with no value is a row the create path skips: it would read as
-    // "saved" on the settings page and behave as absent in the worktree.
+    // "saved" on the settings page and behave as absent in the workspace.
     await expect(setProjectEnvVar('demo', { name: 'K', secret: true, rule: RULE }))
       .rejects.toThrow(/value is required for a new secret/)
     await expect(setProjectEnvVar('demo', { name: 'K', value: 'v', secret: true }))
@@ -160,7 +160,7 @@ describe('removeProjectEnvVar', () => {
 })
 
 describe('resolveProjectEnv', () => {
-  it('splits what a worktree gets from what the proxy injects', async () => {
+  it('splits what a workspace gets from what the proxy injects', async () => {
     await setProjectEnvVar('demo', { name: 'PLAIN', value: 'v' })
     await setProjectEnvVar('demo', { name: 'SECRET', value: 'sekrit', secret: true, rule: RULE })
 

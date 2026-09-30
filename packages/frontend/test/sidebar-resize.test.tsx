@@ -3,21 +3,21 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 
-vi.mock('#lib/stoppedApi', () => ({ getStoppedWorktrees: vi.fn(() => Promise.resolve([])) }))
-vi.mock('#lib/createWorktree', () => ({
+vi.mock('#lib/stoppedApi', () => ({ getStoppedWorkspaces: vi.fn(() => Promise.resolve([])) }))
+vi.mock('#lib/createWorkspace', () => ({
   dismissProvisioning: vi.fn(),
-  restartWorktree: vi.fn(),
-  renameWorktree: vi.fn(() => Promise.resolve()),
+  restartWorkspace: vi.fn(),
+  renameWorkspace: vi.fn(() => Promise.resolve()),
 }))
 vi.mock('#lib/groupApi', () => ({
-  createWorktreeGroup: vi.fn(() => Promise.resolve({ groupId: 'g-new' })),
-  renameWorktreeGroup: vi.fn(() => Promise.resolve()),
-  setWorktreeGroupPinned: vi.fn(() => Promise.resolve()),
-  deleteWorktreeGroup: vi.fn(() => Promise.resolve()),
-  setWorktreeGroup: vi.fn(() => Promise.resolve()),
+  createWorkspaceGroup: vi.fn(() => Promise.resolve({ groupId: 'g-new' })),
+  renameWorkspaceGroup: vi.fn(() => Promise.resolve()),
+  setWorkspaceGroupPinned: vi.fn(() => Promise.resolve()),
+  deleteWorkspaceGroup: vi.fn(() => Promise.resolve()),
+  setWorkspaceGroup: vi.fn(() => Promise.resolve()),
 }))
-vi.mock('#lib/stopWorktreeFlow', () => ({ stopWorktreeOptimistic: vi.fn() }))
-vi.mock('#lib/useProvisionWorktree', () => ({ useProvisionWorktree: () => vi.fn() }))
+vi.mock('#lib/stopWorkspaceFlow', () => ({ stopWorkspaceOptimistic: vi.fn() }))
+vi.mock('#lib/useProvisionWorkspace', () => ({ useProvisionWorkspace: () => vi.fn() }))
 
 import { Sidebar } from '#components/Sidebar'
 import {
@@ -62,7 +62,7 @@ function renderSidebar(): HTMLElement {
       <Sidebar
         projectSlug={null}
         projectRemoteUrl=""
-        worktrees={[]}
+        workspaces={[]}
         groups={[]}
         queued={[]}
         held={[]}

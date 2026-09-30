@@ -1,0 +1,897 @@
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { spawn, type ChildProcess } from 'node:child_process'
+import crypto from 'node:crypto'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import WebSocket from 'ws'
+import {
+  createYaacTestEnv,
+  spawnYaacServer,
+  setTestGitIdentity,
+  runYaac,
+  TEST_CLI_ENTRY,
+  type YaacTestEnv,
+  type SpawnedServer,
+} from '@yaac/test-utils/cli'
+import { addTestProject, createTestRepo, requirePodman, requireCluster } from '@yaac/test-utils/setup'
+import {
+  recordWorkspaceCreated,
+  recordWorkspaceStopped,
+} from '@yaac/server/db/workspace-store'
+import {
+  recordAgentSessions,
+  setActiveAgentSessions,
+} from '@yaac/server/db/agent-session-store'
+import { setDataDir } from '@yaac/shared/paths'
+import { closeDb } from '@yaac/server/db/client'
+import { firstSnapshot } from '@yaac/test-utils/events-ws'
+
+/**
+ * Merged session-CLI suite: one shared `createYaacTestEnv()` + one shared
+ * `spawnYaacServer()` for every test in this file, instead of a per-test
+ * server. Spawning a server (and waiting on the cross-worker server mutex)
+ * dominated the wall-clock of the small per-command files this merges:
+ * session-attach, session-delete, session-shell, session-restart,
+ * session-list, session-monitor, open, the validation-only
+ * session-create tests, the no-container server-ws describe, and the
+ * no-container session-provisioning describe.
+ *
+ * Vitest runs tests within a file sequentially in declaration order, which
+ * this file exploits: the data dir is SHARED across all tests, so ordering
+ * matters —
+ *  - the 'empty state' describe runs first, before anything seeds projects
+ *    into the shared data dir (its tests assert pristine empty states);
+ *  - the validation-error tests run next and create no state;
+ *  - the 'with seeded projects' describe runs last and adds projects with
+ *    file-unique slugs (no slug is seeded twice — addTestProject can't
+ *    re-clone into an existing project dir).
+ * NOTHING in this file may seed credentials: the session-create
+ * credential-error tests rely on the credentials dir staying empty.
+ *
+ * Cluster/podman requirements (from the source files): session resolution
+ * (attach/shell/delete/restart) lists pods/jobs via kubectl; session list —
+ * and each monitor render — queries pods via kubectl even for empty states;
+ * and `createWorkspace` runs `ensureContainerRuntime()` (podman + kubernetes
+ * round-trip) before
+ * the credential checks the create tests target. So the shared beforeAll
+ * requires both podman and a reachable cluster.
+ */
+
+let testEnv: YaacTestEnv
+let server: SpawnedServer
+const TAILNET_HOST = 'srv.tailnet.ts.net'
+
+beforeAll(async () => {
+  await requirePodman()
+  await requireCluster()
+  testEnv = await createYaacTestEnv()
+  // A tailnet name admitted, so the identity refusal below can be asked
+  // for rather than stopping at the Host guard.
+  server = await spawnYaacServer({ ...testEnv.env, YAAC_ALLOWED_HOSTS: TAILNET_HOST })
+  await setTestGitIdentity(testEnv.env)
+})
+
+afterAll(async () => {
+  await server.stop()
+  await testEnv.cleanup()
+})
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+async function waitFor(
+  cond: () => boolean,
+  timeoutMs: number,
+  describeFailure: () => string,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (cond()) return
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  throw new Error(describeFailure())
+}
+
+/** Open a WS against the server, collecting text + binary frames. */
+function openWs(url: string, headers: Record<string, string> = {}): {
+  ws: WebSocket
+  text: string[]
+  binary: () => string
+  opened: Promise<void>
+  failed: Promise<number>
+} {
+  const ws = new WebSocket(url, { headers })
+  const text: string[] = []
+  const chunks: Buffer[] = []
+  ws.on('message', (data, isBinary) => {
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer)
+    if (isBinary) chunks.push(buf)
+    else text.push(buf.toString('utf8'))
+  })
+  const opened = new Promise<void>((resolve, reject) => {
+    ws.once('open', resolve)
+    ws.once('error', reject)
+  })
+  // Tests that expect the upgrade to be refused (e.g. a 401) await
+  // `failed`, never `opened` — and their `ws.close()` while still
+  // CONNECTING rejects `opened` ("WebSocket was closed before the
+  // connection was established"). Attach a no-op handler so that
+  // expected rejection doesn't surface as an unhandled rejection;
+  // callers that do `await opened` still observe it.
+  opened.catch(() => {})
+  const failed = new Promise<number>((resolve) => {
+    ws.once('unexpected-response', (_req, res) => resolve(res.statusCode ?? 0))
+  })
+  return { ws, text, binary: () => Buffer.concat(chunks).toString('utf8'), opened, failed }
+}
+
+/**
+ * Spawn `yaac workspace monitor <args>` as a long-running child (it
+ * re-renders forever), mirroring the `server logs -f` e2e pattern:
+ * wait for the first render, assert on it, then kill the child.
+ *
+ * The built bundle, not the source under tsx — same reason `runYaac` uses
+ * it (see TEST_CLI_ENTRY): a fresh process re-transpiles the whole graph.
+ */
+async function runMonitorUntilFirstRender(...args: string[]): Promise<string> {
+  const child: ChildProcess = spawn(process.execPath, [
+    TEST_CLI_ENTRY, 'workspace', 'monitor', ...args,
+  ], { env: testEnv.env, stdio: ['ignore', 'pipe', 'pipe'] })
+
+  let stdout = ''
+  let stderr = ''
+  child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
+  child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+  try {
+    // First render = header line plus the session list body.
+    await waitFor(
+      () => stdout.includes('yaac workspace monitor') && stdout.includes('No running workspaces'),
+      30_000,
+      () => `monitor never rendered.\nstdout: ${stdout}\nstderr: ${stderr}`,
+    )
+  } finally {
+    child.kill('SIGTERM')
+    await new Promise<void>((resolve) => child.once('exit', () => resolve()))
+  }
+  return stdout
+}
+
+/**
+ * These four tests assert PRISTINE empty states (no sessions, no
+ * projects) against the shared data dir — they MUST run before any test
+ * seeds a project. Nothing in this describe writes server state.
+ */
+describe('empty state (must run before any state is seeded)', () => {
+  it('GET /events sends a snapshot frame on connect', async () => {
+    const { ws, text, opened } = openWs(`ws://127.0.0.1:${server.lock.port}/api/events`)
+    await opened
+    // The snapshot is pushed immediately after the upgrade.
+    for (let i = 0; i < 50 && text.length === 0; i++) await sleep(100)
+    ws.close()
+    expect(text.length).toBeGreaterThan(0)
+    const frame = JSON.parse(text[0]) as { type: string; data: Record<string, unknown> }
+    expect(frame.type).toBe('snapshot')
+    expect(frame.data).toMatchObject({ workspaces: [], projects: [] })
+  })
+
+  it('workspace list prints the empty-state hint when no workspaces exist', async () => {
+    const { stdout, exitCode } = await runYaac(testEnv.env, 'workspace', 'list')
+    expect(exitCode).toBe(0)
+    expect(stdout).toContain('No running workspaces')
+    expect(stdout).toContain('yaac workspace create')
+  })
+
+  it('workspace monitor renders the header with the default interval and the empty session list', async () => {
+    const stdout = await runMonitorUntilFirstRender()
+    expect(stdout).toMatch(/yaac workspace monitor {2}\(every 5s/)
+    expect(stdout).toContain('Press Ctrl+C to exit')
+    expect(stdout).toContain('No running workspaces')
+  })
+})
+
+/**
+ * Wire-level coverage for the server's WebSocket surface:
+ *  - /events sends a `snapshot` frame on connect (see the empty-state
+ *    describe above) and refuses a caller it cannot identify.
+ *  - /pty/attach reports an error for unknown sessions.
+ * The /pty/attach byte round-trip against a real session container lives
+ * in workspace-create-suite.test.ts (it needs mock remotes + a session pod).
+ */
+describe('server WebSocket surface (real server, no containers)', () => {
+  it('refuses /events to a caller it cannot identify', async () => {
+    // The tailnet name this file's server admits, reached without
+    // tailscale serve.
+    const { ws, failed } = openWs(`ws://127.0.0.1:${server.lock.port}/api/events`, { host: TAILNET_HOST })
+    expect(await failed).toBe(401)
+    ws.close()
+  })
+
+  it('/api/pty/attach reports an error frame for an unknown session', async () => {
+    const { ws, text, opened } = openWs(`ws://127.0.0.1:${server.lock.port}/api/pty/attach?id=definitely-bogus`)
+    await opened
+    const closed = new Promise<void>((r) => ws.once('close', () => r()))
+    await closed
+    expect(text.some((t) => t.includes('"type":"error"'))).toBe(true)
+  })
+})
+
+/**
+ * End-to-end coverage for provisioning sessions as first-class snapshot
+ * objects, against a REAL server (no containers needed — a create against a
+ * non-existent project fails fast at project validation, before any cluster or
+ * podman interaction). Proves:
+ *  - a create registers a provisioning entry surfaced in the `/api/events` snapshot,
+ *  - it carries kind/createdAt and, on failure, an error (kept, not dropped),
+ *  - a freshly-opened WS re-hydrates it (the reload-survival mechanism),
+ *  - dismiss removes it from the snapshot.
+ * The provisioning entry lives only in the server's in-memory registry and
+ * is dismissed at the end, so no state leaks into later tests.
+ */
+describe('provisioning sessions in the server snapshot (real server, no containers)', () => {
+  it('surfaces a create as a provisioning entry, survives a reconnect, then dismisses', async () => {
+    const base = `http://127.0.0.1:${server.lock.port}`
+    const workspaceId = crypto.randomUUID()
+
+    // A create against a non-existent project: the route registers the
+    // provisioning entry up front, then createWorkspace throws NOT_FOUND fast →
+    // the entry is marked failed (kept until dismissed).
+    const res = await fetch(`${base}/api/workspace/create`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ project: 'ghost-project', tool: 'claude', workspaceId }),
+    })
+    expect(res.status).toBe(200)
+    const ndjson = await res.text()
+    // The client-supplied id was accepted (uuid schema) and the create failed.
+    expect(ndjson).toContain('"type":"error"')
+
+    // Reconnect (as a reloaded browser would) — the snapshot must still carry
+    // the provisioning entry, with its kind, a createdAt, and the error.
+    let snap = await firstSnapshot(server.lock.port)
+    let entry = snap.provisioning.find((p) => p.workspaceId === workspaceId)
+    // Give the fail-after-reject a beat if the very first reconnect raced it.
+    for (let i = 0; i < 20 && !entry?.error; i++) {
+      await sleep(100)
+      snap = await firstSnapshot(server.lock.port)
+      entry = snap.provisioning.find((p) => p.workspaceId === workspaceId)
+    }
+    expect(entry).toBeDefined()
+    expect(entry?.kind).toBe('create')
+    expect(entry?.projectSlug).toBe('ghost-project')
+    expect(entry?.createdAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+    expect(entry?.error).toBeTruthy()
+
+    // Dismiss drops it from the server registry → out of the snapshot.
+    const dismiss = await fetch(`${base}/api/workspace/provisioning/${workspaceId}/dismiss`, {
+      method: 'POST',
+    })
+    expect(dismiss.status).toBe(204)
+
+    const after = await firstSnapshot(server.lock.port)
+    expect(after.provisioning.some((p) => p.workspaceId === workspaceId)).toBe(false)
+  }, 30_000)
+})
+
+/**
+ * Fast validation/NOT_FOUND paths. None of these create any server-side
+ * state (no projects, no credentials, no sessions).
+ */
+describe('validation errors (no state created)', () => {
+  it('workspace attach errors with NOT_FOUND for a bogus session id', async () => {
+    const { stderr, exitCode } = await runYaac(
+      testEnv.env, 'workspace', 'attach', 'definitely-bogus-id',
+    )
+    expect(exitCode).not.toBe(0)
+    expect(stderr).toMatch(/not found/i)
+  })
+
+  it('workspace shell errors with NOT_FOUND for a bogus session id', async () => {
+    const { stderr, exitCode } = await runYaac(
+      testEnv.env, 'workspace', 'shell', 'definitely-bogus-id',
+    )
+    expect(exitCode).not.toBe(0)
+    expect(stderr).toMatch(/not found/i)
+  })
+
+  it('workspace stop errors with NOT_FOUND when no workspace matches the id', async () => {
+    const { stderr, exitCode } = await runYaac(
+      testEnv.env, 'workspace', 'stop', 'definitely-no-such-session',
+    )
+    expect(exitCode).not.toBe(0)
+    expect(stderr).toMatch(/No workspace found/i)
+  })
+
+  it('workspace restart errors with NOT_FOUND when no workspace matches the id', async () => {
+    const { stderr, exitCode } = await runYaac(
+      testEnv.env, 'workspace', 'restart', 'definitely-no-such-session',
+    )
+    expect(exitCode).not.toBe(0)
+    expect(stderr).toMatch(/No workspace found/i)
+  })
+
+  it('workspace list <project> 404s with a helpful message for an unknown slug', async () => {
+    const { stderr, exitCode } = await runYaac(testEnv.env, 'workspace', 'list', 'no-such-project')
+    expect(exitCode).not.toBe(0)
+    expect(stderr.toLowerCase()).toMatch(/not found|no-such-project/)
+  })
+
+  it('workspace create errors out fast when the project slug does not exist', async () => {
+    const { stderr, exitCode } = await runYaac(testEnv.env, 'workspace', 'create', 'nope')
+    expect(exitCode).not.toBe(0)
+    expect(stderr).toMatch(/Project "nope" not found/)
+  })
+})
+
+/**
+ * From here on, tests seed projects into the SHARED data dir. Every slug
+ * is unique across the file (a slug can only be added once), and none of
+ * these tests seed credentials — the session-create tests below assert
+ * the "has no git credential" error against the still-empty
+ * credentials dir.
+ */
+describe('with seeded projects', () => {
+  describe('yaac workspace list (real CLI + real server)', () => {
+    it('workspace list <project> filters the empty state by project name', async () => {
+      const repo = path.join(testEnv.scratchDir, 'proj-empty')
+      await createTestRepo(repo)
+      await addTestProject(server, repo)
+
+      const { stdout, exitCode } = await runYaac(testEnv.env, 'workspace', 'list', 'proj-empty')
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain('No running workspaces for project "proj-empty"')
+    })
+
+    it('workspace list --stopped shows the empty-stopped message when nothing is recorded', async () => {
+      const repo = path.join(testEnv.scratchDir, 'proj-nodel')
+      await createTestRepo(repo)
+      await addTestProject(server, repo)
+
+      const { stdout, exitCode } = await runYaac(
+        testEnv.env, 'workspace', 'list', 'proj-nodel', '--stopped',
+      )
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain('No stopped workspaces for project "proj-nodel"')
+    })
+
+    /**
+     * Stopped-workspace fixtures: rows written the way a create-then-stop
+     * writes them, since the listing reads recorded rows and nothing else.
+     *
+     * DEL_SLUG's workspace is deliberately recorded WITHOUT a first prompt and
+     * without a transcript path, which is the shape a workspace gets when its
+     * pod died before the capture step ever ran. Its prompt is then reachable
+     * only by parsing the transcript on disk at the conventional claude path,
+     * which is the fallback `stoppedPrompt` exists for — so the transcript
+     * below is the assertion's real subject, not scenery.
+     */
+    const DEL_SLUG = 'proj-del'
+    const CAP_SLUG = 'proj-del-many'
+    const ALL_SLUG = 'proj-del-all'
+    const promptWorkspaceId = crypto.randomUUID()
+    const capIds = Array.from(
+      { length: 5 },
+      (_, i) => `${String(i).padStart(8, '0')}-aaaa-bbbb-cccc-dddddddddddd`,
+    )
+    const allIds = Array.from({ length: 3 }, () => crypto.randomUUID())
+
+    async function seedTranscript(slug: string, workspaceId: string, body: string): Promise<void> {
+      const dir = path.join(
+        testEnv.dataDir, 'global', 'projects', slug, 'claude', 'projects', '-workspace',
+      )
+      await fs.mkdir(dir, { recursive: true })
+      await fs.writeFile(path.join(dir, `${workspaceId}.jsonl`), body)
+    }
+
+    /** One recorded workspace that is stopped, with one claude conversation. */
+    async function seedStopped(slug: string, workspaceId: string): Promise<void> {
+      await recordWorkspaceCreated({ projectSlug: slug, workspaceId })
+      await recordAgentSessions(slug, workspaceId, [
+        { tool: 'claude', agentSessionId: crypto.randomUUID() },
+      ])
+      await recordWorkspaceStopped(slug, workspaceId)
+    }
+
+    beforeAll(async () => {
+      for (const slug of [DEL_SLUG, CAP_SLUG, ALL_SLUG]) {
+        const repo = path.join(testEnv.scratchDir, slug)
+        await createTestRepo(repo)
+        await addTestProject(server, repo)
+      }
+      const firstMsg = JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: 'port the lexer to rust' },
+      })
+      // The conventional claude path is keyed by the WORKSPACE id, which is
+      // what the uncaptured-prompt fallback derives — so this lands where
+      // that lookup will go looking.
+      await seedTranscript(DEL_SLUG, promptWorkspaceId, [
+        `{"type":"permission-mode","workspaceId":"${promptWorkspaceId}"}`,
+        firstMsg,
+        '',
+      ].join('\n'))
+
+      // Rows are written with the server stopped — the DB has a single
+      // writer (see the agents describe).
+      await server.stop()
+      setDataDir(testEnv.dataDir)
+      await seedStopped(DEL_SLUG, promptWorkspaceId)
+      for (const id of capIds) await seedStopped(CAP_SLUG, id)
+      for (const id of allIds) await seedStopped(ALL_SLUG, id)
+      await closeDb()
+      // Restart so the CLI reads these through a server that owns the DB. It
+      // finds the new one through the lock file, like any other client.
+      server = await spawnYaacServer(testEnv.env)
+    })
+
+    it('workspace list --stopped renders stopped workspaces with their prompts', async () => {
+      const { stdout, exitCode } = await runYaac(
+        testEnv.env, 'workspace', 'list', DEL_SLUG, '--stopped',
+      )
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain(promptWorkspaceId.slice(0, 8))
+      expect(stdout).toContain(DEL_SLUG)
+      expect(stdout).toContain('claude')
+      expect(stdout).toContain('PROMPT')
+      expect(stdout).toContain('port the lexer to rust')
+    })
+
+    it('workspace list --stopped -n caps the rendered rows and hints at the cap', async () => {
+      const { stdout, exitCode } = await runYaac(
+        testEnv.env, 'workspace', 'list', CAP_SLUG, '--stopped', '-n', '2',
+      )
+      expect(exitCode).toBe(0)
+      const matches = capIds.filter((id) => stdout.includes(id.slice(0, 8)))
+      expect(matches).toHaveLength(2)
+      expect(stdout).toMatch(/showing most recent 2/)
+    })
+
+    it('workspace list --stopped --all omits the cap hint', async () => {
+      const { stdout, exitCode } = await runYaac(
+        testEnv.env, 'workspace', 'list', ALL_SLUG, '--stopped', '--all',
+      )
+      expect(exitCode).toBe(0)
+      for (const id of allIds) expect(stdout).toContain(id.slice(0, 8))
+      expect(stdout).not.toMatch(/showing most recent/)
+    })
+  })
+
+  /**
+   * `yaac workspace rename`, whose whole subject is recorded state: a title
+   * lives on the host, so a stopped workspace can be renamed and no cluster
+   * is involved.
+   */
+  describe('yaac workspace rename (real CLI + real server)', () => {
+    const REN_SLUG = 'proj-rename'
+    const renameId = crypto.randomUUID()
+    // Two ids sharing a prefix, for the terminal commands' ambiguity check.
+    const twinIds = ['feedface-0000-4000-8000-000000000001', 'feedface-0000-4000-8000-000000000002']
+
+    beforeAll(async () => {
+      const repo = path.join(testEnv.scratchDir, REN_SLUG)
+      await createTestRepo(repo)
+      await addTestProject(server, repo)
+      await server.stop()
+      setDataDir(testEnv.dataDir)
+      await recordWorkspaceCreated({ projectSlug: REN_SLUG, workspaceId: renameId })
+      await recordWorkspaceStopped(REN_SLUG, renameId)
+      for (const id of twinIds) {
+        await recordWorkspaceCreated({ projectSlug: REN_SLUG, workspaceId: id })
+        await recordWorkspaceStopped(REN_SLUG, id)
+      }
+      await closeDb()
+      server = await spawnYaacServer(testEnv.env)
+    })
+
+    it('sets a stopped workspace\u2019s title, and the listing shows it', async () => {
+      const { stdout, exitCode } = await runYaac(
+        testEnv.env, 'workspace', 'rename', renameId, 'porting the lexer to rust',
+      )
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain('porting the lexer to rust')
+
+      const listed = await runYaac(testEnv.env, 'workspace', 'list', REN_SLUG, '--stopped')
+      expect(listed.stdout).toContain('porting the lexer to rust')
+    })
+
+    // A prefix naming two workspaces is refused with what to do about it,
+    // never resolved to whichever came first — and before any socket opens.
+    it('refuses an ambiguous prefix for attach and shell', async () => {
+      for (const command of ['attach', 'shell']) {
+        const { stderr, exitCode } = await runYaac(testEnv.env, 'workspace', command, 'feedface')
+        expect(exitCode, command).not.toBe(0)
+        expect(stderr, command).toMatch(/Ambiguous workspace prefix: feedface/)
+      }
+    })
+
+    it('404s for an id no workspace has', async () => {
+      const { stderr, exitCode } = await runYaac(
+        testEnv.env, 'workspace', 'rename', crypto.randomUUID(), 'nope',
+      )
+      expect(exitCode).not.toBe(0)
+      expect(stderr.toLowerCase()).toContain('not found')
+    })
+  })
+
+  /**
+   * The sidebar groups, from the terminal. Recorded state like the listings
+   * above — a group has no pod and its members can be stopped workspaces — so
+   * this needs no cluster either.
+   *
+   * Groups are addressed by NAME here, which is the whole point of the CLI
+   * surface: the uuid the webapp drags around is not something a person (or
+   * an agent running `yaac-mama`) has ever seen.
+   */
+  describe('yaac group (real CLI + real server)', () => {
+    const GRP_SLUG = 'proj-groups'
+    const memberId = crypto.randomUUID()
+    const otherId = crypto.randomUUID()
+
+    beforeAll(async () => {
+      const repo = path.join(testEnv.scratchDir, GRP_SLUG)
+      await createTestRepo(repo)
+      await addTestProject(server, repo)
+
+      // Same single-writer dance as the describes above: rows go in with the
+      // server stopped, then a fresh server reads them.
+      await server.stop()
+      setDataDir(testEnv.dataDir)
+      await recordWorkspaceCreated({ projectSlug: GRP_SLUG, workspaceId: memberId })
+      await recordWorkspaceCreated({ projectSlug: GRP_SLUG, workspaceId: otherId })
+      await closeDb()
+      server = await spawnYaacServer(testEnv.env)
+    })
+
+    it('group list reports the empty state with the command that fixes it', async () => {
+      const { stdout, exitCode } = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain('No workspace groups')
+      expect(stdout).toContain('yaac group create')
+    })
+
+    it('group create is idempotent, so it cannot manufacture an ambiguous name', async () => {
+      // `yaac-mama group create` reuses an existing group by name; the two
+      // surfaces have to agree, and a duplicate only creates the ambiguity
+      // that `move` and `delete` then have to refuse.
+      const first = await runYaac(testEnv.env, 'group', 'create', GRP_SLUG, 'nightly')
+      expect(first.exitCode).toBe(0)
+      const again = await runYaac(testEnv.env, 'group', 'create', GRP_SLUG, 'nightly')
+      expect(again.exitCode).toBe(0)
+      expect(again.stdout).toContain('already exists')
+
+      const listed = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      expect(listed.stdout.match(/nightly/g)).toHaveLength(1)
+
+      // Including when it is retyped with whitespace the server collapses:
+      // the local pre-check matches under the same normalization the name is
+      // stored with, or it makes the duplicate this exists to prevent.
+      const spaced = await runYaac(testEnv.env, 'group', 'create', GRP_SLUG, 'spaced  out')
+      expect(spaced.exitCode).toBe(0)
+      // And reports the name as stored, not as typed.
+      expect(spaced.stdout).toContain('"spaced out"')
+      const retyped = await runYaac(testEnv.env, 'group', 'create', GRP_SLUG, 'spaced   out')
+      expect(retyped.exitCode).toBe(0)
+      expect(retyped.stdout).toContain('already exists')
+
+      const both = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      expect(both.stdout.match(/spaced out/g)).toHaveLength(1)
+    })
+
+    it('group move by id reports the group\u2019s name, not the id it was given', async () => {
+      const made = await runYaac(testEnv.env, 'group', 'create', GRP_SLUG, 'by id')
+      const id = /\(([0-9a-f-]{36})\)/.exec(made.stdout)?.[1]
+      expect(id).toBeTruthy()
+
+      // Passing an id is exactly what the ambiguity error asks for, so the
+      // success line must not echo a uuid back at the user.
+      const { stdout, exitCode } = await runYaac(
+        testEnv.env, 'group', 'move', memberId, id!, '--project', GRP_SLUG,
+      )
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain('"by id"')
+      expect(stdout).not.toContain(id!)
+    })
+
+    it('group create makes an empty group, and group list shows it', async () => {
+      const created = await runYaac(testEnv.env, 'group', 'create', GRP_SLUG, 'release train')
+      expect(created.exitCode).toBe(0)
+      expect(created.stdout).toContain('release train')
+
+      const { stdout, exitCode } = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      expect(exitCode).toBe(0)
+      expect(stdout).toMatch(/GROUP\s+PROJECT\s+RUNNING\s+PINNED\s+CREATED/)
+      expect(stdout).toContain('release train')
+      // Pinned, or a group with no members would be listed by nothing.
+      expect(stdout).toMatch(/release train\s+proj-groups\s+0\s+yes/)
+    })
+
+    it('group move files a workspace by name, and omitting one ungroups it', async () => {
+      const moved = await runYaac(
+        testEnv.env, 'group', 'move', memberId, 'release train', '--project', GRP_SLUG,
+      )
+      expect(moved.exitCode).toBe(0)
+      expect(moved.stdout).toContain('release train')
+
+      // Creating on move: a name matching no group is made, so a caller
+      // never has to create-then-move. Addressed by the 8-character prefix
+      // every listing prints — the membership write matches ids exactly, so
+      // a prefix that reached it would file nothing and still report success.
+      const fresh = await runYaac(
+        testEnv.env, 'group', 'move', otherId.slice(0, 8), 'brand new', '--project', GRP_SLUG,
+      )
+      expect(fresh.exitCode).toBe(0)
+      const grouped = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      expect(grouped.stdout).toMatch(/brand new\s+proj-groups\s+0/)
+      const listed = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      expect(listed.stdout).toContain('brand new')
+
+      // No group named: back to the default list. A bare `--` could never
+      // serve here — commander eats it as its end-of-options marker.
+      const out = await runYaac(
+        testEnv.env, 'group', 'move', memberId, '--project', GRP_SLUG,
+      )
+      expect(out.exitCode).toBe(0)
+      expect(out.stdout).toContain('out of its group')
+    })
+
+    it('finds a stopped workspace\u2019s project without being told it', async () => {
+      // Filing a stopped workspace is normal — its group is where it comes
+      // back when restarted — so it must not be the case that needs a flag.
+      await runYaac(testEnv.env, 'workspace', 'stop', memberId).catch(() => null)
+      const { stdout, exitCode } = await runYaac(
+        testEnv.env, 'group', 'move', memberId, 'release train',
+      )
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain('release train')
+    })
+
+    it('group move reports a workspace it cannot find rather than moving nothing', async () => {
+      const { stderr, exitCode } = await runYaac(
+        testEnv.env, 'group', 'move', crypto.randomUUID(), 'release train',
+      )
+      expect(exitCode).not.toBe(0)
+      // No --project and not running, so it cannot be resolved — and the
+      // error says which flag would have answered it.
+      expect(stderr).toContain('--project')
+    })
+
+    it('group delete releases its members instead of stopping anything', async () => {
+      const { stdout, exitCode } = await runYaac(
+        testEnv.env, 'group', 'delete', GRP_SLUG, 'brand new',
+      )
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain('default list')
+
+      const listed = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      expect(listed.stdout).not.toContain('brand new')
+      // The workspace it held is still there, just ungrouped.
+      const stopped = await runYaac(testEnv.env, 'workspace', 'list', GRP_SLUG, '--stopped')
+      expect(stopped.stdout).toContain(otherId.slice(0, 8))
+    })
+
+    it('group delete refuses an ambiguous name rather than guessing which to destroy', async () => {
+      // Names are not unique, and this command destroys the row it picks —
+      // so it refuses, like every other name resolution in the CLI.
+      //
+      // Made through the route, because the CLI can no longer produce this
+      // state: `group create` is idempotent. The webapp's own "new group"
+      // still can, which is exactly why the refusal has to exist.
+      for (let i = 0; i < 2; i++) {
+        const res = await fetch(`http://127.0.0.1:${server.lock.port}/api/workspace/group/create`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ projectSlug: GRP_SLUG, name: 'twin' }),
+        })
+        expect(res.ok).toBe(true)
+      }
+
+      const { stderr, exitCode } = await runYaac(
+        testEnv.env, 'group', 'delete', GRP_SLUG, 'twin',
+      )
+      expect(exitCode).not.toBe(0)
+      expect(stderr).toContain('names 2 groups')
+
+      // Both survive, and the id it named is enough to remove one.
+      const listed = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      expect(listed.stdout.match(/twin/g)).toHaveLength(2)
+      const id = /\(([0-9a-f-]{36})\)/.exec(stderr)?.[1]
+        ?? /([0-9a-f-]{36})/.exec(stderr)?.[1]
+      expect(id).toBeTruthy()
+      const byId = await runYaac(testEnv.env, 'group', 'delete', GRP_SLUG, id!)
+      expect(byId.exitCode).toBe(0)
+    })
+
+    it('group delete rejects a name that names nothing', async () => {
+      const { stderr, exitCode } = await runYaac(
+        testEnv.env, 'group', 'delete', GRP_SLUG, 'never existed',
+      )
+      expect(exitCode).not.toBe(0)
+      expect(stderr).toContain('No such group')
+    })
+  })
+
+  /**
+   * The agent-session listing, against a real server and a real DB. It is
+   * about *recorded* state — a workspace's conversations outlive its pod — so
+   * it needs no cluster, and the stopped case is the one that shipped broken
+   * because nothing drove it end to end.
+   */
+  describe('yaac workspace agents (real CLI + real server)', () => {
+    const AG_SLUG = 'proj-agents'
+    const stoppedId = crypto.randomUUID()
+    const convA = crypto.randomUUID()
+    const convB = crypto.randomUUID()
+    const bareId = crypto.randomUUID()
+
+    beforeAll(async () => {
+      const repo = path.join(testEnv.scratchDir, AG_SLUG)
+      await createTestRepo(repo)
+      await addTestProject(server, repo)
+
+      // The DB has exactly one writer — the running server holds it, and
+      // `.server.lock` is the guard (db/client.ts). Opening it from
+      // this process alongside the server loses every write to the server's
+      // own checkpoint, so the server is stopped FIRST, the rows written
+      // while nothing else holds the file, our handle closed, and only then
+      // is a fresh server spawned to read them.
+      await server.stop()
+      setDataDir(testEnv.dataDir)
+
+      // A stopped workspace holding two conversations: one still open at stop,
+      // one closed by a /clear — written the way the registry would have.
+      await recordWorkspaceCreated({ projectSlug: AG_SLUG, workspaceId: stoppedId })
+      await recordAgentSessions(AG_SLUG, stoppedId, [
+        { tool: 'claude', agentSessionId: convA, firstPrompt: 'the original ask' },
+        { tool: 'claude', agentSessionId: convB, firstPrompt: 'after the clear' },
+      ])
+      // Only convB was live when it stopped; convA is history.
+      await setActiveAgentSessions(AG_SLUG, stoppedId, [
+        { tool: 'claude', agentSessionId: convB },
+      ])
+      await recordWorkspaceStopped(AG_SLUG, stoppedId)
+      // A workspace with a row but no conversation, for the empty case.
+      await recordWorkspaceCreated({ projectSlug: AG_SLUG, workspaceId: bareId })
+
+      await closeDb()
+      server = await spawnYaacServer(testEnv.env)
+    })
+
+    it('workspace agents lists a STOPPED workspace\'s conversations, open first', async () => {
+      // The command's whole purpose: pick a conversation to restart. A
+      // stopped workspace has no pod, so resolving through one 404s.
+      const { stdout, exitCode } = await runYaac(testEnv.env, 'workspace', 'agents', stoppedId)
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain(convA)
+      expect(stdout).toContain(convB)
+      expect(stdout).toContain('the original ask')
+      // Open before closed, whatever their ordinal.
+      expect(stdout.indexOf(convB)).toBeLessThan(stdout.indexOf(convA))
+      expect(stdout).toMatch(/open/)
+      expect(stdout).toMatch(/closed/)
+    })
+
+    it('workspace agents reports a workspace that has none', async () => {
+      const { stdout, exitCode } = await runYaac(testEnv.env, 'workspace', 'agents', bareId)
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain('No agent sessions recorded')
+    })
+
+    it('workspace agents 404s for an id no workspace has', async () => {
+      // The negative case, asserted positively: a test that only checked for
+      // the *absence* of some message would pass on this output too.
+      const { stdout, stderr, exitCode } = await runYaac(
+        testEnv.env, 'workspace', 'agents', crypto.randomUUID(),
+      )
+      expect(exitCode).not.toBe(0)
+      expect(`${stdout}${stderr}`).toMatch(/not found/i)
+    })
+
+  })
+
+  describe('yaac workspace monitor (real CLI + real server)', () => {
+    // `-n` and `--interval` are the same commander option; this covers both.
+    it('filters by the [project] argument and honors -n <seconds>', async () => {
+      const repo = path.join(testEnv.scratchDir, 'proj-mon')
+      await createTestRepo(repo)
+      await addTestProject(server, repo)
+
+      const stdout = await runMonitorUntilFirstRender('proj-mon', '-n', '1')
+      expect(stdout).toMatch(/\(every 1s/)
+      expect(stdout).toContain('No running workspaces for project "proj-mon"')
+    })
+  })
+
+  /**
+   * Real CLI + real server + real runtime (podman build engine + cluster).
+   *
+   * These cover the CLI-initiated session-create VALIDATION paths: the
+   * error raised by the server when no GitHub token is configured for the
+   * project's remote, and the argument checks in front of it. That flows
+   * through the full subprocess→HTTP→Hono→session-create-handler→
+   * NDJSON-stream→CLI chain, including `ensureContainerRuntime()` (podman
+   * + kubernetes), so it proves the runtime+server plumbing works
+   * end-to-end through real processes. The happy-path container-creation
+   * coverage lives in workspace-create-suite.test.ts (mocked remotes).
+   *
+   * The originals all seeded a project named "repo-demo" into a fresh
+   * data dir per test; with the shared data dir each test seeds its own
+   * uniquely-slugged project instead.
+   */
+  describe('yaac workspace create (real CLI + real server)', () => {
+    it('surfaces the server "no git credential" validation error via stderr + nonzero exit', async () => {
+      const repo = path.join(testEnv.scratchDir, 'repo-demo')
+      await createTestRepo(repo)
+      // A URL-shaped remote so parseGitRemote succeeds; the credential
+      // lookup against an empty store is the real assertion target.
+      await addTestProject(server, repo, { remoteUrl: 'https://github.com/test-org/repo-demo.git' })
+
+      const { stderr, exitCode } = await runYaac(
+        testEnv.env,
+        'workspace',
+        'create',
+        'repo-demo',
+        '--tool',
+        'claude',
+      )
+      expect(exitCode).not.toBe(0)
+      expect(stderr).toMatch(/has no git credential/)
+    })
+
+    it('rejects an unknown --tool value via server VALIDATION', async () => {
+      const repo = path.join(testEnv.scratchDir, 'repo-demo-tool')
+      await createTestRepo(repo)
+      await addTestProject(server, repo)
+
+      const { stderr, exitCode } = await runYaac(
+        testEnv.env, 'workspace', 'create', 'repo-demo-tool', '--tool', 'mystery',
+      )
+      expect(exitCode).not.toBe(0)
+      expect(stderr.toLowerCase()).toContain('tool')
+    })
+
+    it('accepts --tool opencode (validation passes through to the git-credential check)', async () => {
+      // Mirrors the "no git credential" case above for --tool claude —
+      // confirms opencode passes the server's tool-validation gate, then
+      // trips the same missing-credential check downstream. Cheap proof
+      // that the new tool value is wired through the validator without
+      // standing up a real opencode container.
+      const repo = path.join(testEnv.scratchDir, 'repo-demo-opencode')
+      await createTestRepo(repo)
+      await addTestProject(server, repo, { remoteUrl: 'https://github.com/test-org/repo-demo-opencode.git' })
+
+      const { stderr, exitCode } = await runYaac(
+        testEnv.env, 'workspace', 'create', 'repo-demo-opencode', '--tool', 'opencode',
+      )
+      expect(exitCode).not.toBe(0)
+      expect(stderr).toMatch(/has no git credential/)
+    })
+
+    it('accepts --model for a non-claude tool (passes through to the git-credential check)', async () => {
+      // Mirrors the --tool opencode case above: a codex create with a
+      // provider/model override clears validation (any tool takes --model
+      // now) and trips the missing-credential check downstream — cheap
+      // proof the flag is wired through without standing up a container.
+      const repo = path.join(testEnv.scratchDir, 'repo-demo-model-tool')
+      await createTestRepo(repo)
+      await addTestProject(server, repo, { remoteUrl: 'https://github.com/test-org/repo-demo-model-tool.git' })
+
+      const { stderr, exitCode } = await runYaac(
+        testEnv.env, 'workspace', 'create', 'repo-demo-model-tool',
+        '--tool', 'codex', '--model', 'gpt-5.2-codex',
+      )
+      expect(exitCode).not.toBe(0)
+      expect(stderr).toMatch(/has no git credential/)
+    })
+
+    it('rejects a --model value with shell-unsafe characters via schema validation', async () => {
+      const repo = path.join(testEnv.scratchDir, 'repo-demo-model-bad')
+      await createTestRepo(repo)
+      await addTestProject(server, repo)
+
+      const { stderr, exitCode } = await runYaac(
+        testEnv.env, 'workspace', 'create', 'repo-demo-model-bad',
+        '--tool', 'claude', '--model', "opus'; rm -rf /",
+      )
+      expect(exitCode).not.toBe(0)
+      expect(stderr.toLowerCase()).toContain('model')
+    })
+  })
+})

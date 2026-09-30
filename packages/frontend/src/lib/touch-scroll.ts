@@ -177,12 +177,12 @@ export function patchTouchScroll(term: Terminal): (() => void) | null {
   const emit = (reports: number, at: { clientX: number; clientY: number }): void => {
     // Nothing reporting — a pane app that turned the mouse off, or a graceful
     // detach, which resets the mode on its way out. There is nothing local to
-    // scroll either: the terminal keeps no scrollback (WorktreeTerminal sets
+    // scroll either: the terminal keeps no scrollback (WorkspaceTerminal sets
     // `scrollback: 0`; history lives in tmux).
     //
     // A dropped socket is deliberately not on that list: nothing resets the
     // parser's DECSET state, so reporting stays nominally active and reports
-    // go out into the closed-socket guard in WorktreeTerminal and are dropped.
+    // go out into the closed-socket guard in WorkspaceTerminal and are dropped.
     if (!coreMouse.areMouseEventsActive) return
     // getMouseReportCoords reads only clientX/clientY off the event, so a
     // Touch stands in for the MouseEvent its signature asks for.

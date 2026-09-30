@@ -1,21 +1,21 @@
 import { api } from './api'
 import { ServerError } from '@yaac/shared/errors'
-import type { StoppedWorktreeEntry } from '@yaac/shared/types'
+import type { StoppedWorkspaceEntry } from '@yaac/shared/types'
 
 /**
- * Deleted worktrees for a project — worktrees whose containers are gone but
+ * Deleted workspaces for a project — workspaces whose containers are gone but
  * whose transcripts remain on disk, so they can be restarted (resumed).
- * Mirrors `yaac worktree list -s`.
+ * Mirrors `yaac workspace list -s`.
  *
  * An older server may not serve this route; a 404 degrades to "none" rather
  * than surfacing an error for a non-essential list (skew resilience).
  */
-export async function getStoppedWorktrees(
+export async function getStoppedWorkspaces(
   projectSlug: string,
   limit = 100,
-): Promise<StoppedWorktreeEntry[]> {
+): Promise<StoppedWorkspaceEntry[]> {
   try {
-    return await api.worktree['list-stopped'].$get({
+    return await api.workspace['list-stopped'].$get({
       query: { project: projectSlug, limit: String(limit) },
     })
   } catch (err) {
@@ -27,13 +27,13 @@ export async function getStoppedWorktrees(
 /**
  * Mark an abnormal death as seen — the user viewed its detail in the deleted
  * overlay, so the notification dot / row highlight should clear. Persisted on
- * the server (worktree row) so the acknowledgement is durable and
+ * the server (workspace row) so the acknowledgement is durable and
  * shared across clients. Best-effort: a failed write just re-shows the dot,
  * which the next view clears again, so callers fire-and-forget.
  */
-export async function markDeathSeen(projectSlug: string, worktreeId: string): Promise<void> {
+export async function markDeathSeen(projectSlug: string, workspaceId: string): Promise<void> {
   try {
-    await api.worktree['mark-death-seen'].$post({ json: { projectSlug, worktreeId } })
+    await api.workspace['mark-death-seen'].$post({ json: { projectSlug, workspaceId } })
   } catch {
     // Best-effort: a lost write just re-shows the dot, which the next view
     // clears again. Swallow so fire-and-forget callers need no .catch.
@@ -47,7 +47,7 @@ export async function markDeathSeen(projectSlug: string, worktreeId: string): Pr
  */
 export async function markAllDeathsSeen(projectSlug: string): Promise<void> {
   try {
-    await api.worktree['mark-all-deaths-seen'].$post({ json: { projectSlug } })
+    await api.workspace['mark-all-deaths-seen'].$post({ json: { projectSlug } })
   } catch {
     // Best-effort — see markDeathSeen.
   }

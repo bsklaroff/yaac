@@ -17,13 +17,13 @@ import { env } from '@yaac/shared/env'
 
 /**
  * `yaac cluster delete` — tear down the local kind cluster `yaac cluster
- * setup` created, leaving on-disk worktrees and worktrees untouched.
+ * setup` created, leaving on-disk workspaces untouched.
  *
  * One `kind delete` is now the whole teardown: every yaac workload lives
  * inside the cluster (Calico, netd, the main and
  * per-project registries) and so does all of their node-local storage,
  * including the registries' image blobs — the node's filesystem goes with
- * the node. Nothing under the yaac data dir (projects, worktrees, worktrees)
+ * the node. Nothing under the yaac data dir (projects, workspaces, workspaces)
  * is touched, so a later `yaac cluster install` recreates the cluster and
  * re-pushes the images.
  */
@@ -64,7 +64,7 @@ async function listKindClusters(): Promise<string[]> {
 }
 
 /**
- * Delete the kind cluster. Refuses inside a nested yaac worktree (the
+ * Delete the kind cluster. Refuses inside a nested yaac workspace (the
  * cluster is the outer install's infrastructure), confirms first unless
  * `yes`, and is idempotent: an absent cluster is a no-op. Throws
  * ClusterDeleteError with a user-actionable message when a step cannot
@@ -83,7 +83,7 @@ export async function runClusterDelete(
     const proceed = await confirmDefault(
       `This deletes the kind cluster "${cluster}", including the in-cluster `
       + 'image registry and every image pushed to it. Any running sessions '
-      + 'stop, but their on-disk state and worktrees are kept. Continue?',
+      + 'stop, but their on-disk state and workspaces are kept. Continue?',
     )
     if (!proceed) {
       console.log('Aborted — nothing was deleted.')
@@ -99,7 +99,7 @@ export async function runClusterDelete(
   }
 
   console.log(
-    '\nDone. Sessions and worktrees on disk are untouched — run '
+    '\nDone. Sessions and workspaces on disk are untouched — run '
     + '`yaac cluster install` to recreate the cluster when you need it.',
   )
 }

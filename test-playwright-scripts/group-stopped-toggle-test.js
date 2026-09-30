@@ -1,10 +1,10 @@
 /**
- * Verifies a sidebar group's stopped-worktree controls against a live server:
+ * Verifies a sidebar group's stopped-workspace controls against a live server:
  *
  *  1. The header counts active members against all of them — `(1/2)`.
  *  2. The header's `…` menu (Group actions) offers Rename, Pin/Unpin, Show
- *     stopped worktrees and Delete group; stopped rows are hidden until
- *     "Show stopped worktrees" is picked, and hidden again by "Hide…".
+ *     stopped workspaces and Delete group; stopped rows are hidden until
+ *     "Show stopped workspaces" is picked, and hidden again by "Hide…".
  *  3. In a group whose members have all stopped, the caret and the menu item
  *     are one toggle: the caret shows the stopped rows, the menu then offers
  *     "Hide…" and picking it collapses the caret again.
@@ -14,9 +14,9 @@
  *   STOPPED_GROUP — a pinned group whose only members are stopped
  * e.g. `yaac group create yaac Release; yaac group create yaac Parked`
  *      (created first, so both are pinned), then
- *      `yaac worktree create yaac --group Release` twice and
- *      `yaac worktree create yaac --group Parked` once, and
- *      `yaac worktree stop` one Release member and the Parked one.
+ *      `yaac workspace create yaac --group Release` twice and
+ *      `yaac workspace create yaac --group Parked` once, and
+ *      `yaac workspace stop` one Release member and the Parked one.
  *
  * Run: MIXED_GROUP=Release STOPPED_GROUP=Parked \
  *        node test-playwright-scripts/group-stopped-toggle-test.js
@@ -63,7 +63,7 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
 await page.goto(`${origin}/?project=${PROJECT}`)
 
 const section = (name) => page.locator(`aside [role="group"][aria-label="${name}"]`)
-const ghosts = (name) => section(name).locator('button[title="Read this worktree\'s conversation"]')
+const ghosts = (name) => section(name).locator('button[title="Read this workspace\'s conversation"]')
 const caret = (name) => section(name).locator('button[aria-expanded]').first()
 async function pick(name, item) {
   await caret(name).hover()
@@ -85,23 +85,23 @@ await caret(MIXED).hover()
 await section(MIXED).getByRole('button', { name: 'Group actions' }).first().click()
 const items = await page.getByRole('menuitem').allInnerTexts()
 check(`menu items: ${items.join(', ')}`,
-  ['Rename', 'Show stopped worktrees', 'Delete group'].every((i) => items.includes(i)))
+  ['Rename', 'Show stopped workspaces', 'Delete group'].every((i) => items.includes(i)))
 await page.screenshot({ path: path.join(SHOTS, 'group-menu.png') })
-await page.getByRole('menuitem', { name: 'Show stopped worktrees' }).click()
+await page.getByRole('menuitem', { name: 'Show stopped workspaces' }).click()
 await page.getByRole('menu').waitFor({ state: 'detached' })
 check('Show reveals the stopped rows', await ghosts(MIXED).count() > 0)
 await page.screenshot({ path: path.join(SHOTS, 'group-shown.png') })
-await pick(MIXED, 'Hide stopped worktrees')
+await pick(MIXED, 'Hide stopped workspaces')
 check('Hide hides them again', await ghosts(MIXED).count() === 0)
 
 // 3. the all-stopped group: caret and menu are one toggle
 check(`${STOPPED} starts collapsed`, await caret(STOPPED).getAttribute('aria-expanded') === 'false')
 await caret(STOPPED).click()
 check('caret shows the stopped rows', await ghosts(STOPPED).count() > 0)
-await pick(STOPPED, 'Hide stopped worktrees')
+await pick(STOPPED, 'Hide stopped workspaces')
 check('menu Hide hides them', await ghosts(STOPPED).count() === 0)
 check('...and collapses the caret', await caret(STOPPED).getAttribute('aria-expanded') === 'false')
-await pick(STOPPED, 'Show stopped worktrees')
+await pick(STOPPED, 'Show stopped workspaces')
 check('menu Show expands the caret', await caret(STOPPED).getAttribute('aria-expanded') === 'true')
 await caret(STOPPED).click()
 check('caret hides them again', await ghosts(STOPPED).count() === 0)

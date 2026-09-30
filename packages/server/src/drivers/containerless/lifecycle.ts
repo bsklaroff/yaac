@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { notifyWorktreeListChanged } from '#notify'
+import { notifyWorkspaceListChanged } from '#notify'
 import { serverLog } from '#log'
 import { runHostCheck } from './check'
 import { isSshAgentFor, killPids, runHost } from './host'
@@ -42,7 +42,7 @@ const WATCH_REARM_MS = 1_000
  * A marker whose socket still answers is a running workspace, recovered
  * whole — its agents have been running this entire time. One whose socket
  * does not is recorded as a DEAD workspace rather than dropped: the stale
- * reaper is what turns a dead runtime into a stopped worktree row, and it
+ * reaper is what turns a dead runtime into a stopped workspace row, and it
  * can only do that for a workspace the driver still reports. Dropping it
  * here would leave a row claiming to be running with nothing to reap it.
  */
@@ -54,7 +54,7 @@ async function recoverWorkspaces(): Promise<void> {
       ? { reason: 'pod-stopped' }
       : {
         reason: 'agent-exited',
-        detail: 'the worktree\'s tmux server is no longer running '
+        detail: 'the workspace\'s tmux server is no longer running '
           + '(host reboot, or it was killed)',
       })
     if (!alive) await sweepDeadWorkspaceSecrets(marker)
@@ -62,7 +62,7 @@ async function recoverWorkspaces(): Promise<void> {
   if (markers.length > 0) {
     const live = listWorkspaces().filter((w) => w.running).length
     serverLog(
-      `[server] containerless: recovered ${String(markers.length)} worktree(s), `
+      `[server] containerless: recovered ${String(markers.length)} workspace(s), `
       + `${String(live)} still running`,
     )
   }
@@ -75,15 +75,15 @@ async function recoverWorkspaces(): Promise<void> {
  * holds the two things this driver has to hand a workspace in the clear
  * because there is no proxy to inject them: the git credential store, and an
  * ssh-agent holding the private key. The tmux server is gone, but the agent
- * is NOT its child — it was started beside it, detached — so a worktree
+ * is NOT its child — it was started beside it, detached — so a workspace
  * whose tmux died while the host stayed up leaves one running with the key
- * in memory until reboot. That is the case the per-worktree agent exists to
+ * in memory until reboot. That is the case the per-workspace agent exists to
  * prevent, so it is ended here rather than waiting for a stop that may never
  * come. A restart re-realizes both from the database.
  */
 async function sweepDeadWorkspaceSecrets(marker: WorkspaceMarker): Promise<void> {
   const paths = containerlessWorkspacePaths(
-    containerlessJobName(marker.projectSlug, marker.worktreeId),
+    containerlessJobName(marker.projectSlug, marker.workspaceId),
   )
   // Verified before signalling: a pid recorded before a host reboot names
   // some unrelated process of this user by now, and the socket path in the
@@ -92,11 +92,11 @@ async function sweepDeadWorkspaceSecrets(marker: WorkspaceMarker): Promise<void>
     && await isSshAgentFor(marker.sshAgentPid, paths.sshAgentSock)) {
     killPids([marker.sshAgentPid], 'SIGTERM')
   }
-  const home = workspaceHome(marker.projectSlug, marker.worktreeId)
+  const home = workspaceHome(marker.projectSlug, marker.workspaceId)
   for (const file of [path.join(home, '.git-credentials'), paths.sshAgentSock]) {
     await fs.rm(file, { force: true }).catch((err: unknown) => {
       serverLog(
-        `[server] containerless: could not clear ${file} for a dead worktree: ${String(err)}`,
+        `[server] containerless: could not clear ${file} for a dead workspace: ${String(err)}`,
       )
     })
   }
@@ -104,7 +104,7 @@ async function sweepDeadWorkspaceSecrets(marker: WorkspaceMarker): Promise<void>
 
 async function socketAnswers(marker: WorkspaceMarker): Promise<boolean> {
   const paths = containerlessWorkspacePaths(
-    containerlessJobName(marker.projectSlug, marker.worktreeId),
+    containerlessJobName(marker.projectSlug, marker.workspaceId),
   )
   try {
     await runHost(['tmux', '-S', paths.tmuxSock, 'has-session', '-t', 'yaac'], {
@@ -190,14 +190,14 @@ async function confirmDown(
   forgetPorts(workspaceId)
   const changed = observeLiveness(workspaceId, false, {
     reason: 'agent-exited',
-    detail: 'the worktree\'s tmux server exited',
+    detail: 'the workspace\'s tmux server exited',
   })
   if (!changed) return
   // The whole set, never a delta — the receiver holds no state it would
   // have to reconcile (see `DriverSinks.workspacesChanged`).
   sinks.workspacesChanged(listWorkspaces())
   sinks.trigger('workspaces')
-  notifyWorktreeListChanged()
+  notifyWorkspaceListChanged()
 }
 
 /** Bring the watch set in line with the workspaces we believe are running. */
@@ -223,11 +223,11 @@ function syncWatches(sinks: DriverSinks): void {
  * pod driver gets it free — its informer reports the new pod, and everything
  * that watches workspaces (the status watcher pool above all) learns about it
  * from that event. This substrate has no informer: the set is announced when
- * the driver starts and when a workspace dies, so without this a worktree
+ * the driver starts and when a workspace dies, so without this a workspace
  * created since startup is one nothing observes until the next server start.
- * A `tui` worktree merely goes unwatched — its status stops tracking the
+ * A `tui` workspace merely goes unwatched — its status stops tracking the
  * agent — while an `acp` one never gets a connection at all, so nobody dials
- * acpd, the handshake never runs, and the worktree has no conversation and no
+ * acpd, the handshake never runs, and the workspace has no conversation and no
  * chat pane for as long as this server lives.
  */
 export function watchNewWorkspace(workspaceId: string, jobName: string): void {
@@ -241,7 +241,7 @@ export function watchNewWorkspace(workspaceId: string, jobName: string): void {
 
 let activeSinks: DriverSinks | null = null
 
-/** See `WorktreeDriver.start`. */
+/** See `WorkspaceDriver.start`. */
 export async function startContainerlessDriver(sinks: DriverSinks): Promise<void> {
   activeSinks = sinks
 
@@ -271,11 +271,11 @@ export async function startContainerlessDriver(sinks: DriverSinks): Promise<void
 
   sinks.workspacesChanged(listWorkspaces())
   syncWatches(sinks)
-  startPortSweep(() => notifyWorktreeListChanged())
+  startPortSweep(() => notifyWorkspaceListChanged())
   sinks.attached()
 }
 
-/** See `WorktreeDriver.stop`. */
+/** See `WorkspaceDriver.stop`. */
 export function stopContainerlessDriver(): void {
   stopPortSweep()
   // Only the WATCHES go down. Every workspace's tmux server keeps running,
@@ -286,7 +286,7 @@ export function stopContainerlessDriver(): void {
   activeSinks = null
 }
 
-/** See `WorktreeDriver.release`. Nothing is borrowed from the host that
+/** See `WorkspaceDriver.release`. Nothing is borrowed from the host that
  *  `stop` did not already give back: no listeners, no tunnels, no relay. */
 export function releaseContainerlessDriver(): void {
   /* nothing held */

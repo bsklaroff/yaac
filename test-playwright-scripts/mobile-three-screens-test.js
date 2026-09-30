@@ -5,16 +5,16 @@
  *
  * Structural checks against the real rendered DOM at 390x844 (iPhone-ish):
  *  1. The desktop rail and sidebar are gone; a projects list is the root view.
- *  2. Tapping a project shows its worktree list; tapping a worktree shows the
+ *  2. Tapping a project shows its workspace list; tapping a workspace shows the
  *     pane. Both back chevrons (and the browser's own back button) unwind it.
  *  3. All three screens stay MOUNTED the whole time — only one is visible.
- *     This is the load-bearing one: WorktreeView positions its terminals by
+ *     This is the load-bearing one: WorkspaceView positions its terminals by
  *     measured pixels, so an unmounted or display:none pane would collapse
  *     every rect to zero and cost a resize round-trip to the pod on return.
  *     Asserted by measuring the hidden pane layer's box (non-zero, full
  *     viewport) while another screen is showing.
  *  4. The pane is in tabs mode with the accessory key bar (esc/tab/^C/arrows)
- *     under it, and the worktree-row actions (pin, delete) are visible without
+ *     under it, and the workspace-row actions (pin, delete) are visible without
  *     a hover, which touch cannot produce.
  *  5. Widening back to 1400px restores the desktop three-column layout with
  *     the same pane element still mounted (a phone rotating into landscape
@@ -30,7 +30,7 @@
  * Run: node test-playwright-scripts/mobile-three-screens-test.js
  * (set SCREENSHOT_DIR to capture each screen; defaults to /tmp/yaac-shots).
  * Needs a running server (`yaac server start`) with at least one project and
- * one active worktree, and the dev server on :1420. (playwright is resolved
+ * one active workspace, and the dev server on :1420. (playwright is resolved
  * from the global npm root; browsers live under /opt/playwright-browsers)
  */
 import { execSync } from 'node:child_process'
@@ -97,7 +97,7 @@ try {
   await page.goto(`${APP_URL}/`)
   // Model a genuine cold load: no persisted screen *and* a bare URL. Both
   // matter — persistSelection mirrors the selection into the query string on
-  // every change, and with nothing persisted a `?worktree=` reads as a shared
+  // every change, and with nothing persisted a `?workspace=` reads as a shared
   // link and correctly opens the pane. Reloading in place would race that
   // mirror and make the next check flap.
   await page.evaluate(() => localStorage.removeItem('yaac.mobilescreen.v1'))
@@ -133,25 +133,25 @@ try {
   check('hidden layers are inert',
     report.layers.filter((l) => l.inert).length === 2)
 
-  // ---- 2. tap a project -> worktree list ----
+  // ---- 2. tap a project -> workspace list ----
   const firstProject = projectRows.first()
   const projectName = (await firstProject.textContent()).trim()
   await firstProject.tap()
   await page.waitForTimeout(1500)
-  check('tapping a project shows its worktree list',
+  check('tapping a project shows its workspace list',
     await page.getByLabel('Back to projects').isVisible(), projectName)
-  await page.screenshot({ path: path.join(SHOTS, 'mobile-2-worktrees.png') })
+  await page.screenshot({ path: path.join(SHOTS, 'mobile-2-workspaces.png') })
 
   // Row actions must be reachable with no hover.
-  const worktreesLayer = shell.locator('> div').nth(1)
-  const pin = worktreesLayer.getByLabel('Move to background').first()
-  const del = worktreesLayer.getByLabel('Stop worktree').first()
+  const workspacesLayer = shell.locator('> div').nth(1)
+  const pin = workspacesLayer.getByLabel('Move to background').first()
+  const del = workspacesLayer.getByLabel('Stop workspace').first()
   // Wait for the list to actually settle before deciding whether this env has
-  // worktrees — the snapshot arrives over the events socket, and a fixed sleep
+  // workspaces — the snapshot arrives over the events socket, and a fixed sleep
   // silently downgrades the whole pane section to "skipped" when it's slow.
   await Promise.race([
     del.waitFor({ state: 'visible', timeout: 20_000 }),
-    worktreesLayer.getByText('No worktrees yet').waitFor({ state: 'visible', timeout: 20_000 }),
+    workspacesLayer.getByText('No workspaces yet').waitFor({ state: 'visible', timeout: 20_000 }),
   ]).catch(() => { /* fall through to the count below */ })
   const hasRows = await del.count() > 0
   if (hasRows) {
@@ -162,20 +162,20 @@ try {
       box && box.width >= 24 && box.height >= 24,
       box ? `${Math.round(box.width)}x${Math.round(box.height)}` : 'no box')
   } else {
-    console.log('  (no worktrees in this env — skipping row-action checks)')
+    console.log('  (no workspaces in this env — skipping row-action checks)')
   }
 
-  // ---- 3. tap a worktree -> the pane ----
+  // ---- 3. tap a workspace -> the pane ----
   if (hasRows) {
-    // A *live* worktree row — the one carrying a delete action. Provisioning
+    // A *live* workspace row — the one carrying a delete action. Provisioning
     // rows render above the sections and would open the placeholder overlay
     // instead of the pane.
-    await worktreesLayer
-      .locator('.group.relative.mx-2:has([aria-label="Stop worktree"]) > button')
+    await workspacesLayer
+      .locator('.group.relative.mx-2:has([aria-label="Stop workspace"]) > button')
       .first().tap()
     await page.waitForTimeout(4000)
-    check('tapping a worktree shows the pane',
-      await page.getByLabel('Back to worktrees').isVisible())
+    check('tapping a workspace shows the pane',
+      await page.getByLabel('Back to workspaces').isVisible())
     const paneCards = page.locator('section.absolute.inset-0')
     check('the pane is in tabs mode (one full-bleed card, no tiled columns)',
       await paneCards.count() === 1, `cards=${await paneCards.count()}`)
@@ -195,15 +195,15 @@ try {
     check('all three layers are still mounted on the pane screen', report.count === 3)
 
     // ---- 4. back unwinds, including the browser's own back button ----
-    await page.getByLabel('Back to worktrees').tap()
+    await page.getByLabel('Back to workspaces').tap()
     await page.waitForTimeout(1000)
-    check('the pane’s back chevron returns to the worktree list',
+    check('the pane’s back chevron returns to the workspace list',
       await page.getByLabel('Back to projects').isVisible())
 
     await page.goForward()
     await page.waitForTimeout(1000)
     check('browser forward re-enters the pane',
-      await page.getByLabel('Back to worktrees').isVisible())
+      await page.getByLabel('Back to workspaces').isVisible())
 
     await page.goBack()
     await page.goBack()

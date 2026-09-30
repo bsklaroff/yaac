@@ -16,11 +16,11 @@ export function nodeLocalNodePath(): string {
 }
 
 /**
- * Where a worktree mount's bytes come from, resolved from the storage
+ * Where a workspace mount's bytes come from, resolved from the storage
  * tier its path declares.
  *
  * The layers above the driver declare every mount as a `hostPath` against
- * a tier helper (`worktreeDir`, `cachedPackagesDir`, …) and never learn
+ * a tier helper (`workspaceDir`, `cachedPackagesDir`, …) and never learn
  * how the tier is realized; this is the one place that knows. A path under
  * the GLOBAL root becomes a subPath of the `yaac-global` claim — the same
  * claim the server pod has mounted whole, so the subtree the pod sees is
@@ -32,7 +32,7 @@ export function nodeLocalNodePath(): string {
  *
  * The roots are siblings on the host and inside the pod, so this is a
  * plain prefix test with no ordering concern. A path under SERVER-LOCAL
- * is a thrown error — a worktree pod may not mount the server's claim —
+ * is a thrown error — a workspace pod may not mount the server's claim —
  * and so is a path under no root at all, because every product path is
  * tiered and an untiered one is a caller that bypassed the helpers.
  *
@@ -62,7 +62,7 @@ export function resolveMountSource(m: PodMount): PodMount {
   }
   if (under(source.path, serverLocalRoot()) !== null) {
     throw new Error(
-      `mount ${m.mountPath}: ${source.path} is SERVER-LOCAL, which no worktree pod may mount`,
+      `mount ${m.mountPath}: ${source.path} is SERVER-LOCAL, which no workspace pod may mount`,
     )
   }
   throw new Error(

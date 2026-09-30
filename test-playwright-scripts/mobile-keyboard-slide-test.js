@@ -29,7 +29,7 @@
  * Drives the app the server itself serves (`dist/`), reading the port
  * from $YAAC_DATA_DIR/.server.lock — so run `pnpm build` +
  * `yaac server restart` first, or you are looking at the frontend as it was.
- * Needs no worktree and spends no agent turn.
+ * Needs no workspace and spends no agent turn.
  *
  * Run: node test-playwright-scripts/mobile-keyboard-slide-test.js
  * (APP_URL points it elsewhere; playwright is resolved from the global npm

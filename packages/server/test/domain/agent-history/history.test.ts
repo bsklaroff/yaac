@@ -2,10 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { recordWorktreeCreated } from '#db/worktree-store'
+import { recordWorkspaceCreated } from '#db/workspace-store'
 import { recordAgentSessions } from '#db/agent-session-store'
 import { closeDb } from '#db/client'
-import { listWorktreeAgentSessions } from '#db'
+import { listWorkspaceAgentSessions } from '#db'
 import {
   acpLogDir,
   agentHistoryDir,
@@ -14,7 +14,7 @@ import {
   piSessionsDir,
   projectDir,
   repoDir,
-  worktreeDir,
+  workspaceDir,
 } from '@yaac/shared/project-paths'
 import { claudeProjectDirName } from '#runtime/agents'
 import { convergeAgentHistory, removeAgentHistory } from '#domain/agent-history'
@@ -33,8 +33,8 @@ let tmpDir: string
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  await recordWorktreeCreated({ projectSlug: SLUG, worktreeId: WT })
-  await recordWorktreeCreated({ projectSlug: SLUG, worktreeId: SIBLING })
+  await recordWorkspaceCreated({ projectSlug: SLUG, workspaceId: WT })
+  await recordWorkspaceCreated({ projectSlug: SLUG, workspaceId: SIBLING })
 })
 
 afterEach(async () => {
@@ -65,7 +65,7 @@ async function rollout(dir: string, thread: string, parent?: string, forkedFrom?
 const ROLLOUT_REL = (thread: string): string => `2026/09/29/rollout-2026-09-29T08-32-40-${thread}.jsonl`
 
 describe('convergeAgentHistory', () => {
-  it('moves every conversation the worktree held out of the shared homes, under a runtime that layers', async () => {
+  it('moves every conversation the workspace held out of the shared homes, under a runtime that layers', async () => {
     const projects = shared('claude', 'projects', '-workspace')
     // Rows: an active claude conversation with its path, an inactive one
     // without, and a codex thread.
@@ -89,10 +89,10 @@ describe('convergeAgentHistory', () => {
     await rollout(shared('codex', 'sessions'), 't2', 't1')
     await rollout(shared('codex', 'sessions'), 't3', 't2')
     await rollout(shared('codex', 'sessions'), 'u1')
-    // pi, from before each worktree had its own session dir.
+    // pi, from before each workspace had its own session dir.
     await write(path.join(piSessionsDir(SLUG), 'nested', `100_${WT}.jsonl`))
     await write(path.join(piSessionsDir(SLUG), '100_other.jsonl'))
-    // A sibling's conversation; one both worktrees link (resumed from one in
+    // A sibling's conversation; one both workspaces link (resumed from one in
     // the other, back when the folder was shared); and the sibling's fork of
     // our codex thread. None of them is ours alone.
     await write(path.join(projects, 's1.jsonl'))
@@ -150,7 +150,7 @@ describe('convergeAgentHistory', () => {
     ]) expect(await exists(dir), dir).toBe(true)
 
     // The rows follow the files.
-    const rows = await listWorktreeAgentSessions(SLUG, WT)
+    const rows = await listWorkspaceAgentSessions(SLUG, WT)
     expect(rows.find((r) => r.agentSessionId === 'c1')?.transcriptPath)
       .toBe(path.join('history', WT, 'claude', '-workspace', 'c1.jsonl'))
     expect(rows.find((r) => r.agentSessionId === 't1')?.transcriptPath)
@@ -175,7 +175,7 @@ describe('convergeAgentHistory', () => {
 
     await convergeAgentHistory(SLUG, WT, { layers: true })
 
-    const rows = await listWorktreeAgentSessions(SLUG, WT)
+    const rows = await listWorkspaceAgentSessions(SLUG, WT)
     expect(rows.map((r) => r.transcriptPath)).toEqual([
       path.join('history', WT, 'claude', '-workspace', 'y1.jsonl'),
       path.join('history', WT, 'pi', '100_p1.jsonl'),
@@ -184,7 +184,7 @@ describe('convergeAgentHistory', () => {
 
   it('links the shared homes into the history, under a runtime that cannot layer', async () => {
     const projects = shared('claude', 'projects')
-    const checkout = path.join(projects, claudeProjectDirName(worktreeDir(SLUG, WT)))
+    const checkout = path.join(projects, claudeProjectDirName(workspaceDir(SLUG, WT)))
     const repo = path.join(projects, claudeProjectDirName(repoDir(SLUG)))
     // What a pod wrote into the history, to resume here.
     await write(history('claude', '-workspace', 'k1.jsonl'))
@@ -204,7 +204,7 @@ describe('convergeAgentHistory', () => {
     expect((await fs.lstat(checkout)).isSymbolicLink()).toBe(true)
     expect(await fs.realpath(path.join(checkout, 'k1.jsonl'))).toBe(await fs.realpath(history('claude', '-workspace', 'k1.jsonl')))
     expect(await exists(history('claude', '-workspace', 'h1.jsonl'))).toBe(true)
-    expect((await listWorktreeAgentSessions(SLUG, WT))[0]?.transcriptPath)
+    expect((await listWorkspaceAgentSessions(SLUG, WT))[0]?.transcriptPath)
       .toBe(path.join('history', WT, 'claude', '-workspace', 'h1.jsonl'))
     // Memory became the project's shared one, reached from the host name
     // too, and from the checkout's own memory folder, which is where claude
@@ -224,7 +224,7 @@ describe('convergeAgentHistory', () => {
   })
 
   it('keeps a checkout folder real while it holds a conversation a sibling shares', async () => {
-    const checkout = path.join(shared('claude', 'projects'), claudeProjectDirName(worktreeDir(SLUG, WT)))
+    const checkout = path.join(shared('claude', 'projects'), claudeProjectDirName(workspaceDir(SLUG, WT)))
     const stored = path.relative(projectDir(SLUG), path.join(checkout, 'x1.jsonl'))
     await write(path.join(checkout, 'x1.jsonl'))
     await write(path.join(checkout, 'own.jsonl'))
@@ -236,7 +236,7 @@ describe('convergeAgentHistory', () => {
     expect((await fs.lstat(checkout)).isDirectory()).toBe(true)
     expect(await exists(path.join(checkout, 'x1.jsonl'))).toBe(true)
     expect(await exists(history('claude', '-workspace', 'own.jsonl'))).toBe(true)
-    expect((await listWorktreeAgentSessions(SLUG, WT))[0]?.transcriptPath).toBe(stored)
+    expect((await listWorkspaceAgentSessions(SLUG, WT))[0]?.transcriptPath).toBe(stored)
   })
 
   it('never merges two real memory folders', async () => {
@@ -260,9 +260,12 @@ describe('removeAgentHistory', () => {
     await rollout(history('codex'), 'kt')
     const sibling = await write(shared('codex', 'sessions', 'theirs.jsonl'))
     await convergeAgentHistory(SLUG, WT, { layers: false })
-    const checkout = path.join(shared('claude', 'projects'), claudeProjectDirName(worktreeDir(SLUG, WT)))
+    const checkout = path.join(shared('claude', 'projects'), claudeProjectDirName(workspaceDir(SLUG, WT)))
     expect(await exists(checkout)).toBe(true)
-    // A name another worktree's history has since taken over is its link now.
+    // The one an older install's create linked, under its `worktrees/` path.
+    const legacy = path.join(shared('claude', 'projects'), claudeProjectDirName(shared('worktrees', WT)))
+    await fs.symlink(path.relative(path.dirname(legacy), history('claude', '-workspace')), legacy)
+    // A name another workspace's history has since taken over is its link now.
     const retargeted = shared('claude', 'file-history', 'k2')
     await fs.unlink(retargeted)
     await fs.symlink(path.join(agentHistoryDir(SLUG, SIBLING), 'claude-file-history', 'k2'), retargeted)
@@ -272,6 +275,7 @@ describe('removeAgentHistory', () => {
     for (const gone of [
       agentHistoryDir(SLUG, WT),
       checkout,
+      legacy,
       shared('claude', 'file-history', 'k1'),
       shared('codex', 'sessions', ROLLOUT_REL('kt')),
     ]) expect(await exists(gone), gone).toBe(false)

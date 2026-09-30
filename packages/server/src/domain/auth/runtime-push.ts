@@ -8,7 +8,7 @@ import {
   saveCodexOAuthBundle,
 } from '@yaac/shared/tool-auth'
 import { runtimeGitCredentials } from '#domain/projects'
-import { worktreeDriver } from '#drivers/driver'
+import { workspaceDriver } from '#drivers/driver'
 import { serverLog } from '#log'
 import { claudeBundleIsNewer, codexBundleIsNewer } from './credential-sync'
 import type { RefreshedToolCredentials } from '@yaac/shared/types'
@@ -23,7 +23,7 @@ import type { RefreshedToolCredentials } from '@yaac/shared/types'
  * nothing re-reads it on a schedule of its own: the store is the authority,
  * and a runtime is told.
  *
- * Up: a runtime that mediates egress captures the rotation a worktree's
+ * Up: a runtime that mediates egress captures the rotation a workspace's
  * refresh produced, and `adoptRefreshedToolCredentials` is how that reaches
  * the store — the newest-wins compare every other writer uses, then a push
  * so the runtime sees its own capture echoed and stops preferring it.
@@ -36,7 +36,7 @@ async function pushOnce(): Promise<Error | undefined> {
       loadToolCredentialBundle(),
       runtimeGitCredentials(),
     ])
-    await worktreeDriver().syncCredentials({ ...tools, ...git })
+    await workspaceDriver().syncCredentials({ ...tools, ...git })
     return undefined
   } catch (err) {
     serverLog(`[server] credential push to the runtime failed: ${String(err)}`)

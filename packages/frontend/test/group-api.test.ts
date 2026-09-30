@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
-  createWorktreeGroup,
-  deleteWorktreeGroup,
-  renameWorktreeGroup,
-  setWorktreeGroup,
-  setWorktreeGroupPinned,
+  createWorkspaceGroup,
+  deleteWorkspaceGroup,
+  renameWorkspaceGroup,
+  setWorkspaceGroup,
+  setWorkspaceGroupPinned,
 } from '#lib/groupApi'
 
 const realFetch = globalThis.fetch
@@ -28,65 +28,65 @@ const sent = (fetchMock: ReturnType<typeof vi.fn>): [string, unknown] => {
   return [url, JSON.parse(init.body as string)]
 }
 
-describe('createWorktreeGroup', () => {
-  it('POSTs the name with its founding worktree and returns the new id', async () => {
+describe('createWorkspaceGroup', () => {
+  it('POSTs the name with its founding workspace and returns the new id', async () => {
     const fetchMock = stub({ groupId: 'g-1' }, 200)
-    expect(await createWorktreeGroup('proj', 'sid-1', 'release')).toEqual({ groupId: 'g-1' })
+    expect(await createWorkspaceGroup('proj', 'sid-1', 'release')).toEqual({ groupId: 'g-1' })
     expect(sent(fetchMock)).toEqual([
-      '/api/worktree/group/create',
-      { projectSlug: 'proj', worktreeId: 'sid-1', name: 'release' },
+      '/api/workspace/group/create',
+      { projectSlug: 'proj', workspaceId: 'sid-1', name: 'release' },
     ])
   })
 })
 
-describe('renameWorktreeGroup', () => {
+describe('renameWorkspaceGroup', () => {
   it('POSTs the new name', async () => {
     const fetchMock = stub()
-    await renameWorktreeGroup('proj', 'g-1', 'shipping')
+    await renameWorkspaceGroup('proj', 'g-1', 'shipping')
     expect(sent(fetchMock)).toEqual([
-      '/api/worktree/group/rename',
+      '/api/workspace/group/rename',
       { projectSlug: 'proj', groupId: 'g-1', name: 'shipping' },
     ])
   })
 })
 
-describe('setWorktreeGroupPinned', () => {
+describe('setWorkspaceGroupPinned', () => {
   it('POSTs the pin both ways', async () => {
     const pin = stub()
-    await setWorktreeGroupPinned('proj', 'g-1', true)
+    await setWorkspaceGroupPinned('proj', 'g-1', true)
     expect(sent(pin)).toEqual([
-      '/api/worktree/group/set-pinned',
+      '/api/workspace/group/set-pinned',
       { projectSlug: 'proj', groupId: 'g-1', pinned: true },
     ])
 
     const unpin = stub()
-    await setWorktreeGroupPinned('proj', 'g-1', false)
+    await setWorkspaceGroupPinned('proj', 'g-1', false)
     expect(sent(unpin)[1]).toEqual({ projectSlug: 'proj', groupId: 'g-1', pinned: false })
   })
 })
 
-describe('deleteWorktreeGroup', () => {
+describe('deleteWorkspaceGroup', () => {
   it('POSTs the group id', async () => {
     const fetchMock = stub()
-    await deleteWorktreeGroup('proj', 'g-1')
+    await deleteWorkspaceGroup('proj', 'g-1')
     expect(sent(fetchMock)).toEqual([
-      '/api/worktree/group/delete',
+      '/api/workspace/group/delete',
       { projectSlug: 'proj', groupId: 'g-1' },
     ])
   })
 })
 
-describe('setWorktreeGroup', () => {
+describe('setWorkspaceGroup', () => {
   it('POSTs a move into a group, and null for a move back to the default list', async () => {
     const into = stub()
-    await setWorktreeGroup('proj', 'sid-1', 'g-1')
+    await setWorkspaceGroup('proj', 'sid-1', 'g-1')
     expect(sent(into)).toEqual([
-      '/api/worktree/set-group',
-      { projectSlug: 'proj', worktreeId: 'sid-1', groupId: 'g-1' },
+      '/api/workspace/set-group',
+      { projectSlug: 'proj', workspaceId: 'sid-1', groupId: 'g-1' },
     ])
 
     const out = stub()
-    await setWorktreeGroup('proj', 'sid-1', null)
-    expect(sent(out)[1]).toEqual({ projectSlug: 'proj', worktreeId: 'sid-1', groupId: null })
+    await setWorkspaceGroup('proj', 'sid-1', null)
+    expect(sent(out)[1]).toEqual({ projectSlug: 'proj', workspaceId: 'sid-1', groupId: null })
   })
 })

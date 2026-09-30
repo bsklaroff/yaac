@@ -1,9 +1,9 @@
 ---
 name: yaac-autoconfig
-description: Generate a yaac-config.json template for the current repo — a config that installs, builds, and starts the project's dev server and forwards its ports — for the user to apply to their project's yaac config. Use when the user asks to auto-configure yaac for this project, get the app running in new worktrees, or expose a running dev server / preview from a yaac worktree.
+description: Generate a yaac-config.json template for the current repo — a config that installs, builds, and starts the project's dev server and forwards its ports — for the user to apply to their project's yaac config. Use when the user asks to auto-configure yaac for this project, get the app running in new workspaces, or expose a running dev server / preview from a yaac workspace.
 ---
 
-You are running **inside a yaac worktree** — a sandboxed container holding a
+You are running **inside a yaac workspace** — a sandboxed container holding a
 checkout of some project. This skill writes a `yaac-config.json` to that repo's
 root that, **once the user applies it to their project config**, makes *future*
 sessions boot with the app already built, running, and reachable from the host
@@ -178,7 +178,7 @@ Every option is optional. Include only what the project needs.
 | `addAllowedUrls` | `string[]` | Extra host patterns to allow past the egress proxy, on top of the default allowlist. Exact (`api.example.com`) or wildcard (`*.example.com`). Mutually exclusive with `setAllowedUrls`. |
 | `setAllowedUrls` | `string[]` | **Replace** the default allowlist entirely. `["*"]` allows all (disables filtering); `[]` blocks all egress. Warns if it omits `api.anthropic.com`/`github.com`. Mutually exclusive with `addAllowedUrls`. |
 | `nestedContainers` | `boolean` | Run an in-pod podman so `docker build`/`run`/`compose up` work inside the session (the `docker` CLI talks to podman's socket). Needed for docker-compose-based projects. |
-| `ephemeralModulesPaths` | `string[]` (default `["node_modules"]`) | Paths (relative to `/workspace`) bind-mounted onto per-session storage so package-manager writes don't touch the host worktree. `[]` disables the redirect. |
+| `ephemeralModulesPaths` | `string[]` (default `["node_modules"]`) | Paths (relative to `/workspace`) bind-mounted onto per-session storage so package-manager writes don't touch the host workspace. `[]` disables the redirect. |
 
 ## Gotchas
 

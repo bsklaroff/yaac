@@ -71,7 +71,7 @@ function spawnedArgv(): string[] {
 
 function running(): void {
   rememberWorkspace({
-    projectSlug: 'demo', worktreeId: UUID, tool: 'claude', mode: 'tui',
+    projectSlug: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
     prewarm: false, createdAtMs: 1_000, tmuxPid: 4242,
   })
 }
@@ -92,12 +92,12 @@ afterEach(() => {
 })
 
 describe('sweepPorts', () => {
-  it('scans only the worktree\'s own process tree, not the host\'s', async () => {
+  it('scans only the workspace\'s own process tree, not the host\'s', async () => {
     running()
     await sweepPorts()
-    // A worktree's ports are its own tree's: every other listener on the
+    // A workspace's ports are its own tree's: every other listener on the
     // machine belongs to someone else and must never surface as this
-    // worktree's.
+    // workspace's.
     expect(mockDescendants).toHaveBeenCalledWith([4242])
     const argv = spawnedArgv()
     expect(argv[0]).toBe('lsof')
@@ -165,10 +165,10 @@ describe('sweepPorts', () => {
   })
 
   it('reports nothing for a workspace whose tmux pid was never recorded', async () => {
-    // Without a tree root there is nothing to walk; the worktree still runs
+    // Without a tree root there is nothing to walk; the workspace still runs
     // fine, its ports just go unreported.
     rememberWorkspace({
-      projectSlug: 'demo', worktreeId: UUID, tool: 'claude', mode: 'tui',
+      projectSlug: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
       prewarm: false, createdAtMs: 1_000,
     })
     await sweepPorts()
@@ -200,7 +200,7 @@ async function listener(host: string): Promise<{ port: number; close: () => void
 }
 
 /** Sweep an lsof answer naming `port` bound at `name`, so it is one this
- *  worktree is offering. */
+ *  workspace is offering. */
 async function offered(port: number, name = `127.0.0.1:${String(port)}`): Promise<void> {
   running()
   listening([name.startsWith('[') ? 'IPv6' : 'IPv4', name])
@@ -218,14 +218,14 @@ function read(stream: NodeJS.ReadableStream, n: number): Promise<string> {
 }
 
 describe('dialWorkspacePort', () => {
-  it('refuses a port the sweep has not surfaced for this worktree', async () => {
+  it('refuses a port the sweep has not surfaced for this workspace', async () => {
     // The tunnel is authenticated but this host is the user's machine: an
     // unoffered port is every other loopback service on it, and the dial
     // must not become a door onto those.
     const srv = await listener('127.0.0.1')
     try {
       await offered(3000)
-      await expect(dialWorkspacePort(UUID, srv!.port)).rejects.toThrow(/not one this worktree/)
+      await expect(dialWorkspacePort(UUID, srv!.port)).rejects.toThrow(/not one this workspace/)
     } finally {
       srv!.close()
     }
@@ -248,10 +248,10 @@ describe('dialWorkspacePort', () => {
     }
   })
 
-  it('dials the listener the worktree holds, not a stranger on the other loopback', async () => {
+  it('dials the listener the workspace holds, not a stranger on the other loopback', async () => {
     // A dev server bound to `localhost` lands on `::1` alone on plenty of
     // hosts, and any local process can take `127.0.0.1` on the same
-    // number. The sweep recorded WHICH address the worktree bound, and the
+    // number. The sweep recorded WHICH address the workspace bound, and the
     // dial goes exactly there — a guessed loopback would hand the tunnel
     // to the stranger.
     const mine = await listener('::1')

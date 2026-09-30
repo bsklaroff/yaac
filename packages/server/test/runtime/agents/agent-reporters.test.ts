@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { ensureAgentReporters } from '#runtime/agents/agent-reporters'
-import { seedClaudeSettings } from '#domain/worktrees/seed'
+import { seedClaudeSettings } from '#domain/workspaces/seed'
 import { openRoot } from '#lib/confined-fs'
 
 describe('ensureAgentReporters', () => {
@@ -80,8 +80,8 @@ describe('ensureAgentReporters', () => {
     await ensureAgentReporters(await roots())
 
     // Bare names and `$HOME`-relative homes, because these files are shared
-    // by a whole project and read by worktrees of either substrate. The model
-    // reporter is guarded: claude hot-reloads the file, and a worktree whose
+    // by a whole project and read by workspaces of either substrate. The model
+    // reporter is guarded: claude hot-reloads the file, and a workspace whose
     // staged bin predates the script must not surface a hook error.
     const session = 'yaac-agent-links "$HOME/.claude" claude'
     const report = 'command -v yaac-agent-report >/dev/null && exec yaac-agent-report || true'
@@ -98,7 +98,7 @@ describe('ensureAgentReporters', () => {
       .toEqual({ SessionStart: [codexSession], SessionEnd: [codexSession] })
 
     // A second create finds every byte in place and rewrites nothing — the
-    // files are read at startup by every worktree of the project.
+    // files are read at startup by every workspace of the project.
     const files = [
       claudeSettings,
       path.join(homes.codexDir, 'hooks.json'),
@@ -113,7 +113,7 @@ describe('ensureAgentReporters', () => {
   })
 
   // The rename is what keeps a concurrent reader from a torn file; one that
-  // fails must not leave its temp file behind in a home every worktree reads.
+  // fails must not leave its temp file behind in a home every workspace reads.
   it('leaves no temp file behind when a write cannot land', async () => {
     await fs.mkdir(path.join(homes.claudeDir, 'settings.json', 'occupied'), { recursive: true })
     await expect(ensureAgentReporters(await roots())).rejects.toThrow()

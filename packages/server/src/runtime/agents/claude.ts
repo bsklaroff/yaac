@@ -22,11 +22,11 @@ import type { PermissionMode } from '@yaac/shared/types'
  * (`tengu_static_title_under_mux`, on by default) — the fixtures below were
  * taken from 2.1.229, which still animated under tmux, so it landed between
  * the two — which reads as a
- * permanently `waiting` worktree, with nothing logged, failed or counted.
+ * permanently `waiting` workspace, with nothing logged, failed or counted.
  * If that ever stops working, the fallbacks in descending order are: claude's
  * own record at `~/.claude/sessions/<pid>.json`, which publishes
  * `status` (busy/idle/waiting) and `waitingFor` as data rather than as
- * rendering, but is a per-*project* directory mounted into every worktree pod
+ * rendering, but is a per-*project* directory mounted into every workspace pod
  * of that project, so telling one pod's pids from another's needs a staged
  * per-pane script; or a content search over the pane, which is what opencode
  * and pi use, but claude's footer phrases are load-bearing there and at least

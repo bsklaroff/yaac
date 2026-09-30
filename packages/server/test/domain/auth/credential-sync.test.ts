@@ -14,7 +14,7 @@ import {
   syncToolCredentialsThrottled,
 } from '#domain/auth'
 import { _resetCredentialSyncThrottleForTests } from '#domain/auth/credential-sync'
-import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { setDataDir } from '@yaac/shared/project-paths'
 import {
   PLACEHOLDER_ACCESS_TOKEN,
@@ -78,7 +78,7 @@ beforeEach(async () => {
   dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-credsync-'))
   setDataDir(dataDir)
   _resetCredentialSyncThrottleForTests()
-  installFakeWorktreeDriver({ kind: 'containerless' })
+  installFakeWorkspaceDriver({ kind: 'containerless' })
 })
 
 afterEach(async () => {
@@ -92,7 +92,7 @@ async function seedProject(slug: string, bundle: ClaudeOAuthBundle): Promise<voi
 
 describe('runtimeMediatesEgress', () => {
   it('is false only for the containerless runtime, and true with none registered', () => {
-    const fake = installFakeWorktreeDriver({ kind: 'containerless' })
+    const fake = installFakeWorkspaceDriver({ kind: 'containerless' })
     expect(runtimeMediatesEgress()).toBe(false)
 
     fake.override({ kind: 'k8s' })
@@ -101,11 +101,11 @@ describe('runtimeMediatesEgress', () => {
 })
 
 describe('harvestToolCredentials', () => {
-  it('adopts a worktree-refreshed bundle for both tools, and leaves the store alone when nothing is newer', async () => {
+  it('adopts a workspace-refreshed bundle for both tools, and leaves the store alone when nothing is newer', async () => {
     await saveClaudeOAuthBundle(claudeBundle())
     await saveCodexOAuthBundle(codexBundle())
 
-    // What an agent refreshing in its worktree leaves behind: a rotated pair
+    // What an agent refreshing in its workspace leaves behind: a rotated pair
     // with a later expiry (claude) / a later stamp (codex).
     await writeProjectClaudeCredentials('alpha', claudeBundle({
       accessToken: 'claude-access-fresh',
@@ -139,7 +139,7 @@ describe('harvestToolCredentials', () => {
   })
 
   it('adopts nothing a sandbox wrote where egress is mediated', async () => {
-    installFakeWorktreeDriver({ kind: 'k8s' })
+    installFakeWorkspaceDriver({ kind: 'k8s' })
     await saveClaudeOAuthBundle(claudeBundle())
     await saveCodexOAuthBundle(codexBundle())
     // A pod's own bundle in its tool home, newer by every clock: the proxy is
@@ -162,7 +162,7 @@ describe('harvestToolCredentials', () => {
     await saveClaudeOAuthBundle(claudeBundle())
 
     // A sentinel — a mediated project, a data dir flipped from k8s, or a
-    // chained yaac-in-yaac install. Adopting one would break every worktree.
+    // chained yaac-in-yaac install. Adopting one would break every workspace.
     await writeProjectClaudePlaceholder('sentinel-project', claudeBundle({ expiresAt: BASE_EXPIRY + HOUR }))
     // Older than the host's: a project that has not caught up.
     await writeProjectClaudeCredentials('stale-project', claudeBundle({
@@ -256,7 +256,7 @@ describe('harvestToolCredentials', () => {
 
 describe('seedProjectToolHome', () => {
   it('writes sentinels unconditionally where egress is mediated', async () => {
-    installFakeWorktreeDriver({ kind: 'k8s' })
+    installFakeWorkspaceDriver({ kind: 'k8s' })
     await saveClaudeOAuthBundle(claudeBundle())
     await saveCodexOAuthBundle(codexBundle())
     // Even over a real bundle a previous containerless run left behind.
@@ -273,7 +273,7 @@ describe('seedProjectToolHome', () => {
     expect(codex?.accessToken).toBe(PLACEHOLDER_ACCESS_TOKEN)
   })
 
-  it('never overwrites a credential a running worktree refreshed, and harvests it instead', async () => {
+  it('never overwrites a credential a running workspace refreshed, and harvests it instead', async () => {
     await saveClaudeOAuthBundle(claudeBundle())
     await saveCodexOAuthBundle(codexBundle())
     const refreshedClaude = claudeBundle({
@@ -288,7 +288,7 @@ describe('seedProjectToolHome', () => {
     }))
 
     // This is the create path: it used to stamp the stale host copy over the
-    // live credential and spend the worktree's rotation.
+    // live credential and spend the workspace's rotation.
     await seedProjectToolHome('alpha', { mediatedEgress: false })
 
     expect(await readProjectClaudeBundle('alpha')).toMatchObject({ accessToken: 'claude-access-fresh' })
@@ -320,7 +320,7 @@ describe('seedProjectToolHome', () => {
 
   it('keeps a chained install seeded with the sentinel its outer proxy swaps', async () => {
     // yaac-in-yaac: the inner install's "real" credential IS the outer
-    // proxy's sentinel, and a worktree still needs it on disk to send.
+    // proxy's sentinel, and a workspace still needs it on disk to send.
     await saveClaudeOAuthBundle(claudeBundle({
       accessToken: PLACEHOLDER_ACCESS_TOKEN,
       refreshToken: 'yaac-ph-refresh',
@@ -360,7 +360,7 @@ describe('syncToolCredentialsThrottled', () => {
   })
 
   it('leaves every project home alone where egress is mediated', async () => {
-    installFakeWorktreeDriver({ kind: 'k8s' })
+    installFakeWorkspaceDriver({ kind: 'k8s' })
     await saveClaudeOAuthBundle(claudeBundle())
     await writeProjectClaudePlaceholder('alpha', claudeBundle())
 
@@ -418,7 +418,7 @@ describe('fanOutToolCredentials', () => {
   })
 
   it('writes sentinels where egress is mediated, and does nothing for tools with no bundle on disk', async () => {
-    installFakeWorktreeDriver({ kind: 'k8s' })
+    installFakeWorkspaceDriver({ kind: 'k8s' })
     await saveClaudeOAuthBundle(claudeBundle())
     await saveCodexOAuthBundle(codexBundle())
     await seedProject('alpha', claudeBundle())

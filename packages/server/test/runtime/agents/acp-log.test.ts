@@ -29,14 +29,14 @@ const life = (id: string): string =>
 const update = (u: unknown): string => line({
   jsonrpc: '2.0',
   method: 'session/update',
-  params: { worktreeId: 'acp-1', update: u },
+  params: { workspaceId: 'acp-1', update: u },
 })
 
 const prompt = (text: string): string => line({
   jsonrpc: '2.0',
   id: 'abc-1',
   method: 'session/prompt',
-  params: { worktreeId: 'acp-1', prompt: [{ type: 'text', text }] },
+  params: { workspaceId: 'acp-1', prompt: [{ type: 'text', text }] },
 })
 
 /** The agent asking permission, as acpd recorded it coming the other way. */
@@ -76,8 +76,8 @@ let seq = 0
 /** A fresh conversation's record: the file acpd would write, and the name a
  *  reader asks for it by. */
 async function record(): Promise<{ file: string; ref: AcpRecordRef }> {
-  const ref = { slug: 'demo', worktreeId: `wt-${String(++seq)}`, agentSessionId: 'acp-1' }
-  const dir = acpLogDir(ref.slug, ref.worktreeId)
+  const ref = { slug: 'demo', workspaceId: `wt-${String(++seq)}`, agentSessionId: 'acp-1' }
+  const dir = acpLogDir(ref.slug, ref.workspaceId)
   await fs.mkdir(dir, { recursive: true })
   return { ref, file: path.join(dir, 'acp-1.jsonl') }
 }
@@ -285,7 +285,7 @@ describe('tailAcpLog', () => {
 
 describe('readAcpFirstPrompt', () => {
   it('finds the opening message without a live conversation', async () => {
-    // The registry labels a worktree from this, on a reconciler tick — so it
+    // The registry labels a workspace from this, on a reconciler tick — so it
     // must come off disk rather than from something attached.
     const { file, ref } = await record()
     await fs.writeFile(file, [
@@ -471,7 +471,7 @@ describe('replayAcpLog', () => {
       line({ jsonrpc: '2.0', id: 'x-1', method: 'initialize', params: {} }),
       line({ jsonrpc: '2.0', id: 'x-1', result: { protocolVersion: 1 } }),
       line({ jsonrpc: '2.0', id: 'x-2', method: 'session/new', params: { cwd: '/workspace' } }),
-      line({ jsonrpc: '2.0', id: 'x-2', result: { worktreeId: 'acp-1' } }),
+      line({ jsonrpc: '2.0', id: 'x-2', result: { workspaceId: 'acp-1' } }),
       line({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: true } }),
       update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'only this' } }),
     ].join('\n'))

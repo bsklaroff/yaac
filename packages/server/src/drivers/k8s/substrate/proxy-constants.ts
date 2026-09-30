@@ -3,14 +3,14 @@ export const PROXY_APP_NAME = 'yaac-proxy'
 /**
  * Deployment/Service name and pod selector label of the install's npm
  * registry cache (drivers/k8s/cluster/npm-cache.ts), and the port it serves —
- * one worktree pods dial directly, outside netd's redirected set.
+ * one workspace pods dial directly, outside netd's redirected set.
  */
 export const NPM_CACHE_APP_NAME = 'yaac-npm-cache'
 export const NPM_CACHE_PORT = 4873
 /**
- * Worktree-pod label admitting it to the npm cache — both policies that let
- * a worktree dial the cache select on it. Stamped by the server at launch,
- * per the project's `npmCache` setting; a worktree pod holds no API
+ * Workspace-pod label admitting it to the npm cache — both policies that let
+ * a workspace dial the cache select on it. Stamped by the server at launch,
+ * per the project's `npmCache` setting; a workspace pod holds no API
  * credential, so it cannot relabel itself in.
  */
 export const LABEL_NPM_CACHE = 'yaac.npm-cache'
@@ -27,7 +27,7 @@ export const PROXY_AUTH_SECRET_NAME = 'yaac-proxy-auth'
 /** Port the proxy serves inside the cluster (container + Service port). */
 export const PROXY_PORT = 10255
 /**
- * Transparent egress listeners: worktree pods' outbound 443/80 is DNAT'd
+ * Transparent egress listeners: workspace pods' outbound 443/80 is DNAT'd
  * here by their redirect init container (TLS-SNI / Host-header routing,
  * source-pod-IP identity — see k8s/proxy/proxy.ts).
  */
@@ -38,7 +38,7 @@ export const TRANSPARENT_HTTP_PORT = 10257
  * ProxyCommand, pointed at the relay's loopback CONNECT port) here behind
  * a PP2 identity header. The listener verifies the token, parses the
  * `CONNECT host:port`, and tunnels — so SSH authenticates with the same
- * per-connection credential as HTTP(S), with no `x:<worktreeId>` in the
+ * per-connection credential as HTTP(S), with no `x:<workspaceId>` in the
  * workload's env.
  */
 export const TRANSPARENT_TUNNEL_PORT = 10258
@@ -62,48 +62,48 @@ export const SSH_TUNNEL_SENTINEL = '198.18.0.2'
 export const DNS_STUB_PORT = 53
 /**
  * ssh-agent forwarding listener: the proxy speaks the ssh-agent protocol
- * here, spliced to its own in-memory agent. Worktree pods run a local
+ * here, spliced to its own in-memory agent. Workspace pods run a local
  * forwarder (socat) that re-exposes it as the UNIX socket SSH_AUTH_SOCK
  * names, so a pod's ssh client is unchanged while the rendezvous becomes a
  * TCP hop the two pods can make from different nodes — a hostPath UNIX
  * socket only meets on one.
  *
- * Reachable only by worktree pods (buildProxyIngressNpManifest admits this
- * port from the worktree selector alone), and the proxy re-checks the source
+ * Reachable only by workspace pods (buildProxyIngressNpManifest admits this
+ * port from the workspace selector alone), and the proxy re-checks the source
  * pod IP against its pod-watch before splicing. Key bytes stay in the proxy,
  * and the client→agent direction is filtered to identity listings and
  * signature requests — an add/remove/lock never reaches an agent every
- * worktree shares (k8s/proxy/ssh-agent-relay.ts).
+ * workspace shares (k8s/proxy/ssh-agent-relay.ts).
  */
 export const SSH_AGENT_PORT = 10261
 /**
- * Relay listener: the proxy's authenticated CONNECT into worktree pods'
+ * Relay listener: the proxy's authenticated CONNECT into workspace pods'
  * streamd (docs/stream-relay.md). The server dials it, sends one auth
- * line ({token: proxyAuthSecret, worktreeId}), and the proxy splices the
+ * line ({token: proxyAuthSecret, workspaceId}), and the proxy splices the
  * rest of the stream to `podIP:POD_STREAM_PORT`. The server reaches it
  * through one long-lived kubectl port-forward to the proxy Deployment
  * (see stream-relay.ts).
  */
 export const RELAY_PORT = 10260
 /**
- * TCP port of streamd, the in-pod stream daemon worktree pods run
+ * TCP port of streamd, the in-pod stream daemon workspace pods run
  * (dockerfiles/streamd). In gVisor this is the sentry netstack, reachable
  * via the pod IP like any Service backend; only the proxy may dial it
- * (buildWorktreeIngressLockNpManifest).
+ * (buildWorkspaceIngressLockNpManifest).
  */
 export const POD_STREAM_PORT = 10300
 /**
  * Reserved node-local port range netd's Envoy binds its listener trio
  * in — one trio per install, not per target (see k8s/netd/ports.ts, which
  * takes the base and slot count from the DaemonSet env so the range has
- * one definition). Worktree pods' NetworkPolicy admits egress to
+ * one definition). Workspace pods' NetworkPolicy admits egress to
  * the node on exactly this range — that is the ONLY world-ward egress they
  * get, which is what makes a missing redirect fail closed rather than open.
  *
  * Reaching a listener directly is not an escalation: it only reaches
  * Envoy, which always stamps the connection's real peer address into the
  * PROXY-protocol header, so a pod cannot use it to impersonate another
- * worktree. The proxy's transparent ports stay unreachable from pods.
+ * workspace. The proxy's transparent ports stay unreachable from pods.
  */
 export const NETD_LISTENER_PORT_BASE = 15100
 export const NETD_LISTENER_PORT_END = 15999
@@ -112,14 +112,14 @@ export const NETD_LISTENER_SLOTS = 300
 
 /** NetworkPolicy default-denying world egress across the install namespace. */
 export const EGRESS_WORLD_DENY_NAME = 'yaac-egress-world-deny'
-/** NetworkPolicy granting worktree pods their redirect egress. */
-export const WORKTREE_EGRESS_NP_NAME = 'yaac-worktree-egress'
+/** NetworkPolicy granting workspace pods their redirect egress. */
+export const WORKSPACE_EGRESS_NP_NAME = 'yaac-workspace-egress'
 /** NetworkPolicy locking the proxy's ingress (transparent ports = node only). */
 export const PROXY_INGRESS_NP_NAME = 'yaac-proxy-ingress'
 /** NetworkPolicy keeping the proxy's upstream dials off the kind fronting's node port. */
 export const PROXY_EGRESS_NP_NAME = 'yaac-proxy-egress'
-/** NetworkPolicy locking worktree-pod ingress to the proxy's relay dials. */
-export const WORKTREE_INGRESS_LOCK_NP_NAME = 'yaac-worktree-ingress-lock'
+/** NetworkPolicy locking workspace-pod ingress to the proxy's relay dials. */
+export const WORKSPACE_INGRESS_LOCK_NP_NAME = 'yaac-workspace-ingress-lock'
 /** Role label pods carry so policy and sweeps can select on what they are. */
 export const LABEL_ROLE = 'yaac.role'
 /**
@@ -130,12 +130,12 @@ export const LABEL_ROLE = 'yaac.role'
  */
 export const ROLE_BUILDER = 'builder'
 
-/** ServiceAccount the proxy uses to watch pods (source-IP -> worktree). */
+/** ServiceAccount the proxy uses to watch pods (source-IP -> workspace). */
 export const PROXY_SA_NAME = 'yaac-proxy'
 
 /**
  * The objects the proxy is told through and reports through
- * (docs/worktree-egress.md "What the proxy is told, and how"). One writer
+ * (docs/workspace-egress.md "What the proxy is told, and how"). One writer
  * per object: the server writes the inputs, the proxy writes the outputs.
  * The proxy selects and names them by the same strings, copied into
  * k8s/proxy/objects.ts because it cannot import src/.
@@ -155,7 +155,7 @@ export const PROXY_REFRESHED_SECRET_NAME = 'yaac-proxy-refreshed'
 export const PROXY_CA_SECRET_NAME = 'yaac-proxy-ca'
 /** ConfigMap the proxy writes its blocked-host and git-auth records to. */
 export const PROXY_STATE_CONFIGMAP_NAME = 'yaac-proxy-state'
-/** Prefix of the per-worktree registration ConfigMaps (`-<worktreeId>`). */
+/** Prefix of the per-workspace registration ConfigMaps (`-<workspaceId>`). */
 export const PROXY_REGISTRATION_PREFIX = 'yaac-proxy-reg'
 /** Prefix of the per-project secret-values Secrets (install-scoped name). */
 export const PROXY_PROJECT_SECRETS_PREFIX = 'yaac-proxy-secrets'
@@ -227,7 +227,7 @@ export const TAILSCALE_PARENT_NAMESPACE_LABEL = 'tailscale.com/parent-resource-n
  * by the proxy's ingress policy on the server's pod selector.
  *
  * A FULL `.svc.cluster.local` name for the same reason the registry uses
- * one — a worktree resolves it through the proxy's split-horizon DNS, which
+ * one — a workspace resolves it through the proxy's split-horizon DNS, which
  * forwards only `.cluster.local` to CoreDNS. Namespace is a parameter so
  * this stays part of the zero-import vocabulary.
  */

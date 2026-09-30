@@ -8,8 +8,8 @@ import { missingPrebuiltImage } from '#drivers/k8s/image-engine'
  * Digest-pinned upstream image the sandboxed builder pods run — podman +
  * coreutils, mirrored into the local registry like the cluster's other
  * pinned upstreams (the digest IS the pin; no content-hash tag). Pinned
- * near the worktree engines' podman major so store metadata stays
- * compatible. Never the worktree's own image: its binaries are
+ * near the workspace engines' podman major so store metadata stays
+ * compatible. Never the workspace's own image: its binaries are
  * user-customizable and must not run yaac-driven builds.
  *
  * It sits here rather than beside the builder pods it runs because the

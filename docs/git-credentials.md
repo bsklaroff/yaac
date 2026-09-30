@@ -1,7 +1,7 @@
 # Git credentials
 
 A project's git — the server's clones and fetches, and every fetch and push
-its worktrees make — authenticates with **one credential assigned to that
+its workspaces make — authenticates with **one credential assigned to that
 project**. Credentials are named, and one may serve many projects. There
 are two kinds, and the kind must match the project's remote:
 
@@ -30,7 +30,7 @@ assignment trusted. Why assignment rather than matching a URL against
 patterns: which credential a project gets is a decision the user makes once,
 visibly, and nothing about it changes when another credential is added.
 
-- **No credential, no worktrees.** A project is added with one, but can
+- **No credential, no workspaces.** A project is added with one, but can
   still lack a usable one — an upgraded install's project the importer
   found no match for, or a remote that changed. A create refuses it, and
   the webapp's create button becomes "Add git authentication…", which opens
@@ -49,7 +49,7 @@ visibly, and nothing about it changes when another credential is added.
   confirms, naming them) and the runtime is told immediately — a delete or
   replace the egress proxy could not be told of answers
   `RUNTIME_UNAVAILABLE` rather than "done", since the proxy still holds the
-  old secret until the next push. A running containerless worktree keeps
+  old secret until the next push. A running containerless workspace keeps
   the copy it launched with until it restarts. Either way, revoke a leaked
   token or key at the host too.
 - **Default names** are `<project>-token` / `<project>-key` when made for a
@@ -98,25 +98,25 @@ PKCS#8 form Node exports natively for Ed25519.
   `IdentityAgent` and the project's PUBLIC key file as `-i` under
   `IdentitiesOnly`, so ssh offers the one identity assigned rather than
   every key the agent holds.
-- **A k8s worktree** holds neither. The server hands the egress proxy every
+- **A k8s workspace** holds neither. The server hands the egress proxy every
   credential some project uses, each with the projects entitled to it, in
-  the `yaac-proxy-credentials` Secret (docs/worktree-egress.md). The proxy
-  injects a token only into requests from a worktree of one of its projects,
+  the `yaac-proxy-credentials` Secret (docs/workspace-egress.md). The proxy
+  injects a token only into requests from a workspace of one of its projects,
   and only toward that project's remote host. Keys are loaded into the
   proxy's in-memory agent, each destination-constrained (`ssh-add -h`) to
-  its projects' hosts, and a worktree reaches that agent through its
+  its projects' hosts, and a workspace reaches that agent through its
   `SSH_AUTH_SOCK` forwarder (`k8s/proxy/ssh-agent-relay.ts`). The relay
-  scopes the agent to the worktree's project: it answers "which keys" with
+  scopes the agent to the workspace's project: it answers "which keys" with
   that project's key alone and refuses a signature for any other — so an
   assignment is enforced, not just recorded. It admits three requests —
   list, sign, and the `session-bind@openssh.com` extension, which is how the
   client tells the agent which host it is talking to; an agent will not sign
   with a constrained key on an unbound session.
-- **A containerless worktree** is handed its project's credential: the
+- **A containerless workspace** is handed its project's credential: the
   token, or the key fed through `ssh-add -` into an `ssh-agent` of its own
   from the server's stdin pipe, with only the public half in its home
   (docs/containerless-driver.md). A workspace's agent is its own rather than
-  the server's because a containerless worktree outlives a server restart,
+  the server's because a containerless workspace outlives a server restart,
   and its pushes must not die with it. A running workspace keeps the
   credential it launched with until it restarts.
 
@@ -126,15 +126,15 @@ What the user hands yaac is a token or a name; what they get back for a key
 is a public key. Nothing yaac stores names a path on any machine, so the
 same flow works against a server on another host (docs/remote-hosting.md).
 
-Under `k8s`, nothing a worktree can read is a credential: the pod holds a
+Under `k8s`, nothing a workspace can read is a credential: the pod holds a
 forwarded agent socket and a public known_hosts file, the proxy signs only
 with its own project's key and only for that key's hosts, and a token rides
 only its own project's requests.
 
-Under `containerless` the boundary is the server's uid, and a worktree IS a
+Under `containerless` the boundary is the server's uid, and a workspace IS a
 process of that uid on the same host. The server's agent socket sits in the
-same install-keyed temp dir as the worktree's own tmux and ssh-agent
-sockets, so a containerless worktree can point `SSH_AUTH_SOCK` at it and
+same install-keyed temp dir as the workspace's own tmux and ssh-agent
+sockets, so a containerless workspace can point `SSH_AUTH_SOCK` at it and
 sign with every stored key, not just its project's — and it can read the
 secret-key file and the database directory too. That is the posture of a
 driver with no sandbox at all (docs/containerless-driver.md): nothing on

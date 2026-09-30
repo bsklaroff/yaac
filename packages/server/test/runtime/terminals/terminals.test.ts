@@ -1,5 +1,5 @@
 /**
- * The session-terminal entry points — `listWorktreeTerminals`,
+ * The session-terminal entry points — `listWorkspaceTerminals`,
  * `createShellWindow`, `killWindowTerminal`.
  *
  * Nothing under features/terminals is mocked here: the window-listing parse,
@@ -11,14 +11,14 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
-  registerWorktreeControlStream,
+  registerWorkspaceControlStream,
   _clearControlStreamRegistryForTests,
 } from '#runtime/status/control-stream-registry'
-import { createShellWindow, killWindowTerminal, listWorktreeTerminals } from '#runtime/terminals'
-import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
-import type { WorktreeDriver } from '#drivers/contract'
+import { createShellWindow, killWindowTerminal, listWorkspaceTerminals } from '#runtime/terminals'
+import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import type { WorkspaceDriver } from '#drivers/contract'
 
-const exec = vi.fn<WorktreeDriver['exec']>()
+const exec = vi.fn<WorkspaceDriver['exec']>()
 const out = (stdout: string): Promise<{ stdout: string; stderr: string }> =>
   Promise.resolve({ stdout, stderr: '' })
 
@@ -26,14 +26,14 @@ const LIST_FORMAT = "list-windows -t yaac -F '#{window_index}|#{window_id}|#{win
 
 beforeEach(() => {
   exec.mockReset()
-  installFakeWorktreeDriver({ exec })
+  installFakeWorkspaceDriver({ exec })
   _clearControlStreamRegistryForTests()
 })
 
-describe('listWorktreeTerminals', () => {
+describe('listWorkspaceTerminals', () => {
   it('maps every window but the agent (lowest index), pipes in names and all', async () => {
     exec.mockReturnValueOnce(out('0|@0|claude\n1|@3|dev-server\n2|@5|a|b|c\n'))
-    expect(await listWorktreeTerminals('yaac-demo')).toEqual([
+    expect(await listWorkspaceTerminals('yaac-demo')).toEqual([
       { target: 'window:@3', name: 'dev-server' },
       { target: 'window:@5', name: 'a|b|c' },
     ])
@@ -42,22 +42,22 @@ describe('listWorktreeTerminals', () => {
 
   it('is empty for a lone agent window, for garbage, and for a failed probe', async () => {
     exec.mockReturnValueOnce(out('0|@0|claude\n'))
-    expect(await listWorktreeTerminals('yaac-demo')).toEqual([])
+    expect(await listWorkspaceTerminals('yaac-demo')).toEqual([])
 
     exec.mockReturnValueOnce(out('no pipes here\n???\n'))
-    expect(await listWorktreeTerminals('yaac-demo')).toEqual([])
+    expect(await listWorkspaceTerminals('yaac-demo')).toEqual([])
 
     exec.mockRejectedValueOnce(new Error('pod gone'))
-    expect(await listWorktreeTerminals('yaac-demo')).toEqual([])
+    expect(await listWorkspaceTerminals('yaac-demo')).toEqual([])
   })
 
   it('rides a registered control stream, falling back to exec when it fails', async () => {
     const sent: string[] = []
-    registerWorktreeControlStream('yaac-demo', (cmd) => {
+    registerWorkspaceControlStream('yaac-demo', (cmd) => {
       sent.push(cmd)
       return Promise.resolve('0|@0|claude\n1|@1|init')
     })
-    expect(await listWorktreeTerminals('yaac-demo')).toEqual([
+    expect(await listWorkspaceTerminals('yaac-demo')).toEqual([
       { target: 'window:@1', name: 'init' },
     ])
     expect(sent[0]).toContain(LIST_FORMAT)
@@ -65,9 +65,9 @@ describe('listWorktreeTerminals', () => {
 
     // The watcher's stream just died mid-respawn: this call takes the
     // one-shot relay exec instead of failing.
-    registerWorktreeControlStream('yaac-demo', () => Promise.reject(new Error('stream died')))
+    registerWorkspaceControlStream('yaac-demo', () => Promise.reject(new Error('stream died')))
     exec.mockReturnValueOnce(out('0|@0|claude\n1|@1|init\n'))
-    expect(await listWorktreeTerminals('yaac-demo')).toEqual([
+    expect(await listWorkspaceTerminals('yaac-demo')).toEqual([
       { target: 'window:@1', name: 'init' },
     ])
     expect(exec).toHaveBeenCalledOnce()
@@ -106,7 +106,7 @@ describe('createShellWindow', () => {
 
   it('mutations never ride the (read-only) control stream — only the listing does', async () => {
     const sent: string[] = []
-    registerWorktreeControlStream('yaac-demo', (cmd) => {
+    registerWorkspaceControlStream('yaac-demo', (cmd) => {
       sent.push(cmd)
       return Promise.resolve('0|@0|claude\n1|@1|shell')
     })

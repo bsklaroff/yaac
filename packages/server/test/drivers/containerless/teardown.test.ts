@@ -48,7 +48,7 @@ let dataDir: string
  *  `sshAgentPid` is what a project with an SSH remote also leaves. */
 function registered(extra: { sshAgentPid?: number } = {}): void {
   rememberWorkspace({
-    projectSlug: 'demo', worktreeId: UUID, tool: 'claude', mode: 'tui',
+    projectSlug: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
     prewarm: false, createdAtMs: 1_000, tmuxPid: 4242, ...extra,
   })
 }
@@ -145,10 +145,10 @@ describe('destroyWorkspace', () => {
 })
 
 describe('destroyWorkspace ssh-agent', () => {
-  it('ends the agent holding the worktree’s key, and removes its socket', async () => {
+  it('ends the agent holding the workspace’s key, and removes its socket', async () => {
     // The agent is not a descendant of the tmux server — it was started
     // beside it, detached — so nothing else in the teardown would reach it,
-    // and a surviving one holds a private key for a worktree that is gone.
+    // and a surviving one holds a private key for a workspace that is gone.
     registered({ sshAgentPid: 777 })
     const paths = containerlessWorkspacePaths(TARGET.unitName)
     fs.mkdirSync(path.dirname(paths.sshAgentSock), { recursive: true })
@@ -162,11 +162,11 @@ describe('destroyWorkspace ssh-agent', () => {
 
   it('signals it for a workspace it never saw running, too', async () => {
     // NOT gated on having seen it running, unlike the stray sweep: a
-    // worktree whose tmux died while the host stayed up would otherwise
+    // workspace whose tmux died while the host stayed up would otherwise
     // leave an agent holding the private key until reboot — the failure the
-    // per-worktree agent exists to prevent.
+    // per-workspace agent exists to prevent.
     restoreWorkspace({
-      projectSlug: 'demo', worktreeId: UUID, tool: 'claude', mode: 'tui',
+      projectSlug: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
       prewarm: false, createdAtMs: 1_000, tmuxPid: 4242, sshAgentPid: 777,
     }, false, { reason: 'agent-exited' })
 
@@ -238,7 +238,7 @@ describe('reapNodeLocal', () => {
     await fsp.mkdir(fresh, { recursive: true })
     registered()
 
-    await reapNodeLocal({ projectIds: new Set([DEMO.id]), worktreeIds: new Set([UUID]) })
+    await reapNodeLocal({ projectIds: new Set([DEMO.id]), workspaceIds: new Set([UUID]) })
 
     for (const dir of [live, liveStore, inUse, fresh]) {
       await expect(fsp.access(dir)).resolves.toBeUndefined()
@@ -261,7 +261,7 @@ describe('reapNodeLocal', () => {
       await fsp.rm(path.dirname(imageStoreDir('x')), { recursive: true, force: true })
       await fsp.symlink(path.dirname(rootVictim), path.dirname(imageStoreDir('x')))
 
-      await reapNodeLocal({ projectIds: new Set(), worktreeIds: new Set() })
+      await reapNodeLocal({ projectIds: new Set(), workspaceIds: new Set() })
 
       for (const dir of [entryVictim, rootVictim]) {
         await expect(fsp.access(path.join(dir, 'x'))).resolves.toBeUndefined()
@@ -329,7 +329,7 @@ describe('detachedTeardownCommand', () => {
       binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-teardown-bin-'))
       killLog = path.join(binDir, 'killed.txt')
       // `ps` reports one real ssh-agent for this workspace, plus a decoy for
-      // another worktree that must be left alone.
+      // another workspace that must be left alone.
       const paths = containerlessWorkspacePaths(TARGET.unitName)
       fs.writeFileSync(path.join(binDir, 'ps'), [
         '#!/bin/sh',

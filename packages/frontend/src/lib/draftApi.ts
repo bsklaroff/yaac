@@ -1,21 +1,21 @@
 import { api } from './api'
-import type { DraftWorktreeEntry, DraftWorktreeSettings } from '@yaac/shared/types'
+import type { DraftWorkspaceEntry, DraftWorkspaceSettings } from '@yaac/shared/types'
 
 /**
- * Draft worktrees (docs/draft-worktrees.md): create-dialog contents kept for
+ * Draft workspaces (docs/draft-workspaces.md): create-dialog contents kept for
  * later. Not optimistic — drafts ride the snapshot, so the server's push is
  * what re-renders the sidebar.
  */
 
 /** Save a new draft, or replace draft `id`'s fields. */
-export async function saveDraftWorktree(
+export async function saveDraftWorkspace(
   project: string,
-  settings: DraftWorktreeSettings,
+  settings: DraftWorkspaceSettings,
   id?: string,
-): Promise<DraftWorktreeEntry> {
-  return await api.worktree.draft.save.$post({ json: { project, ...settings, ...(id !== undefined ? { id } : {}) } })
+): Promise<DraftWorkspaceEntry> {
+  return await api.workspace.draft.save.$post({ json: { project, ...settings, ...(id !== undefined ? { id } : {}) } })
 }
 
-export async function discardDraftWorktree(id: string): Promise<void> {
-  await api.worktree.draft.discard.$post({ json: { id } })
+export async function discardDraftWorkspace(id: string): Promise<void> {
+  await api.workspace.draft.discard.$post({ json: { id } })
 }

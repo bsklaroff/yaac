@@ -16,14 +16,14 @@ import { e2eMkdtemp } from '@yaac/test-utils/tmp'
 import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
 import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
 import {
-  applyWorktreeRegistration,
+  applyProxyRegistration,
   deregisterWorkspaceEgress,
 } from '@yaac/server/drivers/k8s/egress/proxy-registration'
 import { syncProxyCredentials } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { proxyServiceClusterIp } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { runtimeClassSpec } from '@yaac/server/drivers/k8s/substrate/gvisor'
 import { SSH_AGENT_MOUNT, SSH_AGENT_SOCKET_PATH } from '@yaac/server/drivers/k8s/substrate/pod-spec'
-import { worktreeIdLabels } from '@yaac/server/drivers/k8s/substrate/pods'
+import { workspaceIdLabels } from '@yaac/server/drivers/k8s/substrate/pods'
 import { PROXY_APP_NAME, SSH_AGENT_PORT } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
 import {
   k8sNamespace,
@@ -95,16 +95,16 @@ async function makeTestKey(dir: string): Promise<{
  * A session-shaped pod carrying exactly the ssh-agent wiring
  * `buildPodJobManifest` + session-create give a real session: the
  * pod-local emptyDir at SSH_AGENT_MOUNT, SSH_AUTH_SOCK, and the forwarder's
- * upstream. `worktreeId` is what the proxy's pod-watch attributes it to.
+ * upstream. `workspaceId` is what the proxy's pod-watch attributes it to.
  */
-async function startWorktreePod(name: string, worktreeId: string): Promise<void> {
+async function startWorkspacePod(name: string, workspaceId: string): Promise<void> {
   await kubectlApply({
     apiVersion: 'v1',
     kind: 'Pod',
     metadata: {
       name,
       namespace: k8sNamespace(),
-      labels: { ...worktreeIdLabels(worktreeId), 'yaac.test': 'true' },
+      labels: { ...workspaceIdLabels(workspaceId), 'yaac.test': 'true' },
     },
     spec: {
       restartPolicy: 'Never',
@@ -208,7 +208,7 @@ async function diagnose(pod: string): Promise<string> {
 }
 
 /**
- * Start the in-pod forwarder — the same socat line `yaac-worktree-init`
+ * Start the in-pod forwarder — the same socat line `yaac-workspace-init`
  * runs from the pod's postStart hook, off the same two env vars.
  */
 async function startForwarder(pod: string): Promise<void> {
@@ -245,18 +245,18 @@ beforeAll(async () => {
 
   // The entitlement the proxy gates on is the session's registered remote:
   // an SSH one is exactly when session-create provisions SSH_AUTH_SOCK.
-  await applyWorktreeRegistration(sshSession, {
+  await applyProxyRegistration(sshSession, {
     rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectSlug: 'agentfwd',
     repoUrl: `git@${SSH_HOST}:acme/app.git`,
   })
-  await applyWorktreeRegistration(httpsSession, {
+  await applyProxyRegistration(httpsSession, {
     rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectSlug: 'agentfwd',
     repoUrl: 'https://github.com/acme/app.git',
   })
 
   await Promise.all([
-    startWorktreePod(sshPod, sshSession),
-    startWorktreePod(httpsPod, httpsSession),
+    startWorkspacePod(sshPod, sshSession),
+    startWorkspacePod(httpsPod, httpsSession),
   ])
   await Promise.all([waitForPodRunning(sshPod), waitForPodRunning(httpsPod)])
 }, 900_000)
@@ -333,7 +333,7 @@ describe('ssh-agent forwarding over the proxy', () => {
   it('shows a session only the keys assigned to its own project', async () => {
     // Same pod, same forwarder, same agent: re-registered under a project
     // the key is not assigned to, the session's next request lists nothing.
-    await applyWorktreeRegistration(sshSession, {
+    await applyProxyRegistration(sshSession, {
       rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectSlug: 'agentfwd-other',
       repoUrl: `git@${SSH_HOST}:acme/app.git`,
     })

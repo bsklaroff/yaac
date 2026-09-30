@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
@@ -9,10 +9,10 @@ import { listProjects } from '#domain/projects'
 import { recordProject } from '#db'
 import type { ProjectMeta } from '@yaac/shared/types'
 
-// Which projects exist is the server's own record; how many worktrees each
+// Which projects exist is the server's own record; how many workspaces each
 // is running comes off the substrate, and what that count excludes (spares,
 // unlabelled pods) is asserted in locate.test.ts.
-// Which projects exist is the server's own record; how many worktrees each
+// Which projects exist is the server's own record; how many workspaces each
 // is running comes off the runtime, and what that count excludes (spares,
 // unlabelled workspaces) is asserted in locate.test.ts.
 const counts = vi.fn()
@@ -27,7 +27,7 @@ describe('listProjects', () => {
   let tmpDir: string
 
   beforeEach(async () => {
-    installFakeWorktreeDriver({ count: counts })
+    installFakeWorkspaceDriver({ count: counts })
     tmpDir = await createTempDataDir()
     counts.mockReset().mockResolvedValue({})
   })
@@ -56,7 +56,7 @@ describe('listProjects', () => {
       addedAt: '2026-01-01T00:00:00.000Z',
     })
     // A project the substrate said nothing about counts 0, not undefined.
-    expect(typeof foo?.worktreeCount).toBe('number')
+    expect(typeof foo?.workspaceCount).toBe('number')
   })
 
   it('joins the live counts onto the recorded projects', async () => {
@@ -64,7 +64,7 @@ describe('listProjects', () => {
     await writeProject('bar', { slug: 'bar', remoteUrl: 'https://example/bar', addedAt: '2026-01-02T00:00:00.000Z' })
     counts.mockResolvedValue({ foo: 2, bar: 1 })
 
-    const joined = Object.fromEntries((await listProjects()).map((p) => [p.slug, p.worktreeCount]))
+    const joined = Object.fromEntries((await listProjects()).map((p) => [p.slug, p.workspaceCount]))
     expect(joined).toEqual({ foo: 2, bar: 1 })
   })
 
@@ -73,6 +73,6 @@ describe('listProjects', () => {
   it('still lists a project the substrate said nothing about', async () => {
     await writeProject('foo', { slug: 'foo', remoteUrl: 'https://example/foo', addedAt: '2026-01-01T00:00:00.000Z' })
     counts.mockResolvedValue({})
-    expect((await listProjects())[0]?.worktreeCount).toBe(0)
+    expect((await listProjects())[0]?.workspaceCount).toBe(0)
   })
 })

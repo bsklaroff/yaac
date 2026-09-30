@@ -94,13 +94,13 @@ describe('useAcpStream', () => {
   })
 
   it('opens no socket for a conversation that has no id yet', () => {
-    // A worktree whose agent has not minted a session id is addressed by
+    // A workspace whose agent has not minted a session id is addressed by
     // nothing; dialling would attach to whatever answers to the empty string.
     renderHook(() => useAcpStream('wt-1', ''))
     expect(FakeSocket.instances).toHaveLength(0)
   })
 
-  it('addresses the conversation by worktree and session id', () => {
+  it('addresses the conversation by workspace and session id', () => {
     renderHook(() => useAcpStream('wt-1', 'acp-1'))
     expect(latest().url).toContain('id=wt-1')
     expect(latest().url).toContain('session=acp-1')

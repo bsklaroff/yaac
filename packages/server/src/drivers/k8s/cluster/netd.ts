@@ -24,7 +24,7 @@ import { env, testEnv } from '@yaac/shared/env'
 import { clusterPodCidrs } from './cluster-cidrs'
 
 /**
- * `yaac-netd` — the per-node DaemonSet that steers worktree egress into the
+ * `yaac-netd` — the per-node DaemonSet that steers workspace egress into the
  * proxy. Two containers in the host network namespace:
  *
  *  - **netd** watches pods/Services, resolves each pod to the veth its
@@ -39,7 +39,7 @@ import { clusterPodCidrs } from './cluster-cidrs'
  * netd owns the redirect ONLY. Every allow/deny is a plain Kubernetes
  * NetworkPolicy enforced by Calico's Felix, so netd can never be the
  * reason something is permitted — and a netd that is down, late, or wrong
- * costs worktrees their egress rather than opening it (their NetworkPolicy
+ * costs workspaces their egress rather than opening it (their NetworkPolicy
  * admits the node's listener ports and nothing world-ward).
  */
 
@@ -81,7 +81,7 @@ export const DEFAULT_VETH_PREFIX = 'cali'
  * The veth prefix netd is told to match on: the operator's configured
  * value, else Calico's. `--byo` verifies the result against the
  * node's real routing table, which is what turns a wrong value into a
- * refusal instead of a cluster whose worktrees silently have no egress.
+ * refusal instead of a cluster whose workspaces silently have no egress.
  */
 export function cniVethPrefix(): string {
   return env.cniVethPrefix ?? DEFAULT_VETH_PREFIX
@@ -119,7 +119,7 @@ export function buildNetdServiceAccountManifest(): Record<string, unknown> {
 
 /**
  * Cluster-scoped read-only access to PODS, and nothing else — netd must see
- * every worktree pod, because a pod's veth is what it programs. Everything
+ * every workspace pod, because a pod's veth is what it programs. Everything
  * else it reads (the proxy Service) lives in its own namespace and comes
  * from the Role below.
  *
@@ -205,7 +205,7 @@ export interface NetdDaemonSetOptions {
    * Interface-name prefix this cluster's CNI gives every workload veth.
    * `cali` wherever Calico does the IPAM; an adopted CNI may differ (see
    * cni-adopt.ts), and `--byo` verifies the value against a node's
-   * real routing table before any worktree depends on it.
+   * real routing table before any workspace depends on it.
    */
   vethPrefix: string
 }
@@ -227,7 +227,7 @@ export interface NetdDaemonSetOptions {
  * - The proxy-side port numbers, the ssh sentinel and the listener range
  *   come from proxy-constants.ts via env, so they have one definition
  *   shared with the proxy and the policy builders. The range especially:
- *   the worktree NetworkPolicy admits exactly those ports, so a netd
+ *   the workspace NetworkPolicy admits exactly those ports, so a netd
  *   binding outside them would be unreachable by the pods it serves.
  * - Only netd carries a readiness probe. Its marker is written after the
  *   pass that confirmed Envoy is serving the current listener config on
@@ -256,7 +256,7 @@ export function buildNetdDaemonSetManifest(opts: NetdDaemonSetOptions): Record<s
           enableServiceLinks: false,
           // Trusted yaac infra: runc, like the proxy (see gvisor.ts).
           // Must also run on a control-plane-only cluster, hence the
-          // blanket toleration — a node with no netd has no worktree
+          // blanket toleration — a node with no netd has no workspace
           // egress at all.
           tolerations: [{ operator: 'Exists' }],
           priorityClassName: 'system-node-critical',
@@ -298,7 +298,7 @@ export function buildNetdDaemonSetManifest(opts: NetdDaemonSetOptions): Record<s
               // reconcile reaches the dataplane and removes it on failure.
               // Without that distinction a netd failing every pass still
               // reports Ready and the cluster-check datapath gate passes on
-              // a cluster with no working worktree egress.
+              // a cluster with no working workspace egress.
               readinessProbe: {
                 exec: { command: ['test', '-f', `${envoyDir}/.ready`] },
                 periodSeconds: 5,
@@ -337,7 +337,7 @@ export function buildNetdDaemonSetManifest(opts: NetdDaemonSetOptions): Record<s
  * Stand up (or converge) netd.
  *
  * Called from `ensureProxyResources`, so the redirect layer exists before any
- * worktree pod can be scheduled.
+ * workspace pod can be scheduled.
  */
 export async function ensureNetd(): Promise<void> {
   const [netdImage, envoyImage, podCidrs] = await Promise.all([

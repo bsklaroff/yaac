@@ -1,5 +1,5 @@
 // The public interface of the container folder: the host's container engine,
-// which is the image BUILD engine only — worktrees run as Jobs, so nothing
+// which is the image BUILD engine only — workspaces run as Jobs, so nothing
 // here addresses the cluster's workloads. Everything outside this directory
 // imports `#drivers/k8s/container`; the SEALED_FOLDERS lint rule stops src
 // from reaching past this file. Modules in here import each other by relative

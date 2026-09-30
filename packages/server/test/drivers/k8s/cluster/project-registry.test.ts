@@ -781,10 +781,10 @@ describe('reconcileProjectRegistryGc', () => {
   })
 
   it('measures the throttle from the registry, not from this process', async () => {
-    // A registry a worktree create JUST stood up has nothing to reclaim —
+    // A registry a workspace create JUST stood up has nothing to reclaim —
     // garbage here is the previous generation of a REBUILT tag — while the
     // window it would pay is two `Recreate` rollouts, landing exactly when
-    // the new worktree is pushing and pulling through it hardest. So the
+    // the new workspace is pushing and pulling through it hardest. So the
     // clock the throttle reads is the Service's age, not this process's
     // uptime, which is also why a server restart cannot re-arm it.
     oneRegistry(DUE - 1)

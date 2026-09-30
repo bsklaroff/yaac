@@ -26,7 +26,7 @@ export function ProjectsScreen({
 }: {
   projects: ProjectSummary[]
   activeProjectSlug: string | null
-  /** Per-project count of worktrees waiting and not yet looked at. */
+  /** Per-project count of workspaces waiting and not yet looked at. */
   attentionBySlug: Record<string, number>
   connected: boolean
   onSelect: (slug: string) => void
@@ -73,7 +73,7 @@ export function ProjectsScreen({
               <span className="min-w-0 flex-1 truncate text-sm font-medium text-text">{p.slug}</span>
               {waiting > 0 && (
                 <span
-                  title={`${waiting} worktree${waiting > 1 ? 's' : ''} waiting for input`}
+                  title={`${waiting} workspace${waiting > 1 ? 's' : ''} waiting for input`}
                   className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-amber-500
                     px-1.5 text-[11px] font-semibold tabular-nums text-black"
                 >

@@ -10,7 +10,7 @@ import {
 /**
  * Half-typed ACP messages outlive their pane, which is torn down every time it
  * goes off-screen. This covers the two ways that can go wrong: the map growing
- * forever as worktrees come and go, and a reload finding garbage where a draft
+ * forever as workspaces come and go, and a reload finding garbage where a draft
  * should be — plus the `sent` marker, which is what lets a restored draft be
  * told apart from a message that was already delivered.
  */
@@ -142,7 +142,7 @@ describe('chat-draft persistence', () => {
     expect(useUiStore.getState().chatDrafts).toBe(before)
   })
 
-  it('GCs drafts for worktrees the snapshot no longer lists', () => {
+  it('GCs drafts for workspaces the snapshot no longer lists', () => {
     const { setChatDraft, syncChatDrafts } = useUiStore.getState()
     setChatDraft('live', 'acp-1', 'still typing')
     setChatDraft('live', 'acp-2', 'also typing')

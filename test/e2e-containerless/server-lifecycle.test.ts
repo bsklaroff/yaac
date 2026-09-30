@@ -222,7 +222,7 @@ describe('yaac server start on a k8s install', () => {
     // The recorded driver is the tripwire: it says which KIND of install
     // this data dir is (docs/server-in-cluster.md). A host server started
     // against a k8s one would be a second writer of the same PGlite
-    // database, and would reap every worktree it cannot see as podless.
+    // database, and would reap every workspace it cannot see as podless.
     const clientRoot = `${testEnv.dataDir}-client`
     await fs.mkdir(clientRoot, { recursive: true })
     await fs.writeFile(path.join(clientRoot, 'server.json'), JSON.stringify({
@@ -233,7 +233,7 @@ describe('yaac server start on a k8s install', () => {
     expect(exitCode).toBe(1)
     // TWO refusals can answer here, and this tier must accept either,
     // because which one fires depends on whether the machine has kubectl —
-    // and a containerless worktree, which is where this tier is meant to be
+    // and a containerless workspace, which is where this tier is meant to be
     // runnable, does not:
     //   - with a cluster to ask: no Deployment → `assertHostServerAllowed`
     //     refuses, naming `yaac cluster install`.

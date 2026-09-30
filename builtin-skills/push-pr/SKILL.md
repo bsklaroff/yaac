@@ -3,7 +3,7 @@ name: push-pr
 description: Commit pending changes on the current branch, rebase onto the latest base branch (origin/main, or another open PR's branch if this one was rebased onto it — which yields a new PR stacked on that PR, never a commit added to it), push to a new named branch on origin, open a GitHub PR against that base, then watch the PR for reviewer comments (via yaac-watch-prs) and address them as they arrive. Use when the user wants to push the current branch out as a PR. Takes an optional branch-name argument; if omitted, a descriptive name is generated from the changes.
 ---
 
-You are running **inside a yaac worktree**. This skill commits any pending
+You are running **inside a yaac workspace**. This skill commits any pending
 work on the current branch, rebases it onto the latest base branch, pushes
 it to a **new named branch on origin**, sets that branch as the current
 branch's upstream, opens a GitHub PR against that base, and then **watches
@@ -28,7 +28,7 @@ Never use `git -C`, always just use `git` commands from the working directory.
 
 ## When this branch sits on top of another PR
 
-A worktree is usually cut from `main`, but the work in it often isn't: a
+A workspace is usually cut from `main`, but the work in it often isn't: a
 common opening instruction is "rebase on top of PR #x, then do y", which
 leaves this branch holding PR #x's commits underneath its own. When that has
 happened, `/push-pr` means **open a new PR stacked on PR #x** — never add to
@@ -41,7 +41,7 @@ of the session:
   locally for the ancestry tests below.
 - `gh pr list --state open --json number,headRefName,headRefOid --jq '.[] | [.number, .headRefName, .headRefOid] | @tsv'`
   — filter with gh's own `--jq` flag, never a `| jq` pipe: `jq` is not
-  installed on every host a containerless worktree runs on, while gh's is
+  installed on every host a containerless workspace runs on, while gh's is
   built in.
 - A PR is underneath this branch when its head tip is an ancestor of `HEAD`
   but not of `origin/main`:
@@ -117,7 +117,7 @@ open the PR with `--base <base>`, and count only the commits above
       step 3 of the section below, don't notify you about themselves.
     - `yaac-watch-prs` baselines on its first poll, so only comments posted
       *after* the watch starts surface. It does no author filtering: comments
-      from your own account posted by the user or by sibling yaac worktrees
+      from your own account posted by the user or by sibling yaac workspaces
       surface (address them like any reviewer comment), and so do your own
       replies (recognize and ignore those — see below).
     - If the repo has no GitHub remote or the PR number can't be resolved,
@@ -132,7 +132,7 @@ The watcher does not filter by author, so **your own replies come back as
 `[comment]` events**. Before acting on a notification, check whether it is a
 comment you posted yourself earlier in this session — if so, ignore it and
 keep watching; never reply to your own comment. Same-account comments you did
-*not* post (the user and sibling yaac worktrees share the account) are real
+*not* post (the user and sibling yaac workspaces share the account) are real
 events — address them like any reviewer comment.
 
 For each notification:

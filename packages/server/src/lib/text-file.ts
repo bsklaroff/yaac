@@ -1,6 +1,6 @@
 /**
  * The one rule for "is this an editable text file", shared by the build-files
- * editor and the worktree file editor.
+ * editor and the workspace file editor.
  */
 
 /** Files at most this size are read and written inline as text. */

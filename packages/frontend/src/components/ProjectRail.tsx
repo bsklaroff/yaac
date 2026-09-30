@@ -10,7 +10,7 @@ import type { ProjectSummary } from '@yaac/shared/types'
 /**
  * Discord/Slack-style left rail of projects — the top-level navigation
  * axis. The active project scopes the sidebar; a project with unread
- * waiting worktrees (awaiting input and not yet viewed) shows an attention
+ * waiting workspaces (awaiting input and not yet viewed) shows an attention
  * badge so "which project needs me" is visible before drilling in.
  */
 export function ProjectRail({

@@ -19,7 +19,7 @@ export async function fileHash(filePath: string): Promise<string> {
 }
 
 /**
- * Content hash for a root (FROM-scratch) worktree image layer: everything
+ * Content hash for a root (FROM-scratch) workspace image layer: everything
  * that goes into building it. Shared by the server's layer resolution and
  * the test global setup so both derive identical tags.
  *
@@ -175,7 +175,7 @@ export interface TrustedLayers {
  * `yaac cluster install` builds and pushes all three on the CLI machine
  * (docs/trust-split-builds.md). Both that install and the chain resolution
  * derive their tags from here, so the tag the install pushes is by
- * construction the tag a worktree create looks up.
+ * construction the tag a workspace create looks up.
  */
 export async function resolveTrustedLayers(prefix = 'yaac'): Promise<TrustedLayers> {
   const baseDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
@@ -201,7 +201,7 @@ export async function resolveTrustedLayers(prefix = 'yaac'): Promise<TrustedLaye
   }
 
   // In-pod rootful podman + docker CLI + compose, for `nestedContainers`
-  // worktrees.
+  // workspaces.
   const nestableDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
   const nestableHash = stringHash(`${toolsHash}:${await fileHash(nestableDockerfile)}`)
   const nestable: ImageLayer = {

@@ -445,7 +445,7 @@ function chunk(
  *
  * A bypassed session is constrained by its sandbox rather than by a prompt —
  * the agent is in a gVisor container behind an egress allowlist, on a
- * throwaway git worktree — so the answer is always "allow", and the option to
+ * throwaway git checkout — so the answer is always "allow", and the option to
  * pick is whichever the agent offered that allows *without* also asking again
  * next time.
  *

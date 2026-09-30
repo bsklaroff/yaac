@@ -1,5 +1,5 @@
 // Verifies that a portaled popup wins the sidebar's gutter with a real mouse:
-// the new-worktree popover, anchored under the "+" in the sidebar header, is
+// the new-workspace popover, anchored under the "+" in the sidebar header, is
 // wide enough to spill over the resize strip that lives in the gutter, and the
 // strip (absolutely positioned at z-10) used to paint and hit-test above it —
 // hovering the popup raised the resize hairline and the press never reached the
@@ -66,9 +66,9 @@ async function main() {
   const handle = page.locator('[aria-label="Resize sidebar"]')
   await handle.waitFor({ state: 'visible', timeout: 15_000 })
 
-  // Open the new-worktree popover from the sidebar header.
-  await page.locator('aside [title="New worktree"]').first().click()
-  const popup = page.locator('[role="dialog"]').filter({ hasText: 'New worktree' }).first()
+  // Open the new-workspace popover from the sidebar header.
+  await page.locator('aside [title="New workspace"]').first().click()
+  const popup = page.locator('[role="dialog"]').filter({ hasText: 'New workspace' }).first()
   await popup.waitFor({ state: 'visible', timeout: 10_000 })
   await page.waitForTimeout(250) // opening transition
 

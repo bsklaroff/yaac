@@ -1,7 +1,7 @@
 # Remote hosting: yaac on an always-on server
 
 One developer, an always-on server, thin clients. The server runs the whole
-stack — cluster, podman, server — so worktrees keep running when every client
+stack — cluster, podman, server — so workspaces keep running when every client
 disconnects. The laptop and phone talk to it over a private
 [Tailscale](https://tailscale.com) tailnet.
 
@@ -92,7 +92,7 @@ yaac cluster install                                 # k8s: the Deployment carri
 yaac forward --bind <the server's tailnet IP>        # holds the listeners
 ```
 
-With both, a worktree's forwarded port `19500` is
+With both, a workspace's forwarded port `19500` is
 `http://srv.<tailnet>.ts.net:19500/` from any tailnet device, and the
 webapp's port chips link there automatically. Two caveats: the port is
 reachable by any tailnet device (it does not pass through `serve`, so no
@@ -106,14 +106,14 @@ server's HTTPS port has to be reachable. That is also what the desktop app
 does automatically once it is attached to the remote, and it is what its
 preview pane loads. Both work against either placement: under
 `containerless` the ports are bound on the server's machine by the
-worktree's own processes, which from a laptop is exactly as far away as a
+workspace's own processes, which from a laptop is exactly as far away as a
 pod (docs/port-forward-tunnel.md).
 
 ## Client setup
 
 ```sh
 yaac remote set https://srv.<tailnet>.ts.net   # prints who the server says you are
-yaac worktree list                             # talks to the server
+yaac workspace list                             # talks to the server
 ```
 
 `yaac remote off` deselects it without forgetting it, and `yaac remote on`
@@ -138,7 +138,7 @@ admin console; nothing on the server needs to change.
 Everything goes through the server, so the CLI and webapp behave the same
 against a local or remote server:
 
-- Worktrees: create, list, attach, shell, stream, restart, delete — the
+- Workspaces: create, list, attach, shell, stream, restart, delete — the
   terminal rides the server's PTY WebSocket (`C-b d` detaches, exactly like
   a local attach).
 - Config editing: `yaac config edit*` fetches the file from the server,
@@ -154,7 +154,7 @@ against a local or remote server:
   the git host (docs/git-credentials.md).
 - Project environment and secrets: edited in the webapp, stored with the
   project, secrets encrypted at rest. Under `k8s` a secret's value never
-  enters a worktree — the egress proxy injects it in flight.
+  enters a workspace — the egress proxy injects it in flight.
 
 Semantics to keep in mind:
 
@@ -162,9 +162,9 @@ Semantics to keep in mind:
   environment variables and its proxied secrets are stored with the project
   and edited in the webapp (Settings → Project Config → Environment). An SSH
   git credential is generated on the server, so there is no key on your
-  machine for it to name. Nothing mounts a host directory into a worktree;
+  machine for it to name. Nothing mounts a host directory into a workspace;
   `cacheVolumes` covers a directory that should persist across them.
-- **The git identity worktrees commit under is a server setting.** The auth
+- **The git identity workspaces commit under is a server setting.** The auth
   server seeds it from your own machine's git config when it starts and the
   server has none. It starts under the desktop app, `yaac auth server start`,
   and the browser sign-in of `yaac auth update` for Claude or Codex — not
@@ -198,7 +198,7 @@ Semantics to keep in mind:
   | carries `X-Forwarded-For` or a `Tailscale-User-*` header, with `Tailscale-User-Login` | that tailnet user |
   | carries them without `Tailscale-User-Login` | refused: a tagged device or Funnel |
   | carries neither, and names a loopback `Host` | local |
-  | carries neither, and names any other `Host` | refused — or local, inside a worktree (below) |
+  | carries neither, and names any other `Host` | refused — or local, inside a workspace (below) |
 
   Every route a client calls, HTTP and WebSocket, is mounted under `/api`
   (docs name them relative to it: `GET /whoami` is `/api/whoami`); the rest
@@ -232,18 +232,18 @@ Semantics to keep in mind:
   (DNS-rebind defense), the `Origin` must be exactly the origin the request
   was sent to — scheme, host and port — and `Sec-Fetch-Site` must not be
   cross-site. The port is what keeps out the pages that share the server's
-  hostname: a worktree's forwarded dev server at `127.0.0.1:<port>` or
+  hostname: a workspace's forwarded dev server at `127.0.0.1:<port>` or
   `srv.<tailnet>.ts.net:19500`, and the desktop preview pane, all run
   untrusted repo code. The `OPTIONS` refusal keeps a cross-origin page from
   adding a custom header such as a forged `Tailscale-User-Login` or
   `X-Forwarded-Proto`, since that needs a preflight.
-- **A yaac running inside a worktree (`YAAC_WORKTREE_ID`) takes an unproxied
+- **A yaac running inside a workspace (`YAAC_WORKSPACE_ID`) takes an unproxied
   request as local whatever Host it names.** It inherits the outer
   install's `YAAC_ALLOWED_HOSTS`, and it is reached as
   `srv.<tailnet>.ts.net:<port>` through the outer install's forward — a
   direct path with no serve on it, which the strict rule would refuse.
   Serve-proxied traffic to it is still identified, and still refused without
-  a user. So a server deliberately fronted from a shell inside a worktree
+  a user. So a server deliberately fronted from a shell inside a workspace
   loses only the fail-closed guard against fronts that are not `serve`.
 - Credentials always travel over the identified RPC channel (`PUT
   /auth/:tool`), never through the relay socket or the browser.

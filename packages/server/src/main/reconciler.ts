@@ -1,4 +1,4 @@
-import { worktreeDriver } from '#drivers/driver'
+import { workspaceDriver } from '#drivers/driver'
 import type {
   PassContext,
   ProjectRef,
@@ -9,7 +9,7 @@ import type {
 import { defaultReconcileSteps } from '#domain/reconcile'
 import { listProjectRows } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
-import { isWorktreeTerminating } from '#runtime/status'
+import { isWorkspaceTerminating } from '#runtime/status'
 import { onConvergenceChange, type ChangeSource } from '#main/convergence'
 import { serverLog } from '#log'
 import type { YaacConfig } from '@yaac/shared/types'
@@ -18,7 +18,7 @@ import type { YaacConfig } from '@yaac/shared/types'
  * Event-driven reconciler. Steps run when something they watch changes,
  * not on a fixed clock — two lanes feed one serialized pass executor:
  *
- * - changes: the convergence signals (worktree pods/Jobs,
+ * - changes: the convergence signals (workspace pods/Jobs,
  *   namespaces and their pods/services, the set of live conversations,
  *   driver-stream health, and what the egress proxy reports over its
  *   event stream) mark their sources dirty; a pass runs after a short
@@ -112,7 +112,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         triggers,
         resync,
         signal,
-        snapshot: () => (snapshot ??= worktreeDriver().snapshot(resync)),
+        snapshot: () => (snapshot ??= workspaceDriver().snapshot(resync)),
         // Which projects exist is a row question, so it is resolved once here
         // and handed down — a runtime step never reads db itself. An
         // unreadable list REJECTS, standing each consumer down for the pass:
@@ -133,7 +133,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         // would build the wrong artifact and succeed at it — a
         // nestedContainers project's chain without its nestable layer — and
         // then push it. Rejecting stands that step down for the pass with a
-        // log line, the way a failed `desiredWorktrees()` read stands the
+        // log line, the way a failed `desiredWorkspaces()` read stands the
         // reaper down, and the next pass retries a fixed file.
         projectConfig: (slug) => {
           let pending = projectConfigs.get(slug)
@@ -146,7 +146,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         // A plain read rather than a memoized one: the marks are in-memory
         // and a pass that starts before a stop lands must see the mark the
         // moment it appears, not a value frozen at pass start.
-        terminating: (workspaceId) => isWorktreeTerminating(workspaceId),
+        terminating: (workspaceId) => isWorkspaceTerminating(workspaceId),
       }
       for (const step of steps) {
         // Stop starting steps as soon as shutdown signals — an in-flight

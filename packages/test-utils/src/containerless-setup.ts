@@ -1,4 +1,4 @@
-import { setWorktreeDriver } from '@yaac/server/drivers/driver'
+import { setWorkspaceDriver } from '@yaac/server/drivers/driver'
 import { createContainerlessDriver } from '@yaac/server/drivers/containerless'
 
 /**
@@ -19,4 +19,4 @@ import { createContainerlessDriver } from '@yaac/server/drivers/containerless'
  * namespace, no pods and no images, which is exactly why it runs without a
  * cluster at all.
  */
-setWorktreeDriver(createContainerlessDriver())
+setWorkspaceDriver(createContainerlessDriver())

@@ -22,7 +22,7 @@ import type { SecretProxyRule } from '@yaac/shared/types'
  *
  * A value that will not open is reported, not thrown: a retired key version
  * or a replaced key file leaves rows that are still listed (so the user can
- * see which secrets need re-entering) but resolve to nothing (so a worktree
+ * see which secrets need re-entering) but resolve to nothing (so a workspace
  * launches without them rather than with an empty header, which fails
  * upstream as a bad credential rather than a missing one).
  */

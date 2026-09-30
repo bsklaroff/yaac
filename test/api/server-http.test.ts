@@ -61,8 +61,8 @@ describe('yaac server HTTP surface (real server)', () => {
     expect(await res.json()).toEqual([])
   })
 
-  it('GET /worktree/list?project=missing returns 404 NOT_FOUND', async () => {
-    const res = await client.worktree.list.$get({ query: { project: 'missing' } })
+  it('GET /workspace/list?project=missing returns 404 NOT_FOUND', async () => {
+    const res = await client.workspace.list.$get({ query: { project: 'missing' } })
     expect(res.status).toBe(404)
     const body = await res.json() as unknown as { error: { code: string } }
     expect(body.error.code).toBe('NOT_FOUND')
@@ -70,8 +70,8 @@ describe('yaac server HTTP surface (real server)', () => {
 
   // Session resolution lists pods via kubectl, so this NOT_FOUND path
   // needs a reachable cluster (without one it maps to RUNTIME_UNAVAILABLE).
-  it.skipIf(!haveCluster)('GET /worktree/:id/blocked-hosts returns 404 for an unknown worktree', async () => {
-    const res = await client.worktree[':id']['blocked-hosts'].$get({ param: { id: 'deadbeef' } })
+  it.skipIf(!haveCluster)('GET /workspace/:id/blocked-hosts returns 404 for an unknown workspace', async () => {
+    const res = await client.workspace[':id']['blocked-hosts'].$get({ param: { id: 'deadbeef' } })
     expect(res.status).toBe(404)
   })
 

@@ -5,11 +5,11 @@ import { getDb } from '#db/client'
 import { agentSessions } from '#db/schema'
 import {
   recordedConversationHandles,
-  deleteWorktreeAgentSessions,
-  listWorktreeAgentSessions,
+  deleteWorkspaceAgentSessions,
+  listWorkspaceAgentSessions,
   recordAgentSessions,
 } from '#db/agent-session-store'
-import { recordWorktreeCreated } from '#db/worktree-store'
+import { recordWorkspaceCreated } from '#db/workspace-store'
 
 /**
  * The store's writes are covered through the reconciler and the listings that
@@ -17,7 +17,7 @@ import { recordWorktreeCreated } from '#db/worktree-store'
  * about the many-to-many, because a wrong answer there is unrecoverable rather
  * than re-reconciled on the next tick.
  */
-describe('deleteWorktreeAgentSessions', () => {
+describe('deleteWorkspaceAgentSessions', () => {
   let tmpDir: string
 
   beforeEach(async () => {
@@ -40,10 +40,10 @@ describe('deleteWorktreeAgentSessions', () => {
   it('takes the conversations a rolled-back create invented, but not shared ones', async () => {
     // wt-doomed is the create that gave up: it wrote its own conversation and
     // also linked one it was told to resume, which wt-live still holds. Only
-    // the first is the rollback's to erase — a conversation another worktree
-    // links is that worktree's history, and nothing would bring it back.
-    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-live' })
-    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-doomed' })
+    // the first is the rollback's to erase — a conversation another workspace
+    // links is that workspace's history, and nothing would bring it back.
+    await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'wt-live' })
+    await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'wt-doomed' })
     await recordAgentSessions('demo', 'wt-live', [
       { tool: 'claude', agentSessionId: 'conv-shared' },
     ])
@@ -52,18 +52,18 @@ describe('deleteWorktreeAgentSessions', () => {
       { tool: 'claude', agentSessionId: 'conv-own', firstPrompt: 'the ask nobody heard' },
     ])
 
-    await deleteWorktreeAgentSessions('demo', 'wt-doomed')
+    await deleteWorkspaceAgentSessions('demo', 'wt-doomed')
 
-    expect(await listWorktreeAgentSessions('demo', 'wt-doomed')).toEqual([])
+    expect(await listWorkspaceAgentSessions('demo', 'wt-doomed')).toEqual([])
     expect(await conversations()).toEqual(['conv-shared'])
-    // The surviving worktree keeps its link to the shared one.
-    expect((await listWorktreeAgentSessions('demo', 'wt-live')).map((l) => l.agentSessionId))
+    // The surviving workspace keeps its link to the shared one.
+    expect((await listWorkspaceAgentSessions('demo', 'wt-live')).map((l) => l.agentSessionId))
       .toEqual(['conv-shared'])
   })
 
-  it('is a no-op for a worktree that linked nothing', async () => {
-    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-bare' })
-    await expect(deleteWorktreeAgentSessions('demo', 'wt-bare')).resolves.toBeUndefined()
+  it('is a no-op for a workspace that linked nothing', async () => {
+    await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'wt-bare' })
+    await expect(deleteWorkspaceAgentSessions('demo', 'wt-bare')).resolves.toBeUndefined()
     expect(await conversations()).toEqual([])
   })
 })
@@ -86,10 +86,10 @@ describe('recordAgentSessions', () => {
   })
 
   const conversation = async (id: string) =>
-    (await listWorktreeAgentSessions('demo', 'wt-1')).find((l) => l.agentSessionId === id)
+    (await listWorkspaceAgentSessions('demo', 'wt-1')).find((l) => l.agentSessionId === id)
 
   it('follows a model switch but keeps the opening message', async () => {
-    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1' })
+    await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'wt-1' })
     await recordAgentSessions('demo', 'wt-1', [
       { tool: 'claude', agentSessionId: 'conv-a', firstPrompt: 'ship it', model: 'claude-opus-5' },
     ])
@@ -115,7 +115,7 @@ describe('recordAgentSessions', () => {
     // Absent means "not read" — a sweep that could not resolve the transcript
     // this tick, or a tool that never reports one. Treating it as "no model"
     // would blank the label on every such tick.
-    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1' })
+    await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'wt-1' })
     await recordAgentSessions('demo', 'wt-1', [
       { tool: 'claude', agentSessionId: 'conv-b', model: 'claude-opus-5' },
     ])
@@ -143,7 +143,7 @@ describe('recordedConversationHandles', () => {
   // the ACP driver re-addresses a live agent by handle, so a link with no
   // pane id names nothing it could attach to.
   it('reports only the recorded conversations that sit on a handle', async () => {
-    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1' })
+    await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'wt-1' })
     await recordAgentSessions('demo', 'wt-1', [
       { tool: 'claude', agentSessionId: 'conv-a', paneId: '%0' },
       { tool: 'claude', agentSessionId: 'conv-b' },

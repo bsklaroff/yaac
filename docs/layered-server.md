@@ -11,7 +11,7 @@ main       composition root: startup, shutdown, the reconcile loop engine
 api        routes/, http/, events (the /events snapshot hub)
   ↓
 domain     the mediators: everything that reads rows, owns what a project
-           and a worktree keep on disk, and drives the runtime
+           and a workspace keep on disk, and drives the runtime
  ↓             ↓
 db           runtime       db: rows; owns the database outright
                ↓           runtime: the driver-neutral machinery — how
@@ -38,10 +38,10 @@ The runtime is itself split, and the split is the seam each driver
 implements. `runtime/` is what is the same over any substrate — the
 tui/acp conduction, the status watchers and liveness policy, the PTY
 bridge, the report assembly and the forwarder restore. `drivers/` is what
-is not: `contract.ts` (the `WorktreeDriver` interface and its vocabulary),
+is not: `contract.ts` (the `WorkspaceDriver` interface and its vocabulary),
 `driver.ts` (the registered instance), one folder per substrate — `k8s/`
-(a single-pod Job per worktree) and `containerless/` (a tmux server per
-worktree on the host; docs/containerless-driver.md) — and `shared/`, the
+(a single-pod Job per workspace) and `containerless/` (a tmux server per
+workspace on the host; docs/containerless-driver.md) — and `shared/`, the
 floor both stand on.
 
 `drivers/shared` exists because a driver is sealed from its siblings: they
@@ -66,7 +66,7 @@ tmux invocation, `git -C` call and prompt script the layers above author
 is written against `WorkspacePaths` — the driver's answer to where a
 workspace's things are in its own world. A pod driver answers with fixed
 container paths, because each pod has its own mount namespace; a
-host-process driver answers per-worktree, because its workspaces share a
+host-process driver answers per-workspace, because its workspaces share a
 filesystem and a single tmux socket between them would be a single tmux
 server.
 
@@ -95,15 +95,15 @@ driver. Three layers hold the accessor, and the rule that matters is the
 one they share — nothing above a driver names a substrate.
 
 What separates them is composition, not permission. A read that resolves a
-worktree, decides something from what it finds and then acts is a
-mediator's, and lives in `#domain` — `dismissWorktreePort` refuses a port
-the runtime is not offering, `getWorktreeChanges` picks the fork branch as
+workspace, decides something from what it finds and then acts is a
+mediator's, and lives in `#domain` — `dismissWorkspacePort` refuses a port
+the runtime is not offering, `getWorkspaceChanges` picks the fork branch as
 the diff's default base. A display value the runtime already holds, asked
 for once and rendered, is not: the image-build feed and the ssh-identity
 push are api calling the contract directly, because a mediator that only
 forwarded the call would hide the seam rather than mediate it. The line is
 invisible to lint on purpose. A wrapper whose body is `return
-worktreeDriver().x(...)` is worse than the call it hides, and the image-build
+workspaceDriver().x(...)` is worse than the call it hides, and the image-build
 retry in `#domain/projects` is there because it cannot be one: a retry has to
 hand the runtime a config reader, and the runtime may not read config.
 
@@ -128,7 +128,7 @@ rows a vocabulary the db layer can speak alone.
 - **`main/`** — `server-run` (lock, DB open through `openDb`,
   bind, attach — and the one place the process's driver is registered),
   `convergence` (what is push-fed and is NOT the driver's: the
-  per-worktree status watchers, which are machinery needing a row lookup,
+  per-workspace status watchers, which are machinery needing a row lookup,
   and the two in-workspace trigger sources no watch of any substrate can
   see — a conversation appearing, a driver connection dropping. The
   driver's own attach lives behind `start`/`stop`/`release`, and reports
@@ -139,28 +139,28 @@ rows a vocabulary the db layer can speak alone.
   (auth middleware, the in-memory token store, the error envelope, static
   SPA serving), `events.ts` (the snapshot hub: coalesced pushes over
   `/events`).
-- **`domain/`** — `worktrees/` (the lifecycle verbs and their joins —
+- **`domain/`** — `workspaces/` (the lifecycle verbs and their joins —
   create, restart, stop, cleanup, list, detail, resolve, the stopped
   listing, project teardown — plus the prewarm pool, spawn policy and its
   proxy drain, the discovery sweeps, prompt capture, the provisioning
-  registry, the stale reaper, and what a worktree keeps on disk: checkout
+  registry, the stale reaper, and what a workspace keeps on disk: checkout
   seeding), `projects/` (a project
   whole — which exist, from rows, and what each one holds on disk: the
   clone's branches, the two config layers, git credentials, dockerfiles and
   build files, plus the image-build retry, which hands the runtime the
   project-config reader it may not fetch), `git/` (domain's process
   boundary onto git, the way kubectl is the driver's; see
-  docs/server-git.md), `agent-history/` (each worktree's conversations on
+  docs/server-git.md), `agent-history/` (each workspace's conversations on
   disk, converged into the shape its runtime reaches before every launch),
   `titles/`, `auth/`, `skills/`, and `reconcile.ts` —
   the ordered step list one pass runs.
 
   Config and credentials sit here rather than a layer down because writing
   them is policy: a persisted allowed-host or port forward is inherited by
-  every future worktree of the project, and the verb that persists one then
+  every future workspace of the project, and the verb that persists one then
   asks the runtime to effect it live.
-- **`db/`** — the worktree, agent-session and project stores,
-  preferences, token persistence, `desired-worktrees` (what the reaper
+- **`db/`** — the workspace, agent-session and project stores,
+  preferences, token persistence, `desired-workspaces` (what the reaper
   judges absence against), the database's open/close pair, and the event
   machinery below. The database is its own: `client.ts` (the PGlite
   handle) and `schema.ts` (the drizzle tables) are internal modules here,
@@ -185,16 +185,16 @@ rows a vocabulary the db layer can speak alone.
   report assembly and restore without reimplementing any of it. tmux is
   the supervisor either way (docs/agent-modes.md) — only the transport
   under it differs, and that is on the contract.
-- **`drivers/`** — `contract.ts` (the `WorktreeDriver` interface and its
+- **`drivers/`** — `contract.ts` (the `WorkspaceDriver` interface and its
   substrate-neutral vocabulary: `RuntimeHandle`, handle-keyed
   `AgentLiveness`, `RuntimeSnapshot`, the stream types `StreamChild` and
   `StreamPty`, the `WorkspaceExecError` verdict, the launch types —
   `WorkspaceSpec`, `WorkspaceMount`, `SubstrateIntent` and the opaque
   `WorkspaceSubstrate` receipt — and the pass scheduling types),
-  `driver.ts` (the registered instance, behind `setWorktreeDriver` /
-  `worktreeDriver`), and `k8s/` — the first driver, whose barrel IS its
+  `driver.ts` (the registered instance, behind `setWorkspaceDriver` /
+  `workspaceDriver`), and `k8s/` — the first driver, whose barrel IS its
   assembly (`createK8sDriver`) over eight sealed folders: `cluster`,
-  `egress`, `forwarders`, `images`, `image-engine`, `worktrees` (launch,
+  `egress`, `forwarders`, `images`, `image-engine`, `workspaces` (launch,
   locate, claim, teardown, the pod-side changes diff, image salvage, the
   one mapper turning a pod into a `RuntimeHandle`, and the pass snapshot
   built on it), and the two host-side primitives the rest are built on —
@@ -265,8 +265,8 @@ rows a vocabulary the db layer can speak alone.
 ## The event door
 
 > Observed facts enter `#db` through exactly one door:
-> `applyWorktreeEvent`. Code that watches the substrate or reads a
-> worktree's disk emits a `WorktreeEvent` — discrete and past-tense — and
+> `applyWorkspaceEvent`. Code that watches the substrate or reads a
+> workspace's disk emits a `WorkspaceEvent` — discrete and past-tense — and
 > the handler alone decides which rows it lands in. Intent (a title, a
 > sidebar group, a preference) is written through ordinary db functions;
 > reads are free to domain and above.
@@ -276,17 +276,17 @@ caller cannot write an observed fact except by saying what happened. The
 disciplines that make re-reporting safe live with the event types
 (`db/events.ts`):
 
-- **Whole sets, never deltas.** `sessions-discovered` carries a worktree's
+- **Whole sets, never deltas.** `sessions-discovered` carries a workspace's
   full known history; `sessions-active` carries the complete live set, and
   the *absence* of that event is emphatically not an empty set — a watcher
   that cannot see says nothing.
 - **Fill-only capture.** An opening message is only ever added, so a sweep
   that re-reads a compacted transcript cannot rewrite one, and a restart's
   re-report is a no-op.
-- **Rollback memory.** A failed create erases a fresh worktree but puts a
+- **Rollback memory.** A failed create erases a fresh workspace but puts a
   resumed one back exactly as the restart found it, death cause and
   dismissal included — the prior stop is read and cleared adjacently in
-  the `worktree-created` handler.
+  the `workspace-created` handler.
 
 ## The push path
 
@@ -303,7 +303,7 @@ and return, and the reconciler knows nothing about snapshots.
 
 One rule, so a new writer never has to ask how its change reaches a
 browser: **if you mutate something `buildSnapshot` reads, notify there.**
-`applyWorktreeEvent` covers every observed fact at the event door;
+`applyWorkspaceEvent` covers every observed fact at the event door;
 intent writers (a title, a group) notify individually.
 
 The consequence worth keeping: an idle server rebuilds nothing at all.
@@ -323,10 +323,10 @@ from the driver connections), `mama-requests`, which the egress proxy
 reports over the event stream described below, and `proxy-refreshed`, a
 cache delta over the object the proxy captures OAuth rotations into.
 `domain/reconcile.ts` is the ordered step list:
-the stale reaper first (so counts reflect just-reaped worktrees by the
-time the prewarm pool runs), then the queued-worktrees backstop (a launch a
-server restart interrupted, or a release it lost — `stopWorktree` launches
-queued worktrees directly, so this rides the resync only), the conversation
+the stale reaper first (so counts reflect just-reaped workspaces by the
+time the prewarm pool runs), then the queued-workspaces backstop (a launch a
+server restart interrupted, or a release it lost — `stopWorkspace` launches
+queued workspaces directly, so this rides the resync only), the conversation
 sweep, and title generation last, so a just-captured opening message is
 eligible in the same pass.
 
@@ -358,7 +358,7 @@ a plain parameter; fired on the DRIVER's own schedule, with no caller to
 pass anything in → a provider composed at the root (`DriverDeps`). None of
 them is a license for the runtime to read rows or config itself.
 
-The reaper reads `desiredWorktrees()` from db at the top of its own
+The reaper reads `desiredWorkspaces()` from db at the top of its own
 step, so absence is only ever judged against a set from the same pass, by
 construction. A failed read stands every sweep down — reaping on a guess
 destroys uncommitted work — and the in-flight exemption comes straight
@@ -368,12 +368,12 @@ create stages anything.
 ## The proxy event stream
 
 One fact the server needs is visible only inside the egress proxy and
-has to be answered now: an in-worktree `yaac-mama` command landing in its
+has to be answered now: an in-workspace `yaac-mama` command landing in its
 queue, whose caller's HTTP response is held open until the server answers.
-Everything else the proxy observes — a worktree's blocked-host set
+Everything else the proxy observes — a workspace's blocked-host set
 growing, a git credential being rejected upstream, a rotation it captured
-from a worktree's refresh — it writes as objects the `ClusterCache`
-watches (docs/worktree-egress.md "What the proxy is told, and how").
+from a workspace's refresh — it writes as objects the `ClusterCache`
+watches (docs/workspace-egress.md "What the proxy is told, and how").
 
 The proxy cannot dial the server, so the queue's signal rides the
 connection the server already holds: one long-lived `GET /events`,
@@ -384,13 +384,13 @@ dropped stream costs latency, never a lost request.
 
 ## Naming
 
-Per docs/naming.md: a **worktree** is the sandbox unit; a **session** is
+Per docs/naming.md: a **workspace** is the sandbox unit; a **session** is
 an agent conversation; **workspace** survives only in the driver
 contract's substrate-neutral vocabulary. The event union and its apply
-function say "worktree" (`WorktreeEvent`, `applyWorktreeEvent`).
+function say "workspace" (`WorkspaceEvent`, `applyWorkspaceEvent`).
 
-The **driver** is the thing a substrate implements — `WorktreeDriver`,
-`drivers/k8s`, `worktreeDriver()`. The observation nouns keep saying
+The **driver** is the thing a substrate implements — `WorkspaceDriver`,
+`drivers/k8s`, `workspaceDriver()`. The observation nouns keep saying
 "runtime" (`RuntimeHandle`, `RuntimeReport`, `RuntimeSnapshot`) and that
 is deliberate: there "runtime" means *observed right now*, as opposed to
 the durable facts `db` keeps — the split the contract is built on.

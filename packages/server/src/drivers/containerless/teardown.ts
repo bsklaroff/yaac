@@ -6,7 +6,7 @@ import { shellQuote } from '#lib/shell'
 import { descendantPids, isSshAgentFor, killPids, runHost } from './host'
 import {
   containerlessWorkspacePaths,
-  workspaceStateDir,
+  containerlessStateDir,
 } from './paths'
 import {
   findWorkspace,
@@ -34,7 +34,7 @@ import type { NodeLocalLiveSet, ProjectRef, TeardownTarget } from '#drivers/cont
  *  reporting that we could not confirm it. */
 const CONFIRM_TIMEOUT_MS = 10_000
 
-/** See `WorktreeDriver.destroy`. Resolves `true` only when the workspace is
+/** See `WorkspaceDriver.destroy`. Resolves `true` only when the workspace is
  *  really gone — the caller deletes the checkout on that verdict, so a
  *  `false` has to mean "something may still be writing there". */
 export async function destroyWorkspace(
@@ -46,7 +46,7 @@ export async function destroyWorkspace(
   // mark. It gates the stray sweep below, and nothing else here.
   const wasRunning = findWorkspace(workspaceId)?.running === true
   // Read before the marker is removed below: this is the process holding
-  // the worktree's ssh key in memory, and losing the pid would leave it
+  // the workspace's ssh key in memory, and losing the pid would leave it
   // running with nothing left on disk to say it exists.
   const agentPid = sshAgentPidOf(workspaceId)
   markTerminating(workspaceId)
@@ -56,7 +56,7 @@ export async function destroyWorkspace(
   //
   // Only for a workspace we just saw running. The marker's pid is advisory
   // — pids are recycled — and this verb runs for DEAD workspaces too: a
-  // worktree recovered dead after a host reboot, then stopped by the user.
+  // workspace recovered dead after a host reboot, then stopped by the user.
   // There, the pre-reboot pid names some unrelated process of this user, and
   // sweeping its tree would SIGTERM their editor.
   const rootPid = wasRunning ? tmuxPidOf(workspaceId) : undefined
@@ -73,9 +73,9 @@ export async function destroyWorkspace(
   // The ssh-agent, before the strays: it is not a descendant of the tmux
   // server (it was started beside it, detached), so nothing else here would
   // reach it. UNLIKE the stray sweep, this is not gated on having seen the
-  // workspace running — a worktree whose tmux died while the host stayed up
+  // workspace running — a workspace whose tmux died while the host stayed up
   // would otherwise leave an agent holding the private key until reboot,
-  // which is the failure the per-worktree agent exists to prevent. What
+  // which is the failure the per-workspace agent exists to prevent. What
   // replaces the gate is checking the pid is still this agent, which the
   // socket path in its argv answers exactly.
   await killWorkspaceSshAgent(agentPid, paths.sshAgentSock)
@@ -135,7 +135,7 @@ async function confirmGone(sock: string): Promise<boolean> {
 }
 
 /**
- * See `WorktreeDriver.detachedTeardownCommand`.
+ * See `WorkspaceDriver.detachedTeardownCommand`.
  *
  * Every command tolerates having already run, because the whole script is
  * re-issued when a teardown has to be resumed: `kill-server` against a dead
@@ -145,7 +145,7 @@ async function confirmGone(sock: string): Promise<boolean> {
  */
 export function detachedTeardownCommand(target: TeardownTarget): string {
   const paths = containerlessWorkspacePaths(target.unitName)
-  const state = workspaceStateDir(target.projectSlug, target.workspaceId)
+  const state = containerlessStateDir(target.projectSlug, target.workspaceId)
   // Quoted, and this is the site where it matters most: both paths are
   // derived from the data dir and `os.tmpdir()`, so a space or a glob
   // character in either (`YAAC_DATA_DIR=…/My Drive/yaac`) would split the
@@ -154,7 +154,7 @@ export function detachedTeardownCommand(target: TeardownTarget): string {
   // has to hold up the same way.
   // The socket files and the acp dir outlive the servers that bound them;
   // nothing else would ever collect them, so a long-lived host would
-  // accumulate a set per worktree it ever ran until a reboot.
+  // accumulate a set per workspace it ever ran until a reboot.
   //
   // The ssh-agent is killed by matching its own socket path in `ps` output
   // rather than by a recorded pid: this script runs detached, with no
@@ -191,8 +191,8 @@ export function detachedTeardownCommand(target: TeardownTarget): string {
 }
 
 /**
- * See `WorktreeDriver.destroyProjectSubstrate`. A project holds nothing
- * here beyond its worktrees and its node-local tree — no registry, no
+ * See `WorkspaceDriver.destroyProjectSubstrate`. A project holds nothing
+ * here beyond its workspaces and its node-local tree — no registry, no
  * cluster objects, no proxy registration — and the "node" is this host,
  * so the tree is one `rm` per root.
  */
@@ -209,11 +209,11 @@ export async function destroyProjectSubstrate(project: ProjectRef): Promise<void
 const REAP_SLACK_MS = 10_000
 
 /**
- * See `WorktreeDriver.reapNodeLocal`. The "node" is this host, so the
+ * See `WorkspaceDriver.reapNodeLocal`. The "node" is this host, so the
  * sweep is a readdir per root, cheap enough to run every pass unthrottled:
  * a project tree whose name is no live project's id goes — a removal that
  * failed, or a tree named by slug before projects had ids. There are no
- * per-worktree leftovers here: opencode opens its global checkpoint
+ * per-workspace leftovers here: opencode opens its global checkpoint
  * directly.
  *
  * Never through a link, at either level: a root that is one (a relocated

@@ -114,7 +114,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    * both modes.
    *
    * `NO_BROWSER=1` because the adapter's ChatGPT login would otherwise try to
-   * open one; a worktree authenticates from the credentials it was launched
+   * open one; a workspace authenticates from the credentials it was launched
    * with or not at all.
    *
    * Its three modes are codex's approval × sandbox grid, collapsed, and none

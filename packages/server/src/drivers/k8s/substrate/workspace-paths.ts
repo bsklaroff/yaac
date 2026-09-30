@@ -7,8 +7,8 @@ import {
 import type { WorkspacePaths } from '#drivers/contract'
 
 /**
- * Where a worktree pod's things are, as the pod itself sees them — this
- * driver's answer to `WorktreeDriver.workspacePaths`.
+ * Where a workspace pod's things are, as the pod itself sees them — this
+ * driver's answer to `WorkspaceDriver.workspacePaths`.
  *
  * Every workspace answers the SAME paths, and can: each pod has its own
  * mount namespace, so one constant per path collides with nothing. The tmux
@@ -17,7 +17,7 @@ import type { WorkspacePaths } from '#drivers/contract'
  * them and why the argument is unused.
  *
  * The constants themselves stay in `@yaac/shared/paths` because the image's
- * own scripts (`worktree-bin/yaac-worktree-init`, the acpd COPY target) are
+ * own scripts (`workspace-bin/yaac-workspace-init`, the acpd COPY target) are
  * built against the same spellings; this is where they enter the contract.
  */
 export function k8sWorkspacePaths(): WorkspacePaths {

@@ -21,7 +21,7 @@ export async function setProjectGitCredential(slug: string, credentialId: string
   return knownHostsEntry
 }
 
-/** Remove a project (and its worktrees/worktrees). */
+/** Remove a project (and its workspaces). */
 export async function removeProject(slug: string): Promise<void> {
   await api.project[':slug'].$delete({ param: { slug } })
 }
@@ -72,13 +72,13 @@ export interface ProjectBranches {
 }
 
 /** React Query key for a project's branch list — shared by every branch picker
- *  (new-worktree popover, Changes-view base picker) so they hit one cache. */
+ *  (new-workspace popover, Changes-view base picker) so they hit one cache. */
 export function projectBranchesKey(slug: string): readonly [string, string] {
   return ['project-branches', slug] as const
 }
 
 /**
- * Branch data for the new-worktree picker. Without `refresh` this reads the
+ * Branch data for the new-workspace picker. Without `refresh` this reads the
  * local remote-tracking refs (instant); with it the server fetches from the
  * remote first so a just-pushed branch appears.
  */
@@ -96,7 +96,7 @@ export async function getProjectDockerfile(slug: string): Promise<string> {
 }
 
 /** Write (or clear, when empty) the per-project Dockerfile.yaac. Takes
- *  effect on the next worktree created for the project. */
+ *  effect on the next workspace created for the project. */
 export async function saveProjectDockerfile(slug: string, content: string): Promise<void> {
   await api.project[':slug'].dockerfile.$put({ param: { slug }, json: { content } })
 }

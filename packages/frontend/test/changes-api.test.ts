@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { CHANGES_TARGET, isChangesTarget, getWorktreeChanges } from '#lib/changesApi'
-import type { WorktreeChanges } from '@yaac/shared/types'
+import { CHANGES_TARGET, isChangesTarget, getWorkspaceChanges } from '#lib/changesApi'
+import type { WorkspaceChanges } from '@yaac/shared/types'
 
 const realFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = realFetch })
@@ -25,30 +25,30 @@ describe('isChangesTarget', () => {
   })
 })
 
-describe('getWorktreeChanges', () => {
+describe('getWorkspaceChanges', () => {
   it('GETs the session changes endpoint and returns the body', async () => {
-    const changes: WorktreeChanges = { base: 'abc123', baseResolved: true, files: [], diff: '', truncated: false }
+    const changes: WorkspaceChanges = { base: 'abc123', baseResolved: true, files: [], diff: '', truncated: false }
     const fetchMock = stub(changes)
-    const result = await getWorktreeChanges('abc-123')
+    const result = await getWorkspaceChanges('abc-123')
     const url = new URL(fetchMock.mock.calls[0][0] as string, 'http://localhost')
-    expect(url.pathname).toBe('/api/worktree/abc-123/changes')
+    expect(url.pathname).toBe('/api/workspace/abc-123/changes')
     expect(url.searchParams.get('base')).toBeNull()
     expect(result).toEqual(changes)
   })
 
   it('sends the chosen base as a query param', async () => {
     const fetchMock = stub({ base: 'abc123', files: [], diff: '', truncated: false })
-    await getWorktreeChanges('abc-123', 'dev')
+    await getWorkspaceChanges('abc-123', 'dev')
     const url = new URL(fetchMock.mock.calls[0][0] as string, 'http://localhost')
-    expect(url.pathname).toBe('/api/worktree/abc-123/changes')
+    expect(url.pathname).toBe('/api/workspace/abc-123/changes')
     expect(url.searchParams.get('base')).toBe('dev')
   })
 
   it('url-encodes a base branch containing slashes', async () => {
     const fetchMock = stub({ base: '', files: [], diff: '', truncated: false })
-    await getWorktreeChanges('abc-123', 'feature/foo')
+    await getWorkspaceChanges('abc-123', 'feature/foo')
     const url = new URL(fetchMock.mock.calls[0][0] as string, 'http://localhost')
-    expect(url.pathname).toBe('/api/worktree/abc-123/changes')
+    expect(url.pathname).toBe('/api/workspace/abc-123/changes')
     expect(url.searchParams.get('base')).toBe('feature/foo')
   })
 })

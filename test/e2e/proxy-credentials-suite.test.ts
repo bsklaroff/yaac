@@ -16,14 +16,14 @@ import { e2eMkdtemp } from '@yaac/test-utils/tmp'
 import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
 import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
 import {
-  applyWorktreeRegistration,
+  applyProxyRegistration,
   deregisterWorkspaceEgress,
-  type WorktreeRegistration,
+  type ProxyRegistration,
 } from '@yaac/server/drivers/k8s/egress/proxy-registration'
 import { ensureNamespace, proxyServiceClusterIp, syncProxyCredentials } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { runtimeClassSpec } from '@yaac/server/drivers/k8s/substrate/gvisor'
 import { CA_CONFIGMAP_NAME } from '@yaac/server/drivers/k8s/substrate/pod-spec'
-import { worktreeIdLabels } from '@yaac/server/drivers/k8s/substrate/pods'
+import { workspaceIdLabels } from '@yaac/server/drivers/k8s/substrate/pods'
 import {
   PROXY_APP_NAME,
   PROXY_CA_SECRET_NAME,
@@ -43,15 +43,15 @@ const execFileAsync = promisify(execFile)
 
 /**
  * End-to-end coverage of how the proxy is told and how it reports — the
- * objects (docs/worktree-egress.md "What the proxy is told, and how"),
+ * objects (docs/workspace-egress.md "What the proxy is told, and how"),
  * driven from the host through the driver's own writers, with one echo
- * pod and one bare worktree pod shared by every case:
+ * pod and one bare workspace pod shared by every case:
  *
  * - the credentials Secret is what injects (an api key, a git token), and
- *   rewriting it without a tool signs that tool out of a running worktree;
- *   a git token reaches only worktrees of the projects it is assigned to
+ *   rewriting it without a tool signs that tool out of a running workspace;
+ *   a git token reaches only workspaces of the projects it is assigned to
  * - the ssh keys reach the agent through the same Secret
- * - a refresh a worktree drives is captured into `yaac-proxy-refreshed`,
+ * - a refresh a workspace drives is captured into `yaac-proxy-refreshed`,
  *   and a burst of them spends the credential upstream once
  * - a blocked host lands in `yaac-proxy-state`, and widening the
  *   registration object prunes it
@@ -75,7 +75,7 @@ const PLACEHOLDER_ACCESS_TOKEN = 'yaac-ph-access'
 const PLACEHOLDER_REFRESH_TOKEN = 'yaac-ph-refresh'
 
 const EMPTY: CredentialBundle = { claude: null, codex: null, opencode: null, pi: null, git: [], ssh: [] }
-/** The git token, assigned to the suite worktree's project. */
+/** The git token, assigned to the suite workspace's project. */
 const GIT_TOKENS: CredentialBundle['git'] = [{ token: 'ghp-real-token', projects: ['creds-suite'] }]
 
 let restoreNamespace: (() => void) | null = null
@@ -197,16 +197,16 @@ async function startEchoPod(name: string): Promise<{ host: string }> {
   return { host: `${name}.${ns}.svc` }
 }
 
-/** A bare worktree pod: the worktree label, the proxy-CA mount, and DNS
+/** A bare workspace pod: the workspace label, the proxy-CA mount, and DNS
  *  pointed at the proxy. No sidecars — egress is redirected at the node. */
-async function startWorktreePod(name: string, worktreeId: string, proxyHost: string): Promise<void> {
+async function startWorkspacePod(name: string, workspaceId: string, proxyHost: string): Promise<void> {
   await kubectlApply({
     apiVersion: 'v1',
     kind: 'Pod',
     metadata: {
       name,
       namespace: k8sNamespace(),
-      labels: { ...worktreeIdLabels(worktreeId), 'yaac.test': 'true' },
+      labels: { ...workspaceIdLabels(workspaceId), 'yaac.test': 'true' },
     },
     spec: {
       restartPolicy: 'Never',
@@ -277,7 +277,7 @@ interface RefreshReply {
   echoed: { refresh_token: string }
 }
 
-/** An HTTPS git request to the worktree's registered remote. */
+/** An HTTPS git request to the workspace's registered remote. */
 const gitProbe = `--cacert ${CA_PATH} --resolve ${GIT_HOST}:443:${FAKE_IP} https://${GIT_HOST}/acme/app.git/info/refs?service=git-upload-pack`
 
 /** What the proxy's agent holds, read in its own pod. */
@@ -317,9 +317,9 @@ describe('proxy credentials suite (objects in, objects out)', () => {
   const suffix = crypto.randomBytes(4).toString('hex')
   const echoName = `yaac-creds-echo-${suffix}`
   const podName = `yaac-creds-pod-${suffix}`
-  const worktreeId = crypto.randomUUID()
+  const workspaceId = crypto.randomUUID()
   let echoHost = ''
-  let registration: WorktreeRegistration
+  let registration: ProxyRegistration
 
   beforeAll(async () => {
     await requirePodman()
@@ -349,14 +349,14 @@ describe('proxy credentials suite (objects in, objects out)', () => {
         [MITM_HOST]: redirect, [MCP_PROXY_HOST]: redirect, [TOKEN_HOST]: redirect, [GIT_HOST]: redirect,
       },
     }
-    await applyWorktreeRegistration(worktreeId, registration)
-    await startWorktreePod(podName, worktreeId, proxyHost)
+    await applyProxyRegistration(workspaceId, registration)
+    await startWorkspacePod(podName, workspaceId, proxyHost)
     await waitForPodRunning(podName)
   }, 600_000)
 
   afterAll(async () => {
     await Promise.all([echoName, podName].map((n) => deleteTestPod(n)))
-    await deregisterWorkspaceEgress(worktreeId)
+    await deregisterWorkspaceEgress(workspaceId)
     try { await client.stop() } catch { /* ok */ }
     restoreNamespace?.()
     restoreNamespace = null
@@ -373,7 +373,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
       (r) => r.exit === 0)
     expect(before.exit, before.out).toBe(0)
     expect(echoedOf(before.out).headers['x-api-key']).toBe(PLACEHOLDER_API_KEY)
-    // The git token was there from the start, assigned to the worktree's
+    // The git token was there from the start, assigned to the workspace's
     // project and gated on its registered remote: an HTTPS request to that
     // host carries it as Basic.
     const git = await curlInPod(podName, gitProbe)
@@ -408,7 +408,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     await kubectlWithRetry(['exec', '-n', k8sNamespace(), podName, '--', 'python3', '-c', script], { timeout: 40_000 })
   }, 60_000)
 
-  it('signs a running worktree out when the Secret is rewritten without the tool', async () => {
+  it('signs a running workspace out when the Secret is rewritten without the tool', async () => {
     await syncProxyCredentials({
       ...EMPTY,
       git: GIT_TOKENS,
@@ -444,7 +444,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     expect(await pollUntil(agentFingerprints, (f) => f.includes(keyA.fingerprint))).toEqual([keyA.fingerprint])
   }, 180_000)
 
-  it('captures a rotation a worktree drives, spending the credential once for a burst', async () => {
+  it('captures a rotation a workspace drives, spending the credential once for a burst', async () => {
     await syncProxyCredentials({
       ...EMPTY,
       claude: {
@@ -506,8 +506,8 @@ describe('proxy credentials suite (objects in, objects out)', () => {
   it('records a blocked host in the state ConfigMap, and widening the registration prunes it', async () => {
     const blocked = await curlInPod(podName, `-k --resolve ${BLOCKED_HOST}:443:${FAKE_IP} https://${BLOCKED_HOST}/`)
     expect(blocked.exit).not.toBe(0)
-    const recorded = await pollUntil(readState, (s) => (s.blockedHosts[worktreeId] ?? []).includes(BLOCKED_HOST))
-    expect(recorded.blockedHosts[worktreeId]).toContain(BLOCKED_HOST)
+    const recorded = await pollUntil(readState, (s) => (s.blockedHosts[workspaceId] ?? []).includes(BLOCKED_HOST))
+    expect(recorded.blockedHosts[workspaceId]).toContain(BLOCKED_HOST)
 
     // The widening is a rewrite of the registration object; the proxy
     // applies it and prunes the record, which is what clears the badge.
@@ -516,28 +516,28 @@ describe('proxy credentials suite (objects in, objects out)', () => {
       allowedHosts: [...registration.allowedHosts, BLOCKED_HOST],
       upstreamRedirects: { ...registration.upstreamRedirects, [BLOCKED_HOST]: { host: echoHost, port: ECHO_PORT, tls: false } },
     }
-    await applyWorktreeRegistration(worktreeId, registration)
+    await applyProxyRegistration(workspaceId, registration)
     const allowed = await curlUntil(podName,
       `--cacert ${CA_PATH} --resolve ${BLOCKED_HOST}:443:${FAKE_IP} https://${BLOCKED_HOST}/after`,
       (r) => r.exit === 0)
     expect(allowed.exit, allowed.out).toBe(0)
-    const pruned = await pollUntil(readState, (s) => !(s.blockedHosts[worktreeId] ?? []).includes(BLOCKED_HOST))
-    expect(pruned.blockedHosts[worktreeId] ?? []).not.toContain(BLOCKED_HOST)
+    const pruned = await pollUntil(readState, (s) => !(s.blockedHosts[workspaceId] ?? []).includes(BLOCKED_HOST))
+    expect(pruned.blockedHosts[workspaceId] ?? []).not.toContain(BLOCKED_HOST)
   }, 180_000)
 
-  it('injects a git token only into worktrees of the projects it is assigned to', async () => {
+  it('injects a git token only into workspaces of the projects it is assigned to', async () => {
     await syncProxyCredentials({ ...EMPTY, git: GIT_TOKENS })
     await curlUntil(podName, gitProbe, (r) => r.exit === 0 && echoedOf(r.out).headers.authorization !== undefined)
     // Same pod, same remote: re-registered under a project the token is
     // not assigned to, its next request goes out with no credential.
-    await applyWorktreeRegistration(worktreeId, { ...registration, projectSlug: 'creds-other' })
+    await applyProxyRegistration(workspaceId, { ...registration, projectSlug: 'creds-other' })
     try {
       const r = await curlUntil(podName, gitProbe,
         (res) => res.exit === 0 && echoedOf(res.out).headers.authorization === undefined)
       expect(r.exit, r.out).toBe(0)
       expect(echoedOf(r.out).headers.authorization).toBeUndefined()
     } finally {
-      await applyWorktreeRegistration(worktreeId, registration)
+      await applyProxyRegistration(workspaceId, registration)
     }
   }, 180_000)
 

@@ -1,8 +1,8 @@
 /**
- * Workspace layout for a worktree's terminals. In full-window (tiles) mode the
+ * Pane layout for a workspace's terminals. In full-window (tiles) mode the
  * workspace is a flat, left-to-right list of equal-width columns; each column
  * is a "window group" holding one or more tabbed panes (identified by their
- * /pty/attach target — unique per worktree). There is no vertical stacking:
+ * /pty/attach target — unique per workspace). There is no vertical stacking:
  * panes sit side by side as columns, and multiple panes in one slot are tabs.
  *
  * All operations are pure — callers store the returned workspace.
@@ -22,8 +22,8 @@ export interface WindowGroup {
   active: string
 }
 
-/** A worktree workspace: left-to-right, equal-width columns. */
-export type Workspace = WindowGroup[]
+/** A workspace's pane layout: left-to-right, equal-width columns. */
+export type PaneLayout = WindowGroup[]
 
 /** A column with the pixel rect it occupies. */
 export interface ColumnRect {
@@ -42,13 +42,13 @@ function group(tabs: string[], active: string): WindowGroup {
 }
 
 /** The default single-column workspace showing one pane. */
-export function singleColumn(target: string): Workspace {
+export function singleColumn(target: string): PaneLayout {
   return [group([target], target)]
 }
 
 /** Structural validation for workspaces from untrusted storage (localStorage).
  *  An empty array (an explicitly emptied workspace) is valid. */
-export function isWorkspace(v: unknown): v is Workspace {
+export function isPaneLayout(v: unknown): v is PaneLayout {
   if (!Array.isArray(v)) return false
   return v.every((g) => {
     if (!g || typeof g !== 'object') return false
@@ -60,13 +60,13 @@ export function isWorkspace(v: unknown): v is Workspace {
 }
 
 /** All pane targets in the workspace, left-to-right, top tab first. */
-export function paneTargets(ws: Workspace | null): string[] {
+export function paneTargets(ws: PaneLayout | null): string[] {
   if (!ws) return []
   return ws.flatMap((g) => g.tabs)
 }
 
 /** Index of the column containing `target`, or -1. */
-export function groupIndexOf(ws: Workspace | null, target: string): number {
+export function groupIndexOf(ws: PaneLayout | null, target: string): number {
   if (!ws) return -1
   return ws.findIndex((g) => g.tabs.includes(target))
 }
@@ -75,7 +75,7 @@ export function groupIndexOf(ws: Workspace | null, target: string): number {
  * Append `target` as a new single-tab column. A workspace already containing
  * the target (in any column) is returned unchanged; a null base starts fresh.
  */
-export function addColumn(ws: Workspace | null, target: string): Workspace {
+export function addColumn(ws: PaneLayout | null, target: string): PaneLayout {
   const base = ws ?? []
   if (paneTargets(base).includes(target)) return base
   return [...base, group([target], target)]
@@ -86,7 +86,7 @@ export function addColumn(ws: Workspace | null, target: string): Workspace {
  * already containing the target anywhere, or an out-of-range index, is
  * returned unchanged.
  */
-export function addTab(ws: Workspace, groupIdx: number, target: string): Workspace {
+export function addTab(ws: PaneLayout, groupIdx: number, target: string): PaneLayout {
   if (groupIdx < 0 || groupIdx >= ws.length) return ws
   if (paneTargets(ws).includes(target)) return ws
   return ws.map((g, i) => (i === groupIdx ? group([...g.tabs, target], target) : g))
@@ -98,10 +98,10 @@ export function addTab(ws: Workspace, groupIdx: number, target: string): Workspa
  * at the same position (clamped) becomes active. Returns the (possibly empty)
  * workspace.
  */
-export function removeTarget(ws: Workspace | null, target: string): Workspace {
+export function removeTarget(ws: PaneLayout | null, target: string): PaneLayout {
   if (!ws) return []
   if (groupIndexOf(ws, target) === -1) return ws
-  const out: Workspace = []
+  const out: PaneLayout = []
   for (const g of ws) {
     if (!g.tabs.includes(target)) {
       out.push(g)
@@ -121,7 +121,7 @@ export function removeTarget(ws: Workspace | null, target: string): Workspace {
  * column at `destGroupIdx` (indexed into the current `ws`). A no-op when `src`
  * is missing or already a tab of the destination column.
  */
-export function moveTargetToGroup(ws: Workspace, src: string, destGroupIdx: number): Workspace {
+export function moveTargetToGroup(ws: PaneLayout, src: string, destGroupIdx: number): PaneLayout {
   const gi = groupIndexOf(ws, src)
   if (gi === -1) return ws
   if (destGroupIdx < 0 || destGroupIdx >= ws.length) return ws
@@ -140,7 +140,7 @@ export function moveTargetToGroup(ws: Workspace, src: string, destGroupIdx: numb
  * the current column list, 0..ws.length). Pulls it out of its old column
  * first. A no-op when `src` already sits alone in a column at that position.
  */
-export function moveTargetToColumn(ws: Workspace, src: string, insertIdx: number): Workspace {
+export function moveTargetToColumn(ws: PaneLayout, src: string, insertIdx: number): PaneLayout {
   const gi = groupIndexOf(ws, src)
   if (gi === -1) return ws
   const alone = ws[gi].tabs.length === 1
@@ -159,7 +159,7 @@ export function moveTargetToColumn(ws: Workspace, src: string, insertIdx: number
  * tiles-mode "move window" primitive. Returns the same reference when there's
  * nothing to move (fewer than two columns, or an unknown target).
  */
-export function moveColumn(ws: Workspace, target: string, dir: 1 | -1): Workspace {
+export function moveColumn(ws: PaneLayout, target: string, dir: 1 | -1): PaneLayout {
   const gi = groupIndexOf(ws, target)
   if (gi === -1 || ws.length < 2) return ws
   const to = (gi + dir + ws.length) % ws.length
@@ -177,7 +177,7 @@ export function moveColumn(ws: Workspace, target: string, dir: 1 | -1): Workspac
  * panes land in which column shifts). Returns the same reference when there's
  * nothing to move (fewer than two panes, or an unknown target).
  */
-export function moveTabInStrip(ws: Workspace, target: string, dir: 1 | -1): Workspace {
+export function moveTabInStrip(ws: PaneLayout, target: string, dir: 1 | -1): PaneLayout {
   const flat = paneTargets(ws)
   const from = flat.indexOf(target)
   if (from === -1 || flat.length < 2) return ws
@@ -197,7 +197,7 @@ export function moveTabInStrip(ws: Workspace, target: string, dir: 1 | -1): Work
  * same place under `to` — what a renamed file or folder does to the panes
  * showing it. Returns the same reference when no target moves.
  */
-export function renameTargets(ws: Workspace, from: string, to: string): Workspace {
+export function renameTargets(ws: PaneLayout, from: string, to: string): PaneLayout {
   const rename = (t: string): string => (
     t === from ? to : t.startsWith(`${from}/`) ? `${to}${t.slice(from.length)}` : t
   )
@@ -207,7 +207,7 @@ export function renameTargets(ws: Workspace, from: string, to: string): Workspac
 
 /** Make `target` the active tab of its column. No-op if absent or already
  *  active (returns the same reference). */
-export function withActive(ws: Workspace | null, target: string): Workspace {
+export function withActive(ws: PaneLayout | null, target: string): PaneLayout {
   if (!ws) return []
   const gi = groupIndexOf(ws, target)
   if (gi === -1 || ws[gi].active === target) return ws
@@ -215,12 +215,12 @@ export function withActive(ws: Workspace | null, target: string): Workspace {
 }
 
 /**
- * The pane keyboard focus should land in when a worktree becomes selected or a
- * shortcut switches terminals. `activeTab` is the worktree's last-active
+ * The pane keyboard focus should land in when a workspace becomes selected or a
+ * shortcut switches terminals. `activeTab` is the workspace's last-active
  * terminal as stored (possibly stale — validated here). Tabs mode shows one
  * pane at a time, so the visible tab wins; tiles mode shows every column, so
  * prefer the last-active pane, then the agent (the one you talk to), then the
- * first pane. Null when the worktree has no panes.
+ * first pane. Null when the workspace has no panes.
  */
 export function focusPaneTarget(
   targets: string[],
@@ -235,7 +235,7 @@ export function focusPaneTarget(
 }
 
 /** Partition `rect` into equal-width columns, leaving `gap` px between them. */
-export function computeColumns(ws: Workspace | null, rect: Rect, gap: number): ColumnRect[] {
+export function computeColumns(ws: PaneLayout | null, rect: Rect, gap: number): ColumnRect[] {
   if (!ws || ws.length === 0) return []
   const n = ws.length
   const w = Math.max(0, (rect.w - gap * (n - 1)) / n)

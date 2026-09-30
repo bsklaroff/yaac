@@ -2,7 +2,7 @@ import { ServerError } from '@yaac/shared/errors'
 import {
   awaitAgentTransport,
   execInWorkspace,
-  getWorktreeChanges,
+  getWorkspaceChanges,
 } from './exec'
 import { dialCtrlStream, dialPtyStream, reviveStatusStream } from './dial'
 import { awaitReady, launchWorkspace, prepareSubstrate } from './launch'
@@ -31,17 +31,17 @@ import {
   destroyWorkspace,
   detachedTeardownCommand,
 } from './teardown'
-import type { WorktreeDriver } from '#drivers/contract'
+import type { WorkspaceDriver } from '#drivers/contract'
 
 /**
  * The containerless driver's one door: `createContainerlessDriver`
  * (docs/layered-server.md).
  *
- * One tmux server per worktree, on the host, in the checkout the server
+ * One tmux server per workspace, on the host, in the checkout the server
  * already made. No image, no cluster, no egress proxy, and no sandbox — the
  * agent runs as the user running yaac, with that user's access to the
  * machine. Choosing this driver IS the consent for that; what it changes
- * per worktree is the default permission mode, which the create path decides
+ * per workspace is the default permission mode, which the create path decides
  * from the driver kind.
  *
  * Most of the contract it answers by DOING less rather than by pretending:
@@ -71,11 +71,11 @@ import type { WorktreeDriver } from '#drivers/contract'
 function unsupported(what: string): never {
   throw new ServerError(
     'VALIDATION',
-    `${what} needs a container runtime; this server runs worktrees on the host.`,
+    `${what} needs a container runtime; this server runs workspaces on the host.`,
   )
 }
 
-export function createContainerlessDriver(): WorktreeDriver {
+export function createContainerlessDriver(): WorkspaceDriver {
   return {
     kind: 'containerless',
     workspacePaths: (jobName) => containerlessWorkspacePaths(jobName),
@@ -84,12 +84,12 @@ export function createContainerlessDriver(): WorktreeDriver {
     stop: () => stopContainerlessDriver(),
     release: () => releaseContainerlessDriver(),
 
-    find: (worktreeId) => Promise.resolve(findWorkspace(worktreeId)),
-    findForTeardown: (worktreeId, opts) => Promise.resolve(findForTeardown(worktreeId, opts)),
+    find: (workspaceId) => Promise.resolve(findWorkspace(workspaceId)),
+    findForTeardown: (workspaceId, opts) => Promise.resolve(findForTeardown(workspaceId, opts)),
     list: (projectSlug) => Promise.resolve(listWorkspaces(projectSlug)),
     count: () => Promise.resolve(countWorkspaces()),
     countForProject: (projectSlug) => Promise.resolve(countForProject(projectSlug)),
-    changes: (jobName, base, defaultBase) => getWorktreeChanges(jobName, base, defaultBase),
+    changes: (jobName, base, defaultBase) => getWorkspaceChanges(jobName, base, defaultBase),
     snapshot: (resync) => createRuntimeSnapshot(resync),
     // No upkeep of its own: there are no images to collect, no registries to
     // sweep and no datapath to heal.
@@ -136,9 +136,9 @@ export function createContainerlessDriver(): WorktreeDriver {
     imageBuildLog: () => undefined,
     dismissImageBuild: () => false,
     retryImageBuild: () => false,
-    // Every agent here is a host process, so what a worktree can run is
+    // Every agent here is a host process, so what a workspace can run is
     // whatever this machine has installed. Without this check the create
-    // reports success and the worktree is gone seconds later: the tool (or
+    // reports success and the workspace is gone seconds later: the tool (or
     // acpd's adapter) execs nothing, exits 127, and tmux closes the window.
     assertCanLaunch: (opts) => assertHostCanLaunch(opts),
     ensureRuntimeReachable: () => Promise.resolve(),
@@ -163,7 +163,7 @@ export function createContainerlessDriver(): WorktreeDriver {
     },
     awaitReady: () => awaitReady(),
 
-    // Spares buy the wait a cold worktree pays — an image pull and a pod
+    // Spares buy the wait a cold workspace pays — an image pull and a pod
     // boot — and this runtime pays neither, so the pool is never filled and
     // a claim can only be a caller that ignored the driver kind.
     claimSpare: (workspaceId, tool) => claimWorkspaceTool(workspaceId, tool)
@@ -188,14 +188,14 @@ export function createContainerlessDriver(): WorktreeDriver {
     destroy: (target, opts) => destroyWorkspace(target, opts),
     detachedTeardownCommand: (target) => detachedTeardownCommand(target),
     destroyProjectSubstrate: (project) => destroyProjectSubstrate(project),
-    // Nothing per-worktree lands in this host's node-local tree: the pnpm
+    // Nothing per-workspace lands in this host's node-local tree: the pnpm
     // store is the project's, and the module dirs live in the checkout.
     reapNodeLocal: (live) => reapNodeLocal(live),
 
     // Empty forever, and NOT because the feature is missing: this pair is
     // the pull transport, which exists so a sandboxed pod — unable to dial
     // the host — can still be answered. A host process has no such problem,
-    // so its `yaac-mama` posts straight to the server's own `/worktree/mama`
+    // so its `yaac-mama` posts straight to the server's own `/workspace/mama`
     // and never touches a queue (docs/containerless-driver.md).
     pendingMamaRequests: () => Promise.resolve([]),
     resolveMamaRequests: () => Promise.resolve(),

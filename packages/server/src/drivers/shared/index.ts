@@ -31,4 +31,4 @@ export {
   buildChangesScript,
   parseChangesOutput,
   type ChangesLocation,
-} from './worktree-changes'
+} from './workspace-changes'

@@ -41,7 +41,7 @@ export function isInfraPort(port: number): boolean {
   return port >= INFRA_PORT_MIN && port <= INFRA_PORT_MAX
 }
 
-/** Cap on ports surfaced per worktree — a hostile listener flood shows a
+/** Cap on ports surfaced per workspace — a hostile listener flood shows a
  *  bounded badge, not an unbounded snapshot. */
 export const MAX_SURFACED_PORTS = 10
 

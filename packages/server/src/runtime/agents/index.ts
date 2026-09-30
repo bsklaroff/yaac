@@ -35,7 +35,7 @@ export {
   agentDriver,
   type AgentConnectDeps,
   type AgentObservation,
-  type DrivenWorktree,
+  type DrivenWorkspace,
   type LiveAgent,
 } from './drivers'
 export { attachAcp } from './acp-bridge'
@@ -43,7 +43,7 @@ export { parkAcpLaunchModel } from './acp-driver'
 export { acpConversation } from './acp-registry'
 export { acpRecord, readAcpFirstPrompt, replayAcpLog } from './acp-log'
 // A tui claude conversation as the events an acp one produces, so a stopped
-// worktree's history reads the same either way. The translation is the ACP
+// workspace's history reads the same either way. The translation is the ACP
 // adapter's own, run as a library — see the module header.
 export { claudeTranscriptAsAcp } from './claude-acp-replay'
 export type { AcpConversation } from './acp-client'
@@ -82,7 +82,7 @@ export {
 } from './transcripts'
 // codex is the one tool whose posture is read off its disk rather than pushed
 // on its pane, so a caller following it has to know it is codex anyway. Its
-// rollouts' names and lineage are what a worktree's history is gathered by.
+// rollouts' names and lineage are what a workspace's history is gathered by.
 export { codexRolloutParent, codexRolloutThreadId, getCodexPermissionMode } from './codex'
 export { ensureAgentReporters } from './agent-reporters'
 // How the server reads and writes the project dirs an agent can write too.

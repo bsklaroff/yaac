@@ -78,7 +78,7 @@ describe('listProjectEnvVars', () => {
   it('reports a value it cannot open instead of throwing', async () => {
     // A key file replaced or lost: the row is still listed, so the settings
     // page can say which secret needs re-entering, and resolves to nothing,
-    // so a worktree launches without it rather than with an empty header.
+    // so a workspace launches without it rather than with an empty header.
     await upsertProjectEnvVar('demo', { name: 'SECRET', value: 'sekrit', secret: true, rule: RULE })
     await fs.writeFile(secretKeyPath(), 'a-completely-different-key\n', { mode: 0o600 })
     forgetSecretConfig()

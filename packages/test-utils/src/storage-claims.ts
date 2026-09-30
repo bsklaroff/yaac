@@ -30,7 +30,7 @@ import { localPathClass, nfsClass } from '#kind-byo'
  * byte a pod sees goes through NFS or the provisioned block class. (Unlike
  * kind-byo's own classes, which give each claim a directory of its own.)
  *
- * Needed by every k8s-tier file whose server launches a worktree pod,
+ * Needed by every k8s-tier file whose server launches a workspace pod,
  * because the resolver turns every global mount into a subPath of
  * `yaac-global`, and a claim that is not there leaves the pod Pending.
  * `deployTestServer` calls it for every deployed server, handing it the

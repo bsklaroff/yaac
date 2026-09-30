@@ -1,6 +1,6 @@
 /*
  * Verifies that a half-typed ACP message survives leaving the chat pane, in
- * real Chromium against a live ACP worktree:
+ * real Chromium against a live ACP workspace:
  *   - typing a draft, switching to another pane (which UNMOUNTS the chat pane —
  *     asserted, since that unmount is the whole reason the draft needs a home
  *     outside component state), and coming back restores the text;
@@ -12,8 +12,8 @@
  *   - but retyping those same words without sending them keeps them, since
  *     nothing was in flight (the trap plain history-matching falls into).
  *
- * Needs a running `yaac server` with a live ACP-mode worktree of the selected
- * project — `yaac worktree create <project> --tool claude --mode acp` — and
+ * Needs a running `yaac server` with a live ACP-mode workspace of the selected
+ * project — `yaac workspace create <project> --tool claude --mode acp` — and
  * spends one small prompt turn on the agent. Reads the port from
  * $YAAC_DATA_DIR/.server.lock (falling back to ~/.yaac) exactly like
  * .claude/skills/run-yaac/driver.mjs.
@@ -83,15 +83,15 @@ async function main() {
   }
 
   await page.goto(`http://127.0.0.1:${lock.port}/`)
-  // Wait for the worktree's workspace (the pushed /events snapshot) to arrive.
+  // Wait for the workspace's row (the pushed /events snapshot) to arrive.
   await page.waitForTimeout(4000)
 
   const chat = page.locator(CHAT)
   await chat.waitFor({ state: 'visible', timeout: 20_000 })
-  check(true, 'the ACP worktree opens on its chat pane')
+  check(true, 'the ACP workspace opens on its chat pane')
 
   // Tabs view: one pane at a time, so switching panes tears the other down —
-  // the same unmount a column close or a worktree switch causes, reached with
+  // the same unmount a column close or a workspace switch causes, reached with
   // a single keystroke.
   await page.keyboard.press('Alt+Comma')
   await page.waitForTimeout(500)

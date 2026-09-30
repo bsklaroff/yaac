@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { api } from './lib/api'
-import { stopWorktreeOptimistic } from './lib/stopWorktreeFlow'
+import { stopWorkspaceOptimistic } from './lib/stopWorkspaceFlow'
 import { claimChord, cycleDeltaFor, matchShortcut, mergeBindings, resolveCycleTarget } from './lib/shortcuts'
 import { getShortcutOverrides } from './lib/settingsApi'
 import { useEvents } from './lib/useEvents'
@@ -12,18 +12,18 @@ import {
 } from './lib/store'
 import { ProjectRail } from './components/ProjectRail'
 import { Sidebar, sidebarRowIds } from './components/Sidebar'
-import { WorktreeView } from './components/WorktreeView'
+import { WorkspaceView } from './components/WorkspaceView'
 import { MobileScreenLayer } from './components/mobile/MobileScreenLayer'
 import { ProjectsScreen } from './components/mobile/ProjectsScreen'
-import { WorktreesScreen } from './components/mobile/WorktreesScreen'
+import { WorkspacesScreen } from './components/mobile/WorkspacesScreen'
 import { goBackScreen, useMobileHistory } from './lib/mobileHistory'
 import { useIsMobile, useVisualViewportHeight } from './lib/viewport'
-import { newlyWaitingWorktrees, shouldChime, waitingSpellKeys } from './lib/attentionChime'
+import { newlyWaitingWorkspaces, shouldChime, waitingSpellKeys } from './lib/attentionChime'
 import { playChime } from './lib/sound'
 import { isElectron } from './lib/platform'
-import { CreateWorktreeDialog } from './components/CreateWorktreeDialog'
-import { StopWorktreeDialog } from './components/StopWorktreeDialog'
-import type { ServerSnapshot, WorktreeListEntry } from '@yaac/shared/types'
+import { CreateWorkspaceDialog } from './components/CreateWorkspaceDialog'
+import { StopWorkspaceDialog } from './components/StopWorkspaceDialog'
+import type { ServerSnapshot, WorkspaceListEntry } from '@yaac/shared/types'
 
 /** `unidentified` carries the server's own account of why it would not say
  *  who this device is (a tagged device or Funnel, or a name reached without
@@ -48,23 +48,23 @@ function App(): JSX.Element {
   const { connected } = useEvents(auth.kind === 'ok')
   const snapshot = useSnapshot()
 
-  // Chime the moment a worktree flips to waiting (it needs input) — the audible
+  // Chime the moment a workspace flips to waiting (it needs input) — the audible
   // sibling of the tray badge + notification. Seed silently on the first
-  // snapshot so worktrees already waiting on load don't all fire; skip the
-  // worktree the user is actively watching (selected + window focused — they can
+  // snapshot so workspaces already waiting on load don't all fire; skip the
+  // workspace the user is actively watching (selected + window focused — they can
   // see it flip); gate on the sound preference.
   const soundEnabled = useUiStore((s) => s.soundEnabled)
-  const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId)
+  const selectedWorkspaceId = useUiStore((s) => s.selectedWorkspaceId)
   const waitingSpells = useRef<Set<string> | null>(null)
   useEffect(() => {
     if (!snapshot) return
-    const current = waitingSpellKeys(snapshot.worktrees)
+    const current = waitingSpellKeys(snapshot.workspaces)
     if (waitingSpells.current === null) { waitingSpells.current = current; return }
-    const fresh = newlyWaitingWorktrees(waitingSpells.current, snapshot.worktrees)
+    const fresh = newlyWaitingWorkspaces(waitingSpells.current, snapshot.workspaces)
     waitingSpells.current = current
-    const watching = typeof document !== 'undefined' && document.hasFocus() ? selectedWorktreeId : null
+    const watching = typeof document !== 'undefined' && document.hasFocus() ? selectedWorkspaceId : null
     if (soundEnabled && shouldChime(fresh, watching)) playChime()
-  }, [snapshot, soundEnabled, selectedWorktreeId])
+  }, [snapshot, soundEnabled, selectedWorkspaceId])
 
   let content: JSX.Element
   if (auth.kind === 'checking') content = <FullScreen>Loading…</FullScreen>
@@ -77,24 +77,24 @@ function App(): JSX.Element {
         </div>
       </FullScreen>
     )
-  } else content = <Workspace snapshot={snapshot} connected={connected} />
+  } else content = <Shell snapshot={snapshot} connected={connected} />
 
   // In Electron the title bar is hidden and the traffic lights float over the
   // UI. The full-screen states (loading/unidentified) reserve a thin draggable
   // strip for the lights; the workspace instead pulls its own top row (rail /
-  // sidebar header / worktree bar) up level with them, so that band isn't dead
+  // sidebar header / workspace bar) up level with them, so that band isn't dead
   // space — it carries its own drag regions and light clearance.
   // A browser tab gets neither, so it always renders content flush.
-  const isWorkspace = auth.kind === 'ok'
+  const inShell = auth.kind === 'ok'
   return (
     <div className="flex h-full flex-col bg-shell">
-      {isElectron() && !isWorkspace && <div className="titlebar-drag h-7 shrink-0" aria-hidden="true" />}
+      {isElectron() && !inShell && <div className="titlebar-drag h-7 shrink-0" aria-hidden="true" />}
       <div className="min-h-0 flex-1">{content}</div>
     </div>
   )
 }
 
-function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefined; connected: boolean }): JSX.Element {
+function Shell({ snapshot, connected }: { snapshot: ServerSnapshot | undefined; connected: boolean }): JSX.Element {
   const activeProjectSlug = useUiStore((s) => s.activeProjectSlug)
   const setActiveProject = useUiStore((s) => s.setActiveProject)
   const restoreActiveProject = useUiStore((s) => s.restoreActiveProject)
@@ -106,8 +106,8 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   const inFlightProvisions = useUiStore((s) => s.inFlightProvisions)
   const recordClaim = useUiStore((s) => s.recordClaim)
   const forgetClaim = useUiStore((s) => s.forgetClaim)
-  const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId)
-  const autoSelectWorktree = useUiStore((s) => s.autoSelectWorktree)
+  const selectedWorkspaceId = useUiStore((s) => s.selectedWorkspaceId)
+  const autoSelectWorkspace = useUiStore((s) => s.autoSelectWorkspace)
   const sidebarOpen = useUiStore((s) => s.sidebarOpen)
   const mobileScreen = useUiStore((s) => s.mobileScreen)
   const readWaiting = useUiStore((s) => s.readWaiting)
@@ -121,7 +121,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   useMobileHistory(isMobile)
 
   const projects = snapshot?.projects ?? []
-  const worktrees = snapshot?.worktrees ?? []
+  const workspaces = snapshot?.workspaces ?? []
   // Server-tracked provisioning rows + local optimistic ones (snapshot wins).
   const provisioning = mergeProvisioning(snapshot?.provisioning ?? [], optimisticProvisioning)
 
@@ -130,13 +130,13 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   // Ongoing changes are mirrored by the store subscription.
   useEffect(() => {
     const s = useUiStore.getState()
-    persistSelection(s.activeProjectSlug, s.selectedWorktreeId)
+    persistSelection(s.activeProjectSlug, s.selectedWorkspaceId)
   }, [])
 
   // Default the rail selection to the first project once projects arrive, and
   // recover from a persisted/active project that no longer exists (deleted, or
   // a stale link) by falling back to the first. Switching here clears the
-  // worktree — correct, since the restored worktree belonged to that project.
+  // workspace — correct, since the restored workspace belonged to that project.
   // Through restoreActiveProject, not setActiveProject: nobody chose this
   // project, so on mobile it must not also count as walking into it.
   useEffect(() => {
@@ -145,24 +145,24 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
     restoreActiveProject(projects[0].slug)
   }, [activeProjectSlug, projects, restoreActiveProject])
 
-  // Once the snapshot no longer lists an optimistically-deleted worktree, the
+  // Once the snapshot no longer lists an optimistically-deleted workspace, the
   // server's cleanup landed — stop tracking it so the set can't leak (or
-  // wrongly hide a future worktree that reuses the id).
+  // wrongly hide a future workspace that reuses the id).
   useEffect(() => {
-    const live = new Set(worktrees.map((s) => s.worktreeId))
+    const live = new Set(workspaces.map((s) => s.workspaceId))
     for (const id of pendingDeleteIds) if (!live.has(id)) endDelete(id)
-  }, [worktrees, pendingDeleteIds, endDelete])
+  }, [workspaces, pendingDeleteIds, endDelete])
 
-  // Once the server knows a provisioning id (as a real worktree or its own
+  // Once the server knows a provisioning id (as a real workspace or its own
   // provisioning row), drop the local optimistic copy — the snapshot is the
   // source of truth from here, carrying live progress and reload-survival.
   useEffect(() => {
     const known = new Set<string>([
-      ...worktrees.map((s) => s.worktreeId),
-      ...(snapshot?.provisioning ?? []).map((p) => p.worktreeId),
+      ...workspaces.map((s) => s.workspaceId),
+      ...(snapshot?.provisioning ?? []).map((p) => p.workspaceId),
     ])
-    for (const e of optimisticProvisioning) if (known.has(e.worktreeId)) removeOptimisticProvisioning(e.worktreeId)
-  }, [worktrees, snapshot, optimisticProvisioning, removeOptimisticProvisioning])
+    for (const e of optimisticProvisioning) if (known.has(e.workspaceId)) removeOptimisticProvisioning(e.workspaceId)
+  }, [workspaces, snapshot, optimisticProvisioning, removeOptimisticProvisioning])
 
   // A create that claimed a prewarmed spare resolves into the spare's id —
   // remembered while the row says so, for the selection to follow, and
@@ -170,42 +170,42 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   // the spare), or fell back to a cold create that lists under its own id.
   useEffect(() => {
     for (const p of snapshot?.provisioning ?? []) {
-      if (p.error !== undefined) forgetClaim(p.worktreeId)
-      else if (p.claimedId) recordClaim(p.worktreeId, p.claimedId)
+      if (p.error !== undefined) forgetClaim(p.workspaceId)
+      else if (p.claimedId) recordClaim(p.workspaceId, p.claimedId)
     }
-    for (const w of worktrees) forgetClaim(w.worktreeId)
-  }, [snapshot, worktrees, recordClaim, forgetClaim])
+    for (const w of workspaces) forgetClaim(w.workspaceId)
+  }, [snapshot, workspaces, recordClaim, forgetClaim])
 
-  const scoped = worktrees.filter((s) => s.projectSlug === activeProjectSlug)
+  const scoped = workspaces.filter((s) => s.projectSlug === activeProjectSlug)
   const scopedProvisioning = provisioning.filter((p) => p.projectSlug === activeProjectSlug)
-  const scopedGroups = (snapshot?.worktreeGroups ?? [])
+  const scopedGroups = (snapshot?.workspaceGroups ?? [])
     .filter((g) => g.projectSlug === activeProjectSlug)
-  const scopedQueued = (snapshot?.queuedWorktrees ?? []).filter((e) => e.projectSlug === activeProjectSlug)
-  const scopedHeld = (snapshot?.heldWorktrees ?? []).filter((h) => h.projectSlug === activeProjectSlug)
-  const scopedDrafts = (snapshot?.draftWorktrees ?? []).filter((d) => d.projectSlug === activeProjectSlug)
+  const scopedQueued = (snapshot?.queuedWorkspaces ?? []).filter((e) => e.projectSlug === activeProjectSlug)
+  const scopedHeld = (snapshot?.heldWorkspaces ?? []).filter((h) => h.projectSlug === activeProjectSlug)
+  const scopedDrafts = (snapshot?.draftWorkspaces ?? []).filter((d) => d.projectSlug === activeProjectSlug)
 
-  // Worktree shortcuts, window-captured so the chord is swallowed before
+  // Workspace shortcuts, window-captured so the chord is swallowed before
   // xterm's textarea handler could forward it to the PTY, and registered
   // here, not in Sidebar, so they work with the sidebar hidden too:
   //  - Alt+K/Alt+J step through the sidebar rows top-to-bottom (wrapping)
-  //    — the vertical sibling of WorktreeView's Alt+H/Alt+L terminal cycler.
+  //    — the vertical sibling of WorkspaceView's Alt+H/Alt+L terminal cycler.
   //  - Alt+N opens the create dialog on the active project with the prompt
   //    focused, so Alt+N, Enter is a create with every default and Alt+N,
   //    type, Enter one with an opening prompt.
-  //  - Alt+D stops the selected worktree, through the same stop dialog as
+  //  - Alt+D stops the selected workspace, through the same stop dialog as
   //    the sidebar row's menu (Enter confirms — the button holds focus).
   // The ref keeps the single listener reading the current render's state.
   const rowIds = sidebarRowIds(scopedProvisioning, scoped, scopedGroups, pendingDeleteIds)
-  const openCreateWorktree = useUiStore((s) => s.openCreateWorktree)
-  const newWorktree = (): void => {
-    if (activeProjectSlug) openCreateWorktree({ projectSlug: activeProjectSlug, focus: 'prompt' })
+  const openCreateWorkspace = useUiStore((s) => s.openCreateWorkspace)
+  const newWorkspace = (): void => {
+    if (activeProjectSlug) openCreateWorkspace({ projectSlug: activeProjectSlug, focus: 'prompt' })
   }
-  const [confirmDelete, setConfirmDelete] = useState<WorktreeListEntry | null>(null)
-  const selectedWorktree = selectedWorktreeId && !pendingDeleteIds.includes(selectedWorktreeId)
-    ? worktrees.find((s) => s.worktreeId === selectedWorktreeId && !s.stopping) ?? null
+  const [confirmDelete, setConfirmDelete] = useState<WorkspaceListEntry | null>(null)
+  const selectedWorkspace = selectedWorkspaceId && !pendingDeleteIds.includes(selectedWorkspaceId)
+    ? workspaces.find((s) => s.workspaceId === selectedWorkspaceId && !s.stopping) ?? null
     : null
-  const shortcutCtx = useRef({ rowIds, selectedWorktreeId, selectedWorktree, newWorktree })
-  shortcutCtx.current = { rowIds, selectedWorktreeId, selectedWorktree, newWorktree }
+  const shortcutCtx = useRef({ rowIds, selectedWorkspaceId, selectedWorkspace, newWorkspace })
+  shortcutCtx.current = { rowIds, selectedWorkspaceId, selectedWorkspace, newWorkspace }
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       const ctx = shortcutCtx.current
@@ -214,27 +214,27 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
       // theirs.
       if (shortcutsSuspended(state)) return
       // Only the project-scoped commands are handled here; terminal-scoped
-      // ones (new-shell, kill-terminal, terminal cycles) belong to WorktreeView,
+      // ones (new-shell, kill-terminal, terminal cycles) belong to WorkspaceView,
       // so its ids fall through the switch untouched.
       const id = matchShortcut(state.bindings, e)
       switch (id) {
-        case 'new-worktree':
+        case 'new-workspace':
           claimChord(e)
-          ctx.newWorktree()
+          ctx.newWorkspace()
           return
-        case 'delete-worktree':
-          if (!ctx.selectedWorktree) return
+        case 'delete-workspace':
+          if (!ctx.selectedWorkspace) return
           claimChord(e)
-          setConfirmDelete(ctx.selectedWorktree)
+          setConfirmDelete(ctx.selectedWorkspace)
           return
-        case 'prev-worktree':
-        case 'next-worktree': {
+        case 'prev-workspace':
+        case 'next-workspace': {
           const delta = cycleDeltaFor(id)
           if (delta === null) return
-          const next = resolveCycleTarget(ctx.rowIds, ctx.selectedWorktreeId ?? undefined, delta)
+          const next = resolveCycleTarget(ctx.rowIds, ctx.selectedWorkspaceId ?? undefined, delta)
           if (!next) return
           claimChord(e)
-          useUiStore.getState().selectWorktree(next)
+          useUiStore.getState().selectWorkspace(next)
           return
         }
         default:
@@ -254,14 +254,14 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   }, [])
 
   // Fill a pane the user didn't empty — a project switched under the
-  // selection, or the open worktree vanished (see resolveVacantSelection).
-  // Deleting a worktree in the app doesn't come through here at all: that
+  // selection, or the open workspace vanished (see resolveVacantSelection).
+  // Deleting a workspace in the app doesn't come through here at all: that
   // selects the row below it as it goes. `rowIds` is the sidebar's own order,
-  // so "the top row" is the one the user sees at the top; `worktrees` is in
+  // so "the top row" is the one the user sees at the top; `workspaces` is in
   // snapshot order, which is not it.
   //
-  // Goes through autoSelectWorktree, not selectWorktree: this is the app
-  // choosing, so on mobile it must fill the pane *behind* the worktree list
+  // Goes through autoSelectWorkspace, not selectWorkspace: this is the app
+  // choosing, so on mobile it must fill the pane *behind* the workspace list
   // rather than navigating the user onto it. A layout effect, so a pane
   // handed to a successor (a create resolving into the spare it claimed)
   // never paints empty in between.
@@ -272,67 +272,67 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
     const pick = resolveVacantSelection({
       previousProjectSlug,
       activeProjectSlug,
-      selectedWorktreeId,
+      selectedWorkspaceId,
       rowIds,
       claims,
       inFlight: inFlightProvisions,
     })
     if (!pick) return
     // A followed claim has done its one job.
-    if (selectedWorktreeId !== null && claims[selectedWorktreeId] === pick) forgetClaim(selectedWorktreeId)
-    autoSelectWorktree(pick)
-  }, [activeProjectSlug, rowIds, selectedWorktreeId, claims, inFlightProvisions, forgetClaim, autoSelectWorktree])
-  // Viewing a waiting worktree marks its current spell read — the pane shows
+    if (selectedWorkspaceId !== null && claims[selectedWorkspaceId] === pick) forgetClaim(selectedWorkspaceId)
+    autoSelectWorkspace(pick)
+  }, [activeProjectSlug, rowIds, selectedWorkspaceId, claims, inFlightProvisions, forgetClaim, autoSelectWorkspace])
+  // Viewing a waiting workspace marks its current spell read — the pane shows
   // it, so it no longer needs attention. Covers both selecting a waiting
-  // worktree and the open worktree flipping running → waiting under the
+  // workspace and the open workspace flipping running → waiting under the
   // user's eyes.
   useEffect(() => {
-    if (!selectedWorktreeId) return
-    const open = worktrees.find((s) => s.worktreeId === selectedWorktreeId)
-    if (open?.status === 'waiting') markWaitingRead(selectedWorktreeId, open.waitingSinceMs ?? 0)
-  }, [selectedWorktreeId, worktrees, markWaitingRead])
+    if (!selectedWorkspaceId) return
+    const open = workspaces.find((s) => s.workspaceId === selectedWorkspaceId)
+    if (open?.status === 'waiting') markWaitingRead(selectedWorkspaceId, open.waitingSinceMs ?? 0)
+  }, [selectedWorkspaceId, workspaces, markWaitingRead])
 
-  // GC read marks whose waiting spell is over (worktree running, gone, or
+  // GC read marks whose waiting spell is over (workspace running, gone, or
   // waiting anew with a fresh waitingSinceMs). Only against hydrated frames:
-  // before the first snapshot lands, `worktrees` is the empty fallback, and
+  // before the first snapshot lands, `workspaces` is the empty fallback, and
   // syncing against it would wipe every restored mark — re-flagging all
-  // waiting worktrees as unread on every reload.
+  // waiting workspaces as unread on every reload.
   useEffect(() => {
     if (!snapshot) return
-    syncWaitingRead(worktrees
+    syncWaitingRead(workspaces
       .filter((s) => s.status === 'waiting')
-      .map((s) => ({ worktreeId: s.worktreeId, waitingSinceMs: s.waitingSinceMs ?? 0 })))
-  }, [snapshot, worktrees, syncWaitingRead])
+      .map((s) => ({ workspaceId: s.workspaceId, waitingSinceMs: s.waitingSinceMs ?? 0 })))
+  }, [snapshot, workspaces, syncWaitingRead])
 
-  // GC chat drafts for worktrees that no longer exist. Same hydration guard as
+  // GC chat drafts for workspaces that no longer exist. Same hydration guard as
   // the read marks, and for the same reason: syncing against the pre-snapshot
   // empty fallback would wipe every restored draft on reload.
   //
-  // Provisioning ids count as live: a worktree being restarted is filtered out
-  // of the snapshot's worktree list for the whole restart, and it comes back
+  // Provisioning ids count as live: a workspace being restarted is filtered out
+  // of the snapshot's workspace list for the whole restart, and it comes back
   // with the same id and the same conversations — GCing there would delete a
   // draft the user is about to return to.
   useEffect(() => {
     if (!snapshot) return
     syncChatDrafts([
-      ...worktrees.map((s) => s.worktreeId),
-      ...provisioning.map((p) => p.worktreeId),
+      ...workspaces.map((s) => s.workspaceId),
+      ...provisioning.map((p) => p.workspaceId),
     ])
-  }, [snapshot, worktrees, provisioning, syncChatDrafts])
+  }, [snapshot, workspaces, provisioning, syncChatDrafts])
 
-  // Per-project count of unread waiting worktrees → the rail attention badge.
-  const attention = unreadWaitingBySlug(worktrees, readWaiting, pendingDeleteIds)
+  // Per-project count of unread waiting workspaces → the rail attention badge.
+  const attention = unreadWaitingBySlug(workspaces, readWaiting, pendingDeleteIds)
 
   const projectRemoteUrl = projects.find((p) => p.slug === activeProjectSlug)?.remoteUrl ?? ''
   const scopedGitAuthFailures = (activeProjectSlug && snapshot?.gitAuthFailures?.[activeProjectSlug]) || []
 
   return (
-    // Desktop: rail + sidebar sit flush on the base layer and the worktree
+    // Desktop: rail + sidebar sit flush on the base layer and the workspace
     // pane floats as an inset, rounded, bordered card. Mobile: the same three
     // regions become stacked full-screen layers, one visible at a time.
     //
     // The three children keep their slots across the switch, which is what
-    // keeps the pane's WorktreeView — and every kept-alive terminal under it —
+    // keeps the pane's WorkspaceView — and every kept-alive terminal under it —
     // mounted when a phone is rotated across the breakpoint. Only the two
     // navigation regions swap component (they're cheap); the pane's wrapper
     // stays the same <div> and merely changes class.
@@ -360,11 +360,11 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
       )}
 
       {isMobile ? (
-        <MobileScreenLayer active={mobileScreen === 'worktrees'}>
-          <WorktreesScreen
+        <MobileScreenLayer active={mobileScreen === 'workspaces'}>
+          <WorkspacesScreen
             projectSlug={activeProjectSlug}
             projectRemoteUrl={projectRemoteUrl}
-            worktrees={scoped}
+            workspaces={scoped}
             groups={scopedGroups}
             provisioning={scopedProvisioning}
             queued={scopedQueued}
@@ -379,7 +379,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
         <Sidebar
           projectSlug={activeProjectSlug}
           projectRemoteUrl={projectRemoteUrl}
-          worktrees={scoped}
+          workspaces={scoped}
           groups={scopedGroups}
           provisioning={scopedProvisioning}
           queued={scopedQueued}
@@ -396,19 +396,19 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
           ? ['absolute inset-0', mobileScreen !== 'pane' && 'invisible pointer-events-none']
           : 'min-w-0 flex-1 p-2')}
       >
-        <WorktreeView snapshot={snapshot} provisioning={scopedProvisioning} />
+        <WorkspaceView snapshot={snapshot} provisioning={scopedProvisioning} />
       </div>
 
       {/* Alt+D's confirm — the same dialog the sidebar row's Stop… opens. */}
-      <StopWorktreeDialog
-        worktree={confirmDelete}
+      <StopWorkspaceDialog
+        workspace={confirmDelete}
         onOpenChange={(next) => { if (!next) setConfirmDelete(null) }}
         onConfirm={() => {
-          if (confirmDelete) stopWorktreeOptimistic(confirmDelete, rowIds)
+          if (confirmDelete) stopWorkspaceOptimistic(confirmDelete, rowIds)
           setConfirmDelete(null)
         }}
       />
-      <CreateWorktreeDialog />
+      <CreateWorkspaceDialog />
     </div>
   )
 }

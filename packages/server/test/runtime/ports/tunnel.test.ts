@@ -15,10 +15,10 @@ import {
   attachPortTunnel,
   type TunnelSocketLike,
 } from '#runtime/ports/tunnel'
-import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
-import type { WorktreeDriver } from '#drivers/contract'
+import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import type { WorkspaceDriver } from '#drivers/contract'
 
-const dialPort = vi.fn<WorktreeDriver['dialPort']>()
+const dialPort = vi.fn<WorkspaceDriver['dialPort']>()
 
 /** A fake client socket that records what the bridge sent it, and lets a
  *  test push frames in as the client would. */
@@ -70,7 +70,7 @@ const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 5))
 
 beforeEach(() => {
   vi.clearAllMocks()
-  installFakeWorktreeDriver({ dialPort })
+  installFakeWorkspaceDriver({ dialPort })
 })
 
 describe('attachPortTunnel', () => {

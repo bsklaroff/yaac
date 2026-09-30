@@ -36,7 +36,7 @@ function rawPod(name: string): unknown {
       name,
       labels: {
         'batch.kubernetes.io/job-name': `yaac-demo-${SID}`,
-        'yaac.worktree-id': SID,
+        'yaac.workspace-id': SID,
         'yaac.project': 'demo',
         'yaac.tool': 'claude',
       },
@@ -50,8 +50,8 @@ function rawPod(name: string): unknown {
 function healthyCache(): ClusterCache {
   return {
     healthy: () => true,
-    worktreePods: () => [{ podName: 'cached' } as PodInfo],
-    worktreeJobs: () => [],
+    workspacePods: () => [{ podName: 'cached' } as PodInfo],
+    workspaceJobs: () => [],
   } as unknown as ClusterCache
 }
 
@@ -87,7 +87,7 @@ describe('createTickSnapshot', () => {
     const snap = createTickSnapshot()
     const pods = await snap.pods()
     expect(pods.map((p) => p.podName)).toEqual(['yaac-demo-p1'])
-    expect(pods[0].worktreeId).toBe(SID)
+    expect(pods[0].workspaceId).toBe(SID)
     expect(await snap.pods()).toBe(pods)
     await snap.jobs()
     await snap.jobs()
@@ -96,7 +96,7 @@ describe('createTickSnapshot', () => {
     // install-wide, by data-dir-hash.
     const argv = execFileMock.mock.calls.map(([, args]) => args.join(' '))
     expect(argv.find((c) => c.startsWith('get pods -n test-ns')))
-      .toMatch(/-l yaac\.data-dir-hash=[0-9a-f]{16},yaac\.worktree-id/)
+      .toMatch(/-l yaac\.data-dir-hash=[0-9a-f]{16},yaac\.workspace-id/)
   })
 
   it('separate snapshots list independently', async () => {

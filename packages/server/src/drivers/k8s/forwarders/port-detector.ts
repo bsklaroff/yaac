@@ -1,16 +1,16 @@
 import type net from 'node:net'
 import { type PodInfo, isPrewarmed, relayDial } from '#drivers/k8s/substrate'
-import { getWorktreePorts } from './port-forwarders'
-import { notifyWorktreeListChanged } from '#notify'
+import { getWorkspacePorts } from './port-forwarders'
+import { notifyWorkspaceListChanged } from '#notify'
 import { serverLog } from '#log'
 import { MAX_SURFACED_PORTS, isForwardablePort } from '#lib/port-policy'
 
 /**
- * Detected in-pod listeners, per worktree: streamd's `ports` stream pushes
+ * Detected in-pod listeners, per workspace: streamd's `ports` stream pushes
  * the pod's localhost-reachable LISTEN set (one JSON line on connect, on
  * every change, and as a periodic keepalive), and this module holds the
  * result in memory — the source of the snapshot's `unforwardedPorts`.
- * There is no server-side poll: the per-worktree watcher just keeps one
+ * There is no server-side poll: the per-workspace watcher just keeps one
  * relay stream open, mirroring (in miniature) the status watcher's
  * lifecycle — informer-driven sync, respawn with backoff, and a silence
  * deadline standing in for its heartbeat.
@@ -23,7 +23,7 @@ import { MAX_SURFACED_PORTS, isForwardablePort } from '#lib/port-policy'
  * offered one-click, and the count is capped.
  */
 
-/** Cap on ports stored per worktree from a single push. */
+/** Cap on ports stored per workspace from a single push. */
 const MAX_DETECTED_PORTS = 100
 
 /** Line-buffer cap for the ports stream (each line is a small JSON set). */
@@ -44,53 +44,53 @@ export function _resetPortDetectorForTests(): void {
   dismissed.clear()
 }
 
-/** Test-only: seed a worktree's detected set directly. */
-export function _setDetectedPortsForTests(worktreeId: string, ports: number[]): void {
-  detected.set(worktreeId, ports)
+/** Test-only: seed a workspace's detected set directly. */
+export function _setDetectedPortsForTests(workspaceId: string, ports: number[]): void {
+  detected.set(workspaceId, ports)
 }
 
 /**
- * The ports the webapp should offer to forward for a worktree: detected
+ * The ports the webapp should offer to forward for a workspace: detected
  * listeners minus already-forwarded container ports, user-dismissed
  * ports, and the sensitive/infra exclusions — capped, ascending. Feeds
- * `unforwardedPorts` on the worktree snapshot.
+ * `unforwardedPorts` on the workspace snapshot.
  */
-export function getUnforwardedPorts(worktreeId: string): number[] {
-  const raw = detected.get(worktreeId)
+export function getUnforwardedPorts(workspaceId: string): number[] {
+  const raw = detected.get(workspaceId)
   if (!raw?.length) return []
-  const forwarded = new Set(getWorktreePorts(worktreeId).map((p) => p.containerPort))
-  const hidden = dismissed.get(worktreeId)
+  const forwarded = new Set(getWorkspacePorts(workspaceId).map((p) => p.containerPort))
+  const hidden = dismissed.get(workspaceId)
   return raw
     .filter((p) => isForwardablePort(p) && !forwarded.has(p) && !hidden?.has(p))
     .slice(0, MAX_SURFACED_PORTS)
 }
 
-/** Whether a port is a listener the worktree's detector has seen and the
+/** Whether a port is a listener the workspace's detector has seen and the
  *  policy would surface — forwarded, dismissed or not. */
-export function isDetectedPort(worktreeId: string, port: number): boolean {
-  return isForwardablePort(port) && (detected.get(worktreeId)?.includes(port) ?? false)
+export function isDetectedPort(workspaceId: string, port: number): boolean {
+  return isForwardablePort(port) && (detected.get(workspaceId)?.includes(port) ?? false)
 }
 
 /**
- * Hide a detected port for this worktree (in-memory — resets with the
- * server, and clears when the worktree goes away). Unlike allow-host,
+ * Hide a detected port for this workspace (in-memory — resets with the
+ * server, and clears when the workspace goes away). Unlike allow-host,
  * "never forward this" is a legitimate lasting choice, so the badge
  * needs a way to stop offering. Only currently-surfaced ports can be
  * dismissed (returns false otherwise) — anything else would let an
- * arbitrary-port dismissal grow the set for worktrees the sync cleanup
+ * arbitrary-port dismissal grow the set for workspaces the sync cleanup
  * never tracked.
  */
-export function dismissWorktreePort(worktreeId: string, port: number): boolean {
-  if (!getUnforwardedPorts(worktreeId).includes(port)) return false
-  let set = dismissed.get(worktreeId)
+export function dismissWorkspacePort(workspaceId: string, port: number): boolean {
+  if (!getUnforwardedPorts(workspaceId).includes(port)) return false
+  let set = dismissed.get(workspaceId)
   if (!set) {
     set = new Set()
-    dismissed.set(worktreeId, set)
+    dismissed.set(workspaceId, set)
   }
   set.add(port)
   // Self-clears the popover row: the dismissal only exists here, so this is
   // the only place that can announce it.
-  notifyWorktreeListChanged()
+  notifyWorkspaceListChanged()
   return true
 }
 
@@ -106,7 +106,7 @@ function normalizePorts(value: unknown): number[] | null {
 
 export interface PortDetectorDeps {
   /** Injected for tests — replaces the real relay `ports`-stream dial. */
-  dialPorts?: (worktreeId: string) => Promise<net.Socket>
+  dialPorts?: (workspaceId: string) => Promise<net.Socket>
   /** First respawn delay after a stream death; doubles to the max. */
   respawnDelayMs?: number
   maxRespawnDelayMs?: number
@@ -116,11 +116,11 @@ export interface PortDetectorDeps {
   log?: (msg: string) => void
 }
 
-function dialRelayPorts(worktreeId: string): Promise<net.Socket> {
-  return relayDial(worktreeId, { kind: 'ports' })
+function dialRelayPorts(workspaceId: string): Promise<net.Socket> {
+  return relayDial(workspaceId, { kind: 'ports' })
 }
 
-class WorktreePortsWatcher {
+class WorkspacePortsWatcher {
   private sock: net.Socket | null = null
   private stopped = false
   private generation = 0
@@ -128,14 +128,14 @@ class WorktreePortsWatcher {
   private respawnTimer: NodeJS.Timeout | null = null
   private silenceTimer: NodeJS.Timeout | null = null
 
-  private readonly dialPorts: (worktreeId: string) => Promise<net.Socket>
+  private readonly dialPorts: (workspaceId: string) => Promise<net.Socket>
   private readonly respawnDelayMs: number
   private readonly maxRespawnDelayMs: number
   private readonly silenceTimeoutMs: number
   private readonly log: (msg: string) => void
 
   constructor(
-    readonly worktreeId: string,
+    readonly workspaceId: string,
     private readonly onPorts: (ports: number[]) => void,
     deps: PortDetectorDeps = {},
   ) {
@@ -164,10 +164,10 @@ class WorktreePortsWatcher {
     const generation = ++this.generation
     let socket: net.Socket
     try {
-      socket = await this.dialPorts(this.worktreeId)
+      socket = await this.dialPorts(this.workspaceId)
     } catch (err) {
       if (this.stopped || generation !== this.generation) return
-      this.log(`[server] port-detector ${this.worktreeId.slice(0, 8)}: dial failed: ${String(err)}`)
+      this.log(`[server] port-detector ${this.workspaceId.slice(0, 8)}: dial failed: ${String(err)}`)
       // A streamd predating the `ports` kind refuses the handshake with
       // "unknown kind" — permanent for this pod, so retry only rarely.
       if (String(err).includes('unknown kind')) this.backoffMs = UNSUPPORTED_KIND_RETRY_MS
@@ -225,7 +225,7 @@ class WorktreePortsWatcher {
   private onStreamDown(generation: number, reason: string): void {
     if (generation !== this.generation || this.stopped) return
     this.generation++
-    this.log(`[server] port-detector ${this.worktreeId.slice(0, 8)}: ${reason}`)
+    this.log(`[server] port-detector ${this.workspaceId.slice(0, 8)}: ${reason}`)
     this.teardownStream()
     this.scheduleRespawn()
   }
@@ -248,13 +248,13 @@ class WorktreePortsWatcher {
 }
 
 /**
- * Keeps one ports stream per running, non-prewarmed worktree pod, synced
+ * Keeps one ports stream per running, non-prewarmed workspace pod, synced
  * from informer pod deltas exactly like the StatusWatcherManager it sits
- * next to. `onChange` fires when any worktree's detected set actually
+ * next to. `onChange` fires when any workspace's detected set actually
  * changes, so the events hub can push a fresh snapshot.
  */
 export class PortDetectorManager {
-  private readonly watchers = new Map<string, WorktreePortsWatcher>()
+  private readonly watchers = new Map<string, WorkspacePortsWatcher>()
 
   constructor(
     private readonly onChange: () => void,
@@ -268,28 +268,28 @@ export class PortDetectorManager {
   sync(pods: PodInfo[]): void {
     const wanted = new Set<string>()
     for (const p of pods) {
-      if (!p.running || !p.worktreeId || isPrewarmed(p)) continue
-      wanted.add(p.worktreeId)
+      if (!p.running || !p.workspaceId || isPrewarmed(p)) continue
+      wanted.add(p.workspaceId)
     }
-    for (const [worktreeId, watcher] of this.watchers) {
-      if (wanted.has(worktreeId)) continue
+    for (const [workspaceId, watcher] of this.watchers) {
+      if (wanted.has(workspaceId)) continue
       watcher.stop()
-      this.watchers.delete(worktreeId)
-      const hadPorts = (detected.get(worktreeId)?.length ?? 0) > 0
-      detected.delete(worktreeId)
-      dismissed.delete(worktreeId)
+      this.watchers.delete(workspaceId)
+      const hadPorts = (detected.get(workspaceId)?.length ?? 0) > 0
+      detected.delete(workspaceId)
+      dismissed.delete(workspaceId)
       if (hadPorts) this.onChange()
     }
-    for (const worktreeId of wanted) {
-      if (this.watchers.has(worktreeId)) continue
-      const watcher = new WorktreePortsWatcher(worktreeId, (ports) => {
-        const prev = detected.get(worktreeId)
+    for (const workspaceId of wanted) {
+      if (this.watchers.has(workspaceId)) continue
+      const watcher = new WorkspacePortsWatcher(workspaceId, (ports) => {
+        const prev = detected.get(workspaceId)
         if (prev && prev.length === ports.length && prev.every((p, i) => p === ports[i])) return
-        detected.set(worktreeId, ports)
+        detected.set(workspaceId, ports)
         this.onChange()
       }, this.deps)
       watcher.start()
-      this.watchers.set(worktreeId, watcher)
+      this.watchers.set(workspaceId, watcher)
     }
   }
 

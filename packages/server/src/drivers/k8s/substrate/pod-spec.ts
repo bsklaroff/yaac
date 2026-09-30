@@ -14,22 +14,22 @@ export const CA_CONFIGMAP_KEY = 'proxy-ca.pem'
  * upstreams on tunnelled hosts. See docs/nested-containers.md.
  */
 export const CA_BUNDLE_KEY = 'ca-bundle.pem'
-/** Directory inside worktree pods where the CA ConfigMap is mounted. */
+/** Directory inside workspace pods where the CA ConfigMap is mounted. */
 export const CA_MOUNT_DIR = '/etc/yaac/certs'
 
 /**
- * Directory inside worktree pods holding the forwarded ssh-agent socket, and
+ * Directory inside workspace pods holding the forwarded ssh-agent socket, and
  * the socket path SSH_AUTH_SOCK names. Pod-local scratch (an emptyDir, see
  * buildPodJobManifest): the agent itself lives in the proxy pod and is
  * reached over TCP (SSH_AGENT_PORT), so nothing here is shared between pods
- * — only the in-pod forwarder writes it, and only the worktree's own ssh
+ * — only the in-pod forwarder writes it, and only the workspace's own ssh
  * client reads it.
  */
 export const SSH_AGENT_MOUNT = '/ssh-agent'
 export const SSH_AGENT_SOCKET_PATH = `${SSH_AGENT_MOUNT}/socket`
 
 /**
- * In-container path of the per-worktree ROOTFUL podman graphroot — podman's
+ * In-container path of the per-workspace ROOTFUL podman graphroot — podman's
  * default `/var/lib/containers/storage` lives under this dir (the image's
  * storage.conf sets graphroot there). Backed by a sentry-internal tmpfs
  * (see NESTED_GRAPHROOT_ANNOTATIONS): gVisor's gofer filesystem refuses
@@ -57,16 +57,16 @@ export const NESTED_GRAPHROOT_VOLUME = 'podman-graphroot'
  * so this is an ephemeral-storage budget, not pod memory — independent of
  * memoryLimitBytes.
  *
- * Sized so a worktree can hold the yaac image chain (base, tools, nestable —
+ * Sized so a workspace can hold the yaac image chain (base, tools, nestable —
  * layer-shared, but ~6.5GiB unique) plus the upstream mirrors its cluster
  * pulls AND still build on top of them. At 8GiB that fit had no slack at
  * all: a warm image cache left the e2e image builds ENOSPC'ing.
  *
  * Only the pod's ephemeral-storage LIMIT clears this; the request does
  * not, so raising it does not cost scheduling density — but it does raise
- * each nested worktree's unaccounted worst case by the same amount. At node
+ * each nested workspace's unaccounted worst case by the same amount. At node
  * disk saturation kubelet ranks eviction by usage-over-request, so the fat
- * nested worktrees go first, which is fatal to them (backoffLimit 0) and is
+ * nested workspaces go first, which is fatal to them (backoffLimit 0) and is
  * the ordering the PriorityClass split already intends.
  */
 export const NESTED_GRAPHROOT_TMPFS_BYTES = 12 * 1024 ** 3
@@ -75,7 +75,7 @@ export const NESTED_GRAPHROOT_TMPFS_BYTES = 12 * 1024 ** 3
  * emptyDir sizeLimit for the graphroot volume: the sentry's `size=` cap
  * plus slack. The filestore file kubelet sees can carry sentry metadata
  * beyond the byte cap it enforces; a sizeLimit at exactly the cap would
- * race kubelet's du-based eviction (which kills the whole worktree) against
+ * race kubelet's du-based eviction (which kills the whole workspace) against
  * the sentry's ENOSPC (which fails just the write). The slack makes
  * eviction unreachable while still bounding a runaway volume.
  */
@@ -120,7 +120,7 @@ export function sentryTmpfsAnnotations(volume: string, sizeBytes: number): Recor
 }
 
 /**
- * Volume-name prefix of a worktree's module dirs (`PodJobParams.moduleDirs`),
+ * Volume-name prefix of a workspace's module dirs (`PodJobParams.moduleDirs`),
  * one volume per dir: `pnpm-modules-0` for the first, and so on.
  */
 export const MODULES_VOLUME_PREFIX = 'pnpm-modules'
@@ -139,8 +139,8 @@ export const MODULES_TMPFS_BYTES = 8 * 1024 ** 3
 export const MODULES_SIZELIMIT_BYTES = MODULES_TMPFS_BYTES + 1024 ** 3
 
 /**
- * What a worktree's modules add to its ephemeral-storage REQUEST: one
- * ordinary install, which every worktree that runs `pnpm install` really
+ * What a workspace's modules add to its ephemeral-storage REQUEST: one
+ * ordinary install, which every workspace that runs `pnpm install` really
  * does hold for its whole life.
  */
 export const MODULES_REQUEST_BYTES = 2 * 1024 ** 3
@@ -173,7 +173,7 @@ export const NESTED_ENGINE_CAPS = [
 export type HostPathType = 'Directory' | 'DirectoryOrCreate' | 'File' | 'FileOrCreate' | ''
 
 /**
- * Where a worktree mount's bytes come from. The mount's container-side path
+ * Where a workspace mount's bytes come from. The mount's container-side path
  * is fixed by the mount itself, never by the source, so re-sourcing a mount
  * is invisible inside the pod — which is the whole point: the storage tier
  * a path declares (GLOBAL / NODE-LOCAL, see packages/shared/src/paths.ts)
@@ -182,7 +182,7 @@ export type HostPathType = 'Directory' | 'DirectoryOrCreate' | 'File' | 'FileOrC
  *
  *  - `hostPath` — a NODE-LOCAL path, on the node's own disk.
  *  - `pvc` — a subPath of a claim: the RWX `yaac-global` claim that carries
- *    the GLOBAL tier, which the server pod and every worktree pod mount.
+ *    the GLOBAL tier, which the server pod and every workspace pod mount.
  *  - `emptyDir` — pod-local scratch: a NODE-LOCAL path that nothing outside
  *    the pod ever opens needs no node identity at all, so it never has to
  *    survive the pod or be found again. The tmux socket dir is the standing
@@ -203,7 +203,7 @@ export type MountSource =
   | { kind: 'pvc'; claimName: string; subPath?: string }
   | { kind: 'emptyDir'; sizeLimit?: number }
 
-/** One volume mounted into the worktree container, plus where it comes from. */
+/** One volume mounted into the workspace container, plus where it comes from. */
 export interface PodMount {
   source: MountSource
   mountPath: string
@@ -240,25 +240,25 @@ function volumeSourceSpec(source: MountSource): Record<string, unknown> {
 export interface PodJobParams {
   jobName: string
   namespace: string
-  /** Applied to the Job and its pod template (project, worktree-id, …). */
+  /** Applied to the Job and its pod template (project, workspace-id, …). */
   labels: Record<string, string>
   image: string
-  /** `NAME=VALUE` entries — same shape worktree-create builds today. */
+  /** `NAME=VALUE` entries — same shape workspace-create builds today. */
   env: string[]
-  /** Worktree mounts in render order, each declaring its own source. */
+  /** Workspace mounts in render order, each declaring its own source. */
   mounts: PodMount[]
   /**
    * Scheduler reservation (the guaranteed floor). Kept well below
-   * memoryLimitBytes so many idle worktrees pack onto one node — memory is
+   * memoryLimitBytes so many idle workspaces pack onto one node — memory is
    * overcommitted the way the kernel already allows for limits. Omitting it
    * would make Kubernetes default the request up to the limit, hard-reserving
-   * the full ceiling per worktree and starving new worktrees of node memory.
+   * the full ceiling per workspace and starving new workspaces of node memory.
    */
   memoryRequestBytes: number
   /** Hard cgroup cap; exceeding it OOM-kills the container. */
   memoryLimitBytes: number
   /**
-   * CPU floor in millicores. Without a request a worktree pod is invisible to
+   * CPU floor in millicores. Without a request a workspace pod is invisible to
    * the scheduler's bin-packing — it costs a node nothing, which is
    * survivable on one local node and wrong anywhere capacity is planned or
    * autoscaled. Under contention this is also the weight: cpu is
@@ -268,7 +268,7 @@ export interface PodJobParams {
   /**
    * CPU ceiling in millicores. On a runc pod a limit would be the wrong
    * default — it lands as a CFS quota that throttles inside every 100ms
-   * period, stalling an interactive worktree on an otherwise idle node. Under
+   * period, stalling an interactive workspace on an otherwise idle node. Under
    * gVisor it does double duty, and that second job is why it is set.
    *
    * runsc sizes the sandbox's virtual CPU count from the container's cpu
@@ -276,11 +276,11 @@ export interface PodJobParams {
    * there is no quota, so it falls back to the HOST's core count and the
    * systrap platform spawns one stub process per core — every sandbox
    * carries as many stubs as the node has cores no matter how small its
-   * share. A worktree that then does syscall-heavy work (an e2e run: image
+   * share. A workspace that then does syscall-heavy work (an e2e run: image
    * builds, container starts) drives all of them at once and takes the whole
    * node with it, since e2e traps every syscall through the sentry.
    *
-   * So the ceiling bounds one worktree's blast radius rather than its
+   * So the ceiling bounds one workspace's blast radius rather than its
    * ordinary latency. Keep it well ABOVE the request — the CFS-throttling
    * concern is real for a limit near the request, but a ceiling set many
    * multiples above it is never reached by interactive work (an agent
@@ -291,23 +291,23 @@ export interface PodJobParams {
   /**
    * Node-disk floor: the container's writable layer, its logs, and its
    * emptyDir volumes (hostPath and PVC mounts are not ephemeral storage, so
-   * the repo, worktrees and caches don't count). Same overcommit shape as
-   * memory — a request far below the limit, since most worktrees never come
+   * the repo, workspaces and caches don't count). Same overcommit shape as
+   * memory — a request far below the limit, since most workspaces never come
    * near it.
    */
   ephemeralStorageRequestBytes: number
   /**
    * Ephemeral-storage ceiling; kubelet evicts the pod when the pod's total
    * usage exceeds it. Unlike cpu this limit earns its keep: node disk is
-   * incompressible and shared, and one worktree filling it takes down every
+   * incompressible and shared, and one workspace filling it takes down every
    * pod on the node, so bounding the blast radius to the offender is worth
-   * the eviction risk. Nested worktrees get the graphroot emptyDir's own
+   * the eviction risk. Nested workspaces get the graphroot emptyDir's own
    * sizeLimit added on top (see the resources block) — kubelet counts that
    * volume against this number. So do `moduleDirs`.
    */
   ephemeralStorageLimitBytes: number
   /**
-   * Pinned proxy Service ClusterIP. Worktree pods point their resolver at it
+   * Pinned proxy Service ClusterIP. Workspace pods point their resolver at it
    * (dnsConfig below) so the proxy's DNS stub answers, and their 443/80
    * egress is redirected to it by netd's per-pod DNAT rules
    * (buildEgressRedirectCecManifest) — no per-pod redirect-init/relay sidecar.
@@ -316,35 +316,35 @@ export interface PodJobParams {
   /**
    * In-pod podman: the rootful-engine graphroot, cap set, and gVisor
    * handler. False (or absent) leaves the pod spec byte-identical to one
-   * built without the field. The engine's cross-worktree image cache needs
+   * built without the field. The engine's cross-workspace image cache needs
    * nothing here — it rides the project registry (image-promoter.ts), not
    * a mount.
    */
   nested?: boolean
   /**
-   * Container paths of the worktree's module dirs (`WorkspaceSpec.moduleDirs`),
+   * Container paths of the workspace's module dirs (`WorkspaceSpec.moduleDirs`),
    * each backed by its own pod-local emptyDir promoted to a disk-backed
    * sentry tmpfs (`sentryTmpfsAnnotations`): pnpm's link and stat traffic
    * stays inside the sandbox instead of crossing the gofer, and a store
    * placed inside the root one is on the same mount as `node_modules/.pnpm`,
    * so pnpm hardlinks instead of copying. Gone with the pod, which is what
-   * "ephemeral" means here — a worktree Job never restarts in place, and a
+   * "ephemeral" means here — a workspace Job never restarts in place, and a
    * restart's init commands reinstall.
    */
   moduleDirs?: string[]
   /**
-   * postStart lifecycle hook command (argv). Worktree pods run
-   * `yaac-worktree-init` here — the kubelet holds the container's Ready
+   * postStart lifecycle hook command (argv). Workspace pods run
+   * `yaac-workspace-init` here — the kubelet holds the container's Ready
    * transition until the hook exits, so "pod Ready" implies the in-pod
    * setup (git config, tmux server, streamd) is done. A hook that exits
    * nonzero kills the container (restartPolicy Never → Job failure), which
-   * worktree-create's retry loop surfaces.
+   * workspace-create's retry loop surfaces.
    */
   postStartExec?: string[]
   /**
    * preStop lifecycle hook command (argv), run before the container is
    * signalled and bounded by the grace period: a hook that outruns it is
-   * killed, not waited on. Worktree pods checkpoint opencode's working
+   * killed, not waited on. Workspace pods checkpoint opencode's working
    * copy here.
    */
   preStopExec?: string[]
@@ -372,9 +372,9 @@ export function parseEnvEntry(entry: string): { name: string; value: string } {
 }
 
 /**
- * Build the Job manifest for one worktree: a single-pod Job
+ * Build the Job manifest for one workspace: a single-pod Job
  * (`backoffLimit: 0`, `restartPolicy: Never`) whose pod carries the
- * worktree container plus every caller-declared mount (each rendered from
+ * workspace container plus every caller-declared mount (each rendered from
  * its own source) and the proxy-CA ConfigMap.
  *
  * Pure — no cluster access — so the full spec shape is unit-testable.
@@ -421,7 +421,7 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
   }
 
   if (p.nested) {
-    // Per-worktree ROOTFUL graphroot: a disk emptyDir promoted to a
+    // Per-workspace ROOTFUL graphroot: a disk emptyDir promoted to a
     // disk-backed sentry-internal tmpfs by NESTED_GRAPHROOT_ANNOTATIONS so
     // `docker build` setcap steps work (goferfs refuses security.* xattr
     // writes) without layer data pinning pod memory. Owned by root — the
@@ -438,7 +438,7 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
   // One volume per module dir, never subPaths of one: the tmpfs hint keys
   // on a whole volume (see sentryTmpfsAnnotations). Not owned by root like
   // the graphroot — the sentry makes a tmpfs root world-writable, the way
-  // the kernel's does, so the unprivileged worktree user can install into
+  // the kernel's does, so the unprivileged workspace user can install into
   // it.
   const moduleDirs = p.moduleDirs ?? []
   let annotations: Record<string, string> = p.nested ? { ...NESTED_GRAPHROOT_ANNOTATIONS } : {}
@@ -451,12 +451,12 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
   // kubelet charges emptyDir volumes to the pod's ephemeral storage. The
   // limit clears ONE module dir's sizeLimit on top of everything else: a
   // runaway install ENOSPCs inside its own dir long before it evicts the
-  // worktree (which is fatal, backoffLimit 0), and a pod with several dirs
+  // workspace (which is fatal, backoffLimit 0), and a pod with several dirs
   // keeps its total bounded rather than multiplying the ceiling. That fits
   // a pnpm workspace, whose nested dirs hold only symlinks; several dirs
   // that are independent installs each hold a full copy (the store is on
   // another mount), and between them can reach the limit. The request
-  // counts the one install every such worktree really holds.
+  // counts the one install every such workspace really holds.
   const modulesLimit = moduleDirs.length > 0 ? MODULES_SIZELIMIT_BYTES : 0
   const modulesRequest = moduleDirs.length > 0 ? MODULES_REQUEST_BYTES : 0
 
@@ -479,10 +479,10 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
         spec: {
           restartPolicy: 'Never',
           terminationGracePeriodSeconds: p.terminationGracePeriodSeconds ?? 5,
-          // The bottom scheduling tier: a full node sheds a worktree before
-          // it sheds the proxy every worktree's network runs through.
+          // The bottom scheduling tier: a full node sheds a workspace before
+          // it sheds the proxy every workspace's network runs through.
           ...priorityClassSpec(),
-          // Worktree pods host untrusted agent workloads: no cluster API
+          // Workspace pods host untrusted agent workloads: no cluster API
           // credentials, and no service-discovery env pollution.
           automountServiceAccountToken: false,
           enableServiceLinks: false,
@@ -494,17 +494,17 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
           securityContext: {
             seccompProfile: { type: 'RuntimeDefault' },
             // Stamped rather than left to the image's own USER: the image
-            // bakes no uid, and what a worktree must run as is the install
+            // bakes no uid, and what a workspace must run as is the install
             // uid that owns its checkout.
             ...installSecurityContext(),
           },
           // Containment for in-container root (reachable via the image's
           // passwordless sudo, a feature — agents install packages
-          // mid-worktree) is the sentry: in-sandbox root is a fiction with no
+          // mid-workspace) is the sentry: in-sandbox root is a fiction with no
           // host authority. No user namespace anywhere — see runtimeClassSpec
           // for the tier policy (gvisor / gvisor-nested).
           ...runtimeClassSpec({ nested: !!p.nested }),
-          // DNS: worktree pods resolve against the proxy's UDP/53 stub, which is
+          // DNS: workspace pods resolve against the proxy's UDP/53 stub, which is
           // split-horizon — internal names (`*.svc`) are forwarded to the
           // cluster CoreDNS so the pod learns live ClusterIPs (the registry,
           // the project registry), while external names get a sinkhole IP since
@@ -516,7 +516,7 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
           ...(initContainers.length > 0 ? { initContainers } : {}),
           containers: [
             {
-              name: 'worktree',
+              name: 'workspace',
               image: p.image,
               // Content-hash tags are immutable — a tag hit in the node's
               // image store is always the right bytes.
@@ -555,7 +555,7 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
                   // kubelet charges a pod's emptyDir volumes to its
                   // ephemeral-storage limit, so a nested pod's limit must
                   // clear the graphroot volume's own sizeLimit or the first
-                  // real `docker build` evicts the worktree — which is fatal
+                  // real `docker build` evicts the workspace — which is fatal
                   // (backoffLimit 0). Adding it here rather than at the call
                   // site keeps that accounting next to the constant.
                   'ephemeral-storage': String(
@@ -582,7 +582,7 @@ const NODE_ROOT_MOUNT = '/node'
  * hook (an opencode checkpoint — a SQLite backup plus a copy) rather than
  * the few seconds a bare SIGTERM needs. The detached teardown's Job
  * delete waits longer than this before it removes the pod's File-mount
- * sources (worktrees/teardown.ts).
+ * sources (workspaces/teardown.ts).
  */
 export const PRE_STOP_GRACE_SECONDS = 60
 
@@ -674,7 +674,7 @@ export function processIdentity(): InstallIdentity {
 
 /**
  * securityContext for every yaac pod that runs as the install's identity:
- * the server, the proxy, worktree pods, the install's probe pods.
+ * the server, the proxy, workspace pods, the install's probe pods.
  *
  * Its two halves answer different questions.
  *
@@ -689,7 +689,7 @@ export function processIdentity(): InstallIdentity {
  * machine that ran install means nothing to it. Install stamps it on the
  * server Deployment, so inside the cluster the default — this process's own
  * identity — is always the install's, and every path the server pre-creates
- * for a worktree lands owned by it. Host-side callers (`cluster check`, the
+ * for a workspace lands owned by it. Host-side callers (`cluster check`, the
  * e2e harness) pass the one the live Deployment records instead.
  *
  * **The supplementary group 0 is the IMAGE's.** yaac images bake no uid and
@@ -700,7 +700,7 @@ export function processIdentity(): InstallIdentity {
  * landing in the install's own group.
  *
  * `fsGroup` is deliberately absent: it applies only to ownership-managed
- * volumes (emptyDir), never to hostPath, and the one emptyDir a worktree pod
+ * volumes (emptyDir), never to hostPath, and the one emptyDir a workspace pod
  * has that matters is the nested engine's root-owned graphroot. The proxy
  * Deployment adds `fsGroup: runAsGroup` at its call site, its HOME being an
  * emptyDir the kubelet has to hand over; nothing else here has a volume

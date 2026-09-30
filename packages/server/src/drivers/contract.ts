@@ -12,19 +12,19 @@ import type {
   RefreshedToolCredentials,
   SecretProxyRule,
   ToolCredentialBundle,
-  WorktreeChanges,
-  WorktreeDeathCause,
+  WorkspaceChanges,
+  WorkspaceDeathCause,
   YaacConfig,
 } from '@yaac/shared/types'
 
 /**
- * The `WorktreeDriver` contract, and the vocabulary of runtime observation
+ * The `WorkspaceDriver` contract, and the vocabulary of runtime observation
  * it answers in — what the substrate can see right now, and nothing that
  * survives it (docs/layered-server.md).
  *
  * The durable half of a listing (a title, a pin, the recorded creation
  * time, the sessions and their opening messages) lives in `#db`;
- * joining the two is how a worktree list is produced. Keeping the split in
+ * joining the two is how a workspace list is produced. Keeping the split in
  * the types is what keeps the join honest: nothing here can carry a fact a
  * restart of the substrate would lose track of.
  *
@@ -56,17 +56,17 @@ export interface ProjectRef {
  *  than reading as empty. */
 export interface NodeLocalLiveSet {
   projectIds: ReadonlySet<string>
-  worktreeIds: ReadonlySet<string>
+  workspaceIds: ReadonlySet<string>
 }
 
 /**
- * A worktree as the substrate can see it — everything a resolver needs and
+ * A workspace as the substrate can see it — everything a resolver needs and
  * nothing db keeps. The durable half (a title, a pin, the recorded
  * creation time, the conversations) never appears here.
  *
- * Distinct from `WorktreeRuntimeReport` (the machinery's, in
+ * Distinct from `WorkspaceRuntimeReport` (the machinery's, in
  * `#runtime/status`), which is what a whole report carries: this is the
- * answer to "which worktree does this id name", so it names the runtime
+ * answer to "which workspace does this id name", so it names the runtime
  * handle an exec addresses and says nothing about liveness.
  */
 export interface RuntimeHandle {
@@ -94,7 +94,7 @@ export interface RuntimeHandle {
   state: string
   labels: Record<string, string>
   createdAtMs: number
-  /** A warmed spare, not a user's worktree. */
+  /** A warmed spare, not a user's workspace. */
   prewarmed: boolean
   /** On its way out — neither active nor stale. It renders as a
    *  "terminating…" row and is already being torn down, so it belongs in
@@ -106,7 +106,7 @@ export interface RuntimeHandle {
    * at reap time, the last moment the evidence exists, because its own
    * teardown destroys the runtime that carries it.
    */
-  deathCause: WorktreeDeathCause
+  deathCause: WorkspaceDeathCause
 }
 
 export interface AgentLiveness {
@@ -198,7 +198,7 @@ export interface WorkspaceRegistration {
 /**
  * One HTTPS token and the projects entitled to it. Scoped by project rather
  * than by URL: a credential is assigned to projects (docs/git-credentials.md),
- * and the egress path hands it only to a worktree of one of them.
+ * and the egress path hands it only to a workspace of one of them.
  */
 export interface HttpsCredentialEntry {
   token: string
@@ -213,11 +213,11 @@ export interface HttpsCredentialEntry {
  * The key material itself, because there is no file to name: a key is a
  * sealed row the server generated, and the only copies outside the database
  * are the ones a runtime puts somewhere a process can use them — the proxy's
- * in-memory ssh-agent, or a per-worktree agent under a driver with no proxy.
+ * in-memory ssh-agent, or a per-workspace agent under a driver with no proxy.
  */
 export interface SshCredentialEntry {
   privateKey: string
-  /** The public half, one OpenSSH line — what a worktree's agent may offer. */
+  /** The public half, one OpenSSH line — what a workspace's agent may offer. */
   publicKey: string
   projects: Array<{ slug: string; host: string; knownHostsEntry: string }>
 }
@@ -335,7 +335,7 @@ export interface WorkspaceSubstrate {
  * container `ssh-add -` reads), because there is no path to name: a key
  * lives sealed in the database and reaches a process only where one is
  * about to use it. What the driver does with it is the driver's — the
- * containerless one loads it into a per-worktree ssh-agent, so the
+ * containerless one loads it into a per-workspace ssh-agent, so the
  * workspace can sign with the key without ever holding a copy of it.
  */
 export type WorkspaceGitCredential =
@@ -429,7 +429,7 @@ export interface WorkspaceSpec {
  * probes branch on it. `verifyAgentWindowAlive` reports "that agent died on
  * launch" only when the probe reached the workspace and found no such
  * window, and the stale reaper's tmux probe may only conclude `dead` on the
- * same evidence — a cluster blip read as death reaps a live worktree, Job
+ * same evidence — a cluster blip read as death reaps a live workspace, Job
  * and all. Every driver must therefore distinguish the two; a driver that
  * cannot tell them apart must report the transport failure, never this.
  */
@@ -658,8 +658,8 @@ export type { DriverKind }
  * single tmux server.
  *
  * Everything here is a path INSIDE the workspace's world. Nothing on it is
- * a host path the server itself should read — what a worktree keeps on disk
- * is `#domain/worktrees`, and a driver that happens to make the two equal
+ * a host path the server itself should read — what a workspace keeps on disk
+ * is `#domain/workspaces`, and a driver that happens to make the two equal
  * (as a host-process driver does) does not make it the caller's business.
  */
 export interface WorkspacePaths {
@@ -695,7 +695,7 @@ export interface WorkspacePaths {
  * to prewarm, WHICH windows to open are decisions and live in `#domain`;
  * how any of that becomes a running workspace is here.
  */
-export interface WorktreeDriver {
+export interface WorkspaceDriver {
   /** Which substrate this is — see `DriverKind` for what a caller may do
    *  with the answer. */
   readonly kind: DriverKind
@@ -745,19 +745,19 @@ export interface WorktreeDriver {
    *  tears its workspace's forwards down. */
   release(): void
 
-  /** Locate one workspace by its EXACT worktree id — prefix expansion is
+  /** Locate one workspace by its EXACT workspace id — prefix expansion is
    *  domain's, over rows, and unit names are this runtime's own business.
-   *  An unclaimed spare is not a worktree and never matches. `preferCache`
+   *  An unclaimed spare is not a workspace and never matches. `preferCache`
    *  answers from a push-fed view when the runtime has a trustworthy one. */
-  find(worktreeId: string, opts?: { preferCache?: boolean }): Promise<RuntimeHandle | undefined>
+  find(workspaceId: string, opts?: { preferCache?: boolean }): Promise<RuntimeHandle | undefined>
   /**
-   * Locate what a stop should address, by exact worktree id, including a
+   * Locate what a stop should address, by exact workspace id, including a
    * workspace whose unit outlived its pod — a stop must still reach a
    * runtime that is half gone, which is exactly the case a plain `find`
    * reports as absent. An unclaimed spare matches only with `spares`: a
    * failed warm tears down its own, and nothing else may stop one.
    */
-  findForTeardown(worktreeId: string, opts?: { spares?: boolean }): Promise<TeardownTarget | undefined>
+  findForTeardown(workspaceId: string, opts?: { spares?: boolean }): Promise<TeardownTarget | undefined>
   /**
    * Every workspace the runtime is holding, optionally one project's,
    * spares included.
@@ -780,7 +780,7 @@ export interface WorktreeDriver {
    *  Rejects with `WorkspaceExecError` when the read ran inside the
    *  workspace and failed; `CHANGES_BASE_UNRESOLVED` is the code that says
    *  the base ref yielded no fork point there. */
-  changes(jobName: string, base?: string, defaultBase?: string): Promise<WorktreeChanges>
+  changes(jobName: string, base?: string, defaultBase?: string): Promise<WorkspaceChanges>
   /** A fresh view for one reconcile pass. `resync` marks the periodic
    *  run-everything pass; a direct caller outside a pass takes its own. */
   snapshot(resync?: boolean): RuntimeSnapshot
@@ -1194,8 +1194,8 @@ export interface WorktreeDriver {
   /**
    * Collect the NODE-LOCAL leftovers of what is gone, on every node the
    * runtime has: a whole per-project tree whose project id is not in
-   * `live.projectIds`, and a per-worktree working copy whose worktree is not
-   * in `live.worktreeIds`. Keyed on ids rather than on what a removal
+   * `live.projectIds`, and a per-workspace working copy whose workspace is not
+   * in `live.workspaceIds`. Keyed on ids rather than on what a removal
    * managed to delete, so it also collects every failed removal. The global
    * half of the same sweep is the caller's; this is the half that lives
    * where the caller's filesystem may not reach. Throttled by the runtime

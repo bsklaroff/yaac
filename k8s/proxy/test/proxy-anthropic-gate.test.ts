@@ -35,14 +35,14 @@ function headerValue(
 }
 
 function buildAnthropicRules(
-  worktreeTool: string | undefined,
+  workspaceTool: string | undefined,
   creds: ClaudeCreds | null,
   reqHeaders: http.IncomingHttpHeaders,
 ): InjectionRule[] {
   const rules: InjectionRule[] = []
-  // Tool gate: only a worktree registered as tool=claude may spend the
-  // claude credential (mirrors `worktreeTool.get(worktreeId) === 'claude'`).
-  if (worktreeTool !== 'claude') return rules
+  // Tool gate: only a workspace registered as tool=claude may spend the
+  // claude credential (mirrors `workspaceTool.get(workspaceId) === 'claude'`).
+  if (workspaceTool !== 'claude') return rules
   const incomingApiKey = headerValue(reqHeaders, 'x-api-key')
   const incomingAuth = headerValue(reqHeaders, 'authorization')
   if (creds && creds.kind === 'api-key' && incomingApiKey === PLACEHOLDER_API_KEY) {
@@ -143,20 +143,20 @@ describe('Anthropic credential injection gating', () => {
     })
   })
 
-  describe('worktree tool gating', () => {
+  describe('workspace tool gating', () => {
     const creds: ClaudeCreds = { kind: 'api-key', apiKey: 'sk-ant-real' }
 
-    it('does not inject for a codex worktree, even with the placeholder', () => {
+    it('does not inject for a codex workspace, even with the placeholder', () => {
       const rules = buildAnthropicRules('codex', creds, { 'x-api-key': PLACEHOLDER_API_KEY })
       expect(rules).toEqual([])
     })
 
-    it('does not inject for an opencode worktree', () => {
+    it('does not inject for an opencode workspace', () => {
       const rules = buildAnthropicRules('opencode', creds, { 'x-api-key': PLACEHOLDER_API_KEY })
       expect(rules).toEqual([])
     })
 
-    it('does not inject when the worktree has no registered tool', () => {
+    it('does not inject when the workspace has no registered tool', () => {
       const rules = buildAnthropicRules(undefined, creds, { 'x-api-key': PLACEHOLDER_API_KEY })
       expect(rules).toEqual([])
     })

@@ -10,7 +10,7 @@ import { useOpenerFocus } from '#lib/useOpenerFocus'
  * action and close on success. Pass `busy` to disable the buttons.
  *
  * The confirm button takes initial focus, so a bare Enter confirms —
- * keyboard flows like Alt+D Enter (delete worktree) complete without the
+ * keyboard flows like Alt+D Enter (delete workspace) complete without the
  * mouse. Esc still cancels, and Tab reaches Cancel.
  *
  * Pass `confirmText` to require typing that exact text before confirm

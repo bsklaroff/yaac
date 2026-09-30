@@ -1,5 +1,5 @@
 /*
- * Verifies the stopped-worktrees overlay in real Chromium (1400x900): a
+ * Verifies the stopped-workspaces overlay in real Chromium (1400x900): a
  * loaded conversation must stay inside the overlay.
  *
  * The detail pane is a flex item beside the fixed-width list, and a
@@ -23,7 +23,7 @@
  *
  * The conversation is stubbed at the two routes the pane reads — the stopped
  * listing and one conversation's transcript — so the script needs no agent
- * turn, no credentials and no stopped worktree of its own: the events are
+ * turn, no credentials and no stopped workspace of its own: the events are
  * exactly the ACP events a claude conversation produces, and everything from
  * the fetch down is the real app.
  *
@@ -122,7 +122,7 @@ const EVENTS = [
 ]
 
 const STOPPED = [{
-  worktreeId: 'w-overflow-probe',
+  workspaceId: 'w-overflow-probe',
   projectSlug: 'probe',
   tool: 'claude',
   createdAt: '2026-01-01 00:00:00',
@@ -160,14 +160,14 @@ async function run({ name, viewport }) {
   const page = await ctx.newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
 
-  await page.route('**/worktree/list-stopped*', (route) =>
+  await page.route('**/workspace/list-stopped*', (route) =>
     route.fulfill({ contentType: 'application/json', body: JSON.stringify(STOPPED) }))
-  await page.route('**/worktree/*/agent-sessions/*/transcript*', (route) =>
+  await page.route('**/workspace/*/agent-sessions/*/transcript*', (route) =>
     route.fulfill({ contentType: 'application/json', body: JSON.stringify({ events: EVENTS }) }))
 
   await page.goto(`${origin}/`)
 
-  await page.locator('text=Stopped worktrees').first().click({ timeout: 15_000 })
+  await page.locator('text=Stopped workspaces').first().click({ timeout: 15_000 })
   const popup = page.locator('[role="dialog"]').last()
   await popup.waitFor({ state: 'visible', timeout: 10_000 })
   // The transcript arrives on its own fetch; wait for the conversation itself.

@@ -21,11 +21,11 @@ import { serverLog } from '#log'
 import { testEnv } from '@yaac/shared/env'
 
 /**
- * Take whatever in-worktree `yaac-mama` requests the proxy is holding.
+ * Take whatever in-workspace `yaac-mama` requests the proxy is holding.
  *
  * `attachIfRunning`, never `ensureRunning`: this must not bootstrap the
- * proxy, which deploys lazily on the first worktree create. No proxy means
- * no worktrees means nothing queued, so an absent proxy is an empty queue
+ * proxy, which deploys lazily on the first workspace create. No proxy means
+ * no workspaces means nothing queued, so an absent proxy is an empty queue
  * rather than a reason to stand one up.
  */
 export async function drainPendingMamaRequests(): Promise<PendingMamaRequest[]> {
@@ -103,7 +103,7 @@ export class ProxyClient {
   private deployVerifiedCurrent = false
   private authSecret: string | null = null
   // In-flight ensureRunning() promise used as a mutex so concurrent
-  // callers (e.g. two parallel worktree creates) don't race into two
+  // callers (e.g. two parallel workspace creates) don't race into two
   // parallel bootstrap passes.
   private ensureInflight: Promise<void> | null = null
 
@@ -124,7 +124,7 @@ export class ProxyClient {
   }
 
   /**
-   * CA-trust (and prompt-suppression) env for worktree containers. No
+   * CA-trust (and prompt-suppression) env for workspace containers. No
    * routing vars: egress interception is transparent — the pod's
    * redirect init container DNATs outbound 443/80 to the proxy at the
    * network layer, so `HTTP(S)_PROXY`/`NO_PROXY` cooperation is gone and
@@ -172,9 +172,9 @@ export class ProxyClient {
   }
 
   /**
-   * Drain the proxy's queued in-worktree `yaac-mama` requests. A drain is a
+   * Drain the proxy's queued in-workspace `yaac-mama` requests. A drain is a
    * claim — the proxy hands each request out exactly once and holds the
-   * worktree's HTTP response open until `postMamaResults` (or its TTL).
+   * workspace's HTTP response open until `postMamaResults` (or its TTL).
    */
   async fetchPendingMamaRequests(): Promise<PendingMamaRequest[]> {
     const res = await tunnelFetch(`${await this.controlBase()}/cmd/pending`, {
@@ -280,7 +280,7 @@ export class ProxyClient {
     // needed until the next process.
     this.deployVerifiedCurrent = true
 
-    // Distribute the proxy's CA to worktree pods via the ConfigMap: the bare
+    // Distribute the proxy's CA to workspace pods via the ConfigMap: the bare
     // CA (additive trust) plus the combined bundle (roots + CA) the
     // own-bundle tools point CURL_CA_BUNDLE & friends at. Cheap no-op when
     // both stored values already match.

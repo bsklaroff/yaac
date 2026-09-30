@@ -21,7 +21,7 @@
  * `yaac server restart` first, or you are measuring the frontend as it was.
  *
  * Needs a running `yaac server` with at least one project and one live
- * worktree (the pane's title and find boxes are only reachable with one).
+ * workspace (the pane's title and find boxes are only reachable with one).
  *
  * Run: node test-playwright-scripts/mobile-input-zoom-test.js
  * (set SCREENSHOT_DIR to capture each stop; defaults to /tmp/yaac-shots,
@@ -81,7 +81,7 @@ const USABLE = 48
  * row would still hide.
  */
 const NOT_WALKED = [
-  'BranchPicker inside the new-worktree sheet (needs the picker opened)',
+  'BranchPicker inside the new-workspace sheet (needs the picker opened)',
   'the badge popovers (unforwarded ports, blocked hosts, usage, image builds)',
   "FileEditor's expanded-editor dialog",
 ]
@@ -161,7 +161,7 @@ try {
 
   const shell = page.locator('#root > div > div > div')
   const projectsLayer = shell.locator('> div').nth(0)
-  const worktreesLayer = shell.locator('> div').nth(1)
+  const workspacesLayer = shell.locator('> div').nth(1)
   const paneLayer = shell.locator('> div').nth(2)
   // Twice, deliberately: one press closes a menu nested in a dialog only as far
   // as the dialog, and a popup left open swallows the *next* stop's tap — which
@@ -203,33 +203,33 @@ try {
     unreached.push('settings', ...SECTIONS.map(sectionStop))
   }
 
-  // ---- worktrees screen: project menu, skills, stopped, new worktree ----
+  // ---- workspaces screen: project menu, skills, stopped, new workspace ----
   await projectsLayer.locator('button:has(> span.truncate)').first().tap()
   await page.waitForTimeout(1500)
-  await sweep('worktrees')
+  await sweep('workspaces')
   // The remove-project dialog's type-to-confirm box (ConfirmDialog's input).
-  if (await tapIfPresent(worktreesLayer.locator('button:has-text("yaac")').first())) {
+  if (await tapIfPresent(workspacesLayer.locator('button:has-text("yaac")').first())) {
     await stop('remove-project', page.getByText('Remove project', { exact: true }))
     await escape()
   } else {
     unreached.push('project-menu', 'remove-project')
   }
-  if (await stop('skills', worktreesLayer.getByLabel('Skills'))) await escape()
-  // Only rendered once the project has a stopped worktree — absent is a fact
+  if (await stop('skills', workspacesLayer.getByLabel('Skills'))) await escape()
+  // Only rendered once the project has a stopped workspace — absent is a fact
   // about the environment, and the hole list says so either way.
-  if (await stop('stopped', worktreesLayer.getByText('Stopped worktrees', { exact: true }))) await escape()
-  if (await stop('new-worktree', worktreesLayer.getByTitle('New worktree'))) await escape()
+  if (await stop('stopped', workspacesLayer.getByText('Stopped workspaces', { exact: true }))) await escape()
+  if (await stop('new-workspace', workspacesLayer.getByTitle('New workspace'))) await escape()
 
   // ---- the pane: its title rename, and the changes pane's find box ----
   await escape()
-  const row = worktreesLayer
-    .locator('.group.relative.mx-2:has([aria-label="Stop worktree"]) > button')
-  const hasWorktree = await tapIfPresent(row, 20_000)
-  check('the walk reached a live worktree (the pane controls need one)', hasWorktree)
-  if (hasWorktree) {
+  const row = workspacesLayer
+    .locator('.group.relative.mx-2:has([aria-label="Stop workspace"]) > button')
+  const hasWorkspace = await tapIfPresent(row, 20_000)
+  check('the walk reached a live workspace (the pane controls need one)', hasWorkspace)
+  if (hasWorkspace) {
     await page.waitForTimeout(4000)
     await sweep('pane')
-    await stop('pane-rename', paneLayer.getByLabel('Rename worktree'))
+    await stop('pane-rename', paneLayer.getByLabel('Rename workspace'))
     await escape()
     if (await tapIfPresent(paneLayer.getByLabel('More pane actions'))) {
       // Swept by hand rather than through `stop`: the diff has to load before

@@ -11,7 +11,7 @@ import {
 import { cloneRepo, createCheckout, fetchOrigin } from '#domain/git'
 import { execFileAsync } from '#lib/shell'
 import { git } from '@yaac/test-utils/git'
-import { WORKTREE_INIT_SCRIPT, worktreeBinDir } from '#domain/worktrees/worktree-bin'
+import { WORKSPACE_INIT_SCRIPT, workspaceBinDir } from '#domain/workspaces/workspace-bin'
 import { PROXY_CA_BUNDLE_PATH } from '#drivers/k8s/egress/proxy-client'
 import { AGENT_TOOLS } from '@yaac/shared/types'
 
@@ -158,13 +158,13 @@ describe('buildWindowsExec', () => {
   })
 })
 
-// The pod-side half of session setup lives in the yaac-worktree-init script
+// The pod-side half of session setup lives in the yaac-workspace-init script
 // (the postStart hook). Pin the contracts the server relies on so a script
 // edit can't silently drift from the TypeScript side.
-describe('yaac-worktree-init script', () => {
-  const scriptPath = path.join(worktreeBinDir(), WORKTREE_INIT_SCRIPT)
+describe('yaac-workspace-init script', () => {
+  const scriptPath = path.join(workspaceBinDir(), WORKSPACE_INIT_SCRIPT)
 
-  it('ships in worktree-bin and is executable', async () => {
+  it('ships in workspace-bin and is executable', async () => {
     const st = await fs.stat(scriptPath)
     expect(st.isFile()).toBe(true)
     expect(st.mode & 0o111).not.toBe(0)
@@ -199,12 +199,12 @@ describe('yaac-worktree-init script', () => {
   it('never does git work from /workspace (the checkout races the hook)', async () => {
     const body = await fs.readFile(scriptPath, 'utf8')
     // The hook cd's to / before any git command: /workspace holds a
-    // half-provisioned worktree whose .git file still names the HOST admin
+    // half-provisioned workspace whose .git file still names the HOST admin
     // path, and git's cwd repository discovery treats that as fatal even
     // for `config --global`.
     expect(body.indexOf('\ncd /\n')).toBeGreaterThan(-1)
     expect(body.indexOf('\ncd /\n')).toBeLessThan(body.indexOf('git config --global'))
-    // The tmux session pins its start directory back to the worktree so
+    // The tmux session pins its start directory back to the workspace so
     // the respawned agent and later windows run there.
     expect(body).toMatch(/new-session[^\n]* -c \/workspace/)
   })

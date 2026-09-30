@@ -1,0 +1,95 @@
+#!/bin/sh
+# yaac agent-session reporter: names the conversation an agent is running on
+# its tmux pane, as the pane option @yaac-session, where the server's status
+# watcher is subscribed over tmux control mode — the same transport
+# yaac-agent-report uses for the model and permission mode. tmux pushes the
+# value the moment it is set, and it dies with the pane, so the server always
+# knows which conversation each live pane holds.
+#
+# $1 is the tool's home (~/.claude, $CODEX_HOME, ~/.pi) and $2 the tool, which
+# is also that home's name under the project directory. With no more
+# arguments the conversation is read from a hook payload on stdin: claude's
+# and codex's SessionStart names it, their SessionEnd ends it. A third
+# argument is the conversation id in hand and $4 its transcript, or `--end`
+# when it ended, as pi's extension and opencode's plugin pass them. (A resume
+# launch names its conversation on the pane itself, as tmux starts it.)
+#
+# Reports nest, because an agent can run another inside its own pane (a
+# `claude -p` from a Bash tool), which inherits the pane. A start saves the
+# conversation it displaces in @yaac-session-under, and an end — honored
+# only for the conversation the pane names — puts that one back, so the pane
+# ends up naming its own agent's conversation again, or nothing once that
+# quits too (the pane — a shell, say — outlives it). One level deep: an agent
+# nested in a nested one hands the pane back to its parent, not further.
+#
+# The value is `<tool>|<id>|<transcript>`, the transcript RELATIVE TO THE
+# PROJECT DIRECTORY, because the payload's path is the workspace's own
+# (/home/yaac/.claude/... in a pod, <workspace home>/.claude/... on a host) and
+# the server reads the same file through the shared project dir, where that
+# prefix does not exist. Swapping the home for its project-relative name is
+# the whole translation.
+#
+# Staged per workspace: read-only File mount at /usr/local/bin under the k8s
+# driver, a symlink in the workspace's own bin dir under containerless. Both
+# put it on the agent's PATH, which is why it is invoked by bare name.
+#
+# Prints NOTHING (claude hands a hook's stdout to the model) and always exits
+# 0: a broken report must never take the agent down with it.
+HOME_DIR="$1"
+TOOL="$2"
+END=''
+[ -n "$TOOL" ] || exit 0
+if [ $# -ge 3 ]; then
+  SID="$3"
+  TRANSCRIPT="${4:-}"
+  [ "$TRANSCRIPT" != --end ] || { END=1; TRANSCRIPT=''; }
+else
+  INPUT=$(cat)
+  TRANSCRIPT=$(printf '%s' "$INPUT" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  SID=$(printf '%s' "$INPUT" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  # codex also fires SessionStart, on the same pane, for the throwaway
+  # session it generates a conversation's title in: one with no rollout, whose
+  # id `codex resume` refuses (codex-cli 0.156.1). Its own conversations
+  # always name their rollout, so a codex report without one is dropped —
+  # kept, it would take the pane from the real conversation.
+  [ "$TOOL" != codex ] || [ -n "$TRANSCRIPT" ] || exit 0
+  printf '%s' "$INPUT" | grep -q '"hook_event_name"[[:space:]]*:[[:space:]]*"SessionEnd"' && END=1
+fi
+[ -n "$SID" ] || exit 0
+[ -n "$HOME_DIR" ] || TRANSCRIPT=''
+[ -n "${TMUX_PANE:-}" ] || exit 0
+# claude runs with $TMUX hidden and the value kept as $YAAC_TMUX (see
+# buildAgentCmd); $TMUX is `<socket>,<pid>,<session>`.
+SERVER="${TMUX:-${YAAC_TMUX:-}}"
+[ -n "$SERVER" ] || exit 0
+pane() { tmux -S "${SERVER%%,*}" "$@" 2>/dev/null; }
+CURRENT=$(pane show-options -pqv -t "$TMUX_PANE" @yaac-session)
+if [ -n "$END" ]; then
+  case "$CURRENT" in "$TOOL|$SID|"*) ;; *) exit 0 ;; esac
+  pane set-option -p -t "$TMUX_PANE" @yaac-session \
+    "$(pane show-options -pqv -t "$TMUX_PANE" @yaac-session-under)" >/dev/null
+  pane set-option -pu -t "$TMUX_PANE" @yaac-session-under >/dev/null
+  exit 0
+fi
+# The home may be reached through a symlink — under containerless the tool
+# home in the workspace's private HOME is a link to the project's shared one —
+# and a tool that resolves its own paths then reports a transcript under the
+# physical directory instead. Try both. `pwd -P` rather than `readlink -f`,
+# which macOS lacked until recently and this driver runs there; it also
+# covers macOS's own /var -> /private/var aliasing of a data dir.
+PHYS=$(cd "$HOME_DIR" 2>/dev/null && pwd -P)
+# A path outside this home has no project-relative form, and one the payload
+# omitted has none yet. Either way it is left empty — the conversation is
+# still real.
+case "$TRANSCRIPT" in
+  "") REL='' ;;
+  "$HOME_DIR"/*) REL="$TOOL/${TRANSCRIPT#"$HOME_DIR"/}" ;;
+  "${PHYS:-$HOME_DIR}"/*) REL="$TOOL/${TRANSCRIPT#"${PHYS:-$HOME_DIR}"/}" ;;
+  *) REL='' ;;
+esac
+case "$CURRENT" in
+  ""|"$TOOL|$SID|"*) ;;
+  *) pane set-option -p -t "$TMUX_PANE" @yaac-session-under "$CURRENT" >/dev/null ;;
+esac
+pane set-option -p -t "$TMUX_PANE" @yaac-session "$TOOL|$SID|$REL" >/dev/null
+exit 0

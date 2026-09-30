@@ -1,0 +1,322 @@
+#!/bin/sh
+# yaac-mama — ask the yaac server that runs this workspace to do something.
+#
+# Usage:
+#   yaac-mama list
+#   yaac-mama create [opts] "<prompt>"
+#   yaac-mama queue --parent-workspace W [opts] "<prompt>"
+#   yaac-mama edit-queued [--parent-workspace W] [opts] <queued> ["<prompt>"]
+#     where opts: [--tool T] [--model M] [--permission-mode P] [--ui-mode U]
+#                 [--branch B] [--group G] [--title T]
+#   yaac-mama rename [<workspace>] "<title>"
+#   yaac-mama stop [<workspace>]
+#   yaac-mama group create "<name>"
+#   yaac-mama group move <workspace> ["<group>"]
+#   yaac-mama models
+#
+# A strict subset of the `yaac` CLI: see what this project is running, start
+# another workspace, file workspaces into named groups, and stop one. Stopping is
+# in reach because it is reversible — the checkout and the conversation
+# survive it. Nothing here deletes, restarts or reconfigures anything; that
+# stays with the user.
+#
+# One request shape for both substrates — a JSON envelope {command, args,
+# body} — because they differ only in where it goes and how the caller is
+# identified:
+#
+#   - Containerless ($YAAC_MAMA_URL set): the workspace is a host process
+#     beside the server, so it POSTs to the server's own /workspace/mama and
+#     proves which workspace it is with $YAAC_MAMA_TOKEN.
+#   - Containers (no $YAAC_MAMA_URL): the pod cannot dial the host, so it
+#     POSTs to the egress proxy's magic host, which holds the request until
+#     the server drains it. Attribution is by source pod IP — no token and no
+#     config, which is why nothing is set for this case. Keep the host in
+#     sync with k8s/proxy/mama-queue.ts MAMA_MAGIC_HOST.
+#
+# Both end at the same server-side handler, which owns what the commands
+# mean; this script only shapes the request. --max-time outlives the proxy's
+# 120s queue TTL (MAMA_TTL_MS) so its self-describing 504 surfaces instead of
+# a curl timeout. Keep it above that constant whenever either moves.
+set -u
+
+MAX_TIME=150
+
+usage() {
+  cat <<'EOF'
+yaac-mama — ask the yaac server running this workspace to do something.
+
+Usage:
+  yaac-mama list                                   # workspaces + groups here
+  yaac-mama create [opts] "<prompt>"               # start another workspace
+  yaac-mama queue --parent-workspace <id> [opts] "<prompt>"
+                                                   # start one when <id> stops
+  yaac-mama edit-queued [opts] <queued> ["<prompt>"]
+                                                   # change a queued one
+  yaac-mama rename [<workspace>] "<title>"          # retitle (default: yourself)
+  yaac-mama stop [<workspace>]                      # stop it (default: yourself)
+  yaac-mama group create "<name>"                  # make an empty group
+  yaac-mama group move <workspace> ["<group>"]      # omit the group to ungroup
+  yaac-mama models                                 # tools/models available
+  yaac-mama --help
+
+Options for create, queue and edit-queued:
+  --tool <tool>    agent for the new workspace: claude, codex, opencode, or pi.
+                   Omitted, inherits this workspace's tool, then the project
+                   default, then claude. Must be logged in on the host (see
+                   `yaac-mama models`) or the new agent can't authenticate.
+  --model <model>  model id the agent launches with — any id the tool accepts:
+                   a model id/alias for claude/codex (e.g. opus), provider/model
+                   for opencode and pi (e.g. anthropic/claude-opus-4-8).
+  --permission-mode <mode>
+                   how much the new agent may do before it asks: bypass, auto,
+                   accept-edits, manual, then plan or read-only (codex's
+                   strictest), most permissive first.
+                   Omitted, it inherits this workspace's own. It can never be
+                   more permissive than this workspace's: asking for more is an
+                   error. Not every tool has every mode (pi has only bypass).
+  --ui-mode <mode> how the agent is driven: tui (its terminal UI, the default)
+                   or acp (a chat pane in the yaac webapp).
+  --branch <name>  reference branch on origin for the new workspace. Omitted,
+                   the project's default branch.
+  --group <name>   file the new workspace in this group, creating it if needed.
+  --title <title>  the sidebar title; omitted, it is titled from its prompt.
+
+queue also takes, and requires:
+  --parent-workspace <id>
+                   what the queued workspace waits on: a workspace in this
+                   project ("$YAAC_WORKSPACE_ID" for this one), or a queued
+                   workspace's id (to chain after it). Options it omits
+                   default to that parent's settings; the permission mode is
+                   still never more permissive than this workspace's own.
+
+edit-queued changes the queued workspace <queued> names: each option given
+replaces its setting (--parent-workspace re-parents it), and a prompt given
+replaces its prompt. A queued workspace more permissive than this one is
+refused until the edit names a permission mode at or below this workspace's,
+or a new --tool (whose permission mode is then resolved at or below it).
+
+queue saves a workspace to start when its parent is STOPPED — by
+`yaac-mama stop` or by the user. A parent that crashes or exits does not
+start it; it waits for the user. It forks from the latest origin tip of the
+parent's reference branch.
+
+create prints the new workspace's id and queue the queued workspace's id;
+a create provisions in the background (watch it in the yaac webapp).
+Everything else prints a short report.
+
+stop ends a workspace's running container/tmux server and keeps its checkout,
+title, group and conversation, so the user can restart it. Stopping YOURSELF
+tears down what this command's own reply travels over, so the confirmation
+may never print — the workspace ending is the confirmation. Do everything that
+must outlive the workspace (commit, push, report) before you run it.
+EOF
+}
+
+# JSON-encode one string as a quoted scalar. Byte-oriented and locale-proof:
+# the shell hands awk raw bytes, and only the seven characters JSON requires
+# are rewritten, so any UTF-8 in a prompt or group name passes through whole.
+json_string() {
+  awk 'BEGIN{
+    s = ARGV[1]
+    gsub(/\\/, "\\\\", s)
+    gsub(/"/, "\\\"", s)
+    gsub(/\n/, "\\n", s)
+    gsub(/\r/, "\\r", s)
+    gsub(/\t/, "\\t", s)
+    printf "%s", "\"" s "\""
+  }' "$1"
+}
+
+# Unwrap {"output":"…"} and undo the escaping above, so what the server
+# rendered is what lands on stdout.
+print_output() {
+  text=$(printf '%s' "$1" \
+    | sed -n 's/^{"output":"\(.*\)"}$/\1/p' \
+    | sed 's/\\n/\
+/g; s/\\t/	/g; s/\\r//g; s/\\"/"/g; s/\\\\/\\/g')
+  # Command substitution ate any trailing newlines, so exactly one goes back
+  # on — a caller doing `id=$(yaac-mama create …)` gets a clean value, and a
+  # caller reading a table gets it terminated.
+  printf '%s\n' "$text"
+}
+
+# Pull the message out of {"error":"…"}, for a refusal the server described.
+error_text() {
+  printf '%s' "$1" | sed -n 's/.*"error":"\(.*\)"}$/\1/p' | sed 's/\\"/"/g; s/\\\\/\\/g'
+}
+
+# Run one command. $1 command, $2 body, then alternating arg name/value pairs
+# (a pair with an empty value is omitted, so an unset option is absent rather
+# than blank).
+run() {
+  cmd=$1; body=$2; shift 2
+  args=""
+  sep=""
+  while [ $# -gt 1 ]; do
+    if [ -n "$2" ]; then
+      args="$args$sep$(json_string "$1"):$(json_string "$2")"
+      sep=","
+    fi
+    shift 2
+  done
+  json="{\"command\":$(json_string "$cmd"),\"args\":{$args},\"body\":$(json_string "$body")}"
+
+  if [ -n "${YAAC_MAMA_URL:-}" ]; then
+    resp=$(printf '%s' "$json" | curl -sS --max-time "$MAX_TIME" \
+      -H 'Content-Type: application/json' \
+      -H "Authorization: Bearer ${YAAC_MAMA_TOKEN:-}" \
+      --data-binary @- -w '\n%{http_code}' \
+      "${YAAC_MAMA_URL}/api/workspace/mama") || {
+      echo "yaac-mama: cannot reach the yaac server at $YAAC_MAMA_URL" >&2
+      exit 1
+    }
+  else
+    resp=$(printf '%s' "$json" | curl -sS --max-time "$MAX_TIME" \
+      -H 'Content-Type: application/json' \
+      --data-binary @- -w '\n%{http_code}' \
+      'http://yaac.internal/cmd') || {
+      echo "yaac-mama: cannot reach the yaac proxy" >&2
+      exit 1
+    }
+  fi
+
+  code=$(printf '%s\n' "$resp" | tail -n 1)
+  payload=$(printf '%s\n' "$resp" | sed '$d')
+  if [ "$code" != "200" ]; then
+    msg=$(error_text "$payload")
+    echo "yaac-mama: ${msg:-${payload:-request failed}} (HTTP $code)" >&2
+    exit 1
+  fi
+  print_output "$payload"
+  exit 0
+}
+
+[ $# -gt 0 ] || { usage >&2; exit 2; }
+
+case "$1" in
+  -h|--help) usage; exit 0 ;;
+
+  list) run list '' ;;
+
+  models) run models '' ;;
+
+  create|queue|edit-queued)
+    cmd=$1; shift
+    tool=""; model=""; perm=""; ui_mode=""; branch=""; group=""; title=""; parent=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --tool|--model|--permission-mode|--ui-mode|--branch|--group|--title|--parent-workspace)
+          [ $# -ge 2 ] && [ -n "$2" ] || { echo "yaac-mama: $1 needs a value" >&2; exit 2; } ;;
+        *) break ;;
+      esac
+      case "$1" in
+        --tool) tool=$2 ;;
+        --model) model=$2 ;;
+        --permission-mode) perm=$2 ;;
+        --ui-mode) ui_mode=$2 ;;
+        --branch) branch=$2 ;;
+        --group) group=$2 ;;
+        --title) title=$2 ;;
+        --parent-workspace) parent=$2 ;;
+      esac
+      shift 2
+    done
+    opts='[--tool T] [--model M] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]'
+    queued=""; prompt=""
+    case "$cmd" in
+      create)
+        if [ $# -ne 1 ] || [ -z "$1" ]; then
+          echo "usage: yaac-mama create $opts \"<prompt>\"" >&2
+          exit 2
+        fi
+        prompt=$1
+        ;;
+      queue)
+        if [ -z "$parent" ] || [ $# -ne 1 ] || [ -z "$1" ]; then
+          echo "usage: yaac-mama queue --parent-workspace W $opts \"<prompt>\"" >&2
+          exit 2
+        fi
+        prompt=$1
+        ;;
+      edit-queued)
+        # The prompt is optional (omitted keeps the stored one), but one that
+        # is present and empty is refused: `edit-queued "$id" "$p"` with $p
+        # unset meant to change the prompt, not to leave it.
+        if [ $# -lt 1 ] || [ $# -gt 2 ] || [ -z "$1" ] || { [ $# -eq 2 ] && [ -z "$2" ]; }; then
+          echo "usage: yaac-mama edit-queued [--parent-workspace W] $opts <queued> [\"<prompt>\"]" >&2
+          exit 2
+        fi
+        queued=$1; prompt=${2:-}
+        ;;
+    esac
+    run "$cmd" "$prompt" queued "$queued" parent-workspace "$parent" tool "$tool" model "$model" \
+      permission-mode "$perm" ui-mode "$ui_mode" branch "$branch" group "$group" title "$title"
+    ;;
+
+  rename)
+    shift
+    # One argument retitles the caller, two retitle the workspace named first.
+    if [ $# -lt 1 ] || [ $# -gt 2 ] || [ -z "$1" ]; then
+      echo 'usage: yaac-mama rename [<workspace>] "<title>"' >&2
+      exit 2
+    fi
+    if [ $# -eq 1 ]; then
+      run rename "$1"
+    else
+      run rename "$2" workspace "$1"
+    fi
+    ;;
+
+  stop)
+    shift
+    # No argument stops the caller — the same "omitted means me" idiom rename
+    # uses, and the common case here. `run` drops an empty-valued pair, so
+    # that sends no `workspace` at all, which is what the server reads as "me".
+    #
+    # An argument that is present but EMPTY is refused rather than treated as
+    # absent, which is the one place those two must not mean the same thing:
+    # `yaac-mama stop "$id"` with $id unset is a caller that plainly meant to
+    # name a sibling, and letting it fall through to the default would stop
+    # the caller instead — silently, and unstoppably by then.
+    if [ $# -gt 1 ] || { [ $# -eq 1 ] && [ -z "$1" ]; }; then
+      echo 'usage: yaac-mama stop [<workspace>]   (omit the workspace to stop yourself)' >&2
+      exit 2
+    fi
+    run stop '' workspace "${1:-}"
+    ;;
+
+  group)
+    shift
+    [ $# -gt 0 ] || { echo 'usage: yaac-mama group create|move …' >&2; exit 2; }
+    sub=$1; shift
+    case "$sub" in
+      create)
+        if [ $# -ne 1 ] || [ -z "$1" ]; then
+          echo 'usage: yaac-mama group create "<name>"' >&2
+          exit 2
+        fi
+        run group-create "$1"
+        ;;
+      move)
+        # The group is optional, and omitting it is how a caller says "no
+        # group" — the same idiom `yaac group move` uses, where a bare `--`
+        # could never work (its parser eats it as end-of-options).
+        if [ $# -lt 1 ] || [ $# -gt 2 ] || [ -z "$1" ]; then
+          echo 'usage: yaac-mama group move <workspace> ["<group>"]   (omit the group to ungroup)' >&2
+          exit 2
+        fi
+        run group-move "${2:-}" workspace "$1"
+        ;;
+      *)
+        echo "yaac-mama: unknown group subcommand '$sub' (expected: create, move)" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+
+  *)
+    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, rename, stop, group, models)" >&2
+    echo 'run "yaac-mama --help" for usage' >&2
+    exit 2
+    ;;
+esac

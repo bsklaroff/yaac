@@ -9,7 +9,7 @@ import { assertProjectExists } from './detail'
 import type { ProjectEnvVar, SecretProxyRule } from '@yaac/shared/types'
 
 /**
- * A project's environment: the variables its worktrees launch with, and the
+ * A project's environment: the variables its workspaces launch with, and the
  * secrets the egress proxy injects on their behalf.
  *
  * The mediator over the env rows. It owns three things the store does not:
@@ -152,7 +152,7 @@ export async function removeProjectEnvVar(slug: string, id: string): Promise<voi
   }
 }
 
-/** What a worktree launch needs: the plain variables, and the secrets that
+/** What a workspace launch needs: the plain variables, and the secrets that
  *  actually have a value behind them. */
 export interface ResolvedProjectEnv {
   plain: Record<string, string>
@@ -160,7 +160,7 @@ export interface ResolvedProjectEnv {
 }
 
 /**
- * Resolve a project's environment for a worktree create.
+ * Resolve a project's environment for a workspace create.
  *
  * A secret with no usable value — never supplied, or sealed under a key this
  * install no longer has — is dropped rather than passed through empty: the

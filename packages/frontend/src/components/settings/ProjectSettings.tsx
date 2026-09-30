@@ -60,8 +60,8 @@ export function ProjectSettings(): JSX.Element {
   // ever builds.
   const buildsImages = useSnapshot()?.driver !== 'containerless'
   // The same driver, asked a different question: whether an egress proxy
-  // stands between a worktree and the network, which is what decides
-  // whether a secret's value can be kept out of the worktree at all.
+  // stands between a workspace and the network, which is what decides
+  // whether a secret's value can be kept out of the workspace at all.
   const mediatedEgress = useSnapshot()?.driver !== 'containerless'
 
   const loadDockerfile = useCallback(
@@ -149,7 +149,7 @@ export function ProjectSettings(): JSX.Element {
             <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
               Files stored next to the Dockerfile as its build context — reference them
               with <code className="text-text-dim">COPY</code>. Changes apply on the next
-              worktree create.
+              workspace create.
             </p>
             <div className="mt-2">
               {filesApi && <BuildFiles key={`files:${slug}`} filesApi={filesApi} title={slug} />}

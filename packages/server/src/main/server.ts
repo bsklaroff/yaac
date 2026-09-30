@@ -14,12 +14,12 @@ import {
   type IdentityEnv,
 } from '#http'
 import { projectApp } from '#routes/projects'
-import { worktreeApp } from '#routes/worktrees'
+import { mamaApp, workspaceApp } from '#routes/workspaces'
 import { authApp } from '#routes/auth'
 import { shortcutsApp } from '#routes/shortcuts'
 import { configApp } from '#routes/config'
 import { imageApp } from '#routes/images'
-import { hasWorktreeDriver, worktreeDriver } from '#drivers/driver'
+import { hasWorkspaceDriver, workspaceDriver } from '#drivers/driver'
 import { PACKAGE_ROOT } from '@yaac/shared/paths'
 
 export interface ServerAppDeps {
@@ -103,13 +103,16 @@ function apiRoutes(isReady: () => boolean, buildId: string) {
       // asks this to decide whether it means anything against THIS server,
       // rather than trusting its own shell's YAAC_DRIVER — a server started
       // elsewhere leaves no trace in it.
-      driver: hasWorktreeDriver() ? worktreeDriver().kind : null,
+      driver: hasWorkspaceDriver() ? workspaceDriver().kind : null,
     }))
     // Who the server takes this caller to be — the SPA's bootstrap and the
     // clients' "will this server take my requests" probe.
     .get('/whoami', (c) => c.json(c.get('principal')))
     .route('/project', projectApp)
-    .route('/worktree', worktreeApp)
+    .route('/workspace', workspaceApp)
+    // Where an older install's `yaac-mama`, still staged in a containerless
+    // workspace it launched, posts (docs/legacy-compat-shims.md).
+    .route('/worktree', mamaApp)
     .route('/auth', authApp)
     .route('/shortcuts', shortcutsApp)
     .route('/config', configApp)

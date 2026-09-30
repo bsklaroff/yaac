@@ -32,7 +32,7 @@ of them could delete a blob out from under another run's push. One pass:
    and ReplicaSets because `kubectl rollout undo` brings an older template
    back. It also includes every layer of every project's current image
    chain, resolved exactly as the prewarm sweep resolves it. A project with
-   no running worktree still has a current image, and losing it would cost
+   no running workspace still has a current image, and losing it would cost
    a builder-pod rebuild on the next create. Both reads fail closed. An
    unreadable workload list stops the pass. A chain that cannot be
    resolved stops step 4 for every project, because the `yaac-base` repo

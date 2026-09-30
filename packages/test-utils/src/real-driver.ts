@@ -1,4 +1,4 @@
-import { setWorktreeDriver } from '@yaac/server/drivers/driver'
+import { setWorkspaceDriver } from '@yaac/server/drivers/driver'
 import { createK8sDriver } from '@yaac/server/drivers/k8s'
 
 /**
@@ -11,6 +11,6 @@ import { createK8sDriver } from '@yaac/server/drivers/k8s'
  * file. Tests that only need a mediator want `fake-runtime` instead, which
  * costs nothing.
  */
-export function installRealWorktreeDriver(): void {
-  setWorktreeDriver(createK8sDriver())
+export function installRealWorkspaceDriver(): void {
+  setWorkspaceDriver(createK8sDriver())
 }

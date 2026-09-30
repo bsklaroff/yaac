@@ -5,13 +5,13 @@
  *     cursor already in the Prompt field and Start on "Now".
  *  2. Shift+Enter in the prompt is a newline, not a submit.
  *  3. Typing a prompt then Enter creates: the dialog closes and a provisioning
- *     row appears in the sidebar, and the worktree the server brings up opens
+ *     row appears in the sidebar, and the workspace the server brings up opens
  *     with that prompt as its founding ask (read back from the snapshot).
  *  4. Esc closes the dialog without creating anything.
  *  5. Keys typed the instant the dialog appears all reach the prompt (20
  *     opens) — none fall between the dialog showing and its focus landing.
  *
- * Creates ONE real worktree in the chosen project (check 3), which it leaves
+ * Creates ONE real workspace in the chosen project (check 3), which it leaves
  * running — stop it afterwards.
  *
  * Drives the app the server itself serves (`dist/`), reading the port + lock
@@ -88,7 +88,7 @@ try {
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
   await page.goto(`${origin}/?project=${PROJECT}&token=${await mintToken()}`)
   await page.waitForFunction(() => !window.location.search.includes('token='), { timeout: 15_000 })
-  await page.getByTitle('New worktree').first().waitFor({ state: 'visible', timeout: 15_000 })
+  await page.getByTitle('New workspace').first().waitFor({ state: 'visible', timeout: 15_000 })
   fs.mkdirSync(SHOTS, { recursive: true })
 
   // (1) Alt+N: the dialog, prompt focused, Start on Now.
@@ -138,18 +138,18 @@ try {
   await page.keyboard.press('Enter')
   await prompt.waitFor({ state: 'detached' })
   check('Enter closes the dialog', true)
-  const row = await page.waitForFunction(() => document.querySelector('aside')?.textContent?.includes('New worktree'),
+  const row = await page.waitForFunction(() => document.querySelector('aside')?.textContent?.includes('New workspace'),
     null, { timeout: 5_000 }).then(() => true, () => false)
   check('a provisioning row appears', row)
   const founded = await (async () => {
     for (let i = 0; i < 90; i++) {
-      const list = await (await fetch(`${origin}/api/worktree/list?project=${PROJECT}`, { headers: auth })).json()
-      if (list.worktrees.some((w) => (w.prompt ?? '').startsWith(ask))) return true
+      const list = await (await fetch(`${origin}/api/workspace/list?project=${PROJECT}`, { headers: auth })).json()
+      if (list.workspaces.some((w) => (w.prompt ?? '').startsWith(ask))) return true
       await new Promise((r) => setTimeout(r, 2000))
     }
     return false
   })()
-  check('the new worktree carries the prompt as its founding ask', founded)
+  check('the new workspace carries the prompt as its founding ask', founded)
 } finally {
   await browser.close()
 }

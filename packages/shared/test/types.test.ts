@@ -74,7 +74,7 @@ describe('toolSupportsPermissionMode', () => {
     // not — it collapses codex's approval × sandbox grid into three modes, the
     // one it calls `read-only` being codex's default preset. Refusing is the
     // point; a create that quietly ran `read-only` as something weaker would
-    // be handing back an unrestrained worktree.
+    // be handing back an unrestrained workspace.
     expect(toolSupportsPermissionMode('codex', 'read-only', 'tui')).toBe(true)
     expect(toolSupportsPermissionMode('codex', 'read-only', 'acp')).toBe(false)
     expect(toolSupportsPermissionMode('codex', 'manual', 'acp')).toBe(false)
@@ -174,7 +174,7 @@ describe('resolveToolCreateDefaults', () => {
 })
 
 describe('AGENT_CLIS', () => {
-  it('names the version the worktree image installs', () => {
+  it('names the version the workspace image installs', () => {
     // yaac launches each posture as the CLI's own flags and reads the CLI's own
     // reports back as one, so the image must run the release those were
     // checked against — the same one a host install asks npm for.
@@ -194,7 +194,7 @@ describe('AGENT_CLIS', () => {
 })
 
 describe('ACP_ADAPTERS', () => {
-  it('names the version the worktree image installs', () => {
+  it('names the version the workspace image installs', () => {
     // `verified` is what yaac's description of each adapter was checked
     // against — above all the session modes it advertises, which are read as
     // permission postures. An adapter that stops advertising one does not

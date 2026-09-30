@@ -1,4 +1,4 @@
-import { worktreeDriver } from '#drivers/driver'
+import { workspaceDriver } from '#drivers/driver'
 import type { PermissionMode } from '@yaac/shared/types'
 
 /**
@@ -14,9 +14,9 @@ import type { PermissionMode } from '@yaac/shared/types'
  * crosses the control-mode stream — the rendered pane never does.
  *
  * First-message lookup asks opencode itself: `opencode api` over a private
- * server on the same per-worktree data dir (`--standalone`, as the TUI runs
+ * server on the same per-workspace data dir (`--standalone`, as the TUI runs
  * — its server is a child on stdio, so there is no port to ask), from the
- * checkout, which is what scopes the lookup to this worktree's project.
+ * checkout, which is what scopes the lookup to this workspace's project.
  * opencode titles a session off its opening prompt, and that title is what
  * the TUI's own switcher displays — using it here keeps the two views
  * consistent. It runs once per session (the capture step persists the
@@ -40,12 +40,12 @@ const OPENCODE_SESSION_ID = /^ses_[A-Za-z0-9]+$/
 
 /**
  * First user message for an opencode session — its title, probed once:
- * opencode keeps its history in a per-worktree sqlite DB and leaves no host
+ * opencode keeps its history in a per-workspace sqlite DB and leaves no host
  * transcript, and the capture step persists the result on the session row,
  * which is what deleted-session listings and restarts read afterwards.
  *
  * Only a session opencode minted has a title to read, and it is fetched by
- * its id. Anything else — the worktree-id pin a create records before the
+ * its id. Anything else — the workspace-id pin a create records before the
  * pane names a session — names no session, so it reads as no title rather
  * than borrowing one out of a listing (whose page holds only the 50 most
  * recently updated anyway). The pattern is also the shell-safety gate. An
@@ -58,7 +58,7 @@ export async function getSessionOpencodeFirstUserMessage(
 ): Promise<string | undefined> {
   if (agentSessionId === undefined || !OPENCODE_SESSION_ID.test(agentSessionId)) return undefined
   try {
-    const { stdout } = await worktreeDriver().exec(
+    const { stdout } = await workspaceDriver().exec(
       jobName,
       `opencode api --standalone session.get --param sessionID=${agentSessionId}`,
       { maxAttempts: 2, timeout: PROBE_TIMEOUT_MS },
@@ -72,7 +72,7 @@ export async function getSessionOpencodeFirstUserMessage(
 
 /**
  * The posture an opencode agent switch adds up to, read against the posture
- * the worktree runs under now.
+ * the workspace runs under now.
  *
  * opencode's in-TUI switch is between its agents, and an agent is only half a
  * posture: the permission rules ride the launch config, which no switch
@@ -82,7 +82,7 @@ export async function getSessionOpencodeFirstUserMessage(
  * posture's rules is no posture yaac has, and neither is an agent of a
  * project's own — both are left unrecorded.
  *
- * `current` stands in for the launch: an opencode worktree's posture only ever
+ * `current` stands in for the launch: an opencode workspace's posture only ever
  * moves between `plan` and `manual`, whose rules are the same, so the two
  * always agree on the rules the running process has.
  */

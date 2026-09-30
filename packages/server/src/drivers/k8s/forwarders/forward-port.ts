@@ -1,5 +1,5 @@
-import { isPrewarmed, listWorktreePods, relayDial } from '#drivers/k8s/substrate'
-import { addWorktreeForwarder, getWorktreePorts } from './port-forwarders'
+import { isPrewarmed, listWorkspacePods, relayDial } from '#drivers/k8s/substrate'
+import { addWorkspaceForwarder, getWorkspacePorts } from './port-forwarders'
 import { getUnforwardedPorts, isDetectedPort } from './port-detector'
 import { ServerError } from '@yaac/shared/errors'
 import { serverLog } from '#log'
@@ -8,7 +8,7 @@ import type { PortMapping } from '@yaac/shared/types'
 
 /**
  * Forward a detected-but-unforwarded port for a running workspace, live (the
- * webapp's click-to-forward action, mirroring allowWorktreeHost).
+ * webapp's click-to-forward action, mirroring allowWorkspaceHost).
  *
  * The port must be in the workspace's currently-surfaced unforwarded set —
  * the action can't be driven to forward an arbitrary port, only one whose
@@ -23,7 +23,7 @@ import type { PortMapping } from '@yaac/shared/types'
  * forward), while a failure on the named target is an error the user should
  * see.
  */
-export async function forwardWorktreePort(
+export async function forwardWorkspacePort(
   target: { workspaceId: string; projectSlug: string; jobName: string },
   containerPort: number,
   opts: { fanOutToProject: boolean },
@@ -35,22 +35,22 @@ export async function forwardWorktreePort(
     )
   }
 
-  const mapping = await addWorktreeForwarder(
+  const mapping = await addWorkspaceForwarder(
     target.projectSlug, target.workspaceId, target.jobName, containerPort,
   )
 
   if (opts.fanOutToProject) {
     // Just the project's pods — the fan-out has no use for the full
-    // worktree-list snapshot (matching allowWorktreeHost).
-    const pods = await listWorktreePods(target.projectSlug)
+    // workspace-list snapshot (matching allowWorkspaceHost).
+    const pods = await listWorkspacePods(target.projectSlug)
     await Promise.all(
       pods
-        .filter((p) => p.running && p.worktreeId && p.worktreeId !== target.workspaceId && !isPrewarmed(p))
+        .filter((p) => p.running && p.workspaceId && p.workspaceId !== target.workspaceId && !isPrewarmed(p))
         .map((p) =>
-          addWorktreeForwarder(p.projectSlug, p.worktreeId, p.jobName, containerPort)
+          addWorkspaceForwarder(p.projectSlug, p.workspaceId, p.jobName, containerPort)
             .catch((err: unknown) => {
               serverLog(
-                `[server] forward-port fan-out to ${p.worktreeId.slice(0, 8)} failed: `
+                `[server] forward-port fan-out to ${p.workspaceId.slice(0, 8)} failed: `
                 + (err instanceof Error ? err.message : String(err)),
               )
             })),
@@ -71,7 +71,7 @@ export async function forwardWorktreePort(
  * pauses the socket after its handshake so the reply's first bytes cannot
  * outrun the consumer's reader.
  *
- * Only a port the worktree DECLARED (its config's forwards, and any it was
+ * Only a port the workspace DECLARED (its config's forwards, and any it was
  * told to forward live), or one its detector has surfaced — never an
  * arbitrary one, and so never yaac's own infra range in the pod (the stream
  * daemon, the relay), which is neither. A declared port is dialled whether
@@ -82,10 +82,10 @@ export function dialWorkspacePort(
   workspaceId: string,
   containerPort: number,
 ): Promise<Duplex> {
-  const declared = getWorktreePorts(workspaceId).some((p) => p.containerPort === containerPort)
+  const declared = getWorkspacePorts(workspaceId).some((p) => p.containerPort === containerPort)
   if (!declared && !isDetectedPort(workspaceId, containerPort)) {
     return Promise.reject(new Error(
-      `port ${String(containerPort)} is neither declared nor a detected listener of this worktree`,
+      `port ${String(containerPort)} is neither declared nor a detected listener of this workspace`,
     ))
   }
   return relayDial(workspaceId, { kind: 'tcp', port: containerPort })

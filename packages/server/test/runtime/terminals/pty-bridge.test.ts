@@ -12,12 +12,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { attachPty, type SocketLike } from '#runtime/terminals'
 import { DETACH_GRACE_MS } from '#runtime/terminals/pty-bridge'
-import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { BATCH_MS } from '@yaac/shared/batcher'
-import type { StreamPty, WorktreeDriver } from '#drivers/contract'
+import type { StreamPty, WorkspaceDriver } from '#drivers/contract'
 
-const execMock = vi.fn<WorktreeDriver['exec']>()
-const dialPtyMock = vi.fn<WorktreeDriver['dialPty']>()
+const execMock = vi.fn<WorkspaceDriver['exec']>()
+const dialPtyMock = vi.fn<WorkspaceDriver['dialPty']>()
 
 const TMUX = 'tmux -S /tmp/yaac-tmux/server'
 const LIST_SESSIONS = `${TMUX} list-sessions -F '#{session_name}'`
@@ -90,7 +90,7 @@ beforeEach(() => {
     return execImpl(cmd)
   })
   dialPtyMock.mockImplementation(() => new FakePty())
-  installFakeWorktreeDriver({ exec: execMock, dialPty: dialPtyMock })
+  installFakeWorkspaceDriver({ exec: execMock, dialPty: dialPtyMock })
 })
 
 /** Drain the fire-and-forget ghost sweep (microtasks only, so this works

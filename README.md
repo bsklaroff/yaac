@@ -28,13 +28,13 @@ The formula pulls in the whole toolchain: `node`, `kubectl`,
 [version note](docs/cluster-setup.md#kind-and-kubernetes-versions)),
 and a patched `krunkit`+`libkrun` pair (`yaac-krunkit`/`yaac-libkrun` —
 stock krunkit's virtiofs reports every file as owned by whichever process
-asks, which breaks hostPath writes from gVisor worktree pods; see the
+asks, which breaks hostPath writes from gVisor workspace pods; see the
 [machine notes](docs/cluster-setup.md#macos-the-podman-machine) and
 [#27](https://github.com/bsklaroff/yaac/issues/27)).
 
 It also installs what the [containerless driver](docs/containerless-driver.md)
 needs on the host — `tmux`, `socat`, `fd`, `ripgrep` — since that mode runs
-worktrees as host processes with no session image to supply anything.
+workspaces as host processes with no session image to supply anything.
 
 ### From source (development)
 
@@ -52,7 +52,7 @@ brew trust bsklaroff/yaac
 brew trust libkrun/krun
 brew tap libkrun/krun
 brew install node pnpm kubernetes-cli podman kind bsklaroff/yaac/yaac-krunkit
-# For the containerless driver (worktrees as host processes, no image):
+# For the containerless driver (workspaces as host processes, no image):
 brew install tmux socat fd ripgrep
 ```
 
@@ -66,7 +66,7 @@ brew install tmux socat fd ripgrep
 # links against; a minimal 26.04 does not ship it. yaac fetches it into its
 # own cache if it is missing, so this line only saves it the trip.
 sudo apt install podman acl libgomp1
-# For the containerless driver (worktrees as host processes, no image):
+# For the containerless driver (workspaces as host processes, no image):
 sudo apt install tmux socat fd-find ripgrep
 
 # Node via nvm: its official builds ship the type-stripper (Node >= 22.18).
@@ -105,9 +105,9 @@ calico-node DaemonSet hangs (see
 [Linux: rootful podman](docs/cluster-setup.md#linux-rootful-podman)).
 
 Give the host **swap** before `yaac cluster install` if `swapon --show` is
-empty. Worktree pods run under gVisor, which holds the sandboxed workload's
+empty. Workspace pods run under gVisor, which holds the sandboxed workload's
 memory in a memfd — shmem, which the kernel cannot reclaim at all without
-swap, so a worktree under pressure is OOM-killed where it would otherwise
+swap, so a workspace under pressure is OOM-killed where it would otherwise
 have paged out. Create it first: the cluster's kubelet picks up
 `swapBehavior: LimitedSwap` (`k8s/kind-config.yaml`) only when kind creates
 the node, and no later install adds it.
@@ -122,7 +122,7 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ```
 
 A pod's share is `memoryRequest / nodeRAM × totalSwap`, so sizing swap at
-roughly node RAM gives a worktree about its memory request again. If you run
+roughly node RAM gives a workspace about its memory request again. If you run
 swap deep, check that `systemd-oomd` (`SwapUsedLimit=90%` by default) won't
 kill the kind node container first.
 
@@ -142,7 +142,7 @@ yaac cluster install
 ## Web app
 
 yaac ships a local web app — a GUI over the same server the CLI drives:
-a live worktree sidebar, the project list, and an embedded terminal
+a live workspace sidebar, the project list, and an embedded terminal
 (xterm.js) attached to each session's tmux. Open it through the desktop app
 (below), or in a browser at the selected server's origin (the `url` line of
 `yaac remote status`).
@@ -203,7 +203,7 @@ device is revoked in the Tailscale admin console. See
 [docs/remote-hosting.md](docs/remote-hosting.md) for the full flow — client
 and phone setup, forwarded-port reachability, and the security model.
 
-A worktree's forwarded ports (a dev server, or an inner yaac's own web UI)
+A workspace's forwarded ports (a dev server, or an inner yaac's own web UI)
 are offered by the server but bound by a client — `yaac forward`, or the
 desktop app, which does it resident in its tray
 ([docs/port-forward-tunnel.md](docs/port-forward-tunnel.md)). To reach them
@@ -222,7 +222,7 @@ The same web app is also available as a macOS Electron shell (`@yaac/desktop`).
 It has no bundled frontend of its own: the main process resolves the
 selected server from `server.json`, checks that it answers and will say who
 this device is, and loads the server origin into a native window. It lives in the tray (close hides, Quit stops
-only the shell) and badges the dock for waiting worktrees. It is not part of
+only the shell) and badges the dock for waiting workspaces. It is not part of
 `pnpm build` and never ships in the npm artifact.
 
 No extra prerequisites beyond the repo's `pnpm install` (the `electron` dev
@@ -254,9 +254,9 @@ yaac [command]
 
 Commands:
   open            Open the web app in your browser (against the selected server)
-  cluster         Manage the kubernetes cluster yaac runs worktrees on
+  cluster         Manage the kubernetes cluster yaac runs workspaces on
   project         Manage projects
-  worktree        Manage worktrees (a git worktree + its container and agents)
+  workspace        Manage workspaces (a git clone + its container and agents)
   config          Edit project configuration files and server settings
   auth            Manage credentials (git credentials and tool sign-ins)
   remote          Point this CLI at a remote yaac server
@@ -282,7 +282,7 @@ yaac cluster <command>
                     Tailscale Kubernetes operator (must be installed) instead
                     of at 127.0.0.1; callers are identified by tailnet user
   delete [-y]       Delete the kind cluster (registry included), keeping
-                    on-disk worktrees and their checkouts (-y skips
+                    on-disk workspaces and their checkouts (-y skips
                     confirmation); refuses on a --byo install
 
 yaac project <command>
@@ -292,28 +292,28 @@ yaac project <command>
                     cloned with — and assigned — the named git credential
                     (names are listed by `yaac auth list`)
 
-yaac worktree <command>
-  create [options] <project>  Create a new worktree for a project
+yaac workspace <command>
+  create [options] <project>  Create a new workspace for a project
     -t, --tool <tool>         Agent tool to use (claude, codex, opencode, or pi)
-    -b, --branch <branch>     Reference branch for the worktree (defaults to
+    -b, --branch <branch>     Reference branch for the workspace (defaults to
                               the remote default branch)
-  list [options] [project]    List running worktrees
-    -s, --stopped             List stopped worktrees (checkouts are kept)
-  stop <worktree-id>          Stop a worktree: tear down its container,
+  list [options] [project]    List running workspaces
+    -s, --stopped             List stopped workspaces (checkouts are kept)
+  stop <workspace-id>          Stop a workspace: tear down its container,
                               keep its checkout and diff
-  restart <worktree-id>       Restart a worktree, resuming the agent sessions
+  restart <workspace-id>       Restart a workspace, resuming the agent sessions
                               that were running when it stopped
-  agents <worktree-id>        List the worktree's agent sessions (open first)
+  agents <workspace-id>        List the workspace's agent sessions (open first)
   attach <container-id>       Attach to the agent tmux session
-  shell <container-id>        Open a raw shell in the worktree container
-  monitor [options] [project] Poll and display running worktrees in real-time
+  shell <container-id>        Open a raw shell in the workspace container
+  monitor [options] [project] Poll and display running workspaces in real-time
     -n, --interval <seconds>  Refresh interval in seconds (default: 5)
 
 yaac config <command>
   edit <project>              Open the project's yaac-config.json in $EDITOR
   edit-dockerfile <project>   Open the project's Dockerfile.yaac in $EDITOR
   edit-user-dockerfile        Open the global ~/.yaac/server-local/build/Dockerfile.user in $EDITOR
-  git-identity [options]      Show the git identity worktrees commit under, or set it:
+  git-identity [options]      Show the git identity workspaces commit under, or set it:
     --name <name>               Git user.name to set (with --email)
     --email <email>             Git user.email to set (with --name)
 
@@ -341,24 +341,24 @@ shell in the tmux session with `Ctrl-B C`, and switch between shells with `Ctrl-
 
 ## Authentication
 
-yaac centralizes credentials on the host and injects them into worktree traffic through the shared proxy (a `yaac-proxy` Deployment in the cluster). Real tokens are never written into the container filesystem. Credentials live under `~/.yaac/server-local/.credentials/` (directory permissions `0700`, files `0600`), split by service:
+yaac centralizes credentials on the host and injects them into workspace traffic through the shared proxy (a `yaac-proxy` Deployment in the cluster). Real tokens are never written into the container filesystem. Credentials live under `~/.yaac/server-local/.credentials/` (directory permissions `0700`, files `0600`), split by service:
 
 - `~/.yaac/server-local/.credentials/claude.json` — Claude Code credentials (OAuth bundle or API key)
 - `~/.yaac/server-local/.credentials/codex.json` — Codex credentials
 - `~/.yaac/server-local/.credentials/opencode.json` — OpenCode credentials (OpenRouter API key)
 - `~/.yaac/server-local/.credentials/pi.json` — Pi credentials (OpenRouter, Anthropic, or OpenAI API key)
 
-A worktree is tool-agnostic — it holds whatever agent sessions you open in it,
+A workspace is tool-agnostic — it holds whatever agent sessions you open in it,
 in any mix — so injection is not scoped to one tool: **any agent in any
-worktree can spend any credential the host has signed in**. The proxy only
+workspace can spend any credential the host has signed in**. The proxy only
 rewrites requests carrying the placeholder sentinel it put in the container's
 env, so traffic you authenticate yourself passes through untouched.
 
-Git credentials are the exception: they live encrypted in the server's database (see below). The proxy is handed every credential whenever one changes, so updates via `yaac auth update` or the web app propagate to every running worktree immediately without needing to restart pods. The proxy is reachable only inside the cluster (ClusterIP Service); the server talks to it over a loopback exec tunnel (`kubectl exec` + socat, which works regardless of the pod's runtime tier).
+Git credentials are the exception: they live encrypted in the server's database (see below). The proxy is handed every credential whenever one changes, so updates via `yaac auth update` or the web app propagate to every running workspace immediately without needing to restart pods. The proxy is reachable only inside the cluster (ClusterIP Service); the server talks to it over a loopback exec tunnel (`kubectl exec` + socat, which works regardless of the pod's runtime tier).
 
 ### Git identity
 
-Worktrees commit under one server-wide git identity. The auth server fills it
+Workspaces commit under one server-wide git identity. The auth server fills it
 from your git config when it starts and the server has none — it runs under
 the desktop app, `yaac auth server start`, and the browser sign-in of
 `yaac auth update` for Claude or Codex. Otherwise a create is refused until
@@ -368,7 +368,7 @@ you set it, in the web app's Settings → General or with
 ### Git credentials
 
 A project's git operations — the server's clones and fetches, and every
-fetch and push from its worktrees — authenticate with **one git credential
+fetch and push from its workspaces — authenticate with **one git credential
 assigned to that project**. Credentials are named, and one can serve many
 projects. There are two kinds:
 
@@ -384,16 +384,16 @@ any project that has none. Adding a project there picks or creates its
 credential as part of the add. From the CLI, `yaac auth update` adds one and
 `yaac auth list` shows their names; `yaac project add <url> <credential>`
 clones with the one named and assigns it. A project without a credential
-cannot create worktrees — its create button reads "Add git authentication…"
+cannot create workspaces — its create button reads "Add git authentication…"
 and opens that settings page. To move a project to another credential,
 assign it a new one. **Replace** swaps a leaked or expired credential for a
 new token or key and keeps every project on it; **Delete** always works and
 leaves its projects with no credential until they are assigned another.
 
-Under `k8s` a credential never enters a worktree: the proxy injects a
+Under `k8s` a credential never enters a workspace: the proxy injects a
 project's token into its HTTPS git and `github.com`/`api.github.com` requests
 (over HTTPS only), and signs for its SSH key through a forwarded agent that
-offers each worktree its own project's key and no other. See
+offers each workspace its own project's key and no other. See
 [docs/git-credentials.md](docs/git-credentials.md).
 
 ### Agent tool credentials
@@ -402,24 +402,24 @@ yaac also manages the API credentials for the agent tool itself, so Claude Code,
 
 For Claude Code OAuth, each project's `.claude/.credentials.json` inside the container holds placeholder tokens (`yaac-ph-access` / `yaac-ph-refresh`) together with the real `expiresAt` and scopes. The proxy transparently rewrites outbound API calls, swaps the placeholder refresh token on refresh requests, and writes refreshed bundles back to the host file — so real tokens never enter the container filesystem. For API-key mode the proxy injects the key as an outbound header.
 
-## Worktree layout
+## Workspace layout
 
-Each worktree runs as a single-pod Kubernetes Job with the following mounts. The data dir (`~/.yaac`) has three tier folders — `global/` (what the server and every worktree pod share), `node-local/` (per-node caches and working copies) and `server-local/` (the server's own state: database, credentials, log) — and the tier a path lives in decides how the pod sees it:
+Each workspace runs as a single-pod Kubernetes Job with the following mounts. The data dir (`~/.yaac`) has three tier folders — `global/` (what the server and every workspace pod share), `node-local/` (per-node caches and working copies) and `server-local/` (the server's own state: database, credentials, log) — and the tier a path lives in decides how the pod sees it:
 
 | Host | Container | Description |
 |------|-----------|-------------|
-| `~/.yaac/global/projects/<project>/worktrees/<worktree-id>` | `/workspace` | Project code (working directory) |
-| `~/.yaac/global/projects/<project>/repo/.git` | the server's own path to it, read-only | The project's main clone, whose objects the worktree's own clone in `/workspace` borrows |
+| `~/.yaac/global/projects/<project>/workspaces/<workspace-id>` | `/workspace` | Project code (working directory) |
+| `~/.yaac/global/projects/<project>/repo/.git` | the server's own path to it, read-only | The project's main clone, whose objects the workspace's own clone in `/workspace` borrows |
 | `~/.yaac/global/projects/<project>/claude/` | `/home/yaac/.claude` | Claude Code configuration |
 | `~/.yaac/global/projects/<project>/codex/` | `/home/yaac/.codex` | Codex configuration and transcripts |
 | `~/.yaac/global/projects/<project>/opencode-config/` | `/home/yaac/.config/opencode` | OpenCode configuration (shared per project) |
-| `~/.yaac/global/projects/<project>/opencode-data/<worktree-id>` | `/home/yaac/.yaac/opencode-checkpoint` | OpenCode session checkpoint (per worktree; the pod works on a node-local copy at `/home/yaac/.local/share/opencode` and checkpoints here) |
+| `~/.yaac/global/projects/<project>/opencode-data/<workspace-id>` | `/home/yaac/.yaac/opencode-checkpoint` | OpenCode session checkpoint (per workspace; the pod works on a node-local copy at `/home/yaac/.local/share/opencode` and checkpoints here) |
 | `~/.yaac/global/projects/<project>/pi/` | `/home/yaac/.pi` | Pi home and session logs |
 | `~/.yaac/node-local/projects/<project>/.cached-packages` | `/home/yaac/.cached-packages` | Per-project package-manager caches (node disk) |
 
-The worktree container runs as user `yaac` with home directory `/home/yaac`. Project data lives under `~/.yaac/global/projects/<repo-name>/` on the host, which the server pod and every worktree pod mount through the `yaac-global` claim (see [Cluster setup](docs/cluster-setup.md#what-it-wires-up)). The repo plus the Claude and Codex state directories are shared across all worktrees within a project (but isolated between projects), so those worktrees can inspect each other's history; OpenCode session data is per-worktree (to avoid concurrent-write issues in its database), and pi resumes a worktree by its session id.
+The workspace container runs as user `yaac` with home directory `/home/yaac`. Project data lives under `~/.yaac/global/projects/<repo-name>/` on the host, which the server pod and every workspace pod mount through the `yaac-global` claim (see [Cluster setup](docs/cluster-setup.md#what-it-wires-up)). The repo plus the Claude and Codex state directories are shared across all workspaces within a project (but isolated between projects), so those workspaces can inspect each other's history; OpenCode session data is per-workspace (to avoid concurrent-write issues in its database), and pi resumes a workspace by its session id.
 
-The `.cached-packages` directory is shared by every worktree of the project on a node, so package-manager caches survive worktree teardown and are reused across worktrees. pnpm is the exception: each worktree pod keeps its own store inside its `node_modules`, which lives on a pod-local volume and goes with the pod, and fetches packages through the install's npm cache (a Verdaccio `yaac cluster install` deploys) — so `pnpm install` needs no extra configuration and concurrent installs never share a store. (A containerless install's worktrees are processes on one host, and share one pnpm store under `.cached-packages`; see [Worktree storage](docs/worktree-storage.md#package-installs).)
+The `.cached-packages` directory is shared by every workspace of the project on a node, so package-manager caches survive workspace teardown and are reused across workspaces. pnpm is the exception: each workspace pod keeps its own store inside its `node_modules`, which lives on a pod-local volume and goes with the pod, and fetches packages through the install's npm cache (a Verdaccio `yaac cluster install` deploys) — so `pnpm install` needs no extra configuration and concurrent installs never share a store. (A containerless install's workspaces are processes on one host, and share one pnpm store under `.cached-packages`; see [Workspace storage](docs/workspace-storage.md#package-installs).)
 
 ## Project configuration
 
@@ -452,8 +452,8 @@ Example `yaac-config.json` with all options:
 }
 ```
 
-- **cacheVolumes** — per-project persistent cache directories mounted into the container. Keys are cache names (backed by `~/.yaac/global/projects/<project>/cache-volumes/<name>` on the host), values are absolute container paths. Caches persist across worktrees. Note: a per-project `~/.yaac/node-local/projects/<project>/.cached-packages` directory is already mounted at `/home/yaac/.cached-packages` on every container for package-manager caches you want to share across worktrees on a node. pnpm needs no entry: its packages come through the install's npm cache.
-- **initCommands** — commands run inside the container after it starts (e.g. `pnpm install`, which fetches through the install's npm cache). These run on every worktree, not just the first. Accepts two shapes (cannot be mixed):
+- **cacheVolumes** — per-project persistent cache directories mounted into the container. Keys are cache names (backed by `~/.yaac/global/projects/<project>/cache-volumes/<name>` on the host), values are absolute container paths. Caches persist across workspaces. Note: a per-project `~/.yaac/node-local/projects/<project>/.cached-packages` directory is already mounted at `/home/yaac/.cached-packages` on every container for package-manager caches you want to share across workspaces on a node. pnpm needs no entry: its packages come through the install's npm cache.
+- **initCommands** — commands run inside the container after it starts (e.g. `pnpm install`, which fetches through the install's npm cache). These run on every workspace, not just the first. Accepts two shapes (cannot be mixed):
   - **String list** — all commands are chained with `&&` and run in a single tmux window named `init`, parallel to the agent:
     ```json
     "initCommands": ["pnpm install", "pnpm build"]
@@ -466,18 +466,18 @@ Example `yaac-config.json` with all options:
     ]
     ```
 - **hideInitPane** — when `true`, the init commands tmux pane is automatically closed after the commands finish or error (default: `false`). When `false`, the pane is preserved with `remain-on-exit` so you can inspect the output.
-- **addAllowedUrls** — additional host patterns to allow on top of the [default allowlist](packages/server/src/lib/container/default-allowed-hosts.ts). By default, the proxy blocks outbound requests to hosts not on the default list. (How a worktree's traffic reaches the proxy in the first place, and why it fails closed: [Worktree egress](docs/worktree-egress.md).) Use this to add extra hosts without replacing the defaults. Supports exact hostnames (`api.example.com`) and wildcards (`*.example.com`).
-- **setAllowedUrls** — completely replaces the default allowlist with the given list of host patterns. Cannot be used together with `addAllowedUrls`. Set to `["*"]` to allow all outbound URLs (disables filtering), or `[]` to block all external network access. If the resolved list does not include `api.anthropic.com` or `github.com`, a warning is printed since worktrees require these to function.
-- **nestedContainers** — run an in-pod rootless podman so `docker build` / `docker run` / `docker compose up --build` work inside the worktree exactly as a project README instructs (the `docker` CLI talks to podman's Docker-API socket). See [Nested containers](#nested-containers).
-- **npmCache** — whether the project's worktrees use the install's npm cache (k8s only; default `true`). With `false`, a worktree's pnpm stays on npmjs through the egress proxy, and the cache is not even reachable from its pod. A project's own `.npmrc` `registry=` already takes precedence over the cache either way. See [Worktree storage](docs/worktree-storage.md#package-installs).
+- **addAllowedUrls** — additional host patterns to allow on top of the [default allowlist](packages/server/src/lib/container/default-allowed-hosts.ts). By default, the proxy blocks outbound requests to hosts not on the default list. (How a workspace's traffic reaches the proxy in the first place, and why it fails closed: [Workspace egress](docs/workspace-egress.md).) Use this to add extra hosts without replacing the defaults. Supports exact hostnames (`api.example.com`) and wildcards (`*.example.com`).
+- **setAllowedUrls** — completely replaces the default allowlist with the given list of host patterns. Cannot be used together with `addAllowedUrls`. Set to `["*"]` to allow all outbound URLs (disables filtering), or `[]` to block all external network access. If the resolved list does not include `api.anthropic.com` or `github.com`, a warning is printed since workspaces require these to function.
+- **nestedContainers** — run an in-pod rootless podman so `docker build` / `docker run` / `docker compose up --build` work inside the workspace exactly as a project README instructs (the `docker` CLI talks to podman's Docker-API socket). See [Nested containers](#nested-containers).
+- **npmCache** — whether the project's workspaces use the install's npm cache (k8s only; default `true`). With `false`, a workspace's pnpm stays on npmjs through the egress proxy, and the cache is not even reachable from its pod. A project's own `.npmrc` `registry=` already takes precedence over the cache either way. See [Workspace storage](docs/workspace-storage.md#package-installs).
 
 A project's **environment variables and secrets** are not in this file: they
 are stored with the project and edited in the webapp under Settings → Project
 Config → Environment, so a client with no shell on the server can set them.
 
 A variable is either plain or a **secret**. A plain one is placed in every
-worktree's environment as it is. A secret is stored encrypted, and where a
-worktree is sandboxed (the `k8s` driver) its value never enters the worktree
+workspace's environment as it is. A secret is stored encrypted, and where a
+workspace is sandboxed (the `k8s` driver) its value never enters the workspace
 at all: the workspace gets a sentinel, and the egress proxy swaps in the real
 value on requests matching the rule you give it — hosts to intercept, an
 HTTP header (default `authorization`, auto-prefixed `Bearer `; override with
@@ -489,9 +489,9 @@ GitHub authentication (`github.com` and `api.github.com`) is handled
 automatically from the project's HTTPS git credential — you do not need a `GITHUB_TOKEN` secret
 for it.
 
-There is no way to mount a host directory into a worktree: a path on the
+There is no way to mount a host directory into a workspace: a path on the
 server is not something a client on another machine can name. Use
-`cacheVolumes` for a directory that should persist across worktrees, or bake
+`cacheVolumes` for a directory that should persist across workspaces, or bake
 the contents into the project image.
 
 ## Secrets at rest
@@ -524,15 +524,15 @@ Every yaac variable is read in one place — [`packages/shared/src/env.ts`](pack
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `YAAC_DATA_DIR` | `~/.yaac` | Data directory holding projects, worktrees, and the server lock. |
+| `YAAC_DATA_DIR` | `~/.yaac` | Data directory holding projects, workspaces, and the server lock. |
 | `YAAC_SERVER_PORT` | `8787` | Port the server binds on `127.0.0.1` (auto-increments if busy). `0` requests an OS-assigned ephemeral port. |
-| `YAAC_USE_TOR` | `false` | Route the server's host-side git/ssh through a Tor SOCKS proxy, and (under the `k8s` driver) every worktree's egress with it. Under `containerless` it covers only the server's own git — a host-run worktree has no proxy to route through, and the server says so at startup. Off when unset/empty/`0`/`false`; any other value is on. |
+| `YAAC_USE_TOR` | `false` | Route the server's host-side git/ssh through a Tor SOCKS proxy, and (under the `k8s` driver) every workspace's egress with it. Under `containerless` it covers only the server's own git — a host-run workspace has no proxy to route through, and the server says so at startup. Off when unset/empty/`0`/`false`; any other value is on. |
 | `YAAC_HOST_TOR_SOCKS_URL` | `socks5h://127.0.0.1:9050` | SOCKS endpoint used when `YAAC_USE_TOR` is on. |
 | `YAAC_KIND_CLUSTER` | `yaac` | Name of the kind cluster `yaac cluster install` creates and converges. |
-| `YAAC_PREWARM_POOL_SIZE` | `1` | Prewarmed worktrees kept ready per active project (`0` disables prewarming). |
-| `YAAC_WORKTREE_ID` | _(unset)_ | Set automatically in every worktree, under both drivers — not something you set yourself. A yaac started inside one reads it as "reached through the outer server's port-forward" and takes an unproxied request as local whatever Host it names (see docs/remote-hosting.md). |
+| `YAAC_PREWARM_POOL_SIZE` | `1` | Prewarmed workspaces kept ready per active project (`0` disables prewarming). |
+| `YAAC_WORKSPACE_ID` | _(unset)_ | Set automatically in every workspace, under both drivers — not something you set yourself. A yaac started inside one reads it as "reached through the outer server's port-forward" and takes an unproxied request as local whatever Host it names (see docs/remote-hosting.md). |
 | `YAAC_ALLOWED_HOSTS` | _(unset)_ | Comma-separated extra hostnames the server's Host-header check admits (e.g. its tailnet name behind `tailscale serve`). Loopback is always allowed; a request to any other name must come through `tailscale serve`, which says who it is from. |
-| `YAAC_FORWARD_BIND` | `127.0.0.1` | Address the webapp claims a worktree's forwarded ports are reachable at; a remote-hosting server sets its tailnet IP. The server binds nothing itself — match this with `yaac forward --bind <same address>` on that machine. |
+| `YAAC_FORWARD_BIND` | `127.0.0.1` | Address the webapp claims a workspace's forwarded ports are reachable at; a remote-hosting server sets its tailnet IP. The server binds nothing itself — match this with `yaac forward --bind <same address>` on that machine. |
 | `YAAC_SECRET` | _(unset)_ | Key the server encrypts stored secrets with. Unset → it generates one into `~/.yaac/server-local/secret.key` (see "Secrets at rest"). |
 | `YAAC_SECRETS` | _(unset)_ | Versioned keys, `"<version>:<secret>,…"`, newest first — how a key is rotated without re-encrypting anything. `YAAC_SECRET` alongside it opens payloads written before versioning. |
 | `YAAC_BUNDLED` | _(unset)_ | Set to `true` by the build (tsup) in the shipped bundle so it loads assets from `dist/`. Build-time define, not a runtime knob. |
@@ -548,7 +548,7 @@ These are set by the build or the test harness; production reads several of them
 | `YAAC_IMAGE_PREFIX` | _(unset)_ | Prefix applied to built/pushed image names (test isolation). |
 | `YAAC_PROXY_IMAGE` | `yaac-proxy` | Proxy image tag override. |
 | `YAAC_REQUIRE_PREBUILT_IMAGES` | _(unset)_ | `1` fails fast if a required image isn't already in the registry (CI/e2e). |
-| `YAAC_STARTING_GRACE_MS` | `60000` | Grace window (ms) protecting freshly-created worktree pods from the stale-worktree reaper. |
+| `YAAC_STARTING_GRACE_MS` | `60000` | Grace window (ms) protecting freshly-created workspace pods from the stale-workspace reaper. |
 | `YAAC_BUILD_ID` | _(unset)_ | Override the build id for tests running from source (no `dist/.build-id`). |
 | `YAAC_SERVER_URL` | _(unset)_ | Point the CLI at an in-process server without the lock file (tests). |
 | `YAAC_E2E_NO_ATTACH` | _(unset)_ | `1` skips the post-provision terminal attach (no-TTY e2e). |
@@ -596,19 +596,19 @@ A step that skips it works on a Linux host whose uid is 1000 and fails with `Per
 
 There is **no `yaac` group** — the user's primary group is 0 — so a layer that says `chown -R yaac:yaac` or `COPY --chown=yaac:yaac` no longer builds. Spell it `yaac:0`.
 
-A **standalone** `Dockerfile.yaac` owns its own user setup, so it owns all of this: create the user with primary group 0 (`useradd -m -u 1000 -g 0 ...`), make its home group-writable (`chmod -R g=u /home/<user>`), and make `/etc/passwd` group-writable (`chgrp 0 /etc/passwd && chmod g=u /etc/passwd`) so yaac can point the entry at the running uid — without that, `sudo` and git-over-ssh fail inside the worktree.
+A **standalone** `Dockerfile.yaac` owns its own user setup, so it owns all of this: create the user with primary group 0 (`useradd -m -u 1000 -g 0 ...`), make its home group-writable (`chmod -R g=u /home/<user>`), and make `/etc/passwd` group-writable (`chgrp 0 /etc/passwd && chmod g=u /etc/passwd`) so yaac can point the entry at the running uid — without that, `sudo` and git-over-ssh fail inside the workspace.
 
 If a standalone image also sets its own `ENTRYPOINT`, that entrypoint must not depend on the `yaac` identity. yaac re-points the passwd entry from the pod's postStart hook, and the kubelet does not order the two, so an entrypoint calling `sudo`, `ssh` or `os.userInfo()` can still see the stale one.
 
 ## Nested containers
 
-**`nestedContainers: true`** runs a rootless podman inside the worktree pod and points the `docker` CLI (and compose) at its Docker-API socket:
+**`nestedContainers: true`** runs a rootless podman inside the workspace pod and points the `docker` CLI (and compose) at its Docker-API socket:
 
-- `docker build` / `docker run` / `docker compose up --build` work as-is. Image pulls ride the worktree's transparent egress to the MITM proxy: the upstream registries (docker.io, ghcr.io, quay.io and their CDNs) are auto-added to the worktree allowlist, and anything else is denied fail-closed. Build `RUN` steps and nested containers automatically trust the proxy CA.
+- `docker build` / `docker run` / `docker compose up --build` work as-is. Image pulls ride the workspace's transparent egress to the MITM proxy: the upstream registries (docker.io, ghcr.io, quay.io and their CDNs) are auto-added to the workspace allowlist, and anything else is denied fail-closed. Build `RUN` steps and nested containers automatically trust the proxy CA.
 - Nested containers share the pod's network namespace: a container's listener is reachable on `localhost:<port>` directly (`docker run -p` is a no-op — the app binds the port itself), and container-private networks are unsupported — use `network_mode: host` in compose files.
-- Built layers are promoted into a per-project shared store at worktree teardown, so an identical `docker build` in the next worktree is a pure cache hit.
+- Built layers are promoted into a per-project shared store at workspace teardown, so an identical `docker build` in the next workspace is a pure cache hit.
 
-Each project gets a plain-HTTP push registry (`registry:2`) reachable from its worktrees as `yaac-reg-<project>.<namespace>.svc:5000`, which is the bus those promoted layers ride: a worktree's salvaged images are pushed there at teardown and pulled by the next one. Only the project's own worktrees can reach its registry. Stale content-hash tags accumulate until project removal or cluster recreate (registry:2 has no safe online GC).
+Each project gets a plain-HTTP push registry (`registry:2`) reachable from its workspaces as `yaac-reg-<project>.<namespace>.svc:5000`, which is the bus those promoted layers ride: a workspace's salvaged images are pushed there at teardown and pulled by the next one. Only the project's own workspaces can reach its registry. Stale content-hash tags accumulate until project removal or cluster recreate (registry:2 has no safe online GC).
 
-**Running yaac inside a worktree** needs no container feature at all: start the inner server with `yaac server start` — a host server is the containerless driver — and its own worktrees are tmux servers in the worktree's checkout.
+**Running yaac inside a workspace** needs no container feature at all: start the inner server with `yaac server start` — a host server is the containerless driver — and its own workspaces are tmux servers in the workspace's checkout.
 

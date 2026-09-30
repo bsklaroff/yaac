@@ -73,17 +73,17 @@ function promptImages(raw: unknown): AcpImage[] | string {
 
 /**
  * Attach `sock` to the conversation, or close it with an error when there is
- * none live. "None live" is a normal state, not a fault: the worktree may
+ * none live. "None live" is a normal state, not a fault: the workspace may
  * still be booting, or its connection may be mid-respawn — so the pane is told
- * plainly and retries, exactly as `WorktreeTerminal` does on a dropped PTY.
+ * plainly and retries, exactly as `WorkspaceTerminal` does on a dropped PTY.
  */
 export function attachAcp(
   slug: string,
-  worktreeId: string,
+  workspaceId: string,
   agentSessionId: string,
   sock: AcpSocket,
 ): void {
-  const conversation = acpConversation(slug, worktreeId, agentSessionId)
+  const conversation = acpConversation(slug, workspaceId, agentSessionId)
   const send = (msg: AcpServerMessage): void => {
     try {
       sock.send(JSON.stringify(msg))
@@ -106,7 +106,7 @@ export function attachAcp(
   let seq = 0
   let detached = false
   const tail = tailAcpLog(
-    { slug, worktreeId, agentSessionId },
+    { slug, workspaceId, agentSessionId },
     (events, reset) => {
       // Closing the tail stops further passes, but not the one already reading:
       // it checks for closure on entry and its chain serializes rather than
@@ -126,7 +126,7 @@ export function attachAcp(
         // the handshake's own reports that this conversation is not running the
         // way it was asked to. They are made before any pane can exist — the id
         // a pane attaches by is minted by the same handshake — so a pane that
-        // only subscribed would never hear that its `accept-edits` worktree is
+        // only subscribed would never hear that its `accept-edits` workspace is
         // running in the adapter's looser default. Sent after `hello` because
         // hello replaces what the pane holds, and re-sent on a later reset for
         // the same reason.
@@ -162,7 +162,7 @@ export function attachAcp(
   // different object: it delivers its turn boundaries to its own subscribers,
   // and a cancel sent down here would reach a closed peer. Only a re-attach
   // rebinds, and a re-attach starts with the socket closing. The pane's backoff
-  // handles the rest — a worktree restarting has nothing to attach to for a
+  // handles the rest — a workspace restarting has nothing to attach to for a
   // while, which is the same "not live yet" a booting one reports below.
   const unsubscribeClose = conversation.onClosed(() => {
     send({ type: 'health', connected: false })
@@ -207,7 +207,7 @@ export function attachAcp(
       // Not awaited: the turn's progress is the event stream's business, and
       // the socket must stay responsive to a cancel while it runs.
       void conversation.prompt(text, images).catch((err: unknown) => {
-        serverLog(`[server] acp attach ${worktreeId}/${agentSessionId}: prompt failed: ${String(err)}`)
+        serverLog(`[server] acp attach ${workspaceId}/${agentSessionId}: prompt failed: ${String(err)}`)
       })
     }
   })

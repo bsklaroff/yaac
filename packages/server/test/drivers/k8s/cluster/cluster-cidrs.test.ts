@@ -59,7 +59,7 @@ describe('nodeIpBlocks', () => {
 
   it('throws rather than answering empty when no address resolves', async () => {
     // An empty ipBlock set renders a policy that silently denies the
-    // redirect delivery path — "all worktrees lost egress", no cause.
+    // redirect delivery path — "all workspaces lost egress", no cause.
     mockKubectlGetJson.mockResolvedValue({ items: [] })
     await expect(nodeIpBlocks()).rejects.toThrow(/could not resolve any node InternalIP/)
   })

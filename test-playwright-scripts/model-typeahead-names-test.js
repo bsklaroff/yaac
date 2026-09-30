@@ -1,5 +1,5 @@
 /*
- * Verifies the "+ New worktree" form's model suggestions show each model's
+ * Verifies the "+ New workspace" form's model suggestions show each model's
  * human-readable name in full: in the popover's narrow model column, the long
  * model id beside a name must truncate first, never the name itself.
  *
@@ -63,7 +63,7 @@ try {
   fs.mkdirSync(SHOTS, { recursive: true })
 
   for (const tool of tools) {
-    await page.getByTitle('New worktree').first().click()
+    await page.getByTitle('New workspace').first().click()
     await page.getByLabel('Agent').selectOption(tool)
     // One letter every name/id shares enough of to fill the list.
     await page.getByLabel('Model').fill('a')

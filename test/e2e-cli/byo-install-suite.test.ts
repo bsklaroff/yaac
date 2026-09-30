@@ -57,7 +57,7 @@ let operatorEnv: NodeJS.ProcessEnv
 let userEnv: NodeJS.ProcessEnv
 let forward: KubectlForward
 let scratch: string
-let worktreeId = ''
+let workspaceId = ''
 const children: ChildProcess[] = []
 
 /** The install namespace, `yaac`: this suite talks to the installed server, never a per-file one. */
@@ -113,7 +113,7 @@ beforeAll(async () => {
   origin = record.url
   scratch = await e2eMkdtemp('byo-install-suite-')
   operatorEnv = installEnv({ YAAC_DATA_DIR: layout.dataDir })
-  // No TTY here, so `worktree create` must not attach after provisioning.
+  // No TTY here, so `workspace create` must not attach after provisioning.
   userEnv = installEnv({ YAAC_DATA_DIR: path.join(scratch, 'user'), YAAC_E2E_NO_ATTACH: '1' })
   forward = await startKubectlForward({ namespace: 'yaac', target: 'svc/yaac-server', remotePort: SERVER_POD_PORT })
   await waitFor('the loopback forward', async () => (await api('/health')).ok)
@@ -198,7 +198,7 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     }
   })
 
-  it('creates a worktree through the installed server, with a terminal and a forward that work', async () => {
+  it('creates a workspace through the installed server, with a terminal and a forward that work', async () => {
     expect((await runYaac(userEnv, 'remote', 'set', forward.origin)).exitCode).toBe(0)
     // The install outlives every run of this file (its volumes are Retain),
     // so a project an earlier run added is still there: start from none.
@@ -212,24 +212,24 @@ describe('yaac cluster install --byo, on kind-byo', () => {
       const res = await runYaac(userEnv, ...args)
       expect(res.exitCode, `${args.join(' ')}: ${res.stderr}`).toBe(0)
     }
-    // `worktree create` fast-fails an unknown slug from THIS machine's disk
+    // `workspace create` fast-fails an unknown slug from THIS machine's disk
     // when the origin is loopback — right for a kind install, whose global
     // tier is here, and never reached by a byo user, who comes in over the
     // https origin. This suite's loopback is a port-forward, so it stands
     // in the directory that check looks for.
     await fs.mkdir(path.join(scratch, 'user', 'global', 'projects', SLUG), { recursive: true })
-    const created = await runYaac(userEnv, 'worktree', 'create', SLUG, '--tool', 'claude')
+    const created = await runYaac(userEnv, 'workspace', 'create', SLUG, '--tool', 'claude')
     expect(created.exitCode, created.stderr).toBe(0)
-    worktreeId = (await kubectl('get', 'pods', '-n', 'yaac', '-l', `yaac.project=${SLUG}`,
-      '-o', 'jsonpath={.items[0].metadata.labels.yaac\\.worktree-id}')).trim()
-    expect(worktreeId).not.toBe('')
-    const pod = (await kubectl('get', 'pods', '-n', 'yaac', '-l', `yaac.worktree-id=${worktreeId}`,
+    workspaceId = (await kubectl('get', 'pods', '-n', 'yaac', '-l', `yaac.project=${SLUG}`,
+      '-o', 'jsonpath={.items[0].metadata.labels.yaac\\.workspace-id}')).trim()
+    expect(workspaceId).not.toBe('')
+    const pod = (await kubectl('get', 'pods', '-n', 'yaac', '-l', `yaac.workspace-id=${workspaceId}`,
       '-o', 'jsonpath={.items[0].metadata.name}')).trim()
 
     // A terminal round-trips over the PTY WebSocket.
-    const term = await (await api(`/worktree/${worktreeId}/terminals`, { method: 'POST' })).json() as { target: string }
+    const term = await (await api(`/workspace/${workspaceId}/terminals`, { method: 'POST' })).json() as { target: string }
     const ws = new WebSocket(`${forward.origin.replace('http', 'ws')}/api/pty/attach`
-      + `?id=${worktreeId}&target=${encodeURIComponent(term.target)}&cols=100&rows=30`)
+      + `?id=${workspaceId}&target=${encodeURIComponent(term.target)}&cols=100&rows=30`)
     let screen = ''
     ws.on('message', (data) => { screen += Buffer.from(data as Buffer).toString('utf8') })
     await new Promise<void>((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject) })
@@ -240,10 +240,10 @@ describe('yaac cluster install --byo, on kind-byo', () => {
 
     // A port in the pod, forwarded to this machine over the tunnel.
     const port = 18_761
-    await execFileAsync('kubectl', ['exec', '-n', 'yaac', pod, '-c', 'worktree', '--', 'sh', '-c',
+    await execFileAsync('kubectl', ['exec', '-n', 'yaac', pod, '-c', 'workspace', '--', 'sh', '-c',
       `nohup node -e "require('http').createServer((q, r) => r.end('byo-forward')).listen(${String(port)}, '127.0.0.1')" >/dev/null 2>&1 &`],
     { env: operatorEnv })
-    const fwd = spawn(process.execPath, [TEST_CLI_ENTRY, 'forward', worktreeId], { env: userEnv, stdio: ['ignore', 'pipe', 'pipe'] })
+    const fwd = spawn(process.execPath, [TEST_CLI_ENTRY, 'forward', workspaceId], { env: userEnv, stdio: ['ignore', 'pipe', 'pipe'] })
     children.push(fwd)
     // What the forwarder says is the only account of a tunnel the server
     // closed: the close code and reason land here, nowhere else.
@@ -252,7 +252,7 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     fwd.stderr.on('data', (b: Buffer) => { fwdOutput += b.toString() })
     let mapping: { hostPort: number } | undefined
     await waitFor('the detected port to be offered', async () => {
-      const res = await api(`/worktree/${worktreeId}/forward-port`, {
+      const res = await api(`/workspace/${workspaceId}/forward-port`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ containerPort: port }),
       })

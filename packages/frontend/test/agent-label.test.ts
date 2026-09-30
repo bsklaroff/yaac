@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { agentLabel, formatModel, worktreeModel } from '#lib/agentLabel'
-import type { AgentSessionEntry, WorktreeListEntry } from '@yaac/shared/types'
+import { agentLabel, formatModel, workspaceModel } from '#lib/agentLabel'
+import type { AgentSessionEntry, WorkspaceListEntry } from '@yaac/shared/types'
 
 const session = (over: Partial<AgentSessionEntry> = {}): AgentSessionEntry => ({
   agentSessionId: 'conv-a',
@@ -10,8 +10,8 @@ const session = (over: Partial<AgentSessionEntry> = {}): AgentSessionEntry => ({
   ...over,
 })
 
-const worktree = (agentSessions: AgentSessionEntry[]): WorktreeListEntry => ({
-  worktreeId: 's1',
+const workspace = (agentSessions: AgentSessionEntry[]): WorkspaceListEntry => ({
+  workspaceId: 's1',
   projectSlug: 'proj',
   tool: 'claude',
   status: 'running',
@@ -80,20 +80,20 @@ describe('agentLabel', () => {
   })
 })
 
-describe('worktreeModel', () => {
-  it('prefers a live conversation over the worktree\'s history', () => {
+describe('workspaceModel', () => {
+  it('prefers a live conversation over the workspace\'s history', () => {
     // A `/clear`ed conversation is still linked and still names a model; what
-    // the worktree is running now is what the live one says.
-    expect(worktreeModel(worktree([
+    // the workspace is running now is what the live one says.
+    expect(workspaceModel(workspace([
       session({ agentSessionId: 'old', ordinal: 0, active: false, model: 'claude-opus-4-8' }),
       session({ agentSessionId: 'live', ordinal: 1, active: true, model: 'claude-opus-5' }),
     ]))?.model).toBe('claude-opus-5')
   })
 
   it('takes the primary agent when several are live', () => {
-    // Ordinal 0 is the window a restart brings up first — the worktree's own
+    // Ordinal 0 is the window a restart brings up first — the workspace's own
     // agent rather than a second one opened beside it.
-    expect(worktreeModel(worktree([
+    expect(workspaceModel(workspace([
       session({ agentSessionId: 'second', ordinal: 1, model: 'claude-fable-5' }),
       session({ agentSessionId: 'primary', ordinal: 0, model: 'claude-opus-5' }),
     ]))?.model).toBe('claude-opus-5')
@@ -102,14 +102,14 @@ describe('worktreeModel', () => {
   it('falls back to history when no live conversation has reported one', () => {
     // The live agent is appending to the same transcript the recorded one came
     // from, so its model is the better guess than nothing at all.
-    expect(worktreeModel(worktree([
+    expect(workspaceModel(workspace([
       session({ agentSessionId: 'old', ordinal: 0, active: false, model: 'claude-opus-5' }),
       session({ agentSessionId: 'live', ordinal: 1, active: true }),
     ]))?.model).toBe('claude-opus-5')
   })
 
-  it('reports none for a worktree whose agents have not answered yet', () => {
-    expect(worktreeModel(worktree([session()]))).toBeUndefined()
-    expect(worktreeModel(worktree([]))).toBeUndefined()
+  it('reports none for a workspace whose agents have not answered yet', () => {
+    expect(workspaceModel(workspace([session()]))).toBeUndefined()
+    expect(workspaceModel(workspace([]))).toBeUndefined()
   })
 })

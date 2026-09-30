@@ -38,8 +38,8 @@ On a saturated link, redundant background bytes are foreground latency.
 This tier deletes the redundancy. Precedent for the pane pause is tmux's own
 control-mode `pause-after`.
 
-- **Pause hidden panes.** The webapp eagerly attaches up to 12 worktrees'
-  agent panes (`WorktreeView.tsx` keep-alive set) and every one streams
+- **Pause hidden panes.** The webapp eagerly attaches up to 12 workspaces'
+  agent panes (`WorkspaceView.tsx` keep-alive set) and every one streams
   full-fidelity output while invisible. Add `{type:'pause'}` /
   `{type:'resume'}` to the `/pty/attach` control vocabulary; a paused bridge
   stops reading its relay socket, so TCP backpressure propagates to streamd's
@@ -50,9 +50,9 @@ control-mode `pause-after`.
   cost zero bytes".
 - **`/events` deltas.** `EventHub.publishSnapshot` (`api/events.ts`)
   broadcasts the entire server snapshot to every client on any change, with
-  only a whole-string dedupe. Move to per-worktree patch events, or at
+  only a whole-string dedupe. Move to per-workspace patch events, or at
   minimum per-client interest filtering (full detail for the selected
-  worktree, summary rows for the rest). The WebSocket compression already in
+  workspace, summary rows for the rest). The WebSocket compression already in
   place masks much of this; deltas finish it.
 - **ACP stream framing.** `acp-bridge.ts` sends one JSON envelope (~70 bytes
   of framing) per projected event — batch each 150 ms tail pass into one
@@ -62,7 +62,7 @@ control-mode `pause-after`.
   the entire transcript (`seq` already exists on every event; the client
   just cannot ask). Note the chat socket is torn down whenever the pane is
   hidden, so today merely tabbing away and back replays the whole history.
-- **Fix the polls.** `WorktreeChanges.tsx` fetches the full unified diff
+- **Fix the polls.** `WorkspaceChanges.tsx` fetches the full unified diff
   every 3 s — add a content-hash/ETag 304 path (or push invalidation over
   `/events`). `ImageBuildsOverlay.tsx` re-fetches the whole build log every
   1.5 s — tail from a byte offset.

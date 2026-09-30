@@ -13,18 +13,18 @@ import {
   probeTmuxLiveness,
 } from '#runtime/status/liveness'
 import {
-  _resetWorktreeStatusStoreForTests,
-  setWorktreeStreamHealth,
+  _resetWorkspaceStatusStoreForTests,
+  setWorkspaceStreamHealth,
 } from '#runtime/status/status-store'
 import { setDataDir } from '@yaac/shared/project-paths'
-import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
-import { WorkspaceExecError, type WorktreeDriver } from '#drivers/contract'
+import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { WorkspaceExecError, type WorkspaceDriver } from '#drivers/contract'
 
 // Mocked at the contract boundary: every probe in here is one `exec` into
 // the workspace, so the registered driver is the only thing that needs
 // standing in. A transport failure is any other error — what a driver
 // throws when it never reached the workspace at all.
-const execMock = vi.fn<WorktreeDriver['exec']>()
+const execMock = vi.fn<WorkspaceDriver['exec']>()
 const transportFailure = (msg: string): Error => new Error(msg)
 
 /** The identity + unit name a probe addresses, by this suite's convention. */
@@ -42,7 +42,7 @@ describe('isTmuxSessionAlive', () => {
   beforeEach(async () => {
     _clearTmuxAliveCacheForTests()
     execMock.mockReset()
-    installFakeWorktreeDriver({ exec: execMock })
+    installFakeWorkspaceDriver({ exec: execMock })
     dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-tmuxalive-'))
     setDataDir(dataDir)
   })
@@ -129,7 +129,7 @@ describe('probeAgentPaneState', () => {
   beforeEach(async () => {
     _clearAgentStartedCacheForTests()
     execMock.mockReset()
-    installFakeWorktreeDriver({ exec: execMock })
+    installFakeWorkspaceDriver({ exec: execMock })
     dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-agentpane-'))
     setDataDir(dataDir)
   })
@@ -217,7 +217,7 @@ describe('probeTmuxLiveness', () => {
   beforeEach(async () => {
     _clearTmuxAliveCacheForTests()
     execMock.mockReset()
-    installFakeWorktreeDriver({ exec: execMock })
+    installFakeWorkspaceDriver({ exec: execMock })
     dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-tmuxprobe-'))
     setDataDir(dataDir)
   })
@@ -253,17 +253,17 @@ describe('probeTmuxLiveness', () => {
   })
 
   it('short-circuits to alive on a healthy watcher stream — no probe at all', async () => {
-    setWorktreeStreamHealth('p', 's-streamed', true)
+    setWorkspaceStreamHealth('p', 's-streamed', true)
     try {
       await expect(probeTmuxLiveness(target('p', 's-streamed'))).resolves.toBe('alive')
       expect(execMock).not.toHaveBeenCalled()
       // Health gone (stream died) → back to the relay probe.
-      setWorktreeStreamHealth('p', 's-streamed', false)
+      setWorkspaceStreamHealth('p', 's-streamed', false)
       execMock.mockResolvedValue({ stdout: '', stderr: '' })
       await expect(probeTmuxLiveness(target('p', 's-streamed'))).resolves.toBe('alive')
       expect(execMock).toHaveBeenCalledTimes(1)
     } finally {
-      _resetWorktreeStatusStoreForTests()
+      _resetWorkspaceStatusStoreForTests()
     }
   })
 })

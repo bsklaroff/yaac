@@ -19,12 +19,12 @@ import type { AcpConversation } from './acp-client'
 
 const byName = new Map<string, AcpConversation>()
 
-function sessionKey(slug: string, worktreeId: string, agentSessionId: string): string {
-  return `${slug}/${worktreeId}/id:${agentSessionId}`
+function sessionKey(slug: string, workspaceId: string, agentSessionId: string): string {
+  return `${slug}/${workspaceId}/id:${agentSessionId}`
 }
 
-function handleKey(slug: string, worktreeId: string, handle: string): string {
-  return `${slug}/${worktreeId}/handle:${handle}`
+function handleKey(slug: string, workspaceId: string, handle: string): string {
+  return `${slug}/${workspaceId}/handle:${handle}`
 }
 
 /**
@@ -34,45 +34,45 @@ function handleKey(slug: string, worktreeId: string, handle: string): string {
  */
 export function registerAcpConversation(
   slug: string,
-  worktreeId: string,
+  workspaceId: string,
   names: { handle: string; agentSessionId?: string },
   conversation: AcpConversation,
 ): void {
-  byName.set(handleKey(slug, worktreeId, names.handle), conversation)
+  byName.set(handleKey(slug, workspaceId, names.handle), conversation)
   if (names.agentSessionId !== undefined) {
-    byName.set(sessionKey(slug, worktreeId, names.agentSessionId), conversation)
+    byName.set(sessionKey(slug, workspaceId, names.agentSessionId), conversation)
   }
 }
 
 export function unregisterAcpConversation(
   slug: string,
-  worktreeId: string,
+  workspaceId: string,
   names: { handle: string; agentSessionId?: string },
 ): void {
-  byName.delete(handleKey(slug, worktreeId, names.handle))
+  byName.delete(handleKey(slug, workspaceId, names.handle))
   if (names.agentSessionId !== undefined) {
-    byName.delete(sessionKey(slug, worktreeId, names.agentSessionId))
+    byName.delete(sessionKey(slug, workspaceId, names.agentSessionId))
   }
 }
 
 /** The live conversation a pane's `acp:<id>` target names, or undefined when
- *  none is connected right now (the worktree is booting, or its connection is
+ *  none is connected right now (the workspace is booting, or its connection is
  *  mid-respawn). */
 export function acpConversation(
   slug: string,
-  worktreeId: string,
+  workspaceId: string,
   agentSessionId: string,
 ): AcpConversation | undefined {
-  return byName.get(sessionKey(slug, worktreeId, agentSessionId))
+  return byName.get(sessionKey(slug, workspaceId, agentSessionId))
 }
 
 /** The same, by the driver's in-pod handle. */
 export function acpConversationByHandle(
   slug: string,
-  worktreeId: string,
+  workspaceId: string,
   handle: string,
 ): AcpConversation | undefined {
-  return byName.get(handleKey(slug, worktreeId, handle))
+  return byName.get(handleKey(slug, workspaceId, handle))
 }
 
 /** Test-only: drop every entry. */
@@ -90,7 +90,7 @@ export function _resetAcpRegistryForTests(): void {
  * so the value is parked here between them rather than threaded through a
  * launch spec, a database column and a connection dep that nothing else would
  * use. Keyed by the conversation's launch id, which is unique by construction:
- * a fresh conversation is launched under its worktree's id, a resumed one under
+ * a fresh conversation is launched under its workspace's id, a resumed one under
  * the id the agent minted.
  *
  * Taken once, then forgotten: a reattach must NOT re-send it. The adapter is

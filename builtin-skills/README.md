@@ -6,7 +6,7 @@ every agent tool (Claude Code, Codex, OpenCode, pi).
 Each skill is a `<name>/SKILL.md` directory here (same format as any personal
 skill). At session create they are delivered the way the substrate allows: a
 pod gets a fresh staging from the install, mounted read-only into each tool's
-personal skills root; a containerless worktree, which has no mount namespace
+personal skills root; a containerless workspace, which has no mount namespace
 to layer that with, gets them linked into the project's shared skills roots.
 Either way they track the installed yaac version rather than going stale in a
 config dir, and discovery surfaces them as the `system` / `yaac` tier.
@@ -16,7 +16,7 @@ shared-root sync) and `packages/server/src/domain/skills/discover.ts`
 (discovery).
 
 A built-in skill runs under **both** substrates, so the commands it hands the
-agent may only assume what a containerless worktree has: the user's own host,
+agent may only assume what a containerless workspace has: the user's own host,
 with none of the tooling yaac's session image bakes in. `jq` is the recurring
 trap — filter GitHub JSON with gh's own `--jq` flag (gh embeds a jq engine),
 never a `| jq` pipe. Same for any other image-provided tool: name a fallback,
@@ -32,9 +32,9 @@ Shipped skills:
 - **`yaac-autoconfig`** — generate a `yaac-config.json` template for the current
   repo (install/build/start the project + forward its ports) for the user to
   apply to their project config.
-- **`yaac-mama`** — ask the yaac server running this worktree to list the
-  project's worktrees, start a sibling one with a prompt, or file worktrees
-  into named groups, via the in-worktree `yaac-mama` command.
+- **`yaac-mama`** — ask the yaac server running this workspace to list the
+  project's workspaces, start a sibling one with a prompt, or file workspaces
+  into named groups, via the in-workspace `yaac-mama` command.
 - **`yaac-watch-prs`** — watch the project's GitHub repo for PR updates (opened
   / comment / commit), one event line per update, via `yaac-watch-prs`.
 - **`push-pr`** — commit the current branch, open a PR, then watch it for

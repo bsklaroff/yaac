@@ -7,7 +7,7 @@ import type { DriverKind } from '#types'
  * server start` and by `yaac cluster install`).
  *
  * CLIENT-LOCAL: the choice belongs to this install, not to a project, and
- * it is not something a worktree's state should carry — and the only
+ * it is not something a workspace's state should carry — and the only
  * process that has to ACT on it is a client, which is why it may not live
  * where a k8s server (a pod) would be the one holding it.
  *

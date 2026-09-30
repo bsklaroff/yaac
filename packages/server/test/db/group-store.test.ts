@@ -2,177 +2,177 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { closeDb } from '#db/client'
 import {
-  createWorktreeGroup,
-  deleteProjectWorktreeGroups,
-  deleteWorktreeGroup,
-  listWorktreeGroupRows,
-  renameWorktreeGroup,
-  setWorktreeGroup,
-  setWorktreeGroupPinned,
+  createWorkspaceGroup,
+  deleteProjectWorkspaceGroups,
+  deleteWorkspaceGroup,
+  listWorkspaceGroupRows,
+  renameWorkspaceGroup,
+  setWorkspaceGroup,
+  setWorkspaceGroupPinned,
 } from '#db/group-store'
-import { getProjectWorktreeRows, recordWorktreeCreated, recordWorktreeStopped } from '#db/worktree-store'
-import { getQueuedWorktreeRow, insertQueuedWorktree } from '#db/queued-worktree-store'
-import { insertDraftWorktree, listDraftWorktreeRows } from '#db/draft-worktree-store'
-import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
+import { getProjectWorkspaceRows, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
+import { getQueuedWorkspaceRow, insertQueuedWorkspace } from '#db/queued-workspace-store'
+import { insertDraftWorkspace, listDraftWorkspaceRows } from '#db/draft-workspace-store'
+import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#notify'
 import { ServerError } from '@yaac/shared/errors'
 
-describe('worktree group store', () => {
+describe('workspace group store', () => {
   let tmpDir: string
   let pushes: number
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
-    _resetWorktreeListChangedForTests()
+    _resetWorkspaceListChangedForTests()
     pushes = 0
-    onWorktreeListChanged(() => { pushes += 1 })
+    onWorkspaceListChanged(() => { pushes += 1 })
   })
 
   afterEach(async () => {
-    _resetWorktreeListChangedForTests()
+    _resetWorkspaceListChangedForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
   })
 
-  const create = (worktreeId: string, projectSlug = 'proj'): Promise<void> =>
-    recordWorktreeCreated({ projectSlug, worktreeId })
+  const create = (workspaceId: string, projectSlug = 'proj'): Promise<void> =>
+    recordWorkspaceCreated({ projectSlug, workspaceId })
 
-  const groupOf = async (worktreeId: string, projectSlug = 'proj'): Promise<string | undefined> =>
-    (await getProjectWorktreeRows(projectSlug)).get(worktreeId)?.groupId
+  const groupOf = async (workspaceId: string, projectSlug = 'proj'): Promise<string | undefined> =>
+    (await getProjectWorkspaceRows(projectSlug)).get(workspaceId)?.groupId
 
-  describe('createWorktreeGroup', () => {
-    it('files its founding worktree, and pushes a snapshot', async () => {
+  describe('createWorkspaceGroup', () => {
+    it('files its founding workspace, and pushes a snapshot', async () => {
       await create('sid-1')
       const before = pushes
 
-      const group = await createWorktreeGroup('proj', '  release   train ', 'sid-1')
+      const group = await createWorkspaceGroup('proj', '  release   train ', 'sid-1')
 
-      // Names take the same normalization a worktree title does.
+      // Names take the same normalization a workspace title does.
       expect(group).toMatchObject({ projectSlug: 'proj', name: 'release train', pinned: false })
       expect(await groupOf('sid-1')).toBe(group.groupId)
       expect(pushes - before).toBe(1)
     })
 
     it('is born pinned when it is born empty, so it can be seen and removed', async () => {
-      const group = await createWorktreeGroup('proj', 'release', null)
+      const group = await createWorkspaceGroup('proj', 'release', null)
 
       // Pinned is what lists a memberless group; an unpinned one would be
       // invisible to every surface, and so undeletable.
       expect(group).toMatchObject({ name: 'release', pinned: true })
-      expect((await listWorktreeGroupRows('proj')).map((g) => g.groupId)).toEqual([group.groupId])
+      expect((await listWorkspaceGroupRows('proj')).map((g) => g.groupId)).toEqual([group.groupId])
 
       // And it still takes members afterwards, like any other group.
       await create('sid-1')
-      await setWorktreeGroup('proj', 'sid-1', group.groupId)
+      await setWorkspaceGroup('proj', 'sid-1', group.groupId)
       expect(await groupOf('sid-1')).toBe(group.groupId)
     })
 
-    it('refuses a founding worktree the project does not have', async () => {
+    it('refuses a founding workspace the project does not have', async () => {
       // An empty group is unreachable — nothing lists an unpinned group with
       // no members, so nothing could ever delete it. The insert has to go back
       // with the failed stamp.
-      await expect(createWorktreeGroup('proj', 'release', 'nope')).rejects.toThrow(ServerError)
-      expect(await listWorktreeGroupRows('proj')).toEqual([])
+      await expect(createWorkspaceGroup('proj', 'release', 'nope')).rejects.toThrow(ServerError)
+      expect(await listWorkspaceGroupRows('proj')).toEqual([])
 
       await create('sid-1', 'other')
-      await expect(createWorktreeGroup('proj', 'release', 'sid-1')).rejects.toThrow(ServerError)
-      expect(await listWorktreeGroupRows('proj')).toEqual([])
+      await expect(createWorkspaceGroup('proj', 'release', 'sid-1')).rejects.toThrow(ServerError)
+      expect(await listWorkspaceGroupRows('proj')).toEqual([])
     })
 
     it('keeps each group to its own project', async () => {
       await create('sid-1')
       await create('sid-2', 'other')
-      const mine = await createWorktreeGroup('proj', 'mine', 'sid-1')
-      await createWorktreeGroup('other', 'theirs', 'sid-2')
+      const mine = await createWorkspaceGroup('proj', 'mine', 'sid-1')
+      await createWorkspaceGroup('other', 'theirs', 'sid-2')
 
-      expect((await listWorktreeGroupRows('proj')).map((g) => g.name)).toEqual(['mine'])
-      expect((await listWorktreeGroupRows()).map((g) => g.name).sort()).toEqual(['mine', 'theirs'])
-      // The founding stamp is scoped too — a same-named worktree in another
+      expect((await listWorkspaceGroupRows('proj')).map((g) => g.name)).toEqual(['mine'])
+      expect((await listWorkspaceGroupRows()).map((g) => g.name).sort()).toEqual(['mine', 'theirs'])
+      // The founding stamp is scoped too — a same-named workspace in another
       // project is untouched.
       expect(await groupOf('sid-1')).toBe(mine.groupId)
       expect(await groupOf('sid-2', 'proj')).toBeUndefined()
     })
   })
 
-  describe('renameWorktreeGroup', () => {
+  describe('renameWorkspaceGroup', () => {
     it('renames, and leaves a blank name alone', async () => {
       await create('sid-1')
-      const group = await createWorktreeGroup('proj', 'release', 'sid-1')
+      const group = await createWorkspaceGroup('proj', 'release', 'sid-1')
 
-      await renameWorktreeGroup('proj', group.groupId, ' shipping  soon ')
-      expect((await listWorktreeGroupRows('proj'))[0]?.name).toBe('shipping soon')
+      await renameWorkspaceGroup('proj', group.groupId, ' shipping  soon ')
+      expect((await listWorkspaceGroupRows('proj'))[0]?.name).toBe('shipping soon')
 
       // A group is only ever identified by its name, so there is nothing for a
       // blank one to fall back to.
-      await renameWorktreeGroup('proj', group.groupId, '   ')
-      expect((await listWorktreeGroupRows('proj'))[0]?.name).toBe('shipping soon')
+      await renameWorkspaceGroup('proj', group.groupId, '   ')
+      expect((await listWorkspaceGroupRows('proj'))[0]?.name).toBe('shipping soon')
     })
   })
 
-  describe('setWorktreeGroupPinned', () => {
+  describe('setWorkspaceGroupPinned', () => {
     it('pins and unpins, pushing each time', async () => {
       await create('sid-1')
-      const group = await createWorktreeGroup('proj', 'release', 'sid-1')
+      const group = await createWorkspaceGroup('proj', 'release', 'sid-1')
       const before = pushes
 
-      await setWorktreeGroupPinned('proj', group.groupId, true)
-      expect((await listWorktreeGroupRows('proj'))[0]?.pinned).toBe(true)
+      await setWorkspaceGroupPinned('proj', group.groupId, true)
+      expect((await listWorkspaceGroupRows('proj'))[0]?.pinned).toBe(true)
 
-      await setWorktreeGroupPinned('proj', group.groupId, false)
-      expect((await listWorktreeGroupRows('proj'))[0]?.pinned).toBe(false)
+      await setWorkspaceGroupPinned('proj', group.groupId, false)
+      expect((await listWorkspaceGroupRows('proj'))[0]?.pinned).toBe(false)
       expect(pushes - before).toBe(2)
     })
   })
 
-  describe('deleteWorktreeGroup', () => {
+  describe('deleteWorkspaceGroup', () => {
     it('releases every member — running, stopped, queued or drafted — back to the default list', async () => {
       await create('live')
       await create('dead')
-      const group = await createWorktreeGroup('proj', 'release', 'live')
-      await setWorktreeGroup('proj', 'dead', group.groupId)
-      await recordWorktreeStopped('proj', 'dead')
+      const group = await createWorkspaceGroup('proj', 'release', 'live')
+      await setWorkspaceGroup('proj', 'dead', group.groupId)
+      await recordWorkspaceStopped('proj', 'dead')
       const settings = { prompt: 'p', tool: 'claude', mode: 'tui', permissionMode: 'bypass', groupId: group.groupId } as const
-      const queued = await insertQueuedWorktree('proj', { parentWorktreeId: 'live' }, {
+      const queued = await insertQueuedWorkspace('proj', { parentWorkspaceId: 'live' }, {
         ...settings, model: 'opus', branch: 'main',
       })
-      await insertDraftWorktree('proj', settings)
+      await insertDraftWorkspace('proj', settings)
 
-      await deleteWorktreeGroup('proj', group.groupId)
+      await deleteWorkspaceGroup('proj', group.groupId)
 
-      expect(await listWorktreeGroupRows('proj')).toEqual([])
+      expect(await listWorkspaceGroupRows('proj')).toEqual([])
       expect(await groupOf('live')).toBeUndefined()
       expect(await groupOf('dead')).toBeUndefined()
-      expect((await getQueuedWorktreeRow(queued.id))?.groupId).toBeUndefined()
-      expect((await listDraftWorktreeRows())[0].groupId).toBeUndefined()
+      expect((await getQueuedWorkspaceRow(queued.id))?.groupId).toBeUndefined()
+      expect((await listDraftWorkspaceRows())[0].groupId).toBeUndefined()
     })
 
     it('leaves another group and its members alone', async () => {
       await create('sid-1')
       await create('sid-2')
-      const doomed = await createWorktreeGroup('proj', 'doomed', 'sid-1')
-      const kept = await createWorktreeGroup('proj', 'kept', 'sid-2')
+      const doomed = await createWorkspaceGroup('proj', 'doomed', 'sid-1')
+      const kept = await createWorkspaceGroup('proj', 'kept', 'sid-2')
 
-      await deleteWorktreeGroup('proj', doomed.groupId)
+      await deleteWorkspaceGroup('proj', doomed.groupId)
 
-      expect((await listWorktreeGroupRows('proj')).map((g) => g.groupId)).toEqual([kept.groupId])
+      expect((await listWorkspaceGroupRows('proj')).map((g) => g.groupId)).toEqual([kept.groupId])
       expect(await groupOf('sid-2')).toBe(kept.groupId)
     })
   })
 
-  describe('setWorktreeGroup', () => {
-    it('moves a worktree between groups and back to the default list', async () => {
+  describe('setWorkspaceGroup', () => {
+    it('moves a workspace between groups and back to the default list', async () => {
       await create('sid-1')
-      const from = await createWorktreeGroup('proj', 'from', 'sid-1')
+      const from = await createWorkspaceGroup('proj', 'from', 'sid-1')
       await create('sid-2')
-      const to = await createWorktreeGroup('proj', 'to', 'sid-2')
+      const to = await createWorkspaceGroup('proj', 'to', 'sid-2')
 
-      await setWorktreeGroup('proj', 'sid-1', to.groupId)
+      await setWorkspaceGroup('proj', 'sid-1', to.groupId)
       expect(await groupOf('sid-1')).toBe(to.groupId)
 
-      await setWorktreeGroup('proj', 'sid-1', null)
+      await setWorkspaceGroup('proj', 'sid-1', null)
       expect(await groupOf('sid-1')).toBeUndefined()
       // The group it left still exists — emptying one never deletes it, which
       // is what lets a hidden group come back when a member restarts.
-      expect((await listWorktreeGroupRows('proj')).map((g) => g.groupId).sort())
+      expect((await listWorkspaceGroupRows('proj')).map((g) => g.groupId).sort())
         .toEqual([from.groupId, to.groupId].sort())
     })
 
@@ -180,45 +180,45 @@ describe('worktree group store', () => {
       await create('sid-1')
       // The sidebar acts on a snapshot, so a drop can name a group another
       // client has just deleted. That has to fail loudly rather than file the
-      // worktree somewhere nothing lists.
-      await expect(setWorktreeGroup('proj', 'sid-1', 'gone')).rejects.toThrow(ServerError)
+      // workspace somewhere nothing lists.
+      await expect(setWorkspaceGroup('proj', 'sid-1', 'gone')).rejects.toThrow(ServerError)
       expect(await groupOf('sid-1')).toBeUndefined()
 
       await create('sid-2', 'other')
-      const theirs = await createWorktreeGroup('other', 'theirs', 'sid-2')
-      await expect(setWorktreeGroup('proj', 'sid-1', theirs.groupId)).rejects.toThrow(ServerError)
+      const theirs = await createWorkspaceGroup('other', 'theirs', 'sid-2')
+      await expect(setWorkspaceGroup('proj', 'sid-1', theirs.groupId)).rejects.toThrow(ServerError)
     })
 
-    it('refuses a worktree the project does not have', async () => {
+    it('refuses a workspace the project does not have', async () => {
       await create('sid-1')
-      const group = await createWorktreeGroup('proj', 'release', 'sid-1')
+      const group = await createWorkspaceGroup('proj', 'release', 'sid-1')
       // Both ends are checked: a move that matched no row would otherwise
       // report success having filed nothing.
-      await expect(setWorktreeGroup('proj', 'nope', group.groupId)).rejects.toThrow(ServerError)
-      await expect(setWorktreeGroup('proj', 'nope', null)).rejects.toThrow(ServerError)
+      await expect(setWorkspaceGroup('proj', 'nope', group.groupId)).rejects.toThrow(ServerError)
+      await expect(setWorkspaceGroup('proj', 'nope', null)).rejects.toThrow(ServerError)
     })
 
     it('pushes a snapshot on a move, so the sidebar regroups', async () => {
       await create('sid-1')
-      const group = await createWorktreeGroup('proj', 'release', 'sid-1')
+      const group = await createWorkspaceGroup('proj', 'release', 'sid-1')
       const before = pushes
-      await setWorktreeGroup('proj', 'sid-1', null)
-      await setWorktreeGroup('proj', 'sid-1', group.groupId)
+      await setWorkspaceGroup('proj', 'sid-1', null)
+      await setWorkspaceGroup('proj', 'sid-1', group.groupId)
       expect(pushes - before).toBe(2)
     })
   })
 
-  describe('deleteProjectWorktreeGroups', () => {
+  describe('deleteProjectWorkspaceGroups', () => {
     it('forgets one project\'s groups and no other\'s', async () => {
       await create('sid-1')
       await create('sid-2', 'other')
-      await createWorktreeGroup('proj', 'mine', 'sid-1')
-      await createWorktreeGroup('other', 'theirs', 'sid-2')
+      await createWorkspaceGroup('proj', 'mine', 'sid-1')
+      await createWorkspaceGroup('other', 'theirs', 'sid-2')
 
-      await deleteProjectWorktreeGroups('proj')
+      await deleteProjectWorkspaceGroups('proj')
 
-      expect(await listWorktreeGroupRows('proj')).toEqual([])
-      expect((await listWorktreeGroupRows('other')).map((g) => g.name)).toEqual(['theirs'])
+      expect(await listWorkspaceGroupRows('proj')).toEqual([])
+      expect((await listWorkspaceGroupRows('other')).map((g) => g.name)).toEqual(['theirs'])
     })
   })
 })

@@ -12,7 +12,7 @@
  * IT THEREFORE MUTATES THE NAMED PROJECT'S Dockerfile.yaac, and restores it
  * on the way out (including on SIGINT — the script sits in waits of up to
  * 150s, so it invites a Ctrl-C). A run that dies without restoring leaves
- * the project layer repriced, and every worktree created afterwards builds
+ * the project layer repriced, and every workspace created afterwards builds
  * and runs the junk `RUN echo ibux-…` image until someone puts the original
  * back. The script says so loudly if its own restore fails; if it is killed
  * outright (SIGKILL), restore by hand with `yaac config edit-dockerfile
@@ -92,7 +92,7 @@ async function writeDockerfile(base, content) {
 
 function warnManualRestore() {
   console.error(`\n!! ${PROJECT}'s Dockerfile.yaac is STILL the cache-busting stub.`)
-  console.error('!! Its project layer is repriced, so every worktree created from now on')
+  console.error('!! Its project layer is repriced, so every workspace created from now on')
   console.error(`!! builds and runs the junk image. Restore it: yaac config edit-dockerfile ${PROJECT}`)
 }
 

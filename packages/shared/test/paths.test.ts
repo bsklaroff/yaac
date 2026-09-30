@@ -15,8 +15,8 @@ import {
   codexDir,
   projectCodexAuthFile,
   opencodeConfigDir,
-  worktreesDir,
-  worktreeDir,
+  workspacesDir,
+  workspaceDir,
   secretKeyPath,
   ensureDataDir,
   PACKAGE_ROOT,
@@ -35,7 +35,7 @@ import {
   globalProjectPath,
   nodeLocalProjectPath,
   serverLocalPath,
-  worktreeStateDir,
+  workspaceStateDir,
   opencodeDataDir,
   cacheVolumeDir,
   imageStoreDir,
@@ -116,8 +116,8 @@ describe('paths', () => {
     expect(codexDir('my-repo')).toBe(`${proj}/codex`)
     expect(projectCodexAuthFile('my-repo')).toBe(`${proj}/codex/auth.json`)
     expect(opencodeConfigDir('my-repo')).toBe(`${proj}/opencode-config`)
-    expect(worktreesDir('my-repo')).toBe(`${proj}/worktrees`)
-    expect(worktreeDir('my-repo', 'abc123')).toBe(`${proj}/worktrees/abc123`)
+    expect(workspacesDir('my-repo')).toBe(`${proj}/workspaces`)
+    expect(workspaceDir('my-repo', 'abc123')).toBe(`${proj}/workspaces/abc123`)
   })
 
   it('puts the secret key in the server-local tier, not beside the credentials', () => {
@@ -202,9 +202,9 @@ describe('storage tiers', () => {
   })
 
   it('keys the socket tmp dir on the install identity, not on a tier root', () => {
-    // A running containerless worktree's tmux socket lives under this dir,
+    // A running containerless workspace's tmux socket lives under this dir,
     // and the recovery scan finds it by name: a root that the pod re-roots
-    // (or that an upgrade moved) would rename it under every live worktree.
+    // (or that an upgrade moved) would rename it under every live workspace.
     setDataDir('/tmp/yaac-test')
     const before = installTmpDir()
     vi.stubEnv('YAAC_SERVER_LOCAL_ROOT', '/yaac/server-local')
@@ -235,7 +235,7 @@ describe('storage tiers', () => {
   })
 
   // Frozen, because a re-rooting would show up here first: these are what a
-  // worktree pod mounts and what the layout migration moves.
+  // workspace pod mounts and what the layout migration moves.
   it('puts the node-local caches and working copies under the node-local root, by project id', () => {
     setDataDir('/tmp/yaac-test')
     const node = '/tmp/yaac-test/node-local'
@@ -244,9 +244,9 @@ describe('storage tiers', () => {
     expect(imageStoreDir(PROJECT_ID)).toBe(`${node}/shared-images/${PROJECT_ID}`)
   })
 
-  it('keeps the per-worktree state dir and the cache volumes global', () => {
+  it('keeps the per-workspace state dir and the cache volumes global', () => {
     setDataDir('/tmp/yaac-test')
-    expect(worktreeStateDir('my-repo', 'abc123')).toBe('/tmp/yaac-test/global/projects/my-repo/sessions/abc123')
+    expect(workspaceStateDir('my-repo', 'abc123')).toBe('/tmp/yaac-test/global/projects/my-repo/sessions/abc123')
     expect(cacheVolumeDir('my-repo', 'pnpm')).toBe('/tmp/yaac-test/global/projects/my-repo/cache-volumes/pnpm')
   })
 })

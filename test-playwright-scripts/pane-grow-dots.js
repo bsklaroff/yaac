@@ -9,14 +9,14 @@
  * separate exec instead lags the grown client, which tmux draws around the
  * old window with a column of dots on every row until the exec lands.
  *
- * Opens the worktree titled TITLE, then grows and shrinks the viewport,
+ * Opens the workspace titled TITLE, then grows and shrinks the viewport,
  * sampling the visible xterm for trailing-dot rows for 1.2s after each step
- * and comparing the worktree's tmux window (read over its socket, SOCK) with
+ * and comparing the workspace's tmux window (read over its socket, SOCK) with
  * the xterm grid. Screenshot -> ./pane-grow-dots.png. Prints PASS/FAIL.
  *
- * Run (needs a containerless server, no auth, with a TUI worktree open-able;
- * SOCK is the worktree's tmux socket, from `ps -eo args | grep 'tmux -S'`):
- *   SOCK=/tmp/yaac-…/….sock TITLE="My worktree" \
+ * Run (needs a containerless server, no auth, with a TUI workspace open-able;
+ * SOCK is the workspace's tmux socket, from `ps -eo args | grep 'tmux -S'`):
+ *   SOCK=/tmp/yaac-…/….sock TITLE="My workspace" \
  *     node test-playwright-scripts/pane-grow-dots.js
  * ORIGIN (default http://127.0.0.1:8787) and PROJECT (default yaac) select
  * the server and project.

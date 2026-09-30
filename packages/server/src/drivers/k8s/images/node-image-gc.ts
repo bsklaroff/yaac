@@ -13,14 +13,14 @@
  * REGISTRY no longer holds its tag and no workload references it. That
  * makes the registry's retention (main-registry-gc.ts) the one policy for
  * both stores — what it keeps as current, live or rollback stays warm on
- * the node, so a worktree create never pays a multi-GB pull for an image
+ * the node, so a workspace create never pays a multi-GB pull for an image
  * the install still wants — and it means nothing is ever dropped that a
  * pod could still pull by name.
  *
  * Scoped to refs under the main registry host with a 16-hex tag in a
  * `yaac-*` repo, the same shape the registry retention retires: the
  * digest-pinned mirrors, the kind node's own preloaded images and anything
- * a worktree's nested engine or a project registry put there are never
+ * a workspace's nested engine or a project registry put there are never
  * candidates.
  *
  * The node is read from `node.status.images`, which the kubelet caps at

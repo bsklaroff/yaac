@@ -3,14 +3,14 @@ import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
 import { setDataDir } from '@yaac/shared/paths'
-import { acpLogDir, worktreeDir } from '@yaac/shared/project-paths'
+import { acpLogDir, workspaceDir } from '@yaac/shared/project-paths'
 import {
   assertShellSafePaths,
   assertSocketPathsFit,
   containerlessJobName,
   containerlessWorkspacePaths,
   refFromJobName,
-  workspaceStateDir,
+  containerlessStateDir,
 } from '#drivers/containerless/paths'
 
 const UUID = '4bfc59c6-1e83-4dd0-80f1-735294d5d2bb'
@@ -29,7 +29,7 @@ afterEach(() => {
 describe('containerlessJobName', () => {
   it('encodes both halves of the identity so a handle alone can be resolved', () => {
     const jobName = containerlessJobName('demo', UUID)
-    expect(refFromJobName(jobName)).toEqual({ projectSlug: 'demo', worktreeId: UUID })
+    expect(refFromJobName(jobName)).toEqual({ projectSlug: 'demo', workspaceId: UUID })
   })
 
   it('survives a slug carrying the same separator it joins with', () => {
@@ -37,13 +37,13 @@ describe('containerlessJobName', () => {
     // which is what keeps a dashed slug from being split in the wrong place.
     const jobName = containerlessJobName('my-cool-repo', UUID)
     expect(refFromJobName(jobName))
-      .toEqual({ projectSlug: 'my-cool-repo', worktreeId: UUID })
+      .toEqual({ projectSlug: 'my-cool-repo', workspaceId: UUID })
   })
 })
 
 describe('refFromJobName', () => {
   it('refuses a handle this driver did not mint rather than inventing an identity', () => {
-    // A wrong answer here would send a teardown at some other worktree's
+    // A wrong answer here would send a teardown at some other workspace's
     // socket, so it must not be guessable.
     expect(() => refFromJobName('yaac-demo-' + UUID)).toThrow(/not a containerless/)
     expect(() => refFromJobName('cl-short')).toThrow(/not a containerless/)
@@ -54,15 +54,15 @@ describe('containerlessWorkspacePaths', () => {
   it('points the workspace at the checkout the server already made', () => {
     const paths = containerlessWorkspacePaths(containerlessJobName('demo', UUID))
     // No path translation: what the agent sees IS the host checkout.
-    expect(paths.workspaceDir).toBe(worktreeDir('demo', UUID))
+    expect(paths.workspaceDir).toBe(workspaceDir('demo', UUID))
   })
 
-  it('gives each worktree its own tmux socket', () => {
+  it('gives each workspace its own tmux socket', () => {
     const a = containerlessWorkspacePaths(containerlessJobName('demo', UUID))
     const b = containerlessWorkspacePaths(
       containerlessJobName('demo', '00000000-0000-4000-8000-000000000000'),
     )
-    // Two worktrees sharing one socket would share one tmux server, where
+    // Two workspaces sharing one socket would share one tmux server, where
     // `has-session -t yaac` answers for whichever got there first.
     expect(a.tmuxSock).not.toBe(b.tmuxSock)
     expect(a.tmuxSock.startsWith(os.tmpdir())).toBe(true)
@@ -83,7 +83,7 @@ describe('containerlessWorkspacePaths', () => {
     expect(Buffer.byteLength(rebased(paths.tmuxSock))).toBeLessThan(104)
   })
 
-  it('refuses a path that could not survive a worktree\'s command text', () => {
+  it('refuses a path that could not survive a workspace\'s command text', () => {
     // The command builders above the driver quote for their own nesting and
     // cannot also quote a path — under the pod driver every one of them is a
     // constant. Here they are data-dir derived, so a space has to be caught
@@ -91,7 +91,7 @@ describe('containerlessWorkspacePaths', () => {
     const paths = containerlessWorkspacePaths(containerlessJobName('demo', UUID))
     expect(() => assertShellSafePaths(paths)).not.toThrow()
     expect(() => assertShellSafePaths({ ...paths, workspaceDir: '/My Drive/yaac/wt' }))
-      .toThrow(/cannot be carried into a worktree's shell commands/)
+      .toThrow(/cannot be carried into a workspace's shell commands/)
     expect(() => assertShellSafePaths({ ...paths, tmuxSock: '/tmp/a$(id).sock' }))
       .toThrow(/cannot be carried/)
   })
@@ -106,13 +106,13 @@ describe('containerlessWorkspacePaths', () => {
   it('records ACP conversations where the layers above read them, and where a stop cannot reach', () => {
     // The one path here that is not this driver's own. Everything that reads a
     // conversation — the chat pane's tail, the registry's first-prompt scan,
-    // a stopped worktree's transcript — looks at the shared project location,
+    // a stopped workspace's transcript — looks at the shared project location,
     // so a driver-private directory would be written where nobody looks. It
     // also has to outlive the state dir: that is removed on stop, and a
-    // stopped worktree's conversation stays readable.
+    // stopped workspace's conversation stays readable.
     const paths = containerlessWorkspacePaths(containerlessJobName('demo', UUID))
     expect(paths.acpLogDir).toBe(acpLogDir('demo', UUID))
-    expect(paths.acpLogDir.startsWith(workspaceStateDir('demo', UUID))).toBe(false)
+    expect(paths.acpLogDir.startsWith(containerlessStateDir('demo', UUID))).toBe(false)
   })
 
   it('answers identically for the same handle, without consulting anything', () => {

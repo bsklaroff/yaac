@@ -179,16 +179,20 @@ describe('env (configuration)', () => {
     })
   })
 
-  describe('worktreeId', () => {
-    it('answers the id a worktree stamps, and undefined outside one', () => {
-      vi.stubEnv('YAAC_WORKTREE_ID', 'abcd1234')
-      expect(env.worktreeId).toBe('abcd1234')
+  describe('workspaceId', () => {
+    it('answers the id a workspace stamps, and undefined outside one', () => {
       vi.stubEnv('YAAC_WORKTREE_ID', undefined)
-      expect(env.worktreeId).toBeUndefined()
-      // Blank is unset, so an explicit `YAAC_WORKTREE_ID=` clears it rather
-      // than reading as "some worktree" to the identity rule.
-      vi.stubEnv('YAAC_WORKTREE_ID', '  ')
-      expect(env.worktreeId).toBeUndefined()
+      vi.stubEnv('YAAC_WORKSPACE_ID', 'abcd1234')
+      expect(env.workspaceId).toBe('abcd1234')
+      vi.stubEnv('YAAC_WORKSPACE_ID', undefined)
+      expect(env.workspaceId).toBeUndefined()
+      // An older install's spelling, for a workspace it launched.
+      vi.stubEnv('YAAC_WORKTREE_ID', 'ef012345')
+      expect(env.workspaceId).toBe('ef012345')
+      // Blank is unset, so an explicit `YAAC_WORKSPACE_ID=` clears it rather
+      // than reading as "some workspace" to the identity rule.
+      vi.stubEnv('YAAC_WORKSPACE_ID', '  ')
+      expect(env.workspaceId).toBeUndefined()
     })
   })
 

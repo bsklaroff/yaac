@@ -1,7 +1,7 @@
 import { eq, sql } from 'drizzle-orm'
 import { getDb } from './client'
 import { projects, projectToolDefaults } from './schema'
-import { notifyWorktreeListChanged } from '#notify'
+import { notifyWorkspaceListChanged } from '#notify'
 import {
   normalizeTool,
   type AgentMode,
@@ -37,7 +37,7 @@ export async function recordProject(
         then ${projects.knownHostsEntry} end`,
     },
   })
-  notifyWorktreeListChanged()
+  notifyWorkspaceListChanged()
 }
 
 /**
@@ -54,7 +54,7 @@ export async function setProjectGitCredential(
   const db = await getDb()
   const rows = await db.update(projects).set({ gitCredentialId, knownHostsEntry })
     .where(eq(projects.slug, slug)).returning({ slug: projects.slug })
-  notifyWorktreeListChanged()
+  notifyWorkspaceListChanged()
   return rows.length > 0
 }
 
@@ -78,7 +78,7 @@ export interface ProjectRow extends ProjectMeta {
 
 type DefaultsRow = typeof projectToolDefaults.$inferSelect
 
-/** Read back with casts, like the worktree posture column: every value here
+/** Read back with casts, like the workspace posture column: every value here
  *  is re-checked against the tool before anything launches with it. */
 function toProjectRow(
   r: typeof projects.$inferSelect,
@@ -164,7 +164,7 @@ export async function recordProjectCreate(
       })
       : insert.onConflictDoNothing())
   })
-  notifyWorktreeListChanged()
+  notifyWorkspaceListChanged()
 }
 
 export async function deleteProjectRow(slug: string): Promise<void> {
@@ -173,5 +173,5 @@ export async function deleteProjectRow(slug: string): Promise<void> {
     await tx.delete(projectToolDefaults).where(eq(projectToolDefaults.projectSlug, slug))
     await tx.delete(projects).where(eq(projects.slug, slug))
   })
-  notifyWorktreeListChanged()
+  notifyWorkspaceListChanged()
 }

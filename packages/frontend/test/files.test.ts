@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import type { WorktreeFiles } from '@yaac/shared/types'
+import type { WorkspaceFiles } from '@yaac/shared/types'
 import {
   FileConflict,
   buildTree,
@@ -10,12 +10,12 @@ import {
   isFileTarget,
   isFilesTarget,
   placeFile,
-  saveWorktreeFile,
+  saveWorkspaceFile,
   type TreeNode,
 } from '#lib/files'
-import { singleColumn, type Workspace } from '#lib/layout'
+import { singleColumn, type PaneLayout } from '#lib/layout'
 
-const listing = (over: Partial<WorktreeFiles> = {}): WorktreeFiles => ({
+const listing = (over: Partial<WorkspaceFiles> = {}): WorkspaceFiles => ({
   paths: [], symlinks: {}, ignored: [], emptyDirs: [], status: {}, truncated: false, ...over,
 })
 
@@ -91,11 +91,11 @@ describe('buildTree', () => {
 })
 
 describe('filterPaths', () => {
-  const paths = ['src/components/WorktreeFiles.tsx', 'src/lib/files.ts', 'docs/file-editor.md', 'package.json']
+  const paths = ['src/components/WorkspaceFiles.tsx', 'src/lib/files.ts', 'docs/file-editor.md', 'package.json']
 
   it('matches a case-insensitive subsequence, best first', () => {
     expect(filterPaths(paths, 'files')[0]).toBe('src/lib/files.ts')
-    expect(filterPaths(paths, 'WTF')).toEqual(['src/components/WorktreeFiles.tsx'])
+    expect(filterPaths(paths, 'WSF')).toEqual(['src/components/WorkspaceFiles.tsx'])
     expect(filterPaths(paths, 'zzz')).toEqual([])
   })
 
@@ -126,12 +126,12 @@ describe('placeFile', () => {
   const c = fileTarget('c.ts')
 
   it('leaves a file that is already open where it is', () => {
-    const ws: Workspace = [{ tabs: ['agent', a], active: 'agent' }]
+    const ws: PaneLayout = [{ tabs: ['agent', a], active: 'agent' }]
     expect(placeFile(ws, a)).toBe(ws)
   })
 
   it('opens beside the explorer when no file is open, else at the end', () => {
-    const withExplorer: Workspace = [
+    const withExplorer: PaneLayout = [
       { tabs: ['agent'], active: 'agent' }, { tabs: ['files'], active: 'files' }, { tabs: ['shell:x'], active: 'shell:x' },
     ]
     expect(placeFile(withExplorer, a).map((g) => g.tabs)).toEqual([['agent'], ['files'], [a], ['shell:x']])
@@ -139,7 +139,7 @@ describe('placeFile', () => {
   })
 
   it('tabs into the column of the active file pane, then of any file pane', () => {
-    const ws: Workspace = [
+    const ws: PaneLayout = [
       { tabs: ['agent', a], active: 'agent' },
       { tabs: [b], active: b },
     ]
@@ -149,7 +149,7 @@ describe('placeFile', () => {
   })
 })
 
-describe('saveWorktreeFile', () => {
+describe('saveWorkspaceFile', () => {
   const realFetch = globalThis.fetch
   afterEach(() => { globalThis.fetch = realFetch })
 
@@ -166,24 +166,24 @@ describe('saveWorktreeFile', () => {
 
   it('PUTs the text against its base version', async () => {
     const fetchMock = stub({ path: 'a.ts', version: 'v2', size: 1 }, 200)
-    expect(await saveWorktreeFile('w1', 'a.ts', 'x', 'v1')).toEqual({ path: 'a.ts', version: 'v2', size: 1 })
+    expect(await saveWorkspaceFile('w1', 'a.ts', 'x', 'v1')).toEqual({ path: 'a.ts', version: 'v2', size: 1 })
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(new URL(url, 'http://localhost').pathname).toBe('/api/worktree/w1/file')
+    expect(new URL(url, 'http://localhost').pathname).toBe('/api/workspace/w1/file')
     expect(init.method).toBe('PUT')
     expect(JSON.parse(init.body as string)).toEqual({ path: 'a.ts', content: 'x', baseVersion: 'v1' })
   })
 
   it('surfaces a 409 as a FileConflict naming the version on disk, or none', async () => {
     stub({ error: { code: 'CONFLICT', message: 'changed' }, version: 'v3' }, 409)
-    await expect(saveWorktreeFile('w1', 'a.ts', 'x', 'v1')).rejects.toEqual(new FileConflict('v3'))
+    await expect(saveWorkspaceFile('w1', 'a.ts', 'x', 'v1')).rejects.toEqual(new FileConflict('v3'))
     stub({ error: { code: 'CONFLICT', message: 'gone' }, version: null }, 409)
-    const err = await saveWorktreeFile('w1', 'a.ts', 'x', 'v1').catch((e: unknown) => e)
+    const err = await saveWorkspaceFile('w1', 'a.ts', 'x', 'v1').catch((e: unknown) => e)
     expect(err).toBeInstanceOf(FileConflict)
     expect((err as FileConflict).version).toBeNull()
   })
 
   it('throws any other failure as the server’s error', async () => {
     stub({ error: { code: 'TOO_LARGE', message: 'too big' } }, 413)
-    await expect(saveWorktreeFile('w1', 'a.ts', 'x', 'v1')).rejects.toMatchObject({ code: 'TOO_LARGE', message: 'too big' })
+    await expect(saveWorkspaceFile('w1', 'a.ts', 'x', 'v1')).rejects.toMatchObject({ code: 'TOO_LARGE', message: 'too big' })
   })
 })

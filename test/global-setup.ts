@@ -35,7 +35,7 @@ const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
  *
  * Assets, not just cli.js: the bundle runs in bundled mode (tsup sets
  * YAAC_BUNDLED), where PACKAGE_ROOT is the directory holding cli.js — so the
- * migrations, k8s manifests, builtin skills and worktree-bin scripts must be
+ * migrations, k8s manifests, builtin skills and workspace-bin scripts must be
  * sitting beside it or a spawned server dies on its first query.
  */
 async function buildCliBundle(): Promise<void> {
@@ -69,7 +69,7 @@ async function fileExists(p: string): Promise<boolean> {
 
 /**
  * Remove every podman container this rig's suites left on the host engine.
- * Worktrees run as kubernetes Jobs, so the only such containers are helpers
+ * Workspaces run as kubernetes Jobs, so the only such containers are helpers
  * a test ran under podman directly (nested-containers' mock upstream
  * registry) — leaked when a run is interrupted before its afterAll.
  *

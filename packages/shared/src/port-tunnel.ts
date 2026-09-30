@@ -10,7 +10,7 @@ import { WebSocket } from 'ws'
  * on the pod's loopback; under `containerless` the workspace binds the
  * port itself, on the server's machine, which is not the user's when the
  * server is remote. What the server does hold is the mapping
- * (`forwardedPorts` on the worktree list) and the near end of each
+ * (`forwardedPorts` on the workspace list) and the near end of each
  * connection (`/forward/attach`) — so a client that binds what the mapping
  * says makes the webapp's `127.0.0.1:<port>` links true for as long as it
  * runs.

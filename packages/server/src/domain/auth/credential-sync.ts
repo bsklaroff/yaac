@@ -14,7 +14,7 @@ import {
   writeProjectCodexAuth,
   writeProjectCodexPlaceholder,
 } from '@yaac/shared/tool-auth'
-import { hasWorktreeDriver, worktreeDriver } from '#drivers/driver'
+import { hasWorkspaceDriver, workspaceDriver } from '#drivers/driver'
 import { serverLog } from '#log'
 import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/shared/types'
 
@@ -36,7 +36,7 @@ import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/share
  * converge on it.** Harvest carries a project's refreshed bundle up to the
  * host store; push carries the host store's back down to projects that are
  * behind. Seeding a project is those two in order, which is what makes it
- * safe to run on every worktree create — the write can only ever move a
+ * safe to run on every workspace create — the write can only ever move a
  * project forward.
  *
  * Placeholders never participate. The readers report a sentinel rather than
@@ -46,10 +46,10 @@ import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/share
  * to date".
  *
  * Under a mediated runtime nothing is harvested at all. The proxy is the only
- * refresh writer there (docs/worktree-egress.md), so a project home has
+ * refresh writer there (docs/workspace-egress.md), so a project home has
  * nothing legitimate to offer — and it is the sandbox's to write: a pod that
  * put a real-looking bundle with a later expiry there would otherwise get it
- * adopted install-wide, swapping the account every worktree of every project
+ * adopted install-wide, swapping the account every workspace of every project
  * runs as for one it chose.
  */
 
@@ -64,7 +64,7 @@ import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/share
  * bundle gets written to disk somewhere nothing would swap it back out.
  */
 export function runtimeMediatesEgress(): boolean {
-  return !hasWorktreeDriver() || worktreeDriver().kind !== 'containerless'
+  return !hasWorkspaceDriver() || workspaceDriver().kind !== 'containerless'
 }
 
 /**
@@ -78,8 +78,8 @@ export function runtimeMediatesEgress(): boolean {
  * on its own schedule and that refresh is the one that counts.
  */
 async function anyLiveWorkspace(): Promise<boolean> {
-  if (!hasWorktreeDriver()) return false
-  const handles = await worktreeDriver().snapshot().workspaces()
+  if (!hasWorkspaceDriver()) return false
+  const handles = await workspaceDriver().snapshot().workspaces()
   return handles.some((h) => h.running && !h.terminating)
 }
 
@@ -101,7 +101,7 @@ async function anyLiveWorkspace(): Promise<boolean> {
  * inside roughly one round trip, and it self-heals — claude re-reads its
  * store on a 401 and adopts an externally written token, and the next sweep
  * pushes the host's out regardless. Closing it properly means counting
- * creates-in-flight as live, which is a fact `#domain/worktrees` holds and
+ * creates-in-flight as live, which is a fact `#domain/workspaces` holds and
  * this module cannot reach: create already depends on `#domain/auth` for
  * seeding, so reading the provisioning registry from here would make that
  * cycle. It would take moving the liveness source into what composes both.
@@ -181,7 +181,7 @@ async function harvestClaude(slugs: string[]): Promise<void> {
   const now = await loadClaudeCredentialsFile()
   if (now?.kind === 'oauth' && now.claudeAiOauth.accessToken === base.accessToken) {
     await saveClaudeOAuthBundle(best)
-    serverLog('[server] credential-sync: adopted a refreshed Claude bundle from a worktree')
+    serverLog('[server] credential-sync: adopted a refreshed Claude bundle from a workspace')
   }
 }
 
@@ -200,12 +200,12 @@ async function harvestCodex(slugs: string[]): Promise<void> {
   const now = await loadCodexCredentialsFile()
   if (now?.kind === 'oauth' && now.codexOauth.accessToken === base.accessToken) {
     await saveCodexOAuthBundle(best)
-    serverLog('[server] credential-sync: adopted a refreshed Codex bundle from a worktree')
+    serverLog('[server] credential-sync: adopted a refreshed Codex bundle from a workspace')
   }
 }
 
 /**
- * Pull any credential a worktree has refreshed up into the host store.
+ * Pull any credential a workspace has refreshed up into the host store.
  *
  * Cheap enough to call wherever staleness would bite — a couple of file reads
  * per project — which is why there is no watcher: the call sites (before a
@@ -267,7 +267,7 @@ async function pushClaude(slug: string, force: boolean): Promise<void> {
     // A project holding a real credential may only be replaced by a strictly
     // newer real one. Never by a sentinel — under a chained install the host
     // store holds one, and stamping it over a working credential would break
-    // the very worktrees this is meant to heal. A project holding a sentinel
+    // the very workspaces this is meant to heal. A project holding a sentinel
     // (or nothing) has nothing to lose and takes whatever the host has.
     if (current && !isPlaceholderClaudeBundle(current)
         && (isPlaceholderClaudeBundle(host) || !claudeBundleIsNewer(host, current))) return
@@ -293,10 +293,10 @@ async function pushCodex(slug: string, force: boolean): Promise<void> {
 // ── The composed operations ────────────────────────────────────────────
 
 /**
- * Bring one project's tool homes to what a worktree there should launch with.
+ * Bring one project's tool homes to what a workspace there should launch with.
  *
  * Called on every create, and the two halves are why it is safe to: harvest
- * first, so anything a running worktree in this project has refreshed becomes
+ * first, so anything a running workspace in this project has refreshed becomes
  * the host's; then push, which by then can only write something at least as
  * new as what is already there. The create-time write that used to overwrite
  * a live credential with a stale host copy is exactly the case this removes.
@@ -325,7 +325,7 @@ export async function seedProjectToolHome(
  * then heal the projects that are behind it.
  *
  * The standing sweep — driven by the reconcile resync, the containerless
- * attach, and worktree stop. Under a mediated runtime it does nothing: there
+ * attach, and workspace stop. Under a mediated runtime it does nothing: there
  * is nothing to harvest (see the top of this module) and project homes hold
  * sentinels, so the fan-out below is what keeps them current there.
  */

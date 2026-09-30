@@ -6,7 +6,7 @@ import fsp from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { setDataDir } from '@yaac/shared/paths'
-import { worktreeDir } from '@yaac/shared/project-paths'
+import { workspaceDir } from '@yaac/shared/project-paths'
 import { agentBinDirs } from '@yaac/shared/tool-install'
 import { substrateFixture } from '@yaac/test-utils/fake-driver'
 import type { WorkspaceMount, WorkspaceSpec } from '#drivers/contract'
@@ -83,7 +83,7 @@ beforeEach(() => {
   mockKillPids.mockReset()
   mockOnPath.mockReset()
   mockOnPath.mockResolvedValue(true)
-  fs.mkdirSync(worktreeDir('demo', UUID), { recursive: true })
+  fs.mkdirSync(workspaceDir('demo', UUID), { recursive: true })
 })
 
 afterEach(() => {
@@ -105,7 +105,7 @@ describe('launchWorkspace', () => {
     // every later respawn and probe addresses.
     expect(newSession).toContain('claude')
     // Windows open in the checkout, not wherever the server happens to be.
-    expect(newSession).toContain(worktreeDir('demo', UUID))
+    expect(newSession).toContain(workspaceDir('demo', UUID))
   })
 
   it('registers the workspace and writes the marker a restart recovers from', async () => {
@@ -114,12 +114,12 @@ describe('launchWorkspace', () => {
     expect(listWorkspaces()).toHaveLength(1)
 
     // The marker is the substrate's only durable record: without it a
-    // restarted server cannot know the worktree exists at all.
+    // restarted server cannot know the workspace exists at all.
     const marker = JSON.parse(await fsp.readFile(
       path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'workspace.json'),
       'utf8',
-    )) as { worktreeId: string; tool: string; tmuxPid: number }
-    expect(marker.worktreeId).toBe(UUID)
+    )) as { workspaceId: string; tool: string; tmuxPid: number }
+    expect(marker.workspaceId).toBe(UUID)
     expect(marker.tool).toBe('claude')
     // Read back from tmux so the port scan has a tree root to walk.
     expect(marker.tmuxPid).toBe(4242)
@@ -162,7 +162,7 @@ describe('launchWorkspace', () => {
     expect(await fsp.realpath(path.join(home, '.claude')))
       .toBe(await fsp.realpath(claudeSrc))
     // HOME is what makes the links reachable; without it the agent would
-    // read the SERVER user's config instead of the worktree's.
+    // read the SERVER user's config instead of the workspace's.
     const newSession = tmuxCalls().find((a) => a.includes('new-session'))
     expect(newSession).toBeDefined()
     const env = mockRunHost.mock.calls
@@ -209,7 +209,7 @@ describe('launchWorkspace', () => {
     // the value resolves to the directory the mount came from — the project's
     // own — rather than to the private HOME's link to it. Both name the same
     // files; a tool that keys anything on the string it was handed can tell
-    // them apart, and would get a per-worktree home from the link.
+    // them apart, and would get a per-workspace home from the link.
     //
     // The user's own values do NOT move: a yaac dev host runs as a user whose
     // home is literally /home/yaac, so rewriting anything container-shaped
@@ -242,13 +242,13 @@ describe('launchWorkspace', () => {
     // A tool's two variables describing one home stay consistent with each
     // other, because one rule produced both.
     expect(env.env.PI_CODING_AGENT_DIR).toBe(path.join(piSrc, 'agent'))
-    // The project's dir, not this worktree's: claude names its macOS Keychain
-    // item after this string, and a per-worktree one would let the first
-    // token refresh take the credential away from every sibling worktree.
+    // The project's dir, not this workspace's: claude names its macOS Keychain
+    // item after this string, and a per-workspace one would let the first
+    // token refresh take the credential away from every sibling workspace.
     const home = path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
     expect(env.env.CLAUDE_CONFIG_DIR).toBe(claudeSrc)
     expect(env.env.CLAUDE_CONFIG_DIR).not.toContain(home)
-    // pnpm's store is the project's, shared by every worktree — and on the
+    // pnpm's store is the project's, shared by every workspace — and on the
     // same filesystem as the checkouts, so node_modules hardlinks into it.
     expect(env.env.pnpm_config_store_dir).toBe(path.join(cachedSrc, 'pnpm-store'))
     expect(env.env.npm_config_store_dir).toBe(path.join(cachedSrc, 'pnpm-store'))
@@ -274,7 +274,7 @@ describe('launchWorkspace', () => {
   })
 
   it('refuses a mount it has no host equivalent for rather than dropping it', async () => {
-    // Silently skipping would hand back a worktree missing the thing its
+    // Silently skipping would hand back a workspace missing the thing its
     // config asked for, failing much later and somewhere unrelated.
     const mounts: WorkspaceMount[] = [
       { source: { kind: 'hostPath', path: '/opt/sock' }, mountPath: '/var/run/thing.sock' },
@@ -287,20 +287,20 @@ describe('launchWorkspace', () => {
     // A pod mounts node_modules onto other storage and git never sees it. A
     // symlink is not a mount: git reports it untracked (so `git add -A`
     // commits an absolute host path), and the ephemeral-modules guard trips
-    // on the driver's own link, which made a stopped worktree unrestartable.
+    // on the driver's own link, which made a stopped workspace unrestartable.
     const modules = path.join(dataDir, 'modules-cache')
     const mounts: WorkspaceMount[] = [
       { source: { kind: 'hostPath', path: modules }, mountPath: '/workspace/node_modules' },
     ]
     await launchWorkspace(spec({ mounts }))
-    await expect(fsp.lstat(path.join(worktreeDir('demo', UUID), 'node_modules')))
+    await expect(fsp.lstat(path.join(workspaceDir('demo', UUID), 'node_modules')))
       .rejects.toThrow()
   })
 
   it('skips a mount that would nest inside another rather than writing through it', async () => {
     // A pod layers a builtin skill over a mounted tool home; here the tool
     // home is a symlink into shared project state, so writing the skill
-    // would leave one worktree's staging where every worktree reads.
+    // would leave one workspace's staging where every workspace reads.
     const claudeSrc = path.join(dataDir, 'global', 'projects', 'demo', 'claude')
     const skillSrc = path.join(dataDir, 'staged-skill')
     await fsp.mkdir(skillSrc, { recursive: true })
@@ -329,7 +329,7 @@ describe('launchWorkspace', () => {
     await expect(read('core.pager')).rejects.toThrow()
     const gitconfig = await fsp.readFile(gitconfigPath, 'utf8')
     // Both repo roots are trusted, exactly as the pod's init hook does.
-    expect(gitconfig).toContain(worktreeDir('demo', UUID))
+    expect(gitconfig).toContain(workspaceDir('demo', UUID))
 
     // And git is pointed AT that file: the workspace inherits the server's
     // environment, so a server started with GIT_CONFIG_GLOBAL set would
@@ -363,10 +363,10 @@ describe('launchWorkspace', () => {
     expect((await fsp.stat(creds)).mode & 0o777).toBe(0o600)
   })
 
-  it('holds an SSH key in a per-worktree agent, never in the workspace', async () => {
+  it('holds an SSH key in a per-workspace agent, never in the workspace', async () => {
     // A pod gets its identity from the proxy's forwarded ssh-agent. There is
     // no proxy here, so the workspace gets an agent of its own — and the key
-    // reaches it over stdin, so a stopped worktree (or one whose host
+    // reaches it over stdin, so a stopped workspace (or one whose host
     // rebooted before anyone pressed stop) leaves no usable private key on
     // disk. What lands in the home is the public half.
     const knownHosts = path.join(dataDir, 'global', 'projects', 'demo', 'known_hosts')
@@ -441,7 +441,7 @@ describe('launchWorkspace', () => {
   })
 
   it('refuses an SSH credential with no host list rather than skipping the check', async () => {
-    // The degraded worktree would be one that verifies no host key at all.
+    // The degraded workspace would be one that verifies no host key at all.
     await expect(launchWorkspace(spec({
       gitCredential: { kind: 'ssh', privateKey: PRIVATE_KEY },
     }))).rejects.toThrow(/known_hosts/)
@@ -449,7 +449,7 @@ describe('launchWorkspace', () => {
 
   it('clears a credential the last launch left behind', async () => {
     // A relaunch is not always for the same answer: a rotated token, a remote
-    // moved to SSH, or a worktree restarted with no credential at all.
+    // moved to SSH, or a workspace restarted with no credential at all.
     const home = path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
     await launchWorkspace(spec({
       gitCredential: { kind: 'https', host: 'github.com', token: 'first' },
@@ -469,7 +469,7 @@ describe('launchWorkspace', () => {
     const call = mockRunHost.mock.calls
       .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
     // The agents run as this user; handing them the server's configuration
-    // invites a worktree to reconfigure the server that launched it.
+    // invites a workspace to reconfigure the server that launched it.
     expect(Object.keys(call.env).filter((k) => k.startsWith('YAAC_')))
       .toEqual(expect.arrayContaining(['YAAC_GIT_NAME']))
     expect(call.env.YAAC_DATA_DIR).toBeUndefined()
@@ -540,7 +540,7 @@ describe('launchWorkspace', () => {
 
   it('lets a caller\'s own env win over the inherited host value', async () => {
     // The deny lists are about what LEAKS in. A value the create put on the
-    // spec is a stated decision (envPassthrough, config.env), and a worktree
+    // spec is a stated decision (envPassthrough, config.env), and a workspace
     // that ignored it would be honoring the host over its own config.
     const saved = process.env.XDG_CONFIG_HOME
     process.env.XDG_CONFIG_HOME = path.join(dataDir, 'the-host-user', '.config')
@@ -564,7 +564,7 @@ describe('launchWorkspace', () => {
   })
 
   it('survives a tmux that refuses its cosmetic options', async () => {
-    // Every option is a display or input preference; a worktree whose bells
+    // Every option is a display or input preference; a workspace whose bells
     // do not ring beats a create that failed after the session came up.
     // (The session's own invocation empties `update-environment`, which is
     // not cosmetic, so it is not the one refused here.)

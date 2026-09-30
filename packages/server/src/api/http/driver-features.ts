@@ -1,5 +1,5 @@
 import { ServerError } from '@yaac/shared/errors'
-import { worktreeDriver } from '#drivers/driver'
+import { workspaceDriver } from '#drivers/driver'
 
 /**
  * Refuse a route for a feature this server's substrate does not have.
@@ -25,9 +25,9 @@ import { worktreeDriver } from '#drivers/driver'
 export type DriverFeature = 'images' | 'egress' | 'portRelay'
 
 const WHY: Record<DriverFeature, string> = {
-  images: 'builds no images — its worktrees run on this host, from the checkout itself',
-  egress: 'mediates no egress — a worktree reaches whatever the user running the server can',
-  portRelay: 'relays no ports — a worktree binds host ports itself, so its listeners are '
+  images: 'builds no images — its workspaces run on this host, from the checkout itself',
+  egress: 'mediates no egress — a workspace reaches whatever the user running the server can',
+  portRelay: 'relays no ports — a workspace binds host ports itself, so its listeners are '
     + 'already reachable at their own port',
 }
 
@@ -35,10 +35,10 @@ const WHY: Record<DriverFeature, string> = {
  * Throw unless the registered driver has `feature`.
  *
  * Called at the TOP of a handler, before any id is resolved: what this
- * server can do is not a property of the worktree being asked about, and a
- * 404 for a worktree that happens not to exist would hide the real answer.
+ * server can do is not a property of the workspace being asked about, and a
+ * 404 for a workspace that happens not to exist would hide the real answer.
  */
 export function requireDriverFeature(feature: DriverFeature): void {
-  if (worktreeDriver().kind !== 'containerless') return
+  if (workspaceDriver().kind !== 'containerless') return
   throw new ServerError('NOT_SUPPORTED', `This server ${WHY[feature]}.`)
 }

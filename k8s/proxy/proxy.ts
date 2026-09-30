@@ -8,10 +8,10 @@
  *
  * - Serves the CA from the `yaac-proxy-ca` Secret, minting one into it the
  *   first time
- * - Takes per-worktree rules and allowlists from registration ConfigMaps,
+ * - Takes per-workspace rules and allowlists from registration ConfigMaps,
  *   secret values from per-project Secrets, and the GitHub / Claude /
  *   Codex / opencode / pi credentials plus ssh keys from the credentials
- *   Secret, each live: a `yaac auth update` reaches every running worktree
+ *   Secret, each live: a `yaac auth update` reaches every running workspace
  *   on its next request
  * - Handles CONNECT tunneling: MITMs TLS when rules match, tunnels otherwise
  * - Swaps placeholder tokens for real OAuth credentials and captures
@@ -58,7 +58,7 @@ import {
   type ProxyState,
   type RefreshedBundles,
   type UpstreamRedirect,
-  type WorktreeRegistration,
+  type ProxyRegistration,
 } from './objects'
 import {
   ProxyObjects,
@@ -71,7 +71,7 @@ import {
 } from './object-watch'
 import { createAgentKeyLoader } from './agent-keys'
 import { DNS_QTYPE_A, buildDnsResponse, isInternalName, parseDnsQuery } from './dns-stub'
-import { PodWorktreeIndex, fetchPodIpByWorktreeId, fetchWorktreeByPodIp, startPodWatch } from './pod-watch'
+import { PodWorkspaceIndex, fetchPodIpByWorkspaceId, fetchWorkspaceByPodIp, startPodWatch } from './pod-watch'
 import {
   MAMA_MAGIC_HOST,
   MAMA_MAX_BODY_BYTES,
@@ -100,7 +100,7 @@ const PROXY_AUTH_SECRET = process.env.PROXY_AUTH_SECRET
 const TRANSPARENT_HTTPS_PORT = process.env.TRANSPARENT_HTTPS_PORT
 const TRANSPARENT_HTTP_PORT = process.env.TRANSPARENT_HTTP_PORT
 const TRANSPARENT_TUNNEL_PORT = process.env.TRANSPARENT_TUNNEL_PORT
-// Stream relay: authenticated CONNECT from the yaac server into a worktree
+// Stream relay: authenticated CONNECT from the yaac server into a workspace
 // pod's streamd (docs/stream-relay.md).
 const RELAY_PORT = process.env.RELAY_PORT
 const POD_STREAM_PORT = process.env.POD_STREAM_PORT
@@ -113,10 +113,10 @@ if (!API_PORT || !PROXY_AUTH_SECRET || !TRANSPARENT_HTTPS_PORT || !TRANSPARENT_H
 }
 // Pod-local scratch (an emptyDir): Tor's state and its readiness marker.
 const DATA_DIR = '/data'
-// UDP/53 DNS stub: worktree pods point their resolver here. Optional so
+// UDP/53 DNS stub: workspace pods point their resolver here. Optional so
 // non-cluster test runs can skip it.
 const DNS_STUB_PORT = process.env.DNS_STUB_PORT
-// TCP port carrying the ssh-agent protocol to entitled worktree pods (see
+// TCP port carrying the ssh-agent protocol to entitled workspace pods (see
 // ssh-agent-relay.ts). Optional for the same reason as the DNS stub: a
 // non-cluster test run has no pod-watch to authenticate anyone with, so it
 // simply doesn't listen.
@@ -148,29 +148,29 @@ async function resolveInternalA(name: string): Promise<string | null> {
   }
 }
 
-// podIP → worktreeId, kept fresh by watching the pods API with the proxy's
+// podIP → workspaceId, kept fresh by watching the pods API with the proxy's
 // read-only ServiceAccount. The transparent listeners resolve a connection's
-// worktree from the source pod IP in the Envoy-stamped PROXY header.
-const podIndex = new PodWorktreeIndex()
+// workspace from the source pod IP in the Envoy-stamped PROXY header.
+const podIndex = new PodWorkspaceIndex()
 
-async function resolveWorktree(ip: string): Promise<string | undefined> {
-  let worktreeId = podIndex.resolve(ip)
-  if (!worktreeId) {
+async function resolveWorkspace(ip: string): Promise<string | undefined> {
+  let workspaceId = podIndex.resolve(ip)
+  if (!workspaceId) {
     // Cache-miss fallback: a new pod's first packet can beat its watch event.
     try {
-      worktreeId = await fetchWorktreeByPodIp(podIndex, ip) ?? undefined
+      workspaceId = await fetchWorkspaceByPodIp(podIndex, ip) ?? undefined
     } catch { return undefined }
   }
   // Same race in the other direction — a Job created microseconds after
   // its registration ConfigMap — and the same cure.
-  if (worktreeId && IN_CLUSTER && !objects.registration(worktreeId)) {
+  if (workspaceId && IN_CLUSTER && !objects.registration(workspaceId)) {
     try {
-      await fetchRegistration(objects, worktreeId)
+      await fetchRegistration(objects, workspaceId)
     } catch (err) {
-      console.error(`[proxy] registration lookup failed for ${worktreeId.slice(0, 8)}...:`, (err as Error).message)
+      console.error(`[proxy] registration lookup failed for ${workspaceId.slice(0, 8)}...:`, (err as Error).message)
     }
   }
-  return worktreeId
+  return workspaceId
 }
 
 // When USE_TOR=1, route every upstream connection through the Tor SOCKS
@@ -204,7 +204,7 @@ const OPENAI_TOKEN_URL_HOST = 'auth.openai.com'
 const OPENAI_TOKEN_URL_PATH = '/oauth/token'
 // Codex in ChatGPT auth mode routes inference to chatgpt.com/backend-api, not
 // api.openai.com — so we must MITM it too and apply the same Authorization
-// swap for codex worktrees.
+// swap for codex workspaces.
 const CHATGPT_HOST = 'chatgpt.com'
 const CODEX_DEFAULT_REFRESH_WINDOW_MS = 28 * 24 * 60 * 60 * 1000
 // How long a mediated refresh may sit idle on upstream before it is given up.
@@ -213,7 +213,7 @@ const CODEX_DEFAULT_REFRESH_WINDOW_MS = 28 * 24 * 60 * 60 * 1000
 // so it is far past any reply upstream could still be committing to.
 const TOKEN_REFRESH_HARD_TIMEOUT_MS = 5 * 60_000
 // opencode and pi are api-key only. The proxy swaps the placeholder key for
-// the real one on the chosen provider's host when the worktree is registered as
+// the real one on the chosen provider's host when the workspace is registered as
 // that tool. The provider→host tables are code-generated from each tool's own
 // registry (models.dev for opencode, the pi package for pi) — see
 // ./tool-providers.generated and scripts/gen-tool-providers.ts. The credential
@@ -254,13 +254,13 @@ const LEAF_REFRESH_MS = 60 * 60 * 1000
 
 /**
  * The CA, from the `yaac-proxy-ca` Secret the server pre-created — minted
- * into it the first time, so every later pod (and every worktree pod's
+ * into it the first time, so every later pod (and every workspace pod's
  * mounted trust bundle) keeps the same root. The combined bundle
  * `{system roots} ∪ {CA}` is rewritten either way: the roots are the
  * image's, and an image upgrade may have refreshed them.
  *
  * Outside a cluster (a local run) there is no Secret: a fresh CA per
- * process, which is all a run without worktrees needs.
+ * process, which is all a run without workspaces needs.
  */
 async function loadOrGenerateCA(): Promise<CA> {
   let result: CA | null = null
@@ -326,7 +326,7 @@ function generateCA(keys = forge.pki.rsa.generateKeyPair(2048)): CA {
     { name: 'keyUsage', keyCertSign: true, cRLSign: true },
     // SKI so a verifier can pick THIS CA over another identically-named
     // "yaac Proxy CA" (each proxy mints its own self-signed CA with the same
-    // CN; a chained nested worktree trusts both). The leaf's AKI points here,
+    // CN; a chained nested workspace trusts both). The leaf's AKI points here,
     // so selection is by key id, not bundle order. See getLeafCert.
     { name: 'subjectKeyIdentifier' },
   ])
@@ -377,10 +377,10 @@ function getLeafCert(hostname: string): { key: string; cert: string } {
 
 // ── The objects the proxy is told through ────────────────────────────
 //
-// Credentials, per-project secret values and per-worktree registrations
+// Credentials, per-project secret values and per-workspace registrations
 // all arrive over the informers in object-watch.ts and are read from these
 // maps per request, which is what makes a `yaac auth update` or a secret
-// edit live for every running worktree.
+// edit live for every running workspace.
 
 const objects = new ProxyObjects({
   loadSshKeys: (entries) => agentKeys.reload(entries),
@@ -388,22 +388,22 @@ const objects = new ProxyObjects({
   // prunes the host from the blocked record so the badge clears, and its
   // narrowing (a claimed spare's re-registration) drops the tunnels it no
   // longer admits as they were accepted.
-  onRegistration: (worktreeId, registration) => {
-    const dropped = liveTunnels.revoke(worktreeId, registration && ((host) => admissionFor(worktreeId, host)))
+  onRegistration: (workspaceId, registration) => {
+    const dropped = liveTunnels.revoke(workspaceId, registration && ((host) => admissionFor(workspaceId, host)))
     if (dropped.length > 0) {
-      console.log(`[proxy] dropped ${dropped.length} tunnel(s) of ${worktreeId.slice(0, 8)}... `
+      console.log(`[proxy] dropped ${dropped.length} tunnel(s) of ${workspaceId.slice(0, 8)}... `
         + `the registration no longer admits: ${[...new Set(dropped)].join(', ')}`)
     }
-    const blocked = blockedHostsByWorktree.get(worktreeId)
+    const blocked = blockedHostsByWorkspace.get(workspaceId)
     if (!blocked) return
     if (registration === null) {
-      blockedHostsByWorktree.delete(worktreeId)
+      blockedHostsByWorkspace.delete(workspaceId)
       scheduleStateWrite()
       return
     }
     let pruned = false
     for (const host of blocked) {
-      if (isHostAllowed(worktreeId, host)) {
+      if (isHostAllowed(workspaceId, host)) {
         blocked.delete(host)
         pruned = true
       }
@@ -412,8 +412,8 @@ const objects = new ProxyObjects({
   },
 })
 
-function registrationOf(worktreeId: string): WorktreeRegistration | undefined {
-  return objects.registration(worktreeId)
+function registrationOf(workspaceId: string): ProxyRegistration | undefined {
+  return objects.registration(workspaceId)
 }
 
 const liveTunnels = new LiveTunnels()
@@ -422,11 +422,11 @@ const liveTunnels = new LiveTunnels()
  * What a tunnel to `hostname` is accepted under — the registered rules and
  * redirect it applies for its life — or null when the host is not allowed.
  */
-function admissionFor(worktreeId: string, hostname: string): string | null {
-  if (!isHostAllowed(worktreeId, hostname)) return null
+function admissionFor(workspaceId: string, hostname: string): string | null {
+  if (!isHostAllowed(workspaceId, hostname)) return null
   return JSON.stringify([
-    findRulesForHost(worktreeId, hostname),
-    registrationOf(worktreeId)?.upstreamRedirects?.[hostname] ?? null,
+    findRulesForHost(workspaceId, hostname),
+    registrationOf(workspaceId)?.upstreamRedirects?.[hostname] ?? null,
   ])
 }
 
@@ -490,12 +490,12 @@ function httpsRemoteHost(remoteUrl: string | undefined): string | null {
 }
 
 /**
- * The HTTPS credential assigned to a worktree's project, with the host of
- * the worktree's registered https remote — the one host it may be sent to,
+ * The HTTPS credential assigned to a workspace's project, with the host of
+ * the workspace's registered https remote — the one host it may be sent to,
  * which every caller checks so a token cannot leak onto another MITM'd host.
  */
-function resolveHttpsCredentialForWorktree(worktreeId: string): { token: string; host: string } | null {
-  const registration = registrationOf(worktreeId)
+function resolveHttpsCredentialForWorkspace(workspaceId: string): { token: string; host: string } | null {
+  const registration = registrationOf(workspaceId)
   if (!registration) return null
   const entry = objects.credentials.git.find((e) => e.projects.includes(registration.projectSlug))
   if (!entry) return null
@@ -504,7 +504,7 @@ function resolveHttpsCredentialForWorktree(worktreeId: string): { token: string;
 }
 
 /**
- * A rotation captured from a worktree's refresh: served from memory at once,
+ * A rotation captured from a workspace's refresh: served from memory at once,
  * and written to the refreshed Secret — which the server adopts and a
  * replacement pod boots from — until the write lands.
  *
@@ -542,30 +542,30 @@ async function writeRefreshedUntilLanded(): Promise<void> {
 
 // ── What only this process observes ─────────────────────────────────
 //
-// Per-tenant records are keyed by worktreeId, except git-auth failures,
-// which are keyed by the worktree's project. Both are written to the
+// Per-tenant records are keyed by workspaceId, except git-auth failures,
+// which are keyed by the workspace's project. Both are written to the
 // `yaac-proxy-state` ConfigMap the server watches; the last pod's records
 // are read back once at boot so a replacement keeps the badges it left.
 
-/** worktreeId -> Set of blocked hostnames */
-const blockedHostsByWorktree = new Map<string, Set<string>>()
+/** workspaceId -> Set of blocked hostnames */
+const blockedHostsByWorkspace = new Map<string, Set<string>>()
 
 /**
  * projectSlug -> (hostname -> auth-failure record). Populated when an
  * upstream rejects a git smart-HTTP request that carried a yaac-injected
  * credential — i.e. the stored token itself is bad (expired/revoked),
  * not a missing allowlist entry. Keyed by project (resolved through the
- * requesting worktree's registration): the credential belongs to the
- * project's repo, so one bad token flags every worktree of the project,
- * and the record outlives the worktree that first hit it. Cleared per
+ * requesting workspace's registration): the credential belongs to the
+ * project's repo, so one bad token flags every workspace of the project,
+ * and the record outlives the workspace that first hit it. Cleared per
  * host on the next successful injected git request from any of the
- * project's worktrees, so the flag self-heals after `yaac auth update`.
+ * project's workspaces, so the flag self-heals after `yaac auth update`.
  */
 const gitAuthFailuresByProject = new Map<string, Map<string, GitAuthFailureRecord>>()
 
 function currentState(): ProxyState {
   const state: ProxyState = { blockedHosts: {}, gitAuthFailures: {} }
-  for (const [sid, hosts] of blockedHostsByWorktree) {
+  for (const [sid, hosts] of blockedHostsByWorkspace) {
     if (hosts.size > 0) state.blockedHosts[sid] = [...hosts]
   }
   for (const [slug, byHost] of gitAuthFailuresByProject) {
@@ -577,7 +577,7 @@ function currentState(): ProxyState {
 
 function seedState(state: ProxyState): void {
   for (const [sid, hosts] of Object.entries(state.blockedHosts)) {
-    blockedHostsByWorktree.set(sid, new Set(hosts))
+    blockedHostsByWorkspace.set(sid, new Set(hosts))
   }
   for (const [slug, entries] of Object.entries(state.gitAuthFailures)) {
     gitAuthFailuresByProject.set(slug, new Map(entries.map(({ host, status, atMs }) => [host, { status, atMs }])))
@@ -626,26 +626,26 @@ function hostMatches(hostname: string, pattern: string): boolean {
   return patternParts.every((p, i) => p === '*' || p === hostParts[i])
 }
 
-function findRulesForHost(worktreeId: string, hostname: string): HostInjectionRule[] {
-  const rules = registrationOf(worktreeId)?.rules
+function findRulesForHost(workspaceId: string, hostname: string): HostInjectionRule[] {
+  const rules = registrationOf(workspaceId)?.rules
   if (!rules) return []
   return rules.filter((r) => hostMatches(hostname, r.hostPattern))
 }
 
-function isHostAllowed(worktreeId: string | null, hostname: string): boolean {
-  if (!worktreeId) return false // no worktree = block by default (fail closed)
-  const allowed = registrationOf(worktreeId)?.allowedHosts
+function isHostAllowed(workspaceId: string | null, hostname: string): boolean {
+  if (!workspaceId) return false // no workspace = block by default (fail closed)
+  const allowed = registrationOf(workspaceId)?.allowedHosts
   if (!allowed) return false // no registration = block by default (fail closed)
   if (allowed.length === 1 && allowed[0] === '*') return true
   return allowed.some((pattern) => hostMatches(hostname, pattern))
 }
 
-function recordBlockedHost(worktreeId: string | null, hostname: string): void {
-  if (!worktreeId) return
-  let hosts = blockedHostsByWorktree.get(worktreeId)
+function recordBlockedHost(workspaceId: string | null, hostname: string): void {
+  if (!workspaceId) return
+  let hosts = blockedHostsByWorkspace.get(workspaceId)
   if (!hosts) {
     hosts = new Set()
-    blockedHostsByWorktree.set(worktreeId, hosts)
+    blockedHostsByWorkspace.set(workspaceId, hosts)
   }
   if (hosts.has(hostname)) return
   hosts.add(hostname)
@@ -673,21 +673,21 @@ function isGitSmartHttpPath(requestPath: string): boolean {
 /**
  * Track the upstream's verdict on a git smart-HTTP request that carried a
  * yaac-injected credential. A 401/403 means the stored token itself was
- * rejected (expired or revoked) — record it against the worktree's project
+ * rejected (expired or revoked) — record it against the workspace's project
  * (written like blocked hosts) so the server surfaces a loud project-wide
  * error. A later 2xx on the same host from any of the
- * project's worktrees clears the record, so the flag self-heals once the
+ * project's workspaces clears the record, so the flag self-heals once the
  * user runs `yaac auth update` and git is retried.
  */
 function noteGitUpstreamStatus(
-  worktreeId: string,
+  workspaceId: string,
   hostname: string,
   requestPath: string,
   status: number,
 ): void {
   if (!isGitSmartHttpPath(requestPath)) return
-  const projectSlug = registrationOf(worktreeId)?.projectSlug
-  if (!projectSlug) return // unregistered worktree — can't attribute
+  const projectSlug = registrationOf(workspaceId)?.projectSlug
+  if (!projectSlug) return // unregistered workspace — can't attribute
   const byHost = gitAuthFailuresByProject.get(projectSlug)
   if (status === 401 || status === 403) {
     if (byHost?.has(hostname)) return // repeat failure — nothing new to write
@@ -786,20 +786,20 @@ function applyBodyInjections(
 
 /**
  * Hosts the proxy MITMs so it can inject agent-tool credentials, plus any
- * HTTPS host for which the current worktree has a matching git credential. SSH (port 22) is always tunneled,
- * never MITM'd. Rule-based per-worktree MITM is still applied on top of this.
+ * HTTPS host for which the current workspace has a matching git credential. SSH (port 22) is always tunneled,
+ * never MITM'd. Rule-based per-workspace MITM is still applied on top of this.
  */
-function hostNeedsDynamicMitm(worktreeId: string | null, hostname: string, port: number): boolean {
+function hostNeedsDynamicMitm(workspaceId: string | null, hostname: string, port: number): boolean {
   if (port === 22) return false
   if (hostname === ANTHROPIC_API_HOST || hostname === CLAUDE_MCP_PROXY_HOST) return true
   if (hostname === CLAUDE_TOKEN_URL_HOST) return true
   if (hostname === OPENAI_API_HOST) return true
   if (hostname === OPENAI_TOKEN_URL_HOST) return true
   if (hostname === CHATGPT_HOST) return true
-  // opencode / pi: MITM the worktree's chosen provider host so the api-key swap
+  // opencode / pi: MITM the workspace's chosen provider host so the api-key swap
   // in buildDynamicRules can run. Matches that swap's gating exactly — only the
   // one host the registered tool's credential points at.
-  const tool = worktreeId ? registrationOf(worktreeId)?.tool : undefined
+  const tool = workspaceId ? registrationOf(workspaceId)?.tool : undefined
   if (tool === 'opencode') {
     const creds = objects.credentials.opencode
     if (creds && hostname === OPENCODE_PROVIDER_HOSTS[creds.provider]) return true
@@ -808,16 +808,16 @@ function hostNeedsDynamicMitm(worktreeId: string | null, hostname: string, port:
     const creds = objects.credentials.pi
     if (creds && hostname === PI_PROVIDER_HOSTS[creds.provider]) return true
   }
-  if (worktreeId && worktreeHasHttpsCredentialForHost(worktreeId, hostname)) return true
+  if (workspaceId && workspaceHasHttpsCredentialForHost(workspaceId, hostname)) return true
   // gh CLI: MITM the GitHub API host so we can swap the placeholder GH_TOKEN
-  // for the worktree's real git token (api.github.com is not the git remote
+  // for the workspace's real git token (api.github.com is not the git remote
   // host, so the credential check above misses it).
-  if (worktreeId && resolveGithubApiTokenForWorktree(worktreeId, hostname) !== null) return true
+  if (workspaceId && resolveGithubApiTokenForWorkspace(workspaceId, hostname) !== null) return true
   return false
 }
 
-function worktreeHasHttpsCredentialForHost(worktreeId: string, hostname: string): boolean {
-  const cred = resolveHttpsCredentialForWorktree(worktreeId)
+function workspaceHasHttpsCredentialForHost(workspaceId: string, hostname: string): boolean {
+  const cred = resolveHttpsCredentialForWorkspace(workspaceId)
   return cred?.host === hostname
 }
 
@@ -833,12 +833,12 @@ function ghApiHostForGitHost(host: string): string | null {
 
 /**
  * Resolve the GitHub token to inject for `gh` traffic to `hostname`: the
- * worktree's HTTPS git token, but only when `hostname` is the gh API host for
+ * workspace's HTTPS git token, but only when `hostname` is the gh API host for
  * that credential's git host. The host gate keeps the token from leaking onto
  * unrelated MITM'd hosts.
  */
-function resolveGithubApiTokenForWorktree(worktreeId: string, hostname: string): string | null {
-  const cred = resolveHttpsCredentialForWorktree(worktreeId)
+function resolveGithubApiTokenForWorkspace(workspaceId: string, hostname: string): string | null {
+  const cred = resolveHttpsCredentialForWorkspace(workspaceId)
   if (!cred) return null
   if (ghApiHostForGitHost(cred.host) !== hostname) return null
   return cred.token
@@ -889,18 +889,18 @@ function swapApiKeyHeader(
  * rules — no separate mutation path.
  */
 function buildDynamicRules(
-  worktreeId: string | null,
+  workspaceId: string | null,
   hostname: string,
   reqHeaders: http.IncomingHttpHeaders,
 ): InjectionRule[] {
-  if (!worktreeId) return []
+  if (!workspaceId) return []
   const rules: InjectionRule[] = []
 
-  // HTTPS git credential injection: only fires when the worktree's repoUrl
+  // HTTPS git credential injection: only fires when the workspace's repoUrl
   // host matches the current MITM hostname. The host equality guard keeps a
   // token scoped to e.g. github.com from leaking into a request to
   // chatgpt.com (which is also MITM'd for other reasons).
-  const httpsCred = resolveHttpsCredentialForWorktree(worktreeId)
+  const httpsCred = resolveHttpsCredentialForWorkspace(workspaceId)
   if (httpsCred && httpsCred.host === hostname) {
     const basic = 'Basic ' + Buffer.from(`x-access-token:${httpsCred.token}`).toString('base64')
     rules.push({
@@ -912,10 +912,10 @@ function buildDynamicRules(
   // GitHub CLI (`gh`) auth: the container's GH_TOKEN carries the placeholder.
   // gh sends it to the GitHub API host (api.github.com — REST + GraphQL) as
   // `Authorization: token <placeholder>` (or `Bearer`). Swap in the HTTPS git
-  // token assigned to the worktree's project, preserving gh's auth scheme.
-  // Gated on the worktree's https remote being on github.com AND on the placeholder
+  // token assigned to the workspace's project, preserving gh's auth scheme.
+  // Gated on the workspace's https remote being on github.com AND on the placeholder
   // sentinel, so traffic carrying a user-supplied token passes through.
-  const ghApiToken = resolveGithubApiTokenForWorktree(worktreeId, hostname)
+  const ghApiToken = resolveGithubApiTokenForWorkspace(workspaceId, hostname)
   if (ghApiToken) {
     const incomingAuth = headerValue(reqHeaders, 'authorization')
     if (incomingAuth && incomingAuth.includes(PLACEHOLDER_GH_TOKEN)) {
@@ -938,12 +938,12 @@ function buildDynamicRules(
   // through unmodified — the proxy only rewrites traffic it knows it
   // originated the placeholder for.
   //
-  // There is deliberately no longer a per-tool gate here. A worktree is
+  // There is deliberately no longer a per-tool gate here. A workspace is
   // tool-agnostic: it holds whatever agent sessions the user opens in it, in
-  // any mix, so "the worktree's tool" is not a property that exists to gate
+  // any mix, so "the workspace's tool" is not a property that exists to gate
   // on. Every pod already carries every tool's placeholder env (spares are
   // retoolable), so the gate only ever decided which of those placeholders
-  // resolved — and any agent in any worktree may now spend any credential the
+  // resolved — and any agent in any workspace may now spend any credential the
   // host has signed in. That is a real widening, and the intended one.
   if (hostname === ANTHROPIC_API_HOST || hostname === CLAUDE_MCP_PROXY_HOST) {
     const creds = objects.credentials.claude
@@ -1006,7 +1006,7 @@ function buildDynamicRules(
   // opencode / pi credential swap. Both are api-key only: the container's env
   // carries the chosen provider's key var set to the placeholder, the tool
   // sends the placeholder to the provider's host, and the proxy substitutes
-  // the real key here. Gated on the worktree's registered tool + the host
+  // the real key here. Gated on the workspace's registered tool + the host
   // matching the credential's provider + the placeholder sentinel, so
   // unrelated traffic (or a user manually carrying their own key) passes
   // through untouched. Which header carries the key varies by provider
@@ -1270,7 +1270,7 @@ function handleMitm(
   clientSocket: Duplex,
   hostname: string,
   port: string | undefined,
-  worktreeId: string | null,
+  workspaceId: string | null,
   rules: HostInjectionRule[],
   upstreamRedirect: UpstreamRedirect | null,
 ): void {
@@ -1294,10 +1294,10 @@ function handleMitm(
     // swap placeholder refresh_token outbound, then capture real tokens +
     // swap placeholders inbound. Null when this isn't the token endpoint or
     // no OAuth bundle is held (nothing to swap). Not gated on the
-    // worktree's tool: a worktree is tool-agnostic, so any agent in it may
+    // workspace's tool: a workspace is tool-agnostic, so any agent in it may
     // drive any signed-in tool's refresh. (The host-side tool sign-in flow
-    // never traverses the worktree proxy, so it's unaffected.)
-    const tokenTool: RefreshTool | null = worktreeId === null ? null
+    // never traverses the workspace proxy, so it's unaffected.)
+    const tokenTool: RefreshTool | null = workspaceId === null ? null
       : hostname === CLAUDE_TOKEN_URL_HOST && reqPath === CLAUDE_TOKEN_URL_PATH ? 'claude'
         : hostname === OPENAI_TOKEN_URL_HOST && reqPath === OPENAI_TOKEN_URL_PATH ? 'codex'
           : null
@@ -1307,18 +1307,18 @@ function handleMitm(
     // credentials on every request and merged into the registered rules
     // (secretRefs resolved per request, same freshness semantics) so a
     // single injection pipeline handles both.
-    const dynamicRules = buildDynamicRules(worktreeId, hostname, req.headers)
-    const projectSlug = worktreeId ? registrationOf(worktreeId)?.projectSlug : undefined
+    const dynamicRules = buildDynamicRules(workspaceId, hostname, req.headers)
+    const projectSlug = workspaceId ? registrationOf(workspaceId)?.projectSlug : undefined
     const allRules: InjectionRule[] = [...resolveRegisteredRules(rules, projectSlug), ...dynamicRules]
     const injCount = applyInjections(headers, reqPath, allRules)
     const bodyInjections = collectBodyInjections(reqPath, allRules)
 
-    // Watch the upstream's verdict when this request goes to the worktree's
+    // Watch the upstream's verdict when this request goes to the workspace's
     // git host with a yaac-injected credential (the same condition under
     // which buildDynamicRules added the git Authorization rule above) — a
     // 401/403 on a git endpoint means the stored token is bad.
     const gitCredInjected =
-      worktreeId !== null && worktreeHasHttpsCredentialForHost(worktreeId, hostname)
+      workspaceId !== null && workspaceHasHttpsCredentialForHost(workspaceId, hostname)
 
     const totalInj = injCount + bodyInjections.length
     if (totalInj > 0) {
@@ -1353,8 +1353,8 @@ function handleMitm(
         ...(useHttp ? {} : { rejectUnauthorized: true }),
         ...(useTorAgent ? { agent: torAgent } : {}),
       }, (upstreamRes) => {
-        if (gitCredInjected && worktreeId !== null) {
-          noteGitUpstreamStatus(worktreeId, hostname, reqPath, upstreamRes.statusCode ?? 0)
+        if (gitCredInjected && workspaceId !== null) {
+          noteGitUpstreamStatus(workspaceId, hostname, reqPath, upstreamRes.statusCode ?? 0)
         }
         if (refresh) {
           collectTokenReply(upstreamRes, refresh.held, refresh.done)
@@ -1458,8 +1458,8 @@ function handleMitm(
     delete headers['proxy-authorization']
     delete headers['proxy-connection']
 
-    const dynamicRules = buildDynamicRules(worktreeId, hostname, req.headers)
-    const projectSlug = worktreeId ? registrationOf(worktreeId)?.projectSlug : undefined
+    const dynamicRules = buildDynamicRules(workspaceId, hostname, req.headers)
+    const projectSlug = workspaceId ? registrationOf(workspaceId)?.projectSlug : undefined
     const allRules: InjectionRule[] = [...resolveRegisteredRules(rules, projectSlug), ...dynamicRules]
     const injCount = applyInjections(headers, reqPath, allRules)
 
@@ -1594,7 +1594,7 @@ function handleTunnel(clientSocket: Duplex, hostname: string, port: string | und
 // ── Upstream Dispatch (shared by CONNECT + transparent listeners) ─────
 
 /**
- * Authorize `hostname` for the worktree and hand the socket to the MITM
+ * Authorize `hostname` for the workspace and hand the socket to the MITM
  * or tunnel path. The explicit CONNECT listener and the transparent
  * HTTPS listener share everything from the allowlist check onward; they
  * differ only in framing — CONNECT writes an HTTP response head
@@ -1605,10 +1605,10 @@ function dispatchToUpstream(
   clientSocket: Duplex,
   hostname: string,
   port: string | undefined,
-  worktreeId: string,
+  workspaceId: string,
   opts: { writeConnectOk: boolean; head?: Buffer },
 ): void {
-  // A client that hung up during the worktree lookup has already closed:
+  // A client that hung up during the workspace lookup has already closed:
   // nothing would untrack it, or tear down an upstream dialed for it.
   if (clientSocket.destroyed) return
 
@@ -1634,11 +1634,11 @@ function dispatchToUpstream(
     return
   }
 
-  const admission = admissionFor(worktreeId, hostname)
+  const admission = admissionFor(workspaceId, hostname)
   if (admission === null) {
     const label = opts.writeConnectOk ? 'CONNECT' : 'transparent HTTPS'
     console.log(`[proxy] BLOCKED ${label} to ${hostname}:${port ?? '443'} (not in allowlist)`)
-    recordBlockedHost(worktreeId, hostname)
+    recordBlockedHost(workspaceId, hostname)
     if (opts.writeConnectOk) {
       clientSocket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
       clientSocket.end()
@@ -1648,19 +1648,19 @@ function dispatchToUpstream(
     return
   }
 
-  liveTunnels.add(worktreeId, clientSocket, hostname, admission)
-  const rules = findRulesForHost(worktreeId, hostname)
+  liveTunnels.add(workspaceId, clientSocket, hostname, admission)
+  const rules = findRulesForHost(workspaceId, hostname)
 
   // Always MITM well-known tool-auth hosts so we can inject credentials,
-  // even when no per-worktree rule-based injections apply. Port-aware:
+  // even when no per-workspace rule-based injections apply. Port-aware:
   // SSH (22) always tunnels.
   const destPort = parseInt(port ?? '', 10) || 443
-  const needsDynMitm = hostNeedsDynamicMitm(worktreeId, hostname, destPort)
+  const needsDynMitm = hostNeedsDynamicMitm(workspaceId, hostname, destPort)
 
   // A registered redirect for this hostname forces MITM — without it, the
   // proxy would tunnel bytes unchanged and the redirect could never apply.
   const redirect: UpstreamRedirect | null =
-    registrationOf(worktreeId)?.upstreamRedirects?.[hostname] ?? null
+    registrationOf(workspaceId)?.upstreamRedirects?.[hostname] ?? null
 
   if (opts.writeConnectOk) {
     clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
@@ -1671,7 +1671,7 @@ function dispatchToUpstream(
   }
 
   if (rules.length > 0 || needsDynMitm || redirect) {
-    handleMitm(clientSocket, hostname, port, worktreeId, rules, redirect)
+    handleMitm(clientSocket, hostname, port, workspaceId, rules, redirect)
   } else {
     handleTunnel(clientSocket, hostname, port)
   }
@@ -1730,7 +1730,7 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
       return
     }
     // Not Ready until every input object's initial list has landed: a pod
-    // serving before that would fail every worktree closed for want of a
+    // serving before that would fail every workspace closed for want of a
     // registration it simply has not been told yet.
     if (IN_CLUSTER && !objects.ready()) {
       res.writeHead(503)
@@ -1743,7 +1743,7 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
   }
 
   // The change stream the server subscribes to for the one thing it has to
-  // be woken for: a queued in-worktree `yaac-mama` request. Held open; one
+  // be woken for: a queued in-workspace `yaac-mama` request. Held open; one
   // NDJSON line per change, plus periodic pings.
   if (req.method === 'GET' && req.url === '/events') {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
@@ -1762,7 +1762,7 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
-  // In-worktree yaac-mama requests: the server drains pending requests when
+  // In-workspace yaac-mama requests: the server drains pending requests when
   // the `mama` event above wakes it (drain = claim, at-most-once) ...
   if (req.method === 'GET' && req.url === '/cmd/pending') {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
@@ -1771,7 +1771,7 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
-  // ... and posts back results, which complete the held worktree responses.
+  // ... and posts back results, which complete the held workspace responses.
   if (req.method === 'POST' && req.url === '/cmd/results') {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
     let body = ''
@@ -1811,7 +1811,7 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
 //
 // Loaded from the credentials Secret's `ssh-keys.json` by the credentials
 // handler (agent-keys.ts). Key bytes live only in the agent's memory; which
-// worktrees may use each one is the relay's per-project scoping below.
+// workspaces may use each one is the relay's per-project scoping below.
 
 // HOME (deployment) and SSH_AUTH_SOCK (entrypoint.sh) are required env the
 // proxy is always launched with; a missing value means a broken
@@ -1829,7 +1829,7 @@ function requireEnv(name: string): string {
 const KNOWN_HOSTS_FILE = path.join(requireEnv('HOME'), '.ssh', 'known_hosts')
 
 // The pod-local agent socket (created by entrypoint.sh under $HOME). The
-// proxy talks to it directly; worktree pods reach it through the
+// proxy talks to it directly; workspace pods reach it through the
 // SSH_AGENT_PORT listener, which splices to this same path.
 const AGENT_SOCK = requireEnv('SSH_AUTH_SOCK')
 
@@ -1858,13 +1858,13 @@ if (IN_CLUSTER) {
 function forwardPlainHttp(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  worktreeId: string,
+  workspaceId: string,
   target: { hostname: string; port: number; path: string },
 ): void {
-  const admission = admissionFor(worktreeId, target.hostname)
+  const admission = admissionFor(workspaceId, target.hostname)
   if (admission === null) {
     console.log(`[proxy] BLOCKED HTTP forward to ${target.hostname} (not in allowlist)`)
-    recordBlockedHost(worktreeId, target.hostname)
+    recordBlockedHost(workspaceId, target.hostname)
     res.writeHead(403, { 'Content-Type': 'text/plain' })
     res.end(`Blocked by URL allowlist: ${target.hostname} is not in the allowed hosts`)
     return
@@ -1899,8 +1899,8 @@ function forwardPlainHttp(
   // Tracked for the request's life, like a tunnel — both halves, since an
   // upstream that answers early leaves the body still streaming after the
   // response closes. A half cut short takes the upstream request with it.
-  liveTunnels.add(worktreeId, req, target.hostname, admission)
-  liveTunnels.add(worktreeId, res, target.hostname, admission)
+  liveTunnels.add(workspaceId, req, target.hostname, admission)
+  liveTunnels.add(workspaceId, res, target.hostname, admission)
   req.once('close', () => { if (!req.complete) upstream.destroy() })
   res.once('close', () => { if (!res.writableFinished) upstream.destroy() })
   req.pipe(upstream)
@@ -1909,7 +1909,7 @@ function forwardPlainHttp(
 // ── Server ─────────────────────────────────────────────────────────────
 
 // :API_PORT serves only the server control API (health, the change stream,
-// the yaac-mama queue). Worktree egress never reaches it — all of it (HTTP,
+// the yaac-mama queue). Workspace egress never reaches it — all of it (HTTP,
 // HTTPS, SSH) rides the relay-fed transparent listeners, gated by the
 // per-connection PP2 token.
 const server = http.createServer((req, res) => {
@@ -1937,12 +1937,12 @@ server.listen(parseInt(API_PORT, 10), '0.0.0.0', () => {
 
 // ── Transparent listeners ──────────────────────────────────────────────
 //
-// Worktree pods' outbound 443/80 (and the SSH tunnel sentinel) is
+// Workspace pods' outbound 443/80 (and the SSH tunnel sentinel) is
 // redirected here by netd's per-pod nat DNAT at the pod's veth peer: the
 // node-local Envoy forwards each connection wrapped in a PROXY protocol
 // v2 header carrying the connection's real source pod IP. Identity is that
-// source IP, resolved to a worktree via the pod-watch index
-// (see resolveWorktreeBySourceIp). Destination comes from the TLS SNI
+// source IP, resolved to a workspace via the pod-watch index
+// (see resolveWorkspaceBySourceIp). Destination comes from the TLS SNI
 // (443) / HTTP Host (80) after the PP2 header is consumed. The listeners
 // fail closed: no/invalid PP2, an unknown source pod, or (for HTTPS) an
 // SNI-less ClientHello → destroy.
@@ -1957,19 +1957,19 @@ const PP2_TIMEOUT_MS = 10_000
 
 /**
  * Consume the Envoy-stamped PROXY-protocol-v2 preamble on a freshly accepted
- * transparent socket, resolve the source pod IP it carries to a worktree id,
- * then hand that worktree id and the remaining stream to `next`. Any failure
+ * transparent socket, resolve the source pod IP it carries to a workspace id,
+ * then hand that workspace id and the remaining stream to `next`. Any failure
  * destroys the socket — this is the fail-closed gate. Identity is the source
  * pod IP, which netd's Envoy stamps from the connection's real peer address
  * (unforgeable: the redirect is keyed on the arrival veth, and neither a
  * gVisor guest nor a Felix-policed runc pod can spoof its source). The
  * proxy-ingress NetworkPolicy admits these ports from the node CIDRs only, so
- * a worktree pod cannot dial in and forge a source.
+ * a workspace pod cannot dial in and forge a source.
  */
-function resolveWorktreeBySourceIp(
+function resolveWorkspaceBySourceIp(
   socket: net.Socket,
   label: string,
-  next: (worktreeId: string, leftover: Buffer) => void,
+  next: (workspaceId: string, leftover: Buffer) => void,
 ): void {
   socket.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code !== 'ECONNRESET') {
@@ -1999,22 +1999,22 @@ function resolveWorktreeBySourceIp(
       return
     }
     const srcIp = res.srcIp
-    // Keep buffering bytes that arrive while we resolve the worktree async, so
+    // Keep buffering bytes that arrive while we resolve the workspace async, so
     // none are lost between removing onData and `next` attaching its reader.
     let leftover = buf.subarray(res.bytesConsumed)
     const buffer = (chunk2: Buffer): void => { leftover = Buffer.concat([leftover, chunk2]) }
     socket.on('data', buffer)
-    void resolveWorktree(srcIp).then((worktreeId) => {
+    void resolveWorkspace(srcIp).then((workspaceId) => {
       socket.removeListener('data', buffer)
-      if (!worktreeId) {
-        console.log(`[proxy] BLOCKED transparent ${label} from ${peer}: source ${srcIp} is not a known worktree pod`)
+      if (!workspaceId) {
+        console.log(`[proxy] BLOCKED transparent ${label} from ${peer}: source ${srcIp} is not a known workspace pod`)
         socket.destroy()
         return
       }
       // Hand the post-header bytes to `next` directly (the HTTPS peeker / HTTP
       // path each unshift once at dispatch; a second unshift would not
       // reliably re-emit to a freshly-added 'data' listener).
-      next(worktreeId, leftover)
+      next(workspaceId, leftover)
     })
   }
   socket.on('data', onData)
@@ -2023,11 +2023,11 @@ function resolveWorktreeBySourceIp(
 /**
  * After the PP2 preamble: peek the ClientHello SNI without terminating
  * TLS, then dispatch to the shared MITM/tunnel path. `initial` is the
- * post-header leftover from resolveWorktreeBySourceIp (often the start of the
+ * post-header leftover from resolveWorkspaceBySourceIp (often the start of the
  * ClientHello). The single unshift at dispatch drives the real handshake
  * downstream.
  */
-function peekSniAndDispatch(socket: net.Socket, worktreeId: string, initial: Buffer): void {
+function peekSniAndDispatch(socket: net.Socket, workspaceId: string, initial: Buffer): void {
   const peer = socket.remoteAddress ?? '(unknown)'
   let buf = initial
   let settled = false
@@ -2061,7 +2061,7 @@ function peekSniAndDispatch(socket: net.Socket, worktreeId: string, initial: Buf
     if (buf.length > 0) socket.unshift(buf)
     // Destination port is 443 by construction: only dport-443 traffic is
     // REDIRECTed to the relay's HTTPS upstream.
-    dispatchToUpstream(socket, peek.serverName, '443', worktreeId, { writeConnectOk: false })
+    dispatchToUpstream(socket, peek.serverName, '443', workspaceId, { writeConnectOk: false })
     return true
   }
 
@@ -2076,16 +2076,16 @@ function peekSniAndDispatch(socket: net.Socket, worktreeId: string, initial: Buf
 }
 
 const transparentHttpsServer = net.createServer((socket) => {
-  resolveWorktreeBySourceIp(socket, 'HTTPS', (worktreeId, leftover) =>
-    peekSniAndDispatch(socket, worktreeId, leftover))
+  resolveWorkspaceBySourceIp(socket, 'HTTPS', (workspaceId, leftover) =>
+    peekSniAndDispatch(socket, workspaceId, leftover))
 })
 
 // Origin-form HTTP after the PP2 preamble: feed the post-header stream
 // into an internal http.Server (the `emit('connection')` pattern handleMitm
-// already uses) and carry the verified worktree id on the socket.
-type IdentifiedSocket = net.Socket & { yaacWorktreeId?: string }
+// already uses) and carry the verified workspace id on the socket.
+type IdentifiedSocket = net.Socket & { yaacWorkspaceId?: string }
 
-// In-worktree yaac-mama requests (see mama-queue.ts). Held responses expire
+// In-workspace yaac-mama requests (see mama-queue.ts). Held responses expire
 // on a coarse sweep — precision doesn't matter, only that abandoned requests
 // eventually 504 instead of leaking.
 const mamaQueue = new MamaQueue()
@@ -2093,15 +2093,15 @@ setInterval(() => { mamaQueue.expire() }, 5_000).unref()
 
 /**
  * `POST http://yaac.internal/cmd?command=<name>&<opts>` from inside a
- * worktree: validate the envelope's shape, then hold the response open until
+ * workspace: validate the envelope's shape, then hold the response open until
  * the server drains the queue and posts the result (or the TTL sweep 504s
- * it). Runs BEFORE the allowlist — a worktree can always reach its own
+ * it). Runs BEFORE the allowlist — a workspace can always reach its own
  * server, without registration and never recorded as a blocked host.
  */
 function handleMamaRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  worktreeId: string,
+  workspaceId: string,
 ): void {
   const url = new URL(req.url ?? '/', `http://${MAMA_MAGIC_HOST}`)
   // The queue writes the completed reply itself; this is for everything
@@ -2134,7 +2134,7 @@ function handleMamaRequest(
     const raw = Buffer.concat(chunks).toString('utf8')
 
     // The envelope arrives as JSON, which is the one shape both substrates
-    // send (worktree-bin/yaac-mama).
+    // send (workspace-bin/yaac-mama).
     const parsed = parseMamaEnvelope(raw)
     if (!parsed) { respond(400, 'invalid request envelope'); return }
     const { command, args, body } = parsed
@@ -2146,7 +2146,7 @@ function handleMamaRequest(
     let gone = false
     res.on('close', () => { gone = true })
     const enqueued = mamaQueue.enqueue(
-      { worktreeId, command, args, body },
+      { workspaceId, command, args, body },
       // The queue has already shaped this reply for the caller's script, so
       // it is written through verbatim rather than through `respond`.
       (status, text) => {
@@ -2156,7 +2156,7 @@ function handleMamaRequest(
       },
     )
     if (!enqueued.ok) { respond(enqueued.status, enqueued.error); return }
-    console.log(`[proxy] ${command} request from worktree ${worktreeId.slice(0, 8)}... queued (${enqueued.requestId.slice(0, 8)}...)`)
+    console.log(`[proxy] ${command} request from workspace ${workspaceId.slice(0, 8)}... queued (${enqueued.requestId.slice(0, 8)}...)`)
     // The caller's response is held until the server drains and answers, so
     // the drain is worth waking immediately rather than at the next resync.
     emitProxyEvent('mama')
@@ -2165,8 +2165,8 @@ function handleMamaRequest(
 
 const internalHttpServer = http.createServer((req, res) => {
   const socket = req.socket as IdentifiedSocket
-  const worktreeId = socket.yaacWorktreeId
-  if (!worktreeId) {
+  const workspaceId = socket.yaacWorkspaceId
+  if (!workspaceId) {
     // Unreachable: sockets reach this server only after token verification.
     res.writeHead(403, { 'Content-Type': 'text/plain' }); res.end('No identity'); return
   }
@@ -2181,10 +2181,10 @@ const internalHttpServer = http.createServer((req, res) => {
     return
   }
   if (target.hostname === MAMA_MAGIC_HOST) {
-    handleMamaRequest(req, res, worktreeId)
+    handleMamaRequest(req, res, workspaceId)
     return
   }
-  forwardPlainHttp(req, res, worktreeId, {
+  forwardPlainHttp(req, res, workspaceId, {
     hostname: target.hostname,
     port: target.port,
     path: req.url ?? '/',
@@ -2192,8 +2192,8 @@ const internalHttpServer = http.createServer((req, res) => {
 })
 
 const transparentHttpServer = net.createServer((socket) => {
-  resolveWorktreeBySourceIp(socket, 'HTTP', (worktreeId, leftover) => {
-    ;(socket as IdentifiedSocket).yaacWorktreeId = worktreeId
+  resolveWorkspaceBySourceIp(socket, 'HTTP', (workspaceId, leftover) => {
+    ;(socket as IdentifiedSocket).yaacWorkspaceId = workspaceId
     if (leftover.length > 0) socket.unshift(leftover)
     internalHttpServer.emit('connection', socket)
   })
@@ -2210,7 +2210,7 @@ const CONNECT_TIMEOUT_MS = 10_000
  * through the relay to ncat. SSH (port 22) tunnels; the allowlist still
  * applies, on the hostname ncat preserved.
  */
-function readConnectAndDispatch(socket: net.Socket, worktreeId: string, initial: Buffer): void {
+function readConnectAndDispatch(socket: net.Socket, workspaceId: string, initial: Buffer): void {
   const peer = socket.remoteAddress ?? '(unknown)'
   let buf = initial
   let settled = false
@@ -2238,7 +2238,7 @@ function readConnectAndDispatch(socket: net.Socket, worktreeId: string, initial:
     }
     // Bytes past the request headers (normally none — ncat waits for 200).
     const rest = buf.subarray(end + 4)
-    dispatchToUpstream(socket, m[1], m[2], worktreeId, {
+    dispatchToUpstream(socket, m[1], m[2], workspaceId, {
       writeConnectOk: true,
       head: rest.length > 0 ? rest : undefined,
     })
@@ -2255,8 +2255,8 @@ function readConnectAndDispatch(socket: net.Socket, worktreeId: string, initial:
 }
 
 const transparentTunnelServer = net.createServer((socket) => {
-  resolveWorktreeBySourceIp(socket, 'TUNNEL', (worktreeId, leftover) =>
-    readConnectAndDispatch(socket, worktreeId, leftover))
+  resolveWorkspaceBySourceIp(socket, 'TUNNEL', (workspaceId, leftover) =>
+    readConnectAndDispatch(socket, workspaceId, leftover))
 })
 
 for (const [srv, portStr, label] of [
@@ -2272,18 +2272,18 @@ for (const [srv, portStr, label] of [
   })
 }
 
-// ── Stream relay (server ↔ worktree-pod streamd) ────────────────────────────
+// ── Stream relay (server ↔ workspace-pod streamd) ────────────────────────────
 //
 // A dumb authenticated CONNECT: the server dials in, sends ONE JSON auth
-// line `{"token": <proxyAuthSecret>, "worktreeId": <sid>}`, and the relay
-// resolves the worktree's pod IP (pod-watch reverse index, labelSelector
+// line `{"token": <proxyAuthSecret>, "workspaceId": <sid>}`, and the relay
+// resolves the workspace's pod IP (pod-watch reverse index, labelSelector
 // list on a miss) and splices the rest of the stream to
 // `podIP:POD_STREAM_PORT` untouched — the streamd handshake, its reply,
 // and the payload are end-to-end server↔streamd. Per-stream failures
-// (unknown worktree, pod dial failure or timeout) are ANSWERED with an
+// (unknown workspace, pod dial failure or timeout) are ANSWERED with an
 // error line before closing: the server treats a silent close as a dead
 // transport and re-establishes its shared port-forward, so a stale
-// worktree's probe must not masquerade as one — and nothing before the
+// workspace's probe must not masquerade as one — and nothing before the
 // splice may hang instead, which is what the pre-splice deadline below
 // enforces. Only a bad auth line closes silently (no oracle for
 // unauthenticated peers).
@@ -2293,7 +2293,7 @@ const RELAY_HANDSHAKE_MAX_BYTES = 4 * 1024
  * Budget for every phase before the splice — the auth line, the pod-IP
  * resolve, then the pod dial (which re-arms it on the target socket, the
  * only handle that can also reap a hung connect). No phase may hang
- * instead of answering: a worktree pod whose ingress policy hasn't
+ * instead of answering: a workspace pod whose ingress policy hasn't
  * admitted this proxy yet DROPS the SYN, so an unbounded `net.connect`
  * sits out the OS retry series (~130s) holding both sockets, with the
  * server waiting out its own deadline and learning nothing about which
@@ -2327,7 +2327,7 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
     socket.end(JSON.stringify({ ok: false, error: `relay: ${error}` }) + '\n')
   }
   const deadline = setTimeout(() => {
-    if (authed) refuse('timed out resolving the worktree pod')
+    if (authed) refuse('timed out resolving the workspace pod')
     else socket.destroy()
   }, RELAY_PRESPLICE_TIMEOUT_MS)
 
@@ -2340,7 +2340,7 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
     }
     socket.removeListener('data', onData)
 
-    let params: { token?: unknown; worktreeId?: unknown }
+    let params: { token?: unknown; workspaceId?: unknown }
     try {
       params = JSON.parse(buf.subarray(0, nl).toString('utf8')) as typeof params
     } catch {
@@ -2348,7 +2348,7 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
       socket.destroy()
       return
     }
-    const dialled = params.worktreeId
+    const dialled = params.workspaceId
     if (
       typeof params.token !== 'string' || typeof dialled !== 'string'
       || !timingSafeStrEqual(params.token, PROXY_AUTH_SECRET!)
@@ -2359,7 +2359,7 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
       return
     }
     authed = true
-    const worktreeId = dialled
+    const workspaceId = dialled
 
     // Keep buffering bytes (the pipelined streamd handshake) that arrive
     // before the splice starts — through BOTH async gaps: the pod-IP
@@ -2372,12 +2372,12 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
     const buffer = (chunk2: Buffer): void => { leftover = Buffer.concat([leftover, chunk2]) }
     socket.on('data', buffer)
     void (async () => {
-      let ip = podIndex.resolveIp(worktreeId)
+      let ip = podIndex.resolveIp(workspaceId)
       if (!ip) {
         try {
-          ip = await fetchPodIpByWorktreeId(podIndex, worktreeId)
+          ip = await fetchPodIpByWorkspaceId(podIndex, workspaceId)
         } catch (err) {
-          console.error(`[proxy] relay pod lookup failed for ${worktreeId.slice(0, 8)}...:`, (err as Error).message)
+          console.error(`[proxy] relay pod lookup failed for ${workspaceId.slice(0, 8)}...:`, (err as Error).message)
         }
       }
       // `writableEnded` as well as `destroyed`: a refusal (the deadline
@@ -2386,8 +2386,8 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
       // otherwise dial the pod anyway and splice into an ended socket.
       if (socket.destroyed || socket.writableEnded) return
       if (!ip) {
-        console.log(`[proxy] BLOCKED relay dial: unknown worktree ${worktreeId.slice(0, 8)}...`)
-        refuse('unknown worktree')
+        console.log(`[proxy] BLOCKED relay dial: unknown workspace ${workspaceId.slice(0, 8)}...`)
+        refuse('unknown workspace')
         return
       }
       // allowHalfOpen so an EOF from either end passes through the splice
@@ -2438,24 +2438,24 @@ relayServer.listen(parseInt(RELAY_PORT, 10), '0.0.0.0', () => {
   console.log(`[proxy] stream relay listener on port ${RELAY_PORT}`)
 })
 
-// ── ssh-agent forwarding (worktree pod → this pod's agent) ──────────────────
+// ── ssh-agent forwarding (workspace pod → this pod's agent) ──────────────────
 //
-// The transport that replaced the hostPath socket the proxy and worktree pods
-// used to share: a worktree pod's local forwarder splices its SSH_AUTH_SOCK
+// The transport that replaced the hostPath socket the proxy and workspace pods
+// used to share: a workspace pod's local forwarder splices its SSH_AUTH_SOCK
 // UNIX socket to this listener, which relays to the agent. Identity is the
-// source pod IP (pod-watch), entitlement is the worktree's registered SSH
+// source pod IP (pod-watch), entitlement is the workspace's registered SSH
 // remote, and the keys it sees are its project's — see ssh-agent-relay.ts
 // for the full gate. The relay asks per message, so the answer is read off
 // the live credentials and registration every time.
-function allowedKeysFor(worktreeId: string): Set<string> {
-  const slug = registrationOf(worktreeId)?.projectSlug
+function allowedKeysFor(workspaceId: string): Set<string> {
+  const slug = registrationOf(workspaceId)?.projectSlug
   return (slug ? sshKeyBlobsByProject(objects.credentials.ssh).get(slug) : undefined) ?? new Set()
 }
 const sshAgentServer = SSH_AGENT_PORT
   ? createSshAgentServer({
     agentSock: AGENT_SOCK,
-    resolveWorktree,
-    repoUrlFor: (worktreeId) => registrationOf(worktreeId)?.repoUrl,
+    resolveWorkspace,
+    repoUrlFor: (workspaceId) => registrationOf(workspaceId)?.repoUrl,
     allowedKeysFor,
   })
   : null
@@ -2469,7 +2469,7 @@ if (sshAgentServer && SSH_AGENT_PORT) {
 }
 
 // ── DNS stub (UDP/53), split-horizon ───────────────────────────────────────
-// Worktree pods resolve against the proxy. External names get the sinkhole;
+// Workspace pods resolve against the proxy. External names get the sinkhole;
 // internal names (`*.svc`) are forwarded to cluster DNS on the top-level proxy
 // (DNS_FORWARD_INTERNAL) so pods learn live ClusterIPs — no IP pinning.
 const dnsServer = DNS_STUB_PORT ? dgram.createSocket('udp4') : null
@@ -2501,7 +2501,7 @@ if (dnsServer && DNS_STUB_PORT) {
   })
 }
 
-// ── The watches (source IP → worktree; the objects) ───────────────────────
+// ── The watches (source IP → workspace; the objects) ───────────────────────
 // Only in-cluster (a mounted SA). Local/test runs without it leave every
 // map empty, so transparent connections fail closed — which is correct.
 if (IN_CLUSTER) {

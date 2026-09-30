@@ -8,8 +8,8 @@
  *   - A query matching nothing shows the no-match state.
  *   - Escape clears the query and restores the full list.
  *
- * Needs a running `yaac server` with at least one live session whose worktree
- * has uncommitted changes (the pane diffs the session worktree against its
+ * Needs a running `yaac server` with at least one live session whose workspace
+ * has uncommitted changes (the pane diffs the session workspace against its
  * fork base) — e.g. `yaac session create <project>`, then edit files in the
  * pod. Reads the port from $YAAC_DATA_DIR/.server.lock
  * (falling back to ~/.yaac) exactly like .claude/skills/run-yaac/driver.mjs.

@@ -16,7 +16,7 @@
  *     remembered branch is dropped and Create is left to origin's default.
  *  5. On a phone viewport, a tap on a suggestion row picks it.
  *
- * Creates ONE real worktree in the chosen project from BRANCH (a non-default
+ * Creates ONE real workspace in the chosen project from BRANCH (a non-default
  * branch that exists on its origin) and stops it at the end.
  *
  * Drives the app the server itself serves (`dist/`), at the port in
@@ -81,9 +81,9 @@ const origin = `http://127.0.0.1:${lock.port}`
 // A loopback origin is this machine's owner: no credential.
 const auth = {}
 
-async function listWorktrees() {
-  const res = await fetch(`${origin}/api/worktree/list?project=${PROJECT}`, { headers: auth })
-  return (await res.json()).worktrees
+async function listWorkspaces() {
+  const res = await fetch(`${origin}/api/workspace/list?project=${PROJECT}`, { headers: auth })
+  return (await res.json()).workspaces
 }
 
 const { chromium } = requirePlaywright()
@@ -95,7 +95,7 @@ try {
   const page = await ctx.newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
   await page.goto(`${origin}/?project=${PROJECT}`)
-  await page.getByTitle('New worktree').first().waitFor({ state: 'visible', timeout: 15_000 })
+  await page.getByTitle('New workspace').first().waitFor({ state: 'visible', timeout: 15_000 })
 
   const branch = page.getByLabel('Base branch', { exact: true })
   const prompt = page.getByLabel('Prompt')
@@ -108,7 +108,7 @@ try {
     await create.and(page.locator('button:enabled')).waitFor({ timeout: 15_000 })
   }
   // The dialog's own close button, not Escape: after a reload a live
-  // worktree's terminal can hold focus, and Escape then goes to it.
+  // workspace's terminal can hold focus, and Escape then goes to it.
   const close = async () => {
     await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click()
     await prompt.waitFor({ state: 'detached' })
@@ -143,15 +143,15 @@ try {
   await page.screenshot({ path: path.join(SHOTS, 'branch-typeahead-picked.png') })
 
   // (2) Create, then reopen: remembered.
-  const knownIds = new Set((await listWorktrees()).map((w) => w.worktreeId))
+  const knownIds = new Set((await listWorkspaces()).map((w) => w.workspaceId))
   await create.click()
   await prompt.waitFor({ state: 'detached' })
   for (let i = 0; i < 60 && createdId === null; i++) {
-    const fresh = (await listWorktrees()).find((w) => !knownIds.has(w.worktreeId))
-    if (fresh) createdId = fresh.worktreeId
+    const fresh = (await listWorkspaces()).find((w) => !knownIds.has(w.workspaceId))
+    if (fresh) createdId = fresh.workspaceId
     else await page.waitForTimeout(1000)
   }
-  check('the create produced a worktree', createdId !== null, createdId ?? 'none')
+  check('the create produced a workspace', createdId !== null, createdId ?? 'none')
   await page.waitForTimeout(1500)
   await open()
   await settle()
@@ -171,7 +171,7 @@ try {
   await page.route(`**/api/project/${PROJECT}/branches**`, dropIt)
   // The dialog's query is cached from the last open: reload so it refetches.
   await page.reload()
-  await page.getByTitle('New worktree').first().waitFor({ state: 'visible', timeout: 15_000 })
+  await page.getByTitle('New workspace').first().waitFor({ state: 'visible', timeout: 15_000 })
   await open()
   await settle()
   check('a remembered branch origin dropped falls back to the default',
@@ -184,7 +184,7 @@ try {
   const fail = (route) => route.fulfill({ status: 500, json: { error: { code: 'INTERNAL', message: 'boom' } } })
   await page.route(`**/api/project/${PROJECT}/branches**`, fail)
   await page.reload()
-  await page.getByTitle('New worktree').first().waitFor({ state: 'visible', timeout: 15_000 })
+  await page.getByTitle('New workspace').first().waitFor({ state: 'visible', timeout: 15_000 })
   await open()
   await settle()
   check('branches API failing: the remembered branch is dropped', (await branch.inputValue()) === '',
@@ -200,7 +200,7 @@ try {
   }
   await page.route(`**/api/project/${PROJECT}/branches**`, slow)
   await page.reload()
-  await page.getByTitle('New worktree').first().waitFor({ state: 'visible', timeout: 15_000 })
+  await page.getByTitle('New workspace').first().waitFor({ state: 'visible', timeout: 15_000 })
   await page.keyboard.press('Alt+KeyN')
   await prompt.waitFor({ state: 'visible' })
   await page.waitForTimeout(1000)
@@ -219,8 +219,8 @@ try {
   const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
   const mpage = await phone.newPage()
   await mpage.goto(`${origin}/?project=${PROJECT}`)
-  await mpage.getByTitle('New worktree').first().waitFor({ state: 'visible', timeout: 15_000 })
-  await mpage.getByTitle('New worktree').first().tap()
+  await mpage.getByTitle('New workspace').first().waitFor({ state: 'visible', timeout: 15_000 })
+  await mpage.getByTitle('New workspace').first().tap()
   const mbranch = mpage.getByLabel('Base branch', { exact: true })
   await mbranch.waitFor({ state: 'visible' })
   await mpage.waitForTimeout(2500)
@@ -235,7 +235,7 @@ try {
   await browser.close()
   if (createdId !== null) {
     try {
-      execSync(`yaac worktree stop ${createdId}`, { stdio: 'ignore' })
+      execSync(`yaac workspace stop ${createdId}`, { stdio: 'ignore' })
       console.log(`stopped ${createdId}`)
     } catch {
       console.log(`could not stop ${createdId} — stop it by hand`)

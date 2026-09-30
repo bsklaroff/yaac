@@ -6,27 +6,27 @@ vi.mock('#drivers/k8s/substrate/stream-relay', () => ({
 }))
 
 vi.mock('#drivers/k8s/forwarders/port-forwarders', () => ({
-  getWorktreePorts: vi.fn().mockReturnValue([]),
+  getWorkspacePorts: vi.fn().mockReturnValue([]),
 }))
 
-import { getWorktreePorts } from '#drivers/k8s/forwarders/port-forwarders'
+import { getWorkspacePorts } from '#drivers/k8s/forwarders/port-forwarders'
 import {
   PortDetectorManager,
   _resetPortDetectorForTests,
   _setDetectedPortsForTests,
-  dismissWorktreePort,
+  dismissWorkspacePort,
   getUnforwardedPorts,
 } from '#drivers/k8s/forwarders/port-detector'
-import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
+import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#notify'
 import type { PodInfo } from '#drivers/k8s/substrate/pods'
 
-const mockGetSessionPorts = vi.mocked(getWorktreePorts)
+const mockGetSessionPorts = vi.mocked(getWorkspacePorts)
 
-function pod(worktreeId: string, over: Partial<PodInfo> = {}): PodInfo {
+function pod(workspaceId: string, over: Partial<PodInfo> = {}): PodInfo {
   return {
-    jobName: `yaac-p-${worktreeId}`,
-    podName: `yaac-p-${worktreeId}-abc`,
-    worktreeId,
+    jobName: `yaac-p-${workspaceId}`,
+    podName: `yaac-p-${workspaceId}-abc`,
+    workspaceId,
     projectSlug: 'p',
     tool: 'claude',
     phase: 'Running',
@@ -93,7 +93,7 @@ describe('getUnforwardedPorts', () => {
   it('subtracts dismissed ports per session', () => {
     _setDetectedPortsForTests('s1', [3000, 8080])
     _setDetectedPortsForTests('s2', [3000])
-    expect(dismissWorktreePort('s1', 3000)).toBe(true)
+    expect(dismissWorkspacePort('s1', 3000)).toBe(true)
     expect(getUnforwardedPorts('s1')).toEqual([8080])
     expect(getUnforwardedPorts('s2')).toEqual([3000])
   })
@@ -101,28 +101,28 @@ describe('getUnforwardedPorts', () => {
   // A dismissal exists only in this module's memory, so it is the only
   // thing that can tell a client the popover row is gone.
   it('pushes a fresh snapshot when a dismissal lands, and not when it is refused', () => {
-    _resetWorktreeListChangedForTests()
+    _resetWorkspaceListChangedForTests()
     let pushes = 0
-    onWorktreeListChanged(() => { pushes += 1 })
+    onWorkspaceListChanged(() => { pushes += 1 })
     _setDetectedPortsForTests('s1', [3000])
 
-    expect(dismissWorktreePort('s1', 8080)).toBe(false)
+    expect(dismissWorkspacePort('s1', 8080)).toBe(false)
     expect(pushes).toBe(0)
-    expect(dismissWorktreePort('s1', 3000)).toBe(true)
+    expect(dismissWorkspacePort('s1', 3000)).toBe(true)
     expect(pushes).toBe(1)
-    _resetWorktreeListChangedForTests()
+    _resetWorkspaceListChangedForTests()
   })
 
   it('refuses to dismiss a port that is not currently surfaced', () => {
     // Un-detected session, un-detected port, an already-forwarded port,
     // and a filtered (sensitive) port are all refused — otherwise the
     // dismissed set could be grown for sessions the sync never cleans up.
-    expect(dismissWorktreePort('nope', 8080)).toBe(false)
+    expect(dismissWorkspacePort('nope', 8080)).toBe(false)
     _setDetectedPortsForTests('s1', [3000, 9229])
-    expect(dismissWorktreePort('s1', 8080)).toBe(false)
-    expect(dismissWorktreePort('s1', 9229)).toBe(false)
+    expect(dismissWorkspacePort('s1', 8080)).toBe(false)
+    expect(dismissWorkspacePort('s1', 9229)).toBe(false)
     mockGetSessionPorts.mockReturnValue([{ containerPort: 3000, hostPort: 3000 }])
-    expect(dismissWorktreePort('s1', 3000)).toBe(false)
+    expect(dismissWorkspacePort('s1', 3000)).toBe(false)
   })
 
   it('hides sensitive and infra ports fail-closed', () => {

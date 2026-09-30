@@ -16,16 +16,16 @@
  *      it with the message, and the conversation shows it in the user's turn
  *      once the echo lands — with the composer emptied.
  *
- * Needs a running containerless `yaac server` with two live claude worktrees
+ * Needs a running containerless `yaac server` with two live claude workspaces
  * of one project: a terminal one and a chat one, e.g. `yaac project add
- * https://github.com/octocat/Hello-World.git <cred>`, then `yaac worktree
+ * https://github.com/octocat/Hello-World.git <cred>`, then `yaac workspace
  * create hello-world --tool claude` and `... --tool claude --mode acp`
- * (in a yaac worktree, `yaac auth fake claude-oauth github` supplies the
+ * (in a yaac workspace, `yaac auth fake claude-oauth github` supplies the
  * credentials). Run `pnpm build && yaac server restart` first, or you are
  * looking at the frontend `dist/` held when the server started. Spends one
  * small prompt turn on the chat agent.
  *
- * Run: node test-playwright-scripts/paste-image-test.js <tui-worktree-id> <acp-worktree-id>
+ * Run: node test-playwright-scripts/paste-image-test.js <tui-workspace-id> <acp-workspace-id>
  * (set SCREENSHOT_DIR to change where screenshots land; defaults to
  * /tmp/yaac-shots. YAAC_DATA_DIR defaults to ~/.yaac.)
  * (playwright is resolved from the global npm root; browsers live under
@@ -62,7 +62,7 @@ function readServerLock() {
 
 const [tuiId, acpId] = process.argv.slice(2)
 if (!tuiId || !acpId) {
-  console.error('usage: node test-playwright-scripts/paste-image-test.js <tui-worktree-id> <acp-worktree-id>')
+  console.error('usage: node test-playwright-scripts/paste-image-test.js <tui-workspace-id> <acp-workspace-id>')
   process.exit(1)
 }
 
@@ -129,15 +129,15 @@ async function main() {
   const lock = readServerLock()
   const origin = `http://127.0.0.1:${lock.port}`
   const auth = { authorization: `Bearer ${lock.secret}` }
-  const { worktrees } = await (await fetch(`${origin}/api/worktree/list`, { headers: auth })).json()
+  const { workspaces } = await (await fetch(`${origin}/api/workspace/list`, { headers: auth })).json()
   const find = (id) => {
-    const wt = worktrees.find((w) => w.worktreeId.startsWith(id))
-    if (!wt) throw new Error(`no running worktree ${id}`)
+    const wt = workspaces.find((w) => w.workspaceId.startsWith(id))
+    if (!wt) throw new Error(`no running workspace ${id}`)
     return wt
   }
   const tui = find(tuiId)
   const acp = find(acpId)
-  const attachments = path.join(DATA_DIR, 'global', 'projects', tui.projectSlug, 'sessions', tui.worktreeId, 'attachments')
+  const attachments = path.join(DATA_DIR, 'global', 'projects', tui.projectSlug, 'sessions', tui.workspaceId, 'attachments')
   const token = () => fetch(`${origin}/tokens`, {
     method: 'POST',
     headers: { ...auth, 'content-type': 'application/json' },
@@ -152,7 +152,7 @@ async function main() {
     page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
 
     // ── the terminal pane ────────────────────────────────────────────────
-    await page.goto(`${origin}/?${new URLSearchParams({ project: tui.projectSlug, worktree: tui.worktreeId, token: await token() })}`)
+    await page.goto(`${origin}/?${new URLSearchParams({ project: tui.projectSlug, workspace: tui.workspaceId, token: await token() })}`)
     await page.locator('.xterm').first().waitFor({ timeout: 30_000 })
     await eventually(async () => (await screenText(page)).includes('❯'), 60_000)
     await page.locator('.xterm').first().click()
@@ -169,7 +169,7 @@ async function main() {
     // uploads still there, so nothing about the directory says which is new.
     const answered = await (await upload).json().catch(() => ({}))
     const uploaded = answered.path && path.join(attachments, path.basename(answered.path))
-    check(uploaded !== undefined && fs.existsSync(uploaded), 'the image was uploaded to the worktree')
+    check(uploaded !== undefined && fs.existsSync(uploaded), 'the image was uploaded to the workspace')
     if (uploaded !== undefined && fs.existsSync(uploaded)) {
       const { width, height } = pngSize(uploaded)
       check(width === 1568 && height === 1045, 'downscaled to 1568 px on the long edge', `${width}x${height}`)
@@ -196,7 +196,7 @@ async function main() {
     await page.screenshot({ path: path.join(SHOTS, 'paste-image-terminal.png') })
 
     // ── the chat pane ────────────────────────────────────────────────────
-    await page.goto(`${origin}/?${new URLSearchParams({ project: acp.projectSlug, worktree: acp.worktreeId, token: await token() })}`)
+    await page.goto(`${origin}/?${new URLSearchParams({ project: acp.projectSlug, workspace: acp.workspaceId, token: await token() })}`)
     const box = page.locator('textarea[placeholder]').first()
     await box.waitFor({ timeout: 30_000 })
     await eventually(() => box.getAttribute('placeholder').then((p) => p === 'Message the agent…'), 60_000)

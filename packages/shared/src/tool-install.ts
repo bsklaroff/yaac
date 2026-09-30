@@ -1,5 +1,5 @@
 /**
- * The agent binaries a host runs its worktrees with, each from yaac's own
+ * The agent binaries a host runs its workspaces with, each from yaac's own
  * install of the package that ships it.
  *
  * Only a runtime with no image to supply the tools needs this — the
@@ -55,7 +55,7 @@ export const AGENT_PACKAGES: Record<string, AgentPackage> = Object.fromEntries([
  * NODE-LOCAL: the npm prefix one pinned package is installed under — its
  * binaries land in `<prefix>/bin`. Named by package and version, so a
  * prefix never changes once it exists: a version bump installs beside it,
- * and a worktree launched against the old one keeps running what it
+ * and a workspace launched against the old one keeps running what it
  * started with.
  */
 export function agentPackagePrefix({ package: pkg, version }: AgentPackage): string {

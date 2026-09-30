@@ -2,7 +2,7 @@
  * Verifies the named-git-credential UI end to end in a real browser, against
  * a live server:
  *
- *  1. A project with no git credential cannot create: the "+ New worktree"
+ *  1. A project with no git credential cannot create: the "+ New workspace"
  *     popover offers "Add git authentication…" instead of Create, and that
  *     opens Settings → Credentials with the project's row in the "Projects
  *     without git authentication" list highlighted.
@@ -140,7 +140,7 @@ try {
   const unassignedList = page.locator('div.mt-6', { hasText: 'Projects without git authentication' })
 
   // (1) Gated create → settings on the project's row.
-  await page.getByTitle('New worktree').first().click()
+  await page.getByTitle('New workspace').first().click()
   const gate = page.getByRole('button', { name: 'Add git authentication…' })
   const gated = await gate.waitFor({ timeout: 15_000 }).then(() => true, () => false)
   check('a project without a credential offers "Add git authentication…", not Create', gated)

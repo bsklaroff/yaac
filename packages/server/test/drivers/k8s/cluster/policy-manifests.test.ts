@@ -11,7 +11,7 @@ import {
   buildProxyIngressNpManifest,
   buildServerFrontIngressNpManifest,
   buildServerIngressNpManifest,
-  buildWorktreeEgressNpManifest,
+  buildWorkspaceEgressNpManifest,
   egressAllButServerFront,
 } from '#drivers/k8s/cluster'
 import {
@@ -24,9 +24,9 @@ import {
   SERVER_FRONT_PORT,
   SERVER_INGRESS_NP_NAME,
   SERVER_POD_PORT,
-  WORKTREE_EGRESS_NP_NAME,
+  WORKSPACE_EGRESS_NP_NAME,
 } from '#drivers/k8s/substrate/proxy-constants'
-import { LABEL_WORKTREE_ID } from '#drivers/k8s/substrate/pods'
+import { LABEL_WORKSPACE_ID } from '#drivers/k8s/substrate/pods'
 
 interface Spec {
   podSelector: Record<string, unknown>
@@ -69,24 +69,24 @@ describe('buildEgressWorldDenyNpManifest', () => {
     expect(spec.podSelector).toEqual({
       matchExpressions: [
         { key: 'app', operator: 'NotIn', values: [PROXY_APP_NAME, SERVER_APP_NAME] },
-        { key: LABEL_WORKTREE_ID, operator: 'DoesNotExist' },
+        { key: LABEL_WORKSPACE_ID, operator: 'DoesNotExist' },
         { key: LABEL_ROLE, operator: 'NotIn', values: ['builder'] },
       ],
     })
   })
 })
 
-describe('buildWorktreeEgressNpManifest', () => {
+describe('buildWorkspaceEgressNpManifest', () => {
   it('admits the node CIDRs it is given, and nothing world-ward', () => {
-    const np = buildWorktreeEgressNpManifest(['10.89.0.7/32', '10.244.93.192/32']) as unknown as {
+    const np = buildWorkspaceEgressNpManifest(['10.89.0.7/32', '10.244.93.192/32']) as unknown as {
       metadata: { name: string; namespace: string }
       spec: { policyTypes: string[]; egress: Array<{ to?: Array<{ ipBlock?: { cidr: string } }> }> }
     }
 
-    expect(np.metadata.name).toBe(WORKTREE_EGRESS_NP_NAME)
+    expect(np.metadata.name).toBe(WORKSPACE_EGRESS_NP_NAME)
     expect(np.metadata.namespace).toBe('test-ns')
     expect(np.spec.policyTypes).toEqual(['Egress'])
-    // Every destination is one of the node blocks: the worktree's only
+    // Every destination is one of the node blocks: the workspace's only
     // world-ward path is netd's node-local listener, which is what makes
     // the egress lockdown fail CLOSED when netd is late or absent.
     const cidrs = np.spec.egress.flatMap((r) => (r.to ?? []).map((t) => t.ipBlock?.cidr))
@@ -95,11 +95,11 @@ describe('buildWorktreeEgressNpManifest', () => {
     expect(cidrs.every((c) => c === undefined || c.endsWith('/32'))).toBe(true)
   })
 
-  // Which worktrees may dial the npm cache is per project, so the
+  // Which workspaces may dial the npm cache is per project, so the
   // install-wide policy grants it to none; the cache's own label-keyed
   // policy does (npm-cache.test.ts).
-  it('grants no worktree the npm cache', () => {
-    expect(JSON.stringify(buildWorktreeEgressNpManifest(['10.89.0.7/32']))).not.toContain('yaac-npm-cache')
+  it('grants no workspace the npm cache', () => {
+    expect(JSON.stringify(buildWorkspaceEgressNpManifest(['10.89.0.7/32']))).not.toContain('yaac-npm-cache')
   })
 })
 
@@ -107,7 +107,7 @@ describe('buildProxyIngressNpManifest', () => {
   it('locks the proxy to the node CIDRs, so only netd may originate PP2', () => {
     // The transparent ports carry a PROXY-protocol preamble naming the
     // source pod. A pod that could dial them directly could claim to be
-    // any worktree, so the ingress is node-only — the forgery guard.
+    // any workspace, so the ingress is node-only — the forgery guard.
     const np = buildProxyIngressNpManifest(['10.89.0.7/32']) as unknown as {
       metadata: { name: string }
       spec: {

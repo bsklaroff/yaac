@@ -95,7 +95,7 @@ export function createAcpd({
   // answer to "where is the checkout" baked into code both share: under the
   // pod driver `/workspace` is right, and on a host it does not exist — where
   // spawn fails with ENOENT for the *cwd*, reads as a missing binary, and
-  // takes the window (and the worktree) down with it. Callers pass the
+  // takes the window (and the workspace) down with it. Callers pass the
   // driver's own answer; see main.js's `--cwd`.
   cwd = process.cwd(),
   logStream = process.stderr,

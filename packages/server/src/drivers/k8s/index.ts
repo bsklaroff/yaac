@@ -9,15 +9,15 @@ import {
   detachedTeardownCommand,
   findWorkspace,
   findWorkspaceForTeardown,
-  getWorktreeChanges,
+  getWorkspaceChanges,
   launchWorkspace,
   listWorkspaces,
   prepareWorkspaceSubstrate,
   registerWorkspace,
   salvageWorkspaceImages,
-} from '#drivers/k8s/worktrees'
+} from '#drivers/k8s/workspaces'
 import {
-  allowWorktreeHost,
+  allowWorkspaceHost,
   drainPendingMamaRequests,
   proxyClient,
   readBlockedHosts,
@@ -37,12 +37,12 @@ import {
   listImageBuilds,
 } from '#drivers/k8s/image-engine'
 import {
-  declareWorktreeForwards,
+  declareWorkspaceForwards,
   dialWorkspacePort,
-  dismissWorktreePort,
-  forwardWorktreePort,
+  dismissWorkspacePort,
+  forwardWorkspacePort,
   getUnforwardedPorts,
-  getWorktreePorts,
+  getWorkspacePorts,
 } from '#drivers/k8s/forwarders'
 import {
   RelayExecError,
@@ -54,11 +54,11 @@ import {
   podExec,
   waitForJobPodReady,
   waitForStreamd,
-  worktreeIdFromJobName,
+  workspaceIdFromJobName,
 } from '#drivers/k8s/substrate'
 import { k8sReconcileSteps } from '#drivers/k8s/steps'
 import { releaseK8sDriver, startK8sDriver, stopK8sDriver } from '#drivers/k8s/lifecycle'
-import { WorkspaceExecError, type WorktreeDriver } from '#drivers/contract'
+import { WorkspaceExecError, type WorkspaceDriver } from '#drivers/contract'
 
 /**
  * The Kubernetes driver's one door: `createK8sDriver`, the whole of what
@@ -76,7 +76,7 @@ import { WorkspaceExecError, type WorktreeDriver } from '#drivers/contract'
  * precisely because the contract is a bucket of its own below them: the
  * graph runs assembly → folders → contract → nothing, with no cycle to
  * close. Only the composition root imports it, and only to register it
- * (`setWorktreeDriver`); nothing calls it through this name, so a mediator
+ * (`setWorkspaceDriver`); nothing calls it through this name, so a mediator
  * never pulls the cluster client in.
  */
 
@@ -105,7 +105,7 @@ async function execInWorkspace(
   }
 }
 
-export function createK8sDriver(): WorktreeDriver {
+export function createK8sDriver(): WorkspaceDriver {
   return {
     kind: 'k8s',
     // Every pod sees the same paths — see `k8sWorkspacePaths` for why the
@@ -116,23 +116,23 @@ export function createK8sDriver(): WorktreeDriver {
     stop: () => stopK8sDriver(),
     release: () => releaseK8sDriver(),
 
-    find: (worktreeId, opts) => findWorkspace(worktreeId, opts),
-    findForTeardown: (worktreeId, opts) => findWorkspaceForTeardown(worktreeId, opts),
+    find: (workspaceId, opts) => findWorkspace(workspaceId, opts),
+    findForTeardown: (workspaceId, opts) => findWorkspaceForTeardown(workspaceId, opts),
     list: (projectSlug, opts) => listWorkspaces(projectSlug, opts),
     count: () => countWorkspaces(),
     countForProject: (projectSlug) => countProjectWorkspaces(projectSlug),
-    changes: (jobName, base, defaultBase) => getWorktreeChanges(jobName, base, defaultBase),
+    changes: (jobName, base, defaultBase) => getWorkspaceChanges(jobName, base, defaultBase),
     snapshot: (resync) => createRuntimeSnapshot(resync),
     reconcileSteps: () => k8sReconcileSteps(),
 
     blockedHosts: (workspaceId) => Promise.resolve(readBlockedHosts(workspaceId)),
     gitAuthFailures: (projectSlug) => Promise.resolve(readGitAuthFailures(projectSlug)),
     allGitAuthFailures: () => Promise.resolve(readAllGitAuthFailures()),
-    forwardedPorts: (workspaceId) => Promise.resolve(getWorktreePorts(workspaceId)),
+    forwardedPorts: (workspaceId) => Promise.resolve(getWorkspacePorts(workspaceId)),
     unforwardedPorts: (workspaceId) => Promise.resolve(getUnforwardedPorts(workspaceId)),
-    allowHost: (target, host, opts) => allowWorktreeHost(target, host, opts),
-    forwardPort: (target, port, opts) => forwardWorktreePort(target, port, opts),
-    dismissPort: (workspaceId, port) => dismissWorktreePort(workspaceId, port),
+    allowHost: (target, host, opts) => allowWorkspaceHost(target, host, opts),
+    forwardPort: (target, port, opts) => forwardWorkspacePort(target, port, opts),
+    dismissPort: (workspaceId, port) => dismissWorkspacePort(workspaceId, port),
 
     listImageBuilds: () => listImageBuilds(),
     imageBuildLog: (id) => getImageBuildLog(id),
@@ -141,11 +141,11 @@ export function createK8sDriver(): WorktreeDriver {
 
     exec: (jobName, cmd, opts) => execInWorkspace(jobName, cmd, opts),
     awaitAgentTransport: (jobName, opts) => waitForStreamd(jobName, opts),
-    // The relay addresses streams by worktree id; deriving one from the unit
+    // The relay addresses streams by workspace id; deriving one from the unit
     // name is the driver's own naming scheme, so it happens here rather than
     // in a caller that would be encoding it.
-    dialCtrl: (jobName, argv) => dialCtrlStream(worktreeIdFromJobName(jobName), argv),
-    dialPty: (jobName, argv, size) => dialPtyStream(worktreeIdFromJobName(jobName), argv, size),
+    dialCtrl: (jobName, argv) => dialCtrlStream(workspaceIdFromJobName(jobName), argv),
+    dialPty: (jobName, argv, size) => dialPtyStream(workspaceIdFromJobName(jobName), argv, size),
     reviveStatusStream: (jobName) => bootStreamd(jobName),
 
     claimSpare: (workspaceId, tool) => claimSpareWorkspace(workspaceId, tool),
@@ -163,7 +163,7 @@ export function createK8sDriver(): WorktreeDriver {
     refreshedCredentials: () => refreshedCredentials(),
     launch: (spec) => launchWorkspace(spec),
     awaitReady: (handle) => waitForJobPodReady(handle.jobName),
-    declareForwards: (workspaceId, forwards) => declareWorktreeForwards(workspaceId, forwards),
+    declareForwards: (workspaceId, forwards) => declareWorkspaceForwards(workspaceId, forwards),
     dialPort: (workspaceId, containerPort) => dialWorkspacePort(workspaceId, containerPort),
 
     registerWorkspace: (reg) => registerWorkspace(reg),

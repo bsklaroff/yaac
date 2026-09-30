@@ -59,31 +59,31 @@ Binding between worlds is encoded in herdr's own state (no shared DB, no loop):
   **action** recovers the focused session's id by a one-shot lookup (agent name,
   or `herdr pane process-info` argv) — not a reconcile.
 
-## Worktrees: two independent layers (not synced, by design)
+## Workspaces: two independent layers (not synced, by design)
 
-yaac and herdr each have their own git-worktree machinery; this plan keeps them
+yaac and herdr each have their own git-workspace machinery; this plan keeps them
 **separate** and uses only yaac's. They are not synced — and structurally cannot
-be the same worktree.
+be the same workspace.
 
-- **yaac owns the real working copy.** Each session gets a host worktree at
-  `~/.yaac/projects/<slug>/worktrees/<sessionId>` on branch `agent/<sessionId>`
-  (`addWorktree`, `src/lib/git.ts:166`; `src/server/session-create.ts:726-736`),
+- **yaac owns the real working copy.** Each session gets a host workspace at
+  `~/.yaac/projects/<slug>/workspaces/<sessionId>` on branch `agent/<sessionId>`
+  (`addWorkspace`, `src/lib/git.ts:166`; `src/server/session-create.ts:726-736`),
   hostPath-mounted into the pod at `/workspace` (`:1090`) with `.git` at
   `/repo/.git` (`:1091`). yaac reuses it on restart and `rm -rf`s it on delete.
-- **These worktrees are intentionally pod-internal.** Their git pointers are
+- **These workspaces are intentionally pod-internal.** Their git pointers are
   rewritten to in-container paths (`/workspace/.git` → `gitdir: /repo/.git/
-  worktrees/<id>`) and locked against pruning (`session-create.ts:431-445`), so a
-  **host-side** `git` can't treat them as normal worktrees. herdr's worktree
+  workspaces/<id>`) and locked against pruning (`session-create.ts:431-445`), so a
+  **host-side** `git` can't treat them as normal workspaces. herdr's workspace
   feature is host-side, so it could not adopt them even if we wanted.
 - **herdr is a launcher only.** A yaac session shows up as a herdr **pane**
   (`yaac session attach` = a `kubectl exec` TTY), grouped under one workspace per
-  *project*. herdr's native worktree feature (`herdr worktree …`,
-  `~/.herdr/worktrees/<repo>/<branch-slug>`) is **not used**, and yaac sessions
-  are **not** mapped onto `herdr worktree create`. Per-session branch/worktree
-  isolation is real (yaac's), surfaced as separate panes, not herdr worktrees.
-- **Footguns for the README:** running herdr's "New worktree" on a yaac project
+  *project*. herdr's native workspace feature (`herdr workspace …`,
+  `~/.herdr/workspaces/<repo>/<branch-slug>`) is **not used**, and yaac sessions
+  are **not** mapped onto `herdr workspace create`. Per-session branch/workspace
+  isolation is real (yaac's), surfaced as separate panes, not herdr workspaces.
+- **Footguns for the README:** running herdr's "New workspace" on a yaac project
   workspace spins up an unrelated *local* checkout; and although the session
-  worktree is a real host dir, editing it from a local host shell while the pod
+  workspace is a real host dir, editing it from a local host shell while the pod
   agent edits the same files (different uid via idmapped mounts) is not a
   supported sync path.
 

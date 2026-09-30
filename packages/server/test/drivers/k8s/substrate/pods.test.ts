@@ -15,14 +15,14 @@ import {
   LABEL_PREWARMED,
   LABEL_PROJECT,
   LABEL_TOOL,
-  findWorktreePod,
+  findWorkspacePod,
   isPrewarmed,
-  listWorktreeJobs,
-  listWorktreePods,
+  listWorkspaceJobs,
+  listWorkspacePods,
   runPodToCompletion,
-  worktreeIdFromJobName,
-  worktreeJobName,
-  worktreeIdLabels,
+  workspaceIdFromJobName,
+  workspaceJobName,
+  workspaceIdLabels,
   type PodInfo,
 } from '#drivers/k8s/substrate'
 // Internal, for fixtures only: the kubelet's own job-name label.
@@ -31,53 +31,53 @@ import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/sub
 
 const mockGetJson = vi.mocked(kubectlGetJson)
 
-describe('worktreeJobName', () => {
+describe('workspaceJobName', () => {
   const SID = '01234567-89ab-cdef-0123-456789abcdef'
 
-  it('builds yaac-<slug>-<worktreeId>', () => {
-    expect(worktreeJobName('demo', 'abcd1234')).toBe('yaac-demo-abcd1234')
+  it('builds yaac-<slug>-<workspaceId>', () => {
+    expect(workspaceJobName('demo', 'abcd1234')).toBe('yaac-demo-abcd1234')
   })
 
   it('lowercases the project slug', () => {
-    expect(worktreeJobName('MyProj', 'abcd')).toBe('yaac-myproj-abcd')
+    expect(workspaceJobName('MyProj', 'abcd')).toBe('yaac-myproj-abcd')
   })
 
   it('replaces DNS-1123-invalid characters with dashes', () => {
-    expect(worktreeJobName('my_proj.x', 'abcd')).toBe('yaac-my-proj-x-abcd')
+    expect(workspaceJobName('my_proj.x', 'abcd')).toBe('yaac-my-proj-x-abcd')
   })
 
   it('trims leading/trailing dashes from the slug', () => {
-    expect(worktreeJobName('-foo-', 'abcd')).toBe('yaac-foo-abcd')
+    expect(workspaceJobName('-foo-', 'abcd')).toBe('yaac-foo-abcd')
   })
 
   it('truncates the slug to 21 chars so the total stays within 63', () => {
     const longSlug = 'a'.repeat(40)
-    const name = worktreeJobName(longSlug, SID)
+    const name = workspaceJobName(longSlug, SID)
     expect(name).toBe(`yaac-${'a'.repeat(21)}-${SID}`)
     expect(name.length).toBeLessThanOrEqual(63)
   })
 
   it('keeps the full yaac- prefix + UUID shape at exactly 63 chars for max slugs', () => {
-    const name = worktreeJobName('exactly-twenty-one-ch', SID)
+    const name = workspaceJobName('exactly-twenty-one-ch', SID)
     expect(name).toHaveLength(63)
   })
 
   it('collapses double dashes', () => {
-    expect(worktreeJobName('a--b', 'abcd')).toBe('yaac-a-b-abcd')
+    expect(workspaceJobName('a--b', 'abcd')).toBe('yaac-a-b-abcd')
   })
 })
 
-describe('worktreeIdFromJobName', () => {
+describe('workspaceIdFromJobName', () => {
   const SID = '01234567-89ab-cdef-0123-456789abcdef'
 
   it('recovers the UUID tail for any slug shape', () => {
     for (const slug of ['demo', 'MyProj', 'my_proj.x', '-foo-', 'a'.repeat(40)]) {
-      expect(worktreeIdFromJobName(worktreeJobName(slug, SID))).toBe(SID)
+      expect(workspaceIdFromJobName(workspaceJobName(slug, SID))).toBe(SID)
     }
   })
 
   it('rejects names too short to carry a session UUID', () => {
-    expect(() => worktreeIdFromJobName('yaac-demo-abcd')).toThrow(/not a worktree job name/)
+    expect(() => workspaceIdFromJobName('yaac-demo-abcd')).toThrow(/not a workspace job name/)
   })
 })
 
@@ -94,7 +94,7 @@ function rawPod(overrides: {
       name: overrides.name ?? 'yaac-demo-s1-x1y2z',
       labels: overrides.labels ?? {
         [JOB_NAME_LABEL]: 'yaac-demo-s1',
-        ...worktreeIdLabels('s1'),
+        ...workspaceIdLabels('s1'),
         [LABEL_PROJECT]: 'demo',
         [LABEL_TOOL]: 'codex',
         [LABEL_DATA_DIR_HASH]: 'ddh0123456789abc',
@@ -109,36 +109,36 @@ function rawPod(overrides: {
   }
 }
 
-describe('listWorktreePods', () => {
+describe('listWorkspacePods', () => {
   beforeEach(() => {
     mockGetJson.mockReset()
   })
 
-  it('queries pods in the namespace scoped by data-dir-hash + worktree-id labels', async () => {
+  it('queries pods in the namespace scoped by data-dir-hash + workspace-id labels', async () => {
     mockGetJson.mockResolvedValue({ items: [] })
-    await listWorktreePods()
+    await listWorkspacePods()
     expect(mockGetJson).toHaveBeenCalledWith([
       'get', 'pods', '-n', 'test-ns',
-      '-l', 'yaac.data-dir-hash=ddh0123456789abc,yaac.worktree-id',
+      '-l', 'yaac.data-dir-hash=ddh0123456789abc,yaac.workspace-id',
     ])
   })
 
   it('appends the project label to the selector when filtering', async () => {
     mockGetJson.mockResolvedValue({ items: [] })
-    await listWorktreePods('proj-a')
+    await listWorkspacePods('proj-a')
     expect(mockGetJson).toHaveBeenCalledWith([
       'get', 'pods', '-n', 'test-ns',
-      '-l', 'yaac.data-dir-hash=ddh0123456789abc,yaac.worktree-id,yaac.project=proj-a',
+      '-l', 'yaac.data-dir-hash=ddh0123456789abc,yaac.workspace-id,yaac.project=proj-a',
     ])
   })
 
   it('maps raw pods into PodInfo rows', async () => {
     mockGetJson.mockResolvedValue({ items: [rawPod()] })
-    const pods = await listWorktreePods()
+    const pods = await listWorkspacePods()
     expect(pods).toEqual([{
       jobName: 'yaac-demo-s1',
       podName: 'yaac-demo-s1-x1y2z',
-      worktreeId: 's1',
+      workspaceId: 's1',
       projectSlug: 'demo',
       tool: 'codex',
       phase: 'Running',
@@ -149,7 +149,7 @@ describe('listWorktreePods', () => {
     }])
   })
 
-  it('throws when a pod carries no worktree-id label', async () => {
+  it('throws when a pod carries no workspace-id label', async () => {
     mockGetJson.mockResolvedValue({
       items: [rawPod({
         labels: {
@@ -159,8 +159,8 @@ describe('listWorktreePods', () => {
         },
       })],
     })
-    await expect(listWorktreePods()).rejects.toThrow(
-      /malformed worktree pod list[\s\S]*yaac\.worktree-id/,
+    await expect(listWorkspacePods()).rejects.toThrow(
+      /malformed workspace pod list[\s\S]*yaac\.workspace-id/,
     )
   })
 
@@ -168,14 +168,14 @@ describe('listWorktreePods', () => {
     mockGetJson.mockResolvedValue({
       items: [rawPod({
         labels: {
-          ...worktreeIdLabels('s2'),
+          ...workspaceIdLabels('s2'),
           [LABEL_PROJECT]: 'demo',
           [LABEL_TOOL]: 'codex',
         },
       })],
     })
-    await expect(listWorktreePods()).rejects.toThrow(
-      /malformed worktree pod list[\s\S]*batch\.kubernetes\.io\/job-name/,
+    await expect(listWorkspacePods()).rejects.toThrow(
+      /malformed workspace pod list[\s\S]*batch\.kubernetes\.io\/job-name/,
     )
   })
 
@@ -184,12 +184,12 @@ describe('listWorktreePods', () => {
       items: [rawPod({
         labels: {
           [JOB_NAME_LABEL]: 'yaac-demo-s2',
-          ...worktreeIdLabels('s2'),
+          ...workspaceIdLabels('s2'),
           [LABEL_PROJECT]: 'demo',
         },
       })],
     })
-    await expect(listWorktreePods()).rejects.toThrow(/yaac\.tool/)
+    await expect(listWorkspacePods()).rejects.toThrow(/yaac\.tool/)
   })
 
   it('marks non-Running phases and terminating pods as not running', async () => {
@@ -199,7 +199,7 @@ describe('listWorktreePods', () => {
         rawPod({ deletionTimestamp: '2026-06-01T01:00:00Z' }),
       ],
     })
-    const pods = await listWorktreePods()
+    const pods = await listWorkspacePods()
     expect(pods[0].running).toBe(false)
     expect(pods[0].phase).toBe('Pending')
     // A pending (not deleting) pod is not terminating.
@@ -227,7 +227,7 @@ describe('listWorktreePods', () => {
         },
       })],
     })
-    const pods = await listWorktreePods()
+    const pods = await listWorkspacePods()
     expect(pods[0].terminal).toEqual({
       podReason: undefined,
       podMessage: undefined,
@@ -244,7 +244,7 @@ describe('listWorktreePods', () => {
         status: { reason: 'Evicted', message: 'The node was low on resource: memory.' },
       })],
     })
-    const pods = await listWorktreePods()
+    const pods = await listWorkspacePods()
     expect(pods[0].terminal).toEqual({
       podReason: 'Evicted',
       podMessage: 'The node was low on resource: memory.',
@@ -264,7 +264,7 @@ describe('listWorktreePods', () => {
         }),
       ],
     })
-    const pods = await listWorktreePods()
+    const pods = await listWorkspacePods()
     expect(pods[0].terminal).toBeUndefined()
     expect(pods[1].terminal).toBeUndefined()
   })
@@ -273,28 +273,28 @@ describe('listWorktreePods', () => {
     const item = rawPod() as { status?: unknown }
     delete item.status
     mockGetJson.mockResolvedValue({ items: [item] })
-    await expect(listWorktreePods()).rejects.toThrow(/items\[0\]\.status/)
+    await expect(listWorkspacePods()).rejects.toThrow(/items\[0\]\.status/)
   })
 
   it('throws when metadata.name is missing', async () => {
     const item = rawPod() as { metadata: { name?: string } }
     delete item.metadata.name
     mockGetJson.mockResolvedValue({ items: [item] })
-    await expect(listWorktreePods()).rejects.toThrow(/items\[0\]\.metadata\.name/)
+    await expect(listWorkspacePods()).rejects.toThrow(/items\[0\]\.metadata\.name/)
   })
 
   it('returns [] when the list call yields null (namespace absent)', async () => {
     mockGetJson.mockResolvedValue(null)
-    await expect(listWorktreePods()).resolves.toEqual([])
+    await expect(listWorkspacePods()).resolves.toEqual([])
   })
 })
 
-describe('findWorktreePod', () => {
+describe('findWorkspacePod', () => {
   function pod(overrides: Partial<PodInfo> = {}): PodInfo {
     return {
       jobName: 'yaac-demo-abcd1234',
       podName: 'yaac-demo-abcd1234-x7k2p',
-      worktreeId: 'abcd1234',
+      workspaceId: 'abcd1234',
       projectSlug: 'demo',
       tool: 'claude',
       phase: 'Running',
@@ -306,31 +306,31 @@ describe('findWorktreePod', () => {
     }
   }
 
-  it('matches by exact worktree id', () => {
-    expect(findWorktreePod([pod()], 'abcd1234')).toBeDefined()
+  it('matches by exact workspace id', () => {
+    expect(findWorkspacePod([pod()], 'abcd1234')).toBeDefined()
   })
 
   // Prefix expansion is domain's, over rows; unit names are this driver's
   // own and no client sends one.
   it('matches no prefix, job name or pod name', () => {
     for (const input of ['abcd', '', 'yaac-demo-abcd1234', 'yaac-demo-abcd1234-x7k2p', 'yaac-']) {
-      expect(findWorktreePod([pod()], input), input).toBeUndefined()
+      expect(findWorkspacePod([pod()], input), input).toBeUndefined()
     }
   })
 
-  // An unclaimed spare is not a worktree; only a teardown asks for one.
+  // An unclaimed spare is not a workspace; only a teardown asks for one.
   it('skips a spare unless asked for spares', () => {
     const spare = pod({ labels: { [LABEL_PREWARMED]: 'true' } })
-    expect(findWorktreePod([spare], 'abcd1234')).toBeUndefined()
-    expect(findWorktreePod([spare], 'abcd1234', { spares: true })).toBeDefined()
+    expect(findWorkspacePod([spare], 'abcd1234')).toBeUndefined()
+    expect(findWorkspacePod([spare], 'abcd1234', { spares: true })).toBeDefined()
   })
 
   it('returns undefined when nothing matches', () => {
-    expect(findWorktreePod([pod()], 'zzz')).toBeUndefined()
+    expect(findWorkspacePod([pod()], 'zzz')).toBeUndefined()
   })
 })
 
-describe('listWorktreeJobs', () => {
+describe('listWorkspaceJobs', () => {
   beforeEach(() => {
     mockGetJson.mockReset()
   })
@@ -340,27 +340,27 @@ describe('listWorktreeJobs', () => {
       items: [{
         metadata: {
           name: 'yaac-demo-s1',
-          labels: { ...worktreeIdLabels('s1'), [LABEL_PROJECT]: 'demo' },
+          labels: { ...workspaceIdLabels('s1'), [LABEL_PROJECT]: 'demo' },
           creationTimestamp: '2026-06-01T00:00:00Z',
         },
       }],
     })
-    const jobs = await listWorktreeJobs()
+    const jobs = await listWorkspaceJobs()
     expect(mockGetJson).toHaveBeenCalledWith([
       'get', 'jobs', '-n', 'test-ns',
-      '-l', 'yaac.data-dir-hash=ddh0123456789abc,yaac.worktree-id',
+      '-l', 'yaac.data-dir-hash=ddh0123456789abc,yaac.workspace-id',
     ])
     expect(jobs).toEqual([{
       jobName: 'yaac-demo-s1',
-      worktreeId: 's1',
+      workspaceId: 's1',
       projectSlug: 'demo',
       createdAtMs: Date.parse('2026-06-01T00:00:00Z'),
     }])
   })
 
-  // The orphan-Job sweep keys on this, and a Job with no worktree id is one
+  // The orphan-Job sweep keys on this, and a Job with no workspace id is one
   // it must not act on.
-  it('throws when a job carries no worktree-id label', async () => {
+  it('throws when a job carries no workspace-id label', async () => {
     mockGetJson.mockResolvedValue({
       items: [{
         metadata: {
@@ -370,14 +370,14 @@ describe('listWorktreeJobs', () => {
         },
       }],
     })
-    await expect(listWorktreeJobs()).rejects.toThrow(
-      /malformed worktree job list[\s\S]*yaac\.worktree-id/,
+    await expect(listWorkspaceJobs()).rejects.toThrow(
+      /malformed workspace job list[\s\S]*yaac\.workspace-id/,
     )
   })
 
   it('throws when a job lacks metadata.name', async () => {
     mockGetJson.mockResolvedValue({ items: [{}] })
-    await expect(listWorktreeJobs()).rejects.toThrow(/malformed worktree job list/)
+    await expect(listWorkspaceJobs()).rejects.toThrow(/malformed workspace job list/)
   })
 
   it('throws when a job lacks the project label', async () => {
@@ -385,17 +385,17 @@ describe('listWorktreeJobs', () => {
       items: [{
         metadata: {
           name: 'yaac-demo-s1',
-          labels: worktreeIdLabels('s1'),
+          labels: workspaceIdLabels('s1'),
           creationTimestamp: '2026-06-01T00:00:00Z',
         },
       }],
     })
-    await expect(listWorktreeJobs()).rejects.toThrow(/yaac\.project/)
+    await expect(listWorkspaceJobs()).rejects.toThrow(/yaac\.project/)
   })
 
   it('returns [] when the list call yields null', async () => {
     mockGetJson.mockResolvedValue(null)
-    await expect(listWorktreeJobs()).resolves.toEqual([])
+    await expect(listWorkspaceJobs()).resolves.toEqual([])
   })
 })
 
@@ -404,7 +404,7 @@ describe('isPrewarmed', () => {
     return {
       jobName: 'yaac-p-s1',
       podName: 'yaac-p-s1-x',
-      worktreeId: 's1',
+      workspaceId: 's1',
       projectSlug: 'p',
       tool: 'claude',
       phase: 'Running',

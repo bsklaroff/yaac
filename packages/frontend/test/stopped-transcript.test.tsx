@@ -8,7 +8,7 @@ import type { AgentSessionEntry } from '@yaac/shared/types'
 import type * as transcriptApiModule from '#lib/transcriptApi'
 
 /**
- * A stopped worktree's conversation, in the pane that used to show only the
+ * A stopped workspace's conversation, in the pane that used to show only the
  * question that started it.
  *
  * The fetch is mocked at the api module and the rendering is real, because the
@@ -54,7 +54,7 @@ function renderPane(props: Partial<Parameters<typeof StoppedTranscript>[0]> = {}
   render(
     <QueryClientProvider client={client}>
       <StoppedTranscript
-        worktreeId="w1"
+        workspaceId="w1"
         sessions={[session()]}
         tool="claude"
         prompt="what changed?"
@@ -71,9 +71,9 @@ describe('StoppedTranscript', () => {
     expect(getSessionTranscript).toHaveBeenCalledWith('w1', 'c1')
   })
 
-  it('offers the worktree\'s conversations in restore order and switches between them', async () => {
-    // `/clear` starts a second conversation in the same worktree; both are
-    // readable, and the one the worktree was last in opens first.
+  it('offers the workspace\'s conversations in restore order and switches between them', async () => {
+    // `/clear` starts a second conversation in the same workspace; both are
+    // readable, and the one the workspace was last in opens first.
     vi.mocked(getSessionTranscript).mockImplementation((_w, id) =>
       Promise.resolve([said(0, id === 'c1' ? 'the first answer' : 'the second answer')]))
     renderPane({
@@ -95,18 +95,18 @@ describe('StoppedTranscript', () => {
     renderPane({ sessions: [session({ tool: 'opencode' })], tool: 'opencode', prompt: 'port it' })
 
     expect(screen.getByText('port it')).toBeTruthy()
-    expect(screen.getByText(/keeps its history inside the worktree/)).toBeTruthy()
+    expect(screen.getByText(/keeps its history inside the workspace/)).toBeTruthy()
     await waitFor(() => expect(getSessionTranscript).not.toHaveBeenCalled())
   })
 
-  it('does not blame the tool for a worktree whose conversations are not listed yet', () => {
-    // The optimistic row of a worktree stopped a moment ago: its real
+  it('does not blame the tool for a workspace whose conversations are not listed yet', () => {
+    // The optimistic row of a workspace stopped a moment ago: its real
     // conversations are still in flight, so "this tool keeps no history"
     // would be both wrong and permanent-sounding.
     renderPane({ sessions: [], prompt: 'what changed?' })
 
     expect(screen.getByText('what changed?')).toBeTruthy()
-    expect(screen.queryByText(/keeps its history inside the worktree/)).toBeNull()
+    expect(screen.queryByText(/keeps its history inside the workspace/)).toBeNull()
   })
 
   it('falls back to the founding ask when the server cannot produce a transcript', async () => {
@@ -120,7 +120,7 @@ describe('StoppedTranscript', () => {
     // ...but it must not blame claude, whose history this install can read
     // perfectly well. Landing here for a viewable conversation means the
     // server is too old to serve the route, which resolves on its own.
-    expect(screen.queryByText(/keeps its history inside the worktree/)).toBeNull()
+    expect(screen.queryByText(/keeps its history inside the workspace/)).toBeNull()
   })
 
   it('passes on the server\'s reason when it refuses to show a conversation', async () => {
@@ -141,7 +141,7 @@ describe('StoppedTranscript', () => {
   })
 
   it('shows an unanswered permission ask as one, without buttons that cannot work', async () => {
-    // A worktree can be stopped while its agent sits blocked on a question, so
+    // A workspace can be stopped while its agent sits blocked on a question, so
     // this is an ordinary thing to find in a transcript. There is no socket
     // behind it any more, and a live-looking Allow that silently does nothing
     // would be worse than saying plainly that the question outlived its

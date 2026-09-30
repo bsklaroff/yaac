@@ -24,18 +24,18 @@ import { openSandboxDir, type SandboxFile } from './sandbox-fs'
  *
  * Every transcript is a file the agent wrote, in a dir it can write, so each
  * is read under that dir (`SandboxFile`) — never the project dir, which also
- * holds `known_hosts`, the checkout and every other worktree's files.
+ * holds `known_hosts`, the checkout and every other workspace's files.
  *
- * A transcript lives in one of two places. Its worktree's own history
+ * A transcript lives in one of two places. Its workspace's own history
  * (`agentHistoryDir`) is where every tool writes today, on either driver. The
  * project's shared tool home is where a conversation lands when nothing
  * reaches the history for it yet — a containerless conversation claude filed
  * under a cwd not linked in, a codex rollout written on a host — until the
- * worktree's next create moves it in (docs/worktree-storage.md). Readers look
+ * workspace's next create moves it in (docs/workspace-storage.md). Readers look
  * in that order, so they work whoever wrote the file.
  */
 
-/** Where one tool's transcripts sit, in both places: the part of a worktree's
+/** Where one tool's transcripts sit, in both places: the part of a workspace's
  *  history holding them, and the subdirectory of the shared home that part
  *  stands in for (the one a pod's mount covers). */
 const TRANSCRIPT_LAYOUT: Record<Exclude<AgentTool, 'opencode'>, {
@@ -48,13 +48,13 @@ const TRANSCRIPT_LAYOUT: Record<Exclude<AgentTool, 'opencode'>, {
   pi: { home: piDir, part: 'pi', shared: 'agent/sessions' },
 }
 
-/** The dirs a tool's transcripts are read under for one worktree, the
- *  worktree's own history first: each as the dir, and the path below it that
+/** The dirs a tool's transcripts are read under for one workspace, the
+ *  workspace's own history first: each as the dir, and the path below it that
  *  holds the transcripts. Empty for a tool that keeps none on the host. */
-function transcriptRoots(slug: string, worktreeId: string, tool: AgentTool): Array<{ dir: string; sub: string }> {
+function transcriptRoots(slug: string, workspaceId: string, tool: AgentTool): Array<{ dir: string; sub: string }> {
   if (tool === 'opencode') return []
   const { home, part, shared } = TRANSCRIPT_LAYOUT[tool]
-  return [{ dir: agentHistoryDir(slug, worktreeId, part), sub: '' }, { dir: home(slug), sub: shared }]
+  return [{ dir: agentHistoryDir(slug, workspaceId, part), sub: '' }, { dir: home(slug), sub: shared }]
 }
 
 const under = (sub: string, rel: string): string => sub === '' ? rel : `${sub}/${rel}`
@@ -76,7 +76,7 @@ export function claudeProjectDirName(cwd: string): string {
 
 /**
  * The cwd a pod runs claude in, so the only directory a pod files a
- * conversation under — and the one a worktree's history keeps every
+ * conversation under — and the one a workspace's history keeps every
  * conversation in, whichever driver wrote it. Checking it first keeps the
  * common case a single `stat`.
  */
@@ -84,7 +84,7 @@ export const CLAUDE_POD_CWD = claudeProjectDirName('/workspace')
 
 /** Where a project's shared auto-memory lives in the shared `projects/`:
  *  named for the `/repo` claude once keyed it on, and mounted (or linked)
- *  over each worktree's own `memory` folder, since claude keys memory on the
+ *  over each workspace's own `memory` folder, since claude keys memory on the
  *  checkout's git root, which is now the checkout itself. */
 export const CLAUDE_POD_REPO = claudeProjectDirName('/repo')
 
@@ -95,7 +95,7 @@ export const CLAUDE_POD_REPO = claudeProjectDirName('/repo')
  * either way.
  *
  * Only reached when nothing recorded a path — the hook stamps one for every
- * conversation it sees, so this is the fallback for a worktree whose pod died
+ * conversation it sees, so this is the fallback for a workspace whose pod died
  * before the registry's first tick.
  *
  * A conversation id identifies one conversation, so at most one directory
@@ -107,14 +107,14 @@ export const CLAUDE_POD_REPO = claudeProjectDirName('/repo')
  */
 async function findClaudeTranscript(
   slug: string,
-  worktreeId: string,
+  workspaceId: string,
   sessionId: string,
 ): Promise<SandboxFile | undefined> {
   // The id names a file, so it is held to the one shape an id may take
   // before it is joined into a path.
   if (!agentSessionIdSchema.safeParse(sessionId).success) return undefined
   const name = `${sessionId}.jsonl`
-  for (const { dir, sub } of transcriptRoots(slug, worktreeId, 'claude')) {
+  for (const { dir, sub } of transcriptRoots(slug, workspaceId, 'claude')) {
     const home = await openSandboxDir(slug, dir).catch(() => null)
     if (home === null) continue
     const found = async (cwd: string): Promise<SandboxFile | undefined> => {
@@ -165,7 +165,7 @@ function escapesRoot(rel: string): boolean {
 /**
  * A transcript in the form everything stores, or null when it has none. Null
  * is the same verdict the workspace-side hook reaches when it writes an empty
- * record (see worktree-bin/yaac-agent-links): the conversation is real, only
+ * record (see workspace-bin/yaac-agent-links): the conversation is real, only
  * its path is unexpressible.
  */
 export function toProjectRelative(file: SandboxFile): string | null {
@@ -178,13 +178,13 @@ export function toProjectRelative(file: SandboxFile): string | null {
  * install will read.
  *
  * The only place the relative form is turned back into a file, which is why
- * its one caller is worth naming: `recordedTranscript` in `#domain/worktrees`,
+ * its one caller is worth naming: `recordedTranscript` in `#domain/workspaces`,
  * the door every reader of a *recorded* path comes through (the stopped
  * listing's last-activity stat and the detail route's founding-ask parse both
  * arrive that way).
  *
  * A value that is under neither the recording tool's shared home nor its part
- * of THIS worktree's history is refused: the pane that reported it can be set
+ * of THIS workspace's history is refused: the pane that reported it can be set
  * by anything in the workspace, and a path naming `known_hosts`,
  * `repo/.git/config` or a sibling's history is not this conversation's
  * transcript. An absolute value is refused too — the column holds
@@ -194,7 +194,7 @@ export function toProjectRelative(file: SandboxFile): string | null {
  */
 export function resolveProjectPath(
   slug: string,
-  worktreeId: string,
+  workspaceId: string,
   tool: AgentTool,
   stored: string,
 ): SandboxFile | undefined {
@@ -205,7 +205,7 @@ export function resolveProjectPath(
   // `path.join` resolves embedded `..`, so a stored value the encoder could
   // never emit cannot walk out of a dir here.
   const abs = path.join(projectDir(slug), stored)
-  for (const { dir } of transcriptRoots(slug, worktreeId, tool)) {
+  for (const { dir } of transcriptRoots(slug, workspaceId, tool)) {
     const rel = path.relative(dir, abs)
     if (!escapesRoot(rel)) return { slug, dir, rel }
   }
@@ -214,13 +214,13 @@ export function resolveProjectPath(
 
 /**
  * Where a transcript the workspace reported really is, in the column's form,
- * or undefined when it is nowhere this worktree may read it from.
+ * or undefined when it is nowhere this workspace may read it from.
  *
  * The reporter speaks the layout the tool sees — `claude/projects/…` and
  * `codex/sessions/…`, the shared home's names — and in a pod those name the
- * worktree's history, mounted there. So the path is looked for in the
+ * workspace's history, mounted there. So the path is looked for in the
  * history first and the shared home second, and then resolved: a host
- * worktree reaches its history through links in the shared home, and the row
+ * workspace reaches its history through links in the shared home, and the row
  * names the file the link leads to. Nothing there yet (claude writes on its
  * first turn) leaves the path out, for the next pass to fill.
  *
@@ -233,13 +233,13 @@ export function resolveProjectPath(
  */
 export async function locateTranscript(
   slug: string,
-  worktreeId: string,
+  workspaceId: string,
   tool: AgentTool,
   agentSessionId: string,
   reported: string | undefined,
 ): Promise<string | undefined> {
   if (tool === 'pi') {
-    const logs = await piSessionLogs(slug, worktreeId, agentSessionId)
+    const logs = await piSessionLogs(slug, workspaceId, agentSessionId)
     const newest = logs[logs.length - 1]
     return newest === undefined ? undefined : toProjectRelative(newest) ?? undefined
   }
@@ -249,27 +249,27 @@ export async function locateTranscript(
   if (!reported.startsWith(prefix)) return undefined
   const rest = reported.slice(prefix.length)
   const project = projectDir(slug)
-  for (const candidate of [path.join(agentHistoryDir(slug, worktreeId, part), rest), path.join(project, reported)]) {
+  for (const candidate of [path.join(agentHistoryDir(slug, workspaceId, part), rest), path.join(project, reported)]) {
     const real = await fs.realpath(candidate).catch(() => null)
     if (real === null) continue
     const rel = path.relative(await fs.realpath(project), real)
-    if (escapesRoot(rel) || resolveProjectPath(slug, worktreeId, tool, rel) === undefined) return undefined
+    if (escapesRoot(rel) || resolveProjectPath(slug, workspaceId, tool, rel) === undefined) return undefined
     return rel
   }
   return undefined
 }
 
 /**
- * pi's JSONL logs for one worktree, sorted chronologically: its history's,
+ * pi's JSONL logs for one workspace, sorted chronologically: its history's,
  * then any the shared home still holds. pi names files
  * `<timestamp>_<uuid>.jsonl` and may nest them under a cwd-derived subdir, so
  * walk one level of subdirectories too. The timestamp prefix sorts
  * chronologically, so a lexical basename sort matches session order (mtime
  * would drift as pi appends).
  */
-async function listPiJsonlFiles(slug: string, worktreeId: string): Promise<SandboxFile[]> {
+async function listPiJsonlFiles(slug: string, workspaceId: string): Promise<SandboxFile[]> {
   const found: SandboxFile[] = []
-  for (const { dir, sub } of transcriptRoots(slug, worktreeId, 'pi')) {
+  for (const { dir, sub } of transcriptRoots(slug, workspaceId, 'pi')) {
     const home = await openSandboxDir(slug, dir).catch(() => null)
     if (home === null) continue
     const walk = async (rel: string, depth: number): Promise<void> => {
@@ -301,16 +301,16 @@ export function sessionIdFromPiLog(file: string): string | undefined {
 /** A conversation's pi logs (oldest first), matched by id. */
 export async function piSessionLogs(
   slug: string,
-  worktreeId: string,
+  workspaceId: string,
   agentSessionId: string,
 ): Promise<SandboxFile[]> {
-  const files = await listPiJsonlFiles(slug, worktreeId)
+  const files = await listPiJsonlFiles(slug, workspaceId)
   return files.filter((f) => sessionIdFromPiLog(f.rel) === agentSessionId)
 }
 
 /**
- * The transcript of one of a worktree's conversations — by default the one
- * pinned to the worktree id — found without a recorded path, or undefined
+ * The transcript of one of a workspace's conversations — by default the one
+ * pinned to the workspace id — found without a recorded path, or undefined
  * when the tool leaves none (opencode) or hasn't written one yet. claude's is
  * named for the conversation. codex is absent: its rollout filename is not
  * derivable from any id, so only the recorded path finds it. pi picks its own
@@ -318,19 +318,19 @@ export async function piSessionLogs(
  */
 export async function sessionTranscriptPath(
   projectSlug: string,
-  worktreeId: string,
+  workspaceId: string,
   tool: AgentTool,
-  agentSessionId = worktreeId,
+  agentSessionId = workspaceId,
 ): Promise<SandboxFile | undefined> {
   // codex is absent on purpose: it names its rollout files unpredictably, so
   // nothing derives one from a session id; the DB carries the path instead,
   // and a codex conversation the DB does not know is simply unresolvable.
   if (tool === 'opencode' || tool === 'codex') return undefined
   if (tool === 'pi') {
-    const logs = await piSessionLogs(projectSlug, worktreeId, agentSessionId)
+    const logs = await piSessionLogs(projectSlug, workspaceId, agentSessionId)
     return logs[logs.length - 1]
   }
-  return findClaudeTranscript(projectSlug, worktreeId, agentSessionId)
+  return findClaudeTranscript(projectSlug, workspaceId, agentSessionId)
 }
 
 /** Last time the agent appended to a transcript (or a conversation record),

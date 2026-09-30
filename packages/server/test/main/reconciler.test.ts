@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { snapshotFixture } from '@yaac/test-utils/fake-driver'
-import { installRealWorktreeDriver } from '@yaac/test-utils/real-driver'
+import { installRealWorkspaceDriver } from '@yaac/test-utils/real-driver'
 import { K8S_TRIGGERS } from '#drivers/k8s/lifecycle'
-import type * as cleanupModule from '#domain/worktrees/cleanup'
+import type * as cleanupModule from '#domain/workspaces/cleanup'
 import type * as imagePrewarmModule from '#drivers/k8s/images/image-prewarm'
 import type * as projectRegistryModule from '#drivers/k8s/cluster/project-registry'
 import type * as titleGenerationModule from '#domain/titles/title-generation'
@@ -10,12 +10,12 @@ import type * as titleGenerationModule from '#domain/titles/title-generation'
 // One reconcile step per module, faked so a pass can be driven without a
 // substrate. Which steps a pass owes is the thing under test, so what each
 // one does is beside the point — that it ran, and in what order, is not.
-vi.mock('#domain/worktrees/stale-worktrees', () => ({ reconcileStaleWorktrees: vi.fn() }))
-vi.mock('#domain/worktrees/mama-reconcile', () => ({ reconcileMamaRequests: vi.fn() }))
-vi.mock('#domain/worktrees/prewarm-reconcile', () => ({ reconcilePrewarmPool: vi.fn() }))
-vi.mock('#drivers/k8s/worktrees/salvage-reconcile', () => ({ reconcileImageSalvage: vi.fn() }))
-vi.mock('#domain/worktrees/agent-session-registry', () => ({ reconcileAgentSessions: vi.fn() }))
-vi.mock('#domain/worktrees/cleanup', async (importOriginal) => ({
+vi.mock('#domain/workspaces/stale-workspaces', () => ({ reconcileStaleWorkspaces: vi.fn() }))
+vi.mock('#domain/workspaces/mama-reconcile', () => ({ reconcileMamaRequests: vi.fn() }))
+vi.mock('#domain/workspaces/prewarm-reconcile', () => ({ reconcilePrewarmPool: vi.fn() }))
+vi.mock('#drivers/k8s/workspaces/salvage-reconcile', () => ({ reconcileImageSalvage: vi.fn() }))
+vi.mock('#domain/workspaces/agent-session-registry', () => ({ reconcileAgentSessions: vi.fn() }))
+vi.mock('#domain/workspaces/cleanup', async (importOriginal) => ({
   ...(await importOriginal<typeof cleanupModule>()),
   gcOrphanEphemeralModuleDirs: vi.fn(),
 }))
@@ -46,12 +46,12 @@ vi.mock('#domain/titles/title-generation', async (importOriginal) => ({
 import { startReconciler } from '#main/reconciler'
 import { defaultReconcileSteps } from '#domain/reconcile'
 import type { PassContext, ReconcileStep, ReconcileTrigger } from '#drivers/contract'
-import { reconcileStaleWorktrees } from '#domain/worktrees/stale-worktrees'
-import { reconcileMamaRequests } from '#domain/worktrees/mama-reconcile'
-import { reconcilePrewarmPool } from '#domain/worktrees/prewarm-reconcile'
-import { reconcileImageSalvage } from '#drivers/k8s/worktrees/salvage-reconcile'
-import { reconcileAgentSessions } from '#domain/worktrees/agent-session-registry'
-import { gcOrphanEphemeralModuleDirs } from '#domain/worktrees/cleanup'
+import { reconcileStaleWorkspaces } from '#domain/workspaces/stale-workspaces'
+import { reconcileMamaRequests } from '#domain/workspaces/mama-reconcile'
+import { reconcilePrewarmPool } from '#domain/workspaces/prewarm-reconcile'
+import { reconcileImageSalvage } from '#drivers/k8s/workspaces/salvage-reconcile'
+import { reconcileAgentSessions } from '#domain/workspaces/agent-session-registry'
+import { gcOrphanEphemeralModuleDirs } from '#domain/workspaces/cleanup'
 import { reconcileBuilderPodGc } from '#drivers/k8s/images/builder-pod'
 import { reconcileMainRegistryGc } from '#drivers/k8s/images/main-registry-gc'
 import { reconcileNodeImageStores } from '#drivers/k8s/images/store-writer'
@@ -63,7 +63,7 @@ import { reconcileProjectRegistryGc } from '#drivers/k8s/cluster/project-registr
 import { reconcileGeneratedTitles } from '#domain/titles/title-generation'
 
 const ALL_STEP_FNS = [
-  reconcileStaleWorktrees, reconcileMamaRequests,
+  reconcileStaleWorkspaces, reconcileMamaRequests,
   reconcileBuilderPodGc, reconcileImagePrewarm, reconcilePrewarmPool,
   reconcileImageSalvage, reconcileNodeImageStores, reconcileProjectRegistryGc,
   reconcileAgentSessions,
@@ -124,7 +124,7 @@ describe('startReconciler', () => {
   it('runs an immediate full pass (every step, resync snapshot)', async () => {
     const runs: StepRuns = []
     const h = start([
-      makeStep(runs, 'a', ['worktree-pods']),
+      makeStep(runs, 'a', ['workspace-pods']),
       makeStep(runs, 'b', []),
       makeStep(runs, 'c', ['status-streams']),
     ])
@@ -141,14 +141,14 @@ describe('startReconciler', () => {
   it('a delta runs only the steps it triggers, in list order', async () => {
     const runs: StepRuns = []
     const h = start([
-      makeStep(runs, 'pods-a', ['worktree-pods']),
+      makeStep(runs, 'pods-a', ['workspace-pods']),
       makeStep(runs, 'other', ['proxy-reconnect']),
-      makeStep(runs, 'pods-b', ['worktree-pods', 'status-streams']),
+      makeStep(runs, 'pods-b', ['workspace-pods', 'status-streams']),
     ])
     await flush()
     runs.length = 0
 
-    h.emit('worktree-pods')
+    h.emit('workspace-pods')
     await flush()
     expect(runs).toEqual([
       { name: 'pods-a', resync: false },
@@ -160,13 +160,13 @@ describe('startReconciler', () => {
 
   it('coalesces a burst of deltas into one pass', async () => {
     const runs: StepRuns = []
-    const h = start([makeStep(runs, 'pods', ['worktree-pods'])])
+    const h = start([makeStep(runs, 'pods', ['workspace-pods'])])
     await flush()
     runs.length = 0
 
-    h.emit('worktree-pods')
-    h.emit('worktree-pods')
-    h.emit('worktree-pods')
+    h.emit('workspace-pods')
+    h.emit('workspace-pods')
+    h.emit('workspace-pods')
     await flush()
     expect(runs).toHaveLength(1)
     h.abort()
@@ -177,10 +177,10 @@ describe('startReconciler', () => {
     const runs: StepRuns = []
     let emitted = false
     const h = start([
-      makeStep(runs, 'pods', ['worktree-pods'], () => {
+      makeStep(runs, 'pods', ['workspace-pods'], () => {
         if (!emitted) {
           emitted = true
-          h.emit('worktree-pods')
+          h.emit('workspace-pods')
         }
       }),
     ])
@@ -202,7 +202,7 @@ describe('startReconciler', () => {
     try {
       const runs: StepRuns = []
       const h = start([
-        makeStep(runs, 'triggered', ['worktree-pods']),
+        makeStep(runs, 'triggered', ['workspace-pods']),
         makeStep(runs, 'idle', []),
       ], { resyncIntervalMs: 60_000 })
       await flush()
@@ -251,7 +251,7 @@ describe('startReconciler', () => {
     expect(runs).toEqual([{ name: 'first', resync: true }])
 
     // Deltas after abort never wake it again.
-    h.emit('worktree-pods')
+    h.emit('workspace-pods')
     await flush()
     expect(runs).toHaveLength(1)
   })
@@ -290,22 +290,22 @@ describe('defaultReconcileSteps', () => {
   beforeEach(() => {
     // The real driver, so its own contributed steps are the ones spliced
     // in — the modules behind them are mocked at the top of this file.
-    installRealWorktreeDriver()
+    installRealWorkspaceDriver()
     for (const fn of ALL_STEP_FNS) vi.mocked(fn).mockReset()
   })
 
-  // The reaper runs first — so counts reflect just-reaped worktrees by the
+  // The reaper runs first — so counts reflect just-reaped workspaces by the
   // time the prewarm pool runs — and titles last, after the conversation
   // sweep, so a just-captured opening message is eligible in the same pass.
   it('reaps first, and generates titles last', () => {
     const names = defaultReconcileSteps().map((s) => s.name)
-    expect(names[0]).toBe('stale-worktrees')
+    expect(names[0]).toBe('stale-workspaces')
     expect(names[names.length - 1]).toBe('generated-titles')
   })
 
   // Titles run after the conversation sweep so a just-captured opening message
   // is eligible in the same pass — which only holds if they run on the passes
-  // that sweep. An ACP worktree's first message is captured on the pass its
+  // that sweep. An ACP workspace's first message is captured on the pass its
   // handshake triggers, and nothing else dirties that one.
   it('generates titles on whatever dirties the conversation sweep', () => {
     const steps = defaultReconcileSteps()
@@ -329,12 +329,12 @@ describe('defaultReconcileSteps', () => {
     }
   }
 
-  // The reaper is the destructive step, and losing a worktree's driver
+  // The reaper is the destructive step, and losing a workspace's driver
   // stream is its edge: in-pod tmux death is not a substrate event, so
   // nothing else would ever dirty it. Its slower sweeps ride the resync,
   // which is why this source pulls in the reaper and nothing more.
   it('runs only the reaper when a driver stream goes unhealthy', async () => {
-    await expectOnly(['status-streams'], [reconcileStaleWorktrees])
+    await expectOnly(['status-streams'], [reconcileStaleWorkspaces])
   })
 
   // The proxy holds the calling pod's HTTP response open until the drain

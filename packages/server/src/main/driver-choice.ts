@@ -52,7 +52,7 @@ export function resolveDriverKind(): DriverKind {
  * cluster.
  *
  * Two servers on one data dir is two writers of one PGlite database, and
- * the host one would additionally see every worktree as podless and reap
+ * the host one would additionally see every workspace as podless and reap
  * it. The recorded driver is the tripwire, and the message names the only
  * command that starts THIS install's server.
  *

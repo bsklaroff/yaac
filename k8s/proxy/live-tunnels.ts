@@ -1,11 +1,11 @@
 /**
- * The tunnels each worktree holds open, and the admission each was accepted
+ * The tunnels each workspace holds open, and the admission each was accepted
  * under.
  *
  * The proxy checks the allowlist and picks the injection rules once per
  * tunnel, and once per plain-HTTP request, so either outlives the
  * registration it was accepted under. When a registration changes, every
- * one of that worktree's is re-admitted against it: one whose host is no
+ * one of that workspace's is re-admitted against it: one whose host is no
  * longer allowed, or whose admission (the rules and redirect it applies)
  * differs, is destroyed, and the client reconnects under the registration
  * as it is now. An unchanged admission keeps its tunnel, so widening an
@@ -27,34 +27,34 @@ interface LiveTunnel {
 }
 
 export class LiveTunnels {
-  private readonly byWorktree = new Map<string, Set<LiveTunnel>>()
+  private readonly byWorkspace = new Map<string, Set<LiveTunnel>>()
 
   /** Track `connection` until it closes. */
-  add(worktreeId: string, connection: Connection, hostname: string, admission: string): void {
-    let tunnels = this.byWorktree.get(worktreeId)
+  add(workspaceId: string, connection: Connection, hostname: string, admission: string): void {
+    let tunnels = this.byWorkspace.get(workspaceId)
     if (!tunnels) {
       tunnels = new Set()
-      this.byWorktree.set(worktreeId, tunnels)
+      this.byWorkspace.set(workspaceId, tunnels)
     }
     const tunnel = { connection, hostname, admission }
     tunnels.add(tunnel)
     connection.once('close', () => {
       tunnels.delete(tunnel)
-      if (tunnels.size === 0 && this.byWorktree.get(worktreeId) === tunnels) {
-        this.byWorktree.delete(worktreeId)
+      if (tunnels.size === 0 && this.byWorkspace.get(workspaceId) === tunnels) {
+        this.byWorkspace.delete(workspaceId)
       }
     })
   }
 
   /**
-   * Destroy each of `worktreeId`'s tunnels whose admission `admit` now
+   * Destroy each of `workspaceId`'s tunnels whose admission `admit` now
    * answers differently — `null` for a host no longer allowed, or `admit`
-   * itself `null` when the worktree is deregistered. Returns the hosts
+   * itself `null` when the workspace is deregistered. Returns the hosts
    * dropped.
    */
-  revoke(worktreeId: string, admit: ((hostname: string) => string | null) | null): string[] {
+  revoke(workspaceId: string, admit: ((hostname: string) => string | null) | null): string[] {
     const dropped: string[] = []
-    for (const tunnel of this.byWorktree.get(worktreeId) ?? []) {
+    for (const tunnel of this.byWorkspace.get(workspaceId) ?? []) {
       if (admit?.(tunnel.hostname) === tunnel.admission) continue
       dropped.push(tunnel.hostname)
       tunnel.connection.destroy()

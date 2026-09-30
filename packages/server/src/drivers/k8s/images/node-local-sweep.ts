@@ -1,13 +1,13 @@
 /**
  * The node-local orphan sweep: one root pod per node, walking this
- * install's node-local tree and removing what no live project or worktree
+ * install's node-local tree and removing what no live project or workspace
  * owns.
  *
  * The NODE-LOCAL tier holds, per project id, package-manager caches, each
- * opencode worktree's working copy and the nested image store
+ * opencode workspace's working copy and the nested image store
  * (docs/server-in-cluster.md "Storage is two claims"). None of it is on the
  * server's own filesystem on a multi-node cluster — it is on whichever node
- * the worktree ran on — so nothing about it is read or written from the
+ * the workspace ran on — so nothing about it is read or written from the
  * server; the sweep runs where the bytes are, on the node-write-pod shape
  * the image store's writer uses (store-writer.ts).
  *
@@ -18,8 +18,8 @@
  *    before projects had ids — except a tree a live pod still mounts, read
  *    off this install's pod specs, which is what spares a pod created
  *    under the old naming until it stops.
- *  - **worktree ids.** Inside a live project, an opencode working copy
- *    whose worktree is not live goes: a stopped worktree's copy is either
+ *  - **workspace ids.** Inside a live project, an opencode working copy
+ *    whose workspace is not live goes: a stopped workspace's copy is either
  *    already deleted by its own `preStop` checkpoint or a stale copy the
  *    global checkpoint outranks on the next start.
  * Either way, what was written since the cutoff stays: a create staging
@@ -36,7 +36,7 @@ import {
   kubectlWithRetry,
   nodeLocalNodePath,
   runPodToCompletion,
-  worktreePodSelector,
+  workspacePodSelector,
 } from '#drivers/k8s/substrate'
 import { ensureBuilderImage } from '#drivers/k8s/cluster'
 import { serverLog } from '#log'
@@ -50,7 +50,7 @@ export const SWEEP_POD_PATH = '/node'
 export const NODE_LOCAL_SWEEP_APP_LABEL = 'yaac-node-local-sweep'
 
 /** Ties sweep pods to this install without making them visible to the
- *  worktree reaper (which filters on `yaac.worktree-id`). */
+ *  workspace reaper (which filters on `yaac.workspace-id`). */
 export const LABEL_SWEEP_DATA_DIR_HASH = 'yaac.sweep-data-dir-hash'
 
 /** Label selector of this install's sweep pods. */
@@ -78,13 +78,13 @@ function sweepLabels(): Record<string, string> {
 
 /**
  * The in-pod script. Argv is `<cutoff epoch seconds> <kept names>
- * <live worktree ids>`, both lists comma-separated. It removes each
+ * <live workspace ids>`, both lists comma-separated. It removes each
  * `/node/{projects,shared-images}/<x>` whose `x` is not a kept name, then
  * each `/node/projects/<x>/opencode-data/<id>` whose `id` is not a live
- * worktree — in both cases only when its mtime is older than the cutoff
+ * workspace — in both cases only when its mtime is older than the cutoff
  * (`find -newermt` is the in-pod form of the slack).
  *
- * Never through a symlink. The tree is mounted read-write into worktree
+ * Never through a symlink. The tree is mounted read-write into workspace
  * pods, so a pod can replace a directory (or an entry under it) with a link
  * to anywhere on the node; a walk that followed it would `rm -rf` the
  * target as root. Every level is tested with `-L` and a link is skipped.
@@ -133,7 +133,7 @@ export function buildNodeLocalSweepPodManifest(params: {
   imageRef: string
   /** Live project ids plus every name a live pod mounts. */
   kept: ReadonlySet<string>
-  liveWorktreeIds: ReadonlySet<string>
+  liveWorkspaceIds: ReadonlySet<string>
   cutoffEpoch: number
   runId: string
   nodeIndex: number
@@ -159,7 +159,7 @@ export function buildNodeLocalSweepPodManifest(params: {
         imagePullPolicy: 'IfNotPresent',
         command: [
           'sh', '-c', `${buildNodeLocalSweepScript()}\n`, '--',
-          String(params.cutoffEpoch), [...params.kept].join(','), [...params.liveWorktreeIds].join(','),
+          String(params.cutoffEpoch), [...params.kept].join(','), [...params.liveWorkspaceIds].join(','),
         ],
         securityContext: { runAsUser: 0 },
         volumeMounts: [{ name: 'node', mountPath: SWEEP_POD_PATH }],
@@ -184,7 +184,7 @@ interface RawPodList {
  */
 async function mountedProjectNames(): Promise<Set<string>> {
   const pods = await kubectlGetJson<RawPodList>([
-    'get', 'pods', '-n', k8sNamespace(), '-l', worktreePodSelector(),
+    'get', 'pods', '-n', k8sNamespace(), '-l', workspacePodSelector(),
   ])
   const names = new Set<string>()
   for (const pod of pods?.items ?? []) {
@@ -213,7 +213,7 @@ interface RawNodeList {
 }
 
 /**
- * See `WorktreeDriver.reapNodeLocal`. Runs one pod per node, throttled to
+ * See `WorkspaceDriver.reapNodeLocal`. Runs one pod per node, throttled to
  * once per {@link NODE_LOCAL_SWEEP_INTERVAL_MS} per server life; every
  * failure is logged and swallowed, since an orphan costs disk and nothing
  * else.
@@ -246,7 +246,7 @@ export async function reapNodeLocal(
         nodeName: metadata.name,
         imageRef,
         kept,
-        liveWorktreeIds: live.worktreeIds,
+        liveWorkspaceIds: live.workspaceIds,
         cutoffEpoch,
         runId,
         nodeIndex,

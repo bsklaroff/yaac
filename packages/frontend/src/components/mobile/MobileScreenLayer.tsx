@@ -6,11 +6,11 @@ import clsx from 'clsx'
  *
  * All three screens stay mounted and stay *laid out*; only one is visible.
  * That is not an optimization, it is a correctness requirement for the pane:
- * WorktreeView positions every terminal by measured pixels (a ResizeObserver
+ * WorkspaceView positions every terminal by measured pixels (a ResizeObserver
  * feeds `computeColumns`, which feeds each pane's absolute rect), so a
  * `display: none` ancestor would collapse every rect to zero and make coming
  * back cost a full resize round-trip to the pod. `visibility: hidden` keeps
- * the box measured — the same trick WorktreeView already uses for its own
+ * the box measured — the same trick WorkspaceView already uses for its own
  * off-screen panes.
  *
  * Deliberately not a translated `300vw` strip, tempting as the slide

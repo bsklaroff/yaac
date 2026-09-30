@@ -8,6 +8,7 @@ import {
   kubectlGetJson,
   kubectlWithRetry,
   LABEL_ROLE,
+  LABEL_WORKSPACE_ID,
   PRIVILEGED_PSS_LABELS,
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
@@ -33,11 +34,40 @@ import {
   buildEgressWorldDenyNpManifest,
   buildProxyEgressNpManifest,
   buildProxyIngressNpManifest,
-  buildWorktreeEgressNpManifest,
-  buildWorktreeIngressLockNpManifest,
+  buildWorkspaceEgressNpManifest,
+  buildWorkspaceIngressLockNpManifest,
 } from './policy-manifests'
 import { nodeIpBlocks } from './cluster-cidrs'
 import { ensureNetd } from './netd'
+
+/** The workspace-id label an install from before workspaces were named
+ *  stamped, in place of LABEL_WORKSPACE_ID. */
+const LEGACY_WORKSPACE_ID_LABEL = 'yaac.worktree-id'
+
+/**
+ * Give every pod, Job and proxy registration an older install labelled with
+ * LEGACY_WORKSPACE_ID_LABEL the current label too, so the workspaces it left
+ * running are seen, governed by the current policies and served by the
+ * proxy (docs/legacy-compat-shims.md). The old label stays: until the proxy
+ * rolls, it is still the one the running proxy and policies select on.
+ * True when there was anything to relabel.
+ */
+export async function relabelLegacyWorkspaces(): Promise<boolean> {
+  let found = false
+  for (const kind of ['pods', 'jobs', 'configmaps']) {
+    const list = await kubectlGetJson<{ items?: Array<{ metadata: { name: string; labels: Record<string, string> } }> }>([
+      'get', kind, '-n', k8sNamespace(), '-l', `${LEGACY_WORKSPACE_ID_LABEL},!${LABEL_WORKSPACE_ID}`,
+    ])
+    for (const { metadata } of list?.items ?? []) {
+      found = true
+      await kubectlWithRetry([
+        'label', kind, metadata.name, '-n', k8sNamespace(),
+        `${LABEL_WORKSPACE_ID}=${metadata.labels[LEGACY_WORKSPACE_ID_LABEL]}`, '--overwrite',
+      ])
+    }
+  }
+  return found
+}
 
 /** True when the cluster serves the ValidatingAdmissionPolicy API. */
 export async function vapAvailable(): Promise<boolean> {
@@ -95,11 +125,11 @@ export async function ensureProxyAuthSecret(): Promise<string> {
 let cachedProxyClusterIp: string | null = null
 
 /**
- * The live ClusterIP of the proxy Service — read at pod-create as the worktree
+ * The live ClusterIP of the proxy Service — read at pod-create as the workspace
  * pods' DNS nameserver + egress redirect target. Allocator-assigned (no longer
  * pinned), and stable because the Service is never deleted/recreated.
  * That stability is why the first read is cached for the process — it saves a
- * kubectl child per worktree create.
+ * kubectl child per workspace create.
  */
 export async function proxyServiceClusterIp(): Promise<string> {
   if (cachedProxyClusterIp) return cachedProxyClusterIp
@@ -142,21 +172,31 @@ export async function ensureProxyResources(imageRef: string): Promise<void> {
   await kubectlApply(buildProxyDeploymentManifest(imageRef))
   await kubectlApply(buildProxyServiceManifest())
   // The egress lockdown, applied with the proxy so it exists before any
-  // worktree pod can be scheduled (worktrees require ensureRunning()).
+  // workspace pod can be scheduled (workspaces require ensureRunning()).
   const nodeCidrs = await nodeIpBlocks()
-  await kubectlApply(buildWorktreeEgressNpManifest(nodeCidrs))
-  // Worktree-pod ingress lock: only the proxy's relay dials reach streamd;
+  await kubectlApply(buildWorkspaceEgressNpManifest(nodeCidrs))
+  // Workspace-pod ingress lock: only the proxy's relay dials reach streamd;
   // everything else is default-denied. Applied with the proxy for the same
-  // exists-before-any-worktree reason as the egress lockdown.
-  await kubectlApply(buildWorktreeIngressLockNpManifest())
+  // exists-before-any-workspace reason as the egress lockdown.
+  await kubectlApply(buildWorkspaceIngressLockNpManifest())
   // Lock the proxy's transparent ports to the node (forgery guard): only
   // netd's Envoy, which runs in the node netns, may originate PP2.
   await kubectlApply(buildProxyIngressNpManifest(nodeCidrs))
   // And its upstream dials kept off the kind fronting's node port, where a
   // transparent CONNECT would otherwise reach the server as the node.
   await kubectlApply(buildProxyEgressNpManifest(nodeCidrs))
-  // World-egress default-deny over non-worktree, non-builder pods.
+  // World-egress default-deny over non-workspace, non-builder pods.
   await kubectlApply(buildEgressWorldDenyNpManifest())
+  // Only once their replacements govern every pod an older install left
+  // running (docs/legacy-compat-shims.md). The relabel is repeated here,
+  // and not only at driver start, so every path that can reach this delete
+  // (a create racing startup, a start whose relabel failed) finishes it
+  // first — and a relabel that throws never gets this far.
+  await relabelLegacyWorkspaces()
+  await kubectlWithRetry([
+    'delete', 'networkpolicy', 'yaac-worktree-egress', 'yaac-worktree-ingress-lock',
+    '-n', k8sNamespace(), '--ignore-not-found',
+  ])
   // The redirect layer.
   await ensureNetd()
   await kubectlWithRetry([
@@ -174,7 +214,7 @@ interface RawObject {
 const CA_WAIT_MS = 30_000
 
 /**
- * Upsert the proxy-CA ConfigMap that every worktree pod mounts, from the
+ * Upsert the proxy-CA ConfigMap that every workspace pod mounts, from the
  * Secret the proxy keeps its CA in. Carries two keys: the bare proxy CA
  * (additive trust — SSL_CERT_FILE/NODE_EXTRA_CA_CERTS) and the combined
  * bundle `{public roots} ∪ {proxy CA}` (replace-semantics trust for the

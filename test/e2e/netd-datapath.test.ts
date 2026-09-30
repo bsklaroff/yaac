@@ -11,14 +11,14 @@ import {
 import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
 import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
 import {
-  applyWorktreeRegistration,
+  applyProxyRegistration,
   deregisterWorkspaceEgress,
 } from '@yaac/server/drivers/k8s/egress/proxy-registration'
 import { proxyServiceClusterIp } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { NETD_APP_NAME } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
 import { runtimeClassSpec } from '@yaac/server/drivers/k8s/substrate/gvisor'
 import { CA_CONFIGMAP_NAME } from '@yaac/server/drivers/k8s/substrate/pod-spec'
-import { worktreeIdLabels } from '@yaac/server/drivers/k8s/substrate/pods'
+import { workspaceIdLabels } from '@yaac/server/drivers/k8s/substrate/pods'
 import {
   k8sNamespace,
   kubectlApply,
@@ -91,9 +91,9 @@ async function waitForPodRunning(
   throw new Error(`pod ${name} not Running within ${timeoutMs}ms (phase ${phase})`)
 }
 
-async function startWorktreePod(
+async function startWorkspacePod(
   name: string,
-  worktreeId: string,
+  workspaceId: string,
   proxyHost: string,
   opts: { netRaw?: boolean } = {},
 ): Promise<void> {
@@ -103,7 +103,7 @@ async function startWorktreePod(
     metadata: {
       name,
       namespace: k8sNamespace(),
-      labels: { ...worktreeIdLabels(worktreeId), 'yaac.test': 'true' },
+      labels: { ...workspaceIdLabels(workspaceId), 'yaac.test': 'true' },
     },
     spec: {
       restartPolicy: 'Never',
@@ -390,7 +390,7 @@ describe('netd datapath gates', () => {
   const podA = `yaac-netd-a-${suffix}`
   const podLate = `yaac-netd-late-${suffix}`
   const podRaw = `yaac-netd-raw-${suffix}`
-  const worktreeA = `netd-a-${suffix}`
+  const workspaceA = `netd-a-${suffix}`
   const sessionLate = `netd-late-${suffix}`
   const sessionRaw = `netd-raw-${suffix}`
   let proxyHost = ''
@@ -398,19 +398,19 @@ describe('netd datapath gates', () => {
   beforeAll(async () => {
     await client.ensureRunning()
     proxyHost = await proxyServiceClusterIp()
-    await applyWorktreeRegistration(worktreeA, {
+    await applyProxyRegistration(workspaceA, {
       rules: [], allowedHosts: [MITM_HOST], tool: 'claude', projectSlug: 'netd-a',
     })
-    await applyWorktreeRegistration(sessionLate, {
+    await applyProxyRegistration(sessionLate, {
       rules: [], allowedHosts: [MITM_HOST], tool: 'claude', projectSlug: 'netd-late',
     })
     // The forger gets NOTHING on its allowlist, so any success in the
     // spoof case below is a real attribution failure rather than its own
     // legitimate egress.
-    await applyWorktreeRegistration(sessionRaw, {
+    await applyProxyRegistration(sessionRaw, {
       rules: [], allowedHosts: [], tool: 'claude', projectSlug: 'netd-raw',
     })
-    await startWorktreePod(podA, worktreeA, proxyHost)
+    await startWorkspacePod(podA, workspaceA, proxyHost)
     await waitForPodRunning(podA)
   }, 600_000)
 
@@ -420,7 +420,7 @@ describe('netd datapath gates', () => {
     await setNetdScheduled(true).catch(() => { /* ok */ })
     await waitForNetdReady('all').catch(() => { /* ok */ })
     await Promise.all([deleteTestPod(podA), deleteTestPod(podLate), deleteTestPod(podRaw)])
-    await deregisterWorkspaceEgress(worktreeA)
+    await deregisterWorkspaceEgress(workspaceA)
     await deregisterWorkspaceEgress(sessionLate)
     await deregisterWorkspaceEgress(sessionRaw)
     try { await client.stop() } catch { /* ok */ }
@@ -502,7 +502,7 @@ describe('netd datapath gates', () => {
     await setNetdScheduled(false)
     await waitForNetdReady(0)
 
-    await startWorktreePod(podLate, sessionLate, proxyHost)
+    await startWorkspacePod(podLate, sessionLate, proxyHost)
     await waitForPodRunning(podLate)
 
     // Not the redirect target...
@@ -567,7 +567,7 @@ describe('netd datapath gates', () => {
     expect(await egressWorks(podA)).toBe(true)
   }, 600_000)
 
-  it('never redirects a worktree pod belonging to another install', async () => {
+  it('never redirects a workspace pod belonging to another install', async () => {
     // netd watches EVERY namespace, and several installs share a node (the
     // real `yaac` one plus this e2e run's). Unscoped, each install's netd
     // DNATs the other's pods at its own proxy; both jumps hang off nat
@@ -595,7 +595,7 @@ describe('netd datapath gates', () => {
         metadata: {
           name: foreignPod,
           namespace: foreignNs,
-          labels: { ...worktreeIdLabels(`netd-foreign-${suffix}`), 'yaac.test': 'true' },
+          labels: { ...workspaceIdLabels(`netd-foreign-${suffix}`), 'yaac.test': 'true' },
         },
         spec: {
           restartPolicy: 'Never',
@@ -617,12 +617,12 @@ describe('netd datapath gates', () => {
       await focusNetdOnPod(podA)
       expect(
         await waitForTrioPorts(k8sNamespace(), podA),
-        'our own install\'s worktree pod must still be redirected',
+        'our own install\'s workspace pod must still be redirected',
       ).toHaveLength(3)
       await focusNetdOnPod(foreignPod, foreignNs)
       expect(
         await rulesMentioning(`yaac:${foreignNs}/${foreignPod}`),
-        'netd claimed a sibling install\'s worktree pod',
+        'netd claimed a sibling install\'s workspace pod',
       ).toEqual([])
     } finally {
       await kubectlWithRetry([
@@ -639,7 +639,7 @@ describe('netd datapath gates', () => {
     // so any success here is a real attribution failure.
     // A dedicated pod: it needs NET_RAW/NET_ADMIN and the gvisor-nested
     // tier, and a pod spec cannot be patched into that after creation.
-    await startWorktreePod(podRaw, sessionRaw, proxyHost, { netRaw: true })
+    await startWorkspacePod(podRaw, sessionRaw, proxyHost, { netRaw: true })
     await waitForPodRunning(podRaw)
 
     // Sanity: the forger has no allowlist of its own, so it cannot reach

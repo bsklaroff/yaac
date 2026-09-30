@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { worktreeDriver } from '@yaac/server/drivers/driver'
+import { workspaceDriver } from '@yaac/server/drivers/driver'
 import { buildApp } from '@yaac/server/main/server'
 import {
   ROUTE_MATRIX,
@@ -44,7 +44,7 @@ describe('every route, containerless', () => {
   // check that the split did not leave this file running against the k8s
   // driver its twin uses.
   it('runs against the containerless driver', () => {
-    expect(worktreeDriver().kind).toBe('containerless')
+    expect(workspaceDriver().kind).toBe('containerless')
   })
 
   for (const route of ROUTE_MATRIX) {

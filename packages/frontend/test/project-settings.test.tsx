@@ -21,7 +21,7 @@ import { useUiStore } from '#lib/store'
 afterEach(cleanup)
 
 const project = (slug: string, remoteUrl: string): ProjectSummary =>
-  ({ slug, remoteUrl, addedAt: '', worktreeCount: 0, createDefaults: {}, gitCredential: null })
+  ({ slug, remoteUrl, addedAt: '', workspaceCount: 0, createDefaults: {}, gitCredential: null })
 
 describe('ProjectSettings', () => {
   it('shows the picked project\'s remote, with its scheme, above the environment', () => {

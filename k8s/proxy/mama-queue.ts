@@ -1,12 +1,12 @@
 /**
- * In-memory queue bridging in-worktree `yaac-mama` commands to the host
- * server. A worktree pod POSTs to the magic host (`http://yaac.internal/cmd`)
+ * In-memory queue bridging in-workspace `yaac-mama` commands to the host
+ * server. A workspace pod POSTs to the magic host (`http://yaac.internal/cmd`)
  * on its transparent HTTP egress path; the proxy holds that request open here
  * while the server drains the queue over the control API (`GET /cmd/pending`,
  * claim-on-drain) and posts back `POST /cmd/results`, which completes the
  * held responses. Nothing is persisted: a command is ephemeral, and replaying
  * stale ones after a proxy restart would be worse than dropping them (the
- * in-worktree curl fails loudly and the agent can retry).
+ * in-workspace curl fails loudly and the agent can retry).
  *
  * The queue does not know what any command MEANS. It carries an opaque
  * envelope — a command name, an option map and one free-text body — and the
@@ -23,10 +23,10 @@
 import crypto from 'node:crypto'
 
 /**
- * Magic hostname the in-worktree `yaac-mama` script POSTs to. Every external
+ * Magic hostname the in-workspace `yaac-mama` script POSTs to. Every external
  * name already resolves to the DNS sinkhole and rides the transparent HTTP
  * listener, so this needs no DNS or redirect change — the proxy routes on the
- * Host header alone. Keep in sync with worktree-bin/yaac-mama.
+ * Host header alone. Keep in sync with workspace-bin/yaac-mama.
  */
 export const MAMA_MAGIC_HOST = 'yaac.internal'
 export const MAMA_PATH = '/cmd'
@@ -39,7 +39,7 @@ export const MAMA_PATH = '/cmd'
  * normal path is a `mama` event, i.e. immediate, so this budget is only
  * ever spent in that degraded lane — and at 60s it left almost none.
  *
- * `worktree-bin/yaac-mama`'s `--max-time` must stay ABOVE this, so the
+ * `workspace-bin/yaac-mama`'s `--max-time` must stay ABOVE this, so the
  * caller sees this self-describing 504 rather than an opaque curl timeout.
  */
 export const MAMA_TTL_MS = 120_000
@@ -47,7 +47,7 @@ export const MAMA_TTL_MS = 120_000
 export const MAMA_MAX_BODY_BYTES = 64 * 1024
 /** Body character limit — mirrors the server's own check. */
 export const MAMA_MAX_BODY_CHARS = 10_000
-export const MAMA_MAX_PENDING_PER_WORKTREE = 8
+export const MAMA_MAX_PENDING_PER_WORKSPACE = 8
 export const MAMA_MAX_PENDING_TOTAL = 32
 
 /**
@@ -71,11 +71,11 @@ const ARG_SHAPES: Record<string, RegExp> = {
   // group). Bounded, and newline-free so it cannot smuggle a second line
   // into anything that renders it.
   group: /^[^\n\r]{1,200}$/,
-  // A worktree title: free-form like a group name, and bounded the same way.
+  // A workspace title: free-form like a group name, and bounded the same way.
   title: /^[^\n\r]{1,200}$/,
-  // A worktree or queued worktree id, or its short prefix.
-  worktree: /^[A-Za-z0-9-]{1,64}$/,
-  'parent-worktree': /^[A-Za-z0-9-]{1,64}$/,
+  // A workspace or queued workspace id, or its short prefix.
+  workspace: /^[A-Za-z0-9-]{1,64}$/,
+  'parent-workspace': /^[A-Za-z0-9-]{1,64}$/,
   queued: /^[A-Za-z0-9-]{1,64}$/,
 }
 
@@ -86,8 +86,8 @@ const COMMAND_RE = /^[a-z][a-z-]{0,31}$/
 
 export interface MamaRequest {
   requestId: string
-  /** Calling worktree, attributed from the source pod IP. */
-  worktreeId: string
+  /** Calling workspace, attributed from the source pod IP. */
+  workspaceId: string
   command: string
   args: Record<string, string>
   body: string
@@ -102,8 +102,15 @@ export interface MamaResult {
   error?: string
 }
 
-/** Writes the held HTTP response back to the waiting worktree pod. */
+/** Writes the held HTTP response back to the waiting workspace pod. */
 export type MamaCompleter = (status: number, body: string) => void
+
+/**
+ * The option names an older install's `yaac-mama` sends — still the one
+ * staged in a workspace it launched — mapped to the current ones
+ * (docs/legacy-compat-shims.md).
+ */
+const LEGACY_ARGS = new Map([['worktree', 'workspace'], ['parent-worktree', 'parent-workspace']])
 
 /**
  * Read the `{command, args, body}` envelope off a request body.
@@ -131,7 +138,7 @@ export function parseMamaEnvelope(
   const args = Object.create(null) as Record<string, string>
   if (typeof env.args === 'object' && env.args !== null && !Array.isArray(env.args)) {
     for (const [name, value] of Object.entries(env.args as Record<string, unknown>)) {
-      if (typeof value === 'string') args[name] = value
+      if (typeof value === 'string') args[LEGACY_ARGS.get(name) ?? name] = value
     }
   }
   return {
@@ -158,7 +165,7 @@ export function validateMamaRequest(
     // truthy inherited member, passes the guard, and then throws on `.test`
     // — inside a request handler, in a process with no uncaughtException
     // handler. That is one crafted request from inside any sandbox taking
-    // egress down for every worktree on the node.
+    // egress down for every workspace on the node.
     if (!Object.hasOwn(ARG_SHAPES, name)) {
       return { ok: false, status: 400, error: `unknown option '--${name}'` }
     }
@@ -180,20 +187,20 @@ export class MamaQueue {
   /** Drained by the server, awaiting its result. */
   private claimed = new Map<string, HeldRequest>()
 
-  pendingCountFor(worktreeId: string): number {
+  pendingCountFor(workspaceId: string): number {
     let n = 0
     for (const held of this.pending.values()) {
-      if (held.req.worktreeId === worktreeId) n++
+      if (held.req.workspaceId === workspaceId) n++
     }
     for (const held of this.claimed.values()) {
-      if (held.req.worktreeId === worktreeId) n++
+      if (held.req.workspaceId === workspaceId) n++
     }
     return n
   }
 
   enqueue(
     req: {
-      worktreeId: string
+      workspaceId: string
       command: string
       args: Record<string, string>
       body: string
@@ -204,18 +211,18 @@ export class MamaQueue {
     if (this.pending.size + this.claimed.size >= MAMA_MAX_PENDING_TOTAL) {
       return { ok: false, status: 429, error: 'too many pending yaac-mama requests' }
     }
-    if (this.pendingCountFor(req.worktreeId) >= MAMA_MAX_PENDING_PER_WORKTREE) {
+    if (this.pendingCountFor(req.workspaceId) >= MAMA_MAX_PENDING_PER_WORKSPACE) {
       return {
         ok: false,
         status: 429,
-        error: 'too many pending yaac-mama requests from this worktree',
+        error: 'too many pending yaac-mama requests from this workspace',
       }
     }
     const requestId = crypto.randomUUID()
     this.pending.set(requestId, {
       req: {
         requestId,
-        worktreeId: req.worktreeId,
+        workspaceId: req.workspaceId,
         command: req.command,
         args: req.args,
         body: req.body,
@@ -259,7 +266,7 @@ export class MamaQueue {
    * nothing ran. A CLAIMED one was — the server took it and then failed to
    * answer (it died, or the result post failed), so the command may well
    * have run. `create` is not idempotent (each mints a fresh id), so
-   * retrying that one blindly is how you get a duplicate worktree.
+   * retrying that one blindly is how you get a duplicate workspace.
    */
   expire(now: number = Date.now()): void {
     for (const [map, timedOut] of [

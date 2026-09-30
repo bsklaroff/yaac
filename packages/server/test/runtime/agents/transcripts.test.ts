@@ -26,13 +26,13 @@ const wt = 'wt-a'
 
 /** Host path of a claude transcript — the layout the module owns, spelled
  *  out here so the test would catch a change to it. */
-function claudeLog(worktreeId: string): string {
-  return path.join(claudeDir(slug), 'projects', '-workspace', `${worktreeId}.jsonl`)
+function claudeLog(workspaceId: string): string {
+  return path.join(claudeDir(slug), 'projects', '-workspace', `${workspaceId}.jsonl`)
 }
 
 /** The same log as the readers name it: under its tool's home. */
-function claudeFile(worktreeId: string) {
-  return { slug, dir: claudeDir(slug), rel: `projects/-workspace/${worktreeId}.jsonl` }
+function claudeFile(workspaceId: string) {
+  return { slug, dir: claudeDir(slug), rel: `projects/-workspace/${workspaceId}.jsonl` }
 }
 
 async function write(file: string, body = '{}\n'): Promise<string> {
@@ -67,8 +67,8 @@ describe('transcripts', () => {
   describe('claudeProjectDirName', () => {
     it('punches every non-alphanumeric out of the cwd', () => {
       expect(claudeProjectDirName('/workspace')).toBe('-workspace')
-      expect(claudeProjectDirName('/home/me/.yaac/projects/p_1/worktrees/abc'))
-        .toBe('-home-me--yaac-projects-p-1-worktrees-abc')
+      expect(claudeProjectDirName('/home/me/.yaac/projects/p_1/workspaces/abc'))
+        .toBe('-home-me--yaac-projects-p-1-workspaces-abc')
     })
 
     it('cuts a long one at 200 and appends claude\'s own hash of the whole path', () => {
@@ -88,7 +88,7 @@ describe('transcripts', () => {
       expect(await sessionTranscriptPath(slug, 'sid', 'claude')).toEqual(claudeFile('sid'))
     })
 
-    it('looks in the worktree\'s own history first, and only its own', async () => {
+    it('looks in the workspace\'s own history first, and only its own', async () => {
       const own = path.join(agentHistoryDir(slug, wt, 'claude'), '-workspace', 'conv.jsonl')
       await write(own)
       await write(path.join(claudeDir(slug), 'projects', '-workspace', 'conv.jsonl'))
@@ -138,7 +138,7 @@ describe('transcripts', () => {
   describe('locateTranscript', () => {
     const reported = 'claude/projects/-workspace/conv.jsonl'
 
-    it('maps a reported path into the worktree\'s history first, then the shared home', async () => {
+    it('maps a reported path into the workspace\'s history first, then the shared home', async () => {
       // Nothing written yet: left out for the next pass to fill.
       expect(await locateTranscript(slug, wt, 'claude', 'conv', reported)).toBeUndefined()
       await write(path.join(projectDir(slug), reported))
@@ -209,7 +209,7 @@ describe('transcripts', () => {
   })
 
   describe('resolveProjectPath', () => {
-    it('resolves under the recording tool\'s home or its part of this worktree\'s history', () => {
+    it('resolves under the recording tool\'s home or its part of this workspace\'s history', () => {
       const files = {
         claude: claudeFile('sid'),
         codex: { slug, dir: codexDir(slug), rel: 'sessions/rollout-x.jsonl' },

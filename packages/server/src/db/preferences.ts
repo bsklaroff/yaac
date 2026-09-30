@@ -25,7 +25,7 @@ export function isSerializedChord(value: unknown): value is SerializedChord {
     && typeof c.shift === 'boolean'
 }
 
-/** `preferences` row keys for the git identity worktrees commit under. */
+/** `preferences` row keys for the git identity workspaces commit under. */
 export const GIT_USER_NAME_KEY = 'git_user_name'
 export const GIT_USER_EMAIL_KEY = 'git_user_email'
 
@@ -61,7 +61,7 @@ export async function clearShortcutOverrides(): Promise<void> {
 }
 
 /**
- * The git identity this server's worktrees commit under, or null when
+ * The git identity this server's workspaces commit under, or null when
  * either half is unset.
  *
  * A server setting rather than something read off a host, because the host

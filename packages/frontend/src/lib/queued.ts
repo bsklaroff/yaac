@@ -1,20 +1,20 @@
-import type { QueuedWorktreeEntry } from '@yaac/shared/types'
+import type { QueuedWorkspaceEntry } from '@yaac/shared/types'
 
 /**
- * Pure helpers over the snapshot's queued worktrees (docs/queued-worktrees.md).
- * An entry waits on exactly one parent — a worktree or another entry — so the
- * entries form a forest hanging off worktree ids.
+ * Pure helpers over the snapshot's queued workspaces (docs/queued-workspaces.md).
+ * An entry waits on exactly one parent — a workspace or another entry — so the
+ * entries form a forest hanging off workspace ids.
  */
 
 /** The id an entry waits on, whichever kind it is. */
-export function queuedParentId(entry: QueuedWorktreeEntry): string {
-  return entry.parentWorktreeId ?? entry.parentQueuedId ?? ''
+export function queuedParentId(entry: QueuedWorkspaceEntry): string {
+  return entry.parentWorkspaceId ?? entry.parentQueuedId ?? ''
 }
 
 /** Entries by the id they wait on, each list in snapshot order (oldest
  *  first, which is the order they will be shown in). */
-export function queuedChildren(entries: QueuedWorktreeEntry[]): Map<string, QueuedWorktreeEntry[]> {
-  const byParent = new Map<string, QueuedWorktreeEntry[]>()
+export function queuedChildren(entries: QueuedWorkspaceEntry[]): Map<string, QueuedWorkspaceEntry[]> {
+  const byParent = new Map<string, QueuedWorkspaceEntry[]>()
   for (const e of entries) {
     const key = queuedParentId(e)
     byParent.set(key, [...(byParent.get(key) ?? []), e])
@@ -24,7 +24,7 @@ export function queuedChildren(entries: QueuedWorktreeEntry[]): Map<string, Queu
 
 /** `id`'s entries below it, at any depth — what re-parenting it under would
  *  make a cycle of. */
-export function queuedDescendants(entries: QueuedWorktreeEntry[], id: string): Set<string> {
+export function queuedDescendants(entries: QueuedWorkspaceEntry[], id: string): Set<string> {
   const children = queuedChildren(entries)
   const out = new Set<string>()
   const walk = (parent: string): void => {
@@ -40,12 +40,12 @@ export function queuedDescendants(entries: QueuedWorktreeEntry[], id: string): S
 
 /** Every entry in tree order: each chain top, then its chain beneath it —
  *  the order the sidebar draws them. */
-export function queuedInTreeOrder(entries: QueuedWorktreeEntry[]): QueuedWorktreeEntry[] {
+export function queuedInTreeOrder(entries: QueuedWorkspaceEntry[]): QueuedWorkspaceEntry[] {
   const ids = new Set(entries.map((e) => e.id))
   const children = queuedChildren(entries)
-  const out: QueuedWorktreeEntry[] = []
+  const out: QueuedWorkspaceEntry[] = []
   const seen = new Set<string>()
-  const walk = (e: QueuedWorktreeEntry): void => {
+  const walk = (e: QueuedWorkspaceEntry): void => {
     if (seen.has(e.id)) return
     seen.add(e.id)
     out.push(e)
@@ -57,8 +57,8 @@ export function queuedInTreeOrder(entries: QueuedWorktreeEntry[]): QueuedWorktre
 
 /** An entry's (or a draft's) label: the title it was given, else its
  *  generated one, else the first non-blank line of its prompt. */
-export function queuedTitle(entry: Pick<QueuedWorktreeEntry, 'prompt' | 'title' | 'generatedTitle'>): string {
-  return entry.title ?? entry.generatedTitle ?? entry.prompt.split('\n').map((l) => l.trim()).find((l) => l !== '') ?? 'Queued worktree'
+export function queuedTitle(entry: Pick<QueuedWorkspaceEntry, 'prompt' | 'title' | 'generatedTitle'>): string {
+  return entry.title ?? entry.generatedTitle ?? entry.prompt.split('\n').map((l) => l.trim()).find((l) => l !== '') ?? 'Queued workspace'
 }
 
 /** Clip a label for dialog and dropdown copy. */

@@ -149,7 +149,7 @@ describe('exec streams', () => {
 
   it('marks a command it could not spawn, so 127 cannot read as not-installed', async () => {
     // The server treats a nonzero exit as a verdict about the pod, and acts
-    // on it — a probe that "exited 127" reaps a worktree or reports a tool
+    // on it — a probe that "exited 127" reaps a workspace or reports a tool
     // missing from the image. A command that never ran says nothing about
     // either, and 127 alone cannot tell the two apart.
     const port = await startDaemon()
@@ -228,7 +228,7 @@ describe('pty streams', () => {
     expect(JSON.parse(exit!.payload.toString('utf8'))).toEqual({ code: 0 })
   })
 
-  it('spawns the child with TERM=xterm-256color (the worktree image TERM)', async () => {
+  it('spawns the child with TERM=xterm-256color (the workspace image TERM)', async () => {
     const port = await startDaemon()
     const { socket } = await handshake(port, {
       token: TOKEN, kind: 'pty', cmd: ['sh', '-c', 'echo TERM=$TERM'], cols: 80, rows: 24,

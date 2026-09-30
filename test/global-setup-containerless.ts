@@ -14,7 +14,7 @@ const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
  *
  * The cluster tier's setup is dominated by images — five content-hashed
  * builds plus the digest-pinned mirrors, pushed to a local registry before
- * any worker starts. None of it applies here: a containerless worktree runs
+ * any worker starts. None of it applies here: a containerless workspace runs
  * the host's own tools in a checkout, so there is no image to build, no
  * registry to push to and no cluster to keep clean. What remains is the one
  * thing both tiers need, which is a current bundle for the suites to spawn.

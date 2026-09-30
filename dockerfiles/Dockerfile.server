@@ -16,7 +16,7 @@
 FROM docker.io/ubuntu:24.04
 
 # Kept in step with dockerfiles/Dockerfile.default's Node: the server and the
-# worktrees it launches should not disagree about the runtime.
+# workspaces it launches should not disagree about the runtime.
 ARG NODE_VERSION=22.22.2
 # kubectl is how the server writes to and execs into the cluster (the typed
 # client covers reads/watches). Within one minor of the kind node's server,
@@ -50,7 +50,7 @@ RUN ARCH="$(dpkg --print-architecture)" && \
 # ubuntu:24.04 ships its own uid-1000 `ubuntu` user, which is the uid this
 # image bakes; drop it first (same idiom as Dockerfile.default).
 #
-# The uid is FIXED, and the pod's is not it: like the worktree chain, this
+# The uid is FIXED, and the pod's is not it: like the workspace chain, this
 # image is uid-agnostic (docs/arbitrary-uid-images.md). `yaac` has primary
 # group 0 and everything it owns is group-writable, so the pod's host uid —
 # which carries a supplementary group 0 — can write it all. /etc/passwd is

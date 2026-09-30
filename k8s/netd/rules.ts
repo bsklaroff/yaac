@@ -1,6 +1,6 @@
 /**
  * The redirect rules netd programs in the node root netns.
- * See docs/worktree-egress.md for the whole datapath.
+ * See docs/workspace-egress.md for the whole datapath.
  *
  * Shape, and why it is this shape:
  *
@@ -9,7 +9,7 @@
  *   rule that has to run *before* `cali-*` is guaranteed to be demoted the
  *   next time Felix resyncs. Measured: after a `calico-node` restart, a
  *   mangle-PREROUTING TPROXY divert and a filter-INPUT accept both landed
- *   below the Calico jumps and every worktree lost egress. `nat`
+ *   below the Calico jumps and every workspace lost egress. `nat`
  *   PREROUTING is uncontended — Calico's `cali-PREROUTING` there is an
  *   empty floating-IP DNAT chain that terminates nothing — so netd
  *   APPENDS and never competes for position. (See docs/plans spike

@@ -43,7 +43,7 @@ Make managing many agents fast and legible.
   resizable dividers) plus a tabs mode, over the server shell + window PTY
   endpoints
 - 🚧 Session lifecycle UI: delete (ConfirmDialog), restart, and rename
-  shipped; open worktree in editor still pending
+  shipped; open workspace in editor still pending
 - ✅ New-project flow (rail `+`) and project removal
 - 🚧 Settings → CLI parity: credentials listing and GitHub
   token add shipped; Claude/Codex OAuth UI and the per-project config editor
@@ -79,7 +79,7 @@ through three modes, switched from a top bar:
   and reuse plans; queue several.
 - ⬜ **Build** — the active agent run (today's terminal), enriched with
   status, prompt history, forwarded ports, and logs.
-- ⬜ **Review** — inspect what the agent produced: worktree **diff** viewer +
+- ⬜ **Review** — inspect what the agent produced: workspace **diff** viewer +
   file browser, accept / iterate / discard, draft a commit or PR, push.
 
 ---

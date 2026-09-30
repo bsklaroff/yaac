@@ -377,7 +377,7 @@ function happyResponse(file: string, args: string[]): { stdout: string; stderr: 
           {
             metadata: {
               name: 'yaac-session-abc', namespace: 'test-ns',
-              labels: { 'yaac.worktree-id': 'abc' },
+              labels: { 'yaac.workspace-id': 'abc' },
             },
             spec: { runtimeClassName: 'gvisor' },
           },
@@ -620,13 +620,13 @@ describe('runClusterCheck', () => {
     }
     expect(podManifest.kind).toBe('Pod')
     // The global claim, not the data dir by hostPath: the same volume every
-    // worktree pod mounts its subPaths of.
+    // workspace pod mounts its subPaths of.
     expect(podManifest.spec.volumes[0].persistentVolumeClaim?.claimName).toBe('yaac-global')
     // The probe mirrors the session-pod containment: the default gvisor
     // tier with no user namespace (the sentry replaces it).
     expect(podManifest.spec.runtimeClassName).toBe('gvisor')
     expect(podManifest.spec.hostUsers).toBeUndefined()
-    // The probe writes through the mount as a worktree pod would, so it
+    // The probe writes through the mount as a workspace pod would, so it
     // carries the same identity buildPodJobManifest stamps — and a
     // read-write mount.
     expect(podManifest.spec.securityContext).toEqual({
@@ -1258,7 +1258,7 @@ describe('runClusterCheck', () => {
     const run = happyRun()
     run.mockImplementation((file: string, args: string[]) => {
       if (file === 'kubectl' && args[0] === 'get' && args[1] === 'priorityclass') {
-        const items = livePriorityClasses().filter((c) => c.metadata.name !== 'yaac-worktree')
+        const items = livePriorityClasses().filter((c) => c.metadata.name !== 'yaac-workspace')
         return Promise.resolve({ stdout: JSON.stringify({ items }), stderr: '' })
       }
       return happyResponses(file, args)
@@ -1268,7 +1268,7 @@ describe('runClusterCheck', () => {
     expect(ok).toBe(false)
     const pcs = byName(results, 'priority-classes')
     expect(pcs).toMatchObject({ status: 'fail' })
-    expect(pcs?.detail).toContain('yaac-worktree')
+    expect(pcs?.detail).toContain('yaac-workspace')
     expect(pcs?.fix).toContain('yaac cluster install')
     expect(byName(results, 'probe')).toMatchObject({ status: 'skip' })
   })
@@ -1347,7 +1347,7 @@ describe('runClusterCheck', () => {
               {
                 metadata: {
                   name: 'yaac-old-session', namespace: 'test-ns',
-                  labels: { 'yaac.worktree-id': 'old' },
+                  labels: { 'yaac.workspace-id': 'old' },
                 },
                 spec: {},
               },
@@ -1466,7 +1466,7 @@ describe('runClusterCheck', () => {
     expect(egress?.fix).toContain('yaac-server-ingress-front')
   })
 
-  // A session pod fetching through the Service proves the worktree egress
+  // A session pod fetching through the Service proves the workspace egress
   // rule, the cache's ingress wall and its own route out, all at once.
   it('passes npm-cache when a session pod fetches a package through the Service\'s IP', async () => {
     const deps = stage()
@@ -1478,7 +1478,7 @@ describe('runClusterCheck', () => {
       metadata: { name: string; labels: Record<string, string> }
       spec: { runtimeClassName?: string; containers: Array<{ command: string[] }> }
     }).find((m) => m.metadata.name === 'yaac-cluster-check-npm-cache')
-    expect(pod?.metadata.labels['yaac.worktree-id']).toBeDefined()
+    expect(pod?.metadata.labels['yaac.workspace-id']).toBeDefined()
     expect(pod?.metadata.labels['yaac.npm-cache']).toBe('true')
     expect(pod?.spec.runtimeClassName).toBe('gvisor')
     expect(pod?.spec.containers[0].command[2])
@@ -1776,7 +1776,7 @@ describe('runClusterCheck', () => {
     podPhases = { 'yaac-cluster-check-fsprobe': 'Failed' }
     stage()
     const { ok, results } = await runClusterCheck()
-    // Fail-level on every backend: a worktree on storage that fails one of
+    // Fail-level on every backend: a workspace on storage that fails one of
     // these breaks in ways nothing downstream names.
     expect(ok).toBe(false)
     const semantics = byName(results, 'storage-semantics')!
@@ -1959,7 +1959,7 @@ describe('runClusterCheck', () => {
     expect(vap?.detail).toContain('ValidatingAdmissionPolicy API unavailable')
     expect(vap?.fix).toContain('image builds')
     // Fail, not warn: the guard refuses to apply without the API, so no
-    // worktree image can be built at all.
+    // workspace image can be built at all.
     expect(ok).toBe(false)
   })
 
