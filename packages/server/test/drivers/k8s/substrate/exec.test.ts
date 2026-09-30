@@ -4,12 +4,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // runner and its transient-error retries run for real underneath.
 type ExecResult = { stdout: string; stderr: string }
 type ExecCallback = (err: unknown, res?: ExecResult) => void
-const execMock = vi.fn<(command: string) => Promise<ExecResult>>()
+const execMock = vi.fn<(command: string, opts: unknown) => Promise<ExecResult>>()
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
   exec: (command: string, opts: unknown, cb?: ExecCallback) => {
     const actualCb = (typeof opts === 'function' ? opts : cb) as ExecCallback
-    void execMock(command).then(
+    void execMock(command, typeof opts === 'function' ? undefined : opts).then(
       (res) => actualCb(null, res),
       (err: unknown) => actualCb(err),
     )
@@ -33,7 +33,10 @@ describe('containerExec', () => {
     vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
     const result = await containerExec('yaac-demo-abc', 'git status')
     expect(result).toEqual({ stdout: 'out', stderr: '' })
-    expect(execMock).toHaveBeenCalledWith('kubectl exec -n test-ns job/yaac-demo-abc -- git status')
+    expect(execMock).toHaveBeenCalledWith(
+      'kubectl exec -n test-ns job/yaac-demo-abc -- git status',
+      expect.objectContaining({ maxBuffer: 64 << 20 }),
+    )
   })
 
   it('retries transient exec failures — a pod being replaced 404s the subresource', async () => {

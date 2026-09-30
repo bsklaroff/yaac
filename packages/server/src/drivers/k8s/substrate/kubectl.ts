@@ -1,4 +1,4 @@
-import { exec, execFile } from 'node:child_process'
+import { exec, execFile, type ExecFileOptions } from 'node:child_process'
 import crypto from 'node:crypto'
 import { promisify } from 'node:util'
 // Install IDENTITY, not storage — the label hash must stay stable when
@@ -7,8 +7,25 @@ import { promisify } from 'node:util'
 import { getDataDir } from '@yaac/shared/paths'
 import { testEnv } from '@yaac/shared/env'
 
-export const execFileAsync = promisify(execFile)
+/**
+ * Output a child may buffer. Node's 1 MiB default is well inside what a
+ * `-o json` listing or an exec'd `cat` can print, and overrunning it kills
+ * the child and fails the call however healthy the cluster is.
+ */
+const MAX_EXEC_BUFFER = 64 << 20
+
+const execFileRaw = promisify(execFile)
 const execAsync = promisify(exec)
+
+/** Promisified `execFile`, bounded by {@link MAX_EXEC_BUFFER} rather than
+ *  Node's default unless the caller names a bound of its own. */
+export function execFileAsync(
+  file: string,
+  args: readonly string[],
+  opts: ExecFileOptions = {},
+): Promise<{ stdout: string; stderr: string }> {
+  return execFileRaw(file, args, { maxBuffer: MAX_EXEC_BUFFER, ...opts, encoding: 'utf8' })
+}
 
 /**
  * Namespace that holds every yaac kubernetes object (worktree Jobs, the
@@ -189,7 +206,7 @@ export async function kubectlWithRetry(
   return retryTransient(
     () => opts.input !== undefined
       ? execFileWithInput('kubectl', args, opts.input, opts.timeout)
-      : execFileAsync('kubectl', args, opts.timeout ? { timeout: opts.timeout } : {}),
+      : execFileAsync('kubectl', args, { timeout: opts.timeout }),
     opts,
     (err) => (err as { stderr?: string })?.stderr ?? '',
   )
@@ -205,7 +222,7 @@ function execFileWithInput(
     const child = execFile(
       bin,
       args,
-      timeout ? { timeout } : {},
+      { maxBuffer: MAX_EXEC_BUFFER, timeout },
       (err, stdout, stderr) => {
         if (err instanceof Error) {
           reject(Object.assign(err, { stdout, stderr }))
@@ -238,10 +255,9 @@ export async function shellKubectlWithRetry(
   command: string,
   opts: KubectlExecOptions = {},
 ): Promise<{ stdout: string; stderr: string }> {
-  const execOpts: { timeout?: number } = opts.timeout ? { timeout: opts.timeout } : {}
   return retryTransient(
     async () => {
-      const res = await execAsync(command, execOpts)
+      const res = await execAsync(command, { maxBuffer: MAX_EXEC_BUFFER, timeout: opts.timeout })
       return { stdout: res.stdout.toString(), stderr: res.stderr.toString() }
     },
     opts,

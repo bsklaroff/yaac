@@ -1785,50 +1785,44 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     }, 240_000)
 
     it('boots opencode and answers a session probe from inside the container', async () => {
-      // The server's opencode first-message probe
-      // (packages/server/src/runtime/agents/opencode.ts) runs `opencode api
-      // session.get` over a private server on the worktree's data dir, from
-      // the checkout — without this test the entire opencode status pipeline
-      // is unverified by CI. A titled session is created first, polled, which
-      // doubles as a wait-for-container-ready barrier: opencode bootstraps
-      // its worker + SQLite migrations first, so allow generous time. What
-      // matters is that the probe's exact command reads the title back.
-      let probeOk = false
-      let last = ''
-      for (let i = 0; i < 60 && !probeOk; i++) {
-        try {
-          const { stdout: created } = await execInJob(jobName, [
-            'sh', '-c', 'opencode api --standalone session.create -d \'{"title":"probe-me"}\'',
-          ])
-          const id = (JSON.parse(created.trim()) as { data?: { id?: string } }).data?.id ?? ''
-          const { stdout } = await execInJob(jobName, [
-            'sh', '-c', `opencode api --standalone session.get --param sessionID=${id}`,
-          ])
-          last = stdout
-          probeOk = (JSON.parse(stdout.trim()) as { data?: { title?: unknown } }).data?.title === 'probe-me'
-        } catch (err) {
-          last = err instanceof Error ? err.message : String(err)
-        }
-        if (!probeOk) await sleep(1000)
-      }
-      if (!probeOk) console.error('last probe output: ' + last)
-      expect(probeOk).toBe(true)
-
-      // The pane itself has to draw: the 1.x line after 1.0.142 never did
-      // under gVisor (its native renderer waits on a terminal-capability
-      // answer the headless tmux never gives), which is what the v2 pin is
-      // for. The prompt box is the one thing every fresh TUI shows.
-      // The window is the init script's to create, so a capture can still
-      // fail for a moment after the api probe answers; keep polling.
+      // The pane has to draw: the 1.x line after 1.0.142 never did under
+      // gVisor (its native renderer waits on a terminal-capability answer
+      // the headless tmux never gives), which is what the v2 pin is for. The
+      // prompt box is the one thing every fresh TUI shows.
+      //
+      // And it has to draw BEFORE anything else here starts an opencode
+      // server. A fresh worktree's data dir is empty, every server
+      // bootstraps the SQLite schema as it starts, and two doing so at once
+      // race for the write lock: the loser dies with "database is locked".
+      // When the loser is the TUI's server the TUI exits, closing its
+      // window, the session's only one, and the tmux server with it. A drawn
+      // prompt box means the TUI's server is up, schema and all, which is
+      // the order the server's probe keeps too: it runs only once the pane
+      // names a session.
       let pane = ''
       for (let i = 0; i < 30 && !/Ask anything/.test(pane); i++) {
         pane = await execInJob(jobName, [
-          'sh', '-c', `tmux -S ${CONTAINER_TMUX_SOCK} capture-pane -t yaac:opencode -p 2>&1`,
-        ]).then((r) => r.stdout).catch(() => '')
+          'sh', '-c', `tmux -S ${CONTAINER_TMUX_SOCK} capture-pane -t yaac:opencode -p`,
+        ]).then((r) => r.stdout, (err: unknown) => String(err))
         if (!/Ask anything/.test(pane)) await sleep(1000)
       }
       if (!/Ask anything/.test(pane)) console.error('opencode tmux pane:\n' + pane)
       expect(pane).toMatch(/Ask anything/)
+
+      // The server's opencode first-message probe
+      // (packages/server/src/runtime/agents/opencode.ts) runs `opencode api
+      // session.get` over a private server on the worktree's data dir, from
+      // the checkout — without this test the entire opencode status pipeline
+      // is unverified by CI. What matters is that the probe's exact command
+      // reads back the title of a session created the same way.
+      const { stdout: created } = await execInJob(jobName, [
+        'sh', '-c', 'opencode api --standalone session.create -d \'{"title":"probe-me"}\'',
+      ])
+      const id = (JSON.parse(created.trim()) as { data?: { id?: string } }).data?.id ?? ''
+      const { stdout } = await execInJob(jobName, [
+        'sh', '-c', `opencode api --standalone session.get --param sessionID=${id}`,
+      ])
+      expect((JSON.parse(stdout.trim()) as { data?: { title?: unknown } }).data?.title).toBe('probe-me')
     }, 180_000)
 
     it('mounts the shared opencode-config dir and pins the install', async () => {
