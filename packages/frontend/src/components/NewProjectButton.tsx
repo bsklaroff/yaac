@@ -1,4 +1,4 @@
-import { useState, type JSX } from 'react'
+import { useEffect, useState, type JSX } from 'react'
 import { Dialog } from '@base-ui/react/dialog'
 import { useQueryClient } from '@tanstack/react-query'
 import { GitCredentialPicker, remoteKind, remoteSlug, TrustedHostKey } from '#components/GitCredentialPicker'
@@ -6,11 +6,14 @@ import { AddIcon } from '#lib/icons'
 import { addProject } from '#lib/projectApi'
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
 import { useUiStore } from '#lib/store'
+import { useSnapshot } from '#lib/useSnapshot'
 
 /**
  * Add-project button and dialog: clone a git repo with a credential chosen in
- * `GitCredentialPicker`. On success, selects the new project; an SSH clone
- * first shows the host key it trusted.
+ * `GitCredentialPicker`. On success, selects the new project once the
+ * snapshot lists it (selecting it sooner, the shell's fallback for an unknown
+ * project would switch straight back); an SSH clone first shows the host key
+ * it trusted.
  */
 export function NewProjectButton(
   /** 'rail': the desktop rail chip. 'row': the mobile projects-screen row. */
@@ -18,6 +21,8 @@ export function NewProjectButton(
 ): JSX.Element {
   const setActiveProject = useUiStore((s) => s.setActiveProject)
   const queryClient = useQueryClient()
+  const projects = useSnapshot()?.projects
+  const [added, setAdded] = useState<string | null>(null)
   const [open, setOpen] = useState(false)
   const [url, setUrl] = useState('')
   const [trusted, setTrusted] = useState<string | null>(null)
@@ -35,10 +40,16 @@ export function NewProjectButton(
     const { slug, knownHostsEntry } = await addProject(remoteUrl, credentialId)
     // Refresh the credential's project list.
     void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
-    setActiveProject(slug)
+    setAdded(slug)
     if (knownHostsEntry !== null) setTrusted(knownHostsEntry)
     else onOpenChange(false)
   }
+
+  useEffect(() => {
+    if (added === null || !projects?.some((p) => p.slug === added)) return
+    setActiveProject(added)
+    setAdded(null)
+  }, [added, projects, setActiveProject])
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>

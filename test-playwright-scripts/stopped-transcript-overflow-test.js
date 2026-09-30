@@ -14,48 +14,18 @@
  *     center.
  *  3. Wide content scrolls inside its own block instead of widening the pane.
  *
- * Desktop only; mobile-overlay-panes-test.js covers the phone layout.
+ * Desktop only; mobile-shell-test.js covers the phone layout.
  *
  * The stopped listing and the transcript routes are stubbed with the ACP
  * events a claude conversation produces, so no agent turn, credentials or
  * stopped workspace is needed. Everything below the fetch is the real app.
  *
- * Drives the app the server serves from `dist/`, reading the port from
- * $YAAC_DATA_DIR/.server.lock, so run `pnpm build` + `yaac server restart`
- * first. Needs a running `yaac server` with at least one project.
+ * Needs a running `yaac server` with at least one project.
  *
- * Run: node test-playwright-scripts/stopped-transcript-overflow-test.js
- * (SCREENSHOT_DIR sets the screenshot dir, default /tmp/yaac-shots; APP_URL
- * points it at another origin).
+ * Run: YAAC_DATA_DIR=... node test-playwright-scripts/stopped-transcript-overflow-test.js
  */
-import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
-import { execSync } from 'node:child_process'
-import { createRequire } from 'node:module'
-
-const require = createRequire(import.meta.url)
-if (!process.env.PLAYWRIGHT_BROWSERS_PATH && fs.existsSync('/opt/playwright-browsers')) {
-  process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/playwright-browsers'
-}
-const { chromium } = (() => {
-  try {
-    return require('playwright')
-  } catch {
-    return require(path.join(execSync('npm root -g').toString().trim(), 'playwright'))
-  }
-})()
-
-const SHOT_DIR = process.env.SCREENSHOT_DIR ?? '/tmp/yaac-shots'
-
-function readServerLock() {
-  const candidates = [
-    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.server.lock'),
-    path.join(os.homedir(), '.yaac', '.server.lock'),
-  ].filter(Boolean)
-  for (const p of candidates) if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
-  throw new Error('no .server.lock found — is the server running? try: yaac server start')
-}
+import { SHOTS, check, finish, origin, requirePlaywright } from './lib.js'
 
 /** A source line long enough that no pane is as wide as it is. */
 const LONG_LINE =
@@ -121,32 +91,15 @@ const STOPPED = [{
   agentSessions: [{ agentSessionId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true }],
 }]
 
-const failures = []
-let where = ''
-const check = (ok, what) => {
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${what}`)
-  if (!ok) failures.push(`${where}: ${what}`)
-}
-
-const lock = readServerLock()
-const origin = process.env.APP_URL ?? `http://127.0.0.1:${lock.port}`
+const { chromium } = requirePlaywright()
 const browser = await chromium.launch()
 try {
-  await run({ name: 'desktop', viewport: { width: 1400, height: 900 } })
-} finally {
-  await browser.close()
-}
-
-async function run({ name, viewport }) {
-  where = name
-  console.log(`\n${name} (${viewport.width}x${viewport.height})`)
-  const ctx = await browser.newContext({ viewport })
-  const page = await ctx.newPage()
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
 
-  await page.route('**/workspace/list-stopped*', (route) =>
+  await page.route('**/api/workspace/list-stopped*', (route) =>
     route.fulfill({ contentType: 'application/json', body: JSON.stringify(STOPPED) }))
-  await page.route('**/workspace/*/agent-sessions/*/transcript*', (route) =>
+  await page.route('**/api/workspace/*/agent-sessions/*/transcript*', (route) =>
     route.fulfill({ contentType: 'application/json', body: JSON.stringify({ events: EVENTS }) }))
 
   await page.goto(`${origin}/`)
@@ -158,61 +111,39 @@ async function run({ name, viewport }) {
   await popup.locator('text=why is the build cache missing?').first().waitFor({ timeout: 10_000 })
   await popup.locator('text=/build-coordinator/').first().waitFor({ timeout: 10_000 })
 
-  const restart = popup.locator('button', { hasText: 'Restart' }).last()
-  const box = async (loc) => await loc.boundingBox()
-  const popupBox = await box(popup)
+  const popupBox = await popup.boundingBox()
+  const popupRight = Math.round(popupBox.x + popupBox.width)
   // The detail pane is the overlay column holding Restart.
   const detailBox = await page.evaluate(() => {
     const btn = [...document.querySelectorAll('[role="dialog"] button')]
       .find((b) => b.textContent?.trim() === 'Restart')
-    if (!btn) return null
-    let el = btn.parentElement
+    let el = btn?.parentElement
     while (el && !(el.parentElement?.classList.contains('gap-3'))) el = el.parentElement
-    const r = el?.getBoundingClientRect()
-    return r ? { x: r.x, y: r.y, width: r.width, right: r.right } : null
+    return el?.getBoundingClientRect().toJSON() ?? null
   })
+  await page.screenshot({ path: path.join(SHOTS, 'stopped-transcript-overflow.png') })
 
-  fs.mkdirSync(SHOT_DIR, { recursive: true })
-  const shot = path.join(SHOT_DIR, `stopped-transcript-overflow-${name}.png`)
-  await page.screenshot({ path: shot })
+  check('the detail pane stays inside the overlay',
+    detailBox !== null && detailBox.right <= popupRight + 1,
+    `detail right ${Math.round(detailBox?.right)}px vs overlay right ${popupRight}px`)
 
-  check(detailBox !== null, 'the detail pane was found')
-  if (detailBox && popupBox) {
-    check(
-      detailBox.right <= popupBox.x + popupBox.width + 1,
-      `the detail pane stays inside the overlay (detail right ${Math.round(detailBox.right)}px vs overlay right ${Math.round(popupBox.x + popupBox.width)}px)`,
-    )
-  }
+  const restartBox = await popup.locator('button', { hasText: 'Restart' }).last().boundingBox()
+  check('the Restart button is inside the overlay',
+    restartBox !== null && restartBox.x + restartBox.width <= popupRight + 1 && restartBox.x >= popupBox.x - 1,
+    `button right ${Math.round(restartBox?.x + restartBox?.width)}px vs overlay right ${popupRight}px`)
+  // An overflowing ancestor can cover the button even inside the box.
+  const hit = restartBox && await page.evaluate(({ x, y }) =>
+    document.elementFromPoint(x, y)?.closest('button')?.textContent?.trim() ?? null,
+  { x: restartBox.x + restartBox.width / 2, y: restartBox.y + restartBox.height / 2 })
+  check('the Restart button is hit-testable', hit === 'Restart', `found ${JSON.stringify(hit)}`)
 
-  const restartBox = await box(restart)
-  check(restartBox !== null, 'the Restart button is laid out')
-  if (restartBox && popupBox) {
-    check(
-      restartBox.x + restartBox.width <= popupBox.x + popupBox.width + 1
-        && restartBox.x >= popupBox.x - 1,
-      `the Restart button is inside the overlay (button right ${Math.round(restartBox.x + restartBox.width)}px vs overlay right ${Math.round(popupBox.x + popupBox.width)}px)`,
-    )
-    // An overflowing ancestor can cover the button even inside the box.
-    const hit = await page.evaluate(({ x, y }) => {
-      const el = document.elementFromPoint(x, y)
-      return el?.closest('button')?.textContent?.trim() ?? null
-    }, { x: restartBox.x + restartBox.width / 2, y: restartBox.y + restartBox.height / 2 })
-    check(hit === 'Restart', `the Restart button is hit-testable (found ${JSON.stringify(hit)})`)
-  }
-
-  const doc = await page.evaluate(() => ({
-    scrollWidth: document.documentElement.scrollWidth,
-    inner: window.innerWidth,
-  }))
-  check(doc.scrollWidth <= doc.inner, `the page does not scroll sideways (${doc.scrollWidth} <= ${doc.inner})`)
+  const doc = await page.evaluate(() => [document.documentElement.scrollWidth, window.innerWidth])
+  check('the page does not scroll sideways', doc[0] <= doc[1], `${doc[0]} vs ${doc[1]}`)
 
   const scrollable = await page.evaluate(() => [...document.querySelectorAll('[role="dialog"] *')]
     .some((el) => el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).overflowX !== 'visible'))
-  check(scrollable, 'wide transcript content scrolls inside its own block')
-
-  console.log(`screenshot -> ${shot}`)
-  await ctx.close()
+  check('wide transcript content scrolls inside its own block', scrollable)
+} finally {
+  await browser.close()
 }
-
-console.log(failures.length === 0 ? '\nAll checks passed.' : `\n${failures.length} check(s) failed.`)
-process.exit(failures.length === 0 ? 0 : 1)
+finish()

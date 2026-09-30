@@ -278,9 +278,6 @@ there passes CI. Run the relevant one by hand after changing what it covers:
 
 | Script | Checks |
 |---|---|
-| `mobile-three-screens-test.js` | hidden layers still measure full-viewport, the key bar sits below the terminal, the pane survives a widen, tap-target sizes. Re-run after changing `MobileScreenLayer` or `WorkspaceView`'s layout math. |
-| `mobile-keyboard-slide-test.js` | fakes `window.visualViewport` moving like a keyboard and a pinch-zoom, and checks `#root` covers the visible area. Needs no workspace. |
-| `mobile-input-zoom-test.js` | opens every dialog and pane with a control at phone width and prints the measured font sizes. Read the inventory: a control never reached passes vacuously. |
+| `mobile-shell-test.js` | walks the phone shell on a live workspace: hidden layers still measure full-viewport and stay inert, the key bar sits below the terminal, back/forward, the overlays' master/detail width, overflow, 32px targets and scroll survival, the font size of every control it opens (read the inventory: a control never reached passes vacuously), a faked keyboard and pinch-zoom against `#root`, and the pane surviving a widen. Re-run after changing `MobileScreenLayer`, `MasterDetail`, `useVisualViewportHeight` or `WorkspaceView`'s layout math. |
 | `acp-chat-mobile-layout-test.js` | on a live `acp` workspace, sends an unbreakable token and measures overflow, input font size and growth. Uses the built app, since `React.StrictMode`'s dev double-mount makes the second ACP socket displace the first. |
-| `mobile-overlay-panes-test.js` | which master/detail side is shown and how wide, overflow, 32px tap targets, list scroll surviving hide/show. |
 | `xterm-touch-scroll-test.js` | real touch input on a real `mouse on` tmux: cancelable gesture, suppressed click, actual scrolling. Needs no cluster. |

@@ -1,134 +1,87 @@
 /*
- * Verifies where the selection lands when the open workspace is deleted,
- * in Chromium against the running server.
+ * Verifies where the selection lands when the open workspace goes away.
  *
- *  1. A workspace that disappears from under the open pane (stopped by the
- *     CLI here, by the stale reaper in practice) hands the pane to the
- *     topmost remaining row. Nothing local knew it was going, so there is no
+ *  1. A workspace that disappears from under the open pane (stopped over the
+ *     API here, by the stale reaper in practice) hands the pane to the
+ *     topmost remaining row: nothing local knew it was going, so there is no
  *     neighbour to pick.
- *  2. Deleting the selected workspace in the app selects the row below it.
- *  3. Deleting the bottom row falls back to the row above, skipping rows
- *     still shown as greyed "stopping…" placeholders, which can't be
- *     selected.
+ *  2. Stopping the selected workspace from its row menu selects the row below.
+ *  3. Stopping the bottom row falls back to the row above, skipping rows
+ *     still shown as greyed "stopping…" placeholders.
  *
- * The selection is read from the URL (?project=…&workspace=<id>), which
- * `persistSelection` keeps in sync.
+ * The selection is read from the URL (?project=…&workspace=<id>).
  *
- * Needs a running `yaac server` with at least FOUR live workspaces in the
- * selected project (`yaac workspace create <project>` x4). It DELETES three
- * of them, so use workspaces you can lose. Reads the port from
- * $YAAC_DATA_DIR/.server.lock and drives the app served from `dist/`, so run
- * `pnpm build` + `yaac server restart` first.
- *
- * Run: node test-playwright-scripts/sidebar-delete-selection-test.js
+ * Needs a running server with a project and no other ungrouped live
+ * workspaces in it. Creates four `pi` ACP workspaces (fake credentials, no
+ * prompt, so no model is called) and stops them all.
+ * Run: YAAC_DATA_DIR=<data dir> node test-playwright-scripts/sidebar-delete-selection-test.js
+ * (PROJECT defaults to yaac)
  */
-import { execSync } from 'node:child_process'
-import fs from 'node:fs'
-import { createRequire } from 'node:module'
-import os from 'node:os'
 import path from 'node:path'
+import { requirePlaywright, origin, api, check, finish, SHOTS, createWorkspaces } from './lib.js'
 
-const require = createRequire(import.meta.url)
-if (!process.env.PLAYWRIGHT_BROWSERS_PATH && fs.existsSync('/opt/playwright-browsers')) {
-  process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/playwright-browsers'
-}
-function requirePlaywright() {
-  try {
-    return require('playwright')
-  } catch {
-    return require(path.join(execSync('npm root -g').toString().trim(), 'playwright'))
-  }
-}
-function readServerLock() {
-  const candidates = [
-    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.server.lock'),
-    path.join(os.homedir(), '.yaac', '.server.lock'),
-  ].filter(Boolean)
-  for (const p of candidates) if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
-  throw new Error('no .server.lock found — is the server running?')
-}
-/** The workspace id the URL says is open. */
-const selectedId = (page) => new URL(page.url()).searchParams.get('workspace')
+const PROJECT = process.env.PROJECT ?? 'yaac'
 
-const lock = readServerLock()
+const stop = (workspaceId) => api('/workspace/stop', { method: 'POST', body: { workspaceId } })
+
+console.log('creating four workspaces…')
+const made = await createWorkspaces([1, 2, 3, 4].map((n) => ({ project: PROJECT, tool: 'pi', mode: 'acp', title: `PW sel ${n}` })))
 const { chromium } = requirePlaywright()
 const browser = await chromium.launch()
-const failures = []
-const check = (label, actual, expected) => {
-  const ok = actual === expected
-  failures.push(...(ok ? [] : [`${label}: expected ${expected}, got ${actual}`]))
-  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${label} -> ${actual}`)
-}
-
 try {
-  const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
-  const page = await ctx.newPage()
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
+  const selectedId = () => new URL(page.url()).searchParams.get('workspace')
+  const list = page.getByRole('group', { name: 'Ungrouped workspaces' })
+  const row = (title) => list.locator('div.group.relative', { hasText: title })
 
-  await page.goto(`http://127.0.0.1:${lock.port}/`)
-  const rows = page.locator('[aria-label="Ungrouped workspaces"] > div')
-  await rows.first().waitFor({ state: 'visible', timeout: 15_000 })
-  await page.waitForTimeout(3000)
+  await page.goto(`${origin}/?project=${PROJECT}`)
+  await row('PW sel 4').waitFor({ timeout: 15_000 })
+  await page.waitForTimeout(1000)
 
-  // Record row order as ids by clicking each row and reading the URL.
+  // Row order as ids, top to bottom, by selecting each row.
+  const titles = (await list.locator('div.group.relative').allInnerTexts()).map((t) => t.split('\n')[0])
+  if (titles.length !== 4) throw new Error(`expected 4 ungrouped rows, found: ${titles.join(', ')}`)
   const ids = []
-  const count = await rows.count()
-  if (count < 4) throw new Error(`need at least 4 workspace rows, found ${count}`)
-  for (let i = 0; i < count; i++) {
-    await rows.nth(i).locator('button').first().click()
+  for (const t of titles) {
+    await row(t).getByText(t, { exact: true }).click()
     await page.waitForTimeout(250)
-    ids.push(selectedId(page))
+    ids.push(selectedId())
   }
-  console.log(`sidebar rows, top to bottom: ${ids.join(', ')}`)
+  const titleOf = Object.fromEntries(ids.map((id, i) => [id, titles[i]]))
+  console.log(`rows, top to bottom: ${titles.join(', ')}`)
 
-  // Find rows by id, not index: a stopping row disappears once cleanup
-  // finishes, which shifts indexes. Leaves the target row selected.
-  const selectRow = async (id) => {
-    const n = await rows.count()
-    for (let i = 0; i < n; i++) {
-      await rows.nth(i).locator('button').first().click()
-      await page.waitForTimeout(250)
-      if (selectedId(page) === id) return i
-    }
-    throw new Error(`no sidebar row for ${id}`)
-  }
-  const deleteSelectedRow = async (id) => {
-    const i = await selectRow(id)
-    await rows.nth(i).hover()
-    await rows.nth(i).locator('[aria-label="Stop workspace"]').click()
-    await page.locator('text=Stop workspace?').waitFor({ state: 'visible', timeout: 5000 })
-    await page.getByRole('button', { name: 'Stop', exact: true }).click()
-    await page.waitForTimeout(500)
-  }
-  /** Wait for the selection to settle somewhere other than `from`. */
   const awaitSelectionChange = async (from) => {
-    for (let i = 0; i < 40 && selectedId(page) === from; i++) await page.waitForTimeout(500)
-    return selectedId(page)
+    for (let i = 0; i < 40 && selectedId() === from; i++) await page.waitForTimeout(500)
+    return selectedId()
+  }
+  const stopFromMenu = async (id) => {
+    const r = row(titleOf[id])
+    await r.getByText(titleOf[id], { exact: true }).click()
+    await r.hover()
+    await r.getByRole('button', { name: 'Workspace actions' }).click()
+    await page.getByRole('menuitem', { name: 'Stop…' }).click()
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Stop', exact: true }).click()
+    await page.waitForTimeout(500)
   }
 
   // 1. Stopped outside the app while open: the top row takes over.
-  await selectRow(ids[1])
-  check('middle row selected', selectedId(page), ids[1])
-  execSync(`yaac workspace stop ${ids[1]}`, { stdio: 'ignore' })
-  check('workspace vanished -> topmost row', await awaitSelectionChange(ids[1]), ids[0])
+  await row(titles[1]).getByText(titles[1], { exact: true }).click()
+  await page.waitForTimeout(250)
+  await stop(ids[1])
+  check('vanished workspace -> topmost row', await awaitSelectionChange(ids[1]) === ids[0], selectedId())
 
-  // 2. Deleted in the app: the row below takes over.
-  await deleteSelectedRow(ids[2])
-  check('delete selected -> row below', selectedId(page), ids[3])
+  // 2. Stopped in the app: the row below takes over.
+  await stopFromMenu(ids[2])
+  check('stop the selected row -> row below', selectedId() === ids[3], selectedId())
 
-  // 3. ids[3] is selected and at the bottom, with only stopping rows between
-  //    it and the top row, so the selection goes up to ids[0].
-  await deleteSelectedRow(ids[3])
-  check('delete bottom row -> row above, skipping the stopping ones', selectedId(page), ids[0])
-
-  fs.mkdirSync('/tmp/yaac-shots', { recursive: true })
-  await page.screenshot({ path: '/tmp/yaac-shots/sidebar-delete-selection.png' })
-  console.log('screenshot -> /tmp/yaac-shots/sidebar-delete-selection.png')
-} catch (err) {
-  failures.push(`error: ${err instanceof Error ? err.message : String(err)}`)
+  // 3. ids[3] is at the bottom, with only a stopping row between it and the
+  //    top, so the selection goes up to ids[0].
+  await stopFromMenu(ids[3])
+  check('stop the bottom row -> row above, skipping stopping ones', selectedId() === ids[0], selectedId())
+  await page.screenshot({ path: path.join(SHOTS, 'sidebar-delete-selection.png') })
 } finally {
   await browser.close()
+  await Promise.allSettled(made.map(stop))
 }
-
-console.log(failures.length === 0 ? '\nALL CHECKS PASSED' : `\nFAILURES:\n${failures.join('\n')}`)
-process.exit(failures.length === 0 ? 0 : 1)
+finish()

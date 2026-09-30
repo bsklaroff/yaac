@@ -28,67 +28,14 @@
  * makes are discarded by the end; if a check fails midway, discard leftovers
  * from the sidebar.
  *
- * Uses the app the server serves from `dist/`, at the loopback origin
- * `$YAAC_DATA_DIR-client/server.json` selects (data dir default ~/.yaac), so
- * run `pnpm build` and `yaac server restart` first.
- *
- * Run: PROJECT=<slug> node test-playwright-scripts/queued-workspaces-ui-test.js
- * (SCREENSHOT_DIR for screenshots; defaults to /tmp/yaac-shots.
- *  playwright is resolved from the global npm root; browsers live under
- *  /opt/playwright-browsers)
+ * Run: YAAC_DATA_DIR=<data dir> PROJECT=<slug> node test-playwright-scripts/queued-workspaces-ui-test.js
  */
-import fs from 'node:fs'
-import { execSync } from 'node:child_process'
-import { createRequire } from 'node:module'
-import os from 'node:os'
 import path from 'node:path'
-
-const require = createRequire(import.meta.url)
-
-if (!process.env.PLAYWRIGHT_BROWSERS_PATH && fs.existsSync('/opt/playwright-browsers')) {
-  process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/playwright-browsers'
-}
-
-function requirePlaywright() {
-  try {
-    return require('playwright')
-  } catch {
-    const globalRoot = execSync('npm root -g').toString().trim()
-    return require(path.join(globalRoot, 'playwright'))
-  }
-}
-
-/**
- * The selected origin from `server.json`. It must be loopback, since the
- * script sends no credential.
- */
-function readServerOrigin() {
-  const dataDir = process.env.YAAC_DATA_DIR || path.join(os.homedir(), '.yaac')
-  const file = `${dataDir}-client/server.json`
-  if (!fs.existsSync(file)) throw new Error(`no ${file} — is the server running?`)
-  const cfg = JSON.parse(fs.readFileSync(file, 'utf8'))
-  if (!cfg.enabled || !cfg.url) throw new Error(`no server selected in ${file} — try: yaac server start`)
-  const host = new URL(cfg.url).hostname
-  if (!['127.0.0.1', 'localhost', '[::1]'].includes(host)) {
-    throw new Error(`${cfg.url} is not loopback; this script only drives a local server`)
-  }
-  return cfg.url
-}
-
-let failures = 0
-function check(name, cond, detail = '') {
-  if (!cond) failures++
-  console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${detail ? `  [${detail}]` : ''}`)
-}
+import { api, check, finish, origin, requirePlaywright, SHOTS } from './lib.js'
 
 const PROJECT = process.env.PROJECT
 if (!PROJECT) throw new Error('set PROJECT=<slug> to a project with a running workspace')
-const SHOTS = process.env.SCREENSHOT_DIR ?? '/tmp/yaac-shots'
-const origin = readServerOrigin()
-
-const listRes = await fetch(`${origin}/api/workspace/list?project=${PROJECT}`)
-if (!listRes.ok) throw new Error(`listing workspaces failed: HTTP ${listRes.status}`)
-const { workspaces } = await listRes.json()
+const { workspaces } = await api(`/workspace/list?project=${PROJECT}`)
 const parent = process.env.WORKSPACE
   ? workspaces.find((w) => w.workspaceId.startsWith(process.env.WORKSPACE))
   : workspaces.find((w) => !w.stopping)
@@ -104,7 +51,6 @@ try {
   const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
   await page.goto(`${origin}/?project=${PROJECT}`)
-  fs.mkdirSync(SHOTS, { recursive: true })
 
   const aside = page.locator('aside')
   const rowOf = (text) => aside.locator('div.group.relative', { hasText: text }).last()
@@ -228,5 +174,4 @@ try {
 } finally {
   await browser.close()
 }
-console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`)
-process.exit(failures === 0 ? 0 : 1)
+finish()

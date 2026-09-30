@@ -1,131 +1,66 @@
 /*
  * Verifies the named-git-credential UI end to end in a real browser, against
- * a live server:
+ * a live server (docs/git-credentials.md):
  *
- *  1. A project with no git credential cannot create: the "+ New workspace"
- *     popover offers "Add git authentication…" instead of Create, and that
- *     opens Settings → Credentials with the project's row in the "Projects
- *     without git authentication" list highlighted.
+ *  0. The git-auth-failure badge in the sidebar's project header, fed by
+ *     snapshots rewritten to report a 401 from github.com (only the k8s
+ *     proxy detects one for real; k8s/proxy/test covers that). Its popover
+ *     names the host and status, and "Change git credential…" opens
+ *     Settings → Credentials on the project's highlighted row.
+ *  1. A project with no git credential cannot create: the create dialog's
+ *     button reads "Add git authentication…", which opens that same row.
  *  2. Settings → Add git credential → SSH key: the name starts on a unique
  *     default, Generate shows the public key (with Copy) right away, and the
  *     key then lists among the stored credentials.
  *  3. The unassigned project's picker: "New HTTPS token…", a pasted token,
  *     Assign — the project moves under the new credential and out of the
  *     unassigned list.
- *  4. Add project with a new HTTPS token: URL, "New HTTPS token…" (named
- *     `<slug>-token` for the slug the remote becomes), token, Add. The token
- *     is stored exactly once whatever the clone does. A clone that succeeds
- *     adds and selects the project; one the host refuses (a fake token on a
- *     host that checks it) shows the error, with the picker now holding the
- *     stored token for a retry.
- *  5. Replace on step 3's token: a new token keeps the credential's name
- *     and its project.
+ *  4. Add project with a new HTTPS token (named `<slug>-token` for the slug
+ *     the remote becomes). The token is stored exactly once whatever the
+ *     clone does. A clone that succeeds adds and selects the project; one the
+ *     host refuses shows the error, with the picker now holding the stored
+ *     token for a retry.
+ *  5. Replace on step 3's token keeps the credential's name and project.
  *  6. Delete on that token: a confirmation names the project it strands, a
- *     pressed Enter does not confirm, a click does — and the project is back
+ *     pressed Enter does not confirm, a click does, and the project is back
  *     among those without git authentication.
  *
- * Changes the install it runs against, so use a scratch server: it stages
- * UNASSIGNED_URL as a project with no credential (a clone in the data dir
- * recorded via `POST /project/register`, as the e2e fixtures do), stores
- * three credentials, assigns, replaces and deletes one, and may add ADD_URL.
+ * Changes the install it runs against, so use a scratch server (see lib.js):
+ * it stages UNASSIGNED_URL as a project with no credential (a clone in the
+ * data dir recorded via `POST /api/project/register`), stores three
+ * credentials, and adds ADD_URL. To rerun, delete both projects and those
+ * credentials, or start from a fresh data dir.
  *
- *   export YAAC_DATA_DIR=/tmp/yaac-pw-$$ YAAC_SERVER_PORT=8893
- *   yaac server start          # after `pnpm build`, so dist/ is current
- *   node test-playwright-scripts/git-credentials-ui-test.js
- *   yaac server stop && rm -rf "$YAAC_DATA_DIR"
- *
+ * Run: node test-playwright-scripts/git-credentials-ui-test.js
  * Env: UNASSIGNED_URL (default https://github.com/octocat/Hello-World),
- * ADD_URL (default https://github.com/octocat/Spoon-Knife; must not already be
- * a project), GIT_TOKEN (default a fake one), SCREENSHOT_DIR (default
- * /tmp/yaac-shots). Reads port + secret from
- * $YAAC_DATA_DIR/server-local/.server.lock (data dir defaults to ~/.yaac).
- * Playwright is resolved from the global npm root; browsers live under
- * /opt/playwright-browsers.
+ * ADD_URL (default https://github.com/octocat/Spoon-Knife; must not already
+ * be a project), GIT_TOKEN (default a fake one).
  */
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
-import { execSync } from 'node:child_process'
-import { createRequire } from 'node:module'
-import os from 'node:os'
 import path from 'node:path'
-
-const require = createRequire(import.meta.url)
-
-if (!process.env.PLAYWRIGHT_BROWSERS_PATH && fs.existsSync('/opt/playwright-browsers')) {
-  process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/playwright-browsers'
-}
-
-function requirePlaywright() {
-  try {
-    return require('playwright')
-  } catch {
-    const globalRoot = execSync('npm root -g').toString().trim()
-    return require(path.join(globalRoot, 'playwright'))
-  }
-}
-
-const dataDir = process.env.YAAC_DATA_DIR ?? path.join(os.homedir(), '.yaac')
-
-function readServerLock() {
-  const candidates = [
-    path.join(dataDir, 'server-local', '.server.lock'),
-    path.join(dataDir, '.server.lock'),
-  ]
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
-  }
-  throw new Error(`no .server.lock found (tried ${candidates.join(', ')}) — is the server running?`)
-}
-
-let failures = 0
-function check(name, cond, detail = '') {
-  if (!cond) failures++
-  console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${detail ? `  [${detail}]` : ''}`)
-}
+import { api, check, DATA_DIR, finish, origin, requirePlaywright, SHOTS, until } from './lib.js'
 
 const UNASSIGNED_URL = process.env.UNASSIGNED_URL ?? 'https://github.com/octocat/Hello-World'
 const ADD_URL = process.env.ADD_URL ?? 'https://github.com/octocat/Spoon-Knife'
 const GIT_TOKEN = process.env.GIT_TOKEN ?? 'ghp_fakefakefakefakefakefakefakefake0000'
-const SHOTS = process.env.SCREENSHOT_DIR ?? '/tmp/yaac-shots'
+/** `until` as a boolean, for checks that report a timeout as a failure. */
+const holds = (...args) => until(...args).then(() => true, () => false)
 const slugOf = (url) => url.replace(/\.git$/, '').split('/').pop().toLowerCase()
 
-const lock = readServerLock()
-const origin = `http://127.0.0.1:${lock.port}`
-
-async function api(method, route, body) {
-  const res = await fetch(`${origin}${route}`, {
-    method,
-    headers: body ? { 'content-type': 'application/json' } : {},
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  })
-  const text = await res.text()
-  if (!res.ok) throw new Error(`${method} ${route}: HTTP ${res.status} ${text}`)
-  return text ? JSON.parse(text) : null
-}
-
-const projects = async () => await api('GET', '/api/project/list')
-const credentials = async () => (await api('GET', '/api/auth/list')).gitCredentials
+const projects = async () => await api('/project/list')
+const credentials = async () => (await api('/auth/list')).gitCredentials
 
 // Setup: a project with no credential, staged on disk and recorded as is.
 const unassigned = slugOf(UNASSIGNED_URL)
 if (!(await projects()).some((p) => p.slug === unassigned)) {
-  const dir = path.join(dataDir, 'global', 'projects', unassigned)
-  execSync(`git clone --quiet ${UNASSIGNED_URL} ${path.join(dir, 'repo')}`)
+  const dir = path.join(DATA_DIR, 'global', 'projects', unassigned)
+  execFileSync('git', ['clone', '--quiet', UNASSIGNED_URL, path.join(dir, 'repo')])
   fs.mkdirSync(path.join(dir, 'claude'), { recursive: true })
-  await api('POST', '/api/project/register', { slug: unassigned, remoteUrl: UNASSIGNED_URL })
+  await api('/project/register', { method: 'POST', body: { slug: unassigned, remoteUrl: UNASSIGNED_URL } })
 }
 if ((await projects()).some((p) => p.slug === slugOf(ADD_URL))) {
   throw new Error(`${slugOf(ADD_URL)} is already a project — pick another ADD_URL`)
-}
-
-/**
- * Poll `fn(arg)` in the page until truthy (page.waitForFunction with an
- * argument evaluates a string, which the app's CSP refuses).
- */
-async function until(page, fn, arg, timeout) {
-  for (const end = Date.now() + timeout; Date.now() < end; await new Promise((r) => setTimeout(r, 200))) {
-    if (await page.evaluate(fn, arg)) return true
-  }
-  return false
 }
 
 const { chromium } = requirePlaywright()
@@ -133,11 +68,37 @@ const browser = await chromium.launch()
 try {
   const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
+  // Every snapshot reports a rejected credential for the unassigned project.
+  await page.routeWebSocket(/\/api\/events$/, (ws) => {
+    const server = ws.connectToServer()
+    server.onMessage((message) => {
+      const frame = JSON.parse(message)
+      if (frame.type === 'snapshot') {
+        frame.data.gitAuthFailures = { [unassigned]: [{ host: 'github.com', status: 401, atMs: Date.now() }] }
+      }
+      ws.send(JSON.stringify(frame))
+    })
+  })
   await page.goto(`${origin}/?project=${unassigned}`)
-  fs.mkdirSync(SHOTS, { recursive: true })
 
   const row = (slug) => page.locator(`[data-project="${slug}"]`)
+  const highlighted = (slug) => row(slug).waitFor({ timeout: 10_000 }).then(
+    async () => /ring-accent/.test(await row(slug).getAttribute('class') ?? ''),
+    () => false,
+  )
   const unassignedList = page.locator('div.mt-6', { hasText: 'Projects without git authentication' })
+
+  // (0) The git-auth badge's popover leads to the same settings row.
+  const badge = page.locator('aside [aria-label="Git authentication failed"]')
+  check('a rejected credential badges the sidebar\'s project header',
+    await badge.waitFor({ timeout: 15_000 }).then(() => true, () => false))
+  await badge.click()
+  check('its popover names the host and status',
+    await page.getByText('github.com — HTTP 401').waitFor({ timeout: 5_000 }).then(() => true, () => false))
+  await page.screenshot({ path: path.join(SHOTS, 'git-auth-badge-popover.png') })
+  await page.getByRole('button', { name: 'Change git credential…' }).click()
+  check('"Change git credential…" opens Settings → Credentials on the project\'s row', await highlighted(unassigned))
+  await page.keyboard.press('Escape')
 
   // (1) Gated create → settings on the project's row.
   await page.getByTitle('New workspace').first().click()
@@ -146,10 +107,7 @@ try {
   check('a project without a credential offers "Add git authentication…", not Create', gated)
   if (gated) await gate.click()
   else await page.keyboard.press('Escape')
-  const focused = await row(unassigned).waitFor({ timeout: 10_000 }).then(
-    async () => /ring-accent/.test(await row(unassigned).getAttribute('class') ?? ''),
-    () => false,
-  )
+  const focused = await highlighted(unassigned)
   check('it opens Settings → Credentials on the project\'s highlighted row', focused)
   if (!focused) {
     await page.getByTitle('Settings').first().click()
@@ -180,7 +138,7 @@ try {
   check('the token\'s name defaults to the project\'s', tokenName === `${unassigned}-token`, tokenName)
   await picker.getByLabel('Token').fill(GIT_TOKEN)
   await picker.getByRole('button', { name: 'Assign' }).click()
-  const moved = await until(page, (slug) => {
+  const moved = await holds(page, (slug) => {
     const lists = [...document.querySelectorAll('div.mt-6')]
     const bottom = lists.find((d) => d.textContent?.includes('Projects without git authentication'))
     return !bottom?.querySelector(`[data-project="${slug}"]`) && document.querySelector(`[data-project="${slug}"]`) !== null
@@ -205,21 +163,23 @@ try {
   await dialog.getByLabel('Token').fill(GIT_TOKEN)
   await page.screenshot({ path: path.join(SHOTS, 'add-project-new-token.png') })
   await dialog.getByRole('button', { name: 'Add' }).click()
-  const outcome = await Promise.race([
-    until(page, (slug) => new URLSearchParams(location.search).get('project') === slug, slugOf(ADD_URL), 60_000)
-      .then((added) => (added ? 'added' : 'timeout')),
-    dialog.locator('p.text-red-400').waitFor({ timeout: 60_000 }).then(() => 'refused', () => 'timeout'),
-  ])
+  const error = dialog.locator('p.text-red-400')
+  const settled = await Promise.race([
+    dialog.waitFor({ state: 'detached', timeout: 60_000 }),
+    error.waitFor({ timeout: 60_000 }),
+  ]).then(() => true, () => false)
+  check('the add settles within 60s', settled)
   const stored = (await credentials()).filter((c) => c.name === newName)
   check('the token is stored exactly once', stored.length === 1, `${stored.length}`)
-  if (outcome === 'added') {
-    check('the project is added and selected with it', stored[0]?.projects.includes(slugOf(ADD_URL)) === true,
+  if ((await projects()).some((p) => p.slug === slugOf(ADD_URL))) {
+    check('the project is added with it', stored[0]?.projects.includes(slugOf(ADD_URL)) === true,
       JSON.stringify(stored[0]?.projects))
-    check('and the dialog closes', await dialog.waitFor({ state: 'detached', timeout: 5_000 }).then(() => true, () => false))
+    check('the dialog closes', await dialog.count() === 0)
+    check('and the new project is selected', await holds(page,
+      (slug) => new URLSearchParams(location.search).get('project') === slug, slugOf(ADD_URL), 5_000))
   } else {
-    const message = outcome === 'refused' ? await dialog.locator('p.text-red-400').textContent() : outcome
-    console.log(`      clone refused (expected with a fake token): ${message}`)
-    check('the clone\'s refusal shows', outcome === 'refused')
+    console.log(`      clone refused: ${await error.textContent().catch(() => '(no error shown)')}`)
+    check('the clone\'s refusal shows', await error.isVisible())
     check('and the picker now holds the stored token for a retry',
       await dialog.getByLabel('Git credential').inputValue() === stored[0]?.id)
   }
@@ -248,19 +208,18 @@ try {
     (await confirm.textContent()).includes(`${unassigned} will be left with no git credential`))
   await page.screenshot({ path: path.join(SHOTS, 'git-credentials-delete-confirm.png') })
   check('focus starts on Cancel, not Delete',
-    await until(page, () => document.activeElement?.textContent === 'Cancel', null, 2_000))
+    await holds(page, () => document.activeElement?.textContent === 'Cancel', null, 2_000))
   await confirm.getByRole('button', { name: 'Delete' }).focus()
   await page.keyboard.press('Enter')
   await new Promise((r) => setTimeout(r, 1000))
   check('Enter on the Delete button does not confirm',
     await confirm.isVisible() && (await credentials()).some((c) => c.name === tokenName))
   await confirm.getByRole('button', { name: 'Delete' }).click()
-  const deleted = await until(page, () => !document.querySelector('[role="alertdialog"]'), null, 10_000)
+  const deleted = await holds(page, () => !document.querySelector('[role="alertdialog"]'), null, 10_000)
   check('a click deletes it', deleted && !(await credentials()).some((c) => c.name === tokenName))
   check('and its project is back among those without git authentication',
     await unassignedList.locator(`[data-project="${unassigned}"]`).waitFor({ timeout: 10_000 }).then(() => true, () => false))
 } finally {
   await browser.close()
 }
-console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`)
-process.exit(failures === 0 ? 0 : 1)
+finish()

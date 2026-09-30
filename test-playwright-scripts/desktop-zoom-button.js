@@ -1,63 +1,51 @@
-// Verifies the desktop shell's green "zoom" window control end to end: a
-// click goes through the preload bridge and window:toggle-maximize IPC to
-// zoomAction, which changes the BrowserWindow state. On Linux a plain click
-// toggles maximize; the macOS full-screen path is unit-tested in
-// packages/desktop/test/window-zoom.test.ts.
-//
-// Run: node test-playwright-scripts/desktop-zoom-button.js
-// Needs: built desktop bundle (pnpm --filter @yaac/desktop exec tsup), the
-// electron binary downloaded (node node_modules/electron/install.js), and a
-// running yaac server (the shell's boot flow lands on it).
+/*
+ * Verifies the desktop shell's green "zoom" window control end to end: a
+ * click goes through the preload bridge and the window:toggle-maximize IPC
+ * to zoomAction, which changes the BrowserWindow state. On Linux a plain
+ * click toggles maximize and so does an Alt-click; the macOS full-screen
+ * path is unit-tested in packages/desktop/test/window-zoom.test.ts.
+ *
+ * Needs the desktop bundle (`pnpm --filter @yaac/desktop build`), the
+ * Electron binary (`node packages/desktop/node_modules/electron/install.js`),
+ * and a running server for the shell to land on (see lib.js; the shell
+ * follows the same YAAC_DATA_DIR). GTK needs a real X display with a window
+ * manager for maximize state to change, e.g.
+ *   Xvfb :99 & DISPLAY=:99 openbox &
+ *   DISPLAY=:99 node test-playwright-scripts/desktop-zoom-button.js
+ */
 import path from 'node:path'
-import { execSync } from 'node:child_process'
-import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
-
-const require = createRequire(import.meta.url)
-let playwright
-try {
-  playwright = require(path.join(execSync('npm root -g').toString().trim(), 'playwright'))
-} catch {
-  playwright = require('playwright')
-}
+import { check, finish, requirePlaywright } from './lib.js'
 
 const desktopDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../packages/desktop')
 
-async function windowState(app) {
-  return app.evaluate(({ BrowserWindow }) => {
-    const w = BrowserWindow.getAllWindows()[0]
-    return { maximized: w.isMaximized(), fullScreen: w.isFullScreen() }
-  })
-}
+const windowState = (app) => app.evaluate(({ BrowserWindow }) => {
+  const w = BrowserWindow.getAllWindows()[0]
+  return { maximized: w.isMaximized(), fullScreen: w.isFullScreen() }
+})
+const settle = () => new Promise((r) => setTimeout(r, 1000))
 
-const app = await playwright._electron.launch({
+const app = await requirePlaywright()._electron.launch({
   executablePath: path.join(desktopDir, 'node_modules/electron/dist/electron'),
-  // Needs a real X display (GTK refuses ozone-headless): run under Xvfb with
-  // a window manager so maximize state works, e.g.
-  //   Xvfb :99 & DISPLAY=:99 openbox & DISPLAY=:99 node <this script>
   args: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '.'],
   cwd: desktopDir,
 })
 try {
   const win = await app.firstWindow()
-  await win.waitForSelector('[aria-label="Zoom window"]', { timeout: 60000 })
-
-  const results = []
+  const zoom = win.getByLabel('Zoom window')
+  await zoom.waitFor({ timeout: 60_000 })
   const before = await windowState(app)
 
-  await win.click('[aria-label="Zoom window"]')
-  await new Promise((r) => setTimeout(r, 1000))
+  await zoom.click()
+  await settle()
   const afterClick = await windowState(app)
-  results.push(['plain click toggles maximize on linux', before.maximized !== afterClick.maximized])
+  check('a plain click toggles maximize', before.maximized !== afterClick.maximized, JSON.stringify(afterClick))
 
-  await win.click('[aria-label="Zoom window"]', { modifiers: ['Alt'] })
-  await new Promise((r) => setTimeout(r, 1000))
+  await zoom.click({ modifiers: ['Alt'] })
+  await settle()
   const afterAltClick = await windowState(app)
-  results.push(['alt-click toggles back', afterAltClick.maximized === before.maximized])
-
-  for (const [name, ok] of results) console.log(`${ok ? 'PASS' : 'FAIL'} ${name}`)
-  console.log('states:', JSON.stringify({ before, afterClick, afterAltClick }))
-  process.exitCode = results.every(([, ok]) => ok) ? 0 : 1
+  check('an Alt-click toggles it back', afterAltClick.maximized === before.maximized, JSON.stringify(afterAltClick))
 } finally {
   await app.close()
 }
+finish()

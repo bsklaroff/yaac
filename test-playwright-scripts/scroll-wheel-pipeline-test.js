@@ -2,31 +2,21 @@
 /*
  * scroll-wheel-pipeline-test.js
  *
- * Verifies two tmux-scroll optimizations end-to-end in headless Chromium
- * against a real tmux, with no cluster or session:
- *
- *   1. streamd output batching (dockerfiles/streamd/batcher.js): one wheel
- *      gesture should produce fewer, larger pty messages from the workspace
- *      streamd than from the pre-batching copy at /opt/yaac/streamd.
- *   2. Frontend wheel pacing (packages/frontend/src/lib/wheel-pacing.ts,
- *      bundled from source): a fast flick's wheel reports are sent at a
- *      bounded per-frame rate with a capped backlog, so scrolling stops when
- *      the gesture stops.
+ * Verifies frontend wheel pacing (packages/frontend/src/lib/wheel-pacing.ts,
+ * bundled from source) end-to-end in headless Chromium against a real tmux,
+ * with no server or workspace: a fast flick's wheel reports are sent at a
+ * bounded per-frame rate with a capped backlog, so scrolling stops when the
+ * gesture stops.
  *
  * Pipeline: xterm.js (tmux `mouse on` sends SGR wheel reports) <-WS-> an
  * in-script bridge that forwards like the server and adds LINK_DELAY_MS of
- * one-way latency <-frame codec-> streamd `pty` stream -> `tmux attach`.
- * Three configs: old streamd + stock wheel (baseline), new streamd + stock
- * wheel (batching alone), new streamd + paced wheel (both). If
- * /opt/yaac/streamd already ships batcher.js, the baseline and its checks
- * are skipped, since old and new would be identical.
+ * one-way latency <-frame codec-> this checkout's streamd `pty` stream
+ * (dockerfiles/streamd) -> `tmux attach`. Two configs, stock and paced
+ * wheel, compared on the same pipeline. Output batching in streamd has its
+ * own unit test (dockerfiles/streamd/test/batcher.test.ts).
  *
- * Checks: batching cuts message count without inflating bytes; the paced
- * report rate is bounded and few reports trail the gesture; every config
- * actually scrolls into history.
- *
- * Run (inside a yaac dev session; needs tmux, and /opt/yaac/streamd for the
- * old daemon and its prebuilt node-pty):
+ * Run (inside a yaac dev session; needs tmux, and /opt/yaac/streamd for its
+ * prebuilt node-pty):
  *   node test-playwright-scripts/scroll-wheel-pipeline-test.js
  */
 import { execSync } from 'node:child_process'
@@ -48,7 +38,6 @@ const pw = (() => {
 })()
 
 const WORKSPACE = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
-const OLD_STREAMD = '/opt/yaac/streamd'
 // pnpm strict node_modules: xterm resolves only from the frontend package.
 const FRONTEND = path.join(WORKSPACE, 'packages/frontend')
 const XTERM_DIR = path.dirname(require.resolve('@xterm/xterm/package.json', { paths: [FRONTEND] }))
@@ -62,15 +51,11 @@ const QUIET_MS = 1200
 const sh = (cmd) => execSync(cmd, { stdio: ['ignore', 'pipe', 'pipe'] }).toString()
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-// Stage the new streamd beside the baked copy's prebuilt node-pty.
+// Stage this checkout's streamd beside the baked copy's prebuilt node-pty.
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'scroll-pipeline-'))
-const NEW_STREAMD = path.join(stage, 'new')
-fs.mkdirSync(NEW_STREAMD)
-for (const f of ['streamd.js', 'framing.js', 'batcher.js']) {
-  fs.copyFileSync(path.join(WORKSPACE, 'dockerfiles/streamd', f), path.join(NEW_STREAMD, f))
-}
-fs.copyFileSync(path.join(OLD_STREAMD, 'package.json'), path.join(NEW_STREAMD, 'package.json'))
-fs.symlinkSync(path.join(OLD_STREAMD, 'node_modules'), path.join(NEW_STREAMD, 'node_modules'))
+const STREAMD = path.join(stage, 'streamd')
+fs.cpSync(path.join(WORKSPACE, 'dockerfiles/streamd'), STREAMD, { recursive: true })
+fs.symlinkSync('/opt/yaac/streamd/node_modules', path.join(STREAMD, 'node_modules'))
 
 const esbuildDir = fs.readdirSync(path.join(WORKSPACE, 'node_modules/.pnpm'))
   .find((d) => d.startsWith('esbuild@'))
@@ -83,32 +68,16 @@ const pacingBundle = (await esbuild.build({
   globalName: 'WheelPacing',
 })).outputFiles[0].text
 
-// One tmux server + streamd daemon per variant.
-const daemons = {} // variant -> { port, sock, close }
-async function startVariant(variant, moduleDir) {
-  const { createStreamd } = await import(path.join(moduleDir, 'streamd.js'))
-  const sock = path.join(stage, `tmux-${variant}.sock`)
-  sh(`tmux -S ${sock} -f /dev/null new-session -d -s bench -x 200 -y 50`)
-  sh(`tmux -S ${sock} set-option -g history-limit 50000 \\; set-option -g mouse on \\; set-option -g status off`)
-  // No trailing `clear`: it would wipe the scrollback the test scrolls into.
-  sh(`tmux -S ${sock} send-keys -t bench "seq -f 'history line %g :: abcdefghijklmnopqrstuvwxyz 0123456789' 1 ${HISTORY_LINES}" Enter`)
-  const daemon = createStreamd({ token: 'bench', port: 0, host: '127.0.0.1' })
-  const port = await daemon.listen()
-  daemons[variant] = {
-    port,
-    sock,
-    close: async () => {
-      await daemon.close()
-      try { sh(`tmux -S ${sock} kill-server`) } catch { /* already gone */ }
-    },
-  }
-}
-await startVariant('old', OLD_STREAMD)
-await startVariant('new', NEW_STREAMD)
-await sleep(3000) // let both `seq` fills finish
-
-// The frame codec is the same in old and new.
-const { FrameParser, encodeFrame, FRAME_DATA } = await import(path.join(NEW_STREAMD, 'framing.js'))
+const { createStreamd } = await import(path.join(STREAMD, 'streamd.js'))
+const { FrameParser, encodeFrame, FRAME_DATA } = await import(path.join(STREAMD, 'framing.js'))
+const sock = path.join(stage, 'tmux.sock')
+sh(`tmux -S ${sock} -f /dev/null new-session -d -s bench -x 200 -y 50`)
+sh(`tmux -S ${sock} set-option -g history-limit 50000 \\; set-option -g mouse on \\; set-option -g status off`)
+// No trailing `clear`: it would wipe the scrollback the test scrolls into.
+sh(`tmux -S ${sock} send-keys -t bench "seq -f 'history line %g :: abcdefghijklmnopqrstuvwxyz 0123456789' 1 ${HISTORY_LINES}" Enter`)
+const daemon = createStreamd({ token: 'bench', port: 0, host: '127.0.0.1' })
+const port = await daemon.listen()
+await sleep(3000) // let the `seq` fill finish
 
 const PAGE = `<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="/xterm.css">
@@ -129,18 +98,12 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8">
   if (params.get('pacing') === '1') {
     if (!WheelPacing.patchWheelPacing(term)) m.pacingFailed = true
   }
-  const dec = new TextDecoder('utf-8', { fatal: false })
-  const count = (s, n) => s.split(n).length - 1
   const ws = new WebSocket(
-    'ws://' + location.host + '/pty?variant=' + params.get('variant')
-    + '&cols=' + term.cols + '&rows=' + term.rows)
+    'ws://' + location.host + '/pty?cols=' + term.cols + '&rows=' + term.rows)
   ws.binaryType = 'arraybuffer'
   ws.onmessage = (e) => {
-    const bytes = new Uint8Array(e.data)
-    const text = dec.decode(bytes)
-    m.recv.push({ t: performance.now(), bytes: bytes.length,
-      torn: count(text, '\\x1b[?25l') !== count(text, '\\x1b[?25h') })
-    term.write(bytes)
+    m.recv.push({ t: performance.now() })
+    term.write(new Uint8Array(e.data))
   }
   ws.onopen = () => { m.ready = true }
   const enc = new TextEncoder()
@@ -179,7 +142,6 @@ const { WebSocketServer } = require('ws')
 const wss = new WebSocketServer({ server })
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, 'http://x')
-  const { port, sock } = daemons[url.searchParams.get('variant')]
   const cols = Number(url.searchParams.get('cols')) || 80
   const rows = Number(url.searchParams.get('rows')) || 24
   const conn = net.connect(port, '127.0.0.1')
@@ -221,12 +183,11 @@ const httpPort = await new Promise((resolve) => {
 })
 
 // Drives one config in the browser and collects its metrics.
-async function runConfig(browser, { variant, pacing, label }) {
-  // Configs sharing a variant share its tmux server: leave copy mode so each
-  // run starts from the bottom.
-  try { sh(`tmux -S ${daemons[variant].sock} send-keys -t bench -X cancel`) } catch { /* not in copy mode */ }
+async function runConfig(browser, pacing) {
+  // Leave copy mode so each run starts from the bottom.
+  try { sh(`tmux -S ${sock} send-keys -t bench -X cancel`) } catch { /* not in copy mode */ }
   const page = await browser.newPage({ viewport: { width: 1200, height: 800 } })
-  await page.goto(`http://127.0.0.1:${httpPort}/?variant=${variant}&pacing=${pacing ? 1 : 0}`)
+  await page.goto(`http://127.0.0.1:${httpPort}/?pacing=${pacing ? 1 : 0}`)
   await page.waitForFunction(() => window.__m.ready, { timeout: 10_000 })
   await page.waitForFunction(() => {
     const m = window.__m
@@ -280,11 +241,6 @@ async function runConfig(browser, { variant, pacing, label }) {
       reportsAfterEnd: m.sent.filter((s) => s.t > m.gestureEnd).length,
       peakReportsPer100ms: peak100,
       gestureMs: Math.round(m.gestureEnd - m.gestureStart),
-      recvMessages: m.recv.length,
-      recvBytes: m.recv.reduce((a, x) => a + x.bytes, 0),
-      avgMessageBytes: m.recv.length
-        ? Math.round(m.recv.reduce((a, x) => a + x.bytes, 0) / m.recv.length) : 0,
-      tornMessages: m.recv.filter((x) => x.torn).length,
       tailMs: m.recv.length
         ? Math.round(m.recv[m.recv.length - 1].t - m.gestureEnd) : 0,
       topLine: topLine.slice(0, 40),
@@ -294,59 +250,33 @@ async function runConfig(browser, { variant, pacing, label }) {
       })(),
     }
   })
-  fs.mkdirSync('/tmp/yaac-shots', { recursive: true })
-  await page.screenshot({ path: `/tmp/yaac-shots/scroll-pipeline-${variant}-${pacing ? 'paced' : 'stock'}.png` })
   await page.close()
-  return { label, ...r }
+  return { label: pacing ? 'paced wheel' : 'stock wheel', ...r }
 }
-
-// A baked streamd that already has the batcher is the new behavior, so an
-// A/B against it would prove nothing.
-const oldIsPreBatching = !fs.existsSync(path.join(OLD_STREAMD, 'batcher.js'))
 
 const browser = await pw.chromium.launch()
 let failures = 0
 try {
-  const configs = [
-    ...(oldIsPreBatching
-      ? [{ variant: 'old', pacing: false, label: 'old streamd + stock wheel (shipped)' }]
-      : []),
-    { variant: 'new', pacing: false, label: 'new streamd + stock wheel (batching only)' },
-    { variant: 'new', pacing: true, label: 'new streamd + paced wheel (full change)' },
-  ]
-  const results = []
-  for (const c of configs) results.push(await runConfig(browser, c))
-  const oldStock = oldIsPreBatching ? results[0] : null
-  const [newStock, newPaced] = results.slice(-2)
-
+  const results = [await runConfig(browser, false), await runConfig(browser, true)]
+  const [stock, paced] = results
   console.log(JSON.stringify(results, null, 2))
   const check = (name, ok) => {
     console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}`)
     if (!ok) failures++
   }
   check('every config scrolled into history', results.every((r) => r.scrolled))
-  if (oldStock) {
-    check(`batching cuts message count (${oldStock.recvMessages} -> ${newStock.recvMessages})`,
-      newStock.recvMessages < oldStock.recvMessages)
-    check(`batching does not inflate bytes (${oldStock.recvBytes} -> ${newStock.recvBytes})`,
-      newStock.recvBytes < oldStock.recvBytes * 1.15)
-    check(`batching does not tear more cursor toggles (${oldStock.tornMessages} -> ${newStock.tornMessages})`,
-      newStock.tornMessages <= oldStock.tornMessages)
-  } else {
-    console.log('SKIP  old-vs-new batching checks (baked streamd already ships batcher.js;'
-      + ' run against a session image predating the change for the A/B)')
-  }
   // 2/frame @60Hz ≈ 12 per 100ms; allow headroom for frame jitter.
-  check(`pacing bounds the report rate (peak/100ms ${newStock.peakReportsPer100ms} -> ${newPaced.peakReportsPer100ms})`,
-    newPaced.peakReportsPer100ms <= 16 && newPaced.peakReportsPer100ms < newStock.peakReportsPer100ms)
-  check(`paced backlog stays capped after the gesture (${newPaced.reportsAfterEnd} trailing reports)`,
-    newPaced.reportsAfterEnd <= 8)
-  check(`pacing drops the over-rate excess of a hard flick (${newStock.reportsSent} -> ${newPaced.reportsSent})`,
-    newPaced.reportsSent < newStock.reportsSent)
+  check(`pacing bounds the report rate (peak/100ms ${stock.peakReportsPer100ms} -> ${paced.peakReportsPer100ms})`,
+    paced.peakReportsPer100ms <= 16 && paced.peakReportsPer100ms < stock.peakReportsPer100ms)
+  check(`paced backlog stays capped after the gesture (${paced.reportsAfterEnd} trailing reports)`,
+    paced.reportsAfterEnd <= 8)
+  check(`pacing drops the over-rate excess of a hard flick (${stock.reportsSent} -> ${paced.reportsSent})`,
+    paced.reportsSent < stock.reportsSent)
 } finally {
   await browser.close()
   server.close()
-  for (const d of Object.values(daemons)) await d.close()
+  await daemon.close()
+  try { sh(`tmux -S ${sock} kill-server`) } catch { /* already gone */ }
   fs.rmSync(stage, { recursive: true, force: true })
 }
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)

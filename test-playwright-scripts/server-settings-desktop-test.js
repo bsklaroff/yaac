@@ -1,158 +1,160 @@
 /*
- * Verifies the desktop-only "Server" settings section (ServerSettings.tsx)
- * in Chromium against the running server's webapp:
- *  1. With no `window.yaacServer` bridge (plain browser), the settings nav
- *     has no Server entry.
- *  2. With a bridge stub injected before load (standing in for the Electron
- *     preload), the section lists every saved server by origin and marks the
- *     current one Connected. There is no "local server" row; a server on
- *     this machine is registered like any other (docs/server-selection.md).
- *     Connect calls `switchTo` and shows "Reconnecting…", a failing switch
- *     shows its error inline, and the add form calls `addRemote`.
+ * Verifies the desktop-only server UI in Chromium: the sidebar server chit
+ * (ServerBadge.tsx) and Settings → Server (ServerSettings.tsx). Both render
+ * only when the Electron preload's `window.yaacServer` bridge exists, so a
+ * stub injected before load stands in for it (docs/server-selection.md).
+ *
+ *  1. No bridge (plain browser tab): no chit and no Server settings entry.
+ *  2. With the bridge: the chit sits in the sidebar's status-chit row, shows
+ *     the origin's host:port, and opens Settings → Server. The section lists
+ *     every saved origin with the current one marked Connected and no
+ *     "Local server" row. A failing switch shows its error inline, a good
+ *     one shows "Reconnecting…", and the add form calls `addRemote`.
+ *  3. A long host fits the chit in a wide sidebar and truncates, without
+ *     overflowing its row, in a narrow one.
+ *  4. A bridge pasted after load (the devtools recipe for looking at the
+ *     chit by hand) shows only after a re-render, such as toggling the
+ *     sidebar: nothing subscribes to `window.yaacServer`.
  *
  * Run: node test-playwright-scripts/server-settings-desktop-test.js
- * Needs a running server (`yaac server start` / `pnpm watch`).
+ * Needs a running server (see lib.js). Screenshots: $SCREENSHOT_DIR/server-*.png.
  */
-import { execSync } from 'node:child_process'
-import fs from 'node:fs'
-import { createRequire } from 'node:module'
-import os from 'node:os'
 import path from 'node:path'
+import { check, finish, origin, requirePlaywright, SHOTS } from './lib.js'
 
-const require = createRequire(import.meta.url)
+const CHIT = '[aria-label="Open server settings"]'
+// MIN/MAX_SIDEBAR_WIDTH in packages/frontend/src/lib/store.ts.
+const SIDEBAR_WIDTHS = [[640, true], [180, false]]
 
-if (!process.env.PLAYWRIGHT_BROWSERS_PATH && fs.existsSync('/opt/playwright-browsers')) {
-  process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/playwright-browsers'
-}
-
-function requirePlaywright() {
-  try {
-    return require('playwright')
-  } catch {
-    const globalRoot = execSync('npm root -g').toString().trim()
-    return require(path.join(globalRoot, 'playwright'))
+/** The bridge stub; `switchTo` fails for the loopback origin. */
+const BRIDGE = () => {
+  window.__bridgeCalls = []
+  window.yaacServer = {
+    targets: () => Promise.resolve({
+      current: 'https://alpha.ts.net',
+      saved: ['https://alpha.ts.net', 'https://beta.ts.net', 'http://127.0.0.1:8787'],
+    }),
+    switchTo: (sel) => {
+      window.__bridgeCalls.push(['switchTo', sel])
+      return Promise.resolve(sel.url === 'http://127.0.0.1:8787'
+        ? { ok: false, error: 'cannot reach http://127.0.0.1:8787 (scripted failure)' }
+        : { ok: true })
+    },
+    addRemote: (url) => {
+      window.__bridgeCalls.push(['addRemote', url])
+      return Promise.resolve({ ok: true })
+    },
   }
 }
 
-function readServerLock() {
-  const candidates = [
-    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.server.lock'),
-    path.join(os.homedir(), '.yaac', '.server.lock'),
-  ].filter(Boolean)
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
+const { chromium } = requirePlaywright()
+const browser = await chromium.launch()
+
+async function openApp({ bridge = false, sidebarWidth } = {}) {
+  const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
+  if (bridge) await ctx.addInitScript(BRIDGE)
+  if (sidebarWidth) {
+    await ctx.addInitScript((px) => localStorage.setItem('yaac.sidebarwidth.v1', String(px)), sidebarWidth)
   }
-  throw new Error('no .server.lock found — is the server running?')
+  const page = await ctx.newPage()
+  page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
+  await page.goto(`${origin}/`)
+  await page.locator('aside').first().waitFor({ timeout: 15_000 })
+  return page
 }
 
-const SHOTS = '/tmp/yaac-shots'
+const navLabels = (page) => page.evaluate(() =>
+  [...document.querySelectorAll('[role="dialog"] button')].map((b) => b.textContent.trim()))
 
-async function openApp(page, lock) {
-  await page.goto(`http://127.0.0.1:${lock.port}/`)
-  await page.locator('[title="Settings"]').first().click()
-  await page.locator('button', { hasText: 'General' }).first().waitFor()
-}
-
-async function main() {
-  const { chromium } = requirePlaywright()
-  const lock = readServerLock()
-  fs.mkdirSync(SHOTS, { recursive: true })
-  const browser = await chromium.launch()
-  const failures = []
-  const check = (ok, label) => {
-    console.log(`${ok ? 'PASS' : 'FAIL'}: ${label}`)
-    if (!ok) failures.push(label)
-  }
-
-  // 1. Plain browser: no bridge, no Server nav entry.
+try {
+  // 1. Plain browser.
   {
-    const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
-    page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
-    await openApp(page, lock)
-    const navLabels = await page.evaluate(() =>
-      [...document.querySelectorAll('[role="dialog"] button')].map((b) => b.textContent.trim()))
-    check(!navLabels.includes('Server'), 'browser settings nav has no Server entry')
+    const page = await openApp()
+    check('plain browser shows no server chit', await page.locator(CHIT).count() === 0)
+    await page.getByTitle('Settings').first().click()
+    await page.locator('button', { hasText: 'General' }).first().waitFor()
+    check('plain browser settings nav has no Server entry', !(await navLabels(page)).includes('Server'))
     await page.close()
   }
 
-  // 2. Bridge injected before load, as the Electron preload does.
-  const context = await browser.newContext({ viewport: { width: 1400, height: 900 } })
-  await context.addInitScript(() => {
-    window.__bridgeCalls = []
-    window.yaacServer = {
-      targets: () => Promise.resolve({
-        current: 'https://alpha.ts.net',
-        saved: ['https://alpha.ts.net', 'https://beta.ts.net', 'http://127.0.0.1:8787'],
-      }),
-      switchTo: (sel) => {
-        window.__bridgeCalls.push(['switchTo', sel])
-        return sel.url === 'http://127.0.0.1:8787'
-          ? Promise.resolve({ ok: false, error: 'cannot reach http://127.0.0.1:8787 (scripted failure)' })
-          : Promise.resolve({ ok: true })
-      },
-      addRemote: (url) => {
-        window.__bridgeCalls.push(['addRemote', url])
-        return Promise.resolve({ ok: true })
-      },
-    }
-  })
-  const page = await context.newPage()
-  page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
-  await openApp(page, lock)
+  // 2. The chit and the Server section.
+  {
+    const page = await openApp({ bridge: true })
+    const chit = page.locator(CHIT).first()
+    check('desktop shell shows the server chit', await chit.isVisible())
+    const host = new URL(origin).host
+    check('chit names the origin host', (await chit.textContent()).trim() === host, await chit.textContent())
+    check('chit tooltip carries the full origin', (await chit.getAttribute('title')).includes(origin))
+    check('chit sits in the sidebar status-chit row',
+      await chit.evaluate((el) => el.parentElement.className.includes('empty:hidden')))
+    await page.locator('aside').first().screenshot({ path: path.join(SHOTS, 'server-badge-sidebar.png') })
 
-  const serverNav = page.locator('button', { hasText: 'Server' }).first()
-  check(await serverNav.isVisible(), 'desktop settings nav shows Server entry')
-  await serverNav.click()
-  await page.getByText('Add a server').waitFor()
+    await chit.click()
+    await page.getByText('Add a server').waitFor({ timeout: 10_000 })
+    check('clicking the chit opens Settings → Server', true)
+    const row = (url) => page.locator('div.rounded-md', { hasText: url }).last()
+    check('current server marked Connected', (await row('https://alpha.ts.net').textContent()).includes('Connected'))
+    check('no "Local server" row', await page.getByText('Local server').count() === 0)
+    check('other saved server listed', await page.getByText('https://beta.ts.net', { exact: true }).isVisible())
+    check('loopback server listed as an origin', await page.getByText('http://127.0.0.1:8787', { exact: true }).isVisible())
+    await page.screenshot({ path: path.join(SHOTS, 'server-settings-desktop.png') })
 
-  const alphaRow = page.locator('div', { hasText: 'https://alpha.ts.net' }).last()
-  check((await alphaRow.textContent()).includes('Connected'), 'current server marked Connected')
-  check(!(await page.getByText('Local server').count()), 'no "Local server" row')
-  check(await page.getByText('https://beta.ts.net').isVisible(), 'other saved server listed')
-  check(await page.getByText('http://127.0.0.1:8787').isVisible(), 'loopback server listed as an origin')
-  await page.screenshot({ path: path.join(SHOTS, 'server-settings-desktop.png') })
-
-  // A failing switch shows its error inline and does not reconnect.
-  await page.locator('div', { hasText: 'http://127.0.0.1:8787' }).last().locator('button').click()
-  await page.getByText('cannot reach http://127.0.0.1:8787 (scripted failure)').waitFor()
-  check(true, 'failed switch shows inline error')
-  await page.screenshot({ path: path.join(SHOTS, 'server-settings-switch-error.png') })
-
-  await page.locator('div', { hasText: 'https://beta.ts.net' }).last().locator('button').click()
-  await page.getByText('Reconnecting…').waitFor()
-  check(true, 'successful switch shows Reconnecting…')
-
-  const calls = await page.evaluate(() => window.__bridgeCalls)
-  check(
-    JSON.stringify(calls[0]) === JSON.stringify(['switchTo', { url: 'http://127.0.0.1:8787' }])
-      && JSON.stringify(calls[1]) === JSON.stringify(['switchTo', { url: 'https://beta.ts.net' }]),
-    `switchTo received the clicked selections (got ${JSON.stringify(calls)})`,
-  )
-
-  // Add-remote form, on a fresh page: the last switch left this one
-  // showing "Reconnecting…".
-  const page2 = await context.newPage()
-  await openApp(page2, lock)
-  await page2.locator('button', { hasText: 'Server' }).first().click()
-  await page2.getByPlaceholder('https://host.ts.net').fill('https://gamma.ts.net')
-  await page2.getByPlaceholder('https://host.ts.net').press('Enter')
-  await page2.getByText('Reconnecting…').waitFor()
-  const addCalls = await page2.evaluate(() => window.__bridgeCalls.filter((c) => c[0] === 'addRemote'))
-  check(
-    JSON.stringify(addCalls) === JSON.stringify([['addRemote', 'https://gamma.ts.net']]),
-    `addRemote received the form values (got ${JSON.stringify(addCalls)})`,
-  )
-  await page2.screenshot({ path: path.join(SHOTS, 'server-settings-add-remote.png') })
-
-  await browser.close()
-  if (failures.length > 0) {
-    console.error(`\n${failures.length} check(s) failed`)
-    process.exit(1)
+    await row('http://127.0.0.1:8787').getByRole('button', { name: 'Connect' }).click()
+    check('failed switch shows its error inline', await page
+      .getByText('cannot reach http://127.0.0.1:8787 (scripted failure)')
+      .waitFor({ timeout: 5_000 }).then(() => true, () => false))
+    await row('https://beta.ts.net').getByRole('button', { name: 'Connect' }).click()
+    check('successful switch shows Reconnecting…',
+      await page.getByText('Reconnecting…').waitFor({ timeout: 5_000 }).then(() => true, () => false))
+    const calls = await page.evaluate(() => window.__bridgeCalls)
+    check('switchTo received the clicked selections', JSON.stringify(calls) === JSON.stringify([
+      ['switchTo', { url: 'http://127.0.0.1:8787' }], ['switchTo', { url: 'https://beta.ts.net' }],
+    ]), JSON.stringify(calls))
+    await page.close()
   }
-  console.log('\nAll checks passed')
-}
+  {
+    // A fresh page: the last switch left the previous one "Reconnecting…".
+    const page = await openApp({ bridge: true })
+    await page.locator(CHIT).first().click()
+    const input = page.getByPlaceholder('https://host.ts.net')
+    await input.fill('https://gamma.ts.net')
+    await input.press('Enter')
+    await page.getByText('Reconnecting…').waitFor({ timeout: 5_000 })
+    const calls = await page.evaluate(() => window.__bridgeCalls)
+    check('addRemote received the form value',
+      JSON.stringify(calls) === JSON.stringify([['addRemote', 'https://gamma.ts.net']]), JSON.stringify(calls))
+    await page.close()
+  }
 
-main().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})
+  // 3. Chit width: a long tailnet host swapped into the label is measured.
+  for (const [width, shouldFit] of SIDEBAR_WIDTHS) {
+    const page = await openApp({ bridge: true, sidebarWidth: width })
+    const m = await page.locator(CHIT).first().evaluate((el) => {
+      const span = el.querySelector('span')
+      span.textContent = 'yaac-dev.tail9edf1.ts.net:8787'
+      const row = el.parentElement.getBoundingClientRect()
+      return {
+        truncated: span.scrollWidth > span.clientWidth + 1,
+        overflowsRow: el.getBoundingClientRect().right > row.right + 1,
+      }
+    })
+    check(`long host ${shouldFit ? 'fits' : 'truncates'} at sidebar ${width}px`, m.truncated === !shouldFit)
+    check(`chit stays inside its row at sidebar ${width}px`, !m.overflowsRow)
+    await page.close()
+  }
+
+  // 4. The devtools recipe.
+  {
+    const page = await openApp()
+    await page.evaluate(BRIDGE)
+    check('a pasted bridge alone does not repaint the chit', await page.locator(CHIT).count() === 0)
+    await page.getByLabel('Hide sidebar').first().click()
+    await page.getByLabel('Show sidebar').first().click()
+    check('the chit appears after toggling the sidebar',
+      await page.locator(CHIT).first().waitFor({ timeout: 10_000 }).then(() => true, () => false))
+    await page.close()
+  }
+} finally {
+  await browser.close()
+}
+finish()

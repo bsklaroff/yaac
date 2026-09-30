@@ -8,48 +8,16 @@
  *  2. Composer: the same from an acp workspace's chat composer; typed keys land
  *     in the composer.
  *
- * Needs one running tui workspace and one running acp workspace in the project
- * (`yaac workspace create <project> --mode tui|acp`), on a containerless
- * server: check 1 finds the tui workspace's tmux socket from `ps`. It types a
- * marker into the agent's input line and the composer without sending it,
- * then clears both.
+ * Needs a running claude workspace of each UI in PROJECT on a containerless
+ * server (`yaac workspace create <slug> --mode tui|acp`): check 1 finds the
+ * tui workspace's tmux socket from `ps`. The first of each listed is used;
+ * set TUI=<id> / ACP=<id> to pick others. It types a marker into the agent's
+ * input line and the composer without sending it, then clears both.
  *
- * Drives the app the server itself serves (`dist/`) over loopback, reading
- * the port from $YAAC_DATA_DIR/server-local/.server.lock (data dir defaults
- * to ~/.yaac) — so run `pnpm build` + `yaac server restart` first.
- *
- * Run: PROJECT=<slug> TUI=<workspace-id> ACP=<workspace-id> \
- *        node test-playwright-scripts/alt-n-returns-focus-test.js
- * (playwright is resolved from the global npm root; browsers live under
- *  /opt/playwright-browsers)
+ * Run: YAAC_DATA_DIR=<data dir> PROJECT=<slug> node test-playwright-scripts/alt-n-returns-focus-test.js
  */
-import fs from 'node:fs'
 import { execSync } from 'node:child_process'
-import { createRequire } from 'node:module'
-import os from 'node:os'
-import path from 'node:path'
-
-const require = createRequire(import.meta.url)
-
-if (!process.env.PLAYWRIGHT_BROWSERS_PATH && fs.existsSync('/opt/playwright-browsers')) {
-  process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/playwright-browsers'
-}
-
-function requirePlaywright() {
-  try {
-    return require('playwright')
-  } catch {
-    const globalRoot = execSync('npm root -g').toString().trim()
-    return require(path.join(globalRoot, 'playwright'))
-  }
-}
-
-function readServerLock() {
-  const dataDir = process.env.YAAC_DATA_DIR ?? path.join(os.homedir(), '.yaac')
-  const p = path.join(dataDir, 'server-local', '.server.lock')
-  if (!fs.existsSync(p)) throw new Error(`no ${p} — is the server running?`)
-  return JSON.parse(fs.readFileSync(p, 'utf8'))
-}
+import { api, check, finish, origin, requirePlaywright } from './lib.js'
 
 /**
  * The tmux socket of a containerless workspace, found via `ps`: its tmux
@@ -62,16 +30,17 @@ function tmuxSocket(workspaceId) {
   return line.match(/tmux -S (\S+)/)[1]
 }
 
-let failures = 0
-function check(name, cond, detail = '') {
-  if (!cond) failures++
-  console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${detail ? `  [${detail}]` : ''}`)
+const PROJECT = process.env.PROJECT
+if (!PROJECT) throw new Error('set PROJECT=<slug>')
+const { workspaces } = await api(`/workspace/list?project=${PROJECT}`)
+const pickId = (mode, want) => {
+  const w = workspaces.find((x) => want ? x.workspaceId.startsWith(want)
+    : x.tool === 'claude' && x.agentSessions?.[0]?.mode === mode)
+  if (!w) throw new Error(`no running claude ${mode} workspace in ${PROJECT}`)
+  return w.workspaceId
 }
-
-const { PROJECT, TUI, ACP } = process.env
-if (!PROJECT || !TUI || !ACP) throw new Error('set PROJECT, TUI and ACP (workspace ids)')
-const lock = readServerLock()
-const origin = `http://127.0.0.1:${lock.port}`
+const TUI = pickId('tui', process.env.TUI)
+const ACP = pickId('acp', process.env.ACP)
 const marker = `focusmark${Date.now() % 100000}`
 const sock = tmuxSocket(TUI)
 const pane = () => execSync(`tmux -S ${sock} capture-pane -p -t yaac:claude`).toString()
@@ -119,5 +88,4 @@ try {
 } finally {
   await browser.close()
 }
-console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`)
-process.exit(failures === 0 ? 0 : 1)
+finish()

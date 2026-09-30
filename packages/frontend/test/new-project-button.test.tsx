@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
-import type { AuthListResult, GitCredentialSummary } from '@yaac/shared/types'
+import { act, render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import type { AuthListResult, GitCredentialSummary, ServerSnapshot } from '@yaac/shared/types'
 
 vi.mock('#lib/settingsApi', () => ({
   getAuthList: vi.fn(),
@@ -17,6 +17,7 @@ import { NewProjectButton } from '#components/NewProjectButton'
 import { addProject } from '#lib/projectApi'
 import { addHttpsCredential, generateSshKey, getAuthList } from '#lib/settingsApi'
 import { useUiStore } from '#lib/store'
+import { SNAPSHOT_KEY } from '#lib/useEvents'
 
 const TOKEN: GitCredentialSummary = {
   id: 'c-token', name: 'repo-token', kind: 'https', preview: '***abcd', projects: ['alpha'],
@@ -31,10 +32,24 @@ beforeEach(() => {
 
 afterEach(cleanup)
 
+let client: QueryClient
+
+/**
+ * Push a snapshot frame listing these projects, as `useEvents` would, and let
+ * React Query's batched notify (a zero timeout) reach the component.
+ */
+async function snapshotLists(...slugs: string[]): Promise<void> {
+  await act(async () => {
+    client.setQueryData(SNAPSHOT_KEY, { projects: slugs.map((slug) => ({ slug })) } as unknown as ServerSnapshot)
+    await new Promise((r) => setTimeout(r, 0))
+  })
+}
+
 /** Render, open the dialog, type the remote, and wait for credentials. */
 async function openWith(url: string): Promise<void> {
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <QueryClientProvider client={client}>
       <NewProjectButton />
     </QueryClientProvider>,
   )
@@ -66,6 +81,11 @@ describe('NewProjectButton', () => {
     await waitFor(() => expect(addProject).toHaveBeenCalledWith('git@github.com:o/repo.git', 'c-key'))
     // The trusted host key is shown before the dialog closes.
     expect(await screen.findByText('github.com ssh-ed25519 HOSTKEY')).toBeTruthy()
+    // Selected only once the snapshot lists it, or the shell's fallback for
+    // an unknown project would switch straight back.
+    await snapshotLists('alpha')
+    expect(useUiStore.getState().activeProjectSlug).toBeNull()
+    await snapshotLists('alpha', 'repo')
     expect(useUiStore.getState().activeProjectSlug).toBe('repo')
   })
 
@@ -94,7 +114,9 @@ describe('NewProjectButton', () => {
     expect(screen.getByLabelText<HTMLSelectElement>('Git credential').value).toBe('c-new')
 
     fireEvent.click(addButton())
-    await waitFor(() => expect(useUiStore.getState().activeProjectSlug).toBe('repo'))
+    await waitFor(() => expect(addProject).toHaveBeenCalledTimes(2))
+    await snapshotLists('repo')
+    expect(useUiStore.getState().activeProjectSlug).toBe('repo')
     expect(addHttpsCredential).toHaveBeenCalledTimes(1)
     expect(vi.mocked(addProject).mock.calls).toEqual([
       ['https://github.com/o/Repo.git/', 'c-new'],

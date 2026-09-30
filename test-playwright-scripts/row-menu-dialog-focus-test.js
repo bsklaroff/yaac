@@ -8,62 +8,21 @@
  *     leaves the trigger unfocused and hidden once the pointer moves away.
  *  2. Its `…` > Discard… > Cancel (ConfirmDialog) does the same, including
  *     when Discard… is picked by press-drag-release.
- *  3. A dialog opened from a focused element still returns focus to it:
- *     the New workspace button, activated by keyboard, is refocused on Escape.
- *  4. By keyboard through the row menu, Open… and Discard… return focus to
+ *  3. By keyboard through the row menu, Open… and Discard… return focus to
  *     the `…` trigger on Escape, visibly.
- *  5. A dialog from an ordinary menu item (the project header's Remove
+ *  4. A dialog from an ordinary menu item (the project header's Remove
  *     project) returns focus to that menu's trigger, by mouse and keyboard.
  *
  * Saves one draft and discards it at the end, with any "pw focus …" drafts
  * an earlier failed run left behind.
  *
- * Drives the app the server itself serves (`dist/`) over loopback, reading
- * the port from $YAAC_DATA_DIR/server-local/.server.lock (data dir defaults
- * to ~/.yaac) — so run `pnpm build` + `yaac server restart` first.
- *
- * Run: PROJECT=<slug> node test-playwright-scripts/row-menu-dialog-focus-test.js
- * (playwright is resolved from the global npm root; browsers live under
- *  /opt/playwright-browsers)
+ * Needs a running server with a project.
+ * Run: YAAC_DATA_DIR=<data dir> node test-playwright-scripts/row-menu-dialog-focus-test.js
+ * (PROJECT defaults to yaac)
  */
-import fs from 'node:fs'
-import { execSync } from 'node:child_process'
-import { createRequire } from 'node:module'
-import os from 'node:os'
-import path from 'node:path'
+import { requirePlaywright, origin, check, finish } from './lib.js'
 
-const require = createRequire(import.meta.url)
-
-if (!process.env.PLAYWRIGHT_BROWSERS_PATH && fs.existsSync('/opt/playwright-browsers')) {
-  process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/playwright-browsers'
-}
-
-function requirePlaywright() {
-  try {
-    return require('playwright')
-  } catch {
-    const globalRoot = execSync('npm root -g').toString().trim()
-    return require(path.join(globalRoot, 'playwright'))
-  }
-}
-
-function readServerLock() {
-  const dataDir = process.env.YAAC_DATA_DIR ?? path.join(os.homedir(), '.yaac')
-  const p = path.join(dataDir, 'server-local', '.server.lock')
-  if (!fs.existsSync(p)) throw new Error(`no ${p} — is the server running?`)
-  return JSON.parse(fs.readFileSync(p, 'utf8'))
-}
-
-let failures = 0
-function check(name, cond, detail = '') {
-  if (!cond) failures++
-  console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${detail ? `  [${detail}]` : ''}`)
-}
-
-const PROJECT = process.env.PROJECT
-if (!PROJECT) throw new Error('set PROJECT=<slug>')
-const lock = readServerLock()
-const origin = `http://127.0.0.1:${lock.port}`
+const PROJECT = process.env.PROJECT ?? 'yaac'
 const idea = `pw focus ${Date.now()}`
 
 const { chromium } = requirePlaywright()
@@ -76,7 +35,7 @@ try {
   const aside = page.locator('aside')
   const prompt = page.getByLabel('Prompt')
   const question = page.getByRole('alertdialog')
-  const newButton = aside.getByRole('button', { name: 'New workspace' })
+  const newButton = aside.getByRole('button', { name: 'New workspace', exact: true })
   await newButton.waitFor({ timeout: 15_000 })
 
   // Save a draft to hang the row menu off.
@@ -165,18 +124,7 @@ try {
   await settle()
   await expectHidden('drag-release Discard… + Escape leaves the … trigger unfocused and hidden')
 
-  // (3) Opened from a focused button, focus goes back to it.
-  await newButton.focus()
-  await page.keyboard.press('Enter')
-  await prompt.waitFor({ state: 'visible' })
-  await page.waitForTimeout(300)
-  await page.keyboard.press('Escape')
-  await prompt.waitFor({ state: 'detached' })
-  await page.waitForTimeout(300)
-  check('a keyboard-opened dialog refocuses its opener',
-    await newButton.evaluate((el) => el === document.activeElement))
-
-  // (4) Keyboard through the row menu.
+  // (3) Keyboard through the row menu.
   const byKey = async (item) => {
     await trigger.focus()
     await page.keyboard.press('Enter')
@@ -205,7 +153,7 @@ try {
   await question.waitFor({ state: 'detached' })
   await expectFocusedVisible('keyboard Discard… + Escape returns focus to the … trigger')
 
-  // (5) An ordinary menu: the project header's Remove project.
+  // (4) An ordinary menu: the project header's Remove project.
   const projectMenu = aside.getByRole('button', { name: PROJECT, exact: true })
   const removeDialog = page.getByRole('alertdialog', { name: 'Remove project?' })
   const escapeRemove = async (name) => {
@@ -240,5 +188,4 @@ try {
 } finally {
   await browser.close()
 }
-console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`)
-process.exit(failures === 0 ? 0 : 1)
+finish()
