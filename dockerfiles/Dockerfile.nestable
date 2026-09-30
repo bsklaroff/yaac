@@ -52,7 +52,7 @@ RUN ARCH="$(dpkg --print-architecture)" && \
 # works; `docker run -p` is a no-op) and its egress stays on the session's
 # transparent redirect — netd's DNAT rule matches the pod's host-side veth,
 # which every frame from a nested container leaves by (k8s/netd/rules.ts,
-# docs/session-egress.md). base_hosts_file extends the
+# docs/workspace-egress.md). base_hosts_file extends the
 # pod's hostAliases (e.g. the per-project registry name) into nested
 # containers. Container-private networks (the default `docker compose`
 # bridge, `docker run --network ...`) are still NOT supported in-pod — the

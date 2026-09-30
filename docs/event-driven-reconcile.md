@@ -1,108 +1,114 @@
-# Event-driven cluster control: informer caches + reconciler
+# Event-driven reconcile
 
-The server consumes cluster state through watch-fed informer caches and
-reconciles on events, not on a polling clock. Reads ride
-`@kubernetes/client-node`; writes (`kubectlApply`/delete) and the bounded
-provisioning execs stay on `kubectl`. Steady-state workspace streams (PTYs,
-status, port forwards, one-shot pod commands) ride the stream relay
-instead — see docs/stream-relay.md.
+The server's reconcile loop runs when something changes, not on a polling
+clock. Under the k8s driver, cluster state comes from watch-fed informer
+caches. Reads and watches use `@kubernetes/client-node`. Writes
+(`kubectlApply`, deletes) and bounded provisioning execs use `kubectl`.
+Steady-state streams into a workspace pod (PTYs, status, port forwards,
+one-shot commands) use the stream relay instead; see
+[stream-relay.md](stream-relay.md).
 
-## Informer layer (`packages/server/src/drivers/k8s/substrate/`)
+## Reconciler (`main/reconciler.ts`)
 
-`client.ts` holds lazy `KubeConfig`/`CoreV1Api`/`BatchV1Api` singletons.
-`loadFromDefault()` resolves the same kubeconfig kubectl does (`KUBECONFIG`
-env included), so the typed client and the kubectl write/exec paths always
-address the same cluster.
+Each reconcile step names the triggers that should run it. The step list is
+`defaultReconcileSteps()` in `domain/reconcile.ts`, plus the steps the driver
+adds. Two lanes mark the pass dirty, and one executor runs passes one at a
+time:
 
-`informer-cache.ts` wraps one client-node informer per resource kind into
-an `InformerCache<T>`: a mapped in-memory cache with `onChange`
-notification, deduped by comparing the *mapped* object (an informer
-`update` fires on every resourceVersion bump, most of which the mapped
-types don't care about). client-node's `makeInformer` owns the watch
-stream, resourceVersion tracking, and relist-on-410; the cache supervises
-what the library deliberately does not (verified against the 1.4.0
-source):
+- **Changes.** A trigger marks the pass dirty, and the pass runs after a
+  250 ms debounce so a burst of events becomes one pass. The named triggers
+  (`MEDIATOR_TRIGGERS` in `drivers/contract.ts`) are:
+  - `workspaces` and `units`: a workspace, or the thing holding it, appeared
+    or went away. Under k8s these are the workspace-pod and workspace-Job
+    informers. Under containerless, the driver raises `workspaces` when a
+    workspace's tmux server exits.
+  - `live-agents`: a workspace's running conversations changed (one started,
+    ended, learned its id, or switched model). An `acp` conversation learns
+    its id in an in-pod handshake no cluster watch sees, so without this the
+    chat pane would wait for the next resync.
+  - `status-streams`: a status-watcher connection dropped. After that the
+    server can no longer assume the workspace's tmux is alive, so the stale
+    reaper probes it.
 
-- On any non-410 error — a failed list included — the informer emits
-  `error` and stops. The cache restarts it with exponential backoff
-  (1s→30s, reset after 60s of uptime).
-- There is no periodic resync, so a ghost row from an event lost while
-  the watch was down would live forever. A 60s relist diff bounds it.
-- The list path yields deserialized class instances (`Date` timestamps);
-  the watch path yields raw JSON (ISO strings). The zod schemas behind
-  every `mapItem` accept both (`z.union([z.string(), z.date()])`).
-- `makeInformer`'s label selector applies to the watch query only — each
-  `listFn` must apply the same selector itself.
+  A driver can also raise triggers of its own. The k8s driver raises
+  `proxy-refreshed` (the egress proxy captured a rotated credential) and
+  `mama-requests` (an in-workspace `yaac-mama` call is queued at the proxy,
+  reported over the proxy's `/events` stream).
+- **Resync (every 60 s).** Runs every step. It catches any missed event, and
+  it drives the hygiene steps that throttle themselves (image prewarm and GC,
+  salvage, builder-pod GC). The first pass after start is a resync.
 
-`healthy()` means seeded and watch-connected: only then may a consumer
-treat absence in the cache as absence in the cluster.
+There is no poll lane: every source has an event, and the resync makes a
+lost event cost latency rather than correctness. Passes never overlap,
+because steps share module state. Steps run in list order, and one step's
+error does not stop the others. Snapshots reach the
+browser separately: every store the snapshot reads calls
+`notifyWorkspaceListChanged()` when it changes, and `server-run.ts` rebuilds
+and pushes the snapshot, coalescing bursts over 150 ms.
 
-`cluster-cache.ts` is the registry of every informer the server runs,
-exposed to the rest of the server as a set-active singleton (the display
-path and reconcile steps read it; unit tests leave it null and fall back
-to one-shot kubectl lists). It runs exactly two install-scoped informers —
-workspace pods (the `workspacePodSelector` set) and workspace Jobs — and
-deltas fan out via `onDelta(source)` with sources `workspace-pods` /
-`workspace-jobs`.
+## k8s informer layer (`drivers/k8s/substrate/`)
 
-`tick-snapshot.ts` keeps the per-pass point-in-time view: each getter
-memoizes once per snapshot and answers from the active ClusterCache when
-that source is healthy, else falls back to a live kubectl list. The
-fallback is the destructive-step safety rule — the stale reaper never
-acts on a cache known to be degraded, and its sweeps are age-gated far
-beyond any watch lag.
+`client.ts` loads the kubeconfig with `loadFromDefault()`, which reads the
+same file kubectl does (including `KUBECONFIG`), so both talk to the same
+cluster.
 
-## Reconciler (`packages/server/src/main/reconciler.ts`)
+`informer-cache.ts` wraps one client-node informer in an `InformerCache<T>`,
+an in-memory map of mapped objects. `onChange` fires only when a mapped object
+changes, since most resourceVersion bumps touch fields the mapping drops.
+client-node's `makeInformer` handles the watch stream, resourceVersion
+tracking and relisting after a 410 (Gone). The cache adds what the library
+leaves out (checked against client-node 1.4.0):
 
-Steps subscribe to triggers; three lanes feed one serialized executor:
+- On any other error, including a failed list, the informer emits `error`
+  and stops. The cache restarts it with exponential backoff from 1 s to
+  30 s, reset after 60 s of uptime.
+- The library never resyncs, so an object whose delete event was lost while
+  the watch was down would stay in the cache forever. The cache relists
+  every 60 s and diffs.
+- The list path returns class instances with `Date` timestamps. The watch
+  path returns raw JSON with ISO strings. Every `mapItem` schema accepts
+  both (`z.union([z.string(), z.date()])`).
+- `makeInformer`'s label selector applies only to the watch. Each `listFn`
+  must apply the same selector itself.
 
-- **deltas** — informer events mark their sources dirty; a pass runs
-  after a 250ms debounce so event storms coalesce. This is what makes a
-  workspace's rows catch up within milliseconds of its pod appearing or
-  going.
-  One source in this lane is not an informer: `live-agents`, marked when a
-  workspace's set of running conversations changes (one appeared, one went,
-  one learned its id, or one switched model). An `acp` conversation's id comes out of an in-pod
-  handshake that moves nothing the informers watch, so without it the
-  conversation sweep — and the chat pane waiting on the row it writes —
-  would sit out the rest of the resync interval.
-- **poll (5s)** — for state no watch can see: the proxy's queued spawn
-  requests (local HTTP) and in-pod tmux death (the stale reaper; probes
-  short-circuit on healthy status-watcher streams and are TTL-cached, so
-  this lane forks nothing).
-- **resync (60s)** — marks every step: the safety net for a missed event
-  and the driver for the internally-throttled hygiene steps (image
-  prewarm/GC, salvage, host-image GC, builder-pod GC). Snapshots carry a
-  `resync` flag so a step can tell a scheduled sweep from an event-driven
-  pass.
+`healthy()` means the cache is seeded and its watch is connected. Only then
+may a caller treat "not in the cache" as "not in the cluster".
 
-Passes never overlap (steps share module state) and run the canonical
-step order; step errors are isolated; after each pass the event hub
-publishes a state snapshot (deduped by serialized compare). Idle cost is
-the poll lane's cache reads plus one proxy HTTP call — no kubectl forks.
+`cluster-cache.ts` is the registry of every informer the server runs. It
+watches workspace pods (`workspacePodSelector`), workspace Jobs, and the two
+objects the egress proxy writes: its state ConfigMap (`proxy-state`) and its
+captured credential rotations (`proxy-refreshed`). The k8s driver's
+`lifecycle.ts` subscribes with `onDelta` and turns pod and Job deltas into the
+`workspaces` and `units` triggers. A `proxy-state` delta only refreshes the
+snapshot. The cache is also a process-wide singleton
+(`setActiveClusterCache`) that the display path and steps read. It is null in
+unit tests, which fall back to one-shot kubectl lists.
 
-The server also reacts to `workspace-pods` deltas outside the reconciler:
-syncing the per-workspace status watchers and firing the debounced
-workspaces-changed push (`main/server-run.ts`).
+`tick-snapshot.ts` gives each pass one point-in-time view. Each getter is
+memoized per pass. It answers from the cache when that informer is healthy,
+and otherwise does a live kubectl list. That fallback is what keeps
+destructive steps safe: the stale reaper never acts on a cache known to be
+behind, and its slower sweeps wait far longer than any watch lag.
 
-## Why writes and streams stay on kubectl
+## Why writes and exec stay on kubectl
 
-The write path is provisioning-heavy and a poor fit for the library: most
-applies are NetworkPolicy objects, where
-kubectl's fresh per-invocation discovery sidesteps the CRD-then-CR "no
-matches for kind" race that client-node's cached discovery hits; deletes
-lean on kubectl-only ergonomics (multi-kind label-selector deletes,
-`--ignore-not-found`, cascade defaults). Exec/PTY/port-forward streams
-are not library calls at all. The transient-retry layer
-(`retryTransient`, `drivers/k8s/substrate/kubectl.ts`) matches kubectl stderr
-strings and stays with those paths; one-shot reads that migrate to the
-typed client later need a typed-HTTP-error retry equivalent.
+- `kubectl` runs API discovery fresh on every call. client-node caches it,
+  which causes "no matches for kind" errors when a CRD and its first object
+  are applied close together.
+- Deletes use features only kubectl has: multi-kind deletes by label
+  selector, `--ignore-not-found`, and its cascade defaults.
+- Exec, PTY and port-forward streams are not library calls at all.
+
+The retry layer for transient failures (`retryTransient` in
+`substrate/kubectl.ts`) matches kubectl stderr text, so it only covers kubectl
+calls. A read moved to the typed client needs its own retry on typed HTTP
+errors.
 
 ## Client version
 
-`@kubernetes/client-node` is pinned `1.4.0` (generated from k8s 1.34,
-one minor behind the 1.35-line cluster — inside both the client compat
-matrix and k8s's n-2 skew policy; the informers touch only core/v1 +
-batch/v1 list/watch, stable for many minors). Take the `undici`
-transport major and the 1.35-generated models when both are stable, not
-the 2.0 RC.
+`@kubernetes/client-node` is pinned to `1.4.0` in the workspace catalog. It is
+generated from Kubernetes 1.34, while `k8s/kind-config.yaml` pins the node
+image to 1.37. That gap is safe here because the informers only list and watch
+core/v1 and batch/v1, which have been stable for many releases. When
+upgrading, prefer a stable release with the `undici` transport and newer
+generated models over the 2.0 release candidate.

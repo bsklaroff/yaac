@@ -1,7 +1,8 @@
 # Permission modes
 
-How much a workspace's agent may do before it stops to ask. One enum,
-`PermissionMode` in `@yaac/shared`, spelled per tool at launch:
+A permission mode (or *posture*) sets how much a workspace's agent may do
+before it stops to ask. It is one enum, `PermissionMode` in `@yaac/shared`,
+translated per tool at launch by `buildAgentCmd`:
 
 | Mode | claude | codex | opencode | pi |
 |---|---|---|---|---|
@@ -12,470 +13,356 @@ How much a workspace's agent may do before it stops to ask. One enum,
 | `plan` | `--permission-mode plan` | — | `default_agent: plan` + the `manual` rules | — |
 | `read-only` | — | `--sandbox read-only` | — | — |
 
-Rows run most permissive first, which is the order the create form's
-dropdown and the CLI's choices list them in (`PERMISSION_MODES`). `plan` and
-`read-only` share the strictest place: each is its tools' strictest posture,
-so either may be granted under the other (see "A spawned workspace's
-posture").
+Rows run most permissive first, the order the create form and CLI list them
+in (`PERMISSION_MODES`). `plan` and `read-only` rank equal: each is the
+strictest posture its tools have. `SUPPORTED_PERMISSION_MODES` lists which
+postures each tool has; the create refusal and the webapp's disabled rows
+read it. The flags are written against the pinned CLIs (`AGENT_CLIS` in
+`@yaac/shared/types`).
 
-`buildAgentCmd` owns that table, written against the pinned CLIs
-(`AGENT_CLIS` in `@yaac/shared/types`, which the image and a host install
-both use). Three things about it are worth knowing.
+## Per-tool notes
 
-**codex splits the posture across two axes** — an approval policy and a
-sandbox — so each mode picks the pair that adds up to it. `accept-edits`
-carries no flag because it *is* codex's own default preset
-(`workspace-write` + `on-request`), whose sandbox has network off; that is
-what makes codex ask to escalate for anything reaching the network, rather
-than yaac having to arrange it. Its strictest posture is `read-only`, its
-"Read Only" preset: reads and sandboxed commands run unasked, and every edit
-or network reach asks. It has no `manual` — its approval policy is only
-`on-request` or `never`, so nothing asks before every action — and no `plan`:
-codex's plan mode is a collaboration mode that instructs the model not to
-mutate anything, over whatever sandbox is in force, and no flag launches into
-it. A posture the sandbox enforces is the one worth naming.
+### codex
 
-**Under k8s, codex's sandbox runs on a patched bubblewrap.** Every codex
-posture but `bypass` — and the ranking of `read-only` level with `plan` —
-rests on codex's Linux sandbox, which is bubblewrap with the network
-unshared. Workspace pods run under gVisor, which gives a new network
-namespace an `lo` that already holds 127.0.0.1 where Linux gives an empty
-one, so stock bubblewrap's own address assignment fails `EEXIST` and it
-aborts (`bwrap: loopback: Failed RTM_NEWADDR`) before the command runs. That
-fails closed and quietly, which is what makes it worth a test: every shell
-command, a read such as `ls` included, fails to start, and codex reports the
-failure and carries on without it rather than asking to run it outside the
-sandbox. So the tools image builds bubblewrap with that `EEXIST` taken as
-done and installs it as `/usr/bin/bwrap`, which codex prefers to the copy it
-bundles; the read-only and workspace sandboxes then hold as they do on
-Linux, network included. The sandbox also needs its helper to survive: each
-codex process spawns sandboxed commands through a `codex-linux-sandbox`
-alias in a directory under `$CODEX_HOME/tmp/arg0`, locked while it runs, and
-every codex start deletes the ones whose lock it can take. gVisor keeps file
-locks per sandbox, so over the project's shared codex home a codex starting
-in any other pod — a prewarmed spare, a sibling — would delete a running
-agent's helper, and every sandboxed command after it fails. So in a pod that
-`tmp` is a pod-local emptyDir (`codexHomeMounts`). `test/e2e/codex-sandbox.test.ts` checks both in a
-pod, and trips when the bundled copy starts working, which is when the
-patched build can go. That happens one of two ways: gVisor creates `lo` empty
+codex sets a posture with two settings, an approval policy and a sandbox.
+`accept-edits` needs no flag because it is codex's default preset
+(`workspace-write` + `on-request`); that sandbox has no network, so codex
+asks before anything that reaches the network. `read-only` is codex's "Read
+Only" preset: reads and sandboxed commands run unasked, edits and network
+access ask. codex has no `manual` (its approval policy is only `on-request`
+or `never`) and no `plan` (its plan mode only instructs the model, and no
+flag launches into it).
+
+**Under k8s, codex's sandbox uses a patched bubblewrap.** Every codex
+posture except `bypass` relies on codex's Linux sandbox, which is bubblewrap
+with the network unshared. gVisor creates a new network namespace with `lo`
+already holding 127.0.0.1, so stock bubblewrap fails to add it (`EEXIST`)
+and aborts with `bwrap: loopback: Failed RTM_NEWADDR`. The failure is quiet:
+every shell command fails to start, and codex carries on without asking to
+run outside the sandbox. So `dockerfiles/Dockerfile.tools` builds a
+bubblewrap that treats that `EEXIST` as success, installed as
+`/usr/bin/bwrap`, which codex prefers over its bundled copy.
+
+The sandbox's helper must also survive. Each codex process runs sandboxed
+commands through a `codex-linux-sandbox` alias under `$CODEX_HOME/tmp/arg0`,
+locked while it runs, and every codex start deletes the ones it can lock.
+gVisor keeps file locks per sandbox, so a codex starting in another pod over
+the project's shared codex home would delete a running agent's helper. So in
+a pod that `tmp` is a pod-local emptyDir (`codexHomeMounts`).
+
+`test/e2e/codex-sandbox.test.ts` checks both, and fails once the bundled
+bubblewrap works, which is when the patched build can go. That happens when
+gVisor creates `lo` empty
 ([google/gvisor#13438](https://github.com/google/gvisor/issues/13438), fixed
-by [#13532](https://github.com/google/gvisor/pull/13532) once
-`GVISOR_VERSION` moves past it), or bubblewrap tolerates the address
+by [#13532](https://github.com/google/gvisor/pull/13532), once
+`GVISOR_VERSION` includes it), or bubblewrap tolerates the address
 ([containers/bubblewrap#745](https://github.com/containers/bubblewrap/issues/745))
-and codex bundles that release. Under containerless the host kernel is Linux,
-and codex's own bubblewrap works as shipped.
+and codex bundles that release. Under containerless, codex's bundled
+bubblewrap works as shipped.
 
-**opencode's posture is config, not flags** — its TUI has no posture, model
-or agent flag at all, and refuses an unknown one outright (usage, exit), so
-inventing one would leave a dead window rather than a posture. The
-launch carries a config document in `OPENCODE_CONFIG_CONTENT`, read per
-process and merged over the shared `opencode.json` (its own keys win), which
-is what makes it per-workspace — the file is shared by every workspace in the
-project. The TUI runs `--standalone`, over a private server that is its own
-child: the server is what reads the config, so a child inheriting the
-process env is what makes the posture stick, where opencode's background
-service would keep running — and keep the first launch's config — across
-restarts.
+### opencode
 
-Rules go in opencode's ordered `permissions` array, over a base policy every
+opencode's posture is config, not flags: its TUI has no posture, model or
+agent flag, and exits on an unknown one. The launch passes a config document
+in `OPENCODE_CONFIG_CONTENT`, which is read per process and merged over the
+project's shared `opencode.json` (its own keys win), making the posture
+per-workspace. The TUI runs `--standalone`, over a private server that is its
+own child and so inherits the env. opencode's background service would keep
+the first launch's config across restarts instead.
+
+Rules go in opencode's ordered `permissions` array, after a base policy every
 agent starts from (`*` allow, then ask for `external_directory` and `.env`
-reads) that global rules append to and a built-in agent's own rules append
-after; last match wins. `manual` is therefore wildcard-first — `*` ask, then
-reads back to allow, then the base policy's `.env` asks restated behind that
-wildcard — so what the base policy allows without yaac naming it (websearch,
-subagents, skills, Code Mode, every MCP tool a project's own config adds) is
-covered. `accept-edits` is those rules with `edit` let back through — the
-action opencode's edit, write and patch tools all assert — which is what
-claude's `acceptEdits` does: edits in the tree land
-unasked, while commands, fetches, subagents, Code Mode and MCP tools still ask,
-and an edit outside the tree asks as `external_directory`. (claude also lets
-through a few filesystem commands, `mkdir` or `mv`; opencode is not given a
-`shell` rule for them, because how it matches a chained command against one is
-unverified and a match on `rm x; curl …` would fail open.) `plan` selects
-opencode's own plan agent by `default_agent` for its `edit: deny`, and carries
-the `manual` rules, because that is *all* the agent's rules say: nothing about
-`shell`, so on its own it runs commands unprompted.
+reads). A built-in agent's own rules come after; the last match wins.
 
-Two things about that document are load-bearing, because **getting either
-wrong fails open rather than loudly**. An action opencode does not know
-matches nothing, so a rule spelled in the wrong action is not a partial
-posture but no posture — the base policy's `*` allow stays in force. And the
-value has to survive the trip: the command is embedded in
+- `manual`: `*` ask, then reads allowed, then the base policy's `.env` asks
+  restated. Starting with the wildcard covers everything the base policy
+  would otherwise allow (websearch, subagents, skills, Code Mode, MCP tools).
+- `accept-edits`: the `manual` rules plus `edit` allowed (the action behind
+  opencode's edit, write and patch tools). As with claude's `acceptEdits`,
+  edits in the tree land unasked; commands, fetches, subagents and MCP tools
+  still ask; an out-of-tree edit asks as `external_directory`. There is no
+  `shell` rule for `mkdir`/`mv` (which claude allows), because how opencode
+  matches a chained command is unverified and a rule matching
+  `rm x; curl …` would also allow the `curl`.
+- `plan`: opencode's plan agent (`default_agent`) for its `edit: deny`, plus
+  the `manual` rules, because the plan agent says nothing about `shell` and
+  would otherwise run commands unasked.
+- `bypass`: an explicit `*` allow, since the base policy asks for
+  out-of-tree access and `.env` reads.
+
+Two mistakes would silently loosen the posture instead of failing. An action
+name opencode doesn't know matches nothing, leaving the base `*` allow in
+force. And the value must survive shell quoting inside
 `respawn-window '<cmd>'`, so it is double-quoted with escaped inner quotes (a
-single quote would end the wrapper early, and bare `{...}` would hit zsh
-brace expansion). Both are asserted in `agent-command.test.ts`, the second by
-running the escaped string through a real shell — string equality alone
-would happily lock in a value opencode cannot read.
+single quote would end the wrapper; bare `{...}` would hit zsh brace
+expansion). `agent-command.test.ts` checks both, the second through a real
+shell.
 
-`bypass` states `*` allow rather than sending nothing, for the same reason:
-the base policy already asks for out-of-tree access and `.env` reads, so an
-unstated bypass is not one, and a future default that tightens would quietly
-stop meaning bypass.
+### pi
 
-**pi has no permission system at all**, by design — its tools execute
-immediately and nothing prompts. It is therefore `bypass`-only, and create
-refuses anything else rather than launch flags that do nothing. Closing that
-gap means shipping a pi extension that denies or prompts on its blocking
-`tool_call` event, not a change to the table above.
+pi has no permission system, by design: its tools run immediately. It is
+`bypass`-only, and create refuses anything else. Adding postures would need a
+pi extension that denies or prompts on its blocking `tool_call` event.
 
-`SUPPORTED_PERMISSION_MODES` is the machine-readable version, and both the
-refusal and the webapp's disabled tool rows read from it. A row holding a
-posture its tool lacks (written by another build) launches — on a restart
-as much as a create — in the most permissive one the tool has that is no
-looser, else its strictest (`launchablePermissionMode`): codex `plan` or
-`manual` as `read-only`, claude's and opencode's `read-only` as `plan`,
-opencode `auto` as `accept-edits`, and pi, which has nothing but `bypass`, as
-that. Never the driver default, which in a container is `bypass`. A
-remembered choice the tool no longer offers (see "Resolution") lands the same
-way.
+### A posture the tool lacks
 
-## Under `acp`, the answer is the adapter's
+A row can hold a posture its tool lacks (written by another build). On
+create or restart it launches in the most permissive posture the tool has
+that is no looser, else the tool's strictest (`launchablePermissionMode`):
+codex `plan`/`manual` as `read-only`, claude's and opencode's `read-only` as
+`plan`, opencode `auto` as `accept-edits`, pi as `bypass`. It never falls
+back to the driver default, which in a container is `bypass`.
 
-A posture is a launch flag for a TUI and an advertised session mode for an
-adapter, and the adapters offer fewer — so the table above is the `tui` column
-and `ACP_SUPPORTED_PERMISSION_MODES` is the other one:
+## Under `acp`, the adapter decides
+
+For an ACP adapter a posture is a session mode the adapter advertises, and
+adapters offer fewer. `ACP_SUPPORTED_PERMISSION_MODES` is the `acp` column:
 
 | Mode | claude | codex | opencode | pi |
 |---|---|---|---|---|
-| `bypass` | `bypassPermissions` | `agent-full-access` | the TUI's own config | — |
+| `bypass` | `bypassPermissions` | `agent-full-access` | the TUI's config | — |
 | `auto` | `auto` | `agent` | — | — |
-| `accept-edits` | `acceptEdits` | `read-only` | the TUI's own config | — |
-| `manual` | `default` | — | the TUI's own config | — |
-| `plan` | `plan` | — | its config, **plus** the `plan` agent over `session/set_mode` | — |
+| `accept-edits` | `acceptEdits` | `read-only` | the TUI's config | — |
+| `manual` | `default` | — | the TUI's config | — |
+| `plan` | `plan` | — | its config, plus the `plan` agent over `session/set_mode` | — |
 | `read-only` | — | — | — | — |
 
-Three things follow from it.
+- **codex has no `read-only` over ACP.** None of codex-acp's three modes is a
+  read-only sandbox; the one it calls `read-only` is yaac's `accept-edits`. A
+  create asking for `read-only` under acp is refused.
+- **opencode's postures are config, not ACP modes.** It gets the same
+  `OPENCODE_CONFIG_CONTENT` as the TUI. Its ACP modes are its agents
+  (`build`, `plan`), and `plan` also needs the `plan` agent set over
+  `session/set_mode`, because the ACP path ignores `default_agent`.
+- **pi's asks are questions, not permission prompts.** No mode is sent (its
+  `availableModes` are thinking levels). What arrives on
+  `session/request_permission` are its extensions' questions for the user,
+  so they are forwarded to the pane even under `bypass`. `bypass` skips
+  permission prompts; it does not answer questions.
 
-**codex loses `read-only` over ACP.** codex-acp collapses codex's approval ×
-sandbox grid into three modes, and none is a read-only sandbox — the one it
-calls `read-only` is codex's default preset, which is `accept-edits`. A create
-asking for `read-only` under acp is refused rather than nudged to a neighbour —
-the same rule the TUI column follows, and the reason the refusal says "under
-acp": codex plainly has the sandbox, its adapter does not offer it.
-
-**opencode's postures do not travel as modes at all.** Every posture is the
-same `OPENCODE_CONFIG_CONTENT` document the TUI is launched with, built by the
-same function — opencode reads it per process whichever front end is running.
-Its ACP "modes" are its own agents (`build`, `plan`), and `plan` is the one
-posture that needs both halves: the config's ask-to-act rules, plus the agent
-itself over `session/set_mode`, because the config's `default_agent` is ignored
-on the ACP path. Without the agent, plan would keep the rules but lose its
-`edit deny`.
-
-**pi's asks are not permissions.** It has no permission system in either mode,
-so no posture maps to a mode and none is sent (its `availableModes` are
-thinking levels, and `session/set_mode` rejects anything else). What does arrive
-on `session/request_permission` are its extensions' own questions — a choice a
-person is being asked to make — so those are forwarded to the pane even under
-`bypass`, where every other adapter's asks are answered for them. `bypass`
-waives permission prompts; it does not answer questions.
-
-A mode a conversation could not be put in — one the adapter never advertised,
-or one it refused — is reported **in the pane** as well as the log, naming the
-mode the session is actually in. It has to stand rather than be announced once:
-the report is made during the handshake, and the id a pane attaches by is
-minted by that same handshake, so at the moment it is made there is nobody to
-hear it. The conversation holds it until a later `session/set_mode` succeeds,
-and every pane is given it after its greeting. It is not fatal: losing a
-workspace over a posture would be worse than running in the adapter's default,
-and the pane says which that is. That mode is the conversation's posture from
-then on, and is reported to the workspace's row like any move (see "Following
-the agent"), so a restart asks for it again rather than for the one refused.
-
-Reporting it is not a nicety, because an adapter's default is not always at
-least as strict as what was asked. codex-acp's is `agent` — a reviewer model
-approving most actions — not the codex CLI's `read-only` preset, so an
-`accept-edits` codex conversation that lands there is running *looser* than the
-create asked for, and recorded as `auto`.
-
-The message says only which mode the session is in, and deliberately promises
-nothing about what happens to the asks from there — codex's `agent` fallback
-has a reviewer answering most of them, so "forwarded to the pane" would be
-wrong.
+If a conversation can't be put in the requested mode (not advertised, or
+refused), the pane and the log say which mode the session is actually in.
+The handshake happens before any pane attaches, so the conversation keeps the
+message and shows it to every pane until a later `session/set_mode`
+succeeds. It is not fatal. The actual mode is recorded on the workspace row
+like any other move (see "Following the agent"), so a restart asks for it.
+This matters because an adapter's default can be looser than what was asked:
+codex-acp's default is `agent` (a reviewer model approves most actions), so
+an `accept-edits` codex conversation that falls back to it is recorded as
+`auto`.
 
 ## Resolution
 
-`resolveCreate` (`#domain/workspaces`) decides a person's create field by field,
+`resolveCreate` (`#domain/workspaces`) decides each field of a user's create,
 most specific first:
 
-1. what the request named (`--permission-mode`, the create form's dropdown),
-2. what this project last chose *for this agent* (`project_tool_defaults`),
-3. `defaultPermissionMode` for this driver and tool — `bypass` where the
-   workspace is sandboxed, `accept-edits` where it is not, and `bypass` for
-   pi either way.
+1. what the request named (`--permission-mode`, the create form's dropdown);
+2. what this project last chose for this agent (`project_tool_defaults`);
+3. `defaultPermissionMode`: `bypass` where the workspace is sandboxed (k8s),
+   `accept-edits` where it is not (containerless), `bypass` for pi.
 
-The middle rung is why the choice is persisted at all: a user who picks
-`plan` once keeps getting it from the CLI, the webapp and the keyboard
-shortcut alike, because all three land here. It lives server-side so those
-three agree, keyed by project because posture tracks what the code is (a
-scratch repo vs one that deploys), and by agent because one agent's postures
-are not another's — pi can only run in `bypass`, and that says nothing about
-how a claude workspace in the same project should run. The route records what
-the request named, since only there is the choice known to be a person's
-rather than a restart's or the spawn policy's; a field the request left out
-is left as it was.
+Step 2 means a user who picks `plan` once keeps getting it from the CLI, the
+webapp and the keyboard shortcut. It is stored server-side so those agree,
+per project because posture depends on the code, and per agent because
+postures differ by agent. The route records only what the request named,
+since only there is it a person's choice.
 
-A request naming a posture its tool lacks is refused rather than nudged to a
-neighbour: the caller asked for a restraint, and quietly launching with a
-weaker one is the failure mode worth being loud about. The remembered value
-gets the opposite treatment — it may have been recorded under the other agent
-mode, or before a tool update dropped it — so a posture the agent no longer
-offers becomes the nearest one it does that is no looser, and when there is
-none, its strictest (`launchablePermissionMode`) — never the default, which
-in a container is `bypass`. A remembered codex `read-only` under acp, whose
-adapter has nothing that strict, runs `accept-edits`: the most restraint the
-tool can give. A restart's posture lands the same way.
+A request naming a posture its tool lacks is refused: silently launching
+with less restraint than asked is the failure worth being loud about. A
+remembered value is instead lowered like a row's (`launchablePermissionMode`),
+since it may have been recorded under the other agent mode or before a tool
+update. A remembered codex `read-only` under acp runs `accept-edits`.
 
 ### A spawned workspace's posture
 
-`yaac-mama create` (the spawn policy), `yaac-mama queue` and `yaac-mama edit-queued`
-(docs/queued-workspaces.md) do not go through that chain. All three resolve their posture with the same
-helper, `agentPermissionMode` in the spawn policy. It
-starts from the **caller's** posture, which is read from the caller's row
-and never taken from the request, and it treats that posture as a ceiling. A
-sibling may run at most as permissively as its parent, in the order `bypass >
-auto > accept-edits > manual > plan = read-only`. Otherwise an agent that the user left in
-`plan` could get its work done unrestrained by asking a sibling to do it.
-The project's remembered posture is skipped here too: a spawned sibling runs
-with nobody attached, so a `plan` inherited from someone's last webapp create
-would leave it waiting for an answer that never comes. The same is true, and
-intended, of a `bypass` sibling whose agent enters plan mode on its own: its
-plan-exit ask is a question for a person, so it is held for one rather than
-approved (see "Following the agent"), and the sibling shows as waiting.
+`yaac-mama create`, `yaac-mama queue` and `yaac-mama edit-queued`
+(docs/queued-workspaces.md) resolve the posture with `agentPermissionMode` in
+the spawn policy instead. It treats the **caller's** posture (read from the
+caller's row, never from the request) as a ceiling: a sibling may run at
+most as permissively as its parent, in the order `bypass > auto >
+accept-edits > manual > plan = read-only`. Otherwise an agent left in `plan`
+could get its work done unrestricted by asking a sibling.
 
-A named `--permission-mode` above the ceiling, or one the tool lacks, is
-refused. This is the last point where a refusal can reach the caller,
-because the create itself runs detached. An unnamed posture is inherited — the
-caller's own for `create`, the parent's for `queue` (a sibling workspace, or
-the stored posture of a queued workspace it chains after) — and steps down to
-the most permissive posture the tool has at or below both it and the
-ceiling. If there is none, for example pi under a caller that is not in
-`bypass`, it is refused. An `edit-queued` treats the entry's stored posture as
-named, so editing one above the ceiling is refused rather than lowered —
-unless the edit changes the tool, which re-resolves the posture as an unnamed
-one, at or below the ceiling.
+The project's remembered posture is skipped, since a spawned sibling runs
+unwatched and a remembered `plan` would leave it waiting forever. Likewise a
+`bypass` sibling whose agent enters plan mode holds its plan-exit ask for a
+person (see "Following the agent") and shows as waiting.
 
-The ceiling limits agents only. The webapp and the `/workspace/queue/*`
-routes are the user's, and a user editing a queued workspace an agent made is
-not held to the agent's ceiling.
+- A named `--permission-mode` above the ceiling, or one the tool lacks, is
+  refused. This is the last point a refusal can reach the caller, since the
+  create itself runs detached.
+- An unnamed posture is inherited (the caller's for `create`; for `queue`,
+  the parent workspace's or the stored posture of the entry it chains after)
+  and lowered to the most permissive the tool has at or below both it and the
+  ceiling. If there is none (pi under a non-`bypass` caller), it is refused.
+- `edit-queued` treats the stored posture as named, so an entry above the
+  ceiling is refused, unless the edit changes the tool, which re-resolves it
+  as unnamed.
 
-The ceiling is the caller's posture as its row holds it, which follows the
-running agent either way (see "Following the agent"): a caller that moved
-into plan mode caps its siblings at `plan`, and one a person moved up to
-`bypass` may spawn `bypass` siblings. The ceiling binds the `yaac-mama`
-channel, not every way to create a workspace. Under k8s that
-channel is the only one a pod has, because the proxy attributes the caller by
-source IP and the ingress policy keeps pods off the server's API. Under
-containerless there is no such boundary (docs/containerless-driver.md): a
-loopback-only server accepts an uncredentialed `/workspace/create` from the
-agent, and every workspace runs as the same user. So there, the ceiling holds
-only as far as the agent's own tool restrains the commands it runs, the same
-as everything else on that driver.
+The ceiling applies only to agents; the webapp and `/workspace/queue/*`
+routes are the user's. It is the caller's current row value, which follows
+the running agent: a caller that moved into plan mode caps siblings at
+`plan`, and one a person moved to `bypass` may spawn `bypass` siblings.
+
+The ceiling binds only the `yaac-mama` channel. Under k8s that is the only
+channel a pod has: the proxy identifies the caller by source IP, and the
+ingress policy keeps pods off the server's API. Under containerless there is
+no such boundary (docs/containerless-driver.md): the loopback server accepts
+an uncredentialed `/workspace/create` from the agent, so the ceiling holds
+only as far as the agent's own tool restrains it.
 
 ### The rest of the create form's memory
 
-The same row remembers the agent's model and agent mode, and the project row
-remembers which agent was last created with (`projects.lastTool`). A create
-naming no tool runs that agent; one naming no model runs the remembered one,
-else a fallback (`defaultModelFor`: a pinned id for claude and codex, pi's own
-per-provider default, and for opencode pi's default for the same provider
-where opencode lists it, else the provider's newest). A remembered
-`provider/model` id for a provider the stored credential no longer names is
-dropped rather than launched.
+`project_tool_defaults` also remembers the agent's model and agent mode, and
+`projects.lastTool` the agent last used. A create naming no tool runs that
+agent; one naming no model runs the remembered model, else `defaultModelFor`
+(a pinned id for claude and codex; pi's per-provider default; for opencode,
+pi's default for the same provider if opencode lists it, else the provider's
+newest). A remembered `provider/model` whose provider the stored credential
+no longer names is dropped.
 
-The agent mode has no server-side rung: an omitted mode is `tui`, because the
-CLI can only present a terminal and would otherwise print "open it in the
-web app" instead of attaching. The webapp, which can present both, sends the
-remembered mode itself: the create dialog (which Alt+N opens) submits
-exactly what it shows untouched. `resolveToolCreateDefaults`
-in `@yaac/shared/types` is the one function both ends answer "what would an
-untouched create run" with, so the form never shows one thing and launches
-another.
+An omitted agent mode is `tui`, because the CLI can only show a terminal. The
+webapp sends the remembered mode itself. `resolveToolCreateDefaults` in
+`@yaac/shared/types` is the one function the form and server both use for
+"what would an untouched create run", so the form always shows what will
+launch.
 
-The branch, too, has no server-side rung: the project row remembers the one
-it was last created from (`projects.lastBranch`, recorded only when a create
-names one), and only the create dialog reads it — opening on it while
-origin still lists it, else on the remote's default branch. A create naming
-no branch takes the remote's default, so the CLI and the spare pool never
-depend on what the webapp last picked.
+The branch is remembered only for the dialog: `projects.lastBranch` (recorded
+when a create names one) is what the dialog opens on while origin still has
+it, else the remote's default. A create naming no branch uses the remote's
+default, so the CLI and spare pool never depend on the webapp's last pick.
 
-The resolved answer is recorded on `workspaces.permissionMode`, because a
-workspace outlives the request that made it: a restart must relaunch its
-agents in the posture they were in, not the way today's default would. The
-column follows the agent while it runs (see "Following the agent"), and a
-restart relaunches in what it holds. It re-states it rather than choosing
-again, so it is neither remembered (it is not a person choosing) nor refused
-when unsupported (a row written by a different build would otherwise strand a
-checkout).
+The resolved posture is stored in `workspaces.permissionMode`, so a restart
+relaunches in the posture the agents were in. A restart re-uses it without
+choosing again: it is neither remembered nor refused if unsupported.
 
-## How a conversation honors one
+## How a conversation applies a posture
 
 A `tui` agent gets its posture as a launch flag, and its own UI does the
 asking.
 
-codex launches in the workspace (`-C`), trusting the repository root, with
-hook trust bypassed and its update check off (`codexLaunchConfig`,
-`--dangerously-bypass-hook-trust`), so it opens no startup screen: no "Trust
-this folder?", no "Hooks need review", no "Update available" (a host codex
-behind the latest release), and on a resume no "session or current
-directory?", any of which would swallow a `--prompt` pasted into it.
-Trusting the folder is a choice with a known cost. A trusted folder loads the
-repository's own `.codex/`:
-- its `config.toml`, so its `sandbox_mode` and `approval_policy` win over a
-  posture that sets no flag;
-- its exec-policy rules, where an `allow` rule runs a command outside the
-  sandbox;
-- its MCP servers and hooks, which run at launch without asking.
+codex launches in the workspace (`-C`) with the repository root trusted,
+hook trust bypassed (`--dangerously-bypass-hook-trust`), and its update check
+off (`codexLaunchConfig`), so no startup screen swallows a pasted
+`--prompt`. Trusting the folder has a known, accepted cost: codex loads the
+repository's `.codex/` — its `config.toml` (whose `sandbox_mode` and
+`approval_policy` override a posture that sets no flag), its exec-policy
+rules (an `allow` rule runs a command outside the sandbox), and its MCP
+servers and hooks, which run at launch. So a repository can loosen codex's
+posture and run code at startup.
 
-So a repository can loosen the posture yaac launched codex in and run code
-as it starts, and yaac accepts that.
+An `acp` conversation has no UI of its own, so yaac does two things:
 
-An `acp` conversation has no UI of its own, so yaac supplies both halves — and
-the split is worth stating, because each half alone would be a posture in name
-only:
+- **It tells the adapter** the posture over `session/set_mode` once the
+  handshake has a session. This decides which questions are asked at all;
+  without it the adapter asks about everything.
+- **It forwards the remaining asks** to the chat pane. The JSON-RPC request
+  is held open with no timeout, because answering for the user after a delay
+  would be the auto-approval the posture exists to prevent.
 
-- **The adapter is told**, over `session/set_mode`, once the handshake has a
-  session to set it on. That is what decides which questions get asked at
-  all — without it `accept-edits` would prompt for every edit, since the
-  adapter's own default is to ask about everything.
-- **The asks it still makes are forwarded** to the chat pane, where the user
-  answers them. The served JSON-RPC request is held open, with no timeout: the
-  agent is blocked until a person decides, and answering *for* them after some
-  interval is exactly the auto-approval the posture exists to refuse.
+Under `bypass` yaac answers asks itself, because an adapter still honors a
+user-configured `permissions.ask` rule in bypass mode. An adapter that won't
+enter its bypass mode (claude's, running as root outside a sandbox) is in
+some other mode, and the conversation answers according to that mode.
 
-`bypass` is the one posture yaac still answers itself, and it stays that way
-even with the mode set: an adapter honors a `permissions.ask` rule the user
-configured even with permissions skipped, and auto-granting those is what
-makes bypass mean bypass. An adapter that would not enter its bypass mode at
-all (claude's, running as root outside a sandbox) is running in another mode,
-and the conversation answers by that one.
+acpd's record holds both directions of each ask, so a pane attaching mid-ask
+sees the question and a reconnecting connection can answer an ask it never
+received (docs/agent-modes.md).
 
-Both directions of the ask are in acpd's record, so a pane attaching mid-ask
-is shown the question and a `bypass` transcript reads back as the decisions
-that were made. That is also what survives a dropped relay: nothing replays a
-request, but the record names it, and the id it must be answered under is the
-agent's own — so the connection that takes over can settle an ask it never
-received. See docs/agent-modes.md.
-
-One posture is *not* re-asserted: a reattach leaves a live adapter's mode
-alone. Leaving plan mode is itself a permission ask whose options are mode
-ids, so a user who accepted "yes, and auto-accept edits" moved the session to
-`acceptEdits`; re-stating the row on the next relay hiccup would drag them
-back. The row has followed them there instead, so the next restart brings the
-conversation back in the mode it was left in.
+A reattach does not re-send the posture to a live adapter. Leaving plan mode
+is itself an ask whose options are mode ids, so a user who chose "yes, and
+auto-accept edits" moved the session to `acceptEdits`; re-sending the row's
+mode would undo that. The row follows the move instead.
 
 ## Following the agent
 
-A posture is chosen at launch, but the agent can leave it: a user presses
-Shift+Tab in claude's TUI or picks `/permissions` in codex's, answers a
-plan-exit ask with "yes, and auto-accept edits", or the agent enters plan
-mode on its own. `workspaces.permissionMode` follows, up or down, because both
-of its readers mean the posture the agent is in *now* — a restart relaunches
-in it, and `yaac-mama create` caps a sibling at it. A create or a claim sets
-it; every move the agent reports overwrites it.
+The agent can leave its launch posture: Shift+Tab in claude's TUI,
+`/permissions` in codex's, a plan-exit answer like "yes, and auto-accept
+edits", or the agent entering plan mode on its own.
+`workspaces.permissionMode` follows, up or down, because both its readers
+want the current posture: a restart relaunches in it, and `yaac-mama create`
+caps siblings at it.
 
-Every report comes from inside the workspace — a pane option, a codex
-rollout, acpd's socket and record — so anything running there could forge
-one. A forged `bypass` raises the workspace's spawn ceiling and the posture a
-restart relaunches in, and under `acp` a forged mode update on the socket
-makes yaac auto-answer that conversation's asks while its real adapter is
-still asking. That is accepted: it takes a process already running in the
-workspace under the agent's own approval posture. Under k8s the sandbox, not
-the row, is what holds such a process in; under containerless there is no
-sandbox, and such a process already runs as the user with nothing between
-it and the host, so a forged posture gives it nothing it lacked.
+Every report comes from inside the workspace (a pane option, a codex rollout,
+acpd's socket and record), so anything running there could forge one, e.g.
+a forged `bypass` to raise the spawn ceiling. This is accepted: it needs a
+process already running in the workspace. Under k8s the sandbox contains such
+a process; under containerless it already runs as the user.
 
-Only a *change* in what an agent reports is recorded, not a difference from
-the row: the row follows every agent in the workspace, and a report that has
-not moved is not news about any of them. A first report is a change, which is
-also what carries a move made while no server was watching onto the row once
-one is — tmux keeps the pane option, acpd's record keeps the mode, and a
-codex rollout keeps its settings. Every source reports per pane or per
-conversation, and the registry's reconcile pass writes the result through the
-event door (`permission-mode-changed`). A mode no posture stands for — pi's
-thinking levels, an agent of a project's own — is left unrecorded rather than
-rounded to a neighbour; claude's `dontAsk`, which denies whatever is not
-pre-approved, reads as `manual`.
+Only a *change* in what an agent reports is recorded, since the row is shared
+by every agent in the workspace. A first report counts as a change, which is
+how a move made while no server was watching reaches the row later (tmux
+keeps the pane option, acpd's record keeps the mode, a rollout keeps its
+settings). The registry's reconcile pass writes it as a
+`permission-mode-changed` workspace event. A mode that matches no posture
+(pi's thinking levels, a project's own opencode agent) is not recorded.
+claude's `dontAsk` reads as `manual`.
 
-**Under `acp` the adapter says so.** Claude's adapter announces a move it made
-itself (EnterPlanMode, a plan-exit answer) as a `current_mode_update`;
-codex-acp reports every change as a `config_option_update` naming its `mode`
-option. The conversation reads both off its socket, and the mode id rides the
-live agent set to the registry (`LiveAgent.reportedMode`), read back through
-the adapter profile (`modeIds`, then `readsAs`). opencode's adapter never
-reports a mode (its one mode, `plan`, is set by yaac), and pi's are thinking
+### Under `acp`
+
+claude's adapter announces a move it made itself (EnterPlanMode, a plan-exit
+answer) as `current_mode_update`; codex-acp reports every change as a
+`config_option_update` for its `mode` option. The conversation publishes the
+mode id on the live agent set (`LiveAgent.reportedMode`), and the registry
+maps it to a posture through the adapter profile (`modeIds`, then
+`readsAs`). opencode's adapter never reports a mode, and pi's are thinking
 levels.
 
-A conversation answers its own asks by the posture its adapter's current
-mode stands for, whichever way it last moved. Each adapter holds its own
-mode, so one conversation entering plan mode leaves another still in
-`bypassPermissions` answering as before, and a person answering "yes, and
-bypass permissions" in one pane does not start auto-approving another's asks.
-The workspace's row stands in only where the adapter's mode names no posture
-(opencode's agents), and only for the connection that launched the
-conversation, as the posture it launched in. A reattach runs no handshake, so
-it reads the mode its session is in back from its own acpd record and reports
-it; an ask that arrives while it reads waits for the answer. When the record
-names no posture it answers by nothing — the row may hold another
-conversation's raise — and forwards every ask. A `bypass` conversation that
-enters plan mode shows its plan-exit ask in the pane, as the TUI would,
-instead of approving it.
+Each conversation answers its own asks according to its adapter's current
+mode, so one conversation entering plan mode, or a user choosing "yes, and
+bypass permissions" in one pane, does not change how another answers. The
+workspace row is used only when the adapter's mode names no posture
+(opencode's agents), and only by the connection that launched the
+conversation. A reattach reads its session's mode back from the acpd record;
+an ask arriving meanwhile waits. If the record names no posture, every ask is
+forwarded. A `bypass` conversation that enters plan mode shows its plan-exit
+ask in the pane, as the TUI would.
 
-**Under `tui` each tool is read where it writes its posture down.** None of
-them announces a change to anything outside the process as it happens:
+### Under `tui`
 
-- **claude** — its hooks carry the mode it is in as `permission_mode`
-  (`manual` arrives as `default`), but no hook fires on the change itself,
-  and its statusLine input does not carry the mode (both checked against
-  2.1.282). So the reporter (`workspace-bin/yaac-agent-report`, the same
-  script that reports the model) runs on the two hooks that fire once a
-  change takes hold: `UserPromptSubmit`, since a mode picked between turns is
-  in force by the next prompt, and `Stop`, for one the agent moved to
-  mid-turn. It sets the pane option `@yaac-permission-mode`. A Shift+Tab is
-  therefore seen at the next prompt or the end of the turn, not as it is
-  pressed — a mode changed and never prompted in has not done anything yet.
-- **opencode** — its Tab switches between its `build` and `plan` agents, and
-  changes only the TUI's draft until a prompt is sent, when its server emits
-  `session.agent.selected`. The same plugin that reports the model reports
-  the agent. An agent is only half a posture — the rules ride the launch
-  config — so it is read against the posture the workspace runs under: `plan`
-  and `manual` share their rules, so a switch moves between those two, and
-  `build` under any other posture is that posture. The plan agent over
-  `bypass`'s or `accept-edits`' rules is no posture yaac has, and is left
-  unrecorded; so is the TUI's auto-accept toggle, which writes a file every
-  workspace of the project shares, so it says nothing about one workspace.
-- **codex** — its hooks carry `permission_mode` only as `bypassPermissions` or
-  `default`, two answers for four postures. Its rollout says more, and at
-  once: a `thread_settings_applied` event is written the moment `/permissions`
-  or Shift+Tab changes anything, and a `turn_context` at every turn, both
-  naming the approval policy, its reviewer and the permission profile. The
-  registry reads the newest from each rollout and maps it back through the
-  launch table; a combination the table never launches reads as the nearest
-  posture no looser. The collaboration mode those entries also name is not
-  read — codex's plan mode restrains the model by instruction only, over
-  whatever sandbox is in force, so it is left unrecorded. It is read on the
-  reconcile pass, from the rollout each codex pane names
-  (docs/workspace-storage.md), and then treated as that pane's report like any
-  other — but only an entry written during the current pod life counts: a
-  restart resumes a rollout whose newest entry is the old process's until
-  codex writes its first turn, and that is where the workspace stands, not a
-  move.
-- **pi** has no permission system to move.
+No tool announces a posture change outside its process, so each is read where
+it writes it down:
 
-claude and opencode reach the server by push: the reporter's option rides the
-same per-pane subscription as the model, filtered inside the format so a value
-anything in the workspace sets cannot forge control-mode lines.
+- **claude.** Its hooks carry the mode as `permission_mode` (`manual` arrives
+  as `default`), but no hook fires on the change itself, and its statusLine
+  input lacks the mode (checked against the pinned 2.1.282). So the reporter
+  (`workspace-bin/yaac-agent-report`, which also reports the model) runs on
+  `UserPromptSubmit` and `Stop` and sets the pane option
+  `@yaac-permission-mode`. A Shift+Tab is seen at the next prompt or turn
+  end, not when pressed.
+- **opencode.** Tab switches between its `build` and `plan` agents; the
+  server emits `session.agent.selected` when a prompt is sent, and the plugin
+  that reports the model reports it. The agent is read against the
+  workspace's posture, since the rules come from the launch config: `plan`
+  and `manual` share rules, so a switch moves between those two, and `build`
+  under any other posture is that posture. The plan agent over `bypass` or
+  `accept-edits` rules matches no posture and is not recorded; nor is the
+  TUI's auto-accept toggle, which writes a file every workspace of the
+  project shares.
+- **codex.** Its hooks only distinguish `bypassPermissions` from `default`.
+  Its rollout says more: a `thread_settings_applied` entry is written as soon
+  as `/permissions` or Shift+Tab changes anything, and a `turn_context` at
+  every turn, both naming the approval policy, reviewer and permission
+  profile. The reconcile pass reads the newest entry from the rollout each
+  codex pane names (docs/workspace-storage.md) and maps it back through the
+  launch table; an unlaunched combination reads as the nearest posture no
+  looser. The collaboration (plan) mode is ignored, since it only instructs
+  the model. Only entries from the current pod's life count, since a resumed
+  rollout's newest entry is the old process's until codex writes a turn.
+- **pi** has no permission system to change.
+
+claude's and opencode's pane option rides the same per-pane tmux subscription
+as the model, filtered inside the format string so a value set by anything
+in the workspace cannot forge control-mode lines.
 
 ## Prewarmed spares
 
-A spare is warmed as its project's untouched create — the last agent, with
-its remembered model, posture and agent mode — so the usual claim hands its
-running agent over as booted. What each spare was launched with is on its
-workspace row (`permissionMode`, `model`, `mode`), and a claim picks one whose
-launch matches the request first. A spare in the same mode but warmed with a
-different agent, model or posture is still claimed, and its agent is
-respawned into what was asked for — a posture is never quietly weaker than
-the request. A spare in the other mode is passed over: an `acp` pod carries a
-mount for acpd's records that a `tui` one lacks, and the pod spec is fixed at
-warm time. The pool replaces a spare whose mode no longer matches its
-project's, since no claim from the webapp could take it.
+A spare is warmed as its project's untouched create: the last agent, with its
+remembered model, posture and agent mode, recorded on the spare's row
+(`permissionMode`, `model`, `mode`). A claim prefers a spare whose launch
+matches. A spare in the same agent mode but with a different agent, model or
+posture can still be claimed; its agent is respawned with what was asked, so
+the posture is never weaker than requested. A spare in the other agent mode
+is skipped, because an `acp` pod has a mount for acpd's records that a `tui`
+pod lacks, fixed at warm time. The pool replaces spares whose mode no longer
+matches their project's.

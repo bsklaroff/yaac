@@ -1,169 +1,168 @@
 # @yaac/desktop
 
-An Electron shell around the yaac webapp. There is no bundled frontend and no
-renderer code: the main process resolves the selected server
-(`~/.yaac-client/server.json`), ensures the machine-local auth-daemon (login
-broker) best-effort, checks that the server answers and will say who this
-device is (`GET /whoami`, via the shared typed client), and loads the server
-origin into the window. From then on the window is a plain browser on that
-origin, identified by the server from each request as any browser is, so the
-SPA and its WebSockets behave exactly like the webapp, and version skew is
-impossible (the SPA comes from the server it talks to).
+An Electron shell around the yaac webapp. It has no bundled frontend and no
+renderer code. At launch the main process:
 
-**Every server is a URL, and the shell starts none.** A server on this machine
-is in `server.json` like any other — `yaac server start` registers the host
-process it spawns, `yaac cluster install` the Deployment it applies — so there
-is no "local server" case here, no lock to read, and no spawn. When the
-selected server cannot be reached (or none is selected), the window shows the
-failure and the server picker (`src/connect-page.ts`) instead of an error
-dialog over nothing: that page is the whole window until a connection
-succeeds, and its buttons drive the same preload bridge the SPA's Settings →
-Server section uses.
+1. resolves the selected server from `~/.yaac-client/server.json`;
+2. starts the machine-local auth daemon (the login broker), best effort;
+3. checks that the server answers and will identify this device
+   (`GET /api/whoami`);
+4. loads the server origin into the window.
+
+From then on the window is a plain browser on that origin. The server
+identifies it from each request as it would any browser, so the SPA and its
+WebSockets behave exactly as in the webapp. The SPA always comes from the
+server it talks to, so the two cannot be on different versions.
+
+**The shell never starts a server.** A server on this machine is registered in
+`server.json` like any other (`yaac server start` registers a host server,
+`yaac cluster install` the in-cluster one), so the shell has no "local
+server" case. When no server is selected or the selected one cannot be
+reached, the whole window is the server picker (`src/connect-page.ts`), which
+shows the error and uses the same preload bridge as the SPA's Settings →
+Server section.
 
 ## Shell behavior
 
-- **Tray, not quit-on-close.** Closing the window hides it; the shell lives
-  in the tray (Open / waiting-count status / Quit). Quit quits the *shell*
-  only — the server keeps running; it was never ours to stop. Reopening
-  (tray click, Dock activate) reruns the resolve→identify flow, which also
-  notices a server that came back meanwhile. A failed boot does not quit either: the tray
-  is what keeps the shell alive while the user goes and starts a server.
-- **Attention signals.** The main process follows the server's `/events`
-  WebSocket (re-resolving the target on every reconnect, so a machine
-  re-pointed at another server follows it) and surfaces
-  waiting sessions as a macOS dock badge, the tray status line, and one OS
-  notification per new waiting *spell* (`waitingSinceMs` — a session that
-  waits anew re-notifies; an ongoing wait doesn't, and neither does a
-  reconnect or the first snapshot after launch).
-- **Native chrome.** `hiddenInset` title bar: the floating traffic lights sit
-  over the SPA's top row, which reserves `titlebar-drag` regions for them
-  (see the frontend's `App.tsx`/`Sidebar.tsx`/`ProjectRail.tsx`). The
-  window's native background mirrors the SPA's `--color-shell` per OS
-  appearance (`src/theme-bg.ts`); bounds persist across launches and are
-  restored only while still on some display (`src/window-state.ts`); the
-  role-based menu keeps Cmd-C/V working inside the xterm terminals.
+- **Tray.** Closing the window hides it; the shell stays in the tray (Open,
+  a waiting-count line, Quit). Quit exits the shell only; the server keeps
+  running. Reopening (tray click or Dock activate) repeats the connect flow,
+  so it notices a server that came back. A failed connect does not quit
+  either, so the user can go start a server.
+- **Attention signals.** The main process follows the server's `/api/events`
+  WebSocket, re-resolving the server on every reconnect so it follows a
+  change of selection. Workspaces waiting for input show as a dock badge, the
+  tray line, and one OS notification each time a workspace starts waiting
+  (`waitingSinceMs`). A reconnect or the first snapshot after launch does not
+  re-notify.
+- **Port forwarding.** The shell binds each workspace's forwarded ports on
+  this machine's loopback and tunnels connections to the server, from the
+  same `/api/events` stream (`src/forwarder.ts`,
+  [docs/port-forward-tunnel.md](../../docs/port-forward-tunnel.md)). It binds
+  loopback only; to expose ports to other machines use
+  `yaac forward --bind`. It binds nothing against a containerless server on
+  this machine, whose workspaces already hold their ports.
+- **Window chrome.** The title bar and native traffic lights are hidden
+  (`titleBarStyle: 'hidden'`); the SPA draws its own window controls
+  (`WindowControls.tsx`) and marks `titlebar-drag` strips so the window can
+  still be moved. The native background follows the SPA's `--color-shell`
+  for the OS appearance (`src/theme-bg.ts`). Window bounds persist across
+  launches and are restored only if still on a display
+  (`src/window-state.ts`). The role-based menu keeps Cmd-C/V working in the
+  xterm terminals, and links open in the system browser.
 
 ## Prerequisites
 
-- Nothing beyond the repo's usual `pnpm install` (the `electron` dev
-  dependency downloads its prebuilt binary on install).
-- A registered server: run `yaac server start` (or `yaac cluster install`)
-  once, or add one through the picker. The shell will not start one.
-- For dev runs: the `yaac` CLI on PATH for the auth-daemon spawn. The packaged
-  app instead runs its bundled Node + CLI and resolves the login-shell PATH up
-  front (the daemon's *children* need it from a Finder launch —
-  claude/codex/npm/brew). Only PATH is hydrated.
+- The repo's usual `pnpm install` (the `electron` dev dependency downloads
+  its binary).
+- A registered server: run `yaac server start` or `yaac cluster install`
+  once, or add one in the picker.
+- For dev runs, the `yaac` CLI on PATH, to start the auth daemon. The
+  packaged app runs its bundled Node and CLI instead, and resolves the
+  login-shell PATH at startup, because a Finder launch gets a minimal PATH and
+  the daemon's children (claude, codex, npm, brew) need the real one. Only
+  PATH is taken from the login shell.
 
 ## Run
 
 ```sh
-pnpm desktop:dev     # tsup-bundle the main process, then electron .
-pnpm desktop:hot     # same, but the window loads Vite for frontend hot-reload
+pnpm desktop:dev     # bundle the main process with tsup, then launch electron
+pnpm desktop:hot     # same, but the window loads Vite for frontend hot reload
 pnpm desktop:build   # just the bundle (dist/main.js)
 ```
 
-All of these share one data dir and one server: the boot flow resolves the
-same target an installed build would (the selected entry of
-`~/.yaac-client/server.json`). A dev run differs from the installed app only in
-running `yaac` from PATH rather than the bundled Node.
+All three connect to the same server an installed build would: the selected
+entry of `~/.yaac-client/server.json`. A dev run differs from the installed app
+only in running `yaac` from PATH.
 
-Each window open also fires a best-effort `ensureAuthDaemonSpawned` against
-the resolved target (local or remote — the broker is machine-scoped), sharing
-`~/.yaac-client/.auth-daemon.lock` with the CLI: no double daemon next to `yaac
-open`, and a daemon pointed at a stale target (the remote setting flipped) is
-restarted. Fire-and-forget — a failed spawn never blocks or fails the window;
-the SPA's sign-in cards still say what to run by hand.
+Each time the window opens, the shell calls `ensureAuthDaemonSpawned` for the
+resolved server, sharing `~/.yaac-client/.auth-daemon.lock` with the CLI. So
+there is never a second daemon, and a daemon pointed at a different server is
+restarted. A failed spawn never blocks the window; the SPA's sign-in cards
+still say what to run by hand.
 
-**`desktop:dev`** loads the SPA the resolved server serves, so frontend edits
-need a rebuild. **`desktop:hot`** (`scripts/dev-hot.sh`) instead points the
-window at the Vite dev server for live frontend HMR: it ensures the shared
-server is up (and registered in `server.json`, which is where Vite's proxy
-finds it), starts Vite on
-`:1420`, then launches Electron with
-`YAAC_DESKTOP_RENDERER_URL=http://localhost:1420/`. Only the *renderer*
-hot-reloads — main-process (`src/*.ts`) changes still need a restart.
+`desktop:dev` loads the SPA the server serves, so frontend edits need a
+rebuild. `desktop:hot` (`scripts/dev-hot.sh`) starts the server if needed
+(Vite's proxy finds it through `server.json`), starts Vite on `:1420`, and
+launches Electron with `YAAC_DESKTOP_RENDERER_URL=http://localhost:1420/`.
+Only the renderer hot-reloads; main-process changes (`src/*.ts`) need a
+restart.
 
-### How the boot flow reaches the server (both modes)
+`YAAC_DESKTOP_RENDERER_URL` changes only which origin the window loads, never
+which server is probed. With it set, the SPA loads from Vite, and its
+relative `/api/...` requests (HTTP and WebSocket) go to Vite, whose proxy
+forwards them to the selected server. That is the same setup as
+`pnpm frontend:dev` in a browser at `http://localhost:1420/`. No credential is
+involved in either mode: the server treats a request at its loopback as this
+machine's owner, and one through `tailscale serve` as the tailnet user it
+names.
 
-`src/flow.ts` always resolves the real server target and probes `GET /whoami`
-against it; `YAAC_DESKTOP_RENDERER_URL` never changes *which* server is
-probed, only the origin the window then loads (`<base>/`). No credential is
-carried: the server takes a request at its loopback as this machine's owner,
-and one through `tailscale serve` as the tailnet user it stamps.
-
-- **`desktop:dev` / installed:** `<base>` is the server origin, so every
-  API/WS call is same-origin to the server directly.
-- **`desktop:hot`:** `<base>` is `http://localhost:1420`, so the SPA loads from
-  Vite. All API/WS calls are relative (`/whoami`, `/session`, `/events`,
-  `/pty`), so they hit Vite same-origin and its proxy forwards them to the
-  server selected in `server.json`, exactly like the browser `pnpm frontend:dev`
-  flow.
-
-Plain `pnpm frontend:dev` (browser, no shell) is the same picture minus the
-probe: open `http://localhost:1420/`.
-
-The desktop app is not part of `pnpm build`; the published npm artifact never
-includes it.
+The desktop app is not part of `pnpm build` and is not in the npm package.
 
 ## Packaging (macOS)
 
 ```sh
-pnpm desktop:package   # root pnpm build → tsup → stage → electron-builder (unsigned .app in dist-app/)
-pnpm desktop:install   # the above, then ditto into /Applications
+pnpm desktop:package   # root pnpm build, tsup, stage, electron-builder (unsigned .app in dist-app/)
+pnpm desktop:install   # the above, then copy into /Applications
 ```
 
-The bundled server is staged from the REAL publish artifact
-(`scripts/stage-server.ts`): `pnpm pack` at the repo root — which rewrites
-`catalog:` pins into concrete versions — untarred to `staging/server` and
-`npm install --omit=dev`ed in place. There is no hand-maintained dependency
-list; the contract is the root manifest, enforced at build time by
-`scripts/check-cli-externals.ts`. A standalone Node (`staging/node/node`, a
-copy of the staging machine's binary) rides along so `@lydell/node-pty` gets
-a real Node ABI with no Node install on the target machine.
+`scripts/stage-server.ts` stages the bundled server from the real publish
+artifact: `pnpm pack` at the repo root (which turns `catalog:` pins into
+versions), untarred to `staging/server`, then `npm install --omit=dev`. There
+is no hand-kept dependency list; the root manifest is the contract, checked at
+build time by `scripts/check-cli-externals.ts`. A standalone Node
+(`staging/node/node`, copied from the build machine) ships alongside, so
+`@lydell/node-pty` gets a matching Node ABI without Node on the target.
+
 `scripts/after-pack.cjs` copies both into `yaac.app/Contents/Resources`
-(electron-builder's extraResources strips node_modules), and
-`scripts/install-app.ts` installs with `ditto` — a dereferencing copy breaks
-the Electron framework's `Versions/Current` symlinks and crashes the GPU
-process on launch. Signing, notarization, and a `.dmg` are a fast-follow.
+(electron-builder's `extraResources` strips `node_modules`).
+`scripts/install-app.ts` installs with `ditto`, because a copy that follows
+symlinks breaks the Electron framework's `Versions/Current` links and
+crashes the GPU process at launch. The app is unsigned and not notarized.
 
-First run on a fresh machine: the SPA's cluster gate (`GET /cluster/check`)
-notices there is no cluster and offers setup, streaming
-`POST /cluster/setup` progress — no terminal needed.
+## Known limitations
 
-## v1 limitations (accepted)
+- The app can add and switch servers but not forget one; `yaac remote unset`
+  forgets them all.
+- The SPA's manual Light/Dark override recolors the page but not the native
+  window background. The default System theme is correct.
 
-- A saved server can be added and switched to, but not forgotten, from the
-  app; `yaac remote unset` forgets them all.
-- A renderer-side manual Light/Dark override recolors the page but not the
-  native window backing (main isn't told); the default System theme stays
-  correct.
-
-## Verifying the 2×2 by hand
+## Verifying by hand
 
 | | server on this machine | server elsewhere |
 |---|---|---|
-| webapp | `yaac server start` → open the origin `yaac remote status` shows | `yaac remote set <url>` → open that origin from a user-owned tailnet device |
-| desktop | `yaac server start` → `pnpm desktop:dev` lands on the loopback origin with no interaction | `yaac remote set …` → should land on `https://…`; from a tagged device it lands on the picker with the server's refusal |
+| webapp | `yaac server start`, then open the origin `yaac remote status` shows | `yaac remote set <url>`, then open that origin from a tailnet device logged in as a user |
+| desktop | `yaac server start`, then `pnpm desktop:dev` lands on the loopback origin with no interaction | `yaac remote set …`, then it lands on `https://…`; from a tagged device it lands on the picker showing the server's refusal |
 
-Also check from the desktop app: a terminal attaches (PTY WebSocket) and
-Cmd-C/V copy/paste inside it; a forwarded-port link opens in the system
-browser (`setWindowOpenHandler` in `src/main.ts`); close hides to the tray
-and tray-Open lands again; a waiting session badges the
-dock and notifies once, and clicking the notification focuses the window;
-Quit leaves `yaac server status` running; window bounds survive a relaunch.
+Also check in the desktop app:
 
-The picker, which is the whole window whenever no server is reachable:
-`yaac server stop` then relaunch → "Could not connect to http://127.0.0.1:…"
-over a row for that origin; start the server and click Connect → lands.
-`yaac remote off` then relaunch → "No yaac server selected" with the rows
-still listed. Add an origin that does not answer → the error inline, still on
-the picker. `test-playwright-scripts/desktop-server-picker.js` drives exactly
-this against a real Electron build.
+- a terminal attaches, and Cmd-C/V work in it;
+- a forwarded-port link opens in the system browser;
+- close hides to the tray, and tray Open brings the window back;
+- a waiting workspace badges the dock and notifies once, and clicking the
+  notification focuses the window;
+- Quit leaves the server running;
+- window bounds survive a relaunch.
 
-And the auth-daemon: after launch, `yaac auth server status` shows running +
-connected (with `target: https://…` when a server elsewhere is selected); Quit
-leaves it running, and a relaunch spawns no second one (lock idempotency);
-switching servers + relaunch repoints it (baseUrl-mismatch restart). For
-the packaged app, launch from Finder (minimal PATH) and drive a Claude
-sign-in from the SPA card — success proves the daemon found `claude` via the
-hydrated login-shell PATH.
+The picker:
+
+- `yaac server stop`, relaunch: "Could not connect to http://127.0.0.1:…"
+  above a row for that origin. Start the server and click Connect: the app
+  loads.
+- `yaac remote off`, relaunch: "No yaac server selected", with the saved rows
+  still listed.
+- Add an origin that does not answer: the error shows inline and the picker
+  stays.
+
+`test-playwright-scripts/desktop-server-picker.js` drives these against a real
+Electron build.
+
+The auth daemon:
+
+- After launch, `yaac auth server status` shows running and connected, and
+  its `target:` line names the selected server.
+- Quit leaves it running, and a relaunch starts no second one.
+- Switching servers and relaunching restarts it against the new one.
+- For the packaged app, launch from Finder and complete a Claude sign-in from
+  the SPA card. Success shows the daemon found `claude` on the login-shell
+  PATH.

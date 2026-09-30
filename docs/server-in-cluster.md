@@ -1,669 +1,575 @@
 # The server in the cluster
 
-Current-state reference for how the yaac server runs under the `k8s`
-driver: a single-replica in-cluster Deployment, applied by `yaac cluster
-install`, reached from the host at a fixed loopback origin.
+Under the `k8s` driver the yaac server is a single-replica Deployment inside
+the cluster it manages. `yaac cluster install` applies it, and clients reach
+it at a fixed origin: loopback on kind, or a tailnet name.
 
-The move exists so that server and workspace pods can be given the *same*
-storage. A host process beside the cluster can only ever share a
-filesystem with its pods by way of hostPath and the node==host assumption;
-a pod can mount a claim, and this one mounts two (see "Storage is two
-claims").
+It runs as a pod so that the server and workspace pods can mount the same
+storage. A host process can share files with pods only through hostPath and
+the assumption that the node is the host. A pod can mount a claim, and this
+one mounts two (see "Storage is two claims").
 
-## What is deployed
+## What install deploys
 
-`yaac cluster install` finishes by applying, in this order:
+`yaac cluster install` ends with these steps, in this order:
 
-1. **A ServiceAccount** (`yaac-server`) and a **ClusterRole** bound to it.
-   Cluster-scoped rather than namespaced, because the server creates
-   per-project registry namespaces at runtime and applies cluster-scoped
-   objects at every start (PriorityClasses, RuntimeClasses, the
-   builder-role admission guard) — a binding into the namespaces that
-   exist today could not cover either. Verbs are full on what the server
-   owns and read-only on what it only observes (nodes, events, storage
-   classes).
-2. **The two ingress NetworkPolicies** — before the Service, so the port
-   is never published to pods before the wall exists (see "The ingress
-   policy is the wall").
-3. **The Service**, a ClusterIP, and the install's *fronting* of it — on
-   kind the forwarder, under `--tailnet` the Tailscale operator's Ingress
-   (see "Reachability"). Before the Deployment, because the origin the
-   fronting publishes is an input to the Deployment's environment.
-4. **The two storage claims** and, on kind, the static volumes behind
-   them — applied before the Deployment that mounts them, and only after
-   the server that is there has been stopped and the data dir moved into
-   the tier layout (see "Storage is two claims").
-5. **The Deployment**: `replicas: 1`, `strategy: Recreate`, `yaac-infra`
-   priority, plain runc, `runAsUser` = the install uid (see "The uid
-   everything runs as"), three
-   mounts (the two claims and the node's own node-local tree) named by the
-   three root variables, and `YAAC_ALLOWED_HOSTS` stating whatever the
-   fronting says about its origin, unioned with what the install shell
-   carried.
+1. **Stop the running server pod**, if there is one, and build and push the
+   server image.
+2. **The two storage claims** and, on kind, the static volumes behind them
+   (see "Storage is two claims"). On byo, the binder pod that binds them
+   runs the server image, which is why the image comes first.
+3. **A ServiceAccount** (`yaac-server`) and a **ClusterRole** bound to it.
+   The role is cluster-scoped because the server creates per-project
+   registry namespaces at runtime and applies cluster-scoped objects on
+   every start (PriorityClasses, RuntimeClasses, the builder-role admission
+   guard). It has full verbs on what the server owns and read-only access to
+   what it only observes (nodes, events, storage classes).
+4. **The two ingress NetworkPolicies**, before the Service, so the server's
+   port is never reachable from pods before the policy exists (see "The
+   ingress policy is the wall").
+5. **The Service** (ClusterIP) and its **fronting**, meaning how the Service
+   is reached from outside the cluster: a forwarder on kind, the Tailscale
+   operator's Ingress under `--tailnet` (see "Reachability"). Objects of the
+   other fronting are deleted first. The fronting comes before the
+   Deployment because the origin it publishes goes into the Deployment's
+   environment.
+6. **The Deployment**: `replicas: 1`, `strategy: Recreate`, `yaac-infra`
+   priority, plain runc, `runAsUser` set to the install uid (see "The uid
+   everything runs as"), three mounts (the two claims and the node's
+   node-local directory), and `YAAC_ALLOWED_HOSTS` set to the fronting's
+   hostname plus whatever the install shell had.
 
-Then it waits for the published origin to report ready and registers the
-server: `server.json` gets that origin and `k8s` as what this data dir
-runs. The registration is not install's own — it is the same
-`registerServer` `yaac server start` calls for a host process, because a
-client reaches either server the same way (docs/server-selection.md). It
-then asks `/whoami` as this machine, and warns when the server will not
-identify it: under the tailnet fronting there is no loopback path, and a
-tagged device has no tailnet user to be.
+Install then waits for the published origin to report ready and registers
+the server: `server.json` gets that origin and the driver `k8s`. This is the
+same `registerServer` call `yaac server start` makes for a host process,
+because clients reach either kind of server the same way
+(docs/server-selection.md). Finally it calls `/whoami` and warns if the
+server will not identify this machine (under the tailnet fronting there is
+no loopback path, and a tagged device has no tailnet user).
 
-Two things it refuses rather than doing. It will not deploy while a **host**
-server still holds the data dir: the documented upgrade is `npm update` then
-install, ordinarily run on a live install, and deploying into that is two
-writers on one database, with the published-origin probe answered by the
-very server being replaced.
+Install refuses to run in two cases:
+
+- **A host server still holds the data dir.** The upgrade path is
+  `npm update` then install, usually on a running install. Deploying then
+  would put two writers on one database, and the published-origin check
+  could be answered by the old server itself.
+- **The data dir is a containerless install.** One data dir is one install.
 
 ## The server image
 
-`dockerfiles/Dockerfile.server`, built by `podman build` on the machine
+`dockerfiles/Dockerfile.server`, built with `podman build` on the machine
 running the CLI and pushed to the in-cluster registry like every other
 yaac-shipped image (docs/trust-split-builds.md). The server builds none of
 its own images.
 
-Its **build context is `dist/`** — the bundle, the one directory the npm
-tarball ships. That is what makes the same Dockerfile work from a source
-checkout and from `npm i -g @bsklaroff/yaac`: both have a `dist/`, and
-neither needs the source tree. The tag is `contextHash(dist)`, so a
-rebuilt bundle is a different image and the Deployment rolls onto it,
-while an unchanged one costs a registry HEAD.
+The **build context is `dist/`**, the bundle and the only directory the npm
+tarball ships. So the same Dockerfile works from a source checkout and from
+`npm i -g @bsklaroff/yaac`. The tag is the content hash of `dist/`: a
+rebuilt bundle is a new image that the Deployment rolls onto, and an
+unchanged one costs one registry HEAD request.
 
-`dist/cli.js` leaves npm dependencies external, so the image `npm
-install`s them from `dist/package.json` — written at build time by
-`scripts/write-dist-manifest.ts` from the root manifest with the
-`catalog:` pins resolved, because pnpm's catalog does not exist on the
-machine doing the build. No hand-kept dependency list: the contract is the
-root manifest, already enforced by `scripts/check-cli-externals.ts`.
+`dist/cli.js` leaves npm dependencies external, so the image runs `npm
+install` from `dist/package.json`. `scripts/write-dist-manifest.ts` writes
+that file at build time from the root manifest, resolving the `catalog:`
+pins (the build machine may not have pnpm's catalog). The root manifest is
+the dependency list, already checked by `scripts/check-cli-externals.ts`.
 
-Baked in: node, `kubectl`, `git`, and the pinned llama.cpp release at
-exactly the path `llamaCppDir()` resolves under the pod's `$HOME`, so
-auto-titles work with no runtime download and no download surviving a
-roll. `catatonit` is PID 1, because node would never reap the orphans of
-the processes the server spawns.
+The image includes node, `kubectl`, `git`, and the pinned llama.cpp release
+at the path `llamaCppDir()` resolves under the pod's `$HOME`, so auto-titles
+need no download at runtime. `catatonit` is PID 1, because node would not
+reap the orphans of the processes the server spawns.
 
 ## Reachability
 
-The server binds `0.0.0.0` (`YAAC_BIND_ADDR`) — a pod's loopback has no
-reachable backend, so a Service in front of a loopback-bound server would
-have no working endpoint. How that Service is reached from outside the
-cluster is the one per-backend piece of the whole deployment, and it is
-rendered by install as a manifest set — a **fronting**
-(`install/server-fronting.ts`) — rather than branched on anywhere in the
-driver. A fronting answers, in the order install asks: what Service to
-apply, what else must exist for it to be reachable, which peers the ingress
-wall must admit, what origin it published, and what the Deployment's
+The server binds `0.0.0.0` (`YAAC_BIND_ADDR`), since a Service cannot reach a
+server bound to the pod's loopback. How that Service is reached from outside
+the cluster is the only part of the deployment that differs per backend. It
+is a **fronting** (`install/server-fronting.ts`), a set of manifests install
+renders. A fronting states: the objects to apply, which peers the ingress
+policy must admit, the origin it published, and what the Deployment's
 environment must say about that origin.
 
-**On kind** the fronting is a ClusterIP Service plus a *forwarder*: a
-one-replica `yaac-server-front` Deployment running stock Envoy (the same
-mirrored image netd uses) with `hostNetwork` on the control-plane node,
-listening on port 30787 and TCP-proxying to the absolute name
-`yaac-server.<ns>.svc.cluster.local.` (`dnsPolicy: ClusterFirstWithHostNet`
-is what lets a host-networked process resolve a cluster name; the trailing
-dot keeps it from first trying the node's own search domains, which
-CoreDNS forwards to a host resolver that may hang). The kind
-`extraPortMapping`, written when the cluster is created, delivers
-`127.0.0.1:<server port>` on the host to that node port. Being fixed at
-creation, that port is read back off the control-plane node's mapping
-(`podman port`) whenever install or `yaac server start|restart` resolves
-the origin, unless `YAAC_SERVER_PORT` names one outright. There is no
-fallback port: whatever answers a guessed one is not this cluster, so a
-node without the mapping, or a podman that cannot be asked, is a refusal.
-The browser, the CLI, the desktop app and the auth daemon all resolve that
-origin through `server.json`, which is the only thing
-`resolveServerTarget` reads (docs/server-selection.md).
+### On kind: a forwarder
 
-A forwarder rather than a NodePort, because of what the pod's ingress
-policy *sees*. Calico evaluates policy in the filter hook, before
-kube-proxy's POSTROUTING masquerade, so a NodePort connection would present
-its original source — the host's address as the node container sees it,
-which is the podman bridge gateway on Linux and gvproxy's address inside the
-VM on macOS, and a node address on neither. The forwarder dials the
-ClusterIP from the node's own network namespace, so what reaches the pod is
-sourced from that node: its InternalIP when the pod is local, its Calico
-tunnel address when the pod is on a worker. That is the set the wall admits
-(below), on every platform, with nothing about the host side guessed — and
-the API is published on no node address at all.
+A ClusterIP Service plus a *forwarder*: a one-replica `yaac-server-front`
+Deployment running stock Envoy (the same mirrored image netd uses) with
+`hostNetwork` on the control-plane node. It listens on port 30787 and
+TCP-proxies to `yaac-server.<ns>.svc.cluster.local.`. It uses `dnsPolicy:
+ClusterFirstWithHostNet` so a host-networked process can resolve a cluster
+name. The trailing dot makes the name absolute, so it is not first tried
+against the node's own search domains, which CoreDNS forwards to a host
+resolver that may hang.
 
-The port mapping is written when the cluster is **created**; kind cannot
-add one to a running cluster. So a cluster made before this existed cannot
-be converged into publishing the server, and install says so by name rather
-than hanging: `yaac cluster delete`, then `yaac cluster install`. That loses
-running workspaces (as any cluster delete does) and nothing else — the data
-dir is on the host, and the pod mounts it at the identical absolute path, so
-`dataDirHash()`, every label and the database carry over. A cluster whose
-Service is still the NodePort an earlier yaac applied converges in place:
-install applies the ClusterIP Service first, which releases the node port,
-and the forwarder binds it after.
+The kind `extraPortMapping` delivers `127.0.0.1:<server port>` on the host
+to that node port. kind writes port mappings only when a cluster is
+created, so the port is read back from the control-plane node's mapping
+(`podman port`) whenever install or `yaac server start|restart` needs the
+origin, unless `YAAC_SERVER_PORT` names it. There is no fallback port:
+whatever answers a guessed port is not this cluster. A node without the
+mapping is refused with the fix: `yaac cluster delete`, then `yaac cluster
+install`. That loses running workspaces and nothing else, because the data
+dir is on the host and the pod mounts it at the same absolute path.
 
-**Under `--tailnet`** the fronting is the same ClusterIP behind the
-Tailscale Kubernetes operator's Ingress — `ingressClassName: tailscale`,
-named `yaac-server`, its default backend the Service and its TLS host
-`yaac` — which gives the server a tailnet-only MagicDNS name with a
-certificate and nothing else: no public LoadBalancer, no NodePort, no DNS
-to manage. Install waits for the operator to publish that name into the
-Ingress status, hands it to the Deployment as `YAAC_ALLOWED_HOSTS` (so the
-server admits the name, and every request to it has to carry the identity
-the Ingress proxy stamps — the tailnet is the trust boundary now, not this
-machine's loopback), and registers
-`https://<name>.<tailnet>.ts.net`. The first HTTPS request to a new name is
-what makes the operator's proxy fetch its certificate, so the publish probe
-waits longer here than on kind, and when it gives up it names the likely
-causes in order: the tailnet's HTTPS certificates setting (which nothing in
-the cluster can read), MagicDNS, then the ACLs.
+Why a forwarder and not a NodePort: Calico evaluates policy before
+kube-proxy's masquerade, so a NodePort connection would reach the pod with
+its original source address. For a kind port mapping that is the podman
+bridge gateway on Linux, or gvproxy's address inside the VM on macOS, and
+neither is a node address. The forwarder dials the ClusterIP from the node's
+own network namespace, so the pod sees the node's InternalIP (or its Calico
+tunnel address, from a worker). That is exactly the set the ingress policy
+admits, on every platform, and the API is published on no node address.
 
-The Ingress rather than the operator's L4 LoadBalancer Service because the
-Ingress proxy is `tailscale serve`: it terminates TLS, so the origin is a
-secure context the webapp needs for its clipboard and pickers, and it
-strips client-supplied identity and forwarding headers and stamps its own,
-which is what the server's identity rule reads (docs/remote-hosting.md). An
-L4 exposure would hand the pod whatever headers a tailnet device chose to
-send — `Host: 127.0.0.1` included, which would make every tailnet device
-the owner. An install still fronted by such a Service is re-installed, not
-restarted, onto a release that identifies callers: the re-install is what
-replaces the Service. The operator
-is the cluster owner's to install; `--tailnet` refuses up front without
-it (its CRD, its Deployment, its IngressClass), printing the helm command,
-and reports a cluster it cannot ask as *unevaluated* rather than as
-missing. `--byo` (docs/cluster-setup.md "Bring your own cluster") selects
-this fronting implicitly — a cloud cluster has no loopback to publish at. The device name stays `yaac`; a second install on the same
-tailnet gets the operator's suffixed name, which install reads back from
-the status rather than assuming.
+### Under `--tailnet`: the Tailscale operator's Ingress
 
-The **live Ingress records which fronting was installed** — nothing on disk
-does. `yaac server start|restart` read it back (`frontingOfIngress`), wait
-on the origin it implies, and print it: a `tailscale`-class `yaac-server`
-Ingress is the tailnet fronting; its absence — every kind install, and the
-e2e harness — is the kind fronting, by the general rule rather than a
-special case. Each fronting deletes the other's objects when it is
-applied, so a re-install that switches fronting leaves no Ingress (or
-forwarder) of the old one behind.
+The same ClusterIP Service behind the Tailscale Kubernetes operator's
+Ingress: `ingressClassName: tailscale`, named `yaac-server`, with the Service
+as its default backend and TLS host `yaac`. This gives the server a
+tailnet-only MagicDNS name with a certificate, and nothing else: no public
+LoadBalancer, no NodePort, no DNS to manage.
 
-### The ingress policy is the wall, not hardening
+Install waits for the operator to publish the name in the Ingress status,
+passes it to the Deployment as `YAAC_ALLOWED_HOSTS`, and registers
+`https://<name>.<tailnet>.ts.net`. Every request to that name must carry the
+identity the Ingress proxy adds; the tailnet, not this machine's loopback,
+is the trust boundary. The device name is `yaac`; a second install on the
+same tailnet gets a suffixed name from the operator, which install reads back
+from the status.
 
-The server identifies a caller the way a host server does
-(docs/remote-hosting.md): a request that did not pass through `tailscale
-serve` and names a loopback `Host` is the owner. On kind the forwarder
-behind the host's `127.0.0.1` port mapping is TCP, so what reaches the pod
-is exactly what a host process sent. That makes this policy load-bearing
-for AUTHENTICATION, not only for reachability: a workspace pod that reached
-the bind could send `Host: 127.0.0.1` and be the owner, so every path onto
-it has to be the node's or the fronting's.
+The first HTTPS request to a new name makes the operator's proxy fetch its
+certificate, so install waits longer here. If it times out, it lists the
+likely causes: the tailnet's HTTPS certificates setting, MagicDNS, then the
+ACLs.
 
-What replaces the loopback bind is the server pod's ingress policy, which
-is an **explicit allow in two objects** over the server's pod selector,
-composed by NetworkPolicy's union of allow rules:
+An Ingress, not the operator's L4 LoadBalancer Service, because the Ingress
+proxy is `tailscale serve`. It terminates TLS, so the origin is a secure
+context (the webapp needs one for clipboard writes and file pickers). It
+also strips client-supplied identity and forwarding headers and adds its
+own, which is what the server's identity check reads (docs/remote-hosting.md).
+An L4 exposure would pass through whatever headers a tailnet device sent,
+including `Host: 127.0.0.1`, making every tailnet device the owner.
 
-- `yaac-server-ingress`, the *node half*: an `ipBlock` per node address —
-  every node's InternalIP plus its Calico tunnel address, the set
-  `nodeIpBlocks()` renders for the proxy's ingress too. Two flows arrive
-  from there: the kubelet's readiness probe, and on kind the forwarder's
-  dial. Install applies it, and the **server re-applies it at every
-  attach** from the live node list, because the node set is the one input
-  that changes under a running install: a pod rescheduled onto a node
-  added since has to admit that node's kubelet itself, or it never goes
-  Ready. (This is the one policy the server renders for itself; it never
-  rolls its own Deployment, for the reason install's header gives.)
-- `yaac-server-ingress-front`, the *fronting half*: the fronting's peers.
-  The operator's proxy pod, selected by its namespace and its
-  `tailscale.com/parent-resource*` labels, under `--tailnet`; empty on
-  kind, where the forwarder is host-networked and already covered by the
-  node half. Applied even when empty, so a re-install that switches
-  fronting overwrites the old peer rather than leaving it behind.
-  Install-only: the server never learns what fronts its Service.
+The operator is the cluster owner's to install. `--tailnet` refuses up front
+without it (its CRD, Deployment and IngressClass), printing the helm
+command, and reports a cluster it cannot query as *unevaluated* rather than
+missing. `--byo` (docs/cluster-setup.md "Bring your own cluster") always uses
+this fronting, since a cloud cluster has no loopback to publish on.
 
-What must never reach the server is a pod, and the explicit form says so by
-omission: no `podSelector` in the install namespace, no pod CIDR anywhere. A
-workspace pod dialing the Service or the pod IP presents its own address —
-Calico enforces a workload's source — and matches nothing. Nothing
-in-cluster wants this port anyway: a workspace's own `yaac-mama` calls go to
-the egress proxy's queue, which the server drains.
+### Which fronting is installed
 
-The node half has one blind spot, and it is on the other side of the
-wire. On kind the fronting forwarder is a hostNetwork listener on the node
-port the port mapping targets, which no pod policy covers, and its dial into
-the server is node-sourced — so a pod that reached `<node>:<that port>` would
-reach the server as the node, and with a loopback `Host` be its owner.
-Workspace pods cannot: their egress reaches node addresses on the netd
-listener range alone. The two kinds of pod that may dial node addresses —
-builder pods, which run `RUN` steps from agent-editable Dockerfiles, and the
-egress proxy, whose upstream is whatever a workspace's allowlist names — carry
-egress policies that admit every node port but that one
-(`egressAllButServerFront`). The proxy's is applied on every server start
-as well as with the proxy, since a proxy that is already current is never
-redeployed; the builders' with each build. Every other pod in the
-namespace is under the world default-deny, and `cluster check`'s `egress`
-gate fails when a deployed proxy has no such policy.
+Only the live Ingress records this; nothing on disk does. `yaac server
+start|restart` read it back (`frontingOfIngress`), wait on the origin it
+implies, and print it. A `tailscale`-class `yaac-server` Ingress means the
+tailnet fronting. No such Ingress (every kind install, and the e2e harness)
+means the kind fronting.
 
-Together with the workspace egress default-deny, that is the whole of what
-keeps untrusted code from being the server's owner — so `yaac cluster
-check`'s `egress` gate proves it on every install, with a workspace-labelled
-probe pod that must fail to dial the server, alongside the apiserver,
-registry and forgery-lock denials it already proved. The `server` e2e suite
-proves the same from a per-file deployment.
+### The ingress policy is the wall
 
-The Host guard has one consequence worth knowing: the kubelet dials the
-POD IP, so its readiness probe would present `Host: <pod ip>` and be
-answered 403 by the DNS-rebind check. The probe therefore states
-`Host: 127.0.0.1` explicitly, which keeps the guard exactly as strict
-while letting the probe stand in for the client it represents — one
-dialing the published origin.
+The server identifies callers the same way a host server does
+(docs/remote-hosting.md): a request that did not come through `tailscale
+serve` and names a loopback `Host` is the owner. On kind the forwarder is
+plain TCP, so the pod sees exactly what a host process sent. That makes the
+ingress policy part of authentication, not just reachability: a workspace
+pod that reached the server could send `Host: 127.0.0.1` and be the owner.
+So every path to the server must come from a node or from the fronting.
 
-Egress is the other way round: the server pod is **excluded** from the
-install namespace's world-egress default-deny. It clones and fetches git
-remotes directly, as the host process did. Routing the server's own
-traffic through the egress proxy is not planned — the proxy mediates
-untrusted code, and the server is the thing doing the mediating. The kind
-forwarder, being host-networked, is selected by no policy at all, like
-netd; its own reach is one ClusterIP.
+The server pod's ingress is an explicit allow in two NetworkPolicies (which
+Kubernetes unions):
 
-## Everything it dials, it dials by Service
+- `yaac-server-ingress`, the **node half**: one `ipBlock` per node address,
+  meaning every node's InternalIP plus its Calico tunnel address
+  (`nodeIpBlocks()`, which the proxy's ingress policy uses too). Two flows
+  arrive this way: the kubelet's readiness probe, and on kind the
+  forwarder. Install applies it, and **the server re-applies it on every
+  start** from the live node list, since nodes can be added to a running
+  install and a pod rescheduled onto a new node must admit that node's
+  kubelet or it never becomes Ready. This is the only policy the server
+  renders for itself; it never changes its own Deployment.
+- `yaac-server-ingress-front`, the **fronting half**: the fronting's peers.
+  Under `--tailnet` that is the operator's proxy pod, selected by its
+  namespace and its `tailscale.com/parent-resource*` labels. On kind it is
+  empty, because the host-networked forwarder is already covered by the
+  node half. It is applied even when empty, so switching fronting replaces
+  the old peer. Only install writes it.
 
-Three things the server talks to live in the cluster with it — the image
-registry, the proxy's stream relay, and the proxy's control API — and it
-reaches all three the way any pod reaches any Service: by DNS name, over the
-pod network. There is no tunnel, no `kubectl port-forward` child and no
-`kubectl exec` relay anywhere on those paths, because a pod of the same
-namespace needs none.
+No pod in the install namespace and no pod CIDR is admitted. A workspace pod
+dialing the Service or the pod IP presents its own address (Calico enforces
+a workload's source) and matches nothing. Nothing in the cluster needs this
+port: a workspace's `yaac-mama` calls go to the egress proxy's queue, which
+the server drains.
 
-- **The registry** answers at the Service DNS name every image ref already
-  carries, and its ingress policy admits the server's pod selector — a
-  pod-sourced dial matches no node CIDR. (The CLI is the one client that
-  genuinely is outside, so it keeps a `kubectl port-forward` for the pushes
-  `yaac cluster install` does.)
+The node half has one gap. On kind the forwarder is a hostNetwork listener
+on a node port, which no pod policy covers, and its dial into the server
+comes from the node. A pod that reached `<node>:<that port>` would therefore
+reach the server as the node and, with a loopback `Host`, be its owner.
+Workspace pods cannot: their egress reaches node addresses only on the netd
+listener range. The two kinds of pod that may dial node addresses carry
+egress policies that allow every node port except that one
+(`egressAllButServerFront`):
+
+- builder pods, which run `RUN` steps from agent-editable Dockerfiles, get
+  it with each build;
+- the egress proxy, whose upstream is whatever a workspace's allowlist names,
+  gets it with the proxy and again on every server start (a proxy that is
+  already current is never redeployed).
+
+Every other pod in the namespace is under the world-egress default-deny.
+
+Together with the workspace egress default-deny, this is what keeps
+untrusted code from becoming the server's owner. `yaac cluster check`'s
+`egress` gate verifies it on every install: it fails when a deployed proxy
+lacks the policy above, and a workspace-labelled probe pod must fail to dial
+the server. The `server` e2e suite checks the same.
+
+The Host check has one side effect: the kubelet dials the pod IP, so its
+readiness probe would send `Host: <pod ip>` and get a 403 from the
+DNS-rebind check. The probe therefore sends `Host: 127.0.0.1` explicitly,
+standing in for a client of the published origin.
+
+Egress is the reverse: the server pod is **excluded** from the install
+namespace's world-egress default-deny. It clones and fetches git remotes
+directly. It does not route its own traffic through the egress proxy, which
+exists to mediate untrusted code. The kind forwarder, being host-networked,
+is selected by no policy (like netd); it only dials one ClusterIP.
+
+## In-cluster dials go by Service
+
+The server talks to three things in the cluster: the image registry, the
+proxy's stream relay and the proxy's control API. It reaches each by its
+Service DNS name over the pod network, with no tunnel, `kubectl
+port-forward` or `kubectl exec` relay.
+
+- **The registry** answers at the Service name every image ref already
+  carries. Its ingress policy admits the server's pod selector. (The CLI,
+  which runs outside the cluster, uses a `kubectl port-forward` for the
+  pushes `yaac cluster install` does.)
 - **The stream relay** is the proxy Service's relay port
-  (docs/stream-relay.md). The Deployment states the address as
-  `YAAC_RELAY_ADDR`; unset resolves to the same Service by name, so the
-  variable is for an install that puts the proxy elsewhere, not for a
-  placement this driver has.
-- **The proxy control API** is the same Service's control port. The proxy's
-  ingress policy admits both ports from the server's pod selector and from
-  nothing else pod-shaped, so a workspace can reach neither.
+  (docs/stream-relay.md). The Deployment sets it as `YAAC_RELAY_ADDR`.
+- **The proxy control API** is another port on the same Service. The
+  proxy's ingress policy admits both ports from the server's pods and no
+  other pods, so a workspace can reach neither.
 
-One caller of these modules is not a pod: the **e2e harness**, which drives
-them from the host against a real cluster, where a ClusterIP names nothing.
-It supplies its own reachability rather than the driver carrying a mode for
-it — `ProxyClientConfig.controlOrigin` takes a loopback origin the harness
-forwards for itself. Nothing in production sets it.
+The e2e harness drives these modules from the host, where a ClusterIP is
+unreachable. It supplies its own route instead of the driver having a mode
+for it: `ProxyClientConfig.controlOrigin` takes a loopback origin the
+harness forwards. Nothing in production sets it.
 
 ## The lock is a lease
 
-`process.kill(pid, 0)` and a `127.0.0.1:<port>/api/health` probe both
-answer about *this* machine, and a lock file on a shared data dir now has
-readers on both sides of a container boundary — where every pod's pid
-namespace hands out the same low pids, so "is pid 1 alive?" answers about
-the wrong process entirely.
-
-So the lock records three more things: an `instance` minted per boot (the
-identity compare-and-delete uses, since a pid no longer identifies a
-server), the writer's `host`, and a `heartbeatAt` the running server
-renews every 5s. A reader that shares the writer's host judges it exactly
-as before; a reader that does not asks whether the lease is younger than
-20s. A server that discovers it has lost the lease exits rather than keep
-writing a database another server now owns — on hostPath storage there is
-no attach exclusivity, so the lease IS the single-writer guard PGlite gets.
+A pid check or a `127.0.0.1` health probe only answers about the local
+machine, and the lock is read from both sides of a container boundary where
+every pod reuses the same low pids. So the lock also records an `instance`
+id minted per boot (used for compare-and-delete, since a pid does not
+identify a server), the writer's `host`, and a `heartbeatAt` that the
+running server renews every 5s. A
+reader on the writer's host checks the pid as usual. A reader elsewhere
+checks whether the heartbeat is younger than 20s. A server that finds it has
+lost the lease exits rather than keep writing a database another server now
+owns. On hostPath storage nothing prevents two mounts, so this lease is
+PGlite's only single-writer guard.
 
 ## The uid everything runs as
 
-Under gVisor there is no user namespace, so a file on a claim is presented
-at its real uid and every writer of a shared path has to name the same
-number. Here that is one number for the whole install: the server pod,
-every workspace pod, the proxy and the check's probe pods all run as **the
-install uid**. `installSecurityContext` is the one place that renders it,
-straight into a manifest — no image build arg, and nothing baked (see
-below).
+gVisor has no user namespace, so a file on a claim appears with its real
+uid, and every writer of a shared path must use the same uid. There is one
+uid for the whole install: the server pod, every workspace pod, the proxy
+and the check's probe pods all run as **the install uid**.
+`installSecurityContext` renders it directly into manifests; no image build
+arg carries it and no image bakes it in.
 
-Install decides the number, and the server Deployment's `runAsUser` is the
-record of it. On kind it is **the uid of the machine that ran `yaac cluster
-install`**, because on macOS nothing else can work: the data dir reaches the
-node over virtiofs, and the host end of that performs every read and write
-with the credentials of the user running the VM. So a hostPath file is
-writable from a pod only if it is writable by THAT user, which makes the
-host uid a ceiling nothing in the cluster can raise. On a Linux host whose
-first user is 1000 the pinned and discovered values coincide and none of
-this is visible; on macOS, where the first login uid is 501, only the
-discovered one exists. On a byo cluster it is a fixed 1000 instead: an NFS
-server passes uids through raw, the machine that ran install means nothing
-to it, and a constant keeps ownership stable whichever machine re-installs
-— the storage binder makes each volume root that uid's once (see "Storage
-is two claims").
+Install picks the uid, and the server Deployment's `runAsUser` records it:
 
-Chowning a kind tree to some other uid does not escape the virtiofs
-ceiling, in either direction. A `chown` issued inside the node is
-cosmetic: it reports success and `stat` shows the new owner, while the
-host inode is unchanged and the write is still refused. A `chown` issued on
-the HOST does propagate — the node then sees the new owner — but the file
-becomes writable by nobody at all: not a pod, not the host user, and not
-even root inside the node, because root in the guest is not root on the
-other side of the gofer.
+- **On kind**, it is the uid of the user who ran `yaac cluster install`.
+  On macOS nothing else works: the data dir reaches the node over virtiofs,
+  whose host side does every read and write as the user running the VM. A
+  hostPath file is writable from a pod only if that user can write it. (On
+  Linux, where the first user is usually 1000, this is invisible; on macOS
+  the first login uid is 501.)
+- **On byo**, it is always 1000. An NFS server passes uids through
+  unchanged, so the machine running install is irrelevant, and a constant
+  keeps ownership stable whichever machine re-installs. The storage binder
+  makes each volume root owned by that uid (see "Storage is two claims").
 
-Everything in the cluster derives the number from the server pod's own
-`process.getuid()`, which is the install uid because the pod runs as what
-install stamped — so every path the server pre-creates for a workspace lands
-owned by the number that workspace's pod runs as. The host-side callers that
-are not install — `cluster check`'s probe pods — read it back off the live
-Deployment (`deployedInstallIdentity`), as they read the fronting off the
-live Service and Ingress. With no Deployment to ask they take what install
-would have stamped (the byo constant, or on kind their own uid); a read
-that fails is reported as itself, never guessed past.
+On kind, chowning to another uid does not get around this: a `chown` inside
+the node changes nothing on the host, and a `chown` on the host leaves the
+file writable by nobody, not even root in the node.
 
-The images, by contrast, know nothing about it: they bake no uid and work
-at any runtime uid, which is what lets one image set serve every install
-(docs/arbitrary-uid-images.md). The pods' supplementary group 0 is the
-other half of that contract, and it comes from the same helper.
+In the cluster, everything derives the uid from the server's own
+`process.getuid()`, which is the install uid because the pod runs as that.
+So every path the server pre-creates for a workspace is owned by the uid the
+workspace pod runs as. Host-side callers that are not install (`cluster
+check`'s probe pods) read it from the live Deployment
+(`deployedInstallIdentity`). With no Deployment they use what install would
+have chosen (1000 on byo, their own uid on kind). A failed read is reported
+as a failure, never guessed past.
 
-`proxyRunAsSecurityContext` runs the proxy as the install uid too, for the
-same reason and against the same wall; the two share one helper so the
-decision cannot drift between them.
+The images bake in no uid and work at any runtime uid, so one image set
+serves every install (docs/arbitrary-uid-images.md). The pods'
+supplementary group 0, the other half of that contract, comes from the same
+helper. `proxyRunAsSecurityContext` runs the proxy as the install uid too,
+through the same shared helper.
 
 ## Lifecycle
 
-`yaac cluster install` is still the one converge verb, and it is what an
-upgrade runs: `npm update`, then install. A new bundle is a new image tag
-is a `Recreate` rollout.
+`yaac cluster install` is the one command that converges an install, and it
+is how you upgrade: `npm update`, then install. A new bundle means a new
+image tag, which means a `Recreate` rollout.
 
-`yaac server start|stop|restart` act on the Deployment — scale to 1 and
-wait, scale to 0, `rollout restart` — rather than spawning or signalling a
-host process, which would put two servers on one data dir. What routes them
-there is the recorded driver beside the lock: `k8s` means "ask the cluster",
-and being unable to ask is a refusal rather than a fallback to the host
-path. `stop` scales rather than deletes: deleting would take the RBAC and
-Service with it, and then the thing that undid a stop would be a full
-install rather than a start. It waits on the POD going away, not on a
-replica count — a Deployment at zero omits `status.replicas` entirely, so
-waiting for it to read `0` waits forever.
+`yaac server start|stop|restart` act on the Deployment (scale to 1 and
+wait, scale to 0, `rollout restart`) instead of running a host process,
+which would put two servers on one data dir. The `k8s` driver recorded in
+`server.json` sends them there; if the cluster cannot be reached they fail
+rather than fall back to a host process. `stop` scales to zero rather than
+deleting, so `start` can undo it without a full install. It waits for the
+pod to disappear, not for a replica count: a Deployment at zero omits
+`status.replicas`, so waiting for `0` would wait forever.
 
-There is no host-process form of this driver, so there is nothing to
-choose between and no flag to choose it with. Placement IS the driver: a
-start notices which of the two it is (`YAAC_IN_CLUSTER`, set by this
-Deployment and by nothing else) and records it. A host `yaac server start`
-on a data dir recorded `k8s` is refused outright, naming `yaac cluster
-install` — and `yaac cluster install` refuses to run against a
-containerless install, so the two kinds never meet on one data dir.
+There is no host-process form of this driver. A server detects that it is
+in the cluster from `YAAC_IN_CLUSTER`, which only this Deployment sets. A
+host `yaac server start` on a data dir recorded as `k8s` is refused and
+points at `yaac cluster install`; `yaac cluster install` refuses a
+containerless data dir. The two never share a data dir.
 
-`yaac server logs` reads `server.log` on the server-local claim wherever
-that claim is, with `-n` and `-F` handed to `tail`. On kind it is this
-machine's disk, so the CLI reads the file directly — whatever state the pod
-is in, which matters because a crash-looping or stopped server is when the
-log is wanted. On a byo install it is a volume the CLI never sees: the log
-is read by `kubectl exec … tail` in the server pod when its container is
-running, and otherwise through `yaac-server-log-reader`, a short-lived pod
-of the server's image and identity that mounts the claim read-only (pinned
-to the server pod's node when there is one, where an attach-once volume
-already is) and is deleted when the command ends — and by `server
-start|restart` first, so a reader holding an attach-once volume on one node
-never keeps a server scheduled onto another stuck.
+`yaac server logs` reads `server.log` on the server-local claim, passing
+`-n` and `-F` to `tail`:
 
-There is deliberately **no hot-reload dev loop**. `pnpm watch` remains the
-containerless workflow; iterating on the in-cluster server is build, push,
-roll — tens of seconds, not sub-second.
+- On kind the claim is this machine's disk, so the CLI reads the file
+  directly, whatever state the pod is in. That matters because a
+  crash-looping or stopped server is when you want the log.
+- On byo the CLI cannot see the volume. It runs `kubectl exec … tail` in the
+  server pod when its container is running. Otherwise it starts
+  `yaac-server-log-reader`, a short-lived pod with the server's image and
+  identity that mounts the claim read-only (on the server pod's node, if
+  there is one, since an attach-once volume is already there), and deletes
+  it when the command ends. `server start|restart` also delete any leftover
+  reader first, so it cannot hold an attach-once volume on the wrong node.
+
+There is no hot-reload loop in the cluster: `pnpm watch` is the
+containerless workflow, and a cluster change means build, push and roll.
 
 ## The e2e tiers run against this
 
-The k8s test tiers deploy the real thing, per test file: `spawnYaacServer`
-applies this Deployment into the file's own `yaac-test-<run-id>` namespace
-and forwards a local port to it, handing back the `{ lock, stop }` shape a
-containerless spawn also answers — so no test file knows which it got. What the harness
-supplies is what a pod cannot read for itself — a reachable origin (the
-forward's local port is what the returned lock reports, never the port the
-pod binds), its origin in `server.json`, RBAC in that namespace, the
-node half of the ingress wall (a port-forward is a CRI-side dial that never
-traverses policy, so no fronting and no fronting half), the claim pair for
-the file's namespace with static volumes into the file's own data dir, and
-one mount an install never has: the file's scratch base at its own
-absolute path, because the source repos tests `project add` and the
-mock-remote stores are siblings of the data dir rather than inside a tier.
+The k8s test tiers deploy the real Deployment, once per test file.
+`spawnYaacServer` applies it into the file's own `yaac-test-<run-id>`
+namespace, forwards a local port to it, and returns the same `{ lock, stop }`
+a containerless spawn returns, so test files do not know which they got.
+The harness provides what a pod cannot provide for itself:
 
-Three consequences worth knowing when reading a failure there:
+- a reachable origin: the forward's local port, which is what the returned
+  lock reports (never the port inside the pod), and what goes in
+  `server.json`;
+- RBAC in that namespace;
+- the node half of the ingress policy (a port-forward bypasses
+  NetworkPolicy, so there is no fronting or fronting half);
+- the claim pair, with static volumes into the file's own data dir;
+- one extra mount: the file's scratch base at its own absolute path, because
+  the source repos and mock-remote stores tests use sit beside the data dir,
+  not inside a tier.
+
+Things to know when reading a failure there:
 
 - The image is `<prefix>-server:<contextHash(dist-test)>`, built once per
-  run by `test/global-setup.ts` from the suite's frozen copy of the bundle,
-  and `requirePrebuilt` in the fixture — a worker never builds.
+  run by `test/global-setup.ts` from the suite's frozen copy of the bundle.
+  The fixture passes `requirePrebuilt`, so a worker never builds.
 - The forward binds the file's own `YAAC_SERVER_PORT`, because that is the
-  origin `yaac server start|restart` waits on. Without that, those verbs
-  could not be exercised at all.
-- The server's ClusterRole and ClusterRoleBinding are namespace-suffixed
-  (`yaac-server-<namespace>`), like netd's, and the two PersistentVolumes
-  are named by the file's data-dir hash, so the real install and every
-  concurrent test file own their own. None of them cascades when a
-  namespace is deleted, so the per-file teardown and the global sweep
-  delete them by their install-namespace label — which touches no bytes,
-  the volumes being `Retain`.
-- The same files run against kind-byo too (docs/cluster-setup.md "Running
-  byo locally: kind-byo"), as the `e2e-byo` vitest project: its kubeconfig,
-  its data dir as the ambient one — so every file's scratch, data dir
-  included, sits inside the NFS export — `YAAC_TEST_BACKEND=byo`, and the
-  Let's Encrypt staging roots its tailnet origin's certificate chains to. What
-  changes in the harness is storage, and only storage: each file gets a pair
-  of classes of its own, built the way kind-byo's are but naming the file's
-  own `global/` and `server-local/` (the NFS class's `subDir` and the
-  local-path class's pattern are fixed to them), and its claims go through
-  the class path an install runs — binder, `Retain` patch and all. So every
-  host-side read and write a file makes of its tiers keeps working
-  unchanged, while every byte a pod sees goes through NFS or the
-  provisioned block class. Because those roots are the host's own tiers,
-  which the file writes into before its binder runs, the harness claims
-  them with the install's `.yaac-install` marker itself, as the binder
-  would. The
-  classes are cluster-scoped and swept with the file's volumes. Its global
-  setup refuses without kind-byo, with a stale ganesha image, or on a host
-  whose uid is not 1000 (the suite writes tier files a uid-1000 pod must be
-  able to write). One file has a project of its own, `e2e-byo-install`:
-  `byo-install-suite`, the installed kind-byo server itself — its claims and
-  uid, its tailnet origin, the server and cluster verbs, and a namespace
-  delete it re-adopts from. That delete takes the registry with it, so it
-  cannot share a run with files that need their prebuilt images — and it
-  needs none itself (the install built its own), so its global setup stops
-  at the CLI bundle and pushes nothing into kind-byo's registry.
-- A test asks a POD things with `kubectl exec`, never through the stream
-  relay or the proxy's control API — both of those are Service dials that
-  answer for a pod of the install namespace and for nothing on the host. A
-  file that needs the proxy's control API (four of `test/e2e` do) hands
-  `ProxyClient` a forwarded origin instead; one that needs a fact from
-  inside a workspace runs the command there.
+  origin `yaac server start|restart` wait on.
+- The server's ClusterRole and ClusterRoleBinding are named
+  `yaac-server-<namespace>`, and the two PersistentVolumes are named by the
+  file's data-dir hash, so every concurrent file has its own. None of these
+  are deleted with a namespace, so per-file teardown and the global sweep
+  delete them by their install-namespace label. The volumes are `Retain`,
+  so no data is touched.
+- A test queries pods with `kubectl exec`, never through the stream relay or
+  the proxy's control API, since those are Service dials that only work from
+  inside the install namespace. A file that needs the control API hands
+  `ProxyClient` a forwarded origin.
+- The same files run against kind-byo (docs/cluster-setup.md "Running byo
+  locally: kind-byo") as the `e2e-byo` project (`YAAC_TEST_BACKEND=byo`,
+  kind-byo's kubeconfig and data dir, so all scratch is inside the NFS
+  export). Only storage differs: each file gets its own pair of storage
+  classes pointing at its own `global/` and `server-local/`, and its claims
+  go through the same class path as an install. The harness writes the
+  `.yaac-install` marker itself, since the file writes to those roots before
+  its binder runs. The global setup refuses to run without kind-byo, with a
+  stale ganesha image, or on a host whose uid is not 1000.
+- `e2e-byo-install` has one file, `byo-install-suite`, which tests the
+  installed kind-byo server itself, including re-adoption after a namespace
+  delete. That delete removes the registry, so the project runs alone and
+  pushes no prebuilt images.
 
 ## Storage is two claims
 
-The data dir has three tier folders on every substrate — `global/`,
-`server-local/` and `node-local/`, and nothing else of yaac's at its root
-(the legend in `packages/shared/src/paths.ts`). The pod sees them as three
-mounts at fixed pod paths, which the Deployment names in three variables:
+The data dir has three tier folders on every driver: `global/`,
+`server-local/` and `node-local/` (see the legend in
+`packages/shared/src/paths.ts`). The pod sees them as three mounts at fixed
+paths, which the Deployment names in three variables:
 
-| Tier | Host folder | Pod mount | Variable | Backing on kind | Backing on byo |
-|---|---|---|---|---|---|
-| GLOBAL | `<dataDir>/global` | `/yaac/global` | `YAAC_GLOBAL_ROOT` | PVC `yaac-global` (RWX) → PV `yaac-global-<hash>` → hostPath `<dataDir>/global` | PVC `yaac-global` (RWX) provisioned from the NFS-family class install is named |
-| SERVER-LOCAL | `<dataDir>/server-local` | `/yaac/server-local` | `YAAC_SERVER_LOCAL_ROOT` | PVC `yaac-server-local` (RWO) → PV `yaac-server-local-<hash>` → hostPath `<dataDir>/server-local` | PVC `yaac-server-local` (RWO) provisioned from the RWO class |
-| NODE-LOCAL | `<dataDir>/node-local` | `/yaac/node-local` | `YAAC_NODE_LOCAL_ROOT` | hostPath `/var/lib/yaac/node/<hash>` on the node, which a kind extraMount binds to `<dataDir>/node-local` | the same hostPath, on the node's own disk |
+| Tier | Pod mount | Variable | Backing on kind | Backing on byo |
+|---|---|---|---|---|
+| GLOBAL | `/yaac/global` | `YAAC_GLOBAL_ROOT` | PVC `yaac-global` (RWX) → PV `yaac-global-<hash>` → hostPath `<dataDir>/global` | PVC `yaac-global` (RWX) from the NFS-family class given to install |
+| SERVER-LOCAL | `/yaac/server-local` | `YAAC_SERVER_LOCAL_ROOT` | PVC `yaac-server-local` (RWO) → PV `yaac-server-local-<hash>` → hostPath `<dataDir>/server-local` | PVC `yaac-server-local` (RWO) from the RWO class |
+| NODE-LOCAL | `/yaac/node-local` | `YAAC_NODE_LOCAL_ROOT` | hostPath `/var/lib/yaac/node/<hash>` on the node, which a kind extraMount binds to `<dataDir>/node-local` | the same hostPath, on the node's own disk |
 
-`YAAC_DATA_DIR` keeps naming the host's data dir inside the pod. It is an
-identity string there and a directory only on the host: `dataDirHash()`,
-every label and the registry claim name hash it, so none
-of them change across the storage boundary. The path helpers resolve into
-the three roots, and the roots are what the Deployment re-points — a host
-process never sets the variables, so under containerless the split is
-inert (three folders of one directory, no volume machinery).
+Inside the pod, `YAAC_DATA_DIR` still names the host's data dir. There it is
+only an identity string: `dataDirHash()`, every label and the registry claim
+name hash it, so none of them change across the storage boundary. The path
+helpers resolve into the three roots, which the Deployment sets. A host
+process never sets these variables, so under containerless the tiers are
+just three folders of one directory.
 
-NODE-LOCAL is the tier nothing durable lives in: per project, the pnpm
-store and the per-workspace module dirs under it, the image-store
-generations (docs/nested-containers.md), and each opencode workspace's
-working copy (docs/workspace-storage.md "opencode"). On a multi-node
-cluster those bytes are on whichever node the workspace ran on, so the
-server never reads or writes them from its own filesystem: a pod's init
-container creates and chowns what the pod mounts, a node-side writer pod
-fills the image store, and `reapNodeLocal` runs one root pod per node to
-remove what no live workspace owns.
+NODE-LOCAL holds nothing durable: per project, the pnpm store and the
+per-workspace module dirs, the image-store generations
+(docs/nested-containers.md), and each opencode workspace's working copy
+(docs/workspace-storage.md "opencode"). On a multi-node cluster those bytes
+are on whichever node the workspace ran on, so the server never touches them
+through its own filesystem. A pod's init container creates and chowns what
+the pod mounts, a node-side writer pod fills the image store, and
+`reapNodeLocal` runs one root pod per node to remove what no live workspace
+owns.
 
-The claims are **named**, and the volumes are **hashed**. A claim is
-namespaced and belongs to one install, so `yaac-global` is the same name
-in every install namespace; a PersistentVolume is cluster-scoped and one
-cluster hosts more than one install (the real one, and every e2e
-namespace), so its name carries the install hash and its `claimRef` pins
-it to its own namespace's claim. Both volumes are `Retain` with an empty
-storage class, which is what makes the pair static: no provisioner, and a
-claim or namespace delete never touches the hostPath. `kind delete` takes
-the objects with the cluster and leaves the bytes under `~/.yaac`, so
-`yaac cluster delete` keeps its promise of touching none of them.
-Kubernetes enforces no access mode on a hostPath, so the same claim spec
-is what a cloud backend binds through a real RWX class.
+The claims have **fixed names** and the volumes have **hashed names**. A
+claim is namespaced and belongs to one install, so every install namespace
+uses `yaac-global`. A PersistentVolume is cluster-scoped, and one cluster can
+host several installs (the real one and every e2e namespace), so its name
+includes the install hash and its `claimRef` pins it to its own namespace's
+claim. On kind both volumes are `Retain` with an empty storage class: no
+provisioner, and deleting a claim or namespace never touches the hostPath.
+`kind delete` removes the objects with the cluster and leaves the bytes
+under `~/.yaac`, so `yaac cluster delete` touches no data. Kubernetes
+enforces no access mode on a hostPath, so the same claim spec works with a
+real RWX class on a cloud cluster.
 
-Workspace pods mount **subPaths** of `yaac-global`, never the claim whole,
-and never the server's claim at all: the k8s driver resolves each declared
-mount from the tier root its path lives under (`resolveMountSource`), a
-GLOBAL path becoming a claim subPath, a NODE-LOCAL one the matching path
-under the node's own tree, and a SERVER-LOCAL one a thrown error. A `File`
-mount is a subPath to that file, which is why every global file a pod
-mounts must exist before its Job is applied — kubelet creates a missing
-subPath as a root-owned directory. The node-local directories a pod
-mounts are chowned to the pod's identity on its node by its own init
-container, as root, because hostPath ignores `fsGroup` and kubelet has
-already created each one root-owned before the init container runs.
+Workspace pods mount **subPaths** of `yaac-global`, never the whole claim,
+and never the server's claim. The k8s driver maps each declared mount by
+the tier its path is under (`resolveMountSource`): a GLOBAL path becomes a
+claim subPath, a NODE-LOCAL path the matching path under the node's
+directory, and a SERVER-LOCAL path is an error. A `File` mount is a subPath
+to that file, so every global file a pod mounts must exist before its Job
+is applied; kubelet would otherwise create it as a root-owned directory.
+The node-local directories a pod mounts are chowned to the pod's uid by its
+own init container, running as root, because hostPath ignores `fsGroup` and
+kubelet creates each one root-owned before the init container runs.
 
-`yaac cluster install` applies the pair after stopping the server that is
-there, through one of two storage shapes (`ensureStorageClaims`): kind's
-static pair above, or — on a byo install — claims provisioned from named
-StorageClasses. The class path is where every volume a cloud cluster
-provisions is made this install's, in order:
+### Claims on byo
 
-1. **Re-adoption first.** `Retain` only protects data a later install can
-   find again. A namespace delete leaves both volumes `Released`, so before
+Install applies the claims after stopping the running server, through one
+of two storage shapes (`ensureStorageClaims`): kind's static pair above, or
+on byo, claims provisioned from named StorageClasses. The class path makes
+each provisioned volume belong to this install, in three steps:
+
+1. **Re-adopt first.** `Retain` only helps if a later install can find the
+   data again. A namespace delete leaves both volumes `Released`, so before
    applying a claim install looks for a volume labelled with this install's
-   id (`yaac.install-id`, the random `installId` its first run recorded in
-   `server.json`), namespace and claim name (`yaac.claim`), clears its
-   stale `claimRef`, and pre-binds the new claim to it by `volumeName` —
-   rather than provisioning two empty volumes beside the data. The id, not
-   the data-dir hash: the hash is of a path, and `/root/.yaac` on two
-   machines is two installs. A loose volume that matches the hash but not
-   the id is refused by name, with the one-line relabel that adopts it on
-   purpose; this install's own volume under a different class is refused
-   too, since the class gate would otherwise never see it.
-2. **The binder is the first consumer.** A `WaitForFirstConsumer` class —
-   the usual block class, and local-path's — binds nothing until a pod
-   schedules, so install runs one: `yaac-storage-bind`, runc, root, both
-   claims mounted. It claims each volume root for the install with a
-   `.yaac-install` marker holding the install id, and refuses a root that
-   is another install's — a marker naming another id, or content with no
-   marker — because a class with a fixed `subDir` or base path hands every
-   claim the same directory, and every byo install runs as the same uid, so
-   ownership cannot tell two installs apart. It then makes the root the
-   install uid's (`chown`, `chmod 2775`) when it is not already;
-   everything below the root the server creates at that uid. This replaces
-   `fsGroup`, which would be the kubelet doing the same chown on every
-   mount of every pod, and which root squash defeats just as it defeats
-   the binder — except that the binder fails once, loudly, naming the fix
-   (an export that does not squash root, or the class's
+   id (`yaac.install-id`, the random `installId` the first run recorded in
+   `server.json`), namespace, and claim name (`yaac.claim`). It clears that
+   volume's stale `claimRef` and pre-binds the new claim to it by
+   `volumeName`, instead of provisioning two empty volumes. The match uses
+   the install id, not the data-dir hash, because the hash is of a path and
+   `/root/.yaac` on two machines is two installs. A volume that matches the
+   hash but not the id is refused, with the one-line relabel that adopts it
+   deliberately. This install's own volume under a different class is
+   refused too.
+2. **Bind with a binder pod.** A `WaitForFirstConsumer` class (the usual
+   block class, and local-path) binds nothing until a pod is scheduled, so
+   install runs one: `yaac-storage-bind`, runc, root, with both claims
+   mounted. It marks each volume root with a `.yaac-install` file holding
+   the install id, and refuses a root that belongs to another install (a
+   marker with another id, or content with no marker). This matters because
+   a class with a fixed `subDir` or base path gives every claim the same
+   directory, and every byo install runs as the same uid. It then sets the
+   root's owner to the install uid (`chown`, `chmod 2775`) if needed;
+   the server creates everything below it at that uid. This replaces
+   `fsGroup`, which would have kubelet do the same chown on every mount.
+   Root squash breaks both approaches, but the binder fails once, clearly,
+   naming the fix (an export without root squash, or the class's
    `mountPermissions`).
-3. **Then each volume is pinned.** `Retain` whatever the class said; the
-   install's labels; and on the RWX volume `mountOptions` with `actimeo=1`
-   merged in — the coherence bound every cross-pod handoff on the shared
-   tier assumes, applied to the volume yaac owns rather than demanded of a
-   class the operator owns. The class's other options stand, `soft` or
-   `hard` included. A PV's options are read at each mount, and the
-   binder's mount is gone before any real pod mounts it.
+3. **Pin each volume.** Set `Retain` regardless of the class, add the
+   install's labels, and on the RWX volume merge `actimeo=1` into
+   `mountOptions`. That bounds attribute caching, which every cross-pod
+   handoff on the shared tier assumes. It is set on the volume yaac owns
+   rather than required of the operator's class. The class's other options
+   (`soft` or `hard` included) stay. A PV's options are read at each mount,
+   and the binder has unmounted before any real pod mounts.
 
-A claim's class is immutable, so a re-install naming a different class is
-refused rather than applied. The RWX class must be NFS-family —
-csi-driver-nfs, EFS, or Azure Files over NFS — because that is what the
-storage spike measured, and `cluster check`'s `storage` gate holds the
-volume to all of the above on every run. Its `egress` gate adds one leg on
-such a volume: a workspace-labelled pod must fail to reach the NFS server
-the volume names. That server speaks AUTH_SYS and trusts whatever uid a
+A claim's class cannot be changed, so a re-install naming a different class
+is refused. The RWX class must be NFS-family (csi-driver-nfs, EFS, or Azure
+Files over NFS), because that is what was measured. `cluster check`'s
+`storage` gate checks all of the above on every run. Its `egress` gate adds
+one check on such a volume: a workspace-labelled pod must fail to reach the
+volume's NFS server. That server uses AUTH_SYS and trusts whatever uid a
 client claims, so a sandbox that reached it could read and write every
-project as anyone; the session policy is what stops that, and the probe
-proves it holds on the cluster at hand.
+project as anyone. The workspace network policy is what prevents that, and
+the probe proves it on the cluster at hand.
 
-The proxy mounts nothing at all: what it needs it is handed as objects
-(docs/workspace-egress.md "What the proxy is told, and how"), so
-`.credentials/` is the server's alone.
+The proxy mounts no storage. It is given what it needs as Kubernetes
+objects (docs/workspace-egress.md "What the proxy is told, and how"), so
+`.credentials/` is readable only by the server.
 
-## Client state lives beside the data dir, not in it
+## Client state lives beside the data dir
 
-The pod mounts the tiers, so anything inside them is something the pod can
-see and the pod's uid owns. Several files there were never the server's:
-`server.json` (which origin this machine's clients dial, and which kind of
-install this is), the auth daemon's lock and its `login-*` scratch, and the
-installer's own caches — the Calico manifest and the podman-pid file. Each is written and
-read only by processes on the USER's machine: the CLI, the auth daemon that
-needs a browser and the vendors' localhost OAuth callbacks, the desktop
-shell, and `yaac cluster install` acting as installer.
+The pod mounts the tiers, so anything inside them is visible to the pod and
+owned by its uid. Some files belong to the user's machine, not the server:
+`server.json` (the origin this machine's clients dial, and the driver),
+the auth daemon's lock and its `login-*` scratch, and the installer's caches
+(the Calico manifest, the podman-pid file). Only processes on the user's
+machine read and write them: the CLI, the auth daemon, the desktop app, and
+`yaac cluster install`.
 
-They are the CLIENT-LOCAL tier (`clientLocalRoot` in `shared/paths.ts`),
-rooted at `<dataDir>-client` — `~/.yaac` pairs with `~/.yaac-client`. A
-sibling rather than a subdirectory, because a subdirectory of the data dir is
-by definition inside what the pod mounts; derived from the data dir rather
-than a fixed per-user path, so `YAAC_DATA_DIR` isolation carries for free and
-one install's clients never read another's remote. The data dir root itself
-holds only the three tier folders, so there is no fourth place for a
-client file to end up.
+These form the CLIENT-LOCAL tier (`clientLocalRoot` in `shared/paths.ts`),
+at `<dataDir>-client` (`~/.yaac` pairs with `~/.yaac-client`). It is a
+sibling, not a subdirectory, because the pod mounts the data dir's contents.
+It is derived from the data dir, so `YAAC_DATA_DIR` isolation carries over.
 
-Two consequences worth stating:
+Two consequences:
 
 - **No server process records the driver.** `resolveDriverKind` writes
-  nothing; the COMMAND that stands the server up records it, and `yaac
-  cluster install` writes `k8s` alongside the origin. There is
-  nothing for the pod to add and nowhere to put it.
-- **`resolveServerTarget` reads neither the record nor the lock.** It reads
-  the origin in `server.json` and nothing else
-  (docs/server-selection.md). The lock is the server's own file — under this
-  driver it belongs to the pod, a client may not be able to read it at all,
-  and the port in it is the one bound inside the pod.
+  nothing. The command that stands the server up records it, and `yaac
+  cluster install` writes `k8s` alongside the origin.
+- **`resolveServerTarget` reads only the origin in `server.json`**
+  (docs/server-selection.md), never the lock. The lock is the server's own
+  file; under this driver a client may be unable to read it, and its port
+  is the one bound inside the pod.
 
-`.server.lock` itself stays SERVER-LOCAL: it is the single-writer guard for
-PGlite and belongs on the same volume as the database.
+`.server.lock` stays in SERVER-LOCAL, on the same volume as the database it
+guards.
 
-## The credential sweep is inert in here
+## The credential sweep does not run here
 
-Credential convergence (docs/containerless-driver.md) carries a token a
-workspace's agent refreshed in place back up to the host store, and pushes it
-down to projects left behind. All of that is about an UNMEDIATED workspace —
-one holding the real bundle because there is no proxy to swap it. Under this
-driver there always is one, so the sweep has nothing to carry, and it is
-inert here for reasons rather than by luck:
+Credential convergence (docs/containerless-driver.md) copies a token a
+workspace's agent refreshed back to the host store. It exists for workspaces
+that hold the real credential. Under this driver the proxy always holds it,
+so the sweep is not used:
 
-- The standing sweep is never scheduled: the reconcile step list adds it only
-  when the driver is `containerless`.
-- The two call sites that are not driver-gated stop on their own. Seeding a
-  create takes the mediated branch, which writes sentinels and returns before
-  either half runs; the harvest on workspace stop returns at once under a
-  mediated runtime, since a pod-writable tool home has nothing legitimate to
-  offer there and a planted bundle must never be adopted install-wide.
-- The Keychain half never applies. It is `darwin`-only, and this server is a
-  Linux pod — there is no `security` to spawn and no host tool home to read.
+- The reconcile step list schedules the periodic sweep only under
+  `containerless`.
+- Seeding a new workspace takes the proxied branch, which writes placeholder
+  credentials and returns early. Harvesting on workspace stop returns at
+  once, because a pod-writable tool home must never be trusted as a source
+  of credentials for the whole install.
+- The macOS Keychain part never applies: this server is a Linux pod.
 
-Worth stating because the pod inverts the assumptions that code was written
-against: a host with a login keychain and the user's own tool directories. It
-has neither, and the answer is that it never asks for them.
-
-What reaches the host store instead is the `credential-adopt` reconcile
-step: a refresh a workspace drives transits the proxy, which captures the
-rotation into `yaac-proxy-refreshed`, and the step adopts it from the
-server's watch of that object — the same newest-wins compare, driven by
-the object's delta rather than a sweep of tool homes.
+Instead, a refresh a workspace makes passes through the proxy, which saves
+the rotated credential into the `yaac-proxy-refreshed` object, and the
+`credential-adopt` reconcile step adopts it from the server's watch of that
+object (newest wins).
 
 ## What a cluster install cannot do for you
 
-- **Workspace port-forwarding needs a client running.** A port the server
-  bound would be on the pod's loopback, so it binds none: it declares the
-  mapping and serves the near end of each connection, and the listener is
-  held by `yaac forward` or the desktop app (docs/port-forward-tunnel.md).
-  With neither running the webapp's `127.0.0.1:<port>` links refuse to
-  connect — which is the honest state, and the one thing a pod-side bind
-  would have hidden.
-- **The git identity is a server setting, not a host's.** Workspaces commit
-  under an identity kept in the database — which the pod already mounts —
-  rather than one install snapshots off whichever machine it ran on. The
-  auth server seeds it from your own machine's git config when it starts
-  (under the desktop app, `yaac auth server start`, or a Claude/Codex browser
-  sign-in — `yaac cluster install` does not start it), and Settings →
-  General or `yaac config git-identity` edits it, so changing your name
-  needs no re-install and no shell on the host. A
-  server that has none refuses to create a workspace and says where to set
-  one. A prewarmed spare bakes its identity in at warm time, so a claim
-  re-keys the checkout it hands over; the pool is never left committing
-  under an identity that has since been changed.
-- **`YAAC_USE_TOR`** names a listener on the host, and a pod's loopback is
-  its own. Install rewrites the loopback halves of
-  `YAAC_HOST_TOR_SOCKS_URL` into the host's address on the kind network —
-  so Tor has to be listening on that interface, not only on `127.0.0.1`,
-  and install says so when it cannot work the address out.
+- **Port forwarding needs a client running.** A port bound by the server
+  would be on the pod's loopback, so it binds none. It declares each mapping
+  and serves the server end of each connection; `yaac forward` or the
+  desktop app holds the listener (docs/port-forward-tunnel.md). With neither
+  running, the webapp's `127.0.0.1:<port>` links refuse to connect.
+- **The git identity is a server setting.** Workspaces commit under an
+  identity stored in the database, not one copied from whichever machine ran
+  install. The auth server seeds it from your machine's git config when it
+  starts (under the desktop app, `yaac auth server start`, or a Claude/Codex
+  browser sign-in; `yaac cluster install` does not start it). Edit it in
+  Settings → General or with `yaac config git-identity`; no re-install
+  needed. A server without one refuses to create workspaces and says where
+  to set it. A prewarmed spare has its identity baked in when warmed, so
+  claiming it re-applies the current identity.
+- **`YAAC_USE_TOR`** points at a listener on the host, and a pod's loopback
+  is its own. Install rewrites loopback addresses in
+  `YAAC_HOST_TOR_SOCKS_URL` to the host's address on the kind network, so
+  Tor must listen on that interface, not only on `127.0.0.1`. Install warns
+  when it cannot determine the address.

@@ -3,715 +3,507 @@
 ## Goal and trust model
 
 Several teammates share one always-on yaac deployment. Each has their own
-projects, workspaces, tool credentials and quota; the first cross-user feature
-is **read-only access to each other's session logs** (agent-conversation
-transcripts, in docs/naming.md terms), with the roadmap's §2 collaboration
-features (observable sessions, presence, handoff, comments, team projects)
-as the trajectory.
+projects, workspaces, tool credentials and quota. The first cross-user
+feature is read-only access to each other's session logs (agent
+conversation transcripts, in docs/naming.md terms). Later collaboration
+features build on the same structure: observable live sessions, presence,
+handoff, comments and team projects.
 
-Trust model: the trust boundary is the tailnet, as in docs/remote-hosting.md.
-Users are teammates who trust each other and the host admin; per-user
-separation is **organizational** (own data, own credentials, own workspaces),
-not adversarial. The adversarial boundary stays where it is today: the
-gVisor + egress sandbox around workspace pods.
+The trust boundary is the tailnet, as in docs/remote-hosting.md. Users are
+teammates who trust each other and the host admin. Per-user separation is
+organizational (own data, own credentials, own workspaces), not a defense
+against a hostile teammate. The defense against hostile code stays where it
+is today: the gVisor and egress sandbox around workspace pods.
 
-That last sentence fixes which substrate a multi-user deployment runs on.
-Under the `k8s` driver a workspace holds sentinels and the egress proxy holds
-the credentials, so "whose credential" is a question the deployment can
-answer per workspace. Under `containerless` (docs/containerless-driver.md)
-every workspace is a tmux server running as the server's own OS user, with
-the real OAuth bundles and API keys in its workspace, and the server itself
-is a process on that machine — there is no boundary between one user's agent
-and another user's data, or the host. **The multi-user deployment is a
-`k8s` deployment.** The principal plumbing is driver-neutral (it lives above
-the driver seam), so a containerless install runs the same code and gets
-ownership as organization — grouping, read-only views, attribution — but it
-cannot get credential or filesystem separation, and this plan does not
-pretend otherwise.
+That fixes the substrate. Under the `k8s` driver a workspace holds sentinel
+credentials and the egress proxy swaps in the real ones, so the deployment
+can decide per workspace whose credential is spent. Under `containerless`
+(docs/containerless-driver.md) every workspace is a tmux server running as
+the server's OS user, with real tokens in its checkout. Nothing separates
+one user's agent from another user's data or from the host. **The
+multi-user deployment is a `k8s` deployment.** The principal code lives
+above the driver interface, so a containerless install runs it too and
+gets ownership as organization (grouping, read-only views, attribution),
+but not credential or filesystem separation.
+
+## Where this starts
+
+Shipped, and what this plan builds on:
+
+- **Identity.** `identify()` in `packages/server/src/api/http/web-auth.ts`
+  gives every request a `Principal`: `local` for a loopback request, or the
+  `tailnet` user that `tailscale serve` (or the Tailscale operator's
+  Ingress) stamped in `Tailscale-User-Login`/`-Name`. There are no tokens,
+  no `YAAC_IDENTITY` knob and no login UI. A forwarded request with no user
+  (a tagged device, Funnel) is refused. Inside a workspace
+  (`YAAC_WORKSPACE_ID` set) an unproxied request is local whatever its Host,
+  because a nested server is reached through the outer install's forward.
+  `GET /whoami` returns the principal. docs/remote-hosting.md "Security
+  model" is the reference.
+- **Transcript reading, single-user.** `GET /workspace/:id/agent-sessions`
+  and `GET /workspace/:id/agent-sessions/:sessionId/transcript` resolve the
+  workspace row, so a stopped workspace answers. `getAgentSessionTranscript`
+  (`#domain/workspaces`) replays an `acp` conversation's record
+  (`projects/<slug>/acp/<workspaceId>/<agentSessionId>.jsonl`) and a `tui`
+  claude conversation through `claudeTranscriptAsAcp`. Other tools get
+  `NOT_SUPPORTED`, files over 64 MB get `TOO_LARGE`. The SPA's
+  `StoppedTranscript` renders it through the same `AcpTranscript` component
+  as the live chat pane. Sharing logs is therefore a policy grant on an
+  existing read path.
+- **Per-workspace agent history.** Each workspace's conversation files live
+  in `projects/<slug>/history/<workspaceId>/<part>` (`agentHistoryDir`),
+  mounted over the shared tool homes in a pod and linked into them on a
+  host (docs/workspace-storage.md). A transcript's owner is therefore
+  already its workspace's owner.
+- **Preconditions from an earlier audit**: exact workspace-id resolution,
+  globally unique workspace ids, confined server I/O on sandbox-writable
+  paths, immutable project ids for names outside the data dir, main-registry
+  write grants (docs/trust-split-builds.md "The write gate"), and a
+  read-only main clone (docs/server-git.md). The last holds for a project
+  once its legacy linked checkouts are converted
+  (docs/legacy-compat-shims.md "Converting linked checkouts").
+
+Not there yet: nothing user-shaped is in the schema. The only non-server
+identity is per-workspace (`workspaces.mamaTokenHash`, the bearer a
+containerless workspace presents to `POST /workspace/mama`). That is an
+advantage: there is no wrong model to migrate off.
+
+Other facts that shape the design:
+
+- Observed facts enter the database only through `applyWorkspaceEvent`,
+  and the substrate has no users in it. So principals annotate intent
+  (creates, writes), never observation. The event union, the driver
+  contract, `src/runtime` and `src/lib` stay user-free.
+- `/acp/attach` is not a read path. It needs a live conversation, and every
+  connection can send `prompt`, `cancel` and `permission` frames.
+- Port forwards bind nothing on the server (docs/port-forward-tunnel.md). A
+  client holds the listener and opens one `GET /forward/attach` WebSocket
+  per TCP connection.
+- The SPA is same-origin only, which one shared origin satisfies.
+- PGlite is an embedded single-writer database, so one server process keeps
+  it as it is.
 
 ## The structural decision
 
-There are two ways to partition a system by user: give each user a process,
-or give each row an owner. A process boundary cut through a cohesive object
-model costs a facade at every call site, a back-channel for the reads that
-cross it, lookup inversions (rows become reports, reads become pushed
-inputs), and lint lists to hold the line — all of it indirection with no
-payoff unless the endgame is genuinely per-user isolation, which the trust
-model above does not ask for.
+A system can be partitioned by user in two ways: a process per user, or an
+owner on each row. A process boundary cut through one object model costs a
+facade at every call site, a back-channel for cross-user reads, and lint
+rules to hold the line. That only pays off if the goal is real per-user
+isolation, which the trust model does not ask for.
 
-So this plan takes the second way: **one server, and `Principal` as a value
-that flows down the existing layers**. Users partition the data, not the
-process. Process seams, when they come, should follow technical boundaries
-(the session-operator plan's host-vs-cluster split), never organizational
-ones.
+So: **one server, with `Principal` as a value passed down the existing
+layers.** Users partition the data, not the process. If process splits come
+later, they should follow technical boundaries (host vs. cluster, as in
+docs/plans/session-operator.md), not organizational ones.
 
-What makes this cheap rather than invasive is a property the layered server
-already has (docs/layered-server.md): **every write a user can cause flows
-through a domain mediator, and the layers below domain never initiate
-intent.** Authorization needs exactly one chokepoint, and domain verbs
-already are it.
+This is cheap because of how the server is layered (docs/layered-server.md):
+every write a user can cause goes through a domain verb, and the layers
+below domain never start an action on their own. Domain verbs are already
+the single place to authorize.
 
-## Facts that shape the design
+## Design
 
-- `tailscale serve` injects spoof-stripped `Tailscale-User-Login` /
-  `Tailscale-User-Name` headers on proxied tailnet requests (Funnel traffic
-  gets none) — identity with no login UI, no OAuth, no password store.
-- The server already identifies every caller (docs/remote-hosting.md
-  "Security model"): `identify()` in `packages/server/src/api/http/web-auth.ts`
-  resolves a `Principal` — `local`, or the `tailnet` user `tailscale serve`
-  stamped — and stores it on the request, where `GET /whoami` and the
-  request log read it. Nothing user-shaped exists in the schema yet; the one
-  non-server identity axis is per-workspace, not per-user
-  (`workspaces.mamaTokenHash`, the bearer a containerless workspace presents to
-  `POST /workspace/mama`). That absence is an asset — there is no wrong model
-  to migrate off.
-- Observed facts enter db through one door (`applyWorkspaceEvent`), and
-  the substrate has no users in it. So principals annotate **intent**, never
-  observation — the event union, the runtime contract, and everything under
-  `src/runtime`/`src/lib` stay user-free.
-- **Transcript reading has shipped, single-user.** `GET
-  /workspace/:id/agent-sessions` and `GET
-  /workspace/:id/agent-sessions/:sessionId/transcript` resolve the workspace
-  *row* (not the pod), so a stopped workspace answers; `getAgentSessionTranscript`
-  in `#domain/workspaces` reads an `acp` conversation's JSONL
-  (`projects/<slug>/acp/<workspaceId>/<agentSessionId>.jsonl`) and replays a
-  `tui` claude conversation through `claudeTranscriptAsAcp`, refusing
-  other tools with `NOT_SUPPORTED` and oversized files with `TOO_LARGE`. The
-  SPA's `StoppedTranscript` renders it through the same `AcpTranscript`
-  component the live chat pane uses. The sharing feature is therefore a
-  policy grant over an existing read path, not a read path to build.
-- `/acp/attach` is *not* that read path: it requires a live conversation
-  and every connection gets the write frames (`prompt`, `cancel`,
-  `permission`).
-- Workspace port forwards bind nothing on the server (docs/port-forward-tunnel.md).
-  The server declares a host port per forward; a client (`yaac forward`, the
-  desktop app) holds the listener and opens one `GET /forward/attach` WS per
-  TCP connection, authenticated by the same bearer as every other WS.
-- The SPA is same-origin only (`OPTIONS` → 405, root-absolute URLs), which
-  a single shared origin satisfies trivially.
-- PGlite is single-writer and embedded — one server process keeps the
-  database exactly as it is.
-
-## Architecture
+### Deployment
 
 ```
 TAILNET
-  alice, bob, carol ── https://srv.<tailnet>.ts.net ── browser + CLI + phone
+  alice, bob, carol ── https://yaac.<tailnet>.ts.net ── browser, CLI, phone
                               │
-SHARED HOST                   ▼
-  tailscale serve → 127.0.0.1:<server port>   TLS + identity headers
-      → kind port-mapping → NodePort 30787 → the server pod (8787)
-  ONE yaac server                        principal-aware layered server
-  one cluster, one namespace, one registry, one data dir, one DB
+CLUSTER                       ▼
+  Tailscale operator Ingress (TLS + identity headers)
+      → yaac-server Service → the server pod
+  one server, one namespace, one registry, one data dir, one database
 ```
 
-No gateway process, no routing, no per-user provisioning: `tailscale serve`
-fronts the one server (a pod, per docs/server-in-cluster.md, published at a
-host loopback origin), and the server itself terminates identity. Deployment
-env such as `YAAC_ALLOWED_HOSTS` reaches the pod by re-running `yaac cluster
-install`.
+`yaac cluster install --tailnet` sets this up (docs/server-in-cluster.md
+"Reachability"). There is no gateway and no per-user provisioning. The
+server resolves identity itself.
 
-### Identity terminates in `api/http`: loopback or tailscale, no tokens
+Tagged devices carry no user and stay refused until a `whois` lookup exists:
+the tailscaled socket mounted into the server, resolving the forwarded
+address to a node, admitting it as a node principal. Device revocation in
+phase 3 rests on the same lookup.
 
-Shipped; docs/remote-hosting.md "Security model" is the reference. Three
-refinements of what this section first proposed:
+### Principals are passed as arguments
 
-- **No `YAAC_IDENTITY` knob.** The rule is derived from the request: a
-  request `tailscale serve` forwarded is identified by the user it stamps,
-  and one it did not forward is local only when it names a loopback `Host`.
-  A knob could be left off on a fronted server; the Host rule fails closed.
-- **No `tailscale-only` mode.** The fronting that would need it — the
-  in-cluster tailnet Ingress — never presents a loopback Host.
-- **The nested-server relaxation stays, narrowed.** Inside a workspace an
-  unproxied request is local whatever its Host, because an inner server is
-  reached as `srv.<tailnet>:<port>` through the outer install's forward;
-  serve-proxied traffic to it is still identified.
+Domain verbs take the principal as an explicit argument. There is no ambient
+request context. Routes stay thin and pass the principal the `identify()`
+middleware resolved.
 
-Tagged devices carry no user and are refused until the `whois` form — the
-tailscaled socket mounted into the server, resolving the forwarded address
-to a node — admits them as node principals. That is also what "revoke a
-device" rests on in phase 3.
+A new sealed domain folder, `domain/access`, owns the `Principal` type, the
+action names and `authorize(principal, action, resource)`, keeping policy in
+one place like `spawn-policy`. The v1 policy is: any authenticated user may
+read anything, only the owner may write.
 
-### Principals flow down as arguments
+"Read vs. write" is the wrong split to enforce, though. The audit below
+shows three classes:
 
-Domain verbs take the principal explicitly — same discipline as the
-reconciler's per-pass accessors and "no substrate step reads a row": no
-ambient request context, no thread-local. Routes stay translation-only; they
-pass the principal a middleware resolved.
+- **Genuine reads** (workspace list, detail, transcript, diff). Safe to
+  share, apart from the snapshot fields listed under "Snapshot field leaks".
+- **Reads that grant execution or reach**: every `/pty/attach` target, the
+  write frames on `/acp/attach`, and `/forward/attach` (a tunnel into the
+  workspace's listeners). These are `act`, owner-only.
+- **Writes**, split into own-resource (owner-gated) and install-global
+  (admin-gated). The second class is large and unguarded today.
 
-A new sealed domain folder, `domain/access`, owns the vocabulary: the
-`Principal` type, the action names, and `authorize(principal, action,
-resource)` — policy in one place, like `spawn-policy`. The intended v1
-policy is *any authenticated principal may read anything; only the owner
-may write*, and read-only log sharing is that policy plus the transcript
-route. But the audit below establishes that **"read vs. write" is the
-wrong axis to enforce on** — the real partition is three-way:
+So `authorize` takes a verb, `read` / `act` / `write` / `admin`. Log
+sharing is the one cross-owner `read` grant, on the transcript route.
 
-- **Genuine reads** (workspace list, detail, transcript, diff): safe to
-  share, modulo the field-level secret leaks catalogued in the snapshot
-  finding.
-- **Action-shaped reads** — endpoints that look like reads but grant code
-  execution or reach: every `/pty/attach` target, the `prompt`/`cancel`/
-  `permission` frames on `/acp/attach`, and `/forward/attach` (a tunnel into
-  the workspace's listeners). These are `act`, gated to the owner, never
-  "read".
-- **Writes**, further split into *own-resource* (owner-gated) and
-  *install-global* (admin-gated) — the audit found the second class is
-  large and mostly unguarded today.
+### Database
 
-So `authorize` takes an **action verb** (`read` / `act` / `write` /
-`admin`), not a boolean, and the transcript sharing feature is the one
-`read` grant across owners — deliberately narrow, because the audit shows
-how much of the surface is *not* a safe read.
+- A `users` table (login, display name, first/last seen), and an `owner`
+  column on `projects` and `workspaces`, backfilled to a built-in owner by
+  migration. Make `owner` a principal reference, not a login string, so it
+  can later name a team.
+- The other intent rows gain an owner the same way: `workspace_groups`,
+  `queued_workspaces`, `draft_workspaces`.
+- Per-user rows for what is install-global today: `preferences` (including
+  the git identity, `git_user_name`/`git_user_email`, which decides what
+  every workspace commits as), `shortcut_overrides`, and
+  `project_tool_defaults` (the create form's per-project memory of agent,
+  model, posture and UI, which also decides what prewarm warms).
+- The event path is unchanged. `WorkspaceEvent` carries no principal. The
+  create verb stamps the owner, and observation fills facts onto rows whose
+  owner is already set.
 
-### Db: owners on rows, and nothing below changes
+### Credentials and tool homes
 
-- A `users` table (login, display name, first/last seen) and an `owner`
-  column on `projects` and `workspaces` (Drizzle migrations; existing rows
-  backfill to the built-in owner).
-- `preferences` and `shortcut_overrides` become per-user rows. They are
-  described today as "the user's" — now there are several — and
-  `preferences` has grown a git identity (`git_user_name`,
-  `git_user_email`) that decides what every workspace commits as, which is
-  the most visibly wrong thing to leave install-global.
-- The event door is untouched. `WorkspaceEvent` carries no principal;
-  ownership is stamped when the *intent* row is created (the create verb),
-  and discovery/observation continue to fill facts onto rows whose owner is
-  already decided.
+Where they live today:
 
-### Store: credentials and tool homes key by owner
+- Tool OAuth/API-key bundles are files under the server-local
+  `.credentials/` dir (`claude.json`, `codex.json`, `opencode.json`,
+  `pi.json`), mirrored into each project's tool home. The server hands the
+  proxy the whole set as a Secret on every change and adopts token
+  rotations the proxy captures (docs/workspace-egress.md).
+- Git credentials (HTTPS tokens, generated SSH keys) are sealed
+  `git_credentials` rows assigned to projects (docs/git-credentials.md).
+  Project env vars and proxied secrets are sealed `project_env_vars` rows.
 
-Where things live today, because it decides what "owner-keyed" means for
-each:
+Two changes:
 
-- Tool OAuth/API-key bundles are flat files, `.credentials/<tool>.json`
-  under the data dir, mirrored into each project's tool home. The server
-  hands the proxy the whole set as a Secret on every write, and adopts the
-  rotations the proxy captures from another Secret (docs/workspace-egress.md).
-- Git credentials — HTTPS tokens and generated SSH keys — are named sealed
-  rows (`git_credentials`), each assigned to projects
-  (docs/git-credentials.md), handed to the proxy in that same Secret scoped
-  by project, or to a containerless workspace's own agent. Project env and proxied secrets are sealed rows too
-  (`project_env_vars`), handed to the proxy as one Secret of opened values
-  per project — registrations carry only `secretRef`s.
+- **Bundles move to `.credentials/<user>/<tool>.json`**, and the sealed-row
+  stores gain an `owner` column. The auth daemon already rides an identified
+  connection, so the server knows whose bundle is arriving. Per-user quota
+  follows: each user signs into their own accounts.
+- **Tool homes gain an owner segment.** `projects/<slug>/claude/` (and
+  `codex/`, `pi/`, `opencode-config/`) is mounted read-write into every pod
+  of the project: settings, account state, auto-memory and personal skills,
+  shared and writable across owners. Per-(project, owner) homes make a pod
+  mount only its owner's. Conversation history is already per-workspace, so
+  it needs no change. The containerless link set gains the segment, and the
+  phase-3 migration moves existing dirs to the built-in owner.
 
-Two moves, not one:
+The project repo clone stays shared across owners. That is the existing
+multi-workspace trust class, carried by branch isolation.
 
-- Host-side credential bundles move from `.credentials/<tool>.json` to
-  `.credentials/<user>/<tool>.json`. The
-  auth-daemon flow already rides an authenticated connection, so the server
-  knows which user's bundle is arriving. Per-user quota falls out: each user
-  signs into their own Claude/Codex accounts. The sealed-row stores gain an
-  `owner` column on the same terms.
-- **Tool homes gain an owner segment.** Today `projects/<slug>/claude/`
-  (and `codex/`, `pi/`, `opencode-config/`) is mounted RW into *every*
-  workspace pod of the project — settings, account state, and transcript
-  files shared and mutually writable across whoever owns those workspaces
-  (docs/workspace-storage.md calls every workspace "a concurrent writer into
-  one transcript directory"). Per-(project, owner) tool homes make a pod
-  mount only its owner's agent state, and put each transcript under its
-  owner by construction — which is also what keeps "whose log is this" a
-  path fact for the sharing feature. The `#runtime/agents` transcript
-  locators, `agent_sessions.transcriptPath`'s project-relative convention
-  and the containerless symlink set gain the segment; the phase-3 migration
-  backfills existing dirs to the built-in owner.
+### Runtime and proxy
 
-The project repo clone (`projects/<slug>/repo`) stays shared across the
-project's workspaces regardless of owner — that is the existing
-multi-workspace trust class, and branch isolation is what already carries it.
+The driver contract, the k8s driver, images, egress and terminals do not
+learn that users exist. A driver is handed paths and intents, never a
+lookup, which is the shape ownership needs. Two things become owner-keyed
+through the workspace without the runtime seeing a user:
 
-### Runtime and platform: no user vocabulary
+- The pod spec mounts whichever tool-home and credential paths were staged
+  for that workspace. This is only a path change.
+- The egress proxy's credentials. This is real work. Today injection is
+  deliberately not keyed: the proxy resolves sentinels against one
+  install-global credential set, and its own comment says "any agent in any
+  workspace may now spend any credential the host has signed in". The proxy
+  already maps each request's source IP to a workspace registration. A
+  registration gains a credential-set key, staged by the server from the
+  workspace's owner, and every credential path resolves through it:
+  sentinel swaps, the GitHub token pool, and which ssh-agent identities a
+  connection may use (scoped today to the project's assigned keys). OAuth
+  refresh write-back routes the same way. Today any workspace's refresh
+  overwrites the bundle every other workspace uses; under ownership it
+  writes only to its owner's.
 
-The runtime driver contract, the k8s driver, images, egress, terminals —
-none of it learns that users exist. A driver is handed paths and intents,
-never a lookup (`docs/layered-server.md`), and that is exactly the shape
-ownership needs.
+Under `containerless` the equivalent is `#domain/auth`'s credential-sync,
+which copies refreshed bundles between a project's tool home and the host
+store. With owner-keyed homes and bundles it works per (project, owner)
+without change. That is bookkeeping, not separation: the workspace holds the
+real token either way.
 
-Two mechanisms do become owner-keyed *through the workspace*, without the
-runtime ever seeing a user: the pod spec mounts whichever tool-home and
-credential paths the store staged for that workspace (a path change only),
-and the egress proxy's credential machinery. The proxy piece is real work,
-not a relabel: today injection is deliberately **not** keyed at all — the
-proxy resolves the placeholder sentinels against one install-global bundle
-file per tool, and its own comment states that "any agent in any workspace
-may now spend any credential the host has signed in". The proxy already
-resolves every request's source IP to a workspace registration (the
-attribution machinery per docs/workspace-egress.md) and keeps per-workspace
-allowlists and injection rules; the change is that a registration gains a
-credential-set key, staged by the server from the workspace's owner, and
-every credential path resolves through it: sentinel swaps, the GitHub token
-pool, and which ssh-agent identities a workspace's connections may list and
-sign with (today the relay scopes them to the keys assigned to the
-workspace's project, not to its owner). The OAuth **refresh
-write-back** must route the same way — the proxy captures Claude/Codex
-token-refresh responses and overwrites the stored bundle, so today any
-workspace can rotate the credential every other workspace uses; under
-ownership it writes back only to its owner's bundle.
+### API and frontend
 
-Under `containerless` the equivalent machinery is `#domain/auth`'s
-credential-sync, which harvests a refreshed bundle from a project's tool
-home up to the host store and pushes the host store's back down. With
-owner-keyed tool homes and bundles it converges per (project, owner) for
-free — but as the trust-model section says, that is bookkeeping, not
-separation: the workspace holds the real token either way.
-
-### API surface
-
-- The snapshot hub's `buildSnapshot()` becomes principal-aware only in what
-  it *labels*, not what it hides: v1 policy is read-everything, so the
-  snapshot gains owner fields for the UI to group by (mine vs. teammates),
-  and per-principal filtering becomes a policy question for later, not a
-  hub rewrite now.
-- The transcript route is the shared read; `authorize(read)` on it is the
-  whole sharing feature. Its tool coverage (claude JSONL; codex/pi later;
-  opencode leaves no host record) is a single-user gap, not a tenancy one.
-- Write routes call `authorize` via their domain verbs; the PTY, ACP and
-  forward attach upgrades authorize as `act`. A read-only live view — the
-  ACP replay minus the write frames, or a PTY tee minus stdin — is roadmap
-  §2's "observable sessions", not part of v1.
-
-### Frontend
-
-Ownership-aware, not two apps: workspaces grouped mine-first with teammates'
-visible read-only (no PTY input, no chat input, no lifecycle buttons —
-driven by an `owned` flag on the snapshot rows), and the existing stopped
-transcript view opened for a teammate's running workspace too — the static
-route already renders through `AcpTranscript`, so "view a teammate's
-session" is the same pane fed from the same endpoint. This is the roadmap's
-"shared / observable sessions" row arriving as a view-mode rather than a
-separate surface; a *live* view of a teammate's agent is the §2 item that
-follows.
+- `buildSnapshot()` (`api/events.ts`) gains owner fields for the UI to group
+  by. It does not filter rows in v1, apart from the fields listed under
+  "Snapshot field leaks".
+- The transcript route is the shared read. `authorize(read)` on it is the
+  whole sharing feature.
+- Write routes authorize through their domain verbs. The PTY, ACP and
+  forward attach upgrades authorize `act`.
+- The SPA groups workspaces mine-first and shows teammates' read-only: no
+  PTY input, no chat input, no lifecycle buttons, driven by an `owned` flag
+  on snapshot rows. A teammate's running workspace opens in the existing
+  transcript view. A live read-only view is a later feature (below).
 
 ## Shared-surface audit
 
-Every backend surface where one user's action could write state another
-user's workspaces consume, and its disposition. (The proxy findings come
-from `k8s/proxy/proxy.ts` and docs/workspace-egress.md; the intended model
-there reasons about isolation between *installs*, not between users of one
-install, which is why several of these exist.)
+Every place where one user's action could change state another user's
+workspaces consume, and what to do about it. Findings come from a sweep of
+the HTTP/WS routes, the pod layer and `k8s/proxy/proxy.ts`.
 
-**Becomes owner-keyed in phase 3** (rows/paths/registrations gain the owner
-dimension):
+Two facts frame all of it:
 
-- Proxy credential injection, refresh write-back, GitHub token selection,
-  ssh-agent identity filtering — see the runtime section above.
-- Tool homes and host credential bundles — see the store section above.
-- **The prewarm pool.** Spares take the normal create path
-  (`prewarm-reconcile` calls `createWorkspace` with `prewarm: true`), so
-  their tool-home and credential mounts are fixed at spare creation and pods
-  cannot be remounted — a spare is owner-bound the moment it exists. The
-  pool (`computePrewarmPlan`, per project, `YAAC_PREWARM_POOL_SIZE` spares)
-  becomes per-(project, owner), and claim filters by owner.
-- **The global user Dockerfile** (`PUT /config/user-dockerfile`) is
-  "applied as the top layer of every project image" — one user's edit runs
-  in every user's future sandboxes. V1: admin-only (policy), keeping one
-  image chain; per-owner top layers (and per-owner image chains, which the
-  content-hash tags would absorb) only if personalization proves worth the
-  build fan-out.
-- Per-user UI/preference state that is install-global today and hence
-  cross-user writable: the per-project create memory (last agent and each
-  agent's model, posture and UI), git identity, shortcut overrides, and
-  workspace death read-marks (`deathSeen` on the row, surfaced by
-  `/workspace/list-stopped`; `mark-all-deaths-seen` dismisses for everyone).
+- **Every workspace pod runs as the same uid, with passwordless sudo, on
+  shared hostPaths** (`installSecurityContext()` in
+  `drivers/k8s/substrate/pod-spec.ts`; gVisor has no user-namespace
+  mapping, so hostPath uids pass through). There is no filesystem isolation
+  between workspaces. Owner separation can only come from which paths get
+  mounted. Of the mounts `createWorkspace` builds, only the main clone's
+  `.git` and the attachments dir are read-only.
+- **Read-all is unsafe until "read" is narrowed** to the genuine reads
+  above, because much of what looks like a read is execution or leaks a
+  secret.
 
-**Changes scoping semantics** (today's scope is wrong for multi-user, and
-two are dubious even single-user):
+### Execution disguised as reads
 
-- **Proxied secrets are per-project, not per-owner.** The cross-*project*
-  half is fixed: secrets are `project_env_vars` rows, sealed at rest, and a
-  `secretRef` is scoped `<projectSlug>/<NAME>`, so one project's rule can no
-  longer resolve another's value. What tenancy adds is the owner dimension
-  where the value is user-supplied.
-- **Persistent allow-host and forward-port approvals fan out
-  project-wide.** `persist:true` writes the host or port into the project
-  config overlay and then passes `fanOutToProject` to the driver, widening
-  every running sibling workspace — under ownership, that is a project
-  *write* (owner/team-gated); non-owners get per-workspace, non-persistent
-  approvals.
-- **Builder pods write the shared registry under a per-project grant.**
-  Every write to the main registry needs a signed grant naming the repos
-  it covers, and a builder's names only the layer it builds and its
-  project's step-cache repo (docs/trust-split-builds.md "The write gate").
-  That closes cross-project writes, but not cross-user ones inside a
-  communal project: `yaac-user-<id>` is built from each user's own
-  `Dockerfile.user`, yet every user's builder may write it, and the image
-  one user's agent pushes there is what another user's next workspace
-  boots. Phase 3 keys the user-layer repo — and so its grant — by
-  (project id, owner).
-- **The per-project registries are a cross-user channel too.** They are
-  not on the builder path, but they are written from *inside* workspace
-  sandboxes (nested-image salvage), unauthenticated, by every workspace of
-  the project, and the node image store materializes their contents into
-  every nested workspace of the project — upstream names included. Within a
-  communal project that is one user's agent choosing the images another
-  user's nested workspace resolves locally. Phase 3 derives the registry
-  name and store path from (project id, owner) rather than the project id.
+- **`/agent/auth` socket takeover.** `authAgentHub.setSocket` (in
+  `domain/auth/agent.ts`) closes the current auth-daemon socket and installs
+  the caller's. Any user can evict the real login broker and receive the
+  OAuth code a victim pastes at `POST /auth/login/:id/input`: an account
+  takeover. Fix: one daemon socket per principal, a connection can replace
+  only its own user's daemon, and `/auth/login/:id/*` and
+  `/auth/install/:id/*` flows carry an owner (404 for others).
+- **`/acp/attach`** handles `prompt`, `cancel` and `permission` frames
+  (`runtime/agents/acp-bridge.ts`). Prompting an agent, and answering its
+  permission asks, is code execution by proxy. It is `act`, owner-only.
+  Replay goes through the HTTP transcript route.
+- **`/pty/attach`**: every target is code execution. `parsePtyTarget`
+  (`runtime/terminals/pty-bridge.ts`) yields `shell`, `native`, `agent` or
+  `window:<id>`, and falls back to `agent`. The bridge always forwards input
+  and `signal` frames, and every viewer resizes the shared window
+  (`window-size latest`). A read-only viewer needs its own path: drop input
+  and signals, keep the viewer's size off the shared window, exclude
+  `native`, cap viewer sessions per workspace. v1 is owner-only PTY plus the
+  read-only transcript pane.
+- **`/forward/attach`** lets any identified user splice into any workspace's
+  forwarded ports. A nested yaac treats every unproxied request as local, so
+  holding the tunnel means holding the nested server's full API
+  (docs/remote-hosting.md relies on the tunnel being the only way in).
+  Authorizing `act` on the workspace closes both. `lib/port-policy.ts`
+  already refuses yaac's own infra ports; a config-declared sensitive port
+  such as 9229 is honored on purpose, and the owner gate limits who
+  reaches it.
 
-**Stays shared by design** (availability or teammate-trust class, named
-rather than fixed):
+### Install-global writes any user can make today
 
-- The single proxy pod and its install-global fate-sharing: MITM CA (one
-  key transits everyone's traffic), DNS stub, leaf-cert cache, the mama
-  command queue (`MAMA_MAX_PENDING_TOTAL` across the install, with a
-  per-workspace cap beside it) and ssh-agent connection caps (a busy
-  workspace can starve siblings — a fairness knob to revisit, not a
-  correctness hole), and the proxy's record ConfigMap, which is one object
-  for the whole install.
-  Attribution itself is sound: the pod-watch index maps source IP to
-  workspace, filter chains are per pod IP with no default chain, transparent
-  ports are node-CIDR-gated, and the relay handshake carries the
-  server-authored proxy secret.
-- The project repo clone, mounted read-write into every workspace pod of
-  the project — the existing multi-workspace trust class; branch isolation
-  carries it, and `git-auth-failures` records staying project-scoped
-  matches it.
-- Forwarded workspace ports are whatever the *client* binds: `yaac forward
-  --bind <tailnet ip>` re-exposes a workspace's dev server to the whole
-  tailnet ungated, and that is the forwarding user's choice about their own
-  machine, not a server surface. The server-side half, `/forward/attach`,
-  is `act`-gated (below).
+- **Credentials** (`api/routes/auth.ts`). `PUT /auth/:tool` overwrites the
+  install's bundle and every project's mirror. `POST /auth/clear` with
+  `service: all` wipes all four tool bundles. `POST
+  /auth/git/credentials`, `/git/ssh-keys`, and the `PATCH`, `/replace` and
+  `DELETE` routes on `/auth/git/credentials/:id` act on the one shared
+  credential set; replacing someone's token redirects their pushes. `GET
+  /auth/list` masks key material but returns the full inventory. All become
+  per-user stores, caller-scoped.
+- **Image and build inputs.** `PUT /config/user-dockerfile` is the top layer
+  of every project image, the widest blast radius.
+  `/config/user-build-files/*` is the same (`resolveRoot` in
+  `api/routes/build-files.ts` needs the principal to express per-user).
+  `PUT /project/:slug/dockerfile` and the project `build-files` routes put
+  code in every pod of the project. v1: admin or project owner only, one
+  image chain. Per-owner top layers only if personalization proves worth the
+  extra builds. `POST /image/builds/:id/retry` can rebuild the egress-proxy
+  sidecar: admin only. (All of these answer `NOT_SUPPORTED` under
+  containerless.)
+- **Fan-out writes.** `allow-host` and `forward-port` with `persist: true`
+  write the project config and pass `fanOutToProject` to the driver,
+  widening every running sibling workspace. Under ownership that is a
+  project write; non-owners get per-workspace, non-persistent approvals.
+  `PUT /project/:slug/env` reaches every future workspace of the project.
+  `DELETE /project/:slug` purges all its workspaces.
+- **Other users' rows.** `mark-all-deaths-seen` clears `deathSeen` for
+  everyone's stopped workspaces; `POST /workspace/provisioning/:id/dismiss`
+  dismisses anyone's provisioning entry (the registry gains an owner).
+- **Shared preferences**: the git identity (`/config/git-identity`),
+  `/shortcuts/*` and the create-form memory. Per-user rows, per the database
+  section.
 
-### Projects under ownership
+### Scoping that has to change
 
-Projects are the one resource where "read all, write own" is not enough of
-an answer, because slugs are a global namespace and the clone is heavy.
-Two coherent shapes:
+- **Prewarm.** Spares take the normal create path (`prewarm-reconcile` calls
+  `createWorkspace` with `prewarm: true`), so their mounts are fixed when
+  the spare is created and a spare is owner-bound from birth. The pool
+  (`computePrewarmPlan`, `YAAC_PREWARM_POOL_SIZE` per project) becomes
+  per-(project, owner), and claiming filters by owner.
+- **Proxied secrets** are scoped `<projectSlug>/<NAME>`, which already
+  blocks cross-project reads. Tenancy adds the owner where the value is
+  user-supplied.
+- **The user-layer image repo.** Builder pods write the main registry under
+  a grant naming only their layer and their project's step-cache repo. That
+  blocks cross-project writes, not cross-user ones: `yaac-user-<id>` is
+  built from each user's `Dockerfile.user`, yet every user's builder may
+  write it, and what one user pushes there is what another's next workspace
+  boots. Key that repo and its grant by (project id, owner).
+- **Per-project registries.** Workspaces push their built and pulled images
+  into the project's registry from inside the sandbox (the image-cache
+  salvage, docs/nested-containers.md), and the node image store serves them
+  to every nested workspace of the project. Within a shared project, one
+  user's agent chooses the images another's workspace resolves locally.
+  Derive the registry name and store path from (project id, owner).
+- **`git-auth-failures`** proxy records are keyed per project and cleared by
+  any workspace's success. Key them per (project, owner) so one user's valid
+  token does not hide another's expired one.
 
-- **Owner-private projects**: only the owner creates workspaces. Two users
-  working the same repo either collide on the slug or duplicate the clone
-  and the image chain.
-- **Communal projects** (recommended): any authenticated user may create
-  workspaces in any project — the workspace is owned by its creator; project
-  *mutation* (config, env and secrets, Dockerfile, build files, delete)
-  stays owner-gated. Creating a workspace in someone's project means running
-  their config and image — the same trust class as sharing the repo — and
-  it is the shape team projects grow into. Project delete gains a guard:
-  blocked (or force-gated) while non-owner workspaces exist.
+### Stays shared by design
 
-**Git authentication stays per-user under communal projects — that is
-what makes them safe.** The upstream provider's per-user permissions are
-the one real external ACL in the system, and every git path presents the
-*requesting user's* credential, never one ambient to the project: host-side
-fetches on the shared clone (create/restart, base-branch resolution) run
-with the workspace creator's credential — and because create unconditionally
-runs `fetchOrigin` and fails on a fetch error, every private-repo create
-*is* an upstream access check for the creator, with no separate probe to
-add (a remote with no matching credential fetches unauthenticated, so
-public repos need none); proxy HTTPS git and `gh` token selection draws
-from the owner's pool; the ssh-agent serves only the owner's identities;
-and the pod's git author identity is seeded from the owner's preference
-rows rather than the install's, so agent commits attribute to the right
-human. Two consequences named plainly: the shared clone caches objects
-across users, so once any member has fetched a repo its *bytes* are
-team-readable regardless of upstream permissions — consistent with the v1
-read-everything policy, and the reason a repo some teammates must not read
-does not belong on a shared deployment until per-project visibility
-exists. And the proxy's `git-auth-failures` records, today keyed per
-project and cleared by any workspace's success, must key per
-(project, owner) — one user's valid token must not mask another's expired
-one.
+- The one proxy pod: its MITM CA, DNS stub, leaf-cert cache, record
+  ConfigMap, the mama queue cap (`MAMA_MAX_PENDING_TOTAL`, beside
+  `MAMA_MAX_PENDING_PER_WORKSPACE`), and ssh-agent connection caps. A busy
+  workspace can starve siblings; that is a fairness knob, not a correctness
+  hole. Attribution itself is sound: source IP maps to workspace through the
+  pod watch, and netd identifies traffic by the veth it arrives on
+  (docs/workspace-egress.md).
+- The project repo clone, per the credentials section.
+- Whatever a client binds: `yaac forward --bind <tailnet ip>` exposes a
+  workspace port to the whole tailnet. That is the forwarding user's choice
+  about their own machine. The server side, `/forward/attach`, is
+  `act`-gated.
 
-## Permissions pitfalls found by a code audit
+### Spawning (`yaac-mama`)
 
-A sweep of the HTTP/WS surface and the pod/runtime layer turned up specific
-flaws. Two structural facts frame all of them:
+Attribution is sound. Under k8s the proxy resolves the caller from its pod
+IP; under containerless the workspace presents its per-workspace bearer.
+Both reach `runMamaCommand`, and `spawn-policy.ts` stops a workspace
+spawning into another project. Gaps under tenancy:
 
-- **Every workspace pod runs as the same host uid, with passwordless sudo,
-  on shared hostPaths** (`installSecurityContext()` in
-  `drivers/k8s/substrate/pod-spec.ts` stamps every pod with the install uid;
-  gVisor has no userns/idmap, so hostPath uids pass through raw). There is
-  therefore **no filesystem-level isolation between workspaces** — owner
-  separation can only come from *which paths get mounted*, never from
-  permissions on a shared mount. Every "owner-key this dir" item below means
-  mount-selection, and a shared-writable mount is a cross-user channel no
-  policy check sees. (Of the mounts `createWorkspace` builds, only the
-  attachments and the project's main clone are `readOnly`.)
-- **Read-all is unsafe until "read" is narrowed** (the three-way split
-  above), because much of what looks like a read is either execution or a
-  secret disclosure.
-
-### Preconditions — pre-existing bugs that make ownership meaningless until fixed
-
-This one is exploitable in the *current* single-user server too; ownership
-cannot be enforced on top of it. It is shipped for every project whose
-last linked checkout has been converted (docs/server-git.md). The rest of
-that list — exact workspace-id
-resolution, the `.cached-packages` mount, `cacheVolumes` key traversal and
-the ungated `POST /auth/fake` — has shipped.
-
-- **The project's main clone was mounted read-write, so a workspace could
-  point the server's git at other projects' files.** Each workspace is now a
-  clone of its own, and pods mount the main clone read-only
-  (docs/server-git.md). What remains is the upgrade window: until a
-  project's last linked checkout from an older install is converted, a
-  legacy pod still holds the main clone read-write
-  (docs/legacy-compat-shims.md).
-
-### Action-takeover chains (multi-user)
-
-- **`/agent/auth` socket hijack → OAuth code interception.** The WS handler
-  `authAgentHub.setSocket(sock)` closes the incumbent auth-daemon socket and
-  installs the caller's (`domain/auth/agent.ts`); the daemon authenticates
-  like any other client, indistinguishable from a CLI. Any authenticated
-  user can evict the real login broker *and* become the recipient of the
-  OAuth authorization code a victim pastes at `POST /auth/login/:id/input`
-  — an account-takeover chain. With identity resolved per request the fix
-  is structural rather than a new credential kind: the hub holds **one
-  socket per principal**, a connection can only displace its own user's
-  daemon, and `/auth/login/:id/*` flow rows carry the owner (404 for
-  non-owners).
-- **`/acp/attach` is not a log tail.** Its `prompt` frame calls
-  `conversation.prompt(text)`, `cancel` cancels a turn, and `permission`
-  answers a held permission ask (`runtime/agents/acp-bridge.ts`) —
-  prompting an agent is code execution by proxy, and answering its
-  permission prompt more so. The route requires a live conversation, so it
-  is `act`, owner-gated, full stop; replay is the HTTP transcript route. A
-  read-only live socket (replay events, drop the three write frames) is the
-  "observable sessions" item.
-- **Every `/pty/attach` target is code execution, and no viewer mode
-  exists.** `parsePtyTarget` yields `shell`/`native` (raw/tmux-prefixed
-  shells), `agent`, or `window:<id>` (a TUI or another user's dev-server
-  window), and falls back to `agent` for anything unrecognized. `bridge()`
-  unconditionally writes binary frames to stdin, honors `signal`, and every
-  view resizes the shared window to its client (`window-size latest`
-  follows whichever client last attached, resized or typed). A read-only viewer is real
-  work (`runtime/terminals/pty-bridge.ts`): a `{readOnly}` path that drops
-  binary and `signal` frames, keeps a viewer's resize off the shared
-  window (a viewer's browser size otherwise moves the owner's pane), excludes
-  `native`, and caps viewer tmux sessions per workspace. For v1, owner-only
-  PTY plus the read-only transcript pane is the safe subset; a live TUI
-  viewer is a §2 "observable sessions" item, not free.
-- **`/forward/attach` is an identity-gated tunnel to any workspace's
-  listeners, and a nested yaac serves its full API to whoever holds it.**
-  The tunnel is identified, but every identified user can splice into
-  every workspace's forwarded ports. A nested yaac treats every unproxied
-  request as local (the `YAAC_WORKSPACE_ID` relaxation in `identify()`);
-  docs/remote-hosting.md argues this is fine because the inner server is
-  reached only through the outer server's tunnel — which holds exactly as
-  long as the tunnel is owner-gated.
-  Disposition: `/forward/attach` authorizes `act` on the workspace, which
-  closes both. A delegated tunnel (handoff, later) hands over the inner
-  control plane with it, which is the trust class handoff means anyway —
-  the delegate can already type into the agent. Separately, the port
-  policy (`lib/port-policy.ts`) now refuses yaac's infra range in config
-  `portForward` and on the k8s dial; a
-  config-declared *sensitive* port such as 9229 is still honored on
-  purpose, and the owner gate above is what limits who reaches it.
-
-### Install-global writes that need admin/owner gating
-
-The audit found the "only the owner may write" rule has a large second
-class — *install-global* writes any user can make today:
-
-- **Credentials** (`api/routes/auth.ts`): `PUT /auth/git/credentials`
-  wholesale-replaces the entire credential set across both stores (swap in
-  your token for a victim's host pattern and their pushes go to you); `PUT
-  /auth/:tool` overwrites the install Claude/Codex bundle and every
-  project's mirror; `POST /auth/clear` with `service: all` wipes every git
-  credential, every SSH key row and all four tool bundles. All must be
-  per-user stores, agent pods mounting the owner's. `GET /auth/list` now
-  masks key material (SSH rows show only a pattern and a "stored on server"
-  preview) but still returns the full pattern inventory — caller-scope it.
-- **Tokens** (`api/routes/tokens.ts`): `DELETE /tokens/:name` is an
-  unscoped global logout (names are enumerable via `GET /tokens`, which
-  lists every user's devices and browser sessions); the
-  `MAX_WEB_SESSIONS`/`MAX_EXCHANGE_TOKENS` FIFO caps are global, so one user
-  spamming token mints evicts others' live sessions. The identity section
-  resolves this by deletion rather than scoping: the routes, the store and
-  the caps go, and the middleware **returns the principal** the tailnet or
-  the loopback resolved — that signature (`web-auth.ts`) is the first thing
-  to change, since the whole plan hangs off it.
-- **Image/build surface**: `PUT /config/user-dockerfile` (top layer of
-  *every* project image — highest blast radius), `/config/user-build-files/*`
-  (same, and the shared `resolveRoot` signature can't express per-user until
-  it takes the Principal), `PUT /project/:slug/dockerfile` and the
-  `build-files` CRUD are all code-in-every-pod writes — admin or
-  project-owner only. `POST /image/builds/:id/retry` can rebuild the shared
-  egress-proxy sidecar (infra DoS) — admin. (All of these already answer
-  `NOT_SUPPORTED` under `containerless`, which has no images.)
-- **Cross-boundary fan-out writes**: `allow-host` and `forward-port` with
-  `persist:true` widen every running sibling workspace of the project (an
-  egress/exposure channel into other users' agents); `PUT
-  /project/:slug/env` puts variables and secrets into every future workspace
-  of the project; `mark-all-deaths-seen` and `POST
-  /workspace/provisioning/:id/dismiss` write other users' rows; `DELETE
-  /project/:slug` purges every workspace of the project. Owner/project-owner
-  gated, with the provisioning registry gaining an owner field.
-- **Shared preference rows**: the per-project create memory (also changes
-  what prewarm warms), the git identity and `/shortcuts/*` are install-global
-  — per-user rows
-  (low severity, but reads like a bug).
-
-### The spawn flow needs an owner carried through it
-
-`yaac-mama` attribution is otherwise sound. Under `k8s` the proxy resolves
-the caller from its source pod IP at enqueue time and the server's drain
-(`mama-reconcile`) takes project and tool from the caller's live workspace
-listing; under `containerless` the workspace presents a per-workspace bearer
-minted at create, of which the row keeps only a hash, and a request never
-names its own workspace. Both transports converge on `runMamaCommand` and
-its allowlist, and a pod *cannot* spawn into another project
-(`domain/workspaces/spawn-policy.ts`). Gaps under tenancy: no owner is
-carried in `SpawnRequest`; the spawned workspace should **inherit the
-caller's owner**, read from the caller's workspace row the drain already
-resolves. The queue caps are `MAMA_MAX_PENDING_TOTAL` across the install
-plus a per-workspace pending cap and `SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE` —
-one user's workspaces can still fill the shared total, so add a per-owner
-budget. And `decideSpawn` falls back to the project's last agent
-(request tool → caller's tool → the project's last agent → `claude`) and its
-credential — resolve tool *and* credential from the inherited owner, and
-fail the spawn if the owner has no credential rather than creating an
-unauthenticatable workspace. The proxy `/tools` roster leaks other users'
-configured tools unless filtered by caller owner.
+- `SpawnRequest` carries no owner. A spawned workspace inherits its
+  caller's owner, read from the caller's row the drain already resolves.
+- The caps are install-wide (`MAMA_MAX_PENDING_TOTAL`) and per-workspace
+  (`SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE`). Add a per-owner budget.
+- `decideSpawn` falls back request tool → caller's tool → project's last
+  agent → `claude`. Resolve tool and credential from the inherited owner,
+  and fail the spawn if that owner has no credential.
+- The proxy's `/tools` roster shows every configured tool. Filter by the
+  caller's owner.
 
 ### Snapshot field leaks
 
-`buildSnapshot` (`api/events.ts`) serializes one payload and fans it to
-every connection, so per-user filtering means giving up the
-single-serialization fast path (or serializing per audience group). Fields
-that are per-user-sensitive even under a generous read-all reading:
-`planUsage`/`codexPlanUsage` (the credential owner's subscription tier and
-live quota — billing telemetry), `gitAuthFailures` (which private hosts
-exist and whose token is broken), provisioning `error`/`message` (repo
-URLs, paths), `projects[].remoteUrl` (every user's private repo URLs), and
-`workspaces[].prompt` (the founding user ask — free-form and the field most
-likely to surprise). The transcript sharing feature wants
-workspaces/sessions readable, but these fields should be owner-scoped in the
-snapshot from the start.
+`buildSnapshot` serializes one payload for every connection, so per-user
+fields mean giving up that single serialization (or serializing per
+audience). Owner-scope these from the start: `planUsage`/`codexPlanUsage`
+(the credential owner's plan and live quota), `gitAuthFailures` (private
+hosts and whose token broke), provisioning errors and messages (repo URLs,
+paths), `projects[].remoteUrl`, and `workspaces[].prompt` (the user's
+founding ask).
 
-### Skills discovered from writable dirs are a cross-user injection path
+### Skills from writable dirs
 
-Only the packaged builtin skills are delivered read-only per workspace
-(a read-only mount under `k8s`; symlinks into the install under
-`containerless`). The *personal* skill tier is just the shared per-project
-tool home (`claudeDir(slug)/skills`, and the codex/opencode/pi
-equivalents in `domain/skills/discover.ts`), writable by the agent:
-workspace A writes `~/.claude/skills/foo/SKILL.md` and every later workspace
-in the project — any owner — loads it into agent context, persisting past
-A's deletion. The *project* tier reads `origin/<branch>` via `ls-tree` from
-the main clone, which no workspace can write once its project is converted.
-Owner-keying the tool homes fixes the personal tier for free; the UI should
-show skill provenance (which owner/workspace last wrote it) and treat
-writable-dir skills as untrusted by default. Title generation, by contrast,
-is **not** a quota surface — it runs a local llama.cpp subprocess against a
-downloaded GGUF, no credential — so it only needs its sweep and `attempted`
-set scoped by owner and `setWorkspaceTitle` owner-gated.
+Builtin skills are delivered read-only. Personal skills are read from the
+shared tool home (`claudeDir(slug)/skills` and the other tools' equivalents
+in `domain/skills/discover.ts`), which agents can write. Workspace A writes
+`~/.claude/skills/foo/SKILL.md` and every later workspace in the project, of
+any owner, loads it. Owner-keyed tool homes fix this. The UI should also
+show which workspace last wrote a skill. Project skills are read from the
+main clone's `origin/<branch>`, which no workspace can write.
 
-## How the rest of roadmap §2 lands in this structure
+Title generation is not a quota surface (it runs local llama.cpp, no
+credential). It only needs its sweep scoped by owner and
+`setWorkspaceTitle` owner-gated.
 
-Each next feature is rows + policy + UI in an existing layer — no new
-processes, no new arrows:
+### Projects under ownership
 
-- **Observable sessions** — the read-only ACP socket and the `{readOnly}`
-  PTY bridge described above, each a `read` grant on a live attach.
-- **Presence** — the api layer already owns connections; a registry of
+Slugs are one global namespace and the clone is heavy, so "read all, write
+own" does not settle projects. Two options:
+
+- **Owner-private projects**: only the owner creates workspaces. Two users
+  on one repo collide on the slug or duplicate the clone and image chain.
+- **Shared projects** (recommended): anyone may create workspaces in any
+  project, owned by whoever creates them. Changing the project (config, env
+  and secrets, Dockerfile, build files, delete) stays owner-gated. Creating
+  a workspace there means running the owner's config and image, the same
+  trust as sharing the repo. Project delete is blocked (or needs force)
+  while others' workspaces exist.
+
+Git authentication stays per-user, which is what makes shared projects
+safe. The git host's per-user permissions are the one real external access
+control, so every git operation uses the requesting user's credential:
+
+- Host-side fetches on the shared clone (create, restart, base-branch
+  resolution) use the workspace creator's credential. Create always runs
+  `fetchOrigin` and fails on a fetch error, so a private-repo create is
+  already an access check for its creator.
+- Proxy HTTPS git and `gh` tokens come from the owner's pool, and the
+  ssh-agent serves only the owner's keys.
+- The pod's git author identity comes from the owner's preferences.
+
+Consequence: the shared clone caches objects across users, so once anyone
+has fetched a repo, its contents are readable by the team. A repo some
+teammates must not read does not belong on a shared deployment until
+per-project visibility exists.
+
+## Later features on this structure
+
+Each is rows plus policy plus UI in an existing layer:
+
+- **Observable sessions**: a read-only ACP socket (replay, no write frames)
+  and the read-only PTY path above, each a `read` grant.
+- **Presence**: the api layer already owns connections; a registry of
   attached principals feeds the snapshot.
-- **Handoff** — a domain verb mutating attachment/ownership under
-  `authorize`; the PTY bridge already tees multiple clients.
-- **Comments** — a db table with an author column and read policy.
-- **Team projects** — `owner` generalizes from a user to a team; policy
-  gains roles. The schema move is designed for by making `owner` a
-  principal reference, not a string login.
-- **Scaling the execution side**, if one process ever isn't enough, is the
-  session-operator plan — a *technical* seam (host vs. cluster
-  convergence) that composes with per-row ownership instead of competing
-  with it.
+- **Handoff**: a domain verb that changes attachment or ownership under
+  `authorize`. The PTY bridge already serves several clients.
+- **Comments**: a table with an author column and a read policy.
+- **Team projects**: `owner` names a team, and policy gains roles.
+- **Scaling execution**, if one process is ever not enough, is
+  docs/plans/session-operator.md, a technical split that works with
+  per-row ownership.
 
 ## Alternatives considered
 
-- **Per-user server instances behind a routing gateway**: a new gateway
-  package routing on the identity header, one full server + data dir +
-  namespace per user, a GET-allowlisted `/peer/` namespace for cross-user
-  reads. Workable — coexisting installs on one cluster are an exercised
-  pattern, and the main registry's PVC and the per-project registries are
-  already scoped by data-dir hash — but it still needs real shared-host
-  fixes (the fixed-name main registry Service, promoting
-  `YAAC_K8S_NAMESPACE` from test hook, the predictable host-side
-  known_hosts scratch path), N of everything (DBs, reconcile loops,
-  informer sets, netd port trios), an identity relay in the gateway that
-  every instance must trust, and it dead-ends at the first collaborative
-  *write* feature: presence,
-  handoff and comments need shared state with identified authors, which a
-  router cannot own and N databases cannot share. Choosing it means
-  choosing federation later.
-- **One shared instance with no identity** (works today, zero code):
-  everyone full-access on one server, log-sharing free via the transcript
-  route. The right stopgap while phases 1–2 land, but tool credentials
-  and quota are per-install (everyone burns one account), and nothing
-  distinguishes users — no ownership, no read-only, no §2 trajectory.
-- **A per-user process seam** (one "session manager" per user under a
-  shared API tier): buys a facade at every call site, a back-channel for
-  cross-user reads, lookup inversions and lint walls, for isolation the
-  trust model doesn't demand — teammates on a tailnet, with the real
-  sandbox at the pod boundary.
-- **A standalone read-only log-viewer** over the data dirs: least code
-  touching yaac, but re-implements transcript rendering in a dead-end
-  second UI and advances nothing else — and the in-app viewer already
-  exists.
+- **Per-user servers behind a routing gateway.** One server, data dir and
+  namespace per user, plus a gateway routing on the identity header and a
+  read-only peer namespace for cross-user reads. Workable (several installs
+  already coexist on one cluster), but it needs shared-host fixes (the
+  fixed-name main registry Service, making `YAAC_K8S_NAMESPACE` more than a
+  test hook), N copies of everything, and a gateway every instance trusts.
+  It dead-ends at the first collaborative write: presence, handoff and
+  comments need shared state with identified authors.
+- **One shared server with no identity** (works today). Everyone has full
+  access and log sharing is free. A fine stopgap, but everyone spends one
+  set of credentials and nothing tells users apart.
+- **A per-user process under a shared API tier.** All the cost of the
+  process split for isolation the trust model does not need.
+- **A standalone log viewer** over the data dir. Duplicates transcript
+  rendering in a second UI and advances nothing else.
 
 ## Phasing
 
-0. **Precondition hardening — shipped, bar one.** Exact workspace-id
-   resolution, the audit's other preconditions, globally unique workspace
-   ids, server I/O confined on sandbox-writable paths, immutable project
-   ids for everything named outside the data dir, and main-registry write
-   grants have all shipped; the read-only main clone holds once each
-   project's legacy linked checkouts are converted. None of it needs a
-   `Principal`; all of it is required before any owner check is
-   meaningful.
-1. **Identity without tokens — shipped** (see "Identity terminates in
-   `api/http`" above). The `whois` form follows.
-2. **Principal plumbing, no behavior change.** The `Principal` type,
-   `domain/access` with the `read`/`act`/`write`/`admin` action verbs
-   (sealed, tested per convention), domain verb signatures take the
-   principal phase 1 resolves, the three attach upgrades authorize `act`,
-   everything resolves to the built-in owner. Mechanical, revertible, and
-   the layering rules make "every verb takes a principal" reviewable in one
-   place.
-3. **Users become real.** `users` table, `owner` columns + backfill
-   migration, per-user credential subtrees
-   and owner columns on the sealed-row stores, owner-keyed tool homes (dir
-   migration + the locator/path-convention change + the containerless
-   symlink set), the proxy's credential-set keying (injection, refresh
-   write-back, git tokens, ssh-agent filtering), per-(project, owner)
-   prewarm, the audit's scoping fixes (allow-host/forward-port/env persist
-   as project writes, owner-keyed user-layer repos and grants, admin-gated user
-   Dockerfile + build-files, per-user preference rows including the git
-   identity), the credential/auth-daemon fixes (per-principal daemon
-   socket, owner-scoped `/auth/*`), the spawn owner inheritance +
-   per-owner budget, snapshot
-   field scoping, owner-keyed skills, communal projects with owner-gated
-   mutation and per-user git auth, and the ownership-aware UI.
-   This phase is the multi-user deployment: serve the server, add users
-   to the tailnet, done. Read-only log sharing arrives here as one `read`
-   grant on the transcript route, not a feature bolted on the side.
-4. **§2 features** — observable sessions, presence, handoff, comments —
-   each as rows + policy + UI on the standing structure.
+0. **Precondition hardening** — shipped (see "Where this starts").
+1. **Identity without tokens** — shipped. `whois` follows.
+2. **Principal plumbing, no behavior change.** `domain/access` with the four
+   verbs (sealed, tested per convention). Domain verbs take the principal;
+   the three attach upgrades authorize `act`; everything resolves to the
+   built-in owner. Mechanical and revertible.
+3. **Users become real.** The `users` table and owner columns with backfill;
+   per-user credential dirs and owner columns on the sealed stores;
+   owner-keyed tool homes; the proxy's credential-set keying (injection,
+   refresh write-back, git tokens, ssh-agent); per-owner prewarm; the
+   audit's scoping fixes and admin gates; per-principal auth daemon and
+   owner-scoped `/auth/*`; spawn owner inheritance and budget; snapshot
+   field scoping; shared projects with per-user git auth; the
+   ownership-aware UI. After this phase, a multi-user deployment is: serve
+   the server, add users to the tailnet. Log sharing is one `read` grant on
+   the transcript route.
+4. **Collaboration features** as listed above.
 
-Testing per repo conventions: `domain/access` gets its barrel-function
-tests; the api project already covers principal resolution
-(`identity-flow`), and gains write-denial for non-owners in both matrix columns — the header form needs
-no tailscale, only request headers, and `whois` gets a stubbed LocalAPI;
-the transcript route's existing api coverage gains
-the cross-owner read case; any new CLI surface gets its e2e test. The
-existing e2e topology is untouched by phases 0–2 and gains a
-second-principal case in phase 3.
+Testing: `domain/access` gets its barrel-function tests. The api project
+already covers principal resolution (`identity-flow`) and gains non-owner
+write denial in both route-matrix columns; the header form needs only
+request headers, and `whois` gets a stubbed LocalAPI. The transcript route
+gains the cross-owner read case. New CLI surface gets e2e tests. Phase 3
+adds a second-principal e2e case.
 
 ## Open questions
 
-- **When `whois` lands**: it admits tagged devices and gives device
-  identity; decide whether it waits for phase 3 or for the first install
-  whose client is a tagged node.
-- **Attach-write semantics for handoff** (phase 4): whether write-attach
-  is exclusive (owner or delegate) or advisory — decide when presence
-  lands, not before.
-- **tui transcript fidelity**: claude's JSONL replays into chat form
-  today; codex/pi vary — per-tool structured rendering vs. the current
+- **When `whois` lands**: with phase 3, or when the first install needs a
+  tagged-node client.
+- **Handoff write semantics**: exclusive (owner or delegate) or advisory.
+  Decide with presence.
+- **tui transcripts for codex and pi**: per-tool rendering, or keep the
   `NOT_SUPPORTED` refusal.
-- **Team objects** (phase 4+): whether `owner` references a principal id
-  that can name a team from day one, or users only until teams are real.
-  Lean: principal id from day one, it costs a type.
-- **Containerless installs with more than one human**: whether ownership
-  should be offered there at all, given every workspace holds every
-  credential it is handed. Lean: yes as organization (it is the same code),
-  with the UI saying plainly that this substrate does not separate users.
+- **Team owners**: `owner` as a principal id from day one (lean yes; it
+  costs a type).
+- **Containerless with several humans**: offer ownership at all? Lean yes,
+  as organization (same code), with the UI saying plainly that this
+  substrate does not separate users.

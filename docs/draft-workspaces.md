@@ -1,72 +1,75 @@
 # Draft workspaces
 
-A **draft workspace** is what the create dialog held when the user closed it
-without creating or queueing, and chose to keep it. It is pure intent, like a
-sidebar group: a row in `draft_workspaces` and nothing else — no workspace, no
-checkout, no runtime, and nothing ever runs from it on its own.
+A **draft workspace** is the contents of the create dialog, kept when the user
+closed it without creating or queueing. Like a sidebar group, it is only a
+record of intent: a row in `draft_workspaces`, with no checkout and no
+runtime. Nothing runs from a draft on its own.
 
 ## When the dialog asks
 
-Dismissing the create dialog — the ×, Escape, a click outside — with a
-non-blank prompt asks whether to **save** it as a draft, **discard** it, or
-**keep editing**. A dialog with no prompt closes silently: settings alone are
-already the project's create memory, so there is nothing to lose. Editing a
-queued workspace never asks; it has its own Save.
+Closing the create dialog (the ×, Escape, or a click outside) with a non-blank
+prompt asks whether to **save** a draft, **discard**, or **keep editing**. With
+no prompt it closes silently, since the settings are already remembered as the
+project's create defaults. Editing a queued workspace never asks; it has its
+own Save.
 
-A dialog reopened on a draft asks only if something changed since it was
-saved, and then offers to save the changes or leave the draft as it was. A
-save naming a draft that has gone meanwhile (created from or discarded in
-another tab) saves the text as a new draft instead, so it always lands.
+A dialog reopened on a draft asks only if something changed, and then offers
+to save the changes or leave the draft as it was. If the draft was deleted
+meanwhile (created from or discarded in another tab), the save makes a new
+draft instead.
 
-Two other ways out of the dialog lose nothing either. Create with a missing
-git or agent credential sends the user to Settings; the user asked to create,
-so a typed prompt is saved as a draft on the way without asking. And while a
-prompt is unsaved, the page holds a reload or tab close with the browser's
-leave-page prompt.
+Two other exits keep the prompt too:
+
+- Create with a missing git or agent credential sends the user to Settings,
+  and saves the typed prompt as a draft first without asking.
+- While a prompt is unsaved, a page reload or tab close triggers the browser's
+  leave-page prompt.
 
 ## What a draft holds
 
-Every field as the dialog showed it — prompt, title, agent, model, UI mode,
-permission mode, reference branch, group, and the **Start** field — so
-reopening it puts back what was on screen. Model and branch are absent when the dialog had
-not resolved them yet (catalog or branch list still loading); reopening then
-takes the default, as a fresh open does. Start is the id of the workspace or
-queued entry the create would have waited on, not a live reference: a parent
-that is gone by the time the draft reopens leaves it starting now. Deleting
-the draft's group clears it. A group only being named in the dialog's "+ New
-group" box is not kept — it does not exist until a create or queue makes
-it, and a draft holds groups by id — so the draft keeps the group picked
-before the box was opened.
+Every field as the dialog showed it: prompt, title, agent, model, UI mode,
+permission mode, reference branch, group, and **Start**. Reopening the draft
+restores the screen.
 
-Creating or queueing from a reopened draft discards it. The create and queue
-requests name the draft (`draftId`), and the server deletes it once the
-workspace or queue entry exists — so a create that fails keeps the draft and
-its prompt.
+- Model and branch are empty if the dialog had not loaded them yet; reopening
+  then uses the default, as a fresh dialog does.
+- Start is the id of the workspace or queued entry the create would wait on.
+  If that parent is gone when the draft reopens, Start falls back to now.
+- Deleting the draft's group clears the field. A name typed into the "+ New
+  group" box is not saved, because that group does not exist until a create
+  or queue makes it; the draft keeps the group picked before the box opened.
+
+Creating or queueing from a draft deletes it. The request names the draft
+(`draftId`) and the server deletes it only after the workspace or queue entry
+exists, so a failed create keeps the draft.
 
 ## Titles
 
-A title set on the dialog's heading is the draft's `title`, and the workspace or
-entry created from it carries it. Without one, the title sweep
-(`reconcileGeneratedTitles`) titles drafts as it does live workspaces: a
-prompt long enough to need summarizing gets one model attempt, written to
-the draft's `generatedTitle`. What is created from the draft carries it —
-a workspace as its title, a queue entry as its own `generatedTitle` — unless
-the user titled it or changed the prompt before creating. Changing the prompt
-clears the generated title, and the attempt is keyed on the prompt as well
-as the draft, so the new prompt gets its own. The write is conditional on
-the draft still holding the prompt it was generated from. The sweep runs on
-the reconciler's resync, so a newly saved draft is titled within about a
-minute; until then the sidebar shows the prompt's first line.
+A title typed in the dialog's heading is the draft's `title`, and whatever is
+created from the draft keeps it.
+
+Without one, the title sweep (`reconcileGeneratedTitles`) handles drafts as it
+does live workspaces. A prompt long enough to need summarizing gets one model
+attempt, stored as the draft's `generatedTitle`. A workspace created from the
+draft uses it as its title; a queue entry stores it as its own
+`generatedTitle`. This is skipped if the user set a title or changed the
+prompt before creating.
+
+Changing the prompt clears the generated title. Attempts are keyed on the
+draft and the prompt, so a new prompt gets its own attempt, and the write only
+lands if the draft still holds the prompt it was generated from. The sweep
+runs on the reconciler's resync (every minute), so a new draft is titled
+within about a minute. Until then the sidebar shows the prompt's first line.
 
 ## Surfaces
 
-- **Routes.** `/workspace/draft/save` (no `id` inserts; an `id` replaces that
-  draft's fields wholesale, and a draft that is gone, or belongs to another
-  project, answers `NOT_FOUND` rather than being re-created) and
-  `/workspace/draft/discard`; `draftId` on `/workspace/create` and
-  `/workspace/queue/create`.
-- **Snapshot.** `draftWorkspaces`, every project's, oldest first.
+- **Routes.** `/workspace/draft/save` inserts when given no `id`. With an `id`
+  it replaces that draft's fields; a draft that is gone or belongs to another
+  project answers `NOT_FOUND` instead of being re-created.
+  `/workspace/draft/discard` deletes one. `/workspace/create` and
+  `/workspace/queue/create` take `draftId`.
+- **Snapshot.** `draftWorkspaces`, for every project, oldest first.
 - **Webapp.** A collapsible **Drafts** section at the top of the sidebar,
-  absent when the project has none, newest first. Clicking a draft reopens
-  the create dialog on it; its `…` menu can also discard it.
+  newest first, hidden when the project has none. Clicking a draft reopens
+  the dialog on it; its `…` menu can discard it.
 - Removing a project deletes its drafts.

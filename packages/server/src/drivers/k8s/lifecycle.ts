@@ -235,11 +235,9 @@ export function stopK8sDriver(): void {
 
 /** See `WorkspaceDriver.release`. */
 export function releaseK8sDriver(): void {
-  // Every active port-forwarder owns a listener server and a set of live
-  // relay streams; without this the listeners survive the server
-  // (orphaned to PID 1) and the next server stacks new ones on top via
-  // the forwarder restore. After the reconcile drain, because a reap tick
-  // still tears its workspace's forwards down.
+  // Forget the forward declarations (no host port is bound; clients hold
+  // the listeners). After the reconcile drain, because a reap tick still
+  // tears its workspace's forwards down.
   stopAllWorkspaceForwarders()
   // The proxy client forgets that it verified the deployment; the deployed
   // proxy itself stays up for the next server to adopt.
