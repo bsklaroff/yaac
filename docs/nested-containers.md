@@ -1,477 +1,372 @@
 # Nested containers on the Kubernetes backend
 
-How in-pod podman, the combined CA bundle, and the per-project push
-registries work on yaac's Kubernetes backend. This is a current-state
-reference for the shipped subsystem.
+How in-pod podman, the combined CA bundle and the per-project push
+registries work on yaac's Kubernetes backend.
 
-One opt-in capability is layered here: **`nestedContainers`** — an in-pod
-rootful podman (real root inside the gVisor sentry, the upstream
-docker-in-gvisor shape) so `docker build` / `docker run` / `docker compose
-up --build` work inside a workspace exactly as a project README instructs
-(the `docker` CLI talks to podman's Docker-API socket). Non-nested
-workspaces are byte-for-byte unchanged.
-
-It is config-only, set in `yaac-config.json`; there is no CLI flag.
+`nestedContainers` is an opt-in setting in `yaac-config.json` (there is no
+CLI flag). It gives a workspace a rootful podman engine inside its gVisor
+sandbox, so `docker build`, `docker run` and `docker compose up --build`
+work as a project README expects. The `docker` CLI talks to podman's
+Docker-API socket. Workspaces without the setting are unchanged.
 
 ## Image layer
 
-`dockerfiles/Dockerfile.nestable` (in-pod rootful podman + the `docker`
-CLI + the compose plugin) is inserted into the image chain
-(default → tools → **nestable** → project `Dockerfile.yaac`) only when
-`nestedContainers` is set, and skipped for a standalone `Dockerfile.yaac`.
-The nestable tag is a content hash of the Dockerfile, so it rebuilds on
-change. This image also carries the proxy-CA trust wiring below.
+`dockerfiles/Dockerfile.nestable` adds rootful podman, the `docker` CLI and
+the compose plugin. It sits in the image chain (default → tools →
+nestable → project `Dockerfile.yaac`) only when `nestedContainers` is set,
+and is skipped for a standalone `Dockerfile.yaac`. Its tag is a content
+hash of the Dockerfile. It also carries the CA trust wiring described
+below.
 
 ## In-pod rootful podman
 
-The engine runs as **real root inside the gVisor sentry** (the
-`gvisor-nested` RuntimeClass). In-sandbox root is a sentry fiction with no
-host authority, so none of the rootless apparatus (subuid maps, id-map
-helper caps, keyring/pivot_root workarounds) is needed. When a workspace is
-nested, its pod gains:
+The engine runs as root inside the gVisor sandbox, under the
+`gvisor-nested` RuntimeClass. Root inside gVisor has no authority on the
+host, so none of rootless podman's setup (subuid maps, id-map helpers,
+keyring and pivot_root workarounds) is needed. A nested pod gets:
 
-- **securityContext**: `seccompProfile: RuntimeDefault` plus
-  `capabilities.add: NESTED_ENGINE_CAPS` (SYS_ADMIN, SYS_CHROOT, MKNOD,
-  SETFCAP, NET_RAW, NET_ADMIN, SYS_PTRACE, SYS_RESOURCE). Under the sentry
-  these grant no host authority — they are the upstream docker-in-gvisor
-  posture, and the `gvisor-nested` handler additionally allows the raw
-  sockets the engine needs.
-- **graphroot**: podman's rootful default (`/var/lib/containers/storage`)
-  on a disk-backed sentry-internal tmpfs. gVisor's gofer filesystem
-  refuses writes to the `security.*` xattr namespace, so `docker build`
-  setcap steps only work on a sentry tmpfs; the disk filestore keeps layer
-  data out of pod memory (reclaimable node page cache, not cgroup-pinned
-  tmpfs pages). Root-owned, so no fsGroup/chown. The sentry's `size=` cap
-  ENOSPCs oversized builds before kubelet eviction can fire.
-- **cross-workspace image cache**: the project's registry is the cache
-  (below), so a nested workspace can be scheduled on any node. A pod
-  additionally mounts its node's *generation* of that cache read-only at
-  `/var/lib/shared-images`, which storage.conf names as the engine's one
-  `additionalimagestores` lower — a per-node materialization of the same
-  registry, never a second source of truth.
+- **securityContext**: `seccompProfile: RuntimeDefault` and
+  `NESTED_ENGINE_CAPS` (SYS_ADMIN, SYS_CHROOT, MKNOD, SETFCAP, NET_RAW,
+  NET_ADMIN, SYS_PTRACE, SYS_RESOURCE). These grant nothing on the host;
+  they match upstream's docker-in-gVisor setup. The `gvisor-nested` handler
+  also allows the raw sockets the engine needs.
+- **graphroot**: podman's default `/var/lib/containers/storage`, on a
+  disk-backed tmpfs inside the gVisor sentry. It has to be a sentry tmpfs:
+  gVisor's gofer filesystem refuses `security.*` xattrs, so `setcap` steps
+  in `docker build` fail anywhere else. Disk backing keeps layer data in
+  reclaimable page cache rather than pod memory. The tmpfs `size=` cap
+  makes an oversized build fail with ENOSPC before kubelet eviction fires.
+- **image cache**: the node's current store generation (below), mounted
+  read-only at `/var/lib/shared-images` and listed in storage.conf as the
+  engine's one `additionalimagestores` entry.
 
-The pod's postStart setup script (`workspace-bin/yaac-workspace-init`) starts
-the engine in the background with one sudo'd shell: `podman system
-service` as root, a socket wait with a log-tail diagnostic on timeout,
-then handing the socket to the `yaac` user so both CLIs
-(`DOCKER_HOST`/`CONTAINER_HOST` → `/run/podman/podman.sock`) drive it;
-workspace-create gates on `docker version` over the stream relay before
-handing the workspace over. The service exports `BUILDAH_ISOLATION=chroot`:
-under buildah's default OCI isolation the sentry breaks the `RUN`-step
-stdio relay after tens of KB of output (EPIPE kills chatty steps like
-`apt-get`), while chroot isolation streams fine, keeps `RUN` on the pod
-netns, and holds setcap file caps on the tmpfs graphroot. Nothing
-supervises the engine: if it dies mid-workspace, the workspace is degraded
-until recreated.
+The pod's postStart hook (`workspace-bin/yaac-workspace-init`) starts
+`podman system service` as root, waits for the socket (printing the engine
+log tail on timeout), and hands the socket to the `yaac` user.
+`DOCKER_HOST` and `CONTAINER_HOST` point both CLIs at
+`/run/podman/podman.sock`. Workspace create then runs `docker version` in
+the pod and fails the create if the engine does not answer.
 
-### Image cache (cross-workspace build cache)
+The service exports `BUILDAH_ISOLATION=chroot`. Under buildah's default OCI
+isolation, gVisor breaks the `RUN` step's stdio relay after tens of KB of
+output, which kills chatty steps like `apt-get` with EPIPE. Chroot
+isolation streams fine, keeps `RUN` in the pod's network namespace, and
+keeps file capabilities on the tmpfs graphroot.
 
-A workspace's built and pulled images are salvaged into the **project's own
-registry**, and reach the next workspace's engine as a read-only lower layer
+Nothing supervises the engine. If it dies, the workspace stays degraded
+until it is recreated.
+
+## Cross-workspace image cache
+
+Images a workspace builds or pulls are **salvaged** (pushed) into the
+project's own registry. The next workspace sees them as a read-only image
 store, so `docker build` gets real layer-cache hits across a project's
-workspaces. The registry is the source of truth and the only thing that
-travels between nodes; the node store below is a cache of it, so a workspace
-landing on a cold node just runs cold rather than being tied to the node
-its predecessor ran on. Every nested workspace therefore ensures the
-per-project registry.
+workspaces. The registry is the source of truth and the only thing shared
+between nodes. The per-node store is a cache of it, so a workspace on a
+cold node just starts cold. Every nested workspace therefore ensures its
+project registry exists.
 
-The push runs **inside the sandbox**, and the constraint it respects is
-that no layer may be extracted file-by-file through the gVisor gofer
-(~2ms/file — a 4GB node_modules-heavy chain took 16+ minutes that way).
-Nothing in this path touches the gofer: the graphroot is a
-sentry-internal tmpfs, so `podman push` reads layers at native speed,
-compresses them in-sandbox, and streams them out over netstack as bulk
-blob uploads — the same shape the trust-split builder pods already push
-their products with.
+### Salvage (the write side)
 
-The push compresses with **gzip**, and that is a correctness constraint
-rather than a tuning choice. buildah only considers a cache candidate
-whose manifest type equals the format the running build emits, and the
-store holds both types: the workspace's `docker` is the real Docker CLI
-against podman's Docker-compatible API, so `docker build` emits
-docker-schema2, while a bare `podman build` emits OCI. A push must
-therefore hand each image back as what it was, and the compression format
-decides that — schema2 has no zstd layer media type, so a zstd push
-silently rewrites a schema2 image as OCI and every later `docker build`
-skips the whole cache. gzip has media types in both schemas, so it
-leaves either in place and the image id survives the round trip
-unchanged. Level 1 within gzip, because this compression runs inside the
-workspace sandbox where CPU is the scarce resource and the bytes land in a
-node-local registry.
+The push runs inside the sandbox. Extracting layers file by file through
+the gVisor gofer costs about 2ms per file (a 4GB chain heavy with
+node_modules took over 16 minutes), so salvage avoids the gofer entirely.
+The graphroot is a sentry tmpfs, so `podman push` reads layers at native
+speed, compresses them in the sandbox, and streams them out over the
+network.
 
-One salvage is two sudo-gated execs:
+Salvage pushes use **gzip, level 1**. The format is required for
+correctness. buildah only uses a cache candidate whose manifest type
+matches what the current build emits. `docker build` through podman's
+Docker API emits docker-schema2, while `podman build` emits OCI. Schema2
+has no zstd media type, so a zstd push silently turns a schema2 image into
+OCI and every later `docker build` misses the cache. gzip exists in both
+schemas, so images round-trip unchanged. Level 1 because the compression
+runs on the workspace's CPU and the bytes only travel to a node-local
+registry.
 
-1. **Survey** — list the engine's images with their parents, names, and
-   the pod's ledger of refs it has already pushed or pulled.
-2. **Push** — the server plans `id → destination` pairs from that survey
-   and hands them to a push script as validated argv. Each named image
-   goes under its own name (`<registry>/<repo>:<tag>`), stripped of
-   podman's `localhost/` local-registry prefix so that one image is one
-   repo whichever side pushed it — the server's own pushes into this
-   registry use the bare tag, and the store builder's restore
-   round-trips back through the prefix. Its ancestor chain goes into the SAME repo
-   under `yaac-cache-<tag>-<n>` tags: those
-   intermediates are what a step-by-step `docker build` matches, and
-   tagging them per named image keeps the tag set bounded — a rebuilt
-   `app:v1` overwrites its own chain tags instead of adding a generation.
-   Blobs are already in the repo by then, so the chain uploads manifests
-   only. Successful pushes append to the ledger, so the 10-minute
-   reconciler never re-compresses what it already sent.
+One salvage is two sudo'd execs into the pod:
 
-### The node-local image store
+1. **Survey**: list the engine's images with their parents and names, plus
+   the pod's ledger of refs already pushed or pulled.
+2. **Push**: the server plans `id → destination` pairs and passes them to a
+   push script as validated argv.
+   - Each named image goes to `<registry>/<repo>:<tag>`, with podman's
+     `localhost/` prefix stripped so one image is one repo whichever side
+     pushed it.
+   - Its ancestor chain goes into the same repo as `yaac-cache-<tag>-<n>`
+     tags. Step-by-step `docker build` matches these intermediates. Keying
+     them per named image bounds the tag set: rebuilding `app:v1`
+     overwrites its own chain tags. The chain pushes are manifest-only,
+     since the blobs are already there.
+   - Each successful push is appended to the ledger, so the next salvage
+     skips it.
 
-The read side is not a per-workspace pull at all: the registry's contents
-are materialized ONCE PER NODE as a read-only containers/storage directory that
-every nested workspace of the project mounts at `/var/lib/shared-images`.
-A fresh workspace therefore sees the project's warm layers at first touch —
-no per-workspace pull, no decompression competing with the agent, and none
-of the 12GiB sentry graphroot spent on layers it did not build. Concurrent
-workspaces on a node share one copy of the bytes.
+Salvage runs every 10 minutes per live workspace (the `image-salvage`
+reconcile step, detached, so a project's large first salvage lands during
+the run) and again at workspace cleanup, before the Job is deleted.
 
-`store-writer.ts` owns it. A **generation** is a complete store under
-`<node-local root>/shared-images/<project id>/gen-<stamp>/` — on the node,
-that is `/var/lib/yaac/node/<install hash>/shared-images/<project id>/…`, the
-install's node-local tree, which is what the writer and cleanup pods mount
-(docs/server-in-cluster.md "Storage is two claims") — written by a
-node-side pod and made publishable only by the `.yaac-store-done` marker
-written last. It sits outside the project tree, alone among per-project
-paths, because a node-side pod writes it as root and the server's own uid
-could not `rm -rf` it at project removal; the one-shot pod that removes a
-project's whole node-local tree does that instead. Generations are
-write-once: workspace create pins the newest
-complete generation's *path* into the pod, so a running workspace's store
-can never change underneath it, and the writer's GC can read the live set
-straight off pod specs — a generation is droppable exactly when no pod
-mounts it.
+The reconciler only visits pods labeled `yaac.nested`, and the in-pod
+script checks the pod's `YAAC_NESTED_ENGINE` variable before any sudo. It
+does not just test whether podman is installed: unconfigured podman under
+sudo creates a root-owned `libpod/tmp` in the user's checkout.
 
-The writer pod **builds nothing** — it pulls what the registry already
-holds and rearranges it on a node path — which is why it is not one of the
-trust-split *builder* pods and carries none of their identity; it borrows
-only their pinned `quay.io/podman/stable` image. Its shape is the
-registry's `hosts.toml` writers': runc, plain root, `nodeName`, tolerating
-everything, the store's node path hostPath-mounted rw. Two of its
-properties are deliberate:
+Destinations carry no content hash. Named images map name for name, and
+chain tags are slots keyed by (repo, tag, depth). So when two workspaces of
+one project push the same name, the last salvage wins. Nothing is
+corrupted, because layers are content-addressed and a manifest PUT is
+atomic. A chain left interleaved between two workspaces costs a wasted
+pull, never a wrong cache hit: buildah matches on both layer parentage and
+history, so a foreign intermediate never matches.
 
-- **hostNetwork**, because the project registry's ingress policy already
-  admits the node's own address range for containerd's pulls. In the host
-  netns the pod *is* the node, so the store needs no NetworkPolicy of its
-  own — and must name the registry by ClusterIP, the node not being a
-  cluster-DNS client.
-- **no CAP_SYS_ADMIN**, because `podman pull --root` needs none (a pull
-  untars into the layer's diff dir; nothing is mounted) and withholding it
-  is load-bearing for the xattr shape below.
+### The node-local image store (the read side)
 
-Each refresh seeds from the previous generation with `cp -al`, so a
-generation costs disk proportional to what changed — a pull only adds layer
-directories and rewrites metadata via temp+rename, never mutating a layer
-diff in place. (podman's own state is dropped from the copy: its database
-records the absolute graphroot it was created under and refuses to open
-under another.) It then pulls the project's working set under the same
-ranking rule as the registry's retention pass, restores each named image's
-bare name, and leaves the `yaac-cache-` chain slots dangling exactly as a
-local `--layers` build's intermediates are.
+Workspaces do not pull from the registry. Instead, the registry's contents
+are materialized once per node as a read-only containers/storage directory
+that every nested workspace of the project on that node mounts at
+`/var/lib/shared-images`. A new workspace sees the project's layers
+immediately, with no pull, no decompression competing with the agent, and
+no graphroot space spent on layers it did not build. Workspaces on the
+same node share one copy.
 
-What that ranking is: a repo holds up to `REGISTRY_GENERATIONS_KEPT`
-content-hash generations and the catalog walk reaches them in no meaningful
-order, so a repo's content-hash tags are ranked newest-first — by the build
-time in each image's own config, the same "content-hash tags are
-write-once, so creation order is generation order" the retention pass leans
-on — and only the newest `CACHED_GENERATIONS_KEPT` are taken, dropping the
-chain slots of the generations dropped with them: an old generation's
-intermediates cache-hit nothing once its named image is gone. What counts
-as a generation is the retention pass's guard, both halves: a yaac-built
-repo (optionally under a push prefix) carrying a content-hash tag. The
-upstream mirrors and a workspace's own repo are left alone even when their
-tags happen to have the content-hash shape — a repo retention has no say
-over is not one this narrows either. A generation whose config will not
-scrape ranks NEWEST rather than oldest: ranking is best-effort, and one
-transient fetch failure must not be what costs a workspace the generation
-its next build would have cache-hit.
+`store-writer.ts` owns it. A **generation** is a complete store at
+`<node-local root>/shared-images/<project id>/gen-<stamp>/` (on the node,
+`/var/lib/yaac/node/<install hash>/…`; see docs/server-in-cluster.md). A
+node-side pod writes it and marks it complete with a `.yaac-store-done`
+file written last. It lives outside the project tree because that pod
+writes it as root, and the server's uid could not delete it on project
+removal. A one-shot cleanup pod removes a project's node-local tree
+instead.
 
-Two post-passes run before the marker. A **metadata assertion** fails the
-build if any layer lacks a recorded diff size — without one `podman images`
-reconstructs it by decompressing the layer's tar-split, which across the
-gofer is the classic "images takes minutes" bug. And an **opaque-directory
-rewrite**, which is the one place this design is not simply "the registry,
-locally":
+Generations are write-once. Workspace create pins the newest complete
+generation's path into the pod spec, so a running engine's store never
+changes. The writer's GC reads the live set from pod specs: a generation
+can be deleted once no pod mounts it.
 
-> A layer that REPLACES a directory records that as an overlay xattr on the
-> diff dir rather than as a file, and neither spelling survives the trip
-> into a workspace. `trusted.overlay.opaque` is invisible through gVisor's
-> gofer filesystem — every read of the `trusted.` namespace answers
-> EOPNOTSUPP. `user.overlay.opaque` *is* readable through the gofer, but the
-> workspace engine holds CAP_SYS_ADMIN in-sandbox, so containers/storage
-> takes its rootful path and mounts overlay without `userxattr`, reading
-> the `trusted.` name. Either way the marker goes unhonored and the
-> replaced directory's old entries resurrect in the merged view — a
-> silently wrong image, not a slow one.
->
-> So the builder rewrites every opaque marker into the explicit per-entry
-> whiteouts it stands for, computed against the layer's own (fixed,
-> write-once) parent chain. Those are 0:0 character devices — plain
-> metadata, which the gofer passes through, as do `security.capability`
-> file caps. This is why the writer runs without CAP_SYS_ADMIN: that is
-> what makes containers/storage record the markers in the `user.` namespace
-> the rewrite can read back. The pass is incremental (a per-layer marker
-> file, hardlinked forward by `cp -al`), so each layer is walked once in
-> the life of a store.
+**The writer pod** builds nothing. It pulls what the registry holds and
+lays it out on a node path, so it is not a trust-split builder pod and has
+none of their identity. It only reuses their pinned `quay.io/podman/stable`
+image. Like the pods that write `hosts.toml`, it runs on runc as plain
+root, pinned with `nodeName`, tolerating every taint, with the store path
+hostPath-mounted read-write. Two choices matter:
 
-The store is refreshed by a reconcile step, throttled per project, and
-immediately after a salvage that actually pushed — the one moment the
-registry gained content. A refresh that publishes nothing retries on a
-shorter backoff, because the commonest cause is racing the registry's own
-maintenance rollout, which lasts seconds; an unreachable registry fails the
-refresh outright rather than publishing an empty result, so the last good
-generation stays mounted.
+- **hostNetwork.** The project registry's ingress policy already admits the
+  node's addresses for containerd pulls. On the host network the writer is
+  the node, so it needs no NetworkPolicy of its own. It addresses the
+  registry by ClusterIP, because the node does not use cluster DNS.
+- **No CAP_SYS_ADMIN.** `podman pull --root` does not need it (a pull
+  untars into the layer directory and mounts nothing). Withholding it is
+  what makes the opaque-directory rewrite below possible.
 
-Because the mount is chosen at pod create, a PREWARMED spare carries the
-generation that existed when the spare was created, not when it is claimed
-— a spare that predates a refresh runs slightly colder than a fresh create
-would. That is the same trade the pinning buys everywhere else: a store
-that cannot change under a running engine. A cold node has no generation, mounts nothing, and
-warms on the next build; `/var/lib/shared-images` is baked into the image
-as an empty directory so that case needs no special-casing (containers/
-storage treats an empty additional store as no images). The engine loads an
-additional store once and afterwards revalidates by statting its lockfile,
-so the postStart script pays the single cold walk with a background
-`podman image ls` and every later `image ls` is answered from the daemon's
-memory.
+**A refresh** works like this:
 
-Both halves are best-effort and self-gating (no engine, no sudo, or no
-registry ⇒ a single cheap exec that does nothing; no generation ⇒ an empty
-store); a cold cache only ever costs a rebuild. Salvage runs
-**mid-workspace** (a periodic reconciler, so a project's large first salvage
-lands during the run) and at **workspace cleanup**, before the Job is
-deleted.
+1. Seed from the previous generation with `cp -al`, so a new generation
+   costs disk only for what changed. A pull only adds layer directories
+   and rewrites metadata by temp file and rename, never editing a layer in
+   place. podman's own database is not copied, because it records the
+   graphroot path it was created under and refuses to open anywhere else.
+2. Pull the project's working set, restore each named image's bare name,
+   and leave the `yaac-cache-` chain entries untagged, as a local
+   `--layers` build leaves its intermediates.
+3. Assert every layer has a recorded diff size. Without one, `podman
+   images` recomputes it by decompressing the layer through the gofer,
+   which makes `images` take minutes.
+4. Rewrite opaque directories (below).
+5. Write the `.yaac-store-done` marker.
 
-"No engine" is the pod's own `YAAC_NESTED_ENGINE`, tested before the sudo
-that every in-pod leg runs behind, and the reconciler additionally skips
-pods without the `yaac.nested` label so a non-nested workspace is not sent a
-probe at all. The test is deliberately not "is podman installed" — a
-binary's presence never implied an engine, and pods from images built
-before podman left the base ship it engineless. Running podman without one
-is not a no-op: unconfigured rootless podman under sudo resolves its
-runtime dir to a relative `libpod/tmp`, and an in-pod exec inherits the
-container's workingDir, so the probe plants a root-owned directory in the
-user's checkout.
+**Which generations are pulled.** In yaac-built repos with content-hash
+tags (the repos registry retention governs), the writer takes only the
+newest `CACHED_GENERATIONS_KEPT` tags, ranked by the build time in each
+image's config, and skips the chain slots of the rest. Other repos are
+pulled whole. A generation whose config cannot be fetched ranks as newest,
+so a transient failure never drops the one the next build would hit.
 
-Destinations carry no content hash: they are name-for-name, and the chain
-tags are slots keyed by (repo, tag, depth). That is what bounds the tag
-set, and it makes concurrent workspaces of one project last-salvage-wins on
-a shared name — and the node store, being a materialization of the
-registry, inherits exactly those semantics.
-Nothing corrupts (layers are content-addressed and a manifest PUT is
-atomic), and a chain left interleaved between two workspaces costs a wasted
-pull, never a wrong cache hit: buildah matches a cache candidate on layer
-parentage *and* history, so a foreign intermediate never matches.
+**The opaque-directory rewrite.** A layer that replaces a directory records
+that as an overlay xattr on the directory, and neither spelling survives
+into a workspace:
+
+- `trusted.overlay.opaque` cannot be read through gVisor's gofer (every
+  `trusted.` read returns EOPNOTSUPP).
+- `user.overlay.opaque` is readable, but the workspace engine holds
+  CAP_SYS_ADMIN in the sandbox, so containers/storage mounts overlay
+  without `userxattr` and looks for the `trusted.` name.
+
+Either way the marker is ignored and the replaced directory's old files
+reappear. The image is silently wrong, not just slow. So the writer
+replaces every opaque marker with the explicit per-entry whiteouts it
+stands for, computed against the layer's own (write-once) parent chain.
+Whiteouts are 0:0 character devices, which the gofer passes through, as it
+does `security.capability` file caps. The writer runs without
+CAP_SYS_ADMIN so that containers/storage records the markers in the
+`user.` namespace, where the rewrite can read them. A per-layer marker
+file, hardlinked forward by `cp -al`, makes the pass walk each layer once
+in the store's life.
+
+**When it refreshes.** The `image-store` reconcile step refreshes each
+project on a throttle, and immediately after a salvage that pushed
+something. A refresh that publishes nothing retries sooner, because the
+usual cause is racing the registry's maintenance rollout, which lasts
+seconds. If the registry is unreachable the refresh fails rather than
+publishing an empty store, so the last good generation stays mounted.
+
+A prewarmed spare carries the generation that existed when it was
+created, so it may run slightly colder than a fresh create. A cold node
+mounts nothing; the image bakes in an empty `/var/lib/shared-images`, which
+containers/storage treats as no images. The postStart script runs a
+background `podman image ls` so the engine's one-time walk of the store
+happens before the agent needs it.
+
+Both halves are best-effort. A cold cache only ever costs a rebuild.
 
 ### Registry GC
 
-A salvage also retires chain slots a shorter rebuild no longer fills
-(`DELETE /manifests/<digest>`, bounded by contiguity), so a stranded tail
-cannot make every future store generation carry dead intermediates.
+Salvage reuses tags, so each rebuild leaves the previous manifest
+untagged. A salvage also deletes chain slots a shorter rebuild no longer
+fills. The `registry-gc` reconcile step then reclaims untagged manifests
+with `registry garbage-collect --delete-untagged`.
 
-Because both flows reuse tags, every rebuild leaves the previous manifest
-referenced by no tag — so the reclaim is just `registry garbage-collect
---delete-untagged`, run by the `registry-gc` reconcile step against the
-storage hostPath.
+Content-hash tagged repos (`yaac-tools:<hash>`) add a new tag per source
+change, so the collect first runs a retention pass keeping the newest
+`REGISTRY_GENERATIONS_KEPT` per repo. It only touches yaac-built repos and
+content-hash tags, so a workspace's `myapp:v1` and the `yaac-cache-…`
+slots are never retired. Retention is by age, not use: a workspace whose
+generation has been passed by that many newer ones would fail to pull on
+a pod restart. The budget is sized to make that rare.
 
-That alone cannot bound a repo whose every build mints a NEW tag, though:
-yaac's own chain is content-hash tagged (`yaac-tools:<hash>`), so each
-source change adds a generation that stays tagged and therefore collectable
-by nothing. The collect runs a retention pass first, keeping the newest
-`REGISTRY_GENERATIONS_KEPT` — the same policy `image-gc.ts` applies to the
-host engine — and letting `--delete-untagged` reclaim the rest. It is the
-only thing here that drops a name someone could still pull, so it is
-doubly guarded: the repo must be yaac-built (mirroring image-gc's
-`YAAC_IMAGE_REPO`), and the tag must have the content-hash shape, so a
-workspace's own `myapp:v1` and the cache's `yaac-cache-…` slots can never
-match. Everything else tagged is left alone: a tag in this registry is a
-promise to whoever pulls it.
+`garbage-collect` is only safe when nothing is pushing, since a push that
+has uploaded blobs but not its manifest looks like garbage. An active
+project never goes idle, so the collect uses a **read-only maintenance
+window** instead: the Deployment is rolled with
+`REGISTRY_STORAGE_MAINTENANCE_READONLY` set, so pulls keep working while
+pushes and deletes return 405. A salvage that lands in the window fails
+and retries next cycle. The cost is two `Recreate` rollouts, a few seconds
+of downtime each. The env var is written as an inline YAML map, because
+the `…_READONLY_ENABLED` form makes registry 2.8 panic at boot.
 
-Retention is age-based, not liveness-based: a workspace pinned to a
-generation that has since been passed by `REGISTRY_GENERATIONS_KEPT` newer
-ones loses pullability, and a pod naming a retired tag would
-ImagePullBackOff on a restart. The budget is sized to make that rare — it
-is the width of the concurrently-live fleet, not a rebuild depth — but
-closing it properly would mean checking the tags live workspaces actually
-reference before retiring.
-
-`garbage-collect` is only safe when nothing can be pushing — a push that
-has uploaded blobs but not yet its manifest is indistinguishable from
-garbage. Upstream's answer is "read-only mode, or not running at all", and
-not-running is unusable here: an active project's workspace count never
-reaches zero, so a collect gated on idleness would never run for the
-registries that actually grow. The collect therefore takes a **read-only
-maintenance window** — the Deployment is rolled with
-`REGISTRY_STORAGE_MAINTENANCE_READONLY` on, which keeps pulls and the
-catalog serving while pushes and deletes answer 405. A salvage push or
-retire that lands in the window fails best-effort and is retried next
-cycle (the ledger and the retired-shape memo only record what succeeded),
-while pulls — what a live workspace and its synced pods depend on — keep
-working. The cost is two `Recreate` rollouts, a few seconds of
-unavailability at each edge of the window.
-
-It holds the same per-project mutex `ensureProjectRegistry` takes, so a
-workspace create cannot start mid-collect; it is throttled per project, runs
-one project per pass, detaches (reconcile steps run sequentially), and the
-restore to serving mode is unconditional so a failed collect never strands
-a registry in maintenance mode.
-
-The throttle's clock is the REGISTRY's, not the server process's: a
-project the server has not collected in this run dates from its Service's
-`creationTimestamp`. Garbage is the previous generation of a rebuilt tag,
-so a registry younger than the interval has none however busy it has been,
-and collecting one would put the window on the registry a workspace create
-just stood up — while that workspace is pushing and pulling through it
-hardest. Reading the registry's own age instead also means a server
-restart cannot re-arm a window that is not due, and a registry that IS due
-is still due on the first pass after one.
-
-That env var is spelled as an inline YAML map: the `…_READONLY_ENABLED`
-form collapses the key to a scalar and registry 2.8 panics at boot.
+The collect holds `ensureProjectRegistry`'s per-project mutex (so no
+workspace create starts mid-collect), handles one project per pass, runs
+detached, and always restores serving mode. Its throttle is timed from the
+registry Service's `creationTimestamp` rather than server uptime. A new
+registry has no garbage yet and is busy serving the workspace that created
+it, and a server restart neither triggers nor delays a collect.
 
 ## CA trust: the combined bundle
 
-Nested containers must trust the workspace's MITM proxy on the hosts it
-intercepts **without** losing trust in the real public roots for the hosts
-it tunnels. CA-trust config splits into two incompatible shapes:
+Nested containers must trust the workspace's MITM proxy for hosts it
+intercepts, and the real public roots for hosts it tunnels. CA settings
+come in two incompatible shapes:
 
-- **Additive** vars layer our CA *on top of* the image's roots:
-  `SSL_CERT_FILE` (OpenSSL still also reads `/etc/ssl/certs`) and
-  `NODE_EXTRA_CA_CERTS`. These cover OpenSSL-default tooling and Node.
-- **Replace** vars point at a *single file* that becomes the tool's entire
+- **Additive** variables add our CA to the image's roots: `SSL_CERT_FILE`
+  (OpenSSL still reads `/etc/ssl/certs`) and `NODE_EXTRA_CA_CERTS`.
+- **Replacing** variables name a single file that becomes the tool's whole
   trust set: `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `CARGO_HTTP_CAINFO`,
-  `GIT_SSL_CAINFO` — the only knobs curl, Python `requests`, Cargo's
-  libcurl, and git's libcurl honor.
+  `GIT_SSL_CAINFO`. These are the only settings curl, Python `requests`,
+  Cargo and git honor.
 
-The trap: pointing the replace vars at our lone proxy CA makes the tool
-trust the MITM cert but reject the real cert of every host the proxy
-*tunnels* (npm, PyPI, crates.io, distro mirrors, docker.io/quay). Pointing
-them at only the public roots fails the other way on intercepted hosts.
-Neither single-source bundle is correct — the replace vars need the union
-`{public roots} ∪ {proxy CA}`.
+Pointing a replacing variable at the proxy CA alone breaks every tunnelled
+host (npm, PyPI, crates.io, distro mirrors, docker.io, quay). Pointing it
+at the public roots alone breaks every intercepted host. It needs the
+union.
 
-### Shipped design
+So a PEM of `{public roots} + {proxy CA}` is built at runtime and the
+replacing variables point at it:
 
-A single PEM that is `{public roots} + {proxy CA}` is produced at runtime
-and the replace vars point at it. Because it is a *superset* of the real
-roots, replace semantics become correct: the tool trusts the proxy on
-intercepted hosts and the real upstreams on tunnelled hosts.
-
-- **Roots source** is the proxy image's own `ca-certificates` bundle, so
-  the roots track the package with no separate staleness burden.
-  `combineCaBundle(roots, ca)` concatenates them (pure, unit-tested), and
-  the proxy writes the result beside its CA into the `yaac-proxy-ca`
-  Secret at every boot (docs/workspace-egress.md).
-- The server reads that Secret and writes both keys — `proxy-ca.pem`
-  (bare) and `ca-bundle.pem` (combined) — into the `yaac-proxy-ca`
-  ConfigMap workspace pods mount, skipping the write when both already
-  match, so a roots refresh is just an object write, no image rebuild.
-- The ConfigMap mounts at `/etc/yaac/certs`; the nestable image's
-  `containers.conf` re-exposes both files to nested containers via
-  `[containers] volumes`. The env-var split is emitted per shape: additive
-  → bare CA, replace → combined bundle (plus `podman run`'s
-  `containers.conf [containers] env` for the same split inside the pod).
+- The roots come from the proxy image's `ca-certificates` package, so they
+  stay current with no separate upkeep. `combineCaBundle(roots, ca)`
+  (`k8s/proxy/ca-bundle.ts`) concatenates them, and the proxy writes the
+  result next to its CA in the `yaac-proxy-ca` Secret on every boot
+  (docs/workspace-egress.md).
+- The server copies `proxy-ca.pem` (bare CA) and `ca-bundle.pem`
+  (combined) from that Secret into the `yaac-proxy-ca` ConfigMap that
+  workspace pods mount, skipping the write when nothing changed. A roots
+  update needs no image rebuild.
+- The ConfigMap mounts at `/etc/yaac/certs`. The nestable image's
+  `containers.conf` passes both files into nested containers through
+  `[containers] volumes`, and sets the same variables through
+  `[containers] env`: additive ones to the bare CA, replacing ones to the
+  combined bundle.
 
 ### Build-time drop-in
 
-`docker build` RUN steps are not covered by env vars: buildah applies
-`containers.conf [containers] volumes` to builds but not `[containers]
-env`. So build-time trust rides a volume: the bare proxy CA is
-bind-mounted as a source cert at
-`/usr/local/share/ca-certificates/yaac-proxy-ca.crt`. When a build runs
+Environment variables do not reach `docker build` RUN steps: buildah
+applies `containers.conf [containers] volumes` to builds but not
+`[containers] env`. So the bare proxy CA is also bind-mounted into builds
+as `/usr/local/share/ca-certificates/yaac-proxy-ca.crt`. When a build runs
 `update-ca-certificates` (as `apt-get install ca-certificates` and many
-package triggers do), it folds the drop-in into the image's real roots,
-producing the correct union that curl reads by default with no env.
+package triggers do), it merges the drop-in into the image's roots, and
+curl then trusts both by default.
 
-The drop-in is a source cert, not a bind-mount over
-`/etc/ssl/certs/ca-certificates.crt` itself: that file is what
-`update-ca-certificates` rewrites via `rename()`, which fails EBUSY onto a
-bind-mountpoint, so the drop-in composes with `update-ca-certificates`
-instead of fighting it. A build that runs curl against a MITM'd host
-without ever refreshing `ca-certificates` is still covered at run time by
-the env vars.
+The drop-in is a source cert rather than a bind mount over
+`/etc/ssl/certs/ca-certificates.crt`, because `update-ca-certificates`
+replaces that file with `rename()`, which fails with EBUSY on a mount
+point. A build that calls a MITM'd host without ever refreshing
+`ca-certificates` is not covered at build time.
 
-Still manual: Java/JVM (own `cacerts` keystore), rustls-based clients, and
-OS-store-only tools with no env knob (GnuTLS `wget`) honor neither the OS
-store nor any CA env var, and need their own per-tool import.
+Tools that ignore both the OS store and every CA variable need their own
+import: Java (its own `cacerts` keystore), rustls-based clients, and GnuTLS
+`wget`.
 
 ## Per-project push registries
 
-A plain `registry:2` per project serves as the push-and-serve bus for the
-cross-workspace image cache: a workspace's built layers are salvaged and
-pushed there at teardown, and the next workspace pulls them. It has no
-upstream egress — nested `docker pull` goes through the MITM proxy, not
-this registry.
+Each project gets a plain `registry:2` that carries the cross-workspace
+image cache. It has no upstream access; nested `docker pull` goes through
+the MITM proxy, not this registry.
 
-- Plain HTTP on **:5000**, blobs on a per-project RWO PVC, plain root
-  (trusted infra, like the proxy). The `registry:2` image is digest-pinned
-  and mirrored into the yaac registry.
-- Ensured for every **nested** workspace — it is what carries their
-  cross-workspace image cache.
-- **Per project, not shared**, because `registry:2` has no path ACLs: a
-  shared writable registry would let one project overwrite another's tags.
-  Within a project it is a shared namespace by design: any workspace of the
-  project can push a name (an upstream one like `postgres:16` included)
-  that every later nested workspace of the project resolves locally.
-- **Named by the project's immutable id** (`yaac-reg-<id>`, and its PVC,
-  policies and one-shot pods after it), as is the node-local image store
-  (`shared-images/<id>`). A project re-added under a freed slug therefore
-  gets an empty registry and store of its own, whether or not the old
-  one's removal succeeded — its catalog is never inherited.
-- Three policies: a workspaces→registry allow k8s NetworkPolicy (podSelector
-  requires the pod's `yaac.project-id` label *and* a `yaac.workspace-id`,
-  keeping it off the registry pod itself), a deny-all egress k8s
-  NetworkPolicy on the registry pod, and a NetworkPolicy ingress lock
-  confining the registry pod's ingress to same-project workspaces plus the
-  host/remote-node entities.
-- Node containerd reaches it via a `hosts.toml` under
-  `/etc/containerd/certs.d/` (see Service addressing below).
-- Lifecycle: created from workspace-create for a `nestedContainers`
-  workspace, removed on project removal. The `orphan-registry-gc` reconcile
-  step removes any of this install's registries whose `yaac.project-id` no
-  live project holds, or that carry no id at all — every removal that
-  failed, collected by id rather than by anything the removal left
-  behind.
+- Plain HTTP on port 5000, blobs on a per-project RWO PVC, running as plain
+  root (trusted infrastructure, like the proxy). The image is
+  digest-pinned and mirrored into the main yaac registry.
+- **One per project**, because `registry:2` has no per-path access control:
+  a shared writable registry would let one project overwrite another's
+  tags. Within a project it is a shared namespace by design: any workspace
+  can push a name (including an upstream one like `postgres:16`) that
+  later nested workspaces of the project then resolve locally.
+- **Named by the project's immutable id** (`yaac-reg-<id>`, with its PVC,
+  policies and one-shot pods named after it), as is the node-local store
+  (`shared-images/<id>`). A project re-added under a freed slug gets a new,
+  empty registry and store, even if the old project's removal failed.
+- **Three NetworkPolicies**:
+  - an allow policy from the project's workspaces to its registry (the pod
+    must carry the project's `yaac.project-id` label and a
+    `yaac.workspace-id` label, which keeps the registry pod itself out);
+  - deny-all egress on the registry pod;
+  - an ingress lock on the registry pod admitting only same-project
+    workspaces and the nodes' addresses (an `ipBlock`, for containerd
+    pulls and the kubelet probe).
+- **Lifecycle**: `ensureProjectRegistry` creates it when a
+  `nestedContainers` workspace is created; project removal deletes it. The
+  `orphan-registry-gc` reconcile step deletes any of this install's
+  registries whose project id no live project holds (or that have no id),
+  which catches every removal that failed.
 
 ### Service addressing
 
-The proxy and per-project registry Services both use
-**allocator-assigned ClusterIPs**. They are stable because the Services
-are never deleted or recreated: `kubectl apply` reconciles drift in place,
-so the immutable ClusterIP is allocated once and never migrates. The
-server reads the live IP whenever it needs one (at pod-create, and when
-writing the node `hosts.toml`).
+The proxy and project registry Services keep their allocator-assigned
+ClusterIPs because they are never deleted (`kubectl apply` updates them in
+place). Workspace pods reach them by service-DNS name through the proxy's
+DNS, which forwards `*.cluster.local` to CoreDNS and blocks bare `.svc`
+names so DNS cannot carry data out. The node does not use cluster DNS, so
+the registry's `hosts.toml` under `/etc/containerd/certs.d/` maps its
+service-DNS host to the live ClusterIP. It is rewritten on every ensure
+and read on every pull, so containerd never needs a restart.
 
-- **In-cluster clients** (workspace pods) reach these Services
-  by their service-DNS names, resolved through the proxy's split-horizon
-  DNS: the proxy forwards `*.cluster.local` to cluster CoreDNS and
-  sinkholes bare `.svc` to avoid a DNS-exfil channel. No `hostAliases`,
-  no pinned VIP.
-- **The node** is not a cluster-DNS client, so containerd needs the IP
-  directly: the registry's `hosts.toml` maps its service-DNS host to the
-  live ClusterIP, rewritten on every ensure (read per-pull, no containerd
-  restart) so it always tracks the allocator-assigned IP.
+## Egress
 
-## Egress integration
+Nested containers share the workspace pod's network namespace, so their
+pulls and build traffic take the normal workspace egress path with no
+extra wiring. netd redirects the pod's outbound 443/80/ssh traffic at its
+veth to a node-local Envoy, which adds a PROXY-protocol header carrying the
+source IP and forwards to the proxy. The proxy maps that IP to a workspace
+by the pod's `yaac.workspace-id` label (docs/workspace-egress.md).
 
-Workspace egress is the netd / pod-watch model, not in-pod iptables. netd
-DNATs a workspace pod's outbound 443/80/ssh-sentinel at its veth to a
-node-local Envoy, which stamps the source IP into a PROXY-protocol
-preamble and forwards to the proxy's transparent listeners; the proxy
-resolves source-IP → workspace by reading the pod's `yaac.workspace-id` label
-off a pod-watch. Nested containers share the workspace pod's netns, so their
-`docker pull`/build traffic rides the same path with zero extra wiring;
-the proxy auto-appends the upstream registry + CDN hosts (docker.io,
-ghcr.io, quay.io and their CDNs) to the allowlist for nested workspaces, and
-anything else is denied fail-closed. The in-cluster destination that
-matters (the project registry on :5000) is reached by its service-DNS name
-(Service addressing above) and admitted by the per-project NetworkPolicy.
+For nested workspaces, the server's proxy registration adds
+`NESTED_PULL_HOSTS` (docker.io, ghcr.io, quay.io and their CDNs) to the
+allowlist. Anything else not on the allowlist is denied. The project
+registry on port 5000 bypasses the proxy: it is reached by service-DNS name
+and admitted by the per-project NetworkPolicy.
 
-## cluster-check probes
+## cluster check
 
-`yaac cluster check` gains a warn-level `nested-mount` probe: in-sandbox
-root runs `mount -t tmpfs` under the real nested containment, the sentry
-prerequisite for the rootful engine. It sits alongside the `gvisor` gate
-and the `runtime-stamp` sweep, which apply to every workspace.
+`yaac cluster check` has a warn-level `nested-mount` probe: under the
+nested securityContext, root inside the sandbox must be able to `mount -t
+tmpfs`, which the rootful engine requires. The `gvisor` gate and the
+`runtime-stamp` sweep cover all workspaces, nested or not.

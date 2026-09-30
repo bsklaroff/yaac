@@ -1,219 +1,161 @@
-# Image panes: view images from a session container in the webapp
+# Image panes: view a workspace's image files in the webapp
 
-## Context
+## Where things stand
 
-Images never reach the webapp today. The terminal path is raw tmux bytes —
-xterm.js ← WebSocket (`/pty/attach`) ← server node-pty running `kubectl exec
--it … tmux` (`src/server/pty-bridge.ts`) — so when an agent takes a screenshot
-(Playwright + Chromium are baked into `dockerfiles/Dockerfile.default:27-56`,
-`chrome-devtools-mcp` into `Dockerfile.tools:8`), all the user sees is the
-file path printed in scrollback.
+- **Terminal panes** show raw tmux output (xterm.js over `/api/pty/attach`).
+  When an agent takes a screenshot (Playwright and Chromium are in
+  `dockerfiles/Dockerfile.default`, `chrome-devtools-mcp` in
+  `Dockerfile.tools`), the user sees only the file path in scrollback.
+- **File panes** exist (docs/file-editor.md). A `file:<path>` leaf opens a
+  checkout-relative file read from the server's own filesystem, so it works
+  for stopped workspaces too. `GET /workspace/:id/file` flags binary
+  content, and `WorkspaceFile` then shows "Binary file, not shown". So an
+  image inside the checkout can be opened but not seen.
+- **Chat panes** (`acp` mode) already render image content blocks inline, as
+  `data:` URLs (`useImageSrc` in `packages/frontend/src/lib/attachments.ts`).
+- Images going the other way, from the user to the agent, are handled by
+  paste/drop attachments (docs/agent-modes.md, "Images").
+- The SPA's CSP (`spaCsp` in `packages/server/src/api/http/static.ts`) allows
+  `img-src 'self' data:`.
 
-Fix chosen (from the option evaluation): serve images out-of-band through a
-new authenticated server route, and render them in the webapp. Alternatives
-rejected: in-band terminal image protocols (images wouldn't survive the
-per-attach view-session reattach; agents don't emit them), and a watched
-"artifacts dir" gallery (needs agent cooperation; can layer on later).
+What is missing: rendering an image file, and opening one from a path printed
+in a terminal.
 
-Decisions (confirmed with user):
+Rejected alternatives: in-band terminal image protocols (agents don't emit
+them, and they would not survive a reattach), and a watched "artifacts dir"
+gallery (needs agent cooperation; it can be layered on later).
 
-- **Regular pane**, not a lightbox/overlay — an image opens as a first-class
-  leaf in the existing tiling/tabs layout, exactly like a shell tab: it can
-  be split, dragged, tabbed, and closed.
-- **Serve any image path in the container**, not just `/workspace`. This
-  forces the transport to `kubectl exec` (the host-side workspace shortcut
-  only covers hostPath mounts) and means images are only viewable while the
-  session is running — accepted.
-- **No new npm dependencies.** Link detection uses xterm's core
-  `registerLinkProvider` API (no `@xterm/addon-web-links`, which is
-  URL-only anyway).
+## Decisions (confirmed with the user)
 
-## Approach
+- An image opens as a regular layout pane, like a file or shell tab: it can be
+  split, dragged, tabbed and closed. Not a lightbox.
+- Any image path the workspace can see is viewable, not only files in the
+  checkout. Paths outside the checkout are read through the driver's `exec`,
+  so they are only viewable while the workspace runs. That is accepted.
+- No new npm dependencies. Link detection uses xterm's core
+  `registerLinkProvider` API.
 
-### 0. Spike first: link clicks under tmux mouse reporting
+## Plan
 
-tmux runs with `mouse on`, and the webapp already patches xterm's mouse
-handling (`patchForcedSelection` / `patchKeepSelection`,
-`src/frontend/lib/selection.ts`) so plain drag selects locally while
-Alt+drag reports to tmux. Whether a plain click reliably activates an
-xterm `ILinkProvider` link in that regime is unverified.
+### 0. Spike: link clicks under tmux mouse mode
 
-Before building the UI, write a Playwright script under
-`test-playwright-scripts/` (committed, header comment saying what it
-verifies and how to run it, per convention) that registers a scratch link
-provider in the live webapp terminal and clicks a matched span with real
-mouse events. If plain click misfires or conflicts with selection, fall
-back to requiring the same Alt modifier used for tmux mouse handoff — the
-script decides.
+tmux runs with `mouse on`, and the webapp patches xterm's mouse handling
+(`patchForcedSelection` / `patchKeepSelection` in
+`packages/frontend/src/lib/selection.ts`) so a plain drag selects locally and
+Alt+drag goes to tmux. It is unverified whether a plain click activates an
+`ILinkProvider` link in that setup.
 
-### 1. Backend: container file read helper
+Before building the UI, write a Playwright script in `test-playwright-scripts/`
+that registers a scratch link provider in a live terminal and clicks a match
+with real mouse events. If a plain click misfires or fights selection, require
+the Alt modifier instead. The script decides.
 
-`src/lib/k8s/exec.ts` — new exported `containerReadFile(jobName, absPath,
-maxBytes)`:
+### 1. Images in file panes (checkout paths)
 
-- **argv-based kubectl, no shells anywhere.** The path is user input;
-  `shellKubectlWithRetry` (string through the host shell) would be an
-  injection hazard. Use `kubectlWithRetry` (`src/lib/k8s/kubectl.ts:82`,
-  `execFile`-based) with the path as its own argv element:
-  1. `['exec', '-n', ns, execTarget(jobName), '--', 'stat', '-L', '-c',
-     '%s', '--', absPath]` — existence + size check (`-L` so symlinked
-     screenshots report the target's size). Map "No such file or
-     directory" stderr → `ServerError('NOT_FOUND', …)`; size > `maxBytes`
-     → `ServerError('VALIDATION', …, 413)`.
-  2. `['exec', …, '--', 'base64', '--', absPath]` → decode with
-     `Buffer.from(stdout.replace(/\s/g, ''), 'base64')`, return the Buffer.
-- Extend `KubectlExecOptions` with `maxBuffer?: number`, plumbed into
-  `execFileAsync` / `execFileWithInput` (`kubectl.ts:92-94,108`). Node's
-  default 1 MiB `maxBuffer` is far below a base64-encoded screenshot; the
-  read call passes ~1.4 × maxBytes.
-- Export `MAX_IMAGE_BYTES = 32 * 1024 * 1024` (generous for screenshots,
-  small enough that the base64 round-trip stays cheap).
-- `stat`/`base64` come from coreutils in the Debian-based session images;
-  a project image that strips them surfaces a clean 500, acceptable.
+- New route `GET /workspace/:id/file/raw?path=` in
+  `packages/server/src/api/routes/workspaces.ts`, backed by a function in
+  `#domain/workspaces` (`files.ts`) that reuses the existing checkout-relative
+  path resolution and `resolveWorkspaceRecord`. Like the other file routes it
+  works for stopped workspaces and needs no driver verb.
+- Only image extensions are served: `png jpg jpeg gif webp bmp`, mapped to a
+  MIME type. Anything else is `VALIDATION` (400). SVG is excluded: served from
+  the cookie-bearing server origin, a navigated-to SVG runs script, which makes
+  agent-written SVG an XSS vector.
+- Cap at `MAX_IMAGE_BYTES` (32 MiB) with `TOO_LARGE`.
+- Response headers: the mapped `Content-Type`, `X-Content-Type-Options:
+  nosniff`, `Cache-Control: no-store` (an agent may overwrite the same path
+  with a new screenshot).
+- `WorkspaceFile` renders an `<img>` instead of "Binary file, not shown" when
+  the path has an image extension.
 
-### 2. Backend: `GET /session/:id/image?path=…`
+### 2. Images outside the checkout
 
-New route in `src/server/routes/session.ts`, following the `/:id/terminals`
-pattern (`routes/session.ts:225`):
+- New route `GET /workspace/:id/image?path=<absolute path>`. It resolves the
+  workspace with `resolveWorkspaceContainer(id, { requireRunning: true })`
+  and reads through `workspaceDriver().exec`: `wc -c < <path>` for existence
+  and size, then `base64 < <path>`, decoded on the server. Both forms are
+  portable; GNU `stat -c`/`base64 <path>` would break on a macOS
+  containerless host. The path
+  goes through `shellQuote` (`#lib/shell`) because `exec` takes a shell
+  command string. Same extension list, cap and headers as step 1. "No such
+  file" maps to `NOT_FOUND`.
+- There is no confinement beyond the extension check. This grants nothing a
+  user doesn't already have through `/api/pty/attach`, which is a shell as
+  the same user. Under `containerless` that shell is on the host, so the
+  route reads host files the server user can read. That is the same trust as
+  the terminal.
+- Add the route to `test/api/route-matrix.ts` with its answer under both
+  drivers.
 
-- `zValidator('query', z.object({ path: z.string().min(1) }))`.
-- Normalize with `path.posix`: relative paths resolve against `/workspace`
-  (the agent's cwd), `~/` against `/home/yaac`. No confinement beyond that
-  — by design any container path is servable. This grants nothing the
-  authenticated user doesn't already have via `/pty/attach` (a full shell
-  as the same container user).
-- Extension whitelist → MIME map, exported for tests: `png jpg jpeg gif
-  webp bmp`. Anything else → `ServerError('VALIDATION', …)`. **`svg` is
-  deliberately excluded**: served same-origin from the cookie-bearing
-  server origin, a navigated-to SVG is a scriptable document — an XSS
-  vector for agent-authored content.
-- `resolveSessionContainer(c.req.param('id'), { requireRunning: true })` →
-  `jobName`, then `containerReadFile`. Stopped sessions get the same error
-  shape the terminals routes produce.
-- Respond with the raw bytes: `Content-Type` from the map,
-  `X-Content-Type-Options: nosniff`, `Cache-Control: no-store` (the agent
-  may overwrite the same path with a fresh screenshot; the pane owns
-  refresh).
+### 3. Path detection in terminals
 
-### 3. Frontend: image path detection in terminals
+New `packages/frontend/src/lib/image-links.ts`:
 
-New `src/frontend/lib/image-links.ts`:
+- `matchImagePaths(line)` returns `{ start, end, path }[]`: absolute, `~/`
+  and relative tokens ending in an image extension (case-insensitive), no
+  spaces inside a path, trailing punctuation stripped.
+- `registerImageLinkProvider(term, onOpen)` implements `ILinkProvider`: joins
+  wrapped lines, maps matches to buffer ranges, underlines on hover, and calls
+  `onOpen(path)` on activate.
+- To decide which pane to open, the frontend needs the workspace's checkout
+  and home paths. These differ by driver, so the workspace snapshot must
+  carry them. The checkout is `WorkspacePaths.workspaceDir`; there is no
+  home field yet, so add `homeDir` to `WorkspacePaths`, with each driver
+  answering where its workspace's `$HOME` is. Relative paths resolve against the
+  checkout. A path inside the checkout opens a `file:<relative path>` pane
+  (step 1); any other path opens an `image:<absolute path>` pane (step 2).
 
-- `matchImagePaths(line: string): Array<{ start: number; end: number;
-  path: string }>` — pure, exported, unit-tested. Matches absolute
-  (`/…/shot.png`), home (`~/shot.png`), and relative (`./x.png`, bare
-  `x.png`) tokens ending in a whitelisted extension (case-insensitive);
-  no spaces inside paths (ambiguous in terminal output — accepted
-  limitation); strips trailing punctuation (`.` `,` `)` `"` `'`).
-- `resolveImagePath(raw: string): string` — relative → `/workspace/…`,
-  `~/` → `/home/yaac/…`; exported for reuse by the route's mirror-image
-  unit tests.
-- `registerImageLinkProvider(term, onOpen)` — implements xterm
-  `ILinkProvider` (core API, no `allowProposedApi` needed): join wrapped
-  buffer lines the way `WebLinksAddon`'s LinkComputer does, map match
-  offsets back to 1-based `IBufferRange`s, underline-on-hover decoration,
-  `activate` → `onOpen(resolvedPath)`. Returns the `IDisposable`.
+`WorkspaceTerminal` takes an optional `onOpenImage` prop, registers the
+provider after `term.open`, and disposes it on cleanup.
 
-`WorkspaceTerminal` (`src/frontend/components/WorkspaceTerminal.tsx`) gains an
-optional `onOpenImage?: (path: string) => void` prop; when set, register
-the provider after `term.open(el)` (near the addon setup at `:98-120`)
-and dispose it in the effect cleanup.
+### 4. The `image:` pane
 
-### 4. Frontend: the image pane
-
-Image panes are client-side layout leaves — no tmux window, no server
-state. Leaf targets are already plain strings (`'agent'`, `'shell:<name>'`,
-`'window:@<id>'`), so add a fourth scheme: **`image:<abs path>`**.
-
-Helpers in `image-links.ts` (exported, unit-tested): `imageTarget(path)`,
-`isImageTarget(t)`, `imageTargetPath(t)`.
-
-`WorkspaceView.tsx` changes:
-
-- **Layout sync** (`WorkspaceView.tsx:142-155`): the reconcile effect removes
-  leaves missing from the live tmux window list — skip `image:` leaves in
-  the removal loop (they have no backing window) and never feed them to
-  the `addLeafToLargest` re-add loop.
-- **Open handler** passed down as `onOpenImage` to every `WorkspaceTerminal`
-  (bound to that pane's session id, not the selected one): if a leaf with
-  the same target exists, just `focusTerminal` to it; otherwise
-  `addLeafToLargest` + focus, mirroring `openShell` (`:197-214`) minus the
-  server call.
-- **`paneName`** (`:72-76`): image targets → `basename(path)`.
-- **Pane body** (mounted loop at `:578-619`): branch on `isImageTarget` —
-  render `<ImagePane sessionId={id} path={…} />` instead of
-  `WorkspaceTerminal`. Keep-alive works unchanged (the pane is cheap).
-- **Close**: image panes get the header ×/tab × unconditionally, but both
-  the click path and the Alt+W shortcut skip the `ConfirmDialog` and the
-  `killWorkspaceTerminal` call — closing destroys nothing; just drop the
-  leaf and the `opened` entry.
-- **Persistence**: layouts already persist to localStorage, so image panes
-  reappear on reload and re-fetch; a stopped session yields the pane's
-  error state.
-
-New `src/frontend/components/ImagePane.tsx`:
-
-- Fetch via a new `api.getBlob(path)` in
-  `src/frontend/lib/apiClient.ts` (same `credentials: 'same-origin'` /
-  `ApiError` handling as `request()`, but returns `res.blob()`), then
-  `URL.createObjectURL` into an `<img>` with `object-fit: contain`,
-  centered on the pane's `bg` block. Revoke the object URL on unmount and
-  before each refetch.
-- States: loading (reuse the `LoadingIcon` "Connecting…" pattern from
-  `WorkspaceTerminal.tsx:283-289`), error (the `ApiError` message — "No such
-  file", "session not running", "too large" — plus a Retry button), and a
-  small refresh control in the pane body so a re-taken screenshot at the
-  same path can be reloaded (`no-store` keeps the fetch honest).
+- `image:<abs path>` is a new client-side leaf scheme, next to `file:` and
+  the others. It has no tmux window and no server state. Add
+  `imageTarget` / `isImageTarget` / `imageTargetPath` helpers in the style
+  of `packages/frontend/src/lib/files.ts`.
+- `WorkspaceView`: add `image:` to `isSpecialPane`, so the layout reconcile
+  keeps the leaf although no tmux window backs it (as for `file:` leaves). Opening an
+  existing target focuses it; otherwise add a leaf and focus it. The pane
+  name is the file's basename. Closing destroys nothing, so there is no
+  confirm dialog and no terminal kill.
+- `ImagePane` fetches the route as a blob, shows it with `object-fit:
+  contain` through an object URL, and revokes the URL on unmount and before
+  each refetch. It has loading and error states (showing the `ApiError`
+  message: not found, not running, too large) and a refresh button.
+- Layouts already persist, so image panes come back on reload and refetch.
 
 ### 5. CSP
 
-`src/server/static.ts:16`: `img-src 'self' data:` → `img-src 'self' data:
-blob:` (object URLs). Direct `<img src={route}>` without the blob fetch was
-considered — no CSP change — but rejected: failures render as an opaque
-broken-image icon with no way to distinguish "file missing" from "session
-stopped" from "too large". Update `test/unit/server/static.test.ts`.
+Change `img-src 'self' data:` to `img-src 'self' data: blob:` for the object
+URLs. A plain `<img src={route}>` would need no CSP change, but a failed load
+shows only a broken-image icon, with no way to tell "missing" from "not
+running" from "too large".
 
 ## Testing
 
-Unit (`test/unit/`, every new exported function covered per repo rule):
+- Server unit tests under `packages/server/test/` in the folder matching each
+  module: the raw-file read (extension list, SVG refused, size cap, stopped
+  workspace still served) and the exec read (quoting, `NOT_FOUND`, size cap,
+  base64 round trip) with `exec` mocked at the driver boundary.
+- `test/api`: the matrix rows, and write-route style behavior tests for both
+  routes.
+- Frontend unit tests in `packages/frontend/test/`: `matchImagePaths` cases
+  (absolute, relative, `~`, uppercase extension, trailing punctuation,
+  spaces, several per line, wrapped lines), target helpers, `ImagePane`
+  fetch/error/retry and URL revocation, and `WorkspaceFile` rendering an
+  image.
+- `test/e2e-containerless`: in the suite's shared workspace, write a small
+  PNG into the checkout and one outside it, fetch both routes, and compare
+  bytes and `Content-Type`; assert 404 for a missing file and 400 for
+  `.txt`. The k8s variant needs a cluster host.
+- The Playwright spike grows into the end-to-end check: echo an image path
+  in a shell pane, click it, and assert an image renders.
 
-- `k8s/exec.test.ts`: `containerReadFile` — argv shape (no shell), stat →
-  404 mapping, size cap → 413, base64 round-trip, symlink `-L` flag.
-- `k8s/kubectl.test.ts`: `maxBuffer` plumbed through both exec paths.
-- `server/session-image.test.ts` (mirroring `server/terminals.test.ts`):
-  MIME map, relative/`~` resolution, non-image extension → 400 VALIDATION,
-  svg rejected, missing file → 404, oversized → 413, `requireRunning`
-  enforced, response headers.
-- `frontend/image-links.test.ts`: matcher cases (absolute/relative/home,
-  uppercase extensions, trailing punctuation, spaces rejected, multiple
-  matches per line, wrapped-line joining), `resolveImagePath`, target
-  helpers round-trip.
-- `frontend/image-pane.test.tsx`: blob fetch success/error/retry, object
-  URL revocation; `api-client.test.ts`: `getBlob`.
-- WorkspaceView layout sync: image leaves survive the terminals reconcile
-  and are never server-killed (extend the existing frontend tests around
-  layout/persist).
+## Out of scope
 
-E2e (`test/e2e/`, needs a wired cluster; no new CLI args so the CLI-e2e
-rule isn't triggered — this covers the transport instead): create a
-session (`requirePrebuilt: true`, per-run namespace), write a small PNG
-into the container via `containerExec` (`base64 -d` of a fixture,
-including a path with spaces outside `/workspace`), `GET` the route with
-the bearer secret, assert byte-for-byte equality and correct
-`Content-Type`; assert 404 for a missing file and 400 for `.txt`.
-
-Playwright (`test-playwright-scripts/`): the spike script from step 0
-evolves into the end-to-end verification — echo an image path in a shell
-pane, click the link, assert an image pane opens and renders.
-
-`pnpm lint` before committing.
-
-## Out of scope (deliberate)
-
-- Gallery / watched artifacts dir (option B) — layers cleanly on this
-  route later.
-- Serving images from stopped sessions (would need a workspace-only
-  host-side read path).
-- SVG, PDFs, or generic file preview.
-- In-band terminal image protocols (sixel / iTerm OSC 1337).
-- Zoom/pan controls beyond contain-fit.
+- A gallery or watched artifacts dir.
+- Reading non-checkout paths from a stopped workspace.
+- SVG, PDF, or general binary preview.
+- Terminal image protocols (sixel, iTerm OSC 1337).
+- Zoom and pan beyond contain-fit.

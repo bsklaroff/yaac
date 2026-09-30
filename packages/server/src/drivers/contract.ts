@@ -740,9 +740,9 @@ export interface WorkspaceDriver {
    * draining pass still uses must survive it.
    */
   stop(): void
-  /** Let go of what was borrowed from the host — the forwarders' listeners,
-   *  the control tunnel. After the drain, because a reap in that drain still
-   *  tears its workspace's forwards down. */
+  /** Drop what a draining pass still needed — the forward declarations, the
+   *  proxy client's state. After the drain, because a reap in that drain
+   *  still tears its workspace's forwards down. */
   release(): void
 
   /** Locate one workspace by its EXACT workspace id — prefix expansion is

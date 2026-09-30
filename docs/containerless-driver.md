@@ -3,720 +3,516 @@
 yaac runs a workspace on one of two substrates. The `k8s` driver gives each
 workspace a single-pod Job in a local cluster, built from an image and
 reached through an egress proxy. The `containerless` driver gives it a tmux
-server on the host, in the checkout the server already made — no image, no
-cluster, no proxy, and no sandbox.
+server on the host, in the checkout the server already made: no image, no
+cluster, no proxy and no sandbox.
 
-It exists for machines the first one cannot run on (podman and kind are a
-tall order on macOS, and impossible on a locked-down laptop) and for people
-who want their agents working on the real machine rather than a copy of it.
-What it costs is the isolation: an agent in a containerless workspace runs as
-the user running yaac, with that user's access to the filesystem, the
-network and everything else. Choosing this driver is consenting to that.
+It is for machines that cannot run the k8s driver (podman and kind are hard
+on macOS and impossible on a locked-down laptop), and for people who want
+agents working on the real machine. The cost is isolation: an agent here
+runs as the user running yaac, with all of that user's access. Choosing this
+driver means accepting that.
 
 ```
-yaac server start        # this driver: a host server IS the containerless one
-yaac host check          # the parallel of `yaac cluster check`
+yaac server start        # a host server is always the containerless one
+yaac host check          # the counterpart of `yaac cluster check`
 ```
 
-There is nothing to select. **Placement is the driver**: the k8s server is a
-pod of the cluster it manages (docs/server-in-cluster.md) and this one is a
-process on your machine, so `yaac server start` means containerless and
-`yaac cluster install` means k8s. A start notices which of the two it is and
-records the answer beside the lock, because the answer outlives it — a
-client that cannot reach the server has to know whether the fix is a start
-or an install.
+There is no driver flag. The k8s server is a pod of the cluster it manages
+(docs/server-in-cluster.md) and this one is a process on your machine, so
+`yaac server start` means containerless and `yaac cluster install` means
+k8s. The command that stands the server up records the driver in
+`server.json` (docs/server-selection.md), so a client that cannot reach the
+server knows whether the fix is a start or an install.
 
-The two kinds never meet on one data dir: a host start against a data dir
-recorded `k8s` is refused, and `yaac cluster install` refuses to run against
-a containerless install. That matters because the crossing is irreversible
-in one direction — a k8s server cannot see a tmux workspace, so it would reap
-rows whose pods it cannot find and its teardown would remove the very state
-dirs the markers live in, leaving the agents running as the user and
-unreachable.
+The two never share a data dir: a host start against a data dir recorded as
+`k8s` is refused, and `yaac cluster install` refuses a containerless one. A
+k8s server cannot see tmux workspaces. It would reap their rows and its
+teardown would delete the state dirs holding their markers, leaving agents
+running as the user with nothing able to reach them.
 
 ## What a workspace is here
 
-The tmux server is the unit — the thing the Job is under the other driver.
-Its existence means the workspace is up, its death means the workspace is
-gone, and it deliberately outlives the yaac server that started it: `yaac
-server restart` must not stop anyone's agent.
+A workspace is its tmux server, as it is its Job under k8s: running means
+up, exited means gone. It outlives the yaac server, so `yaac server restart`
+never stops an agent.
 
-Each workspace gets its own tmux server, on its own socket. That is the one
-thing this substrate must not share: a single socket would put every
-workspace on one tmux server, where `has-session -t yaac` and
-`respawn-window -t yaac:<tool>` answer for whichever workspace got there
-first. The sockets live under the OS temp dir rather than the data dir
-because `sockaddr_un.sun_path` is about 104 bytes on macOS and a data-dir
-path is longer than that; they are keyed by the install's own root so two
-servers on one host never collide.
+Each workspace has its own tmux server and socket; with one shared socket,
+`has-session -t yaac` and `respawn-window -t yaac:<tool>` would answer for
+whichever workspace came first. Sockets live under the OS temp dir because
+`sockaddr_un.sun_path` is about 104 bytes on macOS and data-dir paths are
+longer. The temp dir name is keyed by the data dir, so two servers on one
+host never collide.
 
-The session's shape is identical to the one `workspace-bin/yaac-workspace-init`
-creates inside a pod, and has to be: the `sleep infinity` placeholder the
-stale reaper recognizes, the `yaac:<tool>` window naming the status watcher
-parses, and the tmux options the webapp's terminal rendering depends on are
-all read by driver-neutral machinery that cannot tell the two substrates
-apart.
+The session has the same shape as the one `workspace-bin/yaac-workspace-init`
+creates in a pod (the `sleep infinity` placeholder the stale reaper looks
+for, the `yaac:<tool>` window names the status watcher parses, the tmux
+options the webapp terminal needs), because that machinery is shared by both
+drivers.
 
-## Paths, and the vocabulary that carries them
+## Paths
 
-Every tmux invocation, `git -C` call and prompt script the layers above yaac's
-drivers author is written against `WorkspacePaths` — the driver's answer to
-"where are this workspace's things, as the workspace sees them". A pod
-driver answers with fixed container paths, because each pod has its own
-mount namespace. This one answers per-workspace, because they share a
-filesystem.
+Every tmux command, `git -C` call and prompt script written above the driver
+layer uses `WorkspacePaths`: where this workspace's things are, as the
+workspace sees them. The pod driver answers with fixed container paths,
+since each pod has its own mount namespace. This driver answers per
+workspace, since all workspaces share one filesystem.
 
 | | k8s | containerless |
 |---|---|---|
 | checkout | `/workspace` | `~/.yaac/global/projects/<slug>/workspaces/<id>` |
 | project main clone | the server's own path, read-only | `~/.yaac/global/projects/<slug>/repo/.git` |
-| tmux socket | `/tmp/yaac-tmux/server` (pod-local) | `$TMPDIR/yaac-cl-<hash>/<id>.sock` |
-| scratch | `/tmp` | the workspace's own state dir |
+| tmux socket | `/tmp/yaac-tmux/server` (pod-local) | `$TMPDIR/yaac-<hash>/<short-id>.sock` |
+| scratch | `/tmp` | `<state dir>/containerless/scratch` |
 | ACP record | `/home/yaac/.yaac-acp` (mounted) | `~/.yaac/global/projects/<slug>/acp/<id>` |
 
-The ACP record is the one row the driver does not get to answer freely. Under
-k8s the container path is a mount whose host side is the shared project
-location, and that location is what every reader above the driver opens — the
-chat pane's tail, the registry's first-prompt scan, a stopped workspace's
-transcript. So this driver names it directly. It is also the one per-workspace
-path that must outlive the state dir, which a stop removes: a stopped
+The state dir is `~/.yaac/global/projects/<slug>/sessions/<id>`.
+
+The ACP record is not driver-private: under k8s the container path is a
+mount of the shared project location, and every reader (the chat pane, the
+first-prompt scan, a stopped workspace's transcript) opens that location. It
+must also outlive the state dir, which a stop removes, so a stopped
 workspace's conversation stays readable (docs/agent-modes.md).
 
-Because the checkout the agent sees IS the one the server made, the review
-diff is host `git` run in that directory rather than an exec into anything.
-The checkout is a clone of its own whose one path-shaped piece of git state
-is its alternates line, naming the main clone's objects as the server sees
-them (docs/server-git.md). A pod mounts the main clone at that same path, so
-the line is the same in every view, and the launch rewrites it on both
-drivers (`buildCloneLinkExec`), which heals a checkout last launched by a
-server that saw the data dir elsewhere — so a stopped workspace restarts on
-either substrate. A switch must still take the outgoing substrate's
-workspaces down first: two agents in one checkout is not something either
-server can see or stop, since neither sees the other's workspaces.
+The review diff is plain host `git` in the checkout. The checkout is its own
+clone whose only path-dependent git state is the alternates line pointing at
+the main clone's objects (docs/server-git.md). A pod mounts the main clone at
+the same path, and every launch on either driver rewrites the line
+(`buildCloneLinkExec`), so a stopped workspace can restart on either
+substrate. Stop the old substrate's workspaces before switching: neither
+server sees the other's, so neither would notice two agents in one checkout.
 
-## Storage: the same three folders, no volumes
+## Storage
 
-The data dir has the same shape on every substrate — `global/`,
-`server-local/` and `node-local/` under `~/.yaac` (the tier legend in
-`packages/shared/src/paths.ts`). Under k8s those three are claims and a
-node hostPath; here they are three subdirectories of one directory, and no
-volume machinery applies. The split is inert on this driver, not different:
-a path declared GLOBAL is symlinked from the workspace's HOME exactly as a
-NODE-LOCAL one is, and the one place the tier shows is that a node-local
-source directory that does not exist yet (the project's pnpm store on its
-first workspace) is created by the driver as it links it, where the pod
-driver's init container would have.
+The data dir has the same three tiers on every substrate: `global/`,
+`server-local/` and `node-local/` under `~/.yaac` (tier legend in
+`packages/shared/src/paths.ts`). Under k8s they are volume claims and a node
+hostPath; here they are plain subdirectories. Global and node-local paths are
+symlinked into the workspace's HOME the same way. The only difference: a
+node-local source dir that does not exist yet (the project's pnpm store, on
+its first workspace) is created by the driver, where a pod's init container
+would create it.
 
 ## Mounts become symlinks
 
-The driver contract already anticipates this — "a host-process driver reads
-a hostPath as a bind or a symlink". A symlink here, because a real bind
-mount needs root and running yaac as root to open a workspace is not a trade
-this mode is for. Each workspace gets a private `$HOME` under its state dir,
-with the project's tool homes (`claude`, `codex`, `pi`, the opencode config)
-linked into it, and a private bin dir on `PATH` holding the helper scripts a
-pod would find in `/usr/local/bin`.
+The driver contract lets a host-process driver realize a hostPath mount "as a
+bind or a symlink". This one uses symlinks, since bind mounts need root.
+Each workspace gets a private `$HOME` under its state dir, with the project's
+tool homes (`claude`, `codex`, `pi`, the opencode config) linked in, and a
+private bin dir on `PATH` holding the helper scripts a pod has in
+`/usr/local/bin`.
 
-That layout is HOME-relative, and this driver inherits the host environment —
-where the server's user may well have pointed a tool somewhere else. Left
-alone, the failure is silent and looks like success: the agent reads the
-server user's config, with that user's real credentials in it, and writes its
-transcripts where yaac's discovery never looks.
+This driver inherits the host environment, where the user may have pointed a
+tool elsewhere. Left alone, the agent would silently use the server user's
+own config and credentials, and write transcripts where yaac never looks. So
+tool homes are handled two ways:
 
-So a workspace gets its tool homes two ways. Where a tool has a real home
-override, every create **names it** — `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
-`PI_CODING_AGENT_DIR`, and pi's session dir — on both substrates, in the one
-vocabulary the layers above drivers are written in: the container layout. A
-pod's homes already ARE those paths. Here each is translated to the directory
-its mount came from, which is the project's own. Where a tool has none, the
-home is reached `$HOME`-relative through the staged links, and the only
-defense is that nothing redirects it — so every variable that could is
-**cleared** on the way in, alongside the server's own `YAAC_*` wiring. The
-named ones are cleared too, so "no host tool-home value survives" holds on
-its own rather than only while every create remembers to re-supply one.
+- **Named.** Where a tool has a home override, every create sets it:
+  `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR` and pi's session
+  dir. Creates write these as container paths on both drivers; here each is
+  translated to the host dir its mount came from, the project's shared one.
+- **Cleared.** Any variable that could redirect a tool without an override
+  is removed, along with the server's `YAAC_*` settings. The named variables
+  are cleared too, so no host value survives even if a create forgets one.
 
-The same clearing drops the markers a claude session stamps on the processes
+opencode is why clearing is needed. It has no home override:
+`OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG` and `OPENCODE_CONFIG_CONTENT` add
+config inputs, so a host `OPENCODE_CONFIG_DIR` would load the server user's
+config and provider keys. Its real homes come from `XDG_CONFIG_HOME` and
+`XDG_DATA_HOME`, which, once cleared, resolve through the `$HOME` links.
+(yaac's own `OPENCODE_CONFIG_CONTENT` is set on the launch command line,
+after the clearing.)
+
+The clearing also removes the variables a claude session sets on processes
 it spawns (`AGENT_SESSION_VARS`: `CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`,
-its session id, pid, trace context and messaging socket), which the server
-carries whenever an agent started it. A workspace is not that session's child,
-and a claude that inherits `CLAUDE_CODE_CHILD_SESSION` stops saving its
-transcript. The session also sets `GIT_EDITOR=true`, and that is dropped only
-as that literal value beside `CLAUDECODE` — anywhere else a `GIT_EDITOR` is
-the user's own preference and is inherited like any other.
+session id, pid, trace context, messaging socket), which the server carries
+when an agent started it. A claude that inherits `CLAUDE_CODE_CHILD_SESSION`
+stops saving its transcript. `GIT_EDITOR=true`, which that session also sets,
+is dropped only as that exact value alongside `CLAUDECODE`; otherwise it is
+the user's preference.
 
-opencode is why the cleared half cannot simply be replaced by naming things.
-It has no home override at all: `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG` and
-`OPENCODE_CONFIG_CONTENT` are additional config *inputs* — the first is
-pushed onto the list of directories it loads from, so a host value injects
-the server user's opencode config, and any provider keys in it, no matter
-what else is set (the per-workspace `OPENCODE_CONFIG_CONTENT` yaac's own launch
-command carries is assigned on that command line, after the clearing). Its
-actual homes come from `XDG_CONFIG_HOME` and
-`XDG_DATA_HOME`, which cleared resolve to the staged links.
+The translation points at the mount's source, not the workspace's
+`$HOME/<tool>` link. Both reach the same files, but claude keys its macOS
+Keychain item on the path string, and on first token refresh it moves the
+credential into that item and deletes `.credentials.json`. A per-workspace
+string would let the first refresh in any workspace delete the file every
+other workspace of the project uses. Keeping the rule in the translation
+means no call site can get it wrong.
 
-That translation lands on the mount's **source**, not on the workspace's own
-`$HOME/<tool>` link to it, though the two resolve to the same files. What
-differs is the string, and a tool that keys anything on the string sees a
-different home per workspace, because the private home is per workspace while
-the staged dir is per project. claude is the proven case: it names its macOS
-Keychain item after a hash of this exact value, and on the first token
-refresh — the item being empty — it migrates the credential in and deletes
-the `.credentials.json` it came from. Per-workspace strings would mean the
-first refresh anywhere took away the shared file every other workspace of the
-project still authenticates from. Because the rule lives in the translation
-rather than at each call site, that is not something a future caller can get
-wrong by writing the obvious thing.
+Naming the claude config dir also moves claude's global config: claude reads
+`<$CLAUDE_CONFIG_DIR or home>/.claude.json` and never the other. So the
+seeded onboarding state, API-key approval and trusted folders live in the
+`.claude.json` inside the claude home on both drivers, with no separate
+mount.
 
-Naming a config dir also moves what lives in it. claude resolves its global
-config at `<$CLAUDE_CONFIG_DIR or the home dir>/.claude.json` and never
-probes the other, so the seeded onboarding state, API-key approval and trust
-roots live in the `.claude.json` **inside** the claude home — on both
-substrates, since both name the dir. That is also why it needs no mount of
-its own: it is a file in a directory already carried, rather than a lone
-`File` mount beside it. `settings.json` and `.credentials.json` never needed
-the care, having always been written inside that dir.
+Signing out (`yaac auth clear`, or the webapp) therefore clears both the
+file and the Keychain item, since the live token may exist only in the
+Keychain. The item is per project, and the delete refuses the un-suffixed
+service name, so the user's own claude install is never touched.
 
-That migration is also why signing out clears both places. By the time anyone
-runs `yaac auth clear` (or signs out in the webapp — the same door), the live
-token may exist only in the Keychain, so removing the file alone would leave
-a working credential behind while reporting the account signed out. The item
-is per project because the config dir is, and the delete refuses the
-un-suffixed service, so the user's own claude install is never touched.
+None of this is visible inside a workspace, so `yaac host check` lists the
+host variables that will be overridden or cleared, and a create mentions them
+in its progress output.
 
-Any of this taking effect is reported, because being right here is otherwise
-invisible — nothing inside the workspace looks different, so a user whose
-shell has said for years that opencode lives elsewhere would have no way to
-learn that yaac disagrees. `yaac host check` names them ahead of any create,
-and a create says so in its progress output, reporting only what the
-workspace actually ends up without.
+### Mounts that are not realized
 
-Two kinds of mount are deliberately not realized. A redirect INTO the
-checkout — a cache volume under `/workspace` — is left alone: a pod mounts
-those onto other storage and git never sees them, but a symlink is not a
-mount, so git reports it untracked (an agent running `git add -A` would
-commit an absolute host path) and the ephemeral-modules guard trips on the
-driver's own link. Nothing is lost that this substrate needs, since the
-checkout is already on the host's own disk. The workspace's module dirs
-(`ephemeralModulesPaths`) never arrive as mounts at all, and stay in the
-checkout for the same reason. What keeps them ephemeral all the same is the
-stop: the teardown removes them from the checkout, and a restart's init
-commands rebuild them. That rebuild is a relink rather than a download,
-because pnpm's store is the project's shared `.cached-packages/pnpm-store`:
-the create hands a host workspace that path as `pnpm_config_store_dir`,
-translated like any other mounted path. One store shared by every workspace
-is safe here and only here — pnpm 11 indexes it in a SQLite database in WAL
-mode, which needs every writer on one kernel, and a host's workspaces are all
-processes on this one (a pod keeps a store of its own instead,
-docs/workspace-storage.md "Package installs"). Left to its default, pnpm
-would put a store inside the private HOME: a full copy of every dependency
-per workspace, which the checkout's hardlinked `node_modules` would keep
-alive after the HOME is torn down. Nothing sweeps a checkout stopped before
-this was in place: the copy its `node_modules` had become stays until that
-directory is removed by hand, and the next restart reinstalls.
+**Mounts into the checkout.** A pod mounts cache volumes under `/workspace`
+onto separate storage that git never sees. A symlink there would show as
+untracked (`git add -A` would commit an absolute host path) and trip the
+ephemeral-modules guard. The checkout is already on local disk, so nothing
+is lost. Module dirs (`ephemeralModulesPaths`) also stay in the checkout;
+a stop deletes them and a restart's init commands rebuild them.
 
-The other thing symlinks cannot do that mounts can is nest. A pod mounts the
-project's claude dir at `/home/yaac/.claude` and then a builtin skill at
-`/home/yaac/.claude/skills/<name>` on top of it. Here the first is a link
-into shared project state, so writing the second would reach through it and
-leave one workspace's staging in a directory every other workspace reads. Such
-a mount is skipped and logged; nothing routinely asks for one, because the
-callers that would — builtin skills (see below) and a workspace's agent
-history — write host state instead. Anything with no host equivalent at all fails the
-create rather than being silently dropped.
+The rebuild is a relink, not a download, because every workspace uses the
+project's shared `.cached-packages/pnpm-store`: the create sets
+`pnpm_config_store_dir` (and `npm_config_store_dir`, for pnpm 10) to it. A
+shared store is safe only here: pnpm 11 indexes it in SQLite in WAL mode,
+which needs every writer on one kernel, and pods are not (each keeps its own
+store; docs/workspace-storage.md "Package installs"). Otherwise pnpm would
+put a full store in each private HOME, kept alive by the checkout's
+hardlinked `node_modules` after the HOME is deleted.
 
-## Agent history, linked into the shared homes
+**Nested mounts.** A pod mounts the project's claude dir at
+`/home/yaac/.claude` and then a builtin skill inside it. Here the first is a
+link into shared state, so the second would write into a directory every
+workspace reads. Nested mounts are skipped and logged; builtin skills and
+agent history write host state instead (below). A mount with no host
+equivalent fails the create.
 
-A pod reaches its own conversations through mounts layered over the tool
-homes (docs/workspace-storage.md "Agent history"). Of those, the two a tool has
-an env override for — codex's sqlite home and pi's session dir — sit outside
-every tool home, so this driver realizes them like any other mount: a link in
-the private HOME, and the variable translated to the history dir itself. The
-other three (claude's `projects/` and `file-history/`, codex's `sessions/`) are
-nested, and are not declared here. The create plants links in the shared
-homes instead: the folder claude files this checkout's conversations under
-(its cwd, munged by claude's own rule, in every spelling the data dir
-resolves to) links to the history's `claude/-workspace`, so a host
-conversation is written straight into the history; the folder the host repo
-path names links to `-repo`, so claude's auto-memory is the one a pod uses;
-and each file-history dir and codex rollout already in the history is linked
-at the path its tool looks for it by. What a host run writes outside those —
-a new rollout, a new file-history dir — is a real file in the shared home
-until the next create moves it in. None of this isolates anything, since a
-host agent can reach anything the server's user can; it keeps the layout the
-same on both drivers, which is what lets an install switch between them.
+## Agent history
 
-## Builtin skills, shared per project
+A pod reaches its conversations through mounts over the tool homes
+(docs/workspace-storage.md "Agent history"). The two with an env override
+(codex's sqlite home, pi's session dir) are handled like any other mount.
+The other three (claude's `projects/` and `file-history/`, codex's
+`sessions/`) would be nested, so the create plants links in the shared homes
+instead:
 
-yaac's own skills reach a pod as a per-workspace staging mounted read-only
-over each tool's personal skills root. There is no mount to layer here, so
-workspace create links them into the project's shared skills roots instead —
-`<data>/projects/<slug>/{claude,codex,…}/skills/<name>` pointing at the
-install's `builtin-skills/<name>` — which is exactly where the tool homes a
-workspace gets are links to. All four tools' roots are written, as under a
-pod, so the skills are there whichever tool a workspace runs.
+- The folder claude files this checkout's conversations under (named from
+  the cwd by claude's rule, for every spelling of the data dir) links to the
+  history's `claude/-workspace`.
+- The folder named after the host repo path links to `-repo`, so claude's
+  auto-memory is the one a pod uses.
+- Each file-history dir and codex rollout already in the history is linked
+  where its tool looks.
 
-Per project rather than per workspace is the same bargain the credentials
-are: the dirs they land in are already shared, and there is no boundary here
-that could make the scope narrower. Linking rather than copying is what
-keeps them in lockstep with the running yaac version — an upgrade moves
-every workspace at once, with nothing staged that could go stale.
+A new rollout or file-history dir stays a real file in the shared home until
+the next create moves it in. This isolates nothing; it keeps the layout the
+same on both drivers so an install can switch.
 
-Only yaac's own links are ever written or removed there. A name the user
-owns — a real skill directory, or a link of their own aimed outside a
-`builtin-skills` dir — is left alone, so a personal skill wins its name. A
-link into a dir of that name is the ownership record: one pointing at an
-install that moved is re-aimed on the next create, and one whose skill is no
-longer shipped is removed there, which is the only place a retired skill
-would ever be cleaned up. Ownership is per machine rather than per install,
-because a versioned global install moves on every upgrade and its links are
-recognizable by nothing else. Two live installs sharing a data dir therefore
-reconcile the same roots, and will differ over any skill only one of them
-ships.
+## Builtin skills
 
-Both substrates put something at the same name, so one function
-(`reconcileSharedSkillRoots`) owns both deliveries and takes which one to
-converge on as an argument — because an install can switch between them, and
-each has to be able to undo the other. A pod run leaves an empty directory at
-every mounted name; that is not a skill by any reader's definition, so the
-link delivery reclaims it rather than reading it as a name the user took. The
-mount delivery does the mirror, replacing a link of ours with the empty
-directory a pod mounts over — a link here would aim at an install path no pod
-can resolve. It also creates those directories itself, so the server owns
-them: a mountpoint the kubelet has to create is root-owned, and then nothing
-running as the server can clear it. Either delivery claims only a name this
-install SHIPS, and both run on every create and every restart, so a switched
-install heals per project on first use.
+In a pod, yaac's skills are a per-workspace staging dir mounted read-only
+over each tool's skills root. Here a create links them into the project's
+shared skills roots instead:
+`<data>/projects/<slug>/{claude,codex,…}/skills/<name>` points at the
+install's `builtin-skills/<name>`. All four tools' roots are written. They
+are per project because those dirs are already shared, and links rather than
+copies keep them in step with the running yaac version.
 
-The pod's mount is read-only and a symlink is not, so writing what looks like
-a personal skill at `~/.claude/skills/<name>/SKILL.md` writes through into the
-install — an npm install loses it on upgrade, a dev checkout gets its working
-tree edited for every project on the machine. It is consistent with the rest
-of this substrate (an agent here can reach the install either way), but the
-mount made it impossible by accident and this does not.
+Only yaac's own links are written or removed. A name the user owns (a real
+dir, or a link pointing outside a `builtin-skills` dir) is left alone. A
+yaac link pointing at a moved install is re-pointed on the next create, and
+one for a skill no longer shipped is removed. Ownership is per machine, not
+per install, because a versioned global install moves on every upgrade; two
+installs sharing a data dir will disagree over skills only one ships.
 
-The link cannot simply be made read-only. A symlink carries no permissions of
-its own, so a `chmod` follows it onto the install's real files — where taking
-write away breaks the two things that must be able to replace them: an
-upgrade, and a checkout of the repo that ships them in a dev install. Getting
-the mount's read-only property back would mean linking at a frozen copy
-instead, which costs the lockstep above. Switching a project
-back to the k8s driver also stops the pruning, since it only runs on a
-containerless create: shipped names are shadowed by the pod's own mounts, and
-a skill retired while the project is on k8s leaves a link that dangles in-pod
-until the next containerless create removes it.
+One function, `reconcileSharedSkillRoots`, handles both drivers and takes the
+target delivery as an argument, so each can undo the other after a switch.
+The link delivery replaces the empty dir a pod leaves at each mounted name.
+The mount delivery replaces a yaac link with an empty dir for the pod to
+mount over, and creates it itself so the server owns it (a kubelet-created
+mountpoint is root-owned). Both claim only names this install ships, prune
+links for skills it no longer ships, and run on every create and restart.
 
-The skills reach both substrates unchanged, so what they tell an agent to run
-may only assume what a host has. There is no session image here to supply the
-utilities a pod's `Dockerfile.default` installs, and the same goes for the
-helper scripts in the private bin dir. `jq` is the one that keeps coming up:
-GitHub JSON is filtered with `gh`'s own `--jq` flag — gh embeds a jq engine —
-rather than a `| jq` pipe, and `yaac-watch-prs` therefore preflights only `gh`.
-Paths are the other one: a checkout is at `/workspace` only in a pod, so a
-helper that needs the repo derives it from where it was invoked (`git
-rev-parse --show-toplevel`) and keeps `/workspace` as a fallback, never as the
-default.
+The pod's mount is read-only; a symlink is not. An agent writing
+`~/.claude/skills/<name>/SKILL.md` here edits the install itself: lost on an
+npm upgrade, or an edit to a dev checkout's working tree. A symlink cannot be
+made read-only (`chmod` follows it and would block upgrades), and linking to
+a frozen copy would lose the version lockstep.
 
-## Credentials, and why they are real
+The same skill text reaches both drivers, so it may only assume what a host
+has; there is no image supplying `Dockerfile.default`'s utilities. The same
+applies to the helper scripts in the private bin dir. So skills filter GitHub
+JSON with `gh --jq` rather than piping to `jq` (`yaac-watch-prs` needs only
+`gh`), and find the repo with `git rev-parse --show-toplevel`, using
+`/workspace` only as a fallback.
 
-Under the k8s driver a workspace never holds a real credential: it gets a
-sentinel, and the egress proxy swaps it for the real token on the way out.
-There is no proxy here and nothing to do the swapping, so a sentinel would
-simply be what the agent authenticated with. Containerless workspaces
-therefore get the real thing — real OAuth bundles in the per-project tool
-homes, real API keys and `GH_TOKEN` in the workspace environment.
+## Credentials are real
 
-This is not a weakening of the sandboxed path; it is the same bargain stated
-plainly. There is no boundary between the agent and this machine, so there
-is nothing to withhold a secret from. If that is not acceptable for a given
-project, that project wants the k8s driver.
+Under k8s a workspace holds only a sentinel value, and the egress proxy
+swaps in the real token on the way out. Here there is no proxy, so
+containerless workspaces get real OAuth bundles in the per-project tool
+homes and real API keys and `GH_TOKEN` in the environment. Nothing separates
+the agent from this machine, so there is nothing to hide a secret from. A
+project that cannot accept that should use the k8s driver.
 
-### Where the live credential is, and how it gets back
+### Keeping refreshed credentials in sync
 
-Holding the real bundle means the agent also REFRESHES it. OAuth refresh
-tokens rotate, so the moment an agent does, the project's tool home holds the
-live credential and the host store holds a spent one — and spending a spent
-refresh token does not merely return stale data, it fails, and for Codex
-(single-use) it can strand the chain. Under k8s this never arises: the
-workspace holds a sentinel and every refresh transits the proxy, which writes
-the host store on the way past. There is no proxy here, so the loop is closed
-in the server instead, by `#domain/auth`'s credential-sync.
+An agent holding the real bundle also refreshes it. Refresh tokens rotate,
+so afterwards the project's tool home holds the live credential and the host
+store a spent one. Using a spent token fails, and for Codex (single-use
+tokens) it can break the chain. Under k8s every refresh passes through the
+proxy, which updates the host store. Here `#domain/auth`'s credential-sync
+closes the loop.
 
-One rule: **the newest credential wins, and both sides converge on it.**
-Harvest carries a project's refreshed bundle up to the host store; push
-carries the host store's back down to projects that are behind. Seeding a
-project is those two in order, which is what makes it safe to run on every
-workspace create — the write can only ever move a project forward, where a
-plain write of the host copy would spend the rotation of every workspace
-already running there.
+The rule: **the newest credential wins, and both sides converge on it.**
+Harvest copies a project's refreshed bundle to the host store; push copies
+the host store's bundle to projects that are behind. Seeding a create runs
+harvest then push, so it can only move a project forward rather than undo a
+running workspace's rotation.
 
-Three properties do the work:
+- **A sentinel is never a credential.** It is never harvested and never
+  counts as up to date. So the same code runs under k8s, and a nested
+  yaac-in-yaac install (whose "real" credential is the outer proxy's
+  sentinel) is never adopted or overwritten.
+- **On macOS a Claude credential ends up in the Keychain.** claude moves it
+  there on first refresh and deletes the file, so a file still present is the
+  older copy and harvest reads the Keychain first. Push writes the file and
+  deletes the stale item, so claude moves the fresh file in again. yaac never
+  creates an item.
+- **The host does not refresh a credential a running workspace holds**,
+  since that would invalidate the agent's copy. With a workspace live, the
+  plan-usage check uses whatever the agent produced and refreshes only when
+  nothing is running. A briefly missing usage readout beats signing a
+  running agent out.
 
-- **A sentinel is never a credential.** It cannot be harvested and does not
-  count as a project being up to date. That is what lets the same functions
-  run under either driver — under a mediated one every project reads as
-  having nothing to offer — and it is what keeps a chained yaac-in-yaac
-  install, whose "real" credential IS the outer proxy's sentinel, from being
-  adopted or overwritten.
-- **The Keychain is where a Claude credential ends up on macOS.** claude
-  migrates it into the item its `CLAUDE_CONFIG_DIR` names on first refresh
-  and deletes the file, so a file still sitting there is by definition the
-  older of the two and the harvest reads the item first. Pushing works by
-  subtraction: write the file, then drop the stale scoped item, so claude
-  reads the fresh file and re-migrates it. Nothing mints an item — the
-  account name inside one is claude's to choose.
-- **The host does not refresh a credential something else is holding.** With
-  a workspace live, a host-side rotation would invalidate the copy the
-  running agent is using, so the plan-usage cycle harvests and queries with
-  whatever the agent produced instead, and refreshes only when nothing is
-  live. A briefly missing usage readout is the acceptable cost; logging a
-  running agent out is not.
+Sync runs where staleness would cause a failure: before a host-side refresh,
+before seeding a create, on attach, on workspace stop, and on the reconcile
+resync at most every five minutes (on macOS each sweep spawns one `security`
+process per project). Each project keeps its own copy and catches up on the
+next push. An explicit sign-in ignores newest-wins: it is the user choosing
+the account, so it is written to every project.
 
-Convergence runs where staleness would bite rather than from a watcher:
-before a host-side refresh, before seeding a create, on attach, on workspace
-stop, and on the reconcile resync behind a five-minute floor (the sweep reads
-every project, and on macOS that means spawning `security` per project).
-Cross-project divergence heals through the same path — each project keeps its
-own copy, so one project's agent rotating the shared token leaves the others
-behind until the push hands them the winner.
+### Never refreshing a credential this install does not own
 
-An explicit sign-in is the one write that ignores newest-wins: it is the user
-saying which account this install uses, possibly a different one, so it is
-forced out to every project.
+A refresh grant spends the old refresh token and issues a new one, signing
+out anyone holding the old copy. So the server never presents a sentinel
+refresh token, and the grant functions refuse to (`mayPresentRefreshToken`).
+A sentinel means an outer install (yaac inside a yaac workspace) owns the
+real credential; presenting it would make the outer proxy rotate the real
+token while this server stores nothing, leaving every outer workspace with a
+spent token.
 
-### The one credential this server never refreshes
+For the same reason the test suite forbids refresh grants entirely
+(`YAAC_E2E_NO_TOKEN_REFRESH`, set in the shared vitest setup and every
+spawned test server). A proxy rewrites the `refresh_token` of any POST to a
+token endpoint regardless of what was sent, so a suite running in a
+workspace would rotate the host's live credential even with a fake token.
+Fixture expiry times do not help: they only decide whether a refresh is
+attempted, and the attempt is the damage.
 
-A refresh grant is the only upstream call that MUTATES a credential — the old
-refresh token is spent and a new one issued — so whoever holds the old copy
-and does not learn the new one is signed out. That makes a placeholder refresh
-token something this server must never present, and the grants themselves
-refuse it (`mayPresentRefreshToken`).
+### Git credentials
 
-A sentinel means the real credential belongs to an install above this one,
-which hands this server a placeholder and swaps it on the way out — the
-chained yaac-in-yaac shape. Presenting it makes that install's proxy
-substitute the real token and rotate it, while this server receives sentinels
-back and stores nothing; the outer store is left holding a token the rotation
-already spent, and every workspace using it fails on its next refresh.
-Refreshing a credential this install does not own is never its job.
+The checkout's `origin` has no token (server-side git adds it per command),
+and the private `HOME` hides the user's `~/.gitconfig` and `~/.ssh`. In a
+pod the proxy adds the credential in flight. Here the launch receives the
+resolved credential and writes it into the workspace's home: an HTTPS token
+becomes a line in `$HOME/.git-credentials`, git's credential store default
+file.
 
-The same mechanism is why the test suite forbids refresh grants outright
-(`YAAC_E2E_NO_TOKEN_REFRESH`, set in the shared vitest setup and in every
-spawned test server's environment). A proxy rewrites the `refresh_token` body
-param of anything POSTed to a token endpoint without checking what the request
-carried, so a suite running inside a workspace rotates the hosting install's
-live credential no matter how obviously fake the token it presented. Fixture
-expiries are not a defense: they decide whether a refresh is attempted, and
-the attempt is already the damage.
+An SSH key is never written to disk. The launch starts an **ssh-agent per
+workspace**, detached beside the tmux server, and pipes yaac's generated key
+(docs/git-credentials.md) into `ssh-add -`. Only the public half goes in the
+home, named by `GIT_SSH_COMMAND` with `-i` and `IdentitiesOnly`, so ssh does
+not offer every key the agent holds (which could lock the account). The
+agent's pid is stored in the workspace marker so teardown stops it and
+recovery can tell a live agent from a stale socket. A state dir can outlive
+a workspace whose host rebooted, so recovery also clears the credential
+store of any workspace it finds dead. Host keys use the same project-scoped
+known_hosts as the pod path.
 
-Git is where that has to be spelled out, because a workspace here is cut off
-from the credential twice over. The checkout's `origin` is deliberately
-tokenless — the clone strips it, and every server-side call re-injects per
-invocation — and the private `HOME` hides the user's own `~/.gitconfig` and
-`~/.ssh`. Under a pod neither matters, since the proxy injects the credential
-in flight. So the launch is handed the resolved credential on the spec and
-writes it into the workspace's own home: an HTTPS token becomes a line in
-git's credential store (`$HOME/.git-credentials`, which is the store's
-default file, so the helper needs no argument).
+The credential helper list is reset before `store` is added, so a system
+credential manager cannot answer first. `GIT_CONFIG_GLOBAL` points at the
+file the launch wrote, since an inherited value would hide it, including
+identity and trusted directories. The workspace's SSH command omits the Tor
+options the server's own git uses; see "Egress control" below.
 
-An SSH key does not go into the home at all. The launch starts an
-**ssh-agent per workspace**, detached beside the tmux server, and pipes the
-key yaac generated (docs/git-credentials.md) into `ssh-add -` — so the private
-half exists in two process memories and in neither filesystem. What lands in the home is the PUBLIC half, which
-`GIT_SSH_COMMAND` names with `-i` under `IdentitiesOnly` to pin ssh to that
-identity (naming none would let it offer every key the agent holds against a
-host that may lock the account out). The agent's pid goes in the workspace
-marker, so teardown ends it and a recovery scan can tell a live one from a
-stale socket; the key therefore lives exactly as long as the workspace. That
-matters because a state dir OUTLIVES a workspace whose host rebooted, until
-somebody presses stop — which is also why the recovery scan clears the
-credential store of a workspace it finds dead. Under a pod none of this
-applies: the proxy forwards its own agent. Host verification is unchanged
-either way — the same project-scoped known_hosts the pod path writes.
+## `yaac-mama`: how a workspace reaches its server
 
-Two details keep that deterministic rather than dependent on the host. The
-helper list is reset before `store` is added, so a system-wide credential
-manager cannot answer first with whatever the user has stored for that host;
-and `GIT_CONFIG_GLOBAL` is pinned at the file the launch wrote, because the
-workspace inherits the server's environment and one already set there would
-otherwise silence the whole config — identity and trusted directories
-included.
+`yaac-mama` lets an agent run a small subset of the yaac CLI against its own
+server: list the project's workspaces, start one, retitle one, stop one
+(including itself), and manage sidebar groups. Stop is allowed because it is
+reversible; delete, restart and reconfigure are not. Both drivers support it
+with different transports. A workspace stopping itself gets a best-effort
+reply, since the stop tears down what the reply travels over; the session
+ending is the confirmation.
 
-Tor is the one thing not carried across: the SSH command a workspace gets
-deliberately omits the Tor options the server's own git commands carry. That
-is the same call the driver makes about Tor everywhere — routing one hop
-through advisory environment while the rest goes direct is the fail-open
-shape the difference list below rejects.
+**Under k8s** a pod cannot dial the server: the server's ingress policy
+admits no workspace pod (docs/server-in-cluster.md), and the pod holds no
+credential for it. So the pod POSTs to the egress proxy, which holds the
+request until the server collects it on its reconcile pass, identifying the
+caller by pod IP.
 
-## `yaac-mama`, and how a workspace reaches its server
+**Here** the workspace POSTs straight to `/workspace/mama` with a bearer
+token minted at create and passed in its environment (`YAAC_MAMA_TOKEN`,
+with `YAAC_MAMA_URL`). The server stores only its SHA-256 on the workspace
+row. The token alone identifies the caller, so a request cannot claim to be
+another workspace. It is not a security boundary (the agent could run the
+`yaac` CLI directly as the user); it gives attribution, so `list` and
+`create` resolve to the right project.
 
-`yaac-mama` is the in-workspace command channel — a strict subset of the yaac
-CLI an agent may run against the server that started it: list the project's
-workspaces, start another, retitle one, stop one (its own included),
-and make and fill sidebar groups. Stopping is in reach because it is
-reversible — the checkout, the row and the conversation survive it, so the
-user can restart what an agent wound down; deleting, restarting and
-reconfiguring are not there. Both drivers have it, and the difference is only
-the transport, because the two substrates differ in one fact: whether a
-workspace can dial the server at all.
-
-A session stopping ITSELF is the one command whose reply is best-effort under
-either driver, since the caller tears down what its own answer travels over —
-its pod under `k8s`, and under `containerless` the tmux server the command is
-running in. The teardown is detached, so the handler answers first, but the
-contract the script and the skill state is that the session ending is the
-confirmation.
-
-A pod cannot. It is inside the cluster, the server is a host process with no
-in-cluster address, and the whole point of the sandbox is that the pod holds
-no credential for it. So a pod POSTs to the egress proxy's magic host, the
-proxy holds the request open, and the server collects it on its reconcile
-pass — attribution by source pod IP, nothing configured inside the workspace.
-
-A host process has neither problem. It runs beside the server, so it POSTs
-straight to `/workspace/mama` with a bearer minted for that workspace at
-create and handed to it in its environment (`YAAC_MAMA_TOKEN`, alongside
-`YAAC_MAMA_URL`). The server keeps only the SHA-256 of it, on the workspace
-row, and the token is what identifies the caller — a request never names its
-own workspace, so nothing it sends can claim to be a different one.
-
-The token is not a confinement boundary here, and it is worth being exact
-about that: a containerless agent is a process running as the user, so it
-could invoke the `yaac` CLI directly and do anything the user can. What the
-token buys is *attribution* — the server knowing which workspace is asking,
-so `list` and `create` resolve to the right project — plus one honest,
-stable interface that behaves identically under both drivers.
-
-Both transports end at `runMamaCommand` in `#domain/workspaces`, which is
-where the command allowlist lives, so neither can widen it.
-
-The URL is baked into the workspace's environment at launch rather than
-resolved per call, because the tmux server holds that environment for its
-whole life and outlives the yaac server that made it. A restart on the same
-port (the default) keeps working; a server moved to a different port leaves
-`yaac-mama` in already-running workspaces pointing at nothing until those
-workspaces are themselves restarted.
+Both transports end at `runMamaCommand` in `#domain/workspaces`, which holds
+the allowlist. `YAAC_MAMA_URL` is fixed at launch because the tmux server
+keeps its environment for life; if the server moves to a different port,
+running workspaces must be restarted to reach it.
 
 ## Permission modes
 
-Under a sandbox the default is `bypass` — the container is the containment,
-so a second layer of prompting inside it only costs interruptions. Without
-one the default is `accept-edits`: edits land in the workspace unprompted,
-while shells, out-of-tree writes and the network still ask. pi is the
-exception in both directions, because it has no permission system at all
-(see docs/agent-modes.md) — `bypass` is the only truthful answer anywhere.
+In a sandbox the default mode is `bypass`, since the container contains the
+agent. Without one the default is `accept-edits`: edits in the workspace go
+through, while shell commands, writes outside it and network access still
+ask. This applies to chat (ACP) workspaces too. pi has no permission system
+(docs/agent-modes.md), so `bypass` is its only mode on both drivers.
 
-That default is the last rung. A create takes the posture the request names,
-else the one this project last chose for that agent, else the default above.
-The remembered value lives server-side rather than in the browser, so the
-CLI (`--permission-mode`), the webapp's create form and the keyboard shortcut
-all resolve the same answer (see docs/permission-modes.md).
+The default is the last fallback: a create uses the mode the request names,
+else the one this project last chose for that agent, else the default (see
+docs/permission-modes.md). The result is stored in
+`workspaces.permissionMode` so a restart relaunches agents the same way.
+`bypass` can still be requested; here it means the agent acts as the user on
+the user's machine and credentials, and the create says so in its progress
+output.
 
-The resolved posture is recorded on the workspace row
-(`workspaces.permissionMode`) because a restart relaunches the agents and
-must relaunch them the way the user asked, not the way today's default
-would.
+## Observation and recovery
 
-A chat (ACP) workspace resolves its posture by the same three rungs and
-enforces it the same way every other posture is enforced here — the adapter is
-told, and what it still asks about goes to the chat pane
-(docs/permission-modes.md). So the containerless default applies to it too:
-`accept-edits`, not `bypass`.
+With no informer, the driver tracks liveness with one read-only tmux
+control-mode client per running workspace. tmux ends every client when its
+server dies, so the client's exit is the workspace's death. Its stdin must be
+a pipe held open, because a control-mode client exits when stdin closes.
 
-`bypass` is still reachable by asking for it, and on this driver that means
-something it does not mean under a sandbox — the agent acts as the user, on
-the user's own machine and credentials, with nothing else in the way. A create
-that resolves there says so in its progress output rather than leaving it to
-this page.
+Recovery is the normal path. On start the server reads the marker files it
+wrote (`global/projects/<slug>/sessions/<id>/containerless/workspace.json`,
+the equivalent of a Job object) and probes each socket. A live socket is a
+running workspace, recovered with its agents still working. A dead one is
+recorded as a dead workspace, not dropped, so the stale reaper marks its row
+stopped. Recovery runs after the server starts answering, so early clients
+see workspaces appear.
 
-## Observation, and recovery
+Every command the server runs in a workspace (exec, stream, changes diff)
+gets the workspace's environment, not the server's, whose `YAAC_*` settings
+and host `HOME` would point it at the server user's config. After a restart
+the server rebuilds that environment from the marker, which stores the
+launch's own entries. tmux's environment dump cannot be used because it does
+not escape multi-line values. Secrets (`secretEnvKeys` on the spec: API
+keys, `GH_TOKEN`, proxied project secrets, the `yaac-mama` token) are left
+out of the marker; they live encrypted in the database and in the tmux
+server's memory, never in a file.
 
-There is no informer, so the driver reports liveness from an edge it owns:
-one long-lived read-only tmux control client per running workspace, whose
-exit IS the workspace's death (tmux ends every client when its server dies).
-Its stdin has to be a pipe held open — a control-mode client exits the
-moment stdin closes, which would make the watch die instantly and take the
-workspace's liveness with it.
-
-Recovery is not an edge case here, it is the ordinary path. A fresh server
-enumerates the marker files it wrote last time
-(`global/projects/<slug>/sessions/<id>/containerless/workspace.json` — the
-substrate's analogue of a Job object) and probes each socket. One that
-answers is a running workspace, recovered whole with its agents still
-working. One that does not is recorded as a DEAD workspace rather than
-dropped, so the ordinary stale reaper turns it into a stopped workspace row;
-dropping it would leave a row claiming to be running with nothing to reap
-it. Because recovery runs as the driver attaches — after the server is
-already answering — a client that connects in that window sees workspaces
-appear rather than being made to wait.
-
-Every command the server runs in a workspace — an exec, a dialed stream,
-the changes diff — gets the workspace's environment, never the server's own,
-whose `YAAC_*` wiring and host `HOME` would point the command at the server
-user's configuration. The server holds the whole environment in memory for a
-workspace it launched. A restart loses that copy, and tmux's own dump of its
-environment cannot stand in (it does not escape a multi-line value), so the
-marker carries the launch's own entries — the create's and the git wiring —
-and a restarted server lays them over the same floor a launch builds from.
-The credentials among them (`secretEnvKeys` on the spec: the API keys,
-`GH_TOKEN`, proxied project secrets, the `yaac-mama` bearer) are left out:
-they live encrypted in the database and in the tmux server's memory, never in
-a file, and nothing run this way after a restart sends one anywhere.
-
-The one exception is the liveness watch, which only needs the socket — but
-an attaching client's environment is not inert. tmux by default copies an
-attaching client's `SSH_AUTH_SOCK` (and a few others) into the session
-environment every later window inherits, so the launch empties
-`update-environment` in the same invocation that creates the session, before
-anything can attach. Otherwise the watch alone would hand the panes the
-host's ssh-agent in place of the workspace's.
+By default tmux copies an attaching client's `SSH_AUTH_SOCK` (and a few
+other variables) into the session environment. So the launch empties
+`update-environment` in the same command that creates the session, or the
+liveness client would hand the panes the host's ssh-agent.
 
 ## Ports
 
-A pod's listener is reachable from nowhere until something binds a host port
-and relays it. Here the workspace's processes bind host ports themselves, so
-a detected listener is already reachable on this machine and the mapping is
-the identity. Ports surface as `forwardedPorts` (links the webapp can offer
-directly) and `unforwardedPorts` is always empty — there is no "forward
-this" action because there is nothing left to do, and a config's
-`portForward` entry is simply the port the dev server binds.
+Here the workspace's processes bind host ports directly, so a listener is
+already reachable on this machine and the mapping is the identity. Ports
+appear as `forwardedPorts`; `unforwardedPorts` is always empty, there is no
+"forward this" action, and a config's `portForward` entry is just the port
+the dev server binds.
 
-Detection is a poll over each running workspace's own process tree (`lsof`
-against the tmux server's descendants), filtered through the same
-sensitive-port policy the cluster driver uses. Only that tree: every other
-listener on the machine belongs to someone else.
+Detection polls each running workspace's process tree every 3 seconds
+(`lsof` over the tmux server's descendants), with the same sensitive-port
+filter as the k8s driver. Other listeners on the machine are ignored.
 
-A client on another machine still needs the tunnel, exactly as it would for
-a pod: it binds the identity mapping locally and each connection reaches
-`dialPort`, which connects to the port on this host's loopback (both
-at the address the sweep saw it bound to — `-Ftn` keeps the family, so a
-wildcard is dialled on its own loopback). Only a listener the sweep
-surfaced is dialable, and what keeps the rest of the host out of reach is
-the sweep's scope: the workspace's own process tree, an allowlist with the
-sensitive-port denylist on top. A yaac-dev workspace's inner `yaac server`
-is in that tree, so it surfaces and is dialable, as under k8s. The set is
-the last sweep's, so a port released and re-bound by something else stays
-dialable for up to one poll interval. A client on THIS machine never binds
-against it; which client is where is decided from the origin it resolved
-(docs/port-forward-tunnel.md).
+A client on another machine still needs the tunnel
+(docs/port-forward-tunnel.md). Each connection reaches `dialPort`, which
+connects to the address the sweep saw the port bound to (a wildcard listener
+is dialled on its own family's loopback). Only surfaced ports can be
+dialled, so the workspace's process tree acts as an allowlist. A yaac dev
+workspace's inner `yaac server` is in that tree, so it is dialable, as under
+k8s. A port released and re-bound by something else stays dialable until the
+next sweep.
 
 ## What this driver does not do
 
-Each of these answers empty, `null`, or a no-op at the DRIVER — the
-degradations the contract specifies, so the snapshot composes every feed
-unconditionally and callers above need no branch.
+Each of these answers empty, `null` or a no-op at the driver, as the contract
+specifies, so the snapshot includes every feed without branching. Their API
+routes refuse with `NOT_SUPPORTED` (501): `[]` from `GET /image/builds`
+would read as "no builds running" rather than "this server never builds".
+The webapp reads `snapshot.driver` and hides these features.
+`test/api/route-matrix.ts` lists every route's answer under both drivers.
 
-The ROUTES for them refuse, with `NOT_SUPPORTED` (501). The distinction is
-the point: a verb degrades so the whole picture still draws, but a route is
-one client asking one question, and `[]` from `GET /image/builds` reads as
-"no builds are running" rather than "this server never builds". The webapp
-reads `snapshot.driver` and hides these outright, so nothing that renders
-per driver ever sees a 501. `test/api/route-matrix.ts` states every route's
-answer under both drivers on one line.
-
-- **Images and builds.** Nothing to build; the Dockerfile editors and the
-  build feed are hidden in the webapp.
-- **Egress mediation.** No blocked hosts, no git-auth failure reports, no
-  allowlist. A workspace reaches whatever the user running the server can —
-  including when `YAAC_USE_TOR` is set, which under k8s routes a pod's whole
-  namespace through the proxy's Tor agent and here can only cover the
-  server's own git. The start logs warn rather than route workspace traffic
-  through advisory environment (`ALL_PROXY`, an ssh ProxyCommand) that
-  undici, raw sockets and the agent's own shell all bypass: silently missing
-  traffic is worse for the person who asked for Tor than a stated gap.
-- **Nested containers.** `nestedContainers` asks for a container to put a
-  container in. A project config requesting it is rejected at create.
-- **The prewarmed spare pool.** A spare amortizes an image pull and a pod
-  boot; a tmux server in an existing checkout costs neither.
-- **Per-workspace module caching.** See the mount note above.
+- **Images and builds.** Nothing is built.
+- **Egress control.** No blocked hosts, git-auth failure reports or
+  allowlist; a workspace reaches whatever the user can. Under k8s
+  `YAAC_USE_TOR` routes a pod's traffic through the proxy's Tor agent; here
+  it covers only the server's own git. The server warns at start rather than
+  set `ALL_PROXY` or an ssh ProxyCommand, which undici, raw sockets and the
+  agent's shell would bypass. Silently leaking traffic is worse than a
+  stated gap.
+- **Nested containers.** A project config with `nestedContainers` is
+  rejected at create.
+- **Prewarmed spare workspaces.** A tmux server in an existing checkout has
+  no image pull or pod boot to save.
+- **Per-workspace module caching.** See "Mounts that are not realized".
 
 ## Host requirements
 
-`yaac host check` verifies them, and the driver logs any hard failure at
-startup rather than letting a create fail with a spawn error:
+`yaac host check` verifies these, and the driver logs hard failures at
+startup.
 
-- **tmux** (3.1+ — every webapp terminal sets its window to `window-size
-  latest`, which 3.0 lacks) and **git**:
-  required. The launch spawns both directly, so a create refuses up front
-  rather than dying inside `launchWorkspace` with the workspace half made.
-- **node** 22 or newer, **with npm**: required. npm installs every agent
-  (see "Agent binaries" below) under it, codex and pi are node scripts, and
-  under `--mode acp` the window's command is `node` running yaac's own acpd.
-  22 because the pinned agents declare it; a Debian or Ubuntu `apt install
-  nodejs` is older and comes without npm. A server started by a node that
-  never landed on `PATH` (a bundled one, as the desktop app stages) is the
-  usual way to be missing it.
-- **socat**: required for `--mode acp` — the chat transport dials acpd's
-  socket by spawning one — and unused by `--mode tui`. `yaac host check` warns
-  rather than fails for that reason; a create in acp mode refuses.
-- **lsof**: port detection; without it workspaces run fine and report no ports.
-- **curl**: how `yaac-mama` reaches this server from inside a workspace;
-  nothing else uses it.
+- **tmux** 3.1+ (webapp terminals use `window-size latest`) and **git**:
+  required. A create checks them up front rather than failing halfway
+  through `launchWorkspace`.
+- **node** 22+ **with npm**: required. npm installs every agent, codex and
+  pi are node scripts, and `--mode acp` runs yaac's acpd under `node`. The
+  pinned agents need 22; Debian and Ubuntu `apt install nodejs` is older and
+  lacks npm. A server started by a node not on `PATH` (like the desktop
+  app's bundled one) is the usual way to be missing it.
+- **socat**: required for `--mode acp`, whose chat transport uses it to dial
+  acpd; `yaac host check` only warns, and an acp-mode create refuses.
+- **lsof**: port detection. Without it workspaces report no ports.
+- **curl**: used by `yaac-mama`.
 
-Nothing gates on the tools the agents themselves reach for — `ripgrep` and
-`fd` (pi downloads its own when neither `fd` nor `fdfind` is on `PATH`), `gh`,
-`jq` — which is the same line the builtin skills are written to. The Homebrew
-formula installs the useful ones anyway, since a mode with no image is the
-one place a missing utility is the user's problem.
+Tools the agents themselves use (`ripgrep`, `fd`, `gh`, `jq`) are not
+checked, matching what the builtin skills assume; pi downloads its own `fd`
+if needed. The Homebrew formula installs the useful ones anyway.
 
 ### Agent binaries
 
-Every agent CLI and ACP adapter a workspace runs is yaac's own install of the
-version the image pins (`AGENT_CLIS`, `ACP_ADAPTERS`; the table of packages is
-`AGENT_PACKAGES` in `@yaac/shared/tool-install`), never the one the host
-happens to have. yaac speaks each CLI's own vocabulary in both directions —
-postures go out as its flags, its reports come back as postures — and a
-release off the pin fails quietly: a codex behind the latest release opens an
-"Update available" screen that swallows the prompt, and one ahead of it
-dropped the `untrusted` policy yaac used to launch. So the launch puts
-`<data>/node-local/agent-tools/<package>@<version>/bin` for every pinned
-package ahead of the host's own `PATH`, and a CLI the user installed is
-shadowed inside workspaces and untouched outside them.
+Every agent CLI and ACP adapter is yaac's own install of the version the
+image pins (`AGENT_CLIS`, `ACP_ADAPTERS`; the package table is
+`AGENT_PACKAGES` in `@yaac/shared/tool-install`), never the host's. yaac maps
+permission modes to each CLI's flags and reads its reports back, and an
+unpinned version breaks that without an error (a codex older than the latest
+release, for example, shows an "Update available" screen that swallows the
+prompt). So the launch puts
+`<data>/node-local/agent-tools/<package>@<version>/bin` ahead of the host
+`PATH`, shadowing the user's install only inside workspaces.
 
-Each package is installed the first time a create needs it, with `npm install
---global --prefix` into a staging directory renamed into place only once the
-binary is there — the prefix's existence is what a later create reads as
-"installed", so an npm killed halfway must leave nothing that passes for one.
-For the same reason the install is `--engine-strict`: npm otherwise only warns
-about a node older than a package's `engines` and finishes an install the
-agent cannot run under. A staging directory older than the install timeout
-is swept before the next install, since a server stopped mid-install leaves
-npm to finish into one nothing will rename. npm runs as third-party code
-does in a workspace — with the server's `YAAC_*` wiring stripped from its
-environment, and with lifecycle scripts only for the two packages whose
-postinstall puts their native binary in place (claude, opencode).
-A prefix is named by its version and never changes, so a pin bump installs
-beside the old one and a workspace launched against it keeps running what it
-started with. Nothing removes a superseded prefix.
+Each package is installed on first need with `npm install --global --prefix`
+into a staging dir, renamed into place once the binary exists; a later
+create treats the prefix's existence as "installed", so an interrupted
+install must leave nothing that looks complete. `--engine-strict` makes npm
+fail on a too-old node instead of warning. Staging dirs older than the
+install timeout are deleted before the next install. npm runs without the
+server's `YAAC_*` settings, and lifecycle scripts run only for claude and
+opencode, whose postinstall places their native binary. Prefixes are named
+by version and never change, so a pin bump installs alongside and running
+workspaces keep their version. Old prefixes are never removed.
 
 ### Missing tools
 
-A launch command that execs nothing exits 127, tmux closes the window, and
-the workspace ends seconds after a create that already reported success. Two
-checks say so instead:
+A launch command that runs nothing exits 127, tmux closes the window, and the
+workspace vanishes seconds after the create reported success. Two checks
+prevent that:
 
-- Before anything is provisioned, the create asks the driver
-  (`assertCanLaunch`) whether this host can run the launch: `tmux` and `git`
-  whatever it runs, and for `--mode acp` the `node` acpd runs under and the
-  `socat` that mode's transport dials with. A miss refuses the create with
-  `MISSING_TOOL` and how to install it. They are asked in dependency order,
-  so a bare machine is told about tmux rather than about something it has
-  nowhere to run. socat is in that list even though its absence does not
-  kill the workspace: the pane simply never attaches, which reads as an agent
-  that hangs rather than a tool that is missing. Then it installs whatever
-  pinned binary the launch runs and yaac does not have yet — the tool for
-  `--mode tui`, and for `--mode acp` its adapter (plus the CLI, for an
-  adapter that drives one) — narrated on the create's progress stream.
-- After the launch, a probe checks the agent windows actually survived,
-  catching what a preflight cannot: a binary that is present but broken. It
-  is deliberately not awaited — its settle delay would land on every create
-  — so its verdict arrives as a failed provisioning row a moment later.
+- Before provisioning, the create calls `assertCanLaunch`: `tmux` and `git`
+  always, plus `node` and `socat` for `--mode acp`, checked in dependency
+  order. A miss refuses with `MISSING_TOOL` and install instructions. socat
+  is included because without it the chat pane never attaches and looks like
+  a hung agent. The create then installs any pinned binary it still needs
+  (the tool for `--mode tui`; for `--mode acp` its adapter, plus the CLI if
+  the adapter drives one), reporting progress.
+- After launch, an unawaited probe checks that the agent windows survived,
+  catching a binary that is present but broken. A failure appears a moment
+  later as a failed provisioning row.
 
 ## Testing
 
 `pnpm vitest run --project e2e-containerless` drives the real CLI against a
-real containerless server. It needs no cluster, builds no images, and runs in
-parallel — a fake agent, staged where yaac installs the pinned one, stands
-in for a real one, since what is
-under test is the launch, the exec transport and the recovery rather than
-any agent's behavior. The driver's unit tests mock at `host.ts`, which is its
-entire process boundary.
+real containerless server. It needs no cluster or images and runs in
+parallel. A fake agent, placed where yaac installs the pinned one, stands in
+for real agents, since the tests cover launch, exec and recovery rather than
+agent behavior. The driver's unit tests mock `host.ts`, its whole process
+boundary.

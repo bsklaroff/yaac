@@ -1,8 +1,9 @@
 # Modularity metrics
 
-`pnpm modularity` scores how cleanly the codebase is split into modules, on the
-three axes that trade against each other: how much code there is, how wide the
-interfaces between modules are, and how tangled the dependency graph is.
+`pnpm modularity` scores how cleanly the codebase is split into modules on
+three axes: how much code there is, how wide the interfaces between modules
+are, and how tangled the dependency graph is. It prints a report and never
+fails, so it is a tool for reviewing a change, not a gate.
 
 ```
 pnpm modularity                       # every packages/*/src
@@ -14,80 +15,73 @@ pnpm modularity --json                # machine-readable, incl. the module graph
 ```
 
 dependency-cruiser extracts the raw file graph (configured in
-`.dependency-cruiser.cjs`, and usable directly for graph rendering and rule
-checks); `scripts/modularity.ts` computes everything dependency-cruiser does
-not.
+`.dependency-cruiser.cjs`, which also works on its own for graph rendering and
+rule checks). `scripts/modularity.ts` computes the rest.
 
 ## What a module is
 
-A sealed folder is always its own module: its barrel is the interface the repo
-has already committed to, so it is the boundary regardless of what surrounds it
-— `runtime/` holds both loose files (the contract and the driver accessor) and
-sealed subfolders, and comes out as thirteen modules. Everything else falls back to the shallowest directory under
-`src/` that holds source files directly, which makes pure namespace directories
-transparent: `features/` is not a module, `features/workspaces` is.
+A sealed folder (one with an `index.ts` barrel mapped in its package's
+`imports`) is always its own module, because its barrel is the interface the
+repo has committed to. When sealed folders nest, a file belongs to the
+deepest one: `drivers/k8s/substrate` is a module inside `drivers/k8s`.
 
-The dependency graph is collapsed to that granularity. Imports that resolve
-through a package's `imports` map are re-resolved by the script:
-dependency-cruiser drives enhanced-resolve without `importsFields` or
-`extensionAlias`, so it can neither read an imports map nor substitute our
-output-form `./src/*.js` targets back to `.ts`, and on its own it sees a graph
-with most internal edges missing.
+Any other file belongs to the shallowest directory under `src/` that holds
+source files directly. A directory with only subdirectories is therefore not
+a module itself: in the server, `runtime/` has no files of its own, so
+`runtime/agents` and its siblings are the modules. `drivers/` holds
+`contract.ts` and `driver.ts`, so it is a module of its own beside the sealed
+driver folders under it.
 
-## Coupling and acyclicity
+The script re-resolves imports that go through a package's `imports` map.
+dependency-cruiser cannot read an imports map, and cannot map the `./src/*.js`
+targets back to `.ts` sources, so on its own it misses most internal edges.
 
-The headline numbers are Lakos's, from *Large-Scale C++ Software Design*:
+## Coupling and cycles
 
-- **CD(m)** — cumulative component dependency: how many modules you must
-  understand, link, or stub out to use `m`, counting `m` itself.
-- **CCD** — the sum of CD over every module.
-- **NCCD** — CCD normalized by the CCD of a balanced binary dependency tree of
-  the same size. About 1.0 is tree-like; Lakos treats anything above ~1.6 as a
-  design smell.
-- **PC** — MacCormack and Baldwin's propagation cost, `CCD / n²`: the fraction
-  of the system an average change can reach. The same quantity as CCD, scaled
-  to a percentage so it compares across differently-sized scopes.
+The headline numbers come from Lakos, *Large-Scale C++ Software Design*:
 
-Acyclicity does not need a separate score, which is the reason to use CCD
-rather than a plain edge count. A cycle of *n* mutually dependent modules
-contributes *n²* to CCD, because every member reaches every other; a levelized
-DAG of the same size lands near *n·log₂n*. Cycles are therefore punished
-quadratically and fall out of the one metric. The report prints the share of
-CCD attributable purely to mutual reachability inside cycles, so the cost of a
-tangle is visible as a number rather than a warning.
+- **CD(m)**: cumulative component dependency. The number of modules you must
+  understand, link or stub out to use `m`, counting `m` itself.
+- **CCD**: the sum of CD over every module.
+- **NCCD**: CCD divided by the CCD of a balanced binary dependency tree of the
+  same size. About 1.0 is tree-like. Lakos treats anything above about 1.6 as
+  a design smell.
+- **PC**: MacCormack and Baldwin's propagation cost, `CCD / n²`. It is the
+  fraction of the system an average change can reach, which makes it
+  comparable across scopes of different sizes.
 
-For each cycle it also lists the thinnest internal edges — the ones carried by
-the fewest files — since those are the cheapest places to cut. Martin's
-afferent and efferent coupling (`Ca`, `Ce`) are in the table as the local view
-of the same thing.
+Cycles need no separate score. A cycle of *n* mutually dependent modules adds
+*n²* to CCD, because every member reaches every other, while a layered DAG of
+the same size lands near *n·log₂n*. The report also prints how much of CCD
+comes from cycles alone, and for each cycle it lists the internal edges
+carried by the fewest files, since those are the cheapest to cut. Martin's
+afferent and efferent coupling (`Ca`, `Ce`) appear in the per-module table as
+the local view of the same thing.
 
-Type-only imports are counted by default: they are erased at compile time, but
-a type that crosses a barrel is still part of that barrel's interface and still
-has to be understood. `--runtime-only` drops them, which is the graph the
-bundler sees, and is the right lens for asking whether a cycle is a real
-initialization hazard. Cycle edges that survive only on type imports are tagged
-`[type-only]` either way.
+Type-only imports count by default. They vanish at compile time, but a type
+that crosses a barrel is still part of that barrel's interface. Use
+`--runtime-only` to see the graph the bundler sees, which is the right one
+when asking whether a cycle can cause an initialization-order bug. Cycle
+edges made only of type imports are tagged `[type-only]` either way.
 
 ## Interface width
 
-Interfaces are measured at the barrels, since a sealed folder's `index.ts` *is*
-its interface. Per module the report gives the number of exported names, how
-many of them anything outside the folder actually imports, how many are used by
-exactly one other module, and `depth` — Ousterhout's ratio of implementation
-lines to exported names.
+Interfaces are measured at the barrels. For each module the report gives the
+number of exported names, how many of them code outside the folder imports,
+how many have exactly one consumer, and `depth`: Ousterhout's ratio of
+implementation lines to exported names.
 
-Deep is good: a deep module hides a lot of behavior behind a little surface, a
-shallow one is mostly surface. Exports nothing imports are pure width with no
-payoff and should be deleted or unexported. Exports used by exactly one module
-are a weaker signal, but a barrel where most names have a single consumer is
-usually a namespace rather than an abstraction — the folder is exporting its
-internals under a different spelling.
+A deep module hides a lot of behavior behind a small surface; a shallow one is
+mostly surface. An export nothing imports is width with no payoff, so delete or
+unexport it. An export with one consumer is a weaker signal, but a barrel where
+most names have a single consumer is usually a namespace rather than an
+abstraction: the folder is exporting its internals under another name.
 
 ## Lines of code
 
-`sloc` is reported and deliberately left out of every score. Minimizing lines
-pushes toward extracting shared abstractions, and abstractions extracted purely
-to avoid repetition are a leading cause of both wide interfaces and cycles.
-Ousterhout's deep-module principle explicitly trades more implementation code
-for a narrower interface. Treat size as a tiebreaker between designs that score
-the same on coupling and interface width, not as a co-equal objective.
+`sloc` is reported but left out of every score. Minimizing lines pushes toward
+extracting shared helpers, and helpers extracted only to avoid repetition are
+a common cause of wide interfaces and cycles. Ousterhout's deep-module
+principle accepts more implementation code in exchange for a narrower
+interface. Use size to break ties between designs that score the same on
+coupling and interface width.

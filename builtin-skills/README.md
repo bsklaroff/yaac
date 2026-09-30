@@ -1,46 +1,47 @@
 # Built-in skills
 
-Skills yaac ships in its own package and injects into **every** session, for
-every agent tool (Claude Code, Codex, OpenCode, pi).
+Skills that ship inside the yaac package and are given to every workspace,
+for every agent tool (Claude Code, Codex, OpenCode, pi). Each is a
+`<name>/SKILL.md` directory, in the same format as a personal skill.
 
-Each skill is a `<name>/SKILL.md` directory here (same format as any personal
-skill). At session create they are delivered the way the substrate allows: a
-pod gets a fresh staging from the install, mounted read-only into each tool's
-personal skills root; a containerless workspace, which has no mount namespace
-to layer that with, gets them linked into the project's shared skills roots.
-Either way they track the installed yaac version rather than going stale in a
-config dir, and discovery surfaces them as the `system` / `yaac` tier.
+Delivery depends on the driver:
 
-See `packages/server/src/domain/skills/builtin.ts` (staging, mounts, and the
-shared-root sync) and `packages/server/src/domain/skills/discover.ts`
-(discovery).
+- **k8s.** Each workspace create copies the skills fresh from the install and
+  mounts them read-only into every tool's personal skills root.
+- **containerless.** There is no mount namespace, so each skill is symlinked
+  once per project into the project's shared skills roots, pointing at the
+  install.
 
-A built-in skill runs under **both** substrates, so the commands it hands the
-agent may only assume what a containerless workspace has: the user's own host,
-with none of the tooling yaac's session image bakes in. `jq` is the recurring
-trap — filter GitHub JSON with gh's own `--jq` flag (gh embeds a jq engine),
-never a `| jq` pipe. Same for any other image-provided tool: name a fallback,
-or don't depend on it.
+Either way the skills track the installed yaac version and never go stale in a
+config dir. The webapp's skill list shows them as `system` / `yaac`. The code
+is `packages/server/src/domain/skills/builtin.ts` (delivery) and
+`discover.ts` (listing).
 
-Add a skill by dropping a `<name>/SKILL.md` dir in here. Keep names distinct
-from what users are likely to name their own personal skills (the two share a
-directory in-pod, and a real directory on a containerless host — where a
-user's own skill of that name keeps it, and the builtin is not delivered).
+## Writing one
 
-Shipped skills:
+A built-in skill runs under both drivers, so its commands may only assume what
+a containerless workspace has: the user's own machine, without the tools the
+session image adds. `jq` is the usual trap. Filter GitHub JSON with gh's own
+`--jq` flag (gh embeds a jq engine), never a `| jq` pipe. For any other tool
+the image provides, name a fallback or don't depend on it.
 
-- **`yaac-autoconfig`** — generate a `yaac-config.json` template for the current
-  repo (install/build/start the project + forward its ports) for the user to
-  apply to their project config.
-- **`yaac-mama`** — ask the yaac server running this workspace to list the
-  project's workspaces, start a sibling one with a prompt, or file workspaces
-  into named groups, via the in-workspace `yaac-mama` command.
-- **`yaac-watch-prs`** — watch the project's GitHub repo for PR updates (opened
-  / comment / commit), one event line per update, via `yaac-watch-prs`.
-- **`push-pr`** — commit the current branch, open a PR, then watch it for
-  reviewer comments and address them.
-- **`review-pr`** — own one PR as its reviewer: post findings, watch it,
-  re-review, approve only once every finding is settled, then stop the
-  session.
-- **`spawn-pr-reviewers`** — watch for newly opened PRs and spawn a sibling
-  session to review each one with `review-pr`, aimed at that PR's risks.
+Pick a name users are unlikely to give their own skills. Both live in the same
+directory; on a containerless host a user's skill of the same name wins and the
+built-in one is not delivered.
+
+## Shipped skills
+
+- **`yaac-autoconfig`**: generate a `yaac-config.json` template for the repo
+  (install, build and start the project, and forward its ports) for the user
+  to apply.
+- **`yaac-mama`**: ask the yaac server running this workspace to list the
+  project's workspaces, start or queue a sibling, edit a queued one, retitle,
+  stop, or group workspaces, through the in-workspace `yaac-mama` command.
+- **`yaac-watch-prs`**: watch the project's GitHub repo for PR updates (opened,
+  comment, commit), printing one line per event.
+- **`push-pr`**: commit the branch, open a PR, then watch it for review
+  comments and address them.
+- **`review-pr`**: act as one PR's reviewer: post findings, watch for changes,
+  re-review, approve once every finding is settled, then stop the workspace.
+- **`spawn-pr-reviewers`**: watch for new PRs and start a sibling workspace to
+  review each one with `review-pr`.

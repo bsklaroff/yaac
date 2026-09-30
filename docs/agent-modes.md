@@ -1,56 +1,50 @@
 # Agent modes: `tui` and `acp`
 
-A yaac workspace runs a coding agent. *How* the server talks to that agent is
-its **mode**, and there are two:
+A workspace runs a coding agent. How the server talks to it is its **mode**:
 
 | | `tui` | `acp` |
 |---|---|---|
-| What runs | the tool's own terminal UI | the tool's ACP adapter (JSON-RPC over stdio) |
+| What runs | the tool's own terminal UI | the tool's ACP (Agent Client Protocol) adapter, JSON-RPC over stdio |
 | Server sees | tmux control-mode notifications | `session/update` notifications |
 | Browser sees | PTY bytes in xterm.js | structured messages in a chat pane |
 | Status from | pane titles / rendered content | prompt-turn boundaries |
 | Conversation ids from | a pane option the tool's reporter sets | `session/new`'s reply |
 
-Mode is orthogonal to `AgentTool`: it selects the protocol, not which agent
-runs. Every tool has an adapter, and which one is the shared `ACP_ADAPTERS`
-record in `@yaac/shared/types` — the single table the image's install steps,
-the host preflight, the launch command and the create form's UI dropdown
-(Terminal / Chat — remembered per agent, see docs/permission-modes.md) all
-derive from:
+Mode is independent of the tool: it picks the protocol, not the agent. Every
+tool has an adapter, listed in `ACP_ADAPTERS` in `@yaac/shared/types`. The
+image install, the host preflight, the launch command and the create form's
+Terminal / Chat dropdown (remembered per agent, see
+docs/permission-modes.md) all read that one table:
 
 | tool | adapter | notes |
 |---|---|---|
 | claude | `claude-agent-acp` | bundles its own SDK |
-| codex | `codex-acp` | drives `codex app-server`, so the CLI must be there too |
-| opencode | `opencode acp` | the CLI *is* the adapter, as a subcommand |
-| pi | `pi-acp` | drives `pi --mode rpc`, so the CLI must be there too |
+| codex | `codex-acp` | drives `codex app-server`, so the CLI must be installed too |
+| opencode | `opencode acp` | a subcommand of the CLI |
+| pi | `pi-acp` | drives `pi --mode rpc`, so the CLI must be installed too |
 
-What differs between them is a profile in `#runtime/agents/acp-adapters.ts`:
-the argv, the environment that carries a posture or a model, the session mode
-ids that express yaac's postures, and whether its asks are permission prompts
-at all. One
-table rather than four branches, because these facts are not independent — a
-tool that cannot take a model at launch is exactly the one that has
-to be sent one over the protocol.
+How the adapters differ is described by per-tool profiles in
+`#runtime/agents/acp-adapters.ts`: the argv, the environment that carries a
+posture or model, the session mode ids for yaac's postures, and whether the
+adapter's asks are permission prompts. These facts depend on each other (a
+tool that can't take a model at launch must be sent one over the protocol),
+so they live in one table.
 
-The choice matters most on a phone. A chat pane is a message list and a
-composer, so it needs nothing a soft keyboard can't provide; a TUI needs Esc,
-Tab, Ctrl and arrows, which is why the mobile shell gives a terminal pane an
-accessory key bar (`docs/mobile-layout.md`). `acp` is the mode to reach for
-when the workspace will be driven from one.
+`acp` is the better mode on a phone. A chat pane needs only a message list
+and a composer, while a TUI needs Esc, Tab, Ctrl and arrow keys, which is why
+the mobile layout gives terminal panes an extra key bar
+(docs/mobile-layout.md).
 
 ## tmux supervises both
 
-tmux is not a rendering choice — it is the process supervisor that outlives the
-viewer. A closed tab, a dropped relay, or a restarted server must not kill a
-turn in progress, and tmux is what guarantees that.
+tmux is the process supervisor that outlives the viewer. A closed tab, a
+dropped connection or a server restart must not kill a turn in progress.
 
-An ACP agent cannot be served that way directly: a PTY would corrupt the
-protocol, and a streamd `ctrl` stream owns its child (socket close ⇒ SIGTERM),
-which would put a running turn's life back on the connection. **acpd** is the
-missing half — a daemon that runs *in* the tmux window, owns the agent's stdio,
-and republishes it on a UNIX socket that can be attached to and detached from
-freely.
+An ACP agent can't run under tmux directly: a PTY would corrupt the protocol,
+and a streamd `ctrl` stream kills its child when the socket closes. **acpd**
+(`dockerfiles/acpd/`) fills that gap. It runs inside the tmux window, owns the
+agent's stdio, and republishes it on a UNIX socket that clients can attach to
+and detach from freely.
 
 ```
 tmux window                                   server
@@ -60,379 +54,300 @@ tmux window                                   server
 └─────────────────────────────┘               └──────────────────┘
 ```
 
-So `tmux : PTY :: acpd : JSON-RPC` — one supervisor, two presentation
-transports. Everything downstream of "a conversation is a tmux window" is
-untouched: the launch exec, the restart that respawns what was live,
-window-close teardown, and workspace GC.
+So acpd is to JSON-RPC what tmux is to a PTY. Everything built on "a
+conversation is a tmux window" works unchanged for both modes: launch,
+restart, window-close teardown, and workspace GC.
 
-acpd is shared by both runtimes and knows nothing about either. The launch
-command hands it everything that differs between them: the socket to bind, the
-record to write, and — as `--cwd` — the workspace to run the agent in, since a
-checkout is at `/workspace` in a pod and somewhere under the data dir on a
-host. A cwd that does not exist fails the spawn with the same `ENOENT` a
-missing binary gives, so a guess here is indistinguishable from an adapter
-that was never installed.
+acpd works the same under both drivers. The launch command passes everything
+that differs: the socket path, the record path, and `--cwd`, the checkout to
+run the agent in (`/workspace` in a pod, a path under the data dir on a
+host). A missing cwd fails the spawn with `ENOENT`, the same error as a
+missing binary, so the path must be right.
 
-## The driver seam
+## The driver interface
 
-`#runtime/agents` exposes `agentDriver(mode)`, returning an `AgentDriver` with
-`launchCmd(spec)` and `connect(workspace, sink, deps)` — a stream of
-`AgentObservation`s (`up`, `down`, `live-agents`, `status`,
-`command-channel`). `WorkspaceStatusWatcher` consumes it and owns what both modes
-need identically: respawn, backoff, and the streamd self-heal. That is why ACP
-mode added no second retry loop.
+`agentDriver(mode)` in `#runtime/agents` returns an `AgentDriver` with
+`launchCmd(spec)` and `connect(workspace, sink, deps)`. `connect` produces a
+stream of `AgentObservation`s (`up`, `down`, `live-agents`, `status`,
+`command-channel`). `WorkspaceStatusWatcher` consumes it and owns what both
+modes need: respawn, backoff, and the streamd self-heal. There is one retry
+loop for both.
 
-Content is deliberately **not** in the interface. PTY bytes and ACP events have
-nothing in common, and forcing them into one union would produce a protocol
-neither side can implement honestly; the webapp already models the split, since
-a pane's target string picks its renderer.
+Content is not part of the interface. PTY bytes and ACP events have nothing
+in common, and the webapp already picks a renderer from a pane's target
+string.
 
-ACP's own shapes live in exactly one module (`acp-protocol.ts`), which projects
-every `session/update` into the closed `AcpEvent` union. A spec change lands
-there and nowhere else — not in the driver, not in the route, not in React.
+ACP's message shapes live only in `acp-protocol.ts`, which turns every
+`session/update` into the closed `AcpEvent` union. A protocol change is made
+there and nowhere else.
 
 ## Handles
 
-The status store keys a conversation's busy/idle by its **handle**: the
-driver's address for it inside the pod — a tmux pane id (`%3`) under `tui`, the
-acpd socket's window name (`claude-2`) under `acp`. The store never learns
-which protocol produced a status. `workspace_agent_sessions.paneId` holds the
-same handle, which is how a live status joins back to its conversation.
+The status store keys a conversation's busy/idle state by its **handle**, the
+driver's address for it: a tmux pane id (`%3`) under `tui`, the acpd window
+name (`claude-2`) under `acp`. The store never knows which protocol produced a
+status. `workspace_agent_sessions.paneId` holds the same handle, which is how
+a live status joins back to its conversation.
 
 ## Where history lives
 
-Not in the server. acpd appends every byte it relays — both directions — to a
-record on a host-mounted path, and that file *is* the conversation's history.
+Not in the server. acpd appends every line it relays, in both directions, to
+a **record** file on a host-mounted path (`acpLogDir()` in
+`@yaac/shared/project-paths`). That file is the conversation's history:
 
-One choice settles several things. It is written whether or not anyone is
-attached, so a turn completed with nobody watching is still recorded. It is in
-ACP's own vocabulary, so replaying it runs the *same* projection the live path
-does rather than a second translator that could disagree. It is on the host, so
-the server reads it without going through the pod — and can still read it once
-the pod is gone, which is what makes a stopped workspace's conversation readable
-at all.
+- It is written whether or not anyone is attached, so an unwatched turn is
+  still recorded.
+- It is in ACP's own format, so replaying it uses the same projection as the
+  live path.
+- It is on the host, so the server can read it without the pod, including
+  after the pod is gone. That is what makes a stopped workspace's
+  conversation readable.
 
-Both directions matter: the agent echoes a user message only when replaying
-under `session/load`, so without the client's own `session/prompt` lines the
-record would show no user turns for anything said live.
+Both directions are needed because the agent echoes user messages only when
+replaying under `session/load`; without the client's `session/prompt` lines
+the record would show no live user turns. Nothing is buffered for an absent
+client, and the server keeps no copy.
 
-Because the record is the history, nothing is buffered for an absent client and
-the server retains nothing.
+### Reading a stopped conversation
 
-### Reading a conversation without a workspace
+`GET /workspace/:id/agent-sessions/:sessionId/transcript` returns the same
+`AcpEvent[]` a pane renders, read from files rather than from a running
+workspace, so the stopped-workspaces view can show the whole conversation.
 
-A conversation is worth reading after its workspace has stopped, so
-`GET /workspace/:id/agent-sessions/:sessionId/transcript` answers with the same
-`AcpEvent[]` a pane renders. It resolves from the *record* rather than a
-running workspace, which is what makes a stopped workspace's history the thing
-the stopped-workspaces view shows instead of only its founding ask.
+- An `acp` conversation is a replay of its acpd record.
+- A `tui` claude conversation has no record, so claude's own session
+  transcript is translated on demand. The server calls `claude-agent-acp`'s
+  `toAcpNotifications` (the function its `session/load` uses) as a library,
+  then feeds the result through the same replay as an acpd record. No adapter
+  process, pod or credential is involved, and a stopped conversation renders
+  the same way it looked live. The package the server imports must match the
+  version `dockerfiles/Dockerfile.tools` installs; a unit test fails if they
+  drift.
+- A `tui` conversation of any other tool returns `NOT_SUPPORTED`, because only
+  claude's adapter exposes its translation as a library.
 
-An `acp` conversation is a replay of acpd's record, as above. A `tui` one has
-no record — it was driven through a PTY — so claude's own session transcript is
-translated on demand. That translation is not yaac's: `claude-agent-acp`
-exposes the same `toAcpNotifications` its own `session/load` handler calls, and
-the server runs it as a library over the transcript's messages, then feeds the
-notifications to the same replay an acpd record goes through. No adapter
-process, no pod, no credentials — and, because it is the adapter's own
-function, a stopped conversation cannot render differently from how it was
-watched live. What keeps that true is a version pin: the package the server
-imports must be the one `dockerfiles/Dockerfile.tools` installs, and a unit
-test fails when the two drift.
+### How content reaches a pane
 
-This second path is claude's alone, and that is a fact about TUI transcripts
-rather than about adapters: it exists because claude's adapter exposes its own
-translation as a library. A `tui` conversation of any other tool refuses with
-`NOT_SUPPORTED` — codex names its rollouts by a thread id yaac never sees, and
-opencode's history is a sqlite database inside the container that reaches the
-host at all only while the pod is alive. An `acp` conversation of any tool is
-read from the record, so it needs none of this.
+**Pane content comes only from the record.** The socket carries requests,
+replies and the agent's own questions, but no rendered messages. Record and
+socket carry the same `session/update` notifications, which have no `id`, so
+two copies can't be merged without duplicating or dropping the overlap.
 
-**The record is also the only path by which content reaches a pane.** The
-socket carries the RPC half — our requests and their replies, and the agent's
-own questions — but not a single rendered message. That is not a preference:
-the record and the socket carry the *same* `session/update` notifications, and
-ACP gives notifications no identity (they are JSON-RPC notifications, so they
-have no `id` by definition), which leaves nothing to join them on. Splicing two
-copies of one stream at an unknown point either duplicates the overlap or drops
-it. One source has no join.
+A pane's content is a tail of the record: the first pass delivers everything
+and the pane replaces what it held; later passes deliver only new lines
+(`seq` is scoped to one attach). The cost is polling latency; replies arrive
+in bursts.
 
-So a pane's content comes from a tail of the record: the first pass delivers
-everything and the pane replaces what it held, later passes deliver only what
-was appended. `seq` is scoped to one attach, which is all a pane needs it for.
-The cost is polling latency — a streaming reply arrives in bursts rather than
-continuously, which a chat pane tolerates far better than a terminal would.
+Two events come over the socket because the record can't carry them: turn end
+and error, both built from a `session/prompt` reply that acpd never sees. No
+event comes from both sources, so nothing is duplicated. The tail is flushed
+before either is forwarded, so a turn never appears to end before its last
+words.
 
-A pane keeps nothing of the conversation, then, but it does keep what has not
-been said yet. A chat pane can be torn down under a half-typed message — the
-workspace stops, the tab is closed, the page is reloaded — so that message lives
-in the webapp's ui store, keyed per conversation and persisted, rather than in
-the pane, and returns with it.
+Those turn events (`turn-start`, `turn-end`, `error`) and the busy flag in the
+attach greeting are the only things that move a pane's working indicator.
+Messages can't be used for this: `session/load` replays the whole
+conversation as live `user` messages, and the record has no boundary to close
+them. A pane inferring from content would come back from a restart stuck at
+"working…".
 
-A pane going *off-screen* is not one of those cases: like a terminal, it stays
-mounted and holds its socket, so switching tabs or workspaces is a visibility
-flip with no network on it at all. The conversation replaying on any attach is
-what makes a chat pane cheap to re-create, but it is also what makes attaching
-expensive — a handshake, then the whole conversation in one `hello` frame —
-and on a slow or lossy link that is the entire "Connecting to the agent…" wait.
-The same eager warm-up that pre-attaches terminals after a page load covers
-chat panes too, taking each workspace's default pane from its mode.
+acpd truncates the record when it starts. A tail that sees the file shrink
+resets its position and projection, and the pane replaces its content. A
+restart's `session/load` replays the whole conversation, so the new file ends
+up complete. This depends on every adapter replaying on load, which is
+adapter behavior, not a protocol guarantee. An adapter that didn't would come
+back blank, and the fix would be to keep the record instead of truncating it.
 
-A sent message stays in the box until the server echoes it back, so a pane torn
-down inside that window restores text that may already have been delivered.
-Settling that takes two answers, and they need different evidence. Whether the
-box holds *the message that was sent* is an identity question: the store keeps
-the exact text handed to the socket beside the draft, because comparing against
-the conversation's history would clear a freshly typed "ok" on the strength of
-an earlier one. Whether it arrived is a question only the replayed history can
-answer. Both yes empties the box; either no leaves the text for another try.
+The record is named for the conversation, not the window. Window names are
+slots, and a restart that drops an earlier conversation shifts later ones
+down, which would overwrite one conversation's history with another's. On a
+resume the id is known at launch; on a fresh create the file starts under the
+workspace id and is renamed once `session/new` answers.
 
-Two events do come over the socket, because the record cannot carry them: a
-turn boundary and an error, both synthesized from a `session/prompt` reply that
-acpd never sees. That stays safe because the two sets are *disjoint* —
-duplication needed one event with two sources, and no event has two. The tail
-is flushed before either is forwarded, so a turn cannot appear to end above the
-last words of the answer it ended.
+### What the pane keeps
 
-Those boundaries are also the *only* thing that moves a pane's working
-indicator. The messages themselves cannot be read as one, tempting as it is: a
-`user` message looks like a turn beginning, but a replay is made of them —
-`session/load` re-emits the whole conversation as live updates — and the record
-holds no boundary to close them with. A pane inferring from content would come
-back from a restart pinned at `working…`, offering a Stop button with no turn
-behind it. So the pane classifies on `turn-start`, `turn-end` and `error`, plus
-the busy flag its attach is greeted with, and on nothing else.
+A pane holds none of the conversation, only the unsent draft, which lives in
+the webapp's persisted ui store (keyed per conversation) so it survives a
+stop, a closed tab or a reload. A sent message stays in the composer until
+the server echoes it. If the pane is torn down in between, the store also
+keeps the exact text sent: the composer is cleared only if it still holds
+that text and the replayed history shows it arrived. (Matching on history
+alone would clear a fresh "ok" because of an earlier one.)
 
-acpd truncates the file when it starts, which is how a new agent life
-announces itself: a tail seeing the record shrink resets its position and its
-projection and starts again, and the pane replaces rather than appends. A
-restart's `session/load` replays the whole conversation, so the fresh file ends
-up complete again rather than double-appending history it already had.
-
-That rests on every adapter replaying on load, which is a fact about the
-adapters rather than a guarantee of the protocol — an adapter that answered
-`session/load` without re-emitting the conversation would come back blank, and
-the fix would be to keep the record rather than truncate it.
-
-The record is named for the *conversation*, not the window: a window name is a
-slot, and a restart that drops an earlier conversation shifts the later ones
-down a slot, which under slot-naming would truncate one conversation's history
-onto another's file. On a resume the id is known at launch; on a fresh create
-the file starts under the workspace id and is renamed once `session/new`
-answers.
+An off-screen pane stays mounted and keeps its socket, like a terminal, so
+switching tabs or workspaces costs no network. Attaching is the slow part (a
+handshake, then the whole conversation in one `hello` frame): that is the
+"Connecting to the agent…" wait. The warm-up that pre-attaches terminals
+after a page load covers chat panes too.
 
 ## Reconnect
 
-acpd keeps the agent alive across detaches, so a reconnect lands on a process
-mid-conversation, possibly mid-turn. Three things follow.
+acpd keeps the agent alive across detaches, so a reconnect may land mid-turn.
 
-**The handshake runs once per agent process, not per connection.** acpd's first
-line on every attach is `_acpd/hello {firstAttach}`; when false, the client
-skips `initialize` and `session/new` and resumes consuming notifications for
-the workspace id it already holds. `firstAttach` tracks whether a client ever
-*spoke*, not whether one ever connected — a client that died during an
-adapter's cold start ran no handshake, and telling its successor otherwise
-would send it to address a workspace that was never created.
+**The handshake runs once per agent process, not per connection.** acpd's
+first line on every attach is `_acpd/hello {firstAttach}`. When it is false,
+the client skips `initialize` and `session/new` and keeps the session id it
+already holds. `firstAttach` tracks whether a client ever *sent* anything, not
+whether one connected: a client that died during an adapter's cold start ran
+no handshake, and its successor must run one.
 
-**Busy state is recovered from the record.** ACP scopes turn state to the
-request: a turn is running iff *your* `session/prompt` is unanswered, and the
-protocol offers no status query, no busy notification, and no `session/load`
-semantics for a turn already in progress. So a connection that takes over a
-live agent cannot be told whether it is working — it reads the record instead,
-which holds both directions and therefore says whether the last prompt was
-ever answered. Until that resolves the conversation is *unclassified* rather
-than idle, and nothing publishes a status for it: guessing `waiting` is what
-paints a working agent idle. A recovered turn is announced to attached panes as
-a `turn-start`, which is what lets a pane show a turn nobody there started.
+**Busy state is recovered from the record.** In ACP a turn is running only
+while *your* `session/prompt` is unanswered, and the protocol has no status
+query. A connection taking over a live agent reads the record, which shows
+whether the last prompt was answered. Until then the conversation is
+*unclassified* rather than idle, and no status is published, since guessing
+`waiting` would show a working agent as idle. A recovered turn is sent to
+panes as `turn-start`, so a pane can show a turn it didn't start.
 
-**A pane outlives its connection, not its conversation.** A conversation that
-is torn down takes its panes' sockets with it rather than only greying them
-out. A pane holds the conversation *object* it attached to, so a replacement
-registered under the same `acp:<id>` — which is what a workspace restart
-produces — is invisible to it: the new conversation's boundaries go to its own
-subscribers, and a Stop sent down the old socket reaches a closed peer. Closing
-is what makes the pane re-attach, and re-attaching is what rebinds it.
+**A pane is closed with its conversation.** Tearing down a conversation
+closes its panes' sockets. A pane holds the conversation object it attached
+to, so it would never see a replacement registered under the same `acp:<id>`
+(as a workspace restart creates); a Stop sent down the old socket would reach
+a closed peer. Closing forces the pane to re-attach, which binds it to the new
+conversation.
 
-**An in-flight `session/prompt` reply arrives as an orphan.** Its request id
-belonged to the previous connection, so it is read as "that turn ended".
-Request ids carry a per-connection prefix, so a *duplicate* of this
-connection's own reply is told apart from a genuine orphan and dropped rather
-than ending a live turn. The orphan and the record cover disjoint halves of the
-same window: a reply produced while nobody was attached is never delivered
-(acpd holds nothing for an absent client) and only the record has it, while a
-reply that lands after the reattach beats the scan — first classification wins,
-so a scan returning stale news is dropped.
+**An in-flight `session/prompt` reply arrives as an orphan** and is read as
+"that turn ended". Request ids carry a per-connection prefix, so a duplicate
+of this connection's own reply is dropped instead of ending a live turn. A
+reply produced while nobody was attached is never delivered, so only the
+record has it; a reply arriving after the reattach may beat the record scan,
+and the first classification wins.
 
 ## State
 
-ACP mode adds exactly one column: `agent_sessions.mode`. A restart has to bring
-a conversation back the way it was started, and nothing else on disk says which
-that was.
+The conversation's row records its mode (`agent_sessions.mode`), because a
+restart must bring it back the same way and nothing else on disk says which.
 
-Recording works the same for both: the live agent set names each running
+Recording is the same for both modes: the live agent set names each running
 conversation, and the registry records exactly those as active
-(docs/workspace-storage.md). Only where the id comes from differs — a `tui`
-conversation's tool names it on its pane through a hook or plugin, while
-`session/new` hands an `acp` one's to the server directly.
+(docs/workspace-storage.md). Only the id's source differs: a `tui` tool names
+it on its pane through a hook or plugin, while `session/new` gives an `acp`
+one to the server.
 
-The row's display fields come from the record too, and for the same reason the
-transcript does: it is the one source that answers for every tool. Under ACP
-three of the four leave nothing this side of the pod can find — codex names its
-rollouts by a thread id yaac never sees, opencode's history is a
-container-side database, and pi's log is named for an id its adapter minted
-rather than the one yaac asked for. So an ACP row records no transcript path at
-all: its opening message and its last-active time are read from the record,
-which is on disk whether or not anything is attached and outlives the pod.
+An ACP row records no transcript path. Under ACP, three of the four tools
+leave nothing the server can find outside the pod (codex's rollouts are named
+by a thread id yaac never sees, opencode's history is a database in the
+container, pi's log is named by an id its adapter made up), so the row's
+opening message and last-active time are read from the record instead.
 
-The model is not read at all: the adapter says it. The handshake's reply names
-the model the session opened with — in either shape, because adapters disagree
-about which they use (a `models` block, a `configOptions` entry with
-`id: model`, or both) — and every change since arrives as the adapter's
-`config_option_update`, the moment it lands. The conversation publishes it on
-the live agent set, which is what the row is written from — as the catalog's
-id for it, matched by the name the adapter's model list gives it when the id
-itself is one only that adapter speaks (claude's answers with its picker's
-alias where it has one, `opus[1m]`, which it calls "Opus 5.5", else with the
-id it was given). So the row names the model the
-way the create form did, and the sidebar label does not change when the agent
-first reports. A mode the adapter
-moves the session to travels the same way (a `current_mode_update`, or the
-`mode` option in a `config_option_update`), and becomes the workspace's posture
+The model comes from the adapter: the handshake reply names it (as a
+`models` block, a `configOptions` entry with `id: model`, or both), and later
+changes arrive as `config_option_update`. It is published on the live agent
+set and stored as the catalog's id, matched by display name when the adapter
+uses its own id (claude's adapter may answer with a picker alias such as
+`opus[1m]`), so the sidebar label matches the create form. Mode changes
+travel the same way and become the workspace's posture
 (docs/permission-modes.md, "Following the agent").
 
-The row is still written by the reconciler's conversation sweep, and the
-handshake that mints the id moves nothing the informers watch — so the id
-landing in the live agent set is itself a reconcile trigger (`live-agents`,
+The row is written by the reconciler's conversation sweep, so the id
+appearing in the live agent set is itself a reconcile trigger (`live-agents`,
 docs/event-driven-reconcile.md). Until the row exists an ACP workspace has no
-chat pane to show, only the raw agent window, which is acpd's log rather than
-a conversation — so a fresh ACP create holds until the row lands, and the
-webapp swaps its provisioning placeholder straight for the chat pane. A
-claimed spare is handed over the same way: its claim holds for the row too,
-while the create's placeholder names the spare and hides it, so the
-placeholder is never listed beside it.
+chat pane, only the raw agent window (acpd's log). So a fresh ACP create waits
+for the row, and the webapp swaps its provisioning placeholder straight for
+the chat pane. A claimed spare waits the same way, and the placeholder hides
+the spare so it is never listed twice.
 
-The pod carries `yaac.mode` as a label (stamped only for `acp`) so the status
-watcher can pick a driver from an informer delta without a database read on the
-pod-event hot path. Every pod without it — every TUI pod, and every pod
-predating modes — reads as `tui`.
+Under k8s an `acp` pod carries the label `yaac.mode=acp`, so the status
+watcher can pick a driver from an informer event without a database read. A
+pod without it is `tui`.
 
 ## Where status can mislead
 
-Status is exact at turn boundaries, but three states are worth knowing.
+Status is exact at turn boundaries, with three exceptions.
 
-A **hung adapter** — process alive, prompt never answered — pins the
-conversation `running` indefinitely: nothing times out a `session/prompt`, and
-`workspace/cancel` is a notification a wedged agent will not act on. The way out
-is the pane's stop button, then a workspace restart.
+A **hung adapter** (process alive, prompt never answered) stays `running`
+forever: nothing times out a `session/prompt`, and `session/cancel` is a
+notification a wedged agent ignores. Use the pane's Stop button, then restart
+the workspace.
 
-A **torn record** can pin a reattached conversation `running`. Recovery reads
-"last prompt unanswered" as a turn in flight, so a reply whose bytes never
-landed leaves nothing to reclassify it — the agent's exit is recorded and
-clears it, but a lost write is not. It shows as working with nothing
-streaming, and nothing the pane can do releases it: a message queues behind
-the phantom turn, and Stop's `session/cancel` names a turn the adapter does
-not have, so it draws no reply. The way out is a workspace restart, which
-starts a fresh acpd life and is therefore classified idle.
+A **torn record** can leave a reattached conversation `running`. Recovery
+reads "last prompt unanswered" as a turn in flight, so if the reply's bytes
+never reached the record nothing clears it (an agent exit is recorded and
+clears it; a lost write is not). It shows as working with nothing streaming.
+The pane can't release it: new messages queue behind the phantom turn, and
+Stop's `session/cancel` names a turn the adapter doesn't have, so nothing
+ends it. Restart the workspace; a fresh acpd
+starts idle.
 
-**Stop cancels the running turn, not the queue.** Messages sent while the agent
-works queue rather than overlap, and cancelling interrupts only the turn in
-flight, so stopping a backlog takes one press per message. Deliberate: a queued
-prompt is input the user asked for, and a Stop aimed at the current turn
-shouldn't discard it. A turn recovered after a reattach queues the same way,
-even though this server never sent it.
+**Stop cancels the running turn, not the queue.** Messages sent while the
+agent works are queued, and Stop interrupts only the current turn, so
+clearing a backlog takes one press per message. This is deliberate: a queued
+prompt is something the user asked for. A turn recovered after a reattach is
+treated the same way.
 
 ## Capabilities yaac declines
 
-In an editor the agent is remote from the workspace, so the client serves
-`fs/*` and `terminal/*` on its behalf. Here the agent runs *inside the
-container*, on the real `/workspace`, with its own tools — so yaac declines
-those capabilities and the container boundary (gVisor, the egress proxy, the
-NetworkPolicy) stays the one thing constraining it.
+In an editor the agent is remote from the files, so the client serves `fs/*`
+and `terminal/*` for it. In yaac the agent runs inside the workspace, on the
+real checkout, with its own tools, so yaac declines those capabilities. Under
+k8s the container boundary (gVisor, the egress proxy, the NetworkPolicy) is
+what constrains the agent; under containerless there is no such boundary
+(docs/containerless-driver.md).
 
-`session/request_permission` is the one request yaac does serve, and what it
-answers depends on the workspace's posture (docs/permission-modes.md). Under
-`bypass` it grants immediately: what constrains such a workspace is the sandbox
-and a throwaway git checkout, not a prompt nobody is watching. Under every
-other posture the request is held open and forwarded to the chat pane, where
-the user answers it — the adapter is separately told the posture over
-`session/set_mode`, so it only asks about what the mode leaves open.
+`session/request_permission` is the one request yaac serves, and its answer
+depends on the workspace's posture (docs/permission-modes.md). Under `bypass`
+it is granted immediately. Under every other posture it is held open and
+forwarded to the chat pane for the user to answer. The adapter is also told
+the posture over `session/set_mode`, so it only asks about what that mode
+leaves open.
 
-A held request is a turn that is `busy` but not working, so the conversation
-reports `waiting` while one is outstanding. That is what makes the sidebar dot,
-the chime and the tray badge fire on the one moment a conversation genuinely
-wants attention — status otherwise moves only at turn boundaries, and a blocked
-agent would look busiest exactly when it is stuck.
+While a request is held, the conversation reports `waiting`. That makes the
+sidebar dot, chime and tray badge fire exactly when the agent needs a person;
+otherwise a blocked agent would look busiest exactly when it is stuck.
 
-Two things make an ask survive the relay dropping, and both come from the
-record rather than from anything the server holds. acpd tees both directions,
-so an unanswered ask is visible as a request with no reply after it — which is
-how a reattaching connection knows a human is being waited on, and how a pane
-attaching mid-ask is shown the question. And the id it must be answered under
-is the *agent's*, not namespaced to a connection of ours (unlike our own
-outgoing ids, which carry a per-connection prefix — see the orphan-reply rule
-above). So the connection that takes over can settle an ask it never received,
-which is the difference between a blocked agent that resumes and one that has
-to be restarted mid-turn.
+An ask survives the connection dropping. In the record an unanswered ask is a
+request with no reply after it, which is how a reattaching connection and a
+pane attaching mid-ask learn of it. Its id is the agent's own (no
+per-connection prefix), so the new connection can answer an ask it never
+received, and the agent resumes without a restart.
 
 ## Images
 
-A user hands an agent an image by pasting it, dropping it, or, in a chat pane,
-picking it. The two modes take it differently, each in the form its agents
-already accept.
+Users give an agent an image by pasting or dropping it, or by picking it in a
+chat pane. Each mode delivers it in the form its agents accept.
 
-**`tui`: a path.** A terminal carries no images, and an agent's own
-paste-image key reads the clipboard of the machine it runs on, which is a pod
-or a tmux server with no display. What every TUI yaac runs *does* take is a
-pasted path to an image file: it is what a terminal sends when a file is
-dropped on it. claude reads the image as the path is pasted, and codex and
-opencode attach it on the spot too; pi keeps the path as text and reads the
-file with its tool during the turn, as its own paste-image key does. So the
-terminal pane claims an image paste or drop before xterm sees it, uploads it
-(`POST /workspace/:id/attachments`), and pastes the path the server answers.
+**`tui`: a file path.** A terminal carries no images, and an agent's own
+paste-image key reads the clipboard of the machine it runs on, which has no
+display. Every TUI yaac runs accepts a pasted path to an image file (what a
+terminal sends when a file is dropped on it). claude, codex and opencode
+attach it immediately; pi keeps the path as text and reads the file during
+the turn. So the terminal pane intercepts an image paste or drop, uploads it
+(`POST /workspace/:id/attachments`), and pastes the path the server returns.
 
-The server keeps the file in `workspaceAttachmentsDir`, under the workspace's
-state dir, so it lasts for the workspace's current life and goes when it stops.
-An image a turn has already sent stays in the tool's own history across a
-restart, but a path can no longer be read after one. The path is the one the
-workspace sees (`WorkspacePaths.attachmentsDir`): a read-only mount at
-`/home/yaac/.yaac-attachments` in a pod, the host directory itself under
-containerless. Files are named by content hash, so pasting the same image
-twice writes one file, and a name never needs quoting.
+The server stores the file under the workspace's state dir
+(`workspaceAttachmentsDir`), so it lasts for the workspace's current run and
+is removed when it stops. The pasted path is the one the workspace sees
+(`WorkspacePaths.attachmentsDir`): a read-only mount at
+`/home/yaac/.yaac-attachments` in a pod, the host directory under
+containerless. Files are named by content hash, so the same image pasted
+twice is stored once and names never need quoting.
 
-The keyboard paste chord off macOS, Ctrl+Shift+V, is one browsers run as
-paste-as-plain-text, and its paste event carries no image at all. For a Shift
-chord the pane therefore reads the clipboard itself (`navigator.clipboard.read`,
-which asks for permission the first time) and attaches an image it finds
-there, unless the clipboard also holds text, which the chord is already
-pasting.
+Off macOS, Ctrl+Shift+V is paste-as-plain-text in browsers, and its paste
+event carries no image. For that chord the pane reads the clipboard itself
+(`navigator.clipboard.read`, which asks permission the first time) and
+attaches an image it finds, unless the clipboard also holds text.
 
 **`acp`: an image block.** ACP carries images in `session/prompt`, and every
 adapter yaac runs advertises `promptCapabilities.image`, so a chat message's
-images go inline after its text. The bridge checks each one the way the upload
-route checks a file, by its magic bytes, and holds the message to the same
-5 MB cap for all its images together: the model's request limit and the
-record both take them at once. A message over it is refused whole rather than
-sent without an image, and the composer says so before sending. Because acpd
-records the prompt, the images are part of the conversation's history: a
-replayed user turn shows them, and so does a stopped workspace's transcript.
-That is also why the browser shrinks them before they leave: the long edge to
-1568 px, the most a model reads, and a PNG still over 1 MB re-encoded as WebP
-(or JPEG) when that is smaller. A record keeps them for good, and every attach
-reads it.
+images go inline after its text. The server checks each image's magic bytes,
+as the upload route does, and caps all of a message's images together at
+5 MB (`MAX_ATTACHMENT_BYTES`). A message over the cap is refused whole, and
+the composer warns before sending. Because acpd records the prompt, images
+are part of the history and show on replay and in a stopped workspace's
+transcript. That is why the browser shrinks them first: the long edge to
+1568 px (the most a model reads), and a PNG still over 1 MB re-encoded as
+WebP or JPEG when smaller.
 
-Prompts that big have three consequences for acpd and the record. acpd writes
-whole lines only, holding each direction's unfinished line until its newline,
-so a multi-megabyte prompt arriving in chunks cannot be split by something the
-agent says meanwhile. A client that goes away mid-line has already handed the
-agent that line's start, so acpd ends it with a newline, and the agent discards
-the fragment rather than gluing it onto the next client's first request. And
-the founding-ask scan, which reads only a record's first 64 KB, can still find
-the text of an opening message whose line it cannot finish parsing, because
-the text block is written ahead of the images.
+For large prompts, acpd writes whole lines only, so a multi-megabyte prompt
+arriving in chunks is never split by agent output; a client that disconnects
+mid-line gets its line ended with a newline, so the agent discards the
+fragment. The opening-message scan reads only the record's first 64 KB, but
+still finds the text because it is written before the images.
 
-In either pane, a paste that also carries plain text is taken as text: office
-apps put a picture of the copied selection on the clipboard beside the text.
-Text that is only a URL does not count, since that is what Firefox's Copy
-Image puts beside the image.
+In either pane, a paste that also carries plain text is treated as text,
+since office apps put a picture of the copied selection beside the text. A
+URL alone doesn't count as text, since Firefox's Copy Image puts one beside
+the image.
 
 ## Where things live
 
@@ -447,6 +362,7 @@ Image puts beside the image.
 | JSON-RPC peer | `packages/server/src/runtime/agents/acp-jsonrpc.ts` |
 | Conversation state | `packages/server/src/runtime/agents/acp-client.ts` |
 | Pane bridge (`/acp/attach`) | `packages/server/src/runtime/agents/acp-bridge.ts` |
+| Claude TUI transcript replay | `packages/server/src/runtime/agents/claude-acp-replay.ts` |
 | Agent supervisor | `dockerfiles/acpd/` (baked into the base image; run from the install under containerless) |
 | Record location | `acpLogDir()` in `packages/shared/src/project-paths.ts` |
 | Wire types | `packages/shared/src/acp.ts` |

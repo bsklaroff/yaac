@@ -1,21 +1,26 @@
 # Stream relay: workspace streams off the apiserver
 
-Every steady-state byte between the server and a workspace pod — terminal
-PTYs, the status watcher's tmux control stream, forwarded TCP, and
-one-shot pod commands — rides plain TCP through the proxy pod into an
-in-pod daemon, entirely off the apiserver. Workspace-create provisioning
-rides it too: the pod's postStart hook (`workspace-bin/yaac-workspace-init`)
-starts streamd before the container reports Ready, so every setup command
-the server still runs (workspace gitdir rewrite, branch upstream, init
-windows + agent respawn) is a relay exec. Claiming a prewarmed spare rides
-it the same way — the claim gates on `waitForStreamd` before its first
-mutation, then re-branches, retools, and re-applies the git identity over
-the relay. `kubectl exec` survives only where no stream can be gated on:
-the streamd self-heal re-boot, the teardown-time image-salvage survey, and
-non-workspace infra pods. Before the relay, each
-of these paths held a kubectl child per stream (or per TCP connection),
-and every chunk crossed pod → containerd shim → kubelet → apiserver →
-kubectl → server — with gVisor making the pod side extra expensive.
+Under the `k8s` driver, every steady-state byte between the server and a
+workspace pod travels over plain TCP through the proxy pod to a daemon
+inside the workspace pod (streamd). That covers terminal PTYs, the status
+watcher's tmux control stream, forwarded TCP ports, and one-shot pod
+commands. None of it goes through the Kubernetes apiserver.
+
+Streaming through `kubectl exec` would cost a kubectl child per stream (or
+per TCP connection), and every chunk would cross pod → containerd shim →
+kubelet → apiserver → kubectl → server. gVisor makes the pod end of that
+path especially slow.
+
+Workspace setup uses the relay too. The pod's postStart hook
+(`workspace-bin/yaac-workspace-init`) starts streamd before the container
+reports Ready, so every setup command the server runs after that is a
+relay exec. Claiming a prewarmed spare waits on `waitForStreamd` before its
+first change, then does its re-branching and git-identity work over the
+relay.
+
+`kubectl exec` is used only where there is no stream to wait on: restarting
+streamd itself (`bootStreamd`), the image-salvage survey at teardown, and
+infrastructure pods that are not workspaces.
 
 ## Architecture
 
@@ -29,178 +34,153 @@ server = a pod of the install namespace, dialing the proxy's Service
 
 ### streamd (`dockerfiles/streamd/`)
 
-A small plain-JS Node daemon baked into the base image at
-`/opt/yaac/streamd` (with a prebuilt `@lydell/node-pty`), started last by
-the pod's postStart setup script (`setsid node … &`, reparented to the
-container init) — so a successful relay exec also proves the setup that
-precedes it (git config, tmux server) is in place. Its source is part of the base image's content hash, so
-editing it retags the image. It listens on `0.0.0.0:10300` — in gVisor
-that is the sentry netstack, reachable via the pod IP like any Service
-backend. Every connection opens with one JSON handshake line
-(`{token, kind, …params}`) answered by one `{ok}` reply line:
+A small plain-JS Node daemon, baked into the base image at
+`/opt/yaac/streamd` with a prebuilt `@lydell/node-pty`. The postStart setup
+script starts it last, so a successful relay exec also proves the earlier
+setup (git config, tmux server) is done. Its source is part of the base
+image's content hash, so editing it changes the image tag.
 
-- `tcp {port}` — raw splice to `localhost:<port>` in-pod. The in-pod dial
-  is the point: localhost-bound dev servers stay reachable, which a
-  proxy-side dial of `podIP:port` could not do.
-- `ctrl {cmd}` — spawn argv with piped stdio, raw stdin/stdout splice
-  (tmux control mode is a line protocol). Socket close ⇔ process kill.
-  Also carries ACP: a workspace in `acp` mode dials `socat -
-  UNIX-CONNECT:/tmp/yaac-acp/<window>.sock` here, and the JSON-RPC rides the
-  same raw duplex. Note the socket-close semantics — which is exactly why the
-  ACP agent is supervised by acpd inside a tmux window rather than being this
-  stream's child (see docs/agent-modes.md).
-- `exec {cmd}` — one-shot: run argv, reply with a single JSON line
-  `{exitCode, stdout, stderr}` (bounded) and close. The `containerExec`
-  replacement for workspace pods (`podExec`).
-- `pty {cmd, cols, rows}` — spawn argv under a PTY. Framed both ways
-  (`[1B type][4B BE length][payload]`, codec mirrored in
-  `@yaac/shared/stream-frames`): data/resize/signal in, data/exit out.
-  Resize frames drive TIOCSWINSZ; output is paused against socket
-  backpressure (node-pty has no pull API). Output is micro-batched
-  (leading edge immediate, then one frame per ~8ms window, size-capped):
-  a tmux redraw burst reaches the browser as one message it can paint
-  atomically — fewer frames on every hop, no cursor flicker from
-  painting redraw fragments — while a lone keystroke echo pays no added
-  latency. The server-side pty adapter likewise dispatches consecutive
-  data frames from one chunk as a single callback (one WS message), and
-  `bridge()` runs the same batcher once more before the socket
-  (`@yaac/shared/batcher`, of which streamd's copy is the in-pod mirror)
-  — which is what gives the containerless driver, whose host PTY reaches
-  the bridge event by event with no streamd in front of it, the same
-  coalescing.
-- `ports {}` — push the pod's localhost-reachable LISTEN ports (parsed
-  in-pod from `/proc/net/tcp{,6}`, bounded, loopback/wildcard binds
-  only, streamd's own port excluded) as JSON lines: once on connect, on
-  every change, and re-sent as a keepalive. Feeds the server's
-  port detector (docs/auto-forward-ports.md); the poll only runs while
-  a ports stream is open.
+It listens on `0.0.0.0:10300`, reachable at the pod IP. Each connection
+starts with one JSON handshake line (`{token, kind, …params}`) and gets one
+`{ok}` reply line. The kinds are:
 
-The handshake token is per-workspace — `HMAC-SHA256(proxyAuthSecret,
-workspaceId)`, derived (never stored), injected as `YAAC_STREAM_TOKEN` at
-create. It is defense in depth alongside the ingress NetworkPolicies: a workspace
-leaking its own token gains nothing, since only its own daemon accepts it
-and only the proxy can reach any daemon.
+- `tcp {port}`: raw splice to `localhost:<port>` inside the pod. Dialing
+  from inside the pod is what lets a dev server bound only to localhost be
+  forwarded; dialing `podIP:port` from the proxy could not reach it.
+- `ctrl {cmd}`: run a command with piped stdio and splice stdin/stdout raw
+  (tmux control mode is a line protocol). Closing the socket kills the
+  process. ACP uses this too: an `acp` workspace runs `socat -
+  UNIX-CONNECT:/tmp/yaac-acp/<window>.sock` here and JSON-RPC rides the
+  raw duplex. Because closing the socket kills the child, the ACP agent
+  itself runs under acpd in a tmux window, not as this stream's child
+  (docs/agent-modes.md).
+- `exec {cmd}`: run a command once, reply with one JSON line
+  `{exitCode, stdout, stderr}` (size-bounded), and close. This is what
+  `podExec` uses.
+- `pty {cmd, cols, rows}`: run a command under a PTY. Both directions are
+  framed as `[1B type][4B BE length][payload]` (codec shared with
+  `@yaac/shared/stream-frames`): data, resize and signal frames in; data and
+  exit frames out. Output pauses when the socket applies backpressure.
+- `ports {}`: stream the pod's listening TCP ports (read from
+  `/proc/net/tcp{,6}`, loopback and wildcard binds only, streamd's own port
+  left out) as JSON lines: once on connect, on every change, and
+  periodically as a keepalive. This feeds the server's port detector
+  (docs/auto-forward-ports.md). The scan runs only while a ports stream is
+  open.
+
+PTY output is micro-batched. The first write goes out at once; later writes
+within the next ~8ms are merged into one frame, with a size cap. A tmux
+redraw therefore reaches the browser as one message it can paint in one go,
+which avoids cursor flicker from half-drawn screens, while a single
+keystroke echo is not delayed. The server's PTY adapter delivers
+consecutive data frames from one chunk as a single WebSocket message, and
+`bridge()` runs the same batcher again before the socket
+(`@yaac/shared/batcher`; streamd's `batcher.js` is a copy of it). That last
+step gives the containerless driver, which has no streamd, the same
+coalescing.
+
+The handshake token is per workspace: `HMAC-SHA256(proxyAuthSecret,
+workspaceId)`, derived rather than stored, and passed to the pod as
+`YAAC_STREAM_TOKEN`. It backs up the ingress NetworkPolicies: a workspace
+that leaks its own token gains nothing, because only its own streamd accepts
+it and only the proxy can reach any streamd.
 
 ### Proxy relay listener (`k8s/proxy/proxy.ts`)
 
-A dumb authenticated CONNECT on `:10260`, present in every proxy. Per
-connection: read one JSON auth line (`{token: proxyAuthSecret,
-workspaceId}`, timing-safe compare), resolve the workspace's pod IP from the
-pod-watch reverse index (labelSelector list on a miss), dial
-`podIP:10300`, splice. Everything after the auth line — the streamd
-handshake, its reply, the payload — flows through untouched, so the
-protocol stays end-to-end server↔streamd. Per-stream failures (unknown
-workspace, pod dial failure) are answered with an `{ok:false}` line before
-closing — the server reads a silent close as a dead peer, so a stale
-workspace's probe must not masquerade as one; only a bad auth line closes
-silently.
+A minimal authenticated CONNECT on `:10260`, present in every proxy. For
+each connection it reads one JSON auth line (`{token: proxyAuthSecret,
+workspaceId}`, compared in constant time), looks up the workspace's pod IP
+(from its pod watch, falling back to a label-selector list), dials
+`podIP:10300` and splices. Everything after the auth line passes through
+untouched, so the protocol is end-to-end between server and streamd.
 
-Nor may anything before the splice hang instead of answering. A workspace
-pod whose ingress policy has not yet admitted the proxy *drops* the SYN,
-so an unbounded `net.connect` would sit out the OS retry series holding
-both sockets while the server learns nothing; a deadline over the whole
-pre-splice phase — auth line, IP resolve, pod dial — makes that an
-ordinary refusal instead.
+Errors for a single stream (unknown workspace, pod dial failed) get an
+`{ok:false}` line before the close. The server treats a silent close as a
+dead peer, so a probe of a stale workspace must not look like one. Only a
+bad auth line closes silently.
+
+Everything before the splice has a deadline (auth line, IP lookup, pod
+dial). A pod whose ingress policy does not yet admit the proxy drops the
+SYN, and without the deadline the dial would wait out the OS retry series
+while the server learned nothing.
 
 ### Server transport (`drivers/k8s/substrate/stream-relay.ts`)
 
-`relayDial` opens the TCP connection and pipelines both handshake lines.
-The address is the proxy's Service —
-`yaac-proxy.<namespace>.svc.cluster.local:10260` — dialed directly, because
-the server is a pod of that namespace (docs/server-in-cluster.md) and the
-proxy's ingress policy admits its pod selector on the relay port.
-`YAAC_RELAY_ADDR` is what the Deployment states it as, and it is honoured
-verbatim, so an install that puts the proxy somewhere else says so there
-rather than in code.
+`relayDial` opens the TCP connection and sends both handshake lines in one
+write. The address is the proxy's Service,
+`yaac-proxy.<namespace>.svc.cluster.local:10260`, dialed directly: the
+server is a pod in that namespace (docs/server-in-cluster.md), and the
+proxy's ingress policy admits the server's pods on the relay port. The
+Deployment sets it as `YAAC_RELAY_ADDR`, which is used as given.
 
-Nothing is shared between streams, which is what makes failure handling
-trivial: every dial is its own TCP connection to a Service, so a failed one
-fails its own caller and leaves every other terminal, status stream and
-forwarded port untouched. One rule still guards against impatience, though:
-a caller's command budget is floored before the dial deadline is derived
-from it, because how fast one probe wants an answer is not a statement about
-how long a dial across the cluster legitimately takes.
+Streams share nothing. Each dial is its own TCP connection, so a failure
+affects only its own caller, not other terminals, status streams or
+forwarded ports. A caller's command timeout has a floor (5s) before the
+dial deadline is derived from it: a probe that wants a fast answer should
+not make a slow but healthy dial look like a dead relay.
 
-Adapters give each consumer the surface it already used, so the
-respawn/backoff, `bridge()`, forwarder-registry, and frontend WS logic
-are unchanged: `dialCtrlStream` (child-shaped, the status watcher's
-`spawnAttach`), `dialPtyStream` (PtyLike, the terminal bridge), and
-`podExec` (the one-shot command runner behind tmux probes, terminal
-listing, view cleanup, status-right updates, the changes diff, and the
-opencode probe).
+Adapters give each consumer the interface it already used:
+`dialCtrlStream` (child-process-shaped, for the status watcher),
+`dialPtyStream` (PTY-shaped, for the terminal bridge), and `podExec` (the
+one-shot runner behind tmux probes, terminal listing, the changes diff and
+similar).
 
 ## The browser hop
 
-Everything above optimizes bytes inside the cluster, but the link that is
-actually slow is usually the first one: a remote install is
-`tailscale serve` straight to the server (docs/remote-hosting.md), so the
-browser↔server WebSocket is the whole WAN path, with no edge tier in
-front of it. Four things keep it cheap.
+The slowest link is usually the first one. A remote install serves the
+server straight over Tailscale (docs/remote-hosting.md), so the
+browser↔server WebSocket is the whole WAN path. Four things keep it cheap:
 
-- **Compression.** `permessage-deflate` is negotiated on every WebSocket
-  (`server-run.ts`), with a 512-byte threshold so the latency-critical
-  small frames — a keystroke, its echo, a control frame — skip the codec
-  entirely. What benefits is the bulk: ANSI-heavy repaints, and the
-  snapshot and ACP JSON. `@hono/node-ws` builds its `WebSocketServer`
-  with no options pass-through, so the option is set on the `wss` it
-  returns; `ws` reads it per upgrade, which is what makes that work, and
-  `test/api/websocket-compression.test.ts` asserts the negotiation so a
-  dependency bump cannot silently drop it. For the same reason the
-  `/events` hub holds the raw `ws` socket rather than Hono's `WSContext`:
-  the context's `send` passes an explicit `undefined` compress flag,
-  which overrides ws's own default and would leave the largest payload on
-  the server uncompressed.
-- **No Nagle.** Every relay socket sets `setNoDelay` — the server's dial,
-  both legs of the proxy splice, streamd's accept and its TCP target.
-  Coalescing here is the batchers' job, and they do it deliberately;
-  leaving Nagle on top only spends their window in the kernel waiting for
-  a companion write that the batcher already folded in.
-- **Keystroke batching.** The browser coalesces input on a 4ms
-  leading-edge window (the same shared batcher, half the output window):
-  a lone keypress is never delayed, while autorepeat, a piecewise paste
-  and a TUI's mouse reports stop costing one WebSocket frame and one TLS
-  record each.
+- **Compression.** Every WebSocket negotiates `permessage-deflate`
+  (`server-run.ts`) with a 512-byte threshold, so small latency-critical
+  frames (a keystroke, its echo, a control frame) skip compression. Large
+  ANSI repaints and snapshot/ACP JSON benefit. `@hono/node-ws` does not
+  pass options through, so the setting is applied to the `wss` it returns;
+  `ws` reads it on each upgrade. `test/api/websocket-compression.test.ts`
+  checks the negotiation so a dependency bump cannot silently drop it. The
+  `/events` hub sends on the raw `ws` socket rather than Hono's
+  `WSContext`, because the context passes `compress: undefined`, which
+  overrides ws's default and would leave the largest payload uncompressed.
+- **No Nagle.** Every relay socket sets `setNoDelay`: the server's dial,
+  both sides of the proxy splice, and streamd's accepted and target
+  sockets. The batchers already coalesce; Nagle on top would only add
+  delay.
+- **Keystroke batching.** The browser batches input with the same shared
+  batcher on a 4ms window. A single keypress is sent at once; key repeat,
+  a paste delivered in pieces, and a TUI's mouse reports stop costing one
+  WebSocket frame and TLS record each.
 - **Link measurement.** The PTY control channel's `ping` carries a client
-  stamp that the `pong` echoes back, so the webapp can time the round
-  trip without tracking what is in flight; each open pane probes every
-  10s and the samples land in one app-wide store
-  (`frontend/src/lib/link-quality.ts`). A stamp-less ping — the CLI's
-  keepalive — still gets the bare pong it expects.
+  timestamp that the `pong` echoes, so the webapp can time the round trip.
+  Each open pane probes every 10s and the samples go into one app-wide
+  store (`frontend/src/lib/link-quality.ts`). A ping with no timestamp
+  (the CLI's keepalive) still gets a plain pong.
 
 ## Failure model
 
-When the relay is unreachable (proxy pod restarting, streamd dead),
-streams fail and retry through the layers that already exist for exactly
-this: the status watcher's backoff respawn, the frontend's WS reconnect,
-per-connection forward errors. Probe classification is conservative: only
-a stream that REACHED the pod and saw the command exit nonzero
-(`RelayExecError`) is conclusive; every transport failure
-(`RelayDialError`) is `unknown`, which the reaper treats as "do not
-reap" — a proxy outage degrades terminals, never workspace lifetimes. The
-status watcher self-heals streamd: every third consecutive stream death
-it re-runs the boot exec (`bootStreamd`), the one steady-state kubectl
-exec kept, because it is what works when no stream can.
+When the relay is unreachable (proxy pod restarting, streamd dead), streams
+fail and are retried by the existing layers: the status watcher's backoff
+respawn, the frontend's WebSocket reconnect, and per-connection forward
+errors.
+
+Probe results are classified conservatively. Only a stream that reached the
+pod and saw the command exit nonzero (`RelayExecError`) counts as a real
+answer. Any transport failure (`RelayDialError`) is `unknown`, and the
+stale reaper treats `unknown` as "do not reap". A proxy outage therefore
+degrades terminals but never ends workspaces.
+
+The status watcher restarts streamd itself: after every third consecutive
+stream failure it re-runs the boot command through `kubectl exec`
+(`bootStreamd`), since that works when no stream does.
 
 ## Network policy
 
-The relay makes proxy→pod dialing real, so pod ingress is locked down
-with it (before, nothing dialed workspace pods and their ingress was
-default-allow by omission):
+Because the proxy dials workspace pods, pod ingress is locked down:
 
-- Proxy ingress (`buildProxyIngressNpManifest`): the relay port is
-  admitted from the node CIDRs (netd's Envoy, the kubelet probe) and from
-  the SERVER's pod selector, which is how the server's own dials arrive
-  now that it is a pod. Workspace pods match neither and cannot reach it.
+- Proxy ingress (`buildProxyIngressNpManifest`): the relay port is admitted
+  from the node addresses (netd's Envoy, the kubelet probe) and from the
+  server's pod selector. Workspace pods match neither.
 - Workspace ingress lock (`buildWorkspaceIngressLockNpManifest`): workspace
-  pods accept only `app=yaac-proxy` on 10300, default-denying all other
-  ingress.
+  pods accept only `app=yaac-proxy` on 10300 and deny all other ingress.
 
-## Compatibility edges
-
-- Workspaces created before the upgrade have no streamd and an image
-  without it — their terminals/status/forwards are dead after the server
-  upgrade; restart the workspace. The reaper is unaffected (`unknown`
-  probes don't reap; pod-informer evidence still drives cleanup).
-- The proxy control API is a plain Service dial like the relay, on the
-  proxy's own control port. Folding it onto the relay port is an open
-  follow-up; nothing depends on the two being separate.
+The proxy's control API is a separate port on the same Service, admitted by
+the same rule from the server's pods.

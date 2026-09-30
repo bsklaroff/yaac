@@ -1,332 +1,174 @@
 # Cloud-hosted Kubernetes: what is left
 
-Goal: run the k8s driver on a cluster somebody else hosts — a self-managed
-node pool (k3s + Calico on VMs) first, EKS-AL / AKS-Ubuntu as per-provider
-ports — using **the same code and the same in-cluster infrastructure as the
-local kind install**. The local install keeps its data dir on the host's own
-disk, exactly where it is today, so it never needs a network filesystem and
-never needs a backup story beyond the one the host already has. Only the
-cloud install pays for storage that can move between nodes, and it pays
-for it in manifests, not in code paths.
-
-This plan replaces four earlier ones. What shipped from them is
-current-state reference now (docs/server-in-cluster.md,
-docs/cluster-setup.md, docs/workspace-egress.md, docs/trust-split-builds.md);
-what was dropped is listed at the end.
+Goal: run the k8s driver on a cluster somebody else hosts. First EKS
+(Amazon Linux), then AKS (Ubuntu) as a second provider port. They use the same code and the same
+in-cluster infrastructure as the local kind install. The local install keeps
+its data dir on the host's own disk, so it never needs a network filesystem
+or a backup story beyond the host's. Only the cloud install pays for storage
+that can move between nodes, and it pays in manifests, not in code paths.
 
 ## Where things stand
 
-Everything the earlier plans called "the keystone" has shipped on kind:
+The cloud install itself has shipped and is tested locally:
 
-- The server is an in-cluster Deployment, published at a fixed loopback
-  origin, registered in `server.json`; there is no host-process k8s server,
-  and every in-cluster dial is a Service dial (docs/server-in-cluster.md).
-- Every yaac pod runs under gVisor with no user namespace, which is what
-  makes an NFS-backed volume usable at all — the sentry needs no idmapped
-  mount (docs/cluster-setup.md "Runtimes and uids").
-- Egress is Calico NetworkPolicy plus netd's veth-peer redirect, both
-  per-node DaemonSets, both multi-node clean (docs/workspace-egress.md).
-- The gVisor runtime is installed by a privileged DaemonSet, not by
-  `podman exec` — the one mechanism that works on a node yaac has no shell
-  on and survives node recycling.
-- Both registries are in-cluster Deployments on RWO PVCs through the
-  default StorageClass; the cross-session image cache travels through the
-  per-project registry; builder pods are sandboxed and push to it.
-- The path layer is classified into GLOBAL / NODE-LOCAL / SERVER-LOCAL /
-  CLIENT-LOCAL tiers (`packages/shared/src/paths.ts`, one tier per helper in
-  `project-paths.ts`), and the three in-install tiers are three folders of
-  the data dir on every substrate. On kind the server pod mounts two
-  claims, `yaac-global` (RWX) and `yaac-server-local` (RWO), bound to
-  static hostPath volumes into those folders, plus the node's own
-  node-local tree; every workspace pod mounts subPaths of `yaac-global`,
-  resolved by the k8s driver from the tier a path declares, and its
-  node-local directories are created by its own init container
-  (docs/server-in-cluster.md "Storage is two claims"). The node-local
-  sweeps are per-node pods, opencode works on a node-local copy of a
-  global checkpoint, and `cluster check` proves the claim and the POSIX
-  semantics of what backs it.
-- Multi-node kind (`--nodes N`) exists, with per-node readiness gates.
-- Node tuning (the sysctls, `DefaultTasksMax`) is the gVisor installer
-  DaemonSet's, applied on every node it lands on and re-applied after a
-  restart; install's `podman exec` loop holds only the kind-only pair (the
-  node container's pids ceiling, the kubelet housekeeping flag), and
-  `cluster check` reads the tuning back through the installer's pods.
-- The server's fronting is a per-backend manifest set install renders
-  (docs/server-in-cluster.md "Reachability"): a ClusterIP plus a
-  hostNetwork forwarder behind the port mapping on kind, the same
-  ClusterIP behind the Tailscale operator's TLS Ingress under `--tailnet`.
-  Install reads the published origin off the fronting, states
-  `YAAC_ALLOWED_HOSTS` from it and registers it; `yaac server
-  start|restart` derive the origin from the live fronting. There are no
-  tokens: the server identifies a caller from the request
-  (docs/remote-hosting.md). The ingress wall is an explicit allow in two policies — node
-  addresses (re-rendered by the server at attach) plus the fronting's
-  peers — with no pod-CIDR snapshot left anywhere.
-- Nothing a user configures names a path on the server any more:
-  `bindMounts` is gone, an SSH git credential is ingested as key content,
-  and project env and secrets live encrypted in the database.
-- The egress proxy mounts nothing from the host and holds no state: its
-  credentials, secret values and registrations are objects it watches, its
-  CA, captured rotations and records are objects the server watches
-  (docs/workspace-egress.md "What the proxy is told, and how"), and
-  `.credentials/` is SERVER-LOCAL.
-- The NFS-under-gVisor spike ran (branch `nfs-gvisor-storage-spike`,
-  `test-storage-probes/`). Verdict: **go, conditional on the tier split.**
-  `actimeo=1` on the mount (cross-client visibility 25–57ms), `fsGroup` on
-  csi-driver-nfs claims, and workspaces + pnpm store kept node-local
-  (`git worktree add` 7.6s → 0.75s, checkout 4.0s → 0.57s against an
-  all-ext4 baseline of 0.5s). Sentry locks never reach the server, so
-  single-writer discipline per file is the rule on the shared tier.
+- **`yaac cluster install --byo`** installs into an existing cluster
+  (docs/cluster-setup.md "Bring your own cluster"). It gates on node pool,
+  CNI, Tailscale operator, storage classes, install identity and kube
+  context. It refuses immutable-OS nodes, Fargate and Autopilot, and a node
+  pool whose architecture is mixed or differs from the CLI machine's
+  (`byo-gates.ts`).
+- **The server** is an in-cluster Deployment. Under `--byo` it is published
+  only through the Tailscale operator's Ingress (`--tailnet` does the same on
+  kind). See docs/server-in-cluster.md "Reachability".
+- **Storage** is two claims on every backend: `yaac-global` (RWX) and
+  `yaac-server-local` (RWO). kind binds them to static hostPath volumes in
+  the data dir; byo provisions them from named classes and pins them
+  `Retain` (docs/server-in-cluster.md "Storage is two claims"). The
+  node-local tier is node disk on both (docs/workspace-storage.md "The
+  node-local tree").
+- **opencode's SQLite** runs on a node-local copy checkpointed to the shared
+  tier (docs/workspace-storage.md "opencode").
+- **Egress** (Calico NetworkPolicy plus netd's redirect) and the gVisor
+  installer are per-node DaemonSets and work multi-node
+  (docs/workspace-egress.md, docs/cluster-setup.md "Multi-node").
+  The installer also applies node tuning on every node.
+- **gVisor with no user namespace** is what makes an NFS-backed volume
+  usable at all: the sandbox needs no idmapped mount (docs/cluster-setup.md
+  "Runtimes and uids").
+- **Images bake no uid** (docs/arbitrary-uid-images.md). `runAsUser` is the
+  host uid on kind and `1000` on byo.
+- **Built-in images** are built by podman on the CLI machine and pushed
+  through the CLI's registry port-forward (docs/cluster-setup.md "Images
+  are built here, and only here").
+- **Test rigs:** multi-node kind (`--nodes N`); `pnpm kind-byo` stands up a
+  cloud-shaped cluster on one Linux host (NFS through csi-driver-nfs, a
+  `WaitForFirstConsumer` default class, the operator), and the `e2e-byo`
+  and `e2e-byo-install` projects run against it (docs/cluster-setup.md
+  "Running byo locally: kind-byo").
 
-- **`yaac cluster install --byo` is the cloud install**
-  (docs/cluster-setup.md "Bring your own cluster"): gated on the node pool,
-  the CNI, the Tailscale operator, the storage classes, the install's
-  identity and the recorded kube context; claims provisioned from named
-  classes, owned by a binder pod, pinned `Retain` and re-adopted after a
-  namespace delete (docs/server-in-cluster.md "Storage is two claims"); the
-  server at uid 1000 behind the tailnet Ingress; `cluster check` with the
-  storage gates fail-level on every backend.
-- **kind-byo** (`pnpm kind-byo`, docs/cluster-setup.md "Running byo locally:
-  kind-byo") stands a cloud-shaped cluster up on one Linux host — ganesha
-  behind csi-driver-nfs, a `WaitForFirstConsumer` default class, the
-  operator — and the `e2e-byo` project runs the e2e files against it.
+An NFS-under-gVisor spike (branch `nfs-gvisor-storage-spike`,
+`test-storage-probes/`) found shared storage workable if checkouts and the
+pnpm store stay node-local. Mount with `actimeo=1` (cross-client visibility
+25–57ms). Checkout creation and git checkout were about 10x slower on NFS
+than on node disk (7.6s vs 0.75s, 4.0s vs 0.57s). gVisor's sentry locks
+never reach the server, so each file on the shared tier needs a single
+writer.
 
-What is left is the real targets and the operations around them.
+What is left is running on real targets and the operations around them.
 
 ## Decisions
 
-- **kind stays the local backend.** No k3s-on-Linux, no Lima/minikube
-  spike. What a node-in-a-container costs is a handful of install-time
-  fixups, and those are cheaper than a second local backend. The
-  cloud backend is the second backend, and the local one exists to test it.
-- **Two backends, one driver, one Deployment.** `yaac cluster install
-  --byo` is the cloud backend (docs/cluster-setup.md "Bring your own
-  cluster"). Above install, nothing knows which
-  backend it is on: the pod specs, the mount sources, the Service dials,
-  the check probes are identical. Every difference is a manifest install
-  renders — which PersistentVolume backs a claim, what fronts the server's
-  Service, which uid the images bake — never a branch in the driver.
-- **Storage is two named claims on every backend.** `yaac-global` (RWX:
-  the `projects/` tree) and `yaac-server-local` (RWO: the PGlite DB, the
-  lock, logs, `.credentials/`, `build/`, `models/`). The server pod and
-  every workspace pod mount subPaths of `yaac-global`; only the server
-  mounts `yaac-server-local`; the proxy mounts neither. The data dir has
-  one layout on every substrate — three tier folders, `global/`,
-  `server-local/` and `node-local/`, and nothing else of yaac's at its root
-  — into which an older data dir is moved once, by a rename per row, at
-  the first host process that touches it (docs/legacy-compat-shims.md).
-  What differs per backend is the PV behind each claim:
-  - **kind: static hostPath PVs into the data dir**, `reclaimPolicy:
-    Retain`, explicit `claimRef`. `yaac-global` binds `<dataDir>/global`
-    and `yaac-server-local` binds `<dataDir>/server-local` — so the bytes
-    stay on the host's disk under `~/.yaac`, and `yaac cluster delete`
-    keeps its standing promise of touching none of them. Kubernetes does
-    not enforce access modes on hostPath, so the RWX claim spec is the
-    same one the cloud backend uses. Multi-node kind keeps working because
-    the extraMount binds `$HOME` into every node and the PV path resolves
-    on each.
-  - **byo: dynamically provisioned from named StorageClasses** — an
-    NFS-family RWX class (csi-driver-nfs against an NFS server you run;
-    EFS, Filestore and Azure Files NFS are the managed equivalents, all NFS
-    behind a CSI driver, which is exactly what the spike measured) and any
-    RWO block class for server state. Install patches each bound PV to
-    `reclaimPolicy: Retain` after binding, so a claim or namespace delete
-    can never take the data with it on either backend. The spike's two
-    findings are applied by install to volumes it owns rather than
-    demanded of the operator's classes: `actimeo=1` goes into the bound
-    RWX volume's `mountOptions`, and a one-shot binder pod makes each
-    volume root the install uid's (docs/server-in-cluster.md "Storage is
-    two claims").
-- **Nodes are disposable.** Nothing a workspace needs in order to resume
-  may live only on the node it last ran on, and no pod is ever pinned to a
-  node. The NODE-LOCAL tier therefore holds exactly two kinds of thing:
-  caches that are re-derivable (package caches, the per-node image store)
-  and **working copies of a checkpoint on the shared tier**. opencode's
-  per-workspace SQLite is the second kind: SQLite is unusable on NFS (no
-  WAL, a confirmed corruption issue), so the pod works on a node-local
-  copy and checkpoints it to `<global>/projects/<slug>/opencode-data/<id>`
-  on a timer and at stop, and a start restores from the checkpoint
-  (docs/workspace-storage.md "opencode" is the record of what ships). The
-  pod does both itself (the DB is in-pod and has one writer), so the
-  server learns nothing new; a node lost mid-run costs at most one
-  checkpoint interval of conversation.
-- **The NODE-LOCAL tier is node disk on both backends**: a hostPath at a
-  fixed node path (`/var/lib/yaac/node/<dataDirHash>/…`,
-  `DirectoryOrCreate`) with an init container doing `mkdir -p` + `chown`,
-  since hostPath ignores `fsGroup`. On kind that path is bound to
-  `<dataDir>/node-local` by a second extraMount, so caches still live on
-  the host disk and survive a cluster delete; on a cloud node it is the
-  node's own disk, and a drained node costs a cold cache and nothing
-  else.
-- **The pod's tier roots are three mount points, and the install identity
-  is stamped, not derived.** `globalRoot()`, `serverLocalRoot()` and
-  `nodeLocalRoot()` read `YAAC_GLOBAL_ROOT` / `YAAC_SERVER_LOCAL_ROOT` /
-  `YAAC_NODE_LOCAL_ROOT` when set (the Deployment sets them; containerless
-  never does, so the split is inert there). `dataDirHash()` — every pod
-  label, the registry claim name — hashes `getDataDir()`,
-  which the Deployment keeps passing as the host's data dir path exactly as
-  today, so no label, claim or row changes across the storage move. The
-  data dir path is an identity string inside the pod and a directory only
-  on the host.
-- **Built-in images keep building off the cluster.** Every image yaac
-  ships is built by podman on the machine running the CLI and pushed
-  through the CLI's registry port-forward, on both backends, exactly as
-  today (docs/cluster-setup.md "Images are built here, and only here"),
-  and for the CLI machine's **own** architecture. What keeps those images
-  matching the nodes is a refusal, not a cross-build: `--byo` reads the
-  node architecture off the cluster and refuses, loudly, a pool that is
-  mixed or that differs from the deploying machine's (an arm64 Mac cannot
-  drive an amd64 pool). No `--platform`, no emulation, no platform in the
-  content hash. Lifting that restriction means **published
-  per-architecture images** per release that install pulls instead of
-  building, which needs the images to stop baking a uid (below) and is
-  outside this plan. Nothing in this plan builds an image inside the
-  cluster beyond what the trust-split builder pods already do for project
-  and user layers.
-- **The tailnet is the only way onto a cloud server.** kind keeps the
-  `extraPortMapping` → `127.0.0.1`, fronted by a hostNetwork forwarder so
-  the ingress wall sees a node source on every host platform. byo publishes
-  the server through the Tailscale Kubernetes operator's
-  `ingressClassName: tailscale` Ingress, which gives a tailnet-only
-  hostname on the same trust boundary docs/remote-hosting.md already draws,
-  stamps every request with the caller's tailnet identity (the only
-  authentication the server has — docs/remote-hosting.md), and terminates TLS for it — an `https://` origin and a secure
-  context for the webapp — and nothing else: no public
-  LoadBalancer, no public Ingress, no cert-manager, no DNS, and no option
-  to add them. The operator is a prerequisite the cluster owner installs
-  (one helm command, printed by the refusal); `--byo` implies the tailnet
-  fronting. It is one fronting on both backends: `--tailnet` selects it on
-  kind too, where it **replaces** the loopback origin rather than adding a
-  second one, so an install has exactly one origin and every client —
-  this machine's CLI included — reaches it the same way.
-- **Node tuning moves into the gVisor installer DaemonSet.** The sysctls
-  and `DefaultTasksMax` are real-node concerns as much as kind-node ones;
-  the installer already runs privileged with `nsenter` on every node and
-  reapplies on every new node, so it becomes the one node-tuning mechanism
-  and the `podman exec` fixup loop is deleted. What stays kind-only is
-  what only a node container has: the pids-limit on the container and the
-  kubelet housekeeping flag (a managed pool's kubelet config is the
-  provider's; document the flag as a pool setting).
-- **Images bake no uid** (docs/arbitrary-uid-images.md): gid 0 with
-  `g=u` on everything the process writes, an entrypoint that names the
-  running uid in `/etc/passwd`, the uid out of every tag. `runAsUser` is
-  therefore a runtime value install sets per backend: the host's uid on
-  kind, where the virtiofs ceiling on macOS is real, and a fixed `1000` on
-  byo, where NFS passes uids through raw and the binder's chown of each
-  volume root does the rest. One image set per content hash is also what makes published
-  per-architecture images possible, and with them the lifting of the
-  architecture restriction on `--byo`.
-- **The gVisor node install is the portability ceiling, accepted.**
-  Mutating a managed node's containerd is vendor-unsupported but works on
-  mutable-OS pools (self-managed, EKS AL2023, AKS Ubuntu); it is blocked
-  on Bottlerocket, Autopilot and Fargate, and DOKS is out because its
-  Cilium is mandatory and eBPF host-routing defeats the veth-peer
-  redirect. GKE Standard would need a GKE Sandbox adapter and is not
-  planned. `--byo` probes for these and refuses rather than installing
-  something that silently loses egress enforcement.
-- **Backups are a cloud concern and stay outside yaac**, except one:
-  provider snapshots of the two volumes are the operator's schedule, and
-  the server takes a cold copy of `<serverLocal>/db` before it runs a
-  migration (last-N, keyed by build id) so an image roll is reversible.
-  The local install needs neither — its loss mode is the host disk, as it
-  has always been.
+- **kind stays the local backend.** No k3s-on-Linux or Lima/minikube
+  backend. kind's install-time fixups are cheaper than a second local
+  backend, and kind-byo is what stands in for a cloud cluster.
+- **Two backends, one driver.** Above install, nothing knows which backend
+  it is on. Every difference (which volume backs a claim, what fronts the
+  Service, which uid runs) is a manifest install renders, never a branch in
+  the driver.
+- **Nodes are disposable.** Nothing a workspace needs to resume may live
+  only on the node it last ran on, and no workspace pod is pinned to a
+  node. The node-local tier holds only re-derivable caches and working
+  copies of a checkpoint on the shared tier.
+- **The tailnet is the only way onto a cloud server.** No public
+  LoadBalancer or Ingress, no cert-manager, no DNS.
+- **One architecture per install.** Lifting the architecture refusal means
+  publishing per-architecture images each release for install to pull.
+  That is out of scope here.
+- **The gVisor node install limits portability, and that is accepted.**
+  Editing a managed node's containerd is unsupported by vendors but works on
+  mutable-OS pools. Cilium-mandated platforms (GKE Dataplane V2, DOKS) break
+  netd's redirect and are out (docs/workspace-egress.md "Managed-cloud
+  portability"). A GKE Sandbox adapter is not planned.
+- **Backups stay outside yaac,** with one exception. Provider snapshots of
+  the two volumes are the operator's job. The server takes a cold copy of
+  `<serverLocal>/db` before it runs a migration (last N, keyed by build id)
+  so an image rollout can be reversed. The local install needs neither.
 
 ## The work, in order
 
-Each step is gated by the e2e suite on kind (single and `--nodes 3`) and on
-`e2e-byo`, plus `e2e-byo-install` green on kind-byo.
+Each step must pass the e2e suite on kind (single node and `--nodes 3`)
+and `e2e-byo`, plus `e2e-byo-install` on kind-byo.
 
-### 7. Real targets
+### 1. Real targets
 
-Run in kill-order on a self-managed k3s + Calico pool (VMs, csi-driver-nfs
-against an NFS VM firewalled to the nodes), then EKS-AL, then AKS-Ubuntu:
+In this order: EKS on Amazon Linux, then AKS on Ubuntu. On each:
 
-- The gVisor installer on the real node OS; sentry probe green; survives
-  a node-pool upgrade.
-- The `egress` gate against the provider's Calico (policy-only over VPC
-  CNI on EKS) and `YAAC_KUBE_PROXY_EXTERNAL` on k3s.
-- The storage gates over a real network — every spike number is a
-  single-host floor, and `actimeo=1` is where staleness bugs would show.
-- Workspace `pnpm install` time with the npm cache (docs/workspace-storage.md
-  "Package installs") on another node — measured single-host only so far —
-  and a node drain that moves the cache: installs fail until its claim
+- The gVisor installer on the real node OS: sentry probe green, and it
+  survives a node-pool upgrade.
+- The `egress` gate against each provider's Calico: ours in policy-only
+  mode over VPC CNI on EKS, Microsoft's on AKS.
+- The storage gates over a real network. The spike numbers are single-host
+  best cases, and `actimeo=1` is where staleness bugs would show.
+- Workspace `pnpm install` time with the npm cache
+  (docs/workspace-storage.md "Package installs") from another node. Also a
+  node drain that moves the cache: installs fail until its claim
   reattaches, the same exposure the main registry has for pulls.
-- A full workspace life: create, nested containers, prewarm claim, then
-  drain the node and resume — every tool including opencode — on another
-  (repo, transcripts and the opencode checkpoint are shared; the workspace
-  dir is too until step 9, correct but slow on the first `worktree add`).
-- Reboot and drain: a node drain kills a workspace Job — surface a
-  "node draining" workspace state and document that in-flight scratch is
-  lost while `repo/.git` and transcripts are not.
-- Document each target in docs/cloud-hosting.md (a current-state doc,
-  written as each target passes), with the provider table from
-  docs/workspace-egress.md as its envelope.
+- A full workspace life for every tool, opencode included: create, nested
+  containers, prewarm claim, then drain the node and resume on another.
+  Checkouts stay on the shared tier until step 3, which is correct but slow.
+- Reboot and drain: a node drain kills a workspace Job. Surface a "node
+  draining" workspace state, and document that in-flight scratch is lost
+  while the checkout and transcripts are not.
+- Audit the schema for absolute paths. Every path stored in a row must be
+  data-dir-relative.
+- Write docs/cloud-hosting.md (current-state) as each target passes, using
+  the provider table in docs/workspace-egress.md as its scope.
 
-### 8. Operations
+### 2. Operations
 
-- The pre-migration cold DB snapshot (`db-backup-<buildId>`, last-N).
-- The lease-fenced lock stays; on byo the RWO claim's attach exclusivity
-  is a second guard for free. An OFD/`flock` fence is still worth doing
-  on kind, where hostPath enforces nothing.
-- A dedicated workspaces node pool: the `nodeSelector` on the installer
-  DaemonSet and the `tolerations` on the RuntimeClasses are plumbed and
-  default to no-ops; `--byo` gets a `--workspace-pool-taint` knob that sets
-  both and persists across re-installs (docs/cluster-setup.md "Which nodes
-  count as workspace-eligible" describes why today's apply prunes it).
+- The pre-migration cold DB copy (`db-backup-<buildId>`, last N).
+- The lock's lease stays. On byo the RWO claim's attach exclusivity is a
+  second guard. On kind, where hostPath enforces nothing, an OFD/`flock`
+  fence is still worth adding.
+- A dedicated workspace node pool. The installer DaemonSet takes a
+  `nodeSelector` and the RuntimeClasses take `tolerations`, both defaulting
+  to none. `--byo` gets a `--workspace-pool-taint` option that sets both and
+  persists across re-installs. Today install's re-apply removes a
+  toleration added with `kubectl apply` (docs/cluster-setup.md "Which nodes
+  count as workspace-eligible").
 
-### 9. Node-local workspaces (perf, separable)
+### 3. Node-local checkouts (performance, separable)
 
-The spike showed shared workspaces are correct but ~10x slower on the git
-write paths. Once the cloud install is real: `addWorkspace` splits so the
-server writes only the admin dir into the shared `repo/.git/worktrees/<id>`
-(`--no-checkout` staging) and a workspace init container does the checkout
-into the node-local workspace dir; cleanup and GC learn the dir is per node
-(the node-pinned sweep pattern). Disposable nodes set the bar this step
-has to clear: a node-local checkout holds uncommitted work, so it is a
-working copy of a checkpoint like opencode's DB — a snapshot commit of the
-tree (tracked, untracked and staged) written to `refs/yaac/checkpoint/<id>`
-in the shared `repo/.git` on stop and on a timer, restored by the init
-container when the node-local dir is absent. Without that, workspaces stay
-shared: slow is acceptable, losing an hour of edits to a node upgrade is
-not. The webapp's file editor (docs/file-editor.md) reads and writes
-`workspaceDir` from the server's own filesystem, so a node-local checkout
-also needs an in-pod file path for it. A stopped workspace's files would then
-be reachable only through the checkpoint.
+Checkouts on the shared tier are correct but about 10x slower on git write
+paths. A checkout is a clone whose `.git` borrows every object from the
+main clone through `objects/info/alternates` (`createCheckout` in
+`#domain/git`, docs/server-git.md). The main clone would stay shared; the
+server would stage the checkout's `.git`, and a workspace init container
+would place it and check out into a node-local directory. Cleanup and GC
+then need to know the checkout lives on one node (the node-pinned sweep
+pattern).
+
+Disposable nodes set the bar. A node-local checkout holds uncommitted
+work, so it must be a working copy of a checkpoint, like opencode's DB: on
+stop and on a timer, commit a snapshot of the tree (tracked, untracked and
+staged) to `refs/yaac/checkpoint/<id>` on the shared tier. The init
+container restores from it when the node-local directory is missing.
+Without that, checkouts stay shared: slow is acceptable, losing an hour of
+edits to a node upgrade is not.
+
+The file editor (docs/file-editor.md) reads and writes the checkout
+through the server's filesystem, so a node-local checkout also needs an
+in-pod path for it. A stopped workspace's files would then be reachable
+only through the checkpoint.
 
 ## Invariants to keep
 
-- A shared-tier file may have many readers and ONE appending writer;
-  cross-workspace aggregation goes through per-workspace files merged by the
-  server. Sentry locks are sandbox-local, so nothing on the shared tier may
-  rely on a cross-pod lock.
-- Every path stored in a row is data-dir-relative (transcript paths
-  already are, and no config names a server path any more); an audit of
-  the schema for absolute paths is part of step 1.
-- A driver is handed everything it needs; a byo install's storage classes,
-  fronting and uid reach the driver as manifests install rendered, never as
-  reads of the environment inside the driver.
-- No filesystem watchers: freshness stays poll-on-reconcile, which is what
-  an NFS mount wants.
+- A shared-tier file may have many readers and one appending writer.
+  Cross-workspace aggregation goes through per-workspace files the server
+  merges. Nothing on the shared tier may rely on a cross-pod lock.
+- Every path stored in a row is data-dir-relative.
+- A driver is handed everything it needs. A byo install's storage classes,
+  fronting and uid reach the driver as manifests install rendered, never
+  as environment reads inside the driver.
+- No filesystem watchers. Freshness comes from polling on reconcile, which
+  suits an NFS mount.
 
-## Dropped from the earlier plans
+## Not planned
 
-- **Moving off kind** (native k3s on Linux, Lima/minikube krunkit spikes,
-  buildkitd-in-cluster as a podman replacement). kind is the local backend;
-  its fixups are down to the kind-only pair and its host podman stays for
-  the provider.
-- **A host NFS export for the local install.** The kind install's data dir
-  stays on disk behind static hostPath PVs. The only NFS on one machine is
-  kind-byo's in-cluster ganesha, and that is a stand-in for a cloud
-  cluster, not a mode of the kind install.
-- **`yaac cluster attach` as a separate verb**; it is `--byo` on install.
-- **In-cluster builds of the built-in images**, and a public Ingress or
-  LoadBalancer in front of the server; the tailnet is the only fronting.
-- **Multi-node kind as the acceptance gate for cloud.** It remains a
-  supported topology and an e2e configuration, but kind-byo is what
-  stands in for a cloud cluster.
-- **DOCR / a provider registry**; the in-cluster registry carries over.
-- **CephFS / JuiceFS fallbacks**, kept only as the note that the spike's
-  probes take a mount path and run unchanged against another filesystem.
-- **vcluster sessions**, already retired.
-- **Multi-user access** — docs/plans/multi-user-deployment.md, unchanged
-  by any of this.
+- A host NFS export for the local install.
+- In-cluster builds of the built-in images.
+- A provider registry (ECR, DOCR); the in-cluster registry is used on
+  every backend.
+- CephFS or JuiceFS. The spike's probes take a mount path and would run
+  unchanged against them.
+- Multi-user access: docs/plans/multi-user-deployment.md.

@@ -1,128 +1,108 @@
 # Reaching a workspace's ports
 
 A workspace's dev server listens on a port the user wants to open in a
-browser. Who binds that port on the user's machine is the whole subject
-of this document, and the answer is: **not the server**.
+browser. The yaac server never binds that port on the user's machine; a
+client does.
 
 - Under `k8s` the server is a pod (docs/server-in-cluster.md). A port it
-  bound would be on the pod's loopback — the bind succeeds, every health
-  signal reads green, and the link answers nothing on the machine showing
-  it. That is the worst failure shape available, so the server does not
-  bind at all.
-- Under `containerless` the workspace's own processes bind host ports, so
-  on the server's machine the port is already reachable and there is
-  nothing to forward. From another machine there is, and the same tunnel
-  carries it (see the end of this document).
+  bound would be on the pod's loopback: the bind succeeds, health checks
+  pass, and the link reaches nothing on the user's machine. So the server
+  binds nothing.
+- Under `containerless` the workspace's own processes bind host ports, so on
+  the server's machine there is nothing to forward. From another machine
+  there is (see "Containerless servers").
 
-Neither substrate leaves the server holding a listener. What it holds
-instead is the **mapping** — which container port is offered at which host
-port — and the near end of each connection.
+The server holds the **mapping** (which container port is offered at which
+host port) and the server end of each connection.
 
-## The two halves
+## The server declares, a client binds
 
 **The server declares.** `WorkspaceDriver.declareForwards` takes a config's
-`portForward` entries and answers the host port each is offered at, held
-for the workspace's lifetime and dropped by `deregisterWorkspace`. It runs
-before the workspace launches, because its answer is stamped into the
-workspace's own tmux status bar. The reactive "forward this port" action
-(docs/auto-forward-ports.md) appends to the same registry. Either way the
-result surfaces as `forwardedPorts` on the workspace list, which is what the
-webapp links to and what a client forwarder binds.
+`portForward` entries and returns the host port each is offered at, kept for
+the workspace's lifetime and dropped by `deregisterWorkspace`. It runs before
+launch because the result is shown in the workspace's tmux status bar. The
+"forward this port" action (docs/auto-forward-ports.md) adds to the same
+registry. The result appears as `forwardedPorts` on the workspace list, which
+the webapp links to and client forwarders bind.
 
-Declaring is also **allocating**. Binding used to disambiguate two
-workspaces of one project both asking for 3000 — whoever bound first won
-and the second walked up. With nothing bound, the k8s driver's registry
-keeps the ledger and walks the same way. What it cannot know is what else
-on the user's machine holds a port; that surfaces where it can be
-observed, as the client's listener failing to bind. Under `containerless`
-the answer is the identity: the port the config names IS the port the dev
-server binds, and reserving anything in its name would take it away.
+Declaring also allocates: if two workspaces of a project both ask for 3000,
+the k8s driver gives the second the next free port. It cannot see what else
+holds a port on the user's machine; that shows up as the client failing to
+bind. Under `containerless` the mapping is the identity, since the config's
+port is the port the dev server binds.
 
-**A client binds.** `startForward` in `@yaac/shared` listens on the host
-port and opens one WebSocket per accepted TCP connection to
-`GET /forward/attach?id=<workspace>&port=<container port>`, identified
-the same way as every other WS (docs/remote-hosting.md). The server splices that socket
-to a `dialPort` stream into the workspace (`attachPortTunnel`) — under k8s,
-a `tcp` stream through the pod's streamd, exactly the relay every other
-byte rides (docs/stream-relay.md). The `id` is an exact workspace id (an
-attach naming none is a 400 before any lookup), and the pod driver dials
-only a port the workspace declared or its detector surfaced — never yaac's
-own in-pod infra range (`isInfraPort`), which no config may declare either.
+**A client binds.** `startForward` in `@yaac/shared` listens on the host port
+and, per accepted TCP connection, opens a WebSocket to
+`GET /api/forward/attach?id=<workspace>&port=<container port>`, authenticated
+like every other WebSocket (docs/remote-hosting.md). The server connects it
+to a `dialPort` stream into the workspace (`attachPortTunnel`); under k8s
+that is a `tcp` stream through the pod's streamd (docs/stream-relay.md).
 
-One WebSocket per TCP connection is the kubectl shape, and it is what makes
-the splice the entire protocol: every binary frame is bytes for that one
-connection, in order, with nothing to demultiplex. A chatty client pays one
-handshake per connection; multiplexing is a follow-up, wanted only if that
-cost becomes visible.
+`id` must be an exact workspace id (missing is a 400). The k8s driver dials
+only a port the workspace declared or its detector surfaced, never yaac's
+in-pod infra range (`isInfraPort`), which configs cannot declare either.
 
-Two details the shape forces:
+One WebSocket per TCP connection, as kubectl does, keeps the protocol
+trivial: each binary frame is the next bytes of that one connection. The
+cost is a handshake per connection. Two details follow:
 
-- **Both ends buffer the first bytes.** A TCP client writes its whole
-  request the moment it connects, before the handshake finishes — so the
-  client pauses the socket until the WS opens, and the server queues frames
-  that arrive before its dial lands. Dropping them would look like a hang
-  rather than an error.
-- **A refused dial closes with 4001.** The dial happens inside the cluster
-  where the client cannot look, so the close code is the whole diagnosis it
-  gets, and it has to be tellable from a dev server that simply hung up.
+- **Both ends buffer the first bytes.** A TCP client often sends its request
+  before the WebSocket is open, so the client pauses the socket until then,
+  and the server queues frames that arrive before its dial completes.
+  Dropping them would look like a hang.
+- **A failed dial closes with code 4001.** The client cannot see into the
+  cluster, so the close code is its only diagnosis, and it must differ from a
+  dev server closing the connection.
 
-`@yaac/shared` is where the client lives because the desktop app is one of
-the two forwarders and may import nothing else. It uses `ws` and `net` and
-nothing further.
+The client lives in `@yaac/shared` because the desktop app is a forwarder
+and may import nothing else. It depends only on `ws` and `net`.
 
 ## The two forwarders
 
-`createForwardSet` reconciles a live set of forwards against a desired
-list, by identity — so a session gaining a port never costs the others
-their open connections, and a forward that cannot bind is reported and
-retried on the next pass rather than failing the set. Both clients drive
-it:
+`createForwardSet` keeps a set of forwards in line with a desired list,
+matched by identity: a new port does not disturb other forwards' open
+connections, and a forward that cannot bind is reported and retried next
+pass. Two clients use it:
 
-- **`yaac forward [workspace-id]`** — the explicit one, for a headless box.
-  It polls the workspace list every few seconds, so a session created,
-  stopped, or granted a new port while it runs is picked up. `--port
-  <container[:host]>` names ports directly instead (for one the server has
-  not heard of, or one wanted on a different local number), and `--bind`
-  puts the listeners somewhere other than loopback — the remote-hosting
-  case (docs/remote-hosting.md), where the machine running the forwarder is
-  not the machine at the keyboard.
-- **The desktop app** — the resident one. Its main process is long-lived,
-  tray-scoped and already holds `/events`, whose snapshots carry the
-  mappings; so the stream that drives the badge drives the forwards, and
-  the webapp's `127.0.0.1:<port>` links are true whenever the app is
-  running. Loopback only: a desktop app quietly serving a developer's dev
-  servers to the local network would be a surprise.
+- **`yaac forward [workspace-id]`**, for headless machines. It polls the
+  workspace list every 3 seconds. `--port <container[:host]>` names ports
+  directly (one the server does not know, or a different local port), and
+  `--bind <address>` listens somewhere other than loopback, for remote
+  hosting (docs/remote-hosting.md) where the forwarder is not on the
+  user's machine.
+- **The desktop app**, resident in the tray. Its main process already
+  follows `/events`, whose snapshots carry the mappings, so the stream that
+  drives the badge drives the forwards and the webapp's `127.0.0.1:<port>`
+  links work whenever the app runs. It binds loopback only, never exposing
+  dev servers to the local network.
 
-Nothing is forwarded when neither is running. That is the honest state —
-the mapping exists, the listener does not — and it is visible: the link is
-there and refuses to connect, rather than answering something else.
+With neither running, nothing is forwarded: the link is shown but refuses to
+connect.
 
-Against a **containerless** server the answer depends on where the client
-is. There the mapping is the identity over ports a workspace's own
-processes have ALREADY bound on the server's machine, so a forwarder on
-that machine has nothing to add and nowhere to put a listener: every bind
-loses to the dev server holding the port — or, worse, wins against one that
-has not booted yet and takes the port out from under it. Left to discover
-this per poll it is a retry loop that can never settle, so both clients
-stop first (`serverNeedsForwarder` in `@yaac/shared`): `yaac forward`
-refuses with the reason, and the desktop's `snapshotForwards` offers
-nothing. From any OTHER machine those ports are exactly as unreachable as a
-pod's, and the tunnel is the same answer — the client binds the identity
-mapping locally and the driver's `dialPort` connects to the port on the
-server host's loopback, so the desktop preview pane's `127.0.0.1:<port>`
-is true against a remote containerless server too. Only a listener the
-sweep has surfaced can be dialled, at the address it is bound to: the
-sweep walks the workspace's own process tree, so the set is an allowlist of
-that tree's listeners with the sensitive-port denylist on top. The pod
-driver also dials a declared port with nothing listening yet (a forward
-must survive its dev server restarting), because a pod is a sandbox, while
-this host is the user's machine.
+## Containerless servers
 
-The one "is this the server's machine?" question a client has is the
-origin it resolved (`isLoopbackOrigin`), which is why an `ssh -L` tunnel
-to a remote containerless server passes as local and stays unforwarded.
-An explicit `yaac forward --bind <addr>` is exempt from the refusal and
-taken as "I know what I am binding", loopback included. The case it
-exists for is the remote-hosting recipe (docs/remote-hosting.md): on the
-server host, publishing the ports on another interface relays each
-connection to loopback, which is not the address the dev server holds.
+**On the server's machine** the workspace's processes already hold the
+ports. A forwarder would fail to bind against the dev server, or bind first
+and steal the port from it. So both clients check (`serverNeedsForwarder` in
+`@yaac/shared`): `yaac forward` refuses with the reason, and the desktop's
+`snapshotForwards` returns nothing.
+
+**On any other machine** the ports are as unreachable as a pod's, and the
+tunnel works the same way: the client binds the identity mapping, and the
+driver's `dialPort` connects to the port on the server host. So the desktop
+preview pane works against a remote containerless server too.
+
+Only a listener the containerless port sweep found can be dialled, at the
+address it is bound to. The sweep covers only the workspace's process tree,
+which acts as an allowlist, with the sensitive-port denylist on top
+(docs/containerless-driver.md "Ports"). The k8s driver also dials a declared
+port with nothing listening yet, so a forward survives a dev server restart;
+that is fine in a sandboxed pod but not on the user's own machine.
+
+A client decides whether it is on the server's machine from its resolved
+origin (`isLoopbackOrigin`), so an `ssh -L` tunnel to a remote containerless
+server counts as local and is not forwarded. An explicit `yaac forward --bind
+<addr>` skips the refusal, loopback included. It exists for the
+remote-hosting recipe (docs/remote-hosting.md): on the server host it
+publishes the ports on another interface and relays each connection to
+loopback, which is not the address the dev server holds.
