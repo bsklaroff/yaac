@@ -3,18 +3,18 @@ import type { ConfinedRoot } from '#lib/confined-fs'
 /**
  * The in-tool halves of agent reporting: what each tool is made to run so it
  * puts what it says about itself on its tmux pane, where the status watcher is
- * subscribed — the conversation it holds (`worktree-bin/yaac-agent-links`),
+ * subscribed — the conversation it holds (`workspace-bin/yaac-agent-links`),
  * the model it is running and the permission mode it is in
- * (`worktree-bin/yaac-agent-report`). claude and codex run hooks; pi and
+ * (`workspace-bin/yaac-agent-report`). claude and codex run hooks; pi and
  * opencode load code of their own. codex reports no model or mode: its model
  * is read from its title and its posture from its rollout.
  *
  * Written into the project's tool homes at create rather than staged per
- * worktree or passed on a launch command: every worktree of the project
+ * workspace or passed on a launch command: every workspace of the project
  * mounts those homes, the bytes are the same for all of them, and a tool the
  * user starts by hand in a shell reads them too — which is how a conversation
  * begun there is recorded like any other. The reporters themselves are
- * staged per worktree onto its PATH and named bare, so one form serves both
+ * staged per workspace onto its PATH and named bare, so one form serves both
  * substrates.
  *
  * Each report is best-effort — an absent script (a stripped build) is a
@@ -49,7 +49,7 @@ const sessionHook = (home: string, tool: string): string => `yaac-agent-links "$
  * the turn ends. Its stdout must stay empty: claude hands a hook's stdout to
  * the model on these events.
  *
- * Guarded, because claude hot-reloads this project-shared file: a worktree
+ * Guarded, because claude hot-reloads this project-shared file: a workspace
  * whose staged bin predates the script would otherwise show a hook error on
  * every prompt and `/model`. `exec` keeps the payload on stdin.
  */
@@ -248,7 +248,7 @@ async function mergeHooks(home: ConfinedRoot, rel: string, wanted: Hooks): Promi
 
 /**
  * Written atomically (`writeAtomic`): each of these has other readers and
- * writers — a tool starting in another worktree of the project, the user
+ * writers — a tool starting in another workspace of the project, the user
  * editing it, claude rewriting its settings when a theme changes — and a
  * plain write truncates first, so a reader landing in that window sees an
  * empty or invalid file. Our own answer to invalid JSON is "start fresh", so

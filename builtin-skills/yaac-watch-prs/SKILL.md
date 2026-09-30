@@ -3,7 +3,7 @@ name: yaac-watch-prs
 description: Watch this project's GitHub repo for PR updates — newly opened PRs, new comments, or new commits — on one PR or all of them, emitting one line per event for you to act on. Use when the user asks to watch a PR (or the repo) for comments/commits/new PRs, auto-review new PRs, or drive a follow-up when a PR changes.
 ---
 
-You are running **inside a yaac worktree**. The `yaac-watch-prs` command
+You are running **inside a yaac workspace**. The `yaac-watch-prs` command
 (already on PATH) polls this project's GitHub repo for PR updates and prints
 **one line per new event to stdout**. It takes **no action itself** — you
 decide what to do with each event. This skill is just the manual.
@@ -22,7 +22,7 @@ yaac-watch-prs [--interval <seconds>] [--pr <number>] [--events <list>] [--once]
   - `opened` — a PR was newly opened (all-PRs scope only).
   - `comment` — a new top-level PR comment, inline review comment, or review
     summary. Comments from every author surface — including your own GitHub
-    account, which the user and sibling yaac worktrees also post from, so
+    account, which the user and sibling yaac workspaces also post from, so
     same-account comments can still be work for you. That means your **own**
     replies come back as events too: recognize comments you yourself posted
     (you know what you wrote) and ignore them instead of responding.
@@ -103,10 +103,10 @@ with [`yaac-mama`](../yaac-mama/SKILL.md), whatever the task calls for.
 - Each poll runs `gh` from the top of the checkout you are standing in (repo
   inferred from its git remote, auth via this session's `GH_TOKEN`) — so it
   works both in a container, where that is `/workspace`, and on a containerless
-  worktree, whose checkout is an arbitrary host path. Point it elsewhere with
+  workspace, whose checkout is an arbitrary host path. Point it elsewhere with
   `YAAC_WATCH_PRS_WORKDIR`. `gh` is the only dependency — the JSON
   filtering goes through gh's built-in `--jq`, never a `| jq` pipe, so the
-  watcher runs on a containerless worktree whose host has no `jq` installed.
+  watcher runs on a containerless workspace whose host has no `jq` installed.
   The command fails fast if `gh` is missing. There are **no yaac-specific
   dependencies**.
 - **Seen state** persists in `$HOME/.yaac-watch-prs-seen` (override the path

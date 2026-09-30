@@ -39,14 +39,14 @@ describe('MobileScreenLayer', () => {
     render(
       <>
         <MobileScreenLayer active={false}><p>projects</p></MobileScreenLayer>
-        <MobileScreenLayer active><p>worktrees</p></MobileScreenLayer>
+        <MobileScreenLayer active><p>workspaces</p></MobileScreenLayer>
         <MobileScreenLayer active={false}><p>pane</p></MobileScreenLayer>
       </>,
     )
     // All three are in the tree — the pane's terminals must never be
     // unmounted just because another screen is showing.
     expect(screen.getByText('projects')).toBeTruthy()
-    expect(screen.getByText('worktrees')).toBeTruthy()
+    expect(screen.getByText('workspaces')).toBeTruthy()
     expect(screen.getByText('pane')).toBeTruthy()
   })
 
@@ -88,7 +88,7 @@ describe('goBackScreen', () => {
   it('pops the history stack once there is an entry of ours to pop', () => {
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => {})
     renderHook(() => useMobileHistory(true))
-    act(() => { useUiStore.getState().selectWorktree('s1') })
+    act(() => { useUiStore.getState().selectWorkspace('s1') })
 
     goBackScreen()
     expect(back).toHaveBeenCalledOnce()
@@ -108,10 +108,10 @@ describe('goBackScreen', () => {
 
     act(() => { goBackScreen() })
     expect(back).not.toHaveBeenCalled()
-    expect(useUiStore.getState().mobileScreen).toBe('worktrees')
+    expect(useUiStore.getState().mobileScreen).toBe('workspaces')
     // And stepping up must not deepen the stack it just failed to find.
     expect(push).not.toHaveBeenCalled()
-    expect((window.history.state as { yaacScreen?: string }).yaacScreen).toBe('worktrees')
+    expect((window.history.state as { yaacScreen?: string }).yaacScreen).toBe('workspaces')
   })
 
   it('is a no-op at the root — there is nothing above the project list', () => {
@@ -137,20 +137,20 @@ describe('useMobileHistory', () => {
 
     act(() => { useUiStore.getState().setActiveProject('proj') })
     expect(push).toHaveBeenCalledOnce()
-    expect((window.history.state as { yaacScreen?: string }).yaacScreen).toBe('worktrees')
+    expect((window.history.state as { yaacScreen?: string }).yaacScreen).toBe('workspaces')
 
-    act(() => { useUiStore.getState().selectWorktree('s1') })
+    act(() => { useUiStore.getState().selectWorkspace('s1') })
     expect(push).toHaveBeenCalledTimes(2)
     expect((window.history.state as { yaacScreen?: string }).yaacScreen).toBe('pane')
   })
 
   it('applies a popstate without pushing a duplicate entry back on', () => {
     renderHook(() => useMobileHistory(true))
-    act(() => { useUiStore.getState().selectWorktree('s1') })
+    act(() => { useUiStore.getState().selectWorkspace('s1') })
 
     const push = vi.spyOn(window.history, 'pushState')
-    popTo({ yaacScreen: 'worktrees', yaacDepth: 0 })
-    expect(useUiStore.getState().mobileScreen).toBe('worktrees')
+    popTo({ yaacScreen: 'workspaces', yaacDepth: 0 })
+    expect(useUiStore.getState().mobileScreen).toBe('workspaces')
     expect(push).not.toHaveBeenCalled()
   })
 
@@ -159,7 +159,7 @@ describe('useMobileHistory', () => {
     expect((window.history.state as { yaacDepth?: number }).yaacDepth).toBe(0)
     act(() => { useUiStore.getState().setActiveProject('proj') })
     expect((window.history.state as { yaacDepth?: number }).yaacDepth).toBe(1)
-    act(() => { useUiStore.getState().selectWorktree('s1') })
+    act(() => { useUiStore.getState().selectWorkspace('s1') })
     expect((window.history.state as { yaacDepth?: number }).yaacDepth).toBe(2)
   })
 
@@ -167,13 +167,13 @@ describe('useMobileHistory', () => {
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => {})
     renderHook(() => useMobileHistory(true))
     act(() => { useUiStore.getState().setActiveProject('proj') })
-    act(() => { useUiStore.getState().selectWorktree('s1') })
+    act(() => { useUiStore.getState().selectWorkspace('s1') })
 
-    // Back to worktrees, then forward again to the pane. A module counter
+    // Back to workspaces, then forward again to the pane. A module counter
     // decremented on every popstate would read 0 here and send the chevron
     // down the cold-load path, duplicating an entry and deadening the next
     // hardware back press.
-    popTo({ yaacScreen: 'worktrees', yaacDepth: 1 })
+    popTo({ yaacScreen: 'workspaces', yaacDepth: 1 })
     popTo({ yaacScreen: 'pane', yaacDepth: 2 })
 
     goBackScreen()
@@ -189,16 +189,16 @@ describe('useMobileHistory', () => {
     // A dead back press: the entry below happens to carry the same screen, so
     // the store write is a no-op. A "came from popstate" flag set here would
     // never be consumed, and would eat the real navigation that follows.
-    popTo({ yaacScreen: 'worktrees', yaacDepth: 0 })
+    popTo({ yaacScreen: 'workspaces', yaacDepth: 0 })
 
-    act(() => { useUiStore.getState().selectWorktree('s1') })
+    act(() => { useUiStore.getState().selectWorkspace('s1') })
     expect(push).toHaveBeenCalledOnce()
     expect(window.history.state).toMatchObject({ yaacScreen: 'pane', yaacDepth: 1 })
   })
 
   it('treats an entry with no screen — one from before the app — as the root', () => {
     renderHook(() => useMobileHistory(true))
-    act(() => { useUiStore.getState().selectWorktree('s1') })
+    act(() => { useUiStore.getState().selectWorkspace('s1') })
     act(() => {
       window.history.replaceState(null, '', '/')
       window.dispatchEvent(new PopStateEvent('popstate', { state: null }))
@@ -211,7 +211,7 @@ describe('useMobileHistory', () => {
   it('stamps nothing while disabled — the desktop layout has no screens', () => {
     const push = vi.spyOn(window.history, 'pushState')
     renderHook(() => useMobileHistory(false))
-    act(() => { useUiStore.getState().selectWorktree('s1') })
+    act(() => { useUiStore.getState().selectWorkspace('s1') })
     expect(push).not.toHaveBeenCalled()
     // persistSelection still mirrors the selection into the URL — that is its
     // own replaceState and nothing to do with screens. What must not appear
@@ -226,6 +226,6 @@ describe('useMobileHistory', () => {
     // back navigation silently degrades to a replace.
     act(() => { useUiStore.getState().setActiveProject('proj') })
     expect(window.location.search).toContain('project=proj')
-    expect((window.history.state as { yaacScreen?: string }).yaacScreen).toBe('worktrees')
+    expect((window.history.state as { yaacScreen?: string }).yaacScreen).toBe('workspaces')
   })
 })

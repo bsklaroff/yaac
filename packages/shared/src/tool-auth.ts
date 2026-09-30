@@ -566,7 +566,7 @@ export async function writeProjectClaudePlaceholder(
 /**
  * Write the REAL Claude OAuth bundle into a project's `.credentials.json`.
  *
- * The placeholder writer above exists because a worktree's egress is
+ * The placeholder writer above exists because a workspace's egress is
  * mediated: the sentinel never leaves the pod, and the proxy swaps it for
  * this bundle on the way out. A runtime with no proxy has no such swap, so
  * the agent needs the real thing — and gets it, on disk, in a directory it
@@ -836,11 +836,11 @@ async function unlinkIgnoreMissing(filePath: string): Promise<void> {
  * Remove every tracked project's claude credential — both places one can be.
  *
  * Used by `auth clear` (the CLI and the webapp's sign-out reach the same
- * door) to make sure running worktrees don't keep using a credential the
+ * door) to make sure running workspaces don't keep using a credential the
  * user has just revoked: a placeholder the proxy will no longer swap for a
  * real token, or — under a runtime with no proxy — the real bundle itself.
  *
- * The file is only half of it on macOS. A containerless worktree runs claude
+ * The file is only half of it on macOS. A containerless workspace runs claude
  * with `CLAUDE_CONFIG_DIR` set to the project's claude dir, and claude
  * prefers the Keychain there: on its first token refresh it migrates the
  * credential into the item that dir names and deletes the file it came from.

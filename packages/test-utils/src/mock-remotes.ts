@@ -26,7 +26,7 @@ const execFileAsync = promisify(execFile)
  * namespace.
  *
  * Pairing: production traffic flows
- *   worktree pod → HTTPS_PROXY → proxy pod (MITM + inject creds)
+ *   workspace pod → HTTPS_PROXY → proxy pod (MITM + inject creds)
  *     → https.request(api.anthropic.com)
  * Test traffic flows the same path, but the proxy's upstreamRedirects map
  * swaps the final hop to `{host: mock.host, port: mock.port}` — the mock
@@ -70,7 +70,7 @@ export interface MockGit {
  * pre-built by `test/global-setup.ts` (same content-hash tag computation)
  * and pushed to the local registry; pods can only pull from the registry,
  * so a missing tag is a fail-fast setup error, never a build trigger.
- * Exported for tests that launch worktree-like probe pods directly.
+ * Exported for tests that launch workspace-like probe pods directly.
  */
 export async function resolveTestBaseImageRef(): Promise<string> {
   const dockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
@@ -406,7 +406,7 @@ export async function startMockLLM(): Promise<MockLLM> {
  *
  * NOTE: hostPath mounts assume the cluster node can see the host's temp
  * dir (kind: TMPDIR under the home extraMount, or an extra mount for
- * /tmp) — the same wiring worktree pods need for their data-dir mounts.
+ * /tmp) — the same wiring workspace pods need for their data-dir mounts.
  */
 const MOCK_GIT_SCRIPT = `
   const http = require('http');

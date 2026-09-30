@@ -498,7 +498,7 @@ export const PI_PROVIDERS: readonly ToolProviderInfo[] = [
 
 // ── Provider host lookups (derived from the rows above) ──────────────────
 // The host each provider's api key authenticates against; the proxy swaps the
-// placeholder key only on this host for a worktree registered as that tool.
+// placeholder key only on this host for a workspace registered as that tool.
 
 export const OPENCODE_PROVIDER_HOSTS: Record<string, string> = {
   "302ai": "api.302.ai",
@@ -770,8 +770,8 @@ export const PI_PROVIDER_DEFAULT_MODELS: Record<string, string> = {
 }
 
 // ── Model catalogs: candidate --model values per provider ────────────────
-// Served to a worktree asking `yaac-mama models` so a
-// worktree can discover valid `--model` values without a network fetch; also
+// Served to a workspace asking `yaac-mama models` so a
+// workspace can discover valid `--model` values without a network fetch; also
 // available to the app (e.g. a model picker). MODELS_BY_PROVIDER is models.dev's
 // tool-calling models (claude → anthropic, codex → openai, opencode → provider),
 // newest first with dated snapshots of a listed alias dropped;

@@ -1,13 +1,13 @@
 # File editor
 
-The webapp browses and edits a worktree's files in two kinds of pane that sit
+The webapp browses and edits a workspace's files in two kinds of pane that sit
 in the ordinary layout, next to terminals and Changes:
 
-- **`files`** — the explorer, one per worktree: a tree, a filter that doubles
+- **`files`** — the explorer, one per workspace: a tree, a filter that doubles
   as quick-open, a "show ignored" toggle, git status colors, and create /
   rename / delete.
 - **`file:<path>`** — one editor pane per open file (`<path>` relative to the
-  worktree root). Because each is a plain layout leaf, side-by-side files,
+  workspace root). Because each is a plain layout leaf, side-by-side files,
   tabs, drag, Alt-W, tab cycling and persistence across reloads come from the
   layout rather than from a second tab system inside a pane.
 
@@ -18,20 +18,20 @@ filter box (quick-open) covers tabs mode and phones.
 
 ### I/O on the server's own filesystem
 
-`#domain/worktrees` (`files.ts`) reads and writes the checkout with plain
-`fs` against `worktreeDir(slug, id)`. That path is GLOBAL-tier, mounted by the
+`#domain/workspaces` (`files.ts`) reads and writes the checkout with plain
+`fs` against `workspaceDir(slug, id)`. That path is GLOBAL-tier, mounted by the
 server pod under k8s, and it is the host checkout itself under containerless,
 so there is no driver verb and no in-workspace script, and both drivers answer
-identically. Every file route resolves the worktree's **record**
-(`resolveWorktreeRecord`), so a stopped worktree's files open and save like a
-running one's — its checkout stays on disk (docs/worktree-storage.md). The
+identically. Every file route resolves the workspace's **record**
+(`resolveWorkspaceRecord`), so a stopped workspace's files open and save like a
+running one's — its checkout stays on disk (docs/workspace-storage.md). The
 listing and the git status bar are the exceptions: they need the checkout's
 git, which runs inside the workspace, so they answer only while it runs
-(`CONFLICT` otherwise, which the explorer shows as "Start the worktree to
+(`CONFLICT` otherwise, which the explorer shows as "Start the workspace to
 browse its files").
 
-Ownership needs nothing: the server already runs as the worktree's user. On
-k8s the server Deployment, every worktree pod and the proxy share
+Ownership needs nothing: the server already runs as the workspace's user. On
+k8s the server Deployment, every workspace pod and the proxy share
 `installSecurityContext()`, the install uid; macOS virtiofs writes as the host user anyway;
 under containerless they are the same process user.
 
@@ -40,14 +40,14 @@ The cost is coupling to where the checkout lives: node-local checkouts
 
 | Route | Answer |
 |---|---|
-| `GET /worktree/:id/files` | `WorktreeFiles`: `paths`, `symlinks`, `ignored`, `emptyDirs`, `status`, `truncated` |
-| `GET /worktree/:id/dir?path=` | the immediate children of one folder (capped at 5,000) |
-| `GET /worktree/:id/file?path=&known=` | `{ path, version, size, binary, content? }` |
-| `PUT /worktree/:id/file` | `{ path, content, baseVersion }` → `{ path, version, size }`, or 409 |
-| `POST /worktree/:id/folder` | creates a folder and its missing parents; 409 if taken |
-| `POST /worktree/:id/rename` | moves a file, folder or symlink; 409 if the destination exists |
-| `DELETE /worktree/:id/file?path=` | deletes a file, a link (never its target) or a folder, recursively |
-| `GET /worktree/:id/git-status?base=` | `WorktreeGitStatus`: `{ base, comparison: { ref, ahead, behind, fetchedAt? } \| null }` |
+| `GET /workspace/:id/files` | `WorkspaceFiles`: `paths`, `symlinks`, `ignored`, `emptyDirs`, `status`, `truncated` |
+| `GET /workspace/:id/dir?path=` | the immediate children of one folder (capped at 5,000) |
+| `GET /workspace/:id/file?path=&known=` | `{ path, version, size, binary, content? }` |
+| `PUT /workspace/:id/file` | `{ path, content, baseVersion }` → `{ path, version, size }`, or 409 |
+| `POST /workspace/:id/folder` | creates a folder and its missing parents; 409 if taken |
+| `POST /workspace/:id/rename` | moves a file, folder or symlink; 409 if the destination exists |
+| `DELETE /workspace/:id/file?path=` | deletes a file, a link (never its target) or a folder, recursively |
+| `GET /workspace/:id/git-status?base=` | `WorkspaceGitStatus`: `{ base, comparison: { ref, ahead, behind, fetchedAt? } \| null }` |
 
 ### Listing
 
@@ -78,16 +78,16 @@ empty checkout:
 
 The listing is capped at 50,000 paths (`truncated`). git reports a symlink as
 one entry, so each path is `lstat`ed and links answer `{ target, dir }`, the
-target relative to the worktree or null when broken or outside.
+target relative to the workspace or null when broken or outside.
 
 ### Git status bar
 
-The strip above a worktree's panes (`GitStatusBar`) names its reference
+The strip above a workspace's panes (`GitStatusBar`) names its reference
 branch and how many commits HEAD is ahead of and behind it:
 `checkoutAheadBehind` runs `rev-list --left-right --count <base>...HEAD`
 inside the running workspace, so HEAD follows the agent across a branch
 rename. The base is the Changes pane's pick, else the fork branch the
-worktree's row records (`worktreeForkBranch`), tried as `origin/<base>` and
+workspace's row records (`workspaceForkBranch`), tried as `origin/<base>` and
 then the local branch, as the Changes diff does. It reads refs only and never
 fetches, so `behind` is as fresh as the checkout's `origin/*` — which the
 server keeps within minutes of origin (docs/server-git.md) — and the bar says
@@ -106,14 +106,14 @@ goes through the checkout opened as a confined root (`#lib/confined-fs`,
 policy `inside`, `.git` excluded) — the same helper the server uses for the
 tool homes and conversation records a pod can write. Links are
 followed — file links, linked folders along the way, chains — as long as
-where they finally land is inside the worktree (its `.git` counts as
+where they finally land is inside the workspace (its `.git` counts as
 outside), and that is checked on **what was opened**, not on a string:
 
 1. **Lexically**: non-empty, relative, no NUL, no `..` once normalized, not
    under `.git` (a write there is how a hook gets planted).
 2. **Open, then verify the descriptor**: `readlink('/proc/self/fd/<fd>')` must
-   be `realpath(worktreeDir)` or under it; otherwise 400 "points outside the
-   worktree". All I/O then goes through that descriptor, so no second lookup
+   be `realpath(workspaceDir)` or under it; otherwise 400 "points outside the
+   workspace". All I/O then goes through that descriptor, so no second lookup
    can be raced. Opens are non-blocking so a planted FIFO cannot hang one.
 3. **Walks pin each directory**: create, mkdir, rename and delete resolve a
    path's parent one segment at a time, opening each through the previous
@@ -144,7 +144,7 @@ the first 8,000 bytes, or invalid UTF-8 — the rule `#lib/text-file` shares
 with the build-files editor) or one over 1 MiB, and omits `content` when the
 caller's `known` version is still current.
 
-A save names the version it was made against. Under a per-worktree mutex the
+A save names the version it was made against. Under a per-workspace mutex the
 server re-reads and re-hashes the file through the descriptor it will write,
 and refuses a mismatch with 409 `{ version }` — the one error body carrying
 more than a code, because the editor saves against it next. It then truncates
@@ -171,7 +171,7 @@ holding one, else a new column right of the explorer, else at the end).
 `renameTargets` in `#lib/layout` moves every `file:` target under a renamed
 path.
 
-### Explorer (`WorktreeFiles`)
+### Explorer (`WorkspaceFiles`)
 
 Ephemeral like Changes: torn down off-screen, so a hidden explorer runs no
 listing; while visible it refetches every 5 seconds. Its view state
@@ -203,7 +203,7 @@ listing; while visible it refetches every 5 seconds. Its view state
   confirms (counting a folder's files, noting a link is removed alone,
   listing unsaved panes), and closes those panes.
 
-### Editor pane (`WorktreeFile`)
+### Editor pane (`WorkspaceFile`)
 
 CodeMirror through `ui/CodeEditor`, with the language from the one table in
 `#lib/highlight` (`languageForPath` → `editorLanguage`, which the diff view

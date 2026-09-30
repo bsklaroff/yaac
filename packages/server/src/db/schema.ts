@@ -17,7 +17,7 @@ import { boolean, index, integer, jsonb, primaryKey, snakeCase, text, timestamp,
  * `@yaac/*` imports (drizzle-orm/pg-core + relative paths only).
  */
 
-/** Single-value user preferences, keyed by name (the git identity worktrees
+/** Single-value user preferences, keyed by name (the git identity workspaces
  *  commit under). */
 export const preferences = snakeCase.table('preferences', {
   key: text().primaryKey(),
@@ -39,7 +39,7 @@ export const shortcutOverrides = snakeCase.table('shortcut_overrides', {
  * Every project yaac has cloned, one row per slug.
  *
  * The clone itself, its config and its tool homes are bytes on the substrate
- * that runs worktrees, and none of them can be reproduced from here. What is
+ * that runs workspaces, and none of them can be reproduced from here. What is
  * here is the ANSWER to "which projects exist" — so the server can list them,
  * refuse a duplicate add, and 404 an unknown slug without asking anything
  * that might be unreachable (docs/layered-server.md).
@@ -80,7 +80,7 @@ export const projects = snakeCase.table('projects', {
    * The git credential this project's git authenticates with — one per
    * project, while a credential may serve many (docs/git-credentials.md).
    * Null until one is assigned, and a project without one cannot create
-   * worktrees. Deleting a credential clears it (and the host key) first;
+   * workspaces. Deleting a credential clears it (and the host key) first;
    * the foreign key is the backstop against a delete that did not.
    */
   gitCredentialId: uuid().references(() => gitCredentials.id, { onDelete: 'restrict' }),
@@ -98,7 +98,7 @@ export const projects = snakeCase.table('projects', {
  * permission posture and UI mode that agent was last created with in this
  * project, so picking them once is enough. Written by the create route from
  * whatever the request named, and read back as the next create's defaults
- * (`resolveCreate` in #domain/worktrees).
+ * (`resolveCreate` in #domain/workspaces).
  *
  * Per agent because the three are about the agent — a model id means nothing
  * to another tool, and a posture one tool has another may lack. Per project
@@ -116,47 +116,47 @@ export const projectToolDefaults = snakeCase.table('project_tool_defaults', {
 }, (t) => [uniqueIndex().on(t.projectSlug, t.tool)])
 
 /**
- * Every worktree yaac has ever created, one row per (project, worktree id).
+ * Every workspace yaac has ever created, one row per (project, workspace id).
  * This is the spine: the cluster stays authoritative for "is it running",
  * and this table for "did it exist, and what is it". A row is inserted by
- * worktree create — including when it warms a prewarmed spare, which gets a
+ * workspace create — including when it warms a prewarmed spare, which gets a
  * `spare` row the claim later clears — and never deleted by a stop: a
- * `stoppedAt` row IS the stopped-worktree listing, and a restart clears the
- * column again because worktree ids are reused verbatim.
+ * `stoppedAt` row IS the stopped-workspace listing, and a restart clears the
+ * column again because workspace ids are reused verbatim.
  *
  * A row is 1-1 with a checkout, which is why stopping keeps it: teardown
- * never removes `worktreeDir`, so a stopped row is a checkout still on disk,
+ * never removes `workspaceDir`, so a stopped row is a checkout still on disk,
  * diff and all, waiting to be restarted.
  *
  * Neither the tool nor the founding ask lives here: both are read off the
- * worktree's *first* agent session, which is the thing that actually has
+ * workspace's *first* agent session, which is the thing that actually has
  * them. That is also what makes them survive a `/clear` — the new
  * conversation is a second row, so the first one's opening message stays the
- * worktree's label. Session create records that first conversation with this
- * row, so a worktree always has one. `deathReason` / `deathDetail` are set only when
- * the stale reaper — not the user — tore the worktree down, so a reused id
+ * workspace's label. Session create records that first conversation with this
+ * row, so a workspace always has one. `deathReason` / `deathDetail` are set only when
+ * the stale reaper — not the user — tore the workspace down, so a reused id
  * can't inherit a stale cause; `deathSeen` tracks whether the user has viewed
- * that detail (the "Stopped worktrees" notification dot), durable across
+ * that detail (the "Stopped workspaces" notification dot), durable across
  * devices and daemon restarts. The death columns keep their name against
  * `stoppedAt` on purpose: every stop stamps the latter, only an abnormal one
  * stamps the former.
  */
-export const worktrees = snakeCase.table('worktrees', {
+export const workspaces = snakeCase.table('workspaces', {
   projectSlug: text().notNull(),
   /** Unique across projects, not just within one: provisioning, the runtime
    *  registries, the proxy registration and the relay identity are all keyed
-   *  on the id alone, so a second row carrying it would hand one worktree's
+   *  on the id alone, so a second row carrying it would hand one workspace's
    *  pod another's egress rules and traffic. */
-  worktreeId: text().primaryKey(),
-  /** When the worktree was handed to someone — the insert for a cold
-   *  create, the claim for a prewarmed spare (`claimSpareWorktree`). */
+  workspaceId: text().primaryKey(),
+  /** When the workspace was handed to someone — the insert for a cold
+   *  create, the claim for a prewarmed spare (`claimSpareWorkspace`). */
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   /** Display title — user-assigned or model-generated. */
   title: text(),
-  /** Branch the worktree forked from (no `origin/` prefix). */
+  /** Branch the workspace forked from (no `origin/` prefix). */
   baseBranch: text(),
-  /** The sidebar group this worktree is filed under; null is the default
-   *  list. Belongs to the worktree, not to one of its lives, so it survives
+  /** The sidebar group this workspace is filed under; null is the default
+   *  list. Belongs to the workspace, not to one of its lives, so it survives
    *  a stop and a restart. */
   groupId: text(),
   stoppedAt: timestamp({ withTimezone: true }),
@@ -165,35 +165,35 @@ export const worktrees = snakeCase.table('worktrees', {
   deathSeen: boolean().notNull().default(false),
   /**
    * An unclaimed prewarmed spare: a checkout, a branch and a pod, but not a
-   * worktree — nobody has been handed it. Every listing filters these out,
+   * workspace — nobody has been handed it. Every listing filters these out,
    * and the reaper's desired set excludes them, so a spare is invisible to
    * the user exactly as it was when it had no row at all. The claim clears
-   * the flag, which is the moment the pod becomes someone's worktree.
+   * the flag, which is the moment the pod becomes someone's workspace.
    *
    * Worth a column rather than an absent row because the startup sweep has
    * to be able to answer "was this a spare?" once its pod is already gone —
    * that is what tells an orphaned spare (delete the checkout) from a
-   * stopped worktree (keep it, diff and all).
+   * stopped workspace (keep it, diff and all).
    */
   spare: boolean().notNull().default(false),
   /**
-   * When the pod currently hosting this worktree came up. Null when nothing
+   * When the pod currently hosting this workspace came up. Null when nothing
    * is hosting it. A **life** is one pod, and it is the boundary that
-   * invalidates handles: `recordWorktreeLife` stamps this and NULLs every
-   * `worktree_agent_sessions.paneId` in the same transaction, because tmux
+   * invalidates handles: `recordWorkspaceLife` stamps this and NULLs every
+   * `workspace_agent_sessions.paneId` in the same transaction, because tmux
    * pane ids restart at `%0` in a new pod and last life's handle would
    * otherwise name this life's pane.
    */
   lifeStartedAt: timestamp({ withTimezone: true }),
   /**
-   * The permission posture this worktree's agents run in — a
+   * The permission posture this workspace's agents run in — a
    * `PermissionMode`, spelled per tool at launch (claude's
    * `--permission-mode`, codex's approval/sandbox pair, opencode's permission
    * config; pi has none and is always `bypass`). Set at create or claim, then
    * overwritten by each move the running agent reports, up or down
    * (docs/permission-modes.md, "Following the agent").
    *
-   * Durable rather than a launch-time decision because a worktree outlives
+   * Durable rather than a launch-time decision because a workspace outlives
    * the request that made it: a restart relaunches its agents in the posture
    * they were last in, rather than re-deriving one from whatever the default
    * is now.
@@ -215,14 +215,14 @@ export const worktrees = snakeCase.table('worktrees', {
   model: text(),
   mode: text(),
   /**
-   * SHA-256 of the bearer this worktree's `yaac-mama` presents, when its
+   * SHA-256 of the bearer this workspace's `yaac-mama` presents, when its
    * runtime reaches the server directly (containerless). Null where the
    * substrate attributes a caller itself — a pod is identified by its source
    * IP at the proxy and never holds one of these.
    *
    * Durable, and NOT re-minted on server restart: the token was handed to a
    * tmux server that outlives this process, so re-minting would silently
-   * break `yaac-mama` in every worktree that was already running. A worktree
+   * break `yaac-mama` in every workspace that was already running. A workspace
    * *restart* is a new tmux server and does take a fresh one.
    *
    * The hash rather than the token, so the value the agent holds is not also
@@ -233,38 +233,38 @@ export const worktrees = snakeCase.table('worktrees', {
 
 /**
  * A named sidebar group, one row per (project, group id). Purely how a user
- * has chosen to file their worktrees: the sidebar lists ungrouped worktrees
+ * has chosen to file their workspaces: the sidebar lists ungrouped workspaces
  * first and then one section per group, both in `createdAt` order, and
- * `worktrees.groupId` is the membership.
+ * `workspaces.groupId` is the membership.
  *
- * A group is shown when it is pinned or holds at least one live worktree, so
- * the row outlives its members: an unpinned group whose worktrees have all
+ * A group is shown when it is pinned or holds at least one live workspace, so
+ * the row outlives its members: an unpinned group whose workspaces have all
  * stopped is hidden, not deleted, and restarting one of them brings it back
  * exactly as it was. `pinned` is what keeps a fully-stopped group on screen —
  * a place to restart into rather than a section that vanishes with its last
- * worktree.
+ * workspace.
  *
- * No foreign key to `projects` or from `worktrees.groupId`, matching every
+ * No foreign key to `projects` or from `workspaces.groupId`, matching every
  * other table here; the group store owns the integrity (a move validates the
  * target group, a delete releases its members, project teardown removes the
  * rows).
  */
-export const worktreeGroups = snakeCase.table('worktree_groups', {
+export const workspaceGroups = snakeCase.table('workspace_groups', {
   projectSlug: text().notNull(),
   groupId: text().notNull(),
   name: text().notNull(),
-  /** Keep the group listed even with no live worktree in it. */
+  /** Keep the group listed even with no live workspace in it. */
   pinned: boolean().notNull().default(false),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 }, (t) => [primaryKey({ columns: [t.projectSlug, t.groupId] })])
 
 /**
  * One row per agent conversation — a claude/codex/pi/opencode session, keyed
- * by the *tool's own* id rather than yaac's. Distinct from a worktree because
+ * by the *tool's own* id rather than yaac's. Distinct from a workspace because
  * a user creates these constantly: every `/clear`, `/resume` and `/compact`,
  * and every `claude` started in a second terminal, is a new one.
  *
- * Project-scoped, not worktree-scoped, because the tool homes yaac mounts
+ * Project-scoped, not workspace-scoped, because the tool homes yaac mounts
  * (`claudeDir`, `piDir`, `codexDir`) are per project and shared by all its
  * sessions — any session of a project can resume any of its conversations,
  * which is exactly why the link below is many-to-many.
@@ -294,7 +294,7 @@ export const agentSessions = snakeCase.table('agent_sessions', {
    *  `toProjectRelative`). Null when the tool leaves no transcript, or
    *  when the path has no home-relative form. */
   transcriptPath: text(),
-  /** This conversation's own first user message (the worktree keeps the
+  /** This conversation's own first user message (the workspace keeps the
    *  founding one separately — they differ after a `/clear`). */
   firstPrompt: text(),
   /** Transcript mtime at the last reconcile; the stopped listing's
@@ -309,26 +309,26 @@ export const agentSessions = snakeCase.table('agent_sessions', {
    * model is not a fact about its birth: `/model` mid-session changes it, and
    * the row is meant to say what the agent is running *now*. Seeded from the
    * launch; null only for a conversation launched without a model that has
-   * not reported one (see docs/worktree-storage.md for when each tool does).
+   * not reported one (see docs/workspace-storage.md for when each tool does).
    */
   model: text(),
 }, (t) => [primaryKey({ columns: [t.projectSlug, t.tool, t.agentSessionId] })])
 
 /**
- * Which agent sessions belong to which worktree. Many-to-many: a worktree
+ * Which agent sessions belong to which workspace. Many-to-many: a workspace
  * accumulates conversations over its life, and one conversation can be
- * resumed into a second worktree.
+ * resumed into a second workspace.
  *
- * `active` means *this conversation had a live agent process in this worktree
- * the last time the worktree was observed running*. The registry maintains it
+ * `active` means *this conversation had a live agent process in this workspace
+ * the last time the workspace was observed running*. The registry maintains it
  * from the live pane set while the pod runs, and teardown deliberately leaves
  * it alone — that freeze is what a restart reads back to decide what to bring
  * up again. `ordinal` orders that restore (0 is the primary agent window, the
  * one that keeps the `yaac:<tool>` name); `paneId` is where it was last seen.
  */
-export const worktreeAgentSessions = snakeCase.table('worktree_agent_sessions', {
+export const workspaceAgentSessions = snakeCase.table('workspace_agent_sessions', {
   projectSlug: text().notNull(),
-  worktreeId: text().notNull(),
+  workspaceId: text().notNull(),
   tool: text().notNull(),
   agentSessionId: text().notNull(),
   active: boolean().notNull().default(true),
@@ -337,11 +337,11 @@ export const worktreeAgentSessions = snakeCase.table('worktree_agent_sessions', 
   firstSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   lastSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 }, (t) => [primaryKey({
-  columns: [t.projectSlug, t.worktreeId, t.tool, t.agentSessionId],
+  columns: [t.projectSlug, t.workspaceId, t.tool, t.agentSessionId],
 })])
 
 /**
- * A project's environment: the variables every worktree of it launches with,
+ * A project's environment: the variables every workspace of it launches with,
  * and the secrets the egress proxy injects on its behalf.
  *
  * Rows rather than config keys because a value has to arrive over the same
@@ -408,20 +408,20 @@ export const gitCredentials = snakeCase.table('git_credentials', {
 }, (t) => [uniqueIndex().on(t.name)])
 
 /**
- * A worktree create request saved to run when its parent stops naturally
- * (docs/queued-worktrees.md). Not a worktree: no `worktrees` row, checkout
+ * A workspace create request saved to run when its parent stops naturally
+ * (docs/queued-workspaces.md). Not a workspace: no `workspaces` row, checkout
  * or runtime exists until it launches. A launch that succeeds keeps the
- * entry as a record, pointed at the worktree it became, and every read
+ * entry as a record, pointed at the workspace it became, and every read
  * leaves it out. Every setting is stored concrete, so what the sidebar shows
  * is what will run.
  */
-export const queuedWorktrees = snakeCase.table('queued_worktrees', {
+export const queuedWorkspaces = snakeCase.table('queued_workspaces', {
   id: uuid().primaryKey().defaultRandom(),
   projectSlug: text().notNull(),
-  /** Exactly one of these two is set: the worktree this entry waits on, or
+  /** Exactly one of these two is set: the workspace this entry waits on, or
    *  the entry it is chained after. Claiming the parent entry's launch
-   *  re-points its children at the launching worktree. */
-  parentWorktreeId: text(),
+   *  re-points its children at the launching workspace. */
+  parentWorkspaceId: text(),
   parentQueuedId: uuid(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   prompt: text().notNull(),
@@ -432,11 +432,11 @@ export const queuedWorktrees = snakeCase.table('queued_worktrees', {
   /** The reference branch to fork from (no `origin/` prefix); fetched fresh
    *  from origin at launch, so the child starts from its latest tip. */
   branch: text().notNull(),
-  /** The user's title for the worktree it launches; set, it outranks
+  /** The user's title for the workspace it launches; set, it outranks
    *  `generatedTitle`. */
   title: text(),
   /** Model-generated from the prompt; cleared when the prompt changes.
-   *  Without a user title, the worktree it launches carries this one. */
+   *  Without a user title, the workspace it launches carries this one. */
   generatedTitle: text(),
   /** The sidebar group it launches into; null is the default list. Chosen
    *  when it is queued (its parent's group unless named), and cleared when
@@ -444,28 +444,28 @@ export const queuedWorktrees = snakeCase.table('queued_worktrees', {
   groupId: text(),
   /** Set by a natural parent stop or Run now; the launcher's work list. */
   releasedAt: timestamp({ withTimezone: true }),
-  /** The worktree id this entry's in-flight launch is creating. Set by a
+  /** The workspace id this entry's in-flight launch is creating. Set by a
    *  compare-and-set before anything is provisioned; it is the claim. */
-  launchWorktreeId: text(),
+  launchWorkspaceId: text(),
   /** Why the last launch failed; cleared by the next release. */
   launchError: text(),
-  /** The worktree a successful launch created. Set, the entry is history:
+  /** The workspace a successful launch created. Set, the entry is history:
    *  it keeps its claim, so no edit reaches it, and no read returns it. It
-   *  goes with that worktree's row. */
-  launchedWorktreeId: text().references(() => worktrees.worktreeId, { onDelete: 'cascade' }),
+   *  goes with that workspace's row. */
+  launchedWorkspaceId: text().references(() => workspaces.workspaceId, { onDelete: 'cascade' }),
 }, (t) => [
-  index().on(t.projectSlug, t.parentWorktreeId),
+  index().on(t.projectSlug, t.parentWorkspaceId),
   index().on(t.parentQueuedId),
 ])
 
 /**
- * A worktree create the user closed the create dialog on without running,
- * and chose to keep (docs/draft-worktrees.md). Pure intent, like groups: no
- * worktree, checkout or runtime exists for it, and creating from it deletes
+ * A workspace create the user closed the create dialog on without running,
+ * and chose to keep (docs/draft-workspaces.md). Pure intent, like groups: no
+ * workspace, checkout or runtime exists for it, and creating from it deletes
  * it. It holds the dialog's settings as the dialog showed them, so reopening
  * it puts back what was on screen.
  */
-export const draftWorktrees = snakeCase.table('draft_worktrees', {
+export const draftWorkspaces = snakeCase.table('draft_workspaces', {
   id: uuid().primaryKey().defaultRandom(),
   projectSlug: text().notNull(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
@@ -483,7 +483,7 @@ export const draftWorktrees = snakeCase.table('draft_worktrees', {
    *  still loading) — reopening then takes the default, as a fresh open does. */
   model: text(),
   branch: text(),
-  /** The dialog's Start field: the worktree or queued entry it would wait
+  /** The dialog's Start field: the workspace or queued entry it would wait
    *  on, null for "Now". Not a live reference — a parent that has gone by
    *  the time the draft is reopened falls back to "Now". */
   startAfter: text(),

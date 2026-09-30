@@ -18,7 +18,7 @@ describe('pty input registry', () => {
     expect(send).not.toHaveBeenCalled()
   })
 
-  it('keeps panes of the same worktree apart', () => {
+  it('keeps panes of the same workspace apart', () => {
     const agent = vi.fn()
     const shell = vi.fn()
     const offA = registerPtyInput(paneKey('s3', 'agent'), agent)

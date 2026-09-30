@@ -6,7 +6,7 @@
  * command text is unit-testable.
  *
  * The tool-agnostic base setup (git identity, tmux server + options,
- * streamd) lives in `worktree-bin/yaac-worktree-init`, the pod's postStart
+ * streamd) lives in `workspace-bin/yaac-workspace-init`, the pod's postStart
  * hook; only the steps that need host coordination remain here.
  */
 import {
@@ -62,7 +62,7 @@ export function buildOriginRefreshExec(repoGitDir: string, paths: WorkspacePaths
  * claim time, which renames the agent window to the requested tool — an
  * init window with that name would make the tmux target ambiguous.
  * Validation lives here (called before any resource is provisioned) so a
- * bad config fails the create before a worktree or Job exists.
+ * bad config fails the create before a workspace or Job exists.
  */
 export function validateInitWindows(config: YaacConfig): InitWindow[] {
   const windows = resolveInitWindows(config)
@@ -86,11 +86,11 @@ export function validateInitWindows(config: YaacConfig): InitWindow[] {
  *
  * `agentCmds` is one entry per agent session being started, in restore
  * order: a fresh create passes one, and a restart passes whatever was live
- * when the worktree stopped. Only the first can respawn the placeholder;
+ * when the workspace stopped. Only the first can respawn the placeholder;
  * the rest open their own windows.
  *
- * Each entry carries its own tool, because a worktree's conversations need
- * not share one: a codex conversation resumed into a claude worktree must
+ * Each entry carries its own tool, because a workspace's conversations need
+ * not share one: a codex conversation resumed into a claude workspace must
  * land in a `codex-2` window, not `claude-2` — the window name is what the
  * status watcher reads to pick a tool's status grammar, so a misnamed window
  * gets classified against a title format its agent never emits.
@@ -117,10 +117,10 @@ export function buildWindowsExec(
   // group to completion before reading another client's, so the watcher's
   // listing sees all of them or none, each already naming what it resumes.
   //
-  // The placeholder window carries the worktree's tool name, so the primary
+  // The placeholder window carries the workspace's tool name, so the primary
   // agent respawns into it whatever tool it runs. A primary whose tool
   // differs is a case restart cannot currently produce (ordinal 0 is the
-  // worktree's own agent), and renaming the window would break every
+  // workspace's own agent), and renaming the window would break every
   // `yaac:<tool>` target.
   const agentCmds = [`respawn-window -k -t yaac:${tool} '${primary?.cmd ?? ''}'${named(`yaac:${tool}`, primary)}`]
   extra.forEach((spec, i) => {

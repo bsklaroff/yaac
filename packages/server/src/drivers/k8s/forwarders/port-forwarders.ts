@@ -1,7 +1,7 @@
 /**
  * Process-local registry of the forwards each workspace is offered at,
- * keyed by worktreeId. The server declares them when a worktree starts
- * (see `createWorktree`) and must drop them when the worktree is deleted
+ * keyed by workspaceId. The server declares them when a workspace starts
+ * (see `createWorkspace`) and must drop them when the workspace is deleted
  * or reaped; this module is the handoff point.
  *
  * A DECLARATION, not a listener. Nothing here binds a host port: the
@@ -16,19 +16,19 @@
  * first won and the second walked up. With nothing bound, the walk has to
  * read a ledger instead, which is what `allocated` is.
  *
- * A worktree's entry accumulates declarations: the create/restore batch
- * plus any reactive single-port appends (addWorktreeForwarder), merged so
+ * A workspace's entry accumulates declarations: the create/restore batch
+ * plus any reactive single-port appends (addWorkspaceForwarder), merged so
  * neither can drop the other. The server-restart restore pass guards with
- * hasWorktreeForwarders before provisioning, so it never double-declares.
+ * hasWorkspaceForwarders before provisioning, so it never double-declares.
  */
 
 import { k8sWorkspacePaths, podExec } from '#drivers/k8s/substrate'
-import { notifyWorktreeListChanged } from '#notify'
+import { notifyWorkspaceListChanged } from '#notify'
 import { ServerError } from '@yaac/shared/errors'
 import { buildStatusRight, setStatusRightCmd } from '#lib/status-right'
 import type { PortForwardConfig, PortMapping } from '@yaac/shared/types'
 
-/** Ceiling on live forwards per worktree — bounds a hostile flood of
+/** Ceiling on live forwards per workspace — bounds a hostile flood of
  *  forward-port actions (and keeps well under streamd's stream cap). */
 export const MAX_FORWARDS_PER_SESSION = 32
 
@@ -68,34 +68,34 @@ function allocateHostPort(startPort: number): number {
   )
 }
 
-/** Record mappings against a worktree, merging with whatever it already
+/** Record mappings against a workspace, merging with whatever it already
  *  holds — create's batch can race a reactive append from the forward-port
  *  route (the pod is Running, and its dev servers detectable, well before
  *  create returns), and dropping either side would lose a live offer. */
-function record(worktreeId: string, ports: ReadonlyArray<PortMapping>): void {
-  const entry = forwarders.get(worktreeId)
+function record(workspaceId: string, ports: ReadonlyArray<PortMapping>): void {
+  const entry = forwarders.get(workspaceId)
   if (entry) {
     entry.push(...ports.map(({ containerPort, hostPort }) => ({ containerPort, hostPort })))
   } else {
-    forwarders.set(worktreeId, ports.map(({ containerPort, hostPort }) => ({ containerPort, hostPort })))
+    forwarders.set(workspaceId, ports.map(({ containerPort, hostPort }) => ({ containerPort, hostPort })))
   }
   // This registry is what `forwardedPorts` reads, so it announces its own
   // changes. The startup restore fires this before any client connects,
   // where publishing is a no-op.
-  notifyWorktreeListChanged()
+  notifyWorkspaceListChanged()
 }
 
 /**
  * Declare the forwards a workspace's config asks for, answering the host
- * port each is offered at (see `WorktreeDriver.declareForwards`).
+ * port each is offered at (see `WorkspaceDriver.declareForwards`).
  *
  * Runs before the workspace launches, because the answer is stamped into
  * the workspace's own tmux status bar — which is also why it allocates
  * rather than merely echoing the config: two workspaces of one project
  * both asking for 3000 must not both be told 3000.
  */
-export function declareWorktreeForwards(
-  worktreeId: string,
+export function declareWorkspaceForwards(
+  workspaceId: string,
   forwards: ReadonlyArray<PortForwardConfig>,
 ): PortMapping[] {
   if (forwards.length === 0) return []
@@ -106,29 +106,29 @@ export function declareWorktreeForwards(
     const hostPort = allocateHostPort(hostPortStart)
     const mapping = { containerPort, hostPort }
     mappings.push(mapping)
-    record(worktreeId, [mapping])
+    record(workspaceId, [mapping])
   }
   return mappings
 }
 
 /**
- * Host↔container mappings a worktree is offered at, empty when none are
- * declared. Feeds the `forwardedPorts` field of worktree-list entries (and
+ * Host↔container mappings a workspace is offered at, empty when none are
+ * declared. Feeds the `forwardedPorts` field of workspace-list entries (and
  * thus the webapp snapshot and every client forwarder) — the registry is
- * the server's only record of which host ports a worktree was promised.
+ * the server's only record of which host ports a workspace was promised.
  */
-export function getWorktreePorts(worktreeId: string): PortMapping[] {
-  return forwarders.get(worktreeId) ?? []
+export function getWorkspacePorts(workspaceId: string): PortMapping[] {
+  return forwarders.get(workspaceId) ?? []
 }
 
-export function stopWorktreeForwarders(worktreeId: string): void {
-  if (!forwarders.delete(worktreeId)) return
-  // Covers stopAllWorktreeForwarders too, which runs this per worktree.
-  notifyWorktreeListChanged()
+export function stopWorkspaceForwarders(workspaceId: string): void {
+  if (!forwarders.delete(workspaceId)) return
+  // Covers stopAllWorkspaceForwarders too, which runs this per workspace.
+  notifyWorkspaceListChanged()
 }
 
-export function hasWorktreeForwarders(worktreeId: string): boolean {
-  return forwarders.has(worktreeId)
+export function hasWorkspaceForwarders(workspaceId: string): boolean {
+  return forwarders.has(workspaceId)
 }
 
 /**
@@ -137,49 +137,49 @@ export function hasWorktreeForwarders(worktreeId: string): boolean {
  * the host ports it has promised stay promised until something says
  * otherwise.
  */
-export function stopAllWorktreeForwarders(): void {
-  for (const worktreeId of [...forwarders.keys()]) {
-    stopWorktreeForwarders(worktreeId)
+export function stopAllWorkspaceForwarders(): void {
+  for (const workspaceId of [...forwarders.keys()]) {
+    stopWorkspaceForwarders(workspaceId)
   }
 }
 
-/** Restate the worktree's bar from the forwards it now holds. The restore
+/** Restate the workspace's bar from the forwards it now holds. The restore
  *  path has its own, over the contract; this one rides the driver's exec
  *  because it is already inside the driver. */
 async function refreshStatusRight(
   jobName: string,
   projectSlug: string,
-  worktreeId: string,
+  workspaceId: string,
 ): Promise<void> {
   await podExec(
     jobName,
     setStatusRightCmd(
-      buildStatusRight(projectSlug, worktreeId, getWorktreePorts(worktreeId)),
+      buildStatusRight(projectSlug, workspaceId, getWorkspacePorts(workspaceId)),
       k8sWorkspacePaths().tmuxSock,
     ),
   )
 }
 
 /**
- * Offer ONE additional container port on a running worktree — the reactive
+ * Offer ONE additional container port on a running workspace — the reactive
  * path behind the webapp's "forward this port" action, appended to
- * whatever the worktree already holds (creating its registry entry when it
+ * whatever the workspace already holds (creating its registry entry when it
  * has none). Allocates a host port starting at the container port itself
  * and refreshes tmux status-right so the bar matches the live set.
  * Idempotent per container port.
  */
-export async function addWorktreeForwarder(
+export async function addWorkspaceForwarder(
   projectSlug: string,
-  worktreeId: string,
+  workspaceId: string,
   jobName: string,
   containerPort: number,
 ): Promise<PortMapping> {
-  const existing = getWorktreePorts(worktreeId).find((p) => p.containerPort === containerPort)
+  const existing = getWorkspacePorts(workspaceId).find((p) => p.containerPort === containerPort)
   if (existing) return existing
-  if (getWorktreePorts(worktreeId).length >= MAX_FORWARDS_PER_SESSION) {
+  if (getWorkspacePorts(workspaceId).length >= MAX_FORWARDS_PER_SESSION) {
     throw new ServerError(
       'CONFLICT',
-      `session ${worktreeId.slice(0, 8)} already holds ${MAX_FORWARDS_PER_SESSION} forwarded ports`,
+      `session ${workspaceId.slice(0, 8)} already holds ${MAX_FORWARDS_PER_SESSION} forwarded ports`,
     )
   }
 
@@ -188,10 +188,10 @@ export async function addWorktreeForwarder(
   // same host port — the race the bound-socket version had to unwind
   // afterwards simply cannot start.
   const mapping = { containerPort, hostPort: allocateHostPort(containerPort) }
-  record(worktreeId, [mapping])
+  record(workspaceId, [mapping])
 
   // Cosmetic — a failed status-right refresh must not undo a live offer.
-  await refreshStatusRight(jobName, projectSlug, worktreeId)
+  await refreshStatusRight(jobName, projectSlug, workspaceId)
     .catch(() => { /* cosmetic */ })
 
   return mapping

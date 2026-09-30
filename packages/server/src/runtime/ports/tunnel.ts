@@ -1,4 +1,4 @@
-import { worktreeDriver } from '#drivers/driver'
+import { workspaceDriver } from '#drivers/driver'
 import { serverLog } from '#log'
 import type { Duplex } from 'node:stream'
 
@@ -72,7 +72,7 @@ export function attachPortTunnel(
     else pending.push(chunk)
   })
 
-  worktreeDriver().dialPort(workspaceId, containerPort).then(
+  workspaceDriver().dialPort(workspaceId, containerPort).then(
     (dialed) => {
       if (closed) {
         // Listener first: an unhandled 'error' on a destroyed stream is an

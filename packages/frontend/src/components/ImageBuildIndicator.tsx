@@ -5,7 +5,7 @@ import { useSnapshot } from '#lib/useSnapshot'
 
 /**
  * Sidebar-header pill shown while the server builds or pushes container images
- * (worktree create or the background prewarm sweep), when a build failed, or
+ * (workspace create or the background prewarm sweep), when a build failed, or
  * when finished builds remain in the history. Clicking opens the
  * fullscreen overlay with per-build status and the live podman log tail.
  * Finished rows persist until dismissed, so the pill stays (in a muted

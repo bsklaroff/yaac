@@ -6,7 +6,7 @@ export interface ConfigGitIdentityOptions {
 }
 
 /**
- * `yaac config git-identity`: print the git identity the server's worktrees
+ * `yaac config git-identity`: print the git identity the server's workspaces
  * commit under, or set it with `--name` and `--email`.
  *
  * It is a server setting, so this edits the server's answer, never this

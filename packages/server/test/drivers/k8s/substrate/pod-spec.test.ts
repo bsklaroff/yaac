@@ -34,7 +34,7 @@ function params(overrides: Partial<PodJobParams> = {}): PodJobParams {
     namespace: 'test-ns',
     labels: {
       'yaac.project': 'demo',
-      'yaac.worktree-id': 'abcd',
+      'yaac.workspace-id': 'abcd',
       'yaac.data-dir-hash': 'ddh',
       'yaac.tool': 'claude',
     },
@@ -178,7 +178,7 @@ describe('buildPodJobManifest', () => {
 
   it('configures the session container: image, pull policy, workdir, requests/limits', () => {
     const c = build().spec.template.spec.containers[0]
-    expect(c.name).toBe('worktree')
+    expect(c.name).toBe('workspace')
     expect(c.image).toBe('localhost:5000/yaac-tools:abc')
     expect(c.imagePullPolicy).toBe('IfNotPresent')
     expect(c.workingDir).toBe('/workspace')
@@ -205,7 +205,7 @@ describe('buildPodJobManifest', () => {
   it('puts session pods on the low-priority tier', () => {
     // Infra (proxy, registries, builders) outranks this, so a full node
     // sheds a session rather than the network every session depends on.
-    expect(build().spec.template.spec.priorityClassName).toBe('yaac-worktree')
+    expect(build().spec.template.spec.priorityClassName).toBe('yaac-workspace')
   })
 
   it('parses env entries, preserving equals signs inside values', () => {
@@ -305,20 +305,20 @@ describe('buildPodJobManifest', () => {
   })
 
   it('wires postStartExec as the session container postStart hook', () => {
-    const c = build({ postStartExec: ['/usr/local/bin/yaac-worktree-init'] })
+    const c = build({ postStartExec: ['/usr/local/bin/yaac-workspace-init'] })
       .spec.template.spec.containers[0]
     expect(c.lifecycle).toEqual({
-      postStart: { exec: { command: ['/usr/local/bin/yaac-worktree-init'] } },
+      postStart: { exec: { command: ['/usr/local/bin/yaac-workspace-init'] } },
     })
   })
 
   it('wires preStopExec as the preStop hook, beside or without postStart', () => {
     const both = build({
-      postStartExec: ['/usr/local/bin/yaac-worktree-init'],
+      postStartExec: ['/usr/local/bin/yaac-workspace-init'],
       preStopExec: ['/usr/local/bin/yaac-opencode-checkpoint', 'stop'],
     }).spec.template.spec.containers[0]
     expect(both.lifecycle).toEqual({
-      postStart: { exec: { command: ['/usr/local/bin/yaac-worktree-init'] } },
+      postStart: { exec: { command: ['/usr/local/bin/yaac-workspace-init'] } },
       preStop: { exec: { command: ['/usr/local/bin/yaac-opencode-checkpoint', 'stop'] } },
     })
     const only = build({ preStopExec: ['x'] }).spec.template.spec.containers[0]
@@ -351,11 +351,11 @@ describe('buildPodJobManifest', () => {
       '/node/projects/demo/.cached-packages',
       '/node/projects/demo/opencode-data/abcd',
     ])
-    // Chowned to the identity the worktree container runs as — hostPath
+    // Chowned to the identity the workspace container runs as — hostPath
     // ignores fsGroup, and DirectoryOrCreate leaves them root-owned. The
     // chown is unconditional: kubelet has already created the leaf by the
     // time the init container runs, so a chown gated on the mkdir would
-    // never reach the one directory the worktree writes to.
+    // never reach the one directory the workspace writes to.
     const { runAsUser, runAsGroup } = installSecurityContext()
     expect(init.command?.[2]).toContain('[ -d "$p" ] || mkdir "$p"')
     expect(init.command?.[2]).toContain(`\n    chown ${String(runAsUser)}:${String(runAsGroup)} "$p"`)

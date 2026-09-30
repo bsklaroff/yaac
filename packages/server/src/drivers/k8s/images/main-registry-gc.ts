@@ -368,7 +368,7 @@ async function readInUse(): Promise<Set<string>> {
 
 /**
  * Read the live set. The chains are the prewarm sweep's view of what each
- * project wants warm: a project with no running worktree still has a
+ * project wants warm: a project with no running workspace still has a
  * current image, and retiring it would cost a rebuild on the next create —
  * in a builder pod, for the untrusted layers.
  *

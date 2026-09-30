@@ -1,11 +1,11 @@
 /*
- * Verifies that restarting a worktree leaves its "Restarting worktree" row
- * INSIDE the sidebar group the worktree is filed under, rather than lifting it
+ * Verifies that restarting a workspace leaves its "Restarting workspace" row
+ * INSIDE the sidebar group the workspace is filed under, rather than lifting it
  * to the top of the sidebar for the duration of the restart.
  *
- * A worktree is out of the snapshot while its container is recreated, so that
+ * A workspace is out of the snapshot while its container is recreated, so that
  * placeholder is the only thing standing in for it — and where it stands is
- * where the reader takes the worktree to be.
+ * where the reader takes the workspace to be.
  *
  * Two passes, because the row has two authors and only the second one can be
  * checked in jsdom:
@@ -25,9 +25,9 @@
  *
  * Needs a running `yaac server` built from the source under test (`pnpm build`
  * + `yaac server restart`), and a project with a sidebar group holding TWO
- * worktrees, so the section keeps a live member while the other restarts:
+ * workspaces, so the section keeps a live member while the other restarts:
  *
- *   yaac worktree create <project> --group Reviews    # twice
+ *   yaac workspace create <project> --group Reviews    # twice
  *
  * The script stops and restarts the older member itself; it leaves it running.
  *
@@ -108,7 +108,7 @@ function sidebarShape(groupName) {
   return {
     section: section ? rows(section) : null,
     all: list ? rows(list) : null,
-    restartingInSection: section ? rows(section).some((t) => t.startsWith('Restarting worktree')) : false,
+    restartingInSection: section ? rows(section).some((t) => t.startsWith('Restarting workspace')) : false,
   }
 }
 
@@ -129,7 +129,7 @@ async function sampleWhileRestarting(page, label) {
   const samples = []
   for (;;) {
     const shape = await page.evaluate(sidebarShape, GROUP)
-    if ((shape.all ?? []).some((t) => t.startsWith('Restarting worktree'))) {
+    if ((shape.all ?? []).some((t) => t.startsWith('Restarting workspace'))) {
       if (samples.length === 0) {
         fs.mkdirSync(SHOTS, { recursive: true })
         await page.screenshot({ path: path.join(SHOTS, `restart-group-${label}.png`) })
@@ -154,7 +154,7 @@ function report(label, samples) {
   const strayed = samples.filter((s) => !s.restartingInSection)
   check(`${label}: the restarting row is in the group section, every frame`,
     strayed.length === 0, `${strayed.length}/${samples.length} frames outside`)
-  const jumped = samples.filter((s) => (s.all ?? [])[0]?.startsWith('Restarting worktree'))
+  const jumped = samples.filter((s) => (s.all ?? [])[0]?.startsWith('Restarting workspace'))
   check(`${label}: it never reaches the top of the sidebar`,
     jumped.length === 0, `${jumped.length}/${samples.length} frames on top`)
   // Rows, not the section's own header — which is a `.group.relative` too, and
@@ -164,14 +164,14 @@ function report(label, samples) {
     samples.every((s) => rowsOf(s).length >= 2), JSON.stringify(rowsOf(samples[0])))
 }
 
-const { groups } = await get(`/api/worktree/group/list?project=${PROJECT}`)
+const { groups } = await get(`/api/workspace/group/list?project=${PROJECT}`)
 const group = groups.find((g) => g.name === GROUP)
 if (!group) throw new Error(`project ${PROJECT} has no group named ${GROUP} — see the header comment`)
-const { worktrees } = await get(`/api/worktree/list?project=${PROJECT}`)
-const members = worktrees.filter((w) => w.groupId === group.groupId).sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+const { workspaces } = await get(`/api/workspace/list?project=${PROJECT}`)
+const members = workspaces.filter((w) => w.groupId === group.groupId).sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 if (members.length < 2) throw new Error(`group ${GROUP} needs two live members, has ${members.length}`)
 const subject = members[0]
-console.log(`subject ${subject.worktreeId.slice(0, 8)} in ${GROUP}, keeping ${members[1].worktreeId.slice(0, 8)} live\n`)
+console.log(`subject ${subject.workspaceId.slice(0, 8)} in ${GROUP}, keeping ${members[1].workspaceId.slice(0, 8)} live\n`)
 
 const { chromium } = requirePlaywright()
 const browser = await chromium.launch()
@@ -192,15 +192,15 @@ try {
     // pointer-inert until the header itself is hovered.
     await section.locator('button[aria-expanded]').first().hover()
     await trigger.click()
-    const show = page.getByRole('menuitem', { name: 'Show stopped worktrees' })
-    const hide = page.getByRole('menuitem', { name: 'Hide stopped worktrees' })
+    const show = page.getByRole('menuitem', { name: 'Show stopped workspaces' })
+    const hide = page.getByRole('menuitem', { name: 'Hide stopped workspaces' })
     await show.or(hide).waitFor({ timeout: 30_000 })
     if (await show.count()) await show.click()
     else await page.keyboard.press('Escape')
   }
 
   // --- pass 1: restarted by clicking the ghost row, as a user does ---
-  await api('/api/worktree/stop', { worktreeId: subject.worktreeId })
+  await api('/api/workspace/stop', { workspaceId: subject.workspaceId })
   await openGhosts()
   await untilShape(page, (s) => (s.section ?? []).some((t) => t.includes('stopped')), 'the ghost row')
   check('the stopped member is a ghost row in the group', true)
@@ -209,21 +209,21 @@ try {
   // Playwright hit-tests before it moves the mouse — so hover the row first.
   const ghost = section.locator('.group.relative').filter({ hasText: 'stopped' }).first()
   await ghost.hover()
-  await ghost.locator('[aria-label="Restart worktree"]').click()
-  await page.locator('text=Restart this worktree?').waitFor({ state: 'visible', timeout: 10_000 })
+  await ghost.locator('[aria-label="Restart workspace"]').click()
+  await page.locator('text=Restart this workspace?').waitFor({ state: 'visible', timeout: 10_000 })
   await page.locator('button', { hasText: /^Restart$/ }).last().click()
   report('clicked', await sampleWhileRestarting(page, 'clicked'))
 
   // --- pass 2: restarted from outside the browser, so only the server's
   // snapshot row is ever drawn ---
   await untilShape(page, (s) => !(s.all ?? []).some((t) => t.startsWith('Restarting')), 'the restart to finish')
-  await api('/api/worktree/stop', { worktreeId: subject.worktreeId })
+  await api('/api/workspace/stop', { workspaceId: subject.workspaceId })
   await openGhosts()
   await untilShape(page, (s) => (s.section ?? []).some((t) => t.includes('stopped')), 'the ghost row again')
   // Exactly what the webapp posts, minus the browser: projectSlug + tool, the
   // pair that makes the route register the row before it resolves anything.
-  const streamed = api('/api/worktree/restart', {
-    worktreeId: subject.worktreeId, projectSlug: PROJECT, tool: subject.tool,
+  const streamed = api('/api/workspace/restart', {
+    workspaceId: subject.workspaceId, projectSlug: PROJECT, tool: subject.tool,
   }).then((res) => res.text())
   report('server', await sampleWhileRestarting(page, 'server'))
   await streamed

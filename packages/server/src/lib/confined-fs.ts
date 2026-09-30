@@ -5,9 +5,9 @@ import path from 'node:path'
 
 /**
  * Server I/O under a directory something less trusted can write: a
- * worktree's checkout, and under a sandboxing runtime the tool homes and
+ * workspace's checkout, and under a sandboxing runtime the tool homes and
  * conversation records every pod of a project mounts read-write
- * (docs/worktree-storage.md). Whatever runs there can put a symlink or a
+ * (docs/workspace-storage.md). Whatever runs there can put a symlink or a
  * FIFO at any path below the directory it was given, so a plain
  * `fs.readFile` there can be steered at any file the server can read, and
  * a plain `open` can block a libuv thread forever.
@@ -27,7 +27,7 @@ import path from 'node:path'
  *
  *  - `inside`: a link is followed when it lands inside the root. A checkout
  *    holds links on purpose, and a containerless project dir holds yaac's
- *    own (the per-worktree tool homes).
+ *    own (the per-workspace tool homes).
  *  - `no-links`: no link anywhere below the root — not in a directory on
  *    the way, not at the leaf. Nothing yaac or a tool writes into a
  *    sandbox-mounted tool home is a link, so one there was planted.

@@ -23,7 +23,7 @@ yaac cluster install
   in docs/cluster-setup.md), and — on macOS/arm64 — the tap's
   `yaac-krunkit` (which pulls `yaac-libkrun`).
   It also carries what the containerless driver needs on the host, since
-  that mode has no session image to supply anything: `tmux` (the worktree
+  that mode has no session image to supply anything: `tmux` (the workspace
   supervisor) and `socat` (the ACP chat transport), both of which a create
   refuses without, plus `fd` and `ripgrep` for the agents' own file search.
   `git`, `curl` and `lsof` are `uses_from_macos` — provided there, installed

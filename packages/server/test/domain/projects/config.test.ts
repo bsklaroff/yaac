@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { resolveEphemeralModulesPaths, resolveProjectConfig, retryImageBuild } from '#domain/projects'
-import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { setDataDir, projectConfigDir } from '@yaac/shared/project-paths'
 import type { YaacConfig } from '@yaac/shared/types'
 
@@ -310,7 +310,7 @@ describe('retryImageBuild', () => {
   // as all-defaults: null from the store, undefined to the contract.
   it('hands the runtime a reader for each owning project’s config', async () => {
     const mockRetry = vi.fn<RetryVerb>().mockReturnValue(true)
-    installFakeWorktreeDriver({ retryImageBuild: mockRetry })
+    installFakeWorkspaceDriver({ retryImageBuild: mockRetry })
     await storeConfig(JSON.stringify({ nestedContainers: true }))
 
     expect(retryImageBuild('b1')).toBe(true)
@@ -321,7 +321,7 @@ describe('retryImageBuild', () => {
   })
 
   it('reports that there was nothing to retry', () => {
-    installFakeWorktreeDriver({ retryImageBuild: () => false })
+    installFakeWorkspaceDriver({ retryImageBuild: () => false })
 
     expect(retryImageBuild('gone')).toBe(false)
   })

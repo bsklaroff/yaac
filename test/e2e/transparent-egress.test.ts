@@ -16,8 +16,8 @@ import {
 import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
 import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
 import {
-  allowWorktreeHost,
-  applyWorktreeRegistration,
+  allowWorkspaceHost,
+  applyProxyRegistration,
   deregisterWorkspaceEgress,
 } from '@yaac/server/drivers/k8s/egress/proxy-registration'
 import { proxyServiceClusterIp } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
@@ -28,7 +28,7 @@ import {
 } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
 import { runtimeClassSpec } from '@yaac/server/drivers/k8s/substrate/gvisor'
 import { CA_CONFIGMAP_NAME } from '@yaac/server/drivers/k8s/substrate/pod-spec'
-import { worktreeIdLabels } from '@yaac/server/drivers/k8s/substrate/pods'
+import { workspaceIdLabels } from '@yaac/server/drivers/k8s/substrate/pods'
 import {
   k8sNamespace,
   kubectlApply,
@@ -40,7 +40,7 @@ const execFileAsync = promisify(execFile)
 
 /**
  * End-to-end coverage of the node-level egress redirect. Session pods are
- * BARE — no sidecars — carrying only the `yaac.worktree-id` label and a
+ * BARE — no sidecars — carrying only the `yaac.workspace-id` label and a
  * `dnsConfig` pointed at the proxy. Their outbound 443/80 is DNAT'd at
  * their veth by netd to the node-local Envoy, which forwards to the proxy
  * behind a PROXY-protocol preamble; the proxy identifies each connection
@@ -216,20 +216,20 @@ async function startTlsEchoPod(name: string): Promise<{ host: string }> {
 }
 
 /**
- * A bare worktree pod: the `yaac.worktree-id` label (so the proxy's pod-watch
+ * A bare workspace pod: the `yaac.workspace-id` label (so the proxy's pod-watch
  * resolves its source IP to a session and netd selects it for redirect), the
  * proxy-CA mount for `curl --cacert`, and `dnsConfig` pointed at the proxy
  * VIP DNS stub. No sidecars, no proxy env vars — egress is redirected at the
  * cluster level.
  */
-async function startWorktreePod(name: string, worktreeId: string, proxyHost: string): Promise<void> {
+async function startWorkspacePod(name: string, workspaceId: string, proxyHost: string): Promise<void> {
   await kubectlApply({
     apiVersion: 'v1',
     kind: 'Pod',
     metadata: {
       name,
       namespace: k8sNamespace(),
-      labels: { ...worktreeIdLabels(worktreeId), 'yaac.test': 'true' },
+      labels: { ...workspaceIdLabels(workspaceId), 'yaac.test': 'true' },
     },
     spec: {
       restartPolicy: 'Never',
@@ -283,8 +283,8 @@ describe('node-level transparent egress (source-IP identity)', () => {
   const podA = `yaac-tegress-a-${suffix}`
   const podB = `yaac-tegress-b-${suffix}`
 
-  const worktreeA = crypto.randomUUID()
-  const worktreeB = crypto.randomUUID()
+  const workspaceA = crypto.randomUUID()
+  const workspaceB = crypto.randomUUID()
 
   let echoHost = ''
   let tlsHost = ''
@@ -303,20 +303,20 @@ describe('node-level transparent egress (source-IP identity)', () => {
 
     // Session A: MITM api.anthropic.com → the HTTP echo, plus plain HTTP to
     // the echo host. Session B: only the TLS echo (for the tunnel test).
-    await applyWorktreeRegistration(worktreeA, {
+    await applyProxyRegistration(workspaceA, {
       rules: [],
       allowedHosts: [MITM_HOST, echoHost],
       tool: 'claude',
       projectSlug: 'egress-a',
       upstreamRedirects: { [MITM_HOST]: { host: echoHost, port: ECHO_PORT, tls: false } },
     })
-    await applyWorktreeRegistration(worktreeB, {
+    await applyProxyRegistration(workspaceB, {
       rules: [], allowedHosts: [tlsHost], tool: 'claude', projectSlug: 'egress-b',
     })
 
     await Promise.all([
-      startWorktreePod(podA, worktreeA, proxyHost),
-      startWorktreePod(podB, worktreeB, proxyHost),
+      startWorkspacePod(podA, workspaceA, proxyHost),
+      startWorkspacePod(podB, workspaceB, proxyHost),
     ])
     await Promise.all([waitForPodRunning(podA), waitForPodRunning(podB)])
   }, 300_000)
@@ -325,8 +325,8 @@ describe('node-level transparent egress (source-IP identity)', () => {
     await Promise.all(
       [echoName, tlsEchoName, podA, podB].map((n) => deleteTestPod(n)),
     )
-    await deregisterWorkspaceEgress(worktreeA)
-    await deregisterWorkspaceEgress(worktreeB)
+    await deregisterWorkspaceEgress(workspaceA)
+    await deregisterWorkspaceEgress(workspaceB)
     try { await client.stop() } catch { /* ok */ }
   })
 
@@ -380,8 +380,8 @@ describe('node-level transparent egress (source-IP identity)', () => {
     // Widen the running session's allowlist in place (no re-create, no
     // restart): the registration object is rewritten and the proxy's
     // informer applies it.
-    await allowWorktreeHost(
-      { workspaceId: worktreeB, projectSlug: 'egress-b' }, echoHost, { fanOutToProject: false },
+    await allowWorkspaceHost(
+      { workspaceId: workspaceB, projectSlug: 'egress-b' }, echoHost, { fanOutToProject: false },
     )
 
     const after = await curlUntilSuccess(

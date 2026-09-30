@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { Hono } from 'hono'
-import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 
 // These routes are pure translation: HTTP in, one mediator call out, and a
 // 404 for an id it does not know. What a build IS, and what retrying one
@@ -43,7 +43,7 @@ describe('image routes', () => {
     vi.clearAllMocks()
     mockDismiss.mockReturnValue(true)
     mockRetry.mockReturnValue(true)
-    installFakeWorktreeDriver({
+    installFakeWorkspaceDriver({
       listImageBuilds: () => [buildEntry()],
       imageBuildLog: (id) => (id === 'b1' ? 'STEP 1/2: FROM ubuntu\n' : undefined),
       dismissImageBuild: mockDismiss,

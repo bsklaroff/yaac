@@ -5,7 +5,7 @@ import { serverLog } from '#log'
  * The server's subscription to the egress proxy's change stream.
  *
  * One thing only the proxy process can see is an input to the server's
- * work that has to be answered now: an in-worktree `yaac-mama` landing in
+ * work that has to be answered now: an in-workspace `yaac-mama` landing in
  * its queue, whose caller's HTTP response is held open until the server
  * answers. Everything else the proxy observes (blocked hosts, rejected git
  * credentials, captured rotations) travels as objects the `ClusterCache`

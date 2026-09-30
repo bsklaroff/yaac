@@ -14,7 +14,7 @@
  * project dirs this driver staged, cleared out of a workspace's inherited
  * environment.
  *
- * A worktree reaches its tool homes two ways, and the difference is what
+ * A workspace reaches its tool homes two ways, and the difference is what
  * this list is for. Where a tool has a real home override — claude's
  * `CLAUDE_CONFIG_DIR`, codex's `CODEX_HOME`, pi's `PI_CODING_AGENT_DIR` —
  * the create SETS it to the project's own directory, which beats anything
@@ -43,7 +43,7 @@
  *   `OPENCODE_CONFIG` and `OPENCODE_CONFIG_CONTENT` are additional config
  *   INPUTS — the first is pushed onto the list of directories it loads from,
  *   so a host value injects the server user's own opencode config (and any
- *   provider keys in it) no matter what else is set. (The per-worktree
+ *   provider keys in it) no matter what else is set. (The per-workspace
  *   `OPENCODE_CONFIG_CONTENT` yaac's own launch command sets is assigned on
  *   that command line, after this clearing.) Its actual homes come
  *   from `XDG_CONFIG_HOME`/`XDG_DATA_HOME`, which is why the XDG family is
@@ -67,7 +67,7 @@ export const TOOL_HOME_VARS = new Set([
 ])
 
 /**
- * The ones this host sets, and a worktree therefore will not see — what
+ * The ones this host sets, and a workspace therefore will not see — what
  * `yaac host check` reports and what a create says it ignored.
  *
  * Resolved here rather than at each surface so the drop and the report

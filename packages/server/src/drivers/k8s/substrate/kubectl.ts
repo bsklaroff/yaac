@@ -28,7 +28,7 @@ export function execFileAsync(
 }
 
 /**
- * Namespace that holds every yaac kubernetes object (worktree Jobs, the
+ * Namespace that holds every yaac kubernetes object (workspace Jobs, the
  * proxy Deployment/Service, the CA ConfigMap, the auth Secret).
  * `YAAC_K8S_NAMESPACE` is a test-only hook so e2e runs can isolate their
  * objects in per-test-file namespaces (see TEST_NAMESPACE in

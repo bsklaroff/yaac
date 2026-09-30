@@ -74,7 +74,7 @@ describe('resolveMountSource', () => {
     expect(resolveMountSource(pvc)).toBe(pvc)
   })
 
-  it('refuses a server-local path: no worktree pod may mount the server\'s claim', () => {
+  it('refuses a server-local path: no workspace pod may mount the server\'s claim', () => {
     setDataDir('/data/yaac')
     const m: PodMount = { source: { kind: 'hostPath', path: secretKeyPath() }, mountPath: '/x' }
     expect(() => resolveMountSource(m)).toThrow(/SERVER-LOCAL/)

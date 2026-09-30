@@ -30,7 +30,7 @@ describe('parsePongRtt', () => {
       // The CLI's keepalive pong carries no stamp, and the server echoes it
       // stamp-less; it is a liveness signal, not a measurement.
       '{"type":"pong"}',
-      // The route's own error frame, sent when a worktree can't be resolved.
+      // The route's own error frame, sent when a workspace can't be resolved.
       '{"type":"error","message":"session not found or not running"}',
       // Junk and non-objects must not throw out of an onmessage handler.
       'not json', '', '42', 'null', '[]',

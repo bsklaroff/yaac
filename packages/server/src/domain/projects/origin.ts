@@ -1,5 +1,5 @@
 import { fetchOrigin, maintainRepo } from '#domain/git'
-import { worktreeDriver } from '#drivers/driver'
+import { workspaceDriver } from '#drivers/driver'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import { serverLog } from '#log'
 import { buildOriginRefreshExec } from '#runtime/agents'
@@ -9,8 +9,8 @@ import { resolveProjectCredential } from './credentials'
 import { projectRemoteUrl } from './detail'
 
 /**
- * Keeping every worktree's `origin/*` current (docs/server-git.md). A
- * worktree is a clone with refs of its own, so a server fetch into the
+ * Keeping every workspace's `origin/*` current (docs/server-git.md). A
+ * workspace is a clone with refs of its own, so a server fetch into the
  * main clone reaches it only when something copies the refs over: every
  * fetch the server makes goes through `fetchProjectOrigin`, which fans the
  * result out to the project's running workspaces, and the `origin-refresh`
@@ -18,7 +18,7 @@ import { projectRemoteUrl } from './detail'
  * trails origin by minutes rather than indefinitely.
  */
 
-/** How stale the main clone of a project with running worktrees may get
+/** How stale the main clone of a project with running workspaces may get
  *  before the reconcile step fetches it. */
 export const ORIGIN_REFRESH_MS = 5 * 60_000
 
@@ -86,7 +86,7 @@ function propagateOrigin(slug: string): void {
 }
 
 async function fanOut(slug: string): Promise<void> {
-  const driver = worktreeDriver()
+  const driver = workspaceDriver()
   const queue = (await driver.list(slug).catch(() => []))
     .filter((h) => h.running && !h.terminating)
   const repoGitDir = `${repoDir(slug)}/.git`
@@ -102,10 +102,10 @@ async function fanOut(slug: string): Promise<void> {
 
 /**
  * The `origin-refresh` reconcile step: fetch every project that has a
- * running worktree and has not been fetched for `ORIGIN_REFRESH_MS`. A
+ * running workspace and has not been fetched for `ORIGIN_REFRESH_MS`. A
  * fetch a create, a claim or the branch picker made counts. Detached from
  * the pass, which does not wait on the network; a failure is logged and
- * tried again an interval later, and never reaches a worktree — a stale
+ * tried again an interval later, and never reaches a workspace — a stale
  * `origin/*` is all it costs.
  */
 export async function refreshProjectOrigins(view: RuntimeSnapshot): Promise<void> {

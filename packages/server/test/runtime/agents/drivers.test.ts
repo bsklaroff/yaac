@@ -4,7 +4,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { setDataDir } from '@yaac/shared/paths'
 import { acpLogDir, codexDir } from '@yaac/shared/project-paths'
-import { agentDriver, type AgentObservation, type DrivenWorktree } from '#runtime/agents/drivers'
+import { agentDriver, type AgentObservation, type DrivenWorkspace } from '#runtime/agents/drivers'
 // A bound, imported rather than duplicated: a test that hard-codes the budget
 // passes against a driver that changed it.
 import { MAX_FAST_ATTACH_ATTEMPTS } from '#runtime/agents/acp-driver'
@@ -13,8 +13,8 @@ import {
   acpConversation,
   acpConversationByHandle,
 } from '#runtime/agents/acp-registry'
-import { installFakeWorktreeDriver, workspacePathsFixture } from '@yaac/test-utils/fake-driver'
-import type { StreamChild, WorktreeDriver } from '#drivers/contract'
+import { installFakeWorkspaceDriver, workspacePathsFixture } from '@yaac/test-utils/fake-driver'
+import type { StreamChild, WorkspaceDriver } from '#drivers/contract'
 import type { AcpConversation } from '#runtime/agents/acp-client'
 import type { AcpEventInit } from '@yaac/shared/acp'
 import {
@@ -42,7 +42,7 @@ const PI_DEFAULT_MODEL = piProviderInfo(PI_DEFAULT_PROVIDER).defaultModel
  * them; none of them is mocked out.
  */
 
-const podExec = vi.fn<WorktreeDriver['exec']>()
+const podExec = vi.fn<WorkspaceDriver['exec']>()
 
 /** A fake `ctrl` stream the test drives from the workspace's side. */
 class FakeStream implements StreamChild {
@@ -82,9 +82,9 @@ async function answer(stream: FakeStream, cmd: string): Promise<void> {
   stream.feed('%begin 1 1 1\n%end 1 1 1\n')
 }
 
-const session: DrivenWorktree = {
+const session: DrivenWorkspace = {
   slug: 'demo',
-  worktreeId: 'wt-1',
+  workspaceId: 'wt-1',
   jobName: 'yaac-demo-wt-1',
   tool: 'claude',
 }
@@ -109,7 +109,7 @@ function collect(conversation: AcpConversation): AcpEventInit[] {
  * on disk.
  */
 async function record(agentSessionId: string, lines: unknown[]): Promise<void> {
-  const dir = acpLogDir(session.slug, session.worktreeId)
+  const dir = acpLogDir(session.slug, session.workspaceId)
   await fs.mkdir(dir, { recursive: true })
   await fs.writeFile(
     path.join(dir, `${agentSessionId}.jsonl`),
@@ -194,7 +194,7 @@ beforeEach(async () => {
   _resetAcpRegistryForTests()
   podExec.mockReset()
   podExec.mockResolvedValue({ stdout: '', stderr: '' })
-  installFakeWorktreeDriver({ exec: podExec })
+  installFakeWorkspaceDriver({ exec: podExec })
 })
 
 afterEach(async () => {
@@ -290,7 +290,7 @@ describe('agentDriver', () => {
 
     // codex-acp takes no flags at all: a model is merged into the codex
     // session config through the environment, and the browser login is shut
-    // off because nothing in a worktree could open one.
+    // off because nothing in a workspace could open one.
     const codex = spec('codex')
     expect(codex).toContain('NO_BROWSER=1 node /opt/yaac/acpd/main.js')
     expect(codex).toContain('-- codex-acp')
@@ -371,7 +371,7 @@ describe('agentDriver', () => {
     expect(agentSets().length).toBe(before + 2)
 
     // The mode rides the same push, in claude's own words — which posture it
-    // stands for is decided where the worktree's row is, not here.
+    // stands for is decided where the workspace's row is, not here.
     stream.feed('%subscription-changed report-7 $0 @0 0 %7 : claude-sonnet-5|acceptEdits\n')
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents',
@@ -937,7 +937,7 @@ describe('agentDriver', () => {
   /**
    * An adapter can move a session by itself — claude's announces EnterPlanMode
    * and a plan-exit answer as a `current_mode_update` — and the mode it is in
-   * from then on is what it answers asks by, and what the worktree's row is
+   * from then on is what it answers asks by, and what the workspace's row is
    * told about.
    */
   it('publishes a mode the adapter moves to, and answers its asks by it', async () => {
@@ -1017,7 +1017,7 @@ describe('agentDriver', () => {
 
   // opencode's modes are agents, not postures, so an opencode conversation
   // answers by the posture it launched in — read at launch. The row it came
-  // from moves with every other conversation in the worktree, and one taking
+  // from moves with every other conversation in the workspace, and one taking
   // "yes, and bypass permissions" must not start answering this one's asks.
   it('answers by the posture it launched in where its mode names none', async () => {
     const stream = new FakeStream()
@@ -1077,7 +1077,7 @@ describe('agentDriver', () => {
 
   /**
    * The posture an ask is answered by belongs to the conversation, not the
-   * worktree: each adapter holds its own mode, so one conversation entering
+   * workspace: each adapter holds its own mode, so one conversation entering
    * plan mode says nothing about another still bypassing permissions.
    */
   it('keeps each conversation on its own posture', async () => {
@@ -1180,7 +1180,7 @@ describe('agentDriver', () => {
     // recovery only names the outstanding asks after acpd's greeting and two
     // file reads. A click in that window has a real ask behind it, and
     // discarding it would leave the agent blocked with a dead card until the
-    // worktree restarted.
+    // workspace restarted.
     await record('acp-held', [
       lifeLine,
       promptLine('acp-held', 'old-1', 'do the thing'),
@@ -1272,7 +1272,7 @@ describe('agentDriver', () => {
     // would find nothing advertised, skip `session/set_mode`, and post a
     // standing notice where the restraint should be. The ask-to-act rules from
     // the launch config would still apply, but not the plan agent's `edit
-    // deny`, so the worktree would be editable.
+    // deny`, so the workspace would be editable.
     const stream = new FakeStream()
     podExec.mockResolvedValue({ stdout: 'opencode\n', stderr: '' })
     connections.push(agentDriver('acp').connect(session, () => {}, {
@@ -1348,7 +1348,7 @@ describe('agentDriver', () => {
     // never sends one authenticates against whatever pi's shared settings hold.
     const stream = new FakeStream()
     podExec.mockResolvedValue({ stdout: 'pi\n', stderr: '' })
-    // The launch is what knows the worktree's provider default; the handshake
+    // The launch is what knows the workspace's provider default; the handshake
     // is where it can be delivered.
     agentDriver('acp').launchCmd({
       tool: 'pi',
@@ -1384,7 +1384,7 @@ describe('agentDriver', () => {
 
     // A model the adapter will not take is survived and said out loud: the
     // conversation runs the adapter's own default, which for pi means a
-    // provider whose api key the egress proxy never swapped — a worktree that
+    // provider whose api key the egress proxy never swapped — a workspace that
     // fails at its first turn for a reason nothing else would explain.
     const events: AcpEventInit[] = []
     acpConversationByHandle('demo', 'wt-1', 'pi')!.subscribe((e) => events.push(e))
@@ -1435,7 +1435,7 @@ describe('agentDriver', () => {
     // sandbox, and `auto` by a model with no classifier. Setting one throws at
     // the adapter, and losing the conversation over it would be worse than
     // running in its default — which is then the conversation's posture, and
-    // the worktree's.
+    // the workspace's.
     //
     // But it is NOT silent. An adapter's default is not always at least as
     // strict as what was asked (codex-acp's is `agent`, where a reviewer model
@@ -1488,7 +1488,7 @@ describe('agentDriver', () => {
     expect(stream.sent().some((m) => m.id === 3)).toBe(false)
   })
 
-  it('reports a mode the adapter REFUSED, which is where a codex worktree runs loose', async () => {
+  it('reports a mode the adapter REFUSED, which is where a codex workspace runs loose', async () => {
     // The exposed cell, and the reason this path reports rather than only
     // logs: codex-acp's own default is `agent` — a reviewer model approving
     // most actions — not the codex CLI's `read-only` preset. So an
@@ -1537,7 +1537,7 @@ describe('agentDriver', () => {
     // Names the mode it is actually in, which is the whole point: `agent` is
     // not what was asked for and not stricter than it.
     expect(message).toContain('agent')
-    // The conversation survives it — losing a worktree over a posture would be
+    // The conversation survives it — losing a workspace over a posture would be
     // worse than running in the adapter's default and saying so.
     expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined()
   })
@@ -1565,7 +1565,7 @@ describe('agentDriver', () => {
     podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
     connections.push(agentDriver('acp').connect(session, () => {}, {
       // The settled cadence, set far beyond this test's patience: a re-dial
-      // that waited for it would leave a fresh ACP worktree showing acpd's
+      // that waited for it would leave a fresh ACP workspace showing acpd's
       // log instead of a chat pane for a full sweep, which is the bug this
       // covers. The first sweep DOES lower the cadence to this — the window
       // is there and the dial did not throw — so nothing but the drop itself

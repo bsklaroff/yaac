@@ -16,7 +16,7 @@ import type { StreamChild, StreamPty } from '#drivers/contract'
  */
 
 /**
- * See `WorktreeDriver.dialCtrl`. Synchronous by contract, which a real
+ * See `WorkspaceDriver.dialCtrl`. Synchronous by contract, which a real
  * `spawn` satisfies for free: the object exists immediately and a failure to
  * start arrives as an `error` event, which is exactly the "report a failed
  * dial as an observation rather than a throw" the callers' backoff wants.
@@ -31,7 +31,7 @@ export function dialCtrlStream(jobName: string, argv: string[]): StreamChild {
   })
 }
 
-/** See `WorktreeDriver.dialPty`. A real PTY on the host — the same library
+/** See `WorkspaceDriver.dialPty`. A real PTY on the host — the same library
  *  the pod driver's in-pod stream daemon uses at the other end of its
  *  relay, with the relay taken out. */
 export function dialPtyStream(
@@ -63,7 +63,7 @@ export function dialPtyStream(
 }
 
 /**
- * See `WorktreeDriver.reviveStatusStream`.
+ * See `WorkspaceDriver.reviveStatusStream`.
  *
  * Nothing to repair: the pod driver re-execs its in-pod stream daemon
  * because the daemon is a separate process that can die while the pod

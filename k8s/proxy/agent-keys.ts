@@ -8,7 +8,7 @@
  * known_hosts file at the moment it runs: the file is rewritten before each
  * add to hold exactly that key's projects' entries. The agent itself stores
  * the constraint, so the file's later contents don't matter. Which
- * worktrees may use a key at all is the relay's business
+ * workspaces may use a key at all is the relay's business
  * (ssh-agent-relay.ts); the constraint is what bounds where it signs.
  *
  * The file path is always passed explicitly via `-H`: ssh-add's default

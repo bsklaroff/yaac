@@ -4,7 +4,7 @@ import { buildChangesScript, parseChangesOutput } from '#drivers/shared'
 import { runHost } from './host'
 import { workspaceRunEnvironment } from './launch'
 import { containerlessWorkspacePaths } from './paths'
-import type { WorktreeChanges } from '@yaac/shared/types'
+import type { WorkspaceChanges } from '@yaac/shared/types'
 
 /**
  * Running a command inside a workspace, which on this substrate means
@@ -12,14 +12,14 @@ import type { WorktreeChanges } from '@yaac/shared/types'
  * environment.
  *
  * The environment matters more than it looks: it carries `HOME` (the
- * per-worktree home the tool configs are symlinked into) and the agent
+ * per-workspace home the tool configs are symlinked into) and the agent
  * credentials, so a command run without it would read the SERVER user's
- * configuration instead of the worktree's (see `workspaceRunEnvironment`).
+ * configuration instead of the workspace's (see `workspaceRunEnvironment`).
  */
 
 const DEFAULT_TIMEOUT_MS = 30_000
 
-/** See `WorktreeDriver.exec`. */
+/** See `WorkspaceDriver.exec`. */
 export async function execInWorkspace(
   jobName: string,
   cmd: string,
@@ -49,19 +49,19 @@ export async function execInWorkspace(
 }
 
 /**
- * One run at a time per worktree: the runs share a single index file, and
+ * One run at a time per workspace: the runs share a single index file, and
  * two overlapping `git add -A` calls would collide on its lock.
  */
 const changesMutex = createKeyedMutex()
 
-/** See `WorktreeDriver.changes`. Host git in the worktree's own checkout —
+/** See `WorkspaceDriver.changes`. Host git in the workspace's own checkout —
  *  there is no path translation to do, because the checkout the agent sees
  *  is the one the server made. */
-export function getWorktreeChanges(
+export function getWorkspaceChanges(
   jobName: string,
   base?: string,
   defaultBase?: string,
-): Promise<WorktreeChanges> {
+): Promise<WorkspaceChanges> {
   const paths = containerlessWorkspacePaths(jobName)
   return changesMutex(jobName, async () => {
     const { stdout } = await runHost([
@@ -77,7 +77,7 @@ export function getWorktreeChanges(
 }
 
 /**
- * See `WorktreeDriver.awaitAgentTransport`. Poll until the workspace's tmux
+ * See `WorkspaceDriver.awaitAgentTransport`. Poll until the workspace's tmux
  * server answers.
  *
  * There is no daemon between the server and the workspace here — the

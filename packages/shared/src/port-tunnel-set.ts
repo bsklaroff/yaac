@@ -12,7 +12,7 @@ import type { DriverKind } from '#types'
  * A live set of port forwards, reconciled against a desired list.
  *
  * The resident forwarder's core, and shared by both of them: `yaac
- * forward` polls the worktree list while the desktop app watches
+ * forward` polls the workspace list while the desktop app watches
  * `/events`, but what each does with the answer is identical — bind what
  * the server now offers, let go of what it no longer does. Keeping that
  * here is what stops the tray and the CLI drifting into two different

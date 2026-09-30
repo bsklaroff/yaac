@@ -129,7 +129,7 @@ export function secretKeyPath(): string {
 }
 
 /**
- * GLOBAL: the project's state tree — everything a worktree pod mounts
+ * GLOBAL: the project's state tree — everything a workspace pod mounts
  * hangs off it, plus the project metadata the server keeps beside it.
  * The node-local counterpart is {@link nodeLocalProjectPath}.
  */
@@ -139,7 +139,7 @@ export function projectDir(slug: string): string {
 
 /**
  * NODE-LOCAL. Parent of a project's node-local image store generations —
- * the read-only containers/storage lower that every nested worktree of the
+ * the read-only containers/storage lower that every nested workspace of the
  * project mounts at `/var/lib/shared-images` (docs/nested-containers.md).
  * Per node because a store is a cache of the project registry, not a
  * second source of truth: a cold node simply mounts nothing.
@@ -158,17 +158,17 @@ export function imageStoreDir(projectId: string): string {
 }
 
 /** GLOBAL: the project's main clone. Its `.git` is mounted read-only into
- *  every worktree pod, whose checkout borrows its objects. */
+ *  every workspace pod, whose checkout borrows its objects. */
 export function repoDir(slug: string): string {
   return globalProjectPath(slug, 'repo')
 }
 
 /**
- * GLOBAL: mounted at `/home/yaac/.claude` in every worktree of the project,
+ * GLOBAL: mounted at `/home/yaac/.claude` in every workspace of the project,
  * and named by `CLAUDE_CONFIG_DIR` — so claude's global config is the
  * `.claude.json` INSIDE this directory, carried by this mount. Its
  * `projects/` (all but the shared auto-memory) and `file-history/` are each
- * worktree's own history, mounted over it (`agentHistoryDir`).
+ * workspace's own history, mounted over it (`agentHistoryDir`).
  */
 export function claudeDir(slug: string): string {
   return globalProjectPath(slug, 'claude')
@@ -184,38 +184,38 @@ export function projectClaudeCredentialsFile(slug: string): string {
   return path.join(claudeDir(slug), '.credentials.json')
 }
 
-/** GLOBAL: mounted at `/home/yaac/.codex`. Its `sessions/` is the worktree's
+/** GLOBAL: mounted at `/home/yaac/.codex`. Its `sessions/` is the workspace's
  *  own history, mounted over it (`agentHistoryDir`). */
 export function codexDir(slug: string): string {
   return globalProjectPath(slug, 'codex')
 }
 
 /**
- * GLOBAL. One worktree's ACP conversation logs — the verbatim `session/update`
+ * GLOBAL. One workspace's ACP conversation logs — the verbatim `session/update`
  * stream acpd tees as it relays, one file per conversation, mounted read-write
- * at `/home/yaac/.yaac-acp` in that worktree's worktree.
+ * at `/home/yaac/.yaac-acp` in that workspace's checkout.
  *
  * Deliberately beside the tool homes rather than inside one: the log is a
  * property of the *protocol*, so a future codex or pi adapter writes to the
- * same place. Project-level rather than under the worktree dir because teardown
- * prunes that, and a stopped worktree's conversation should still be readable —
+ * same place. Project-level rather than under the workspace dir because teardown
+ * prunes that, and a stopped workspace's conversation should still be readable —
  * the same reason a tool's transcripts outlive their pod.
  *
- * Worktree-scoped because the file is named for its conversation and every
- * worktree's primary window is named for its tool, so a flat project-level dir
- * would collide across worktrees.
+ * Workspace-scoped because the file is named for its conversation and every
+ * workspace's primary window is named for its tool, so a flat project-level dir
+ * would collide across workspaces.
  */
-export function acpLogDir(slug: string, worktreeId: string): string {
-  return globalProjectPath(slug, 'acp', worktreeId)
+export function acpLogDir(slug: string, workspaceId: string): string {
+  return globalProjectPath(slug, 'acp', workspaceId)
 }
 
 /**
  * NODE-LOCAL. The project's package-manager caches, mounted at
  * `/home/yaac/.cached-packages`: per node, because a cache on a network
  * filesystem turns every `link(2)`/stat into a round trip. On a host it is
- * also where the project's pnpm store lives (every worktree there is a
+ * also where the project's pnpm store lives (every workspace there is a
  * process on one disk); a pod keeps its store in its own module dirs
- * instead (docs/containerless-driver.md, docs/worktree-storage.md).
+ * instead (docs/containerless-driver.md, docs/workspace-storage.md).
  */
 export function cachedPackagesDir(projectId: string): string {
   return nodeLocalProjectPath(projectId, '.cached-packages')
@@ -225,8 +225,8 @@ export function cachedPackagesDir(projectId: string): string {
  * GLOBAL. Host directory backing a `cacheVolumes` entry. The podman
  * backend used named volumes (`yaac-cache-<slug>-<key>`); on kubernetes
  * these are plain per-project hostPath dirs with the same
- * persist-across-worktrees semantics — and the point of persisting them is
- * that the NEXT worktree gets the warm cache, wherever it is scheduled.
+ * persist-across-workspaces semantics — and the point of persisting them is
+ * that the NEXT workspace gets the warm cache, wherever it is scheduled.
  */
 export function cacheVolumeDir(slug: string, key: string): string {
   return globalProjectPath(slug, 'cache-volumes', key)
@@ -245,9 +245,9 @@ export function projectCodexAuthFile(slug: string): string {
 /**
  * GLOBAL. Per-project shared opencode config root. Bind-mounted at
  * `/home/yaac/.config/opencode/` inside the container. Shared across
- * worktrees within the same project so that model selection, permissions,
+ * workspaces within the same project so that model selection, permissions,
  * and other opencode settings (written via `Config.updateGlobal()`)
- * persist across worktree restarts without affecting per-worktree data
+ * persist across workspace restarts without affecting per-workspace data
  * isolation (the SQLite DB in `~/.local/share/opencode/`).
  */
 export function opencodeConfigDir(slug: string): string {
@@ -255,21 +255,21 @@ export function opencodeConfigDir(slug: string): string {
 }
 
 /**
- * GLOBAL. The one durable home of a worktree's opencode history: its
- * per-worktree SQLite database and everything beside it, as a plain copy
+ * GLOBAL. The one durable home of a workspace's opencode history: its
+ * per-workspace SQLite database and everything beside it, as a plain copy
  * of the data directory. A k8s pod works on a node-local copy of this
  * ({@link opencodeDataDir}), checkpoints into here on a timer and at
  * `preStop`, and every start restores from here unconditionally; a
  * containerless workspace opens this directory directly, there being no
  * other filesystem to copy it to.
  *
- * Per-worktree isolation sidesteps opencode's concurrent-write issues
- * (sst/opencode#5241), since each database only ever holds its own worktree.
+ * Per-workspace isolation sidesteps opencode's concurrent-write issues
+ * (sst/opencode#5241), since each database only ever holds its own workspace.
  *
- * Renaming it is a migration of every stopped opencode worktree's history.
+ * Renaming it is a migration of every stopped opencode workspace's history.
  */
-export function opencodeCheckpointDir(slug: string, worktreeId: string): string {
-  return globalProjectPath(slug, 'opencode-data', worktreeId)
+export function opencodeCheckpointDir(slug: string, workspaceId: string): string {
+  return globalProjectPath(slug, 'opencode-data', workspaceId)
 }
 
 /**
@@ -283,15 +283,15 @@ export function opencodeCheckpointDir(slug: string, worktreeId: string): string 
  * the server never opens the file (opencode-status.ts probes the in-pod
  * HTTP API). Unused under containerless.
  */
-export function opencodeDataDir(projectId: string, worktreeId: string): string {
-  return nodeLocalProjectPath(projectId, 'opencode-data', worktreeId)
+export function opencodeDataDir(projectId: string, workspaceId: string): string {
+  return nodeLocalProjectPath(projectId, 'opencode-data', workspaceId)
 }
 
 /**
  * GLOBAL. Per-project pi home. Bind-mounted at `/home/yaac/.pi/` inside the
  * container (the whole `.pi` dir, mirroring `claudeDir`/`~/.claude`), so every
- * worktree's settings and extensions are shared across all worktrees of the
- * project. Its session logs are not: pi writes those to the worktree's own
+ * workspace's settings and extensions are shared across all workspaces of the
+ * project. Its session logs are not: pi writes those to the workspace's own
  * history (`agentHistoryDir`).
  */
 export function piDir(slug: string): string {
@@ -300,7 +300,7 @@ export function piDir(slug: string): string {
 
 /**
  * GLOBAL. Where pi kept its session logs before they moved into each
- * worktree's history — read as a fallback and moved in by the next create
+ * workspace's history — read as a fallback and moved in by the next create
  * (docs/legacy-compat-shims.md).
  */
 export function piSessionsDir(slug: string): string {
@@ -308,58 +308,58 @@ export function piSessionsDir(slug: string): string {
 }
 
 /**
- * GLOBAL. One worktree's agent history: the conversation state every tool
+ * GLOBAL. One workspace's agent history: the conversation state every tool
  * would otherwise keep in the project's shared home, where any sibling could
- * delete it (docs/worktree-storage.md). One subdirectory per part —
+ * delete it (docs/workspace-storage.md). One subdirectory per part —
  * `claude` (claude's `projects/`), `claude-file-history`, `codex` (its
  * `sessions/`), `codex-sqlite` and `pi` — reached as mounts over the tool
  * homes in a pod and as links in the shared homes on a host. Outlives stops;
- * goes when the worktree does.
+ * goes when the workspace does.
  */
-export function agentHistoryDir(slug: string, worktreeId: string, part?: AgentHistoryPart): string {
-  return globalProjectPath(slug, 'history', worktreeId, ...(part === undefined ? [] : [part]))
+export function agentHistoryDir(slug: string, workspaceId: string, part?: AgentHistoryPart): string {
+  return globalProjectPath(slug, 'history', workspaceId, ...(part === undefined ? [] : [part]))
 }
 
 export const AGENT_HISTORY_PARTS = ['claude', 'claude-file-history', 'codex', 'codex-sqlite', 'pi'] as const
 export type AgentHistoryPart = typeof AGENT_HISTORY_PARTS[number]
 
-/** GLOBAL — see {@link worktreeDir}. */
-export function worktreesDir(slug: string): string {
-  return globalProjectPath(slug, 'worktrees')
+/** GLOBAL — see {@link workspaceDir}. */
+export function workspacesDir(slug: string): string {
+  return globalProjectPath(slug, 'workspaces')
 }
 
 /**
- * GLOBAL, deliberately. The worktree's `/workspace`. A worktree is hot,
- * per-worktree data that would rather be node-local, but the server creates
- * its checkout — a clone borrowing `repo/.git`'s objects — from its own
- * filesystem. A clone needs only a read-only mount of the main clone to
+ * GLOBAL, deliberately. The workspace's checkout, its `/workspace`. A
+ * checkout is hot, per-workspace data that would rather be node-local, but
+ * the server creates it — a clone borrowing `repo/.git`'s objects — from its
+ * own filesystem. A clone needs only a read-only mount of the main clone to
  * exist, so moving it node-local needs the checkout to be made by an init
- * container on the worktree's node.
+ * container on the workspace's node.
  */
-export function worktreeDir(slug: string, worktreeId: string): string {
-  return path.join(worktreesDir(slug), worktreeId)
+export function workspaceDir(slug: string, workspaceId: string): string {
+  return path.join(workspacesDir(slug), workspaceId)
 }
 
 /**
- * GLOBAL. Per-worktree directory rooting everything worktree-scoped that is
- * not the worktree — today the staged builtin-skills and worktree-bin
- * copies. All of it is written by the server and mounted into the worktree
+ * GLOBAL. Per-workspace directory rooting everything workspace-scoped that is
+ * not the checkout — today the staged builtin-skills and workspace-bin
+ * copies. All of it is written by the server and mounted into the workspace
  * pod, so it has to be visible from the pod's node.
  *
- * Removed wholesale by worktree cleanup and the orphan-worktree GC.
+ * Removed wholesale by workspace cleanup and the orphan-workspace GC.
  */
-export function worktreeStateDir(slug: string, worktreeId: string): string {
-  return globalProjectPath(slug, 'sessions', worktreeId)
+export function workspaceStateDir(slug: string, workspaceId: string): string {
+  return globalProjectPath(slug, 'sessions', workspaceId)
 }
 
 /**
- * GLOBAL. The images a user pasted into the worktree's terminal panes,
+ * GLOBAL. The images a user pasted into the workspace's terminal panes,
  * server-written and read by the agent the path was pasted to. Under the
- * state dir, so they go when the worktree stops: an agent copies an image in
+ * state dir, so they go when the workspace stops: an agent copies an image in
  * when the path is pasted, so the file only has to outlive the paste.
  */
-export function worktreeAttachmentsDir(slug: string, worktreeId: string): string {
-  return path.join(worktreeStateDir(slug, worktreeId), 'attachments')
+export function workspaceAttachmentsDir(slug: string, workspaceId: string): string {
+  return path.join(workspaceStateDir(slug, workspaceId), 'attachments')
 }
 
 

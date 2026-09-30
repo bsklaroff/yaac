@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { classifyWorkspaces } from '#runtime/status/classify'
-import { markWorktreeTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
+import { markWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import type { ProbeTarget, TmuxLiveness } from '#runtime/status/liveness'
-import { runtimeHandleFromPod } from '#drivers/k8s/worktrees'
+import { runtimeHandleFromPod } from '#drivers/k8s/workspaces'
 import type { RuntimeHandle } from '#drivers/contract'
 
 /** Grace window passed explicitly — production callers use testEnv.startingGraceMs. */
@@ -18,7 +18,7 @@ const probe = (v: TmuxLiveness) =>
 function pod(overrides: {
   jobName?: string
   podName?: string
-  worktreeId?: string
+  workspaceId?: string
   project?: string
   running?: boolean
   terminating?: boolean
@@ -32,7 +32,7 @@ function pod(overrides: {
   return runtimeHandleFromPod({
     jobName: overrides.jobName ?? 'yaac-proj-s1',
     podName: overrides.podName ?? `${overrides.jobName ?? 'yaac-proj-s1'}-abcde`,
-    worktreeId: overrides.worktreeId ?? 's1',
+    workspaceId: overrides.workspaceId ?? 's1',
     projectSlug: overrides.project ?? 'proj',
     tool: 'claude',
     phase: overrides.phase ?? (running ? 'Running' : 'Failed'),
@@ -55,29 +55,29 @@ describe('classifyWorkspaces', () => {
   })
 
   it('still classifies prewarmed spares (the reaper must keep seeing them)', async () => {
-    // listActiveWorktrees filters spares out, but the stale reaper relies on
+    // listActiveWorkspaces filters spares out, but the stale reaper relies on
     // classifyWorkspaces NOT special-casing them, so a stuck spare is reaped.
-    const live = { ...pod({ jobName: 'yaac-proj-spare', worktreeId: 'sp1' }), labels: { 'yaac.prewarmed': 'true' } }
+    const live = { ...pod({ jobName: 'yaac-proj-spare', workspaceId: 'sp1' }), labels: { 'yaac.prewarmed': 'true' } }
     const liveRes = await classifyWorkspaces([live], now(), probe('alive'), GRACE_MS)
     expect(liveRes.running).toEqual([live])
 
-    const stuck = { ...pod({ jobName: 'yaac-proj-stuck', worktreeId: 'sp2', ageMs: GRACE_MS + 5_000 }), labels: { 'yaac.prewarmed': 'true' } }
+    const stuck = { ...pod({ jobName: 'yaac-proj-stuck', workspaceId: 'sp2', ageMs: GRACE_MS + 5_000 }), labels: { 'yaac.prewarmed': 'true' } }
     const stuckRes = await classifyWorkspaces([stuck], now(), probe('dead'), GRACE_MS)
     expect(stuckRes.stale).toEqual([
       {
-        jobName: 'yaac-proj-stuck', projectSlug: 'proj', worktreeId: 'sp2', zombie: true,
+        jobName: 'yaac-proj-stuck', projectSlug: 'proj', workspaceId: 'sp2', zombie: true,
         deathCause: { reason: 'agent-exited' },
       },
     ])
   })
 
   it('classifies old running pods with a conclusively dead tmux as zombie stale', async () => {
-    const p = pod({ jobName: 'yaac-proj-zombie', worktreeId: 'z1' })
+    const p = pod({ jobName: 'yaac-proj-zombie', workspaceId: 'z1' })
     const result = await classifyWorkspaces([p], now(), probe('dead'), GRACE_MS)
     expect(result.running).toEqual([])
     expect(result.stale).toEqual([
       {
-        jobName: 'yaac-proj-zombie', projectSlug: 'proj', worktreeId: 'z1', zombie: true,
+        jobName: 'yaac-proj-zombie', projectSlug: 'proj', workspaceId: 'z1', zombie: true,
         deathCause: { reason: 'agent-exited' },
       },
     ])
@@ -86,7 +86,7 @@ describe('classifyWorkspaces', () => {
   it('keeps a running pod whose tmux probe is inconclusive (unknown) and never reaps it', async () => {
     // The false-positive guard: a transient kubectl-exec failure on a
     // healthy, long-running session must NOT trigger a reap.
-    const p = pod({ jobName: 'yaac-proj-blip', worktreeId: 'b1', ageMs: GRACE_MS + 60_000 })
+    const p = pod({ jobName: 'yaac-proj-blip', workspaceId: 'b1', ageMs: GRACE_MS + 60_000 })
     const result = await classifyWorkspaces([p], now(), probe('unknown'), GRACE_MS)
     expect(result.running).toEqual([p])
     expect(result.stale).toEqual([])
@@ -94,12 +94,12 @@ describe('classifyWorkspaces', () => {
   })
 
   it('classifies old non-running pods as non-zombie stale', async () => {
-    const p = pod({ jobName: 'yaac-proj-dead', worktreeId: 'd1', running: false })
+    const p = pod({ jobName: 'yaac-proj-dead', workspaceId: 'd1', running: false })
     const result = await classifyWorkspaces([p], now(), probe('alive'), GRACE_MS)
     expect(result.running).toEqual([])
     expect(result.stale).toEqual([
       {
-        jobName: 'yaac-proj-dead', projectSlug: 'proj', worktreeId: 'd1', zombie: false,
+        jobName: 'yaac-proj-dead', projectSlug: 'proj', workspaceId: 'd1', zombie: false,
         deathCause: { reason: 'pod-stopped' },
       },
     ])
@@ -129,7 +129,7 @@ describe('classifyWorkspaces', () => {
     const result = await classifyWorkspaces([p], now(), probe('dead'), GRACE_MS)
     expect(result.stale).toEqual([
       {
-        jobName: 'yaac-proj-stuck', projectSlug: 'proj', worktreeId: 's1', zombie: true,
+        jobName: 'yaac-proj-stuck', projectSlug: 'proj', workspaceId: 's1', zombie: true,
         deathCause: { reason: 'agent-exited' },
       },
     ])
@@ -151,18 +151,18 @@ describe('classifyWorkspaces', () => {
   })
 
   it('tolerates empty labels — a pod without slug/session-id still becomes stale', async () => {
-    const p = pod({ jobName: 'abc123', worktreeId: '', project: '', running: false })
+    const p = pod({ jobName: 'abc123', workspaceId: '', project: '', running: false })
     const result = await classifyWorkspaces([p], now(), probe('alive'), GRACE_MS)
     expect(result.stale).toEqual([
       {
-        jobName: 'abc123', projectSlug: '', worktreeId: '', zombie: false,
+        jobName: 'abc123', projectSlug: '', workspaceId: '', zombie: false,
         deathCause: { reason: 'pod-stopped' },
       },
     ])
   })
 
   it('hands the prober the whole workspace, unit name included', async () => {
-    const p = pod({ jobName: 'yaac-proj-s1', project: 'proj', worktreeId: 's1' })
+    const p = pod({ jobName: 'yaac-proj-s1', project: 'proj', workspaceId: 's1' })
     const probeFn = vi.fn<(target: ProbeTarget) => Promise<TmuxLiveness>>().mockResolvedValue('alive')
     await classifyWorkspaces([p], now(), probeFn, GRACE_MS)
     expect(probeFn).toHaveBeenCalledWith(expect.objectContaining({
@@ -181,7 +181,7 @@ describe('classifyWorkspaces', () => {
   it('routes a pod with a deletionTimestamp to the terminating bucket, never stale', async () => {
     // Old enough to be stale and probe dead — but terminating wins, so it's
     // neither reaped nor shown as active.
-    const p = pod({ jobName: 'yaac-proj-term', worktreeId: 't1', terminating: true, ageMs: GRACE_MS + 5_000 })
+    const p = pod({ jobName: 'yaac-proj-term', workspaceId: 't1', terminating: true, ageMs: GRACE_MS + 5_000 })
     const result = await classifyWorkspaces([p], now(), probe('dead'), GRACE_MS)
     expect(result.terminating).toEqual([p])
     expect(result.running).toEqual([])
@@ -189,8 +189,8 @@ describe('classifyWorkspaces', () => {
   })
 
   it('routes a registry-marked session to terminating without probing it', async () => {
-    markWorktreeTerminating('s1')
-    const p = pod({ worktreeId: 's1' })
+    markWorkspaceTerminating('s1')
+    const p = pod({ workspaceId: 's1' })
     const probeFn = vi.fn<(target: ProbeTarget) => Promise<TmuxLiveness>>().mockResolvedValue('alive')
     const result = await classifyWorkspaces([p], now(), probeFn, GRACE_MS)
     expect(result.terminating).toEqual([p])

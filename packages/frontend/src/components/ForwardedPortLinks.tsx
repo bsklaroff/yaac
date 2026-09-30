@@ -23,7 +23,7 @@ export function portLinkLabel(p: PortMapping): string {
  * host, or a loopback forwarder on the machine showing the page. The
  * desktop app's own preview pane goes to loopback directly (`#lib/preview`).
  * This is the webapp's replacement for the tmux
- * status-right port readout — webapp panes attach through view worktrees
+ * status-right port readout — webapp panes attach through view workspaces
  * with `status off`, so the server-pushed snapshot is the only place the
  * mapping can surface.
  */

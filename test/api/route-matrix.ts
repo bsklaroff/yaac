@@ -19,7 +19,7 @@ import type { DriverKind } from '@yaac/shared/types'
  * durable version of "remember to update the other file".
  *
  * What this asserts is deliberately narrow: the STATUS CLASS a caller sees,
- * against a server with no projects and no worktrees. It is a reachability
+ * against a server with no projects and no workspaces. It is a reachability
  * and driver-parity check, not a substitute for the behavioral suites
  * (`write-routes.test.ts` and the e2e tiers) — those drive real state.
  */
@@ -42,7 +42,7 @@ export interface RouteCase {
   containerless: Expected
 }
 
-/** 404: no such project/worktree/build on an empty server — the route was
+/** 404: no such project/workspace/build on an empty server — the route was
  *  reached and resolved its subject, which is what this table checks. */
 const MISSING = 404
 /** 501 NOT_SUPPORTED: this server's substrate has no such feature. */
@@ -55,7 +55,7 @@ const OK_OR_MISSING = [200, 404]
  * The table. Grouped as the routes are, and every line states both columns.
  *
  * Most routes are IDENTICAL under both drivers, and that is the useful
- * signal: what a worktree runs on changes almost nothing a client can see.
+ * signal: what a workspace runs on changes almost nothing a client can see.
  * The differences are exactly the features a host has no answer for.
  */
 export const ROUTE_MATRIX: RouteCase[] = [
@@ -95,7 +95,7 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'PUT', path: '/api/project/:slug/build-files/file', request: '/api/project/nope/build-files/file', body: { path: 'a', content: '' }, why: 'builds no images', k8s: [200, 400, 404], containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/project/:slug/build-files/rename', request: '/api/project/nope/build-files/rename', body: { from: 'a', to: 'b' }, why: 'builds no images', k8s: [200, 400, 404], containerless: UNSUPPORTED },
   { method: 'DELETE', path: '/api/project/:slug/build-files/file', request: '/api/project/nope/build-files/file?path=a', why: 'builds no images', k8s: [200, 204, 400, 404], containerless: UNSUPPORTED },
-  // The git identity worktrees commit under. Not image-gated: every
+  // The git identity workspaces commit under. Not image-gated: every
   // substrate makes commits, and this is the setting that replaced reading
   // one off whichever host the server happened to be installed from.
   { method: 'GET', path: '/api/config/git-identity', k8s: 200, containerless: 200 },
@@ -118,81 +118,85 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'DELETE', path: '/api/image/builds/:id', request: '/api/image/builds/x', why: 'builds no images', k8s: 204, containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/image/builds/:id/retry', request: '/api/image/builds/x/retry', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
 
-  // ── worktrees: the driver-neutral half ────────────────────────────────
-  { method: 'GET', path: '/api/worktree/list', k8s: [200, 503], containerless: 200 },
-  { method: 'GET', path: '/api/worktree/list-stopped', k8s: 200, containerless: 200 },
-  { method: 'POST', path: '/api/worktree/create', body: { project: '' }, k8s: 400, containerless: 400 },
-  // Resolves the worktree before it streams, so an unknown one is a plain
+  // ── workspaces: the driver-neutral half ────────────────────────────────
+  { method: 'GET', path: '/api/workspace/list', k8s: [200, 503], containerless: 200 },
+  { method: 'GET', path: '/api/workspace/list-stopped', k8s: 200, containerless: 200 },
+  { method: 'POST', path: '/api/workspace/create', body: { project: '' }, k8s: 400, containerless: 400 },
+  // Resolves the workspace before it streams, so an unknown one is a plain
   // 404; past that, progress and any failure travel in the NDJSON stream.
-  { method: 'POST', path: '/api/worktree/restart', body: { worktreeId: 'nope' }, k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/worktree/stop', body: { worktreeId: 'nope' }, k8s: [404, 503], containerless: MISSING },
-  { method: 'POST', path: '/api/worktree/mark-death-seen', body: { projectSlug: 'nope', worktreeId: 'nope' }, k8s: [200, 204, 404], containerless: [200, 204, 404] },
-  { method: 'POST', path: '/api/worktree/mark-all-deaths-seen', body: { projectSlug: 'nope' }, k8s: [200, 204], containerless: [200, 204] },
-  // The in-worktree command channel. Only the runtime whose workspaces can
+  { method: 'POST', path: '/api/workspace/restart', body: { workspaceId: 'nope' }, k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/stop', body: { workspaceId: 'nope' }, k8s: [404, 503], containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/mark-death-seen', body: { projectSlug: 'nope', workspaceId: 'nope' }, k8s: [200, 204, 404], containerless: [200, 204, 404] },
+  { method: 'POST', path: '/api/workspace/mark-all-deaths-seen', body: { projectSlug: 'nope' }, k8s: [200, 204], containerless: [200, 204] },
+  // The in-workspace command channel. Only the runtime whose workspaces can
   // dial the server has it: a pod speaks to the egress proxy instead, and
   // holds no token to present here. 401 rather than a refusal on
-  // containerless because the matrix asks with no worktree bearer, which is
+  // containerless because the matrix asks with no workspace bearer, which is
   // exactly what an unknown caller looks like.
+  { method: 'POST', path: '/api/workspace/mama', body: { command: 'list' },
+    why: 'a pod reaches yaac-mama through the egress proxy, not the server',
+    k8s: UNSUPPORTED, containerless: 401 },
+  // The same channel at an older install's path (docs/legacy-compat-shims.md).
   { method: 'POST', path: '/api/worktree/mama', body: { command: 'list' },
     why: 'a pod reaches yaac-mama through the egress proxy, not the server',
     k8s: UNSUPPORTED, containerless: 401 },
-  // Queued worktrees are rows and a create request: substrate-neutral.
-  { method: 'POST', path: '/api/worktree/queue/create', body: { project: 'nope', parent: 'nope', prompt: 'p' }, k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/worktree/queue/update', body: { id: 'nope', prompt: 'p' }, k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/worktree/queue/discard', body: { id: 'nope' }, k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/worktree/queue/run', body: { id: 'nope' }, k8s: MISSING, containerless: MISSING },
+  // Queued workspaces are rows and a create request: substrate-neutral.
+  { method: 'POST', path: '/api/workspace/queue/create', body: { project: 'nope', parent: 'nope', prompt: 'p' }, k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/queue/update', body: { id: 'nope', prompt: 'p' }, k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/queue/discard', body: { id: 'nope' }, k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/queue/run', body: { id: 'nope' }, k8s: MISSING, containerless: MISSING },
   // Drafts are rows alone: substrate-neutral.
-  { method: 'POST', path: '/api/worktree/draft/save', body: { project: 'nope', prompt: 'p', tool: 'claude', mode: 'tui', permissionMode: 'manual' }, k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/worktree/draft/discard', body: { id: 'nope' }, k8s: MISSING, containerless: MISSING },
-  { method: 'GET', path: '/api/worktree/group/list', k8s: 200, containerless: 200 },
-  { method: 'POST', path: '/api/worktree/group/create', body: { name: 'g' }, k8s: [200, 400], containerless: [200, 400] },
-  { method: 'POST', path: '/api/worktree/group/move', body: { worktreeId: 'nope', group: null }, k8s: [200, 400, 404], containerless: [200, 400, 404] },
-  { method: 'POST', path: '/api/worktree/group/rename', body: { id: 'nope', name: 'g' }, k8s: [200, 204, 400, 404], containerless: [200, 204, 400, 404] },
-  { method: 'POST', path: '/api/worktree/group/set-pinned', body: { id: 'nope', pinned: true }, k8s: [200, 204, 400, 404], containerless: [200, 204, 400, 404] },
-  { method: 'POST', path: '/api/worktree/group/delete', body: { id: 'nope' }, k8s: [200, 204, 400, 404], containerless: [200, 204, 400, 404] },
-  { method: 'POST', path: '/api/worktree/set-group', body: { worktreeId: 'nope', groupId: null }, k8s: [200, 204, 400, 404], containerless: [200, 204, 400, 404] },
-  { method: 'POST', path: '/api/worktree/provisioning/:id/dismiss', request: '/api/worktree/provisioning/x/dismiss', k8s: [200, 204, 404], containerless: [200, 204, 404] },
-  { method: 'POST', path: '/api/worktree/:id/title', request: '/api/worktree/nope/title', body: { title: 't' }, k8s: [200, 204, 404], containerless: [200, 204, 404] },
-  { method: 'GET', path: '/api/worktree/:id', request: '/api/worktree/nope', k8s: [404, 503], containerless: MISSING },
-  { method: 'GET', path: '/api/worktree/:id/agent-sessions', request: '/api/worktree/nope/agent-sessions', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/draft/save', body: { project: 'nope', prompt: 'p', tool: 'claude', mode: 'tui', permissionMode: 'manual' }, k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/draft/discard', body: { id: 'nope' }, k8s: MISSING, containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/group/list', k8s: 200, containerless: 200 },
+  { method: 'POST', path: '/api/workspace/group/create', body: { name: 'g' }, k8s: [200, 400], containerless: [200, 400] },
+  { method: 'POST', path: '/api/workspace/group/move', body: { workspaceId: 'nope', group: null }, k8s: [200, 400, 404], containerless: [200, 400, 404] },
+  { method: 'POST', path: '/api/workspace/group/rename', body: { id: 'nope', name: 'g' }, k8s: [200, 204, 400, 404], containerless: [200, 204, 400, 404] },
+  { method: 'POST', path: '/api/workspace/group/set-pinned', body: { id: 'nope', pinned: true }, k8s: [200, 204, 400, 404], containerless: [200, 204, 400, 404] },
+  { method: 'POST', path: '/api/workspace/group/delete', body: { id: 'nope' }, k8s: [200, 204, 400, 404], containerless: [200, 204, 400, 404] },
+  { method: 'POST', path: '/api/workspace/set-group', body: { workspaceId: 'nope', groupId: null }, k8s: [200, 204, 400, 404], containerless: [200, 204, 400, 404] },
+  { method: 'POST', path: '/api/workspace/provisioning/:id/dismiss', request: '/api/workspace/provisioning/x/dismiss', k8s: [200, 204, 404], containerless: [200, 204, 404] },
+  { method: 'POST', path: '/api/workspace/:id/title', request: '/api/workspace/nope/title', body: { title: 't' }, k8s: [200, 204, 404], containerless: [200, 204, 404] },
+  { method: 'GET', path: '/api/workspace/:id', request: '/api/workspace/nope', k8s: [404, 503], containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/agent-sessions', request: '/api/workspace/nope/agent-sessions', k8s: MISSING, containerless: MISSING },
   // Reads recorded state and files on the host, so it answers the same under
   // both substrates — the 501 it can raise is about the *tool* whose
   // conversation is asked for (opencode keeps its history in the container),
   // never about which driver is installed.
-  { method: 'GET', path: '/api/worktree/:id/agent-sessions/:sessionId/transcript', request: '/api/worktree/nope/agent-sessions/s1/transcript', k8s: MISSING, containerless: MISSING },
-  { method: 'GET', path: '/api/worktree/:id/changes', request: '/api/worktree/nope/changes', k8s: [404, 503], containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/agent-sessions/:sessionId/transcript', request: '/api/workspace/nope/agent-sessions/s1/transcript', k8s: MISSING, containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/changes', request: '/api/workspace/nope/changes', k8s: [404, 503], containerless: MISSING },
   // Both are the checkout's own git, run inside the running workspace: a
-  // stopped worktree is 409 on either substrate, an unknown one 404.
-  { method: 'GET', path: '/api/worktree/:id/git-status', request: '/api/worktree/nope/git-status', k8s: MISSING, containerless: MISSING },
-  { method: 'GET', path: '/api/worktree/:id/files', request: '/api/worktree/nope/files', k8s: MISSING, containerless: MISSING },
+  // stopped workspace is 409 on either substrate, an unknown one 404.
+  { method: 'GET', path: '/api/workspace/:id/git-status', request: '/api/workspace/nope/git-status', k8s: MISSING, containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/files', request: '/api/workspace/nope/files', k8s: MISSING, containerless: MISSING },
   // The rest of the file editor reads the checkout on the server's own disk,
   // resolved from the record — so it needs no workspace and answers alike on
   // both substrates.
-  { method: 'GET', path: '/api/worktree/:id/dir', request: '/api/worktree/nope/dir?path=a', k8s: MISSING, containerless: MISSING },
-  { method: 'GET', path: '/api/worktree/:id/file', request: '/api/worktree/nope/file?path=a', k8s: MISSING, containerless: MISSING },
-  { method: 'PUT', path: '/api/worktree/:id/file', request: '/api/worktree/nope/file', body: { path: 'a', content: '', baseVersion: null }, k8s: MISSING, containerless: MISSING },
-  { method: 'DELETE', path: '/api/worktree/:id/file', request: '/api/worktree/nope/file?path=a', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/worktree/:id/folder', request: '/api/worktree/nope/folder', body: { path: 'a' }, k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/worktree/:id/rename', request: '/api/worktree/nope/rename', body: { from: 'a', to: 'b' }, k8s: MISSING, containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/dir', request: '/api/workspace/nope/dir?path=a', k8s: MISSING, containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/file', request: '/api/workspace/nope/file?path=a', k8s: MISSING, containerless: MISSING },
+  { method: 'PUT', path: '/api/workspace/:id/file', request: '/api/workspace/nope/file', body: { path: 'a', content: '', baseVersion: null }, k8s: MISSING, containerless: MISSING },
+  { method: 'DELETE', path: '/api/workspace/:id/file', request: '/api/workspace/nope/file?path=a', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/:id/folder', request: '/api/workspace/nope/folder', body: { path: 'a' }, k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/:id/rename', request: '/api/workspace/nope/rename', body: { from: 'a', to: 'b' }, k8s: MISSING, containerless: MISSING },
   // Recorded state too, and resolved from the record for the same reason: the
   // founding ask outlives the workspace, so neither substrate needs one to
   // answer — which is why no 503 sits beside the 404 here.
-  { method: 'GET', path: '/api/worktree/:id/prompt', request: '/api/worktree/nope/prompt', k8s: [200, 404], containerless: [200, 404] },
+  { method: 'GET', path: '/api/workspace/:id/prompt', request: '/api/workspace/nope/prompt', k8s: [200, 404], containerless: [200, 404] },
   // An image pasted into a terminal pane, for its agent to read: only a
   // running workspace has one to hand it to.
-  { method: 'POST', path: '/api/worktree/:id/attachments', request: '/api/worktree/nope/attachments', k8s: [404, 503], containerless: MISSING },
-  { method: 'GET', path: '/api/worktree/:id/terminals', request: '/api/worktree/nope/terminals', k8s: [404, 409, 503], containerless: MISSING },
-  { method: 'POST', path: '/api/worktree/:id/terminals', request: '/api/worktree/nope/terminals', k8s: [404, 409, 503], containerless: MISSING },
-  { method: 'POST', path: '/api/worktree/:id/terminals/close', request: '/api/worktree/nope/terminals/close', body: { target: 'window:@1' }, k8s: [404, 409, 503], containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/:id/attachments', request: '/api/workspace/nope/attachments', k8s: [404, 503], containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/terminals', request: '/api/workspace/nope/terminals', k8s: [404, 409, 503], containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/:id/terminals', request: '/api/workspace/nope/terminals', k8s: [404, 409, 503], containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/:id/terminals/close', request: '/api/workspace/nope/terminals/close', body: { target: 'window:@1' }, k8s: [404, 409, 503], containerless: MISSING },
 
-  // ── worktrees: egress and the port relay ──────────────────────────────
+  // ── workspaces: egress and the port relay ──────────────────────────────
   // Guarded before the id resolve: what this server can do is not a property
-  // of the worktree being asked about, so the answer must not depend on one
+  // of the workspace being asked about, so the answer must not depend on one
   // existing.
-  { method: 'GET', path: '/api/worktree/:id/blocked-hosts', request: '/api/worktree/nope/blocked-hosts', why: 'mediates no egress', k8s: [404, 503], containerless: UNSUPPORTED },
-  { method: 'POST', path: '/api/worktree/:id/allow-host', request: '/api/worktree/nope/allow-host', body: { host: 'example.com' }, why: 'mediates no egress', k8s: [404, 503], containerless: UNSUPPORTED },
-  { method: 'POST', path: '/api/worktree/:id/forward-port', request: '/api/worktree/nope/forward-port', body: { containerPort: 3000 }, why: 'relays no ports', k8s: [404, 503], containerless: UNSUPPORTED },
-  { method: 'POST', path: '/api/worktree/:id/dismiss-port', request: '/api/worktree/nope/dismiss-port', body: { containerPort: 3000 }, why: 'relays no ports', k8s: [404, 503], containerless: UNSUPPORTED },
+  { method: 'GET', path: '/api/workspace/:id/blocked-hosts', request: '/api/workspace/nope/blocked-hosts', why: 'mediates no egress', k8s: [404, 503], containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/workspace/:id/allow-host', request: '/api/workspace/nope/allow-host', body: { host: 'example.com' }, why: 'mediates no egress', k8s: [404, 503], containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/workspace/:id/forward-port', request: '/api/workspace/nope/forward-port', body: { containerPort: 3000 }, why: 'relays no ports', k8s: [404, 503], containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/workspace/:id/dismiss-port', request: '/api/workspace/nope/dismiss-port', body: { containerPort: 3000 }, why: 'relays no ports', k8s: [404, 503], containerless: UNSUPPORTED },
 
   // ── shortcuts ─────────────────────────────────────────────────────────
   { method: 'GET', path: '/api/shortcuts/get', k8s: 200, containerless: 200 },

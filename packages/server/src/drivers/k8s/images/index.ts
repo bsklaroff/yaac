@@ -20,7 +20,7 @@
 export { ensureImage } from './build-coordinator'
 export { reconcileBuilderPodGc } from './builder-pod'
 export { reconcileImagePrewarm, retryImageBuild } from './image-prewarm'
-export { salvageWorktreeImages } from './image-promoter'
+export { salvageJobImages } from './image-promoter'
 export { prepareWorkspaceImage } from './workspace-image'
 export {
   ensureNodeImageStore,

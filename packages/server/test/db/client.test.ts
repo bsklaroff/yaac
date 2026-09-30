@@ -121,8 +121,8 @@ describe('openDb', () => {
   })
 
   // A draft's title was the generated one; it moves aside for the user's. A
-  // queued entry launched into its nearest parent worktree's group, and now
-  // stores it — walked up a chain, and none when that worktree is ungrouped,
+  // queued entry launched into its nearest parent workspace's group, and now
+  // stores it — walked up a chain, and none when that workspace is ungrouped,
   // has no row, or the chain dangles or loops.
   it('moves draft titles aside and files queued entries in their parent\'s group', async () => {
     const entry = (id: string, parent: string): string =>
@@ -143,14 +143,14 @@ describe('openDb', () => {
     `)
     try {
       const drafts = await db.$client.query<{ title: string | null; generated_title: string | null }>(
-        'SELECT title, generated_title FROM draft_worktrees ORDER BY id',
+        'SELECT title, generated_title FROM draft_workspaces ORDER BY id',
       )
       expect(drafts.rows).toEqual([
         { title: null, generated_title: 'Gen one' },
         { title: null, generated_title: null },
       ])
       const queued = await db.$client.query<{ group_id: string | null }>(
-        'SELECT group_id FROM queued_worktrees ORDER BY id',
+        'SELECT group_id FROM queued_workspaces ORDER BY id',
       )
       expect(queued.rows.map((r) => r.group_id)).toEqual(['g1', 'g1', 'g1', null, null, null, null, null])
     } finally {

@@ -1,5 +1,5 @@
 /*
- * Verifies the full-screen overlays (Skills, Stopped worktrees) on a phone.
+ * Verifies the full-screen overlays (Skills, Stopped workspaces) on a phone.
  *
  * All of them are desktop master/detail: a 20rem list beside a detail pane.
  * At 390px that leaves the detail a few dozen pixels, so below the breakpoint
@@ -8,8 +8,8 @@
  * Only real layout can prove that; jsdom has none.
  *
  * Structural checks against the real rendered DOM at 390x844 (iPhone-ish):
- *  1. The sidebar's "Stopped worktrees" entry is a finger-sized row, about as
- *     tall as a worktree row above it (it is the same kind of list item on
+ *  1. The sidebar's "Stopped workspaces" entry is a finger-sized row, about as
+ *     tall as a workspace row above it (it is the same kind of list item on
  *     touch, not the thin desktop group header).
  *  2. In each overlay: the list is full-bleed and the detail pane is hidden
  *     until a row is tapped; then they swap, and the back chevron swaps them
@@ -21,8 +21,8 @@
  *  4. Settings — the other full-screen dialog reachable from a phone — keeps
  *     its add-git-credential row (two inputs + a button) inside the viewport.
  *
- * Stopped worktrees are stubbed over the network (`/worktree/list-stopped`):
- * this is a layout check, and standing up a real worktree just to delete it
+ * Stopped workspaces are stubbed over the network (`/workspace/list-stopped`):
+ * this is a layout check, and standing up a real workspace just to delete it
  * costs an image build and a k8s Job. Skills come from the real project.
  *
  * Drives the Vite dev server (`pnpm frontend:dev`, port 1420), which serves
@@ -68,11 +68,11 @@ const PHONE = { width: 390, height: 844 }
 
 const STOPPED = [
   {
-    worktreeId: 'stub-1',
+    workspaceId: 'stub-1',
     projectSlug: 'yaac',
     tool: 'claude',
     title: 'Rework the mobile overlays so both panes fit',
-    prompt: 'Make the stopped worktrees and skills panes readable on a phone.',
+    prompt: 'Make the stopped workspaces and skills panes readable on a phone.',
     createdAt: '2026-08-10 09:00:00',
     lastActiveAt: '2026-08-10 11:00:00',
     stoppedAt: '2026-08-10 12:00:00',
@@ -82,7 +82,7 @@ const STOPPED = [
     agentSessions: [],
   },
   {
-    worktreeId: 'stub-2',
+    workspaceId: 'stub-2',
     projectSlug: 'yaac',
     tool: 'codex',
     title: 'Add a changes pane filter',
@@ -94,10 +94,10 @@ const STOPPED = [
   // Filler: the list has to overflow for the scroll-survival check below to
   // mean anything.
   ...Array.from({ length: 24 }, (_, i) => ({
-    worktreeId: `stub-fill-${i}`,
+    workspaceId: `stub-fill-${i}`,
     projectSlug: 'yaac',
     tool: 'claude',
-    title: `Older worktree ${i + 1}`,
+    title: `Older workspace ${i + 1}`,
     createdAt: '2026-08-01 09:00:00',
     stoppedAt: '2026-08-01 18:00:00',
     seen: true,
@@ -156,11 +156,11 @@ try {
   const page = await ctx.newPage()
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
 
-  // Stub the deleted-worktree list so the entry point and its overlay have
-  // rows to lay out in an environment with no worktrees.
-  await page.route('**/worktree/list-stopped*', (route) =>
+  // Stub the deleted-workspace list so the entry point and its overlay have
+  // rows to lay out in an environment with no workspaces.
+  await page.route('**/workspace/list-stopped*', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(STOPPED) }))
-  await page.route('**/worktree/*/death-seen*', (route) =>
+  await page.route('**/workspace/*/death-seen*', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }))
 
   await page.goto(`${APP_URL}/`)
@@ -170,30 +170,30 @@ try {
 
   const shell = page.locator('#root > div > div > div')
   const projectsLayer = shell.locator('> div').nth(0)
-  const worktreesLayer = shell.locator('> div').nth(1)
+  const workspacesLayer = shell.locator('> div').nth(1)
   await projectsLayer.getByText('Add project', { exact: true }).waitFor({ state: 'visible', timeout: 15_000 })
   await projectsLayer.locator('button:has(> span.truncate)').first().tap()
   await page.waitForTimeout(1500)
 
-  // ---- 1. the stopped-worktrees entry is a list row, not a header ----
-  const entry = worktreesLayer.locator('button', { hasText: 'Stopped worktrees' }).first()
+  // ---- 1. the stopped-workspaces entry is a list row, not a header ----
+  const entry = workspacesLayer.locator('button', { hasText: 'Stopped workspaces' }).first()
   await entry.waitFor({ state: 'visible', timeout: 15_000 })
   const entryBox = await entry.boundingBox()
-  check('the stopped-worktrees entry is finger-sized', entryBox && entryBox.height >= 44,
+  check('the stopped-workspaces entry is finger-sized', entryBox && entryBox.height >= 44,
     entryBox ? `${Math.round(entryBox.width)}x${Math.round(entryBox.height)}` : 'no box')
-  const rowBox = await worktreesLayer
+  const rowBox = await workspacesLayer
     .locator('.group.relative.mx-2 > button').first().boundingBox()
     .catch(() => null)
   if (rowBox) {
-    check('it is about as tall as a worktree row',
+    check('it is about as tall as a workspace row',
       Math.abs(entryBox.height - rowBox.height) <= 16,
       `entry=${Math.round(entryBox.height)} row=${Math.round(rowBox.height)}`)
   } else {
-    console.log('  (no worktree rows in this env — skipping the height comparison)')
+    console.log('  (no workspace rows in this env — skipping the height comparison)')
   }
   await page.screenshot({ path: path.join(SHOTS, 'mobile-overlay-0-entry.png') })
 
-  // ---- 2. the stopped-worktrees overlay: list -> detail -> back ----
+  // ---- 2. the stopped-workspaces overlay: list -> detail -> back ----
   await entry.tap()
   await page.waitForTimeout(800)
   let report = await page.evaluate(panesReport())
@@ -219,7 +219,7 @@ try {
   check('the detail keeps the list mounted behind it', report.panes?.length === 2)
   await page.screenshot({ path: path.join(SHOTS, 'mobile-overlay-2-stopped-detail.png') })
 
-  await page.getByLabel('Back to stopped worktrees').tap()
+  await page.getByLabel('Back to stopped workspaces').tap()
   await page.waitForTimeout(500)
   report = await page.evaluate(panesReport())
   check('back returns to the list',
@@ -245,7 +245,7 @@ try {
   check('the stopped list is long enough to scroll', scroll.overflowed && scroll.before > 0,
     `scrollTop=${scroll.before}`)
   await page.waitForTimeout(500)
-  await page.getByLabel('Back to stopped worktrees').tap()
+  await page.getByLabel('Back to stopped workspaces').tap()
   await page.waitForTimeout(500)
   const after = await page.evaluate(() => document.querySelector('[role="dialog"] ul').scrollTop)
   check('the list keeps its scroll position across a drill-down and back',
@@ -255,7 +255,7 @@ try {
   await page.waitForTimeout(500)
 
   // ---- 3. the skills overlay: same drill-down, wrapped header ----
-  await worktreesLayer.getByLabel('Skills').tap()
+  await workspacesLayer.getByLabel('Skills').tap()
   await page.waitForTimeout(2500)
   report = await page.evaluate(panesReport())
   console.log('  skills panes (list):', JSON.stringify(report))
@@ -296,9 +296,9 @@ try {
   // ---- 4. settings: the add-credential row fits the width ----
   await page.keyboard.press('Escape')
   await page.waitForTimeout(500)
-  // Settings lives on the projects screen; the worktrees screen we are on is a
+  // Settings lives on the projects screen; the workspaces screen we are on is a
   // separate (inert) layer, so walk back before reaching for it.
-  await worktreesLayer.getByLabel('Back to projects').tap()
+  await workspacesLayer.getByLabel('Back to projects').tap()
   await page.waitForTimeout(1000)
   await projectsLayer.getByText('Settings', { exact: true }).tap()
   await page.waitForTimeout(1200)
@@ -318,7 +318,7 @@ try {
   // ---- 5. the same overlays still show both panes on a desktop width ----
   await projectsLayer.locator('button:has(> span.truncate)').first().tap()
   await page.waitForTimeout(1200)
-  await worktreesLayer.getByLabel('Skills').tap()
+  await workspacesLayer.getByLabel('Skills').tap()
   await page.waitForTimeout(2500)
   await page.setViewportSize({ width: 1400, height: 900 })
   await page.waitForTimeout(800)

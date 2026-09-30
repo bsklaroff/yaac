@@ -1,6 +1,6 @@
 /**
  * The push half of the nested-session image cache, exercised through its
- * one barrel entry: `salvageWorktreeImages`.
+ * one barrel entry: `salvageJobImages`.
  *
  * The survey script, its sudo wrapper, the report parser, the push planner
  * and the retire script are all things the salvage hands to a session pod
@@ -32,7 +32,7 @@ vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
 
 vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 
-import { salvageWorktreeImages } from '#drivers/k8s/images'
+import { salvageJobImages } from '#drivers/k8s/images'
 // The registry the cache rides is the project's own — resolved for real
 // here (not stubbed), so a change to its host shape shows up as a broken
 // push destination rather than a passing test against a stale constant.
@@ -49,7 +49,7 @@ const HEX2 = 'b'.repeat(64)
 const HEX3 = 'c'.repeat(64)
 
 const PROJECT = { slug: 'demo', id: '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c' }
-const PARAMS = { jobName: 'yaac-demo-job', project: PROJECT, worktreeId: SID }
+const PARAMS = { jobName: 'yaac-demo-job', project: PROJECT, workspaceId: SID }
 const REG = projectRegistryHost(PROJECT.id)
 
 /** A three-image engine: a named leaf on two unnamed ancestors. */
@@ -64,7 +64,7 @@ async function salvageReporting(stdout: string): Promise<boolean> {
     Promise.resolve(cmd.includes('image inspect')
       ? { stdout, stderr: '' }
       : { stdout: 'pushed 1 failed 0\n', stderr: '' }))
-  return salvageWorktreeImages(PARAMS)
+  return salvageJobImages(PARAMS)
 }
 
 /**
@@ -84,7 +84,7 @@ beforeEach(() => {
   _resetSalvageMemoForTests()
 })
 
-describe('salvageWorktreeImages', () => {
+describe('salvageJobImages', () => {
   it('gates on the in-pod engine and passwordless sudo, and stays one exec with nothing to push', async () => {
     await expect(salvageReporting('')).resolves.toBe(true)
     const cmd = surveyCommand()
@@ -105,8 +105,8 @@ describe('salvageWorktreeImages', () => {
   })
 
   it('never pushes back what the node image store already provided', async () => {
-    // The engine's view inside a warm worktree: the store's base chain
-    // read-only, one image the worktree rebuilt on top of it (so its id
+    // The engine's view inside a warm workspace: the store's base chain
+    // read-only, one image the workspace rebuilt on top of it (so its id
     // has a writable row too), and a fresh unnamed layer between them.
     await expect(salvageReporting(
       `ro sha256:${HEX2}\n`
@@ -114,7 +114,7 @@ describe('salvageWorktreeImages', () => {
       + CHAIN,
     )).resolves.toBe(true)
     const push = pushCommand()
-    // The leaf is the worktree's own work and travels under its name.
+    // The leaf is the workspace's own work and travels under its name.
     expect(push).toContain(`'${HEX}' '${REG}/myapp:v1'`)
     // Its ancestors came out of the store, which is nothing but a
     // materialization of THIS registry — re-pushing them would recompress
@@ -135,7 +135,7 @@ describe('salvageWorktreeImages', () => {
   it('reports which images exist only in the read-only store', async () => {
     await expect(salvageReporting('')).resolves.toBe(true)
     const cmd = surveyCommand()
-    // One row per NAME, so an id the worktree ALSO holds writably (it
+    // One row per NAME, so an id the workspace ALSO holds writably (it
     // rebuilt or re-tagged a store image) must not be counted read-only —
     // that name is new and does travel.
     expect(cmd).toContain('{{.ID}} {{.ReadOnly}}')
@@ -252,9 +252,9 @@ describe('salvageWorktreeImages', () => {
       Promise.resolve(cmd.includes('image inspect')
         ? { stdout: have + CHAIN, stderr: '' }
         : { stdout: 'retired 0 failed 2\n', stderr: '' }))
-    await salvageWorktreeImages(PARAMS)
+    await salvageJobImages(PARAMS)
     mockContainerExec.mockClear()
-    await salvageWorktreeImages(PARAMS)
+    await salvageJobImages(PARAMS)
     // Second cycle tries again instead of treating the shape as retired.
     expect(mockContainerExec).toHaveBeenCalledTimes(2)
   })
@@ -302,14 +302,14 @@ describe('salvageWorktreeImages', () => {
 
   it('swallows failures — teardown is never blocked on cache salvage', async () => {
     mockContainerExec.mockRejectedValue(new Error('pod is gone'))
-    await expect(salvageWorktreeImages(PARAMS)).resolves.toBe(false)
+    await expect(salvageJobImages(PARAMS)).resolves.toBe(false)
   })
 
   it('coalesces concurrent salvages for the same session', async () => {
     let resolveExec: (v: { stdout: string; stderr: string }) => void = () => {}
     mockContainerExec.mockReturnValue(new Promise((r) => { resolveExec = r }))
-    const a = salvageWorktreeImages(PARAMS)
-    const b = salvageWorktreeImages(PARAMS)
+    const a = salvageJobImages(PARAMS)
+    const b = salvageJobImages(PARAMS)
     resolveExec({ stdout: '', stderr: '' })
     await expect(Promise.all([a, b])).resolves.toEqual([true, true])
     expect(mockContainerExec).toHaveBeenCalledOnce()

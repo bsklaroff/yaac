@@ -1,4 +1,4 @@
-// Verifies the desktop worktree sidebar's resize handle with a real mouse:
+// Verifies the desktop workspace sidebar's resize handle with a real mouse:
 // the handle sits in the gutter on the sidebar's right edge, a press-move-
 // release drag widens/narrows the card live, the width clamps at both bounds,
 // a double-click restores the default, and the width survives a reload

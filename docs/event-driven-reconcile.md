@@ -3,7 +3,7 @@
 The server consumes cluster state through watch-fed informer caches and
 reconciles on events, not on a polling clock. Reads ride
 `@kubernetes/client-node`; writes (`kubectlApply`/delete) and the bounded
-provisioning execs stay on `kubectl`. Steady-state worktree streams (PTYs,
+provisioning execs stay on `kubectl`. Steady-state workspace streams (PTYs,
 status, port forwards, one-shot pod commands) ride the stream relay
 instead — see docs/stream-relay.md.
 
@@ -41,9 +41,9 @@ treat absence in the cache as absence in the cluster.
 exposed to the rest of the server as a set-active singleton (the display
 path and reconcile steps read it; unit tests leave it null and fall back
 to one-shot kubectl lists). It runs exactly two install-scoped informers —
-worktree pods (the `worktreePodSelector` set) and worktree Jobs — and
-deltas fan out via `onDelta(source)` with sources `worktree-pods` /
-`worktree-jobs`.
+workspace pods (the `workspacePodSelector` set) and workspace Jobs — and
+deltas fan out via `onDelta(source)` with sources `workspace-pods` /
+`workspace-jobs`.
 
 `tick-snapshot.ts` keeps the per-pass point-in-time view: each getter
 memoizes once per snapshot and answers from the active ClusterCache when
@@ -58,10 +58,10 @@ Steps subscribe to triggers; three lanes feed one serialized executor:
 
 - **deltas** — informer events mark their sources dirty; a pass runs
   after a 250ms debounce so event storms coalesce. This is what makes a
-  worktree's rows catch up within milliseconds of its pod appearing or
+  workspace's rows catch up within milliseconds of its pod appearing or
   going.
   One source in this lane is not an informer: `live-agents`, marked when a
-  worktree's set of running conversations changes (one appeared, one went,
+  workspace's set of running conversations changes (one appeared, one went,
   one learned its id, or one switched model). An `acp` conversation's id comes out of an in-pod
   handshake that moves nothing the informers watch, so without it the
   conversation sweep — and the chat pane waiting on the row it writes —
@@ -81,9 +81,9 @@ step order; step errors are isolated; after each pass the event hub
 publishes a state snapshot (deduped by serialized compare). Idle cost is
 the poll lane's cache reads plus one proxy HTTP call — no kubectl forks.
 
-The server also reacts to `worktree-pods` deltas outside the reconciler:
-syncing the per-worktree status watchers and firing the debounced
-worktrees-changed push (`main/server-run.ts`).
+The server also reacts to `workspace-pods` deltas outside the reconciler:
+syncing the per-workspace status watchers and firing the debounced
+workspaces-changed push (`main/server-run.ts`).
 
 ## Why writes and streams stay on kubectl
 

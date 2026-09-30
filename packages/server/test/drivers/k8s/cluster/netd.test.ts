@@ -5,7 +5,7 @@
  * The DaemonSet's manifest *shape* is asserted through `ensureProxyResources`
  * in proxy-apply.test.ts, which is where production applies it; what these
  * cases pin is what netd resolves before applying — the images it will not
- * build, and the prefix a wrong value silently costs every worktree its
+ * build, and the prefix a wrong value silently costs every workspace its
  * egress.
  */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
@@ -129,7 +129,7 @@ describe('ensureNetd', () => {
   it('carries the veth prefix into the DaemonSet, so an override reaches the rules', async () => {
     // The prefix is what netd matches pod veths on. A value that resolves
     // nothing renders a redirect chain with no per-pod rules in it —
-    // indistinguishable from a healthy netd until a worktree tries to
+    // indistinguishable from a healthy netd until a workspace tries to
     // reach the internet.
     vi.stubEnv('YAAC_CNI_VETH_PREFIX', 'eni')
     await ensureNetd()

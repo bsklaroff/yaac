@@ -8,7 +8,7 @@ vi.mock('#log', () => ({ serverLog: vi.fn() }))
 import { adoptRefreshedToolCredentials, pushCredentialsToRuntime } from '#domain/auth'
 import { addHttpsCredential, assignProjectCredential } from '#domain/projects'
 import { closeDb, openDb, recordProject } from '#db'
-import { installFakeWorktreeDriver, resetWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { setDataDir } from '@yaac/shared/project-paths'
 import {
   PLACEHOLDER_ACCESS_TOKEN,
@@ -54,13 +54,13 @@ beforeEach(async () => {
   setDataDir(dataDir)
   await openDb()
   synced = []
-  installFakeWorktreeDriver({
+  installFakeWorkspaceDriver({
     syncCredentials: (bundle) => { synced.push(bundle); return Promise.resolve() },
   })
 })
 
 afterEach(async () => {
-  resetWorktreeDriver()
+  resetWorkspaceDriver()
   await closeDb()
   await fs.rm(dataDir, { recursive: true, force: true })
 })
@@ -95,7 +95,7 @@ describe('pushCredentialsToRuntime', () => {
     // runs at a time, and one more follows for whoever asked meanwhile —
     // reading the store after the write that asked.
     const gate: Array<() => void> = []
-    installFakeWorktreeDriver({
+    installFakeWorkspaceDriver({
       syncCredentials: (bundle) => new Promise<void>((resolve) => {
         synced.push(bundle)
         gate.push(resolve)
@@ -117,9 +117,9 @@ describe('pushCredentialsToRuntime', () => {
   it('never rejects on a runtime that refuses, but reports the failure to a caller that asks', async () => {
     // The write it followed already succeeded; a delete or replace still
     // needs to know the runtime holds the old secret.
-    installFakeWorktreeDriver({ syncCredentials: () => Promise.reject(new Error('no cluster')) })
+    installFakeWorkspaceDriver({ syncCredentials: () => Promise.reject(new Error('no cluster')) })
     await expect(pushCredentialsToRuntime()).resolves.toMatchObject({ message: 'no cluster' })
-    installFakeWorktreeDriver({ syncCredentials: () => Promise.resolve() })
+    installFakeWorkspaceDriver({ syncCredentials: () => Promise.resolve() })
     await expect(pushCredentialsToRuntime()).resolves.toBeUndefined()
   })
 })

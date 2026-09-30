@@ -5,9 +5,9 @@ import { ChevronIcon, LoadingIcon, PortIcon } from '#lib/icons'
 import { forwardDetectedPort, dismissDetectedPort } from '#lib/portsApi'
 
 /**
- * Detected-port badge for servers listening inside the worktree that aren't
+ * Detected-port badge for servers listening inside the workspace that aren't
  * forwarded; clicking it opens a popover listing the ports. Each row expands
- * to three actions — forward for just this running worktree, forward
+ * to three actions — forward for just this running workspace, forward
  * permanently for the project (persisted to yaac-config.json), or dismiss the
  * offer. The exposure host shown in the header is the server-reported one
  * (`forwardBindHost` on the snapshot — YAAC_FORWARD_BIND), NOT the page
@@ -21,14 +21,14 @@ import { forwardDetectedPort, dismissDetectedPort } from '#lib/portsApi'
  */
 export function UnforwardedPortsBadge({
   ports,
-  worktreeId,
+  workspaceId,
   exposeHost,
   iconSize,
   className,
 }: {
   ports: number[]
-  /** The worktree the listeners were detected in — the target of the actions. */
-  worktreeId: string
+  /** The workspace the listeners were detected in — the target of the actions. */
+  workspaceId: string
   /** The host this install's forwarder binds (snapshot `forwardBindHost`). */
   exposeHost: string
   iconSize: number
@@ -74,7 +74,7 @@ export function UnforwardedPortsBadge({
             data-[starting-style]:opacity-0 data-[ending-style]:opacity-0">
             <div className="px-2 pb-0.5 pt-1 text-[11px] font-medium text-text-faint">Detected ports</div>
             <div className="px-2 pb-1 text-[11px] text-text-faint">
-              Servers listening in the worktree. Forwarding exposes them at
+              Servers listening in the workspace. Forwarding exposes them at
               {' '}
               <span className="font-mono">
                 http://{exposeHost === '127.0.0.1' || exposeHost === '::1' ? 'localhost' : exposeHost}
@@ -111,16 +111,16 @@ export function UnforwardedPortsBadge({
                       <div className="flex flex-col pb-1 pl-2">
                         {[
                           {
-                            label: 'Forward for this worktree',
-                            action: () => forwardDetectedPort(worktreeId, port, { persist: false }),
+                            label: 'Forward for this workspace',
+                            action: () => forwardDetectedPort(workspaceId, port, { persist: false }),
                           },
                           {
                             label: 'Forward permanently for this project',
-                            action: () => forwardDetectedPort(worktreeId, port, { persist: true }),
+                            action: () => forwardDetectedPort(workspaceId, port, { persist: true }),
                           },
                           {
                             label: 'Dismiss',
-                            action: () => dismissDetectedPort(worktreeId, port),
+                            action: () => dismissDetectedPort(workspaceId, port),
                           },
                         ].map(({ label, action }) => (
                           <button

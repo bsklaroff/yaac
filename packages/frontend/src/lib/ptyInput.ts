@@ -3,8 +3,8 @@
  *
  * A phone keyboard has no Esc, Tab, Ctrl or arrow keys, and every agent TUI
  * needs all four — so the mobile pane grows an accessory key bar. That bar
- * lives in WorktreeView's chrome, while the PTY socket is private to the
- * WorktreeTerminal that owns it, so the two meet here rather than by threading
+ * lives in WorkspaceView's chrome, while the PTY socket is private to the
+ * WorkspaceTerminal that owns it, so the two meet here rather than by threading
  * a ref down through the pane layout.
  *
  * The registered sender routes through xterm's own `input()`, which is the
@@ -15,10 +15,10 @@
 
 const senders = new Map<string, (data: string) => void>()
 
-/** The registry key for a pane: the same worktree|target pair WorktreeView
+/** The registry key for a pane: the same workspace|target pair WorkspaceView
  *  uses for its keep-alive set. */
-export function paneKey(worktreeId: string, target: string): string {
-  return `${worktreeId}|${target}`
+export function paneKey(workspaceId: string, target: string): string {
+  return `${workspaceId}|${target}`
 }
 
 /** Register a pane's input sink; returns the deregistration function. */

@@ -32,7 +32,7 @@
 
 import { StringDecoder } from 'node:string_decoder'
 import { type StreamChild, type WorkspacePaths } from '#drivers/contract'
-import { worktreeDriver } from '#drivers/driver'
+import { workspaceDriver } from '#drivers/driver'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { acpLogDir } from '@yaac/shared/project-paths'
@@ -56,7 +56,7 @@ import type {
   AgentDriver,
   AgentLaunchSpec,
   AgentObservation,
-  DrivenWorktree,
+  DrivenWorkspace,
   LiveAgent,
 } from './drivers'
 import { agentSessionIdSchema, type AgentTool, type PermissionMode } from '@yaac/shared/types'
@@ -98,11 +98,11 @@ const DEFAULT_SWEEP_MS = 20_000
  * up", and both are resolved by looking again in a second.
  *
  * The cadence rises to `DEFAULT_SWEEP_MS` once every enumerated window is
- * attached — or has spent its `MAX_FAST_ATTACH_ATTEMPTS` — so an idle worktree
+ * attached — or has spent its `MAX_FAST_ATTACH_ATTEMPTS` — so an idle workspace
  * costs one cheap exec every 20s rather than one per second. The cost of
  * getting this wrong is not a slow log line: until the dial lands there is no
  * handshake, so no conversation id, no row, and no chat pane — a fresh ACP
- * worktree stares at acpd's own output for the length of one sweep.
+ * workspace stares at acpd's own output for the length of one sweep.
  */
 const EMPTY_SWEEP_MS = 1_000
 
@@ -115,7 +115,7 @@ const EMPTY_SWEEP_MS = 1_000
  * it every second forever costs an exec and a dial per second, per broken
  * window, for as long as the pod lives. It still gets re-dialed every
  * `DEFAULT_SWEEP_MS`, so a window that heals is picked up; it just stops
- * holding its worktree's whole connection at the fast cadence while it does
+ * holding its workspace's whole connection at the fast cadence while it does
  * not.
  *
  * Ten rather than a snug two or three, because the two sides of this budget
@@ -191,7 +191,7 @@ class AcpConnection implements AgentConnection {
   private readonly sweepMs: number
   private readonly commandTimeoutMs: number
   private readonly log: (msg: string) => void
-  private readonly dial: (session: DrivenWorktree, argv: string[]) => StreamChild
+  private readonly dial: (session: DrivenWorkspace, argv: string[]) => StreamChild
   private readonly recordedSessions: () => Promise<Array<{ handle: string; agentSessionId: string }>>
   private readonly readPermissionMode: () => Promise<PermissionMode | undefined>
   /**
@@ -211,14 +211,14 @@ class AcpConnection implements AgentConnection {
   private permissionMode: PermissionMode | undefined
 
   constructor(
-    private readonly session: DrivenWorktree,
+    private readonly session: DrivenWorkspace,
     private readonly sink: (obs: AgentObservation) => void,
     deps: AgentConnectDeps,
   ) {
     this.sweepMs = deps.heartbeatIntervalMs ?? DEFAULT_SWEEP_MS
     this.commandTimeoutMs = deps.commandTimeoutMs ?? DEFAULT_COMMAND_MS
     this.log = deps.log ?? serverLog
-    this.dial = deps.dial ?? ((s, argv) => worktreeDriver().dialCtrl(s.jobName, argv))
+    this.dial = deps.dial ?? ((s, argv) => workspaceDriver().dialCtrl(s.jobName, argv))
     this.recordedSessions = deps.recordedSessions ?? (() => Promise.resolve([]))
     this.readPermissionMode = deps.permissionMode ?? (() => Promise.resolve('bypass'))
     void this.sweep().then(() => this.rearm())
@@ -302,7 +302,7 @@ class AcpConnection implements AgentConnection {
     // Refreshed before the attach loop, so a conversation built on this sweep
     // handshakes with the posture the row holds now rather than the one the
     // connection started with. A failed read keeps the last known answer — the
-    // posture this worktree has been running under — rather than resolving to
+    // posture this workspace has been running under — rather than resolving to
     // anything: relaxing to `bypass` on a transient database error would
     // quietly stop enforcing what the user asked for, and before the first
     // successful read there is no answer to keep, so it stays unknown and every
@@ -310,7 +310,7 @@ class AcpConnection implements AgentConnection {
     try {
       this.permissionMode = await this.readPermissionMode()
     } catch (err) {
-      this.log(`[server] acp-driver ${this.session.worktreeId}: could not read the`
+      this.log(`[server] acp-driver ${this.session.workspaceId}: could not read the`
         + ` permission posture: ${String(err)}`)
     }
     for (const w of windows) {
@@ -330,14 +330,14 @@ class AcpConnection implements AgentConnection {
     if (windows.length === 0) {
       // Same rule as the TUI driver: an empty set is never published for a
       // session whose agent simply has not started, because it would read as
-      // "every agent exited" and deactivate the worktree's conversations.
+      // "every agent exited" and deactivate the workspace's conversations.
       return
     }
     this.publishAgents()
   }
 
   private async listAcpWindows(): Promise<Array<{ handle: string; tool: AgentTool }>> {
-    const driver = worktreeDriver()
+    const driver = workspaceDriver()
     const { stdout } = await driver.exec(
       this.session.jobName,
       `${tmuxCmd(driver.workspacePaths(this.session.jobName))} `
@@ -358,12 +358,12 @@ class AcpConnection implements AgentConnection {
       // socat, not a new streamd kind: `ctrl` already gives us a raw duplex to
       // an argv in the pod, and the agent's endpoint is a UNIX socket rather
       // than a port precisely so it stays out of the auto-forward port scan.
-      const paths = worktreeDriver().workspacePaths(this.session.jobName)
+      const paths = workspaceDriver().workspacePaths(this.session.jobName)
       child = this.dial(this.session, [
         'socat', '-', `UNIX-CONNECT:${acpSockPath(paths, handle)}`,
       ])
     } catch (err) {
-      this.log(`[server] acp-driver ${this.session.worktreeId}/${handle}: dial failed: ${String(err)}`)
+      this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: dial failed: ${String(err)}`)
       return
     }
 
@@ -374,9 +374,9 @@ class AcpConnection implements AgentConnection {
     const entry: Attached = { handle, tool, child }
     this.attached.set(handle, entry)
     // The id this conversation was LAUNCHED under, which is what a launch-time
-    // model was parked against: the recorded id on a resume, the worktree's own
+    // model was parked against: the recorded id on a resume, the workspace's own
     // on a fresh create (see the `launching` list session create builds).
-    const launchId = resumeSessionId ?? this.session.worktreeId
+    const launchId = resumeSessionId ?? this.session.workspaceId
     const profile = acpAdapterFor(tool)
     // Only an adapter that cannot be launched with a model has one waiting,
     // and only its first attach takes it.
@@ -388,12 +388,12 @@ class AcpConnection implements AgentConnection {
       // author the launch (it restarted between the two), so the adapter keeps
       // whatever its own settings name — for pi, a provider whose key the
       // egress proxy never swapped. Worth a line, since nothing else says so.
-      this.log(`[server] acp-driver ${this.session.worktreeId}/${handle}: no launch model`
+      this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: no launch model`
         + ' was parked for this conversation — the agent runs its own default')
     }
     entry.conversation = new AcpConversation({
       transport: ctrlTransport(child),
-      cwd: worktreeDriver().workspacePaths(this.session.jobName).workspaceDir,
+      cwd: workspaceDriver().workspacePaths(this.session.jobName).workspaceDir,
       permissionMode: () => this.permissionMode,
       profile,
       ...(launchModel !== undefined ? { launchModel } : {}),
@@ -411,7 +411,7 @@ class AcpConnection implements AgentConnection {
         // into paths and a restart's launch line: one of the wrong shape is
         // not recorded at all, and the conversation runs unnamed.
         if (!agentSessionIdSchema.safeParse(agentSessionId).success) {
-          this.log(`[server] acp-driver ${this.session.worktreeId}/${handle}: not recording malformed id ${JSON.stringify(agentSessionId.slice(0, 200))}`)
+          this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: not recording malformed id ${JSON.stringify(agentSessionId.slice(0, 200))}`)
           return
         }
         entry.agentSessionId = agentSessionId
@@ -419,7 +419,7 @@ class AcpConnection implements AgentConnection {
         // it onto the one the conversation will be addressed by from now on.
         void adoptLog(this.session, resumeSessionId, agentSessionId, this.log)
         if (entry.conversation) {
-          registerAcpConversation(this.session.slug, this.session.worktreeId, { handle, agentSessionId }, entry.conversation)
+          registerAcpConversation(this.session.slug, this.session.workspaceId, { handle, agentSessionId }, entry.conversation)
         }
         // The registry reconciler turns this into the conversation's DB row,
         // as it does a tui pane's named conversation.
@@ -456,33 +456,33 @@ class AcpConnection implements AgentConnection {
         // One conversation's stream dropped; the others are unaffected, and
         // acpd is still holding this one's agent. Drop the entry so the next
         // sweep re-attaches (and, on a reattach, skips the handshake).
-        this.log(`[server] acp-driver ${this.session.worktreeId}/${handle}: ${reason}`)
+        this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: ${reason}`)
         this.detach(entry, reason)
       },
     })
     // A synchronous failure above already detached; do not re-publish it.
     if (!this.attached.has(handle)) return
     entry.agentSessionId = resumeSessionId
-    registerAcpConversation(this.session.slug, this.session.worktreeId, {
+    registerAcpConversation(this.session.slug, this.session.workspaceId, {
       handle,
       ...(resumeSessionId !== undefined ? { agentSessionId: resumeSessionId } : {}),
     }, entry.conversation)
   }
 
-  /** Which of this worktree's records acpd keeps one conversation in. */
+  /** Which of this workspace's records acpd keeps one conversation in. */
   private record(agentSessionId: string): AcpRecordRef {
-    return { slug: this.session.slug, worktreeId: this.session.worktreeId, agentSessionId }
+    return { slug: this.session.slug, workspaceId: this.session.workspaceId, agentSessionId }
   }
 
   private detach(entry: Attached, reason: string): void {
     if (!this.attached.has(entry.handle)) return
     this.attached.delete(entry.handle)
-    unregisterAcpConversation(this.session.slug, this.session.worktreeId, {
+    unregisterAcpConversation(this.session.slug, this.session.workspaceId, {
       handle: entry.handle,
       ...(entry.agentSessionId !== undefined ? { agentSessionId: entry.agentSessionId } : {}),
     })
     entry.conversation?.close()
-    this.log(`[server] acp-driver ${this.session.worktreeId}/${entry.handle}: detached (${reason})`)
+    this.log(`[server] acp-driver ${this.session.workspaceId}/${entry.handle}: detached (${reason})`)
     // A conversation that dropped is one this connection owes a re-attach, and
     // the drop can land between sweeps — the dial into a window whose acpd is
     // still binding fails milliseconds after a sweep armed the settled
@@ -552,33 +552,33 @@ class AcpConnection implements AgentConnection {
  * is moved or replaced, never written through.
  */
 async function adoptLog(
-  session: DrivenWorktree,
+  session: DrivenWorkspace,
   launchedAs: string | undefined,
   agentSessionId: string,
   log: (msg: string) => void,
 ): Promise<void> {
-  const provisional = launchedAs ?? session.worktreeId
+  const provisional = launchedAs ?? session.workspaceId
   if (provisional === agentSessionId) return
-  const dir = acpLogDir(session.slug, session.worktreeId)
+  const dir = acpLogDir(session.slug, session.workspaceId)
   try {
     await fs.rename(path.join(dir, `${provisional}.jsonl`), path.join(dir, `${agentSessionId}.jsonl`))
   } catch (err) {
     // Losing the adoption costs this conversation its history on the next
     // attach, not the conversation itself — so it is logged, not fatal.
-    log(`[server] acp-driver ${session.worktreeId}: could not adopt log for ${agentSessionId}: ${String(err)}`)
+    log(`[server] acp-driver ${session.workspaceId}: could not adopt log for ${agentSessionId}: ${String(err)}`)
   }
 }
 
 /** Poll the registry until the connection's sweep has attached `handle`. */
 async function waitForConversation(
   slug: string,
-  worktreeId: string,
+  workspaceId: string,
   handle: string,
   timeoutMs: number,
 ): Promise<AcpConversation> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
-    const found = acpConversationByHandle(slug, worktreeId, handle)
+    const found = acpConversationByHandle(slug, workspaceId, handle)
     if (found !== undefined) return found
     if (Date.now() >= deadline) {
       throw new Error(`no ACP conversation attached on ${handle} after ${timeoutMs}ms`)
@@ -627,7 +627,7 @@ export const acpDriver: AgentDriver = {
   launchCmd(spec: AgentLaunchSpec): string {
     const adapter = acpAdapterFor(spec.tool)
     // An adapter that can only be told its model over the protocol is handed
-    // one here anyway: the launch is where the worktree's provider default is
+    // one here anyway: the launch is where the workspace's provider default is
     // known, and the handshake is where it can be delivered.
     parkAcpLaunchModel(spec.tool, spec.agentSessionId, acpLaunchModel(spec))
     // The record is named for the CONVERSATION, not the window: a window name
@@ -635,7 +635,7 @@ export const acpDriver: AgentDriver = {
     // later one down a slot — which under slot-naming would truncate a live
     // conversation's history onto another's file. On a resume the id is
     // already known and this is its final name; on a fresh create the agent has
-    // not minted one yet, so it starts under the worktree id and is adopted
+    // not minted one yet, so it starts under the workspace id and is adopted
     // once `session/new` answers (see `adoptLog`).
     // `--cwd` is the workspace the adapter runs in, named rather than
     // inherited: it is the one thing here that differs per runtime, and acpd
@@ -664,12 +664,12 @@ export const acpDriver: AgentDriver = {
    * is session create, which runs the moment the agent window is made and
    * before the driver's sweep has attached to it.
    */
-  async deliverPrompt(session: DrivenWorktree, handle: string, text: string): Promise<void> {
+  async deliverPrompt(session: DrivenWorkspace, handle: string, text: string): Promise<void> {
     const conversation = await waitForConversation(
-      session.slug, session.worktreeId, handle, PROMPT_ATTACH_TIMEOUT_MS,
+      session.slug, session.workspaceId, handle, PROMPT_ATTACH_TIMEOUT_MS,
     )
     void conversation.prompt(text).catch((err: unknown) => {
-      serverLog(`[server] acp-driver ${session.worktreeId}/${handle}: prompt failed: ${String(err)}`)
+      serverLog(`[server] acp-driver ${session.workspaceId}/${handle}: prompt failed: ${String(err)}`)
     })
   },
 }

@@ -1,57 +1,57 @@
 import { api } from './api'
 
 /**
- * The sidebar's worktree groups. Every call is addressed by (project, …)
+ * The sidebar's workspace groups. Every call is addressed by (project, …)
  * rather than through a container lookup, because a group outlives the
- * containers of its members: a stopped worktree can be dragged out of a group,
+ * containers of its members: a stopped workspace can be dragged out of a group,
  * and a pinned group can hold nothing but ghost rows.
  *
  * None of these are optimistic. Group state rides the snapshot, so the server
  * push is what re-renders the sidebar — the same way the row's rename does.
  */
 
-/** Create a group around a worktree; the founding member goes in with it. */
-export async function createWorktreeGroup(
+/** Create a group around a workspace; the founding member goes in with it. */
+export async function createWorkspaceGroup(
   projectSlug: string,
-  worktreeId: string,
+  workspaceId: string,
   name: string,
 ): Promise<{ groupId: string }> {
-  return await api.worktree.group.create.$post({ json: { projectSlug, worktreeId, name } })
+  return await api.workspace.group.create.$post({ json: { projectSlug, workspaceId, name } })
 }
 
-export async function renameWorktreeGroup(
+export async function renameWorkspaceGroup(
   projectSlug: string,
   groupId: string,
   name: string,
 ): Promise<void> {
-  await api.worktree.group.rename.$post({ json: { projectSlug, groupId, name } })
+  await api.workspace.group.rename.$post({ json: { projectSlug, groupId, name } })
 }
 
 /** Pin (or unpin) a group — whether it stays listed once its last live
- *  worktree stops. */
-export async function setWorktreeGroupPinned(
+ *  workspace stops. */
+export async function setWorkspaceGroupPinned(
   projectSlug: string,
   groupId: string,
   pinned: boolean,
 ): Promise<void> {
-  await api.worktree.group['set-pinned'].$post({ json: { projectSlug, groupId, pinned } })
+  await api.workspace.group['set-pinned'].$post({ json: { projectSlug, groupId, pinned } })
 }
 
-/** Delete a group. Its worktrees are not touched — they return to the default
+/** Delete a group. Its workspaces are not touched — they return to the default
  *  list, which is why this needs no confirmation. */
-export async function deleteWorktreeGroup(
+export async function deleteWorkspaceGroup(
   projectSlug: string,
   groupId: string,
 ): Promise<void> {
-  await api.worktree.group.delete.$post({ json: { projectSlug, groupId } })
+  await api.workspace.group.delete.$post({ json: { projectSlug, groupId } })
 }
 
-/** File a worktree under a group, or (with `null`) return it to the default
+/** File a workspace under a group, or (with `null`) return it to the default
  *  list. The drop half of sidebar drag-and-drop. */
-export async function setWorktreeGroup(
+export async function setWorkspaceGroup(
   projectSlug: string,
-  worktreeId: string,
+  workspaceId: string,
   groupId: string | null,
 ): Promise<void> {
-  await api.worktree['set-group'].$post({ json: { projectSlug, worktreeId, groupId } })
+  await api.workspace['set-group'].$post({ json: { projectSlug, workspaceId, groupId } })
 }

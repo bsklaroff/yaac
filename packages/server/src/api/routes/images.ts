@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { ServerError } from '@yaac/shared/errors'
-import { worktreeDriver } from '#drivers/driver'
+import { workspaceDriver } from '#drivers/driver'
 import { retryImageBuild } from '#domain/projects'
 import { requireDriverFeature } from '#http'
 
@@ -25,11 +25,11 @@ import { requireDriverFeature } from '#http'
 export const imageApp = new Hono()
   .get('/builds', (c) => {
     requireDriverFeature('images')
-    return c.json(worktreeDriver().listImageBuilds())
+    return c.json(workspaceDriver().listImageBuilds())
   })
   .get('/builds/:id/log', (c) => {
     requireDriverFeature('images')
-    const log = worktreeDriver().imageBuildLog(c.req.param('id'))
+    const log = workspaceDriver().imageBuildLog(c.req.param('id'))
     if (log === undefined) {
       throw new ServerError('NOT_FOUND', 'no such build')
     }
@@ -39,7 +39,7 @@ export const imageApp = new Hono()
   // backing off the prewarm sweep until its window lapses).
   .delete('/builds/:id', (c) => {
     requireDriverFeature('images')
-    worktreeDriver().dismissImageBuild(c.req.param('id'))
+    workspaceDriver().dismissImageBuild(c.req.param('id'))
     return c.body(null, 204)
   })
   // Retry forgets the entry and rebuilds now. What that means — which chain

@@ -1,7 +1,7 @@
-import { worktreeDriver } from '#drivers/driver'
+import { workspaceDriver } from '#drivers/driver'
 import { StatusWatcherManager, onLiveAgentsChanged, onStreamHealthLost } from '#runtime/status'
 import { restoreAllWorkspaceForwarders } from '#runtime/ports'
-import { findWorktreeRow, recordedConversationHandles } from '#db'
+import { findWorkspaceRow, recordedConversationHandles } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
 import { serverLog } from '#log'
 import type { ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
@@ -13,7 +13,7 @@ import type { ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
  * What is left here after the driver took its own attach is the part that
  * is genuinely the composition root's — the two things a driver may not
  * reach for itself. The status watchers are driver-neutral machinery
- * (`#runtime/status`), and they need a worktree's recorded conversations,
+ * (`#runtime/status`), and they need a workspace's recorded conversations,
  * which is a row; so main constructs them, feeds them the workspace set the
  * driver reports, and passes the db lookup down. Same for the forwarder
  * restore: machinery, over a project-config reader that is domain's.
@@ -44,22 +44,22 @@ function fireChange(source: ReconcileTrigger): void {
 export async function attachConvergence(opts: {
   onAttached: () => void
 }): Promise<void> {
-  // The ACP driver needs a worktree's already-recorded conversations to
+  // The ACP driver needs a workspace's already-recorded conversations to
   // re-address a live agent (and to `session/load` after a restart), and
   // which conversation sits on a handle is a row.
   const manager = new StatusWatcherManager({
     recordedSessions: (session) =>
-      recordedConversationHandles(session.slug, session.worktreeId),
+      recordedConversationHandles(session.slug, session.workspaceId),
     // And its posture, which for `acp` is not a launch argument but something
     // the adapter is told over the protocol — so the connection needs it, and
     // only the row knows it.
     //
     // A missing row answers `undefined` rather than a default. It is not
-    // evidence that this worktree runs unrestrained, and treating it as such
+    // evidence that this workspace runs unrestrained, and treating it as such
     // would auto-answer asks the row might well have said to forward — so the
     // absence is passed on as the absence it is.
     permissionMode: async (session) =>
-      (await findWorktreeRow(session.worktreeId))?.permissionMode,
+      (await findWorkspaceRow(session.workspaceId))?.permissionMode,
   })
   statusWatchers = manager
 
@@ -67,17 +67,17 @@ export async function attachConvergence(opts: {
   // reconcile steps owe work on, and no watch below can see it: for `acp`
   // the id comes from the in-pod handshake, well after the substrate
   // deltas that created the window have gone quiet. Without this the
-  // worktree's conversation rows — and so the webapp's chat pane — wait
+  // workspace's conversation rows — and so the webapp's chat pane — wait
   // for the 60s resync.
   onLiveAgentsChanged(() => fireChange('live-agents'))
   // Losing a driver connection retires the "stream healthy ⇒ tmux alive"
-  // shortcut for that worktree, which is precisely when the stale reaper's
+  // shortcut for that workspace, which is precisely when the stale reaper's
   // own probes are worth running. In-workspace tmux death is not a
   // substrate event, so without this the reaper would have nothing to
   // wake it.
   onStreamHealthLost(() => fireChange('status-streams'))
 
-  await worktreeDriver().start({
+  await workspaceDriver().start({
     trigger: fireChange,
     workspacesChanged: (workspaces: RuntimeHandle[]) => manager.sync(workspaces),
     // A server restart loses the in-memory forwarder registry while
@@ -99,25 +99,25 @@ export async function attachConvergence(opts: {
 
 /**
  * Stop everything push-fed, synchronously: the driver's watches and
- * streams, and the per-worktree status watchers over them.
+ * streams, and the per-workspace status watchers over them.
  *
  * Separate from `releaseConvergence` because the reconcile loop drains
  * between the two — the watches must be down before the drain, and the
- * forwarders must survive it (a reap tick still tears its worktree down).
+ * forwarders must survive it (a reap tick still tears its workspace down).
  */
 export function stopConvergence(): void {
   // Before the driver's own stop: each watcher holds a long-lived stream
   // that the driver's transport is underneath.
   statusWatchers?.stopAll()
   statusWatchers = null
-  worktreeDriver().stop()
+  workspaceDriver().stop()
 }
 
 /** Release what was borrowed from the host — the driver's forwarders and
  *  control tunnel. After the reconcile drain, because a reap tick in that
- *  drain still tears its worktree's forwards down. */
+ *  drain still tears its workspace's forwards down. */
 export function releaseConvergence(): void {
-  worktreeDriver().release()
+  workspaceDriver().release()
 }
 
 /** Subscribe to change notifications from the convergence watches. */

@@ -218,7 +218,7 @@ function testServerDeploymentManifest(
   // one FILE. The suite keeps several namespaces alive at once — a finished
   // file's namespace drains in the background while the next one starts —
   // so a production-sized request per file is what the scheduler runs out
-  // of first, on the same node that also has to fit worktree pods, builder
+  // of first, on the same node that also has to fit workspace pods, builder
   // pods and a proxy per namespace. The limit is left alone: it is not
   // scheduled against, and PGlite still lives in this process.
   container.resources = {
@@ -244,8 +244,8 @@ function testServerDeploymentManifest(
  * itself).
  *
  * Copying every `YAAC_*` instead would hand the pod the environment of
- * whatever shell started vitest — which, when that shell is a yaac worktree,
- * includes `YAAC_WORKTREE_ID` (the server would then read itself as running
+ * whatever shell started vitest — which, when that shell is a yaac workspace,
+ * includes `YAAC_WORKSPACE_ID` (the server would then read itself as running
  * INSIDE a session and stop requiring a credential) and the tailnet
  * `YAAC_ALLOWED_HOSTS` of an unrelated install. Copying the whole
  * environment would be worse still: `HOME`, `PATH` and `KUBECONFIG` name

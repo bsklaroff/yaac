@@ -45,11 +45,11 @@ describe('identify', () => {
   })
 
   // Every row of the identity rule, under a top-level server and then under
-  // one inside a worktree — which differ in exactly one row.
-  for (const worktree of [false, true]) {
-    describe(worktree ? 'inside a worktree' : 'top-level', () => {
+  // one inside a workspace — which differ in exactly one row.
+  for (const workspace of [false, true]) {
+    describe(workspace ? 'inside a workspace' : 'top-level', () => {
       const setup = (): Hono<IdentityEnv> => {
-        if (worktree) vi.stubEnv('YAAC_WORKTREE_ID', 'abcd1234')
+        if (workspace) vi.stubEnv('YAAC_WORKSPACE_ID', 'abcd1234')
         return appWithIdentity()
       }
 
@@ -87,18 +87,18 @@ describe('identify', () => {
         expect(nameless.status).toBe(401)
       })
 
-      it(worktree
+      it(workspace
         ? 'an unproxied request to another name is local — the outer install\'s forward'
         : 'an unproxied request to another name is refused, failing closed', async () => {
         const res = await setup().request('/api/whoami', { headers: { host: 'srv.tailnet.ts.net:9787' } })
-        if (worktree) expect(await res.json()).toEqual({ kind: 'local' })
+        if (workspace) expect(await res.json()).toEqual({ kind: 'local' })
         else expect(await refusal(res)).toMatch(/reached as srv\.tailnet\.ts\.net without tailscale serve/)
       })
     })
   }
 
-  it('ignores an empty YAAC_WORKTREE_ID', async () => {
-    vi.stubEnv('YAAC_WORKTREE_ID', '')
+  it('ignores an empty YAAC_WORKSPACE_ID', async () => {
+    vi.stubEnv('YAAC_WORKSPACE_ID', '')
     const res = await appWithIdentity().request('/api/whoami', { headers: { host: 'srv.tailnet.ts.net' } })
     expect(res.status).toBe(401)
   })

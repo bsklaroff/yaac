@@ -162,7 +162,7 @@ export function patchWheelPacing(term: Terminal): (() => void) | null {
   term.attachCustomWheelEventHandler((ev: WheelEvent): boolean => {
     // No mouse reporting active (a graceful detach, or a pane app turned it
     // off): decline, leaving it to stock xterm — which, with no scrollback
-    // (see WorktreeTerminal), has nothing to scroll.
+    // (see WorkspaceTerminal), has nothing to scroll.
     if (!coreMouse.areMouseEventsActive) return true
     // Same gating as stock reporting: consumeWheelEvent owns sensitivity,
     // trackpad damping, and the fractional-line carry — an event below the

@@ -1,25 +1,25 @@
 import type { JSX } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { useUiStore } from '#lib/store'
-import { getWorktreeGitStatus } from '#lib/changesApi'
+import { getWorkspaceGitStatus } from '#lib/changesApi'
 import { BranchIcon } from '#lib/icons'
 import { relativeAge } from '#lib/time'
-import type { WorktreeGitStatus } from '@yaac/shared/types'
+import type { WorkspaceGitStatus } from '@yaac/shared/types'
 
 /**
- * The strip above a worktree's panes: how many commits HEAD is ahead of and
+ * The strip above a workspace's panes: how many commits HEAD is ahead of and
  * behind its reference branch, said in words — a bare branch name there reads
  * as the branch you are on. The branch follows the Changes pane's pick, so the
  * two never disagree about what "base" means; without one it is the branch the
- * worktree forked from.
+ * workspace forked from.
  */
-export function GitStatusBar({ worktreeId }: { worktreeId: string }): JSX.Element {
-  const pick = useUiStore((s) => s.changesBase[worktreeId])
+export function GitStatusBar({ workspaceId }: { workspaceId: string }): JSX.Element {
+  const pick = useUiStore((s) => s.changesBase[workspaceId])
   // `dataUpdatedAt` is read so every poll re-renders, even one with an
   // unchanged answer: that is what moves "fetched 5m ago" along.
   const { data, dataUpdatedAt: _polled } = useQuery({
-    queryKey: ['git-status', worktreeId, pick ?? null],
-    queryFn: () => getWorktreeGitStatus(worktreeId, pick),
+    queryKey: ['git-status', workspaceId, pick ?? null],
+    queryFn: () => getWorkspaceGitStatus(workspaceId, pick),
     refetchInterval: 10_000,
     staleTime: 5_000,
     // A new pick keeps the old line until its answer lands.
@@ -58,7 +58,7 @@ function refLabel(ref: string): JSX.Element {
   )
 }
 
-function describe(base: string, comparison: WorktreeGitStatus['comparison']): JSX.Element {
+function describe(base: string, comparison: WorkspaceGitStatus['comparison']): JSX.Element {
   if (!comparison) return <>No branch named {refLabel(base)} to compare with</>
   const { ref, ahead, behind } = comparison
   const label = refLabel(ref)

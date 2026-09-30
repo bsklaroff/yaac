@@ -5,9 +5,9 @@ import path from 'node:path'
 
 // The real store stays — the candidates are its rows, and a race is asserted
 // on the row itself; only the title writer is stubbed, for the call assertions.
-vi.mock('#db/worktree-store', async (importOriginal) => ({
+vi.mock('#db/workspace-store', async (importOriginal) => ({
   ...(await importOriginal<typeof storeModule>()),
-  setWorktreeTitle: vi.fn(),
+  setWorkspaceTitle: vi.fn(),
 }))
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 // The one boundary this feature has: every download and every inference is a
@@ -25,24 +25,24 @@ import { _resetTitleSummarizerForTests } from '#domain/titles/title-summarizer'
 // and the title cap bounds what may be persisted.
 import { LLAMA_CPP_TAG } from '#domain/titles/llama-cpp'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
-import { getProjectWorktreeRows, setWorktreeTitle } from '#db/worktree-store'
+import { getProjectWorkspaceRows, setWorkspaceTitle } from '#db/workspace-store'
 import {
-  applyWorktreeEvent,
-  getQueuedWorktreeRow,
-  insertDraftWorktree,
-  insertQueuedWorktree,
-  listDraftWorktreeRows,
-  updateDraftWorktree,
-  updateQueuedWorktree,
+  applyWorkspaceEvent,
+  getQueuedWorkspaceRow,
+  insertDraftWorkspace,
+  insertQueuedWorkspace,
+  listDraftWorkspaceRows,
+  updateDraftWorkspace,
+  updateQueuedWorkspace,
 } from '#db'
-import type * as storeModule from '#db/worktree-store'
+import type * as storeModule from '#db/workspace-store'
 import { closeDb } from '#db/client'
 import { execFileAsync } from '#lib/shell'
 import type * as shellModule from '#lib/shell'
 import { serverLog } from '#log'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-const mockSetTitle = vi.mocked(setWorktreeTitle)
+const mockSetTitle = vi.mocked(setWorkspaceTitle)
 const mockExec = vi.mocked(execFileAsync)
 const mockLog = vi.mocked(serverLog)
 
@@ -93,24 +93,24 @@ function stubPlatform(platform: NodeJS.Platform, arch: string): void {
   Object.defineProperty(process, 'arch', { value: arch, configurable: true })
 }
 
-interface Seeded { projectSlug: string; worktreeId: string; prompt?: string; title?: string; stopped?: boolean }
+interface Seeded { projectSlug: string; workspaceId: string; prompt?: string; title?: string; stopped?: boolean }
 
 function session(overrides: Partial<Seeded> = {}): Seeded {
-  return { projectSlug: 'p', worktreeId: 's1', prompt: PROMPT, ...overrides }
+  return { projectSlug: 'p', workspaceId: 's1', prompt: PROMPT, ...overrides }
 }
 
-/** Record each worktree the way a create does: its row, then its first
+/** Record each workspace the way a create does: its row, then its first
  *  conversation carrying the opening message. */
-async function seed(...worktrees: Seeded[]): Promise<void> {
-  const real = await vi.importActual<typeof storeModule>('#db/worktree-store')
-  for (const { projectSlug, worktreeId, prompt, title, stopped } of worktrees) {
-    await applyWorktreeEvent({ type: 'worktree-created', projectSlug, worktreeId })
-    await applyWorktreeEvent({
-      type: 'sessions-launched', projectSlug, worktreeId,
-      sessions: [{ agentSessionId: `${worktreeId}-a`, tool: 'claude', firstPrompt: prompt }],
+async function seed(...workspaces: Seeded[]): Promise<void> {
+  const real = await vi.importActual<typeof storeModule>('#db/workspace-store')
+  for (const { projectSlug, workspaceId, prompt, title, stopped } of workspaces) {
+    await applyWorkspaceEvent({ type: 'workspace-created', projectSlug, workspaceId })
+    await applyWorkspaceEvent({
+      type: 'sessions-launched', projectSlug, workspaceId,
+      sessions: [{ agentSessionId: `${workspaceId}-a`, tool: 'claude', firstPrompt: prompt }],
     })
-    if (title !== undefined) await real.setWorktreeTitle(projectSlug, worktreeId, title)
-    if (stopped) await applyWorktreeEvent({ type: 'worktree-stopped', projectSlug, worktreeId })
+    if (title !== undefined) await real.setWorkspaceTitle(projectSlug, workspaceId, title)
+    if (stopped) await applyWorkspaceEvent({ type: 'workspace-stopped', projectSlug, workspaceId })
   }
 }
 
@@ -264,8 +264,8 @@ describe('reconcileGeneratedTitles', () => {
     // no content word with its prompt and would be worse than the fallback.
     reply = (input) => Promise.resolve(input.includes('parser') ? ' "..." ' : 'adolescent symphony')
     await seed(
-      session({ worktreeId: 'empty', prompt: 'the parser has a bug with nested arrays, please fix it today' }),
-      session({ worktreeId: 'halluc', prompt: PROMPT }),
+      session({ workspaceId: 'empty', prompt: 'the parser has a bug with nested arrays, please fix it today' }),
+      session({ workspaceId: 'halluc', prompt: PROMPT }),
     )
     await reconcileGeneratedTitles()
     await flush()
@@ -282,8 +282,8 @@ describe('reconcileGeneratedTitles', () => {
       // No content word (4+ chars) to judge by — kept as-is.
       : 'Fix it now')
     await seed(
-      session({ worktreeId: 'gha', prompt: 'set up a github actions workflow that runs lint and unit tests on every pull request' }),
-      session({ worktreeId: 'link', projectSlug: 'q', prompt: 'the build is failing on macos with a linker error about missing symbols, figure out why' }),
+      session({ workspaceId: 'gha', prompt: 'set up a github actions workflow that runs lint and unit tests on every pull request' }),
+      session({ workspaceId: 'link', projectSlug: 'q', prompt: 'the build is failing on macos with a linker error about missing symbols, figure out why' }),
     )
     await reconcileGeneratedTitles()
     await flush()
@@ -292,7 +292,7 @@ describe('reconcileGeneratedTitles', () => {
     expect(mockSetTitle).toHaveBeenCalledWith('q', 'link', 'Fix it now', { ifUntitled: true })
   })
 
-  it('serializes inference across worktrees and sets the runtime up once', async () => {
+  it('serializes inference across workspaces and sets the runtime up once', async () => {
     let inFlight = 0
     let maxInFlight = 0
     reply = async () => {
@@ -302,7 +302,7 @@ describe('reconcileGeneratedTitles', () => {
       inFlight -= 1
       return TITLE
     }
-    await seed(session(), session({ worktreeId: 's2', projectSlug: 'q' }))
+    await seed(session(), session({ workspaceId: 's2', projectSlug: 'q' }))
     await reconcileGeneratedTitles()
     await new Promise((r) => setTimeout(r, 50))
 
@@ -322,13 +322,13 @@ describe('reconcileGeneratedTitles', () => {
     expect(mockExec).not.toHaveBeenCalled()
   })
 
-  it('skips titled, promptless, and stopped worktrees, and prompts short enough to label themselves', async () => {
+  it('skips titled, promptless, and stopped workspaces, and prompts short enough to label themselves', async () => {
     await seedCache()
     await seed(
-      session({ worktreeId: 'titled', title: 'My session' }),
-      session({ worktreeId: 'no-prompt', prompt: undefined }),
-      session({ worktreeId: 'short', prompt: 'x'.repeat(48) }),
-      session({ worktreeId: 'stopped', stopped: true }),
+      session({ workspaceId: 'titled', title: 'My session' }),
+      session({ workspaceId: 'no-prompt', prompt: undefined }),
+      session({ workspaceId: 'short', prompt: 'x'.repeat(48) }),
+      session({ workspaceId: 'stopped', stopped: true }),
     )
     await reconcileGeneratedTitles()
     await flush()
@@ -369,23 +369,23 @@ describe('reconcileGeneratedTitles', () => {
 
   // A draft is titled from its prompt, straight into its own row, and gets
   // one fresh attempt per prompt it is saved with — unless the user titled it.
-  it('titles a draft worktree, and again once its prompt is edited', async () => {
+  it('titles a draft workspace, and again once its prompt is edited', async () => {
     await seedCache()
-    const draft = await insertDraftWorktree('p', {
+    const draft = await insertDraftWorkspace('p', {
       prompt: PROMPT, tool: 'claude', mode: 'tui', permissionMode: 'manual',
     })
-    await insertDraftWorktree('p', { prompt: 'short enough', tool: 'claude', mode: 'tui', permissionMode: 'manual' })
-    await insertDraftWorktree('p', { prompt: PROMPT, tool: 'claude', mode: 'tui', permissionMode: 'manual', title: 'Mine' })
+    await insertDraftWorkspace('p', { prompt: 'short enough', tool: 'claude', mode: 'tui', permissionMode: 'manual' })
+    await insertDraftWorkspace('p', { prompt: PROMPT, tool: 'claude', mode: 'tui', permissionMode: 'manual', title: 'Mine' })
     await reconcileGeneratedTitles()
     await flush()
     expect(inferences()).toHaveLength(1)
     const titleOf = async (): Promise<string | undefined> =>
-      (await listDraftWorktreeRows()).find((d) => d.id === draft.id)?.generatedTitle
+      (await listDraftWorkspaceRows()).find((d) => d.id === draft.id)?.generatedTitle
     expect(await titleOf()).toBe(TITLE)
 
     const edited = `${PROMPT}, and document the widget registry`
     reply = () => Promise.resolve('Document widget registry')
-    await updateDraftWorktree('p', draft.id, { prompt: edited, tool: 'claude', mode: 'tui', permissionMode: 'manual' })
+    await updateDraftWorkspace('p', draft.id, { prompt: edited, tool: 'claude', mode: 'tui', permissionMode: 'manual' })
     await reconcileGeneratedTitles()
     await flush()
     await reconcileGeneratedTitles()
@@ -393,28 +393,28 @@ describe('reconcileGeneratedTitles', () => {
     expect(inferences()).toHaveLength(2)
     expect(payloadOf(inferences()[1])).toContain(edited)
     expect(await titleOf()).toBe('Document widget registry')
-    // Worktree titles go through their own writer; a draft never touches it.
+    // Workspace titles go through their own writer; a draft never touches it.
     expect(mockSetTitle).not.toHaveBeenCalled()
   })
 
   // A queued entry is titled the same way, and re-titled when an edit
   // changes its prompt — unless the user titled it.
-  it('titles a queued worktree, and again once its prompt is edited', async () => {
+  it('titles a queued workspace, and again once its prompt is edited', async () => {
     await seedCache()
     const settings = {
       prompt: PROMPT, tool: 'claude', model: 'opus', mode: 'tui', permissionMode: 'manual', branch: 'main',
     } as const
-    const entry = await insertQueuedWorktree('p', { parentWorktreeId: 'w' }, settings)
-    await insertQueuedWorktree('p', { parentWorktreeId: 'w' }, { ...settings, title: 'Mine' })
+    const entry = await insertQueuedWorkspace('p', { parentWorkspaceId: 'w' }, settings)
+    await insertQueuedWorkspace('p', { parentWorkspaceId: 'w' }, { ...settings, title: 'Mine' })
     await reconcileGeneratedTitles()
     await flush()
     expect(inferences()).toHaveLength(1)
-    const titleOf = async (): Promise<string | undefined> => (await getQueuedWorktreeRow(entry.id))?.generatedTitle
+    const titleOf = async (): Promise<string | undefined> => (await getQueuedWorkspaceRow(entry.id))?.generatedTitle
     expect(await titleOf()).toBe(TITLE)
 
     const edited = `${PROMPT}, and document the widget registry`
     reply = () => Promise.resolve('Document widget registry')
-    await updateQueuedWorktree(entry.id, { ...settings, prompt: edited })
+    await updateQueuedWorkspace(entry.id, { ...settings, prompt: edited })
     await reconcileGeneratedTitles()
     await flush()
     expect(inferences()).toHaveLength(2)
@@ -423,8 +423,8 @@ describe('reconcileGeneratedTitles', () => {
   })
 
   it('keeps a rename that lands while the model is still running', async () => {
-    const real = await vi.importActual<typeof storeModule>('#db/worktree-store')
-    mockSetTitle.mockImplementation(real.setWorktreeTitle)
+    const real = await vi.importActual<typeof storeModule>('#db/workspace-store')
+    mockSetTitle.mockImplementation(real.setWorkspaceTitle)
     await seedCache()
     let release!: (title: string) => void
     reply = () => new Promise<string>((r) => { release = r })
@@ -432,11 +432,11 @@ describe('reconcileGeneratedTitles', () => {
 
     await reconcileGeneratedTitles()
     await flush()
-    await real.setWorktreeTitle('p', 's1', 'my rename')
+    await real.setWorkspaceTitle('p', 's1', 'my rename')
     release(TITLE)
     await flush()
 
-    expect((await getProjectWorktreeRows('p')).get('s1')?.title).toBe('my rename')
+    expect((await getProjectWorkspaceRows('p')).get('s1')?.title).toBe('my rename')
   })
 
   it('vendors the OpenMP runtime into the cache when the host lacks it', async () => {
@@ -463,7 +463,7 @@ describe('reconcileGeneratedTitles', () => {
     await seedCache()
     openMpPresent = false
     aptAvailable = false // no apt, or an index too stale to resolve it
-    await seed(session(), session({ worktreeId: 's2', projectSlug: 'q' }))
+    await seed(session(), session({ workspaceId: 's2', projectSlug: 'q' }))
     await reconcileGeneratedTitles()
     await flush()
 
@@ -478,7 +478,7 @@ describe('reconcileGeneratedTitles', () => {
 
   it('logs a setup failure once and fast-fails the rest of the backoff window', async () => {
     mockExec.mockRejectedValue(new Error('curl: (6) Could not resolve host'))
-    await seed(session(), session({ worktreeId: 's2', projectSlug: 'q' }))
+    await seed(session(), session({ workspaceId: 's2', projectSlug: 'q' }))
     await reconcileGeneratedTitles()
     await flush()
 
@@ -509,13 +509,13 @@ describe('reconcileGeneratedTitles', () => {
   it('logs an inference failure and keeps the runtime cached for the next session', async () => {
     await seedCache()
     reply = () => Promise.reject(new Error('llama-completion exited 1'))
-    await seed(session(), session({ worktreeId: 's2', projectSlug: 'q' }))
+    await seed(session(), session({ workspaceId: 's2', projectSlug: 'q' }))
     await reconcileGeneratedTitles()
     await flush()
 
     expect(mockLog).toHaveBeenCalledWith(expect.stringContaining('[titles] inference failed'))
     expect(mockSetTitle).not.toHaveBeenCalled()
-    // Setup succeeded, so both worktrees reached the model.
+    // Setup succeeded, so both workspaces reached the model.
     expect(inferences()).toHaveLength(2)
   })
 

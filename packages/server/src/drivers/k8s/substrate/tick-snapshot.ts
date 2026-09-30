@@ -1,4 +1,4 @@
-import { listWorktreeJobs, listWorktreePods, type JobInfo, type PodInfo } from './pods'
+import { listWorkspaceJobs, listWorkspacePods, type JobInfo, type PodInfo } from './pods'
 import { getActiveClusterCache } from './cluster-cache'
 
 /**
@@ -39,10 +39,10 @@ export function createTickSnapshot(resync = true): TickSnapshot {
   return {
     resync,
     pods: () => get('pods',
-      () => (cache?.healthy('worktree-pods') ? cache.worktreePods() : null),
-      () => listWorktreePods()),
+      () => (cache?.healthy('workspace-pods') ? cache.workspacePods() : null),
+      () => listWorkspacePods()),
     jobs: () => get('jobs',
-      () => (cache?.healthy('worktree-jobs') ? cache.worktreeJobs() : null),
-      () => listWorktreeJobs()),
+      () => (cache?.healthy('workspace-jobs') ? cache.workspaceJobs() : null),
+      () => listWorkspaceJobs()),
   }
 }

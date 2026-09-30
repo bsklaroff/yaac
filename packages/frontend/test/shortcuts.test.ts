@@ -53,14 +53,14 @@ describe('SHORTCUTS registry', () => {
 
   it('marks the four directional cyclers, and only those, as CYCLE_IDS', () => {
     expect([...CYCLE_IDS].sort()).toEqual(
-      ['next-terminal', 'next-worktree', 'prev-terminal', 'prev-worktree'],
+      ['next-terminal', 'next-workspace', 'prev-terminal', 'prev-workspace'],
     )
   })
 })
 
 describe('isShortcutId', () => {
   it('accepts known ids and rejects others', () => {
-    expect(isShortcutId('new-worktree')).toBe(true)
+    expect(isShortcutId('new-workspace')).toBe(true)
     expect(isShortcutId('next-terminal')).toBe(true)
     expect(isShortcutId('nope')).toBe(false)
     expect(isShortcutId('')).toBe(false)
@@ -99,16 +99,16 @@ describe('chordMatches', () => {
 
 describe('matchShortcut', () => {
   it('maps each default chord to its command', () => {
-    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyN'))).toBe('new-worktree')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyN'))).toBe('new-workspace')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyT'))).toBe('new-shell')
-    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyD'))).toBe('delete-worktree')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyD'))).toBe('delete-workspace')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyW'))).toBe('kill-terminal')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyG'))).toBe('open-changes')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyP'))).toBe('open-preview')
     expect(matchShortcut(DEFAULT_BINDINGS, key('Comma'))).toBe('view-tabs')
     expect(matchShortcut(DEFAULT_BINDINGS, key('Period'))).toBe('view-tiles')
-    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyK'))).toBe('prev-worktree')
-    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyJ'))).toBe('next-worktree')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyK'))).toBe('prev-workspace')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyJ'))).toBe('next-workspace')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyH'))).toBe('prev-terminal')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyL'))).toBe('next-terminal')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyH', { shiftKey: true }))).toBe('move-terminal-left')
@@ -128,20 +128,20 @@ describe('matchShortcut', () => {
   })
 
   it('honors a rebind', () => {
-    const bindings = { ...DEFAULT_BINDINGS, 'new-worktree': chord('KeyY') }
-    expect(matchShortcut(bindings, key('KeyY'))).toBe('new-worktree')
+    const bindings = { ...DEFAULT_BINDINGS, 'new-workspace': chord('KeyY') }
+    expect(matchShortcut(bindings, key('KeyY'))).toBe('new-workspace')
     expect(matchShortcut(bindings, key('KeyN'))).toBeNull()
   })
 })
 
 describe('cycleDeltaFor', () => {
   it('maps prev/next cyclers to -1/1 and non-cyclers to null', () => {
-    expect(cycleDeltaFor('prev-worktree')).toBe(-1)
+    expect(cycleDeltaFor('prev-workspace')).toBe(-1)
     expect(cycleDeltaFor('prev-terminal')).toBe(-1)
-    expect(cycleDeltaFor('next-worktree')).toBe(1)
+    expect(cycleDeltaFor('next-workspace')).toBe(1)
     expect(cycleDeltaFor('next-terminal')).toBe(1)
-    expect(cycleDeltaFor('new-worktree')).toBeNull()
-    expect(cycleDeltaFor('delete-worktree')).toBeNull()
+    expect(cycleDeltaFor('new-workspace')).toBeNull()
+    expect(cycleDeltaFor('delete-workspace')).toBeNull()
   })
 })
 
@@ -179,22 +179,22 @@ describe('isModifierCode', () => {
 
 describe('validateChord', () => {
   it('rejects a lone modifier keypress', () => {
-    const r = validateChord(chord('AltLeft'), DEFAULT_BINDINGS, 'new-worktree')
+    const r = validateChord(chord('AltLeft'), DEFAULT_BINDINGS, 'new-workspace')
     expect(r.ok).toBe(false)
   })
 
   it('requires a real modifier — Alt, Ctrl, or Meta', () => {
-    expect(validateChord(chord('KeyY', { alt: false }), DEFAULT_BINDINGS, 'new-worktree').ok).toBe(false)
+    expect(validateChord(chord('KeyY', { alt: false }), DEFAULT_BINDINGS, 'new-workspace').ok).toBe(false)
     // Shift alone is not enough.
-    expect(validateChord(chord('KeyY', { alt: false, shift: true }), DEFAULT_BINDINGS, 'new-worktree').ok).toBe(false)
-    expect(validateChord(chord('KeyY'), DEFAULT_BINDINGS, 'new-worktree').ok).toBe(true)
-    expect(validateChord(chord('KeyY', { alt: false, ctrl: true }), DEFAULT_BINDINGS, 'new-worktree').ok).toBe(true)
+    expect(validateChord(chord('KeyY', { alt: false, shift: true }), DEFAULT_BINDINGS, 'new-workspace').ok).toBe(false)
+    expect(validateChord(chord('KeyY'), DEFAULT_BINDINGS, 'new-workspace').ok).toBe(true)
+    expect(validateChord(chord('KeyY', { alt: false, ctrl: true }), DEFAULT_BINDINGS, 'new-workspace').ok).toBe(true)
   })
 
   it('rejects a chord already bound to a different command, with its label', () => {
-    const r = validateChord(chord('KeyD'), DEFAULT_BINDINGS, 'new-worktree')
+    const r = validateChord(chord('KeyD'), DEFAULT_BINDINGS, 'new-workspace')
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.reason).toContain('Stop worktree')
+    if (!r.ok) expect(r.reason).toContain('Stop workspace')
   })
 
   it('refuses the platform’s save chord, and only that platform’s', () => {
@@ -241,7 +241,7 @@ describe('validateChord', () => {
   })
 
   it('allows rebinding a command to its own current chord', () => {
-    expect(validateChord(chord('KeyN'), DEFAULT_BINDINGS, 'new-worktree').ok).toBe(true)
+    expect(validateChord(chord('KeyN'), DEFAULT_BINDINGS, 'new-workspace').ok).toBe(true)
   })
 })
 
@@ -257,11 +257,11 @@ describe('isChord', () => {
 describe('mergeBindings', () => {
   it('overlays known ids and ignores unknown ids and malformed chords', () => {
     const merged = mergeBindings({
-      'new-worktree': chord('KeyY'),
+      'new-workspace': chord('KeyY'),
       'bogus-id': chord('KeyZ'),
       'kill-terminal': { code: 'KeyW' }, // malformed — dropped
     })
-    expect(merged['new-worktree']).toEqual(chord('KeyY'))
+    expect(merged['new-workspace']).toEqual(chord('KeyY'))
     expect(merged['kill-terminal']).toEqual(DEFAULT_BINDINGS['kill-terminal'])
     expect((merged as Record<string, unknown>)['bogus-id']).toBeUndefined()
   })
@@ -281,16 +281,16 @@ describe('mergeBindings', () => {
   it('lets an override win over a default it collides with, leaving that command unbound', () => {
     // Alt+T / Alt+G became the new-shell / open-changes defaults after
     // overrides on them could already have been saved.
-    const merged = mergeBindings({ 'new-worktree': chord('KeyT'), 'view-tiles': chord('KeyG') })
+    const merged = mergeBindings({ 'new-workspace': chord('KeyT'), 'view-tiles': chord('KeyG') })
     expect(merged['new-shell']).toEqual(UNBOUND)
     expect(merged['open-changes']).toEqual(UNBOUND)
-    expect(matchShortcut(merged, key('KeyT'))).toBe('new-worktree')
+    expect(matchShortcut(merged, key('KeyT'))).toBe('new-workspace')
     expect(matchShortcut(merged, key('KeyG'))).toBe('view-tiles')
     // An unbound command matches nothing, even a keydown with an empty code.
     expect(matchShortcut(merged, key('', { altKey: false }))).toBeNull()
     expect(formatChord(UNBOUND)).toBe('Unset')
     // Two overrides never unbind each other's (overridden) command.
-    expect(mergeBindings({ 'new-shell': chord('KeyY'), 'new-worktree': chord('KeyT') })['new-shell'])
+    expect(mergeBindings({ 'new-shell': chord('KeyY'), 'new-workspace': chord('KeyT') })['new-shell'])
       .toEqual(chord('KeyY'))
   })
 

@@ -37,7 +37,7 @@ export const TEST_CLI_DIR = path.join(REPO_ROOT, 'dist-test')
  * bundle. It also means these suites exercise the artifact users actually
  * run — including its bundled-mode paths, where PACKAGE_ROOT is the
  * directory holding cli.js and the migrations, k8s manifests, builtin skills
- * and worktree-bin scripts are read from the copies beside it. That is why
+ * and workspace-bin scripts are read from the copies beside it. That is why
  * the snapshot is the whole of dist/ and not just cli.js.
  */
 export const TEST_CLI_ENTRY = path.join(TEST_CLI_DIR, 'cli.js')

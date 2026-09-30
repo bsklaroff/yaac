@@ -14,8 +14,8 @@ import { AGENT_CLIS, type ToolInstallView } from '@yaac/shared/types'
  *    `~/.local/bin`), told the version to install.
  *  - codex: `npm install -g @openai/codex@<version>`.
  *
- * Both at the version in `AGENT_CLIS`, the release worktrees run (a
- * containerless worktree runs yaac's own install of it, not this one). No
+ * Both at the version in `AGENT_CLIS`, the release workspaces run (a
+ * containerless workspace runs yaac's own install of it, not this one). No
  * Homebrew fallback for codex — a formula installs whatever is current and
  * cannot be pinned.
  *

@@ -13,8 +13,8 @@ import {
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import { AGENT_TOOLS, type AgentTool, type PermissionMode } from '@yaac/shared/types'
 
-import { installFakeWorktreeDriver, workspacePathsFixture } from '@yaac/test-utils/fake-driver'
-import { WorkspaceExecError, type WorktreeDriver } from '#drivers/contract'
+import { installFakeWorkspaceDriver, workspacePathsFixture } from '@yaac/test-utils/fake-driver'
+import { WorkspaceExecError, type WorkspaceDriver } from '#drivers/contract'
 
 interface OpencodeConfig {
   model?: string
@@ -36,9 +36,9 @@ const TMUX = `tmux -S ${PATHS.tmuxSock}`
 // Mocked at the contract boundary. `verifyAgentWindowAlive` branches on
 // WorkspaceExecError to tell "the probe ran and the window is gone" apart
 // from "the workspace was never reached", so the real class is used.
-const podExec = vi.fn<WorktreeDriver['exec']>()
+const podExec = vi.fn<WorkspaceDriver['exec']>()
   .mockResolvedValue({ stdout: '', stderr: '' })
-beforeEach(() => { installFakeWorktreeDriver({ exec: podExec }) })
+beforeEach(() => { installFakeWorkspaceDriver({ exec: podExec }) })
 
 describe('buildAgentCmd', () => {
   describe('codex tool', () => {
@@ -47,12 +47,12 @@ describe('buildAgentCmd', () => {
     const bare = (cmd: string): string => cmd.replace(/ -c "(?:[^"\\]|\\.)*"/g, '')
 
     it('omits prompt arguments', () => {
-      const cmd = buildAgentCmd({ tool: 'codex', worktreeId: 'sess-1', permissionMode: 'bypass' })
+      const cmd = buildAgentCmd({ tool: 'codex', workspaceId: 'sess-1', permissionMode: 'bypass' })
       expect(bare(cmd)).toBe('codex --dangerously-bypass-hook-trust --yolo')
     })
 
     it('resumes the conversation it is given', () => {
-      const cmd = buildAgentCmd({ tool: 'codex', worktreeId: 'sess-1', resume: true, permissionMode: 'bypass' })
+      const cmd = buildAgentCmd({ tool: 'codex', workspaceId: 'sess-1', resume: true, permissionMode: 'bypass' })
       expect(bare(cmd)).toBe('codex --dangerously-bypass-hook-trust --yolo resume sess-1')
     })
 
@@ -61,7 +61,7 @@ describe('buildAgentCmd', () => {
       // command is run with `codex` swapped for a printer of its argv.
       const cmd = buildAgentCmd({
         tool: 'codex',
-        worktreeId: 'sess-1',
+        workspaceId: 'sess-1',
         permissionMode: 'accept-edits',
         paths: { workspaceDir: '/data/wt' },
       })
@@ -88,12 +88,12 @@ describe('buildAgentCmd', () => {
     })
 
     it('inserts --model when a model override is given', () => {
-      const cmd = buildAgentCmd({ tool: 'codex', worktreeId: 'sess-1', resume: false, model: 'gpt-5.2-codex', permissionMode: 'bypass' })
+      const cmd = buildAgentCmd({ tool: 'codex', workspaceId: 'sess-1', resume: false, model: 'gpt-5.2-codex', permissionMode: 'bypass' })
       expect(bare(cmd)).toBe('codex --dangerously-bypass-hook-trust --yolo --model gpt-5.2-codex')
     })
 
     it('places --model after the resume subcommand (codex resume parses it)', () => {
-      const cmd = buildAgentCmd({ tool: 'codex', worktreeId: 'abc', resume: true, model: 'gpt-5.2-codex', permissionMode: 'bypass' })
+      const cmd = buildAgentCmd({ tool: 'codex', workspaceId: 'abc', resume: true, model: 'gpt-5.2-codex', permissionMode: 'bypass' })
       expect(cmd).toMatch(/ --yolo resume abc --model gpt-5\.2-codex$/)
     })
   })
@@ -102,18 +102,18 @@ describe('buildAgentCmd', () => {
     // The posture rides in OPENCODE_CONFIG_CONTENT (asserted below); these
     // cases are about the launch itself.
     it('runs the TUI over a private server of its own', () => {
-      const cmd = buildAgentCmd({ tool: 'opencode', worktreeId: 'sess-1', permissionMode: 'bypass' })
+      const cmd = buildAgentCmd({ tool: 'opencode', workspaceId: 'sess-1', permissionMode: 'bypass' })
       expect(cmd).toMatch(/ opencode --standalone$/)
     })
 
     it('resumes a session by id', () => {
-      const cmd = buildAgentCmd({ tool: 'opencode', worktreeId: 'ses_1', resume: true, permissionMode: 'bypass' })
+      const cmd = buildAgentCmd({ tool: 'opencode', workspaceId: 'ses_1', resume: true, permissionMode: 'bypass' })
       expect(cmd).toMatch(/^OPENCODE_CONFIG_CONTENT=.* opencode --standalone --session ses_1$/)
     })
 
     it('carries a provider/model override in the config, never as a flag', () => {
       // The TUI has no --model flag and refuses an unknown one outright.
-      const cmd = buildAgentCmd({ tool: 'opencode', worktreeId: 'sess-1', resume: false, model: 'anthropic/claude-opus-4-8', permissionMode: 'bypass' })
+      const cmd = buildAgentCmd({ tool: 'opencode', workspaceId: 'sess-1', resume: false, model: 'anthropic/claude-opus-4-8', permissionMode: 'bypass' })
       expect(cmd).not.toContain('--model')
       expect(opencodeConfigOf(cmd).model).toBe('anthropic/claude-opus-4-8')
     })
@@ -131,27 +131,27 @@ describe('buildAgentCmd', () => {
       `${piCmd} 2> >(sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*Warning: No project session found with id .*creating a new session with that id\\./{//d}" >&2)`
 
     it('uses --approve, the default provider model, and --session-id when none is given', () => {
-      const cmd = buildAgentCmd({ tool: 'pi', worktreeId: 'sess-1', permissionMode: 'bypass' })
+      const cmd = buildAgentCmd({ tool: 'pi', workspaceId: 'sess-1', permissionMode: 'bypass' })
       expect(cmd).toBe(wrapped(`pi --approve --model ${defaultModel} --session-id sess-1`))
     })
 
     it('uses the given provider default model', () => {
-      const cmd = buildAgentCmd({ tool: 'pi', worktreeId: 'sess-1', resume: false, piProvider: 'anthropic', permissionMode: 'bypass' })
+      const cmd = buildAgentCmd({ tool: 'pi', workspaceId: 'sess-1', resume: false, piProvider: 'anthropic', permissionMode: 'bypass' })
       expect(cmd).toBe(wrapped(`pi --approve --model ${anthropicModel} --session-id sess-1`))
     })
 
     it('addresses the session by id when resuming (same command as create)', () => {
-      const cmd = buildAgentCmd({ tool: 'pi', worktreeId: 'sess-1', resume: true, piProvider: 'anthropic', permissionMode: 'bypass' })
+      const cmd = buildAgentCmd({ tool: 'pi', workspaceId: 'sess-1', resume: true, piProvider: 'anthropic', permissionMode: 'bypass' })
       expect(cmd).toBe(wrapped(`pi --approve --model ${anthropicModel} --session-id sess-1`))
     })
 
     it('prefers an explicit model override over the provider default', () => {
-      const cmd = buildAgentCmd({ tool: 'pi', worktreeId: 'sess-1', resume: false, piProvider: 'anthropic', model: 'openai/gpt-5.2', permissionMode: 'bypass' })
+      const cmd = buildAgentCmd({ tool: 'pi', workspaceId: 'sess-1', resume: false, piProvider: 'anthropic', model: 'openai/gpt-5.2', permissionMode: 'bypass' })
       expect(cmd).toBe(wrapped('pi --approve --model openai/gpt-5.2 --session-id sess-1'))
     })
 
     it('filters the fresh-run warning without single quotes (survives respawn wrapper)', () => {
-      const cmd = buildAgentCmd({ tool: 'pi', worktreeId: 'sess-1', permissionMode: 'bypass' })
+      const cmd = buildAgentCmd({ tool: 'pi', workspaceId: 'sess-1', permissionMode: 'bypass' })
       // Must never contain a single quote: it is embedded in tmux
       // `respawn-window '<cmd>'`, itself passed through the host `sh -c`. The
       // sed pattern uses `.*` instead of the literal quotes around the id so
@@ -169,25 +169,25 @@ describe('buildAgentCmd', () => {
     // `env -u TMUX` is load-bearing, not cosmetic: claude animates the spinner
     // into its title only when it cannot see `$TMUX`, and that title is the
     // whole status signal for a claude pane. If this prefix is dropped, every
-    // claude worktree reads `waiting` forever and nothing fails — so it is
+    // claude workspace reads `waiting` forever and nothing fails — so it is
     // asserted on every claude launch shape below, not just once.
     it('hides $TMUX so the title keeps animating, and omits prompt flags', () => {
-      const cmd = buildAgentCmd({ tool: 'claude', worktreeId: 'sess-1', permissionMode: 'bypass' })
+      const cmd = buildAgentCmd({ tool: 'claude', workspaceId: 'sess-1', permissionMode: 'bypass' })
       expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --session-id sess-1')
     })
 
     it('swaps --session-id for --resume when resuming', () => {
-      const cmd = buildAgentCmd({ tool: 'claude', worktreeId: 'sess-1', resume: true, permissionMode: 'bypass' })
+      const cmd = buildAgentCmd({ tool: 'claude', workspaceId: 'sess-1', resume: true, permissionMode: 'bypass' })
       expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --resume sess-1')
     })
 
     it('inserts --model when a model override is given', () => {
-      const cmd = buildAgentCmd({ tool: 'claude', worktreeId: 'sess-1', resume: false, model: 'claude-opus-4-8', permissionMode: 'bypass' })
+      const cmd = buildAgentCmd({ tool: 'claude', workspaceId: 'sess-1', resume: false, model: 'claude-opus-4-8', permissionMode: 'bypass' })
       expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --model claude-opus-4-8 --session-id sess-1')
     })
 
     it('combines a model override with resume', () => {
-      const cmd = buildAgentCmd({ tool: 'claude', worktreeId: 'sess-1', resume: true, model: 'opus', permissionMode: 'bypass' })
+      const cmd = buildAgentCmd({ tool: 'claude', workspaceId: 'sess-1', resume: true, model: 'opus', permissionMode: 'bypass' })
       expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --model opus --resume sess-1')
     })
   })
@@ -211,7 +211,7 @@ describe('buildAgentCmd', () => {
     ]
 
     it.each(CASES)('%s in %s mode', (tool, permissionMode, expected) => {
-      expect(buildAgentCmd({ tool, worktreeId: 'sess-1', permissionMode })).toContain(expected)
+      expect(buildAgentCmd({ tool, workspaceId: 'sess-1', permissionMode })).toContain(expected)
     })
 
     // opencode's rules are appended over a base policy whose first rule is
@@ -223,7 +223,7 @@ describe('buildAgentCmd', () => {
     // outright, which would leave a dead window.
     it('spells every opencode posture in rules opencode actually reads', () => {
       const postureOf = (permissionMode: PermissionMode): OpencodeConfig => {
-        const cmd = buildAgentCmd({ tool: 'opencode', worktreeId: 's', permissionMode })
+        const cmd = buildAgentCmd({ tool: 'opencode', workspaceId: 's', permissionMode })
         // Escaped double quotes, never single ones: the whole command is
         // embedded in `respawn-window '<cmd>'`, and bare braces would hit zsh
         // brace expansion before opencode ever saw them.
@@ -264,7 +264,7 @@ describe('buildAgentCmd', () => {
     // vocabulary read off the pinned binary rather than trusted to read right.
     it('names only actions the pinned opencode binary knows', () => {
       for (const mode of ['bypass', 'accept-edits', 'manual', 'plan'] as const) {
-        const cmd = buildAgentCmd({ tool: 'opencode', worktreeId: 's', permissionMode: mode })
+        const cmd = buildAgentCmd({ tool: 'opencode', workspaceId: 's', permissionMode: mode })
         for (const r of opencodeConfigOf(cmd).permissions ?? []) {
           expect(OPENCODE_ACTIONS).toContain(r.action)
         }
@@ -277,7 +277,7 @@ describe('buildAgentCmd', () => {
     // that does not survive leaves opencode reading a broken value — and a
     // config value opencode cannot parse fails OPEN.
     it('delivers the opencode posture through the shell it is embedded in', () => {
-      const cmd = buildAgentCmd({ tool: 'opencode', worktreeId: 's', permissionMode: 'manual' })
+      const cmd = buildAgentCmd({ tool: 'opencode', workspaceId: 's', permissionMode: 'manual' })
       const env = /^(OPENCODE_CONFIG_CONTENT=\S+)/.exec(cmd)?.[1] ?? ''
       // Exactly how it travels: single-quoted inside the tmux argument, which
       // a shell then unwraps and runs.
@@ -285,28 +285,28 @@ describe('buildAgentCmd', () => {
       expect(JSON.parse(out) as OpencodeConfig).toEqual(opencodeConfigOf(cmd))
     })
 
-    // A posture the tool does not have can still reach here off a worktree
+    // A posture the tool does not have can still reach here off a workspace
     // row written by a different build. Refusing would strand the checkout,
     // so each falls back to the most permissive posture that tool really has
     // no looser than the row's.
     it('falls back to the nearest posture a tool actually has', () => {
       // pi has no permission system at all: every posture is bypass in fact,
       // and its command is the same one `bypass` produces.
-      const piManual = buildAgentCmd({ tool: 'pi', worktreeId: 's', permissionMode: 'manual' })
-      expect(piManual).toBe(buildAgentCmd({ tool: 'pi', worktreeId: 's', permissionMode: 'bypass' }))
+      const piManual = buildAgentCmd({ tool: 'pi', workspaceId: 's', permissionMode: 'manual' })
+      expect(piManual).toBe(buildAgentCmd({ tool: 'pi', workspaceId: 's', permissionMode: 'bypass' }))
       expect(piManual).toContain('pi --approve')
       // opencode has no reviewer model, so `auto` lands on accept-edits
       // rather than on the unrestrained `--auto` flag.
-      expect(buildAgentCmd({ tool: 'opencode', worktreeId: 's', permissionMode: 'auto' }))
-        .toBe(buildAgentCmd({ tool: 'opencode', worktreeId: 's', permissionMode: 'accept-edits' }))
+      expect(buildAgentCmd({ tool: 'opencode', workspaceId: 's', permissionMode: 'auto' }))
+        .toBe(buildAgentCmd({ tool: 'opencode', workspaceId: 's', permissionMode: 'accept-edits' }))
       // codex's `manual` was the `untrusted` policy the pinned codex no longer
       // has, and the next stricter posture is its read-only sandbox — never
       // the unrestrained default a looser fallback would give.
-      expect(buildAgentCmd({ tool: 'codex', worktreeId: 's', permissionMode: 'manual' }))
-        .toBe(buildAgentCmd({ tool: 'codex', worktreeId: 's', permissionMode: 'plan' }))
+      expect(buildAgentCmd({ tool: 'codex', workspaceId: 's', permissionMode: 'manual' }))
+        .toBe(buildAgentCmd({ tool: 'codex', workspaceId: 's', permissionMode: 'plan' }))
       // A posture this build does not rank compares with nothing: the
       // tool's strictest, never the first one offered.
-      expect(buildAgentCmd({ tool: 'claude', worktreeId: 's', permissionMode: 'dontAsk' as PermissionMode }))
+      expect(buildAgentCmd({ tool: 'claude', workspaceId: 's', permissionMode: 'dontAsk' as PermissionMode }))
         .toContain('--permission-mode plan')
     })
   })
@@ -460,7 +460,7 @@ describe('verifyAgentWindowAlive', () => {
   it('types the verdict, so a caller that cannot rethrow still tells the two apart', async () => {
     // The create fires this probe without awaiting it, so its handler sees
     // every rejection and has no try/catch to honor the split with. Filing a
-    // transport blip as a dead agent there hides a live worktree behind an
+    // transport blip as a dead agent there hides a live workspace behind an
     // error row, so the distinction has to survive as a type.
     podExec.mockImplementation(
       () => Promise.reject(new WorkspaceExecError('command exited 1', 1, '', 'codex')),

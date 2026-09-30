@@ -90,11 +90,11 @@ export async function prepareImage(file: Blob): Promise<Blob> {
   return blob
 }
 
-/** Upload an image to a running worktree; answers the path its agent reads it
+/** Upload an image to a running workspace; answers the path its agent reads it
  *  at, to paste in the image's place. */
-export async function uploadAttachment(worktreeId: string, image: Blob): Promise<string> {
-  const { path } = await api.worktree[':id'].attachments.$post(
-    { param: { id: worktreeId } },
+export async function uploadAttachment(workspaceId: string, image: Blob): Promise<string> {
+  const { path } = await api.workspace[':id'].attachments.$post(
+    { param: { id: workspaceId } },
     { init: { body: image, headers: { 'Content-Type': image.type } } },
   )
   return path

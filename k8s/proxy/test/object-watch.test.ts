@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type { spawn as nodeSpawn } from 'node:child_process'
 import { ProxyObjects } from 'yaac-proxy-sidecar/object-watch'
-import { LABEL_WORKTREE_ID, type SshCredentialEntry, type WorktreeRegistration } from 'yaac-proxy-sidecar/objects'
+import { LABEL_WORKSPACE_ID, type SshCredentialEntry, type ProxyRegistration } from 'yaac-proxy-sidecar/objects'
 import { createAgentKeyLoader, type AgentIdentity } from 'yaac-proxy-sidecar/agent-keys'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -27,9 +27,9 @@ function secretsObject(name: string, values: Record<string, string>): { metadata
   return { metadata: { name }, data: { 'values.json': b64(values) } }
 }
 
-function registrationObject(worktreeId: string, reg: Partial<WorktreeRegistration> = {}) {
+function registrationObject(workspaceId: string, reg: Partial<ProxyRegistration> = {}) {
   return {
-    metadata: { name: `yaac-proxy-reg-${worktreeId}`, labels: { [LABEL_WORKTREE_ID]: worktreeId } },
+    metadata: { name: `yaac-proxy-reg-${workspaceId}`, labels: { [LABEL_WORKSPACE_ID]: workspaceId } },
     data: { 'registration.json': JSON.stringify({
       rules: [], allowedHosts: ['api.example.com'], tool: 'claude', projectSlug: 'demo', ...reg,
     }) },
@@ -95,7 +95,7 @@ describe('ProxyObjects', () => {
     expect(loads).toHaveLength(1)
 
     // So does assigning the key to another project on a host it already
-    // serves: which worktrees may use it is the relay's live lookup, and
+    // serves: which workspaces may use it is the relay's live lookup, and
     // the decoded set carries the new assignment for it.
     await objects.applyCredentials(credentialsSecret({
       'ssh-keys.json': [sshKey(grant('other'), grant('demo'))],
@@ -153,7 +153,7 @@ describe('ProxyObjects', () => {
     await objects.applyCredentials(credentialsSecret({ 'claude.json': { kind: 'oauth', claudeAiOauth: pushed } }))
     expect(objects.claudeOAuthBundle()).toEqual(pushed)
 
-    // A worktree refreshed: the capture is newer, so it is what gets served.
+    // A workspace refreshed: the capture is newer, so it is what gets served.
     const rotated = claudeBundle('a2', 2_000)
     objects.capture({ claude: rotated })
     expect(objects.claudeOAuthBundle()).toEqual(rotated)
@@ -196,8 +196,8 @@ describe('ProxyObjects', () => {
     expect(objects.secret('other/A')).toBe('9')
   })
 
-  it('registers, updates and deregisters exactly the worktree an object names', () => {
-    const seen: Array<[string, WorktreeRegistration | null]> = []
+  it('registers, updates and deregisters exactly the workspace an object names', () => {
+    const seen: Array<[string, ProxyRegistration | null]> = []
     const objects = new ProxyObjects({
       loadSshKeys: () => Promise.resolve(),
       onRegistration: (id, reg) => seen.push([id, reg]),
@@ -205,7 +205,7 @@ describe('ProxyObjects', () => {
     })
     objects.applyRegistration(registrationObject('w1'))
     objects.applyRegistration(registrationObject('w2', { allowedHosts: ['*'] }))
-    expect(objects.registeredWorktreeIds().sort()).toEqual(['w1', 'w2'])
+    expect(objects.registeredWorkspaceIds().sort()).toEqual(['w1', 'w2'])
     expect(objects.registration('w2')?.allowedHosts).toEqual(['*'])
 
     // An allowlist widening arrives as an update of the same object.
@@ -213,16 +213,16 @@ describe('ProxyObjects', () => {
     expect(objects.registration('w1')?.allowedHosts).toEqual(['api.example.com', 'new.example.com'])
     expect(seen.at(-1)?.[0]).toBe('w1')
 
-    // A delete removes that worktree and nothing else — even when the
+    // A delete removes that workspace and nothing else — even when the
     // delete event carries no data.
     objects.applyRegistration({ metadata: { name: 'yaac-proxy-reg-w1' } }, true)
     expect(objects.registration('w1')).toBeUndefined()
     expect(objects.registration('w2')).toBeDefined()
     expect(seen.at(-1)).toEqual(['w1', null])
 
-    // A malformed registration is dropped, and fails that worktree closed.
+    // A malformed registration is dropped, and fails that workspace closed.
     objects.applyRegistration({
-      metadata: { name: 'yaac-proxy-reg-w3', labels: { [LABEL_WORKTREE_ID]: 'w3' } },
+      metadata: { name: 'yaac-proxy-reg-w3', labels: { [LABEL_WORKSPACE_ID]: 'w3' } },
       data: { 'registration.json': '{"rules":[]}' },
     })
     expect(objects.registration('w3')).toBeUndefined()

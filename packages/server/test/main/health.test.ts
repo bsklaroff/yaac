@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { buildApp } from '#main/server'
 
 describe('GET /health', () => {
   it('reports ok, the buildId, and the driver', async () => {
-    installFakeWorktreeDriver()
+    installFakeWorkspaceDriver()
     const app = buildApp({ buildId: 'bid-1' })
     const res = await app.request('/api/health')
     expect(res.status).toBe(200)

@@ -21,16 +21,16 @@ import type { WorkspaceGitCredential } from '#drivers/contract'
  * and to push anywhere it likes — rather than in the workspace's home.
  * The store's default file IS `$HOME/.git-credentials`, so the helper takes
  * no argument — no path has to survive gitconfig parsing and then a shell —
- * and the file is reaped with the worktree, since that HOME sits inside the
+ * and the file is reaped with the workspace, since that HOME sits inside the
  * state dir teardown removes.
  *
- * SSH gets an ssh-agent of its own, one per worktree, holding the key —
+ * SSH gets an ssh-agent of its own, one per workspace, holding the key —
  * where a pod gets the proxy's forwarded agent. The key is never written
  * into the workspace: `ssh-add` reads it from this process's stdin, the
  * agent holds it in memory, and what lands in the workspace's home is the
  * PUBLIC half, which `-i` names to pin ssh to that identity under
- * `IdentitiesOnly`. That is what keeps a stopped worktree from leaving a
- * usable private key behind on the host — the agent dies with the worktree,
+ * `IdentitiesOnly`. That is what keeps a stopped workspace from leaving a
+ * usable private key behind on the host — the agent dies with the workspace,
  * and a state dir that outlives one (a host that rebooted before anybody
  * pressed stop) holds nothing worth having. Host verification still comes
  * from the project-scoped known_hosts the server wrote, so an unknown host
@@ -104,8 +104,8 @@ export async function realizeGitAuth(params: {
   }
 
   // Both halves of an SSH remote are decided together by the caller, so one
-  // without the other is a wiring bug rather than a degraded worktree — and
-  // the degraded worktree would be one that skips host verification.
+  // without the other is a wiring bug rather than a degraded workspace — and
+  // the degraded workspace would be one that skips host verification.
   if (knownHostsFile === undefined) {
     throw new Error(
       'containerless: an SSH git credential arrived without a known_hosts file',

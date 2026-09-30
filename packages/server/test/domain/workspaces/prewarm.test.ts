@@ -1,0 +1,801 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type * as dbModule from '#db'
+// The identity a claim re-keys its checkout with. A row, so it is read
+// through the db barrel like every other one this file stubs.
+const mockGitIdentity = vi.hoisted(() => vi.fn())
+
+vi.mock('#db', async (importOriginal) => ({
+  ...(await importOriginal<typeof dbModule>()),
+  applyWorkspaceEvent: vi.fn(),
+  claimSpareWorkspace: vi.fn(),
+  restoreSpareWorkspace: vi.fn(),
+  getWorkspaceRow: vi.fn(),
+  listActiveAgentSessions: vi.fn(),
+  setWorkspaceGroup: vi.fn(),
+  setWorkspaceTitle: vi.fn(),
+  getGitIdentity: mockGitIdentity,
+}))
+
+vi.mock('#domain/workspaces/spare-pool', () => ({
+  retoolSpare: vi.fn(),
+  rebranchSpare: vi.fn(),
+}))
+vi.mock('#domain/workspaces/cleanup', () => ({
+  cleanupWorkspace: vi.fn(),
+  deleteWorkspaceState: vi.fn(),
+}))
+vi.mock('#runtime/status/liveness', () => ({
+  isTmuxSessionAlive: vi.fn(),
+}))
+vi.mock('#domain/git', () => ({
+  fetchOrigin: vi.fn(),
+  getDefaultBranch: vi.fn(),
+  maintainRepo: vi.fn(() => Promise.resolve()),
+  remoteBranchExists: vi.fn(),
+  // Constructed with its answer, which survives the suite's resetAllMocks.
+  resolveRemoteRef: vi.fn(() => Promise.resolve('cafebabe1234')),
+}))
+vi.mock('#domain/projects/config', () => ({ resolveProjectConfig: vi.fn() }))
+vi.mock('#domain/projects/credentials', () => ({ resolveProjectCredential: vi.fn() }))
+vi.mock('#domain/projects/env', () => ({ resolveProjectEnv: vi.fn() }))
+vi.mock('#domain/projects/detail', async (importOriginal) => ({
+  ...await importOriginal<object>(),
+  projectRemoteUrl: vi.fn(() => Promise.resolve('https://example.com/p.git')),
+}))
+
+import {
+  tryClaimPrewarmed,
+  // Shared claim state, read to assert what a claim reserved and released.
+  claiming,
+  inFlight,
+  clearPrewarmStateForTests,
+} from '#domain/workspaces/prewarm'
+import {
+  clearAllProvisioningForTests, listProvisioning, registerProvisioning,
+} from '#domain/workspaces/provisioning'
+import { cleanupWorkspace, deleteWorkspaceState } from '#domain/workspaces/cleanup'
+import { isTmuxSessionAlive } from '#runtime/status/liveness'
+import { rebranchSpare, retoolSpare } from '#domain/workspaces/spare-pool'
+import {
+  fetchOrigin,
+  getDefaultBranch,
+  remoteBranchExists,
+  resolveRemoteRef,
+} from '#domain/git'
+import { resolveProjectConfig } from '#domain/projects/config'
+import { resolveProjectEnv } from '#domain/projects/env'
+import { ServerError } from '@yaac/shared/errors'
+import type { WorkspaceEvent } from '#db'
+import {
+  applyWorkspaceEvent,
+  claimSpareWorkspace,
+  getWorkspaceRow,
+  listActiveAgentSessions,
+  restoreSpareWorkspace,
+  setWorkspaceGroup,
+  setWorkspaceTitle,
+  type WorkspaceRow,
+} from '#db'
+import type { CreateSetup } from '#domain/workspaces/create'
+import { _resetAcpRegistryForTests, takeAcpLaunchModel } from '#runtime/agents/acp-registry'
+import { handleFixture, installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import type { RuntimeHandle, WorkspaceRegistration } from '#drivers/contract'
+import type { AgentTool } from '@yaac/shared/types'
+
+// The runtime verbs the claim drives, as mocks — the fake runtime installed
+// below is nothing but a shell over these, so a test configures and asserts
+// them exactly as it would any other boundary.
+const mockList = vi.fn<(projectSlug?: string) => Promise<RuntimeHandle[]>>()
+const mockClaimSpare = vi.fn<(workspaceId: string, tool: AgentTool) => Promise<void>>()
+const mockExec = vi.fn<(jobName: string, cmd: string) => Promise<{ stdout: string; stderr: string }>>()
+/** Where the spare's checkout stands, as read inside it: at origin's tip
+ *  unless a case moves it. Kept off `mockExec`, whose calls cases count. */
+const mockHead = vi.fn<(jobName: string) => Promise<string>>()
+const mockAwaitTransport = vi.fn<(jobName: string, opts?: { timeoutMs?: number }) => Promise<void>>()
+const mockRegister = vi.fn<(reg: WorkspaceRegistration) => Promise<void>>()
+
+const mockTmuxAlive = vi.mocked(isTmuxSessionAlive)
+const mockRetool = vi.mocked(retoolSpare)
+const mockRebranch = vi.mocked(rebranchSpare)
+const mockCleanup = vi.mocked(cleanupWorkspace)
+const mockDeleteState = vi.mocked(deleteWorkspaceState)
+const mockFetchOrigin = vi.mocked(fetchOrigin)
+const mockDefaultBranch = vi.mocked(getDefaultBranch)
+const mockRemoteBranchExists = vi.mocked(remoteBranchExists)
+const mockResolveConfig = vi.mocked(resolveProjectConfig)
+
+/** Let the teardown chain a burned claim starts — deliberately unawaited, so
+ *  the caller falls straight through to a cold create — run to completion. */
+const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
+
+const emit = vi.fn()
+
+function spare(o: Partial<RuntimeHandle> = {}): RuntimeHandle {
+  return handleFixture({
+    jobName: 'yaac-p-spare',
+    workspaceId: 'spare1',
+    projectSlug: 'p',
+    tool: 'claude',
+    declaredTool: 'claude',
+    createdAtMs: 1_000,
+    prewarmed: true,
+    ...o,
+  })
+}
+
+/** A fully resolved create — tui, bypass, no model unless a case says so,
+ *  which is what `launched()` warms spares as by default. */
+function setup(tool: AgentTool = 'claude', o: Partial<CreateSetup> = {}): CreateSetup {
+  return { tool, permissionMode: 'bypass', mode: 'tui', ...o }
+}
+
+/** What a spare's row says its agent was launched with. */
+/** The spare's row as warming left it: warmed from `main` unless a case
+ *  says otherwise. */
+function launched(o: Partial<WorkspaceRow> = {}): void {
+  vi.mocked(getWorkspaceRow).mockImplementation((projectSlug, workspaceId) => Promise.resolve({
+    projectSlug, workspaceId, permissionMode: 'bypass', mode: 'tui', baseBranch: 'main', ...o,
+  } as WorkspaceRow))
+}
+
+const appliedEvents: WorkspaceEvent[] = []
+
+describe('tryClaimPrewarmed', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+    clearPrewarmStateForTests()
+    clearAllProvisioningForTests()
+    // The create's own row, which a claim names its spare on.
+    registerProvisioning({ workspaceId: 'req', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    // The claim reports what it recorded rather than writing rows, so a stub
+    // link stands in for the server: no DB is opened, and what a claim tells
+    // it is asserted directly.
+    appliedEvents.length = 0
+    vi.mocked(applyWorkspaceEvent).mockImplementation((event) => {
+      appliedEvents.push(event)
+      return Promise.resolve()
+    })
+    mockTmuxAlive.mockResolvedValue(true)
+    mockList.mockResolvedValue([])
+    mockClaimSpare.mockResolvedValue(undefined)
+    mockExec.mockResolvedValue({ stdout: '', stderr: '' })
+    mockHead.mockResolvedValue('cafebabe1234')
+    mockAwaitTransport.mockResolvedValue(undefined)
+    mockRegister.mockResolvedValue(undefined)
+    installFakeWorkspaceDriver({
+      list: mockList,
+      claimSpare: mockClaimSpare,
+      // The fetch's fan-out to the project's workspaces is not the claim's.
+      exec: async (jobName, cmd) => cmd.endsWith('rev-parse HEAD')
+        ? { stdout: `${await mockHead(jobName)}\n`, stderr: '' }
+        : cmd.includes('--no-write-fetch-head') ? { stdout: '', stderr: '' } : mockExec(jobName, cmd),
+      awaitAgentTransport: mockAwaitTransport,
+      registerWorkspace: mockRegister,
+    })
+    vi.mocked(resolveProjectEnv).mockResolvedValue({ plain: {}, secrets: {} })
+    mockRetool.mockResolvedValue(undefined)
+    mockRebranch.mockResolvedValue(undefined)
+    vi.mocked(setWorkspaceGroup).mockResolvedValue(undefined)
+    mockCleanup.mockResolvedValue(true)
+    mockDeleteState.mockResolvedValue(true)
+    // Branch defaults: spare warmed from main, config sets no default —
+    // so no re-branch prep unless a test asks for one.
+    mockResolveConfig.mockResolvedValue({})
+    mockDefaultBranch.mockResolvedValue('main')
+    mockRemoteBranchExists.mockResolvedValue(true)
+    mockFetchOrigin.mockResolvedValue(undefined)
+    // The identity the claim re-keys with. Defaulted here so a case that
+    // asserts on it says outright which one it expects.
+    mockGitIdentity.mockResolvedValue({ name: 'A B', email: 'a@b.co' })
+    launched()
+  })
+
+  it('claims a ready spare, re-applies identity, and returns its id', async () => {
+    mockList.mockResolvedValue([spare()])
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
+    expect(result).toEqual({ workspaceId: 'spare1', jobName: 'yaac-p-spare', tool: 'claude', mode: 'tui', forwardedPorts: [] })
+    expect(mockClaimSpare).toHaveBeenCalledWith('spare1', 'claude')
+    // The create's row names the spare, which lists in its place once the
+    // create resolves — and not before.
+    expect(listProvisioning()).toMatchObject([{ workspaceId: 'req', claimedId: 'spare1' }])
+    // One exec carries both identity settings.
+    expect(mockExec).toHaveBeenCalledTimes(1)
+    expect(mockExec.mock.calls[0][1]).toBe(
+      "git config --global user.name 'A B' && git config --global user.email 'a@b.co'",
+    )
+    expect(claiming.size).toBe(0) // released in finally
+  })
+
+  // A spare's registration is written when it is warmed, from the project
+  // as it was then. A claim hands the user a workspace as a cold create would
+  // make it now, so an allowlist or secret edited since must reach it — even
+  // on a claim that changes nothing else about the spare.
+  it('re-registers the spare from the project as it is at claim time', async () => {
+    mockList.mockResolvedValue([spare()])
+    mockResolveConfig.mockResolvedValue({ setAllowedUrls: ['*'] })
+    vi.mocked(resolveProjectEnv).mockResolvedValue({
+      plain: {},
+      secrets: { API_KEY: { value: 'v', rule: { hosts: ['api.example.com'] } } },
+    } as unknown as Awaited<ReturnType<typeof resolveProjectEnv>>)
+
+    await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
+
+    expect(mockRegister).toHaveBeenCalledWith({
+      workspaceId: 'spare1',
+      projectSlug: 'p',
+      tool: 'claude',
+      config: { setAllowedUrls: ['*'] },
+      remoteUrl: 'https://example.com/p.git',
+      proxySecretRules: { API_KEY: { hosts: ['api.example.com'] } },
+    })
+    expect(mockRetool).not.toHaveBeenCalled()
+    // Before the commit, so the workspace is never handed over on the old one.
+    expect(mockRegister.mock.invocationCallOrder[0])
+      .toBeLessThan(mockClaimSpare.mock.invocationCallOrder[0])
+  })
+
+  // Under its own tool a spare holds a consistent registration whether or
+  // not the write landed, so it goes back to the pool; under another, its
+  // registration may no longer match its agent, and it is reaped.
+  it('releases a spare whose re-registration failed under its own tool, reaps one retooled', async () => {
+    mockRegister.mockRejectedValue(new Error('apiserver down'))
+
+    mockList.mockResolvedValue([spare()])
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
+    await flush()
+    expect(mockCleanup).not.toHaveBeenCalled()
+    expect(vi.mocked(restoreSpareWorkspace))
+      .toHaveBeenCalledWith(expect.objectContaining({ projectSlug: 'p', workspaceId: 'spare1' }))
+    expect(claiming.size).toBe(0)
+
+    mockList.mockResolvedValue([spare({ tool: 'codex', declaredTool: 'codex' })])
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
+    await flush()
+    expect(mockCleanup).toHaveBeenCalledTimes(1)
+    expect(mockRetool).not.toHaveBeenCalled()
+  })
+
+  it('reports the workspace and its first conversation, warmed-from branch and all', async () => {
+    mockList.mockResolvedValue([spare()])
+    await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
+
+    // The spare's own id is the workspace's first conversation — that is
+    // where its tool is read from — and no re-branch means no second
+    // branch report.
+    expect(vi.mocked(claimSpareWorkspace)).toHaveBeenCalledWith('p', 'spare1', {
+      permissionMode: 'bypass', mode: 'tui',
+    })
+    expect(appliedEvents).toEqual([
+      {
+        type: 'sessions-launched',
+        projectSlug: 'p',
+        workspaceId: 'spare1',
+        sessions: [{ tool: 'claude', agentSessionId: 'spare1' }],
+      },
+    ])
+  })
+
+  it('reports the branch a re-branched claim ended on, not the one it was warmed from', async () => {
+    mockList.mockResolvedValue([spare()])
+    await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { branch: 'dev' })
+
+    expect(appliedEvents.filter((e) => e.type === 'base-branch-resolved')).toEqual([
+      {
+        type: 'base-branch-resolved', projectSlug: 'p', workspaceId: 'spare1', baseBranch: 'dev',
+      },
+    ])
+  })
+
+  // A claim that gave up after reporting describes a session that never
+  // existed; the caller is about to cold-create a different one. The checkout
+  // has to go with it: the claim cleared the `spare` flag before it mutated
+  // anything, so the sweep that collects a dead spare's checkout on the
+  // strength of that flag can no longer see this one, and erasing the row
+  // takes the last name anything had for it.
+  it('collects the burned spare whole — runtime, then checkout, then row', async () => {
+    mockList.mockResolvedValue([spare({ tool: 'codex', declaredTool: 'codex' })])
+    mockRetool.mockRejectedValue(new Error('retool blew up'))
+
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
+    await flush()
+
+    expect(mockDeleteState).toHaveBeenCalledWith('p', 'spare1')
+    expect(appliedEvents.at(-1)).toEqual({
+      type: 'workspace-create-failed', projectSlug: 'p', workspaceId: 'spare1',
+    })
+    // Order is the whole safety argument. The AWAITED teardown runs first, so
+    // the checkout is never removed under a workspace still mounting it;
+    // the row goes last, so a teardown that dies partway leaves something the
+    // stale reaper can still see rather than a checkout nothing can name.
+    expect(mockCleanup.mock.invocationCallOrder[0])
+      .toBeLessThan(mockDeleteState.mock.invocationCallOrder[0])
+    expect(mockDeleteState.mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(applyWorkspaceEvent).mock.invocationCallOrder.at(-1)!)
+  })
+
+  // Each step of that chain destroys the evidence the one before it relied
+  // on, so each gates the next on having actually happened.
+  it('keeps the checkout, and its row, when the teardown cannot confirm the runtime is gone', async () => {
+    // A teardown the runtime could not confirm leaves something still
+    // shutting down, and still writing to /workspace.
+    mockList.mockResolvedValue([spare({ tool: 'codex', declaredTool: 'codex' })])
+    mockRetool.mockRejectedValue(new Error('retool blew up'))
+    mockCleanup.mockResolvedValue(false)
+
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
+    await flush()
+    expect(mockDeleteState).not.toHaveBeenCalled()
+    expect(appliedEvents.some((e) => e.type === 'workspace-create-failed')).toBe(false)
+  })
+
+  it('keeps the row when the checkout could not be removed', async () => {
+    // The row is the last name those bytes have — erasing it over a failed rm
+    // is exactly how a retryable leftover becomes a permanent one. What
+    // survives reaches the user as an ordinary stopped workspace.
+    mockList.mockResolvedValue([spare({ tool: 'codex', declaredTool: 'codex' })])
+    mockRetool.mockRejectedValue(new Error('retool blew up'))
+    mockDeleteState.mockResolvedValue(false)
+
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
+    await flush()
+    expect(mockDeleteState).toHaveBeenCalledWith('p', 'spare1')
+    expect(appliedEvents.some((e) => e.type === 'workspace-create-failed')).toBe(false)
+  })
+
+  it('returns undefined when there is no spare', async () => {
+    mockList.mockResolvedValue([])
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
+    expect(mockClaimSpare).not.toHaveBeenCalled()
+  })
+
+  it('retools a spare booted with a different tool, then commits for the claimed tool', async () => {
+    mockList.mockResolvedValue([spare({ tool: 'codex', declaredTool: 'codex' })])
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
+
+    expect(result).toEqual({ workspaceId: 'spare1', jobName: 'yaac-p-spare', tool: 'claude', mode: 'tui', forwardedPorts: [] })
+    expect(mockRetool).toHaveBeenCalledWith(expect.objectContaining({ jobName: 'yaac-p-spare' }), setup('claude'))
+    expect(mockClaimSpare).toHaveBeenCalledWith('spare1', 'claude')
+    expect(emit).toHaveBeenCalledWith('Switching prewarmed session to claude...')
+    expect(claiming.size).toBe(0)
+  })
+
+  it('does not retool when the spare already matches', async () => {
+    mockList.mockResolvedValue([spare()])
+    await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
+    expect(mockRetool).not.toHaveBeenCalled()
+  })
+
+  it('prefers a matching-tool spare over a newer mismatched one', async () => {
+    mockList.mockResolvedValue([
+      spare({ jobName: 'yaac-p-codex', workspaceId: 'sc', tool: 'codex', declaredTool: 'codex', createdAtMs: 9_000 }),
+      spare({ createdAtMs: 1_000 }),
+    ])
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
+    expect(result?.workspaceId).toBe('spare1')
+    expect(mockRetool).not.toHaveBeenCalled()
+  })
+
+  it('reaps the tainted spare and falls back to cold create when the retool fails', async () => {
+    mockList.mockResolvedValue([spare({ tool: 'codex', declaredTool: 'codex' })])
+    let claimedDuringRetool: string | undefined
+    mockRetool.mockImplementation(() => {
+      claimedDuringRetool = listProvisioning()[0].claimedId
+      return Promise.reject(new Error('respawn failed'))
+    })
+
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
+    // The row named the spare while the claim held it, and lets go of it for
+    // the cold create that follows under the row's own id.
+    expect(claimedDuringRetool).toBe('spare1')
+    expect(listProvisioning()[0].claimedId).toBeUndefined()
+    expect(mockCleanup).toHaveBeenCalledWith({
+      jobName: 'yaac-p-spare', projectSlug: 'p', workspaceId: 'spare1',
+    })
+    // The reservation is kept so a concurrent claim can't grab the dying spare.
+    expect(claiming.has('yaac-p-spare')).toBe(true)
+  })
+
+  it('reaps the spare when the commit fails after a retool', async () => {
+    mockList.mockResolvedValue([spare({ tool: 'codex', declaredTool: 'codex' })])
+    mockClaimSpare.mockRejectedValue(new Error('pod gone'))
+
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
+    expect(mockCleanup).toHaveBeenCalledTimes(1)
+  })
+
+  it('releases and skips a spare whose tmux is dead', async () => {
+    mockList.mockResolvedValue([spare()])
+    mockTmuxAlive.mockResolvedValue(false)
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
+    expect(mockClaimSpare).not.toHaveBeenCalled()
+    expect(claiming.size).toBe(0)
+  })
+
+  it('gates on the agent transport before the first mutation, and leaves the spare alone if it never answers', async () => {
+    mockList.mockResolvedValue([spare({ tool: 'codex', declaredTool: 'codex' })])
+    mockAwaitTransport.mockRejectedValue(new Error('agent transport not reachable after 10000ms'))
+
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
+    expect(mockAwaitTransport).toHaveBeenCalledWith('yaac-p-spare', { timeoutMs: 10_000 })
+    // Nothing ran inside the spare, so it is untainted: no retool, no
+    // commit, and no reap — the claim just degrades to a cold create, and
+    // the spare keeps the checkout it is still going to serve from.
+    expect(mockRetool).not.toHaveBeenCalled()
+    expect(mockRebranch).not.toHaveBeenCalled()
+    expect(mockExec).not.toHaveBeenCalled()
+    expect(mockClaimSpare).not.toHaveBeenCalled()
+    expect(mockCleanup).not.toHaveBeenCalled()
+    await flush()
+    expect(mockDeleteState).not.toHaveBeenCalled()
+    expect(claiming.size).toBe(0)
+  })
+
+  it('falls through (undefined) and clears the reservation if the commit fails', async () => {
+    mockList.mockResolvedValue([spare()])
+    mockClaimSpare.mockRejectedValue(new Error('pod gone'))
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
+    expect(claiming.size).toBe(0)
+  })
+
+  it('keeps the claimed session when the identity re-apply fails', async () => {
+    // It runs past the commit point over a step the no-identity path skips
+    // outright, so a transport hiccup must not reap a whole good session.
+    mockList.mockResolvedValue([spare()])
+    mockExec.mockRejectedValue(new Error('transport dial: timeout'))
+
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
+    expect(result?.workspaceId).toBe('spare1')
+    expect(mockCleanup).not.toHaveBeenCalled()
+  })
+
+  // A spare's identity is baked at WARM time and nothing re-warms the pool,
+  // so every claim re-keys the checkout from the setting as it stands now.
+  // Without that, a user who changes their identity keeps getting the old
+  // one on the next claim per project — durably, and invisibly until someone
+  // reads the author of a commit.
+  it('re-keys a claimed spare from the identity the setting holds now', async () => {
+    mockGitIdentity.mockResolvedValue({ name: 'New Name', email: 'new@example.com' })
+    mockList.mockResolvedValue([spare()])
+
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
+
+    expect(result?.workspaceId).toBe('spare1')
+    expect(mockExec.mock.calls[0][1]).toBe(
+      "git config --global user.name 'New Name'"
+      + " && git config --global user.email 'new@example.com'",
+    )
+  })
+
+  it('execs nothing when the server has no identity, and still claims', async () => {
+    // Nothing to re-key with is not a failure: the spare keeps the identity
+    // it was warmed with and the claim still succeeds.
+    mockGitIdentity.mockResolvedValue(null)
+    mockList.mockResolvedValue([spare()])
+
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
+    expect(result?.workspaceId).toBe('spare1')
+    expect(mockExec).not.toHaveBeenCalled()
+  })
+
+  it('lets only one of two concurrent claims win the single spare', async () => {
+    mockList.mockResolvedValue([spare()])
+    const [a, b] = await Promise.all([
+      tryClaimPrewarmed('p', 'req', setup('claude'), emit),
+      tryClaimPrewarmed('p', 'req', setup('claude'), emit),
+    ])
+    const claimed = [a, b].filter(Boolean)
+    expect(claimed).toHaveLength(1)
+    expect(mockClaimSpare).toHaveBeenCalledTimes(1)
+    expect(claiming.size).toBe(0)
+  })
+
+  it('returns undefined (cold create) if the workspace listing throws', async () => {
+    mockList.mockRejectedValue(new Error('cluster down'))
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
+    expect(inFlight.size).toBe(0)
+  })
+
+  it('re-branches a spare when the requested branch differs, then commits the claim', async () => {
+    mockList.mockResolvedValue([spare()])
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { branch: 'dev' })
+
+    expect(result?.workspaceId).toBe('spare1')
+    expect(mockFetchOrigin).toHaveBeenCalledTimes(1)
+    expect(mockRebranch).toHaveBeenCalledWith(
+      expect.objectContaining({ jobName: 'yaac-p-spare' }),
+      'dev',
+      'cafebabe1234',
+      setup('claude'), // matches as warmed — the re-branch owns the agent respawn
+    )
+    expect(mockClaimSpare).toHaveBeenCalledWith('spare1', 'claude')
+    expect(emit).toHaveBeenCalledWith('Switching prewarmed session to branch dev...')
+    expect(claiming.size).toBe(0)
+  })
+
+  it('skips re-branch prep entirely when the spare already matches the request', async () => {
+    mockList.mockResolvedValue([spare()])
+    await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { branch: 'main' })
+    // Fetched to learn that origin has not moved, and nothing more.
+    expect(mockFetchOrigin).toHaveBeenCalledTimes(1)
+    expect(mockRebranch).not.toHaveBeenCalled()
+  })
+
+  it('brings a spare whose branch moved on origin up to its tip before the hand-over', async () => {
+    mockList.mockResolvedValue([spare()])
+    mockHead.mockResolvedValue('0ldbase')
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { prompt: 'go' })
+
+    expect(result?.workspaceId).toBe('spare1')
+    // The same prep as a re-branch, onto the branch it already has — so the
+    // agent is restarted on the new checkout, before anyone has prompted it.
+    expect(mockRebranch).toHaveBeenCalledWith(
+      expect.objectContaining({ jobName: 'yaac-p-spare' }), 'main', 'cafebabe1234', setup('claude'),
+    )
+    expect(mockHead).toHaveBeenCalledWith('yaac-p-spare')
+    expect(mockRebranch.mock.invocationCallOrder[0])
+      .toBeLessThan(mockClaimSpare.mock.invocationCallOrder[0])
+    expect(emit).toHaveBeenCalledWith('Updating prewarmed session to the latest main...')
+    // Still the branch it was warmed from, so no second branch report.
+    expect(appliedEvents.some((e) => e.type === 'base-branch-resolved')).toBe(false)
+  })
+
+  it('hands a spare over as warmed when its fetch fails or outlasts the wait', async () => {
+    mockList.mockResolvedValue([spare()])
+    mockHead.mockResolvedValue('0ldbase')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    mockFetchOrigin.mockRejectedValue(new Error('remote unreachable'))
+    expect((await tryClaimPrewarmed('p', 'req', setup('claude'), emit))?.workspaceId).toBe('spare1')
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('remote unreachable'))
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      mockFetchOrigin.mockReturnValue(new Promise<void>(() => { /* never lands */ }))
+      const claim = tryClaimPrewarmed('p', 'req', setup('claude'), emit)
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect((await claim)?.workspaceId).toBe('spare1')
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('fetch still running'))
+    } finally {
+      vi.useRealTimers()
+    }
+
+    expect(mockRebranch).not.toHaveBeenCalled()
+    expect(mockCleanup).not.toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  it('hands the agent respawn to the retool when tool and branch both differ', async () => {
+    mockList.mockResolvedValue([spare({ tool: 'codex', declaredTool: 'codex' })])
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { branch: 'dev' })
+    expect(result?.tool).toBe('claude')
+    expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'dev', 'cafebabe1234', null)
+    expect(mockRetool).toHaveBeenCalledWith(expect.objectContaining({ jobName: 'yaac-p-spare' }), setup('claude'))
+  })
+
+  it('a model override retools a spare whose tool already matches (agent must respawn with --model)', async () => {
+    mockList.mockResolvedValue([spare()])
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude', { model: 'claude-opus-4-8' }), emit)
+    expect(result?.workspaceId).toBe('spare1')
+    expect(mockRetool).toHaveBeenCalledWith(
+      expect.objectContaining({ jobName: 'yaac-p-spare' }), setup('claude', { model: 'claude-opus-4-8' }),
+    )
+    // Same tool: no retool announcement, and the commit still names the
+    // tool the workspace was claimed for.
+    expect(emit).not.toHaveBeenCalledWith('Switching prewarmed session to claude...')
+    expect(mockClaimSpare).toHaveBeenCalledWith('spare1', 'claude')
+  })
+
+  it('a model override on a re-branched claim skips the rebranch respawn (retool respawns with --model)', async () => {
+    mockList.mockResolvedValue([spare()])
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude', { model: 'claude-opus-4-8' }), emit, { branch: 'dev' })
+    expect(result?.workspaceId).toBe('spare1')
+    expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'dev', 'cafebabe1234', null)
+    expect(mockRetool).toHaveBeenCalledWith(
+      expect.objectContaining({ jobName: 'yaac-p-spare' }), setup('claude', { model: 'claude-opus-4-8' }),
+    )
+  })
+
+  it('propagates VALIDATION for an unknown branch and releases the spare untouched', async () => {
+    mockList.mockResolvedValue([spare()])
+    mockRemoteBranchExists.mockResolvedValue(false)
+
+    await expect(tryClaimPrewarmed('p', 'req', setup('claude', { permissionMode: 'plan' }), emit, { branch: 'nope' }))
+      .rejects.toMatchObject({ code: 'VALIDATION' })
+    expect(mockRebranch).not.toHaveBeenCalled()
+    expect(mockCleanup).not.toHaveBeenCalled() // pre-mutation: not tainted
+    expect(claiming.size).toBe(0) // released for the next claim
+    // The row is claimed before the branch is validated, so propagating has
+    // to undo it first. Left flagged claimed, the spare would still be
+    // pooled and claimable while its row says it is somebody's
+    // workspace: `deleteSpareWorkspaceRow` no-ops on the flag guard when the
+    // pool reaps it, the checkout goes, and the stale reaper later stamps a
+    // phantom `never-started` stop whose restart resolves into nothing.
+    expect(vi.mocked(claimSpareWorkspace)).toHaveBeenCalledWith('p', 'spare1', expect.objectContaining({ permissionMode: 'plan' }))
+    // Back to the launch it was warmed with, not the claim's: the next claim
+    // reads the row to decide whether the booted agent needs a respawn.
+    expect(vi.mocked(restoreSpareWorkspace)).toHaveBeenCalledWith(expect.objectContaining({
+      projectSlug: 'p', workspaceId: 'spare1', permissionMode: 'bypass',
+    }))
+  })
+
+  it('reaps the tainted spare and falls back to cold create when the re-branch fails', async () => {
+    mockList.mockResolvedValue([spare()])
+    mockRebranch.mockRejectedValue(new Error('reset failed'))
+
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { branch: 'dev' })).toBeUndefined()
+    expect(mockCleanup).toHaveBeenCalledWith({
+      jobName: 'yaac-p-spare', projectSlug: 'p', workspaceId: 'spare1',
+    })
+    expect(claiming.has('yaac-p-spare')).toBe(true)
+  })
+
+  it('does not swallow a mid-mutation VALIDATION-shaped failure into a throw', async () => {
+    // Post-mutation errors — whatever their shape — must degrade to a cold
+    // create with the tainted spare reaped, not propagate.
+    mockList.mockResolvedValue([spare()])
+    mockRebranch.mockRejectedValue(new ServerError('VALIDATION', 'weird in-pod failure'))
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { branch: 'dev' })).toBeUndefined()
+    expect(mockCleanup).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-branches onto an explicitly requested branch', async () => {
+    // Spare warmed from develop; the caller asked for another branch.
+    mockList.mockResolvedValue([spare()])
+    launched({ baseBranch: 'develop' })
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { branch: 'dev' })
+    expect(result?.workspaceId).toBe('spare1')
+    expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'dev', 'cafebabe1234', setup('claude'))
+  })
+
+  it('re-branches a spare warmed off the default branch back to it on a bare create', async () => {
+    // Spare warmed from develop; a bare create wants the repo default.
+    mockList.mockResolvedValue([spare()])
+    launched({ baseBranch: 'develop' })
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
+    expect(result?.workspaceId).toBe('spare1')
+    expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'main', 'cafebabe1234', setup('claude'))
+  })
+
+  // Spares are warmed as the project's untouched create, so the usual claim
+  // asks for exactly what the spare already runs — model included — and the
+  // agent is handed over without a respawn.
+  it('hands over a spare warmed with the requested model and posture untouched', async () => {
+    mockList.mockResolvedValue([spare()])
+    launched({ model: 'claude-opus-5-5', permissionMode: 'plan' })
+    const want = setup('claude', { model: 'claude-opus-5-5', permissionMode: 'plan' })
+
+    expect((await tryClaimPrewarmed('p', 'req', want, emit))?.workspaceId).toBe('spare1')
+    expect(mockRetool).not.toHaveBeenCalled()
+    // What the workspace runs is recorded — posture, mode and model — and the
+    // conversation is named from its launch before the agent has answered.
+    expect(vi.mocked(claimSpareWorkspace)).toHaveBeenCalledWith('p', 'spare1', expect.objectContaining({
+      permissionMode: 'plan', mode: 'tui', model: 'claude-opus-5-5',
+    }))
+    expect(appliedEvents).toContainEqual(expect.objectContaining({
+      type: 'sessions-launched',
+      sessions: [{ tool: 'claude', agentSessionId: 'spare1', model: 'claude-opus-5-5' }],
+    }))
+  })
+
+  it('respawns a spare warmed in another posture into the requested one', async () => {
+    mockList.mockResolvedValue([spare()])
+    const want = setup('claude', { permissionMode: 'plan' })
+
+    expect((await tryClaimPrewarmed('p', 'req', want, emit))?.workspaceId).toBe('spare1')
+    expect(mockRetool).toHaveBeenCalledWith(expect.objectContaining({ jobName: 'yaac-p-spare' }), want)
+  })
+
+  it('prefers a spare warmed as asked over a newer one that would need a respawn', async () => {
+    mockList.mockResolvedValue([
+      spare({ jobName: 'yaac-p-new', workspaceId: 'new', createdAtMs: 9_000 }),
+      spare({ createdAtMs: 1_000 }),
+    ])
+    vi.mocked(getWorkspaceRow).mockImplementation((_slug, id) => Promise.resolve({
+      permissionMode: 'bypass', mode: 'tui', ...(id === 'spare1' ? { model: 'claude-opus-5-5' } : {}),
+    } as WorkspaceRow))
+
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude', { model: 'claude-opus-5-5' }), emit)
+    expect(result?.workspaceId).toBe('spare1')
+    expect(mockRetool).not.toHaveBeenCalled()
+  })
+
+  // An `acp` pod carries acpd's record mount and a `tui` one does not, and the
+  // pod spec is fixed at warm time — so no respawn can convert one.
+  it('passes over a spare warmed in the other agent mode', async () => {
+    mockList.mockResolvedValue([spare()])
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude', { mode: 'acp' }), emit)).toBeUndefined()
+    // A row older than the mode column names none, and is passed over too.
+    launched({ mode: undefined })
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
+    expect(mockClaimSpare).not.toHaveBeenCalled()
+  })
+
+  // A chat spare's adapter waits with no client; the handshake happens once
+  // the claim unhides it, and the registry writes the conversation's row.
+  it('claims a chat spare and holds for its conversation, recording none itself', async () => {
+    mockList.mockResolvedValue([spare()])
+    launched({ mode: 'acp', model: 'claude-opus-5-5' })
+    vi.mocked(listActiveAgentSessions).mockResolvedValue([{ agentSessionId: 'minted' }] as never)
+
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude', { mode: 'acp', model: 'claude-opus-5-5' }), emit)
+    expect(result).toMatchObject({ workspaceId: 'spare1', mode: 'acp' })
+    expect(mockRetool).not.toHaveBeenCalled()
+    expect(appliedEvents.some((e) => e.type === 'sessions-launched')).toBe(false)
+    expect(vi.mocked(listActiveAgentSessions)).toHaveBeenCalledWith('p', 'spare1')
+  })
+
+  // The warm-time parking is this process's memory, and a spare outlives the
+  // server that warmed it. A spare handed over as warmed must still be told
+  // its model at the handshake the claim lets happen — for pi, the one whose
+  // provider key the proxy swaps.
+  it('re-parks a chat spare\'s launch model before handing it over as warmed', async () => {
+    _resetAcpRegistryForTests() // the server that warmed it has restarted
+    mockList.mockResolvedValue([spare({ tool: 'pi', declaredTool: 'pi' })])
+    launched({ mode: 'acp', model: 'openrouter/moonshotai/kimi-k2.6' })
+    vi.mocked(listActiveAgentSessions).mockResolvedValue([{ agentSessionId: 'minted' }] as never)
+    mockClaimSpare.mockImplementation(() => {
+      // Parked by the time the claim unhides the spare to the watcher.
+      expect(takeAcpLaunchModel('spare1')).toBe('openrouter/moonshotai/kimi-k2.6')
+      return Promise.resolve()
+    })
+
+    const want = setup('pi', { mode: 'acp', model: 'openrouter/moonshotai/kimi-k2.6' })
+    expect((await tryClaimPrewarmed('p', 'req', want, emit))?.workspaceId).toBe('spare1')
+    expect(mockRetool).not.toHaveBeenCalled()
+    expect(mockClaimSpare).toHaveBeenCalledTimes(1)
+  })
+
+  // The rest of the create is handed over with the agent, the way a cold
+  // create's is: the group and title before the workspace shows, then the
+  // prompt its agent booted without.
+  it('files and titles the claimed workspace and gives its agent the prompt', async () => {
+    mockList.mockResolvedValue([spare()])
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, {
+      prompt: 'fix the bug', title: 'Bug fix', groupId: 'g1',
+    })
+    expect(result?.workspaceId).toBe('spare1')
+    expect(vi.mocked(setWorkspaceGroup)).toHaveBeenCalledWith('p', 'spare1', 'g1')
+    expect(vi.mocked(setWorkspaceTitle)).toHaveBeenCalledWith('p', 'spare1', 'Bug fix')
+    // The paste script travels base64'd, and carries the prompt the same
+    // way, so the script is decoded to be read.
+    const pasted = mockExec.mock.calls.flatMap(([jobName, cmd]) => {
+      const b64 = /printf %s (\S+) \| base64 -d/.exec(cmd)?.[1]
+      return b64 !== undefined ? [{ jobName, script: Buffer.from(b64, 'base64').toString() }] : []
+    })
+    expect(pasted).toHaveLength(1)
+    expect(pasted[0].jobName).toBe('yaac-p-spare')
+    expect(pasted[0].script).toContain(Buffer.from('fix the bug').toString('base64'))
+    // ...and records it as the workspace's founding ask, as a cold create does.
+    expect(appliedEvents).toContainEqual(expect.objectContaining({
+      type: 'sessions-launched',
+      sessions: [{ tool: 'claude', agentSessionId: 'spare1', firstPrompt: 'fix the bug' }],
+    }))
+  })
+
+  // A group deleted since the route resolved it would fail a cold create the
+  // same way, so burning the spare over it would only lose a good workspace.
+  it('hands a claimed workspace over ungrouped when filing it fails', async () => {
+    mockList.mockResolvedValue([spare()])
+    vi.mocked(setWorkspaceGroup).mockRejectedValue(new ServerError('NOT_FOUND', 'No such workspace group'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { groupId: 'gone' })
+    expect(result?.workspaceId).toBe('spare1')
+    await flush()
+    expect(mockCleanup).not.toHaveBeenCalled()
+    expect(appliedEvents.some((e) => e.type === 'workspace-create-failed')).toBe(false)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('No such workspace group'))
+    warn.mockRestore()
+  })
+
+  it('treats a spare whose row records no branch as warmed from the default branch', async () => {
+    mockList.mockResolvedValue([spare()])
+    launched({ baseBranch: undefined })
+    mockDefaultBranch.mockResolvedValue('trunk')
+    const result = await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
+    expect(result?.workspaceId).toBe('spare1')
+    expect(mockRebranch).not.toHaveBeenCalled()
+    // ...and it is that branch whose tip it is checked against.
+    expect(vi.mocked(resolveRemoteRef)).toHaveBeenCalledWith(expect.any(String), 'trunk')
+  })
+})

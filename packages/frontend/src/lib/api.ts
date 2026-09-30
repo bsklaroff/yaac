@@ -27,5 +27,5 @@ export const api = createApiClient('', sameOriginFetch)
 
 /** The same routes without the throwing/unwrapping wrappers, for the one call
  *  whose error body carries more than a code: a file save refused against a
- *  newer version (see `saveWorktreeFile`). */
+ *  newer version (see `saveWorkspaceFile`). */
 export const rawApi = createRawApiClient('', sameOriginFetch)

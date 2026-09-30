@@ -4,7 +4,7 @@
  *
  * Mocked at the process boundary only — podman (through the container
  * folder's exec + image-store helpers) and the registry client — so the
- * real tag resolution runs and the assertions land on the tags a worktree
+ * real tag resolution runs and the assertions land on the tags a workspace
  * create will look up.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'

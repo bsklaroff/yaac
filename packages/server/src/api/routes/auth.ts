@@ -34,7 +34,7 @@ async function requireRuntimeTold(applied: string): Promise<void> {
   if (!failure) return
   throw new ServerError(
     'RUNTIME_UNAVAILABLE',
-    `${applied}, but the egress proxy could not be updated, so worktrees running right now `
+    `${applied}, but the egress proxy could not be updated, so workspaces running right now `
     + `still hold the old one: ${failure.message}. It is dropped when the proxy is next reachable `
     + '(any credential change, or a server restart) — revoke it at the git host meanwhile.',
   )
@@ -56,7 +56,7 @@ export const authApp = new Hono()
     async (c) => {
       const { service } = c.req.valid('json')
       await clearAuth(service)
-      // A sign-out reaches running worktrees as surely as a sign-in: the
+      // A sign-out reaches running workspaces as surely as a sign-in: the
       // runtime is handed the set with the credential gone.
       await pushCredentialsToRuntime()
       return c.body(null, 204)

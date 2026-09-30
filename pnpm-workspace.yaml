@@ -40,7 +40,7 @@ minimumReleaseAgeExclude:
   # Adopted at days old (only release; the attention chime's one cue) after
   # reading its full source — see packages/frontend/src/lib/sound.ts.
   - cuelume
-  # Adopted at days old because they must match the claude CLI the worktree
+  # Adopted at days old because they must match the claude CLI the workspace
   # image pins (dockerfiles/Dockerfile.tools, `AGENT_CLIS`): the server replays
   # stopped transcripts through the same adapter version the image runs live.
   # Mode ids re-verified against this release (runtime/agents/acp-adapters.ts).

@@ -18,12 +18,12 @@ import type {
  *
  * Split out from the chat pane because a conversation is worth reading in two
  * places that share nothing else: the live pane, which owns a socket, a draft
- * and a composer, and a *stopped* worktree's transcript, which owns none of
+ * and a composer, and a *stopped* workspace's transcript, which owns none of
  * them and is a plain fetch. Both render the same events, so both render them
  * through here; the transport is the caller's business.
  *
  * Everything below is pure over the events it is handed. Nothing reaches for a
- * connection, a store or a worktree id, which is the property that makes a
+ * connection, a store or a workspace id, which is the property that makes a
  * conversation from a pod that no longer exists render exactly like a live
  * one.
  *
@@ -401,7 +401,7 @@ function isAllow(option: AcpPermissionOption | undefined): boolean {
  * re-enables them, because nothing on the far side heard it.
  *
  * With no `onAnswer` there is nothing behind the buttons, so they are not
- * offered: a stopped worktree's transcript can contain an ask whose agent died
+ * offered: a stopped workspace's transcript can contain an ask whose agent died
  * unanswered, and a live-looking button that silently does nothing is worse
  * than plainly saying the question outlived its conversation.
  */
@@ -470,7 +470,7 @@ function PermissionRow({
           ))}
           {/* Always available, even when the agent offered only allows: the
               turn is blocked until this is answered, so a user who wants
-              neither needs a way out that is not "restart the worktree". */}
+              neither needs a way out that is not "restart the workspace". */}
           <button
             type="button"
             disabled={sending}
@@ -533,7 +533,7 @@ export function AcpTranscript({
   className?: string
   /**
    * How to answer a permission ask, when there is anything to answer it with.
-   * The live pane passes its socket send; a stopped worktree's transcript
+   * The live pane passes its socket send; a stopped workspace's transcript
    * passes nothing, and its cards render as the unanswered questions they are.
    */
   onAnswerPermission?: (requestId: string, optionId?: string) => boolean

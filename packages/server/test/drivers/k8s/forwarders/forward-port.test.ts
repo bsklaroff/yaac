@@ -2,12 +2,12 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 
 vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => ({
   ...(await importOriginal<typeof podsModule>()),
-  listWorktreePods: vi.fn(),
+  listWorkspacePods: vi.fn(),
 }))
 
 vi.mock('#drivers/k8s/forwarders/port-forwarders', () => ({
-  addWorktreeForwarder: vi.fn(),
-  getWorktreePorts: vi.fn().mockReturnValue([]),
+  addWorkspaceForwarder: vi.fn(),
+  getWorkspacePorts: vi.fn().mockReturnValue([]),
 }))
 
 vi.mock('#drivers/k8s/forwarders/port-detector', () => ({
@@ -24,26 +24,26 @@ vi.mock('#drivers/k8s/substrate/stream-relay', () => ({
 }))
 
 import type * as podsModule from '#drivers/k8s/substrate/pods'
-import { listWorktreePods, type PodInfo } from '#drivers/k8s/substrate/pods'
-import { addWorktreeForwarder, getWorktreePorts } from '#drivers/k8s/forwarders/port-forwarders'
+import { listWorkspacePods, type PodInfo } from '#drivers/k8s/substrate/pods'
+import { addWorkspaceForwarder, getWorkspacePorts } from '#drivers/k8s/forwarders/port-forwarders'
 import { getUnforwardedPorts, isDetectedPort } from '#drivers/k8s/forwarders/port-detector'
 import { relayDial } from '#drivers/k8s/substrate/stream-relay'
-import { dialWorkspacePort, forwardWorktreePort } from '#drivers/k8s/forwarders/forward-port'
+import { dialWorkspacePort, forwardWorkspacePort } from '#drivers/k8s/forwarders/forward-port'
 
-const mockList = vi.mocked(listWorktreePods)
-const mockAdd = vi.mocked(addWorktreeForwarder)
+const mockList = vi.mocked(listWorkspacePods)
+const mockAdd = vi.mocked(addWorkspaceForwarder)
 const mockDetected = vi.mocked(getUnforwardedPorts)
-const mockDeclared = vi.mocked(getWorktreePorts)
+const mockDeclared = vi.mocked(getWorkspacePorts)
 const mockIsDetected = vi.mocked(isDetectedPort)
 const mockRelayDial = vi.mocked(relayDial)
 
 const target = { workspaceId: 'sess-1', projectSlug: 'proj', jobName: 'yaac-proj-sess-1' }
 
-function pod(worktreeId: string, over: Partial<PodInfo> = {}): PodInfo {
+function pod(workspaceId: string, over: Partial<PodInfo> = {}): PodInfo {
   return {
-    jobName: `yaac-proj-${worktreeId}`,
-    podName: `yaac-proj-${worktreeId}-abc`,
-    worktreeId,
+    jobName: `yaac-proj-${workspaceId}`,
+    podName: `yaac-proj-${workspaceId}-abc`,
+    workspaceId,
     projectSlug: 'proj',
     tool: 'claude',
     phase: 'Running',
@@ -64,16 +64,16 @@ beforeEach(() => {
   mockIsDetected.mockReturnValue(false)
 })
 
-describe('forwardWorktreePort', () => {
+describe('forwardWorkspacePort', () => {
   it('rejects a port that is not in the surfaced unforwarded set', async () => {
     mockDetected.mockReturnValue([3000])
-    await expect(forwardWorktreePort(target, 8090, { fanOutToProject: false }))
+    await expect(forwardWorkspacePort(target, 8090, { fanOutToProject: false }))
       .rejects.toThrow(/not an unforwarded listener/)
     expect(mockAdd).not.toHaveBeenCalled()
   })
 
   it('forwards only the target session when no fan-out is asked for', async () => {
-    const mapping = await forwardWorktreePort(target, 8090, { fanOutToProject: false })
+    const mapping = await forwardWorkspacePort(target, 8090, { fanOutToProject: false })
     expect(mapping).toEqual({ containerPort: 8090, hostPort: 8090 })
     expect(mockAdd).toHaveBeenCalledExactlyOnceWith('proj', 'sess-1', 'yaac-proj-sess-1', 8090)
     expect(mockList).not.toHaveBeenCalled()
@@ -87,7 +87,7 @@ describe('forwardWorktreePort', () => {
       pod('sess-4', { labels: { 'yaac.prewarmed': 'true' } }),
     ])
 
-    await forwardWorktreePort(target, 8090, { fanOutToProject: true })
+    await forwardWorkspacePort(target, 8090, { fanOutToProject: true })
 
     expect(mockList).toHaveBeenCalledWith('proj')
     // Target plus the one running, non-prewarmed sibling.
@@ -96,17 +96,17 @@ describe('forwardWorktreePort', () => {
 
   it('tolerates a sibling forward failure', async () => {
     mockList.mockResolvedValue([pod('sess-1'), pod('sess-2')])
-    mockAdd.mockImplementation((_slug, worktreeId) => {
-      if (worktreeId === 'sess-2') return Promise.reject(new Error('sibling down'))
+    mockAdd.mockImplementation((_slug, workspaceId) => {
+      if (workspaceId === 'sess-2') return Promise.reject(new Error('sibling down'))
       return Promise.resolve({ containerPort: 8090, hostPort: 8090 })
     })
-    const mapping = await forwardWorktreePort(target, 8090, { fanOutToProject: true })
+    const mapping = await forwardWorkspacePort(target, 8090, { fanOutToProject: true })
     expect(mapping).toEqual({ containerPort: 8090, hostPort: 8090 })
   })
 
   it('surfaces a failure on the directly-targeted session', async () => {
     mockAdd.mockRejectedValue(new Error('no ports available'))
-    await expect(forwardWorktreePort(target, 8090, { fanOutToProject: false }))
+    await expect(forwardWorkspacePort(target, 8090, { fanOutToProject: false }))
       .rejects.toThrow('no ports available')
   })
 })

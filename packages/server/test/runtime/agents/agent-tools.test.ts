@@ -68,7 +68,7 @@ describe('classifyAgentObservation', () => {
 })
 
 describe('agentWindowName', () => {
-  it("gives the worktree's first agent the bare tool name", () => {
+  it("gives the workspace's first agent the bare tool name", () => {
     // Every existing `yaac:<tool>` target — prompt paste, `attach --agent`,
     // the terminals listing — depends on this staying unsuffixed.
     expect(agentWindowName('claude', 0)).toBe('claude')
@@ -90,8 +90,8 @@ describe('agentWindowTool', () => {
     }
   })
 
-  it("matches any tool, not just the worktree's own", () => {
-    // A codex conversation opened inside a claude worktree must still be
+  it("matches any tool, not just the workspace's own", () => {
+    // A codex conversation opened inside a claude workspace must still be
     // classified; missing it leaves the pane out of the live set, and the
     // next restart silently forgets the conversation.
     expect(agentWindowTool('codex-2')).toBe('codex')
@@ -160,7 +160,7 @@ describe('resolveAgentPermissionMode', () => {
   // An opencode agent is half a posture; the rules the running process has
   // are the other half. plan and manual share theirs, so the agent alone
   // moves between them — and nowhere else.
-  it('reads an opencode agent against the rules the worktree runs under', () => {
+  it('reads an opencode agent against the rules the workspace runs under', () => {
     expect(resolveAgentPermissionMode('tui', 'opencode', 'build', 'plan')).toBe('manual')
     expect(resolveAgentPermissionMode('tui', 'opencode', 'plan', 'manual')).toBe('plan')
     expect(resolveAgentPermissionMode('tui', 'opencode', 'build', 'accept-edits')).toBe('accept-edits')

@@ -1,8 +1,8 @@
 /**
- * The install's npm registry cache: one Verdaccio every worktree pod of the
- * install installs through (docs/worktree-storage.md "Package installs").
+ * The install's npm registry cache: one Verdaccio every workspace pod of the
+ * install installs through (docs/workspace-storage.md "Package installs").
  *
- * Each worktree keeps its own pnpm store, on its own pod-local volume, so a
+ * Each workspace keeps its own pnpm store, on its own pod-local volume, so a
  * cold store is the normal case and every install is a full fetch. This is
  * where those fetches land instead of the internet: a package comes from
  * npmjs once per cluster, and installs keep working while npmjs is slow,
@@ -17,37 +17,37 @@
  * node: a pod rescheduled elsewhere reattaches it warm, and a lost claim
  * costs a cold cache and nothing else.
  *
- * Read-only to worktrees: `publish` and `unpublish` are `$nobody` for every
- * package, because every project's worktrees share this one cache and a
- * worktree that could publish could poison what the others install. What
+ * Read-only to workspaces: `publish` and `unpublish` are `$nobody` for every
+ * package, because every project's workspaces share this one cache and a
+ * workspace that could publish could poison what the others install. What
  * they pull is still bounded by their lockfiles — pnpm checks every tarball
  * against the lockfile's integrity hash, whoever served it.
  *
  * The public registry is the only uplink, and the cache is only ever the
- * DEFAULT: a worktree gets it at user-config precedence, below its
+ * DEFAULT: a workspace gets it at user-config precedence, below its
  * project's own `.npmrc`, so a project naming a registry of its own — for
  * everything or for a scope — keeps it, and those requests go out through
  * the egress proxy with their credentials. The cache sends none upstream,
  * so it only ever holds what npmjs serves anonymously.
  *
  * It fetches directly, not through the egress proxy, so what it serves is
- * outside the per-worktree allowlist — an accepted exception, bounded to
- * npm content coming IN (docs/worktree-egress.md). Which worktrees may use
+ * outside the per-workspace allowlist — an accepted exception, bounded to
+ * npm content coming IN (docs/workspace-egress.md). Which workspaces may use
  * it at all is per project: only a pod the server labelled
  * `LABEL_NPM_CACHE` at launch (launch.ts) can dial it — the project's
  * `npmCache` setting is on, its allowlist admits npmjs, and it has no
  * proxied npmjs secret — and only such a pod is pointed at it.
  *
  * Nothing prunes the cache: it keeps every tarball it ever fetched, and any
- * worktree can grow it by asking for public packages. Accepted for now —
- * on kind the claim is node disk with no quota (docs/worktree-storage.md).
+ * workspace can grow it by asking for public packages. Accepted for now —
+ * on kind the claim is node disk with no quota (docs/workspace-storage.md).
  */
 import crypto from 'node:crypto'
 import {
   LABEL_NPM_CACHE,
   NPM_CACHE_APP_NAME,
   NPM_CACHE_PORT,
-  LABEL_WORKTREE_ID,
+  LABEL_WORKSPACE_ID,
   PRIORITY_CLASS_INFRA,
   dataDirHash,
   k8sNamespace,
@@ -94,7 +94,7 @@ function npmCachePvcName(): string {
 const NPM_CACHE_STORAGE_SIZE = '20Gi'
 
 /**
- * The registry URL a worktree's pnpm is pointed at: the Service by its
+ * The registry URL a workspace's pnpm is pointed at: the Service by its
  * `.svc.cluster.local` name, which the proxy's split-horizon DNS forwards
  * to CoreDNS. Trailing slash, as npm config spells a registry.
  */
@@ -150,21 +150,21 @@ function buildNpmCacheConfigYaml(): string {
  * before the Deployment that mounts them, then its three policies), and apart
  * from it the Service, which goes on last — see `ensureNpmCache`.
  *
- * The policies are the wall around a pod worktrees can reach:
- *  - The WORKTREE side: egress to the cache port for worktree pods carrying
- *    `LABEL_NPM_CACHE`, which the install-wide worktree egress policy does
+ * The policies are the wall around a pod workspaces can reach:
+ *  - The WORKSPACE side: egress to the cache port for workspace pods carrying
+ *    `LABEL_NPM_CACHE`, which the install-wide workspace egress policy does
  *    not grant — it cannot tell one project from another, and a label can.
- *  - INGRESS admits the same labelled worktree pods of this namespace on
+ *  - INGRESS admits the same labelled workspace pods of this namespace on
  *    the cache port, and the node addresses for the kubelet's readiness
  *    probe. Nothing else in the install has a reason to dial it.
  *  - EGRESS admits 443 off-cluster (the uplink) and DNS. Off-cluster
- *    because the cache parses every worktree's requests: compromised, it
+ *    because the cache parses every workspace's requests: compromised, it
  *    must not reach the cluster's own 443 listeners, so the pod and node
  *    addresses are carved out (a Service address is DNAT'd to a pod one
  *    before policy applies). The namespace's world-deny selects this pod
  *    like any other non-proxy pod; NetworkPolicy unions allow rules, so
  *    this is the whole of what it may reach. netd never redirects it — it
- *    is not a worktree pod — so its fetches go straight out, not through
+ *    is not a workspace pod — so its fetches go straight out, not through
  *    the egress proxy.
  */
 function buildNpmCacheManifests(
@@ -177,7 +177,7 @@ function buildNpmCacheManifests(
   const port = { protocol: 'TCP', port: NPM_CACHE_PORT }
   const admitted = {
     matchLabels: { [LABEL_NPM_CACHE]: 'true' },
-    matchExpressions: [{ key: LABEL_WORKTREE_ID, operator: 'Exists' }],
+    matchExpressions: [{ key: LABEL_WORKSPACE_ID, operator: 'Exists' }],
   }
   const workload = [
     {
@@ -216,7 +216,7 @@ function buildNpmCacheManifests(
             automountServiceAccountToken: false,
             enableServiceLinks: false,
             // Infra tier, and trusted infra on runc like the registries:
-            // every worktree's install goes through it.
+            // every workspace's install goes through it.
             priorityClassName: PRIORITY_CLASS_INFRA,
             // A block-storage claim arrives root-owned; fsGroup hands it to
             // the image's group. (kind's local-path volume is 0777 anyway.)
@@ -289,7 +289,7 @@ function buildNpmCacheManifests(
     {
       apiVersion: 'networking.k8s.io/v1',
       kind: 'NetworkPolicy',
-      metadata: metadata(`${NPM_CACHE_APP_NAME}-worktree-egress`),
+      metadata: metadata(`${NPM_CACHE_APP_NAME}-workspace-egress`),
       spec: {
         podSelector: admitted,
         policyTypes: ['Egress'],
@@ -343,17 +343,22 @@ export async function ensureNpmCache(): Promise<void> {
       + 'a Pending PVC means the cluster has no default StorageClass to bind it.',
     )
   }
+  // The workspace-egress policy under an older install's name, replaced by
+  // the one the workload set above carries (docs/legacy-compat-shims.md).
+  await kubectlWithRetry([
+    'delete', 'networkpolicy', `${NPM_CACHE_APP_NAME}-worktree-egress`, '-n', k8sNamespace(), '--ignore-not-found',
+  ])
   await kubectlApply(service)
 }
 
 /**
- * The registry URL a worktree should install through, or null when the
+ * The registry URL a workspace should install through, or null when the
  * cache is not serving right now: absent (an install converged before it
  * existed), or with no ready pod behind its Service (a rollout, a crash, a
  * claim that cannot attach). Read per create and never cached, because the
  * two mistakes are not symmetric: pnpm has no fallback registry, so a
- * worktree pointed at a cache that is down fails every install, while one
- * left on npmjs only goes slower. A worktree already pointed here when the
+ * workspace pointed at a cache that is down fails every install, while one
+ * left on npmjs only goes slower. A workspace already pointed here when the
  * cache goes down does fail its installs until it is back.
  */
 export async function servingNpmCacheUrl(): Promise<string | null> {

@@ -171,7 +171,7 @@ describe('startForward', () => {
     //
     // Asserted on the URL rather than on a failed connection to a
     // made-up hostname. That form only holds where DNS says the name does
-    // not exist — inside a sandboxed worktree, whose proxy accepts the dial
+    // not exist — inside a sandboxed workspace, whose proxy accepts the dial
     // and drops the handshake, the error names no host at all and the test
     // fails for a reason that has nothing to do with this module.
     const spec = { session: 'sess-1', containerPort: 5173, hostPort: 0 }

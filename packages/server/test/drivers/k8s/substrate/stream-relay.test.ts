@@ -69,7 +69,7 @@ function serveKubectl(): void {
 }
 
 interface Received {
-  auth: { token?: string; worktreeId?: string }
+  auth: { token?: string; workspaceId?: string }
   handshake: Record<string, unknown>
   socket: net.Socket
   leftover: Buffer
@@ -158,7 +158,7 @@ describe('relayDial', () => {
     const socket = await relayDial(SID, { kind: 'ctrl', cmd: ['tmux'] })
     const r = received!
     // Both names — see relayDial: this path has no currency gate.
-    expect(r.auth).toEqual({ token: SECRET, worktreeId: SID })
+    expect(r.auth).toEqual({ token: SECRET, workspaceId: SID })
     expect(r.handshake).toEqual({
       token: await podStreamToken(SID),
       kind: 'ctrl',
@@ -258,9 +258,9 @@ describe('podExec', () => {
 
   // Only a command that RAN AND EXITED is a verdict about the pod: a
   // RelayExecError reads as `dead` at the stale reaper, which tears the
-  // worktree down in the same pass. These three results all carry a nonzero
+  // workspace down in the same pass. These three results all carry a nonzero
   // exit code without the command having got that far, so each would
-  // otherwise be a deleted-live-worktree path.
+  // otherwise be a deleted-live-workspace path.
   it('reports a signal-killed command as transport, not a nonzero exit', async () => {
     // streamd reports `code ?? 1` for a signalled child, so the OOM killer
     // taking the probe's sh/tmux looks exactly like `tmux has-session`

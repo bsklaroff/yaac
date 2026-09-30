@@ -5,7 +5,7 @@
  * Verifies that switching between sessions (and tabs) never flashes tmux
  * overflow dots on the right-hand side of the pane. Each view's tmux window
  * follows its client under `window-size latest` (pty-bridge attachArgs), and
- * hidden panes keep a frozen rect (WorktreeView) so switches are pure
+ * hidden panes keep a frozen rect (WorkspaceView) so switches are pure
  * visibility flips with no resize at all. A regression shows up here as dotRows > 0 in
  * the visible xterm buffer right after a switch, or as grids changing across
  * switches.

@@ -98,8 +98,8 @@ export async function configEditDockerfile(slug: string): Promise<void> {
   }
   await discardScratch(edit)
   console.log(edit.text.trim() === ''
-    ? 'Cleared Dockerfile.yaac — the image reverts to the base stack on the next worktree create.'
-    : 'Saved Dockerfile.yaac — it applies to the next worktree created.')
+    ? 'Cleared Dockerfile.yaac — the image reverts to the base stack on the next workspace create.'
+    : 'Saved Dockerfile.yaac — it applies to the next workspace created.')
 }
 
 /** `yaac config edit-user-dockerfile` — the global Dockerfile.user. */

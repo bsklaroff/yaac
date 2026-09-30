@@ -3,17 +3,17 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react'
 import type { JSX } from 'react'
-import type { ImageBuildEntry, ProjectSkills, SkillDetail, StoppedWorktreeEntry } from '@yaac/shared/types'
+import type { ImageBuildEntry, ProjectSkills, SkillDetail, StoppedWorkspaceEntry } from '@yaac/shared/types'
 
 const provision = vi.hoisted(() => vi.fn())
 
 vi.mock('#lib/stoppedApi', () => ({
-  getStoppedWorktrees: vi.fn(),
+  getStoppedWorkspaces: vi.fn(),
   markDeathSeen: vi.fn(),
   markAllDeathsSeen: vi.fn(),
 }))
-vi.mock('#lib/createWorktree', () => ({ restartWorktree: vi.fn() }))
-vi.mock('#lib/useProvisionWorktree', () => ({ useProvisionWorktree: () => provision }))
+vi.mock('#lib/createWorkspace', () => ({ restartWorkspace: vi.fn() }))
+vi.mock('#lib/useProvisionWorkspace', () => ({ useProvisionWorkspace: () => provision }))
 vi.mock('#lib/skillsApi', () => ({ getProjectSkills: vi.fn(), getSkillBody: vi.fn() }))
 vi.mock('#lib/projectApi', () => ({
   getProjectBranches: vi.fn(),
@@ -27,13 +27,13 @@ vi.mock('#lib/imageBuildsApi', () => ({
 
 import { ImageBuildsOverlay } from '#components/ImageBuildsOverlay'
 import { SkillsButton } from '#components/SkillsButton'
-import { StoppedWorktreesButton } from '#components/StoppedWorktreesButton'
-import { useStoppedWorktrees } from '#lib/useStoppedWorktrees'
+import { StoppedWorkspacesButton } from '#components/StoppedWorkspacesButton'
+import { useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
 import { MasterDetail } from '#components/ui/MasterDetail'
 import { getImageBuildLog } from '#lib/imageBuildsApi'
 import { getProjectBranches } from '#lib/projectApi'
 import { getProjectSkills, getSkillBody } from '#lib/skillsApi'
-import { getStoppedWorktrees, markDeathSeen } from '#lib/stoppedApi'
+import { getStoppedWorkspaces, markDeathSeen } from '#lib/stoppedApi'
 import { useUiStore } from '#lib/store'
 
 // jsdom has no ResizeObserver; Base UI needs one to exist.
@@ -127,9 +127,9 @@ describe('MasterDetail', () => {
   })
 })
 
-describe('StoppedWorktreesButton on a phone', () => {
-  const stopped = (over: Partial<StoppedWorktreeEntry> = {}): StoppedWorktreeEntry => ({
-    worktreeId: 's1',
+describe('StoppedWorkspacesButton on a phone', () => {
+  const stopped = (over: Partial<StoppedWorkspaceEntry> = {}): StoppedWorkspaceEntry => ({
+    workspaceId: 's1',
     projectSlug: 'proj',
     tool: 'claude',
     createdAt: '2026-07-13 00:00:00',
@@ -140,7 +140,7 @@ describe('StoppedWorktreesButton on a phone', () => {
   })
 
   function Harness(): JSX.Element {
-    return <StoppedWorktreesButton projectSlug="proj" stopped={useStoppedWorktrees('proj', [], [])} />
+    return <StoppedWorkspacesButton projectSlug="proj" stopped={useStoppedWorkspaces('proj', [], [])} />
   }
 
   const openOverlay = async (): Promise<void> => {
@@ -150,13 +150,13 @@ describe('StoppedWorktreesButton on a phone', () => {
         <Harness />
       </QueryClientProvider>,
     )
-    fireEvent.click(await screen.findByRole('button', { name: /^Stopped worktrees/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /^Stopped workspaces/ }))
   }
 
   beforeEach(() => {
-    vi.mocked(getStoppedWorktrees).mockResolvedValue([
-      stopped({ worktreeId: 's1', title: 'OOMed run', prompt: 'fix the parser', deathReason: 'oom' }),
-      stopped({ worktreeId: 's2', title: 'Add tests', tool: 'codex' }),
+    vi.mocked(getStoppedWorkspaces).mockResolvedValue([
+      stopped({ workspaceId: 's1', title: 'OOMed run', prompt: 'fix the parser', deathReason: 'oom' }),
+      stopped({ workspaceId: 's2', title: 'Add tests', tool: 'codex' }),
     ])
     vi.mocked(markDeathSeen).mockResolvedValue(undefined)
   })
@@ -181,7 +181,7 @@ describe('StoppedWorktreesButton on a phone', () => {
     expect(screen.getByText('Cause')).toBeTruthy()
     await waitFor(() => expect(markDeathSeen).toHaveBeenCalledWith('proj', 's1'))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Back to stopped worktrees' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Back to stopped workspaces' }))
     await waitFor(() => expect(screen.queryByText('fix the parser')).toBeNull())
     expect(screen.getByText('Add tests')).toBeTruthy()
   })

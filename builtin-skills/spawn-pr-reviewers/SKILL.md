@@ -1,19 +1,19 @@
 ---
 name: spawn-pr-reviewers
-description: Watch this project's GitHub repo for newly opened PRs and spawn a sibling yaac worktree to review each one — posting its findings back to the PR and re-reviewing on follow-up commits and comments. Use when the user wants automatic code review of incoming PRs. Requires a reviewer argument naming the model (`<model>`, `<tool>:<model>`, or `:<model>` to let the tool be resolved); there is no default — ask which model to review with if it is missing.
+description: Watch this project's GitHub repo for newly opened PRs and spawn a sibling yaac workspace to review each one — posting its findings back to the PR and re-reviewing on follow-up commits and comments. Use when the user wants automatic code review of incoming PRs. Requires a reviewer argument naming the model (`<model>`, `<tool>:<model>`, or `:<model>` to let the tool be resolved); there is no default — ask which model to review with if it is missing.
 ---
 
-You are running **inside a yaac worktree**. This skill sets up **continuous
+You are running **inside a yaac workspace**. This skill sets up **continuous
 review coverage**: you watch for newly opened PRs and spawn a **sibling
-worktree** per PR whose whole job is that PR — review it, post findings to
+workspace** per PR whose whole job is that PR — review it, post findings to
 GitHub, keep watching it, re-review as it changes.
 
 You stay the dispatcher. You never review the PR yourself, and reviewer
-worktrees never report back to you — their output is the PR thread.
+workspaces never report back to you — their output is the PR thread.
 
 Built on [`yaac-watch-prs`](../yaac-watch-prs/SKILL.md) (the event source),
 [`yaac-mama`](../yaac-mama/SKILL.md) (the spawn) and
-[`review-pr`](../review-pr/SKILL.md) — which is what a reviewer worktree
+[`review-pr`](../review-pr/SKILL.md) — which is what a reviewer workspace
 actually runs, so your prompt supplies the *aim*, not the procedure.
 
 ## The reviewer argument
@@ -34,7 +34,7 @@ looks like a hung review rather than a misconfiguration. A **tool omitted** is
 resolved to the authed tools whose model list has that id: none → stop and
 show near matches (ids are easy to typo, and `opencode`/`pi` use
 `provider/model` while `claude`/`codex` use bare ids); one → use it; several →
-prefer this worktree's tool (the listing marks it), then `claude`, `codex`,
+prefer this workspace's tool (the listing marks it), then `claude`, `codex`,
 `opencode`, `pi`, and say it was available on more than one.
 
 Use the same reviewer for every PR unless the user changes it.
@@ -68,20 +68,20 @@ gh pr view <n> --json number,title,author,headRefName,isCrossRepository,url,addi
 
 Narrow that with gh's own `--jq` flag when you want fields rather than the
 whole object (e.g. `--jq '.files[].path'`) — never a `| jq` pipe. `jq` is not
-installed on every host a containerless worktree runs on, while gh's jq engine
+installed on every host a containerless workspace runs on, while gh's jq engine
 is built into the binary; the same goes for every `gh` call below.
 
 The file list is what lets you aim the review; the size says how much to ask
 for. If `isCrossRepository` is true the head branch is **not on origin** — the
 reviewer must use `gh pr checkout <n>`, not `git fetch origin <branch>`.
 
-### 2. Find the worktree that opened the PR
+### 2. Find the workspace that opened the PR
 
 Everything for this PR is filed under a group named **`PR <n>`**, so the user
 sees the author and its reviewer side by side in the sidebar. Find the author
-in git rather than by reading prompts: every yaac worktree commits on
-`agent/<worktree-id>` in the shared git dir, and `/push-pr` pushes that
-branch's tip to the PR head, so the authoring worktree is the local `agent/*`
+in git rather than by reading prompts: every yaac workspace commits on
+`agent/<workspace-id>` in the shared git dir, and `/push-pr` pushes that
+branch's tip to the PR head, so the authoring workspace is the local `agent/*`
 branch that holds the PR's head commit:
 
 ```
@@ -91,12 +91,12 @@ git branch --list 'agent/*' --contains origin/<headRefName> --format='%(refname:
 
 Take the branch whose tip **equals** the PR head SHA; if none does, take the
 one fewest commits ahead of it (`git rev-list --count origin/<headRefName>..<branch>`),
-since that worktree kept working after it pushed. The worktree id is the uuid
+since that workspace kept working after it pushed. The workspace id is the uuid
 after `agent/`, and `yaac-mama list` shows its first 8 characters — check the
 row is there and that its PROMPT column plausibly matches the PR, then:
 
 ```
-yaac-mama group move <author-worktree> "PR <n>"
+yaac-mama group move <author-workspace> "PR <n>"
 ```
 
 No branch contains it usually means the PR came from outside this yaac (a
@@ -153,7 +153,7 @@ like an overlap. Only when both hold: name the PR, say what you verified, and
 ask the reviewer to flag likely conflicts for whoever merges second — **not**
 to resolve them.
 
-**Tell the reviewer to run what it can, not defer it.** A reviewer worktree
+**Tell the reviewer to run what it can, not defer it.** A reviewer workspace
 can run containerless yaac, so a check on the PR's "Not run" list is often
 not host-only, and "not verified on a live server" is not something to leave
 for later. Tell the reviewer to run every check that runs under containerless
@@ -185,7 +185,7 @@ procedure to the skill, whatever the PR:
 > tool takes slash commands, otherwise read `review-pr/SKILL.md` from your
 > skills directory and follow it. It covers checking out the head, posting
 > findings, when you may say "Approved", watching the PR, and stopping this
-> worktree once the PR is approved.
+> workspace once the PR is approved.
 
 Everything after that is **this PR's aim**: the risks from step 3, the files
 worth reading first, a verified collision if there is one. Don't restate the
@@ -200,7 +200,7 @@ a failure:
 
 - It approves only once **every** finding it raised — nits included — has
   been fixed by a commit or answered by the implementer. A PR sitting with
-  one open nit is a reviewer doing its job, not a stalled worktree.
+  one open nit is a reviewer doing its job, not a stalled workspace.
 - It **stops itself** (`yaac-mama stop`) right after posting "Approved", or
   if the PR is merged or closed while it watches. Its row leaving
   `yaac-mama list` is the review finishing. Don't respawn a reviewer for a
@@ -208,9 +208,9 @@ a failure:
 
 ### 5. Report
 
-Relay: the event line, the PR link and size, the reviewer worktree id, the
+Relay: the event line, the PR link and size, the reviewer workspace id, the
 group (`PR <n>`) and who else is in it, and one line on what you aimed the
-review at. The worktree id is how the user follows it in the yaac webapp —
+review at. The workspace id is how the user follows it in the yaac webapp —
 `yaac-mama create` is fire-and-forget and you cannot watch its progress from
 here.
 
@@ -219,7 +219,7 @@ here.
 The monitor can stop without warning (process restart, teardown). When you
 notice, **do not just restart it** — the seen-state in
 `$HOME/.yaac-watch-prs-seen` (override with `YAAC_WATCH_PRS_STATE`) is
-per-worktree, so a restarted watcher re-baselines and any PR opened during the
+per-workspace, so a restarted watcher re-baselines and any PR opened during the
 downtime is recorded as seen and **never reviewed**. Instead run
 `gh pr list --state all --limit 10 --json number,title,state,createdAt --jq '.[] | [.number, .state, .createdAt, .title] | @tsv'`,
 compare against the last PR you spawned a reviewer for, cover anything opened

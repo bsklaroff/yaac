@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { buildApp } from '@yaac/server/main/server'
 import { makeTestApiClient } from '@yaac/test-utils/api'
-import { worktreeDriver } from '@yaac/server/drivers/driver'
+import { workspaceDriver } from '@yaac/server/drivers/driver'
 
 const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
@@ -36,7 +36,7 @@ describe('buildApp', () => {
       ok: true,
       buildId: 'abc123',
       ready: true,
-      driver: worktreeDriver().kind,
+      driver: workspaceDriver().kind,
     })
   })
 

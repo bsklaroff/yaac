@@ -419,7 +419,7 @@ function calicoReads(rest: (p: string) => string | null) {
 }
 
 describe('runClusterInstall', () => {
-  // Worktrees install from npmjs without it, so a cache that will not come
+  // Workspaces install from npmjs without it, so a cache that will not come
   // up is a note, not a failed install.
   it('finishes the install when the npm cache cannot be deployed', async () => {
     const log = vi.fn()
@@ -484,7 +484,7 @@ describe('runClusterInstall', () => {
     expect(createCall?.[2]?.env?.KIND_EXPERIMENTAL_PROVIDER).toBe('podman')
 
     // The npm cache, once its image is mirrored and before the server whose
-    // worktrees install through it.
+    // workspaces install through it.
     expect(deps.ensureNpmCache).toHaveBeenCalledOnce()
     expect(vi.mocked(deps.ensureNpmCache).mock.invocationCallOrder[0])
       .toBeGreaterThan(vi.mocked(deps.buildImages).mock.invocationCallOrder[0])
@@ -875,7 +875,7 @@ describe('runClusterInstall', () => {
     expect(deps.buildImages).toHaveBeenCalledOnce()
     // No delete, no create, no Calico — only the fixups, the layers and
     // the check. This is the whole safety property of the verb: running it
-    // against a machine with live worktrees costs nothing.
+    // against a machine with live workspaces costs nothing.
     expect(deps.run.mock.calls.some(([f, a]) => f === 'kind' && a[0] === 'delete')).toBe(false)
     expect(deps.runStreaming).not.toHaveBeenCalled()
     expect(deps.run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'exec')).toBe(true)

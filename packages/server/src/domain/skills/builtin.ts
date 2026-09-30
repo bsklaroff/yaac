@@ -1,28 +1,28 @@
 /**
  * yaac's own bundled skills — `builtin-skills/<name>/SKILL.md` dirs shipped
- * inside the yaac package that yaac injects into *every* worktree's personal
+ * inside the yaac package that yaac injects into *every* workspace's personal
  * skills root, for every agent tool.
  *
  * Delivery is per substrate, and both deliveries put something at the same
  * name — `<root>/<name>` in every tool's shared skills root — which is why
  * `reconcileSharedSkillRoots` owns both and can convert either into the other.
  *
- * A pod gets a per-worktree read-only mount: at worktree create the packaged
- * skills are copied into a staging dir under the worktree dir
+ * A pod gets a per-workspace read-only mount: at workspace create the packaged
+ * skills are copied into a staging dir under the workspace dir
  * (`stageBuiltinSkills`) and each is mounted at `<root>/<name>`
  * (`builtinSkillMounts`). Copying fresh from the install on every create keeps
  * the staged skills in lockstep with the running yaac version, and because the
  * content rides in via the mount it never lands in the persisted per-project
  * config dirs — so nothing ever goes stale there. The staging dir is removed
- * with the worktree dir on cleanup. The `mountpoint` delivery makes each
+ * with the workspace dir on cleanup. The `mountpoint` delivery makes each
  * `<root>/<name>` first, so the SERVER owns those directories: a mountpoint the
  * kubelet has to create is created root-owned, which no later run can clear.
  *
- * A containerless worktree has no mount namespace to layer that staging over
+ * A containerless workspace has no mount namespace to layer that staging over
  * its tool homes (which are symlinks into the project's shared config dirs),
  * so the `link` delivery symlinks each skill once per PROJECT into those
  * shared skills roots, pointing at the install dir itself. Shared across the
- * project's worktrees is that substrate's honest scope — the same bargain as
+ * project's workspaces is that substrate's honest scope — the same bargain as
  * its real credentials: there is no boundary that could make it narrower.
  *
  * An install can switch substrates, so each delivery has to converge the roots
@@ -115,7 +115,7 @@ export async function listBuiltinSkills(dir: string): Promise<string[]> {
 }
 
 /** Copy every skill dir from `srcDir` into `destDir` (replacing any prior
- *  staging) and return the staged skill names. A fresh copy per worktree keeps
+ *  staging) and return the staged skill names. A fresh copy per workspace keeps
  *  the staged skills in lockstep with the installed yaac version. */
 export async function stageBuiltinSkills(srcDir: string, destDir: string): Promise<string[]> {
   await fs.rm(destDir, { recursive: true, force: true })
@@ -155,7 +155,7 @@ export async function isBuiltinSkillLink(entry: string): Promise<boolean> {
 /**
  * How this substrate delivers a builtin skill to `<root>/<name>`: a symlink
  * into the install (containerless, which has no mount namespace), or an empty
- * directory for a pod to mount its per-worktree staging over (k8s).
+ * directory for a pod to mount its per-workspace staging over (k8s).
  */
 export type SkillDelivery = 'link' | 'mountpoint'
 
@@ -163,7 +163,7 @@ export type SkillDelivery = 'link' | 'mountpoint'
  * Converge a project's shared skills roots on `delivery`, and answer with the
  * names this install ships.
  *
- * Per project rather than per worktree because the roots themselves are
+ * Per project rather than per workspace because the roots themselves are
  * per-project: the tool homes a workspace gets are mounts or links into these
  * dirs. Under `link` the skills track the running yaac version with nothing on
  * disk to go stale; under `mountpoint` the content rides in on the mount, so
@@ -292,9 +292,9 @@ async function mkdirMountpoint(dest: string): Promise<void> {
 
 /**
  * Create one link, tolerating a concurrent create of the same project having
- * just planted it. Two worktree creates run this sweep against the same
+ * just planted it. Two workspace creates run this sweep against the same
  * shared roots with the same desired state, so losing that race means the
- * link is already there — never a reason to fail a worktree create.
+ * link is already there — never a reason to fail a workspace create.
  */
 async function plantLink(src: string, dest: string): Promise<void> {
   try {
@@ -324,7 +324,7 @@ let reaimSeq = 0
  * description matches it while it is still in use, so a concurrent create of
  * this project can prune it out from under this rename; that create is
  * running the same reconcile toward the same desired state, so it converges
- * `dest` itself. Losing the race is never a reason to fail a worktree create.
+ * `dest` itself. Losing the race is never a reason to fail a workspace create.
  */
 async function reaimLink(src: string, dest: string): Promise<void> {
   reaimSeq += 1
@@ -354,7 +354,7 @@ async function pruneRetiredLinks(root: PinnedDir, names: string[]): Promise<void
 /** Read-only mounts placing each staged skill at `<root>/<name>` in every
  *  tool's personal skills dir. The skill content rides in via the mount, so it
  *  is never written into the persisted per-project config dirs. The staging dir
- *  is GLOBAL (under `worktreeStateDir`) — server-written, pod-read — so it takes the
+ *  is GLOBAL (under `workspaceStateDir`) — server-written, pod-read — so it takes the
  *  shared tier's source. */
 export function builtinSkillMounts(stagingDir: string, names: string[]): WorkspaceMount[] {
   const mounts: WorkspaceMount[] = []

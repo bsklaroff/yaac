@@ -3,7 +3,7 @@
 ## Goal and trust model
 
 Several teammates share one always-on yaac deployment. Each has their own
-projects, worktrees, tool credentials and quota; the first cross-user feature
+projects, workspaces, tool credentials and quota; the first cross-user feature
 is **read-only access to each other's session logs** (agent-conversation
 transcripts, in docs/naming.md terms), with the roadmap's §2 collaboration
 features (observable sessions, presence, handoff, comments, team projects)
@@ -11,15 +11,15 @@ as the trajectory.
 
 Trust model: the trust boundary is the tailnet, as in docs/remote-hosting.md.
 Users are teammates who trust each other and the host admin; per-user
-separation is **organizational** (own data, own credentials, own worktrees),
+separation is **organizational** (own data, own credentials, own workspaces),
 not adversarial. The adversarial boundary stays where it is today: the
-gVisor + egress sandbox around worktree pods.
+gVisor + egress sandbox around workspace pods.
 
 That last sentence fixes which substrate a multi-user deployment runs on.
-Under the `k8s` driver a worktree holds sentinels and the egress proxy holds
+Under the `k8s` driver a workspace holds sentinels and the egress proxy holds
 the credentials, so "whose credential" is a question the deployment can
-answer per worktree. Under `containerless` (docs/containerless-driver.md)
-every worktree is a tmux server running as the server's own OS user, with
+answer per workspace. Under `containerless` (docs/containerless-driver.md)
+every workspace is a tmux server running as the server's own OS user, with
 the real OAuth bundles and API keys in its workspace, and the server itself
 is a process on that machine — there is no boundary between one user's agent
 and another user's data, or the host. **The multi-user deployment is a
@@ -61,20 +61,20 @@ already are it.
   resolves a `Principal` — `local`, or the `tailnet` user `tailscale serve`
   stamped — and stores it on the request, where `GET /whoami` and the
   request log read it. Nothing user-shaped exists in the schema yet; the one
-  non-server identity axis is per-worktree, not per-user
-  (`worktrees.mamaTokenHash`, the bearer a containerless worktree presents to
-  `POST /worktree/mama`). That absence is an asset — there is no wrong model
+  non-server identity axis is per-workspace, not per-user
+  (`workspaces.mamaTokenHash`, the bearer a containerless workspace presents to
+  `POST /workspace/mama`). That absence is an asset — there is no wrong model
   to migrate off.
-- Observed facts enter db through one door (`applyWorktreeEvent`), and
+- Observed facts enter db through one door (`applyWorkspaceEvent`), and
   the substrate has no users in it. So principals annotate **intent**, never
   observation — the event union, the runtime contract, and everything under
   `src/runtime`/`src/lib` stay user-free.
 - **Transcript reading has shipped, single-user.** `GET
-  /worktree/:id/agent-sessions` and `GET
-  /worktree/:id/agent-sessions/:sessionId/transcript` resolve the worktree
-  *row* (not the pod), so a stopped worktree answers; `getAgentSessionTranscript`
-  in `#domain/worktrees` reads an `acp` conversation's JSONL
-  (`projects/<slug>/acp/<worktreeId>/<agentSessionId>.jsonl`) and replays a
+  /workspace/:id/agent-sessions` and `GET
+  /workspace/:id/agent-sessions/:sessionId/transcript` resolve the workspace
+  *row* (not the pod), so a stopped workspace answers; `getAgentSessionTranscript`
+  in `#domain/workspaces` reads an `acp` conversation's JSONL
+  (`projects/<slug>/acp/<workspaceId>/<agentSessionId>.jsonl`) and replays a
   `tui` claude conversation through `claudeTranscriptAsAcp`, refusing
   other tools with `NOT_SUPPORTED` and oversized files with `TOO_LARGE`. The
   SPA's `StoppedTranscript` renders it through the same `AcpTranscript`
@@ -83,7 +83,7 @@ already are it.
 - `/acp/attach` is *not* that read path: it requires a live conversation
   and every connection gets the write frames (`prompt`, `cancel`,
   `permission`).
-- Worktree port forwards bind nothing on the server (docs/port-forward-tunnel.md).
+- Workspace port forwards bind nothing on the server (docs/port-forward-tunnel.md).
   The server declares a host port per forward; a client (`yaac forward`, the
   desktop app) holds the listener and opens one `GET /forward/attach` WS per
   TCP connection, authenticated by the same bearer as every other WS.
@@ -122,7 +122,7 @@ refinements of what this section first proposed:
   A knob could be left off on a fronted server; the Host rule fails closed.
 - **No `tailscale-only` mode.** The fronting that would need it — the
   in-cluster tailnet Ingress — never presents a loopback Host.
-- **The nested-server relaxation stays, narrowed.** Inside a worktree an
+- **The nested-server relaxation stays, narrowed.** Inside a workspace an
   unproxied request is local whatever its Host, because an inner server is
   reached as `srv.<tailnet>:<port>` through the outer install's forward;
   serve-proxied traffic to it is still identified.
@@ -147,13 +147,13 @@ may write*, and read-only log sharing is that policy plus the transcript
 route. But the audit below establishes that **"read vs. write" is the
 wrong axis to enforce on** — the real partition is three-way:
 
-- **Genuine reads** (worktree list, detail, transcript, diff): safe to
+- **Genuine reads** (workspace list, detail, transcript, diff): safe to
   share, modulo the field-level secret leaks catalogued in the snapshot
   finding.
 - **Action-shaped reads** — endpoints that look like reads but grant code
   execution or reach: every `/pty/attach` target, the `prompt`/`cancel`/
   `permission` frames on `/acp/attach`, and `/forward/attach` (a tunnel into
-  the worktree's listeners). These are `act`, gated to the owner, never
+  the workspace's listeners). These are `act`, gated to the owner, never
   "read".
 - **Writes**, further split into *own-resource* (owner-gated) and
   *install-global* (admin-gated) — the audit found the second class is
@@ -167,14 +167,14 @@ how much of the surface is *not* a safe read.
 ### Db: owners on rows, and nothing below changes
 
 - A `users` table (login, display name, first/last seen) and an `owner`
-  column on `projects` and `worktrees` (Drizzle migrations; existing rows
+  column on `projects` and `workspaces` (Drizzle migrations; existing rows
   backfill to the built-in owner).
 - `preferences` and `shortcut_overrides` become per-user rows. They are
   described today as "the user's" — now there are several — and
   `preferences` has grown a git identity (`git_user_name`,
-  `git_user_email`) that decides what every worktree commits as, which is
+  `git_user_email`) that decides what every workspace commits as, which is
   the most visibly wrong thing to leave install-global.
-- The event door is untouched. `WorktreeEvent` carries no principal;
+- The event door is untouched. `WorkspaceEvent` carries no principal;
   ownership is stamped when the *intent* row is created (the create verb),
   and discovery/observation continue to fill facts onto rows whose owner is
   already decided.
@@ -187,11 +187,11 @@ each:
 - Tool OAuth/API-key bundles are flat files, `.credentials/<tool>.json`
   under the data dir, mirrored into each project's tool home. The server
   hands the proxy the whole set as a Secret on every write, and adopts the
-  rotations the proxy captures from another Secret (docs/worktree-egress.md).
+  rotations the proxy captures from another Secret (docs/workspace-egress.md).
 - Git credentials — HTTPS tokens and generated SSH keys — are named sealed
   rows (`git_credentials`), each assigned to projects
   (docs/git-credentials.md), handed to the proxy in that same Secret scoped
-  by project, or to a containerless worktree's own agent. Project env and proxied secrets are sealed rows too
+  by project, or to a containerless workspace's own agent. Project env and proxied secrets are sealed rows too
   (`project_env_vars`), handed to the proxy as one Secret of opened values
   per project — registrations carry only `secretRef`s.
 
@@ -205,9 +205,9 @@ Two moves, not one:
   `owner` column on the same terms.
 - **Tool homes gain an owner segment.** Today `projects/<slug>/claude/`
   (and `codex/`, `pi/`, `opencode-config/`) is mounted RW into *every*
-  worktree pod of the project — settings, account state, and transcript
-  files shared and mutually writable across whoever owns those worktrees
-  (docs/worktree-storage.md calls every worktree "a concurrent writer into
+  workspace pod of the project — settings, account state, and transcript
+  files shared and mutually writable across whoever owns those workspaces
+  (docs/workspace-storage.md calls every workspace "a concurrent writer into
   one transcript directory"). Per-(project, owner) tool homes make a pod
   mount only its owner's agent state, and put each transcript under its
   owner by construction — which is also what keeps "whose log is this" a
@@ -217,8 +217,8 @@ Two moves, not one:
   backfills existing dirs to the built-in owner.
 
 The project repo clone (`projects/<slug>/repo`) stays shared across the
-project's worktrees regardless of owner — that is the existing
-multi-worktree trust class, and branch isolation is what already carries it.
+project's workspaces regardless of owner — that is the existing
+multi-workspace trust class, and branch isolation is what already carries it.
 
 ### Runtime and platform: no user vocabulary
 
@@ -227,25 +227,25 @@ none of it learns that users exist. A driver is handed paths and intents,
 never a lookup (`docs/layered-server.md`), and that is exactly the shape
 ownership needs.
 
-Two mechanisms do become owner-keyed *through the worktree*, without the
+Two mechanisms do become owner-keyed *through the workspace*, without the
 runtime ever seeing a user: the pod spec mounts whichever tool-home and
-credential paths the store staged for that worktree (a path change only),
+credential paths the store staged for that workspace (a path change only),
 and the egress proxy's credential machinery. The proxy piece is real work,
 not a relabel: today injection is deliberately **not** keyed at all — the
 proxy resolves the placeholder sentinels against one install-global bundle
-file per tool, and its own comment states that "any agent in any worktree
+file per tool, and its own comment states that "any agent in any workspace
 may now spend any credential the host has signed in". The proxy already
-resolves every request's source IP to a worktree registration (the
-attribution machinery per docs/worktree-egress.md) and keeps per-worktree
+resolves every request's source IP to a workspace registration (the
+attribution machinery per docs/workspace-egress.md) and keeps per-workspace
 allowlists and injection rules; the change is that a registration gains a
-credential-set key, staged by the server from the worktree's owner, and
+credential-set key, staged by the server from the workspace's owner, and
 every credential path resolves through it: sentinel swaps, the GitHub token
-pool, and which ssh-agent identities a worktree's connections may list and
+pool, and which ssh-agent identities a workspace's connections may list and
 sign with (today the relay scopes them to the keys assigned to the
-worktree's project, not to its owner). The OAuth **refresh
+workspace's project, not to its owner). The OAuth **refresh
 write-back** must route the same way — the proxy captures Claude/Codex
 token-refresh responses and overwrites the stored bundle, so today any
-worktree can rotate the credential every other worktree uses; under
+workspace can rotate the credential every other workspace uses; under
 ownership it writes back only to its owner's bundle.
 
 Under `containerless` the equivalent machinery is `#domain/auth`'s
@@ -272,10 +272,10 @@ separation: the workspace holds the real token either way.
 
 ### Frontend
 
-Ownership-aware, not two apps: worktrees grouped mine-first with teammates'
+Ownership-aware, not two apps: workspaces grouped mine-first with teammates'
 visible read-only (no PTY input, no chat input, no lifecycle buttons —
 driven by an `owned` flag on the snapshot rows), and the existing stopped
-transcript view opened for a teammate's running worktree too — the static
+transcript view opened for a teammate's running workspace too — the static
 route already renders through `AcpTranscript`, so "view a teammate's
 session" is the same pane fed from the same endpoint. This is the roadmap's
 "shared / observable sessions" row arriving as a view-mode rather than a
@@ -285,8 +285,8 @@ follows.
 ## Shared-surface audit
 
 Every backend surface where one user's action could write state another
-user's worktrees consume, and its disposition. (The proxy findings come
-from `k8s/proxy/proxy.ts` and docs/worktree-egress.md; the intended model
+user's workspaces consume, and its disposition. (The proxy findings come
+from `k8s/proxy/proxy.ts` and docs/workspace-egress.md; the intended model
 there reasons about isolation between *installs*, not between users of one
 install, which is why several of these exist.)
 
@@ -297,7 +297,7 @@ dimension):
   ssh-agent identity filtering — see the runtime section above.
 - Tool homes and host credential bundles — see the store section above.
 - **The prewarm pool.** Spares take the normal create path
-  (`prewarm-reconcile` calls `createWorktree` with `prewarm: true`), so
+  (`prewarm-reconcile` calls `createWorkspace` with `prewarm: true`), so
   their tool-home and credential mounts are fixed at spare creation and pods
   cannot be remounted — a spare is owner-bound the moment it exists. The
   pool (`computePrewarmPlan`, per project, `YAAC_PREWARM_POOL_SIZE` spares)
@@ -311,8 +311,8 @@ dimension):
 - Per-user UI/preference state that is install-global today and hence
   cross-user writable: the per-project create memory (last agent and each
   agent's model, posture and UI), git identity, shortcut overrides, and
-  worktree death read-marks (`deathSeen` on the row, surfaced by
-  `/worktree/list-stopped`; `mark-all-deaths-seen` dismisses for everyone).
+  workspace death read-marks (`deathSeen` on the row, surfaced by
+  `/workspace/list-stopped`; `mark-all-deaths-seen` dismisses for everyone).
 
 **Changes scoping semantics** (today's scope is wrong for multi-user, and
 two are dubious even single-user):
@@ -325,8 +325,8 @@ two are dubious even single-user):
 - **Persistent allow-host and forward-port approvals fan out
   project-wide.** `persist:true` writes the host or port into the project
   config overlay and then passes `fanOutToProject` to the driver, widening
-  every running sibling worktree — under ownership, that is a project
-  *write* (owner/team-gated); non-owners get per-worktree, non-persistent
+  every running sibling workspace — under ownership, that is a project
+  *write* (owner/team-gated); non-owners get per-workspace, non-persistent
   approvals.
 - **Builder pods write the shared registry under a per-project grant.**
   Every write to the main registry needs a signed grant naming the repos
@@ -335,16 +335,16 @@ two are dubious even single-user):
   That closes cross-project writes, but not cross-user ones inside a
   communal project: `yaac-user-<id>` is built from each user's own
   `Dockerfile.user`, yet every user's builder may write it, and the image
-  one user's agent pushes there is what another user's next worktree
+  one user's agent pushes there is what another user's next workspace
   boots. Phase 3 keys the user-layer repo — and so its grant — by
   (project id, owner).
 - **The per-project registries are a cross-user channel too.** They are
-  not on the builder path, but they are written from *inside* worktree
-  sandboxes (nested-image salvage), unauthenticated, by every worktree of
+  not on the builder path, but they are written from *inside* workspace
+  sandboxes (nested-image salvage), unauthenticated, by every workspace of
   the project, and the node image store materializes their contents into
-  every nested worktree of the project — upstream names included. Within a
+  every nested workspace of the project — upstream names included. Within a
   communal project that is one user's agent choosing the images another
-  user's nested worktree resolves locally. Phase 3 derives the registry
+  user's nested workspace resolves locally. Phase 3 derives the registry
   name and store path from (project id, owner) rather than the project id.
 
 **Stays shared by design** (availability or teammate-trust class, named
@@ -353,20 +353,20 @@ rather than fixed):
 - The single proxy pod and its install-global fate-sharing: MITM CA (one
   key transits everyone's traffic), DNS stub, leaf-cert cache, the mama
   command queue (`MAMA_MAX_PENDING_TOTAL` across the install, with a
-  per-worktree cap beside it) and ssh-agent connection caps (a busy
-  worktree can starve siblings — a fairness knob to revisit, not a
+  per-workspace cap beside it) and ssh-agent connection caps (a busy
+  workspace can starve siblings — a fairness knob to revisit, not a
   correctness hole), and the proxy's record ConfigMap, which is one object
   for the whole install.
   Attribution itself is sound: the pod-watch index maps source IP to
-  worktree, filter chains are per pod IP with no default chain, transparent
+  workspace, filter chains are per pod IP with no default chain, transparent
   ports are node-CIDR-gated, and the relay handshake carries the
   server-authored proxy secret.
-- The project repo clone, mounted read-write into every worktree pod of
-  the project — the existing multi-worktree trust class; branch isolation
+- The project repo clone, mounted read-write into every workspace pod of
+  the project — the existing multi-workspace trust class; branch isolation
   carries it, and `git-auth-failures` records staying project-scoped
   matches it.
-- Forwarded worktree ports are whatever the *client* binds: `yaac forward
-  --bind <tailnet ip>` re-exposes a worktree's dev server to the whole
+- Forwarded workspace ports are whatever the *client* binds: `yaac forward
+  --bind <tailnet ip>` re-exposes a workspace's dev server to the whole
   tailnet ungated, and that is the forwarding user's choice about their own
   machine, not a server surface. The server-side half, `/forward/attach`,
   is `act`-gated (below).
@@ -377,23 +377,23 @@ Projects are the one resource where "read all, write own" is not enough of
 an answer, because slugs are a global namespace and the clone is heavy.
 Two coherent shapes:
 
-- **Owner-private projects**: only the owner creates worktrees. Two users
+- **Owner-private projects**: only the owner creates workspaces. Two users
   working the same repo either collide on the slug or duplicate the clone
   and the image chain.
 - **Communal projects** (recommended): any authenticated user may create
-  worktrees in any project — the worktree is owned by its creator; project
+  workspaces in any project — the workspace is owned by its creator; project
   *mutation* (config, env and secrets, Dockerfile, build files, delete)
-  stays owner-gated. Creating a worktree in someone's project means running
+  stays owner-gated. Creating a workspace in someone's project means running
   their config and image — the same trust class as sharing the repo — and
   it is the shape team projects grow into. Project delete gains a guard:
-  blocked (or force-gated) while non-owner worktrees exist.
+  blocked (or force-gated) while non-owner workspaces exist.
 
 **Git authentication stays per-user under communal projects — that is
 what makes them safe.** The upstream provider's per-user permissions are
 the one real external ACL in the system, and every git path presents the
 *requesting user's* credential, never one ambient to the project: host-side
 fetches on the shared clone (create/restart, base-branch resolution) run
-with the worktree creator's credential — and because create unconditionally
+with the workspace creator's credential — and because create unconditionally
 runs `fetchOrigin` and fails on a fetch error, every private-repo create
 *is* an upstream access check for the creator, with no separate probe to
 add (a remote with no matching credential fetches unauthenticated, so
@@ -407,7 +407,7 @@ team-readable regardless of upstream permissions — consistent with the v1
 read-everything policy, and the reason a repo some teammates must not read
 does not belong on a shared deployment until per-project visibility
 exists. And the proxy's `git-auth-failures` records, today keyed per
-project and cleared by any worktree's success, must key per
+project and cleared by any workspace's success, must key per
 (project, owner) — one user's valid token must not mask another's expired
 one.
 
@@ -416,15 +416,15 @@ one.
 A sweep of the HTTP/WS surface and the pod/runtime layer turned up specific
 flaws. Two structural facts frame all of them:
 
-- **Every worktree pod runs as the same host uid, with passwordless sudo,
+- **Every workspace pod runs as the same host uid, with passwordless sudo,
   on shared hostPaths** (`installSecurityContext()` in
   `drivers/k8s/substrate/pod-spec.ts` stamps every pod with the install uid;
   gVisor has no userns/idmap, so hostPath uids pass through raw). There is
-  therefore **no filesystem-level isolation between worktrees** — owner
+  therefore **no filesystem-level isolation between workspaces** — owner
   separation can only come from *which paths get mounted*, never from
   permissions on a shared mount. Every "owner-key this dir" item below means
   mount-selection, and a shared-writable mount is a cross-user channel no
-  policy check sees. (Of the mounts `createWorktree` builds, only the
+  policy check sees. (Of the mounts `createWorkspace` builds, only the
   attachments and the project's main clone are `readOnly`.)
 - **Read-all is unsafe until "read" is narrowed** (the three-way split
   above), because much of what looks like a read is either execution or a
@@ -435,12 +435,12 @@ flaws. Two structural facts frame all of them:
 This one is exploitable in the *current* single-user server too; ownership
 cannot be enforced on top of it. It is shipped for every project whose
 last linked checkout has been converted (docs/server-git.md). The rest of
-that list — exact worktree-id
+that list — exact workspace-id
 resolution, the `.cached-packages` mount, `cacheVolumes` key traversal and
 the ungated `POST /auth/fake` — has shipped.
 
-- **The project's main clone was mounted read-write, so a worktree could
-  point the server's git at other projects' files.** Each worktree is now a
+- **The project's main clone was mounted read-write, so a workspace could
+  point the server's git at other projects' files.** Each workspace is now a
   clone of its own, and pods mount the main clone read-only
   (docs/server-git.md). What remains is the upgrade window: until a
   project's last linked checkout from an older install is converted, a
@@ -478,18 +478,18 @@ the ungated `POST /auth/fake` — has shipped.
   work (`runtime/terminals/pty-bridge.ts`): a `{readOnly}` path that drops
   binary and `signal` frames, keeps a viewer's resize off the shared
   window (a viewer's browser size otherwise moves the owner's pane), excludes
-  `native`, and caps viewer tmux sessions per worktree. For v1, owner-only
+  `native`, and caps viewer tmux sessions per workspace. For v1, owner-only
   PTY plus the read-only transcript pane is the safe subset; a live TUI
   viewer is a §2 "observable sessions" item, not free.
-- **`/forward/attach` is an identity-gated tunnel to any worktree's
+- **`/forward/attach` is an identity-gated tunnel to any workspace's
   listeners, and a nested yaac serves its full API to whoever holds it.**
   The tunnel is identified, but every identified user can splice into
-  every worktree's forwarded ports. A nested yaac treats every unproxied
-  request as local (the `YAAC_WORKTREE_ID` relaxation in `identify()`);
+  every workspace's forwarded ports. A nested yaac treats every unproxied
+  request as local (the `YAAC_WORKSPACE_ID` relaxation in `identify()`);
   docs/remote-hosting.md argues this is fine because the inner server is
   reached only through the outer server's tunnel — which holds exactly as
   long as the tunnel is owner-gated.
-  Disposition: `/forward/attach` authorizes `act` on the worktree, which
+  Disposition: `/forward/attach` authorizes `act` on the workspace, which
   closes both. A delegated tunnel (handoff, later) hands over the inner
   control plane with it, which is the trust class handoff means anyway —
   the delegate can already type into the agent. Separately, the port
@@ -530,12 +530,12 @@ class — *install-global* writes any user can make today:
   egress-proxy sidecar (infra DoS) — admin. (All of these already answer
   `NOT_SUPPORTED` under `containerless`, which has no images.)
 - **Cross-boundary fan-out writes**: `allow-host` and `forward-port` with
-  `persist:true` widen every running sibling worktree of the project (an
+  `persist:true` widen every running sibling workspace of the project (an
   egress/exposure channel into other users' agents); `PUT
-  /project/:slug/env` puts variables and secrets into every future worktree
+  /project/:slug/env` puts variables and secrets into every future workspace
   of the project; `mark-all-deaths-seen` and `POST
-  /worktree/provisioning/:id/dismiss` write other users' rows; `DELETE
-  /project/:slug` purges every worktree of the project. Owner/project-owner
+  /workspace/provisioning/:id/dismiss` write other users' rows; `DELETE
+  /project/:slug` purges every workspace of the project. Owner/project-owner
   gated, with the provisioning registry gaining an owner field.
 - **Shared preference rows**: the per-project create memory (also changes
   what prewarm warms), the git identity and `/shortcuts/*` are install-global
@@ -547,21 +547,21 @@ class — *install-global* writes any user can make today:
 `yaac-mama` attribution is otherwise sound. Under `k8s` the proxy resolves
 the caller from its source pod IP at enqueue time and the server's drain
 (`mama-reconcile`) takes project and tool from the caller's live workspace
-listing; under `containerless` the worktree presents a per-worktree bearer
+listing; under `containerless` the workspace presents a per-workspace bearer
 minted at create, of which the row keeps only a hash, and a request never
-names its own worktree. Both transports converge on `runMamaCommand` and
+names its own workspace. Both transports converge on `runMamaCommand` and
 its allowlist, and a pod *cannot* spawn into another project
-(`domain/worktrees/spawn-policy.ts`). Gaps under tenancy: no owner is
-carried in `SpawnRequest`; the spawned worktree should **inherit the
-caller's owner**, read from the caller's worktree row the drain already
+(`domain/workspaces/spawn-policy.ts`). Gaps under tenancy: no owner is
+carried in `SpawnRequest`; the spawned workspace should **inherit the
+caller's owner**, read from the caller's workspace row the drain already
 resolves. The queue caps are `MAMA_MAX_PENDING_TOTAL` across the install
-plus a per-worktree pending cap and `SPAWN_MAX_IN_FLIGHT_PER_WORKTREE` —
-one user's worktrees can still fill the shared total, so add a per-owner
+plus a per-workspace pending cap and `SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE` —
+one user's workspaces can still fill the shared total, so add a per-owner
 budget. And `decideSpawn` falls back to the project's last agent
 (request tool → caller's tool → the project's last agent → `claude`) and its
 credential — resolve tool *and* credential from the inherited owner, and
 fail the spawn if the owner has no credential rather than creating an
-unauthenticatable worktree. The proxy `/tools` roster leaks other users'
+unauthenticatable workspace. The proxy `/tools` roster leaks other users'
 configured tools unless filtered by caller owner.
 
 ### Snapshot field leaks
@@ -574,28 +574,28 @@ that are per-user-sensitive even under a generous read-all reading:
 live quota — billing telemetry), `gitAuthFailures` (which private hosts
 exist and whose token is broken), provisioning `error`/`message` (repo
 URLs, paths), `projects[].remoteUrl` (every user's private repo URLs), and
-`worktrees[].prompt` (the founding user ask — free-form and the field most
+`workspaces[].prompt` (the founding user ask — free-form and the field most
 likely to surprise). The transcript sharing feature wants
-worktrees/sessions readable, but these fields should be owner-scoped in the
+workspaces/sessions readable, but these fields should be owner-scoped in the
 snapshot from the start.
 
 ### Skills discovered from writable dirs are a cross-user injection path
 
-Only the packaged builtin skills are delivered read-only per worktree
+Only the packaged builtin skills are delivered read-only per workspace
 (a read-only mount under `k8s`; symlinks into the install under
 `containerless`). The *personal* skill tier is just the shared per-project
 tool home (`claudeDir(slug)/skills`, and the codex/opencode/pi
 equivalents in `domain/skills/discover.ts`), writable by the agent:
-worktree A writes `~/.claude/skills/foo/SKILL.md` and every later worktree
+workspace A writes `~/.claude/skills/foo/SKILL.md` and every later workspace
 in the project — any owner — loads it into agent context, persisting past
 A's deletion. The *project* tier reads `origin/<branch>` via `ls-tree` from
-the main clone, which no worktree can write once its project is converted.
+the main clone, which no workspace can write once its project is converted.
 Owner-keying the tool homes fixes the personal tier for free; the UI should
-show skill provenance (which owner/worktree last wrote it) and treat
+show skill provenance (which owner/workspace last wrote it) and treat
 writable-dir skills as untrusted by default. Title generation, by contrast,
 is **not** a quota surface — it runs a local llama.cpp subprocess against a
 downloaded GGUF, no credential — so it only needs its sweep and `attempted`
-set scoped by owner and `setWorktreeTitle` owner-gated.
+set scoped by owner and `setWorkspaceTitle` owner-gated.
 
 ## How the rest of roadmap §2 lands in this structure
 
@@ -651,8 +651,8 @@ processes, no new arrows:
 
 ## Phasing
 
-0. **Precondition hardening — shipped, bar one.** Exact worktree-id
-   resolution, the audit's other preconditions, globally unique worktree
+0. **Precondition hardening — shipped, bar one.** Exact workspace-id
+   resolution, the audit's other preconditions, globally unique workspace
    ids, server I/O confined on sandbox-writable paths, immutable project
    ids for everything named outside the data dir, and main-registry write
    grants have all shipped; the read-only main clone holds once each

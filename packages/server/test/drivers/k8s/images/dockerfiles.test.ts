@@ -57,7 +57,7 @@ describe('Dockerfile.default', () => {
     // the base image is not the harmless extra it looks like: the rootless
     // apparatus it needs (uidmap, an overlay mount_program) is not here, so
     // it cannot work, while every probe that reasons "podman is installed,
-    // so this pod must have an engine" starts believing a plain worktree
+    // so this pod must have an engine" starts believing a plain workspace
     // has one. Salvage did, and its `sudo podman` — run from the
     // container's workingDir, which is the user's checkout — left a
     // root-owned directory there each time it fired.
@@ -86,7 +86,7 @@ describe('Dockerfile.default', () => {
     // getpwuid() has no answer for an arbitrary uid, and the things that
     // ask do not degrade: ssh exits 255, and sudo stops matching the
     // NOPASSWD line (which names the user, not the number). The rewrite
-    // itself lives in worktree-bin/yaac-worktree-init.
+    // itself lives in workspace-bin/yaac-workspace-init.
     expect(content).toContain('chgrp 0 /etc/passwd && chmod g=u /etc/passwd')
   })
 
@@ -187,9 +187,9 @@ describe('Dockerfile.nestable', () => {
 describe('Dockerfile.server', () => {
   it('runs the server as the same uid-agnostic yaac user', async () => {
     const content = await read('Dockerfile.server')
-    // The server pod runs as the install host's uid exactly like a worktree
+    // The server pod runs as the install host's uid exactly like a workspace
     // pod, so its image takes the same shape and the same fixed uid — and,
-    // like the worktree chain, bakes nothing about the host that built it.
+    // like the workspace chain, bakes nothing about the host that built it.
     expect(content).toContain('useradd -m -u 1000 -g 0')
     expect(content).toContain('chgrp 0 /etc/passwd && chmod g=u /etc/passwd')
     expect(content).not.toContain('YAAC_UID')
@@ -197,8 +197,8 @@ describe('Dockerfile.server', () => {
 
   it('starts through the entrypoint that claims the running uid', async () => {
     const content = await read('Dockerfile.server')
-    // A Deployment has no postStart hook, so the passwd rewrite a worktree
-    // gets from yaac-worktree-init has to ride the entrypoint here. It
+    // A Deployment has no postStart hook, so the passwd rewrite a workspace
+    // gets from yaac-workspace-init has to ride the entrypoint here. It
     // still execs catatonit, which stays PID 1 to reap what the server
     // spawns.
     expect(content).toContain('ENTRYPOINT ["/opt/yaac/dockerfiles/server-entrypoint.sh"]')

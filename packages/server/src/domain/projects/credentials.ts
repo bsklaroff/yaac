@@ -302,7 +302,7 @@ export async function listCredentialSummaries(): Promise<GitCredentialSummary[]>
 
 /**
  * The git half of what the runtime is handed: each credential with the
- * projects entitled to it, so an egress path can give it to a worktree of
+ * projects entitled to it, so an egress path can give it to a workspace of
  * those projects and no other. Opens every secret, because that is what it
  * is for; a row that will not open, or that no project can use, is left out.
  */

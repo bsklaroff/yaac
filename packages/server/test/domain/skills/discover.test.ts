@@ -9,7 +9,7 @@ import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { setClaudeBundledSkills } from '#domain/skills/claude-bundled'
 import { setBuiltinSkillsDir } from '#domain/skills/builtin'
 import { git } from '@yaac/test-utils/git'
-import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 
 const slug = 'proj'
 
@@ -186,7 +186,7 @@ describe('getProjectSkills', () => {
       path.join(claudeDir(slug), 'skills', 'linked'),
       'dir',
     )
-    installFakeWorktreeDriver({ kind: 'containerless' })
+    installFakeWorkspaceDriver({ kind: 'containerless' })
     const found = (await getProjectSkills('claude', slug)).skills.find((s) => s.name === 'linked')
     expect(found).toMatchObject({ source: 'personal', description: 'symlinked in' })
   })
@@ -199,7 +199,7 @@ describe('getProjectSkills', () => {
     await fs.mkdir(path.join(claudeDir(slug), 'skills', 'planted'), { recursive: true })
     await fs.symlink(secret, path.join(claudeDir(slug), 'skills', 'planted', 'SKILL.md'))
     await fs.symlink(path.dirname(secret), path.join(claudeDir(slug), 'skills', 'dirlink'), 'dir')
-    installFakeWorktreeDriver({ kind: 'k8s' })
+    installFakeWorkspaceDriver({ kind: 'k8s' })
     const names = (await getProjectSkills('claude', slug)).skills.map((s) => s.name)
     expect(names).not.toContain('leaked')
     expect(names).not.toContain('planted')
@@ -383,7 +383,7 @@ describe('getProjectSkills', () => {
     const theirs = path.join(claudeDir(slug), '..', 'shared-skills', 'theirs')
     await writeSkill(theirs, '---\nname: theirs\ndescription: t\n---\nb')
     await fs.symlink(theirs, path.join(claudeDir(slug), 'skills', 'theirs'), 'dir')
-    installFakeWorktreeDriver({ kind: 'containerless' })
+    installFakeWorkspaceDriver({ kind: 'containerless' })
 
     for (const tool of ['claude', 'pi'] as const) {
       const { skills } = await getProjectSkills(tool, slug)

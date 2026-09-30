@@ -1,19 +1,19 @@
 import { constants as C } from 'node:fs'
 import type { FileHandle } from 'node:fs/promises'
 import { projectDir } from '@yaac/shared/project-paths'
-import { hasWorktreeDriver, worktreeDriver } from '#drivers/driver'
+import { hasWorkspaceDriver, workspaceDriver } from '#drivers/driver'
 import { openRoot, type ConfinedRoot, type LinkPolicy } from '#lib/confined-fs'
 
 /**
  * How the server touches a project dir an agent writes too: a tool home
- * (`claude/`, `codex/`, `pi/`, `opencode-config/`) or a worktree's
- * conversation records (`acp/<worktreeId>/`).
+ * (`claude/`, `codex/`, `pi/`, `opencode-config/`) or a workspace's
+ * conversation records (`acp/<workspaceId>/`).
  *
  * Under a sandboxing runtime every pod of the project mounts these
  * read-write, so anything below a mount root may be a link or a FIFO the pod
  * planted: they are opened `no-links`, rooted at the dir itself — a mount
  * root, which the pod cannot replace. Under containerless there is no
- * boundary to defend, and links there are yaac's own (a worktree's history
+ * boundary to defend, and links there are yaac's own (a workspace's history
  * and builtin skills are linked in), so they are opened `inside`, rooted at
  * the project dir.
  *
@@ -22,7 +22,7 @@ import { openRoot, type ConfinedRoot, type LinkPolicy } from '#lib/confined-fs'
  * conservative answer.
  */
 export function sandboxLinkPolicy(): LinkPolicy {
-  return hasWorktreeDriver() && worktreeDriver().kind === 'containerless' ? 'inside' : 'no-links'
+  return hasWorkspaceDriver() && workspaceDriver().kind === 'containerless' ? 'inside' : 'no-links'
 }
 
 /** `dir` of `slug`'s project, opened as `sandboxLinkPolicy` says. Paths are

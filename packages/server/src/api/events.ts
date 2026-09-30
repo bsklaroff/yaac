@@ -1,13 +1,13 @@
 import {
-  listActiveWorktrees,
-  listDraftWorktrees,
-  listHeldWorktrees,
+  listActiveWorkspaces,
+  listDraftWorkspaces,
+  listHeldWorkspaces,
   listProvisioning,
-  listQueuedWorktrees,
-  listWorktreeGroups,
-} from '#domain/worktrees'
+  listQueuedWorkspaces,
+  listWorkspaceGroups,
+} from '#domain/workspaces'
 import { listProjects } from '#domain/projects'
-import { worktreeDriver } from '#drivers/driver'
+import { workspaceDriver } from '#drivers/driver'
 import { planUsageForSnapshot, codexPlanUsageForSnapshot } from '#domain/auth'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
@@ -25,40 +25,40 @@ export interface WsLike {
  */
 export async function buildSnapshot(): Promise<ServerSnapshot> {
   const [
-    active, worktreeGroups, projects, planUsage, codexPlanUsage, queuedWorktrees, heldWorktrees, draftWorktrees,
+    active, workspaceGroups, projects, planUsage, codexPlanUsage, queuedWorkspaces, heldWorkspaces, draftWorkspaces,
   ] = await Promise.all([
-    listActiveWorktrees(),
-    listWorktreeGroups(),
+    listActiveWorkspaces(),
+    listWorkspaceGroups(),
     listProjects(),
     planUsageForSnapshot(),
     codexPlanUsageForSnapshot(),
-    listQueuedWorktrees(),
-    listHeldWorktrees(),
-    listDraftWorktrees(),
+    listQueuedWorkspaces(),
+    listHeldWorkspaces(),
+    listDraftWorkspaces(),
   ])
-  const imageBuilds = worktreeDriver().listImageBuilds()
-  // A worktree with a provisioning entry is mid-create/mid-restart (or
-  // failed, awaiting dismissal) — the row, not the worktree, is what clients
+  const imageBuilds = workspaceDriver().listImageBuilds()
+  // A workspace with a provisioning entry is mid-create/mid-restart (or
+  // failed, awaiting dismissal) — the row, not the workspace, is what clients
   // should render. The pod lists as running well before setup finishes
   // (pod Running + tmux up ≠ agent and init windows exist), so surfacing it
   // would make the webapp swap the placeholder for terminals that can't
-  // attach yet. Suppressing the worktree until the create/restart route drops
-  // the entry (on resolve) swaps row → ready worktree in one snapshot, and
+  // attach yet. Suppressing the workspace until the create/restart route drops
+  // the entry (on resolve) swaps row → ready workspace in one snapshot, and
   // keeps an id from ever appearing in both lists. A spare a create claimed
   // is hidden under that create's row the same way.
   const provisioning = listProvisioning()
-  const hidden = new Set(provisioning.flatMap((p) => [p.worktreeId, p.claimedId]))
+  const hidden = new Set(provisioning.flatMap((p) => [p.workspaceId, p.claimedId]))
   return {
-    driver: worktreeDriver().kind,
-    worktrees: active.worktrees.filter((w) => !hidden.has(w.worktreeId)),
-    worktreeGroups,
+    driver: workspaceDriver().kind,
+    workspaces: active.workspaces.filter((w) => !hidden.has(w.workspaceId)),
+    workspaceGroups,
     stale: active.stale,
-    // `worktreeCount` is what ProjectSummary still calls it on the wire.
-    projects: projects.map(({ worktreeCount, ...p }) => ({ ...p, worktreeCount: worktreeCount })),
+    // `workspaceCount` is what ProjectSummary still calls it on the wire.
+    projects: projects.map(({ workspaceCount, ...p }) => ({ ...p, workspaceCount: workspaceCount })),
     provisioning,
-    queuedWorktrees,
-    heldWorktrees,
-    draftWorktrees,
+    queuedWorkspaces,
+    heldWorkspaces,
+    draftWorkspaces,
     gitAuthFailures: active.gitAuthFailures,
     imageBuilds,
     planUsage,

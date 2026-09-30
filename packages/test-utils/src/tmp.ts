@@ -124,13 +124,13 @@ async function salvageRemove(p: string): Promise<string[]> {
  *
  * e2e runs leave root-owned directories under their scratch dirs — observed
  * as `libpod/` (mode 0700, uid 0, holding podman's `tmp/pause.pid`) in the
- * worktree of assorted e2e worktrees. Scratch is hostPath-mounted into pods,
+ * workspace of assorted e2e workspaces. Scratch is hostPath-mounted into pods,
  * so anything a pod writes as uid 0 lands on the host owned by root, and
  * emptying such a directory needs write+execute INSIDE it — which the test
  * user does not have. A plain recursive remove dies on EACCES.
  *
- * (What creates them is not established. It is NOT ordinary worktree
- * behavior: a developer's real data dir here holds hundreds of worktrees
+ * (What creates them is not established. It is NOT ordinary workspace
+ * behavior: a developer's real data dir here holds hundreds of workspaces
  * and none of them has a `libpod/`. So treat this as a property of the e2e
  * harness, not a documented product behavior, until someone traces it.)
  *

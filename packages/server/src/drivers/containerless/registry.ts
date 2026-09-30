@@ -2,11 +2,11 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { getProjectsDir } from '@yaac/shared/paths'
 import { serverLog } from '#log'
-import { containerlessJobName, markerPath, workspaceStateDir } from './paths'
+import { containerlessJobName, markerPath, containerlessStateDir } from './paths'
 import type {
   AgentMode,
   AgentTool,
-  WorktreeDeathCause,
+  WorkspaceDeathCause,
 } from '@yaac/shared/types'
 import type { RuntimeHandle, RuntimeSnapshot, StrayUnit, TeardownTarget } from '#drivers/contract'
 
@@ -28,7 +28,7 @@ import type { RuntimeHandle, RuntimeSnapshot, StrayUnit, TeardownTarget } from '
  *  field is something only the launch knew and nothing can re-derive. */
 export interface WorkspaceMarker {
   projectSlug: string
-  worktreeId: string
+  workspaceId: string
   tool: AgentTool
   declaredTool?: AgentTool
   mode: AgentMode
@@ -41,7 +41,7 @@ export interface WorkspaceMarker {
   /**
    * The ssh-agent started for this workspace, when its project authenticates
    * over SSH. Recorded because the agent holds a private key in memory and
-   * must not outlive the worktree: teardown signals this, and a recovery
+   * must not outlive the workspace: teardown signals this, and a recovery
    * scan that finds the workspace dead sweeps it.
    *
    * Advisory in the same way `tmuxPid` is — a pid can be recycled — so it is
@@ -54,7 +54,7 @@ export interface WorkspaceMarker {
    * as the launch resolved them — minus every credential, which stays in
    * memory only (`WorkspaceSpec.secretEnvKeys`). What a restarted server lays
    * over the floor so a command it runs in the workspace still sees the
-   * worktree's tool homes and settings (see `workspaceRunEnvironment`). Absent
+   * workspace's tool homes and settings (see `workspaceRunEnvironment`). Absent
    * on a marker written before it was recorded.
    */
   launchEnv?: Record<string, string>
@@ -64,7 +64,7 @@ export interface WorkspaceMarker {
 interface Entry {
   marker: WorkspaceMarker
   running: boolean
-  deathCause: WorktreeDeathCause
+  deathCause: WorkspaceDeathCause
   /** A teardown has started; it renders as terminating and is not a reaper
    *  target. */
   terminating: boolean
@@ -83,22 +83,22 @@ export function _resetRegistryForTests(): void {
 }
 
 export function rememberWorkspace(marker: WorkspaceMarker, env?: NodeJS.ProcessEnv): RuntimeHandle {
-  entries.set(marker.worktreeId, {
+  entries.set(marker.workspaceId, {
     marker,
     running: true,
     deathCause: { reason: 'pod-stopped' },
     terminating: false,
     ...(env !== undefined ? { env } : {}),
   })
-  return handleFor(marker.worktreeId) as RuntimeHandle
+  return handleFor(marker.workspaceId) as RuntimeHandle
 }
 
-export function forgetWorkspace(worktreeId: string): void {
-  entries.delete(worktreeId)
+export function forgetWorkspace(workspaceId: string): void {
+  entries.delete(workspaceId)
 }
 
-export function markTerminating(worktreeId: string): void {
-  const entry = entries.get(worktreeId)
+export function markTerminating(workspaceId: string): void {
+  const entry = entries.get(workspaceId)
   if (entry) entry.terminating = true
 }
 
@@ -108,11 +108,11 @@ export function markTerminating(worktreeId: string): void {
  * repeated stream error costs no snapshot.
  */
 export function observeLiveness(
-  worktreeId: string,
+  workspaceId: string,
   running: boolean,
-  deathCause: WorktreeDeathCause,
+  deathCause: WorkspaceDeathCause,
 ): boolean {
-  const entry = entries.get(worktreeId)
+  const entry = entries.get(workspaceId)
   if (!entry) return false
   if (entry.running === running) return false
   entry.running = running
@@ -120,20 +120,20 @@ export function observeLiveness(
   return true
 }
 
-export function workspaceEnv(worktreeId: string): NodeJS.ProcessEnv | undefined {
-  return entries.get(worktreeId)?.env
+export function workspaceEnv(workspaceId: string): NodeJS.ProcessEnv | undefined {
+  return entries.get(workspaceId)?.env
 }
 
-export function workspaceLaunchEnv(worktreeId: string): Record<string, string> | undefined {
-  return entries.get(worktreeId)?.marker.launchEnv
+export function workspaceLaunchEnv(workspaceId: string): Record<string, string> | undefined {
+  return entries.get(workspaceId)?.marker.launchEnv
 }
 
-export function tmuxPidOf(worktreeId: string): number | undefined {
-  return entries.get(worktreeId)?.marker.tmuxPid
+export function tmuxPidOf(workspaceId: string): number | undefined {
+  return entries.get(workspaceId)?.marker.tmuxPid
 }
 
-export function claimWorkspaceTool(worktreeId: string, tool: AgentTool): boolean {
-  const entry = entries.get(worktreeId)
+export function claimWorkspaceTool(workspaceId: string, tool: AgentTool): boolean {
+  const entry = entries.get(workspaceId)
   if (!entry?.marker.prewarm) return false
   entry.marker.prewarm = false
   entry.marker.tool = tool
@@ -144,9 +144,9 @@ export function claimWorkspaceTool(worktreeId: string, tool: AgentTool): boolean
 function toHandle(entry: Entry): RuntimeHandle {
   const { marker } = entry
   return {
-    workspaceId: marker.worktreeId,
+    workspaceId: marker.workspaceId,
     projectSlug: marker.projectSlug,
-    jobName: containerlessJobName(marker.projectSlug, marker.worktreeId),
+    jobName: containerlessJobName(marker.projectSlug, marker.workspaceId),
     tool: marker.tool,
     ...(marker.declaredTool !== undefined ? { declaredTool: marker.declaredTool } : {}),
     mode: marker.mode,
@@ -162,26 +162,26 @@ function toHandle(entry: Entry): RuntimeHandle {
   }
 }
 
-function handleFor(worktreeId: string): RuntimeHandle | undefined {
-  const entry = entries.get(worktreeId)
+function handleFor(workspaceId: string): RuntimeHandle | undefined {
+  const entry = entries.get(workspaceId)
   return entry ? toHandle(entry) : undefined
 }
 
-/** The workspace for this exact worktree id. An unclaimed spare is not a
- *  worktree, so it matches only when asked for — a failed warm's teardown. */
+/** The workspace for this exact workspace id. An unclaimed spare is not a
+ *  workspace, so it matches only when asked for — a failed warm's teardown. */
 export function findWorkspace(
-  worktreeId: string,
+  workspaceId: string,
   opts: { spares?: boolean } = {},
 ): RuntimeHandle | undefined {
-  const handle = handleFor(worktreeId)
+  const handle = handleFor(workspaceId)
   return handle?.prewarmed === true && opts.spares !== true ? undefined : handle
 }
 
 export function findForTeardown(
-  worktreeId: string,
+  workspaceId: string,
   opts: { spares?: boolean } = {},
 ): TeardownTarget | undefined {
-  const handle = findWorkspace(worktreeId, opts)
+  const handle = findWorkspace(workspaceId, opts)
   if (!handle) return undefined
   return {
     projectSlug: handle.projectSlug,
@@ -233,7 +233,7 @@ export function createRuntimeSnapshot(resync = false): RuntimeSnapshot {
  *  a marker that fails to write costs recovery after a restart, not the
  *  launch itself. */
 export async function writeMarker(marker: WorkspaceMarker): Promise<void> {
-  const file = markerPath(marker.projectSlug, marker.worktreeId)
+  const file = markerPath(marker.projectSlug, marker.workspaceId)
   await fs.mkdir(path.dirname(file), { recursive: true })
   // Written whole or not at all. A torn marker reads as unparseable, and
   // recovery rightly skips one of those rather than tearing down what it
@@ -245,8 +245,8 @@ export async function writeMarker(marker: WorkspaceMarker): Promise<void> {
   await fs.rename(tmp, file)
 }
 
-export async function removeMarker(projectSlug: string, worktreeId: string): Promise<void> {
-  await fs.rm(workspaceStateDir(projectSlug, worktreeId), { recursive: true, force: true })
+export async function removeMarker(projectSlug: string, workspaceId: string): Promise<void> {
+  await fs.rm(containerlessStateDir(projectSlug, workspaceId), { recursive: true, force: true })
 }
 
 /**
@@ -285,7 +285,7 @@ export async function readMarkers(): Promise<WorkspaceMarker[]> {
         // The path is the authority on identity, not the file's contents: a
         // marker copied along with a directory would otherwise claim to be
         // the workspace it was copied from.
-        found.push({ ...marker, projectSlug: slug, worktreeId: id })
+        found.push({ ...marker, projectSlug: slug, workspaceId: id })
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
           serverLog(`[server] containerless: unreadable marker ${slug}/${id}: ${String(err)}`)
@@ -300,15 +300,15 @@ export async function readMarkers(): Promise<WorkspaceMarker[]> {
 export function restoreWorkspace(
   marker: WorkspaceMarker,
   running: boolean,
-  deathCause: WorktreeDeathCause,
+  deathCause: WorkspaceDeathCause,
 ): void {
-  entries.set(marker.worktreeId, { marker, running, deathCause, terminating: false })
+  entries.set(marker.workspaceId, { marker, running, deathCause, terminating: false })
 }
 
 /**
  * The ssh-agent pid a workspace's marker records, if it started one.
  *
- * Read by teardown, which has to end the process holding this worktree's
+ * Read by teardown, which has to end the process holding this workspace's
  * private key. Off the in-memory entry rather than the file so it answers
  * for a workspace recovered after a server restart too — `readMarkers`
  * repopulates the same entries.

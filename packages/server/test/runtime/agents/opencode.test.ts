@@ -4,10 +4,10 @@ import {
   OPENCODE_BUSY_MARKERS,
   getSessionOpencodeFirstUserMessage,
 } from '#runtime/agents/opencode'
-import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
-import type { WorktreeDriver } from '#drivers/contract'
+import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import type { WorkspaceDriver } from '#drivers/contract'
 
-const mockedExec = vi.fn<WorktreeDriver['exec']>()
+const mockedExec = vi.fn<WorkspaceDriver['exec']>()
 
 /**
  * The probe (`opencode api … session.get`) goes through the driver's `exec`;
@@ -17,7 +17,7 @@ const mockedExec = vi.fn<WorktreeDriver['exec']>()
  * verify-tmux-status-format.js.)
  */
 function mockSession(id: string, reply: { title?: string } | Error): void {
-  installFakeWorktreeDriver({ exec: mockedExec })
+  installFakeWorkspaceDriver({ exec: mockedExec })
   mockedExec.mockImplementation((_jobName: string, cmd: string) => {
     if (cmd !== `opencode api --standalone session.get --param sessionID=${id}`) {
       return Promise.reject(new Error('HTTP 404 Not Found'))
@@ -51,7 +51,7 @@ describe('opencode-status', () => {
   describe('getSessionOpencodeFirstUserMessage', () => {
     it('returns the title of the session the row names, fetched by id', async () => {
       // Fetched rather than picked out of `session.list`, whose page holds
-      // only the 50 most recently updated: a worktree with more still labels
+      // only the 50 most recently updated: a workspace with more still labels
       // each conversation by its own title.
       mockSession('ses_old', { title: 'OLIVE' })
       expect(await getSessionOpencodeFirstUserMessage('container', 'ses_old')).toBe('OLIVE')
@@ -62,7 +62,7 @@ describe('opencode-status', () => {
       mockSession('ses_old', { title: 'OLIVE' })
       // An id opencode lacks: `session.get` exits 1.
       expect(await getSessionOpencodeFirstUserMessage('container', 'ses_gone')).toBeUndefined()
-      // The worktree-id pin, and no id at all, name no opencode session.
+      // The workspace-id pin, and no id at all, name no opencode session.
       expect(await getSessionOpencodeFirstUserMessage('container', 'wt-1')).toBeUndefined()
       expect(await getSessionOpencodeFirstUserMessage('container')).toBeUndefined()
       // Nor does a malformed `ses_` id, which is never put on a command line.

@@ -4,15 +4,15 @@
 // relative path, which is why they are unaffected by that rule.
 //
 // This feature owns the *policy* side of the shared egress proxy: which
-// hosts a worktree may reach, the secrets and redirects injected on its
+// hosts a workspace may reach, the secrets and redirects injected on its
 // behalf, and the registration that carries all of it to the sidecar.
 // (`#drivers/k8s/cluster` owns standing the sidecar itself up and the
 // objects that hand it its credentials; this owns what it is told per
-// worktree once it is running, and what it reports back.)
+// workspace once it is running, and what it reports back.)
 //
-// Every path in here is fail-closed by design — an unregistered worktree
+// Every path in here is fail-closed by design — an unregistered workspace
 // reaches nothing — so the interface is deliberately narrow: callers
-// register a worktree, widen it, or read what it was denied. The rule
+// register a workspace, widen it, or read what it was denied. The rule
 // builder and the redirect parser stay internal so a caller cannot assemble
 // a half-registration of its own.
 //
@@ -32,13 +32,13 @@ export {
 } from './proxy-client'
 export { PROXY_CHANGE_SOURCES, ProxyEventStream, type ProxyChangeSource } from './proxy-events'
 export {
-  allowWorktreeHost,
-  applyWorktreeRegistration,
-  buildWorktreeRegistration,
+  allowWorkspaceHost,
+  applyProxyRegistration,
+  buildProxyRegistration,
   deregisterWorkspaceEgress,
   reconcileRegistrationGc,
   registerWorkspaceEgress,
-  type WorktreeRegistration,
+  type ProxyRegistration,
 } from './proxy-registration'
 export {
   readAllGitAuthFailures,

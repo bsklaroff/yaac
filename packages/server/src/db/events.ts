@@ -2,54 +2,54 @@ import type {
   AgentMode,
   AgentTool,
   PermissionMode,
-  WorktreeDeathCause,
+  WorkspaceDeathCause,
 } from '@yaac/shared/types'
 
 /**
  * What substrate- and disk-observing code tells db it found — the ONE
- * door through which observed facts become rows (`applyWorktreeEvent`).
+ * door through which observed facts become rows (`applyWorkspaceEvent`).
  *
- * Code that watches the substrate or reads a worktree's disk never writes a
+ * Code that watches the substrate or reads a workspace's disk never writes a
  * row: it reports a discrete, past-tense event, and which table that lands
  * in is decided here alone. That inversion is what keeps every observer
  * mechanical, makes re-reporting after a restart a no-op rather than a
  * clobber, and lets one handler own the write-side invariants below
  * (docs/layered-server.md).
  *
- * A `WorktreeEvent` is discrete and past-tense — something that happened,
+ * A `WorkspaceEvent` is discrete and past-tense — something that happened,
  * applied once to a row. That is what separates it from the status store,
  * which answers the continuous "what is this agent doing right now" and is
  * carried in the runtime report rather than here.
  */
-export type WorktreeEvent =
-  | WorktreeCreated
-  | WorktreeCreateFailed
-  | WorktreeLifeStarted
+export type WorkspaceEvent =
+  | WorkspaceCreated
+  | WorkspaceCreateFailed
+  | WorkspaceLifeStarted
   | BaseBranchResolved
   | SessionsLaunched
   | SessionsDiscovered
   | SessionsActive
   | PermissionModeChanged
-  | WorktreeStopped
+  | WorkspaceStopped
 
 /**
- * Provisioning has begun for a worktree — emitted before anything is built,
+ * Provisioning has begun for a workspace — emitted before anything is built,
  * so no runtime can ever exist that the server has no row for.
  */
-export interface WorktreeCreated {
-  type: 'worktree-created'
+export interface WorkspaceCreated {
+  type: 'workspace-created'
   projectSlug: string
-  worktreeId: string
+  workspaceId: string
   /** The branch it forks from — resolved from local reads before anything
    *  is provisioned, so a row has it from birth. Absent on a resume, whose
    *  recorded base is left as it was. */
   baseBranch?: string
-  /** This worktree already existed and is being brought back up. Its row
+  /** This workspace already existed and is being brought back up. Its row
    *  carries a history — title, pin, founding prompt, and how it last died —
    *  which is why a failed resume is put back rather than erased. */
   resume?: boolean
-  /** This is a prewarmed spare being warmed, not a worktree being created.
-   *  It gets a row so a reap can still tell it from a stopped worktree once
+  /** This is a prewarmed spare being warmed, not a workspace being created.
+   *  It gets a row so a reap can still tell it from a stopped workspace once
    *  its pod is gone, but every listing filters it out until it is claimed. */
   spare?: boolean
   /** The permission posture its agents launch in. Recorded with the row
@@ -57,64 +57,64 @@ export interface WorktreeCreated {
    *  today's default. */
   permissionMode?: PermissionMode
   /** The model and agent mode its first agent launches with — what a spare
-   *  claim matches a request against (see `worktrees.model`). */
+   *  claim matches a request against (see `workspaces.model`). */
   model?: string
   mode?: AgentMode
 }
 
 /**
- * Provisioning gave up. The counterpart to `worktree-created`, and the reason
+ * Provisioning gave up. The counterpart to `workspace-created`, and the reason
  * that event can be sent before anything is built: whatever it started, this
  * undoes.
  *
  * What "undo" means is decided by the handler alone, and it differs by
- * `resume` — a fresh worktree is erased, a resumed one is put back exactly as
+ * `resume` — a fresh workspace is erased, a resumed one is put back exactly as
  * the restart found it. The emitter knows only that it failed.
  */
-export interface WorktreeCreateFailed {
-  type: 'worktree-create-failed'
+export interface WorkspaceCreateFailed {
+  type: 'workspace-create-failed'
   projectSlug: string
-  worktreeId: string
+  workspaceId: string
   resume?: boolean
 }
 
 /**
- * A pod has come up for this worktree — a **life** has begun.
+ * A pod has come up for this workspace — a **life** has begun.
  *
  * The event that invalidates the previous life's handles. Handling it NULLs
  * every recorded pane id in the same transaction that stamps the life,
  * because tmux pane ids restart at `%0` in a new pod and a surviving handle
- * would name a pane this life owns. Emitted after the worktree is recorded
+ * would name a pane this life owns. Emitted after the workspace is recorded
  * and before the Job exists.
  */
-export interface WorktreeLifeStarted {
-  type: 'worktree-life-started'
+export interface WorkspaceLifeStarted {
+  type: 'workspace-life-started'
   projectSlug: string
-  worktreeId: string
+  workspaceId: string
 }
 
 /** A claimed spare was re-branched: the branch it now forks from. */
 export interface BaseBranchResolved {
   type: 'base-branch-resolved'
   projectSlug: string
-  worktreeId: string
+  workspaceId: string
   baseBranch: string
 }
 
 /**
  * The sessions a create started, in the order their windows were laid
- * out — index 0 is the worktree's original agent, the one a restart brings up
- * first and whose opening message becomes the worktree's founding ask.
+ * out — index 0 is the workspace's original agent, the one a restart brings up
+ * first and whose opening message becomes the workspace's founding ask.
  *
  * The list is complete and every entry is live, which is what lets one event
- * carry both halves of the record: which sessions this worktree has, and
+ * carry both halves of the record: which sessions this workspace has, and
  * which of them are running. Discovery reports the two separately, because a
  * sweep finds sessions that ended long ago.
  */
 export interface SessionsLaunched {
   type: 'sessions-launched'
   projectSlug: string
-  worktreeId: string
+  workspaceId: string
   sessions: LaunchedSession[]
 }
 
@@ -134,7 +134,7 @@ export interface LaunchedSession {
 }
 
 /**
- * The sessions a pass found running in a worktree — each named by its live
+ * The sessions a pass found running in a workspace — each named by its live
  * agent: a tui pane's reporter, or an acp handshake. Only ever adds: the
  * handler fills in what it did not know and keeps what it did, so a pass that
  * reads a compacted transcript cannot rewrite an opening message, and a
@@ -143,7 +143,7 @@ export interface LaunchedSession {
 export interface SessionsDiscovered {
   type: 'sessions-discovered'
   projectSlug: string
-  worktreeId: string
+  workspaceId: string
   sessions: DiscoveredSession[]
 }
 
@@ -172,18 +172,18 @@ export interface DiscoveredSession {
 }
 
 /**
- * Which of a worktree's sessions are running right now — the complete
+ * Which of a workspace's sessions are running right now — the complete
  * live set, so anything linked and unnamed here has stopped.
  *
  * Absence of this event is emphatically NOT an empty set. A watcher that
- * cannot see a worktree's agents says nothing, because blanking the set on
+ * cannot see a workspace's agents says nothing, because blanking the set on
  * a transient gap would look like "every agent exited" — and the frozen set
  * is exactly what a restart brings back up.
  */
 export interface SessionsActive {
   type: 'sessions-active'
   projectSlug: string
-  worktreeId: string
+  workspaceId: string
   active: ActiveSession[]
 }
 
@@ -194,7 +194,7 @@ export interface ActiveSession {
 }
 
 /**
- * The posture a worktree's running agent is in moved — the user changed mode
+ * The posture a workspace's running agent is in moved — the user changed mode
  * inside the agent, or the agent moved itself (entering plan mode, a plan-exit
  * answer). The row follows, up or down, because both of its readers mean the
  * posture the agent is in now: a restart relaunches in it, and `yaac-mama
@@ -203,19 +203,19 @@ export interface ActiveSession {
 export interface PermissionModeChanged {
   type: 'permission-mode-changed'
   projectSlug: string
-  worktreeId: string
+  workspaceId: string
   permissionMode: PermissionMode
 }
 
 
 /**
- * A worktree's runtime went away — a user stop, a project teardown, or a
+ * A workspace's runtime went away — a user stop, a project teardown, or a
  * reaper. `cause` is set only when a reaper (not the user) tore it down, so a
  * plain stop cannot inherit an earlier death's reason.
  */
-export interface WorktreeStopped {
-  type: 'worktree-stopped'
+export interface WorkspaceStopped {
+  type: 'workspace-stopped'
   projectSlug: string
-  worktreeId: string
-  cause?: WorktreeDeathCause
+  workspaceId: string
+  cause?: WorkspaceDeathCause
 }

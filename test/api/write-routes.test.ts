@@ -11,40 +11,40 @@ import {
   loadClaudeCredentialsFile,
   saveClaudeOAuthBundle,
 } from '@yaac/shared/tool-auth'
-import { getProjectWorktreeRows, recordWorktreeCreated } from '@yaac/server/db/worktree-store'
+import { getProjectWorkspaceRows, recordWorkspaceCreated } from '@yaac/server/db/workspace-store'
 import { getProjectRow, recordProject } from '@yaac/server/db/project-store'
-import { listWorktreeGroups } from '@yaac/server/domain/worktrees/groups'
-import { getQueuedWorktreeRow, listQueuedWorktreeRows } from '@yaac/server/db/queued-worktree-store'
-import { setDraftWorktreeTitle } from '@yaac/server/db/draft-worktree-store'
-import { listDraftWorktrees } from '@yaac/server/domain/worktrees/drafts'
+import { listWorkspaceGroups } from '@yaac/server/domain/workspaces/groups'
+import { getQueuedWorkspaceRow, listQueuedWorkspaceRows } from '@yaac/server/db/queued-workspace-store'
+import { setDraftWorkspaceTitle } from '@yaac/server/db/draft-workspace-store'
+import { listDraftWorkspaces } from '@yaac/server/domain/workspaces/drafts'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { closeDb } from '@yaac/server/db/client'
-import type * as sessionCreateModule from '@yaac/server/domain/worktrees/create'
+import type * as sessionCreateModule from '@yaac/server/domain/workspaces/create'
 import type * as projectAddModule from '@yaac/server/domain/projects/add'
-import type * as sessionDeleteModule from '@yaac/server/domain/worktrees/stop'
-import type * as sessionRestartModule from '@yaac/server/domain/worktrees/restart'
-import type * as projectRemoveModule from '@yaac/server/domain/worktrees/project-teardown'
+import type * as sessionDeleteModule from '@yaac/server/domain/workspaces/stop'
+import type * as sessionRestartModule from '@yaac/server/domain/workspaces/restart'
+import type * as projectRemoveModule from '@yaac/server/domain/workspaces/project-teardown'
 import type * as cliResolveModule from '@yaac/auth-daemon/cli-resolve'
 import type { ProjectMeta, ClaudeOAuthBundle } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
 import { makeTestApiClient } from '@yaac/test-utils/api'
-import { worktreeDriver } from '@yaac/server/drivers/driver'
+import { workspaceDriver } from '@yaac/server/drivers/driver'
 
-vi.mock('@yaac/server/domain/worktrees/create', async () => {
-  const actual = await vi.importActual<typeof sessionCreateModule>('@yaac/server/domain/worktrees/create')
+vi.mock('@yaac/server/domain/workspaces/create', async () => {
+  const actual = await vi.importActual<typeof sessionCreateModule>('@yaac/server/domain/workspaces/create')
   return {
     ...actual,
-    createWorktree: vi.fn(),
+    createWorkspace: vi.fn(),
   }
 })
 
-vi.mock('@yaac/server/domain/worktrees/stop', () => ({
-  stopWorktree: vi.fn(),
+vi.mock('@yaac/server/domain/workspaces/stop', () => ({
+  stopWorkspace: vi.fn(),
 } satisfies Partial<typeof sessionDeleteModule>))
 
-vi.mock('@yaac/server/domain/worktrees/restart', async () => ({
-  ...await vi.importActual<typeof sessionRestartModule>('@yaac/server/domain/worktrees/restart'),
-  restartWorktree: vi.fn(),
+vi.mock('@yaac/server/domain/workspaces/restart', async () => ({
+  ...await vi.importActual<typeof sessionRestartModule>('@yaac/server/domain/workspaces/restart'),
+  restartWorkspace: vi.fn(),
 } satisfies Partial<typeof sessionRestartModule>))
 
 vi.mock('@yaac/server/domain/projects/add', async () => {
@@ -55,7 +55,7 @@ vi.mock('@yaac/server/domain/projects/add', async () => {
   }
 })
 
-vi.mock('@yaac/server/domain/worktrees/project-teardown', () => ({
+vi.mock('@yaac/server/domain/workspaces/project-teardown', () => ({
   removeProject: vi.fn(),
 } satisfies Partial<typeof projectRemoveModule>))
 
@@ -69,12 +69,12 @@ vi.mock('@yaac/auth-daemon/cli-resolve', async () => {
   }
 })
 
-import { createWorktree } from '@yaac/server/domain/worktrees/create'
-import { stopWorktree } from '@yaac/server/domain/worktrees/stop'
-import { restartWorktree } from '@yaac/server/domain/worktrees/restart'
+import { createWorkspace } from '@yaac/server/domain/workspaces/create'
+import { stopWorkspace } from '@yaac/server/domain/workspaces/stop'
+import { restartWorkspace } from '@yaac/server/domain/workspaces/restart'
 import { addProject } from '@yaac/server/domain/projects/add'
-import { removeProject } from '@yaac/server/domain/worktrees/project-teardown'
-import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@yaac/server/domain/worktrees/provisioning'
+import { removeProject } from '@yaac/server/domain/workspaces/project-teardown'
+import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@yaac/server/domain/workspaces/provisioning'
 import { authAgentHub } from '@yaac/server/domain/auth/agent'
 import type { AgentOp } from '@yaac/shared/auth-agent-protocol'
 import { CLAUDE_STUB, CODEX_STUB, INSTALL_STUB } from '@yaac/test-utils/fixtures'
@@ -136,9 +136,9 @@ function installLoopbackAgent(): () => void {
   }
 }
 
-const mockCreateWorktree = vi.mocked(createWorktree)
-const mockDeleteSession = vi.mocked(stopWorktree)
-const mockRestartSession = vi.mocked(restartWorktree)
+const mockCreateWorkspace = vi.mocked(createWorkspace)
+const mockDeleteSession = vi.mocked(stopWorkspace)
+const mockRestartSession = vi.mocked(restartWorkspace)
 const mockAddProject = vi.mocked(addProject)
 const mockRemoveProject = vi.mocked(removeProject)
 
@@ -578,10 +578,10 @@ describe('write routes', () => {
     })
   })
 
-  describe('POST /worktree/create', () => {
+  describe('POST /workspace/create', () => {
     it('rejects missing project', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/api/worktree/create', rawInit({
+      const res = await app.request('/api/workspace/create', rawInit({
         method: 'POST',
         body: JSON.stringify({}),
       }))
@@ -590,7 +590,7 @@ describe('write routes', () => {
 
     it('rejects an unknown tool with VALIDATION', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/api/worktree/create', rawInit({
+      const res = await app.request('/api/workspace/create', rawInit({
         method: 'POST',
         body: JSON.stringify({ project: 'demo', tool: 'mystery' }),
       }))
@@ -604,12 +604,12 @@ describe('write routes', () => {
     // never move another's. A field left out keeps what was picked before.
     it('remembers the agent and what the request named for it', async () => {
       await recordProject({ slug: 'demo', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
-      mockCreateWorktree.mockResolvedValue({
-        worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
+      mockCreateWorkspace.mockResolvedValue({
+        workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
       })
       const app = buildApp({ buildId: 'test' })
       const create = async (body: Record<string, unknown>): Promise<void> => {
-        const res = await app.request('/api/worktree/create', rawInit({
+        const res = await app.request('/api/workspace/create', rawInit({
           method: 'POST', body: JSON.stringify({ project: 'demo', ...body }),
         }))
         await res.text() // drain the NDJSON stream so the handler finishes
@@ -629,7 +629,7 @@ describe('write routes', () => {
       // A bare create runs the last agent with what it last used — except
       // the mode, which only the webapp (which sends it) can present.
       await create({ tool: 'claude' })
-      expect(mockCreateWorktree.mock.calls.at(-1)?.[1]).toMatchObject({
+      expect(mockCreateWorkspace.mock.calls.at(-1)?.[1]).toMatchObject({
         tool: 'claude', model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'tui',
       })
       // ...and records nothing but the agent, so the picks stand.
@@ -640,24 +640,24 @@ describe('write routes', () => {
     it('names the launch model on the provisioning row', async () => {
       await recordProject({ slug: 'demo', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
       let rowModel: unknown
-      mockCreateWorktree.mockImplementation((_slug, opts) => {
-        rowModel = listProvisioning().find((p) => p.worktreeId === opts.worktreeId)
-        return Promise.resolve({ worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' as const })
+      mockCreateWorkspace.mockImplementation((_slug, opts) => {
+        rowModel = listProvisioning().find((p) => p.workspaceId === opts.workspaceId)
+        return Promise.resolve({ workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' as const })
       })
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/api/worktree/create', rawInit({
+      const res = await app.request('/api/workspace/create', rawInit({
         method: 'POST', body: JSON.stringify({ project: 'demo', tool: 'claude', model: 'claude-opus-5-5' }),
       }))
       await res.text()
       expect(rowModel).toMatchObject({ model: 'claude-opus-5-5', modelName: 'Opus 5.5' })
     })
 
-    it('streams progress and a terminal result event from createWorktree', async () => {
-      mockCreateWorktree.mockImplementation((_slug, opts) => {
+    it('streams progress and a terminal result event from createWorkspace', async () => {
+      mockCreateWorkspace.mockImplementation((_slug, opts) => {
         opts.onProgress?.('Fetching latest from remote...')
         opts.onProgress?.('Creating session job yaac-demo-sess-x...')
         return Promise.resolve({
-          worktreeId: 'sess-x',
+          workspaceId: 'sess-x',
           jobName: 'yaac-demo-sess-x',
           forwardedPorts: [],
           tool: 'claude',
@@ -665,7 +665,7 @@ describe('write routes', () => {
         })
       })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.worktree.create.$post({
+      const res = await client.workspace.create.$post({
         json: {
           project: 'demo',
         },
@@ -680,24 +680,24 @@ describe('write routes', () => {
         {
           type: 'result',
           result: {
-            worktreeId: 'sess-x',
+            workspaceId: 'sess-x',
             jobName: 'yaac-demo-sess-x',
             forwardedPorts: [],
             tool: 'claude',
-            // Streamed verbatim, and the CLI reads it: an acp worktree must
+            // Streamed verbatim, and the CLI reads it: an acp workspace must
             // not get a PTY attached after a create or a restart.
             mode: 'tui',
           },
         },
       ])
-      expect(mockCreateWorktree).toHaveBeenCalledWith('demo', expect.objectContaining({
+      expect(mockCreateWorkspace).toHaveBeenCalledWith('demo', expect.objectContaining({
       }))
     })
 
-    it('emits a terminal error event when createWorktree throws', async () => {
-      mockCreateWorktree.mockRejectedValue(new ServerError('VALIDATION', 'no github token'))
+    it('emits a terminal error event when createWorkspace throws', async () => {
+      mockCreateWorkspace.mockRejectedValue(new ServerError('VALIDATION', 'no github token'))
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.worktree.create.$post({ json: { project: 'demo' } })
+      const res = await client.workspace.create.$post({ json: { project: 'demo' } })
       expect(res.status).toBe(200)
       const events = (await res.text()).trim().split('\n').map((l) => JSON.parse(l) as unknown)
       expect(events).toEqual([
@@ -705,78 +705,78 @@ describe('write routes', () => {
       ])
     })
 
-    it('threads a branch into createWorktree', async () => {
-      mockCreateWorktree.mockResolvedValue({
-        worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
+    it('threads a branch into createWorkspace', async () => {
+      mockCreateWorkspace.mockResolvedValue({
+        workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
       })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.worktree.create.$post({ json: { project: 'demo', branch: 'dev' } })
+      const res = await client.workspace.create.$post({ json: { project: 'demo', branch: 'dev' } })
       expect(res.status).toBe(200)
       await res.text()
-      expect(mockCreateWorktree).toHaveBeenCalledWith('demo', expect.objectContaining({ branch: 'dev' }))
+      expect(mockCreateWorkspace).toHaveBeenCalledWith('demo', expect.objectContaining({ branch: 'dev' }))
     })
 
     it('rejects an empty branch with VALIDATION', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/api/worktree/create', rawInit({
+      const res = await app.request('/api/workspace/create', rawInit({
         method: 'POST',
         body: JSON.stringify({ project: 'demo', branch: '' }),
       }))
       expect(res.status).toBe(400)
     })
 
-    it('threads a client-supplied worktreeId into createWorktree', async () => {
-      mockCreateWorktree.mockResolvedValue({
-        worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
+    it('threads a client-supplied workspaceId into createWorkspace', async () => {
+      mockCreateWorkspace.mockResolvedValue({
+        workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
       })
       const id = '11111111-1111-4111-8111-111111111111'
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.worktree.create.$post({ json: { project: 'demo', worktreeId: id } })
+      const res = await client.workspace.create.$post({ json: { project: 'demo', workspaceId: id } })
       expect(res.status).toBe(200)
       await res.text()
-      expect(mockCreateWorktree).toHaveBeenCalledWith('demo', expect.objectContaining({ worktreeId: id }))
+      expect(mockCreateWorkspace).toHaveBeenCalledWith('demo', expect.objectContaining({ workspaceId: id }))
     })
 
-    // A worktree id is claimed once. Reusing a live one used to re-stamp its
+    // A workspace id is claimed once. Reusing a live one used to re-stamp its
     // row and then, when the create failed on the existing branch, tear the
-    // live worktree down as if it were the create's own.
-    it('answers 409 for an id a worktree already holds, touching nothing', async () => {
+    // live workspace down as if it were the create's own.
+    it('answers 409 for an id a workspace already holds, touching nothing', async () => {
       const id = '22222222-2222-4222-8222-222222222222'
-      await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: id, baseBranch: 'main' })
-      const before = (await getProjectWorktreeRows('demo')).get(id)
+      await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: id, baseBranch: 'main' })
+      const before = (await getProjectWorkspaceRows('demo')).get(id)
       const app = buildApp({ buildId: 'test' })
 
       for (const project of ['demo', 'elsewhere']) {
-        const res = await app.request('/api/worktree/create', rawInit({
-          method: 'POST', body: JSON.stringify({ project, worktreeId: id }),
+        const res = await app.request('/api/workspace/create', rawInit({
+          method: 'POST', body: JSON.stringify({ project, workspaceId: id }),
         }))
         expect(res.status, project).toBe(409)
       }
 
-      expect(mockCreateWorktree).not.toHaveBeenCalled()
+      expect(mockCreateWorkspace).not.toHaveBeenCalled()
       expect(listProvisioning()).toEqual([])
-      expect((await getProjectWorktreeRows('demo')).get(id)).toEqual(before)
+      expect((await getProjectWorkspaceRows('demo')).get(id)).toEqual(before)
     })
 
     // Still provisioning: no row yet, but the id is taken all the same.
     it('answers 409 for an id a create is still provisioning, leaving its row alone', async () => {
       const id = '33333333-3333-4333-8333-333333333333'
-      registerProvisioning({ worktreeId: id, projectSlug: 'demo', tool: 'claude', kind: 'create' })
+      registerProvisioning({ workspaceId: id, projectSlug: 'demo', tool: 'claude', kind: 'create' })
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/api/worktree/create', rawInit({
-        method: 'POST', body: JSON.stringify({ project: 'demo', worktreeId: id }),
+      const res = await app.request('/api/workspace/create', rawInit({
+        method: 'POST', body: JSON.stringify({ project: 'demo', workspaceId: id }),
       }))
       expect(res.status).toBe(409)
-      expect(mockCreateWorktree).not.toHaveBeenCalled()
-      expect(listProvisioning()).toEqual([expect.objectContaining({ worktreeId: id, message: 'Starting…' })])
+      expect(mockCreateWorkspace).not.toHaveBeenCalled()
+      expect(listProvisioning()).toEqual([expect.objectContaining({ workspaceId: id, message: 'Starting…' })])
       expect(listProvisioning()[0].error).toBeUndefined()
     })
 
-    it('rejects a non-uuid worktreeId with VALIDATION', async () => {
+    it('rejects a non-uuid workspaceId with VALIDATION', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/api/worktree/create', rawInit({
+      const res = await app.request('/api/workspace/create', rawInit({
         method: 'POST',
-        body: JSON.stringify({ project: 'demo', worktreeId: 'not-a-uuid' }),
+        body: JSON.stringify({ project: 'demo', workspaceId: 'not-a-uuid' }),
       }))
       expect(res.status).toBe(400)
       const body = await res.json() as { error: { code: string } }
@@ -784,48 +784,48 @@ describe('write routes', () => {
     })
   })
 
-  describe('POST /worktree/provisioning/:id/dismiss', () => {
+  describe('POST /workspace/provisioning/:id/dismiss', () => {
     it('removes the registry entry and returns 204', async () => {
-      registerProvisioning({ worktreeId: 'dz-1', projectSlug: 'demo', tool: 'claude', kind: 'create' })
+      registerProvisioning({ workspaceId: 'dz-1', projectSlug: 'demo', tool: 'claude', kind: 'create' })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.worktree.provisioning[':id'].dismiss.$post({ param: { id: 'dz-1' } })
+      const res = await client.workspace.provisioning[':id'].dismiss.$post({ param: { id: 'dz-1' } })
       expect(res.status).toBe(204)
-      expect(listProvisioning().some((p) => p.worktreeId === 'dz-1')).toBe(false)
+      expect(listProvisioning().some((p) => p.workspaceId === 'dz-1')).toBe(false)
     })
 
     it('is idempotent for an unknown id', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.worktree.provisioning[':id'].dismiss.$post({ param: { id: 'nope' } })
+      const res = await client.workspace.provisioning[':id'].dismiss.$post({ param: { id: 'nope' } })
       expect(res.status).toBe(204)
     })
   })
 
-  describe('POST /worktree/restart', () => {
-    it('rejects missing worktreeId', async () => {
+  describe('POST /workspace/restart', () => {
+    it('rejects missing workspaceId', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/api/worktree/restart', rawInit({
+      const res = await app.request('/api/workspace/restart', rawInit({
         method: 'POST',
         body: JSON.stringify({}),
       }))
       expect(res.status).toBe(400)
     })
 
-    it('answers 404, before any stream, for an id no worktree has', async () => {
+    it('answers 404, before any stream, for an id no workspace has', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/api/worktree/restart', rawInit({
-        method: 'POST', body: JSON.stringify({ worktreeId: 'nope' }),
+      const res = await app.request('/api/workspace/restart', rawInit({
+        method: 'POST', body: JSON.stringify({ workspaceId: 'nope' }),
       }))
       expect(res.status).toBe(404)
       expect(mockRestartSession).not.toHaveBeenCalled()
     })
 
-    it('streams progress and a result event from restartWorktree, by the resolved id', async () => {
-      await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'sess-x' })
+    it('streams progress and a result event from restartWorkspace, by the resolved id', async () => {
+      await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'sess-x' })
       mockRestartSession.mockImplementation((_id, opts) => {
         opts?.onProgress?.('Stopping session job yaac-demo-sess-x...')
-        opts?.onProgress?.('Reusing existing worktree at /wt/sess-x')
+        opts?.onProgress?.('Reusing existing workspace at /wt/sess-x')
         return Promise.resolve({
-          worktreeId: 'sess-x',
+          workspaceId: 'sess-x',
           jobName: 'yaac-demo-sess-x',
           forwardedPorts: [],
           tool: 'claude',
@@ -835,9 +835,9 @@ describe('write routes', () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       // A prefix, as the CLI sends what a user typed: the route resolves it
       // and keys the restart on the full id.
-      const res = await client.worktree.restart.$post({
+      const res = await client.workspace.restart.$post({
         json: {
-          worktreeId: 'sess',
+          workspaceId: 'sess',
         },
       })
       expect(res.status).toBe(200)
@@ -845,15 +845,15 @@ describe('write routes', () => {
       const events = (await res.text()).trim().split('\n').map((line) => JSON.parse(line) as unknown)
       expect(events).toEqual([
         { type: 'progress', message: 'Stopping session job yaac-demo-sess-x...' },
-        { type: 'progress', message: 'Reusing existing worktree at /wt/sess-x' },
+        { type: 'progress', message: 'Reusing existing workspace at /wt/sess-x' },
         {
           type: 'result',
           result: {
-            worktreeId: 'sess-x',
+            workspaceId: 'sess-x',
             jobName: 'yaac-demo-sess-x',
             forwardedPorts: [],
             tool: 'claude',
-            // Streamed verbatim, and the CLI reads it: an acp worktree must
+            // Streamed verbatim, and the CLI reads it: an acp workspace must
             // not get a PTY attached after a create or a restart.
             mode: 'tui',
           },
@@ -863,11 +863,11 @@ describe('write routes', () => {
       }))
     })
 
-    it('emits a terminal error event when restartWorktree throws', async () => {
-      await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'sess-y' })
+    it('emits a terminal error event when restartWorkspace throws', async () => {
+      await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'sess-y' })
       mockRestartSession.mockRejectedValue(new ServerError('INTERNAL', 'image pull failed'))
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.worktree.restart.$post({ json: { worktreeId: 'sess-y' } })
+      const res = await client.workspace.restart.$post({ json: { workspaceId: 'sess-y' } })
       expect(res.status).toBe(200)
       const events = (await res.text()).trim().split('\n').map((l) => JSON.parse(l) as unknown)
       expect(events).toEqual([
@@ -875,38 +875,38 @@ describe('write routes', () => {
       ])
     })
 
-    // One restart at a time: a second on a worktree still coming up is
+    // One restart at a time: a second on a workspace still coming up is
     // refused, not run alongside it on the same id.
-    it('answers 409 for a worktree already provisioning', async () => {
-      await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'sess-z' })
-      registerProvisioning({ worktreeId: 'sess-z', projectSlug: 'demo', tool: 'claude', kind: 'restart' })
+    it('answers 409 for a workspace already provisioning', async () => {
+      await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'sess-z' })
+      registerProvisioning({ workspaceId: 'sess-z', projectSlug: 'demo', tool: 'claude', kind: 'restart' })
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/api/worktree/restart', rawInit({
-        method: 'POST', body: JSON.stringify({ worktreeId: 'sess-z' }),
+      const res = await app.request('/api/workspace/restart', rawInit({
+        method: 'POST', body: JSON.stringify({ workspaceId: 'sess-z' }),
       }))
       expect(res.status).toBe(409)
       expect(mockRestartSession).not.toHaveBeenCalled()
     })
   })
 
-  describe('POST /worktree/stop', () => {
-    it('rejects a missing worktreeId', async () => {
+  describe('POST /workspace/stop', () => {
+    it('rejects a missing workspaceId', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/api/worktree/stop', rawInit({
+      const res = await app.request('/api/workspace/stop', rawInit({
         method: 'POST',
         body: JSON.stringify({}),
       }))
       expect(res.status).toBe(400)
     })
 
-    it('delegates to stopWorktree and returns the result', async () => {
+    it('delegates to stopWorkspace and returns the result', async () => {
       mockDeleteSession.mockResolvedValue({
-        worktreeId: 'sess-x',
+        workspaceId: 'sess-x',
         projectSlug: 'demo',
         jobName: 'yaac-demo-sess-x',
       })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.worktree.stop.$post({ json: { worktreeId: 'sess-x' } })
+      const res = await client.workspace.stop.$post({ json: { workspaceId: 'sess-x' } })
       expect(res.status).toBe(200)
       expect(mockDeleteSession).toHaveBeenCalledWith('sess-x')
     })
@@ -914,85 +914,85 @@ describe('write routes', () => {
 
   // The sidebar's groups, end to end through the routes: what the webapp
   // creates, drags between and deletes has to come back on the snapshot the
-  // same way, and a stale group id has to fail rather than file a worktree
+  // same way, and a stale group id has to fail rather than file a workspace
   // where nothing lists it.
-  describe('worktree group routes', () => {
+  describe('workspace group routes', () => {
     const client = (): ReturnType<typeof makeTestApiClient> =>
       makeTestApiClient(buildApp({ buildId: 'test' }))
 
-    const seed = async (...worktreeIds: string[]): Promise<void> => {
-      for (const worktreeId of worktreeIds) {
-        await recordWorktreeCreated({ projectSlug: 'demo', worktreeId })
+    const seed = async (...workspaceIds: string[]): Promise<void> => {
+      for (const workspaceId of workspaceIds) {
+        await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId })
       }
     }
 
-    /** Create a group around `worktreeId` and hand back its new id. */
-    const createGroup = async (worktreeId: string, name = 'Release'): Promise<string> => {
-      const res = await client().worktree.group.create.$post({
-        json: { projectSlug: 'demo', worktreeId, name },
+    /** Create a group around `workspaceId` and hand back its new id. */
+    const createGroup = async (workspaceId: string, name = 'Release'): Promise<string> => {
+      const res = await client().workspace.group.create.$post({
+        json: { projectSlug: 'demo', workspaceId, name },
       })
       expect(res.status).toBe(200)
       return (await res.json()).groupId
     }
 
-    it('creates a group around a worktree and surfaces it for the snapshot', async () => {
+    it('creates a group around a workspace and surfaces it for the snapshot', async () => {
       await seed('sess-a')
       const groupId = await createGroup('sess-a')
 
-      expect(await listWorktreeGroups('demo')).toEqual([expect.objectContaining({
+      expect(await listWorkspaceGroups('demo')).toEqual([expect.objectContaining({
         groupId, projectSlug: 'demo', name: 'Release', pinned: false,
       })])
-      expect((await getProjectWorktreeRows('demo')).get('sess-a')?.groupId).toBe(groupId)
+      expect((await getProjectWorkspaceRows('demo')).get('sess-a')?.groupId).toBe(groupId)
     })
 
-    it('renames, pins and deletes it, releasing its worktrees', async () => {
+    it('renames, pins and deletes it, releasing its workspaces', async () => {
       await seed('sess-a')
       const groupId = await createGroup('sess-a')
 
-      await client().worktree.group.rename.$post({ json: { projectSlug: 'demo', groupId, name: 'Shipping' } })
-      await client().worktree.group['set-pinned'].$post({ json: { projectSlug: 'demo', groupId, pinned: true } })
-      expect(await listWorktreeGroups('demo')).toEqual([expect.objectContaining({
+      await client().workspace.group.rename.$post({ json: { projectSlug: 'demo', groupId, name: 'Shipping' } })
+      await client().workspace.group['set-pinned'].$post({ json: { projectSlug: 'demo', groupId, pinned: true } })
+      expect(await listWorkspaceGroups('demo')).toEqual([expect.objectContaining({
         name: 'Shipping', pinned: true,
       })])
 
-      await client().worktree.group.delete.$post({ json: { projectSlug: 'demo', groupId } })
-      expect(await listWorktreeGroups('demo')).toEqual([])
-      expect((await getProjectWorktreeRows('demo')).get('sess-a')?.groupId).toBeUndefined()
+      await client().workspace.group.delete.$post({ json: { projectSlug: 'demo', groupId } })
+      expect(await listWorkspaceGroups('demo')).toEqual([])
+      expect((await getProjectWorkspaceRows('demo')).get('sess-a')?.groupId).toBeUndefined()
     })
 
-    it('moves a worktree in and out of a group, and 404s an unknown one', async () => {
+    it('moves a workspace in and out of a group, and 404s an unknown one', async () => {
       await seed('sess-a', 'sess-b')
       const groupId = await createGroup('sess-a')
 
-      await client().worktree['set-group'].$post({
-        json: { projectSlug: 'demo', worktreeId: 'sess-b', groupId },
+      await client().workspace['set-group'].$post({
+        json: { projectSlug: 'demo', workspaceId: 'sess-b', groupId },
       })
-      expect((await getProjectWorktreeRows('demo')).get('sess-b')?.groupId).toBe(groupId)
+      expect((await getProjectWorkspaceRows('demo')).get('sess-b')?.groupId).toBe(groupId)
 
-      await client().worktree['set-group'].$post({
-        json: { projectSlug: 'demo', worktreeId: 'sess-b', groupId: null },
+      await client().workspace['set-group'].$post({
+        json: { projectSlug: 'demo', workspaceId: 'sess-b', groupId: null },
       })
-      expect((await getProjectWorktreeRows('demo')).get('sess-b')?.groupId).toBeUndefined()
+      expect((await getProjectWorkspaceRows('demo')).get('sess-b')?.groupId).toBeUndefined()
 
       // A drop onto a group another client has already deleted.
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/api/worktree/set-group', rawInit({
+      const res = await app.request('/api/workspace/set-group', rawInit({
         method: 'POST',
-        body: JSON.stringify({ projectSlug: 'demo', worktreeId: 'sess-b', groupId: 'gone' }),
+        body: JSON.stringify({ projectSlug: 'demo', workspaceId: 'sess-b', groupId: 'gone' }),
       }))
       expect(res.status).toBe(404)
     })
 
-    it('404s a group created around a worktree that is not there', async () => {
+    it('404s a group created around a workspace that is not there', async () => {
       // Otherwise the group row lands with no member — invisible in the
       // sidebar, and so undeletable from it.
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/api/worktree/group/create', rawInit({
+      const res = await app.request('/api/workspace/group/create', rawInit({
         method: 'POST',
-        body: JSON.stringify({ projectSlug: 'demo', worktreeId: 'nope', name: 'Release' }),
+        body: JSON.stringify({ projectSlug: 'demo', workspaceId: 'nope', name: 'Release' }),
       }))
       expect(res.status).toBe(404)
-      expect(await listWorktreeGroups('demo')).toEqual([])
+      expect(await listWorkspaceGroups('demo')).toEqual([])
     })
 
     it('rejects a group name longer than the store keeps', async () => {
@@ -1001,86 +1001,86 @@ describe('write routes', () => {
       // sharing their first MAX_TITLE_LENGTH characters would then resolve
       // to one group.
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/api/worktree/group/create', rawInit({
+      const res = await app.request('/api/workspace/group/create', rawInit({
         method: 'POST',
         body: JSON.stringify({
           projectSlug: 'demo',
-          worktreeId: 'sess-a',
+          workspaceId: 'sess-a',
           name: 'x'.repeat(MAX_TITLE_LENGTH + 1),
         }),
       }))
       expect(res.status).toBe(400)
-      expect(await listWorktreeGroups('demo')).toEqual([])
+      expect(await listWorkspaceGroups('demo')).toEqual([])
     })
 
     it('rejects a blank group name', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/api/worktree/group/create', rawInit({
+      const res = await app.request('/api/workspace/group/create', rawInit({
         method: 'POST',
-        body: JSON.stringify({ projectSlug: 'demo', worktreeId: 'sess-a', name: '' }),
+        body: JSON.stringify({ projectSlug: 'demo', workspaceId: 'sess-a', name: '' }),
       }))
       expect(res.status).toBe(400)
     })
   })
 
-  // Queued worktrees through the routes (docs/queued-worktrees.md). The
-  // create a launch runs is mocked, as it is for /worktree/create; what is
+  // Queued workspaces through the routes (docs/queued-workspaces.md). The
+  // create a launch runs is mocked, as it is for /workspace/create; what is
   // real is everything that decides what it runs and when.
-  describe('queued worktree routes', () => {
+  describe('queued workspace routes', () => {
     const client = (): ReturnType<typeof makeTestApiClient> =>
       makeTestApiClient(buildApp({ buildId: 'test' }))
     const post = (route: string, body: unknown): Promise<Response> =>
-      Promise.resolve(buildApp({ buildId: 'test' }).request(`/api/worktree/queue/${route}`, rawInit({
+      Promise.resolve(buildApp({ buildId: 'test' }).request(`/api/workspace/queue/${route}`, rawInit({
         method: 'POST', body: JSON.stringify(body),
       })))
 
     beforeEach(async () => {
       await writeProject('demo')
-      await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'parent', baseBranch: 'main', permissionMode: 'plan' })
+      await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'parent', baseBranch: 'main', permissionMode: 'plan' })
     })
 
     it('queues, edits and runs one — once', async () => {
-      const { groupId } = await (await client().worktree.group.create.$post({
+      const { groupId } = await (await client().workspace.group.create.$post({
         json: { projectSlug: 'demo', name: 'review' },
       })).json()
-      const queued = await (await client().worktree.queue.create.$post({
+      const queued = await (await client().workspace.queue.create.$post({
         json: { project: 'demo', parent: 'parent', prompt: 'follow up', tool: 'claude', title: 'Named', group: 'review' },
       })).json()
       expect(queued).toMatchObject({
-        parentWorktreeId: 'parent', branch: 'main', permissionMode: 'plan', title: 'Named', groupId,
+        parentWorkspaceId: 'parent', branch: 'main', permissionMode: 'plan', title: 'Named', groupId,
       })
 
-      const edited = await (await client().worktree.queue.update.$post({
+      const edited = await (await client().workspace.queue.update.$post({
         json: { id: queued.id, prompt: 'follow up, edited' },
       })).json()
       expect(edited).toMatchObject({ prompt: 'follow up, edited', title: 'Named', groupId })
       // A group named but not yet made is created, as a create's is.
-      const refiled = await (await client().worktree.queue.update.$post({
+      const refiled = await (await client().workspace.queue.update.$post({
         json: { id: queued.id, group: 'fresh group' },
       })).json()
       expect(refiled.groupId).not.toBe(groupId)
-      expect(await listWorktreeGroups('demo')).toContainEqual(
+      expect(await listWorkspaceGroups('demo')).toContainEqual(
         expect.objectContaining({ groupId: refiled.groupId, name: 'fresh group' }))
 
       // A launch still in flight: a second Run now loses the claim.
       let finish!: () => void
-      // It records the worktree's row, as the real create does — the launched
+      // It records the workspace's row, as the real create does — the launched
       // entry keeps a foreign key to it.
-      mockCreateWorktree.mockImplementation((slug, opts) => new Promise((resolve) => {
+      mockCreateWorkspace.mockImplementation((slug, opts) => new Promise((resolve) => {
         finish = () => {
-          void recordWorktreeCreated({ projectSlug: slug, worktreeId: opts.worktreeId ?? 'x' }).then(() =>
-            resolve({ worktreeId: opts.worktreeId ?? 'x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' }))
+          void recordWorkspaceCreated({ projectSlug: slug, workspaceId: opts.workspaceId ?? 'x' }).then(() =>
+            resolve({ workspaceId: opts.workspaceId ?? 'x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' }))
         }
       }))
-      const run = await client().worktree.queue.run.$post({ json: { id: queued.id } })
+      const run = await client().workspace.queue.run.$post({ json: { id: queued.id } })
       expect(run.status).toBe(200)
-      const { worktreeId } = await run.json()
+      const { workspaceId } = await run.json()
       expect((await post('run', { id: queued.id })).status).toBe(409)
       expect((await post('discard', { id: queued.id })).status).toBe(409)
 
-      await vi.waitFor(() => { expect(mockCreateWorktree).toHaveBeenCalledTimes(1) })
-      expect(mockCreateWorktree.mock.calls[0][1]).toMatchObject({
-        worktreeId,
+      await vi.waitFor(() => { expect(mockCreateWorkspace).toHaveBeenCalledTimes(1) })
+      expect(mockCreateWorkspace.mock.calls[0][1]).toMatchObject({
+        workspaceId,
         initialPrompt: 'follow up, edited',
         branch: 'main',
         permissionMode: 'plan',
@@ -1088,14 +1088,14 @@ describe('write routes', () => {
         groupId: refiled.groupId,
       })
       finish()
-      // The entry became the worktree; there is nothing left to run.
-      await vi.waitFor(async () => { expect(await getQueuedWorktreeRow(queued.id)).toBeUndefined() })
+      // The entry became the workspace; there is nothing left to run.
+      await vi.waitFor(async () => { expect(await getQueuedWorkspaceRow(queued.id)).toBeUndefined() })
       expect((await post('run', { id: queued.id })).status).toBe(404)
     })
 
     it('refuses a cycle in a chain, and splices a discarded link\'s children up', async () => {
       const queue = async (parent: string, prompt: string): Promise<string> =>
-        (await (await client().worktree.queue.create.$post({
+        (await (await client().workspace.queue.create.$post({
           json: { project: 'demo', parent, prompt },
         })).json()).id
       const top = await queue('parent', 'top')
@@ -1104,18 +1104,18 @@ describe('write routes', () => {
 
       expect((await post('update', { id: top, parent: bottom })).status).toBe(400)
       expect((await post('discard', { id: middle })).status).toBe(204)
-      expect((await getQueuedWorktreeRow(bottom))?.parentQueuedId).toBe(top)
+      expect((await getQueuedWorkspaceRow(bottom))?.parentQueuedId).toBe(top)
       expect((await post('discard', { id: middle })).status).toBe(404)
       // An entry with no prompt would launch an agent nobody is watching.
       expect((await post('create', { project: 'demo', parent: 'parent', prompt: '' })).status).toBe(400)
     })
   })
 
-  // Drafts through the routes (docs/draft-worktrees.md): a save without an
+  // Drafts through the routes (docs/draft-workspaces.md): a save without an
   // id makes one, with an id replaces it, and the snapshot carries them.
-  describe('draft worktree routes', () => {
+  describe('draft workspace routes', () => {
     const post = (route: string, body: unknown): Promise<Response> =>
-      Promise.resolve(buildApp({ buildId: 'test' }).request(`/api/worktree/draft/${route}`, rawInit({
+      Promise.resolve(buildApp({ buildId: 'test' }).request(`/api/workspace/draft/${route}`, rawInit({
         method: 'POST', body: JSON.stringify(body),
       })))
     const settings = { prompt: 'someday', tool: 'claude', mode: 'tui', permissionMode: 'plan' }
@@ -1124,17 +1124,17 @@ describe('write routes', () => {
 
     it('saves, replaces and discards a draft', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const saved = await (await client.worktree.draft.save.$post({
+      const saved = await (await client.workspace.draft.save.$post({
         json: { project: 'demo', prompt: 'someday', tool: 'codex', mode: 'acp', permissionMode: 'plan', branch: 'dev' },
       })).json()
       expect(saved).toMatchObject({ projectSlug: 'demo', tool: 'codex', mode: 'acp', branch: 'dev' })
 
-      const replaced = await (await client.worktree.draft.save.$post({
+      const replaced = await (await client.workspace.draft.save.$post({
         json: { id: saved.id, project: 'demo', prompt: 'someday', tool: 'claude', mode: 'tui', permissionMode: 'plan', startAfter: 'w1' },
       })).json()
       expect(replaced).toMatchObject({ id: saved.id, tool: 'claude', startAfter: 'w1' })
       expect(replaced).not.toHaveProperty('branch')
-      expect((await listDraftWorktrees()).map((d) => d.id)).toEqual([saved.id])
+      expect((await listDraftWorkspaces()).map((d) => d.id)).toEqual([saved.id])
 
       expect((await post('discard', { id: saved.id })).status).toBe(204)
       expect((await post('discard', { id: saved.id })).status).toBe(404)
@@ -1142,56 +1142,56 @@ describe('write routes', () => {
       expect((await post('save', { id: saved.id, project: 'demo', ...settings })).status).toBe(404)
       // An empty prompt has nothing to keep.
       expect((await post('save', { project: 'demo', ...settings, prompt: '' })).status).toBe(400)
-      expect((await listDraftWorktrees())).toEqual([])
+      expect((await listDraftWorkspaces())).toEqual([])
     })
 
     // The draft goes only once what was made from it exists, so a create
     // that fails leaves the prompt somewhere.
     it('drops the draft a create or queue names, once it has succeeded', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const draft = async (): Promise<string> => (await (await client.worktree.draft.save.$post({
+      const draft = async (): Promise<string> => (await (await client.workspace.draft.save.$post({
         json: { project: 'demo', prompt: 'someday', tool: 'claude', mode: 'tui', permissionMode: 'plan' },
       })).json()).id
-      const ids = async (): Promise<string[]> => (await listDraftWorktrees()).map((d) => d.id)
+      const ids = async (): Promise<string[]> => (await listDraftWorkspaces()).map((d) => d.id)
 
       const failed = await draft()
-      mockCreateWorktree.mockRejectedValueOnce(new ServerError('VALIDATION', 'no github token'))
-      await (await client.worktree.create.$post({ json: { project: 'demo', draftId: failed } })).text()
+      mockCreateWorkspace.mockRejectedValueOnce(new ServerError('VALIDATION', 'no github token'))
+      await (await client.workspace.create.$post({ json: { project: 'demo', draftId: failed } })).text()
       expect(await ids()).toEqual([failed])
 
       // Untitled, what is made from a draft keeps the title generated for it —
       // while it is still the draft's prompt.
-      await setDraftWorktreeTitle(failed, 'someday', 'Someday')
-      mockCreateWorktree.mockResolvedValueOnce({
-        worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
+      await setDraftWorkspaceTitle(failed, 'someday', 'Someday')
+      mockCreateWorkspace.mockResolvedValueOnce({
+        workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
       })
-      await (await client.worktree.create.$post({
+      await (await client.workspace.create.$post({
         json: { project: 'demo', prompt: 'someday', draftId: failed },
       })).text()
       expect(await ids()).toEqual([])
-      expect(mockCreateWorktree.mock.lastCall?.[1]).toMatchObject({ title: 'Someday' })
+      expect(mockCreateWorkspace.mock.lastCall?.[1]).toMatchObject({ title: 'Someday' })
 
       const queued = await draft()
-      await setDraftWorktreeTitle(queued, 'someday', 'Someday')
-      expect((await client.worktree.queue.create.$post({
+      await setDraftWorkspaceTitle(queued, 'someday', 'Someday')
+      expect((await client.workspace.queue.create.$post({
         json: { project: 'demo', parent: 'nope', prompt: 'p', draftId: queued },
       })).status).toBe(404)
       expect(await ids()).toEqual([queued])
-      await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'parent', baseBranch: 'main', permissionMode: 'plan' })
-      expect((await client.worktree.queue.create.$post({
+      await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'parent', baseBranch: 'main', permissionMode: 'plan' })
+      expect((await client.workspace.queue.create.$post({
         json: { project: 'demo', parent: 'parent', prompt: 'someday', draftId: queued },
       })).status).toBe(200)
       expect(await ids()).toEqual([])
-      expect((await listQueuedWorktreeRows('demo'))[0]).toMatchObject({ generatedTitle: 'Someday' })
-      expect((await listQueuedWorktreeRows('demo'))[0]).not.toHaveProperty('title')
+      expect((await listQueuedWorkspaceRows('demo'))[0]).toMatchObject({ generatedTitle: 'Someday' })
+      expect((await listQueuedWorkspaceRows('demo'))[0]).not.toHaveProperty('title')
 
       // An edited prompt leaves the draft's title behind.
       const edited = await draft()
-      await setDraftWorktreeTitle(edited, 'someday', 'Someday')
-      await client.worktree.queue.create.$post({
+      await setDraftWorkspaceTitle(edited, 'someday', 'Someday')
+      await client.workspace.queue.create.$post({
         json: { project: 'demo', parent: 'parent', prompt: 'another day', draftId: edited },
       })
-      expect((await listQueuedWorktreeRows('demo'))[1]).not.toHaveProperty('generatedTitle')
+      expect((await listQueuedWorkspaceRows('demo'))[1]).not.toHaveProperty('generatedTitle')
     })
   })
 
@@ -1226,7 +1226,7 @@ describe('write routes', () => {
     })
 
     it('stores a named token without pushing — no project uses it yet — and refuses a taken name', async () => {
-      const synced = vi.spyOn(worktreeDriver(), 'syncCredentials').mockResolvedValue(undefined)
+      const synced = vi.spyOn(workspaceDriver(), 'syncCredentials').mockResolvedValue(undefined)
       try {
         const client = makeTestApiClient(buildApp({ buildId: 'test' }))
         const res = await client.auth.git.credentials.$post({ json: { name: 'gh', token: 'ghp_new' } })
@@ -1290,7 +1290,7 @@ describe('write routes', () => {
       await recordProject({ slug: 'web', remoteUrl: 'https://github.com/acme/web', addedAt: 'now' })
       const a = await addHttpsCredential({ name: 'a', token: 'ghp_a' })
       await assignProjectCredential('web', a.id)
-      const synced = vi.spyOn(worktreeDriver(), 'syncCredentials').mockResolvedValue(undefined)
+      const synced = vi.spyOn(workspaceDriver(), 'syncCredentials').mockResolvedValue(undefined)
       try {
         const client = makeTestApiClient(buildApp({ buildId: 'test' }))
         const res = await client.auth.git.credentials[':id'].$delete({ param: { id: a.id } })
@@ -1306,7 +1306,7 @@ describe('write routes', () => {
       // A delete is how a leak is dealt with: "done" must not be said while
       // the proxy still holds the credential.
       const { id } = await addHttpsCredential({ name: 'a', token: 'ghp_a' })
-      const synced = vi.spyOn(worktreeDriver(), 'syncCredentials').mockRejectedValue(new Error('apiserver down'))
+      const synced = vi.spyOn(workspaceDriver(), 'syncCredentials').mockRejectedValue(new Error('apiserver down'))
       try {
         const client = makeTestApiClient(buildApp({ buildId: 'test' }))
         const res = await client.auth.git.credentials[':id'].$delete({ param: { id } })
@@ -1332,7 +1332,7 @@ describe('write routes', () => {
       await recordProject({ slug: 'web', remoteUrl: 'https://github.com/acme/web', addedAt: 'now' })
       const { id } = await addHttpsCredential({ name: 'gh', token: 'ghp_leaked' })
       await assignProjectCredential('web', id)
-      const synced = vi.spyOn(worktreeDriver(), 'syncCredentials').mockResolvedValue(undefined)
+      const synced = vi.spyOn(workspaceDriver(), 'syncCredentials').mockResolvedValue(undefined)
       try {
         const client = makeTestApiClient(buildApp({ buildId: 'test' }))
         const res = await client.auth.git.credentials[':id'].replace.$post({ param: { id }, json: { token: 'ghp_fresh' } })
@@ -1352,7 +1352,7 @@ describe('write routes', () => {
     it('assigns the credential and hands the runtime what the project may now use', async () => {
       await recordProject({ slug: 'web', remoteUrl: 'https://github.com/acme/web', addedAt: 'now' })
       const { id } = await addHttpsCredential({ name: 'gh', token: 'ghp_web' })
-      const synced = vi.spyOn(worktreeDriver(), 'syncCredentials').mockResolvedValue(undefined)
+      const synced = vi.spyOn(workspaceDriver(), 'syncCredentials').mockResolvedValue(undefined)
       try {
         const client = makeTestApiClient(buildApp({ buildId: 'test' }))
         const res = await client.project[':slug']['git-credential'].$put({

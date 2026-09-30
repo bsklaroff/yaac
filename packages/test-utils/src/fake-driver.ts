@@ -1,5 +1,5 @@
 import { afterEach } from 'vitest'
-import { setWorktreeDriver } from '@yaac/server/drivers/driver'
+import { setWorkspaceDriver } from '@yaac/server/drivers/driver'
 import type {
   RuntimeHandle,
   RuntimeSnapshot,
@@ -8,22 +8,22 @@ import type {
   StreamPty,
   WorkspacePaths,
   WorkspaceSubstrate,
-  WorktreeDriver,
+  WorkspaceDriver,
 } from '@yaac/server/drivers/contract'
 
 /**
- * A `WorktreeDriver` for unit tests: every verb answers empty (or
+ * A `WorkspaceDriver` for unit tests: every verb answers empty (or
  * succeeds) until a test overrides the one it cares about.
  *
  * This is what lets a mediator's tests run without the substrate at all —
  * no cluster, and crucially no `@kubernetes/client-node`, whose import
  * alone costs a couple of seconds per test file. A test that reaches the
- * runtime without installing one gets a loud error from `worktreeDriver()`
+ * runtime without installing one gets a loud error from `workspaceDriver()`
  * rather than a silent null branch.
  */
-export type FakeWorktreeDriver = WorktreeDriver & {
+export type FakeWorkspaceDriver = WorkspaceDriver & {
   /** Replace some verbs mid-test without rebuilding the whole fake. */
-  override(overrides: Partial<WorktreeDriver>): void
+  override(overrides: Partial<WorkspaceDriver>): void
 }
 
 /** A `RuntimeHandle` with sane defaults — override only what a case is about. */
@@ -98,17 +98,17 @@ export function snapshotFixture(
 // call. Registered here rather than left to each file because a forgotten
 // hook fails silently and in the direction of a false pass — the next test
 // quietly reads the previous one's runtime.
-afterEach(resetWorktreeDriver)
+afterEach(resetWorkspaceDriver)
 
 /**
  * Build a fake runtime and register it as the process's. Call it from a
  * `beforeEach` (or inside the test); the teardown above forgets it.
  */
-export function installFakeWorktreeDriver(
-  overrides: Partial<WorktreeDriver> = {},
-): FakeWorktreeDriver {
-  let current: WorktreeDriver = { ...defaultRuntime(), ...overrides }
-  const fake: FakeWorktreeDriver = {
+export function installFakeWorkspaceDriver(
+  overrides: Partial<WorkspaceDriver> = {},
+): FakeWorkspaceDriver {
+  let current: WorkspaceDriver = { ...defaultRuntime(), ...overrides }
+  const fake: FakeWorkspaceDriver = {
     // Read through `current` like every verb, so `override({kind})` moves
     // them: a test about what a containerless server does differently flips
     // the kind and asserts on the mediator, with no second fake to build.
@@ -165,13 +165,13 @@ export function installFakeWorktreeDriver(
     resolveMamaRequests: (r) => current.resolveMamaRequests(r),
     override(next) { current = { ...current, ...next } },
   }
-  setWorktreeDriver(fake)
+  setWorkspaceDriver(fake)
   return fake
 }
 
-/** Forget the installed runtime — pair with `installFakeWorktreeDriver`. */
-export function resetWorktreeDriver(): void {
-  setWorktreeDriver(null)
+/** Forget the installed runtime — pair with `installFakeWorkspaceDriver`. */
+export function resetWorkspaceDriver(): void {
+  setWorkspaceDriver(null)
 }
 
 /** A `StreamChild` that never connects: no data, no exit, kill is a no-op. */
@@ -196,7 +196,7 @@ function deadStreamPty(): StreamPty {
   }
 }
 
-function defaultRuntime(): WorktreeDriver {
+function defaultRuntime(): WorkspaceDriver {
   return {
     // k8s by default, and the container paths with it, so a mediator test
     // asserting on command text keeps asserting the same strings it always

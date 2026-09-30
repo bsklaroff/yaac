@@ -3,11 +3,11 @@
 // src from reaching past this file. Modules in here import each other by
 // relative path, which is why they are unaffected by that rule.
 //
-// This feature is the durable half of a worktree: every fact a client can
+// This feature is the durable half of a workspace: every fact a client can
 // ask about that no substrate can answer — the title a user typed, the
 // sidebar group they filed it under, the creation time that survives a
 // restart the runtime did not,
-// the conversations a worktree has hosted and what each opened with, and
+// the conversations a workspace has hosted and what each opened with, and
 // how it died.
 //
 // It owns the database outright — the handle (`client.ts`) and the schema
@@ -17,15 +17,15 @@
 // crosses from the handle is the void-returning `openDb`/`closeDb` pair the
 // composition root drives. Observed facts
 // enter through
-// exactly one door: code that watches the substrate or reads a worktree's
-// disk emits a `WorktreeEvent`, and `applyWorktreeEvent` alone decides
+// exactly one door: code that watches the substrate or reads a workspace's
+// disk emits a `WorkspaceEvent`, and `applyWorkspaceEvent` alone decides
 // which rows that lands in — its per-event mutators are internal, off this
 // barrel. Intent (a title, a group, a preference) is written through the
 // ordinary functions below, and reads are free to every layer above.
 //
 // The join paths that read these rows alongside a runtime observation
-// (`listActiveWorktrees`, restart, the stopped listing) deliberately live
-// in `#domain/worktrees` next to the verbs they orchestrate, and reach
+// (`listActiveWorkspaces`, restart, the stopped listing) deliberately live
+// in `#domain/workspaces` next to the verbs they orchestrate, and reach
 // in through this barrel like anything else. So does the wire projection
 // they share (`toAgentSessionEntry`): the entry it builds is half row and
 // half live observation, and what this layer speaks is rows.
@@ -47,50 +47,50 @@ export {
   getAgentSessionsFor,
   getProjectAgentSessions,
   listActiveAgentSessions,
-  listWorktreeAgentSessions,
+  listWorkspaceAgentSessions,
   recordedConversationHandles,
   setAgentSessionCapture,
   type AgentSessionLinkRow,
 } from './agent-session-store'
-export { applyWorktreeEvent } from './apply-worktree-event'
-export type { DiscoveredSession, WorktreeEvent } from './events'
-export { desiredWorktrees } from './desired-worktrees'
+export { applyWorkspaceEvent } from './apply-workspace-event'
+export type { DiscoveredSession, WorkspaceEvent } from './events'
+export { desiredWorkspaces } from './desired-workspaces'
 export {
-  createWorktreeGroup,
-  deleteProjectWorktreeGroups,
-  deleteWorktreeGroup,
-  listWorktreeGroupRows,
-  renameWorktreeGroup,
-  setWorktreeGroup,
-  setWorktreeGroupPinned,
+  createWorkspaceGroup,
+  deleteProjectWorkspaceGroups,
+  deleteWorkspaceGroup,
+  listWorkspaceGroupRows,
+  renameWorkspaceGroup,
+  setWorkspaceGroup,
+  setWorkspaceGroupPinned,
 } from './group-store'
 export { closeDb, openDb } from './client'
 export {
-  deleteDraftWorktree,
-  deleteProjectDraftWorktrees,
-  insertDraftWorktree,
-  listDraftWorktreeRows,
-  setDraftWorktreeTitle,
-  updateDraftWorktree,
-  type DraftWorktreeRow,
-} from './draft-worktree-store'
+  deleteDraftWorkspace,
+  deleteProjectDraftWorkspaces,
+  insertDraftWorkspace,
+  listDraftWorkspaceRows,
+  setDraftWorkspaceTitle,
+  updateDraftWorkspace,
+  type DraftWorkspaceRow,
+} from './draft-workspace-store'
 export {
   claimQueuedLaunch,
-  deleteProjectQueuedWorktrees,
-  deleteQueuedWorktree,
+  deleteProjectQueuedWorkspaces,
+  deleteQueuedWorkspace,
   failQueuedLaunch,
   finishQueuedLaunch,
-  getQueuedWorktreeRow,
-  insertQueuedWorktree,
-  listQueuedWorktreeRows,
+  getQueuedWorkspaceRow,
+  insertQueuedWorkspace,
+  listQueuedWorkspaceRows,
   releaseQueuedChildren,
-  releaseQueuedWorktree,
-  setQueuedWorktreeTitle,
-  updateQueuedWorktree,
+  releaseQueuedWorkspace,
+  setQueuedWorkspaceTitle,
+  updateQueuedWorkspace,
   type QueuedParent,
-  type QueuedWorktreeRow,
-  type QueuedWorktreeSettings,
-} from './queued-worktree-store'
+  type QueuedWorkspaceRow,
+  type QueuedWorkspaceSettings,
+} from './queued-workspace-store'
 export {
   clearShortcutOverrides,
   getGitIdentity,
@@ -126,20 +126,20 @@ export {
   type ProjectRow,
 } from './project-store'
 export {
-  claimSpareWorktree,
-  clearWorktreeStopped,
-  deleteProjectWorktrees,
-  deleteSpareWorktreeRow,
-  findWorktreeRow,
-  getProjectWorktreeRows,
-  getWorktreeRow,
-  listProjectWorktreeIds,
-  listWorktreeRows,
+  claimSpareWorkspace,
+  clearWorkspaceStopped,
+  deleteProjectWorkspaces,
+  deleteSpareWorkspaceRow,
+  findWorkspaceRow,
+  getProjectWorkspaceRows,
+  getWorkspaceRow,
+  listProjectWorkspaceIds,
+  listWorkspaceRows,
   recordAllDeathsSeen,
   recordDeathSeen,
-  restoreSpareWorktree,
-  findWorktreeByMamaToken,
-  setWorktreeMamaTokenHash,
-  setWorktreeTitle,
-  type WorktreeRow,
-} from './worktree-store'
+  restoreSpareWorkspace,
+  findWorkspaceByMamaToken,
+  setWorkspaceMamaTokenHash,
+  setWorkspaceTitle,
+  type WorkspaceRow,
+} from './workspace-store'

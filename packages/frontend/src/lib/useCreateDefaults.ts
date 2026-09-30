@@ -1,7 +1,7 @@
 import { useCallback } from 'react'
-import { createWorktree } from '#lib/createWorktree'
+import { createWorkspace } from '#lib/createWorkspace'
 import { configuredTools, useAuthList } from '#lib/useAuthList'
-import { useProvisionWorktree } from '#lib/useProvisionWorktree'
+import { useProvisionWorkspace } from '#lib/useProvisionWorkspace'
 import { useSnapshot } from '#lib/useSnapshot'
 import { randomUUID } from '#lib/uuid'
 import {
@@ -87,7 +87,7 @@ export function useCreateDefaults(projectSlug: string | null): CreateDefaults {
  * Everything is sent, so everything becomes the project's defaults for that
  * agent — pressing Create accepts what the form shows.
  */
-export function useCreateWorktree(): (
+export function useCreateWorkspace(): (
   projectSlug: string,
   tool: AgentTool,
   setup: Pick<AgentSetup, 'model' | 'permissionMode' | 'mode'> & {
@@ -101,12 +101,12 @@ export function useCreateWorktree(): (
   },
   branch?: string,
 ) => void {
-  const provision = useProvisionWorktree()
+  const provision = useProvisionWorkspace()
   return useCallback((projectSlug, tool, setup, branch) => {
     const { model, modelName, permissionMode, mode, prompt, title, groupId, newGroup, draftId } = setup
     provision(projectSlug, tool, 'create', randomUUID(),
       (sid, onProgress) =>
-        createWorktree(projectSlug, tool, onProgress, sid, {
+        createWorkspace(projectSlug, tool, onProgress, sid, {
           ...(branch !== undefined ? { branch } : {}),
           // Empty only when the credential's provider lists no models at
           // all; the server then launches without one.

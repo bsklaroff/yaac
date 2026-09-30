@@ -1,0 +1,310 @@
+import { useEffect, useState, type JSX } from 'react'
+import clsx from 'clsx'
+import { useQueryClient } from '@tanstack/react-query'
+import { Dialog } from '@base-ui/react/dialog'
+import { CloseIcon, DeleteIcon, RestartIcon } from '#lib/icons'
+import { agentLabel, workspaceModel } from '#lib/agentLabel'
+import { EmptyState } from '#components/ui/EmptyState'
+import { ConfirmDialog } from '#components/ui/ConfirmDialog'
+import { MasterDetail } from '#components/ui/MasterDetail'
+import { StoppedTranscript } from '#components/StoppedTranscript'
+import { restartWorkspace } from '#lib/createWorkspace'
+import { markAllDeathsSeen, markDeathSeen } from '#lib/stoppedApi'
+import { useProvisionWorkspace } from '#lib/useProvisionWorkspace'
+import { patchStopped } from '#lib/useStoppedWorkspaces'
+import { useIsMobile } from '#lib/viewport'
+import { isUnseenDeath, useUiStore } from '#lib/store'
+import { describeWorkspaceDeathReason } from '@yaac/shared/death-reason'
+import type { StoppedWorkspaceEntry } from '@yaac/shared/types'
+import { relativeAge } from '#lib/time'
+
+const label = (d: StoppedWorkspaceEntry): string => d.title || d.prompt || 'New workspace'
+
+/**
+ * Sidebar entry point to the deleted-workspaces view plus the full-screen modal
+ * it opens. Rendered as a labeled button below the Waiting/Running groups.
+ * Deleted workspaces (containers gone, transcripts kept) are project-scoped, so
+ * this lives in the sidebar; open state lives in the store so the overlay is a
+ * sibling of the workspace, not nested in a row.
+ *
+ * The overlay is a search-filtered master/detail list ordered newest-stopped
+ * first (last active, for one with no recorded stop); picking a row shows its
+ * history metadata and a Restart action that recreates the container and
+ * resumes the tool from where it left off.
+ */
+export function StoppedWorkspacesButton({
+  projectSlug,
+  stopped,
+}: {
+  projectSlug: string
+  /** The project's stopped workspaces, from `useStoppedWorkspaces`. */
+  stopped: StoppedWorkspaceEntry[]
+}): JSX.Element {
+  const open = useUiStore((s) => s.stoppedOverlayOpen)
+  const openOverlay = useUiStore((s) => s.openStoppedOverlay)
+  const closeOverlay = useUiStore((s) => s.closeStoppedOverlay)
+  const focus = useUiStore((s) => s.stoppedOverlayFocus)
+  const removeOptimisticStopped = useUiStore((s) => s.removeOptimisticStopped)
+  const provision = useProvisionWorkspace()
+  const queryClient = useQueryClient()
+  const isMobile = useIsMobile()
+
+  const [queryText, setQueryText] = useState('')
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [confirm, setConfirm] = useState<StoppedWorkspaceEntry | null>(null)
+
+  // Unseen abnormal deaths across the whole list (search-independent) drive the
+  // sidebar notification dot.
+  const unseenDeaths = stopped.filter(isUnseenDeath).length
+
+  const q = queryText.trim().toLowerCase()
+  const rows = q
+    ? stopped.filter((d) => `${label(d)} ${agentLabel(d.tool, workspaceModel(d))}`.toLowerCase().includes(q))
+    : stopped
+  // `picked` is a row the user clicked; `selected` is what the detail pane
+  // shows. Desktop shows both panes, so the top row stands in there until the
+  // user picks one. A phone shows the list *or* the detail, so there the detail
+  // exists only once a row is actually tapped. Every consequence of opening a
+  // detail keys on `picked` (see the acknowledgement effect below).
+  const picked = rows.find((d) => d.workspaceId === selectedId) ?? null
+  const selected = picked ?? (isMobile ? null : rows[0] ?? null)
+
+  // Reopening the overlay on a phone should land on the list, not on whatever
+  // was last read — unless it was opened from one workspace's own row, which
+  // is a request to read that one.
+  useEffect(() => {
+    if (!open) setSelectedId(null)
+    else if (focus !== null) setSelectedId(focus)
+  }, [open, focus])
+
+  // Clicking a death's row marks it seen server-side (durable, shared across
+  // clients) and optimistically flips `seen` in the cached list so the dot /
+  // highlight clear instantly. The `!picked.seen` guard stops the cache patch
+  // from re-triggering this effect (and re-POSTing).
+  //
+  // Keyed on `picked`, never on `selected`: the desktop stand-in row is a
+  // display convenience, and a durable cross-client write must not ride on it.
+  // Three ways it otherwise fires for a row nobody read — merely opening the
+  // overlay acknowledges the top death; each keystroke in the search box
+  // re-filters `rows`, so hunting for one dead workspace walks the top match
+  // through several others and acknowledges each; and `useIsMobile` is live, so
+  // rotating a phone into landscape past the breakpoint materializes a
+  // stand-in and acknowledges it. "Mark all as read" is the bulk path.
+  useEffect(() => {
+    if (!open || !picked?.deathReason || picked.seen) return
+    void markDeathSeen(projectSlug, picked.workspaceId)
+    patchStopped(queryClient, projectSlug, (e) => (e.workspaceId === picked.workspaceId ? { ...e, seen: true } : e))
+  }, [open, picked, projectSlug, queryClient])
+
+  // Dismiss every death at once. Same server-persisted acknowledgement the
+  // per-row view makes, with the same optimistic cache patch so the dot and
+  // row highlights clear without waiting for a refetch.
+  const onMarkAllRead = (): void => {
+    void markAllDeathsSeen(projectSlug)
+    patchStopped(queryClient, projectSlug, (e) => (e.deathReason ? { ...e, seen: true } : e))
+  }
+
+  const onConfirmRestart = (entry: StoppedWorkspaceEntry): void => {
+    setConfirm(null)
+    removeOptimisticStopped(entry.workspaceId)
+    // Its provisioning row takes it off the list. Close the overlay so
+    // useProvisionWorkspace's auto-open shows progress in the main pane.
+    closeOverlay()
+    provision(projectSlug, entry.tool, 'restart', entry.workspaceId,
+      (sid, onProgress) => restartWorkspace(sid, onProgress),
+      entry.groupId)
+  }
+
+  return (
+    <Dialog.Root open={open} onOpenChange={(next) => { if (next) openOverlay(); else closeOverlay() }}>
+      {/* Entry point hidden until the project actually has stopped workspaces.
+          The overlay below stays mounted regardless so an open dialog keeps
+          its exit animation if the list empties out. */}
+      {stopped.length > 0 && (
+        <button
+          onClick={() => openOverlay()}
+          className="mt-1 flex w-full items-center gap-1.5 px-3 py-1 text-xs font-medium text-text-faint
+            outline-none transition hover:text-text-dim
+            max-md:mx-2 max-md:mt-2 max-md:w-[calc(100%-1rem)] max-md:gap-2 max-md:rounded-lg
+            max-md:bg-surface-2/40 max-md:px-2.5 max-md:py-3.5 max-md:text-sm max-md:text-text-dim
+            max-md:active:bg-surface-2"
+        >
+          <DeleteIcon size={13} className="shrink-0 max-md:hidden" />
+          <DeleteIcon size={15} className="hidden shrink-0 max-md:block" />
+          <span>Stopped workspaces</span>
+          {/* The count reads as the same kind of row as a workspace group's
+              header on desktop; on touch it is the row's second affordance,
+              which is why the entry is a full tap-sized card there. */}
+          <span className="text-text-faint/70">{stopped.length}</span>
+          {/* Decorative unread dot (aria-hidden so it stays out of the button's
+              accessible name); the title is a hover tooltip. */}
+          {unseenDeaths > 0 && (
+            <span
+              aria-hidden="true"
+              title={`${unseenDeaths} workspace${unseenDeaths > 1 ? 's' : ''} died unexpectedly`}
+              className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500 max-md:h-2 max-md:w-2"
+            />
+          )}
+        </button>
+      )}
+
+      <Dialog.Portal>
+        <Dialog.Backdrop className="fixed inset-0 bg-black/60 backdrop-blur-[1px] transition-opacity duration-150
+          data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
+        <Dialog.Popup className="fixed inset-4 flex flex-col gap-3
+          max-md:inset-0 max-md:rounded-none max-md:border-0 rounded-xl border border-hairline
+          bg-surface p-4 text-text shadow-[0_16px_48px_var(--shadow-color)] outline-none transition duration-150
+          data-[starting-style]:scale-95 data-[starting-style]:opacity-0 data-[ending-style]:scale-95
+          data-[ending-style]:opacity-0">
+          <div className="flex items-center justify-between gap-2">
+            <Dialog.Title className="text-xs font-semibold text-text-dim max-md:text-sm">
+              Stopped workspaces
+            </Dialog.Title>
+            <div className="flex items-center gap-2">
+              {/* Only offered when there is something unread to clear. */}
+              {unseenDeaths > 0 && (
+                <button
+                  type="button"
+                  onClick={onMarkAllRead}
+                  className="rounded-md px-2 py-1 text-xs font-medium text-text-faint transition
+                    hover:bg-surface-2 hover:text-text max-md:px-2.5 max-md:py-2"
+                >
+                  Mark all as read
+                </button>
+              )}
+              <Dialog.Close
+                title="Close"
+                aria-label="Close"
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
+                  hover:bg-surface-2 hover:text-text max-md:h-9 max-md:w-9"
+              >
+                <CloseIcon size={14} />
+              </Dialog.Close>
+            </div>
+          </div>
+
+          {stopped.length === 0 ? (
+            <EmptyState
+              className="flex-1"
+              title="No stopped workspaces"
+              description="Workspaces you stop are kept here so you can restart them."
+            />
+          ) : (
+            <MasterDetail
+              detailOpen={isMobile && picked !== null}
+              onBack={() => setSelectedId(null)}
+              backLabel="Back to stopped workspaces"
+              master={
+                <>
+                  <input
+                    value={queryText}
+                    onChange={(e) => setQueryText(e.target.value)}
+                    placeholder="Search…"
+                    className="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1.5 text-xs text-text
+                      outline-none focus:border-border-strong max-md:py-2.5"
+                  />
+                  <ul className="min-h-0 flex-1 overflow-y-auto">
+                    {rows.length === 0 && (
+                      <li className="px-2 py-2 text-xs text-text-faint">No matches.</li>
+                    )}
+                    {rows.map((d) => {
+                      const unseen = isUnseenDeath(d)
+                      return (
+                      <li key={d.workspaceId}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedId(d.workspaceId)}
+                          className={clsx(
+                            'flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left transition max-md:py-3',
+                            selected?.workspaceId === d.workspaceId
+                              ? 'bg-surface-2'
+                              : unseen ? 'bg-amber-500/10 hover:bg-amber-500/15' : 'hover:bg-surface-2/50',
+                          )}
+                        >
+                          <span className="flex items-center gap-1.5">
+                            {unseen && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
+                            <span className="truncate text-sm font-medium text-text-dim">{label(d)}</span>
+                          </span>
+                          <span className="flex items-center gap-2 text-[11px] text-text-faint">
+                            <span className="truncate">
+                              {d.deathReason
+                                ? `died ${relativeAge(d.stoppedAt)} — ${describeWorkspaceDeathReason(d.deathReason)}`
+                                : d.stoppedAt ? `stopped ${relativeAge(d.stoppedAt)}` : `last active ${relativeAge(d.lastActiveAt ?? d.createdAt)}`}
+                            </span>
+                            <span className="ml-auto shrink-0">{agentLabel(d.tool, workspaceModel(d))}</span>
+                          </span>
+                        </button>
+                      </li>
+                      )
+                    })}
+                  </ul>
+                </>
+              }
+              detail={
+                <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-hairline-soft bg-bg/50 p-4
+                  max-md:border-0 max-md:bg-transparent max-md:p-0">
+                  {selected && (
+                    <>
+                      {/* Title and metadata are shrink-0 so a long prompt (the
+                          one flex-1 band) can't squeeze them into clipped
+                          lines on a short phone screen. */}
+                      <h3 className="shrink-0 text-sm font-semibold text-text max-md:text-[0.9375rem]">
+                        {label(selected)}
+                      </h3>
+                      <dl className="mt-3 grid shrink-0 grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs text-text-faint">
+                        <dt>Tool</dt><dd className="text-text-dim">{agentLabel(selected.tool, workspaceModel(selected))}</dd>
+                        <dt>Created</dt><dd className="text-text-dim">{relativeAge(selected.createdAt) || '—'}</dd>
+                        <dt>Last active</dt><dd className="text-text-dim">{relativeAge(selected.lastActiveAt) || '—'}</dd>
+                        <dt>{selected.deathReason ? 'Died' : 'Stopped'}</dt>
+                        <dd className="text-text-dim">{relativeAge(selected.stoppedAt) || '—'}</dd>
+                        {selected.deathReason && (
+                          <>
+                            <dt>Cause</dt>
+                            <dd className="text-text-dim">
+                              {describeWorkspaceDeathReason(selected.deathReason, selected.deathDetail)}
+                            </dd>
+                          </>
+                        )}
+                      </dl>
+                      {/* The conversation itself, where the founding ask alone
+                          used to be. Keyed by workspace so switching rows
+                          starts the pane over rather than carrying the last
+                          one's chosen conversation into it. */}
+                      <StoppedTranscript
+                        key={selected.workspaceId}
+                        workspaceId={selected.workspaceId}
+                        sessions={selected.agentSessions}
+                        tool={selected.tool}
+                        prompt={selected.prompt}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setConfirm(selected)}
+                        className="mt-4 flex w-fit items-center gap-1.5 self-end rounded-md bg-surface-3 px-3 py-1.5
+                          text-xs font-medium text-text transition hover:bg-border-strong
+                          max-md:w-full max-md:justify-center max-md:py-3 max-md:text-sm"
+                      >
+                        <RestartIcon size={13} />
+                        Restart
+                      </button>
+                    </>
+                  )}
+                </div>
+              }
+            />
+          )}
+        </Dialog.Popup>
+      </Dialog.Portal>
+
+      <ConfirmDialog
+        open={!!confirm}
+        onOpenChange={(next) => { if (!next) setConfirm(null) }}
+        destructive={false}
+        title="Restart this workspace?"
+        description={confirm ? label(confirm) : ''}
+        confirmLabel="Restart"
+        onConfirm={() => { if (confirm) onConfirmRestart(confirm) }}
+      />
+    </Dialog.Root>
+  )
+}

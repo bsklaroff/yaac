@@ -2,12 +2,12 @@ import type { JSX, KeyboardEvent, PointerEvent } from 'react'
 import { SidebarIcon } from '#lib/icons'
 import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
 import { ImageBuildIndicator } from '#components/ImageBuildIndicator'
-import { NewWorktreeButton } from '#components/NewWorktreeButton'
+import { NewWorkspaceButton } from '#components/NewWorkspaceButton'
 import { ProjectActionsMenu } from '#components/ProjectActionsMenu'
 import { ServerBadge } from '#components/ServerBadge'
 import { SkillsButton } from '#components/SkillsButton'
 import { UsageBadge } from '#components/UsageBadge'
-import { WorktreeList } from '#components/WorktreeList'
+import { WorkspaceList } from '#components/WorkspaceList'
 import {
   DEFAULT_SIDEBAR_WIDTH,
   MAX_SIDEBAR_WIDTH,
@@ -16,16 +16,16 @@ import {
 } from '#lib/store'
 import type {
   GitAuthFailure,
-  DraftWorktreeEntry,
-  HeldWorktreeEntry,
-  ProvisioningWorktreeEntry,
-  QueuedWorktreeEntry,
-  WorktreeGroupSummary,
-  WorktreeListEntry,
+  DraftWorkspaceEntry,
+  HeldWorkspaceEntry,
+  ProvisioningWorkspaceEntry,
+  QueuedWorkspaceEntry,
+  WorkspaceGroupSummary,
+  WorkspaceListEntry,
 } from '@yaac/shared/types'
 
-// The list body, its groups and its row ordering live in WorktreeList — the
-// mobile worktrees screen shows the same body without this card's chrome.
+// The list body, its groups and its row ordering live in WorkspaceList — the
+// mobile workspaces screen shows the same body without this card's chrome.
 // Re-exported here because these are what the workspace's Alt+K/J cycle and
 // the existing tests reach for.
 export {
@@ -33,7 +33,7 @@ export {
   sidebarRowIds,
   type SidebarGroupSection,
   type SidebarLayout,
-} from '#components/WorktreeList'
+} from '#components/WorkspaceList'
 
 /**
  * The grab strip on the sidebar's right edge. It sits in the gutter *outside*
@@ -106,9 +106,9 @@ function ResizeHandle(): JSX.Element {
 }
 
 /**
- * The desktop worktree list: a resizable card between the project rail and the
- * pane. Header (project actions + new worktree + hide) and status chits, over
- * the shared WorktreeList body.
+ * The desktop workspace list: a resizable card between the project rail and the
+ * pane. Header (project actions + new workspace + hide) and status chits, over
+ * the shared WorkspaceList body.
  *
  * The card keeps the `overflow-hidden` that clips rows to its rounded corners,
  * so the drag handle hangs off an outer wrapper that doesn't clip.
@@ -117,7 +117,7 @@ function ResizeHandle(): JSX.Element {
  * pane, and without a stacking context here it would outrank the whole app.
  * Base UI portals every popup to the end of <body> with no z-index of its own,
  * so the strip painted — and hit-tested — above any popup spilling into the
- * gutter. The new-worktree form does: 240px wide, anchored under a button by
+ * gutter. The new-workspace form does: 240px wide, anchored under a button by
  * the card's right edge, its left column landed under the strip, which lit the
  * resize hairline and swallowed the clicks. Confined, the strip still covers
  * the pane (a portal-free sibling below it in paint order) and every popup
@@ -126,7 +126,7 @@ function ResizeHandle(): JSX.Element {
 export function Sidebar({
   projectSlug,
   projectRemoteUrl,
-  worktrees,
+  workspaces,
   groups,
   provisioning,
   queued,
@@ -139,16 +139,16 @@ export function Sidebar({
   /** Active project's git remote ('' until the snapshot hydrates) — the
    *  remove-project dialog's type-to-confirm text. */
   projectRemoteUrl: string
-  worktrees: WorktreeListEntry[]
+  workspaces: WorkspaceListEntry[]
   /** The active project's sidebar groups. */
-  groups: WorktreeGroupSummary[]
-  provisioning: ProvisioningWorktreeEntry[]
-  /** The active project's queued worktrees, and the stopped worktrees they
+  groups: WorkspaceGroupSummary[]
+  provisioning: ProvisioningWorkspaceEntry[]
+  /** The active project's queued workspaces, and the stopped workspaces they
    *  still wait on. */
-  queued: QueuedWorktreeEntry[]
-  held: HeldWorktreeEntry[]
-  /** The active project's draft worktrees. */
-  drafts: DraftWorktreeEntry[]
+  queued: QueuedWorkspaceEntry[]
+  held: HeldWorkspaceEntry[]
+  /** The active project's draft workspaces. */
+  drafts: DraftWorkspaceEntry[]
   connected: boolean
   /** The active project's rejected git credentials (project-wide flag). */
   gitAuthFailures: GitAuthFailure[]
@@ -173,7 +173,7 @@ export function Sidebar({
             <div className="flex shrink-0 items-center gap-2 no-drag">
               {!connected && <span className="text-xs text-amber-400/80">reconnecting…</span>}
               {projectSlug && <SkillsButton projectSlug={projectSlug} />}
-              {projectSlug && <NewWorktreeButton projectSlug={projectSlug} />}
+              {projectSlug && <NewWorkspaceButton projectSlug={projectSlug} />}
               <button
                 onClick={toggleSidebar}
                 title="Hide sidebar"
@@ -195,7 +195,7 @@ export function Sidebar({
             <ServerBadge />
             <ImageBuildIndicator projectSlug={projectSlug} />
             {/* Project-wide: the stored credential is the project's, so the
-                flag lives on the project header, not on individual worktrees. */}
+                flag lives on the project header, not on individual workspaces. */}
             {projectSlug && gitAuthFailures.length > 0 && (
               <GitAuthFailureBadge
                 projectSlug={projectSlug}
@@ -207,9 +207,9 @@ export function Sidebar({
           </div>
         </div>
 
-        <WorktreeList
+        <WorkspaceList
           projectSlug={projectSlug}
-          worktrees={worktrees}
+          workspaces={workspaces}
           groups={groups}
           provisioning={provisioning}
           queued={queued}

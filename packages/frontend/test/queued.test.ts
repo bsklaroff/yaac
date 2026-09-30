@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import { queuedDescendants, queuedInTreeOrder, queuedTitle } from '#lib/queued'
-import type { QueuedWorktreeEntry } from '@yaac/shared/types'
+import type { QueuedWorkspaceEntry } from '@yaac/shared/types'
 
-const q = (id: string, parent: { worktree?: string; queued?: string }, prompt = id): QueuedWorktreeEntry => ({
+const q = (id: string, parent: { workspace?: string; queued?: string }, prompt = id): QueuedWorkspaceEntry => ({
   id,
   projectSlug: 'p',
-  ...(parent.worktree !== undefined ? { parentWorktreeId: parent.worktree } : {}),
+  ...(parent.workspace !== undefined ? { parentWorkspaceId: parent.workspace } : {}),
   ...(parent.queued !== undefined ? { parentQueuedId: parent.queued } : {}),
   prompt,
   tool: 'claude',
@@ -18,11 +18,11 @@ const q = (id: string, parent: { worktree?: string; queued?: string }, prompt = 
 
 // A forest: w ← a ← b ← c, and w ← d; plus x ← e.
 const entries = [
-  q('a', { worktree: 'w' }),
-  q('e', { worktree: 'x' }),
+  q('a', { workspace: 'w' }),
+  q('e', { workspace: 'x' }),
   q('c', { queued: 'b' }),
   q('b', { queued: 'a' }),
-  q('d', { worktree: 'w' }),
+  q('d', { workspace: 'w' }),
 ]
 
 describe('queued helpers', () => {

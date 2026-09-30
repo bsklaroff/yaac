@@ -1,14 +1,14 @@
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { getDb } from './client'
-import { agentSessions, worktreeAgentSessions } from './schema'
+import { agentSessions, workspaceAgentSessions } from './schema'
 import { MAX_MODEL_LENGTH, MAX_PROMPT_LENGTH, SELF_NAMING_TOOLS } from '@yaac/shared/types'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 
 /**
  * The conversation side of the model: `agent_sessions` (one row per
  * tool-native conversation, project-scoped because the tool homes yaac
- * mounts are) and `worktree_agent_sessions` (which conversations belong to
- * which worktree, and which of them were live).
+ * mounts are) and `workspace_agent_sessions` (which conversations belong to
+ * which workspace, and which of them were live).
  *
  * Everything here is discovered rather than authored — the registry
  * reconciler feeds it from what the discovery sweep found — so every write is an
@@ -29,7 +29,7 @@ export interface AgentSessionRow {
   /** Project-relative, exactly as the column holds it. A reader that wants
    *  bytes on disk resolves it against the recording tool's home, which takes
    *  the store's layout knowledge and so happens a layer up
-   *  (`recordedTranscript` in `#domain/worktrees`). */
+   *  (`recordedTranscript` in `#domain/workspaces`). */
   transcriptPath?: string
   firstPrompt?: string
   lastActiveAt?: Date
@@ -38,9 +38,9 @@ export interface AgentSessionRow {
   model?: string
 }
 
-/** A conversation's membership of one worktree. */
+/** A conversation's membership of one workspace. */
 export interface AgentSessionLinkRow extends AgentSessionRow {
-  worktreeId: string
+  workspaceId: string
   active: boolean
   ordinal: number
   paneId?: string
@@ -73,20 +73,20 @@ export interface DiscoveredAgentSession {
 }
 
 /**
- * Upsert the conversations discovered in a worktree and link them to it.
+ * Upsert the conversations discovered in a workspace and link them to it.
  *
- * Ordering is by first appearance, so ordinal 0 is the worktree's original
+ * Ordering is by first appearance, so ordinal 0 is the workspace's original
  * agent — the one whose window keeps the `yaac:<tool>` name and which a
  * restart brings up first. Existing links keep the ordinal they were given:
  * renumbering them on every tick would reshuffle a restart's window order
  * whenever an old conversation was resumed.
  *
- * The one exception is the worktree-id pin: the conversation a create records
- * under the worktree id, before any agent has named one. For codex and
+ * The one exception is the workspace-id pin: the conversation a create records
+ * under the workspace id, before any agent has named one. For codex and
  * opencode that id is a stand-in (`SELF_NAMING_TOOLS`), so the first
  * conversation of the pin's tool to be named takes over its link — ordinal 0,
  * and what the create recorded on it (the `--prompt` ask, the launch's model,
- * its birth) — and the pin is gone. Otherwise the worktree's founding ask
+ * its birth) — and the pin is gone. Otherwise the workspace's founding ask
  * would sit on a row no agent ever runs. claude and pi run under the pin
  * itself, so the first conversation they name IS the pin, and a later
  * `/clear` is one of its own.
@@ -97,7 +97,7 @@ export interface DiscoveredAgentSession {
  */
 export async function recordAgentSessions(
   projectSlug: string,
-  worktreeId: string,
+  workspaceId: string,
   discovered: DiscoveredAgentSession[],
 ): Promise<void> {
   if (discovered.length === 0) return
@@ -106,21 +106,21 @@ export async function recordAgentSessions(
     await (await getDb()).transaction(async (db) => {
       const now = new Date()
       const existing = await db.select({
-        tool: worktreeAgentSessions.tool,
-        agentSessionId: worktreeAgentSessions.agentSessionId,
-        ordinal: worktreeAgentSessions.ordinal,
-      }).from(worktreeAgentSessions).where(linkKey(projectSlug, worktreeId))
+        tool: workspaceAgentSessions.tool,
+        agentSessionId: workspaceAgentSessions.agentSessionId,
+        ordinal: workspaceAgentSessions.ordinal,
+      }).from(workspaceAgentSessions).where(linkKey(projectSlug, workspaceId))
       const ordinalOf = new Map(existing.map((e) => [`${e.tool}/${e.agentSessionId}`, e.ordinal]))
       let nextOrdinal = existing.reduce((max, e) => Math.max(max, e.ordinal + 1), 0)
 
       for (const reported of discovered) {
         const linkId = `${reported.tool}/${reported.agentSessionId}`
-        const pinId = `${reported.tool}/${worktreeId}`
+        const pinId = `${reported.tool}/${workspaceId}`
         // Only the tool's first conversation: a pin beside a sibling of its
         // tool predates the takeover (docs/legacy-compat-shims.md), and a
         // later conversation must not take the first one's place.
         const pinOrdinal = SELF_NAMING_TOOLS.includes(reported.tool) && !ordinalOf.has(linkId)
-          && !existing.some((e) => e.tool === reported.tool && e.agentSessionId !== worktreeId)
+          && !existing.some((e) => e.tool === reported.tool && e.agentSessionId !== workspaceId)
           ? ordinalOf.get(pinId)
           : undefined
         let d = reported
@@ -132,12 +132,12 @@ export async function recordAgentSessions(
           const [pin] = await db.delete(agentSessions).where(and(
             eq(agentSessions.projectSlug, projectSlug),
             eq(agentSessions.tool, reported.tool),
-            eq(agentSessions.agentSessionId, worktreeId),
+            eq(agentSessions.agentSessionId, workspaceId),
           )).returning()
-          await db.delete(worktreeAgentSessions).where(and(
-            linkKey(projectSlug, worktreeId),
-            eq(worktreeAgentSessions.tool, reported.tool),
-            eq(worktreeAgentSessions.agentSessionId, worktreeId),
+          await db.delete(workspaceAgentSessions).where(and(
+            linkKey(projectSlug, workspaceId),
+            eq(workspaceAgentSessions.tool, reported.tool),
+            eq(workspaceAgentSessions.agentSessionId, workspaceId),
           ))
           d = {
             ...(pin !== undefined ? { firstSeenMs: pin.createdAt.getTime() } : {}),
@@ -156,7 +156,7 @@ export async function recordAgentSessions(
         // omits the column entirely rather than clearing it.
         const stored = d.transcriptPath ?? null
         // Only ever fill in — a resumed conversation is rediscovered from a
-        // second worktree and must not lose what the first one learned. Built
+        // second workspace and must not lose what the first one learned. Built
         // first because an empty `set` is an error, not a no-op: a conversation
         // discovered with nothing but its id (the common first sighting) has to
         // take the DO NOTHING branch.
@@ -198,9 +198,9 @@ export async function recordAgentSessions(
           : db.insert(agentSessions).values(values).onConflictDoNothing({ target }))
 
         const ordinal = ordinalOf.get(linkId) ?? nextOrdinal++
-        await db.insert(worktreeAgentSessions).values({
+        await db.insert(workspaceAgentSessions).values({
           projectSlug,
-          worktreeId,
+          workspaceId,
           tool: d.tool,
           agentSessionId: d.agentSessionId,
           ordinal,
@@ -209,10 +209,10 @@ export async function recordAgentSessions(
           lastSeenAt: now,
         }).onConflictDoUpdate({
           target: [
-            worktreeAgentSessions.projectSlug,
-            worktreeAgentSessions.worktreeId,
-            worktreeAgentSessions.tool,
-            worktreeAgentSessions.agentSessionId,
+            workspaceAgentSessions.projectSlug,
+            workspaceAgentSessions.workspaceId,
+            workspaceAgentSessions.tool,
+            workspaceAgentSessions.agentSessionId,
           ],
           set: { lastSeenAt: now, paneId: d.paneId ?? null },
         })
@@ -223,23 +223,23 @@ export async function recordAgentSessions(
   }
 }
 
-const linkKey = (projectSlug: string, worktreeId: string) => and(
-  eq(worktreeAgentSessions.projectSlug, projectSlug),
-  eq(worktreeAgentSessions.worktreeId, worktreeId),
+const linkKey = (projectSlug: string, workspaceId: string) => and(
+  eq(workspaceAgentSessions.projectSlug, projectSlug),
+  eq(workspaceAgentSessions.workspaceId, workspaceId),
 )
 
 /**
- * Set which of a worktree's conversations are live, from the pane set
+ * Set which of a workspace's conversations are live, from the pane set
  * observed on this tick. Everything linked but not named goes inactive.
  *
  * Call this ONLY while the pod is observed running. Teardown must leave the
- * last-written set alone: "what was active when the worktree stopped" is
+ * last-written set alone: "what was active when the workspace stopped" is
  * exactly what a restart brings back, and zeroing it on the way out would
- * restart every worktree empty.
+ * restart every workspace empty.
  */
 export async function setActiveAgentSessions(
   projectSlug: string,
-  worktreeId: string,
+  workspaceId: string,
   live: Array<{ tool: AgentTool; agentSessionId: string; paneId?: string }>,
 ): Promise<void> {
   try {
@@ -247,11 +247,11 @@ export async function setActiveAgentSessions(
     const now = new Date()
     const liveIds = live.map((l) => `${l.tool}/${l.agentSessionId}`)
     const rows = await db.select({
-      tool: worktreeAgentSessions.tool,
-      agentSessionId: worktreeAgentSessions.agentSessionId,
-      active: worktreeAgentSessions.active,
-      paneId: worktreeAgentSessions.paneId,
-    }).from(worktreeAgentSessions).where(linkKey(projectSlug, worktreeId))
+      tool: workspaceAgentSessions.tool,
+      agentSessionId: workspaceAgentSessions.agentSessionId,
+      active: workspaceAgentSessions.active,
+      paneId: workspaceAgentSessions.paneId,
+    }).from(workspaceAgentSessions).where(linkKey(projectSlug, workspaceId))
 
     for (const row of rows) {
       const isLive = liveIds.includes(`${row.tool}/${row.agentSessionId}`)
@@ -259,17 +259,17 @@ export async function setActiveAgentSessions(
         (l) => l.tool === row.tool && l.agentSessionId === row.agentSessionId,
       )?.paneId
       // Nothing observable changed — skip the write. This runs on every
-      // reconciler tick for every conversation of every running worktree, and
+      // reconciler tick for every conversation of every running workspace, and
       // a steady state is the overwhelmingly common case.
       if (row.active === isLive && (!isLive || row.paneId === (paneId ?? null))) continue
-      await db.update(worktreeAgentSessions).set({
+      await db.update(workspaceAgentSessions).set({
         active: isLive,
         lastSeenAt: now,
         ...(isLive ? { paneId: paneId ?? null } : {}),
       }).where(and(
-        linkKey(projectSlug, worktreeId),
-        eq(worktreeAgentSessions.tool, row.tool),
-        eq(worktreeAgentSessions.agentSessionId, row.agentSessionId),
+        linkKey(projectSlug, workspaceId),
+        eq(workspaceAgentSessions.tool, row.tool),
+        eq(workspaceAgentSessions.agentSessionId, row.agentSessionId),
       ))
     }
   } catch {
@@ -280,16 +280,16 @@ export async function setActiveAgentSessions(
 /** Join shape shared by the link readers. */
 function selectLinked() {
   return {
-    projectSlug: worktreeAgentSessions.projectSlug,
-    worktreeId: worktreeAgentSessions.worktreeId,
-    tool: worktreeAgentSessions.tool,
-    agentSessionId: worktreeAgentSessions.agentSessionId,
+    projectSlug: workspaceAgentSessions.projectSlug,
+    workspaceId: workspaceAgentSessions.workspaceId,
+    tool: workspaceAgentSessions.tool,
+    agentSessionId: workspaceAgentSessions.agentSessionId,
     mode: agentSessions.mode,
-    active: worktreeAgentSessions.active,
-    ordinal: worktreeAgentSessions.ordinal,
-    paneId: worktreeAgentSessions.paneId,
-    firstSeenAt: worktreeAgentSessions.firstSeenAt,
-    lastSeenAt: worktreeAgentSessions.lastSeenAt,
+    active: workspaceAgentSessions.active,
+    ordinal: workspaceAgentSessions.ordinal,
+    paneId: workspaceAgentSessions.paneId,
+    firstSeenAt: workspaceAgentSessions.firstSeenAt,
+    lastSeenAt: workspaceAgentSessions.lastSeenAt,
     createdAt: agentSessions.createdAt,
     transcriptPath: agentSessions.transcriptPath,
     firstPrompt: agentSessions.firstPrompt,
@@ -300,7 +300,7 @@ function selectLinked() {
 
 type LinkedSelect = {
   projectSlug: string
-  worktreeId: string
+  workspaceId: string
   tool: string
   agentSessionId: string
   mode: string
@@ -319,7 +319,7 @@ type LinkedSelect = {
 function toLinkRow(r: LinkedSelect): AgentSessionLinkRow {
   return {
     projectSlug: r.projectSlug,
-    worktreeId: r.worktreeId,
+    workspaceId: r.workspaceId,
     tool: r.tool as AgentTool,
     agentSessionId: r.agentSessionId,
     mode: r.mode === 'acp' ? 'acp' : 'tui',
@@ -343,67 +343,67 @@ function toLinkRow(r: LinkedSelect): AgentSessionLinkRow {
  * time removes the load-order dependency outright.
  */
 const linkJoin = () => and(
-  eq(worktreeAgentSessions.projectSlug, agentSessions.projectSlug),
-  eq(worktreeAgentSessions.tool, agentSessions.tool),
-  eq(worktreeAgentSessions.agentSessionId, agentSessions.agentSessionId),
+  eq(workspaceAgentSessions.projectSlug, agentSessions.projectSlug),
+  eq(workspaceAgentSessions.tool, agentSessions.tool),
+  eq(workspaceAgentSessions.agentSessionId, agentSessions.agentSessionId),
 )
 
-/** One worktree's conversations, in restore order. */
-export async function listWorktreeAgentSessions(
+/** One workspace's conversations, in restore order. */
+export async function listWorkspaceAgentSessions(
   projectSlug: string,
-  worktreeId: string,
+  workspaceId: string,
 ): Promise<AgentSessionLinkRow[]> {
   const db = await getDb()
   const rows = await db.select(selectLinked())
-    .from(worktreeAgentSessions)
+    .from(workspaceAgentSessions)
     .innerJoin(agentSessions, linkJoin())
-    .where(linkKey(projectSlug, worktreeId))
-    .orderBy(asc(worktreeAgentSessions.ordinal))
+    .where(linkKey(projectSlug, workspaceId))
+    .orderBy(asc(workspaceAgentSessions.ordinal))
   return rows.map(toLinkRow)
 }
 
 /**
  * The conversations a restart should bring back: those that were live when
- * the worktree was last observed running, in window order.
+ * the workspace was last observed running, in window order.
  */
 export async function listActiveAgentSessions(
   projectSlug: string,
-  worktreeId: string,
+  workspaceId: string,
 ): Promise<AgentSessionLinkRow[]> {
   const db = await getDb()
   const rows = await db.select(selectLinked())
-    .from(worktreeAgentSessions)
+    .from(workspaceAgentSessions)
     .innerJoin(agentSessions, linkJoin())
-    .where(and(linkKey(projectSlug, worktreeId), eq(worktreeAgentSessions.active, true)))
-    .orderBy(asc(worktreeAgentSessions.ordinal))
+    .where(and(linkKey(projectSlug, workspaceId), eq(workspaceAgentSessions.active, true)))
+    .orderBy(asc(workspaceAgentSessions.ordinal))
   return rows.map(toLinkRow)
 }
 
 /**
- * The recorded conversations of a worktree that sit on a live handle —
+ * The recorded conversations of a workspace that sit on a live handle —
  * what an ACP driver attaching to a running pod needs to re-address agents
  * it did not start (and to `session/load` after a restart). A link with no
  * pane id names nothing it could attach to, so it is filtered here.
  *
  * Swallows a read failure: a watcher starting against an unreadable
  * database must attach with no history rather than fail the whole
- * worktree's status stream.
+ * workspace's status stream.
  */
 export async function recordedConversationHandles(
   projectSlug: string,
-  worktreeId: string,
+  workspaceId: string,
 ): Promise<Array<{ handle: string; agentSessionId: string }>> {
-  const links = await listActiveAgentSessions(projectSlug, worktreeId).catch(() => [])
+  const links = await listActiveAgentSessions(projectSlug, workspaceId).catch(() => [])
   return links.flatMap((l) => (l.paneId === undefined
     ? []
     : [{ handle: l.paneId, agentSessionId: l.agentSessionId }]))
 }
 
 /**
- * The conversations of the named worktrees, grouped by worktree id — one
+ * The conversations of the named workspaces, grouped by workspace id — one
  * query per project per list build, so a snapshot never pays per row.
  *
- * Scoped to the worktrees the caller will actually render rather than the
+ * Scoped to the workspaces the caller will actually render rather than the
  * whole project: conversations are never pruned, so a long-lived project
  * accumulates them without bound, and an unfiltered read would haul every
  * one (4000-char prompts included) into memory on every ~5s list poll only
@@ -411,52 +411,52 @@ export async function recordedConversationHandles(
  */
 export async function getProjectAgentSessions(
   projectSlug: string,
-  worktreeIds: string[],
+  workspaceIds: string[],
 ): Promise<Map<string, AgentSessionLinkRow[]>> {
-  if (worktreeIds.length === 0) return new Map()
+  if (workspaceIds.length === 0) return new Map()
   const db = await getDb()
   const rows = await db.select(selectLinked())
-    .from(worktreeAgentSessions)
+    .from(workspaceAgentSessions)
     .innerJoin(agentSessions, linkJoin())
     .where(and(
-      eq(worktreeAgentSessions.projectSlug, projectSlug),
-      inArray(worktreeAgentSessions.worktreeId, worktreeIds),
+      eq(workspaceAgentSessions.projectSlug, projectSlug),
+      inArray(workspaceAgentSessions.workspaceId, workspaceIds),
     ))
-    .orderBy(asc(worktreeAgentSessions.ordinal))
-  const byWorktree = new Map<string, AgentSessionLinkRow[]>()
+    .orderBy(asc(workspaceAgentSessions.ordinal))
+  const byWorkspace = new Map<string, AgentSessionLinkRow[]>()
   for (const r of rows) {
     const row = toLinkRow(r)
-    byWorktree.set(row.worktreeId, [...(byWorktree.get(row.worktreeId) ?? []), row])
+    byWorkspace.set(row.workspaceId, [...(byWorkspace.get(row.workspaceId) ?? []), row])
   }
-  return byWorktree
+  return byWorkspace
 }
 
-/** The same, for a set of worktrees across projects (the stopped listing,
+/** The same, for a set of workspaces across projects (the stopped listing,
  *  which is capped before it reads anything). */
 export async function getAgentSessionsFor(
-  worktreeIds: Array<{ projectSlug: string; worktreeId: string }>,
+  workspaceIds: Array<{ projectSlug: string; workspaceId: string }>,
 ): Promise<Map<string, AgentSessionLinkRow[]>> {
-  if (worktreeIds.length === 0) return new Map()
+  if (workspaceIds.length === 0) return new Map()
   const db = await getDb()
   const rows = await db.select(selectLinked())
-    .from(worktreeAgentSessions)
+    .from(workspaceAgentSessions)
     .innerJoin(agentSessions, linkJoin())
     // Narrowed by both columns in SQL so the read scales with the ids asked
     // about, not the projects' whole history; `wanted` is the exact pair filter.
     .where(and(
-      inArray(worktreeAgentSessions.projectSlug, [...new Set(worktreeIds.map((w) => w.projectSlug))]),
-      inArray(worktreeAgentSessions.worktreeId, [...new Set(worktreeIds.map((w) => w.worktreeId))]),
+      inArray(workspaceAgentSessions.projectSlug, [...new Set(workspaceIds.map((w) => w.projectSlug))]),
+      inArray(workspaceAgentSessions.workspaceId, [...new Set(workspaceIds.map((w) => w.workspaceId))]),
     ))
-    .orderBy(asc(worktreeAgentSessions.ordinal))
-  const wanted = new Set(worktreeIds.map((w) => `${w.projectSlug}/${w.worktreeId}`))
-  const byWorktree = new Map<string, AgentSessionLinkRow[]>()
+    .orderBy(asc(workspaceAgentSessions.ordinal))
+  const wanted = new Set(workspaceIds.map((w) => `${w.projectSlug}/${w.workspaceId}`))
+  const byWorkspace = new Map<string, AgentSessionLinkRow[]>()
   for (const r of rows) {
     const row = toLinkRow(r)
-    const k = `${row.projectSlug}/${row.worktreeId}`
+    const k = `${row.projectSlug}/${row.workspaceId}`
     if (!wanted.has(k)) continue
-    byWorktree.set(k, [...(byWorktree.get(k) ?? []), row])
+    byWorkspace.set(k, [...(byWorkspace.get(k) ?? []), row])
   }
-  return byWorktree
+  return byWorkspace
 }
 
 
@@ -503,44 +503,44 @@ export async function setAgentSessionCapture(
 /** Forget a project's conversations (the project itself is going away). */
 export async function deleteProjectAgentSessions(projectSlug: string): Promise<void> {
   const db = await getDb()
-  await db.delete(worktreeAgentSessions)
-    .where(eq(worktreeAgentSessions.projectSlug, projectSlug))
+  await db.delete(workspaceAgentSessions)
+    .where(eq(workspaceAgentSessions.projectSlug, projectSlug))
   await db.delete(agentSessions).where(eq(agentSessions.projectSlug, projectSlug))
 }
 
 /**
- * Drop one worktree's links, and with them every conversation it was the last
- * worktree holding. The create rollback's cleanup: a create that never came up
+ * Drop one workspace's links, and with them every conversation it was the last
+ * workspace holding. The create rollback's cleanup: a create that never came up
  * wrote both a link and the conversation behind it (with the ask the user
  * typed), and nothing else prunes either — unlinked rows are inert but
  * accumulate until the project is removed.
  *
- * Conversations are shared many-to-many, so one another worktree still links
- * survives: resuming a conversation into a second worktree must not make the
- * first worktree's rollback take it away from the second.
+ * Conversations are shared many-to-many, so one another workspace still links
+ * survives: resuming a conversation into a second workspace must not make the
+ * first workspace's rollback take it away from the second.
  */
-export async function deleteWorktreeAgentSessions(
+export async function deleteWorkspaceAgentSessions(
   projectSlug: string,
-  worktreeId: string,
+  workspaceId: string,
 ): Promise<void> {
   const db = await getDb()
   const key = (l: { tool: string; agentSessionId: string }): string =>
     `${l.tool}/${l.agentSessionId}`
   const linkedColumns = {
-    tool: worktreeAgentSessions.tool,
-    agentSessionId: worktreeAgentSessions.agentSessionId,
+    tool: workspaceAgentSessions.tool,
+    agentSessionId: workspaceAgentSessions.agentSessionId,
   }
   const dropped = await db.select(linkedColumns)
-    .from(worktreeAgentSessions).where(linkKey(projectSlug, worktreeId))
-  await db.delete(worktreeAgentSessions).where(linkKey(projectSlug, worktreeId))
+    .from(workspaceAgentSessions).where(linkKey(projectSlug, workspaceId))
+  await db.delete(workspaceAgentSessions).where(linkKey(projectSlug, workspaceId))
   if (dropped.length === 0) return
 
-  // Asked after the delete, so a conversation this worktree held twice (one
+  // Asked after the delete, so a conversation this workspace held twice (one
   // per pane) does not count itself as the other holder.
   const survivors = new Set((await db.select(linkedColumns)
-    .from(worktreeAgentSessions).where(and(
-      eq(worktreeAgentSessions.projectSlug, projectSlug),
-      inArray(worktreeAgentSessions.agentSessionId, dropped.map((l) => l.agentSessionId)),
+    .from(workspaceAgentSessions).where(and(
+      eq(workspaceAgentSessions.projectSlug, projectSlug),
+      inArray(workspaceAgentSessions.agentSessionId, dropped.map((l) => l.agentSessionId)),
     ))).map(key))
   for (const orphan of dropped.filter((l) => !survivors.has(key(l)))) {
     await db.delete(agentSessions).where(and(
@@ -552,30 +552,30 @@ export async function deleteWorktreeAgentSessions(
 }
 
 /**
- * A worktree's first conversation — the one whose tool the worktree runs and
+ * A workspace's first conversation — the one whose tool the workspace runs and
  * whose opening message labels it. Create records it moments after the
- * worktree row itself, so a row can be read in between (and a create that
+ * workspace row itself, so a row can be read in between (and a create that
  * died in that gap leaves one for good); that reads as unknown here rather
  * than being guessed at, and each caller decides what to do without one.
  */
 export async function firstAgentSession(
   projectSlug: string,
-  worktreeId: string,
+  workspaceId: string,
 ): Promise<AgentSessionLinkRow | undefined> {
-  const [first] = await listWorktreeAgentSessions(projectSlug, worktreeId)
+  const [first] = await listWorkspaceAgentSessions(projectSlug, workspaceId)
   return first
 }
 
 /**
- * The first conversation of each named worktree, keyed `<slug>/<id>` — the
+ * The first conversation of each named workspace, keyed `<slug>/<id>` — the
  * batched form for listings, which would otherwise pay a query per row.
  */
 export async function firstAgentSessionsFor(
-  worktrees: Array<{ projectSlug: string; worktreeId: string }>,
+  workspaces: Array<{ projectSlug: string; workspaceId: string }>,
 ): Promise<Map<string, AgentSessionLinkRow>> {
-  const byWorktree = await getAgentSessionsFor(worktrees)
+  const byWorkspace = await getAgentSessionsFor(workspaces)
   const firsts = new Map<string, AgentSessionLinkRow>()
-  for (const [k, links] of byWorktree) {
+  for (const [k, links] of byWorkspace) {
     const first = links[0]
     if (first !== undefined) firsts.set(k, first)
   }

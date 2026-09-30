@@ -2,9 +2,9 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { handleFixture, installFakeWorktreeDriver, snapshotFixture, workspacePathsFixture } from '@yaac/test-utils/fake-driver'
+import { handleFixture, installFakeWorkspaceDriver, snapshotFixture, workspacePathsFixture } from '@yaac/test-utils/fake-driver'
 import { git } from '@yaac/test-utils/git'
-import { repoDir, worktreeDir } from '@yaac/shared/project-paths'
+import { repoDir, workspaceDir } from '@yaac/shared/project-paths'
 import { closeDb } from '#db/client'
 import { recordProject } from '#db'
 import { cloneRepo, createCheckout } from '#domain/git'
@@ -12,7 +12,7 @@ import { fetchProjectOrigin, refreshProjectOrigins } from '#domain/projects'
 import { execFileAsync } from '#lib/shell'
 
 /**
- * A project whose remote is a repo on this disk, one running worktree whose
+ * A project whose remote is a repo on this disk, one running workspace whose
  * checkout is a real clone of the main clone, and a driver whose `exec` runs
  * the in-workspace command as a host shell in that checkout — what it is for
  * a host workspace.
@@ -30,9 +30,9 @@ const commit = (msg: string): Promise<string> =>
   git(source, ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', msg])
 
 function installDriver(): void {
-  installFakeWorktreeDriver({
+  installFakeWorkspaceDriver({
     list: () => Promise.resolve([running]),
-    workspacePaths: () => workspacePathsFixture({ workspaceDir: worktreeDir(SLUG, WT) }),
+    workspacePaths: () => workspacePathsFixture({ workspaceDir: workspaceDir(SLUG, WT) }),
     exec: async (_job, cmd) => {
       execs.push(cmd)
       return execFileAsync('sh', ['-c', cmd])
@@ -48,7 +48,7 @@ beforeAll(async () => {
   await commit('initial')
   await recordProject({ slug: SLUG, remoteUrl: source, addedAt: '2026-01-01T00:00:00.000Z' })
   await cloneRepo(source, repoDir(SLUG), null)
-  await createCheckout(repoDir(SLUG), worktreeDir(SLUG, WT), { branch: `agent/${WT}`, baseBranch: 'main', remoteUrl: source })
+  await createCheckout(repoDir(SLUG), workspaceDir(SLUG, WT), { branch: `agent/${WT}`, baseBranch: 'main', remoteUrl: source })
 })
 
 afterAll(async () => {
@@ -57,14 +57,14 @@ afterAll(async () => {
 })
 
 describe('refreshProjectOrigins', () => {
-  it('fetches a project with a running worktree once per interval, and fans the fetch out', async () => {
+  it('fetches a project with a running workspace once per interval, and fans the fetch out', async () => {
     installDriver()
     await commit('timed')
     execs.length = 0
 
     await refreshProjectOrigins(snapshotFixture([running]))
     await vi.waitFor(async () => {
-      expect(await tip(worktreeDir(SLUG, WT), 'origin/main')).toBe(await tip(source, 'main'))
+      expect(await tip(workspaceDir(SLUG, WT), 'origin/main')).toBe(await tip(source, 'main'))
     }, { timeout: 10_000, interval: 50 })
 
     // Fetched just now: the next pass leaves it be.
@@ -83,10 +83,10 @@ describe('fetchProjectOrigin', () => {
 
     await Promise.all([fetchProjectOrigin(SLUG), fetchProjectOrigin(SLUG), fetchProjectOrigin(SLUG)])
     await vi.waitFor(async () => {
-      expect(await tip(worktreeDir(SLUG, WT), 'origin/main')).toBe(await tip(source, 'main'))
+      expect(await tip(workspaceDir(SLUG, WT), 'origin/main')).toBe(await tip(source, 'main'))
     }, { timeout: 10_000, interval: 50 })
     await new Promise((r) => setTimeout(r, 300))
-    // One worktree, at most two rounds however many fetches asked.
+    // One workspace, at most two rounds however many fetches asked.
     expect(execs.length).toBeGreaterThanOrEqual(1)
     expect(execs.length).toBeLessThanOrEqual(2)
   })

@@ -3,7 +3,7 @@
  * (docs/server-in-cluster.md "Storage is two claims").
  *
  * `yaac-global` (RWX) carries the GLOBAL tier: the server pod mounts it
- * whole and every worktree pod mounts subPaths of it. `yaac-server-local`
+ * whole and every workspace pod mounts subPaths of it. `yaac-server-local`
  * (RWO) carries the SERVER-LOCAL tier and is the server's alone. The claims
  * are the same on every backend; what differs is the volume behind each,
  * and that is the storage SHAPE install hands in:
@@ -524,7 +524,7 @@ async function pinVolume(claim: ClaimShape, installId: string): Promise<void> {
  * `actimeo=1` bounds how long one client serves another's stale
  * attributes (cross-client visibility of 25–57ms in the spike, against
  * NFS's default of up to a minute). It costs a GETATTR per file per second
- * of use, which on EFS is billed latency — the price of a worktree seeing
+ * of use, which on EFS is billed latency — the price of a workspace seeing
  * the server's writes before its agent acts on them. Every other option the
  * class set is kept, `soft` or `hard` included: that trade (an EIO versus a
  * hang when the server goes away) is the operator's, and Linux's default is

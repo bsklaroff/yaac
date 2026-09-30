@@ -11,9 +11,9 @@ import type { GitAuthFailure, RefreshedToolCredentials } from '@yaac/shared/type
  * runs — exactly what a runtime that mediates no egress answers.
  */
 
-/** The blocked hostnames the proxy has recorded for one worktree. */
-export function readBlockedHosts(worktreeId: string): string[] {
-  return getActiveClusterCache()?.proxyRecords().blockedHosts[worktreeId] ?? []
+/** The blocked hostnames the proxy has recorded for one workspace. */
+export function readBlockedHosts(workspaceId: string): string[] {
+  return getActiveClusterCache()?.proxyRecords().blockedHosts[workspaceId] ?? []
 }
 
 /** Every project's git auth failures. */

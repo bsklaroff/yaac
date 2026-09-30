@@ -18,7 +18,7 @@
  *
  * Run (needs a running server + one active multi-terminal session, named by
  * its sidebar title):
- *   node test-playwright-scripts/column-tabs-dnd-test.js "<worktree title>"
+ *   node test-playwright-scripts/column-tabs-dnd-test.js "<workspace title>"
  */
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -87,7 +87,7 @@ async function main() {
     await page.goto(`${origin}/?project=yaac`)
     // Select the session from the sidebar by its title.
     const title = process.argv[2]
-    if (!title) throw new Error('usage: column-tabs-dnd-test.js "<worktree title>"')
+    if (!title) throw new Error('usage: column-tabs-dnd-test.js "<workspace title>"')
     await page.locator('aside').getByText(title, { exact: true }).first().click({ timeout: 15000 })
     // Wait for the tiles columns to render.
     await page.locator('section[style]').first().waitFor({ state: 'visible', timeout: 15000 })

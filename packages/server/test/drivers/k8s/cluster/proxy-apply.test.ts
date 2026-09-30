@@ -62,6 +62,7 @@ import {
   ensureProxyAuthSecret,
   ensureProxyResources,
   proxyServiceClusterIp,
+  relabelLegacyWorkspaces,
   removeProjectSecrets,
   resetProxyClusterIpCache,
   syncProjectSecrets,
@@ -85,14 +86,14 @@ import {
   PROXY_PORT,
   PROXY_SA_NAME,
   RELAY_PORT,
-  WORKTREE_EGRESS_NP_NAME,
-  WORKTREE_INGRESS_LOCK_NP_NAME,
+  WORKSPACE_EGRESS_NP_NAME,
+  WORKSPACE_INGRESS_LOCK_NP_NAME,
   SSH_AGENT_PORT,
   TRANSPARENT_HTTPS_PORT,
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_TUNNEL_PORT,
 } from '#drivers/k8s/substrate/proxy-constants'
-import { LABEL_DATA_DIR_HASH, LABEL_WORKTREE_ID } from '#drivers/k8s/substrate/pods'
+import { LABEL_DATA_DIR_HASH, LABEL_WORKSPACE_ID } from '#drivers/k8s/substrate/pods'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/substrate/kubectl'
 import { imageExists } from '#drivers/k8s/container/runtime'
 import { registryHasTag } from '#drivers/k8s/container/registry'
@@ -304,6 +305,13 @@ describe('ensureProxyResources', () => {
     // The proxy Service ClusterIP is allocator-assigned and never deleted —
     // no pin migration, so ensureProxyResources issues no `delete service`.
     expect(mockRetry).not.toHaveBeenCalledWith(expect.arrayContaining(['delete', 'service']))
+    // An older install's policies go only once their replacements are in.
+    const retire = mockRetry.mock.calls.findIndex((c) => c[0].includes('yaac-worktree-egress'))
+    expect(mockRetry.mock.calls[retire]?.[0]).toEqual([
+      'delete', 'networkpolicy', 'yaac-worktree-egress', 'yaac-worktree-ingress-lock', '-n', 'test-ns', '--ignore-not-found',
+    ])
+    const lastPolicy = kinds().lastIndexOf('NetworkPolicy')
+    expect(mockRetry.mock.invocationCallOrder[retire]).toBeGreaterThan(mockApply.mock.invocationCallOrder[lastPolicy] ?? Infinity)
     expect(mockRetry).toHaveBeenCalledWith(
       ['rollout', 'status', `daemonset/${NETD_APP_NAME}`, '-n', 'test-ns', '--timeout=180s'],
       expect.objectContaining({ maxAttempts: 2 }),
@@ -312,6 +320,31 @@ describe('ensureProxyResources', () => {
       ['rollout', 'status', `deployment/${PROXY_APP_NAME}`, '-n', 'test-ns', '--timeout=180s'],
       expect.objectContaining({ maxAttempts: 2 }),
     )
+  })
+
+  it('relabels an older install\'s pods before retiring its policies, and keeps them if it cannot', async () => {
+    // A create can reach this before the driver's startup relabel ran, or
+    // after one that failed: the policies those pods still rely on must stay.
+    stageClusterReads()
+    const staged = mockGetJson.getMockImplementation()!
+    mockGetJson.mockImplementation((args: string[]) => args[1] === 'pods'
+      ? Promise.resolve({ items: [{ metadata: { name: 'old-pod', labels: { 'yaac.worktree-id': 'w1' } } }] })
+      : staged(args))
+    const isRetire = (args: string[]): boolean => args.includes('yaac-worktree-egress')
+    mockRetry.mockImplementation((args: string[]) => args[0] === 'label'
+      ? Promise.reject(new Error('label failed'))
+      : Promise.resolve({ stdout: '', stderr: '' }))
+    await expect(ensureProxyResources('img')).rejects.toThrow('label failed')
+    expect(mockRetry.mock.calls.some(([args]) => isRetire(args))).toBe(false)
+
+    mockRetry.mockClear()
+    mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
+    await ensureProxyResources('img')
+    const label = mockRetry.mock.calls.findIndex(([args]) => args[0] === 'label')
+    const retire = mockRetry.mock.calls.findIndex(([args]) => isRetire(args))
+    expect(label).toBeGreaterThanOrEqual(0)
+    expect(retire).toBeGreaterThanOrEqual(0)
+    expect(mockRetry.mock.invocationCallOrder[label]).toBeLessThan(mockRetry.mock.invocationCallOrder[retire])
   })
 
   it('leaves the proxy’s outputs alone once they exist', async () => {
@@ -457,7 +490,7 @@ describe('ensureProxyResources', () => {
     // Session egress: the node's netd listener range is the only world-ward
     // path a session pod gets, which is what makes a missing redirect fail
     // closed rather than open.
-    const egress = specOf(byName(WORKTREE_EGRESS_NP_NAME)) as { egress: Rule[] }
+    const egress = specOf(byName(WORKSPACE_EGRESS_NP_NAME)) as { egress: Rule[] }
     const nodeRule = egress.egress.find((r) =>
       r.to?.some((p) => JSON.stringify(p).includes(NODE_IP)))
     expect(nodeRule).toBeDefined()
@@ -466,7 +499,7 @@ describe('ensureProxyResources', () => {
     expect(rangePorts?.endPort).toBe(NETD_LISTENER_PORT_END)
 
     // Session ingress lock: only the proxy's relay dials reach streamd.
-    const lock = specOf(byName(WORKTREE_INGRESS_LOCK_NP_NAME)) as { ingress: Rule[] }
+    const lock = specOf(byName(WORKSPACE_INGRESS_LOCK_NP_NAME)) as { ingress: Rule[] }
     expect(lock.ingress.flatMap((r) => (r.ports ?? []).map((p) => p.port)))
       .toContain(POD_STREAM_PORT)
 
@@ -487,7 +520,7 @@ describe('ensureProxyResources', () => {
     const agentIngress = proxyIngress.ingress.filter((r) =>
       (r.ports ?? []).some((p) => p.port === SSH_AGENT_PORT))
     expect(agentIngress).toHaveLength(1)
-    expect(JSON.stringify(agentIngress[0].from)).toContain(LABEL_WORKTREE_ID)
+    expect(JSON.stringify(agentIngress[0].from)).toContain(LABEL_WORKSPACE_ID)
     expect(JSON.stringify(agentIngress[0].from)).not.toContain(NODE_IP)
 
     // Proxy egress: its upstream dials reach the nodes on every port but
@@ -644,6 +677,31 @@ describe('ensureProxyResources', () => {
       .toBe(false)
   })
 
+})
+
+describe('relabelLegacyWorkspaces', () => {
+  it('adds the current label to what an older install labelled, keeping the old one', async () => {
+    const legacy = { 'yaac.worktree-id': 'w1' }
+    mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
+      args[1] === 'pods' ? { items: [{ metadata: { name: 'pod-a', labels: legacy } }] }
+        : args[1] === 'configmaps' ? { items: [{ metadata: { name: 'yaac-proxy-reg-w1', labels: legacy } }] }
+          : { items: [] },
+    ))
+    expect(await relabelLegacyWorkspaces()).toBe(true)
+    expect(mockGetJson).toHaveBeenCalledWith(
+      ['get', 'jobs', '-n', 'test-ns', '-l', `yaac.worktree-id,!${LABEL_WORKSPACE_ID}`],
+    )
+    expect(mockRetry.mock.calls.map((c) => c[0])).toEqual([
+      ['label', 'pods', 'pod-a', '-n', 'test-ns', `${LABEL_WORKSPACE_ID}=w1`, '--overwrite'],
+      ['label', 'configmaps', 'yaac-proxy-reg-w1', '-n', 'test-ns', `${LABEL_WORKSPACE_ID}=w1`, '--overwrite'],
+    ])
+  })
+
+  it('answers false and touches nothing on an install with nothing to relabel', async () => {
+    mockGetJson.mockResolvedValue({ items: [] })
+    expect(await relabelLegacyWorkspaces()).toBe(false)
+    expect(mockRetry).not.toHaveBeenCalled()
+  })
 })
 
 describe('ensureCaConfigMap', () => {

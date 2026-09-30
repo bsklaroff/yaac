@@ -91,7 +91,7 @@ describe('sharedSkillRoots', () => {
   it('names every tool\'s host skills root under the project config dirs', () => {
     const roots = sharedSkillRoots(SLUG)
     // The host counterpart of the in-pod roots: same four tools, so a skill
-    // is there whichever tool the project's worktrees run.
+    // is there whichever tool the project's workspaces run.
     expect(roots).toHaveLength(TOOL_SKILL_ROOTS.length)
     expect(roots).toContain(path.join(claudeDir(SLUG), 'skills'))
     expect(roots).toContain(path.join(piDir(SLUG), 'agent', 'skills'))
@@ -117,7 +117,7 @@ describe('reconcileSharedSkillRoots', () => {
         const entry = path.join(root, name)
         expect((await fs.lstat(entry)).isSymbolicLink()).toBe(true)
         // Read THROUGH the link: what the agent finds is the installed skill,
-        // so an upgrade moves every worktree at once with nothing to restage.
+        // so an upgrade moves every workspace at once with nothing to restage.
         expect(await fs.readFile(path.join(entry, 'SKILL.md'), 'utf8')).toContain(`name: ${name}`)
       }
     }
@@ -196,7 +196,7 @@ describe('reconcileSharedSkillRoots', () => {
 
   it('survives two creates of the same project racing on the same roots', async () => {
     // Both sweeps want the same links in the same shared dirs, so losing the
-    // race means the link is already there — never a failed worktree create.
+    // race means the link is already there — never a failed workspace create.
     const src = await install(['welcome', 'alpha'])
     const [a, b] = await Promise.all([
       reconcileSharedSkillRoots(src, SLUG, 'link'),

@@ -20,8 +20,8 @@ const KEYS: { label: string; data: string; aria: string; wide?: boolean }[] = [
  * Accessory keys for a terminal pane on a phone.
  *
  * A soft keyboard has no Esc, Tab, Ctrl or arrows, and every agent TUI is
- * driven with all four — so without this a `tui` worktree is readable on a
- * phone but not usable. (An `acp` worktree needs none of it: its pane is a
+ * driven with all four — so without this a `tui` workspace is readable on a
+ * phone but not usable. (An `acp` workspace needs none of it: its pane is a
  * chat composer, see docs/agent-modes.md.)
  *
  * The bar is a sibling of the measured workspace rather than an overlay, so
@@ -33,14 +33,14 @@ const KEYS: { label: string; data: string; aria: string; wide?: boolean }[] = [
  * the whole point is to press these *while* typing.
  */
 export function TerminalKeyBar({
-  worktreeId,
+  workspaceId,
   target,
 }: {
-  worktreeId: string
+  workspaceId: string
   /** The visible terminal pane's /pty/attach target. */
   target: string
 }): JSX.Element {
-  const key = paneKey(worktreeId, target)
+  const key = paneKey(workspaceId, target)
   return (
     <div className="flex shrink-0 items-center gap-1 overflow-x-auto px-1 py-1">
       {KEYS.map((k) => (

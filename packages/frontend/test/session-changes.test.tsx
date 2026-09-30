@@ -2,25 +2,25 @@
 import { describe, it, expect, afterEach, beforeAll, beforeEach, afterAll, vi } from 'vitest'
 import { render, screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { WorktreeChanges as SessionChangesData } from '@yaac/shared/types'
+import type { WorkspaceChanges as SessionChangesData } from '@yaac/shared/types'
 import type { ProjectBranches } from '#lib/projectApi'
 import type * as ChangesApi from '#lib/changesApi'
 
 vi.mock('#lib/changesApi', async (importOriginal) => ({
   ...await importOriginal<typeof ChangesApi>(),
-  getWorktreeChanges: vi.fn(),
+  getWorkspaceChanges: vi.fn(),
 }))
 vi.mock('#lib/projectApi', () => ({
   getProjectBranches: vi.fn(),
   projectBranchesKey: (slug: string) => ['project-branches', slug],
 }))
-import { getWorktreeChanges } from '#lib/changesApi'
+import { getWorkspaceChanges } from '#lib/changesApi'
 import { getProjectBranches } from '#lib/projectApi'
-import { WorktreeChanges } from '#components/WorktreeChanges'
+import { WorkspaceChanges } from '#components/WorkspaceChanges'
 import { useUiStore } from '#lib/store'
 import { findChord } from '#lib/shortcuts'
 
-const mock = vi.mocked(getWorktreeChanges)
+const mock = vi.mocked(getWorkspaceChanges)
 
 const BRANCHES: ProjectBranches = {
   branches: ['main', 'dev', 'feature/x'],
@@ -59,7 +59,7 @@ function renderPane(
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <WorktreeChanges worktreeId="s1" projectSlug="proj" baseBranch={baseBranch} focusKey={focusKey} />
+      <WorkspaceChanges workspaceId="s1" projectSlug="proj" baseBranch={baseBranch} focusKey={focusKey} />
     </QueryClientProvider>,
   )
 }
@@ -98,7 +98,7 @@ afterEach(() => {
   useUiStore.setState({ paneView: {}, changesBase: {} })
 })
 
-describe('WorktreeChanges', () => {
+describe('WorkspaceChanges', () => {
   it('lists changed files and auto-expands the first file’s diff', async () => {
     mock.mockResolvedValue(PAYLOAD)
     renderPane()
@@ -267,7 +267,7 @@ describe('WorktreeChanges', () => {
   })
 
   // Picking the session's own base branch must send it explicitly rather than
-  // fall back to the server default: that default is read from the worktree's
+  // fall back to the server default: that default is read from the workspace's
   // git config, which the session's own `git push -u` repoints at the branch it
   // just pushed — a base whose fork point is HEAD, so a session with a pushed
   // PR renders as "No changes".

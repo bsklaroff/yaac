@@ -27,7 +27,7 @@ describe('setStatusRightCmd', () => {
 
   it('addresses the socket the caller was handed', () => {
     // Which socket a workspace's tmux listens on is the driver's answer, so
-    // a containerless workspace's per-worktree socket has to arrive intact.
+    // a containerless workspace's per-workspace socket has to arrive intact.
     expect(setStatusRightCmd(' p ', '/tmp/yaac-cl-ab12cd34/wt-9.sock'))
       .toBe("tmux -S /tmp/yaac-cl-ab12cd34/wt-9.sock set-option -t yaac status-right ' p '")
   })

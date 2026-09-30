@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   MAMA_MAX_BODY_CHARS,
-  MAMA_MAX_PENDING_PER_WORKTREE,
+  MAMA_MAX_PENDING_PER_WORKSPACE,
   MAMA_MAX_PENDING_TOTAL,
   MAMA_TTL_MS,
   MamaQueue,
@@ -13,6 +13,11 @@ describe('parseMamaEnvelope', () => {
   it('reads the envelope both substrates send', () => {
     expect(parseMamaEnvelope('{"command":"create","args":{"tool":"claude"},"body":"do it"}'))
       .toEqual({ command: 'create', args: { tool: 'claude' }, body: 'do it' })
+  })
+
+  it('renames the options an older install\'s yaac-mama sends', () => {
+    expect(parseMamaEnvelope('{"command":"queue","args":{"parent-worktree":"w1","worktree":"w2"}}')?.args)
+      .toEqual({ 'parent-workspace': 'w1', workspace: 'w2' })
   })
 
   it('defaults the halves a command may legitimately omit', () => {
@@ -57,12 +62,12 @@ describe('parseMamaEnvelope', () => {
 /** Enqueue capturing the completion, failing the test on an enqueue reject. */
 function enqueue(
   q: MamaQueue,
-  worktreeId = 's1',
+  workspaceId = 's1',
   now = 0,
 ): { requestId: string; completed: () => { status: number; body: string } | undefined } {
   let completion: { status: number; body: string } | undefined
   const res = q.enqueue(
-    { worktreeId, command: 'create', args: {}, body: 'do the thing' },
+    { workspaceId, command: 'create', args: {}, body: 'do the thing' },
     (status: number, body: string) => { completion = { status, body } },
     now,
   )
@@ -143,11 +148,11 @@ describe('validateMamaRequest', () => {
     expect(validateMamaRequest('create', { title: 'Port the lexer' }, 'p')).toEqual({ ok: true })
     expect(validateMamaRequest('create', { title: 'a\nb' }, 'p').ok).toBe(false)
 
-    expect(validateMamaRequest('group-move', { worktree: 'a1b2c3d4' }, 'p')).toEqual({ ok: true })
-    expect(validateMamaRequest('group-move', { worktree: 'a/b' }, 'p').ok).toBe(false)
-    expect(validateMamaRequest('edit-queued', { queued: 'a1b2c3d4', 'parent-worktree': 'e5f6' }, 'p'))
+    expect(validateMamaRequest('group-move', { workspace: 'a1b2c3d4' }, 'p')).toEqual({ ok: true })
+    expect(validateMamaRequest('group-move', { workspace: 'a/b' }, 'p').ok).toBe(false)
+    expect(validateMamaRequest('edit-queued', { queued: 'a1b2c3d4', 'parent-workspace': 'e5f6' }, 'p'))
       .toEqual({ ok: true })
-    expect(validateMamaRequest('queue', { 'parent-worktree': 'a/b' }, 'p').ok).toBe(false)
+    expect(validateMamaRequest('queue', { 'parent-workspace': 'a/b' }, 'p').ok).toBe(false)
   })
 })
 
@@ -158,7 +163,7 @@ describe('MamaQueue', () => {
     const drained = q.drain()
     expect(drained).toHaveLength(1)
     expect(drained[0].requestId).toBe(requestId)
-    expect(drained[0].worktreeId).toBe('s1')
+    expect(drained[0].workspaceId).toBe('s1')
     expect(drained[0].command).toBe('create')
     expect(drained[0].body).toBe('do the thing')
     expect(q.complete({ requestId, ok: true, output: 'new-id' })).toBe(true)
@@ -172,7 +177,7 @@ describe('MamaQueue', () => {
     let completion: unknown
     const res = q.enqueue(
       {
-        worktreeId: 's1',
+        workspaceId: 's1',
         command: 'create',
         args: { tool: 'claude', model: 'claude-opus-4-8', group: 'review' },
         body: 'p',
@@ -238,7 +243,7 @@ describe('MamaQueue', () => {
   it('tells a timed-out caller whether its command could have run', () => {
     // The difference decides whether retrying is safe: `create` is not
     // idempotent, so a blind retry after a CLAIMED timeout duplicates a
-    // worktree. Pending never reached the server; claimed did.
+    // workspace. Pending never reached the server; claimed did.
     const q = new MamaQueue()
     // Handed over, then never answered.
     const claimed = enqueue(q, 's1', 0)
@@ -252,28 +257,28 @@ describe('MamaQueue', () => {
     expect(claimed.completed()?.body).toContain('yaac-mama list')
   })
 
-  it('caps pending requests per worktree at 429, counting claimed ones too', () => {
+  it('caps pending requests per workspace at 429, counting claimed ones too', () => {
     const q = new MamaQueue()
-    for (let i = 0; i < MAMA_MAX_PENDING_PER_WORKTREE - 1; i++) enqueue(q, 's1')
-    q.drain() // claimed entries still count toward the worktree cap
+    for (let i = 0; i < MAMA_MAX_PENDING_PER_WORKSPACE - 1; i++) enqueue(q, 's1')
+    q.drain() // claimed entries still count toward the workspace cap
     enqueue(q, 's1')
     const rejected = q.enqueue(
-      { worktreeId: 's1', command: 'create', args: {}, body: 'p' }, () => {},
+      { workspaceId: 's1', command: 'create', args: {}, body: 'p' }, () => {},
     )
     expect(rejected.ok).toBe(false)
     if (!rejected.ok) expect(rejected.status).toBe(429)
-    // Other worktrees are unaffected.
+    // Other workspaces are unaffected.
     enqueue(q, 's2')
   })
 
-  it('caps total pending requests across worktrees', () => {
+  it('caps total pending requests across workspaces', () => {
     const q = new MamaQueue()
     for (let i = 0; i < MAMA_MAX_PENDING_TOTAL; i++) {
-      // Spread across worktrees so the per-worktree cap never trips first.
-      enqueue(q, `s${Math.floor(i / (MAMA_MAX_PENDING_PER_WORKTREE - 1))}`)
+      // Spread across workspaces so the per-workspace cap never trips first.
+      enqueue(q, `s${Math.floor(i / (MAMA_MAX_PENDING_PER_WORKSPACE - 1))}`)
     }
     const rejected = q.enqueue(
-      { worktreeId: 'fresh', command: 'create', args: {}, body: 'p' }, () => {},
+      { workspaceId: 'fresh', command: 'create', args: {}, body: 'p' }, () => {},
     )
     expect(rejected.ok).toBe(false)
     if (!rejected.ok) expect(rejected.status).toBe(429)
@@ -282,16 +287,16 @@ describe('MamaQueue', () => {
   it('frees capacity when requests complete', () => {
     const q = new MamaQueue()
     const held = Array.from(
-      { length: MAMA_MAX_PENDING_PER_WORKTREE },
+      { length: MAMA_MAX_PENDING_PER_WORKSPACE },
       () => enqueue(q, 's1'),
     )
     q.drain()
     expect(q.enqueue(
-      { worktreeId: 's1', command: 'create', args: {}, body: 'p' }, () => {},
+      { workspaceId: 's1', command: 'create', args: {}, body: 'p' }, () => {},
     ).ok).toBe(false)
     q.complete({ requestId: held[0].requestId, ok: true, output: 'x' })
     expect(q.enqueue(
-      { worktreeId: 's1', command: 'create', args: {}, body: 'p' }, () => {},
+      { workspaceId: 's1', command: 'create', args: {}, body: 'p' }, () => {},
     ).ok).toBe(true)
   })
 })

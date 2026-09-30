@@ -14,7 +14,7 @@
 //
 // Credential convergence adds three more consumers: the create path seeds a
 // project's tool homes, the auth route fans a fresh login out to them, and
-// the reconcile pass (plus the containerless attach and worktree stop)
+// the reconcile pass (plus the containerless attach and workspace stop)
 // drives the standing sweep. The comparators and the per-project harvest and
 // push are internal to it, exercised through those four.
 //
@@ -24,7 +24,7 @@
 //
 // The runtime link is the other direction: every writer of the host store
 // pushes the whole set to the runtime, and the reconcile pass adopts what a
-// mediating runtime captured from a worktree's refresh.
+// mediating runtime captured from a workspace's refresh.
 
 export { authAgentHub } from './agent'
 export { clearAuth } from './clear'

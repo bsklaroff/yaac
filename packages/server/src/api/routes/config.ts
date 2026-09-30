@@ -10,7 +10,7 @@ import { ServerError } from '@yaac/shared/errors'
 
 /**
  * Global (non-project-scoped) editable config: the git identity this
- * server's worktrees commit under, the user Dockerfile
+ * server's workspaces commit under, the user Dockerfile
  * (`~/.yaac/build/Dockerfile.user`), which layers on top of every project
  * image, and the support files sharing its build dir (its whole build
  * context).

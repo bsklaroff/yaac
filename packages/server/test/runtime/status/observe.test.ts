@@ -1,5 +1,5 @@
 /**
- * The runtime half of a worktree listing — `observeWorkspaces`.
+ * The runtime half of a workspace listing — `observeWorkspaces`.
  *
  * Mocked at the contract boundary only, so the classification, the
  * terminating prune and the per-agent liveness join all run for real against
@@ -12,18 +12,18 @@ import { observeWorkspaces } from '#runtime/status/observe'
 import {
   setAgentStatus,
   setLiveAgents,
-  setWorktreeStreamHealth,
-  _resetWorktreeStatusStoreForTests,
+  setWorkspaceStreamHealth,
+  _resetWorkspaceStatusStoreForTests,
 } from '#runtime/status/status-store'
 import {
-  markWorktreeTerminating,
-  isWorktreeTerminating,
+  markWorkspaceTerminating,
+  isWorkspaceTerminating,
   _clearTerminatingForTests,
 } from '#runtime/status/terminating'
-import { handleFixture, installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
-import type { RuntimeHandle, WorktreeDriver } from '#drivers/contract'
+import { handleFixture, installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
 
-const list = vi.fn<WorktreeDriver['list']>()
+const list = vi.fn<WorkspaceDriver['list']>()
 
 function workspace(overrides: Partial<RuntimeHandle> = {}): RuntimeHandle {
   return handleFixture({ projectSlug: 'proj', workspaceId: 'w1', jobName: 'yaac-proj-w1', ...overrides })
@@ -31,15 +31,15 @@ function workspace(overrides: Partial<RuntimeHandle> = {}): RuntimeHandle {
 
 /** Alive to the display path, which reads stream health rather than probing. */
 function streaming(slug: string, id: string): void {
-  setWorktreeStreamHealth(slug, id, true)
+  setWorkspaceStreamHealth(slug, id, true)
 }
 
 beforeEach(() => {
   vi.resetAllMocks()
-  _resetWorktreeStatusStoreForTests()
+  _resetWorkspaceStatusStoreForTests()
   _clearTerminatingForTests()
   list.mockResolvedValue([])
-  installFakeWorktreeDriver({ list })
+  installFakeWorkspaceDriver({ list })
 })
 
 describe('observeWorkspaces', () => {
@@ -51,7 +51,7 @@ describe('observeWorkspaces', () => {
   it('joins each workspace with what only the driver can see', async () => {
     list.mockResolvedValue([workspace()])
     streaming('proj', 'w1')
-    installFakeWorktreeDriver({
+    installFakeWorkspaceDriver({
       list,
       blockedHosts: () => Promise.resolve(['evil.test']),
       forwardedPorts: () => Promise.resolve([{ containerPort: 3000, hostPort: 19000 }]),
@@ -63,8 +63,8 @@ describe('observeWorkspaces', () => {
 
     const report = await observeWorkspaces()
 
-    expect(report.worktrees).toHaveLength(1)
-    expect(report.worktrees[0]).toMatchObject({
+    expect(report.workspaces).toHaveLength(1)
+    expect(report.workspaces[0]).toMatchObject({
       workspaceId: 'w1',
       projectSlug: 'proj',
       phase: 'running',
@@ -75,7 +75,7 @@ describe('observeWorkspaces', () => {
     expect(report.gitAuthFailures.proj).toHaveLength(1)
   })
 
-  it('reports each live agent by handle, and the worktree aggregate over them', async () => {
+  it('reports each live agent by handle, and the workspace aggregate over them', async () => {
     list.mockResolvedValue([workspace()])
     streaming('proj', 'w1')
     setLiveAgents('proj', 'w1', [
@@ -85,14 +85,14 @@ describe('observeWorkspaces', () => {
     setAgentStatus('proj', 'w1', '%0', 'running')
     setAgentStatus('proj', 'w1', '%1', 'waiting')
 
-    const [w] = (await observeWorkspaces()).worktrees
+    const [w] = (await observeWorkspaces()).workspaces
 
     expect(w.agents.map((a) => [a.handle, a.status])).toEqual([['%0', 'running'], ['%1', 'waiting']])
-    // Any agent waiting makes the worktree wait — that is the badge's meaning.
+    // Any agent waiting makes the workspace wait — that is the badge's meaning.
     expect(w.status).toBe('waiting')
   })
 
-  it('hides prewarmed spares, which are not worktrees until claimed', async () => {
+  it('hides prewarmed spares, which are not workspaces until claimed', async () => {
     list.mockResolvedValue([
       workspace({ workspaceId: 'spare', prewarmed: true }),
       workspace(),
@@ -101,16 +101,16 @@ describe('observeWorkspaces', () => {
 
     const report = await observeWorkspaces()
 
-    expect(report.worktrees.map((w) => w.workspaceId)).toEqual(['w1'])
+    expect(report.workspaces.map((w) => w.workspaceId)).toEqual(['w1'])
   })
 
   it('reports a marked workspace as terminating, with no status read', async () => {
     // The store was evicted at teardown, so reading it would default to
     // `waiting` — a spurious attention badge on a row that is disappearing.
-    markWorktreeTerminating('w1')
+    markWorkspaceTerminating('w1')
     list.mockResolvedValue([workspace()])
 
-    const [w] = (await observeWorkspaces()).worktrees
+    const [w] = (await observeWorkspaces()).workspaces
 
     expect(w.phase).toBe('terminating')
     expect(w.status).toBe('running')
@@ -119,15 +119,15 @@ describe('observeWorkspaces', () => {
   })
 
   it('forgets a terminating mark once its workspace is gone', async () => {
-    markWorktreeTerminating('gone')
+    markWorkspaceTerminating('gone')
     list.mockResolvedValue([workspace()])
     streaming('proj', 'w1')
 
     await observeWorkspaces()
 
-    // Otherwise the mark leaks, and an id reused by a later worktree renders
+    // Otherwise the mark leaks, and an id reused by a later workspace renders
     // permanently greyed.
-    expect(isWorktreeTerminating('gone')).toBe(false)
+    expect(isWorkspaceTerminating('gone')).toBe(false)
   })
 
   it('reports a workspace whose runtime is gone as stale, with its death cause', async () => {
@@ -140,11 +140,11 @@ describe('observeWorkspaces', () => {
 
     const report = await observeWorkspaces()
 
-    expect(report.worktrees).toEqual([])
+    expect(report.workspaces).toEqual([])
     expect(report.stale).toEqual([{
       jobName: 'yaac-proj-w1',
       projectSlug: 'proj',
-      worktreeId: 'w1',
+      workspaceId: 'w1',
       zombie: false,
       deathCause: { reason: 'crashed', detail: 'exit code 1' },
     }])

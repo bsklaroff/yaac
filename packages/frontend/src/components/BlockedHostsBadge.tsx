@@ -6,20 +6,20 @@ import { allowBlockedHost } from '#lib/blockedHostsApi'
 
 /**
  * Blocked-host count badge; clicking it opens a popover listing the hosts.
- * Each host row expands to two actions — allow it for just this running worktree,
+ * Each host row expands to two actions — allow it for just this running workspace,
  * or permanently for the project (persisted to yaac-config.json). Renders its
  * own <button>, so inside clickable rows mount it as an overlaid sibling (like
  * the sidebar row's actions menu), never nested in the row button.
  */
 export function BlockedHostsBadge({
   hosts,
-  worktreeId,
+  workspaceId,
   iconSize,
   className,
 }: {
   hosts: string[]
-  /** The worktree these hosts were blocked for — the target of the allow action. */
-  worktreeId: string
+  /** The workspace these hosts were blocked for — the target of the allow action. */
+  workspaceId: string
   iconSize: number
   /** Positioning and the context-appropriate hover highlight for the trigger. */
   className?: string
@@ -33,7 +33,7 @@ export function BlockedHostsBadge({
     setPending(host)
     setError(null)
     try {
-      await allowBlockedHost(worktreeId, host, { persist })
+      await allowBlockedHost(workspaceId, host, { persist })
       // The server pushes a fresh snapshot that drops the now-allowed host, so
       // the row disappears on its own; just collapse it in the meantime.
       setExpanded(null)
@@ -88,7 +88,7 @@ export function BlockedHostsBadge({
                     {isOpen && (
                       <div className="flex flex-col pb-1 pl-2">
                         {[
-                          { persist: false, label: 'Allow for this worktree' },
+                          { persist: false, label: 'Allow for this workspace' },
                           { persist: true, label: 'Allow permanently for this project' },
                         ].map(({ persist, label }) => (
                           <button

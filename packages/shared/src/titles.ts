@@ -1,9 +1,9 @@
 /**
- * Worktree-title normalization, shared by the rename route, the worktree store
+ * Workspace-title normalization, shared by the rename route, the workspace store
  * that persists the result, and the titles feature that generates one from a
- * worktree's first message. Titles are
+ * workspace's first message. Titles are
  * display-only: the captured first message stays the fallback label
- * everywhere, and both live on the worktree row.
+ * everywhere, and both live on the workspace row.
  */
 
 export const MAX_TITLE_LENGTH = 120

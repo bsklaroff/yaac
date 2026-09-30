@@ -3,7 +3,7 @@ import {
   isUnreadWaiting, isUnseenDeath, loadViewMode, mergeProvisioning, paneViewKey,
   resolveVacantSelection, unreadWaitingBySlug, useUiStore,
 } from '#lib/store'
-import type { ProvisioningWorktreeEntry } from '@yaac/shared/types'
+import type { ProvisioningWorkspaceEntry } from '@yaac/shared/types'
 
 const initial = useUiStore.getState()
 
@@ -30,8 +30,8 @@ describe('pending-delete tracking', () => {
 })
 
 describe('optimistic deleted tracking', () => {
-  const entry = (worktreeId: string) => ({
-    worktreeId, projectSlug: 'p', tool: 'claude' as const, createdAt: '2026-01-01 00:00:00',
+  const entry = (workspaceId: string) => ({
+    workspaceId, projectSlug: 'p', tool: 'claude' as const, createdAt: '2026-01-01 00:00:00',
     prompt: 'hi', seen: false, agentSessions: [],
   })
 
@@ -39,16 +39,16 @@ describe('optimistic deleted tracking', () => {
     useUiStore.getState().addOptimisticStopped(entry('a'))
     useUiStore.getState().addOptimisticStopped(entry('b'))
     useUiStore.getState().addOptimisticStopped(entry('a'))
-    expect(useUiStore.getState().optimisticStopped.map((e) => e.worktreeId)).toEqual(['b', 'a'])
+    expect(useUiStore.getState().optimisticStopped.map((e) => e.workspaceId)).toEqual(['b', 'a'])
   })
 
   it('removeOptimisticStopped drops a tracked id and no-ops otherwise', () => {
     useUiStore.getState().addOptimisticStopped(entry('a'))
     useUiStore.getState().addOptimisticStopped(entry('b'))
     useUiStore.getState().removeOptimisticStopped('a')
-    expect(useUiStore.getState().optimisticStopped.map((e) => e.worktreeId)).toEqual(['b'])
+    expect(useUiStore.getState().optimisticStopped.map((e) => e.workspaceId)).toEqual(['b'])
     useUiStore.getState().removeOptimisticStopped('missing')
-    expect(useUiStore.getState().optimisticStopped.map((e) => e.worktreeId)).toEqual(['b'])
+    expect(useUiStore.getState().optimisticStopped.map((e) => e.workspaceId)).toEqual(['b'])
   })
 })
 
@@ -68,9 +68,9 @@ describe('read-waiting tracking', () => {
     // 'a' ran again (gone from the waiting set); 'b' is waiting anew with a
     // fresh spell; 'c' is unchanged; 'd' was never read — must not be added.
     useUiStore.getState().syncWaitingRead([
-      { worktreeId: 'b', waitingSinceMs: 250 },
-      { worktreeId: 'c', waitingSinceMs: 300 },
-      { worktreeId: 'd', waitingSinceMs: 400 },
+      { workspaceId: 'b', waitingSinceMs: 250 },
+      { workspaceId: 'c', waitingSinceMs: 300 },
+      { workspaceId: 'd', waitingSinceMs: 400 },
     ])
     expect(useUiStore.getState().readWaiting).toEqual({ c: 300 })
   })
@@ -79,8 +79,8 @@ describe('read-waiting tracking', () => {
     useUiStore.getState().markWaitingRead('a', 100)
     const before = useUiStore.getState()
     useUiStore.getState().syncWaitingRead([
-      { worktreeId: 'a', waitingSinceMs: 100 },
-      { worktreeId: 'other', waitingSinceMs: 500 },
+      { workspaceId: 'a', waitingSinceMs: 100 },
+      { workspaceId: 'other', waitingSinceMs: 500 },
     ])
     expect(useUiStore.getState()).toBe(before)
   })
@@ -100,26 +100,26 @@ describe('isUnseenDeath', () => {
 
 describe('isUnreadWaiting', () => {
   it('flags a waiting session with no mark or a mark from an older spell', () => {
-    const s = { worktreeId: 'a', status: 'waiting' as const, waitingSinceMs: 200 }
+    const s = { workspaceId: 'a', status: 'waiting' as const, waitingSinceMs: 200 }
     expect(isUnreadWaiting(s, {})).toBe(true)
     expect(isUnreadWaiting(s, { a: 100 })).toBe(true)
     expect(isUnreadWaiting(s, { a: 200 })).toBe(false)
   })
 
   it('never flags a running session', () => {
-    expect(isUnreadWaiting({ worktreeId: 'a', status: 'running' }, {})).toBe(false)
+    expect(isUnreadWaiting({ workspaceId: 'a', status: 'running' }, {})).toBe(false)
   })
 
   it('normalizes a missing waitingSinceMs to 0', () => {
-    const s = { worktreeId: 'a', status: 'waiting' as const }
+    const s = { workspaceId: 'a', status: 'waiting' as const }
     expect(isUnreadWaiting(s, {})).toBe(true)
     expect(isUnreadWaiting(s, { a: 0 })).toBe(false)
   })
 })
 
 describe('unreadWaitingBySlug', () => {
-  const s = (worktreeId: string, projectSlug: string, status: 'running' | 'waiting', waitingSinceMs?: number) =>
-    ({ worktreeId, projectSlug, status, waitingSinceMs })
+  const s = (workspaceId: string, projectSlug: string, status: 'running' | 'waiting', waitingSinceMs?: number) =>
+    ({ workspaceId, projectSlug, status, waitingSinceMs })
 
   it('counts only unread waiting sessions, grouped by project', () => {
     const sessions = [
@@ -150,7 +150,7 @@ describe('unreadWaitingBySlug', () => {
 
   it('excludes server-marked stopping sessions', () => {
     const sessions = [
-      { worktreeId: 'w1', projectSlug: 'p1', status: 'waiting' as const, stopping: true },
+      { workspaceId: 'w1', projectSlug: 'p1', status: 'waiting' as const, stopping: true },
       s('w2', 'p1', 'waiting', 200),
     ]
     expect(unreadWaitingBySlug(sessions, {})).toEqual({ p1: 1 })
@@ -161,7 +161,7 @@ describe('resolveVacantSelection', () => {
   const args = (over: Partial<Parameters<typeof resolveVacantSelection>[0]> = {}) => ({
     previousProjectSlug: 'p1',
     activeProjectSlug: 'p1',
-    selectedWorktreeId: 'w1',
+    selectedWorkspaceId: 'w1',
     rowIds: ['w1', 'w2'],
     claims: {},
     inFlight: [],
@@ -171,86 +171,86 @@ describe('resolveVacantSelection', () => {
   it('leaves a live selection — and a provisioning one — alone', () => {
     expect(resolveVacantSelection(args())).toBeNull()
     // Mid-create: the provisioning row is a sidebar row like any other.
-    expect(resolveVacantSelection(args({ selectedWorktreeId: 'new', rowIds: ['new', 'w1'] }))).toBeNull()
+    expect(resolveVacantSelection(args({ selectedWorkspaceId: 'new', rowIds: ['new', 'w1'] }))).toBeNull()
   })
 
-  it('takes the topmost row when the open worktree vanished', () => {
+  it('takes the topmost row when the open workspace vanished', () => {
     // A CLI delete / the stale reaper: the selection is still set, but its
-    // worktree is no longer among the selectable rows. Topmost is the sidebar's
+    // workspace is no longer among the selectable rows. Topmost is the sidebar's
     // first row, not the snapshot's — the caller passes display order.
-    expect(resolveVacantSelection(args({ selectedWorktreeId: 'gone' }))).toBe('w1')
-    expect(resolveVacantSelection(args({ selectedWorktreeId: 'gone', rowIds: ['w2', 'w1'] }))).toBe('w2')
+    expect(resolveVacantSelection(args({ selectedWorkspaceId: 'gone' }))).toBe('w1')
+    expect(resolveVacantSelection(args({ selectedWorkspaceId: 'gone', rowIds: ['w2', 'w1'] }))).toBe('w2')
   })
 
   it('follows a create into the prewarmed spare it claimed, once the spare lists', () => {
     const claims = { req: 'spare' }
     // The create's row resolved but the spare hasn't listed yet: wait for it
     // rather than handing the pane to some other row.
-    expect(resolveVacantSelection(args({ selectedWorktreeId: 'req', claims }))).toBeNull()
+    expect(resolveVacantSelection(args({ selectedWorkspaceId: 'req', claims }))).toBeNull()
     expect(resolveVacantSelection(args({
-      selectedWorktreeId: 'req', claims, rowIds: ['w1', 'spare'],
+      selectedWorkspaceId: 'req', claims, rowIds: ['w1', 'spare'],
     }))).toBe('spare')
     // A project switch is not the create resolving: the top row, as ever.
     expect(resolveVacantSelection(args({
-      previousProjectSlug: 'p0', selectedWorktreeId: 'req', claims,
+      previousProjectSlug: 'p0', selectedWorkspaceId: 'req', claims,
     }))).toBe('w1')
   })
 
   it('holds a vanished selection whose provision is still in flight', () => {
-    // A snapshot that caught neither the row nor its worktree: the create's
+    // A snapshot that caught neither the row nor its workspace: the create's
     // result may yet say where it went, so the pane is not handed away.
-    expect(resolveVacantSelection(args({ selectedWorktreeId: 'req', inFlight: ['req'] }))).toBeNull()
+    expect(resolveVacantSelection(args({ selectedWorkspaceId: 'req', inFlight: ['req'] }))).toBeNull()
   })
 
   it('takes the topmost row of a project switched into', () => {
     expect(resolveVacantSelection(args({
-      previousProjectSlug: 'p0', selectedWorktreeId: null,
+      previousProjectSlug: 'p0', selectedWorkspaceId: null,
     }))).toBe('w1')
   })
 
   it('stays empty on a first paint, and on a deselect', () => {
     // Nothing persisted: no previous project, nothing selected, so nobody has
-    // chosen a worktree yet.
+    // chosen a workspace yet.
     expect(resolveVacantSelection(args({
-      previousProjectSlug: null, selectedWorktreeId: null,
+      previousProjectSlug: null, selectedWorkspaceId: null,
     }))).toBeNull()
     // Same project, selection cleared by the user (a dismissed provisioning row).
-    expect(resolveVacantSelection(args({ selectedWorktreeId: null }))).toBeNull()
+    expect(resolveVacantSelection(args({ selectedWorkspaceId: null }))).toBeNull()
   })
 
   it('has nothing to fill the pane with when no row is selectable', () => {
-    expect(resolveVacantSelection(args({ selectedWorktreeId: 'gone', rowIds: [] }))).toBeNull()
+    expect(resolveVacantSelection(args({ selectedWorkspaceId: 'gone', rowIds: [] }))).toBeNull()
     expect(resolveVacantSelection(args({ activeProjectSlug: null }))).toBeNull()
   })
 })
 
 describe('selection + project switching', () => {
-  it('selectWorktree sets the selected id', () => {
-    useUiStore.getState().selectWorktree('s1')
-    expect(useUiStore.getState().selectedWorktreeId).toBe('s1')
+  it('selectWorkspace sets the selected id', () => {
+    useUiStore.getState().selectWorkspace('s1')
+    expect(useUiStore.getState().selectedWorkspaceId).toBe('s1')
   })
 
   it('setActiveProject clears the open session', () => {
-    useUiStore.getState().selectWorktree('s1')
+    useUiStore.getState().selectWorkspace('s1')
     useUiStore.getState().setActiveProject('proj')
     expect(useUiStore.getState().activeProjectSlug).toBe('proj')
-    expect(useUiStore.getState().selectedWorktreeId).toBeNull()
+    expect(useUiStore.getState().selectedWorkspaceId).toBeNull()
   })
 
-  it('openWorktree sets both project and session', () => {
-    useUiStore.getState().openWorktree('proj', 's2')
+  it('openWorkspace sets both project and session', () => {
+    useUiStore.getState().openWorkspace('proj', 's2')
     expect(useUiStore.getState().activeProjectSlug).toBe('proj')
-    expect(useUiStore.getState().selectedWorktreeId).toBe('s2')
+    expect(useUiStore.getState().selectedWorkspaceId).toBe('s2')
   })
 
-  it('selectWorktree and openWorktree each bump focusNonce', () => {
+  it('selectWorkspace and openWorkspace each bump focusNonce', () => {
     expect(useUiStore.getState().focusNonce).toBe(0)
-    useUiStore.getState().selectWorktree('s1')
+    useUiStore.getState().selectWorkspace('s1')
     expect(useUiStore.getState().focusNonce).toBe(1)
     // Re-selecting the same session still bumps — clicking it re-focuses.
-    useUiStore.getState().selectWorktree('s1')
+    useUiStore.getState().selectWorkspace('s1')
     expect(useUiStore.getState().focusNonce).toBe(2)
-    useUiStore.getState().openWorktree('proj', 's2')
+    useUiStore.getState().openWorkspace('proj', 's2')
     expect(useUiStore.getState().focusNonce).toBe(3)
   })
 
@@ -261,20 +261,20 @@ describe('selection + project switching', () => {
     expect(useUiStore.getState().terminalNonces).toEqual({ t1: 2, t2: 1 })
   })
 
-  it('setWorktreeLayout stores per-session workspaces (null = emptied)', () => {
+  it('setWorkspaceLayout stores per-workspace pane layouts (null = emptied)', () => {
     const ws = [
       { tabs: ['agent'], active: 'agent' },
       { tabs: ['shell:shell'], active: 'shell:shell' },
     ]
-    useUiStore.getState().setWorktreeLayout('s1', ws)
-    useUiStore.getState().setWorktreeLayout('s2', null)
+    useUiStore.getState().setWorkspaceLayout('s1', ws)
+    useUiStore.getState().setWorkspaceLayout('s2', null)
     expect(useUiStore.getState().layouts).toEqual({ s1: ws, s2: null })
   })
 })
 
 describe('optimistic provisioning tracking', () => {
-  const entry = (worktreeId: string, over: Partial<ProvisioningWorktreeEntry> = {}): ProvisioningWorktreeEntry => ({
-    worktreeId, projectSlug: 'p', tool: 'claude', kind: 'create', message: 'Starting…',
+  const entry = (workspaceId: string, over: Partial<ProvisioningWorkspaceEntry> = {}): ProvisioningWorkspaceEntry => ({
+    workspaceId, projectSlug: 'p', tool: 'claude', kind: 'create', message: 'Starting…',
     createdAt: '2026-01-01 00:00:00', ...over,
   })
 
@@ -282,7 +282,7 @@ describe('optimistic provisioning tracking', () => {
     useUiStore.getState().addOptimisticProvisioning(entry('a'))
     useUiStore.getState().addOptimisticProvisioning(entry('b'))
     useUiStore.getState().addOptimisticProvisioning(entry('a'))
-    expect(useUiStore.getState().optimisticProvisioning.map((e) => e.worktreeId)).toEqual(['a', 'b'])
+    expect(useUiStore.getState().optimisticProvisioning.map((e) => e.workspaceId)).toEqual(['a', 'b'])
   })
 
   it('updateOptimisticProvisioning patches message/error and no-ops for unknown ids', () => {
@@ -299,22 +299,22 @@ describe('optimistic provisioning tracking', () => {
     useUiStore.getState().addOptimisticProvisioning(entry('a'))
     useUiStore.getState().addOptimisticProvisioning(entry('b'))
     useUiStore.getState().removeOptimisticProvisioning('a')
-    expect(useUiStore.getState().optimisticProvisioning.map((e) => e.worktreeId)).toEqual(['b'])
+    expect(useUiStore.getState().optimisticProvisioning.map((e) => e.workspaceId)).toEqual(['b'])
     useUiStore.getState().removeOptimisticProvisioning('missing')
-    expect(useUiStore.getState().optimisticProvisioning.map((e) => e.worktreeId)).toEqual(['b'])
+    expect(useUiStore.getState().optimisticProvisioning.map((e) => e.workspaceId)).toEqual(['b'])
   })
 })
 
 describe('mergeProvisioning', () => {
-  const e = (worktreeId: string, over: Partial<ProvisioningWorktreeEntry> = {}): ProvisioningWorktreeEntry => ({
-    worktreeId, projectSlug: 'p', tool: 'claude', kind: 'create', message: 'm',
+  const e = (workspaceId: string, over: Partial<ProvisioningWorkspaceEntry> = {}): ProvisioningWorkspaceEntry => ({
+    workspaceId, projectSlug: 'p', tool: 'claude', kind: 'create', message: 'm',
     createdAt: '2026-01-01 00:00:00', ...over,
   })
 
   it('dedupes by id with the snapshot row winning', () => {
     const merged = mergeProvisioning([e('a', { message: 'live' })], [e('a', { message: 'optim' }), e('b')])
-    expect(merged.find((x) => x.worktreeId === 'a')?.message).toBe('live')
-    expect(merged.map((x) => x.worktreeId)).toEqual(['a', 'b'])
+    expect(merged.find((x) => x.workspaceId === 'a')?.message).toBe('live')
+    expect(merged.map((x) => x.workspaceId)).toEqual(['a', 'b'])
   })
 
   it('sorts by createdAt then id', () => {
@@ -322,7 +322,7 @@ describe('mergeProvisioning', () => {
       e('b', { createdAt: '2026-01-01 00:00:02' }),
       e('a', { createdAt: '2026-01-01 00:00:01' }),
     ])
-    expect(merged.map((x) => x.worktreeId)).toEqual(['a', 'b'])
+    expect(merged.map((x) => x.workspaceId)).toEqual(['a', 'b'])
   })
 })
 

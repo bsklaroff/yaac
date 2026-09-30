@@ -6,7 +6,7 @@
 #
 # The data dir is the only durable state a yaac install has: the PGlite
 # database, .credentials/, the project git clones and per-session
-# worktrees, and the agent homes and transcripts. Everything in Kubernetes
+# workspaces, and the agent homes and transcripts. Everything in Kubernetes
 # and podman is rebuilt from it — `yaac cluster delete` says so explicitly —
 # so restoring is "unpack, then re-run `yaac cluster install`". (The proxy
 # MITM CA lives in the cluster, so a restore mints a new one.)
@@ -135,12 +135,12 @@ cmd_dump() {
   # projects/*/sessions goes too. It is per-session state yaac's own cleanup
   # and orphan GC remove wholesale, and the pod it belonged to does not
   # survive a restore anyway: the tmux socket is dead without its kernel,
-  # and the staged skills/bin are re-copied on the next create. Worktrees
-  # are NOT in here — they are the sibling projects/*/worktrees, always
+  # and the staged skills/bin are re-copied on the next create. Workspaces
+  # are NOT in here — they are the sibling projects/*/workspaces, always
   # kept.
   #
-  # An inner yaac running in a worktree keeps its own data dir under that
-  # worktree's checkout, so back it up from inside the worktree if you
+  # An inner yaac running in a workspace keeps its own data dir under that
+  # workspace's checkout, so back it up from inside the workspace if you
   # need its state.
   #
   # cache/ and models/ are re-fetched rather than carried: the Calico

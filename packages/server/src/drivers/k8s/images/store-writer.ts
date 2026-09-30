@@ -1,23 +1,23 @@
 /**
  * The node-local image store: a per-(node, project) READ-ONLY
  * containers/storage lower, materialized from the project registry by a
- * node-side pod and mounted into every nested worktree at
+ * node-side pod and mounted into every nested workspace at
  * `/var/lib/shared-images` (the `additionalimagestores` entry in
  * Dockerfile.nestable).
  *
  * It is a CACHE of the registry, never a second source of truth. The
  * registry is still what a salvage pushes to and what survives a node
- * dying; this only removes the per-worktree cost of getting those layers
- * back — a fresh worktree sees them with no warm-up pull and no
- * graphroot spend, and concurrent worktrees on one node share one copy of
+ * dying; this only removes the per-workspace cost of getting those layers
+ * back — a fresh workspace sees them with no warm-up pull and no
+ * graphroot spend, and concurrent workspaces on one node share one copy of
  * the layer data. A cold node mounts nothing and simply behaves as it did
  * before there was a store.
  *
  * Generations are WRITE-ONCE. `ensureNodeImageStore` writes
  * `<store>/gen-<stamp>/` and writes {@link DONE_MARKER} last; nothing ever
- * mutates a published generation. Worktree create pins the newest complete
+ * mutates a published generation. Workspace create pins the newest complete
  * generation *path* into the pod at create time
- * ({@link nodeImageStoreMount}), so a running worktree's store never
+ * ({@link nodeImageStoreMount}), so a running workspace's store never
  * changes underneath it and the GC below can tell "in use" from "stale" by
  * looking at live pods' mounts.
  *
@@ -54,12 +54,12 @@
  *
  * A layer that REPLACES a directory records that as an overlay xattr on
  * the diff dir rather than as a file. Measured on the dev cluster, neither
- * spelling survives the trip into a worktree:
+ * spelling survives the trip into a workspace:
  *
  *  - `trusted.overlay.opaque` is invisible through gVisor's gofer
  *    filesystem — every read of the `trusted.` namespace answers
  *    EOPNOTSUPP, so the sentry cannot see the marker at all;
- *  - `user.overlay.opaque` IS readable through the gofer, but the worktree
+ *  - `user.overlay.opaque` IS readable through the gofer, but the workspace
  *    engine mounts overlay without `userxattr` (it holds CAP_SYS_ADMIN
  *    in-sandbox, so containers/storage takes the rootful path), and so
  *    reads the `trusted.` name.
@@ -111,9 +111,9 @@ import { CACHE_TAG_PREFIX, rankedRegistryTagsScript } from './image-promoter'
 import { serverLog } from '#log'
 import type { ProjectRef } from '#drivers/contract'
 
-/** In-pod mount point of a nested worktree's read-only additional store —
+/** In-pod mount point of a nested workspace's read-only additional store —
  *  the path Dockerfile.nestable's `additionalimagestores` names. Baked as
- *  an empty directory in that image, so a worktree with no generation to
+ *  an empty directory in that image, so a workspace with no generation to
  *  mount still starts (containers/storage skips an empty store). */
 export const SHARED_IMAGES_MOUNT = '/var/lib/shared-images'
 
@@ -132,7 +132,7 @@ export const DONE_MARKER = '.yaac-store-done'
 export const IMAGE_STORE_APP_LABEL = 'yaac-image-store'
 
 /** GC scope: ties writer pods to this install without making them visible
- *  to the worktree reaper (which filters on `yaac.worktree-id`). */
+ *  to the workspace reaper (which filters on `yaac.workspace-id`). */
 export const LABEL_STORE_DATA_DIR_HASH = 'yaac.store-data-dir-hash'
 
 /** How often one project's store is refreshed. A generation only gains
@@ -204,14 +204,14 @@ export async function listStoreGenerations(projectId: string): Promise<string[]>
 }
 
 /**
- * The read-only store mount for a new nested worktree pod, or undefined
+ * The read-only store mount for a new nested workspace pod, or undefined
  * when this node has no complete generation yet.
  *
  * Pinned to a generation PATH rather than a stable symlink on purpose: the
  * mount a pod is created with is the store it keeps for its whole life, so
- * a generation published mid-worktree can never change the layers an
+ * a generation published mid-workspace can never change the layers an
  * engine has already loaded, and the GC can read the live set off pod
- * specs. A worktree picks up a newer generation the next time it is
+ * specs. A workspace picks up a newer generation the next time it is
  * created.
  */
 export async function nodeImageStoreMount(projectId: string): Promise<PodMount | undefined> {
@@ -237,7 +237,7 @@ export async function nodeImageStoreMount(projectId: string): Promise<PodMount |
  *     adds layer directories and rewrites the metadata files via
  *     temp+rename, which breaks the link safely; it never mutates a layer
  *     diff in place, so the previous generation stays byte-identical for
- *     the worktrees still mounting it. podman's OWN state
+ *     the workspaces still mounting it. podman's OWN state
  *     (`db.sql`, `libpod/`, …) is dropped from the copy: its database
  *     records the absolute graphroot it was created under and refuses to
  *     open under a different one.
@@ -268,7 +268,7 @@ export function buildStoreWriterScript(registryEndpoint: string, genName: string
     'set -eu',
     'STORE="$1"; shift',
     `GEN="$STORE/${genName}"`,
-    // Lowest priority: this shares a node with interactive worktrees, and
+    // Lowest priority: this shares a node with interactive workspaces, and
     // untarring a project's whole working set is exactly the kind of
     // background work that must lose the CPU to them.
     'command -v renice >/dev/null 2>&1 && renice -n 19 $$ >/dev/null 2>&1 || true',
@@ -301,7 +301,7 @@ export function buildStoreWriterScript(registryEndpoint: string, genName: string
     '  for tag in $(ranked_tags "$repo"); do',
     '    ref="$REG/$repo:$tag"',
     '    podman pull -q --tls-verify=false "$ref" >/dev/null 2>&1 || continue',
-    // The bare name is what a worktree's `FROM` and `docker run` name the
+    // The bare name is what a workspace's `FROM` and `docker run` name the
     // image by; the registry-qualified one is dropped so the store reads
     // like a local build's store.
     `    case "$tag" in ${CACHE_TAG_PREFIX}*) ;; *) podman tag "$ref" "$repo:$tag" >/dev/null 2>&1 || true;; esac`,
@@ -508,7 +508,7 @@ const OPAQUE_REWRITE_PY = [
  * recorded uncompressed size; without one `podman images` reconstructs it
  * from the layer's tar-split, and a store is read over the gofer where
  * that is ruinous. Failing the build here is right: an incomplete
- * generation never gets a DONE marker, so worktrees keep mounting the last
+ * generation never gets a DONE marker, so workspaces keep mounting the last
  * good one.
  */
 const DIFF_SIZE_CHECK_PY = [
@@ -564,8 +564,8 @@ export function buildStoreWriterPodManifest(params: {
       tolerations: [{ operator: 'Exists' }],
       automountServiceAccountToken: false,
       enableServiceLinks: false,
-      // Infra tier: a worktree pod filling this node must not keep the
-      // cache those worktrees read from being built.
+      // Infra tier: a workspace pod filling this node must not keep the
+      // cache those workspaces read from being built.
       priorityClassName: PRIORITY_CLASS_INFRA,
       containers: [{
         name: 'write',
@@ -658,7 +658,7 @@ interface RawPodList {
 }
 
 /**
- * Generation names a live worktree pod of this project still has mounted.
+ * Generation names a live workspace pod of this project still has mounted.
  * The server wrote those mounts, so reading them back off the pod specs is
  * the authoritative "in use" set — a generation is safe to drop exactly
  * when nothing is pointing at it.
@@ -669,7 +669,7 @@ interface RawPodList {
  *
  * A failure to list is treated as "everything is in use": the cost of
  * keeping a stale generation is disk, the cost of dropping a live one is a
- * worktree whose engine loses its store mid-run.
+ * workspace whose engine loses its store mid-run.
  */
 async function generationsInUse(projectId: string): Promise<string[] | null> {
   const suffix = `/shared-images/${projectId}/`
@@ -761,7 +761,7 @@ async function writeOneStore(project: ProjectRef): Promise<boolean> {
   const runId = crypto.randomBytes(4).toString('hex')
   const keep = await generationsInUse(id)
   // Null means the live set is unknown; keep every complete generation
-  // rather than risk unmounting one from under a running worktree.
+  // rather than risk unmounting one from under a running workspace.
   const keepNames = keep ?? await listStoreGenerations(id)
 
   // Strays from a run whose server died mid-poll: the per-run name suffix

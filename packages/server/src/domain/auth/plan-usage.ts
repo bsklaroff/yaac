@@ -15,7 +15,7 @@ import {
   runtimeMediatesEgress,
 } from './credential-sync'
 import { pushCredentialsToRuntime } from './runtime-push'
-import { notifyWorktreeListChanged } from '#notify'
+import { notifyWorkspaceListChanged } from '#notify'
 import { serverLog } from '#log'
 import type { ClaudeOAuthBundle, CodexOAuthBundle, PlanUsageResult } from '@yaac/shared/types'
 
@@ -121,7 +121,7 @@ function kickRefresh(
     }
     // Deliver without waiting for the next background tick — the hub dedupes,
     // so an unchanged snapshot costs no traffic.
-    notifyWorktreeListChanged()
+    notifyWorkspaceListChanged()
   })()
 }
 
@@ -170,7 +170,7 @@ async function refreshAndPersistClaudeBundle(
 }
 
 /**
- * Adopt anything a running worktree has refreshed, then re-read the stored
+ * Adopt anything a running workspace has refreshed, then re-read the stored
  * credential — the one to actually spend this cycle.
  *
  * Under a mediated runtime this finds nothing (the proxy has already written
@@ -210,7 +210,7 @@ async function convergedCodexBundle(fallback: CodexOAuthBundle): Promise<CodexOA
   return fallback
 }
 
-/** One Claude usage cycle: adopt anything a worktree refreshed, refresh an
+/** One Claude usage cycle: adopt anything a workspace refreshed, refresh an
  *  expired token if this host is the one that may, query usage and (once per
  *  credential) the rate-limit tier, and retry once after a refresh if an
  *  unexpired token comes back unauthorized. */

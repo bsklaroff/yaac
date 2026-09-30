@@ -20,19 +20,19 @@ import {
   writeProjectDockerfile,
   resolveProjectEnv,
 } from '#domain/projects'
-import { removeProject } from '#domain/worktrees'
+import { removeProject } from '#domain/workspaces'
 import { pushCredentialsToRuntime } from '#domain/auth'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { projectBuildDir } from '#lib/build-dirs'
 import { ServerError } from '@yaac/shared/errors'
 import { buildFilesApp } from '#routes/build-files'
 import { requireDriverFeature } from '#http'
-import { worktreeDriver } from '#drivers/driver'
+import { workspaceDriver } from '#drivers/driver'
 
 /**
  * Deliver a project's changed secrets to whatever is running now.
  *
- * A live worktree resolves an injection per request, so an edit reaches it
+ * A live workspace resolves an injection per request, so an edit reaches it
  * without a restart — but only if the runtime is told. A failure here is
  * reported rather than swallowed, and the message says what DID happen,
  * because the two halves diverge: the row is written either way, so a caller
@@ -42,20 +42,20 @@ import { worktreeDriver } from '#drivers/driver'
  * The next server start converges it; what the caller needs is to know it
  * has not happened yet.
  */
-async function syncRunningWorktrees(slug: string, applied: string): Promise<void> {
+async function syncRunningWorkspaces(slug: string, applied: string): Promise<void> {
   try {
     const { secrets } = await resolveProjectEnv(slug)
-    await worktreeDriver().syncProjectSecrets(
+    await workspaceDriver().syncProjectSecrets(
       slug,
       Object.fromEntries(Object.entries(secrets).map(([name, { value }]) => [name, value])),
     )
   } catch (err) {
     throw new ServerError(
       'RUNTIME_UNAVAILABLE',
-      `${applied}, but the egress proxy could not be updated, so worktrees `
+      `${applied}, but the egress proxy could not be updated, so workspaces `
       + 'running right now still use the previous value: '
       + `${err instanceof Error ? err.message : String(err)}. `
-      + 'New worktrees are unaffected, and running ones catch up when the '
+      + 'New workspaces are unaffected, and running ones catch up when the '
       + 'proxy is reachable again.',
     )
   }
@@ -129,7 +129,7 @@ export const projectApp = new Hono()
     await removeProjectConfig(c.req.param('slug'))
     return c.body(null, 204)
   })
-  // The project's environment: the variables its worktrees launch with, and
+  // The project's environment: the variables its workspaces launch with, and
   // the secrets the egress proxy injects. A secret's value is write-only —
   // it goes in through the PUT and never comes back out of the GET.
   .get('/:slug/env', async (c) => c.json({ vars: await listProjectEnv(c.req.param('slug')) }))
@@ -146,17 +146,17 @@ export const projectApp = new Hono()
     async (c) => {
       const slug = c.req.param('slug')
       const saved = await setProjectEnvVar(slug, c.req.valid('json'))
-      await syncRunningWorktrees(slug, `${saved.name} was saved`)
+      await syncRunningWorkspaces(slug, `${saved.name} was saved`)
       return c.json({ var: saved })
     },
   )
   .delete('/:slug/env/:id', async (c) => {
     const slug = c.req.param('slug')
     await removeProjectEnvVar(slug, c.req.param('id'))
-    await syncRunningWorktrees(slug, 'the variable was removed')
+    await syncRunningWorkspaces(slug, 'the variable was removed')
     return c.body(null, 204)
   })
-  // Branch data for the new-worktree picker: local remote-tracking refs
+  // Branch data for the new-workspace picker: local remote-tracking refs
   // (instant), or freshly fetched with ?refresh=1.
   .get(
     '/:slug/branches',
@@ -172,7 +172,7 @@ export const projectApp = new Hono()
   )
   // Personal + plugin + project SKILL.md files a project's agent can use, for
   // the given tool (default claude). A pure host-side read of each agent's
-  // explicit skill dirs, so it needs no running worktree.
+  // explicit skill dirs, so it needs no running workspace.
   .get(
     '/:slug/skills',
     zv('query', z.object({

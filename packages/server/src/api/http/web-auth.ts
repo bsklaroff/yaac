@@ -88,7 +88,7 @@ function decodeIdentityHeader(value: string): string {
  *   `serve` and not loopback, which a top-level server refuses rather than
  *   trust — the fail-closed half, since `YAAC_ALLOWED_HOSTS` is what opts
  *   a server into remote access and remote access is identity-only. A
- *   server inside a worktree (`YAAC_WORKTREE_ID`) is reached exactly that
+ *   server inside a workspace (`YAAC_WORKSPACE_ID`) is reached exactly that
  *   way, as `srv.<tailnet>:<port>` through the outer install's forward, so
  *   there it is local.
  *
@@ -121,7 +121,7 @@ function identifyRequest(
     }
   }
   const hostname = requestHost(header('host'), url).split(':')[0]
-  if (isLoopbackHostname(hostname) || env.worktreeId !== undefined) return { kind: 'local' }
+  if (isLoopbackHostname(hostname) || env.workspaceId !== undefined) return { kind: 'local' }
   return {
     refused: `reached as ${hostname} without tailscale serve: a server is reached `
       + 'at loopback on its own machine, and through tailscale serve from '
@@ -192,7 +192,7 @@ export function hostHeaderCheck(): MiddlewareHandler {
  * one) is allowed.
  *
  * The port is the point. Every page served on the server's hostname at
- * another port — a worktree's forwarded dev server on `127.0.0.1:<port>`,
+ * another port — a workspace's forwarded dev server on `127.0.0.1:<port>`,
  * the desktop's preview pane, `srv.<tailnet>.ts.net:19500` — runs untrusted
  * repo code, and a hostname comparison would admit it. `Origin` is
  * browser-controlled and page JS cannot forge or drop it (a Fetch

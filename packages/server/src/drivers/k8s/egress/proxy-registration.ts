@@ -1,7 +1,7 @@
 import {
   LABEL_PROJECT,
   LABEL_PROXY_INPUT,
-  LABEL_WORKTREE_ID,
+  LABEL_WORKSPACE_ID,
   PROXY_APP_NAME,
   getActiveClusterCache,
   k8sNamespace,
@@ -11,16 +11,16 @@ import {
 } from '#drivers/k8s/substrate'
 import { buildRegistrationConfigMapManifest, proxyRegistrationName } from '#drivers/k8s/cluster'
 import { NESTED_PULL_HOSTS, resolveAllowedHosts } from '#lib/allowed-hosts'
-import { notifyWorktreeListChanged } from '#notify'
+import { notifyWorkspaceListChanged } from '#notify'
 import { serverLog } from '#log'
 import { ServerError } from '@yaac/shared/errors'
 import type { AgentTool, SecretProxyRule, YaacConfig } from '@yaac/shared/types'
 import type { PassContext, WorkspaceRegistration } from '#drivers/contract'
 
 /**
- * A worktree's egress registration — what the proxy is told a worktree may
+ * A workspace's egress registration — what the proxy is told a workspace may
  * reach and what to inject on its behalf — as the ConfigMap that carries it
- * (docs/worktree-egress.md "What the proxy is told, and how").
+ * (docs/workspace-egress.md "What the proxy is told, and how").
  *
  * The object is written here, patched here (a live allowlist widening) and
  * deleted here; the proxy's informer applies every change within its watch
@@ -38,7 +38,7 @@ export interface Injection {
    * `<projectSlug>/<NAME>`, naming one of the values in the project's
    * secrets Secret, instead of a literal `value`. The proxy resolves it at
    * injection time from the map it holds, which keeps registrations
-   * secret-free and means a rotation applies to live worktrees immediately.
+   * secret-free and means a rotation applies to live workspaces immediately.
    *
    * Scoped by project because the proxy's map is shared: an unscoped name
    * would let one project's rule have another project's secret injected
@@ -72,7 +72,7 @@ export interface UpstreamRedirect {
  * agent-credential injection is gated on the registered tool, and
  * git-auth-failure records are keyed by the owning project.
  */
-export interface WorktreeRegistration {
+export interface ProxyRegistration {
   rules: InjectionRule[]
   allowedHosts: string[]
   repoUrl?: string
@@ -154,7 +154,7 @@ export function parseUpstreamRedirectsEnv(
 }
 
 /**
- * Assemble a worktree's proxy registration from already-loaded inputs.
+ * Assemble a workspace's proxy registration from already-loaded inputs.
  * Pure given (config, remoteUrl, tool, secretRules, env).
  *
  * `secretRules` is the project's proxied secrets — which hosts and headers
@@ -164,20 +164,20 @@ export function parseUpstreamRedirectsEnv(
  * for the e2e redirect wiring, which is the driver's own test seam rather
  * than anything about a secret.
  */
-export function buildWorktreeRegistration(input: {
+export function buildProxyRegistration(input: {
   config: YaacConfig
   remoteUrl: string
   tool: AgentTool
   projectSlug: string
   secretRules: Record<string, SecretProxyRule>
   env?: NodeJS.ProcessEnv
-}): WorktreeRegistration {
+}): ProxyRegistration {
   // eslint-disable-next-line no-process-env -- DI seam: tests pass input.env.
   const env = input.env ?? process.env
   // Copy: resolveAllowedHosts may return the shared DEFAULT_ALLOWED_HOSTS
   // array itself, which must never be mutated.
   const allowedHosts = [...resolveAllowedHosts(input.config)]
-  // Auto-append the registry pull hosts for nested worktrees — unless the
+  // Auto-append the registry pull hosts for nested workspaces — unless the
   // user pinned an exact allowlist with setAllowedUrls, which is a full
   // override the user owns completely (addAllowedUrls and the default list
   // still get them).
@@ -194,13 +194,13 @@ export function buildWorktreeRegistration(input: {
   }
 }
 
-/** Write (or rewrite) one worktree's registration object. */
-export async function applyWorktreeRegistration(
-  worktreeId: string,
-  registration: WorktreeRegistration,
+/** Write (or rewrite) one workspace's registration object. */
+export async function applyProxyRegistration(
+  workspaceId: string,
+  registration: ProxyRegistration,
 ): Promise<void> {
   await kubectlApply(
-    buildRegistrationConfigMapManifest(worktreeId, registration.projectSlug, registration),
+    buildRegistrationConfigMapManifest(workspaceId, registration.projectSlug, registration),
   )
 }
 
@@ -219,15 +219,15 @@ export async function applyWorktreeRegistration(
  */
 export async function registerWorkspaceEgress(
   reg: WorkspaceRegistration,
-): Promise<WorktreeRegistration> {
-  const registration = buildWorktreeRegistration({
+): Promise<ProxyRegistration> {
+  const registration = buildProxyRegistration({
     config: reg.config,
     remoteUrl: reg.remoteUrl,
     tool: reg.tool,
     projectSlug: reg.projectSlug,
     secretRules: reg.proxySecretRules,
   })
-  await applyWorktreeRegistration(reg.workspaceId, registration)
+  await applyProxyRegistration(reg.workspaceId, registration)
   return registration
 }
 
@@ -237,14 +237,14 @@ export async function registerWorkspaceEgress(
  * workspace behind it reaches nothing anyway — the sweep below collects
  * it.
  */
-export async function deregisterWorkspaceEgress(worktreeId: string): Promise<void> {
+export async function deregisterWorkspaceEgress(workspaceId: string): Promise<void> {
   try {
     await kubectlWithRetry([
-      'delete', 'configmap', proxyRegistrationName(worktreeId),
+      'delete', 'configmap', proxyRegistrationName(workspaceId),
       '-n', k8sNamespace(), '--ignore-not-found',
     ])
   } catch (err) {
-    serverLog(`[server] failed to deregister ${worktreeId} from the egress proxy: ${String(err)}`)
+    serverLog(`[server] failed to deregister ${workspaceId} from the egress proxy: ${String(err)}`)
   }
 }
 
@@ -268,11 +268,11 @@ async function listRegistrations(projectSlug?: string): Promise<RegistrationObje
   return list?.items ?? []
 }
 
-function decode(obj: RegistrationObject): WorktreeRegistration | null {
+function decode(obj: RegistrationObject): ProxyRegistration | null {
   const raw = obj.data?.['registration.json']
   if (raw === undefined) return null
   try {
-    return JSON.parse(raw) as WorktreeRegistration
+    return JSON.parse(raw) as ProxyRegistration
   } catch {
     return null
   }
@@ -280,11 +280,11 @@ function decode(obj: RegistrationObject): WorktreeRegistration | null {
 
 /** Widen one registration object in place; false when it holds none. */
 async function widen(obj: RegistrationObject, host: string): Promise<boolean> {
-  const worktreeId = obj.metadata.labels?.[LABEL_WORKTREE_ID]
+  const workspaceId = obj.metadata.labels?.[LABEL_WORKSPACE_ID]
   const registration = decode(obj)
-  if (!worktreeId || !registration) return false
+  if (!workspaceId || !registration) return false
   if (!registration.allowedHosts.includes(host)) {
-    await applyWorktreeRegistration(worktreeId, {
+    await applyProxyRegistration(workspaceId, {
       ...registration,
       allowedHosts: [...registration.allowedHosts, host],
     })
@@ -308,7 +308,7 @@ async function widen(obj: RegistrationObject, host: string): Promise<boolean> {
  * set IS the set. The proxy prunes its blocked record for the host as the
  * widened registration lands, which clears the badge.
  */
-export async function allowWorktreeHost(
+export async function allowWorkspaceHost(
   target: { workspaceId: string; projectSlug: string },
   host: string,
   opts: { fanOutToProject: boolean },
@@ -329,7 +329,7 @@ export async function allowWorktreeHost(
   // The proxy's own record update follows within its watch latency; pushing
   // here keeps the click instant regardless. The hub diffs, so the overlap
   // costs a rebuild rather than a duplicate push.
-  notifyWorktreeListChanged()
+  notifyWorkspaceListChanged()
 }
 
 /** How long a registration may stand without a workspace before the sweep
@@ -347,26 +347,26 @@ export function _resetRegistrationGcForTests(): void {
 /**
  * Collect registrations whose workspace is gone — the leavings of a
  * teardown that never ran (a server that died between deleting the Job and
- * the object). A leaked registration reaches nothing, since worktree ids
+ * the object). A leaked registration reaches nothing, since workspace ids
  * are never reused; the sweep keeps the namespace from accumulating them.
  * Throttled, and reads the pass's own view of the workspace set.
  */
 export async function reconcileRegistrationGc(ctx: PassContext): Promise<void> {
   if (Date.now() - lastRegistrationGcAt < REGISTRATION_GC_INTERVAL_MS) return
   // Only against a trusted view: an empty cache that is merely unseeded
-  // must not read as "every worktree is gone".
+  // must not read as "every workspace is gone".
   const cache = getActiveClusterCache()
-  if (!cache?.healthy('worktree-jobs')) return
+  if (!cache?.healthy('workspace-jobs')) return
   lastRegistrationGcAt = Date.now()
   const live = new Set((await ctx.snapshot().workspaces()).map((w) => w.workspaceId))
-  for (const job of cache.worktreeJobs()) live.add(job.worktreeId)
+  for (const job of cache.workspaceJobs()) live.add(job.workspaceId)
   const cutoff = Date.now() - ORPHAN_REGISTRATION_GRACE_MS
   for (const obj of await listRegistrations()) {
-    const worktreeId = obj.metadata.labels?.[LABEL_WORKTREE_ID]
-    if (!worktreeId || live.has(worktreeId) || ctx.terminating(worktreeId)) continue
+    const workspaceId = obj.metadata.labels?.[LABEL_WORKSPACE_ID]
+    if (!workspaceId || live.has(workspaceId) || ctx.terminating(workspaceId)) continue
     const createdAt = Date.parse(obj.metadata.creationTimestamp ?? '')
     if (!Number.isFinite(createdAt) || createdAt > cutoff) continue
-    serverLog(`[server] collecting the orphaned egress registration of ${worktreeId}`)
-    await deregisterWorkspaceEgress(worktreeId)
+    serverLog(`[server] collecting the orphaned egress registration of ${workspaceId}`)
+    await deregisterWorkspaceEgress(workspaceId)
   }
 }

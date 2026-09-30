@@ -101,7 +101,7 @@ const updateLine = (u: unknown): unknown => ({
  */
 function liveConversation(): AcpConversation {
   transport = new FakeTransport()
-  const record = { slug: 'demo', worktreeId: 'wt-1', agentSessionId: 'acp-1' }
+  const record = { slug: 'demo', workspaceId: 'wt-1', agentSessionId: 'acp-1' }
   const c = new AcpConversation({
     transport,
     cwd: '/workspace',
@@ -482,7 +482,7 @@ describe('attachAcp', () => {
     attachAcp('demo', 'wt-1', 'no-such-conversation', sock)
     await new Promise((r) => setTimeout(r, 20))
 
-    // A booting worktree, or a connection mid-respawn — normal states the
+    // A booting workspace, or a connection mid-respawn — normal states the
     // pane retries out of, not faults.
     expect(sock.sent).toEqual([{ type: 'health', connected: false }])
     expect(sock.closedWith).toBe('no live conversation')
@@ -493,7 +493,7 @@ describe('attachAcp', () => {
     attachAcp('demo', 'wt-1', 'acp-1', sock)
     await waitForHello(sock)
 
-    // What a worktree restart looks like from here: this conversation is
+    // What a workspace restart looks like from here: this conversation is
     // dropped, and a fresh one is registered under the same name once the new
     // pod's agent is up.
     conversation.close()

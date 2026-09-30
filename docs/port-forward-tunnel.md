@@ -1,6 +1,6 @@
-# Reaching a worktree's ports
+# Reaching a workspace's ports
 
-A worktree's dev server listens on a port the user wants to open in a
+A workspace's dev server listens on a port the user wants to open in a
 browser. Who binds that port on the user's machine is the whole subject
 of this document, and the answer is: **not the server**.
 
@@ -20,13 +20,13 @@ port — and the near end of each connection.
 
 ## The two halves
 
-**The server declares.** `WorktreeDriver.declareForwards` takes a config's
+**The server declares.** `WorkspaceDriver.declareForwards` takes a config's
 `portForward` entries and answers the host port each is offered at, held
 for the workspace's lifetime and dropped by `deregisterWorkspace`. It runs
 before the workspace launches, because its answer is stamped into the
 workspace's own tmux status bar. The reactive "forward this port" action
 (docs/auto-forward-ports.md) appends to the same registry. Either way the
-result surfaces as `forwardedPorts` on the worktree list, which is what the
+result surfaces as `forwardedPorts` on the workspace list, which is what the
 webapp links to and what a client forwarder binds.
 
 Declaring is also **allocating**. Binding used to disambiguate two
@@ -44,9 +44,9 @@ port and opens one WebSocket per accepted TCP connection to
 the same way as every other WS (docs/remote-hosting.md). The server splices that socket
 to a `dialPort` stream into the workspace (`attachPortTunnel`) — under k8s,
 a `tcp` stream through the pod's streamd, exactly the relay every other
-byte rides (docs/stream-relay.md). The `id` is an exact worktree id (an
+byte rides (docs/stream-relay.md). The `id` is an exact workspace id (an
 attach naming none is a 400 before any lookup), and the pod driver dials
-only a port the worktree declared or its detector surfaced — never yaac's
+only a port the workspace declared or its detector surfaced — never yaac's
 own in-pod infra range (`isInfraPort`), which no config may declare either.
 
 One WebSocket per TCP connection is the kubectl shape, and it is what makes
@@ -78,8 +78,8 @@ their open connections, and a forward that cannot bind is reported and
 retried on the next pass rather than failing the set. Both clients drive
 it:
 
-- **`yaac forward [worktree-id]`** — the explicit one, for a headless box.
-  It polls the worktree list every few seconds, so a session created,
+- **`yaac forward [workspace-id]`** — the explicit one, for a headless box.
+  It polls the workspace list every few seconds, so a session created,
   stopped, or granted a new port while it runs is picked up. `--port
   <container[:host]>` names ports directly instead (for one the server has
   not heard of, or one wanted on a different local number), and `--bind`
@@ -112,7 +112,7 @@ mapping locally and the driver's `dialPort` connects to the port on the
 server host's loopback, so the desktop preview pane's `127.0.0.1:<port>`
 is true against a remote containerless server too. Only a listener the
 sweep has surfaced can be dialled, at the address it is bound to: the
-sweep walks the worktree's own process tree, so the set is an allowlist of
+sweep walks the workspace's own process tree, so the set is an allowlist of
 that tree's listeners with the sensitive-port denylist on top. The pod
 driver also dials a declared port with nothing listening yet (a forward
 must survive its dev server restarting), because a pod is a sandbox, while

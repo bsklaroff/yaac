@@ -138,7 +138,7 @@ export function kindFronting(): ServerFronting {
 }
 
 const KIND_RECREATE_ADVICE = 'Recreate it: `yaac cluster delete`, then `yaac cluster '
-  + 'install`. Running worktrees are lost (as any cluster delete loses them); '
+  + 'install`. Running workspaces are lost (as any cluster delete loses them); '
   + 'nothing under the data dir is touched.'
 
 /**

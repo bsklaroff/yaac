@@ -2,15 +2,15 @@
  * Verifies that dismissing the create dialog hands focus back to the pane it
  * was opened from, in a real browser with real keyboard events:
  *
- *  1. Terminal: focus a tui worktree's terminal (xterm's textarea), Alt+N,
+ *  1. Terminal: focus a tui workspace's terminal (xterm's textarea), Alt+N,
  *     Escape. Focus is back on that textarea, and keys typed next reach the
- *     agent's pane (read back from the worktree's tmux with capture-pane).
- *  2. Composer: the same from an acp worktree's chat composer; typed keys land
+ *     agent's pane (read back from the workspace's tmux with capture-pane).
+ *  2. Composer: the same from an acp workspace's chat composer; typed keys land
  *     in the composer.
  *
- * Needs one running tui worktree and one running acp worktree in the project
- * (`yaac worktree create <project> --mode tui|acp`), on a containerless
- * server: check 1 finds the tui worktree's tmux socket from `ps`. It types a
+ * Needs one running tui workspace and one running acp workspace in the project
+ * (`yaac workspace create <project> --mode tui|acp`), on a containerless
+ * server: check 1 finds the tui workspace's tmux socket from `ps`. It types a
  * marker into the agent's input line and the composer without sending it,
  * then clears both.
  *
@@ -18,7 +18,7 @@
  * the port from $YAAC_DATA_DIR/server-local/.server.lock (data dir defaults
  * to ~/.yaac) — so run `pnpm build` + `yaac server restart` first.
  *
- * Run: PROJECT=<slug> TUI=<worktree-id> ACP=<worktree-id> \
+ * Run: PROJECT=<slug> TUI=<workspace-id> ACP=<workspace-id> \
  *        node test-playwright-scripts/alt-n-returns-focus-test.js
  * (playwright is resolved from the global npm root; browsers live under
  *  /opt/playwright-browsers)
@@ -51,12 +51,12 @@ function readServerLock() {
   return JSON.parse(fs.readFileSync(p, 'utf8'))
 }
 
-/** The tmux socket of a containerless worktree: its session was started in
- *  the worktree's checkout, whose path ends in the worktree id. */
-function tmuxSocket(worktreeId) {
+/** The tmux socket of a containerless workspace: its session was started in
+ *  the workspace's checkout, whose path ends in the workspace id. */
+function tmuxSocket(workspaceId) {
   const line = execSync('ps -eo args').toString().split('\n')
-    .find((l) => l.includes('tmux -S') && l.includes('new-session') && l.includes(worktreeId))
-  if (!line) throw new Error(`no tmux session found for ${worktreeId} — is it a running containerless worktree?`)
+    .find((l) => l.includes('tmux -S') && l.includes('new-session') && l.includes(workspaceId))
+  if (!line) throw new Error(`no tmux session found for ${workspaceId} — is it a running containerless workspace?`)
   return line.match(/tmux -S (\S+)/)[1]
 }
 
@@ -67,7 +67,7 @@ function check(name, cond, detail = '') {
 }
 
 const { PROJECT, TUI, ACP } = process.env
-if (!PROJECT || !TUI || !ACP) throw new Error('set PROJECT, TUI and ACP (worktree ids)')
+if (!PROJECT || !TUI || !ACP) throw new Error('set PROJECT, TUI and ACP (workspace ids)')
 const lock = readServerLock()
 const origin = `http://127.0.0.1:${lock.port}`
 const marker = `focusmark${Date.now() % 100000}`
@@ -91,7 +91,7 @@ try {
   }
 
   // (1) Terminal.
-  await page.goto(`${origin}/?project=${PROJECT}&worktree=${TUI}`)
+  await page.goto(`${origin}/?project=${PROJECT}&workspace=${TUI}`)
   const xterm = page.locator('.xterm-helper-textarea').first()
   await xterm.waitFor({ state: 'attached', timeout: 20_000 })
   await page.locator('.xterm-screen').first().click()
@@ -104,7 +104,7 @@ try {
   for (let i = 0; i < marker.length; i++) await page.keyboard.press('Backspace')
 
   // (2) Composer.
-  await page.goto(`${origin}/?project=${PROJECT}&worktree=${ACP}`)
+  await page.goto(`${origin}/?project=${PROJECT}&workspace=${ACP}`)
   const composer = page.getByPlaceholder('Message the agent…')
   await composer.waitFor({ state: 'visible', timeout: 30_000 })
   await composer.click()

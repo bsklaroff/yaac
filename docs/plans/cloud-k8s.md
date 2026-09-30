@@ -11,7 +11,7 @@ for it in manifests, not in code paths.
 
 This plan replaces four earlier ones. What shipped from them is
 current-state reference now (docs/server-in-cluster.md,
-docs/cluster-setup.md, docs/worktree-egress.md, docs/trust-split-builds.md);
+docs/cluster-setup.md, docs/workspace-egress.md, docs/trust-split-builds.md);
 what was dropped is listed at the end.
 
 ## Where things stand
@@ -25,7 +25,7 @@ Everything the earlier plans called "the keystone" has shipped on kind:
   makes an NFS-backed volume usable at all — the sentry needs no idmapped
   mount (docs/cluster-setup.md "Runtimes and uids").
 - Egress is Calico NetworkPolicy plus netd's veth-peer redirect, both
-  per-node DaemonSets, both multi-node clean (docs/worktree-egress.md).
+  per-node DaemonSets, both multi-node clean (docs/workspace-egress.md).
 - The gVisor runtime is installed by a privileged DaemonSet, not by
   `podman exec` — the one mechanism that works on a node yaac has no shell
   on and survives node recycling.
@@ -38,7 +38,7 @@ Everything the earlier plans called "the keystone" has shipped on kind:
   the data dir on every substrate. On kind the server pod mounts two
   claims, `yaac-global` (RWX) and `yaac-server-local` (RWO), bound to
   static hostPath volumes into those folders, plus the node's own
-  node-local tree; every worktree pod mounts subPaths of `yaac-global`,
+  node-local tree; every workspace pod mounts subPaths of `yaac-global`,
   resolved by the k8s driver from the tier a path declares, and its
   node-local directories are created by its own init container
   (docs/server-in-cluster.md "Storage is two claims"). The node-local
@@ -68,12 +68,12 @@ Everything the earlier plans called "the keystone" has shipped on kind:
 - The egress proxy mounts nothing from the host and holds no state: its
   credentials, secret values and registrations are objects it watches, its
   CA, captured rotations and records are objects the server watches
-  (docs/worktree-egress.md "What the proxy is told, and how"), and
+  (docs/workspace-egress.md "What the proxy is told, and how"), and
   `.credentials/` is SERVER-LOCAL.
 - The NFS-under-gVisor spike ran (branch `nfs-gvisor-storage-spike`,
   `test-storage-probes/`). Verdict: **go, conditional on the tier split.**
   `actimeo=1` on the mount (cross-client visibility 25–57ms), `fsGroup` on
-  csi-driver-nfs claims, and worktrees + pnpm store kept node-local
+  csi-driver-nfs claims, and workspaces + pnpm store kept node-local
   (`git worktree add` 7.6s → 0.75s, checkout 4.0s → 0.57s against an
   all-ext4 baseline of 0.5s). Sentry locks never reach the server, so
   single-writer discipline per file is the rule on the shared tier.
@@ -109,7 +109,7 @@ What is left is the real targets and the operations around them.
 - **Storage is two named claims on every backend.** `yaac-global` (RWX:
   the `projects/` tree) and `yaac-server-local` (RWO: the PGlite DB, the
   lock, logs, `.credentials/`, `build/`, `models/`). The server pod and
-  every worktree pod mount subPaths of `yaac-global`; only the server
+  every workspace pod mount subPaths of `yaac-global`; only the server
   mounts `yaac-server-local`; the proxy mounts neither. The data dir has
   one layout on every substrate — three tier folders, `global/`,
   `server-local/` and `node-local/`, and nothing else of yaac's at its root
@@ -137,16 +137,16 @@ What is left is the real targets and the operations around them.
     RWX volume's `mountOptions`, and a one-shot binder pod makes each
     volume root the install uid's (docs/server-in-cluster.md "Storage is
     two claims").
-- **Nodes are disposable.** Nothing a worktree needs in order to resume
+- **Nodes are disposable.** Nothing a workspace needs in order to resume
   may live only on the node it last ran on, and no pod is ever pinned to a
   node. The NODE-LOCAL tier therefore holds exactly two kinds of thing:
   caches that are re-derivable (package caches, the per-node image store)
   and **working copies of a checkpoint on the shared tier**. opencode's
-  per-worktree SQLite is the second kind: SQLite is unusable on NFS (no
+  per-workspace SQLite is the second kind: SQLite is unusable on NFS (no
   WAL, a confirmed corruption issue), so the pod works on a node-local
   copy and checkpoints it to `<global>/projects/<slug>/opencode-data/<id>`
   on a timer and at stop, and a start restores from the checkpoint
-  (docs/worktree-storage.md "opencode" is the record of what ships). The
+  (docs/workspace-storage.md "opencode" is the record of what ships). The
   pod does both itself (the DB is in-pod and has one writer), so the
   server learns nothing new; a node lost mid-run costs at most one
   checkpoint interval of conversation.
@@ -247,20 +247,20 @@ against an NFS VM firewalled to the nodes), then EKS-AL, then AKS-Ubuntu:
   CNI on EKS) and `YAAC_KUBE_PROXY_EXTERNAL` on k3s.
 - The storage gates over a real network — every spike number is a
   single-host floor, and `actimeo=1` is where staleness bugs would show.
-- Worktree `pnpm install` time with the npm cache (docs/worktree-storage.md
+- Workspace `pnpm install` time with the npm cache (docs/workspace-storage.md
   "Package installs") on another node — measured single-host only so far —
   and a node drain that moves the cache: installs fail until its claim
   reattaches, the same exposure the main registry has for pulls.
-- A full worktree life: create, nested containers, prewarm claim, then
+- A full workspace life: create, nested containers, prewarm claim, then
   drain the node and resume — every tool including opencode — on another
-  (repo, transcripts and the opencode checkpoint are shared; the worktree
+  (repo, transcripts and the opencode checkpoint are shared; the workspace
   dir is too until step 9, correct but slow on the first `worktree add`).
-- Reboot and drain: a node drain kills a worktree Job — surface a
-  "node draining" worktree state and document that in-flight scratch is
+- Reboot and drain: a node drain kills a workspace Job — surface a
+  "node draining" workspace state and document that in-flight scratch is
   lost while `repo/.git` and transcripts are not.
 - Document each target in docs/cloud-hosting.md (a current-state doc,
   written as each target passes), with the provider table from
-  docs/worktree-egress.md as its envelope.
+  docs/workspace-egress.md as its envelope.
 
 ### 8. Operations
 
@@ -268,35 +268,35 @@ against an NFS VM firewalled to the nodes), then EKS-AL, then AKS-Ubuntu:
 - The lease-fenced lock stays; on byo the RWO claim's attach exclusivity
   is a second guard for free. An OFD/`flock` fence is still worth doing
   on kind, where hostPath enforces nothing.
-- A dedicated worktrees node pool: the `nodeSelector` on the installer
+- A dedicated workspaces node pool: the `nodeSelector` on the installer
   DaemonSet and the `tolerations` on the RuntimeClasses are plumbed and
-  default to no-ops; `--byo` gets a `--worktree-pool-taint` knob that sets
+  default to no-ops; `--byo` gets a `--workspace-pool-taint` knob that sets
   both and persists across re-installs (docs/cluster-setup.md "Which nodes
-  count as worktree-eligible" describes why today's apply prunes it).
+  count as workspace-eligible" describes why today's apply prunes it).
 
-### 9. Node-local worktrees (perf, separable)
+### 9. Node-local workspaces (perf, separable)
 
-The spike showed shared worktrees are correct but ~10x slower on the git
-write paths. Once the cloud install is real: `addWorktree` splits so the
+The spike showed shared workspaces are correct but ~10x slower on the git
+write paths. Once the cloud install is real: `addWorkspace` splits so the
 server writes only the admin dir into the shared `repo/.git/worktrees/<id>`
-(`--no-checkout` staging) and a worktree init container does the checkout
-into the node-local worktree dir; cleanup and GC learn the dir is per node
+(`--no-checkout` staging) and a workspace init container does the checkout
+into the node-local workspace dir; cleanup and GC learn the dir is per node
 (the node-pinned sweep pattern). Disposable nodes set the bar this step
 has to clear: a node-local checkout holds uncommitted work, so it is a
 working copy of a checkpoint like opencode's DB — a snapshot commit of the
 tree (tracked, untracked and staged) written to `refs/yaac/checkpoint/<id>`
 in the shared `repo/.git` on stop and on a timer, restored by the init
-container when the node-local dir is absent. Without that, worktrees stay
+container when the node-local dir is absent. Without that, workspaces stay
 shared: slow is acceptable, losing an hour of edits to a node upgrade is
 not. The webapp's file editor (docs/file-editor.md) reads and writes
-`worktreeDir` from the server's own filesystem, so a node-local checkout
-also needs an in-pod file path for it. A stopped worktree's files would then
+`workspaceDir` from the server's own filesystem, so a node-local checkout
+also needs an in-pod file path for it. A stopped workspace's files would then
 be reachable only through the checkpoint.
 
 ## Invariants to keep
 
 - A shared-tier file may have many readers and ONE appending writer;
-  cross-worktree aggregation goes through per-worktree files merged by the
+  cross-workspace aggregation goes through per-workspace files merged by the
   server. Sentry locks are sandbox-local, so nothing on the shared tier may
   rely on a cross-pod lock.
 - Every path stored in a row is data-dir-relative (transcript paths

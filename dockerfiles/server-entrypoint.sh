@@ -10,8 +10,8 @@
 # existing `yaac` entry at the uid we are actually running as. /etc/passwd is
 # group-0 writable (see the Dockerfile) precisely so this can happen.
 #
-# The same rewrite runs for worktree pods at the top of
-# worktree-bin/yaac-worktree-init; a Deployment has no postStart hook to carry
+# The same rewrite runs for workspace pods at the top of
+# workspace-bin/yaac-workspace-init; a Deployment has no postStart hook to carry
 # it, so the two copies are the price of one contract. Both must keep the same
 # two properties:
 #

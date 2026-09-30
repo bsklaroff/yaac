@@ -1,5 +1,5 @@
 import { WorkspaceExecError, type WorkspacePaths } from '#drivers/contract'
-import { worktreeDriver } from '#drivers/driver'
+import { workspaceDriver } from '#drivers/driver'
 import {
   PI_DEFAULT_PROVIDER,
   piProviderInfo,
@@ -24,8 +24,8 @@ import { CODEX_TITLE_ITEMS, codexLaunchConfig } from './codex'
  * reason: a UNIX socket only rendezvouses within the kernel that bound it.
  * A pod has its own, so one fixed in-container path is safe for every
  * workspace; host processes share one, so a fixed path would land every
- * worktree on a single tmux server, where `has-session -t yaac` and
- * `respawn-window -t yaac:<tool>` would answer for whichever worktree got
+ * workspace on a single tmux server, where `has-session -t yaac` and
+ * `respawn-window -t yaac:<tool>` would answer for whichever workspace got
  * there first.
  */
 export function tmuxCmd(paths: Pick<WorkspacePaths, 'tmuxSock'>): string {
@@ -74,7 +74,7 @@ export function resolveInitWindows(config: YaacConfig): InitWindow[] {
 /** What one agent's launch command is built from. */
 export interface AgentCmdSpec {
   tool: AgentTool
-  worktreeId: string
+  workspaceId: string
   resume?: boolean
   /** pi only — provider whose default model is passed to `pi --model`
    *  when no explicit `model` override is given. */
@@ -90,8 +90,8 @@ export interface AgentCmdSpec {
    *
    * Required rather than defaulted: it decides whether an agent can act
    * unsupervised, and on a runtime with no sandbox around it that is the
-   * difference between a worktree and this machine. A caller states it,
-   * and the worktree's row is what remembers the answer across a restart.
+   * difference between a workspace and this machine. A caller states it,
+   * and the workspace's row is what remembers the answer across a restart.
    */
   permissionMode: PermissionMode
   /** codex only — the workspace to run it in and launch it trusting
@@ -100,11 +100,11 @@ export interface AgentCmdSpec {
 }
 
 /**
- * The posture to actually launch `tool` in, given what the worktree's row
+ * The posture to actually launch `tool` in, given what the workspace's row
  * asks for.
  *
  * Create refuses a posture its tool doesn't have, so this only fires on a row
- * written by a different build — where refusing would strand a worktree that
+ * written by a different build — where refusing would strand a workspace that
  * cannot be restarted. The fallback is the most permissive posture the tool
  * has that is no looser than the row's (`launchablePermissionMode`): opencode has
  * no reviewer model, so `auto` lands on `accept-edits`; codex's strictest is
@@ -120,8 +120,8 @@ function postureFor(tool: AgentTool, mode: PermissionMode): PermissionMode {
  * opencode's posture is config, not flags. `OPENCODE_CONFIG_CONTENT` is a
  * config document read per process and merged over the `opencode.json` in
  * the shared config dir (its own keys win), which is what makes the posture
- * per-worktree — that file is shared by every worktree in the project, and
- * the model picked in one worktree's TUI is persisted there for the rest.
+ * per-workspace — that file is shared by every workspace in the project, and
+ * the model picked in one workspace's TUI is persisted there for the rest.
  *
  * Rules are stated in opencode's ordered `permissions` array, over a base
  * policy every agent starts from — `* allow`, then `ask` for
@@ -131,7 +131,7 @@ function postureFor(tool: AgentTool, mode: PermissionMode): PermissionMode {
  *
  * **Getting a rule wrong fails open, silently.** An action opencode does not
  * know matches nothing, so a misspelled `ask` leaves the base policy's
- * `* allow` in force — on a containerless worktree's real filesystem. That is
+ * `* allow` in force — on a containerless workspace's real filesystem. That is
  * also why `bypass` states `* allow` rather than passing no config: the base
  * policy already asks for out-of-tree access and `.env` reads, and a future
  * default that tightens would quietly stop meaning bypass.
@@ -225,7 +225,7 @@ export function opencodeConfigArg(mode: PermissionMode, model: string | undefine
 }
 
 export function buildAgentCmd(spec: AgentCmdSpec): string {
-  const { tool, worktreeId, piProvider, model } = spec
+  const { tool, workspaceId, piProvider, model } = spec
   const mode = postureFor(tool, spec.permissionMode)
   const resume = spec.resume ?? false
   if (tool === 'codex') {
@@ -273,7 +273,7 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
       ...config.map((c) => `-c ${doubleQuoted(c)}`),
       '--dangerously-bypass-hook-trust',
       posture,
-      resume ? `resume ${worktreeId}` : '',
+      resume ? `resume ${workspaceId}` : '',
       model ? `--model ${model}` : '',
     ].filter(Boolean).join(' ')
   }
@@ -298,7 +298,7 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // guarded so a future registry gap falls back to pi's own default rather
     // than `--model undefined`).
     const modelFlag = piModel ? ` --model ${piModel}` : ''
-    const pi = `pi --approve${modelFlag} --session-id ${worktreeId}`
+    const pi = `pi --approve${modelFlag} --session-id ${workspaceId}`
     // On a fresh run that `--session-id` names a session that doesn't exist
     // yet, so pi prints a yellow "Warning: No project session found with id
     // '<id>'; creating a new session with that id." to stderr, which then
@@ -331,14 +331,14 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // on stdio — rather than the background service opencode would otherwise
     // spawn and leave running. The server is what reads the config, so a
     // child inheriting this process's env is what makes the posture and
-    // model per-worktree, and nothing outlives the window to carry a stale
+    // model per-workspace, and nothing outlives the window to carry a stale
     // one into the next launch. The TUI takes no model or agent flag — both
     // ride in the config (`opencodeConfigArg`) — and refuses an unknown one
     // outright (usage, exit: a dead window), so none is invented here.
     return [
       opencodeConfigArg(mode, model),
       'opencode --standalone',
-      resume ? `--session ${worktreeId}` : '',
+      resume ? `--session ${workspaceId}` : '',
     ].filter(Boolean).join(' ')
   }
   // claude names all five postures on one flag, so the mapping is a rename.
@@ -367,13 +367,13 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
   // Claude Code animates its spinner into the title only when it does NOT
   // detect a multiplexer, and it detects one by reading `$TMUX`; inside a yaac
   // pane that is always set, so the title would sit on the idle glyph for the
-  // life of the session and every worktree would read `waiting` forever.
+  // life of the session and every workspace would read `waiting` forever.
   // Hiding the variable from the process restores the animation, and the OSC
   // title still reaches tmux — the escape is written to the pty either way,
   // so `#{pane_title}` is set exactly as before.
   //
   // Only `TMUX` is dropped. `TMUX_PANE` stays, because the hooks set their
-  // pane options on it (worktree-bin/yaac-agent-links, yaac-agent-report) —
+  // pane options on it (workspace-bin/yaac-agent-links, yaac-agent-report) —
   // dropping it would silently cost every conversation's record. And the
   // value itself survives as `YAAC_TMUX`, which is how they find the server
   // to set those options on without claude seeing a multiplexer.
@@ -392,7 +392,7 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
   return [
     `env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode ${posture}`,
     model ? `--model ${model}` : '',
-    resume ? `--resume ${worktreeId}` : `--session-id ${worktreeId}`,
+    resume ? `--resume ${workspaceId}` : `--session-id ${workspaceId}`,
   ].filter(Boolean).join(' ')
 }
 
@@ -494,7 +494,7 @@ export function buildPromptPasteBgCmd(
  * class, not every crash.
  *
  * A window-name LIST rather than a tool, because a launch can open several
- * conversations at once (a restart resuming a multi-agent worktree), whose
+ * conversations at once (a restart resuming a multi-agent workspace), whose
  * windows are `agentWindowName(tool, i)` — `claude`, `claude-2`, `codex`.
  * One `list-windows`, one sleep, one exit code for the whole set; each
  * missing window names itself on stderr, which is what the caller's message
@@ -517,8 +517,8 @@ export function buildAgentWindowCheck(windowNames: string[], paths: WorkspacePat
  * a caller that cannot use `try`/`catch` control flow to honor it. The
  * create fires this probe without awaiting it, so its whole `.catch` sees
  * every rejection — and reporting a transport blip as a dead agent there
- * does not merely add noise: a failed provisioning row HIDES its worktree
- * from the snapshot, so a false positive makes a live, working worktree
+ * does not merely add noise: a failed provisioning row HIDES its workspace
+ * from the snapshot, so a false positive makes a live, working workspace
  * vanish behind an error until the user dismisses it.
  */
 export class AgentLaunchDeadError extends Error {
@@ -548,7 +548,7 @@ export async function verifyAgentWindowAlive(
   jobName: string,
   windowNames: string[],
 ): Promise<void> {
-  const driver = worktreeDriver()
+  const driver = workspaceDriver()
   try {
     await driver.exec(jobName, buildAgentWindowCheck(windowNames, driver.workspacePaths(jobName)))
   } catch (err) {

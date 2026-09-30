@@ -5,7 +5,7 @@ import { env } from '@yaac/shared/env'
 import type { StreamChild } from '#drivers/contract'
 import { FRAME_DATA, FRAME_EXIT, FRAME_RESIZE, FRAME_SIGNAL, FrameParser, encodeFrame } from '@yaac/shared/stream-frames'
 import { k8sNamespace, kubectlGetJson } from './kubectl'
-import { worktreeIdFromJobName } from './pods'
+import { workspaceIdFromJobName } from './pods'
 import { containerExec } from './exec'
 import {
   PROXY_AUTH_SECRET_NAME,
@@ -15,16 +15,16 @@ import {
 
 /**
  * The server side of the stream relay (docs/stream-relay.md): every
- * steady-state byte between the server and a worktree pod — terminal PTYs,
+ * steady-state byte between the server and a workspace pod — terminal PTYs,
  * the status watcher's tmux control stream, forwarded TCP, one-shot pod
  * commands — rides a plain TCP connection through the proxy's relay
  * listener into the pod's streamd, entirely off the apiserver. kubectl
  * exec survives only where streamd cannot be gated on — `bootStreamd`,
- * the teardown-time image-salvage survey — and for non-worktree infra pods.
+ * the teardown-time image-salvage survey — and for non-workspace infra pods.
  *
  * Wire shape per stream: one relay auth line
- * `{token: <proxyAuthSecret>, worktreeId}`, then one streamd handshake
- * line `{token: <per-worktree HMAC>, kind, ...params}`, then streamd's
+ * `{token: <proxyAuthSecret>, workspaceId}`, then one streamd handshake
+ * line `{token: <per-workspace HMAC>, kind, ...params}`, then streamd's
  * `{ok}` reply line, then the payload. Both lines are pipelined in one
  * write; the relay is a dumb splice after its auth line.
  */
@@ -34,7 +34,7 @@ const DIAL_TIMEOUT_MS = 15_000
 /**
  * Floor on a `podExec` budget, and so on the dial deadline derived
  * from it. A dial deadline is a statement about the TRANSPORT — which
- * every worktree's streams share — not about how fast one caller wants an
+ * every workspace's streams share — not about how fast one caller wants an
  * answer, and the two must not be the same number. The stale reaper's
  * tmux probes ask for 2s (features/status/liveness.ts); a dial that
  * crosses the apiserver, the proxy and a pod dial can legitimately take
@@ -81,7 +81,7 @@ function resolveRelayAddr(): RelayAddr {
 
 /**
  * The install's proxy auth secret — the relay bearer and the HMAC key for
- * per-worktree stream tokens. Read once per server run (it is generated
+ * per-workspace stream tokens. Read once per server run (it is generated
  * once per cluster and never rotated in place).
  */
 async function relaySecret(): Promise<string> {
@@ -96,13 +96,13 @@ async function relaySecret(): Promise<string> {
 }
 
 /**
- * A worktree's streamd token: HMAC-SHA256(proxyAuthSecret, worktreeId).
- * Derived (never stored), so it survives server restarts; worktree-create
+ * A workspace's streamd token: HMAC-SHA256(proxyAuthSecret, workspaceId).
+ * Derived (never stored), so it survives server restarts; workspace-create
  * injects it into the pod as YAAC_STREAM_TOKEN.
  */
-export async function podStreamToken(worktreeId: string): Promise<string> {
+export async function podStreamToken(workspaceId: string): Promise<string> {
   const secret = await relaySecret()
-  return crypto.createHmac('sha256', secret).update(worktreeId).digest('hex')
+  return crypto.createHmac('sha256', secret).update(workspaceId).digest('hex')
 }
 
 /** Transport-level failure (relay unreachable, refused handshake,
@@ -126,7 +126,7 @@ export class RelayDialError extends Error {
 }
 
 /**
- * Open one stream to a worktree's streamd: dial the relay, pipeline the
+ * Open one stream to a workspace's streamd: dial the relay, pipeline the
  * relay auth line + streamd handshake line, await streamd's `{ok}` reply.
  * Resolves with the connected socket, paused, with any bytes past the
  * reply line unshifted. Rejects with RelayDialError on any failure.
@@ -137,7 +137,7 @@ export class RelayDialError extends Error {
  * whether to condemn it.
  */
 export async function relayDial(
-  worktreeId: string,
+  workspaceId: string,
   handshake: Record<string, unknown>,
   opts: { timeoutMs?: number } = {},
 ): Promise<net.Socket> {
@@ -145,7 +145,7 @@ export async function relayDial(
   const addr = resolveRelayAddr()
   const [secret, token] = await Promise.all([
     relaySecret(),
-    podStreamToken(worktreeId),
+    podStreamToken(workspaceId),
   ]).catch((err: unknown) => {
     throw new RelayDialError(`stream relay: ${err instanceof Error ? err.message : String(err)}`)
   })
@@ -166,7 +166,7 @@ export async function relayDial(
       settled = true
       clearTimeout(timer)
       socket.destroy()
-      reject(new RelayDialError(`stream relay dial (${worktreeId.slice(0, 8)}...): ${reason}`))
+      reject(new RelayDialError(`stream relay dial (${workspaceId.slice(0, 8)}...): ${reason}`))
     }
     const timer = setTimeout(() => fail(`timeout after ${timeoutMs}ms`), timeoutMs)
 
@@ -174,7 +174,7 @@ export async function relayDial(
     socket.on('close', () => fail('connection closed during handshake'))
     socket.on('connect', () => {
       socket.write(
-        JSON.stringify({ token: secret, worktreeId }) + '\n'
+        JSON.stringify({ token: secret, workspaceId }) + '\n'
         + JSON.stringify({ token, ...handshake }) + '\n',
       )
     })
@@ -214,7 +214,7 @@ export async function relayDial(
   })
 }
 
-// ── One-shot commands (the containerExec replacement for worktree pods) ──────
+// ── One-shot commands (the containerExec replacement for workspace pods) ──────
 
 /** The remote command ran and exited nonzero — a conclusive verdict about
  *  the pod (unlike RelayDialError). Mirrors child_process error fields
@@ -267,8 +267,8 @@ export interface RelayExecOptions {
 }
 
 /**
- * Run a shell command inside a worktree pod via its streamd — the drop-in
- * replacement for `containerExec` on worktree pods. `cmd` is a
+ * Run a shell command inside a workspace pod via its streamd — the drop-in
+ * replacement for `containerExec` on workspace pods. `cmd` is a
  * shell-formatted command tail (executed as `sh -c <cmd>` in the pod —
  * one shell pass, like the host-shell pass `containerExec` gave it).
  * Resolves `{stdout, stderr}` on exit 0; throws RelayExecError on a
@@ -283,7 +283,7 @@ export async function podExec(
   cmd: string,
   opts: RelayExecOptions = {},
 ): Promise<{ stdout: string; stderr: string }> {
-  const worktreeId = worktreeIdFromJobName(jobName)
+  const workspaceId = workspaceIdFromJobName(jobName)
   const timeoutMs = Math.max(MIN_EXEC_TIMEOUT_MS, opts.timeout ?? 30_000)
   const maxAttempts = opts.maxAttempts ?? 3
   let lastErr: Error = new RelayDialError('no attempts made')
@@ -294,7 +294,7 @@ export async function podExec(
       // for the COMMAND, and letting it govern the dial too would make a
       // hung transport cost `timeout` per attempt before anyone notices.
       const socket = await relayDial(
-        worktreeId,
+        workspaceId,
         { kind: 'exec', cmd: ['sh', '-c', cmd] },
         { timeoutMs: Math.min(DIAL_TIMEOUT_MS, timeoutMs) },
       )
@@ -317,8 +317,8 @@ export async function podExec(
       }
       const { exitCode, stdout = '', stderr = '', signal, spawnFailed } = result
       // Only a command that RAN AND EXITED is a verdict about the pod, and
-      // the difference deletes worktrees: a RelayExecError reads as `dead`
-      // at the reaper, which tears the worktree down in the same pass. Three
+      // the difference deletes workspaces: a RelayExecError reads as `dead`
+      // at the reaper, which tears the workspace down in the same pass. Three
       // results say the command did not get that far, and each would
       // otherwise land as a nonzero exit — a signal kill reports no code (so
       // the `?? 1` in streamd stands in for one), a spawn failure fabricates
@@ -365,14 +365,14 @@ export async function podExec(
  * dial completes are buffered, and a dial failure surfaces as an 'error'
  * event.
  */
-export function dialCtrlStream(worktreeId: string, argv: string[]): StreamChild {
+export function dialCtrlStream(workspaceId: string, argv: string[]): StreamChild {
   const emitter = new EventEmitter()
   const dataCbs: Array<(chunk: Buffer | string) => void> = []
   const pending: string[] = []
   let sock: net.Socket | null = null
   let killed = false
 
-  relayDial(worktreeId, { kind: 'ctrl', cmd: argv }).then(
+  relayDial(workspaceId, { kind: 'ctrl', cmd: argv }).then(
     (socket) => {
       if (killed) {
         socket.destroy()
@@ -426,7 +426,7 @@ export interface StreamPty {
 }
 
 export function dialPtyStream(
-  worktreeId: string,
+  workspaceId: string,
   argv: string[],
   size: { cols?: number; rows?: number },
 ): StreamPty {
@@ -448,7 +448,7 @@ export function dialPtyStream(
     else if (!killed) pending.push(frame)
   }
 
-  relayDial(worktreeId, {
+  relayDial(workspaceId, {
     kind: 'pty',
     cmd: argv,
     cols: size.cols ?? 80,
@@ -529,10 +529,10 @@ export function dialPtyStream(
 // ── streamd lifecycle ──────────────────────────────────────────────────────
 
 /**
- * Start (or restart) streamd in a worktree pod — the one steady-state
+ * Start (or restart) streamd in a workspace pod — the one steady-state
  * kubectl exec that remains, because it is what heals a crashed streamd
  * when no stream can reach the pod. Idempotent: a second daemon exits on
- * EADDRINUSE. Used by worktree-create's setup and the status watcher's
+ * EADDRINUSE. Used by workspace-create's setup and the status watcher's
  * self-heal.
  */
 export async function bootStreamd(
@@ -556,9 +556,9 @@ export interface WaitForStreamdDeps {
 }
 
 /**
- * Gate on a worktree pod's streamd answering the relay — worktree-create's
+ * Gate on a workspace pod's streamd answering the relay — workspace-create's
  * "in-pod setup done" signal, and the prewarm claim's readiness gate
- * before it mutates a spare. The pod's postStart hook (yaac-worktree-init)
+ * before it mutates a spare. The pod's postStart hook (yaac-workspace-init)
  * starts streamd last, so a successful relay exec proves the git config and
  * tmux server it configured are in place, and every setup command that
  * follows can ride the relay instead of kubectl exec.

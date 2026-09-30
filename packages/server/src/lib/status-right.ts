@@ -2,7 +2,7 @@ import { shellEscape } from './shell'
 import type { PortMapping } from '@yaac/shared/types'
 
 /**
- * The worktree status bar: what it says, and the command that sets it.
+ * The workspace status bar: what it says, and the command that sets it.
  *
  * Vocabulary rather than mechanism, which is why it is here. The bar reaches
  * a workspace three ways — the launch stamps `YAAC_STATUS_RIGHT` for the
@@ -14,13 +14,13 @@ import type { PortMapping } from '@yaac/shared/types'
  */
 export function buildStatusRight(
   projectSlug: string,
-  worktreeId: string,
+  workspaceId: string,
   ports: ReadonlyArray<PortMapping>,
 ): string {
   const portInfo = ports.length > 0
     ? ' ' + ports.map((p) => `:${p.hostPort}->${p.containerPort}`).join(' ')
     : ''
-  return ` ${projectSlug} ${worktreeId.slice(0, 8)}${portInfo} `
+  return ` ${projectSlug} ${workspaceId.slice(0, 8)}${portInfo} `
 }
 
 /**

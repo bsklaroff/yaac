@@ -1,7 +1,7 @@
 # The containerless driver
 
-yaac runs a worktree on one of two substrates. The `k8s` driver gives each
-worktree a single-pod Job in a local cluster, built from an image and
+yaac runs a workspace on one of two substrates. The `k8s` driver gives each
+workspace a single-pod Job in a local cluster, built from an image and
 reached through an egress proxy. The `containerless` driver gives it a tmux
 server on the host, in the checkout the server already made — no image, no
 cluster, no proxy, and no sandbox.
@@ -9,7 +9,7 @@ cluster, no proxy, and no sandbox.
 It exists for machines the first one cannot run on (podman and kind are a
 tall order on macOS, and impossible on a locked-down laptop) and for people
 who want their agents working on the real machine rather than a copy of it.
-What it costs is the isolation: an agent in a containerless worktree runs as
+What it costs is the isolation: an agent in a containerless workspace runs as
 the user running yaac, with that user's access to the filesystem, the
 network and everything else. Choosing this driver is consenting to that.
 
@@ -29,28 +29,28 @@ or an install.
 The two kinds never meet on one data dir: a host start against a data dir
 recorded `k8s` is refused, and `yaac cluster install` refuses to run against
 a containerless install. That matters because the crossing is irreversible
-in one direction — a k8s server cannot see a tmux worktree, so it would reap
+in one direction — a k8s server cannot see a tmux workspace, so it would reap
 rows whose pods it cannot find and its teardown would remove the very state
 dirs the markers live in, leaving the agents running as the user and
 unreachable.
 
-## What a worktree is here
+## What a workspace is here
 
 The tmux server is the unit — the thing the Job is under the other driver.
-Its existence means the worktree is up, its death means the worktree is
+Its existence means the workspace is up, its death means the workspace is
 gone, and it deliberately outlives the yaac server that started it: `yaac
 server restart` must not stop anyone's agent.
 
-Each worktree gets its own tmux server, on its own socket. That is the one
+Each workspace gets its own tmux server, on its own socket. That is the one
 thing this substrate must not share: a single socket would put every
-worktree on one tmux server, where `has-session -t yaac` and
-`respawn-window -t yaac:<tool>` answer for whichever worktree got there
+workspace on one tmux server, where `has-session -t yaac` and
+`respawn-window -t yaac:<tool>` answer for whichever workspace got there
 first. The sockets live under the OS temp dir rather than the data dir
 because `sockaddr_un.sun_path` is about 104 bytes on macOS and a data-dir
 path is longer than that; they are keyed by the install's own root so two
 servers on one host never collide.
 
-The session's shape is identical to the one `worktree-bin/yaac-worktree-init`
+The session's shape is identical to the one `workspace-bin/yaac-workspace-init`
 creates inside a pod, and has to be: the `sleep infinity` placeholder the
 stale reaper recognizes, the `yaac:<tool>` window naming the status watcher
 parses, and the tmux options the webapp's terminal rendering depends on are
@@ -63,24 +63,24 @@ Every tmux invocation, `git -C` call and prompt script the layers above yaac's
 drivers author is written against `WorkspacePaths` — the driver's answer to
 "where are this workspace's things, as the workspace sees them". A pod
 driver answers with fixed container paths, because each pod has its own
-mount namespace. This one answers per-worktree, because they share a
+mount namespace. This one answers per-workspace, because they share a
 filesystem.
 
 | | k8s | containerless |
 |---|---|---|
-| checkout | `/workspace` | `~/.yaac/global/projects/<slug>/worktrees/<id>` |
+| checkout | `/workspace` | `~/.yaac/global/projects/<slug>/workspaces/<id>` |
 | project main clone | the server's own path, read-only | `~/.yaac/global/projects/<slug>/repo/.git` |
 | tmux socket | `/tmp/yaac-tmux/server` (pod-local) | `$TMPDIR/yaac-cl-<hash>/<id>.sock` |
-| scratch | `/tmp` | the worktree's own state dir |
+| scratch | `/tmp` | the workspace's own state dir |
 | ACP record | `/home/yaac/.yaac-acp` (mounted) | `~/.yaac/global/projects/<slug>/acp/<id>` |
 
 The ACP record is the one row the driver does not get to answer freely. Under
 k8s the container path is a mount whose host side is the shared project
 location, and that location is what every reader above the driver opens — the
-chat pane's tail, the registry's first-prompt scan, a stopped worktree's
-transcript. So this driver names it directly. It is also the one per-worktree
+chat pane's tail, the registry's first-prompt scan, a stopped workspace's
+transcript. So this driver names it directly. It is also the one per-workspace
 path that must outlive the state dir, which a stop removes: a stopped
-worktree's conversation stays readable (docs/agent-modes.md).
+workspace's conversation stays readable (docs/agent-modes.md).
 
 Because the checkout the agent sees IS the one the server made, the review
 diff is host `git` run in that directory rather than an exec into anything.
@@ -89,7 +89,7 @@ is its alternates line, naming the main clone's objects as the server sees
 them (docs/server-git.md). A pod mounts the main clone at that same path, so
 the line is the same in every view, and the launch rewrites it on both
 drivers (`buildCloneLinkExec`), which heals a checkout last launched by a
-server that saw the data dir elsewhere — so a stopped worktree restarts on
+server that saw the data dir elsewhere — so a stopped workspace restarts on
 either substrate. A switch must still take the outgoing substrate's
 workspaces down first: two agents in one checkout is not something either
 server can see or stop, since neither sees the other's workspaces.
@@ -101,18 +101,18 @@ The data dir has the same shape on every substrate — `global/`,
 `packages/shared/src/paths.ts`). Under k8s those three are claims and a
 node hostPath; here they are three subdirectories of one directory, and no
 volume machinery applies. The split is inert on this driver, not different:
-a path declared GLOBAL is symlinked from the worktree's HOME exactly as a
+a path declared GLOBAL is symlinked from the workspace's HOME exactly as a
 NODE-LOCAL one is, and the one place the tier shows is that a node-local
 source directory that does not exist yet (the project's pnpm store on its
-first worktree) is created by the driver as it links it, where the pod
+first workspace) is created by the driver as it links it, where the pod
 driver's init container would have.
 
 ## Mounts become symlinks
 
 The driver contract already anticipates this — "a host-process driver reads
 a hostPath as a bind or a symlink". A symlink here, because a real bind
-mount needs root and running yaac as root to open a worktree is not a trade
-this mode is for. Each worktree gets a private `$HOME` under its state dir,
+mount needs root and running yaac as root to open a workspace is not a trade
+this mode is for. Each workspace gets a private `$HOME` under its state dir,
 with the project's tool homes (`claude`, `codex`, `pi`, the opencode config)
 linked into it, and a private bin dir on `PATH` holding the helper scripts a
 pod would find in `/usr/local/bin`.
@@ -123,7 +123,7 @@ alone, the failure is silent and looks like success: the agent reads the
 server user's config, with that user's real credentials in it, and writes its
 transcripts where yaac's discovery never looks.
 
-So a worktree gets its tool homes two ways. Where a tool has a real home
+So a workspace gets its tool homes two ways. Where a tool has a real home
 override, every create **names it** — `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
 `PI_CODING_AGENT_DIR`, and pi's session dir — on both substrates, in the one
 vocabulary the layers above drivers are written in: the container layout. A
@@ -138,7 +138,7 @@ its own rather than only while every create remembers to re-supply one.
 The same clearing drops the markers a claude session stamps on the processes
 it spawns (`AGENT_SESSION_VARS`: `CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`,
 its session id, pid, trace context and messaging socket), which the server
-carries whenever an agent started it. A worktree is not that session's child,
+carries whenever an agent started it. A workspace is not that session's child,
 and a claude that inherits `CLAUDE_CODE_CHILD_SESSION` stops saving its
 transcript. The session also sets `GIT_EDITOR=true`, and that is dropped only
 as that literal value beside `CLAUDECODE` — anywhere else a `GIT_EDITOR` is
@@ -149,7 +149,7 @@ It has no home override at all: `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG` and
 `OPENCODE_CONFIG_CONTENT` are additional config *inputs* — the first is
 pushed onto the list of directories it loads from, so a host value injects
 the server user's opencode config, and any provider keys in it, no matter
-what else is set (the per-worktree `OPENCODE_CONFIG_CONTENT` yaac's own launch
+what else is set (the per-workspace `OPENCODE_CONFIG_CONTENT` yaac's own launch
 command carries is assigned on that command line, after the clearing). Its
 actual homes come from `XDG_CONFIG_HOME` and
 `XDG_DATA_HOME`, which cleared resolve to the staged links.
@@ -157,12 +157,12 @@ actual homes come from `XDG_CONFIG_HOME` and
 That translation lands on the mount's **source**, not on the workspace's own
 `$HOME/<tool>` link to it, though the two resolve to the same files. What
 differs is the string, and a tool that keys anything on the string sees a
-different home per worktree, because the private home is per worktree while
+different home per workspace, because the private home is per workspace while
 the staged dir is per project. claude is the proven case: it names its macOS
 Keychain item after a hash of this exact value, and on the first token
 refresh — the item being empty — it migrates the credential in and deletes
-the `.credentials.json` it came from. Per-worktree strings would mean the
-first refresh anywhere took away the shared file every other worktree of the
+the `.credentials.json` it came from. Per-workspace strings would mean the
+first refresh anywhere took away the shared file every other workspace of the
 project still authenticates from. Because the rule lives in the translation
 rather than at each call site, that is not something a future caller can get
 wrong by writing the obvious thing.
@@ -184,7 +184,7 @@ is per project because the config dir is, and the delete refuses the
 un-suffixed service, so the user's own claude install is never touched.
 
 Any of this taking effect is reported, because being right here is otherwise
-invisible — nothing inside the worktree looks different, so a user whose
+invisible — nothing inside the workspace looks different, so a user whose
 shell has said for years that opencode lives elsewhere would have no way to
 learn that yaac disagrees. `yaac host check` names them ahead of any create,
 and a create says so in its progress output, reporting only what the
@@ -203,13 +203,13 @@ stop: the teardown removes them from the checkout, and a restart's init
 commands rebuild them. That rebuild is a relink rather than a download,
 because pnpm's store is the project's shared `.cached-packages/pnpm-store`:
 the create hands a host workspace that path as `pnpm_config_store_dir`,
-translated like any other mounted path. One store shared by every worktree
+translated like any other mounted path. One store shared by every workspace
 is safe here and only here — pnpm 11 indexes it in a SQLite database in WAL
-mode, which needs every writer on one kernel, and a host's worktrees are all
+mode, which needs every writer on one kernel, and a host's workspaces are all
 processes on this one (a pod keeps a store of its own instead,
-docs/worktree-storage.md "Package installs"). Left to its default, pnpm
+docs/workspace-storage.md "Package installs"). Left to its default, pnpm
 would put a store inside the private HOME: a full copy of every dependency
-per worktree, which the checkout's hardlinked `node_modules` would keep
+per workspace, which the checkout's hardlinked `node_modules` would keep
 alive after the HOME is torn down. Nothing sweeps a checkout stopped before
 this was in place: the copy its `node_modules` had become stays until that
 directory is removed by hand, and the next restart reinstalls.
@@ -218,16 +218,16 @@ The other thing symlinks cannot do that mounts can is nest. A pod mounts the
 project's claude dir at `/home/yaac/.claude` and then a builtin skill at
 `/home/yaac/.claude/skills/<name>` on top of it. Here the first is a link
 into shared project state, so writing the second would reach through it and
-leave one worktree's staging in a directory every other worktree reads. Such
+leave one workspace's staging in a directory every other workspace reads. Such
 a mount is skipped and logged; nothing routinely asks for one, because the
-callers that would — builtin skills (see below) and a worktree's agent
+callers that would — builtin skills (see below) and a workspace's agent
 history — write host state instead. Anything with no host equivalent at all fails the
 create rather than being silently dropped.
 
 ## Agent history, linked into the shared homes
 
 A pod reaches its own conversations through mounts layered over the tool
-homes (docs/worktree-storage.md "Agent history"). Of those, the two a tool has
+homes (docs/workspace-storage.md "Agent history"). Of those, the two a tool has
 an env override for — codex's sqlite home and pi's session dir — sit outside
 every tool home, so this driver realizes them like any other mount: a link in
 the private HOME, and the variable translated to the history dir itself. The
@@ -247,19 +247,19 @@ same on both drivers, which is what lets an install switch between them.
 
 ## Builtin skills, shared per project
 
-yaac's own skills reach a pod as a per-worktree staging mounted read-only
+yaac's own skills reach a pod as a per-workspace staging mounted read-only
 over each tool's personal skills root. There is no mount to layer here, so
-worktree create links them into the project's shared skills roots instead —
+workspace create links them into the project's shared skills roots instead —
 `<data>/projects/<slug>/{claude,codex,…}/skills/<name>` pointing at the
 install's `builtin-skills/<name>` — which is exactly where the tool homes a
 workspace gets are links to. All four tools' roots are written, as under a
-pod, so the skills are there whichever tool a worktree runs.
+pod, so the skills are there whichever tool a workspace runs.
 
-Per project rather than per worktree is the same bargain the credentials
+Per project rather than per workspace is the same bargain the credentials
 are: the dirs they land in are already shared, and there is no boundary here
 that could make the scope narrower. Linking rather than copying is what
 keeps them in lockstep with the running yaac version — an upgrade moves
-every worktree at once, with nothing staged that could go stale.
+every workspace at once, with nothing staged that could go stale.
 
 Only yaac's own links are ever written or removed there. A name the user
 owns — a real skill directory, or a link of their own aimed outside a
@@ -318,10 +318,10 @@ default.
 
 ## Credentials, and why they are real
 
-Under the k8s driver a worktree never holds a real credential: it gets a
+Under the k8s driver a workspace never holds a real credential: it gets a
 sentinel, and the egress proxy swaps it for the real token on the way out.
 There is no proxy here and nothing to do the swapping, so a sentinel would
-simply be what the agent authenticated with. Containerless worktrees
+simply be what the agent authenticated with. Containerless workspaces
 therefore get the real thing — real OAuth bundles in the per-project tool
 homes, real API keys and `GH_TOKEN` in the workspace environment.
 
@@ -345,8 +345,8 @@ One rule: **the newest credential wins, and both sides converge on it.**
 Harvest carries a project's refreshed bundle up to the host store; push
 carries the host store's back down to projects that are behind. Seeding a
 project is those two in order, which is what makes it safe to run on every
-worktree create — the write can only ever move a project forward, where a
-plain write of the host copy would spend the rotation of every worktree
+workspace create — the write can only ever move a project forward, where a
+plain write of the host copy would spend the rotation of every workspace
 already running there.
 
 Three properties do the work:
@@ -372,7 +372,7 @@ Three properties do the work:
   running agent out is not.
 
 Convergence runs where staleness would bite rather than from a watcher:
-before a host-side refresh, before seeding a create, on attach, on worktree
+before a host-side refresh, before seeding a create, on attach, on workspace
 stop, and on the reconcile resync behind a five-minute floor (the sweep reads
 every project, and on macOS that means spawning `security` per project).
 Cross-project divergence heals through the same path — each project keeps its
@@ -396,14 +396,14 @@ which hands this server a placeholder and swaps it on the way out — the
 chained yaac-in-yaac shape. Presenting it makes that install's proxy
 substitute the real token and rotate it, while this server receives sentinels
 back and stores nothing; the outer store is left holding a token the rotation
-already spent, and every worktree using it fails on its next refresh.
+already spent, and every workspace using it fails on its next refresh.
 Refreshing a credential this install does not own is never its job.
 
 The same mechanism is why the test suite forbids refresh grants outright
 (`YAAC_E2E_NO_TOKEN_REFRESH`, set in the shared vitest setup and in every
 spawned test server's environment). A proxy rewrites the `refresh_token` body
 param of anything POSTed to a token endpoint without checking what the request
-carried, so a suite running inside a worktree rotates the hosting install's
+carried, so a suite running inside a workspace rotates the hosting install's
 live credential no matter how obviously fake the token it presented. Fixture
 expiries are not a defense: they decide whether a refresh is attempted, and
 the attempt is already the damage.
@@ -419,14 +419,14 @@ git's credential store (`$HOME/.git-credentials`, which is the store's
 default file, so the helper needs no argument).
 
 An SSH key does not go into the home at all. The launch starts an
-**ssh-agent per worktree**, detached beside the tmux server, and pipes the
+**ssh-agent per workspace**, detached beside the tmux server, and pipes the
 key yaac generated (docs/git-credentials.md) into `ssh-add -` — so the private
 half exists in two process memories and in neither filesystem. What lands in the home is the PUBLIC half, which
 `GIT_SSH_COMMAND` names with `-i` under `IdentitiesOnly` to pin ssh to that
 identity (naming none would let it offer every key the agent holds against a
 host that may lock the account out). The agent's pid goes in the workspace
 marker, so teardown ends it and a recovery scan can tell a live one from a
-stale socket; the key therefore lives exactly as long as the worktree. That
+stale socket; the key therefore lives exactly as long as the workspace. That
 matters because a state dir OUTLIVES a workspace whose host rebooted, until
 somebody presses stop — which is also why the recovery scan clears the
 credential store of a workspace it finds dead. Under a pod none of this
@@ -447,11 +447,11 @@ is the same call the driver makes about Tor everywhere — routing one hop
 through advisory environment while the rest goes direct is the fail-open
 shape the difference list below rejects.
 
-## `yaac-mama`, and how a worktree reaches its server
+## `yaac-mama`, and how a workspace reaches its server
 
-`yaac-mama` is the in-worktree command channel — a strict subset of the yaac
+`yaac-mama` is the in-workspace command channel — a strict subset of the yaac
 CLI an agent may run against the server that started it: list the project's
-worktrees, start another, retitle one, stop one (its own included),
+workspaces, start another, retitle one, stop one (its own included),
 and make and fill sidebar groups. Stopping is in reach because it is
 reversible — the checkout, the row and the conversation survive it, so the
 user can restart what an agent wound down; deleting, restarting and
@@ -470,37 +470,37 @@ A pod cannot. It is inside the cluster, the server is a host process with no
 in-cluster address, and the whole point of the sandbox is that the pod holds
 no credential for it. So a pod POSTs to the egress proxy's magic host, the
 proxy holds the request open, and the server collects it on its reconcile
-pass — attribution by source pod IP, nothing configured inside the worktree.
+pass — attribution by source pod IP, nothing configured inside the workspace.
 
 A host process has neither problem. It runs beside the server, so it POSTs
-straight to `/worktree/mama` with a bearer minted for that worktree at
+straight to `/workspace/mama` with a bearer minted for that workspace at
 create and handed to it in its environment (`YAAC_MAMA_TOKEN`, alongside
-`YAAC_MAMA_URL`). The server keeps only the SHA-256 of it, on the worktree
+`YAAC_MAMA_URL`). The server keeps only the SHA-256 of it, on the workspace
 row, and the token is what identifies the caller — a request never names its
-own worktree, so nothing it sends can claim to be a different one.
+own workspace, so nothing it sends can claim to be a different one.
 
 The token is not a confinement boundary here, and it is worth being exact
 about that: a containerless agent is a process running as the user, so it
 could invoke the `yaac` CLI directly and do anything the user can. What the
-token buys is *attribution* — the server knowing which worktree is asking,
+token buys is *attribution* — the server knowing which workspace is asking,
 so `list` and `create` resolve to the right project — plus one honest,
 stable interface that behaves identically under both drivers.
 
-Both transports end at `runMamaCommand` in `#domain/worktrees`, which is
+Both transports end at `runMamaCommand` in `#domain/workspaces`, which is
 where the command allowlist lives, so neither can widen it.
 
-The URL is baked into the worktree's environment at launch rather than
+The URL is baked into the workspace's environment at launch rather than
 resolved per call, because the tmux server holds that environment for its
 whole life and outlives the yaac server that made it. A restart on the same
 port (the default) keeps working; a server moved to a different port leaves
-`yaac-mama` in already-running worktrees pointing at nothing until those
-worktrees are themselves restarted.
+`yaac-mama` in already-running workspaces pointing at nothing until those
+workspaces are themselves restarted.
 
 ## Permission modes
 
 Under a sandbox the default is `bypass` — the container is the containment,
 so a second layer of prompting inside it only costs interruptions. Without
-one the default is `accept-edits`: edits land in the worktree unprompted,
+one the default is `accept-edits`: edits land in the workspace unprompted,
 while shells, out-of-tree writes and the network still ask. pi is the
 exception in both directions, because it has no permission system at all
 (see docs/agent-modes.md) — `bypass` is the only truthful answer anywhere.
@@ -511,12 +511,12 @@ The remembered value lives server-side rather than in the browser, so the
 CLI (`--permission-mode`), the webapp's create form and the keyboard shortcut
 all resolve the same answer (see docs/permission-modes.md).
 
-The resolved posture is recorded on the worktree row
-(`worktrees.permissionMode`) because a restart relaunches the agents and
+The resolved posture is recorded on the workspace row
+(`workspaces.permissionMode`) because a restart relaunches the agents and
 must relaunch them the way the user asked, not the way today's default
 would.
 
-A chat (ACP) worktree resolves its posture by the same three rungs and
+A chat (ACP) workspace resolves its posture by the same three rungs and
 enforces it the same way every other posture is enforced here — the adapter is
 told, and what it still asks about goes to the chat pane
 (docs/permission-modes.md). So the containerless default applies to it too:
@@ -535,25 +535,25 @@ one long-lived read-only tmux control client per running workspace, whose
 exit IS the workspace's death (tmux ends every client when its server dies).
 Its stdin has to be a pipe held open — a control-mode client exits the
 moment stdin closes, which would make the watch die instantly and take the
-worktree's liveness with it.
+workspace's liveness with it.
 
 Recovery is not an edge case here, it is the ordinary path. A fresh server
 enumerates the marker files it wrote last time
 (`global/projects/<slug>/sessions/<id>/containerless/workspace.json` — the
 substrate's analogue of a Job object) and probes each socket. One that
-answers is a running worktree, recovered whole with its agents still
+answers is a running workspace, recovered whole with its agents still
 working. One that does not is recorded as a DEAD workspace rather than
-dropped, so the ordinary stale reaper turns it into a stopped worktree row;
+dropped, so the ordinary stale reaper turns it into a stopped workspace row;
 dropping it would leave a row claiming to be running with nothing to reap
 it. Because recovery runs as the driver attaches — after the server is
-already answering — a client that connects in that window sees worktrees
+already answering — a client that connects in that window sees workspaces
 appear rather than being made to wait.
 
 Every command the server runs in a workspace — an exec, a dialed stream,
 the changes diff — gets the workspace's environment, never the server's own,
 whose `YAAC_*` wiring and host `HOME` would point the command at the server
 user's configuration. The server holds the whole environment in memory for a
-worktree it launched. A restart loses that copy, and tmux's own dump of its
+workspace it launched. A restart loses that copy, and tmux's own dump of its
 environment cannot stand in (it does not escape a multi-line value), so the
 marker carries the launch's own entries — the create's and the git wiring —
 and a restarted server lays them over the same floor a launch builds from.
@@ -568,7 +568,7 @@ attaching client's `SSH_AUTH_SOCK` (and a few others) into the session
 environment every later window inherits, so the launch empties
 `update-environment` in the same invocation that creates the session, before
 anything can attach. Otherwise the watch alone would hand the panes the
-host's ssh-agent in place of the worktree's.
+host's ssh-agent in place of the workspace's.
 
 ## Ports
 
@@ -580,7 +580,7 @@ directly) and `unforwardedPorts` is always empty — there is no "forward
 this" action because there is nothing left to do, and a config's
 `portForward` entry is simply the port the dev server binds.
 
-Detection is a poll over each running worktree's own process tree (`lsof`
+Detection is a poll over each running workspace's own process tree (`lsof`
 against the tmux server's descendants), filtered through the same
 sensitive-port policy the cluster driver uses. Only that tree: every other
 listener on the machine belongs to someone else.
@@ -591,8 +591,8 @@ a pod: it binds the identity mapping locally and each connection reaches
 at the address the sweep saw it bound to — `-Ftn` keeps the family, so a
 wildcard is dialled on its own loopback). Only a listener the sweep
 surfaced is dialable, and what keeps the rest of the host out of reach is
-the sweep's scope: the worktree's own process tree, an allowlist with the
-sensitive-port denylist on top. A yaac-dev worktree's inner `yaac server`
+the sweep's scope: the workspace's own process tree, an allowlist with the
+sensitive-port denylist on top. A yaac-dev workspace's inner `yaac server`
 is in that tree, so it surfaces and is dialable, as under k8s. The set is
 the last sweep's, so a port released and re-bound by something else stays
 dialable for up to one poll interval. A client on THIS machine never binds
@@ -616,7 +616,7 @@ answer under both drivers on one line.
 - **Images and builds.** Nothing to build; the Dockerfile editors and the
   build feed are hidden in the webapp.
 - **Egress mediation.** No blocked hosts, no git-auth failure reports, no
-  allowlist. A worktree reaches whatever the user running the server can —
+  allowlist. A workspace reaches whatever the user running the server can —
   including when `YAAC_USE_TOR` is set, which under k8s routes a pod's whole
   namespace through the proxy's Tor agent and here can only cover the
   server's own git. The start logs warn rather than route workspace traffic
@@ -627,7 +627,7 @@ answer under both drivers on one line.
   container in. A project config requesting it is rejected at create.
 - **The prewarmed spare pool.** A spare amortizes an image pull and a pod
   boot; a tmux server in an existing checkout costs neither.
-- **Per-worktree module caching.** See the mount note above.
+- **Per-workspace module caching.** See the mount note above.
 
 ## Host requirements
 
@@ -648,8 +648,8 @@ startup rather than letting a create fail with a spawn error:
 - **socat**: required for `--mode acp` — the chat transport dials acpd's
   socket by spawning one — and unused by `--mode tui`. `yaac host check` warns
   rather than fails for that reason; a create in acp mode refuses.
-- **lsof**: port detection; without it worktrees run fine and report no ports.
-- **curl**: how `yaac-mama` reaches this server from inside a worktree;
+- **lsof**: port detection; without it workspaces run fine and report no ports.
+- **curl**: how `yaac-mama` reaches this server from inside a workspace;
   nothing else uses it.
 
 Nothing gates on the tools the agents themselves reach for — `ripgrep` and
@@ -660,7 +660,7 @@ one place a missing utility is the user's problem.
 
 ### Agent binaries
 
-Every agent CLI and ACP adapter a worktree runs is yaac's own install of the
+Every agent CLI and ACP adapter a workspace runs is yaac's own install of the
 version the image pins (`AGENT_CLIS`, `ACP_ADAPTERS`; the table of packages is
 `AGENT_PACKAGES` in `@yaac/shared/tool-install`), never the one the host
 happens to have. yaac speaks each CLI's own vocabulary in both directions —
@@ -670,7 +670,7 @@ release off the pin fails quietly: a codex behind the latest release opens an
 dropped the `untrusted` policy yaac used to launch. So the launch puts
 `<data>/node-local/agent-tools/<package>@<version>/bin` for every pinned
 package ahead of the host's own `PATH`, and a CLI the user installed is
-shadowed inside worktrees and untouched outside them.
+shadowed inside workspaces and untouched outside them.
 
 Each package is installed the first time a create needs it, with `npm install
 --global --prefix` into a staging directory renamed into place only once the
@@ -685,13 +685,13 @@ does in a workspace — with the server's `YAAC_*` wiring stripped from its
 environment, and with lifecycle scripts only for the two packages whose
 postinstall puts their native binary in place (claude, opencode).
 A prefix is named by its version and never changes, so a pin bump installs
-beside the old one and a worktree launched against it keeps running what it
+beside the old one and a workspace launched against it keeps running what it
 started with. Nothing removes a superseded prefix.
 
 ### Missing tools
 
 A launch command that execs nothing exits 127, tmux closes the window, and
-the worktree ends seconds after a create that already reported success. Two
+the workspace ends seconds after a create that already reported success. Two
 checks say so instead:
 
 - Before anything is provisioned, the create asks the driver
@@ -701,7 +701,7 @@ checks say so instead:
   `MISSING_TOOL` and how to install it. They are asked in dependency order,
   so a bare machine is told about tmux rather than about something it has
   nowhere to run. socat is in that list even though its absence does not
-  kill the worktree: the pane simply never attaches, which reads as an agent
+  kill the workspace: the pane simply never attaches, which reads as an agent
   that hangs rather than a tool that is missing. Then it installs whatever
   pinned binary the launch runs and yaac does not have yet — the tool for
   `--mode tui`, and for `--mode acp` its adapter (plus the CLI, for an

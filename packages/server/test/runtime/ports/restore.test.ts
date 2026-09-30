@@ -14,16 +14,16 @@ vi.mock('#runtime/status/liveness', () => ({ isTmuxSessionAlive: vi.fn() }))
 
 import { isTmuxSessionAlive } from '#runtime/status/liveness'
 import { restoreAllWorkspaceForwarders } from '#runtime/ports/restore'
-import { handleFixture, installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
-import type { RuntimeHandle, WorktreeDriver } from '#drivers/contract'
+import { handleFixture, installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
 
 const mockTmuxAlive = vi.mocked(isTmuxSessionAlive)
 /** The reader the caller supplies — main, once, as the server attaches. */
 const projectConfig = vi.fn<(slug: string) => Promise<YaacConfig | undefined>>()
 
-const list = vi.fn<WorktreeDriver['list']>()
-const forwardedPorts = vi.fn<WorktreeDriver['forwardedPorts']>()
-const exec = vi.fn<WorktreeDriver['exec']>()
+const list = vi.fn<WorkspaceDriver['list']>()
+const forwardedPorts = vi.fn<WorkspaceDriver['forwardedPorts']>()
+const exec = vi.fn<WorkspaceDriver['exec']>()
 /** Every declaration the restore made, in order, with the workspace it was
  *  made for — nothing is bound, so this IS the observable effect. */
 let declared: Array<{ workspaceId: string; mapping: PortMapping }> = []
@@ -50,7 +50,7 @@ beforeEach(() => {
   projectConfig.mockResolvedValue({
     portForward: [{ containerPort: 3000, hostPortStart: 3000 }],
   })
-  installFakeWorktreeDriver({
+  installFakeWorkspaceDriver({
     list,
     forwardedPorts,
     exec,

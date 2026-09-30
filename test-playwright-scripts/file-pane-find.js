@@ -8,7 +8,7 @@
  *   3. The header's "Aa" menu steps the size and resets it, and the size
  *      survives a reload (localStorage); Ctrl+= / Ctrl+- / Ctrl+0 in the
  *      editor do the same. (That they stop the browser's own zoom is
- *      covered by worktree-file.test.tsx: headless Chromium has none.)
+ *      covered by workspace-file.test.tsx: headless Chromium has none.)
  *   4. Ctrl+F opens the app's find bar with its input focused; typing jumps
  *      to the first match and shows "1 of N"; Enter steps to "2 of N";
  *      the regex toggle flips; a miss reads "No results"; a regex that
@@ -25,13 +25,13 @@
  *   7. In a wide editor (Settings → Project Config, expanded) the bar sits
  *      at the left, and Escape closes it without closing the dialog.
  *
- * Needs a running containerless `yaac server` with one live worktree whose
- * checkout has a README.md (any worktree of the yaac project will do). Run
+ * Needs a running containerless `yaac server` with one live workspace whose
+ * checkout has a README.md (any workspace of the yaac project will do). Run
  * `pnpm build && yaac server restart` first, or you are looking at the
  * frontend `dist/` held when the server started. It writes pw-long.md into
  * the checkout and edits it.
  *
- * Run: node test-playwright-scripts/file-pane-find.js <worktree-id>
+ * Run: node test-playwright-scripts/file-pane-find.js <workspace-id>
  * (set SCREENSHOT_DIR to change where screenshots land; defaults to
  * /tmp/yaac-shots. YAAC_DATA_DIR defaults to ~/.yaac.)
  * (playwright is resolved from the global npm root; browsers live under
@@ -65,9 +65,9 @@ function readServerLock() {
   throw new Error('no .server.lock found — is the server running? try: yaac server start')
 }
 
-const worktreeId = process.argv[2]
-if (!worktreeId) {
-  console.error('usage: node test-playwright-scripts/file-pane-find.js <worktree-id>')
+const workspaceId = process.argv[2]
+if (!workspaceId) {
+  console.error('usage: node test-playwright-scripts/file-pane-find.js <workspace-id>')
   process.exit(1)
 }
 
@@ -90,17 +90,17 @@ async function main() {
   fs.mkdirSync(SHOT_DIR, { recursive: true })
   const lock = readServerLock()
   const origin = `http://127.0.0.1:${lock.port}`
-  const { worktrees } = await (await fetch(`${origin}/api/worktree/list`)).json()
-  const wt = worktrees.find((w) => w.worktreeId.startsWith(worktreeId))
-  if (!wt) throw new Error(`no running worktree ${worktreeId}`)
-  const checkout = path.join(DATA_DIR, 'global', 'projects', wt.projectSlug, 'worktrees', wt.worktreeId)
+  const { workspaces } = await (await fetch(`${origin}/api/workspace/list`)).json()
+  const wt = workspaces.find((w) => w.workspaceId.startsWith(workspaceId))
+  if (!wt) throw new Error(`no running workspace ${workspaceId}`)
+  const checkout = path.join(DATA_DIR, 'global', 'projects', wt.projectSlug, 'workspaces', wt.workspaceId)
   const long = `${'word '.repeat(80)}needle\nshort needle line\nthird needle\n${'a'.repeat(5000)}\n`
   fs.writeFileSync(path.join(checkout, 'pw-long.md'), long)
 
   const browser = await chromium.launch()
   const page = await browser.newPage({ viewport: { width: 1400, height: 800 } })
   const load = async () => {
-    const query = new URLSearchParams({ project: wt.projectSlug, worktree: wt.worktreeId })
+    const query = new URLSearchParams({ project: wt.projectSlug, workspace: wt.workspaceId })
     await page.goto(`${origin}/?${query}`)
     await page.waitForSelector('[aria-label="Browse files"]', { timeout: 20000 })
   }

@@ -7,7 +7,7 @@ export const AGENT_TOOLS: readonly AgentTool[] = ['claude', 'codex', 'opencode',
 
 /**
  * The tools that mint their own conversation ids. claude and pi are launched
- * under an id yaac chooses — the worktree id, for a create's conversation —
+ * under an id yaac chooses — the workspace id, for a create's conversation —
  * but codex and opencode take none, so the id a create records for them is a
  * stand-in no agent ever runs under, until the pane names the real one.
  */
@@ -150,13 +150,13 @@ export const ACP_ADAPTERS = {
  * config block for opencode, nothing at all for pi).
  *
  * - `bypass`        no prompts; the agent acts freely. What a sandboxed
- *                   worktree wants — the sandbox is the containment, so a
+ *                   workspace wants — the sandbox is the containment, so a
  *                   second layer inside it only costs interruptions.
  * - `auto`          no routine prompts, but a reviewer model adjudicates each
  *                   action and blocks the dangerous ones. Availability is not
  *                   ours to check: claude gates it by subscription plan and
  *                   fails loudly in-pane when the account is ineligible.
- * - `accept-edits`  file edits in the worktree run unprompted; anything else
+ * - `accept-edits`  file edits in the workspace run unprompted; anything else
  *                   (other shells, out-of-tree paths, network) still asks.
  * - `manual`        every tool use asks first.
  * - `plan`          read and explore only; no edits until a plan is approved.
@@ -167,14 +167,14 @@ export const ACP_ADAPTERS = {
  *
  * Not every tool has every posture — ask `SUPPORTED_PERMISSION_MODES`, never
  * assume. There is deliberately no "the tool's own default" member: what a
- * bare `claude` does differs from a bare `codex` or `opencode`, so a worktree
+ * bare `claude` does differs from a bare `codex` or `opencode`, so a workspace
  * records the posture it actually launched with.
  */
 export type PermissionMode = 'bypass' | 'auto' | 'accept-edits' | 'manual' | 'plan' | 'read-only'
 
 /**
  * Postures ranked from most to least permissive — a Record, so a new
- * `PermissionMode` member cannot go unranked. A spawned worktree runs at most
+ * `PermissionMode` member cannot go unranked. A spawned workspace runs at most
  * as permissively as its caller by it. `plan` and `read-only` share the
  * strictest place, so either tool's strictest posture may be granted under
  * the other.
@@ -323,13 +323,13 @@ export const PERMISSION_MODE_COPY: Record<PermissionMode, string> = {
 }
 
 /**
- * The posture a worktree gets when nobody has chosen one — neither the request
+ * The posture a workspace gets when nobody has chosen one — neither the request
  * nor the project's remembered last choice.
  *
  * A sandboxed substrate answers `bypass` for every tool: the container is the
  * containment, and prompting inside it protects nothing. Containerless
- * worktrees act as the user on the user's own machine, so they start at
- * `accept-edits` — edits land in the worktree without nagging, while shells and
+ * workspaces act as the user on the user's own machine, so they start at
+ * `accept-edits` — edits land in the workspace without nagging, while shells and
  * out-of-tree writes still ask. pi is the exception in both directions: having
  * no permission system, `bypass` is the only truthful answer anywhere.
  */
@@ -393,7 +393,7 @@ export type ToolAuthKind = 'api-key' | 'oauth'
 
 /**
  * Credential kinds `yaac auth fake` can seed. Each seeds a proxy-placeholder
- * credential (never a real secret) so a worktree authenticates through a parent
+ * credential (never a real secret) so a workspace authenticates through a parent
  * yaac's MITM proxy — the yaac-in-yaac case (see lib/project/fake-auth.ts).
  * Single source of truth shared by the CLI's `Argument.choices()` and the
  * server route's zod validator, which must stay in lockstep.
@@ -522,7 +522,7 @@ export interface ToolCredentialBundle {
 }
 
 /**
- * OAuth bundles a runtime's egress path captured from a worktree's refresh
+ * OAuth bundles a runtime's egress path captured from a workspace's refresh
  * and the host store has not yet adopted. Each slot is the newest capture
  * the runtime holds; absent means none.
  */
@@ -533,7 +533,7 @@ export interface RefreshedToolCredentials {
 
 /**
  * Summary view over per-tool credential files. Consumers (`auth list`,
- * worktree-create's per-tool placeholder wiring) read only kind / apiKey /
+ * workspace-create's per-tool placeholder wiring) read only kind / apiKey /
  * savedAt / opencodeProvider — full OAuth bundles stay in the per-tool
  * credentials files.
  */
@@ -619,7 +619,7 @@ export interface InitCommandSpec {
  * A project's config overlay (`config/yaac-config.json`), edited through the
  * server so a client needs no shell on its host.
  *
- * What is NOT here is as deliberate as what is. A worktree's environment and
+ * What is NOT here is as deliberate as what is. A workspace's environment and
  * its proxied secrets are rows (`ProjectEnvVar`) rather than keys, so that
  * setting one needs nothing but the API — a value named here would have to
  * be resolved against the server's own process environment, which only
@@ -631,14 +631,14 @@ export interface YaacConfig {
   cacheVolumes?: Record<string, string>
   /**
    * Run an in-pod rootful podman so `docker build` / `docker run` /
-   * `docker compose` work inside worktrees. Adds the nestable image layer and
+   * `docker compose` work inside workspaces. Adds the nestable image layer and
    * the nested pod-spec branch (gvisor-nested runtime, in-sandbox engine
    * caps, tmpfs graphroot, shared image store).
    */
   nestedContainers?: boolean
   /**
-   * Whether the project's worktrees may use the install's npm cache (k8s
-   * only): installs fetch through it by default, and a worktree of a
+   * Whether the project's workspaces may use the install's npm cache (k8s
+   * only): installs fetch through it by default, and a workspace of a
    * project that sets this false can neither use nor reach it — its pnpm
    * stays on npmjs, through the egress proxy. Unset → true.
    */
@@ -653,9 +653,9 @@ export interface YaacConfig {
   setAllowedUrls?: string[]
   /**
    * Paths (relative to /workspace) of installed-package dirs that live
-   * and die with the worktree's runtime rather than in the shared checkout
+   * and die with the workspace's runtime rather than in the shared checkout
    * — a pod backs each with its own pod-local volume (and keeps its pnpm
-   * store inside the root one); a host worktree keeps them in its checkout.
+   * store inside the root one); a host workspace keeps them in its checkout.
    * Removed at stop either way. Unset → `["node_modules"]`. Empty array
    * disables the feature.
    */
@@ -688,7 +688,7 @@ export interface ProjectEnvVar {
 // the Hono RPC client.
 // ---------------------------------------------------------------------------
 
-/** Host↔container port mapping returned by `/worktree/create`. */
+/** Host↔container port mapping returned by `/workspace/create`. */
 export interface PortMapping {
   containerPort: number
   hostPort: number
@@ -750,7 +750,7 @@ export interface AuthListResult {
  */
 export interface PlanUsageLimit {
   /** Limit kind, verbatim from the provider. Claude: 'session' (its
-   *  five-hour usage window, not a yaac worktree), 'weekly_all',
+   *  five-hour usage window, not a yaac workspace), 'weekly_all',
    *  'weekly_scoped'. Codex:
    *  'codex_primary' (the shorter window) and 'codex_secondary' (weekly). */
   kind: string
@@ -824,15 +824,15 @@ export interface ToolInstallView {
   error?: string
 }
 
-// --- worktree/list ---
+// --- workspace/list ---
 
 /**
  * A git credential the proxy injected that the upstream rejected — the
  * stored token is bad (expired or revoked), as opposed to a blocked host.
  * Recorded per project by the proxy (the credential belongs to the
- * project's repo, so one bad token affects every worktree of the project);
+ * project's repo, so one bad token affects every workspace of the project);
  * cleared automatically when a later git request to the same host from any
- * of the project's worktrees succeeds.
+ * of the project's workspaces succeeds.
  */
 export interface GitAuthFailure {
   host: string
@@ -843,10 +843,10 @@ export interface GitAuthFailure {
 }
 
 /**
- * One agent conversation inside a worktree — a claude/codex/pi/opencode
- * worktree. Several can be live at once (a second terminal, or a `/clear`
+ * One agent conversation inside a workspace — a claude/codex/pi/opencode
+ * workspace. Several can be live at once (a second terminal, or a `/clear`
  * that left the old conversation's window open), and the ones that are not
- * live are the worktree's history.
+ * live are the workspace's history.
  */
 export interface AgentSessionEntry {
   /** The tool's own conversation id, not yaac's. */
@@ -855,16 +855,16 @@ export interface AgentSessionEntry {
   /** Which protocol drives it, and therefore which pane renders it. Absent
    *  on rows recorded before modes existed, which are `tui`. */
   mode?: AgentMode
-  /** Restore order; 0 is the worktree's original agent. */
+  /** Restore order; 0 is the workspace's original agent. */
   ordinal: number
-  /** Had a live agent process when the worktree was last observed running —
+  /** Had a live agent process when the workspace was last observed running —
    *  and therefore what a restart brings back. */
   active: boolean
   /** Live only: this conversation's own busy/idle, from its pane. */
   status?: 'running' | 'waiting'
   /** Live only: epoch ms when this conversation's waiting spell began. */
   waitingSinceMs?: number
-  /** This conversation's own first user message (the worktree keeps the
+  /** This conversation's own first user message (the workspace keeps the
    *  founding one separately — they differ after a `/clear`). */
   prompt?: string
   /** 'YYYY-MM-DD HH:MM:SS' (UTC) of its transcript's last write. */
@@ -885,20 +885,20 @@ export interface AgentSessionEntry {
   modelName?: string
 }
 
-export interface WorktreeListEntry {
-  worktreeId: string
+export interface WorkspaceListEntry {
+  workspaceId: string
   projectSlug: string
   tool: AgentTool
   /**
-   * The worktree's aggregate: `waiting` if ANY of its agent sessions is
+   * The workspace's aggregate: `waiting` if ANY of its agent sessions is
    * waiting, else `running`. Waiting is the actionable state — an agent that
    * needs you needs you whether or not a sibling is still working.
    */
   status: 'running' | 'waiting'
-  /** The worktree's container is being torn down (its pod has a deletion
+  /** The workspace's container is being torn down (its pod has a deletion
    *  timestamp, or a stop was just issued). Orthogonal to `status`: the
    *  row is on its way out and should render as a non-interactive
-   *  "stopping…" placeholder rather than a live worktree. */
+   *  "stopping…" placeholder rather than a live workspace. */
   stopping?: boolean
   /** Pod created time as 'YYYY-MM-DD HH:MM:SS' (UTC). */
   createdAt: string
@@ -907,15 +907,15 @@ export interface WorktreeListEntry {
    *  while status is 'waiting'; the *earliest* waiting agent wins, so a
    *  second agent going idle joins the spell in progress rather than
    *  restarting it. In-memory on the server: a restart (or a still-booting
-   *  worktree with no watcher yet) has no stamp, which clients treat as
+   *  workspace with no watcher yet) has no stamp, which clients treat as
    *  its own spell. */
   waitingSinceMs?: number
-  /** The founding ask — the first user message of the worktree's first
+  /** The founding ask — the first user message of the workspace's first
    *  agent session. Survives a `/clear` that discards that conversation. */
   prompt?: string
   /** User-assigned display title (falls back to `prompt` in UIs). */
   title?: string
-  /** Every conversation the worktree has hosted, in restore order. */
+  /** Every conversation the workspace has hosted, in restore order. */
   agentSessions: AgentSessionEntry[]
   blockedHosts: string[]
   /** Live host→container forwards owned by the server (from the
@@ -927,39 +927,39 @@ export interface WorktreeListEntry {
    *  sensitive, and infra ports. Drives the "forward this port?" badge;
    *  self-clears when a port is forwarded or its listener stops. */
   unforwardedPorts: number[]
-  /** The branch this worktree forked from (its reference branch), as its
+  /** The branch this workspace forked from (its reference branch), as its
    *  row records it. Unset when the row records none. */
   baseBranch?: string
-  /** The sidebar group this worktree is filed under (see
-   *  `WorktreeGroupSummary`); absent means the default list. Server-persisted
-   *  and orthogonal to `status` and `stopping` — a worktree keeps its group
-   *  through stopping and restarting (and, via `StoppedWorktreeEntry.groupId`,
+  /** The sidebar group this workspace is filed under (see
+   *  `WorkspaceGroupSummary`); absent means the default list. Server-persisted
+   *  and orthogonal to `status` and `stopping` — a workspace keeps its group
+   *  through stopping and restarting (and, via `StoppedWorkspaceEntry.groupId`,
    *  keeps a ghost row in it while stopped). */
   groupId?: string
-  /** The permission posture its agents run in (`worktrees.permissionMode`) —
-   *  what a worktree queued after this one defaults to. Absent while its row
+  /** The permission posture its agents run in (`workspaces.permissionMode`) —
+   *  what a workspace queued after this one defaults to. Absent while its row
    *  has not landed yet. */
   permissionMode?: PermissionMode
 }
 
 /**
  * A named sidebar group — how the user has chosen to file a project's
- * worktrees. The sidebar lists ungrouped worktrees first and then one
+ * workspaces. The sidebar lists ungrouped workspaces first and then one
  * collapsible section per group, both in `createdAt` order; membership is
- * `WorktreeListEntry.groupId`.
+ * `WorkspaceListEntry.groupId`.
  *
- * A group is shown when it is `pinned` or holds at least one live worktree,
+ * A group is shown when it is `pinned` or holds at least one live workspace,
  * and every shown group lists ALL its members — live ones as ordinary rows,
  * stopped ones as ghost rows with a restart action. So an unpinned group
- * whose worktrees have all stopped just disappears (its row persists, and
+ * whose workspaces have all stopped just disappears (its row persists, and
  * restarting a member brings it back), while pinning keeps it on screen as a
  * place to restart into.
  */
-export interface WorktreeGroupSummary {
+export interface WorkspaceGroupSummary {
   groupId: string
   projectSlug: string
   name: string
-  /** Keep the group listed even with no live worktree in it. */
+  /** Keep the group listed even with no live workspace in it. */
   pinned: boolean
   /** 'YYYY-MM-DD HH:MM:SS' (UTC) — the groups' display order. */
   createdAt: string
@@ -968,8 +968,8 @@ export interface WorktreeGroupSummary {
 /** How a file changed, mapped from git's name-status letters. */
 export type ChangeStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'typechange'
 
-/** One changed file in a worktree's worktree, relative to the fork base. */
-export interface WorktreeChange {
+/** One changed file in a workspace's checkout, relative to the fork base. */
+export interface WorkspaceChange {
   path: string
   status: ChangeStatus
   additions: number
@@ -982,12 +982,12 @@ export interface WorktreeChange {
 }
 
 /**
- * The review diff for a worktree — everything the agent changed since the
- * worktree forked from its base branch (committed + staged + unstaged +
+ * The review diff for a workspace — everything the agent changed since the
+ * workspace forked from its base branch (committed + staged + unstaged +
  * untracked), computed against an index of our own so it never disturbs the
  * agent's own git state.
  */
-export interface WorktreeChanges {
+export interface WorkspaceChanges {
   /** The base commit the diff is taken against (merge-base with the fork
    *  point), or HEAD when no upstream is resolvable. */
   base: string
@@ -996,7 +996,7 @@ export interface WorktreeChanges {
    *  uncommitted", not "nothing changed" — say so rather than showing the
    *  ordinary no-changes state. */
   baseResolved: boolean
-  files: WorktreeChange[]
+  files: WorkspaceChange[]
   /** The combined unified diff; the client splits it into per-file hunks.
    *  Capped for size — see `truncated`. */
   diff: string
@@ -1004,10 +1004,10 @@ export interface WorktreeChanges {
   truncated: boolean
 }
 
-/** Where a worktree's HEAD stands against its reference branch — the status
+/** Where a workspace's HEAD stands against its reference branch — the status
  *  bar above its panes. Counts come from the server's own refs, so `behind`
  *  is only as fresh as `fetchedAt`. */
-export interface WorktreeGitStatus {
+export interface WorkspaceGitStatus {
   /** The branch compared against; null when nothing records one. */
   base: string | null
   /** Null when `base` resolves to no branch, remote or local. */
@@ -1028,15 +1028,15 @@ export interface WorktreeGitStatus {
  */
 export type FileStatus = 'modified' | 'added' | 'untracked' | 'conflicted'
 
-/** Where a symlink in a worktree leads: its resolved path relative to the
- *  worktree, or null when it is broken or leads outside the worktree. */
+/** Where a symlink in a workspace leads: its resolved path relative to the
+ *  workspace, or null when it is broken or leads outside the workspace. */
 export interface SymlinkTarget {
   target: string | null
   dir: boolean
 }
 
-/** Every path in a worktree's checkout, for the file explorer. */
-export interface WorktreeFiles {
+/** Every path in a workspace's checkout, for the file explorer. */
+export interface WorkspaceFiles {
   /** Tracked and untracked files, gitignore-aware, deleted ones removed. */
   paths: string[]
   /** The entries of `paths` that are symlinks. */
@@ -1050,8 +1050,8 @@ export interface WorktreeFiles {
   truncated: boolean
 }
 
-/** One file of a worktree, as the editor reads it. */
-export interface WorktreeFile {
+/** One file of a workspace, as the editor reads it. */
+export interface WorkspaceFile {
   path: string
   /** The sha256 of the file's bytes — what a save names as its base. */
   version: string
@@ -1063,32 +1063,32 @@ export interface WorktreeFile {
 }
 
 /** A successful save: the version the file now has. */
-export interface WorktreeFileSaved {
+export interface WorkspaceFileSaved {
   path: string
   version: string
   size: number
 }
 
 /** One child of a folder, for expanding a folder the listing leaves out. */
-export interface WorktreeDirEntry {
+export interface WorkspaceDirEntry {
   name: string
   dir: boolean
   symlink?: SymlinkTarget
 }
 
-export interface WorktreeDir {
-  entries: WorktreeDirEntry[]
+export interface WorkspaceDir {
+  entries: WorkspaceDirEntry[]
   truncated: boolean
 }
 
 /**
- * Why a worktree died, derived at reap time from the pod's terminal state
+ * Why a workspace died, derived at reap time from the pod's terminal state
  * and the reaper's own classification — the last chance to capture it,
  * since the reaper's teardown deletes the Job (and with it the pod's
  * `containerStatuses` and the Job's failure condition). Absent on a plain
  * user delete.
  */
-export type WorktreeDeathReason =
+export type WorkspaceDeathReason =
   | 'oom'            // session container OOMKilled by the kernel
   | 'evicted'        // pod evicted by the kubelet (node pressure)
   | 'crashed'        // session container exited non-zero
@@ -1097,8 +1097,8 @@ export type WorktreeDeathReason =
   | 'never-started'  // session create was interrupted before the agent ran
   | 'orphaned'       // Job/pod deleted out-of-band
 
-export interface WorktreeDeathCause {
-  reason: WorktreeDeathReason
+export interface WorkspaceDeathCause {
+  reason: WorkspaceDeathReason
   /** Free-form evidence: exit code, eviction message, … */
   detail?: string
 }
@@ -1108,7 +1108,7 @@ export interface WorktreeDeathCause {
  * all loose `SKILL.md` files. `system` is a built-in tier: an agent's own
  * bundled skills (Codex's `.system/` under the host-mounted `~/.codex/skills/`,
  * or Claude's binary-bundled skills read list-only from its docs, `sourceLabel`
- * `bundled`), plus the skills yaac itself ships and injects into every worktree
+ * `bundled`), plus the skills yaac itself ships and injects into every workspace
  * (`sourceLabel` `yaac`; see the server's features/skills).
  */
 export type SkillSource = 'personal' | 'plugin' | 'project' | 'system'
@@ -1151,67 +1151,67 @@ export interface SkillDetail {
   body: string
 }
 
-export interface StaleWorktreeInfo {
+export interface StaleWorkspaceInfo {
   jobName: string
   projectSlug: string
-  worktreeId: string
+  workspaceId: string
   /** True when the pod is still running but tmux is gone. */
   zombie: boolean
   /** Terminal-state evidence for the reap, when the pod carried any. */
-  deathCause?: WorktreeDeathCause
+  deathCause?: WorkspaceDeathCause
 }
 
-export interface ActiveWorktreesResult {
-  worktrees: WorktreeListEntry[]
-  stale: StaleWorktreeInfo[]
+export interface ActiveWorkspacesResult {
+  workspaces: WorkspaceListEntry[]
+  stale: StaleWorkspaceInfo[]
   /** Project slug -> git credentials the upstream rejected. Project-wide,
-   *  not per-worktree: one bad token affects every worktree of the project.
+   *  not per-workspace: one bad token affects every workspace of the project.
    *  Only projects with at least one failing host appear. */
   gitAuthFailures: Record<string, GitAuthFailure[]>
 }
 
-export interface StoppedWorktreeEntry {
-  worktreeId: string
+export interface StoppedWorkspaceEntry {
+  workspaceId: string
   projectSlug: string
   tool: AgentTool
-  /** 'YYYY-MM-DD HH:MM:SS' (UTC). Worktree birth time. */
+  /** 'YYYY-MM-DD HH:MM:SS' (UTC). Workspace birth time. */
   createdAt: string
   /** Last-activity time as 'YYYY-MM-DD HH:MM:SS' (UTC) — the newest
-   *  transcript mtime across every conversation the worktree hosted, so a
-   *  worktree the user `/clear`ed an hour ago reads as an hour old rather
+   *  transcript mtime across every conversation the workspace hosted, so a
+   *  workspace the user `/clear`ed an hour ago reads as an hour old rather
    *  than as old as its opening question. Falls back to creation time when
    *  nothing is readable (opencode leaves no host transcript). */
   lastActiveAt?: string
-  /** When the worktree was stopped, as 'YYYY-MM-DD HH:MM:SS' (UTC). Recorded
+  /** When the workspace was stopped, as 'YYYY-MM-DD HH:MM:SS' (UTC). Recorded
    *  at stop time; the primary sort key (newest-stopped first). Absent for
-   *  worktrees removed out-of-band, which fall back to `lastActiveAt`. */
+   *  workspaces removed out-of-band, which fall back to `lastActiveAt`. */
   stoppedAt?: string
   /** The founding ask — the first conversation's first user message. */
   prompt?: string
   /** User-assigned display title (survives stopping; ids are stable). */
   title?: string
-  /** Every conversation the worktree hosted, in restore order. The ones
+  /** Every conversation the workspace hosted, in restore order. The ones
    *  marked `active` are what a restart brings back. */
   agentSessions: AgentSessionEntry[]
-  /** Why the worktree died, when the reaper (not the user) stopped it. */
-  deathReason?: WorktreeDeathReason
+  /** Why the workspace died, when the reaper (not the user) stopped it. */
+  deathReason?: WorkspaceDeathReason
   /** Evidence accompanying `deathReason` (exit code, eviction message, …). */
   deathDetail?: string
   /** Whether the user has viewed this death's detail — clears the "Stopped
-   *  worktrees" notification dot / row highlight. Server-persisted (on the
-   *  worktree row) so the acknowledgement is durable and shared across
+   *  workspaces" notification dot / row highlight. Server-persisted (on the
+   *  workspace row) so the acknowledgement is durable and shared across
    *  clients; only meaningful when `deathReason` is set. */
   seen: boolean
-  /** The sidebar group the worktree is filed under — membership survives
-   *  stopping (worktree ids are stable across restarts), so a stopped member
+  /** The sidebar group the workspace is filed under — membership survives
+   *  stopping (workspace ids are stable across restarts), so a stopped member
    *  keeps a ghost row in its group with a restart action. */
   groupId?: string
 }
 
-/** A webapp-attachable terminal inside a worktree's container (beyond the
- *  primary agent view): a `yaac`-worktree tmux window — an initCommands
+/** A webapp-attachable terminal inside a workspace's container (beyond the
+ *  primary agent view): a `yaac`-workspace tmux window — an initCommands
  *  window (dev server, watcher, …) or a scratch shell. */
-export interface WorktreeTerminalEntry {
+export interface WorkspaceTerminalEntry {
   /** /pty/attach target: 'window:@<id>'. */
   target: string
   /** Display name (the tmux window name). */
@@ -1229,7 +1229,7 @@ export interface ProjectSummary {
   slug: string
   remoteUrl: string
   addedAt: string
-  worktreeCount: number
+  workspaceCount: number
   /** The agent this project was last created with; absent until the first
    *  create, when `claude` answers. What the create form opens on. */
   lastTool?: AgentTool
@@ -1242,18 +1242,18 @@ export interface ProjectSummary {
    *  so the form shows what the server would run. */
   createDefaults: Partial<Record<AgentTool, ToolCreateDefaults>>
   /** The git credential its git authenticates with. Null until one is
-   *  assigned — and a project without one cannot create worktrees. */
+   *  assigned — and a project without one cannot create workspaces. */
   gitCredential: { id: string; name: string } | null
 }
 
 /**
- * A worktree that is currently provisioning — a create or restart in flight,
+ * A workspace that is currently provisioning — a create or restart in flight,
  * tracked in server memory and surfaced in the snapshot so the webapp renders
  * it as a first-class, selectable sidebar row that survives a reload (with live
- * progress) until the real worktree lands or a failure is dismissed.
+ * progress) until the real workspace lands or a failure is dismissed.
  */
-export interface ProvisioningWorktreeEntry {
-  worktreeId: string
+export interface ProvisioningWorkspaceEntry {
+  workspaceId: string
   projectSlug: string
   tool: AgentTool
   kind: 'create' | 'restart'
@@ -1266,7 +1266,7 @@ export interface ProvisioningWorktreeEntry {
   message: string
   /** Set when provisioning failed; the row stays until dismissed. */
   error?: string
-  /** The sidebar group this worktree is filed under — asked for by a create
+  /** The sidebar group this workspace is filed under — asked for by a create
    *  (`--group`), or already recorded for a restart — so the row renders in
    *  that section while it provisions rather than jumping to the top of the
    *  list and back. Absent means the default list. */
@@ -1281,15 +1281,15 @@ export interface ProvisioningWorktreeEntry {
 }
 
 /**
- * A worktree create request saved to run when its parent stops naturally
- * (docs/queued-worktrees.md). Not a worktree yet: every setting is concrete,
+ * A workspace create request saved to run when its parent stops naturally
+ * (docs/queued-workspaces.md). Not a workspace yet: every setting is concrete,
  * so what the sidebar shows is exactly what will launch. Exactly one parent
- * field is set — a worktree, or another entry it is chained after.
+ * field is set — a workspace, or another entry it is chained after.
  */
-export interface QueuedWorktreeEntry {
+export interface QueuedWorkspaceEntry {
   id: string
   projectSlug: string
-  parentWorktreeId?: string
+  parentWorkspaceId?: string
   parentQueuedId?: string
   prompt: string
   tool: AgentTool
@@ -1300,11 +1300,11 @@ export interface QueuedWorktreeEntry {
   permissionMode: PermissionMode
   /** The reference branch it forks from, fetched fresh at launch. */
   branch: string
-  /** The user's title for the worktree it launches, which is then not
+  /** The user's title for the workspace it launches, which is then not
    *  auto-titled. */
   title?: string
   /** Model-generated from the prompt, once the title sweep has run for an
-   *  untitled entry. A `title` outranks it; without one, the worktree it
+   *  untitled entry. A `title` outranks it; without one, the workspace it
    *  launches carries it. */
   generatedTitle?: string
   /** The sidebar group it launches into; absent is the default list. */
@@ -1313,20 +1313,20 @@ export interface QueuedWorktreeEntry {
   createdAt: string
   /** Why its last launch failed; it is back in the queue until run again. */
   launchError?: string
-  /** Its parent worktree has no row (that worktree's own create failed), so
+  /** Its parent workspace has no row (that workspace's own create failed), so
    *  it has nothing to nest under and renders at the top level. */
   orphaned?: boolean
 }
 
 /**
- * What a draft worktree keeps of the create dialog (docs/draft-worktrees.md)
+ * What a draft workspace keeps of the create dialog (docs/draft-workspaces.md)
  * — the fields as the dialog showed them, so reopening it puts them back.
  * `model` and `branch` are absent when the dialog had not resolved them yet;
- * `startAfter` is the Start field's parent (a worktree or queued entry id),
+ * `startAfter` is the Start field's parent (a workspace or queued entry id),
  * absent for "Now". `title` is the user's own, absent when the dialog's
  * Title field was left blank.
  */
-export interface DraftWorktreeSettings {
+export interface DraftWorkspaceSettings {
   prompt: string
   tool: AgentTool
   mode: AgentMode
@@ -1339,7 +1339,7 @@ export interface DraftWorktreeSettings {
 }
 
 /** A create-dialog's contents the user kept instead of running. */
-export interface DraftWorktreeEntry extends DraftWorktreeSettings {
+export interface DraftWorkspaceEntry extends DraftWorkspaceSettings {
   id: string
   projectSlug: string
   /** Model-generated from the prompt, once the title sweep has run — never
@@ -1351,13 +1351,13 @@ export interface DraftWorktreeEntry extends DraftWorktreeSettings {
 }
 
 /**
- * A stopped worktree that still has queued worktrees waiting on it — kept
+ * A stopped workspace that still has queued workspaces waiting on it — kept
  * in the sidebar, as a stopped row, until the last of them has launched or
- * been discarded. Slimmer than `StoppedWorktreeEntry` because the snapshot
+ * been discarded. Slimmer than `StoppedWorkspaceEntry` because the snapshot
  * rebuilds on every change and cannot afford that listing's transcript stats.
  */
-export interface HeldWorktreeEntry {
-  worktreeId: string
+export interface HeldWorkspaceEntry {
+  workspaceId: string
   projectSlug: string
   tool: AgentTool
   title?: string
@@ -1365,7 +1365,7 @@ export interface HeldWorktreeEntry {
   groupId?: string
   /** 'YYYY-MM-DD HH:MM:SS' (UTC). */
   stoppedAt: string
-  deathReason?: WorktreeDeathReason
+  deathReason?: WorkspaceDeathReason
   deathDetail?: string
 }
 
@@ -1416,20 +1416,20 @@ export interface CheckResult {
 /**
  * Full picture of server-owned state the webapp renders. Hydrated from a
  * `snapshot` event on connect and replaced wholesale on every subsequent
- * `snapshot`. Mirrors the union of `GET /worktree/list` and
+ * `snapshot`. Mirrors the union of `GET /workspace/list` and
  * `GET /project/list`.
  */
 /**
- * Which substrate a server runs worktrees on.
+ * Which substrate a server runs workspaces on.
  *
- * `k8s` runs each worktree as a single-pod Job in a local cluster, built
+ * `k8s` runs each workspace as a single-pod Job in a local cluster, built
  * from an image and reached through an egress proxy. `containerless` runs
- * it as a tmux server on the host, in the worktree checkout itself — no
+ * it as a tmux server on the host, in the workspace checkout itself — no
  * image, no proxy, and no sandbox around the agent.
  *
  * On the wire because the webapp has to render two different products: a
  * containerless server has no Dockerfile to edit, no builds to show and no
- * blocked hosts to allow, and its worktrees start at a stricter permission
+ * blocked hosts to allow, and its workspaces start at a stricter permission
  * mode than the one a sandbox justifies. The server-side definition of
  * what a kind may be branched on is `DriverKind` in the driver contract,
  * which imports this one.
@@ -1451,23 +1451,23 @@ export type Principal =
 export interface ServerSnapshot {
   /** Which substrate this server runs — see `DriverKind`. */
   driver: DriverKind
-  worktrees: WorktreeListEntry[]
+  workspaces: WorkspaceListEntry[]
   /** Every project's sidebar groups (clients filter by slug, as they do
-   *  `worktrees`). Carries hidden groups too — whether a group shows is a
+   *  `workspaces`). Carries hidden groups too — whether a group shows is a
    *  question about its members, which the client already has. */
-  worktreeGroups: WorktreeGroupSummary[]
-  stale: StaleWorktreeInfo[]
+  workspaceGroups: WorkspaceGroupSummary[]
+  stale: StaleWorkspaceInfo[]
   projects: ProjectSummary[]
-  provisioning: ProvisioningWorktreeEntry[]
-  /** Every project's queued worktrees not currently launching, oldest first
+  provisioning: ProvisioningWorkspaceEntry[]
+  /** Every project's queued workspaces not currently launching, oldest first
    *  (clients filter by slug). A launching one is its provisioning row. */
-  queuedWorktrees: QueuedWorktreeEntry[]
-  /** Stopped worktrees that queued worktrees still wait on. */
-  heldWorktrees: HeldWorktreeEntry[]
-  /** Every project's draft worktrees, oldest first (clients filter by slug). */
-  draftWorktrees: DraftWorktreeEntry[]
+  queuedWorkspaces: QueuedWorkspaceEntry[]
+  /** Stopped workspaces that queued workspaces still wait on. */
+  heldWorkspaces: HeldWorkspaceEntry[]
+  /** Every project's draft workspaces, oldest first (clients filter by slug). */
+  draftWorkspaces: DraftWorkspaceEntry[]
   /** Project slug -> git credentials the upstream rejected (project-wide;
-   *  see ActiveWorktreesResult.gitAuthFailures). */
+   *  see ActiveWorkspacesResult.gitAuthFailures). */
   gitAuthFailures: Record<string, GitAuthFailure[]>
   imageBuilds: ImageBuildEntry[]
   /** Claude subscription plan usage, refreshed server-side
@@ -1478,7 +1478,7 @@ export interface ServerSnapshot {
    *  same engine. Null until the first refresh lands, or when Codex isn't
    *  signed in with a ChatGPT (OAuth) account. */
   codexPlanUsage: PlanUsageResult | null
-  /** The host worktree port-forward listeners actually bind
+  /** The host workspace port-forward listeners actually bind
    *  (`YAAC_FORWARD_BIND`; loopback locally, the tailnet IP on a remote
    *  host). Server-reported so UI exposure claims state the real bind —
    *  the page origin can differ from it (e.g. an SSH tunnel). */
@@ -1529,11 +1529,11 @@ export const MAX_PROMPT_LENGTH = 4000
 export const MAX_MODEL_LENGTH = 128
 
 /**
- * What a worktree's agent may ask its own yaac server to do, via the
- * in-worktree `yaac-mama` command.
+ * What a workspace's agent may ask its own yaac server to do, via the
+ * in-workspace `yaac-mama` command.
  *
  * This union IS the allowlist — the strict subset of the yaac CLI reachable
- * from inside a worktree. It is enforced where the request is answered
+ * from inside a workspace. It is enforced where the request is answered
  * (`runMamaCommand`), so neither transport can widen it: the k8s proxy
  * queues opaque envelopes without knowing what any command means, and the
  * containerless route validates against this same list.
@@ -1561,7 +1561,7 @@ export const MAMA_COMMANDS = [
 export type MamaCommand = (typeof MAMA_COMMANDS)[number]
 
 /**
- * One queued in-worktree `yaac-mama` request, as drained from a runtime that
+ * One queued in-workspace `yaac-mama` request, as drained from a runtime that
  * holds them. Wire shape mirrors k8s/proxy/mama-queue.ts (MamaRequest sans
  * enqueuedAtMs) — the proxy bundles independently; keep them in sync.
  *
@@ -1576,8 +1576,8 @@ export type MamaCommand = (typeof MAMA_COMMANDS)[number]
  */
 export interface PendingMamaRequest {
   requestId: string
-  /** The CALLING worktree (attributed by the runtime, never by the caller). */
-  worktreeId: string
+  /** The CALLING workspace (attributed by the runtime, never by the caller). */
+  workspaceId: string
   /** A `MamaCommand`, unvalidated — an unknown one is refused server-side. */
   command: string
   /** Options as `--name value` pairs, e.g. `{ tool: 'claude' }`. */

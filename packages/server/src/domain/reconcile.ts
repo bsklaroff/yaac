@@ -3,13 +3,13 @@ import {
   reconcileAgentSessions,
   reconcilePrewarmPool,
   reconcileMamaRequests,
-  reconcileQueuedWorktrees,
-  reconcileStaleWorktrees,
-} from '#domain/worktrees'
+  reconcileQueuedWorkspaces,
+  reconcileStaleWorkspaces,
+} from '#domain/workspaces'
 import { reconcileGeneratedTitles } from '#domain/titles'
 import { refreshProjectOrigins } from '#domain/projects'
 import { adoptRefreshedToolCredentials, syncToolCredentialsThrottled } from '#domain/auth'
-import { worktreeDriver } from '#drivers/driver'
+import { workspaceDriver } from '#drivers/driver'
 import type { ReconcileStep } from '#drivers/contract'
 
 /**
@@ -27,16 +27,16 @@ import type { ReconcileStep } from '#drivers/contract'
  * its own step.
  */
 export function defaultReconcileSteps(): ReconcileStep[] {
-  const driver = worktreeDriver()
+  const driver = workspaceDriver()
   const runtime = driver.reconcileSteps()
-  // What a spare buys is the wait a cold worktree pays — an image pull and
+  // What a spare buys is the wait a cold workspace pays — an image pull and
   // a pod boot. A host-process runtime pays neither (a tmux server starts in
   // milliseconds in a checkout that already exists), so a pool there would
-  // hold worktrees open to save nothing. The step is dropped rather than
+  // hold workspaces open to save nothing. The step is dropped rather than
   // made to no-op so a pass over a containerless server has no prewarm
   // vocabulary in it at all.
   // The standing credential convergence, and the only lane that reaches an
-  // IDLE install: a worktree that refreshed its OAuth token holds the live
+  // IDLE install: a workspace that refreshed its OAuth token holds the live
   // credential, and every other reader of it — the next create, the plan-usage
   // poller, the next server — is looking at the host store. The other triggers
   // (create, attach, stop, a usage cycle) each cover a moment; this covers the
@@ -48,7 +48,7 @@ export function defaultReconcileSteps(): ReconcileStep[] {
   // nothing to converge and a pass over such a server has no credential
   // vocabulary in it at all.
   //
-  // Its mirror under a mediating runtime: the refresh a worktree drives
+  // Its mirror under a mediating runtime: the refresh a workspace drives
   // transits the proxy, which captures the rotation into an object the
   // runtime watches, and this is how it reaches the host store. Edge-driven
   // by that object's delta; on the resync it reads a cache. Dropped where
@@ -59,15 +59,15 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     : [{ name: 'credential-sync', triggers: [], run: () => syncToolCredentialsThrottled() }]
   const pool: ReconcileStep[] = driver.kind === 'containerless' ? [] : [
     // Keep one prewarmed spare per active project (after the stale sweep so
-    // counts reflect just-reaped worktrees). No-op when the pool size is 0.
+    // counts reflect just-reaped workspaces). No-op when the pool size is 0.
     { name: 'prewarm-pool', triggers: ['workspaces'],
       run: (ctx) => reconcilePrewarmPool(ctx.snapshot()) },
   ]
   return [
-    // The stale reaper — first, so counts reflect just-reaped worktrees by
+    // The stale reaper — first, so counts reflect just-reaped workspaces by
     // the time the prewarm pool runs. It reads what should exist from
     // db at the top of its pass; the sources here are the ones on
-    // which a worktree may have appeared or gone, plus `status-streams`
+    // which a workspace may have appeared or gone, plus `status-streams`
     // because in-pod tmux death is not a substrate event — losing a
     // driver connection is the edge after which liveness can no longer be
     // inferred and must be probed. Its slower sweeps ride the resync, which
@@ -76,15 +76,15 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // out the 60s starting grace. Nor can a flapping stream turn this into
     // a reaping loop — the destructive path needs a conclusive in-pod
     // verdict, and a failed or timed-out probe reads `unknown` and keeps
-    // the worktree.
-    { name: 'stale-worktrees', triggers: ['workspaces', 'units', 'status-streams'],
-      run: (ctx) => reconcileStaleWorktrees(ctx.snapshot()) },
-    // The crash backstop for queued worktrees: a launch a server restart
-    // interrupted, or a release it lost before launching. `stopWorktree`
+    // the workspace.
+    { name: 'stale-workspaces', triggers: ['workspaces', 'units', 'status-streams'],
+      run: (ctx) => reconcileStaleWorkspaces(ctx.snapshot()) },
+    // The crash backstop for queued workspaces: a launch a server restart
+    // interrupted, or a release it lost before launching. `stopWorkspace`
     // launches directly, so this has no triggers of its own — the resync
     // (and the first pass after start, which is one) is enough.
-    { name: 'queued-worktrees', triggers: [], run: () => reconcileQueuedWorktrees() },
-    // Service in-worktree `yaac-mama` requests queued at the egress proxy.
+    { name: 'queued-workspaces', triggers: [], run: () => reconcileQueuedWorkspaces() },
+    // Service in-workspace `yaac-mama` requests queued at the egress proxy.
     // The drain resolves who called from pod labels; what a request MEANS
     // (which commands exist, and what each may do) is `runMamaCommand`'s.
     // The proxy holds the caller's HTTP response open until we answer, so
@@ -97,7 +97,7 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // capacity should be out of the way before those builds are launched.
     ...runtime.prePool,
     ...pool,
-    // Which agent sessions each worktree holds, which are live, and what
+    // Which agent sessions each workspace holds, which are live, and what
     // each opened with — the conversations the watcher's live agent set
     // names, each pane's or acpd socket's own. The opening message rides
     // along because the pass has just resolved the transcript it would be
@@ -109,7 +109,7 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     { name: 'agent-sessions', triggers: ['workspaces', 'live-agents'],
       run: (ctx) => reconcileAgentSessions(ctx.snapshot()) },
     // The runtime's upkeep — substrate GCs and datapath heals. After the
-    // sweeps above, so a just-reaped worktree's leavings are collectable in
+    // sweeps above, so a just-reaped workspace's leavings are collectable in
     // the same pass.
     //
     // This runs later than it used to: the image sweeps and the registry
@@ -119,9 +119,9 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // detach their work, and the sweep reads transcripts and rows rather
     // than images.
     ...runtime.maintenance,
-    // What worktrees whose runtime is gone left behind — leftovers from
+    // What workspaces whose runtime is gone left behind — leftovers from
     // crashes and host reboots (see gcOrphanEphemeralModuleDirs). A sweep that
-    // must not delete a dir a create is staging into: which worktrees are
+    // must not delete a dir a create is staging into: which workspaces are
     // mid-create comes straight from the provisioning registry, which is
     // same-process and populated synchronously before a create stages
     // anything, so the sweep can never see a fresher directory than the
@@ -130,12 +130,12 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // project, and the runtime throttles its node-local half.
     { name: 'orphan-modules-gc', triggers: [], run: () => gcOrphanEphemeralModuleDirs() },
     ...credentialSync,
-    // Keep every running worktree's `origin/*` within minutes of origin
-    // (docs/server-git.md): a worktree's clone moves only when the server
+    // Keep every running workspace's `origin/*` within minutes of origin
+    // (docs/server-git.md): a workspace's clone moves only when the server
     // fetches, and nothing else fetches a project nobody creates in.
     // Throttled per project, and detached from the pass.
     { name: 'origin-refresh', triggers: [], run: (ctx) => refreshProjectOrigins(ctx.snapshot()) },
-    // Model-generated titles for untitled worktrees, after the
+    // Model-generated titles for untitled workspaces, after the
     // conversation sweep so a freshly captured prompt is eligible the same
     // pass — which means it owes a pass on whatever dirties that sweep.
     // Cheap when there is nothing to do.

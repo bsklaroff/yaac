@@ -7,11 +7,11 @@
  * included. SCREENSHOT_DIR
  * gets explorer-tooltip.png.
  *
- * Needs a running containerless `yaac server` with one live worktree. Run
+ * Needs a running containerless `yaac server` with one live workspace. Run
  * `pnpm build && yaac server restart` first, or you are looking at the
  * frontend `dist/` held when the server started.
  *
- * Run: node test-playwright-scripts/file-explorer-tooltips.js <worktree-id>
+ * Run: node test-playwright-scripts/file-explorer-tooltips.js <workspace-id>
  * (set SCREENSHOT_DIR to change where screenshots land; defaults to
  * /tmp/yaac-shots. YAAC_DATA_DIR defaults to ~/.yaac.)
  * (playwright is resolved from the global npm root; browsers live under
@@ -45,9 +45,9 @@ function readServerLock() {
   throw new Error('no .server.lock found — is the server running? try: yaac server start')
 }
 
-const worktreeId = process.argv[2]
-if (!worktreeId) {
-  console.error('usage: node test-playwright-scripts/file-explorer-tooltips.js <worktree-id>')
+const workspaceId = process.argv[2]
+if (!workspaceId) {
+  console.error('usage: node test-playwright-scripts/file-explorer-tooltips.js <workspace-id>')
   process.exit(1)
 }
 
@@ -61,12 +61,12 @@ async function main() {
   fs.mkdirSync(SHOT_DIR, { recursive: true })
   const lock = readServerLock()
   const origin = `http://127.0.0.1:${lock.port}`
-  const { worktrees } = await (await fetch(`${origin}/api/worktree/list`)).json()
-  const wt = worktrees.find((w) => w.worktreeId.startsWith(worktreeId))
-  if (!wt) throw new Error(`no running worktree ${worktreeId}`)
+  const { workspaces } = await (await fetch(`${origin}/api/workspace/list`)).json()
+  const wt = workspaces.find((w) => w.workspaceId.startsWith(workspaceId))
+  if (!wt) throw new Error(`no running workspace ${workspaceId}`)
   const browser = await chromium.launch()
   const page = await browser.newPage({ viewport: { width: 1400, height: 800 } })
-  const query = new URLSearchParams({ project: wt.projectSlug, worktree: wt.worktreeId })
+  const query = new URLSearchParams({ project: wt.projectSlug, workspace: wt.workspaceId })
   await page.goto(`${origin}/?${query}`)
   await page.waitForSelector('[aria-label="Browse files"]', { timeout: 20000 })
   await page.locator('[aria-label="Browse files"]').click()

@@ -2,22 +2,22 @@
 import { describe, it, expect } from 'vitest'
 import { sidebarLayout, sidebarRowIds } from '#components/Sidebar'
 import type {
-  HeldWorktreeEntry,
-  ProvisioningWorktreeEntry,
-  QueuedWorktreeEntry,
-  StoppedWorktreeEntry,
-  WorktreeGroupSummary,
-  WorktreeListEntry,
+  HeldWorkspaceEntry,
+  ProvisioningWorkspaceEntry,
+  QueuedWorkspaceEntry,
+  StoppedWorkspaceEntry,
+  WorkspaceGroupSummary,
+  WorkspaceListEntry,
 } from '@yaac/shared/types'
 
-/** A worktree entry. `at` is the seconds field of its creation time, which is
+/** A workspace entry. `at` is the seconds field of its creation time, which is
  *  what the list orders on. */
 const entry = (
-  worktreeId: string,
+  workspaceId: string,
   at: number,
-  extra: Partial<WorktreeListEntry> = {},
-): WorktreeListEntry => ({
-  worktreeId,
+  extra: Partial<WorkspaceListEntry> = {},
+): WorkspaceListEntry => ({
+  workspaceId,
   projectSlug: 'p',
   tool: 'claude',
   status: 'running',
@@ -32,8 +32,8 @@ const entry = (
 const group = (
   groupId: string,
   at: number,
-  extra: Partial<WorktreeGroupSummary> = {},
-): WorktreeGroupSummary => ({
+  extra: Partial<WorkspaceGroupSummary> = {},
+): WorkspaceGroupSummary => ({
   groupId,
   projectSlug: 'p',
   name: groupId,
@@ -43,11 +43,11 @@ const group = (
 })
 
 const stopped = (
-  worktreeId: string,
+  workspaceId: string,
   at: number,
   groupId?: string,
-): StoppedWorktreeEntry => ({
-  worktreeId,
+): StoppedWorkspaceEntry => ({
+  workspaceId,
   projectSlug: 'p',
   tool: 'claude',
   createdAt: `2026-01-01 00:00:${String(at).padStart(2, '0')}`,
@@ -56,13 +56,13 @@ const stopped = (
   ...(groupId !== undefined ? { groupId } : {}),
 })
 
-/** A provisioning row: a create in flight, or a worktree being restarted. */
+/** A provisioning row: a create in flight, or a workspace being restarted. */
 const prov = (
-  worktreeId: string,
+  workspaceId: string,
   at: number,
-  extra: Partial<ProvisioningWorktreeEntry> = {},
-): ProvisioningWorktreeEntry => ({
-  worktreeId,
+  extra: Partial<ProvisioningWorkspaceEntry> = {},
+): ProvisioningWorkspaceEntry => ({
+  workspaceId,
   projectSlug: 'p',
   tool: 'claude',
   kind: 'restart',
@@ -74,28 +74,28 @@ const prov = (
 /** { top: [provisioning ids], default: [ids],
  *    <group name>: [its provisioning ids + member ids + ghost ids] } */
 const shape = (
-  worktrees: WorktreeListEntry[],
-  groups: WorktreeGroupSummary[],
-  stoppedRows: StoppedWorktreeEntry[] = [],
-  provisioning: ProvisioningWorktreeEntry[] = [],
+  workspaces: WorkspaceListEntry[],
+  groups: WorkspaceGroupSummary[],
+  stoppedRows: StoppedWorkspaceEntry[] = [],
+  provisioning: ProvisioningWorkspaceEntry[] = [],
 ): Record<string, string[]> => {
-  const layout = sidebarLayout(worktrees, groups, stoppedRows, provisioning)
+  const layout = sidebarLayout(workspaces, groups, stoppedRows, provisioning)
   return {
-    ...(provisioning.length > 0 ? { top: layout.provisioning.map((p) => p.worktreeId) } : {}),
-    default: layout.defaultList.map((w) => w.worktreeId),
+    ...(provisioning.length > 0 ? { top: layout.provisioning.map((p) => p.workspaceId) } : {}),
+    default: layout.defaultList.map((w) => w.workspaceId),
     ...Object.fromEntries(layout.groups.map((s) => [
       s.group.name,
       [
-        ...s.provisioning.map((p) => p.worktreeId),
-        ...s.members.map((w) => w.worktreeId),
-        ...s.ghosts.map((d) => d.worktreeId),
+        ...s.provisioning.map((p) => p.workspaceId),
+        ...s.members.map((w) => w.workspaceId),
+        ...s.ghosts.map((d) => d.workspaceId),
       ],
     ])),
   }
 }
 
 describe('sidebarLayout', () => {
-  it('lists ungrouped worktrees newest-first, whatever their status', () => {
+  it('lists ungrouped workspaces newest-first, whatever their status', () => {
     expect(shape([
       entry('c', 3),
       entry('a', 1, { status: 'waiting' }),
@@ -103,7 +103,7 @@ describe('sidebarLayout', () => {
     ], [])).toEqual({ default: ['c', 'b', 'a'] })
   })
 
-  it('keeps a stopping worktree in place rather than bucketing it', () => {
+  it('keeps a stopping workspace in place rather than bucketing it', () => {
     // Both the server-marked kind and (via sidebarRowIds) a mid-flight
     // optimistic delete: the row greys out where it sits.
     expect(shape([
@@ -123,9 +123,9 @@ describe('sidebarLayout', () => {
       entry('in-early-old', 3, { groupId: 'early' }),
     ], [late, early])
 
-    expect(layout.defaultList.map((w) => w.worktreeId)).toEqual(['loose'])
+    expect(layout.defaultList.map((w) => w.workspaceId)).toEqual(['loose'])
     expect(layout.groups.map((s) => s.group.groupId)).toEqual(['late', 'early'])
-    expect(layout.groups[1]?.members.map((w) => w.worktreeId))
+    expect(layout.groups[1]?.members.map((w) => w.workspaceId))
       .toEqual(['in-early-new', 'in-early-old'])
   })
 
@@ -151,14 +151,14 @@ describe('sidebarLayout', () => {
 
   it('ghosts every shown group\'s stopped members, pinned or not', () => {
     const g = group('g', 10)
-    // An unpinned group with one live worktree still shows its dead ones.
+    // An unpinned group with one live workspace still shows its dead ones.
     expect(shape(
       [entry('live', 2, { groupId: 'g' })],
       [g],
       [stopped('gone', 1, 'g'), stopped('elsewhere', 1), stopped('other-group', 1, 'nope')],
     )).toEqual({ default: [], g: ['live', 'gone'] })
 
-    // Ungrouped stopped worktrees are never drawn — they live in the stopped
+    // Ungrouped stopped workspaces are never drawn — they live in the stopped
     // overlay — and neither are a hidden group's.
     expect(shape([], [g], [stopped('gone', 1, 'g')])).toEqual({ default: [] })
     expect(shape([], [{ ...g, pinned: true }], [stopped('gone', 1, 'g')]))
@@ -198,18 +198,18 @@ describe('sidebarLayout', () => {
   })
 })
 
-/** A queued worktree waiting on `parent` — a worktree, or with `chained`
+/** A queued workspace waiting on `parent` — a workspace, or with `chained`
  *  another entry. */
 const queued = (
   id: string,
   parent: string,
-  extra: Partial<QueuedWorktreeEntry> & { chained?: boolean } = {},
-): QueuedWorktreeEntry => {
+  extra: Partial<QueuedWorkspaceEntry> & { chained?: boolean } = {},
+): QueuedWorkspaceEntry => {
   const { chained, ...rest } = extra
   return {
     id,
     projectSlug: 'p',
-    ...(chained === true ? { parentQueuedId: parent } : { parentWorktreeId: parent }),
+    ...(chained === true ? { parentQueuedId: parent } : { parentWorkspaceId: parent }),
     prompt: id,
     tool: 'claude',
     model: 'm',
@@ -221,15 +221,15 @@ const queued = (
   }
 }
 
-const held = (worktreeId: string, groupId?: string): HeldWorktreeEntry => ({
-  worktreeId,
+const held = (workspaceId: string, groupId?: string): HeldWorkspaceEntry => ({
+  workspaceId,
   projectSlug: 'p',
   tool: 'claude',
   stoppedAt: '2026-01-01 00:00:05',
   ...(groupId !== undefined ? { groupId } : {}),
 })
 
-describe('sidebarLayout with queued worktrees', () => {
+describe('sidebarLayout with queued workspaces', () => {
   it('nests each entry under what it waits on, chains included', () => {
     const layout = sidebarLayout([entry('a', 1)], [], [], [prov('p', 2)], [
       queued('q1', 'a'),
@@ -247,20 +247,20 @@ describe('sidebarLayout with queued worktrees', () => {
     const layout = sidebarLayout([], [g], [stopped('grouped', 3, 'g'), stopped('gone', 2, 'g')], [],
       [queued('q1', 'loose'), queued('q2', 'grouped')],
       [held('loose'), held('grouped', 'g')])
-    expect(layout.defaultHeld.map((d) => d.worktreeId)).toEqual(['loose'])
+    expect(layout.defaultHeld.map((d) => d.workspaceId)).toEqual(['loose'])
     // Shown for its held member alone, which is drawn once — from the
     // stopped listing, whose row carries more — and kept out of the ghosts,
     // which stay hidden with what is queued under them still waiting.
-    expect(layout.groups.map((s) => s.held.map((d) => d.worktreeId))).toEqual([['grouped']])
+    expect(layout.groups.map((s) => s.held.map((d) => d.workspaceId))).toEqual([['grouped']])
     expect(layout.groups[0]?.held[0]?.createdAt).toBe('2026-01-01 00:00:03')
-    expect(layout.groups.map((s) => s.ghosts.map((d) => d.worktreeId))).toEqual([['gone']])
+    expect(layout.groups.map((s) => s.ghosts.map((d) => d.workspaceId))).toEqual([['gone']])
     expect(layout.orphans).toEqual([])
   })
 
   it('draws a held parent once, as its live or restarting row', () => {
     // Every list the group header sums: provisioning, members, held, ghosts.
     const counted = (layout: ReturnType<typeof sidebarLayout>): string[][][] => layout.groups.map((s) =>
-      [s.provisioning, s.members, s.held, s.ghosts].map((l) => l.map((w) => w.worktreeId)))
+      [s.provisioning, s.members, s.held, s.ghosts].map((l) => l.map((w) => w.workspaceId)))
     const stopping = sidebarLayout([entry('a', 1, { groupId: 'g' })], [group('g', 10)], [], [],
       [queued('q1', 'a')], [held('a', 'g')])
     expect(counted(stopping)).toEqual([[[], ['a'], [], []]])

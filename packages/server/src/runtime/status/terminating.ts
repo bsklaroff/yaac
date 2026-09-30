@@ -1,7 +1,7 @@
 /**
- * Worktrees whose teardown has been issued but whose pod may not yet carry a
- * Kubernetes deletionTimestamp — the gap between `cleanupWorktree*` starting
- * and the `kubectl delete` landing. Marking a worktree here lets the display
+ * Workspaces whose teardown has been issued but whose pod may not yet carry a
+ * Kubernetes deletionTimestamp — the gap between `cleanupWorkspace*` starting
+ * and the `kubectl delete` landing. Marking a workspace here lets the display
  * path render it as "terminating…" across that gap and for deletes that
  * originate outside the UI (CLI, the stale reaper), instead of the row
  * flashing a stray `waiting` spell on its way out.
@@ -15,9 +15,9 @@
  * un-greyed row.
  */
 
-import { notifyWorktreeListChanged } from '#notify'
+import { notifyWorkspaceListChanged } from '#notify'
 
-/** worktreeId -> epoch ms when the teardown was marked. */
+/** workspaceId -> epoch ms when the teardown was marked. */
 const marks = new Map<string, number>()
 
 /**
@@ -28,28 +28,28 @@ const marks = new Map<string, number>()
  */
 export const TERMINATING_TTL_MS = 60_000
 
-/** Mark a worktree as terminating (idempotent; does not reset the timestamp so
+/** Mark a workspace as terminating (idempotent; does not reset the timestamp so
  *  the TTL measures from the first mark). */
-export function markWorktreeTerminating(worktreeId: string, nowMs = Date.now()): void {
-  if (!worktreeId) return
-  if (marks.has(worktreeId)) return
-  marks.set(worktreeId, nowMs)
+export function markWorkspaceTerminating(workspaceId: string, nowMs = Date.now()): void {
+  if (!workspaceId) return
+  if (marks.has(workspaceId)) return
+  marks.set(workspaceId, nowMs)
   // A mark greys the row, so it is a snapshot input and announces itself
   // (docs/layered-server.md). Without this a CLI- or reaper-issued stop
   // showed nothing until the pod's deletionTimestamp delta landed, which
   // is the whole gap this mark exists to cover.
-  notifyWorktreeListChanged()
+  notifyWorkspaceListChanged()
 }
 
-/** Whether a worktree is currently marked terminating. */
-export function isWorktreeTerminating(worktreeId: string): boolean {
-  return marks.has(worktreeId)
+/** Whether a workspace is currently marked terminating. */
+export function isWorkspaceTerminating(workspaceId: string): boolean {
+  return marks.has(workspaceId)
 }
 
-/** Drop a worktree's mark — called when its id is reused (restart) so a fresh
+/** Drop a workspace's mark — called when its id is reused (restart) so a fresh
  *  incarnation isn't rendered as terminating. */
-export function clearWorktreeTerminating(worktreeId: string): void {
-  if (marks.delete(worktreeId)) notifyWorktreeListChanged()
+export function clearWorkspaceTerminating(workspaceId: string): void {
+  if (marks.delete(workspaceId)) notifyWorkspaceListChanged()
 }
 
 /**
@@ -59,9 +59,9 @@ export function clearWorktreeTerminating(worktreeId: string): void {
  * display-list build.
  */
 export function pruneTerminating(livePodIds: Set<string>, nowMs = Date.now()): void {
-  for (const [worktreeId, markedAt] of marks) {
-    if (!livePodIds.has(worktreeId) || nowMs - markedAt > TERMINATING_TTL_MS) {
-      marks.delete(worktreeId)
+  for (const [workspaceId, markedAt] of marks) {
+    if (!livePodIds.has(workspaceId) || nowMs - markedAt > TERMINATING_TTL_MS) {
+      marks.delete(workspaceId)
     }
   }
 }

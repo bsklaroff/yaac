@@ -51,14 +51,14 @@ import {
   type PaneSession,
 } from './agent-tools'
 import { buildAgentCmd, buildPromptPasteBgCmd } from './agent-command'
-import { worktreeDriver } from '#drivers/driver'
+import { workspaceDriver } from '#drivers/driver'
 import type {
   AgentConnectDeps,
   AgentConnection,
   AgentDriver,
   AgentLaunchSpec,
   AgentObservation,
-  DrivenWorktree,
+  DrivenWorkspace,
   LiveAgent,
 } from './drivers'
 import type { AgentTool } from '@yaac/shared/types'
@@ -87,7 +87,7 @@ const PLACEHOLDER_FORMAT = '#{m/r:^"?sleep infinity"?$,#{pane_start_command}}'
  * It MUST be unique per pane: `refresh-client -B <name>:<pane>:<format>` keys
  * subscriptions by name, so subscribing a second pane under a name the client
  * already holds *replaces* the first rather than adding to it, and that pane
- * silently stops reporting. With one agent per worktree the bug is invisible;
+ * silently stops reporting. With one agent per workspace the bug is invisible;
  * with two, only the last-subscribed pane ever pushes a status — a waiting
  * primary agent reads as running and never raises attention.
  *
@@ -129,7 +129,7 @@ class TuiConnection implements AgentConnection {
   private child: StreamChild | null = null
   private client: ControlModeClient | null = null
   /** Panes we hold a status subscription on, each with the tool its window
-   *  runs — a worktree's panes need not share one, and the pushed value is
+   *  runs — a workspace's panes need not share one, and the pushed value is
    *  classified against that tool's grammar. */
   private readonly subscribed = new Map<string, AgentTool>()
   /** Each pane's model, as its model subscription last resolved it. */
@@ -150,7 +150,7 @@ class TuiConnection implements AgentConnection {
   private readonly log: (msg: string) => void
 
   constructor(
-    private readonly session: DrivenWorktree,
+    private readonly session: DrivenWorkspace,
     private readonly sink: (obs: AgentObservation) => void,
     deps: AgentConnectDeps,
   ) {
@@ -160,8 +160,8 @@ class TuiConnection implements AgentConnection {
 
     let child: StreamChild
     try {
-      const paths = worktreeDriver().workspacePaths(session.jobName)
-      child = (deps.dial ?? ((s, argv) => worktreeDriver().dialCtrl(s.jobName, argv)))(
+      const paths = workspaceDriver().workspacePaths(session.jobName)
+      child = (deps.dial ?? ((s, argv) => workspaceDriver().dialCtrl(s.jobName, argv)))(
         session, attachArgv(paths),
       )
     } catch (err) {
@@ -216,11 +216,11 @@ class TuiConnection implements AgentConnection {
 
   /**
    * Enumerate the panes and subscribe each one's formats. An agent pane is one
-   * whose window is an agent window — `<tool>` for the worktree's original
+   * whose window is an agent window — `<tool>` for the workspace's original
    * agent, `<tool>-2`, `<tool>-3`, … for the extra conversations a restart
    * brings back or a user opens — and only those get a status and a report
    * subscription: an init window or a scratch shell has no agent status, and
-   * what a hand-run agent reports about its posture is not the worktree's.
+   * what a hand-run agent reports about its posture is not the workspace's.
    * Every pane gets the session one, which is how a conversation started by
    * hand in a shell is recorded too.
    *
@@ -247,7 +247,7 @@ class TuiConnection implements AgentConnection {
       .map((line) => line.split('\t'))
       .flatMap(([paneId, windowName, placeholder, session]) => {
         if (paneId === undefined || !paneId.startsWith('%')) return []
-        // Classify each pane against ITS tool's grammar, not the worktree's: a
+        // Classify each pane against ITS tool's grammar, not the workspace's: a
         // pi pane read with claude's title format is permanently misclassified.
         const tool = placeholder === '1' ? undefined : agentWindowTool(windowName ?? '')
         return [{ paneId, placeholder: placeholder === '1', tool, session: parsePaneSession(session ?? '') }]
@@ -261,7 +261,7 @@ class TuiConnection implements AgentConnection {
     if (!panes.some((p) => p.tool !== undefined)) {
       // Nothing to classify yet (the agent window is still being created).
       // Deliberately not published as an empty live set: that would read as
-      // "every agent exited" and deactivate the worktree's conversations.
+      // "every agent exited" and deactivate the workspace's conversations.
       return
     }
 
@@ -337,7 +337,7 @@ class TuiConnection implements AgentConnection {
 
   /**
    * A pane's reported permission mode moved. Carried as the tool said it, to
-   * be read as a posture where the worktree's row is (`LiveAgent.reportedMode`)
+   * be read as a posture where the workspace's row is (`LiveAgent.reportedMode`)
    * — opencode's agent means one thing under one launch and another under the
    * next. Empty leaves the last one standing, as for the model.
    */
@@ -461,7 +461,7 @@ class TuiConnection implements AgentConnection {
 
   close(): void {
     if (this.done) return
-    this.log(`[server] tui-driver ${this.session.worktreeId}: closing`)
+    this.log(`[server] tui-driver ${this.session.workspaceId}: closing`)
     this.teardown()
   }
 }
@@ -472,7 +472,7 @@ export const tuiDriver: AgentDriver = {
   launchCmd(spec: AgentLaunchSpec): string {
     return buildAgentCmd({
       tool: spec.tool,
-      worktreeId: spec.agentSessionId,
+      workspaceId: spec.agentSessionId,
       resume: spec.resume,
       permissionMode: spec.permissionMode,
       paths: spec.paths,
@@ -485,10 +485,10 @@ export const tuiDriver: AgentDriver = {
     return new TuiConnection(session, sink, deps)
   },
 
-  async deliverPrompt(session: DrivenWorktree, handle: string, text: string): Promise<void> {
+  async deliverPrompt(session: DrivenWorkspace, handle: string, text: string): Promise<void> {
     // The handle is a pane id, which is exactly what tmux's paste target
     // wants — no window-name indirection needed.
-    const driver = worktreeDriver()
+    const driver = workspaceDriver()
     const cmd = buildPromptPasteBgCmd(handle, text, driver.workspacePaths(session.jobName))
     await driver.exec(session.jobName, cmd, { maxAttempts: 1, timeout: 15_000 })
   },

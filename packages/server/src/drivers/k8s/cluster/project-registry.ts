@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import {
   LABEL_PROJECT,
   LABEL_PROJECT_ID,
-  LABEL_WORKTREE_ID,
+  LABEL_WORKSPACE_ID,
   PRIORITY_CLASS_INFRA,
   dataDirHash,
   k8sNamespace,
@@ -22,8 +22,8 @@ import type { ProjectRef } from '#drivers/contract'
 export const REGISTRY_APP_LABEL = 'yaac-registry'
 /**
  * GC scope label: ties registry objects to this yaac install without
- * making them visible to the worktree reaper/list paths (which filter on
- * `yaac.data-dir-hash` + `yaac.worktree-id`).
+ * making them visible to the workspace reaper/list paths (which filter on
+ * `yaac.data-dir-hash` + `yaac.workspace-id`).
  */
 export const LABEL_REGISTRY_DATA_DIR_HASH = 'yaac.registry-data-dir-hash'
 /**
@@ -37,7 +37,7 @@ export const LABEL_NODE_WRITE = 'yaac.node-write'
 /**
  * In-cluster port of the per-project registry. Deliberately not 443/80:
  * netd redirects those to the proxy, whereas 5000 rides the per-project
- * worktrees NetworkPolicy straight to the registry, un-MITM'd.
+ * workspaces NetworkPolicy straight to the registry, un-MITM'd.
  */
 export const PROJECT_REGISTRY_PORT = 5000
 
@@ -68,7 +68,7 @@ export function projectRegistryName(projectId: string): string {
 
 /**
  * The in-cluster service-DNS name of the registry. A FULL `.svc.cluster.local`
- * FQDN, not the `.svc` shorthand: worktrees resolve it through the proxy's
+ * FQDN, not the `.svc` shorthand: workspaces resolve it through the proxy's
  * split-horizon DNS, which forwards ONLY `.cluster.local` to CoreDNS (a bare
  * `.svc` would be sinkholed, since CoreDNS forwards anything outside its zone
  * to the remote resolver — a DNS-exfil channel). The node's containerd matches
@@ -100,7 +100,7 @@ export function projectRegistryPvcName(projectId: string): string {
 }
 
 /**
- * Requested capacity — one project's image chain and its worktrees' salvaged
+ * Requested capacity — one project's image chain and its workspaces' salvaged
  * layers, so a fraction of the main registry's. As with that one it is a
  * request, not a cap anything here enforces: kind's local-path provisioner
  * ignores the number, and the real bound on the local backend is the
@@ -117,7 +117,7 @@ export const PROJECT_REGISTRY_STORAGE_SIZE = '50Gi'
 
 /**
  * registries.conf.d drop-in making user-driven `docker push` from a
- * worktree accept the registry's plain HTTP. Written into the worktree at
+ * workspace accept the registry's plain HTTP. Written into the workspace at
  * setup time (the host is per-project, so it cannot be baked into the
  * shared nestable layer). Scoped to the exact registry host — every
  * other registry keeps full TLS verification.
@@ -175,7 +175,7 @@ function registrySelector(projectId: string): string {
  * registry instead of having to stop it.
  *
  * Losing the volume is not symmetric with the main registry's: the
- * cross-worktree layer cache refills by rebuild, but anything a worktree
+ * cross-workspace layer cache refills by rebuild, but anything a workspace
  * `docker push`ed here under a name yaac never mints is not regenerable and
  * goes with it.
  */
@@ -209,7 +209,7 @@ export function buildProjectRegistryPvcManifest(project: ProjectRef): Record<str
  * enforces without anything here having to name a node.
  *
  * Declaring no `tolerations` is load-bearing, not an omission, and it is
- * what keeps this off a tainted worktrees pool. That used to be hand-computed
+ * what keeps this off a tainted workspaces pool. That used to be hand-computed
  * by the node-resolver this replaced (matching each node's taints against an
  * empty toleration set); with the pin gone the scheduler does the same
  * matching natively, and for the same reason: the pool's toleration lives on
@@ -240,8 +240,8 @@ export function buildProjectRegistryDeploymentManifest(
         spec: {
           automountServiceAccountToken: false,
           enableServiceLinks: false,
-          // Infra tier: the project's worktrees pull their images from here,
-          // so evicting it to make room for a worktree is backwards.
+          // Infra tier: the project's workspaces pull their images from here,
+          // so evicting it to make room for a workspace is backwards.
           priorityClassName: PRIORITY_CLASS_INFRA,
           containers: [
             {
@@ -252,7 +252,7 @@ export function buildProjectRegistryDeploymentManifest(
               // drop chain slots a shorter rebuild no longer fills, and
               // which is what leaves their blobs collectable. Scoped by the
               // same policies as every other write to this registry: only
-              // this project's own worktrees can reach it.
+              // this project's own workspaces can reach it.
               //
               // `readOnly` is the maintenance window a blob collect runs in
               // (reconcileProjectRegistryGc): pulls and the catalog keep
@@ -301,7 +301,7 @@ export function buildProjectRegistryServiceManifest(project: ProjectRef): Record
     },
     spec: {
       type: 'ClusterIP',
-      // Allocator-assigned (no longer pinned): worktrees resolve the live
+      // Allocator-assigned (no longer pinned): workspaces resolve the live
       // ClusterIP through the proxy's split-horizon DNS, and the node's
       // hosts.toml is rewritten with the live IP on every ensure.
       selector: registryPodSelector(project.id),
@@ -317,19 +317,19 @@ export function buildProjectRegistryServiceManifest(project: ProjectRef): Record
 }
 
 /**
- * NetworkPolicy admitting this project's worktrees to this project's
- * registry — the SOLE egress hole for worktree→registry traffic:
+ * NetworkPolicy admitting this project's workspaces to this project's
+ * registry — the SOLE egress hole for workspace→registry traffic:
  * NetworkPolicy unions allow rules, so this punches an exactly-scoped
- * hole through the worktree-egress policy's default-deny (which itself has
+ * hole through the workspace-egress policy's default-deny (which itself has
  * no in-cluster registry allowance — an install-wide rule there could
  * not express "same project only"; see that builder's comment).
  * Per-project rather than shared because registry:2 has no path ACLs: a
  * shared writable registry
- * would let any worktree overwrite another project's (or the infra) tags.
- * The worktree-id Exists term keeps the policy off the registry pod
+ * would let any workspace overwrite another project's (or the infra) tags.
+ * The workspace-id Exists term keeps the policy off the registry pod
  * itself (it carries the project label too).
  */
-export function buildRegistryWorktreesNetworkPolicyManifest(
+export function buildRegistryWorkspacesNetworkPolicyManifest(
   project: ProjectRef,
 ): Record<string, unknown> {
   return {
@@ -343,7 +343,7 @@ export function buildRegistryWorktreesNetworkPolicyManifest(
     spec: {
       podSelector: {
         matchLabels: { [LABEL_PROJECT_ID]: project.id },
-        matchExpressions: [{ key: LABEL_WORKTREE_ID, operator: 'Exists' }],
+        matchExpressions: [{ key: LABEL_WORKSPACE_ID, operator: 'Exists' }],
       },
       policyTypes: ['Egress'],
       egress: [
@@ -358,10 +358,10 @@ export function buildRegistryWorktreesNetworkPolicyManifest(
 
 /**
  * NetworkPolicy locking the registry pod's INGRESS to exactly its two
- * legitimate clients: same-project worktree pods pushing on 5000, and the
+ * legitimate clients: same-project workspace pods pushing on 5000, and the
  * NODE — the kubelet readiness probe plus containerd pulling pushed refs
- * from the host netns via hosts.toml. The worktrees policy above already
- * stops other projects' worktrees at their source; this is the
+ * from the host netns via hosts.toml. The workspaces policy above already
+ * stops other projects' workspaces at their source; this is the
  * receiving-side lock, so no future egress loosening can silently reopen
  * cross-project tag reads or overwrites (registry:2 has no path ACLs).
  *
@@ -390,7 +390,7 @@ export function buildRegistryIngressNetworkPolicyManifest(
           from: [{
             podSelector: {
               matchLabels: { [LABEL_PROJECT_ID]: project.id },
-              matchExpressions: [{ key: LABEL_WORKTREE_ID, operator: 'Exists' }],
+              matchExpressions: [{ key: LABEL_WORKSPACE_ID, operator: 'Exists' }],
             },
           }],
           ports: [registryPort],
@@ -407,7 +407,7 @@ export function buildRegistryIngressNetworkPolicyManifest(
 /**
  * Deny-all egress on the registry pod: it only ever serves pushes and
  * pulls — there is nothing for it to fetch (no pull-through, no proxy
- * pseudo-worktree). Ingress is locked separately by
+ * pseudo-workspace). Ingress is locked separately by
  * buildRegistryIngressNetworkPolicyManifest.
  */
 export function buildRegistryEgressNetworkPolicyManifest(
@@ -486,13 +486,13 @@ function buildNodeWritePodManifest(
       // bypasses the SCHEDULER, so NoSchedule never mattered — but kubelet
       // admits and the taint manager evicts, so a NoExecute taint would
       // refuse this pod on the very nodes it exists to write to: a tainted
-      // worktrees pool would get no hosts.toml, and its worktrees could not
+      // workspaces pool would get no hosts.toml, and its workspaces could not
       // pull. Free in scheduling terms — the pod is pinned to one named node
       // and lives for seconds.
       tolerations: [{ operator: 'Exists' }],
       automountServiceAccountToken: false,
       enableServiceLinks: false,
-      // Infra tier: a worktree pod filling the one node this can land on
+      // Infra tier: a workspace pod filling the one node this can land on
       // must not keep the registry wiring from landing.
       priorityClassName: PRIORITY_CLASS_INFRA,
       containers: [{
@@ -594,10 +594,10 @@ const GC_REPOS_PATH = `${GC_STORAGE_PATH}/docker/registry/v2/repositories`
  * Content-hash generations kept per yaac-built repo. Deliberately far
  * above the host engine's HOST_GENERATIONS_KEPT of 2: the host's
  * generations are sequential rebuilds of ONE chain, so "current + one
- * rollback" covers it, whereas a project registry serves every worktree at
- * once and each worktree on its own branch mints its own hash. The live set
+ * rollback" covers it, whereas a project registry serves every workspace at
+ * once and each workspace on its own branch mints its own hash. The live set
  * is therefore as wide as the fleet, not one deep — keep enough that a
- * parallel worktree's image is never the thing retention evicts.
+ * parallel workspace's image is never the thing retention evicts.
  */
 export const REGISTRY_GENERATIONS_KEPT = 8
 
@@ -615,7 +615,7 @@ export const REGISTRY_GENERATIONS_KEPT = 8
  * Two guards keep it off anything else, because a tag here is otherwise a
  * promise to whoever pulls it:
  *  - the repo must be yaac-built (`yaac-…`) — every push into this
- *    registry names one — so a worktree's own `myapp` repo is never
+ *    registry names one — so a workspace's own `myapp` repo is never
  *    touched;
  *  - the tag must have the 16-hex content-hash shape — so `v1`, `latest`
  *    and the cache's `yaac-cache-…` slots can never match.
@@ -698,7 +698,7 @@ export function buildRegistryRetentionScript(opts: {
  * `--delete-untagged` is what makes this worth running at all. Both image
  * flows into this registry REUSE tags — the image cache pushes
  * `<repo>:<tag>` and `<repo>:yaac-cache-<tag>-<n>` under the names the
- * worktree already had, and a rebuilt tag re-points at fresh bytes — so
+ * workspace already had, and a rebuilt tag re-points at fresh bytes — so
  * every rebuild leaves the previous manifest referenced by no tag at all.
  * Those are exactly the manifests this deletes, and their blobs go with
  * them. The retention pass above is what feeds it the one class of
@@ -830,8 +830,8 @@ const registryEnsureMutex = createKeyedMutex()
 /**
  * Idempotently stand up the project's registry (PVC + Deployment + Service
  * + the network policies + node hosts.toml) and wait for it to serve. Called from
- * worktree-create for every `nestedContainers` worktree — it is the bus the
- * cross-worktree image cache rides. The Service's ClusterIP is allocator-assigned and never
+ * workspace-create for every `nestedContainers` workspace — it is the bus the
+ * cross-workspace image cache rides. The Service's ClusterIP is allocator-assigned and never
  * deleted, so `apply` is a no-op on it after first creation (the pin and its
  * immutable-field migration are gone).
  *
@@ -854,7 +854,7 @@ export async function ensureProjectRegistry(project: ProjectRef): Promise<void> 
     await kubectlApply(buildProjectRegistryPvcManifest(project))
     await kubectlApply(buildProjectRegistryDeploymentManifest(project, imageRef))
     await kubectlApply(buildProjectRegistryServiceManifest(project))
-    await kubectlApply(buildRegistryWorktreesNetworkPolicyManifest(project))
+    await kubectlApply(buildRegistryWorkspacesNetworkPolicyManifest(project))
     await kubectlApply(buildRegistryIngressNetworkPolicyManifest(project, await nodeIpBlocks()))
     await kubectlApply(buildRegistryEgressNetworkPolicyManifest(project))
     try {
@@ -862,7 +862,7 @@ export async function ensureProjectRegistry(project: ProjectRef): Promise<void> 
         'rollout', 'status', `deployment/${name}`, '-n', ns, '--timeout=120s',
       ], { timeout: 130_000, maxAttempts: 2 })
     } catch (err) {
-      // Worktree create is where a storage misconfiguration surfaces first,
+      // Workspace create is where a storage misconfiguration surfaces first,
       // and kubectl reports only a timeout. An unbindable claim — no default
       // StorageClass, or an exhausted provisioner quota — presents as a
       // Pending pod with no scheduling reason of its own, so the PVC has to
@@ -975,8 +975,8 @@ const lastRegistryGcMs = new Map<string, number>()
  * Without that baseline the throttle measures this process's uptime
  * instead, and an unseen project is eligible immediately — which puts a
  * maintenance window (two `Recreate` rollouts, a few seconds of connection
- * refusals each) on the registry a worktree create JUST stood up, at the
- * one moment the new worktree is pushing and pulling through it hardest.
+ * refusals each) on the registry a workspace create JUST stood up, at the
+ * one moment the new workspace is pushing and pulling through it hardest.
  * The registry's own age is the honest measure, and it survives the server
  * restart the map does not: a registry that really is due is still due on
  * the first pass after one.
@@ -1013,7 +1013,7 @@ export function _registryGcSettledForTests(): Promise<void> {
  * push that has uploaded blobs but not yet its manifest looks exactly like
  * garbage, so a concurrent push can have its layers deleted underneath it.
  * Upstream's answer is "read-only mode, or not running at all" — and NOT
- * RUNNING is not an option here, because an active project's worktree count
+ * RUNNING is not an option here, because an active project's workspace count
  * never reaches zero, so a collect gated on idleness would never run for
  * the registries that actually grow.
  *
@@ -1022,7 +1022,7 @@ export function _registryGcSettledForTests(): Promise<void> {
  * serving while pushes and deletes answer 405 (verified against this pin).
  * A salvage push or retire that lands in the window fails best-effort and
  * is retried on its next cycle — the ledger and the retired-shape memo
- * only record what actually succeeded — while pulls, which a live worktree
+ * only record what actually succeeded — while pulls, which a live workspace
  * and its synced pods depend on, never stop working. The cost is two
  * `Recreate` rollouts: a few seconds of unavailability at each edge.
  *
@@ -1068,7 +1068,7 @@ export async function reconcileProjectRegistryGc(
 
 /**
  * The collect itself, under the project's ensure mutex. That mutex is what
- * makes a worktree create safe against a running collect — and also the one
+ * makes a workspace create safe against a running collect — and also the one
  * place a create can wait on one: worst case it blocks for the two
  * rollouts plus REGISTRY_GC_TIMEOUT_MS. At the 6h cadence that is rare,
  * but it is where the latency comes from.
@@ -1115,7 +1115,7 @@ async function collectProjectRegistry(project: ProjectRef): Promise<void> {
 /**
  * How old a registry object must be before the orphan sweep may take it. A
  * pass reads the live project set once, at its start, so a project added
- * after that read whose first nested worktree stands its registry up
+ * after that read whose first nested workspace stands its registry up
  * within the same pass would otherwise look like an orphan.
  */
 export const ORPHAN_REGISTRY_MIN_AGE_MS = 10 * 60_000

@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // serverLog writes files — silence it.
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
-vi.mock('#notify', () => ({ notifyWorktreeListChanged: vi.fn() }))
+vi.mock('#notify', () => ({ notifyWorkspaceListChanged: vi.fn() }))
 // The push composes the whole set from three stores (its own test); here
 // only that a persisted rotation is pushed matters.
 vi.mock('#domain/auth/runtime-push', () => ({
@@ -13,7 +13,7 @@ vi.mock('#domain/auth/runtime-push', () => ({
   adoptRefreshedToolCredentials: vi.fn(),
 }))
 
-import { notifyWorktreeListChanged } from '#notify'
+import { notifyWorkspaceListChanged } from '#notify'
 import { pushCredentialsToRuntime } from '#domain/auth/runtime-push'
 import {
   planUsageForSnapshot,
@@ -35,7 +35,7 @@ import {
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
 } from '@yaac/shared/tool-auth'
-import { installFakeWorktreeDriver, handleFixture, snapshotFixture } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver, handleFixture, snapshotFixture } from '@yaac/test-utils/fake-driver'
 import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/shared/types'
 
 /**
@@ -228,10 +228,10 @@ function useAuthFixture(prefix: string): () => string {
     _resetPlanUsageForTests()
     upstream.reset()
     upstream.install()
-    vi.mocked(notifyWorktreeListChanged).mockReset()
+    vi.mocked(notifyWorkspaceListChanged).mockReset()
     vi.useFakeTimers({ toFake: ['Date'] })
     // The suite forbids refresh grants outright (vitest-setup says why: from
-    // behind a worktree's proxy, any POST to a token endpoint rotates the
+    // behind a workspace's proxy, any POST to a token endpoint rotates the
     // hosting install's real credential). This file is where refresh BEHAVIOR
     // is asserted, so it opts back in — safely, because `upstream.install()`
     // above has replaced `fetch` with a stub that throws on any URL it has no
@@ -279,7 +279,7 @@ describe('planUsageForSnapshot', () => {
 
     // Nothing to show until the detached refresh completes.
     expect(await planUsageForSnapshot()).toBeNull()
-    expect(notifyWorktreeListChanged).not.toHaveBeenCalled()
+    expect(notifyWorkspaceListChanged).not.toHaveBeenCalled()
     await flush()
 
     expect(await planUsageForSnapshot()).toEqual({
@@ -289,7 +289,7 @@ describe('planUsageForSnapshot', () => {
       limits: CLAUDE_LIMITS,
     })
     // A landed refresh pushes a snapshot rather than waiting for the tick.
-    expect(notifyWorktreeListChanged).toHaveBeenCalledTimes(1)
+    expect(notifyWorkspaceListChanged).toHaveBeenCalledTimes(1)
 
     // Both endpoints got the stored token as an OAuth bearer.
     for (const url of [CLAUDE_USAGE_URL, CLAUDE_PROFILE_URL]) {
@@ -470,20 +470,20 @@ describe('planUsageForSnapshot', () => {
     expect(pushCredentialsToRuntime).toHaveBeenCalledTimes(1)
   })
 
-  it('adopts a live worktree\'s refreshed token instead of rotating it out from under one', async () => {
+  it('adopts a live workspace\'s refreshed token instead of rotating it out from under one', async () => {
     // The containerless case, and the whole reason credential-sync exists.
-    // The agent in a running worktree refreshed its own OAuth token: the live
+    // The agent in a running workspace refreshed its own OAuth token: the live
     // credential is in the project's tool home and the host store holds the
     // spent one. Spending it would fail, and refreshing it would rotate the
     // token the running agent is using — so the cycle must do neither.
-    installFakeWorktreeDriver({
+    installFakeWorkspaceDriver({
       kind: 'containerless',
       snapshot: () => snapshotFixture([handleFixture({ running: true, terminating: false })]),
     })
     await seedClaude({ expiresAt: Date.now() - 1000 })
     await writeProjectClaudeCredentials('demo', {
-      accessToken: 'tok-from-worktree',
-      refreshToken: 'ref-from-worktree',
+      accessToken: 'tok-from-workspace',
+      refreshToken: 'ref-from-workspace',
       expiresAt: FAR_FUTURE_MS,
       scopes: ['user:inference'],
       subscriptionType: 'max',
@@ -497,11 +497,11 @@ describe('planUsageForSnapshot', () => {
     // No grant was spent: the harvested token was already good.
     expect(upstream.countTo(CLAUDE_TOKEN_URL)).toBe(0)
     expect(upstream.requestsTo(CLAUDE_USAGE_URL).at(-1)?.headers)
-      .toMatchObject({ Authorization: 'Bearer tok-from-worktree' })
+      .toMatchObject({ Authorization: 'Bearer tok-from-workspace' })
     // …and the host store caught up, so the next reader is not stale either.
     expect(await storedClaude()).toMatchObject({
-      accessToken: 'tok-from-worktree',
-      refreshToken: 'ref-from-worktree',
+      accessToken: 'tok-from-workspace',
+      refreshToken: 'ref-from-workspace',
     })
   })
 
@@ -511,7 +511,7 @@ describe('planUsageForSnapshot', () => {
     // refresh, because the rotation would invalidate the copy the running
     // agent holds — it refreshes on its own schedule, and that is the one that
     // counts. A missing usage readout is the acceptable cost.
-    installFakeWorktreeDriver({
+    installFakeWorkspaceDriver({
       kind: 'containerless',
       snapshot: () => snapshotFixture([handleFixture({ running: true })]),
     })
@@ -532,7 +532,7 @@ describe('planUsageForSnapshot', () => {
     // belongs to that install. Presenting it would make the outer proxy
     // substitute the real refresh token and rotate it — while this server
     // gets sentinels back and stores nothing, leaving the outer holding a
-    // spent token and every worktree on it signed out.
+    // spent token and every workspace on it signed out.
     await seedClaude({
       accessToken: PLACEHOLDER_ACCESS_TOKEN,
       refreshToken: PLACEHOLDER_REFRESH_TOKEN,
@@ -846,7 +846,7 @@ describe('codexPlanUsageForSnapshot', () => {
       rateLimitTier: null,
       limits: CODEX_LIMITS,
     })
-    expect(notifyWorktreeListChanged).toHaveBeenCalledTimes(1)
+    expect(notifyWorkspaceListChanged).toHaveBeenCalledTimes(1)
     expect(upstream.requestsTo(CODEX_USAGE_URL)[0].headers).toEqual({
       'Authorization': 'Bearer ctok-123',
       'User-Agent': 'codex-cli',
@@ -1189,6 +1189,6 @@ describe('refreshPlanUsage', () => {
 
     await refreshPlanUsage()
     await flush()
-    expect(notifyWorktreeListChanged).toHaveBeenCalled()
+    expect(notifyWorkspaceListChanged).toHaveBeenCalled()
   })
 })

@@ -15,14 +15,14 @@ import { userEnvironment } from './launch'
 import { overriddenToolHomeVars } from './tool-homes'
 
 /**
- * `yaac host check`: whether this machine can run worktrees without
+ * `yaac host check`: whether this machine can run workspaces without
  * containers.
  *
  * The parallel of `yaac cluster check`, and the reason the layering doc
  * keeps a door open through the package exports for exactly this — "a
  * host-process driver would ship its own doctor". It answers the same
  * question that one does, against a different substrate: with no image to
- * install anything, the system tools a worktree needs have to already be on
+ * install anything, the system tools a workspace needs have to already be on
  * this host, and the failure mode without this check is a tmux window that
  * opens and immediately exits with nobody watching. The agents themselves
  * are yaac's to install, so for them it asks only for the npm that does it.
@@ -36,16 +36,16 @@ import { overriddenToolHomeVars } from './tool-homes'
 const NODE_INSTALL = 'node 22 or newer, with npm: brew install node, or nodejs.org — '
   + "Debian and Ubuntu's apt nodejs is older and has no npm"
 
-/** What a worktree cannot run without at all. */
+/** What a workspace cannot run without at all. */
 const REQUIRED: Array<{ binary: string; why: string; fix: string }> = [
   {
     binary: 'tmux',
-    why: 'supervises every worktree session and outlives the server',
+    why: 'supervises every workspace session and outlives the server',
     fix: 'Install tmux (apt install tmux / brew install tmux).',
   },
   {
     binary: 'git',
-    why: 'creates and reads every worktree checkout',
+    why: 'creates and reads every workspace checkout',
     fix: 'Install git (apt install git / brew install git).',
   },
   {
@@ -60,14 +60,14 @@ const REQUIRED: Array<{ binary: string; why: string; fix: string }> = [
 const OPTIONAL: Array<{ binary: string; why: string; fix: string }> = [
   {
     binary: 'lsof',
-    why: 'detects the ports a worktree is listening on',
-    fix: 'Install lsof to get clickable port links; worktrees run fine without it.',
+    why: 'detects the ports a workspace is listening on',
+    fix: 'Install lsof to get clickable port links; workspaces run fine without it.',
   },
   {
     binary: 'socat',
     why: 'carries the ACP chat transport to an agent',
     fix: 'Install socat (apt install socat / brew install socat) to use --mode acp, '
-      + 'which is refused without it; tui-mode worktrees do not need it.',
+      + 'which is refused without it; tui-mode workspaces do not need it.',
   },
   {
     binary: 'curl',
@@ -78,16 +78,16 @@ const OPTIONAL: Array<{ binary: string; why: string; fix: string }> = [
 ]
 
 /**
- * See `WorktreeDriver.assertCanLaunch` — this driver's answer.
+ * See `WorkspaceDriver.assertCanLaunch` — this driver's answer.
  *
- * Under the pod driver every tool ships in the image, so what a worktree can
+ * Under the pod driver every tool ships in the image, so what a workspace can
  * run is a build-time fact. Here the host supplies the system tools and yaac
  * supplies the agents: each agent CLI and ACP adapter is yaac's own install
  * of its pinned package (`ensureAgentBinary`), made the first time a create
  * needs it. The failure without this check is silent both ways: a launch
  * command that execs nothing makes tmux respawn a command that exits 127,
  * closing the window — and `respawn-window` reports success — while `acp` has
- * acpd exec nothing and end the same way. Either leaves a worktree that
+ * acpd exec nothing and end the same way. Either leaves a workspace that
  * vanishes seconds after a create that already said it worked. So the create
  * asks first.
  *
@@ -108,7 +108,7 @@ const OPTIONAL: Array<{ binary: string; why: string; fix: string }> = [
  * The rest differs by mode, and only by mode: `tui` runs the tool itself,
  * while `acp` runs the tool's adapter and needs `socat` besides, because the
  * chat transport dials acpd's UNIX socket by spawning one on this host:
- * without it the worktree comes up and its pane never attaches, which reads
+ * without it the workspace comes up and its pane never attaches, which reads
  * as an agent that hangs rather than a tool that is missing — a worse failure
  * than the one this whole check exists to replace, and the reason it is
  * refused here rather than warned about in `yaac host check` alone.
@@ -125,11 +125,11 @@ export async function assertHostCanLaunch(opts: {
   const { tool, mode, onProgress } = opts
   // In dependency order, so a host missing several is fixed from the bottom
   // up: no tmux means no session at all, and no git means no checkout to put
-  // one in. Neither has an alternative because there is none — a worktree
-  // on this substrate IS a tmux server over a git worktree.
-  await requireBinary('tmux', 'every worktree here is a tmux session on this host',
+  // one in. Neither has an alternative because there is none — a workspace
+  // on this substrate IS a tmux server over a git checkout.
+  await requireBinary('tmux', 'every workspace here is a tmux session on this host',
     'apt install tmux / brew install tmux', null)
-  await requireBinary('git', "it makes and reads the worktree's checkout",
+  await requireBinary('git', "it makes and reads the workspace's checkout",
     'apt install git / brew install git', null)
   await requireBinary('node', 'npm installs the agents under it, and acpd, codex and pi run under it',
     NODE_INSTALL, null)
@@ -137,7 +137,7 @@ export async function assertHostCanLaunch(opts: {
     // Before anything is installed, so a host that cannot run acp at all is
     // told so without first waiting on a download.
     await requireBinary('socat', "the chat transport dials acpd's socket with it",
-      'apt install socat / brew install socat', 'create the worktree with --mode tui')
+      'apt install socat / brew install socat', 'create the workspace with --mode tui')
     const adapter = ACP_ADAPTERS[tool]
     await ensureAgentBinary(adapter.binary, onProgress)
     // An adapter that is a front end rather than an implementation needs the
@@ -377,16 +377,16 @@ export async function runHostCheck(): Promise<CheckResult[]> {
     name: 'agent tools',
     status: npm ? 'pass' : 'warn',
     detail: (installed.length > 0 ? `installed: ${installed.join(', ')}` : 'none installed yet')
-      + (complete ? '' : ' — yaac installs each at its pinned version the first time a worktree needs it'),
+      + (complete ? '' : ' — yaac installs each at its pinned version the first time a workspace needs it'),
     ...(npm ? {} : {
       fix: 'Install node (apt install nodejs / brew install node): yaac installs '
         + 'each agent CLI and ACP adapter with npm.',
     }),
   })
 
-  // A host that re-points its own tool homes. Worktrees ignore these (see
+  // A host that re-points its own tool homes. Workspaces ignore these (see
   // `overriddenToolHomeVars`), which is the right answer and an invisible
-  // one: nothing inside a worktree looks different, so a user whose shell
+  // one: nothing inside a workspace looks different, so a user whose shell
   // has said for years that opencode lives elsewhere would have no way to
   // learn that yaac disagrees. Ahead of the create rather than only during
   // it, since this is a property of the host and `host check` is where a
@@ -397,14 +397,14 @@ export async function runHostCheck(): Promise<CheckResult[]> {
     status: overridden.length === 0 ? 'pass' : 'warn',
     detail: overridden.length === 0
       ? 'none set — agents resolve their config from this project\'s own dirs'
-      : `${overridden.join(', ')} set here, not used inside worktrees`,
+      : `${overridden.join(', ')} set here, not used inside workspaces`,
     ...(overridden.length === 0 ? {} : {
-      fix: 'A worktree reads its tool config from this project\'s dirs — named '
+      fix: 'A workspace reads its tool config from this project\'s dirs — named '
         + 'outright where a tool has a home variable, and reached through its '
         + 'private HOME where none exists — so these are cleared rather than '
         + 'followed. Otherwise an agent would read your own config and '
         + 'credentials and write its transcripts where yaac does not look. '
-        + 'Nothing to fix unless you meant a worktree to use them; per-worktree '
+        + 'Nothing to fix unless you meant a workspace to use them; per-workspace '
         + 'values go in the project config.',
     }),
   })
@@ -415,7 +415,7 @@ export async function runHostCheck(): Promise<CheckResult[]> {
     name: 'isolation',
     status: 'warn',
     detail: 'none — agents run as this user with full access to this machine',
-    fix: 'Worktrees are not sandboxed in containerless mode. New worktrees '
+    fix: 'Workspaces are not sandboxed in containerless mode. New workspaces '
       + 'default to accept-edits permissions; --permission-mode picks another.',
   })
 

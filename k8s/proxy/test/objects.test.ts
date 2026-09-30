@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  LABEL_WORKTREE_ID,
+  LABEL_WORKSPACE_ID,
   decodeCa,
   decodeCredentials,
   decodeProjectSecrets,
@@ -149,12 +149,12 @@ describe('decodeProjectSecrets', () => {
 })
 
 describe('decodeRegistration', () => {
-  const cm = (registration: unknown, labels: Record<string, string> = { [LABEL_WORKTREE_ID]: 'w1' }) => ({
+  const cm = (registration: unknown, labels: Record<string, string> = { [LABEL_WORKSPACE_ID]: 'w1' }) => ({
     metadata: { name: 'yaac-proxy-reg-w1', labels },
     data: { 'registration.json': JSON.stringify(registration) },
   })
 
-  it('reads the payload and the worktree id off the label', () => {
+  it('reads the payload and the workspace id off the label', () => {
     const decoded = decodeRegistration(cm({
       rules: [{ hostPattern: 'api.example.com', pathPattern: '/*', injections: [
         { action: 'set_header', name: 'x-api-key', secretRef: 'demo/KEY' },
@@ -168,7 +168,7 @@ describe('decodeRegistration', () => {
         'bad': { host: 'mock' },
       },
     }))
-    expect(decoded?.worktreeId).toBe('w1')
+    expect(decoded?.workspaceId).toBe('w1')
     expect(decoded?.registration).toEqual({
       rules: [{ hostPattern: 'api.example.com', pathPattern: '/*', injections: [
         { action: 'set_header', name: 'x-api-key', secretRef: 'demo/KEY' },
@@ -188,7 +188,7 @@ describe('decodeRegistration', () => {
     expect(decodeRegistration(cm({ ...base, rules: 'x' }))).toBeNull()
     expect(decodeRegistration(cm({ ...base, allowedHosts: undefined }))).toBeNull()
     expect(decodeRegistration(cm(base, {}))).toBeNull()
-    expect(decodeRegistration({ metadata: { labels: { [LABEL_WORKTREE_ID]: 'w1' } }, data: {} })).toBeNull()
+    expect(decodeRegistration({ metadata: { labels: { [LABEL_WORKSPACE_ID]: 'w1' } }, data: {} })).toBeNull()
     // An empty repoUrl reads as none (an https credential needs a remote).
     expect(decodeRegistration(cm({ ...base, repoUrl: '' }))?.registration.repoUrl).toBeUndefined()
   })

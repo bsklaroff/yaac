@@ -22,7 +22,7 @@ const cacheStub = {
   onDelta: (fn: (source: string) => void) => { onDeltaHandlers.push(fn) },
   start: () => { order.push('cache.start') },
   stop: () => { order.push('cache.stop') },
-  worktreePods: () => [{ worktreeId: 'w1', projectSlug: 'demo', jobName: 'yaac-demo-w1' }],
+  workspacePods: () => [{ workspaceId: 'w1', projectSlug: 'demo', jobName: 'yaac-demo-w1' }],
 }
 
 vi.mock('#drivers/k8s/substrate', () => ({
@@ -38,11 +38,12 @@ vi.mock('#drivers/k8s/cluster', () => ({
   ensureMainRegistry: vi.fn().mockResolvedValue(undefined),
   ensureNamespace: vi.fn(() => { order.push('bootstrap'); return Promise.resolve() }),
   nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.2/32', '10.89.0.3/32']),
+  relabelLegacyWorkspaces: vi.fn(() => { order.push('relabel'); return Promise.resolve(false) }),
   gcOrphanProjectRegistries: vi.fn().mockResolvedValue(undefined),
 }))
 vi.mock('#drivers/k8s/forwarders', () => ({
   PortDetectorManager: class { sync = vi.fn(); stopAll = vi.fn() },
-  stopAllWorktreeForwarders: vi.fn(() => { order.push('forwarders.released') }),
+  stopAllWorkspaceForwarders: vi.fn(() => { order.push('forwarders.released') }),
 }))
 vi.mock('#drivers/k8s/egress', () => ({
   PROXY_CHANGE_SOURCES: ['mama-requests'],
@@ -51,17 +52,20 @@ vi.mock('#drivers/k8s/egress', () => ({
     start = (): void => { order.push('proxy.start') }
     stop = vi.fn()
   },
-  proxyClient: { disconnect: vi.fn(() => { order.push('proxy.disconnect') }) },
+  proxyClient: {
+    disconnect: vi.fn(() => { order.push('proxy.disconnect') }),
+    ensureRunning: vi.fn(() => { order.push('proxy.ensure'); return Promise.resolve() }),
+  },
 }))
-vi.mock('#drivers/k8s/worktrees', () => ({
-  runtimeHandleFromPod: (p: { worktreeId: string }) => ({ workspaceId: p.worktreeId }),
+vi.mock('#drivers/k8s/workspaces', () => ({
+  runtimeHandleFromPod: (p: { workspaceId: string }) => ({ workspaceId: p.workspaceId }),
 }))
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import { startK8sDriver, stopK8sDriver, releaseK8sDriver, triggerFor } from '#drivers/k8s/lifecycle'
-import { ensureNamespace } from '#drivers/k8s/cluster'
+import { ensureNamespace, relabelLegacyWorkspaces } from '#drivers/k8s/cluster'
 import { kubectlApply } from '#drivers/k8s/substrate'
-import { _resetWorktreeListChangedForTests, onWorktreeListChanged } from '#notify'
+import { _resetWorkspaceListChangedForTests, onWorkspaceListChanged } from '#notify'
 
 let reported: { triggers: string[]; workspaces: RuntimeHandle[][] }
 
@@ -99,6 +103,19 @@ describe('startK8sDriver', () => {
     expect(order.indexOf('cache.start')).toBeLessThan(order.indexOf('attached'))
   })
 
+  it('relabels an older install\'s workspaces before anything watches, and rolls its proxy', async () => {
+    await startK8sDriver(sinks())
+    expect(order).not.toContain('proxy.ensure')
+    expect(order.indexOf('relabel')).toBeLessThan(order.indexOf('cache.start'))
+
+    stopK8sDriver()
+    order.length = 0
+    vi.mocked(relabelLegacyWorkspaces).mockResolvedValueOnce(true)
+    await startK8sDriver(sinks())
+    expect(order.indexOf('proxy.ensure')).toBeGreaterThan(-1)
+    expect(order.indexOf('proxy.ensure')).toBeLessThan(order.indexOf('recover'))
+  })
+
   it('re-renders the node half of the server wall from the live node list', async () => {
     await startK8sDriver(sinks())
 
@@ -126,7 +143,7 @@ describe('startK8sDriver', () => {
 
   it('reports the workspace set as handles, never as pods', async () => {
     await startK8sDriver(sinks())
-    onDeltaHandlers.forEach((fn) => fn('worktree-pods'))
+    onDeltaHandlers.forEach((fn) => fn('workspace-pods'))
 
     // The machinery above has no word for a pod, so the boundary mapper runs
     // here rather than at the receiver.
@@ -135,9 +152,9 @@ describe('startK8sDriver', () => {
   })
 
   it('routes the proxy’s outputs: records to the snapshot, a captured rotation to the pass', async () => {
-    _resetWorktreeListChangedForTests()
+    _resetWorkspaceListChangedForTests()
     let notified = 0
-    onWorktreeListChanged(() => { notified += 1 })
+    onWorkspaceListChanged(() => { notified += 1 })
     await startK8sDriver(sinks())
 
     // A blocked host is a badge, never reconcile work.
@@ -148,7 +165,7 @@ describe('startK8sDriver', () => {
     onDeltaHandlers.forEach((fn) => fn('proxy-refreshed'))
     expect(reported.triggers).toContain('proxy-refreshed')
     expect(notified).toBe(1)
-    _resetWorktreeListChangedForTests()
+    _resetWorkspaceListChangedForTests()
   })
 
   it('attaches even when the cluster bootstrap fails', async () => {
@@ -184,7 +201,7 @@ describe('releaseK8sDriver', () => {
     stopK8sDriver()
     // The forwarders and the control tunnel survive the reconcile drain that
     // runs between the two: a reap tick in that drain still tears its
-    // worktree's forwards down.
+    // workspace's forwards down.
     expect(order).not.toContain('forwarders.released')
 
     releaseK8sDriver()
@@ -195,8 +212,8 @@ describe('releaseK8sDriver', () => {
 
 describe('triggerFor', () => {
   it('translates the two substrate edges the mediators name', () => {
-    expect(triggerFor('worktree-pods')).toBe('workspaces')
-    expect(triggerFor('worktree-jobs')).toBe('units')
+    expect(triggerFor('workspace-pods')).toBe('workspaces')
+    expect(triggerFor('workspace-jobs')).toBe('units')
   })
 
 })

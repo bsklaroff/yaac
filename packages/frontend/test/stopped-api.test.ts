@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { getStoppedWorktrees } from '#lib/stoppedApi'
+import { getStoppedWorkspaces } from '#lib/stoppedApi'
 
 const realFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = realFetch })
@@ -18,9 +18,9 @@ function errorStub(status: number, error: { code: string; message: string }): ty
   return vi.fn().mockResolvedValue(res) as unknown as typeof fetch
 }
 
-describe('getStoppedWorktrees', () => {
+describe('getStoppedWorkspaces', () => {
   it('requests the project-scoped list-deleted endpoint with a limit', async () => {
-    const entries = [{ worktreeId: 'a', projectSlug: 'p', tool: 'claude', createdAt: '2026-01-01 00:00:00' }]
+    const entries = [{ workspaceId: 'a', projectSlug: 'p', tool: 'claude', createdAt: '2026-01-01 00:00:00' }]
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -29,10 +29,10 @@ describe('getStoppedWorktrees', () => {
     })
     globalThis.fetch = fetchMock as unknown as typeof fetch
 
-    const result = await getStoppedWorktrees('my-project', 10)
+    const result = await getStoppedWorkspaces('my-project', 10)
 
     const url = fetchMock.mock.calls[0][0] as string
-    expect(url).toContain('/api/worktree/list-stopped')
+    expect(url).toContain('/api/workspace/list-stopped')
     expect(url).toContain('project=my-project')
     expect(url).toContain('limit=10')
     expect(result).toEqual(entries)
@@ -42,7 +42,7 @@ describe('getStoppedWorktrees', () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, headers: new Headers({ 'content-type': 'application/json' }), json: () => Promise.resolve([]) })
     globalThis.fetch = fetchMock as unknown as typeof fetch
 
-    await getStoppedWorktrees('proj')
+    await getStoppedWorkspaces('proj')
 
     expect(fetchMock.mock.calls[0][0] as string).toContain('limit=100')
   })
@@ -50,12 +50,12 @@ describe('getStoppedWorktrees', () => {
   it('degrades to an empty list when the server lacks the route (404)', async () => {
     globalThis.fetch = errorStub(404, { code: 'NOT_FOUND', message: 'no route' })
 
-    expect(await getStoppedWorktrees('proj')).toEqual([])
+    expect(await getStoppedWorkspaces('proj')).toEqual([])
   })
 
   it('still throws on non-404 errors', async () => {
     globalThis.fetch = errorStub(500, { code: 'INTERNAL', message: 'boom' })
 
-    await expect(getStoppedWorktrees('proj')).rejects.toMatchObject({ code: 'INTERNAL', httpStatus: 500 })
+    await expect(getStoppedWorkspaces('proj')).rejects.toMatchObject({ code: 'INTERNAL', httpStatus: 500 })
   })
 })

@@ -22,7 +22,7 @@
  *
  * Retry policy is not here either. A connection reports that it went down and
  * the caller decides what to do about it, so both modes get one respawn
- * strategy (`WorktreeStatusWatcher`) rather than two that drift.
+ * strategy (`WorkspaceStatusWatcher`) rather than two that drift.
  */
 
 import { acpDriver } from './acp-driver'
@@ -33,10 +33,10 @@ import type { StreamChild, WorkspacePaths } from '#drivers/contract'
 import type { AgentPaneStatus } from './agent-tools'
 
 /** The session a driver is connected to. */
-export interface DrivenWorktree {
+export interface DrivenWorkspace {
   slug: string
-  /** The worktree id — what the relay addresses streams by. */
-  worktreeId: string
+  /** The workspace id — what the relay addresses streams by. */
+  workspaceId: string
   jobName: string
   tool: AgentTool
 }
@@ -96,7 +96,7 @@ export type AgentObservation =
   | { kind: 'down'; reason: string }
   /** The conversations running right now. Never emitted empty for a session
    *  that simply has not started its agent yet — an empty set means "every
-   *  agent exited", which deactivates the worktree's conversations. */
+   *  agent exited", which deactivates the workspace's conversations. */
   | { kind: 'live-agents'; agents: LiveAgent[] }
   | { kind: 'status'; handle: string; status: AgentPaneStatus }
   /**
@@ -120,7 +120,7 @@ export interface AgentConnection {
  *  for itself (the DB) or should not hard-code (timeouts, the dial). */
 export interface AgentConnectDeps {
   /**
-   * The conversations yaac has already recorded for this worktree, keyed by
+   * The conversations yaac has already recorded for this workspace, keyed by
    * handle. `acp` needs them to re-address a live agent after a reconnect
    * (and to `session/load` after a restart) — the ACP session id is the
    * agent's to mint, and only the database remembers it across a server
@@ -129,7 +129,7 @@ export interface AgentConnectDeps {
    */
   recordedSessions?: () => Promise<Array<{ handle: string; agentSessionId: string }>>
   /**
-   * The worktree's permission posture. `acp` needs it because the posture is
+   * The workspace's permission posture. `acp` needs it because the posture is
    * something it tells the *adapter* over the protocol (`session/set_mode`)
    * and uses to decide who answers a permission ask — and a connection is
    * rebuilt independently of the launch that carried `AgentLaunchSpec`, so it
@@ -145,7 +145,7 @@ export interface AgentConnectDeps {
   permissionMode?: () => Promise<PermissionMode | undefined>
   /** Injected by tests — replaces the real relay ctrl-stream dial, which is
    *  the process boundary both drivers are mocked at. */
-  dial?: (session: DrivenWorktree, argv: string[]) => StreamChild
+  dial?: (session: DrivenWorkspace, argv: string[]) => StreamChild
   /** Heartbeat cadence over the open connection. */
   heartbeatIntervalMs?: number
   /** Reply deadline for a command sent over the connection. */
@@ -198,7 +198,7 @@ export interface AgentDriver {
   /** Open the observation stream. Never throws — a failed dial is reported
    *  as a `down` observation so the caller's backoff owns it. */
   connect(
-    session: DrivenWorktree,
+    session: DrivenWorkspace,
     sink: (obs: AgentObservation) => void,
     deps?: AgentConnectDeps,
   ): AgentConnection
@@ -206,5 +206,5 @@ export interface AgentDriver {
    * Deliver a user message to a live conversation, addressed by handle.
    * `tui` pastes it into the pane and submits; `acp` sends `session/prompt`.
    */
-  deliverPrompt(session: DrivenWorktree, handle: string, text: string): Promise<void>
+  deliverPrompt(session: DrivenWorkspace, handle: string, text: string): Promise<void>
 }

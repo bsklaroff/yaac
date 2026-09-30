@@ -4,7 +4,7 @@
 // rule stops src from reaching past this file. Modules in here import each
 // other by relative path, which is why they are unaffected by that rule.
 //
-// This is not a feature: nothing here decides anything about worktrees,
+// This is not a feature: nothing here decides anything about workspaces,
 // images or projects. It is the vocabulary every feature uses to talk to the
 // cluster — run a kubectl, name a Job, read the pods, exec into one, open a
 // stream, wait for readiness — plus the datapath's names and ports, which
@@ -91,19 +91,19 @@ export {
   LABEL_PREWARMED,
   LABEL_PROJECT,
   LABEL_PROJECT_ID,
-  LABEL_WORKTREE_ID,
+  LABEL_WORKSPACE_ID,
   LABEL_MODE,
   LABEL_TOOL,
-  findWorktreePod,
+  findWorkspacePod,
   isNested,
   isPrewarmed,
-  listWorktreeJobs,
-  listWorktreePods,
+  listWorkspaceJobs,
+  listWorkspacePods,
   runPodToCompletion,
-  worktreeIdFromJobName,
-  worktreeJobName,
-  worktreeIdLabels,
-  worktreePodSelector,
+  workspaceIdFromJobName,
+  workspaceJobName,
+  workspaceIdLabels,
+  workspacePodSelector,
 } from './pods'
 export type { PodInfo } from './pods'
 export {
@@ -146,8 +146,8 @@ export {
   TAILSCALE_OPERATOR_NAMESPACE,
   TAILSCALE_PARENT_NAMESPACE_LABEL,
   TAILSCALE_PARENT_RESOURCE_LABEL,
-  WORKTREE_EGRESS_NP_NAME,
-  WORKTREE_INGRESS_LOCK_NP_NAME,
+  WORKSPACE_EGRESS_NP_NAME,
+  WORKSPACE_INGRESS_LOCK_NP_NAME,
   SSH_AGENT_PORT,
   SSH_TUNNEL_SENTINEL,
   TRANSPARENT_HTTPS_PORT,

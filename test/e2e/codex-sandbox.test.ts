@@ -9,7 +9,7 @@ import { resolveTrustedLayers } from '@yaac/server/drivers/k8s/image-engine/imag
 import { ensureNamespace } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { registryHasTag, registryRef } from '@yaac/server/drivers/k8s/container/registry'
 import { buildPodJobManifest, k8sWorkspacePaths } from '@yaac/server/drivers/k8s/substrate'
-import { CODEX_CONTAINER_HOME, codexHomeMounts } from '@yaac/server/domain/worktrees/codex-home'
+import { CODEX_CONTAINER_HOME, codexHomeMounts } from '@yaac/server/domain/workspaces/codex-home'
 import { e2eMkdtemp } from '@yaac/test-utils/tmp'
 import {
   k8sNamespace,
@@ -18,7 +18,7 @@ import {
 } from '@yaac/server/drivers/k8s/substrate/kubectl'
 
 /**
- * codex's sandbox inside a worktree pod (docs/permission-modes.md). Every
+ * codex's sandbox inside a workspace pod (docs/permission-modes.md). Every
  * codex posture but `bypass` runs its commands through bubblewrap with the
  * network unshared, and gVisor hands a new network namespace an `lo` that
  * bubblewrap cannot configure — so the image ships a patched `bwrap`
@@ -27,10 +27,10 @@ import {
  * fails closed, so a broken one reads as codex reporting each command's
  * failure and carrying on without it, not as an error.
  *
- * Each pod is the worktree manifest's own pod (`buildPodJobManifest`), on
+ * Each pod is the workspace manifest's own pod (`buildPodJobManifest`), on
  * both gVisor tiers, with the checkout a mounted volume at /workspace as it
- * is in a worktree, and the two share one codex home as a project's
- * worktrees do (`codexHomeMounts`). It drives `codex sandbox`, which is the
+ * is in a workspace, and the two share one codex home as a project's
+ * workspaces do (`codexHomeMounts`). It drives `codex sandbox`, which is the
  * same code path an agent's commands take, and needs no credentials.
  */
 
@@ -80,12 +80,12 @@ async function inSandbox(pod: string, profile: string): Promise<string> {
 }
 
 /**
- * The pod a worktree Job would run, less the one volume this namespace
+ * The pod a workspace Job would run, less the one volume this namespace
  * cannot satisfy: the proxy-CA ConfigMap lives in the install namespace,
  * and would hold the pod in ContainerCreating. Everything else — runtime
  * class, securityContext, workingDir, caps, annotations — is the manifest's.
  */
-async function worktreePod(pod: string, nested: boolean): Promise<Record<string, unknown>> {
+async function workspacePod(pod: string, nested: boolean): Promise<Record<string, unknown>> {
   const { tools, nestable } = await resolveTrustedLayers('yaac-test')
   const tag = nested ? nestable.tag : tools.tag
   if (!await registryHasTag(tag)) {
@@ -139,7 +139,7 @@ beforeAll(async () => {
 
   const probe = Buffer.from(PROBE).toString('base64')
   await Promise.all(TIERS.map(async ({ pod, nested }) => {
-    await kubectlApply(await worktreePod(pod, nested))
+    await kubectlApply(await workspacePod(pod, nested))
     await kubectlWithRetry(
       ['wait', '--for=condition=Ready', `pod/${pod}`, '-n', k8sNamespace(), '--timeout=300s'],
       { timeout: 320_000 },
@@ -157,7 +157,7 @@ afterAll(async () => {
   restoreNamespace?.()
 })
 
-describe.each(TIERS)("codex's sandbox in a $tier worktree pod", ({ pod }) => {
+describe.each(TIERS)("codex's sandbox in a $tier workspace pod", ({ pod }) => {
   it('runs read-only commands, and refuses every write and the network', async () => {
     const out = await inSandbox(pod, ':read-only')
     expect(out).toContain('ran')

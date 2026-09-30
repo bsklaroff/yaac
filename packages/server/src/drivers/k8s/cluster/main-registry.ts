@@ -4,7 +4,7 @@
  * This is the one image bus (docs/trust-split-builds.md): host-side
  * `podman build` pushes trusted layers into it, sandboxed builder pods pull
  * their parents from it and push their products back, node containerd pulls
- * every worktree image from it, and the mirrored upstream images are named
+ * every workspace image from it, and the mirrored upstream images are named
  * through it. It is deliberately the SAME topology as the per-project
  * registries (project-registry.ts) rather than a second pattern:
  * digest-pinned `registry:2`, a Recreate Deployment, a selector-backed
@@ -26,11 +26,11 @@
  *  - Its ingress lock admits a different caller set: node CIDRs (containerd
  *    pulls and the kubelet probe, plus the server's port-forward, which
  *    arrives from the node) and builder pods in ANY namespace, rather than
- *    one project's worktrees. Worktree pods are not on that list and cannot
+ *    one project's workspaces. Workspace pods are not on that list and cannot
  *    reach it anyway — their own default-deny egress
- *    (`buildWorktreeEgressNpManifest`) admits nothing but the node's netd
+ *    (`buildWorkspaceEgressNpManifest`) admits nothing but the node's netd
  *    listener range. Note the world-deny policy is NOT what stops them: it
- *    explicitly excludes worktree-labeled pods.
+ *    explicitly excludes workspace-labeled pods.
  *
  * The lock pins the caller set; it cannot say WHAT a caller may write.
  * Builder pods are the UNTRUSTED principal of the trust split — an
@@ -109,8 +109,8 @@ export const LABEL_MAIN_REGISTRY_NODE_WRITE = 'yaac.main-registry-node-write'
 
 /**
  * Install-scoping labels. The hash carries the registry-scoped key rather
- * than the worktree one, for the same reason project-registry.ts uses it:
- * these objects must stay invisible to the worktree reaper and list paths.
+ * than the workspace one, for the same reason project-registry.ts uses it:
+ * these objects must stay invisible to the workspace reaper and list paths.
  */
 function mainRegistryLabels(): Record<string, string> {
   return {
@@ -133,7 +133,7 @@ export function mainRegistryPvcName(): string {
  * enforces: kind's local-path provisioner ignores the number entirely (the
  * volume is a directory on the node's filesystem), so on the local backend
  * the real bound is its GC (docs/image-gc.md). It is sized for the backends where
- * it does bind — this store holds every worktree image of the install plus
+ * it does bind — this store holds every workspace image of the install plus
  * every trust-split step-cache layer, and running it out of space fails
  * builds rather than degrading them.
  *
@@ -233,8 +233,8 @@ export function buildMainRegistryDeploymentManifest(publicKeyDer: Buffer): Recor
         spec: {
           automountServiceAccountToken: false,
           enableServiceLinks: false,
-          // Infra tier: every worktree pod's image comes from here, so
-          // evicting it to make room for a worktree is backwards.
+          // Infra tier: every workspace pod's image comes from here, so
+          // evicting it to make room for a workspace is backwards.
           priorityClassName: PRIORITY_CLASS_INFRA,
           containers: [
             {
@@ -325,11 +325,11 @@ export function buildMainRegistryServiceManifest(): Record<string, unknown> {
  *    (docs/server-in-cluster.md). It pushes and HEADs here on every image
  *    resolution, and in-cluster it dials the Service directly rather than
  *    arriving from a node address through a port-forward — so without this
- *    rule the server's first registry HEAD fails and every worktree create
+ *    rule the server's first registry HEAD fails and every workspace create
  *    reports the image as unbuilt. Selected across namespaces for the same
  *    reason builders are: an e2e run puts its server in a per-run one.
  *
- * Worktree pods are deliberately absent. This does NOT confine what a
+ * Workspace pods are deliberately absent. This does NOT confine what a
  * builder writes — the write gate does (see the module header) — it stops
  * everything that is not a builder or the node from becoming a caller by
  * accident.
@@ -396,7 +396,7 @@ export function buildMainRegistryIngressNetworkPolicyManifest(
  * kubelet still admits, and the taint manager still evicts, so a
  * `NoExecute` taint would refuse this pod on the very nodes it has to reach.
  * A node with no hosts.toml cannot pull, so the pods that most need this
- * write are exactly the ones a tainted worktrees pool would deny it to. The
+ * write are exactly the ones a tainted workspaces pool would deny it to. The
  * blanket toleration costs nothing in scheduling freedom: the pod is pinned
  * to one named node and lives for seconds.
  *

@@ -5,7 +5,7 @@ import type { SandboxFile } from './sandbox-fs'
  * Status classification + first-message lookup for pi (earendil) sessions.
  *
  * Unlike opencode, pi writes plain JSONL session logs (one
- * `<timestamp>_<sessionId>.jsonl` per session) into the worktree's history,
+ * `<timestamp>_<sessionId>.jsonl` per session) into the workspace's history,
  * which the host reads directly — no HTTP probe and no DB meta cache. A
  * session's logs are matched by the id pi embeds in the filename (from our
  * `--session-id`; see `transcripts.ts`). The files persist across container

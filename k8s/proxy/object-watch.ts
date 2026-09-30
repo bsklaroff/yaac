@@ -4,14 +4,14 @@
  *
  * Three informers on the proxy's own in-cluster client feed `ProxyObjects`:
  * the credentials Secret, the per-project secrets Secrets and the
- * per-worktree registration ConfigMaps, each selected by its
+ * per-workspace registration ConfigMaps, each selected by its
  * `yaac.proxy-input` label. A replaced pod restores itself from the
  * informers' initial lists, so nothing here persists anything — the pod is
- * stateless by construction (docs/worktree-egress.md).
+ * stateless by construction (docs/workspace-egress.md).
  *
  * Fail-closed is preserved: until every initial list has landed, `ready()`
  * is false and the readiness probe keeps the pod out of its Service, so no
- * worktree is ever served from an empty registration map.
+ * workspace is ever served from an empty registration map.
  *
  * `ProxyObjects` is pure (maps and handlers over decoded objects) and
  * unit-tested with a fake informer; the wiring to the real client-node
@@ -26,7 +26,7 @@ import {
   CREDENTIALS_SECRET_NAME,
   EMPTY_CREDENTIALS,
   LABEL_PROXY_INPUT,
-  LABEL_WORKTREE_ID,
+  LABEL_WORKSPACE_ID,
   REFRESHED_SECRET_NAME,
   STATE_CONFIGMAP_NAME,
   decodeCredentials,
@@ -37,16 +37,16 @@ import {
   type ProxyCredentials,
   type RawObject,
   type RefreshedBundles,
-  type WorktreeRegistration,
+  type ProxyRegistration,
 } from './objects'
 
 export interface ProxyObjectsDeps {
   /** Replace the ssh-agent's identities — the credentials handler's side
    *  effect, injected so the maps can be tested without an agent. */
   loadSshKeys: (identities: AgentIdentity[]) => Promise<void>
-  /** A worktree's registration changed (or went, on `null`): the listener
+  /** A workspace's registration changed (or went, on `null`): the listener
    *  prunes its blocked-host record against the new allowlist. */
-  onRegistration?: (worktreeId: string, registration: WorktreeRegistration | null) => void
+  onRegistration?: (workspaceId: string, registration: ProxyRegistration | null) => void
   log?: (message: string) => void
 }
 
@@ -70,16 +70,16 @@ export class ProxyObjects {
   /** Which refs each secrets object contributed, so a delete or an update
    *  of one project's object forgets exactly that project's refs. */
   private readonly refsByObject = new Map<string, string[]>()
-  private readonly registrations = new Map<string, WorktreeRegistration>()
-  /** Object name -> worktree id, so a DELETE (which may arrive without
+  private readonly registrations = new Map<string, ProxyRegistration>()
+  /** Object name -> workspace id, so a DELETE (which may arrive without
    *  data) still evicts the right registration. */
-  private readonly worktreeByObject = new Map<string, string>()
+  private readonly workspaceByObject = new Map<string, string>()
   /**
-   * OAuth bundles captured from a worktree's refresh and not yet echoed back
+   * OAuth bundles captured from a workspace's refresh and not yet echoed back
    * in the credentials Secret. Served in preference to the pushed bundle
    * while they are newer — a codex rotation is single-use, so serving the
    * pushed (spent) token in the window between capture and adoption would
-   * sign the worktree out. Dropped the moment the pushed bundle catches up.
+   * sign the workspace out. Dropped the moment the pushed bundle catches up.
    */
   private captured: RefreshedBundles = {}
   /** The identities the agent was last loaded with, so a token-only
@@ -126,11 +126,11 @@ export class ProxyObjects {
     return this.secrets.get(ref)
   }
 
-  registration(worktreeId: string): WorktreeRegistration | undefined {
-    return this.registrations.get(worktreeId)
+  registration(workspaceId: string): ProxyRegistration | undefined {
+    return this.registrations.get(workspaceId)
   }
 
-  registeredWorktreeIds(): string[] {
+  registeredWorkspaceIds(): string[] {
     return [...this.registrations.keys()]
   }
 
@@ -204,32 +204,32 @@ export class ProxyObjects {
   applyRegistration(cm: RawObject, gone = false): void {
     const name = cm.metadata?.name
     if (!name) return
-    const previous = this.worktreeByObject.get(name)
+    const previous = this.workspaceByObject.get(name)
     const decoded = gone ? null : decodeRegistration(cm)
-    if (previous !== undefined && previous !== decoded?.worktreeId) {
+    if (previous !== undefined && previous !== decoded?.workspaceId) {
       this.registrations.delete(previous)
-      this.worktreeByObject.delete(name)
+      this.workspaceByObject.delete(name)
       this.onRegistration?.(previous, null)
-      this.log(`[proxy] deregistered worktree ${previous.slice(0, 8)}...`)
+      this.log(`[proxy] deregistered workspace ${previous.slice(0, 8)}...`)
     }
     if (!decoded) {
       if (!gone) this.log(`[proxy] ignoring malformed registration ${name}`)
       return
     }
-    const { worktreeId, registration } = decoded
-    const isNew = !this.registrations.has(worktreeId)
-    this.registrations.set(worktreeId, registration)
-    this.worktreeByObject.set(name, worktreeId)
-    this.onRegistration?.(worktreeId, registration)
+    const { workspaceId, registration } = decoded
+    const isNew = !this.registrations.has(workspaceId)
+    this.registrations.set(workspaceId, registration)
+    this.workspaceByObject.set(name, workspaceId)
+    this.onRegistration?.(workspaceId, registration)
     if (isNew) {
       const redirects = Object.keys(registration.upstreamRedirects ?? {}).length
-      this.log(`[proxy] registered worktree ${worktreeId.slice(0, 8)}... `
+      this.log(`[proxy] registered workspace ${workspaceId.slice(0, 8)}... `
         + `(${registration.rules.length} rules, ${registration.allowedHosts.length} allowed host patterns`
         + `${redirects > 0 ? `, ${redirects} upstream redirects` : ''})`)
     }
   }
 
-  /** A rotation this proxy just captured from a worktree's refresh. */
+  /** A rotation this proxy just captured from a workspace's refresh. */
   capture(bundles: RefreshedBundles): void {
     this.captured = { ...this.captured, ...bundles }
   }
@@ -301,18 +301,18 @@ const REGISTRATION_MISS_TTL_MS = 5_000
 
 export async function fetchRegistration(
   objects: ProxyObjects,
-  worktreeId: string,
+  workspaceId: string,
   client: Client = inClusterClient(),
-): Promise<WorktreeRegistration | undefined> {
-  const missedAt = registrationMisses.get(worktreeId)
+): Promise<ProxyRegistration | undefined> {
+  const missedAt = registrationMisses.get(workspaceId)
   if (missedAt !== undefined && Date.now() - missedAt < REGISTRATION_MISS_TTL_MS) return undefined
   const list = await client.core.listNamespacedConfigMap({
     namespace: client.namespace,
-    labelSelector: `${selector('registration')},${LABEL_WORKTREE_ID}=${worktreeId}`,
+    labelSelector: `${selector('registration')},${LABEL_WORKSPACE_ID}=${workspaceId}`,
   })
   for (const cm of list.items) objects.applyRegistration(cm as RawObject)
-  const found = objects.registration(worktreeId)
-  if (!found) registrationMisses.set(worktreeId, Date.now())
+  const found = objects.registration(workspaceId)
+  if (!found) registrationMisses.set(workspaceId, Date.now())
   return found
 }
 

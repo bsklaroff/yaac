@@ -3,7 +3,7 @@ import { useEffect, useSyncExternalStore } from 'react'
 /**
  * Viewport shape — one breakpoint for the whole app.
  *
- * Below it the webapp is a three-screen mobile shell (projects → worktrees →
+ * Below it the webapp is a three-screen mobile shell (projects → workspaces →
  * pane); above it the desktop rail + sidebar + pane row. Width-only, not
  * `pointer: coarse`, so a narrow desktop window gets the mobile shell too —
  * which is what makes it drivable from a Playwright script.
@@ -43,7 +43,7 @@ export function useIsMobile(): boolean {
  * in particular just slides the page), so a `100dvh` app puts the bottom of
  * the terminal behind the keyboard. `window.visualViewport` is the only thing
  * that reports the keyboard reliably across iOS and Android; feeding its
- * height into the root makes the whole layout — and therefore WorktreeView's
+ * height into the root makes the whole layout — and therefore WorkspaceView's
  * ResizeObserver, and therefore the PTY's row count — track the space the user
  * can actually see.
  *

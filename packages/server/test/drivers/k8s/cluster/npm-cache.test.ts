@@ -1,6 +1,6 @@
 /**
  * The npm cache's barrel surface: standing Verdaccio up, and the answer a
- * worktree create reads to decide whether its pnpm installs through it.
+ * workspace create reads to decide whether its pnpm installs through it.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
@@ -54,11 +54,11 @@ beforeEach(() => {
 })
 
 describe('ensureNpmCache', () => {
-  it('stands up one read-only Verdaccio on its claim, walled to worktrees, and publishes it last', async () => {
+  it('stands up one read-only Verdaccio on its claim, walled to workspaces, and publishes it last', async () => {
     await ensureNpmCache()
 
     const config = appliedNamed('ConfigMap', 'yaac-npm-cache-config')?.data?.['config.yaml'] ?? ''
-    // Nothing may publish into a cache every project's worktrees share.
+    // Nothing may publish into a cache every project's workspaces share.
     expect(config).not.toMatch(/publish: \$(all|authenticated)/)
     expect(config.match(/publish: \$nobody/g)).toHaveLength(4)
     expect(config).toContain('url: https://registry.npmjs.org/')
@@ -87,11 +87,11 @@ describe('ensureNpmCache', () => {
       resources: { requests: { storage: '20Gi' } },
     })
 
-    // Only worktree pods the server labelled for the cache — a project with
+    // Only workspace pods the server labelled for the cache — a project with
     // `npmCache: false` gets no label — on both sides of the dial.
     const admitted = {
       matchLabels: { 'yaac.npm-cache': 'true' },
-      matchExpressions: [{ key: 'yaac.worktree-id', operator: 'Exists' }],
+      matchExpressions: [{ key: 'yaac.workspace-id', operator: 'Exists' }],
     }
     expect(appliedNamed('NetworkPolicy', 'yaac-npm-cache-ingress')?.spec).toEqual({
       podSelector: { matchLabels: { app: 'yaac-npm-cache' } },
@@ -101,7 +101,7 @@ describe('ensureNpmCache', () => {
         { from: [{ ipBlock: { cidr: '10.89.0.7/32' } }], ports: [{ protocol: 'TCP', port: 4873 }] },
       ],
     })
-    expect(appliedNamed('NetworkPolicy', 'yaac-npm-cache-worktree-egress')?.spec).toEqual({
+    expect(appliedNamed('NetworkPolicy', 'yaac-npm-cache-workspace-egress')?.spec).toEqual({
       podSelector: admitted,
       policyTypes: ['Egress'],
       egress: [{
@@ -130,6 +130,11 @@ describe('ensureNpmCache', () => {
     expect(rollout).toBeGreaterThanOrEqual(0)
     expect(mockKubectlWithRetry.mock.invocationCallOrder[rollout])
       .toBeLessThan(mockKubectlApply.mock.invocationCallOrder.at(-1)!)
+    // An older install's name for the workspace-egress policy goes, now that
+    // the current one is applied.
+    expect(mockKubectlWithRetry).toHaveBeenCalledWith([
+      'delete', 'networkpolicy', 'yaac-npm-cache-worktree-egress', '-n', 'test-ns', '--ignore-not-found',
+    ])
   })
 
   it('publishes no Service for a cache that never rolled out', async () => {
@@ -148,7 +153,7 @@ describe('ensureNpmCache', () => {
 })
 
 describe('servingNpmCacheUrl', () => {
-  // pnpm has no fallback registry: a worktree pointed at a cache that is
+  // pnpm has no fallback registry: a workspace pointed at a cache that is
   // down fails every install, so only a ready pod earns the URL — asked
   // afresh each time, never remembered.
   it('names the Service only while a cache pod is ready behind it', async () => {

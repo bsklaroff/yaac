@@ -138,7 +138,7 @@ function fetchRecord(repoPath: string): string {
  * Fetch every branch of `remoteUrl` into `refs/remotes/origin/*`, pruning
  * the ones origin has deleted — so a merged-and-deleted branch leaves the
  * picker, and a create naming it is refused rather than forked from its last
- * fetched tip. Only the refspec's destination is pruned: worktree branches
+ * fetched tip. Only the refspec's destination is pruned: workspace branches
  * are local `agent/*` heads, and the symbolic `origin/HEAD` is kept. The URL is
  * the project row's, passed in: the repository's own `remote.origin.*` is
  * written by pods, so it never decides where a fetch goes, what it runs, or
@@ -175,7 +175,7 @@ export function fetchOrigin(
 
 /**
  * The main clone's one gc, run by the server after its fetches
- * (docs/server-git.md). Every worktree clone borrows objects from the main
+ * (docs/server-git.md). Every workspace clone borrows objects from the main
  * clone through `objects/info/alternates`, and the main clone cannot see
  * which: their refs, indexes and reflogs are in their own git dirs. So an
  * object the main clone holds is never deleted — unreachable ones are kept
@@ -261,8 +261,8 @@ export async function ensureNeverPrune(repoPath: string): Promise<void> {
 
 /** Where a checkout's git dir is assembled before it is moved into place:
  *  beside the checkout, where no workspace mounts it. */
-export function stagingGitDir(worktreePath: string): string {
-  return path.join(path.dirname(worktreePath), `.staging-${path.basename(worktreePath)}`, '.git')
+export function stagingGitDir(workspacePath: string): string {
+  return path.join(path.dirname(workspacePath), `.staging-${path.basename(workspacePath)}`, '.git')
 }
 
 /**
@@ -270,7 +270,7 @@ export function stagingGitDir(worktreePath: string): string {
  * naming the project row's URL as `origin` and `branch`'s upstream, and an
  * alternates line borrowing every object from the main clone. `refs` are
  * `<sha> <refname>` lines, written as `packed-refs` so a repository with
- * thousands of branches does not cost thousands of files per worktree.
+ * thousands of branches does not cost thousands of files per workspace.
  *
  * The alternates line is the main clone's objects dir as the SERVER sees it:
  * a pod mounts the main clone at that same path (docs/server-git.md), so one
@@ -284,7 +284,7 @@ export async function initClone(repoPath: string, gitDir: string, params: {
   originHead: string | null
 }): Promise<void> {
   if (await fs.lstat(path.join(repoPath, '.git', 'shallow')).then(() => true, () => false)) {
-    throw new Error(`${repoPath} is a shallow clone, which a worktree cannot borrow from`)
+    throw new Error(`${repoPath} is a shallow clone, which a workspace cannot borrow from`)
   }
   const format = (await runGit(repo(repoPath), ['rev-parse', '--show-object-format'])).trim()
   // No template: no sample hooks, no `info/exclude` — nothing the server
@@ -336,8 +336,8 @@ export async function mainRefs(
 }
 
 /**
- * Create a worktree's checkout at a path that may ALREADY EXIST and already
- * hold entries — a worktree's `/workspace` mount points (the ephemeral module
+ * Create a workspace's checkout at a path that may ALREADY EXIST and already
+ * hold entries — a workspace's `/workspace` mount points (the ephemeral module
  * dirs) are created there before the checkout runs, and the pod's runtime
  * creates any that are missing the moment it mounts.
  *
@@ -346,7 +346,7 @@ export async function mainRefs(
  * `branch` at `origin/<baseBranch>` with that as its upstream, and no object
  * of its own — every one is borrowed through `objects/info/alternates`. It
  * is assembled in a staging dir no workspace mounts, populated from there,
- * and only then renamed in as `<worktreePath>/.git`: one new directory
+ * and only then renamed in as `<workspacePath>/.git`: one new directory
  * entry, so the destination's inode is never replaced, which is what lets
  * the pod bind `/workspace` to it before any of this has run.
  *
@@ -357,14 +357,14 @@ export async function mainRefs(
  * would refuse to overwrite forever. A failure leaves no `.git` behind, so a
  * retry starts over.
  */
-export async function createCheckout(repoPath: string, worktreePath: string, params: {
+export async function createCheckout(repoPath: string, workspacePath: string, params: {
   branch: string
   baseBranch: string
   remoteUrl: string
 }): Promise<void> {
   await ensureNeverPrune(repoPath)
   const startSha = await resolveRemoteRef(repoPath, params.baseBranch)
-  const gitDir = stagingGitDir(worktreePath)
+  const gitDir = stagingGitDir(workspacePath)
   await fs.rm(path.dirname(gitDir), { recursive: true, force: true })
   await fs.mkdir(path.dirname(gitDir), { recursive: true })
   try {
@@ -374,9 +374,9 @@ export async function createCheckout(repoPath: string, worktreePath: string, par
     })
     await runGit({ kind: 'private', gitDir }, ['update-ref', `refs/heads/${params.branch}`, startSha])
     await runGit({ kind: 'private', gitDir }, ['symbolic-ref', 'HEAD', `refs/heads/${params.branch}`])
-    await fs.mkdir(worktreePath, { recursive: true })
-    await runGit({ kind: 'private', gitDir, workTree: worktreePath }, ['checkout', '--force', '--quiet'])
-    await fs.rename(gitDir, path.join(worktreePath, '.git'))
+    await fs.mkdir(workspacePath, { recursive: true })
+    await runGit({ kind: 'private', gitDir, workTree: workspacePath }, ['checkout', '--force', '--quiet'])
+    await fs.rename(gitDir, path.join(workspacePath, '.git'))
   } finally {
     await fs.rm(path.dirname(gitDir), { recursive: true, force: true })
   }

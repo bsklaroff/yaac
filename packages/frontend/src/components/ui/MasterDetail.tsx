@@ -3,7 +3,7 @@ import clsx from 'clsx'
 import { NavBackIcon } from '#lib/icons'
 
 /**
- * The two-pane body the full-screen overlays share (skills, stopped worktrees,
+ * The two-pane body the full-screen overlays share (skills, stopped workspaces,
  * image builds): a fixed-width master list beside a detail pane that fills the
  * rest.
  *

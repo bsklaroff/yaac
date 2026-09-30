@@ -1,0 +1,1503 @@
+import { EventEmitter } from 'node:events'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+vi.mock('node:child_process', () => ({
+  spawn: vi.fn(),
+  execFile: vi.fn(),
+  exec: vi.fn(),
+}))
+
+const { fsFake } = vi.hoisted(() => ({
+  fsFake: {
+    access: vi.fn().mockResolvedValue(undefined),
+    mkdir: vi.fn().mockResolvedValue(undefined),
+    writeFile: vi.fn<(file: string, data: string) => Promise<void>>().mockResolvedValue(undefined),
+    readFile: vi.fn<(file: string) => Promise<Buffer>>().mockRejectedValue(new Error('missing')),
+    chmod: vi.fn().mockResolvedValue(undefined),
+    // Built-in skill staging: rm the stage dir, list (readdir) the bundled
+    // skills, cp each across. An empty readdir stages nothing. Session-bin
+    // staging copyFiles each listed script.
+    rm: vi.fn().mockResolvedValue(undefined),
+    readdir: vi.fn().mockResolvedValue([]),
+    cp: vi.fn().mockResolvedValue(undefined),
+    copyFile: vi.fn().mockResolvedValue(undefined),
+    // Inline rather than `.mockResolvedValue()`: `mockReset` restores the
+    // function `vi.fn` was constructed with but strips anything configured
+    // afterwards, so this survives the `resetAllMocks` in each suite's
+    // beforeEach without having to be re-primed in all three.
+    rename: vi.fn(() => Promise.resolve()),
+    // Nothing on disk is a legacy linked checkout: the resume conversion
+    // guard finds no `.git` file to worry about.
+    lstat: vi.fn((_p: string): Promise<{ isDirectory: () => boolean }> => Promise.reject(new Error('missing'))),
+  },
+}))
+
+// The agent-history converge walks and moves real files; this file asserts
+// on the create around it, not on the history.
+vi.mock('@yaac/server/domain/agent-history', async (importOriginal) => ({
+  ...await importOriginal<object>(),
+  convergeAgentHistory: vi.fn(() => Promise.resolve()),
+}))
+vi.mock('node:fs/promises', () => ({ default: fsFake }))
+
+// Confined roots (the claude home's seeds, the ephemeral module dirs) walk
+// the real disk — realpath, fds — which the fs mock above has none of, so
+// they read and write through that mock instead. Inline for the same
+// `resetAllMocks` reason as `rename`.
+vi.mock('@yaac/server/lib/confined-fs', () => ({
+  openRoot: vi.fn((root: string) => Promise.resolve({
+    mkdirp: () => Promise.resolve(),
+    readFile: (rel: string) => fsFake.readFile(`${root}/${rel}`).catch(() => null),
+    writeAtomic: (rel: string, data: string) => fsFake.writeFile(`${root}/${rel}`, data),
+  })),
+}))
+
+// Stubbed to keep podman off the import path; nothing on the create path
+// calls into it.
+vi.mock('@yaac/server/drivers/k8s/image-engine/image-builder', () => ({
+} satisfies Partial<typeof imageBuilderModule>))
+
+vi.mock('@yaac/server/drivers/k8s/images/build-coordinator', () => ({
+  ensureImage: vi.fn().mockResolvedValue('yaac-test-image'),
+  pushImageShared: vi.fn().mockResolvedValue('localhost:5000/yaac-test-image'),
+} satisfies Partial<typeof buildCoordinatorModule>))
+
+vi.mock('@yaac/server/drivers/k8s/substrate/kubectl', () => ({
+  dataDirHash: vi.fn(() => 'ddh0123456789abc'),
+  ensureKubernetes: vi.fn().mockResolvedValue(undefined),
+  k8sNamespace: vi.fn(() => 'yaac'),
+  kubectlApply: vi.fn().mockResolvedValue(undefined),
+  kubectlGetJson: vi.fn(),
+  kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+} satisfies Partial<typeof kubectlModule>))
+
+// Keep bootstrap real except proxyServiceClusterIp, which would otherwise hit
+// the (pod-shaped) kubectlGetJson mock and throw — the pod's DNS nameserver is
+// the live proxy ClusterIP read here.
+vi.mock('@yaac/server/drivers/k8s/cluster/proxy-apply', async (importOriginal) => ({
+  ...(await importOriginal()),
+  proxyServiceClusterIp: vi.fn().mockResolvedValue('10.96.0.5'),
+}))
+
+vi.mock('@yaac/server/drivers/k8s/substrate/exec', () => ({
+  containerExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+} satisfies Partial<typeof execModule>))
+
+// The CLI command attaches over the server PTY WebSocket after
+// provisioning — mock the transport so no socket is opened.
+vi.mock('#commands/ws-terminal', () => ({
+  attachWorkspacePty: vi.fn().mockResolvedValue(undefined),
+}))
+
+vi.mock('@yaac/server/drivers/k8s/egress/proxy-client', () => ({
+  proxyClient: {
+    ensureRunning: vi.fn().mockResolvedValue(undefined),
+    getCaTrustEnv: vi.fn().mockReturnValue(['SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem']),
+  },
+  // NOT tsc-guarded: the mocked `proxyClient` is a deliberate 2-method subset
+  // of the `ProxyClient` class, which `satisfies Partial<…>` rejects (a
+  // partial object value is not assignable to the full property type). The
+  // registration itself is a ConfigMap, applied through the kubectl mock.
+}))
+
+vi.mock('@yaac/server/lib/allowed-hosts', async (importOriginal) => {
+  const actual = await importOriginal<typeof allowedHostsModule>()
+  return {
+    ...actual,
+    // Default to '*' so session-create's allowlist hard-check passes.
+    // Tests that need a specific allowlist can override per-test.
+    resolveAllowedHosts: vi.fn().mockReturnValue(['*']),
+  }
+})
+
+// Spread the real module so its error classes keep their identity:
+// verifyAgentWindowAlive branches on `instanceof RelayExecError`, and a
+// stand-in class would silently send the first test that exercises a relay
+// failure down the wrong branch.
+vi.mock('@yaac/server/drivers/k8s/substrate/stream-relay', async (importOriginal) => ({
+  ...await importOriginal<typeof streamRelayModule>(),
+  bootStreamd: vi.fn().mockResolvedValue(undefined),
+  podStreamToken: vi.fn().mockResolvedValue('stream-token'),
+  podExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+  waitForStreamd: vi.fn().mockResolvedValue(undefined),
+}))
+
+vi.mock('@yaac/server/drivers/k8s/substrate/pod-wait', () => ({
+  waitForJobPodReady: vi.fn().mockResolvedValue(undefined),
+}))
+
+// The tier resolver is bypassed: every path here is a `/tmp` stand-in
+// under no real tier root, and what these cases pin is the DECLARED mount
+// list. How a declaration becomes a claim subPath or a node path is
+// covered where the resolver lives (substrate/mount-sources.test.ts).
+vi.mock('@yaac/server/drivers/k8s/substrate/mount-sources', () => ({
+  resolveMountSource: (m: unknown) => m,
+  nodeLocalDirsOf: () => [],
+  nodeLocalHostPath: (p: string) => p,
+  nodeLocalNodePath: () => '/var/lib/yaac/node/ddh0123456789abc',
+}))
+
+// A whole replacement, not a partial one: every path has to land under /tmp
+// so nothing here can reach a real data dir. The cost is that it has to be
+// kept in step by hand — a path helper the create path starts calling is
+// `undefined` here until it is added below.
+vi.mock('@yaac/shared/project-paths', () => ({
+  // A constant, not a per-project path: sealing features/cluster put its
+  // setup module in this graph — session create reaches it through the
+  // #drivers/k8s/cluster barrel (→ delete.ts → setup.ts) — and it reads
+  // CALICO_DIR at module scope, so an undefined value throws before any test
+  // runs. Independent of how stream-relay is mocked.
+  CALICO_DIR: '/tmp/yaac-package/k8s/calico',
+  repoDir: vi.fn((slug: string) => `/tmp/${slug}/repo`),
+  agentHistoryDir: vi.fn((slug: string, workspaceId: string, part?: string) =>
+    `/tmp/${slug}/history/${workspaceId}${part !== undefined ? `/${part}` : ''}`),
+  AGENT_HISTORY_PARTS: ['claude', 'claude-file-history', 'codex', 'codex-sqlite', 'pi'],
+  claudeDir: vi.fn((slug: string) => `/tmp/${slug}/claude`),
+  codexDir: vi.fn((slug: string) => `/tmp/${slug}/codex`),
+  opencodeConfigDir: vi.fn((slug: string) => `/tmp/${slug}/opencode-config`),
+  opencodeDataDir: vi.fn((slug: string, workspaceId: string) => `/tmp/node/${slug}/opencode-data/${workspaceId}`),
+  opencodeCheckpointDir: vi.fn((slug: string, workspaceId: string) => `/tmp/${slug}/opencode-data/${workspaceId}`),
+  piDir: vi.fn((slug: string) => `/tmp/${slug}/pi`),
+  cachedPackagesDir: vi.fn((slug: string) => `/tmp/${slug}/.cached-packages`),
+  // Per-workspace ACP conversation records; create makes the dir so acpd can
+  // write into it through the mount.
+  acpLogDir: vi.fn((slug: string, workspaceId: string) => `/tmp/${slug}/acp/${workspaceId}`),
+  // Pasted images; create makes the dir so the read-only mount binds it.
+  workspaceAttachmentsDir: vi.fn((slug: string, workspaceId: string) => `/tmp/${slug}/attachments/${workspaceId}`),
+  cacheVolumeDir: vi.fn((slug: string, key: string) => `/tmp/${slug}/cache-volumes/${key}`),
+  workspaceDir: vi.fn((slug: string, workspaceId: string) => `/tmp/${slug}/workspaces/${workspaceId}`),
+  workspacesDir: vi.fn((slug: string) => `/tmp/${slug}/workspaces`),
+  projectDir: vi.fn((slug: string) => `/tmp/${slug}`),
+  workspaceStateDir: vi.fn((slug: string, sid: string) => `/tmp/${slug}/sessions/${sid}`),
+  credentialsDir: vi.fn(() => '/tmp/yaac-data/.credentials'),
+  getDataDir: vi.fn(() => '/tmp/yaac-data'),
+  PACKAGE_ROOT: '/tmp/yaac-package',
+}))
+
+// The project row — the only source the create reads the remote and the
+// project id from.
+const { projectRow } = vi.hoisted(() => ({
+  projectRow: (remoteUrl: string) => ({
+    slug: 'demo',
+    id: '5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b',
+    remoteUrl,
+    addedAt: '2026-01-01T00:00:00.000Z',
+    createDefaults: {},
+    gitCredentialId: null,
+    knownHostsEntry: null,
+  }),
+}))
+vi.mock('@yaac/server/db/project-store', async (importOriginal) => ({
+  ...await importOriginal<typeof projectStoreModule>(),
+  getProjectRow: vi.fn().mockResolvedValue(projectRow('https://github.com/example/repo.git')),
+} satisfies Partial<typeof projectStoreModule>))
+
+vi.mock('@yaac/server/domain/projects/config', () => ({
+  resolveProjectConfig: vi.fn().mockResolvedValue({}),
+  resolveEphemeralModulesPaths: () => [],
+} satisfies Partial<typeof projectConfigModule>))
+
+// The project's environment: rows, so the create asks for them rather than
+// reading the server's own process env as the retired config keys did.
+vi.mock('@yaac/server/domain/projects/env', () => ({
+  resolveProjectEnv: vi.fn().mockResolvedValue({ plain: {}, secrets: {} }),
+}))
+
+vi.mock('@yaac/server/domain/projects/credentials', () => ({
+  resolveProjectCredential: vi.fn().mockResolvedValue({ kind: 'https', token: 'token' }),
+  missingCredentialError: (slug: string) => new Error(`no credential for ${slug}`) as never,
+  parseGitRemote: (url: string) => {
+    if (url.startsWith('https://')) {
+      const u = new URL(url)
+      const path = u.pathname.replace(/^\//, '').replace(/\.git$/, '')
+      return { scheme: 'https', host: u.hostname, path }
+    }
+    const m = /^(?:[\w._-]+@)?([\w.-]+):(.+)$/.exec(url)!
+    const path = m[2].replace(/\.git$/, '')
+    return { scheme: 'ssh', host: m[1], path }
+  },
+} satisfies Partial<typeof credentialsModule>))
+
+vi.mock('@yaac/shared/tool-auth', () => ({
+  loadToolAuthEntry: vi.fn().mockResolvedValue(null),
+  loadClaudeCredentialsFile: vi.fn().mockResolvedValue(null),
+  loadCodexCredentialsFile: vi.fn().mockResolvedValue(null),
+  writeProjectClaudePlaceholder: vi.fn().mockResolvedValue(undefined),
+  writeProjectCodexPlaceholder: vi.fn().mockResolvedValue(undefined),
+  PLACEHOLDER_API_KEY: 'test-placeholder-key',
+  PLACEHOLDER_GH_TOKEN: 'test-placeholder-gh-token',
+}))
+
+vi.mock('@yaac/server/domain/git', () => ({
+  adoptLinkedCheckout: vi.fn().mockResolvedValue(undefined),
+  createCheckout: vi.fn().mockResolvedValue(undefined),
+  // Inline: survives resetAllMocks, and nothing re-primes it.
+  maintainRepo: vi.fn(() => Promise.resolve()),
+  getDefaultBranch: vi.fn().mockResolvedValue('main'),
+  fetchOrigin: vi.fn().mockResolvedValue(undefined),
+  remoteBranchExists: vi.fn().mockResolvedValue(true),
+  writeKnownHostsFile: vi.fn().mockResolvedValue(undefined),
+} satisfies Partial<typeof gitModule>))
+
+// NOT mocked: declaring a forward is in-memory bookkeeping, so the real
+// allocator runs and what it answers is the honest assertion.
+vi.mock('@yaac/server/drivers/k8s/forwarders/port-forwarders', async (importOriginal) => ({
+  ...await importOriginal<typeof portForwardersModule>(),
+} satisfies Partial<typeof portForwardersModule>))
+
+vi.mock('@yaac/server/lib/status-right', async (importOriginal) => ({
+  ...await importOriginal<typeof statusRightModule>(),
+  buildStatusRight: vi.fn().mockReturnValue(' stub-status '),
+}))
+
+// The session row is a real DB write; this file mocks everything around
+// createWorkspace, so it mocks the store too. `recordWorkspaceCreated` throwing
+// is a failed create (see the teardown case below), not a swallowed hiccup.
+vi.mock('@yaac/server/db/workspace-store', () => ({
+  recordWorkspaceCreated: vi.fn(),
+  recordWorkspaceResumed: vi.fn(),
+  recordWorkspaceLife: vi.fn(),
+  recordWorkspaceStopped: vi.fn(),
+  deleteWorkspaceRow: vi.fn(),
+  setWorkspaceBaseBranch: vi.fn(),
+  getWorkspaceRow: vi.fn(),
+  priorStopOf: vi.fn(),
+  restoreWorkspaceStop: vi.fn(),
+  listProjectWorkspaceIds: vi.fn(() => Promise.resolve(new Map<string, boolean>())),
+} satisfies Partial<typeof storeModule>))
+
+// The git identity a create commits under: a preferences row on the server.
+vi.mock('@yaac/server/db/preferences', async (importOriginal) => ({
+  ...(await importOriginal<typeof preferencesModule>()),
+  getGitIdentity: vi.fn(),
+}))
+
+vi.mock('@yaac/server/db/agent-session-store', () => ({
+  recordAgentSessions: vi.fn(),
+  setActiveAgentSessions: vi.fn(),
+  deleteWorkspaceAgentSessions: vi.fn().mockResolvedValue(undefined),
+} satisfies Partial<typeof agentStoreModule>))
+
+// `deleteWorkspaceState` is reached only by the rollback of a failed FRESH
+// create, and only once its checkout leg has settled — so a mock without it
+// does not fail the create, it silently swallows the rollback into the
+// chain's own catch and the row survives.
+vi.mock('@yaac/server/domain/workspaces/cleanup', () => ({
+  cleanupWorkspaceDetached: vi.fn(),
+  // Inline implementation, not `.mockResolvedValue()`: the suites'
+  // `resetAllMocks` strips anything configured after construction (see the
+  // fs mock above), and a rollback reading `undefined` here silently skips
+  // the row delete.
+  deleteWorkspaceState: vi.fn(() => Promise.resolve(true)),
+} satisfies Partial<typeof cleanupModule>))
+
+import { spawn } from 'node:child_process'
+import fs from 'node:fs/promises'
+import { createWorkspace } from '@yaac/server/domain/workspaces/create'
+import {
+  deleteWorkspaceRow,
+  getWorkspaceRow,
+  priorStopOf,
+  recordWorkspaceCreated,
+  recordWorkspaceStopped,
+  restoreWorkspaceStop,
+} from '@yaac/server/db/workspace-store'
+import { recordAgentSessions } from '@yaac/server/db/agent-session-store'
+import { buildAgentCmd, resolveInitWindows } from '@yaac/server/runtime/agents/agent-command'
+import { retoolSpare } from '@yaac/server/domain/workspaces/spare-pool'
+import { workspaceCreate } from '#commands/workspace-create'
+import { ensureKubernetes } from '@yaac/server/drivers/k8s/substrate/kubectl'
+import { ensureImage, pushImageShared } from '@yaac/server/drivers/k8s/images/build-coordinator'
+import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/drivers/k8s/substrate/kubectl'
+import { containerExec } from '@yaac/server/drivers/k8s/substrate/exec'
+import { proxyServiceClusterIp } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
+import { proxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
+import { resolveProjectConfig } from '@yaac/server/domain/projects/config'
+import { resolveProjectEnv } from '@yaac/server/domain/projects/env'
+import { getGitIdentity } from '@yaac/server/db/preferences'
+import { resolveProjectCredential } from '@yaac/server/domain/projects/credentials'
+import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
+import { CONTAINER_TMUX_DIR } from '@yaac/shared/paths'
+import { resolveAllowedHosts } from '@yaac/server/lib/allowed-hosts'
+import { adoptLinkedCheckout, createCheckout, getDefaultBranch, fetchOrigin, remoteBranchExists } from '@yaac/server/domain/git'
+import { getProjectRow } from '@yaac/server/db/project-store'
+import { podExec, waitForStreamd } from '@yaac/server/drivers/k8s/substrate/stream-relay'
+import type * as streamRelayModule from '@yaac/server/drivers/k8s/substrate/stream-relay'
+import { waitForJobPodReady } from '@yaac/server/drivers/k8s/substrate/pod-wait'
+import {
+  declareWorkspaceForwards,
+  getWorkspacePorts,
+  stopAllWorkspaceForwarders,
+} from '@yaac/server/drivers/k8s/forwarders/port-forwarders'
+import { buildStatusRight } from '@yaac/server/lib/status-right'
+import type * as statusRightModule from '@yaac/server/lib/status-right'
+import { handleFixture, installFakeWorkspaceDriver, type FakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { launchWorkspace, prepareWorkspaceSubstrate } from '@yaac/server/drivers/k8s/workspaces/launch'
+import { destroyWorkspace } from '@yaac/server/drivers/k8s/workspaces/teardown'
+import { prepareWorkspaceImage } from '@yaac/server/drivers/k8s/images/workspace-image'
+
+const mockSpawn = vi.mocked(spawn)
+const mockAccess = vi.mocked(fs.access)
+const mockMkdir = vi.mocked(fs.mkdir)
+const mockWriteFile = vi.mocked(fs.writeFile)
+const mockReadFile = vi.mocked(fs.readFile)
+const mockReaddir = vi.mocked(fs.readdir)
+const mockApply = vi.mocked(kubectlApply)
+
+/** Job manifests applied — create also (idempotently) ensures PriorityClasses. */
+function jobApplies(): unknown[] {
+  return mockApply.mock.calls
+    .map((c) => c[0] as { kind?: string })
+    .filter((m) => m.kind === 'Job')
+}
+const mockGetJson = vi.mocked(kubectlGetJson)
+const mockKubectlRetry = vi.mocked(kubectlWithRetry)
+const mockContainerExec = vi.mocked(containerExec)
+const mockPodExec = vi.mocked(podExec)
+const mockWaitForStreamd = vi.mocked(waitForStreamd)
+const mockWaitForPodReady = vi.mocked(waitForJobPodReady)
+const mockLoadToolAuth = vi.mocked(loadToolAuthEntry)
+
+function mockAttachedChild(): EventEmitter {
+  const child = new EventEmitter()
+  process.nextTick(() => child.emit('close', 0))
+  return child
+}
+
+interface JobManifest {
+  kind: string
+  metadata: { name: string; namespace: string; labels: Record<string, string> }
+  spec: {
+    backoffLimit: number
+    template: {
+      metadata: { labels: Record<string, string> }
+      spec: {
+        restartPolicy: string
+        dnsPolicy?: string
+        dnsConfig?: { nameservers: string[] }
+        initContainers?: Array<{
+          name: string
+          image: string
+          restartPolicy?: string
+          env: Array<{ name: string; value: string }>
+        }>
+        containers: Array<{
+          image: string
+          env: Array<{ name: string; value: string }>
+          lifecycle?: { postStart?: { exec?: { command: string[] } }; preStop?: { exec?: { command: string[] } } }
+          volumeMounts: Array<{ name: string; mountPath: string; readOnly?: boolean }>
+        }>
+        volumes: Array<{
+          name: string
+          hostPath?: { path: string; type: string }
+          configMap?: { name: string }
+          emptyDir?: { sizeLimit?: string }
+        }>
+      }
+    }
+  }
+}
+
+function appliedJobManifest(): JobManifest {
+  const call = mockApply.mock.calls.find((c) => (c[0] as { kind?: string }).kind === 'Job')
+  expect(call).toBeDefined()
+  return call![0] as JobManifest
+}
+
+describe('createWorkspace', () => {
+  let fake: FakeWorkspaceDriver
+  beforeEach(() => {
+    vi.resetAllMocks()
+
+    // A create reports what it recorded rather than writing rows itself, so
+    // the server's end of the link stands behind the boundary here — the
+    // mocked stores below are what those reports land in.
+
+    // Async store reads must resolve, not return undefined: createWorkspace
+    // awaits and `.catch()`es them.
+    vi.mocked(getWorkspaceRow).mockResolvedValue(undefined)
+    mockAccess.mockResolvedValue(undefined)
+    mockMkdir.mockResolvedValue(undefined)
+    mockWriteFile.mockResolvedValue(undefined)
+    mockReadFile.mockRejectedValue(new Error('missing'))
+    // resetAllMocks strips the module-mock impls: re-prime readdir so the
+    // built-in skill staging sees "no bundled skills", while workspace-bin
+    // staging finds the mandatory postStart script (createWorkspace refuses
+    // to provision without yaac-workspace-init).
+    mockReaddir.mockImplementation(((dir: string) => Promise.resolve(
+      dir === '/tmp/yaac-package/workspace-bin'
+        ? [{ name: 'yaac-workspace-init', isFile: () => true }]
+        : [],
+    )) as never)
+    vi.mocked(ensureKubernetes).mockResolvedValue(undefined)
+    vi.mocked(ensureImage).mockResolvedValue('yaac-test-image')
+    vi.mocked(pushImageShared).mockResolvedValue('localhost:5000/yaac-test-image')
+    vi.mocked(resolveProjectConfig).mockResolvedValue({})
+    vi.mocked(resolveProjectCredential).mockResolvedValue({ kind: 'https', token: 'token' } as never)
+    vi.mocked(resolveAllowedHosts).mockReturnValue(['*'])
+    vi.mocked(createCheckout).mockResolvedValue(undefined)
+    vi.mocked(adoptLinkedCheckout).mockResolvedValue(undefined)
+    vi.mocked(getDefaultBranch).mockResolvedValue('main')
+    vi.mocked(fetchOrigin).mockResolvedValue(undefined)
+    vi.mocked(getProjectRow).mockResolvedValue(projectRow('https://github.com/example/repo.git'))
+    vi.mocked(remoteBranchExists).mockResolvedValue(true)
+    vi.mocked(resolveProjectEnv).mockResolvedValue({ plain: {}, secrets: {} })
+    vi.mocked(getGitIdentity).mockResolvedValue({ name: 'Test User', email: 'test@example.com' })
+    mockLoadToolAuth.mockResolvedValue(null)
+    vi.mocked(proxyServiceClusterIp).mockResolvedValue('10.96.0.5')
+    /* eslint-disable @typescript-eslint/unbound-method */
+    vi.mocked(proxyClient.ensureRunning).mockResolvedValue(undefined)
+    vi.mocked(proxyClient.getCaTrustEnv).mockReturnValue(['SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem'])
+    /* eslint-enable @typescript-eslint/unbound-method */
+    mockSpawn.mockImplementation(() => mockAttachedChild() as never)
+    mockApply.mockResolvedValue(undefined)
+    mockGetJson.mockResolvedValue(null)
+    // Pod boot + streamd default to healthy so the flow runs straight
+    // through. Failure tests override waitForJobPodReady.
+    mockWaitForPodReady.mockResolvedValue(undefined)
+    mockWaitForStreamd.mockResolvedValue(undefined)
+    mockKubectlRetry.mockResolvedValue({ stdout: '', stderr: '' })
+    mockContainerExec.mockResolvedValue({ stdout: '', stderr: '' })
+    mockPodExec.mockResolvedValue({ stdout: '', stderr: '' })
+    vi.mocked(buildStatusRight).mockReturnValue(' stub-status ')
+    // The declaration registry is process-local and outlives a case, so the
+    // host ports it promised would otherwise be walked past by the next.
+    stopAllWorkspaceForwarders()
+
+    // createWorkspace drives the substrate through the registered runtime,
+    // so this file installs the REAL k8s half of it — the code under test
+    // here is exactly what turns a create into a Job. Only the verbs a
+    // launch actually uses are wired: everything else keeps the fake's
+    // default, which is what makes an accidental new dependency on the
+    // runtime show up as a test failure rather than a silent cluster call.
+    // The process boundary below it is mocked as it always was (kubectl,
+    // the proxy client, the relay, podman), so nothing here reaches a
+    // cluster.
+    fake = installFakeWorkspaceDriver({
+      ensureRuntimeReachable: () => ensureKubernetes(),
+      prepareImage: (o) => prepareWorkspaceImage(o),
+      prepareSubstrate: (i) => prepareWorkspaceSubstrate(i),
+      launch: (spec) => launchWorkspace(spec),
+      awaitReady: (h) => waitForJobPodReady(h.jobName),
+      awaitAgentTransport: (j, o) => waitForStreamd(j, o),
+      exec: (j, c, o) => podExec(j, c, o),
+      declareForwards: (id, forwards) => declareWorkspaceForwards(id, forwards),
+      destroy: (t, o) => destroyWorkspace(t, o),
+    })
+  })
+
+
+  it('creates the workspace from an explicitly requested branch, borrowing from the main clone', async () => {
+    const result = await createWorkspace('demo', { tool: 'claude', branch: 'dev' })
+    expect(vi.mocked(createCheckout)).toHaveBeenCalledWith(
+      '/tmp/demo/repo',
+      `/tmp/demo/workspaces/${result?.workspaceId}`,
+      { branch: `agent/${result?.workspaceId}`, baseBranch: 'dev', remoteUrl: 'https://github.com/example/repo.git' },
+    )
+    // The launch points the clone at the main clone as the server sees it.
+    const linkCall = mockPodExec.mock.calls.find(([, cmd]) => cmd.includes('objects/info/alternates'))
+    expect(linkCall?.[1]).toContain("'/tmp/demo/repo/.git/objects'")
+  })
+
+  it('records the workspace and its first conversation before the Job', async () => {
+    const result = await createWorkspace('demo', {
+      tool: 'codex', branch: 'dev', initialPrompt: 'ship it', model: 'gpt-6-sol',
+    })
+    expect(vi.mocked(recordWorkspaceCreated)).toHaveBeenCalledWith({
+      projectSlug: 'demo',
+      workspaceId: result?.workspaceId,
+      // Recorded with the row: a restart has to relaunch the agents the way
+      // the user asked rather than re-deriving today's default, and a spare
+      // claim matches on it. `bypass` because the fake driver is a sandboxed
+      // one.
+      permissionMode: 'bypass',
+      mode: 'tui',
+      model: 'gpt-6-sol',
+      // With the row, not after provisioning: a workspace queued after this
+      // one defaults to it, and may be queued while this one still boots.
+      baseBranch: 'dev',
+    })
+    // The tool and the founding ask live on the conversation create launches,
+    // which is the only reason a workspace can name either — and the model it
+    // launched with names it before the agent has answered.
+    expect(vi.mocked(recordAgentSessions)).toHaveBeenCalledWith(
+      'demo',
+      result?.workspaceId,
+      [{
+        tool: 'codex', agentSessionId: result?.workspaceId, mode: 'tui', firstPrompt: 'ship it', model: 'gpt-6-sol',
+      }],
+    )
+    // Ordering is the point: no pod can exist without a row.
+    const recordOrder = vi.mocked(recordWorkspaceCreated).mock.invocationCallOrder[0] ?? Infinity
+    const jobApplyIdx = mockApply.mock.calls
+      .findIndex((c) => (c[0] as { kind?: string }).kind === 'Job')
+    const applyOrder = mockApply.mock.invocationCallOrder[jobApplyIdx] ?? 0
+    expect(recordOrder).toBeLessThan(applyOrder)
+  })
+
+  it('fails the create before provisioning anything when the row cannot be written', async () => {
+    // The row goes in before the Job, so a write failure costs nothing —
+    // no image, no workspace checkout, no pod.
+    vi.mocked(recordWorkspaceCreated).mockRejectedValueOnce(new Error('disk full'))
+    await expect(createWorkspace('demo', { tool: 'claude' })).rejects.toThrow('disk full')
+    expect(jobApplies()).toHaveLength(0)
+  })
+
+  it('rolls the row back when a fresh create gives up', async () => {
+    mockWaitForPodReady.mockRejectedValue(new Error('pod never became ready'))
+    await expect(createWorkspace('demo', { tool: 'claude' })).rejects.toThrow()
+    // The rollback is chained off the checkout leg rather than awaited — the
+    // create fails fast and the removal follows it — so it lands after the
+    // caller's rejection, not before it.
+    await vi.waitFor(() => {
+      expect(vi.mocked(deleteWorkspaceRow)).toHaveBeenCalledWith('demo', expect.any(String))
+    })
+  })
+
+  it('re-marks a failed restart as deleted instead of erasing its history', async () => {
+    // A resume re-stamped a row that already carries the session's title,
+    // pin and captured prompt; a failed restart must not take those with it.
+    mockWaitForPodReady.mockRejectedValue(new Error('pod never became ready'))
+    await expect(
+      createWorkspace('demo', { tool: 'claude', resume: true, workspaceId: 'prior-session' }),
+    ).rejects.toThrow()
+    expect(vi.mocked(deleteWorkspaceRow)).not.toHaveBeenCalled()
+    expect(vi.mocked(recordWorkspaceStopped)).toHaveBeenCalledWith('demo', 'prior-session')
+  })
+
+  it('restores the exact prior deletion when a restart of a died session fails', async () => {
+    // Restarting an OOM-killed session and failing must not lose how it
+    // died, nor re-raise a notification the user already dismissed.
+    const prior = {
+      stoppedAt: new Date('2026-07-30T00:00:00Z'),
+      deathReason: 'oom' as const,
+      deathDetail: 'exit code 137',
+      deathSeen: true,
+    }
+    vi.mocked(priorStopOf).mockReturnValueOnce(prior)
+    mockWaitForPodReady.mockRejectedValue(new Error('pod never became ready'))
+
+    await expect(
+      createWorkspace('demo', { tool: 'claude', resume: true, workspaceId: 'died-session' }),
+    ).rejects.toThrow()
+
+    expect(vi.mocked(restoreWorkspaceStop)).toHaveBeenCalledWith('demo', 'died-session', prior)
+    expect(vi.mocked(recordWorkspaceStopped)).not.toHaveBeenCalled()
+  })
+
+  it('flags a prewarmed spare — a spare is not a workspace until claimed', async () => {
+    // It gets a row, because once its pod is gone nothing else could tell a
+    // reaped spare from a stopped workspace, and deleting the wrong one takes
+    // uncommitted work with it. The flag is what keeps it out of every
+    // listing until the claim clears it — and the claim is what records the
+    // conversation, so a warm never reports one.
+    await createWorkspace('demo', { tool: 'claude', prewarm: true })
+
+    expect(vi.mocked(recordWorkspaceCreated)).toHaveBeenCalledWith(
+      expect.objectContaining({ projectSlug: 'demo', spare: true }),
+    )
+    expect(vi.mocked(recordAgentSessions)).not.toHaveBeenCalled()
+  })
+
+  it('creates from the requested branch without asking origin for its default', async () => {
+    await createWorkspace('demo', { tool: 'claude', branch: 'dev' })
+    expect(vi.mocked(createCheckout)).toHaveBeenLastCalledWith(
+      expect.anything(), expect.anything(), expect.objectContaining({ baseBranch: 'dev' }),
+    )
+    expect(vi.mocked(getDefaultBranch)).not.toHaveBeenCalled()
+  })
+
+  it('rejects a requested branch missing from origin', async () => {
+    vi.mocked(remoteBranchExists).mockResolvedValue(false)
+    await expect(createWorkspace('demo', { tool: 'claude', branch: 'ghost' }))
+      .rejects.toThrow(/branch "ghost" not found on origin/)
+    expect(vi.mocked(createCheckout)).not.toHaveBeenCalled()
+  })
+
+  it('a bad branch fails fast: one Job apply, one delete, no recreate retries', async () => {
+    // Workspace-leg failures are the create's inputs being bad, never the
+    // pod's — SetupInputError must skip the 3-attempt Job-recreate loop.
+    vi.mocked(remoteBranchExists).mockResolvedValue(false)
+    await expect(createWorkspace('demo', { tool: 'claude', branch: 'ghost', workspaceId: 'abcd1234' }))
+      .rejects.toThrow(/branch "ghost" not found/)
+
+    expect(jobApplies()).toHaveLength(1)
+    const deleteCalls = mockKubectlRetry.mock.calls
+      .map((c) => c[0])
+      .filter((args) => args[0] === 'delete' && args[1] === 'job')
+    expect(deleteCalls).toHaveLength(1)
+  })
+
+  it('returns a session descriptor with the job name, without attaching', async () => {
+    const result = await createWorkspace('demo', { tool: 'codex' })
+
+    expect(result).toBeDefined()
+    expect(result?.workspaceId).toEqual(expect.any(String))
+    expect(result?.jobName).toBe(`yaac-demo-${result?.workspaceId}`)
+    expect(result?.tool).toBe('codex')
+    expect(result?.forwardedPorts).toEqual([])
+    expect(jobApplies()).toHaveLength(1)
+    expect(mockSpawn).not.toHaveBeenCalled()
+  })
+
+  it('seeds OPENROUTER_API_KEY when the opencode credential uses the openrouter provider', async () => {
+    mockLoadToolAuth.mockImplementation((tool) => Promise.resolve(tool === 'opencode' ? {
+      tool: 'opencode',
+      kind: 'api-key',
+      apiKey: 'sk-or-real',
+      savedAt: new Date().toISOString(),
+      opencodeProvider: 'openrouter',
+    } : null))
+    await createWorkspace('demo', { tool: 'opencode', workspaceId: 'abcd1234' })
+
+    const env = appliedJobManifest().spec.template.spec.containers[0].env
+    expect(env).toContainEqual({ name: 'OPENROUTER_API_KEY', value: 'test-placeholder-key' })
+    expect(env.map((e) => e.name)).not.toContain('NEURALWATT_API_KEY')
+  })
+
+  it('seeds NEURALWATT_API_KEY when the opencode credential uses the neuralwatt provider', async () => {
+    mockLoadToolAuth.mockImplementation((tool) => Promise.resolve(tool === 'opencode' ? {
+      tool: 'opencode',
+      kind: 'api-key',
+      apiKey: 'nw-real',
+      savedAt: new Date().toISOString(),
+      opencodeProvider: 'neuralwatt',
+    } : null))
+    await createWorkspace('demo', { tool: 'opencode', workspaceId: 'abcd1234' })
+
+    const env = appliedJobManifest().spec.template.spec.containers[0].env
+    expect(env).toContainEqual({ name: 'NEURALWATT_API_KEY', value: 'test-placeholder-key' })
+    expect(env.map((e) => e.name)).not.toContain('OPENROUTER_API_KEY')
+  })
+
+  it('seeds ANTHROPIC_API_KEY + the pi session dir when the pi credential uses anthropic', async () => {
+    mockLoadToolAuth.mockImplementation((tool) => Promise.resolve(tool === 'pi' ? {
+      tool: 'pi',
+      kind: 'api-key',
+      apiKey: 'sk-ant-real',
+      savedAt: new Date().toISOString(),
+      piProvider: 'anthropic',
+    } : null))
+    await createWorkspace('demo', { tool: 'pi', workspaceId: 'abcd1234' })
+
+    const env = appliedJobManifest().spec.template.spec.containers[0].env
+    // anthropic provider → ANTHROPIC_API_KEY placeholder (claude is unconfigured here).
+    expect(env).toContainEqual({ name: 'ANTHROPIC_API_KEY', value: 'test-placeholder-key' })
+    // pi session-log dir + version-check skip are seeded unconditionally.
+    expect(env).toContainEqual({ name: 'PI_CODING_AGENT_SESSION_DIR', value: '/home/yaac/.yaac-pi-sessions' })
+    expect(env).toContainEqual({ name: 'PI_SKIP_VERSION_CHECK', value: '1' })
+  })
+
+  it('seeds OPENAI_API_KEY when the pi credential uses the openai provider', async () => {
+    mockLoadToolAuth.mockImplementation((tool) => Promise.resolve(tool === 'pi' ? {
+      tool: 'pi',
+      kind: 'api-key',
+      apiKey: 'sk-oai-real',
+      savedAt: new Date().toISOString(),
+      piProvider: 'openai',
+    } : null))
+    await createWorkspace('demo', { tool: 'pi', workspaceId: 'abcd1234' })
+
+    const env = appliedJobManifest().spec.template.spec.containers[0].env
+    expect(env).toContainEqual({ name: 'OPENAI_API_KEY', value: 'test-placeholder-key' })
+  })
+
+  it('seeds every credentialed tool\'s placeholder env on any session (spares are retoolable)', async () => {
+    mockLoadToolAuth.mockImplementation((tool) => Promise.resolve(tool === 'codex' ? null : {
+      tool,
+      kind: 'api-key',
+      apiKey: 'real-key',
+      savedAt: new Date().toISOString(),
+      ...(tool === 'opencode' ? { opencodeProvider: 'openrouter' } : {}),
+    } as never))
+    await createWorkspace('demo', { tool: 'codex', workspaceId: 'abcd1234' })
+
+    const env = appliedJobManifest().spec.template.spec.containers[0].env
+    // A codex session still carries the other tools' placeholders…
+    expect(env).toContainEqual({ name: 'ANTHROPIC_API_KEY', value: 'test-placeholder-key' })
+    expect(env).toContainEqual({ name: 'OPENROUTER_API_KEY', value: 'test-placeholder-key' })
+    expect(env).toContainEqual({ name: 'OPENCODE_DISABLE_AUTOUPDATE', value: '1' })
+    // …but no OPENAI_API_KEY: codex has no credential here, and for codex
+    // OAuth the var would steer it into api-key mode.
+    expect(env.map((e) => e.name)).not.toContain('OPENAI_API_KEY')
+  })
+
+  it('seeds OPENAI_API_KEY only for a codex api-key credential, never for codex OAuth', async () => {
+    mockLoadToolAuth.mockImplementation((tool) => Promise.resolve(tool === 'codex' ? {
+      tool: 'codex',
+      kind: 'oauth',
+      apiKey: 'access-token',
+      savedAt: new Date().toISOString(),
+    } as never : null))
+    await createWorkspace('demo', { tool: 'claude', workspaceId: 'abcd1234' })
+    expect(appliedJobManifest().spec.template.spec.containers[0].env.map((e) => e.name))
+      .not.toContain('OPENAI_API_KEY')
+
+    mockApply.mockClear()
+    mockLoadToolAuth.mockImplementation((tool) => Promise.resolve(tool === 'codex' ? {
+      tool: 'codex',
+      kind: 'api-key',
+      apiKey: 'sk-real',
+      savedAt: new Date().toISOString(),
+    } as never : null))
+    await createWorkspace('demo', { tool: 'claude', workspaceId: 'abcd1235' })
+    expect(appliedJobManifest().spec.template.spec.containers[0].env)
+      .toContainEqual({ name: 'OPENAI_API_KEY', value: 'test-placeholder-key' })
+  })
+
+  it('applies a Job manifest with session labels, the registry image ref, and shared mounts', async () => {
+    await createWorkspace('demo', { tool: 'claude', workspaceId: 'abcd1234' })
+
+    const manifest = appliedJobManifest()
+    expect(manifest.metadata.name).toBe('yaac-demo-abcd1234')
+    expect(manifest.metadata.namespace).toBe('yaac')
+
+    const labels = {
+      'yaac.project': 'demo',
+      'yaac.project-id': projectRow('').id,
+      'yaac.workspace-id': 'abcd1234',
+      'yaac.data-dir-hash': 'ddh0123456789abc',
+      'yaac.tool': 'claude',
+      // npmCache defaults on and npmjs is allowed, so the pod is admitted.
+      'yaac.npm-cache': 'true',
+    }
+    expect(manifest.metadata.labels).toEqual(labels)
+    expect(manifest.spec.template.metadata.labels).toEqual(labels)
+    expect(manifest.spec.backoffLimit).toBe(0)
+    expect(manifest.spec.template.spec.restartPolicy).toBe('Never')
+
+    const container = manifest.spec.template.spec.containers[0]
+    // The image ref is the registry push result, not the local tag.
+    expect(container.image).toBe('localhost:5000/yaac-test-image')
+    expect(container.env).toEqual(expect.arrayContaining([
+      { name: 'YAAC_WORKSPACE_ID', value: 'abcd1234' },
+      { name: 'SSL_CERT_FILE', value: '/etc/yaac/certs/proxy-ca.pem' },
+    ]))
+    // Routing env vars are gone — interception is transparent.
+    const envNames = container.env.map((e) => e.name)
+    for (const name of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NO_PROXY', 'no_proxy']) {
+      expect(envNames).not.toContain(name)
+    }
+
+    const hostPaths = manifest.spec.template.spec.volumes
+      .filter((v) => v.hostPath)
+      .map((v) => v.hostPath!.path)
+    expect(hostPaths).toEqual(expect.arrayContaining([
+      '/tmp/demo/workspaces/abcd1234',
+      '/tmp/demo/repo/.git',
+      '/tmp/demo/claude',
+      '/tmp/demo/codex',
+      `/tmp/node/${projectRow('').id}/opencode-data/abcd1234`,
+      '/tmp/demo/opencode-data/abcd1234',
+      '/tmp/demo/opencode-config',
+      '/tmp/demo/pi',
+    ]))
+    // No project-wide package tree under a pod: its pnpm store lives in its
+    // own module dirs, and a tree every pod could write would be a channel
+    // between them.
+    expect(hostPaths).not.toContain('/tmp/demo/.cached-packages')
+    // claude's global config gets no mount of its own: naming
+    // CLAUDE_CONFIG_DIR puts it at `<claude home>/.claude.json`, inside the
+    // directory the mount above already carries.
+    expect(hostPaths).not.toContain('/tmp/demo/claude.json')
+
+    expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/claude', { recursive: true })
+    expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/codex', { recursive: true })
+  })
+
+  it('puts the tmux socket dir on a pod-local emptyDir, with no host dir behind it', async () => {
+    await createWorkspace('demo', { tool: 'claude', workspaceId: 'abcd1234' })
+
+    const { volumes, containers } = appliedJobManifest().spec.template.spec
+    const mount = containers[0].volumeMounts.find((m) => m.mountPath === CONTAINER_TMUX_DIR)
+    expect(mount).toBeDefined()
+    const volume = volumes.find((v) => v.name === mount!.name)
+    // A UNIX socket only meets within one kernel and every consumer reaches
+    // tmux through exec in this pod, so there is nothing to share: no
+    // hostPath source, and nothing created host-side to back it.
+    expect(volume).toEqual({ name: mount!.name, emptyDir: {} })
+    expect(volumes.some((v) => v.hostPath?.path.endsWith('/tmux'))).toBe(false)
+    expect(mockMkdir).not.toHaveBeenCalledWith(
+      expect.stringContaining('/tmux'),
+      expect.anything(),
+    )
+  })
+
+  it('injects no per-pod egress sidecars and points the pod resolver at the proxy', async () => {
+    await createWorkspace('demo', { tool: 'claude', workspaceId: 'abcd1234' })
+
+    const spec = appliedJobManifest().spec.template.spec
+    // Egress is redirected at the node level (netd's veth-peer DNAT) — the
+    // Job carries no redirect-init/relay init containers.
+    expect(spec.initContainers).toBeUndefined()
+    // The pod resolves DNS against the proxy Service's stub at its live
+    // (allocator-assigned) ClusterIP, read via proxyServiceClusterIp;
+    // identity is the source pod IP the proxy watches, so no token.
+    expect(spec.dnsPolicy).toBe('None')
+    expect(proxyServiceClusterIp).toHaveBeenCalled()
+    expect(spec.dnsConfig).toEqual({ nameservers: ['10.96.0.5'] })
+    const sessionEnvNames = spec.containers[0].env.map((e: { name: string }) => e.name)
+    expect(sessionEnvNames).not.toContain('RELAY_TOKEN')
+    // No bind endpoint exists — identity is stateless at the proxy.
+    expect(proxyClient).not.toHaveProperty('relayToken')
+  })
+
+  it('routes SSH through the redirected tunnel sentinel with no credential', async () => {
+    // SSH-scheme remote: ncat CONNECTs to the sentinel address that netd
+    // redirects to the proxy tunnel listener, carrying no proxy-auth — so
+    // identity is the source pod IP (not a leakable bearer credential).
+    vi.mocked(getProjectRow).mockResolvedValue(projectRow('git@github.com:example/repo.git'))
+    vi.mocked(resolveProjectCredential).mockResolvedValue({
+      kind: 'ssh', id: 'k', publicKey: 'ssh-ed25519 AAAA yaac k', knownHostsEntry: 'github.com ssh-ed25519 AAAAC3',
+    })
+
+    await createWorkspace('demo', { tool: 'claude', workspaceId: 'abcd1234' })
+
+    const env = appliedJobManifest().spec.template.spec.containers[0].env
+    const sshCmd = env.find((e) => e.name === 'GIT_SSH_COMMAND')?.value ?? ''
+    expect(sshCmd).toContain('ncat --proxy 198.18.0.2:10259')
+    expect(sshCmd).toContain('--proxy-type http')
+    // No bearer credential rides the workload env.
+    expect(sshCmd).not.toContain('--proxy-auth')
+    expect(sshCmd).not.toContain('x:')
+    expect(sshCmd).not.toContain('abcd1234')
+  })
+
+  it('adds the placeholder API key env for claude api-key auth', async () => {
+    mockLoadToolAuth.mockImplementation((tool) =>
+      Promise.resolve(tool === 'claude' ? { kind: 'api-key' } as never : null))
+
+    await createWorkspace('demo', { tool: 'claude', workspaceId: 'abcd1234' })
+
+    const container = appliedJobManifest().spec.template.spec.containers[0]
+    expect(container.env).toEqual(expect.arrayContaining([
+      { name: 'ANTHROPIC_API_KEY', value: 'test-placeholder-key' },
+    ]))
+  })
+
+  it('seeds a placeholder GH_TOKEN for an HTTPS github.com remote', async () => {
+    await createWorkspace('demo', { workspaceId: 'abcd1234' })
+
+    const container = appliedJobManifest().spec.template.spec.containers[0]
+    expect(container.env).toEqual(expect.arrayContaining([
+      { name: 'GH_TOKEN', value: 'test-placeholder-gh-token' },
+    ]))
+  })
+
+  it('does not seed GH_TOKEN for a non-GitHub HTTPS remote', async () => {
+    vi.mocked(getProjectRow).mockResolvedValue(projectRow('https://gitlab.com/example/repo.git'))
+
+    await createWorkspace('demo', { workspaceId: 'abcd1234' })
+
+    const envNames = appliedJobManifest().spec.template.spec.containers[0].env.map((e) => e.name)
+    expect(envNames).not.toContain('GH_TOKEN')
+  })
+
+  it('does not override a GH_TOKEN the project sets itself', async () => {
+    vi.mocked(resolveProjectEnv).mockResolvedValue({
+      plain: { GH_TOKEN: 'ghp_user' },
+      secrets: {},
+    })
+
+    await createWorkspace('demo', { workspaceId: 'abcd1234' })
+
+    const env = appliedJobManifest().spec.template.spec.containers[0].env
+    expect(env.find((e) => e.name === 'GH_TOKEN')?.value).toBe('ghp_user')
+  })
+
+  it('defers to a proxied GITHUB_TOKEN secret instead of auto-wiring gh', async () => {
+    vi.mocked(resolveProjectEnv).mockResolvedValue({
+      plain: {},
+      secrets: {
+        GITHUB_TOKEN: { value: 'sekrit', rule: { hosts: ['api.github.com'] } },
+      },
+    })
+
+    await createWorkspace('demo', { workspaceId: 'abcd1234' })
+
+    const envNames = appliedJobManifest().spec.template.spec.containers[0].env.map((e) => e.name)
+    expect(envNames).not.toContain('GH_TOKEN')
+  })
+
+  it('never chowns mounts in-container — uid alignment makes server dirs writable', async () => {
+    await createWorkspace('demo', { workspaceId: 'abcd1234' })
+
+    // The pod runs as the server's own uid (installSecurityContext), so
+    // server-created hostPath dirs are writable without privileged fixups.
+    // A chown here would also corrupt host-side ownership on Linux.
+    const cmds = [...mockContainerExec.mock.calls, ...mockPodExec.mock.calls].map((c) => c[1])
+    expect(cmds.some((c) => c.includes('chown') || c.startsWith('sudo '))).toBe(false)
+  })
+
+  it('calls onProgress with stage messages during provisioning', async () => {
+    const messages: string[] = []
+    await createWorkspace('demo', {
+      tool: 'claude',
+      onProgress: (m) => messages.push(m),
+    })
+    expect(messages).toContain('Fetching latest from remote...')
+    expect(messages).toContain('Ensuring container images are built...')
+    expect(messages).toContain('Publishing the session image to the local registry...')
+    expect(messages).toContain('Creating workspace from main...')
+    expect(messages).toContain('Ensuring proxy deployment...')
+    expect(messages.some((m) => m.startsWith('Creating session job yaac-demo-'))).toBe(true)
+    expect(messages).toContain('Starting Claude Code...')
+  })
+
+  it('declares the config\'s forwards against the new job, binding nothing', async () => {
+    vi.mocked(resolveProjectConfig).mockResolvedValue({
+      portForward: [{ containerPort: 3000, hostPortStart: 3000 }],
+    })
+
+    const result = await createWorkspace('demo', { workspaceId: 'abcd1234' })
+
+    // The server is a pod under this driver, so a listener it bound would be
+    // on the pod's loopback: there is no host-forwarding machinery left for
+    // it to reach for (docs/port-forward-tunnel.md).
+    // Read back out of the real registry: this is what the workspace listing
+    // reports, and what a client forwarder binds.
+    expect(getWorkspacePorts('abcd1234')).toEqual([{ containerPort: 3000, hostPort: 3000 }])
+    expect(result?.forwardedPorts).toEqual([{ containerPort: 3000, hostPort: 3000 }])
+  })
+
+  it('deletes the half-created Job after every failed startup attempt, including the last', async () => {
+    // The pod-ready watch sees a terminal pod on every attempt.
+    mockWaitForPodReady.mockRejectedValue(
+      new Error('workspace pod for yaac-demo-abcd1234 reached terminal phase Failed'),
+    )
+
+    await expect(createWorkspace('demo', { workspaceId: 'abcd1234' })).rejects.toThrow(
+      /terminal phase Failed/,
+    )
+
+    const deleteCalls = mockKubectlRetry.mock.calls
+      .map((c) => c[0])
+      .filter((args) => args[0] === 'delete' && args[1] === 'job')
+    expect(deleteCalls).toHaveLength(3)
+    for (const args of deleteCalls) {
+      expect(args[2]).toBe('yaac-demo-abcd1234')
+    }
+  })
+
+  it('drops a failed FRESH create\'s egress registration, but keeps a failed resume\'s', async () => {
+    // The mode a rollback tears down in follows the same predicate as the
+    // checkout removal: a fresh create owns everything it made and its row
+    // is about to go, so nothing may outlive it; a resume keeps its
+    // checkout and its row, so the workspace is still named and the
+    // runtime's own sweeps collect the rest.
+    const registrationDeletes = (): string[] => mockKubectlRetry.mock.calls
+      .map((c) => c[0])
+      .filter((args) => args[0] === 'delete' && args[1] === 'configmap')
+      .map((args) => args[2])
+    mockWaitForPodReady.mockRejectedValue(new Error('pod never became ready'))
+
+    await expect(createWorkspace('demo', { workspaceId: 'fresh1' })).rejects.toThrow()
+    expect(registrationDeletes()).toContain('yaac-proxy-reg-fresh1')
+
+    mockKubectlRetry.mockClear()
+    await expect(
+      createWorkspace('demo', { workspaceId: 'prior1', resume: true }),
+    ).rejects.toThrow()
+    expect(registrationDeletes()).toEqual([])
+  })
+
+  it('seeds claude.json onboarding flags even for non-Claude sessions (spares are retoolable)', async () => {
+    await createWorkspace('demo', { tool: 'codex', workspaceId: 'abcd1234' })
+    // Inside the claude home, which is where CLAUDE_CONFIG_DIR points and so
+    // where claude resolves its global config — not the sibling beside it.
+    const claudeJsonWrite = mockWriteFile.mock.calls
+      .find((c) => c[0] === '/tmp/demo/claude/.claude.json')
+    expect(claudeJsonWrite).toBeDefined()
+    const state = JSON.parse(claudeJsonWrite![1] as string) as Record<string, unknown>
+    expect(state.hasCompletedOnboarding).toBe(true)
+  })
+
+  it('spawns one tmux new-window per InitCommandSpec entry', async () => {
+    vi.mocked(resolveProjectConfig).mockResolvedValue({
+      initCommands: [
+        { name: 'backend', commands: ['pnpm dev:backend'] },
+        { name: 'frontend', commands: ['pnpm dev:frontend'], hidePane: true },
+      ],
+    })
+
+    await createWorkspace('demo', { tool: 'claude' })
+
+    // Init windows + the agent respawn travel as ONE relay exec.
+    const windowsCmd = mockPodExec.mock.calls
+      .map((args) => args[1])
+      .find((c) => c.includes('new-window'))
+    expect(windowsCmd).toBeDefined()
+    expect(windowsCmd).toContain('-n backend')
+    expect(windowsCmd).toContain('pnpm dev:backend')
+    expect(windowsCmd).toContain('-n frontend')
+    expect(windowsCmd).toContain('pnpm dev:frontend')
+
+    // backend defaults to hidePane=false → keeps remain-on-exit; frontend
+    // sets hidePane=true → no remain-on-exit.
+    expect(windowsCmd).toContain('set-option -t yaac:backend remain-on-exit on')
+    expect(windowsCmd).not.toContain('yaac:frontend remain-on-exit on')
+  })
+
+  it('respawns the agent window with the tool command after tmux setup', async () => {
+    await createWorkspace('demo', { tool: 'codex', workspaceId: 'abcd1234' })
+
+    const respawn = mockPodExec.mock.calls
+      .map((args) => args[1])
+      .find((c) => c.includes('respawn-window'))
+    expect(respawn).toBeDefined()
+    expect(respawn).toContain('-t yaac:codex')
+    expect(respawn).toMatch(/'codex .* --yolo'/)
+  })
+
+  it('resumes every restored conversation in the workspace, codex\'s workspace-id pin anew', async () => {
+    await createWorkspace('demo', {
+      tool: 'codex',
+      workspaceId: 'abcd1234',
+      resume: true,
+      resumeAgentSessions: [
+        { agentSessionId: 'abcd1234', tool: 'codex' },
+        { agentSessionId: 'conv-2', tool: 'claude' },
+      ],
+    })
+
+    const windowsCmd = mockPodExec.mock.calls
+      .map((args) => args[1])
+      .find((c) => c.includes('respawn-window'))
+    // codex never runs under the pin, so `codex resume abcd1234` would find
+    // nothing and kill the window. `-C` is what keeps a real resume from
+    // asking which directory to run in.
+    expect(windowsCmd).toMatch(/respawn-window -k -t yaac:codex 'codex -C \/workspace [^']* --yolo'/)
+    expect(windowsCmd).not.toContain('resume abcd1234')
+    // A new window starts in the exec's cwd unless told otherwise, and claude
+    // looks a conversation up under the directory it runs in.
+    expect(windowsCmd).toMatch(/new-window -d -t yaac -n claude-2 -c \/workspace '[^']* --resume conv-2'/)
+  })
+
+  it('threads a model override into the claude agent respawn command', async () => {
+    await createWorkspace('demo', { tool: 'claude', workspaceId: 'abcd1234', model: 'claude-opus-4-8' })
+
+    const respawn = mockPodExec.mock.calls
+      .map((args) => args[1])
+      .find((c) => c.includes('respawn-window'))
+    expect(respawn).toBeDefined()
+    expect(respawn).toContain('claude --permission-mode bypassPermissions --model claude-opus-4-8 --session-id abcd1234')
+  })
+
+  it('mounts the main clone read-only, at the path the server sees it at', async () => {
+    // The checkout borrows its objects through an alternates line naming
+    // that path, and refreshes its origin/* from it — but never writes it.
+    await createWorkspace('demo', { tool: 'claude', workspaceId: 'abcd1234' })
+
+    const spec = appliedJobManifest().spec.template.spec
+    const volume = spec.volumes.find((v) => v.hostPath?.path === '/tmp/demo/repo/.git')
+    const mounts = spec.containers[0].volumeMounts
+    expect(mounts.find((m) => m.name === volume?.name))
+      .toMatchObject({ mountPath: '/tmp/demo/repo/.git', readOnly: true })
+    expect(mounts.some((m) => m.mountPath.startsWith('/repo'))).toBe(false)
+  })
+
+  it('wires the postStart setup hook and the env that drives it', async () => {
+    await createWorkspace('demo', { tool: 'claude', workspaceId: 'abcd1234' })
+
+    // Base setup (git identity, tmux server + options, streamd) runs in-pod
+    // via yaac-workspace-init — its inputs ride the container env.
+    const container = appliedJobManifest().spec.template.spec.containers[0]
+    expect(container.lifecycle).toEqual({
+      postStart: { exec: { command: ['/usr/local/bin/yaac-workspace-init'] } },
+      preStop: { exec: { command: ['/usr/local/bin/yaac-opencode-checkpoint', 'stop'] } },
+    })
+    expect(container.env).toEqual(expect.arrayContaining([
+      { name: 'YAAC_TOOL', value: 'claude' },
+      { name: 'YAAC_GIT_NAME', value: 'Test User' },
+      { name: 'YAAC_GIT_EMAIL', value: 'test@example.com' },
+      { name: 'YAAC_STATUS_RIGHT', value: ' stub-status ' },
+    ]))
+    // The gate on the pod's own streamd replaces the old exec chain. The
+    // job name is the assertion; the deadline argument rides along
+    // unset, as it does through every driver delegation.
+    expect(mockWaitForStreamd.mock.calls[0]?.[0]).toBe('yaac-demo-abcd1234')
+  })
+
+  it('rejects an init window name that collides with any agent tool window', async () => {
+    vi.mocked(resolveProjectConfig).mockResolvedValue({
+      // The config parser normally rejects 'claude' as reserved, but the
+      // collision guard in validateInitWindows is a belt-and-suspenders
+      // backstop — exercise it by feeding a config that bypasses the
+      // parser path used in production.
+      initCommands: [{ name: 'claude', commands: ['echo hi'] }],
+    })
+    await expect(createWorkspace('demo', { tool: 'claude' })).rejects.toThrow(
+      /collides with an agent tool window/,
+    )
+
+    // Other tools' names are rejected too: a retooled spare renames the
+    // agent window, so any tool name would make the tmux target ambiguous.
+    vi.mocked(resolveProjectConfig).mockResolvedValue({
+      initCommands: [{ name: 'codex', commands: ['echo hi'] }],
+    })
+    await expect(createWorkspace('demo', { tool: 'claude' })).rejects.toThrow(
+      /collides with an agent tool window/,
+    )
+  })
+
+  describe('resume mode', () => {
+    it('throws VALIDATION when resume is true but no workspaceId is given', async () => {
+      await expect(createWorkspace('demo', { resume: true })).rejects.toMatchObject({
+        code: 'VALIDATION',
+      })
+    })
+
+    it('reuses an existing workspace instead of creating a checkout', async () => {
+      mockAccess.mockResolvedValue(undefined)
+      const messages: string[] = []
+      await createWorkspace('demo', {
+        resume: true,
+        workspaceId: 'abcd1234',
+        onProgress: (m) => messages.push(m),
+      })
+      expect(createCheckout).not.toHaveBeenCalled()
+      expect(messages.some((m) => m.includes('Reusing existing workspace'))).toBe(true)
+    })
+
+    it('converts a reused checkout an older install left linked', async () => {
+      mockAccess.mockResolvedValue(undefined)
+      await createWorkspace('demo', { resume: true, workspaceId: 'abcd1234' })
+      expect(adoptLinkedCheckout).toHaveBeenCalledWith(
+        '/tmp/demo/repo', '/tmp/demo/workspaces/abcd1234', 'abcd1234', 'https://github.com/example/repo.git',
+        expect.any(Set),
+      )
+    })
+
+    it('refuses to convert a linked checkout its previous workspace still has', async () => {
+      // A restart whose teardown did not land: the old pod is still up, with
+      // the linked checkout mounted read-write.
+      mockAccess.mockResolvedValue(undefined)
+      vi.mocked(fsFake.lstat).mockImplementation((p) => p.endsWith('/.git')
+        ? Promise.resolve({ isDirectory: () => false })
+        : Promise.reject(new Error('missing')))
+      fake.override({ find: () => Promise.resolve(handleFixture({ workspaceId: 'abcd1234', projectSlug: 'demo' })) })
+
+      await expect(createWorkspace('demo', { resume: true, workspaceId: 'abcd1234' }))
+        .rejects.toMatchObject({ code: 'CONFLICT' })
+      expect(adoptLinkedCheckout).not.toHaveBeenCalled()
+    })
+
+    it('still creates a checkout when the workspace directory is missing', async () => {
+      mockAccess.mockImplementation((target) => {
+        if (typeof target === 'string' && target.includes('/workspaces/abcd1234')) {
+          return Promise.reject(new Error('missing'))
+        }
+        return Promise.resolve(undefined)
+      })
+      await createWorkspace('demo', { resume: true, workspaceId: 'abcd1234' })
+      expect(createCheckout).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('mounts the per-session opencode working copy, its global checkpoint, and the shared config dir on every session', async () => {
+    // Per-yaac-session opencode data is mounted regardless of which tool
+    // is active (matches the existing "claude + codex always mounted"
+    // pattern), so the mount shows up here even though tool=claude.
+    await createWorkspace('demo', { tool: 'claude', workspaceId: 'abcd1234' })
+
+    const { volumes, containers } = appliedJobManifest().spec.template.spec
+
+    // The NODE-LOCAL working copy the tool runs against, named by the
+    // project's immutable id...
+    const dataVol = volumes.find((v) => v.hostPath?.path === `/tmp/node/${projectRow('').id}/opencode-data/abcd1234`)
+    expect(dataVol).toBeDefined()
+    const dataMount = containers[0].volumeMounts
+      .find((m) => m.mountPath === '/home/yaac/.local/share/opencode')
+    expect(dataMount?.name).toBe(dataVol?.name)
+    // ...and the GLOBAL checkpoint it is restored from and copied back to,
+    // with the preStop hook that does the last copy. The working copy is
+    // NOT created here: it lives on the pod's node, which the init
+    // container creates.
+    const checkpointVol = volumes.find((v) => v.hostPath?.path === '/tmp/demo/opencode-data/abcd1234')
+    expect(checkpointVol).toBeDefined()
+    expect(containers[0].volumeMounts.find((m) => m.mountPath === '/home/yaac/.yaac/opencode-checkpoint')?.name)
+      .toBe(checkpointVol?.name)
+    expect(containers[0].lifecycle?.preStop).toEqual({
+      exec: { command: ['/usr/local/bin/yaac-opencode-checkpoint', 'stop'] },
+    })
+    expect(mockMkdir).not.toHaveBeenCalledWith(
+      expect.stringMatching(/^\/tmp\/node\//), expect.anything(),
+    )
+
+    const configVol = volumes.find((v) => v.hostPath?.path === '/tmp/demo/opencode-config')
+    expect(configVol).toBeDefined()
+    const configMount = containers[0].volumeMounts
+      .find((m) => m.mountPath === '/home/yaac/.config/opencode')
+    expect(configMount?.name).toBe(configVol?.name)
+
+    expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/opencode-data/abcd1234', { recursive: true })
+    expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/opencode-config', { recursive: true })
+  })
+})
+
+describe('buildAgentCmd', () => {
+  // codex's line without its `-c` settings (its title items and folder
+  // trust), which the server's agent-command test pins exactly.
+  const bare = (cmd: string): string => cmd.replace(/ -c "(?:[^"\\]|\\.)*"/g, '')
+
+  it('returns the codex respawn command unchanged', () => {
+    const fresh = buildAgentCmd({ tool: 'codex', workspaceId: 'sid-abc', permissionMode: 'bypass' })
+    expect(bare(fresh)).toBe('codex --dangerously-bypass-hook-trust --yolo')
+    const resume = buildAgentCmd({
+      tool: 'codex', workspaceId: 'sid-abc', resume: true, permissionMode: 'bypass',
+    })
+    expect(bare(resume)).toBe('codex --dangerously-bypass-hook-trust --yolo resume sid-abc')
+  })
+
+  // The `env -u TMUX` prefix is load-bearing — it is what keeps claude
+  // animating its title, which is the whole status signal for its pane (see
+  // buildAgentCmd). Pinned on the respawn command too, because a respawn that
+  // dropped it would leave a restarted workspace reading `waiting` forever.
+  it('returns the claude respawn command unchanged, $TMUX hidden', () => {
+    const fresh = buildAgentCmd({ tool: 'claude', workspaceId: 'sid-abc', permissionMode: 'bypass' })
+    expect(fresh).toBe(
+      'env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --session-id sid-abc',
+    )
+    const resume = buildAgentCmd({
+      tool: 'claude', workspaceId: 'sid-abc', resume: true, permissionMode: 'bypass',
+    })
+    expect(resume).toBe(
+      'env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --resume sid-abc',
+    )
+  })
+
+  // Without a sandbox the posture is the user's per-workspace choice, and
+  // `manual` has to actually produce one: the agent asks in its pane instead
+  // of acting.
+  it('asks for approval in each tool\'s own spelling under manual', () => {
+    // codex has no posture that asks before everything any more, so a row
+    // holding `manual` launches its read-only sandbox, the next one stricter.
+    expect(bare(buildAgentCmd({ tool: 'codex', workspaceId: 'sid-abc', permissionMode: 'manual' })))
+      .toBe('codex --dangerously-bypass-hook-trust --sandbox read-only')
+    expect(buildAgentCmd({ tool: 'claude', workspaceId: 'sid-abc', permissionMode: 'manual' }))
+      .toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode manual --session-id sid-abc')
+  })
+
+  it('launches opencode over a private server of its own, with its posture in the env', () => {
+    const fresh = buildAgentCmd({ tool: 'opencode', workspaceId: 'sid-abc', permissionMode: 'bypass' })
+    expect(fresh).toMatch(/^OPENCODE_CONFIG_CONTENT="\{.*\}" opencode --standalone$/)
+  })
+
+  it('resumes an opencode session by its id', () => {
+    const resume = buildAgentCmd({
+      tool: 'opencode', workspaceId: 'sid-abc', resume: true, permissionMode: 'bypass',
+    })
+    expect(resume).toMatch(/ opencode --standalone --session sid-abc$/)
+  })
+})
+
+describe('retoolSpare', () => {
+  const spare = { jobName: 'yaac-demo-spare1', workspaceId: 'spare1', tool: 'claude' }
+
+  /** Commands the retool ran, in order. */
+  let execs: Array<[string, string, { timeout?: number; maxAttempts?: number } | undefined]>
+
+  beforeEach(() => {
+    vi.resetAllMocks()
+    execs = []
+    installFakeWorkspaceDriver({
+      exec: (jobName, cmd, opts) => {
+        execs.push([jobName, cmd, opts])
+        return Promise.resolve({ stdout: '', stderr: '' })
+      },
+    })
+  })
+
+  it('renames + respawns the agent window for the new tool', async () => {
+    await retoolSpare(spare, { tool: 'codex', permissionMode: 'bypass', mode: 'tui' })
+
+    const cmds = execs.map((c) => c[1])
+    expect(cmds.some((c) => c.includes('rename-window -t yaac:claude codex'))).toBe(true)
+    const respawn = cmds.find((c) => c.includes('respawn-window'))
+    expect(respawn).toContain('-t yaac:codex')
+    expect(respawn).toMatch(/'codex .* --yolo'/)
+    // The rename keeps its retries, so it has to survive having already
+    // run: the fallback passes when the window is already renamed.
+    const rename = cmds.find((c) => c.includes('rename-window'))!
+    expect(rename).toContain('|| ')
+    expect(rename).toContain('grep -qxF codex')
+    expect(execs.every((c) => c[2]?.maxAttempts === undefined)).toBe(true)
+  })
+
+  it('boots the new agent with the spare\'s own session id', async () => {
+    await retoolSpare({ ...spare, tool: 'codex' }, { tool: 'claude', permissionMode: 'bypass', mode: 'tui' })
+
+    const respawn = execs.map((c) => c[1]).find((c) => c.includes('respawn-window'))
+    expect(respawn).toContain('-t yaac:claude')
+    expect(respawn).toContain('--session-id spare1')
+  })
+
+  // A claim asking for a posture other than the spare's is served by a
+  // respawn into it, not refused into a cold create.
+  it('respawns the agent with the requested model and posture', async () => {
+    await retoolSpare(spare, { tool: 'claude', model: 'claude-opus-5-5', permissionMode: 'plan', mode: 'tui' })
+
+    const respawn = execs.map((c) => c[1]).find((c) => c.includes('respawn-window'))
+    expect(respawn).toContain('--model claude-opus-5-5')
+    expect(respawn).toContain('--permission-mode plan')
+  })
+})
+
+describe('resolveInitWindows', () => {
+  it('returns [] when initCommands is unset or empty', () => {
+    expect(resolveInitWindows({})).toEqual([])
+    expect(resolveInitWindows({ initCommands: [] })).toEqual([])
+  })
+
+  it('collapses a string list into a single init window with &&-joined cmd', () => {
+    const windows = resolveInitWindows({ initCommands: ['pnpm install', 'pnpm build'] })
+    expect(windows).toEqual([
+      { name: 'init', cmd: 'pnpm install && pnpm build', hidePane: false },
+    ])
+  })
+
+  it('inherits the top-level hideInitPane on the string-form window', () => {
+    const windows = resolveInitWindows({
+      initCommands: ['pnpm install'],
+      hideInitPane: true,
+    })
+    expect(windows[0]?.hidePane).toBe(true)
+  })
+
+  it('produces one window per object entry, &&-joining commands within each', () => {
+    const windows = resolveInitWindows({
+      initCommands: [
+        { name: 'backend', commands: ['pnpm dev:backend'] },
+        { name: 'frontend', commands: ['pnpm install', 'pnpm dev:frontend'] },
+      ],
+    })
+    expect(windows).toEqual([
+      { name: 'backend', cmd: 'pnpm dev:backend', hidePane: false },
+      { name: 'frontend', cmd: 'pnpm install && pnpm dev:frontend', hidePane: false },
+    ])
+  })
+
+  it('per-window hidePane overrides the top-level default', () => {
+    const windows = resolveInitWindows({
+      initCommands: [
+        { name: 'backend', commands: ['pnpm dev:backend'] },
+        { name: 'install', commands: ['pnpm install'], hidePane: true },
+      ],
+      hideInitPane: false,
+    })
+    expect(windows.map((w) => [w.name, w.hidePane])).toEqual([
+      ['backend', false],
+      ['install', true],
+    ])
+  })
+
+  it('shell-escapes single quotes in command strings', () => {
+    const windows = resolveInitWindows({ initCommands: ["echo 'hi'"] })
+    expect(windows[0]?.cmd).toBe("echo '\\''hi'\\''")
+  })
+})
+
+import type * as allowedHostsModule from '@yaac/server/lib/allowed-hosts'
+import type * as imageBuilderModule from '@yaac/server/drivers/k8s/image-engine/image-builder'
+import type * as buildCoordinatorModule from '@yaac/server/drivers/k8s/images/build-coordinator'
+import type * as kubectlModule from '@yaac/server/drivers/k8s/substrate/kubectl'
+import type * as execModule from '@yaac/server/drivers/k8s/substrate/exec'
+import type * as projectConfigModule from '@yaac/server/domain/projects/config'
+import type * as credentialsModule from '@yaac/server/domain/projects/credentials'
+import type * as projectStoreModule from '@yaac/server/db/project-store'
+import type * as gitModule from '@yaac/server/domain/git'
+import type * as portForwardersModule from '@yaac/server/drivers/k8s/forwarders/port-forwarders'
+import type * as storeModule from '@yaac/server/db/workspace-store'
+import type * as agentStoreModule from '@yaac/server/db/agent-session-store'
+import type * as preferencesModule from '@yaac/server/db/preferences'
+import type * as cleanupModule from '@yaac/server/domain/workspaces/cleanup'
+
+// workspaceCreate posts to the streaming /workspace/create route via the `api`
+// singleton; the leaf resolves to a raw streaming Response (the client only
+// unwraps JSON routes), which `consumeNdjsonStream` reads.
+const { mockPost } = vi.hoisted(() => ({
+  mockPost: vi.fn(),
+}))
+vi.mock('#commands/api', () => ({
+  api: { workspace: { create: { $post: mockPost } } },
+}))
+
+function streamingResponse(lines: string[]): { ok: true; body: ReadableStream<Uint8Array> } {
+  const enc = new TextEncoder()
+  return {
+    ok: true,
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const line of lines) controller.enqueue(enc.encode(line + '\n'))
+        controller.close()
+      },
+    }),
+  }
+}
+
+describe('workspaceCreate (CLI shim)', () => {
+  const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+  beforeEach(() => {
+    vi.resetAllMocks()
+    logSpy.mockClear()
+
+    mockAccess.mockResolvedValue(undefined)
+    mockMkdir.mockResolvedValue(undefined)
+    mockWriteFile.mockResolvedValue(undefined)
+    vi.mocked(resolveProjectConfig).mockResolvedValue({})
+    mockSpawn.mockImplementation(() => mockAttachedChild() as never)
+    mockPost.mockResolvedValue(streamingResponse([
+      JSON.stringify({ type: 'progress', message: 'Fetching latest from remote...' }),
+      JSON.stringify({ type: 'progress', message: 'Creating session job yaac-demo-sess-123...' }),
+      JSON.stringify({
+        type: 'result',
+        result: {
+          workspaceId: 'sess-123',
+          jobName: 'yaac-demo-sess-123',
+          forwardedPorts: [],
+          tool: 'claude',
+        },
+      }),
+    ]))
+  })
+
+  it('POSTs /workspace/create and returns the workspaceId', async () => {
+    const result = await workspaceCreate('demo', {})
+    expect(result).toBe('sess-123')
+    expect(mockPost).toHaveBeenCalledTimes(1)
+    expect(mockPost).toHaveBeenCalledWith(expect.objectContaining({
+      json: expect.objectContaining({
+        project: 'demo',
+        // No --tool → omitted so the server resolves the configured default
+        // (and matches the prewarmed spare it keeps for that tool).
+        tool: undefined,
+      }) as unknown,
+    }))
+    // The identity does not ride the request: it is a server setting.
+    const [{ json }] = mockPost.mock.calls[0] as [{ json: Record<string, unknown> }]
+    expect(json.gitUser).toBeUndefined()
+  })
+
+  it('forwards an explicit --tool unchanged', async () => {
+    await workspaceCreate('demo', { tool: 'codex' })
+    expect(mockPost).toHaveBeenCalledWith(expect.objectContaining({
+      json: expect.objectContaining({ tool: 'codex' }) as unknown,
+    }))
+  })
+
+  it('prints each progress message from the NDJSON stream', async () => {
+    await workspaceCreate('demo', {})
+    const logged = logSpy.mock.calls.map((args) => args[0] as unknown).filter((v) => typeof v === 'string')
+    expect(logged).toContain('Fetching latest from remote...')
+    expect(logged).toContain('Creating session job yaac-demo-sess-123...')
+  })
+
+  it('throws with the server error message when the stream carries an error event', async () => {
+    mockPost.mockResolvedValue(streamingResponse([
+      JSON.stringify({ type: 'progress', message: 'Fetching latest from remote...' }),
+      JSON.stringify({ type: 'error', error: { code: 'VALIDATION', message: 'no github token' } }),
+    ]))
+    await expect(workspaceCreate('demo', {})).rejects.toThrow('no github token')
+  })
+})

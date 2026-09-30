@@ -55,9 +55,9 @@ const appliedPods = (): PodManifest[] => mockApply.mock.calls.map((c) => c[0] as
 
 const LIVE = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
 const GONE = 'c9d8e7f6-a5b4-4c3d-8e2f-1a0b9c8d7e6f'
-const NOTHING = { projectIds: new Set<string>(), worktreeIds: new Set<string>() }
+const NOTHING = { projectIds: new Set<string>(), workspaceIds: new Set<string>() }
 
-/** Nodes, and the hostPath volumes this install's worktree pods mount. */
+/** Nodes, and the hostPath volumes this install's workspace pods mount. */
 function stageNodes(names: string[], podHostPaths: string[] = []): void {
   mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
     if (args[1] === 'nodes') return Promise.resolve({ items: names.map((name) => ({ metadata: { name } })) })
@@ -85,7 +85,7 @@ describe('reapNodeLocal', () => {
       `/var/lib/yaac/node/ddh16/shared-images/${LIVE}/gen-1`,
       '/var/lib/yaac/global/ddh16/projects/elsewhere',
     ])
-    await reapNodeLocal({ projectIds: new Set([LIVE]), worktreeIds: new Set(['a', 'b']) })
+    await reapNodeLocal({ projectIds: new Set([LIVE]), workspaceIds: new Set(['a', 'b']) })
 
     const pods = appliedPods()
     expect(pods.map((p) => p.spec.nodeName)).toEqual(['n1', 'n2'])
@@ -200,7 +200,7 @@ describe('reapNodeLocal', () => {
       expect(out.trim().endsWith('node-local-sweep removed 3')).toBe(true)
     })
 
-    it('inside a live project, spares live worktrees\' working copies and removes the rest', async () => {
+    it('inside a live project, spares live workspaces\' working copies and removes the rest', async () => {
       const liveCopy = await seed(`projects/${LIVE}/opencode-data/live`)
       const stoppedCopy = await seed(`projects/${LIVE}/opencode-data/stopped`)
       const fresh = await seed(`projects/${LIVE}/opencode-data/staging`, new Date())

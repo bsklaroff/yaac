@@ -7,8 +7,8 @@ import {
   useTestNamespace,
 } from '@yaac/test-utils/setup'
 import { e2eMkdtemp } from '@yaac/test-utils/tmp'
-import { stageWorktreeBin, worktreeBinDir, WORKTREE_INIT_SCRIPT }
-  from '@yaac/server/domain/worktrees/worktree-bin'
+import { stageWorkspaceBin, workspaceBinDir, WORKSPACE_INIT_SCRIPT }
+  from '@yaac/server/domain/workspaces/workspace-bin'
 import { resolveTrustedLayers } from '@yaac/server/drivers/k8s/image-engine/image-builder'
 import { ensureNamespace } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { registryHasTag, registryRef } from '@yaac/server/drivers/k8s/container/registry'
@@ -32,7 +32,7 @@ import {
 
 /**
  * The arbitrary-uid pattern, end to end (docs/arbitrary-uid-images.md): a
- * worktree pod running as a uid that appears nowhere in its image must still
+ * workspace pod running as a uid that appears nowhere in its image must still
  * be `yaac` in every way that matters — own its home, sudo to root, and be
  * found by name.
  *
@@ -44,9 +44,9 @@ import {
  * group 0 — leaving the supplementary group 0 as the only thing that can
  * make the image's files writable.
  *
- * It runs the shipped `yaac-worktree-init` as its real postStart hook rather
+ * It runs the shipped `yaac-workspace-init` as its real postStart hook rather
  * than a copy of the interesting lines, so the passwd rewrite under test is
- * the one a worktree actually gets, and the hook's own `set -eu` means the
+ * the one a workspace actually gets, and the hook's own `set -eu` means the
  * pod does not reach Ready unless the whole script survived at this uid.
  *
  * Nested, because the engine start is where the rewrite's subtlest property
@@ -111,7 +111,7 @@ async function waitForPodReady(timeoutMs = 300_000): Promise<void> {
     last = pod?.status?.phase ?? 'Unknown'
     const ready = pod?.status?.conditions?.find((c) => c.type === 'Ready')
     // Ready is the gate, not Running: the postStart hook holds the Ready
-    // transition, so this waits for yaac-worktree-init to have finished.
+    // transition, so this waits for yaac-workspace-init to have finished.
     if (ready?.status === 'True') return
     if (last === 'Failed' || last === 'Succeeded') {
       const state = JSON.stringify(pod?.status?.containerStatuses?.[0]?.state ?? {})
@@ -132,11 +132,11 @@ beforeAll(async () => {
   restoreNamespace = useTestNamespace()
   await ensureNamespace()
 
-  // The real staged script, mounted where a worktree pod gets it. Staging
+  // The real staged script, mounted where a workspace pod gets it. Staging
   // is what a create does, and the File mount is how it lands on PATH.
   const binDir = await e2eMkdtemp('yaac-arbitrary-uid-')
-  const staged = await stageWorktreeBin(worktreeBinDir(), binDir)
-  expect(staged).toContain(WORKTREE_INIT_SCRIPT)
+  const staged = await stageWorkspaceBin(workspaceBinDir(), binDir)
+  expect(staged).toContain(WORKSPACE_INIT_SCRIPT)
 
   await kubectlApply({
     apiVersion: 'v1',
@@ -160,7 +160,7 @@ beforeAll(async () => {
         ...installSecurityContext({ uid: ARBITRARY_UID, gid: ARBITRARY_GID }),
       },
       containers: [{
-        name: 'worktree',
+        name: 'workspace',
         image: await nestableImageRef(),
         imagePullPolicy: 'IfNotPresent',
         securityContext: { capabilities: { add: NESTED_ENGINE_CAPS } },
@@ -172,12 +172,12 @@ beforeAll(async () => {
           { name: 'YAAC_NESTED_ENGINE', value: '1' },
         ],
         lifecycle: {
-          postStart: { exec: { command: [`/usr/local/bin/${WORKTREE_INIT_SCRIPT}`] } },
+          postStart: { exec: { command: [`/usr/local/bin/${WORKSPACE_INIT_SCRIPT}`] } },
         },
         volumeMounts: [
           {
-            name: 'worktree-bin',
-            mountPath: `/usr/local/bin/${WORKTREE_INIT_SCRIPT}`,
+            name: 'workspace-bin',
+            mountPath: `/usr/local/bin/${WORKSPACE_INIT_SCRIPT}`,
             readOnly: true,
           },
           { name: NESTED_GRAPHROOT_VOLUME, mountPath: NESTED_GRAPHROOT_PATH },
@@ -186,14 +186,14 @@ beforeAll(async () => {
       }],
       volumes: [
         {
-          name: 'worktree-bin',
-          hostPath: { path: path.join(binDir, WORKTREE_INIT_SCRIPT), type: 'File' },
+          name: 'workspace-bin',
+          hostPath: { path: path.join(binDir, WORKSPACE_INIT_SCRIPT), type: 'File' },
         },
         {
           name: NESTED_GRAPHROOT_VOLUME,
           emptyDir: { sizeLimit: String(NESTED_GRAPHROOT_SIZELIMIT_BYTES) },
         },
-        // A real worktree gets a hostPath the server pre-created; an
+        // A real workspace gets a hostPath the server pre-created; an
         // emptyDir stands in, and the kubelet creates it 0777, so the tmux
         // socket dir needs no fsGroup. Leaving it off keeps this pod's
         // securityContext identical to what buildPodJobManifest stamps,
@@ -213,7 +213,7 @@ afterAll(async () => {
   restoreNamespace?.()
 })
 
-describe('a worktree pod running as a uid no image knows', () => {
+describe('a workspace pod running as a uid no image knows', () => {
   it('answers to the yaac name, and to nothing else', async () => {
     expect(await ok('id -u')).toBe(String(ARBITRARY_UID))
     // getpwuid and getpwnam must resolve to each other. The rewrite REPLACES
@@ -231,7 +231,7 @@ describe('a worktree pod running as a uid no image knows', () => {
   it('sudos to root and resolves an ssh identity', async () => {
     // The image's NOPASSWD line names the USER, so this is the passwd
     // rewrite's most load-bearing consumer: without it the agent cannot
-    // install a package mid-worktree.
+    // install a package mid-workspace.
     expect(await ok('sudo -n id -u')).toBe('0')
     // ssh does not degrade without a passwd entry — it exits 255 with "No
     // user exists for uid", which would take out git over ssh entirely.

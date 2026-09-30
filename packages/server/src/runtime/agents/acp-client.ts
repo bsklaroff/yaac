@@ -239,7 +239,7 @@ export class AcpConversation {
    *
    * The handshake is the one moment nobody can be listening: a pane finds a
    * conversation by the id `session/new` mints, and that id reaches the
-   * worktree row a reconcile tick later — so every report `applyPermissionMode`
+   * workspace row a reconcile tick later — so every report `applyPermissionMode`
    * and `applyLaunchModel` make would be emitted into an empty room. They are
    * also the reports that matter most, being the two that say the conversation
    * is not running the way it was asked to.
@@ -383,7 +383,7 @@ export class AcpConversation {
    *
    * A turn recovered from a *torn* record has none of those routes, since the
    * reply it is waiting for was already produced and lost. That conversation
-   * holds its queue until the worktree restarts (docs/agent-modes.md, "Where
+   * holds its queue until the workspace restarts (docs/agent-modes.md, "Where
    * status can mislead"). Deliberate: the alternative is releasing the queue on
    * a timer, which cannot tell a phantom from an agent that is simply taking a
    * long time, and would dispatch over a turn that really is running.
@@ -511,9 +511,9 @@ export class AcpConversation {
    * The posture THIS conversation answers asks by: the one its adapter's
    * current mode stands for, whichever way it last moved.
    *
-   * Per conversation, because a worktree can hold several and each adapter
+   * Per conversation, because a workspace can hold several and each adapter
    * holds its own mode: one entering plan mode says nothing about another
-   * still in `bypassPermissions`, and the worktree's row, which follows every
+   * still in `bypassPermissions`, and the workspace's row, which follows every
    * conversation's moves, is not this one's posture either. Where the
    * adapter's mode stands for no posture (opencode's agents, pi's thinking
    * levels), it is the posture this connection launched the conversation in,
@@ -588,7 +588,7 @@ export class AcpConversation {
    * the agent sat blocked — by writing the reply against the agent's own id,
    * which is not namespaced to any connection of ours. Without it a pane could
    * show a live question that nothing could answer, and the only cure would be
-   * restarting the worktree mid-turn.
+   * restarting the workspace mid-turn.
    */
   answerPermission(requestId: string, optionId?: string): void {
     if (this.answeredPermissions.has(requestId)) {
@@ -610,7 +610,7 @@ export class AcpConversation {
    * which asks are outstanding after acpd's greeting and two file reads. A
    * click in that window has a real ask behind it; recording it as answered
    * would make `recover()` skip the very id it belongs to, leaving the agent
-   * blocked with a dead card until the worktree restarts.
+   * blocked with a dead card until the workspace restarts.
    */
   private settlePermission(requestId: string, result: unknown): void {
     const resolve = this.pendingPermissions.get(requestId)
@@ -709,7 +709,7 @@ export class AcpConversation {
       if (this.sessionId !== undefined && canLoad) {
         // For most adapters this replays the whole conversation as
         // `session/update` notifications, which is exactly the pane's history
-        // — so a restarted worktree comes back with its transcript already on
+        // — so a restarted workspace comes back with its transcript already on
         // screen. For one that replays nothing (opencode) the history is in
         // the record instead, which is why acpd was told to keep it
         // (`--append`); either way the pane reads the record, so the two look
@@ -779,7 +779,7 @@ export class AcpConversation {
    * adapter's default and prompting.
    */
   private async applyPermissionMode(): Promise<void> {
-    // Read here, once: the row moves with every conversation in the worktree,
+    // Read here, once: the row moves with every conversation in the workspace,
     // and what this one launched in is what it was launched in.
     this.launchPosture = this.permissionMode()
     if (this.sessionId === undefined) return
@@ -787,7 +787,7 @@ export class AcpConversation {
     if (mode === undefined) {
       // Nothing to assert, and the adapter's own default is the strict one —
       // it asks about everything, and this conversation forwards all of it.
-      this.log('[server] acp: no posture known for this worktree'
+      this.log('[server] acp: no posture known for this workspace'
         + ' — leaving the session in the adapter default and forwarding its asks')
       return
     }
@@ -837,7 +837,7 @@ export class AcpConversation {
    * wrong.
    *
    * That mode is the conversation's posture from here, as any move would be,
-   * so it is reported upward too: the worktree's row holds the posture the
+   * so it is reported upward too: the workspace's row holds the posture the
    * agent is actually in.
    */
   private reportModeNotSet(mode: PermissionMode, modeId: string, why: string): void {
@@ -879,7 +879,7 @@ export class AcpConversation {
    * A refusal is reported and survived. The model is a preference, and losing
    * the conversation over one the adapter will not take (a provider with no
    * credential, an id retired upstream) would be worse than running the
-   * adapter's own default — which the pane says out loud, because a worktree
+   * adapter's own default — which the pane says out loud, because a workspace
    * created with `--model` and silently running another is a bill nobody
    * expects.
    */

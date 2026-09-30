@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { getWorktreeTerminals, createShellTerminal, killWorktreeTerminal } from '#lib/terminalsApi'
+import { getWorkspaceTerminals, createShellTerminal, killWorkspaceTerminal } from '#lib/terminalsApi'
 
 const realFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = realFetch })
@@ -16,12 +16,12 @@ function stub(json: unknown = [], status = 200): ReturnType<typeof vi.fn> {
   return fetchMock
 }
 
-describe('getWorktreeTerminals', () => {
+describe('getWorkspaceTerminals', () => {
   it('GETs the session terminals endpoint', async () => {
     const entries = [{ target: 'window:@2', name: 'shell' }]
     const fetchMock = stub(entries)
-    const result = await getWorktreeTerminals('abc-123')
-    expect(fetchMock.mock.calls[0][0] as string).toBe('/api/worktree/abc-123/terminals')
+    const result = await getWorkspaceTerminals('abc-123')
+    expect(fetchMock.mock.calls[0][0] as string).toBe('/api/workspace/abc-123/terminals')
     expect(result).toEqual(entries)
   })
 })
@@ -32,18 +32,18 @@ describe('createShellTerminal', () => {
     const fetchMock = stub(entry)
     const result = await createShellTerminal('abc-123')
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/api/worktree/abc-123/terminals')
+    expect(url).toBe('/api/workspace/abc-123/terminals')
     expect(init.method).toBe('POST')
     expect(result).toEqual(entry)
   })
 })
 
-describe('killWorktreeTerminal', () => {
+describe('killWorkspaceTerminal', () => {
   it('POSTs the close endpoint with the target', async () => {
     const fetchMock = stub(null, 200)
-    await killWorktreeTerminal('abc-123', 'window:@3')
+    await killWorkspaceTerminal('abc-123', 'window:@3')
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/api/worktree/abc-123/terminals/close')
+    expect(url).toBe('/api/workspace/abc-123/terminals/close')
     expect(init.method).toBe('POST')
     expect(JSON.parse(init.body as string)).toEqual({ target: 'window:@3' })
   })

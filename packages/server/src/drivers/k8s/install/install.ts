@@ -77,7 +77,7 @@ import { env } from '@yaac/shared/env'
  * update` then `yaac cluster install`. A cluster that already exists is
  * converged, never recreated, so teardown normally only happens through an
  * explicit `yaac cluster delete` — the one command whose job is to lose
- * running worktrees. The single exception is the macOS machine bootstrap
+ * running workspaces. The single exception is the macOS machine bootstrap
  * below, which cannot converge a machine on the wrong provider or from a
  * podman too old to start it: those are `podman machine rm -f`, and both
  * are gated behind an interactive confirm that defaults to No and refuses
@@ -253,7 +253,7 @@ export interface ClusterInstallDeps {
   /** Applies the gVisor installer DaemonSet + the RuntimeClasses.
    *  Injectable for the same reason as the two above. */
   ensureGvisorRuntime: () => Promise<void>
-  /** Installs the infra/worktree PriorityClasses. Injectable for the same
+  /** Installs the infra/workspace PriorityClasses. Injectable for the same
    *  reason as the two above. */
   ensurePriorityClasses: () => Promise<void>
   /** Builds, applies and publishes the server Deployment, returning the
@@ -437,7 +437,7 @@ export async function runClusterInstall(
         deps.log(
           `note: kind cluster "${cluster}" already exists, so --nodes is ignored — a `
           + 'node count is fixed when the cluster is created. To change it: `yaac '
-          + 'cluster delete`, then install again (this loses running worktrees).',
+          + 'cluster delete`, then install again (this loses running workspaces).',
         )
       }
       deps.log(`Converging the existing kind cluster "${cluster}"...`)
@@ -498,7 +498,7 @@ export async function runClusterInstall(
   // means rather than leaving it to be inferred from a red line.
   //
   // The `egress` gate is the one where it really bites: it is the positive
-  // NetworkPolicy probe, and a cluster that fails it runs worktrees whose
+  // NetworkPolicy probe, and a cluster that fails it runs workspaces whose
   // egress lockdown is ADVISORY — they still work, and the proxy allowlist
   // silently covers only what the redirect steers (443/80/the sentinel).
   // That is a containment weakening with no symptom, which is exactly the
@@ -536,7 +536,7 @@ const KIND_NODES_SECTION = /^nodes:\n([\s\S]+)$/m
  * swapped, which is the whole trick behind the multi-node rehearsal: the
  * copy carries both extraMounts, and since every kind node container
  * shares this one host's filesystem, both paths keep resolving to the same
- * bytes on whichever node a worktree lands. Everything else in the file is
+ * bytes on whichever node a workspace lands. Everything else in the file is
  * cluster-scoped (containerd registry patch, kubelet swap patch,
  * disableDefaultCNI), and kind applies those to every node itself.
  */
@@ -796,7 +796,7 @@ async function createKindCluster(
 /**
  * Install Calico (pinned by checksum) as the CNI and policy engine. kindnet's
  * NetworkPolicy engine fails OPEN — a new pod's first packets flow before
- * its IP reaches the engine's nftables set — and worktree egress lockdown
+ * its IP reaches the engine's nftables set — and workspace egress lockdown
  * needs fail CLOSED. Calico's Felix gives that off the shelf: until it has
  * programmed a workload's endpoint, traffic on that veth falls through the
  * dispatch chain's "Unknown interface" DROP.
@@ -841,16 +841,16 @@ async function installCalico(deps: ClusterInstallDeps, cluster: string): Promise
  *
  * Refuses rather than warns, because every one of these fails SILENTLY.
  * Calico in its eBPF dataplane, a replaced kube-proxy, an empty pod-CIDR
- * exclusion set — none of them stops a worktree from starting; they show up
- * as "worktrees have no egress" or, worse, as a redirect chain that counts
+ * exclusion set — none of them stops a workspace from starting; they show up
+ * as "workspaces have no egress" or, worse, as a redirect chain that counts
  * packets and never fires. The full reasoning per check is in cni-adopt.ts.
  *
  * The NetworkPolicy half is deliberately not decided here: "Calico is
  * installed" does not mean policy is enforced (policy-only Calico over a
  * foreign IPAM is a supported topology and a misconfigured one looks
- * identical until a worktree escapes), so it is left to the `egress` gate of
+ * identical until a workspace escapes), so it is left to the `egress` gate of
  * the cluster check that finishes every setup — a positive probe from a
- * worktree-labeled pod, whose failure makes this command exit non-zero.
+ * workspace-labeled pod, whose failure makes this command exit non-zero.
  */
 async function verifyAdoptedCni(deps: ClusterInstallDeps): Promise<void> {
   deps.log('Verifying the CNI this cluster already runs...')
@@ -1122,7 +1122,7 @@ async function verifyKindContext(deps: ClusterInstallDeps, cluster: string): Pro
  * where Calico does the IPAM — policy-only Calico over the AWS VPC CNI
  * gives `eni*` — and a prefix that matches nothing renders a redirect chain
  * with no per-pod rules in it, which is indistinguishable from a healthy
- * netd until a worktree tries to reach the internet.
+ * netd until a workspace tries to reach the internet.
  *
  * Fail-soft on an unreachable netd (the cluster check's datapath gate owns
  * that verdict), fail-hard on a node that has the routes but not under this
@@ -1254,9 +1254,9 @@ async function applyKindNodeFixups(deps: ClusterInstallDeps, node: string): Prom
  * container, and its pod names the infra class.
  *
  * Deliberately NOT fail-soft: the registry is the only image bus, so
- * without it no worktree image can be pushed, no node can pull one, and no
+ * without it no workspace image can be pushed, no node can pull one, and no
  * builder pod can fetch a parent. Finishing an install without it would trade a
- * clear error here for an opaque ImagePullBackOff at the first worktree
+ * clear error here for an opaque ImagePullBackOff at the first workspace
  * create.
  */
 async function installRegistry(deps: ClusterInstallDeps): Promise<void> {
@@ -1272,7 +1272,7 @@ async function installRegistry(deps: ClusterInstallDeps): Promise<void> {
  *
  * Deliberately NOT fail-soft, and deliberately BEFORE the layers that name
  * these images: nothing else builds them, so a run that skipped this would
- * leave a cluster whose first worktree create fails on a registry lookup —
+ * leave a cluster whose first workspace create fails on a registry lookup —
  * pointing back at the command that just declined to do the work.
  */
 async function buildImages(deps: ClusterInstallDeps): Promise<void> {
@@ -1298,7 +1298,7 @@ async function installBuilderGuard(deps: ClusterInstallDeps): Promise<void> {
 }
 
 /**
- * Install the infra/worktree PriorityClasses. Re-applied every run: like
+ * Install the infra/workspace PriorityClasses. Re-applied every run: like
  * the gVisor RuntimeClasses, these are cluster-scoped objects the manifest
  * builders name, so this is how a cluster created by an older yaac gets
  * them on upgrade (the server re-ensures them at boot as well).
@@ -1306,7 +1306,7 @@ async function installBuilderGuard(deps: ClusterInstallDeps): Promise<void> {
  * Deliberately NOT fail-soft: a pod naming a class the apiserver doesn't
  * have is rejected, and a Job whose pod is rejected hangs rather than
  * failing, so finishing an install without them would trade a clear error here
- * for a mystifying one at the next worktree create.
+ * for a mystifying one at the next workspace create.
  */
 async function installPriorityClasses(deps: ClusterInstallDeps): Promise<void> {
   deps.log('Installing the yaac PriorityClasses (infra > sessions)...')
@@ -1316,15 +1316,15 @@ async function installPriorityClasses(deps: ClusterInstallDeps): Promise<void> {
 /**
  * Apply the gVisor installer DaemonSet and, once it has converged, the
  * RuntimeClasses — so a freshly-set-up cluster can run sandboxed pods
- * before any worktree exists, and so `check`'s gvisor gate has something to
+ * before any workspace exists, and so `check`'s gvisor gate has something to
  * verify. Re-applied every run: it is how a cluster created by an older
  * yaac picks up a runsc version bump.
  *
  * Deliberately NOT fail-soft, unlike netd below. Nothing else installs the
- * runtime (there is no lazy re-ensure on the worktree-create path), and
- * every worktree pod names a RuntimeClass whose nodeSelector only matches an
+ * runtime (there is no lazy re-ensure on the workspace-create path), and
+ * every workspace pod names a RuntimeClass whose nodeSelector only matches an
  * installed node — so finishing an install with this broken would trade a clear
- * error here for every worktree sitting Pending later.
+ * error here for every workspace sitting Pending later.
  */
 async function installGvisorRuntime(deps: ClusterInstallDeps): Promise<void> {
   deps.log('Installing the gVisor runtime (installer DaemonSet + RuntimeClasses)...')
@@ -1342,7 +1342,7 @@ async function installGvisorRuntime(deps: ClusterInstallDeps): Promise<void> {
 
 /**
  * Build/push the netd + Envoy images and apply the DaemonSet, so a
- * freshly-set-up cluster can redirect worktree egress before any worktree
+ * freshly-set-up cluster can redirect workspace egress before any workspace
  * exists — and so `check`'s datapath gate has something to verify.
  *
  * Re-applied every run: like the gVisor install, this is how an existing
@@ -1350,7 +1350,7 @@ async function installGvisorRuntime(deps: ClusterInstallDeps): Promise<void> {
  *
  * Fails soft. The server re-ensures netd on every proxy bootstrap
  * (ensureProxyResources), so a transient registry or build hiccup here
- * self-heals on first worktree create rather than aborting the whole setup;
+ * self-heals on first workspace create rather than aborting the whole setup;
  * the cluster check that follows reports it either way.
  */
 /**
@@ -1361,7 +1361,7 @@ async function installGvisorRuntime(deps: ClusterInstallDeps): Promise<void> {
  * install stops being about a cluster and starts being about an install —
  * the step it delegates to records the driver this data dir now runs and
  * writes the `server.json` every client on this machine resolves through,
- * so `yaac worktree list` talks to the pod without being told to.
+ * so `yaac workspace list` talks to the pod without being told to.
  */
 async function deployServer(
   deps: ClusterInstallDeps,
@@ -1434,8 +1434,8 @@ async function deployNetd(deps: ClusterInstallDeps): Promise<void> {
 }
 
 /**
- * Stand up the npm cache worktrees install through. Fails soft: until it
- * serves, the worktree env names no registry and pnpm goes to npmjs, which
+ * Stand up the npm cache workspaces install through. Fails soft: until it
+ * serves, the workspace env names no registry and pnpm goes to npmjs, which
  * is slower and nothing worse — and `cluster check` says so.
  */
 async function deployNpmCache(deps: ClusterInstallDeps): Promise<void> {
@@ -1446,7 +1446,7 @@ async function deployNpmCache(deps: ClusterInstallDeps): Promise<void> {
     deps.log(
       'note: could not deploy the npm cache '
       + `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}) — `
-      + 'worktrees install from npmjs until a re-run of `yaac cluster install` succeeds.',
+      + 'workspaces install from npmjs until a re-run of `yaac cluster install` succeeds.',
     )
   }
 }
@@ -1487,7 +1487,7 @@ export function isLegacyMachineError(stderr: string): boolean {
 /**
  * VM sizing for `podman machine init`. The README's canonical numbers are
  * 8 cpus / 32 GiB; scale down for smaller hosts (half the host RAM, capped
- * at the canonical values, floored at something worktrees can survive on).
+ * at the canonical values, floored at something workspaces can survive on).
  */
 export function defaultMachineResources(
   totalmemBytes: number,
@@ -1546,10 +1546,10 @@ async function initMachine(deps: ClusterInstallDeps): Promise<void> {
  * settings the README used to describe by hand, plus migration traps from
  * pre-brew installs:
  *   - provider = libkrun (virtiofs that reports real file ownership, which
- *     gVisor worktree pods need: the runsc gofer does hostPath I/O as node
+ *     gVisor workspace pods need: the runsc gofer does hostPath I/O as node
  *     root while the sentry enforces DAC on the ownership the gofer sees.
  *     applehv/vz virtiofs reports the accessing process as every file's
- *     owner — the root gofer sees root-owned files, so non-root worktree
+ *     owner — the root gofer sees root-owned files, so non-root workspace
  *     uids can never write hostPath mounts) — written as a
  *     containers.conf.d drop-in;
  *   - rootful (kind's podman provider requires it);
@@ -1591,7 +1591,7 @@ export async function ensurePodmanMachineSetup(deps: ClusterInstallDeps): Promis
     const replace = await deps.confirm(
       `Podman machine "${machine.Name}" uses the ${machine.VMType} provider; yaac `
       + 'needs libkrun. Remove and recreate it? (destroys the machine, and with '
-      + 'it the image store, the kind cluster inside it, and any running worktrees)',
+      + 'it the image store, the kind cluster inside it, and any running workspaces)',
     )
     if (!replace) {
       throw new ClusterInstallError(
@@ -1633,7 +1633,7 @@ async function startMachine(deps: ClusterInstallDeps): Promise<void> {
     const recreate = await deps.confirm(
       `Podman machine "${machine.Name}" was created by an older podman and must be `
       + 'recreated. Remove and re-init it? (destroys the machine, and with it the '
-      + 'image store, the kind cluster inside it, and any running worktrees)',
+      + 'image store, the kind cluster inside it, and any running workspaces)',
     )
     if (!recreate) {
       throw new ClusterInstallError(

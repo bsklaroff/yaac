@@ -2,14 +2,14 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import { CreatingPlaceholder } from '#components/CreatingPlaceholder'
-import type { ProvisioningWorktreeEntry } from '@yaac/shared/types'
+import type { ProvisioningWorkspaceEntry } from '@yaac/shared/types'
 
 afterEach(() => {
   cleanup()
 })
 
-const failed = (over: Partial<ProvisioningWorktreeEntry> = {}): ProvisioningWorktreeEntry => ({
-  worktreeId: 'w1',
+const failed = (over: Partial<ProvisioningWorkspaceEntry> = {}): ProvisioningWorkspaceEntry => ({
+  workspaceId: 'w1',
   projectSlug: 'demo',
   tool: 'claude',
   kind: 'create',

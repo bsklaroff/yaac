@@ -7,8 +7,8 @@ import type { ForwardSpec } from '@yaac/shared/port-tunnel'
 /**
  * `yaac forward` — hold the listeners the server cannot.
  *
- * A worktree's ports are offered by the server (`forwardedPorts` on the
- * worktree list) but bound by a client: under `k8s` the server is a pod,
+ * A workspace's ports are offered by the server (`forwardedPorts` on the
+ * workspace list) but bound by a client: under `k8s` the server is a pod,
  * so a port it bound would be on the pod's loopback and reachable from
  * nowhere the user is, and under `containerless` they are bound on the
  * server's machine, which is not this one when the server is remote. This
@@ -50,14 +50,14 @@ export function parsePortOption(raw: string, session: string): ForwardSpec {
 }
 
 /** What the server currently offers, as specs — every running session's,
- *  or one session's when `only` names a resolved worktree id. */
+ *  or one session's when `only` names a resolved workspace id. */
 async function offeredForwards(only: string | undefined): Promise<ForwardSpec[]> {
-  const { worktrees } = await api.worktree.list.$get({ query: {} })
+  const { workspaces } = await api.workspace.list.$get({ query: {} })
   const specs: ForwardSpec[] = []
-  for (const w of worktrees) {
-    if (only !== undefined && w.worktreeId !== only) continue
+  for (const w of workspaces) {
+    if (only !== undefined && w.workspaceId !== only) continue
     for (const { containerPort, hostPort } of w.forwardedPorts) {
-      specs.push({ session: w.worktreeId, containerPort, hostPort })
+      specs.push({ session: w.workspaceId, containerPort, hostPort })
     }
   }
   return specs
@@ -100,9 +100,9 @@ async function refuseLocalContainerlessForward(baseUrl: string, bind: string | u
   if (driver === undefined || serverNeedsForwarder(driver, baseUrl)) return
   throw new Error(
     'this server runs the containerless driver on this machine, where a '
-    + 'worktree\'s processes bind the host ports themselves — the ports are '
+    + 'workspace\'s processes bind the host ports themselves — the ports are '
     + 'already reachable here and there is nothing to tunnel.\n'
-    + '    `yaac worktree list` shows what each one is listening on; from '
+    + '    `yaac workspace list` shows what each one is listening on; from '
     + 'another machine `yaac forward` tunnels them, and `--bind <addr>` '
     + 'publishes them on another interface of this one '
     + '(docs/port-forward-tunnel.md).',
@@ -126,11 +126,11 @@ export async function forward(
   // Resolved once, server-side, so an id prefix or a name means here what
   // it means everywhere else — and so a session that does not exist is an
   // error now rather than an empty forward set that never fills.
-  const worktreeId = session === undefined
+  const workspaceId = session === undefined
     ? undefined
-    : (await api.worktree[':id'].$get({ param: { id: session } })).worktreeId
+    : (await api.workspace[':id'].$get({ param: { id: session } })).workspaceId
   const explicit = options.port?.length
-    ? options.port.map((raw) => parsePortOption(raw, worktreeId ?? ''))
+    ? options.port.map((raw) => parsePortOption(raw, workspaceId ?? ''))
     : undefined
 
   const set = createForwardSet(
@@ -175,7 +175,7 @@ export async function forward(
   if (!explicit) {
     const poll = async (): Promise<void> => {
       try {
-        await set.reconcile(await offeredForwards(worktreeId))
+        await set.reconcile(await offeredForwards(workspaceId))
       } catch (err) {
         // A server that blinked is not a reason to drop live forwards —
         // the next tick re-reads it.

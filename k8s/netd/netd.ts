@@ -1,7 +1,7 @@
 /**
  * netd — the per-node yaac network daemon.
  *
- * One job: steer worktree egress into the yaac MITM proxy. It programs the
+ * One job: steer workspace egress into the yaac MITM proxy. It programs the
  * per-pod redirect (nat DNAT at the host-side veth) and renders the
  * co-located Envoy's listeners/clusters. It does NOT decide what is
  * allowed: every allow/deny is a plain Kubernetes NetworkPolicy enforced
@@ -14,7 +14,7 @@
  * node's listener ports) and is dropped. netd being late means no egress,
  * never open egress.
  *
- * Full design and rationale: docs/worktree-egress.md.
+ * Full design and rationale: docs/workspace-egress.md.
  *
  * Reconcile is a pure function of cluster state: pods + Services + the
  * node's Calico routes → desired chain + Envoy documents. Every pass
@@ -242,7 +242,7 @@ export async function reconcileOnce(
   const pods = deps.pods()
   const services = deps.services()
 
-  // The proxy's ClusterIP — the destination every worktree pod's egress is
+  // The proxy's ClusterIP — the destination every workspace pod's egress is
   // redirected to.
   const outerProxy = services.find(
     (s) => s.namespace === config.installNamespace && s.name === 'yaac-proxy',

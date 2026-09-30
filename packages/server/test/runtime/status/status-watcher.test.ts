@@ -1,22 +1,22 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 
 import {
-  WorktreeStatusWatcher,
+  WorkspaceStatusWatcher,
   StatusWatcherManager,
-  type WatchedWorktree,
+  type WatchedWorkspace,
 } from '#runtime/status/status-watcher'
 import type { RuntimeHandle, StreamChild } from '#drivers/contract'
 import { handleFixture } from '@yaac/test-utils/fake-driver'
 import type { AgentTool } from '@yaac/shared/types'
 import {
-  readWorktreeStatus,
-  isWorktreeStreamHealthy,
+  readWorkspaceStatus,
+  isWorkspaceStreamHealthy,
   setAgentStatus,
-  _resetWorktreeStatusStoreForTests,
+  _resetWorkspaceStatusStoreForTests,
 } from '#runtime/status/status-store'
 import {
-  worktreeControlStreamSend,
+  workspaceControlStreamSend,
   _clearControlStreamRegistryForTests,
 } from '#runtime/status/control-stream-registry'
 
@@ -57,18 +57,18 @@ class FakeAttachChild implements StreamChild {
   }
 }
 
-function session(tool: WatchedWorktree['tool']): WatchedWorktree {
-  return { slug: 'demo', worktreeId: 's1', jobName: 'yaac-demo-s1', tool, mode: 'tui' }
+function session(tool: WatchedWorkspace['tool']): WatchedWorkspace {
+  return { slug: 'demo', workspaceId: 's1', jobName: 'yaac-demo-s1', tool, mode: 'tui' }
 }
 
-function makeWatcher(tool: WatchedWorktree['tool'], deps: {
+function makeWatcher(tool: WatchedWorkspace['tool'], deps: {
   heartbeatIntervalMs?: number
   commandTimeoutMs?: number
   respawnDelayMs?: number
-} = {}): { watcher: WorktreeStatusWatcher; children: FakeAttachChild[]; revives: string[] } {
+} = {}): { watcher: WorkspaceStatusWatcher; children: FakeAttachChild[]; revives: string[] } {
   const children: FakeAttachChild[] = []
   const revives: string[] = []
-  const watcher = new WorktreeStatusWatcher(session(tool), {
+  const watcher = new WorkspaceStatusWatcher(session(tool), {
     dial: () => {
       const child = new FakeAttachChild()
       children.push(child)
@@ -108,18 +108,18 @@ async function connectWatcher(
   child.feedReply('')
   await vi.waitFor(() => expect(child.commandCount).toBe(4)) // refresh-client -B model
   child.feedReply('')
-  await vi.waitFor(() => expect(isWorktreeStreamHealthy('demo', 's1')).toBe(true))
+  await vi.waitFor(() => expect(isWorkspaceStreamHealthy('demo', 's1')).toBe(true))
 }
 
-let watchers: WorktreeStatusWatcher[] = []
+let watchers: WorkspaceStatusWatcher[] = []
 
 beforeEach(() => {
-  _resetWorktreeStatusStoreForTests()
+  _resetWorkspaceStatusStoreForTests()
   _clearControlStreamRegistryForTests()
   // The dial and the streamd revive are injected below, but the attach argv
   // is written against the workspace's own tmux socket — which is the
   // driver's answer, so a fake has to be installed to supply it.
-  installFakeWorktreeDriver()
+  installFakeWorkspaceDriver()
 })
 
 afterEach(() => {
@@ -127,7 +127,7 @@ afterEach(() => {
   watchers = []
 })
 
-describe('WorktreeStatusWatcher (title tools)', () => {
+describe('WorkspaceStatusWatcher (title tools)', () => {
   it('enumerates agent panes, subscribes to their titles, and marks the stream healthy', async () => {
     const { watcher, children } = makeWatcher('claude')
     watchers.push(watcher)
@@ -140,7 +140,7 @@ describe('WorktreeStatusWatcher (title tools)', () => {
     // replace each other, so a shared name silences every pane but the last.
     expect(sent).toContain("refresh-client -B 'status-7:%7:#{pane_title}'")
     // No classification yet — absent entry reads as waiting.
-    expect(readWorktreeStatus('demo', 's1')).toBe('waiting')
+    expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
   })
 
   it('publishes the proven stream as the session command channel and retires it with the stream', async () => {
@@ -150,9 +150,9 @@ describe('WorktreeStatusWatcher (title tools)', () => {
     const child = children[0]
     // Not registered while still attaching (registration happens only
     // after the pane-id and subscribe replies prove the stream).
-    expect(worktreeControlStreamSend('yaac-demo-s1')).toBeUndefined()
+    expect(workspaceControlStreamSend('yaac-demo-s1')).toBeUndefined()
     await connectWatcher(child)
-    const send = worktreeControlStreamSend('yaac-demo-s1')
+    const send = workspaceControlStreamSend('yaac-demo-s1')
     expect(send).toBeDefined()
 
     // A command through the channel rides the same control-mode stream.
@@ -164,7 +164,7 @@ describe('WorktreeStatusWatcher (title tools)', () => {
 
     // Stream death unregisters the channel (until the respawn re-proves one).
     child.emitExit()
-    expect(worktreeControlStreamSend('yaac-demo-s1')).toBeUndefined()
+    expect(workspaceControlStreamSend('yaac-demo-s1')).toBeUndefined()
   })
 
   it('classifies pushed title values from the subscription', async () => {
@@ -175,10 +175,10 @@ describe('WorktreeStatusWatcher (title tools)', () => {
     await connectWatcher(child)
 
     child.feed('%subscription-changed status-7 $0 @0 0 %7 : ⠋ working\n')
-    expect(readWorktreeStatus('demo', 's1')).toBe('running')
+    expect(readWorkspaceStatus('demo', 's1')).toBe('running')
 
     child.feed('%subscription-changed status-7 $0 @0 0 %7 : ✳ done\n')
-    expect(readWorktreeStatus('demo', 's1')).toBe('waiting')
+    expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
   })
 
   it('ignores subscriptions for other panes or names', async () => {
@@ -190,7 +190,7 @@ describe('WorktreeStatusWatcher (title tools)', () => {
 
     child.feed('%subscription-changed status-9 $0 @0 0 %9 : ⠋ other pane\n')
     child.feed('%subscription-changed other $0 @0 0 %7 : ⠋ other name\n')
-    expect(readWorktreeStatus('demo', 's1')).toBe('waiting')
+    expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
   })
 
   it('keeps status sticky and flips health on stream exit, then respawns', async () => {
@@ -200,11 +200,11 @@ describe('WorktreeStatusWatcher (title tools)', () => {
     const child = children[0]
     await connectWatcher(child)
     child.feed('%subscription-changed status-7 $0 @0 0 %7 : ⠋ working\n')
-    expect(readWorktreeStatus('demo', 's1')).toBe('running')
+    expect(readWorkspaceStatus('demo', 's1')).toBe('running')
 
     child.emitExit()
-    expect(isWorktreeStreamHealthy('demo', 's1')).toBe(false)
-    expect(readWorktreeStatus('demo', 's1')).toBe('running') // sticky
+    expect(isWorkspaceStreamHealthy('demo', 's1')).toBe(false)
+    expect(readWorkspaceStatus('demo', 's1')).toBe('running') // sticky
 
     await vi.waitFor(() => expect(children.length).toBe(2))
     const second = children[1]
@@ -215,7 +215,7 @@ describe('WorktreeStatusWatcher (title tools)', () => {
       await vi.waitFor(() => expect(second.commandCount).toBe(n))
       second.feedReply('')
     }
-    await vi.waitFor(() => expect(isWorktreeStreamHealthy('demo', 's1')).toBe(true))
+    await vi.waitFor(() => expect(isWorkspaceStreamHealthy('demo', 's1')).toBe(true))
   })
 
   it('tears down and respawns when the heartbeat gets no reply', async () => {
@@ -236,7 +236,7 @@ describe('WorktreeStatusWatcher (title tools)', () => {
     // them either), so the child count only grows from here.
     await vi.waitFor(() => expect(children.length).toBeGreaterThanOrEqual(2))
     expect(child.killed).toBe(true)
-    expect(isWorktreeStreamHealthy('demo', 's1')).toBe(false)
+    expect(isWorkspaceStreamHealthy('demo', 's1')).toBe(false)
   })
 
   it('answers heartbeats to stay connected', async () => {
@@ -252,7 +252,7 @@ describe('WorktreeStatusWatcher (title tools)', () => {
     child.feedReply('ok')
     await new Promise((r) => setTimeout(r, 30))
     expect(children.length).toBe(1)
-    expect(isWorktreeStreamHealthy('demo', 's1')).toBe(true)
+    expect(isWorkspaceStreamHealthy('demo', 's1')).toBe(true)
   })
 
   it('respawns when init fails (tmux window not up yet)', async () => {
@@ -296,7 +296,7 @@ describe('WorktreeStatusWatcher (title tools)', () => {
   })
 })
 
-describe('WorktreeStatusWatcher (pane tools)', () => {
+describe('WorkspaceStatusWatcher (pane tools)', () => {
   it('subscribes opencode to its tmux-side busy format (no capture-pane, no %output)', async () => {
     const { watcher, children } = makeWatcher('opencode')
     watchers.push(watcher)
@@ -320,9 +320,9 @@ describe('WorktreeStatusWatcher (pane tools)', () => {
 
     // opencode/pi push an already-resolved word, not pane content.
     child.feed('%subscription-changed status-2 $0 @0 0 %2 : running\n')
-    expect(readWorktreeStatus('demo', 's1')).toBe('running')
+    expect(readWorkspaceStatus('demo', 's1')).toBe('running')
     child.feed('%subscription-changed status-2 $0 @0 0 %2 : waiting\n')
-    expect(readWorktreeStatus('demo', 's1')).toBe('waiting')
+    expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
   })
 
   it('ignores stray %output (the watcher attaches no-output, so it never re-captures)', async () => {
@@ -338,7 +338,7 @@ describe('WorktreeStatusWatcher (pane tools)', () => {
 })
 
 function workspace(opts: {
-  worktreeId: string
+  workspaceId: string
   slug?: string
   running?: boolean
   prewarmed?: boolean
@@ -346,9 +346,9 @@ function workspace(opts: {
 }): RuntimeHandle {
   const slug = opts.slug ?? 'demo'
   return handleFixture({
-    workspaceId: opts.worktreeId,
+    workspaceId: opts.workspaceId,
     projectSlug: slug,
-    jobName: `yaac-${slug}-${opts.worktreeId}`,
+    jobName: `yaac-${slug}-${opts.workspaceId}`,
     tool: opts.tool ?? 'claude',
     running: opts.running !== false,
     state: opts.running === false ? 'pending' : 'running',
@@ -375,9 +375,9 @@ describe('StatusWatcherManager', () => {
     const { manager, children } = makeManager()
     try {
       manager.sync([
-        workspace({ worktreeId: 's1' }),
-        workspace({ worktreeId: 's2', running: false }),
-        workspace({ worktreeId: 's3', prewarmed: true }),
+        workspace({ workspaceId: 's1' }),
+        workspace({ workspaceId: 's2', running: false }),
+        workspace({ workspaceId: 's3', prewarmed: true }),
       ])
       expect(manager.size).toBe(1)
       expect(children).toHaveLength(1)
@@ -389,8 +389,8 @@ describe('StatusWatcherManager', () => {
   it('is idempotent for an unchanged pod set', () => {
     const { manager, children } = makeManager()
     try {
-      manager.sync([workspace({ worktreeId: 's1' })])
-      manager.sync([workspace({ worktreeId: 's1' })])
+      manager.sync([workspace({ workspaceId: 's1' })])
+      manager.sync([workspace({ workspaceId: 's1' })])
       expect(manager.size).toBe(1)
       expect(children).toHaveLength(1)
     } finally {
@@ -401,12 +401,12 @@ describe('StatusWatcherManager', () => {
   it('stops the watcher and evicts the store entry when the pod goes away', () => {
     const { manager, children } = makeManager()
     try {
-      manager.sync([workspace({ worktreeId: 's1' })])
+      manager.sync([workspace({ workspaceId: 's1' })])
       setAgentStatus('demo', 's1', '%0', 'running')
       manager.sync([])
       expect(manager.size).toBe(0)
       expect(children[0].killed).toBe(true)
-      expect(readWorktreeStatus('demo', 's1')).toBe('waiting')
+      expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
     } finally {
       manager.stopAll()
     }
@@ -415,9 +415,9 @@ describe('StatusWatcherManager', () => {
   it('starts a watcher when a claimed spare loses its prewarm label', () => {
     const { manager } = makeManager()
     try {
-      manager.sync([workspace({ worktreeId: 's1', prewarmed: true })])
+      manager.sync([workspace({ workspaceId: 's1', prewarmed: true })])
       expect(manager.size).toBe(0)
-      manager.sync([workspace({ worktreeId: 's1' })])
+      manager.sync([workspace({ workspaceId: 's1' })])
       expect(manager.size).toBe(1)
     } finally {
       manager.stopAll()
@@ -426,7 +426,7 @@ describe('StatusWatcherManager', () => {
 
   it('stopAll kills every watcher', () => {
     const { manager, children } = makeManager()
-    manager.sync([workspace({ worktreeId: 's1' }), workspace({ worktreeId: 's2' })])
+    manager.sync([workspace({ workspaceId: 's1' }), workspace({ workspaceId: 's2' })])
     expect(manager.size).toBe(2)
     manager.stopAll()
     expect(manager.size).toBe(0)

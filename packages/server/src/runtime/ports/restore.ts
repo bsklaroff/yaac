@@ -1,4 +1,4 @@
-import { worktreeDriver } from '#drivers/driver'
+import { workspaceDriver } from '#drivers/driver'
 import { isTmuxSessionAlive } from '#runtime/status'
 import { buildStatusRight, setStatusRightCmd } from '#lib/status-right'
 import { serverLog } from '#log'
@@ -11,14 +11,14 @@ import type { PortForwardConfig, PortMapping, YaacConfig } from '@yaac/shared/ty
 async function setWorkspaceStatusRight(
   jobName: string,
   projectSlug: string,
-  worktreeId: string,
+  workspaceId: string,
   ports: ReadonlyArray<PortMapping>,
 ): Promise<void> {
-  const driver = worktreeDriver()
+  const driver = workspaceDriver()
   await driver.exec(
     jobName,
     setStatusRightCmd(
-      buildStatusRight(projectSlug, worktreeId, ports),
+      buildStatusRight(projectSlug, workspaceId, ports),
       driver.workspacePaths(jobName).tmuxSock,
     ),
   )
@@ -46,7 +46,7 @@ async function setWorkspaceStatusRight(
 export async function restoreAllWorkspaceForwarders(
   projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
 ): Promise<void> {
-  const runtime = worktreeDriver()
+  const runtime = workspaceDriver()
   let workspaces
   try {
     workspaces = await runtime.list()
@@ -87,14 +87,14 @@ export async function restoreAllWorkspaceForwarders(
  */
 async function provisionForwarders(
   projectSlug: string,
-  worktreeId: string,
+  workspaceId: string,
   jobName: string,
   portForward: PortForwardConfig[] | undefined,
 ): Promise<void> {
-  const declared = worktreeDriver().declareForwards(worktreeId, portForward ?? [])
+  const declared = workspaceDriver().declareForwards(workspaceId, portForward ?? [])
 
   // Always refresh status-right — even with no port forwards, the workspace's
   // existing string may carry stale port info from before the restart that
   // has to be cleared.
-  await setWorkspaceStatusRight(jobName, projectSlug, worktreeId, declared)
+  await setWorkspaceStatusRight(jobName, projectSlug, workspaceId, declared)
 }

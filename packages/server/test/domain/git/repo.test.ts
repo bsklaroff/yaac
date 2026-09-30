@@ -51,7 +51,7 @@ async function subjectAt(repo: string, ref: string): Promise<string> {
 }
 
 /**
- * A clone whose `.git` holds what a worktree pod can write there, each piece
+ * A clone whose `.git` holds what a workspace pod can write there, each piece
  * naming a command that leaves a file in `markers` when it runs: a filter
  * driver every path selects, hooks in both the default dir and a
  * `core.hooksPath`, and an fsmonitor; plus an `origin` and a URL rewrite
@@ -209,10 +209,10 @@ describe('createCheckout', () => {
     await cloneRepo(sourceRepo, main, null)
     const base = await getDefaultBranch(main)
 
-    // /workspace is a bind of the worktree dir, so the pod's module mount
+    // /workspace is a bind of the workspace dir, so the pod's module mount
     // points are directories ON it before the checkout runs, and the pod may
     // already hold the dir itself.
-    const wtPath = path.join(tmpDir, 'worktree')
+    const wtPath = path.join(tmpDir, 'workspace')
     await fs.mkdir(path.join(wtPath, 'frontends', 'node_modules'), { recursive: true })
     const inode = (await fs.stat(wtPath)).ino
 
@@ -238,7 +238,7 @@ describe('createCheckout', () => {
     // Nothing of it is in the main clone.
     expect(await git(main, ['branch', '--list', 'agent/*'])).toBe('')
     await expect(fs.access(path.join(main, '.git', 'worktrees'))).rejects.toThrow()
-    expect(await fs.readdir(tmpDir)).not.toContain('.staging-worktree')
+    expect(await fs.readdir(tmpDir)).not.toContain('.staging-workspace')
 
     // A commit in the clone lands in the clone, and a sibling sees none of
     // its git state.
@@ -270,11 +270,11 @@ describe('createCheckout', () => {
   it('leaves nothing behind when it fails, and a retry checks out over a half-written tree', async () => {
     const main = path.join(tmpDir, 'main')
     await cloneRepo(sourceRepo, main, null)
-    const wtPath = path.join(tmpDir, 'worktree')
+    const wtPath = path.join(tmpDir, 'workspace')
     await expect(createCheckout(main, wtPath, { branch: 'agent/r', baseBranch: 'no-such-branch', remoteUrl: sourceRepo }))
       .rejects.toThrow()
     await expect(fs.access(path.join(wtPath, '.git'))).rejects.toThrow()
-    expect(await fs.readdir(tmpDir)).not.toContain('.staging-worktree')
+    expect(await fs.readdir(tmpDir)).not.toContain('.staging-workspace')
 
     // An earlier attempt got tracked files down but no `.git`: every one is
     // untracked to a new index, which an unforced checkout would refuse.

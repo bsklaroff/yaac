@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { worktreeDriver } from '@yaac/server/drivers/driver'
+import { workspaceDriver } from '@yaac/server/drivers/driver'
 import { buildApp } from '@yaac/server/main/server'
 import {
   ROUTE_MATRIX,
@@ -43,7 +43,7 @@ describe('every route, k8s', () => {
   })
 
   it('runs against the k8s driver', () => {
-    expect(worktreeDriver().kind).toBe('k8s')
+    expect(workspaceDriver().kind).toBe('k8s')
   })
 
   for (const route of ROUTE_MATRIX) {
@@ -55,7 +55,7 @@ describe('every route, k8s', () => {
   }
 
   // A 501 here means a guard fired on the wrong driver — with one honest
-  // exception, which the matrix has to have declared: the in-worktree
+  // exception, which the matrix has to have declared: the in-workspace
   // command channel is the containerless half of a pair whose k8s half is
   // the egress proxy's queue, so it is this substrate that lacks the route.
   // Anything else refusing is the bug this test exists for.

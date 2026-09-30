@@ -87,12 +87,12 @@ describe('removeScratchTree', () => {
 
   it('salvages what it can and reports an unreadable subtree instead of throwing', async () => {
     // Stands in for what e2e runs leave behind: a 0700 root-owned libpod/
-    // inside a hostPath-mounted worktree, which the test user cannot empty.
+    // inside a hostPath-mounted workspace, which the test user cannot empty.
     // Mode 0 reproduces the same unreadable-directory case from the owner's
     // side, without needing root to set up.
     setHermeticScratch(true)
     const dir = await e2eMkdtemp('yaac-rm-stuck-')
-    const locked = path.join(dir, 'worktrees', 'wt-1', 'libpod')
+    const locked = path.join(dir, 'workspaces', 'wt-1', 'libpod')
     await fs.mkdir(path.join(locked, 'tmp'), { recursive: true })
     await fs.writeFile(path.join(locked, 'tmp', 'pause.pid'), '1')
     const deletable = path.join(dir, 'projects', 'keep.txt')

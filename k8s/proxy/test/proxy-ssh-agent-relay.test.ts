@@ -12,7 +12,7 @@ import {
 } from 'yaac-proxy-sidecar/ssh-agent-relay'
 
 /**
- * The ssh-agent forwarding transport: worktree pods reach the proxy's
+ * The ssh-agent forwarding transport: workspace pods reach the proxy's
  * in-memory agent over TCP (a hostPath UNIX socket only rendezvous between
  * pods on one node), and the proxy decides per connection whether the
  * source is entitled to it.
@@ -21,7 +21,7 @@ import {
  * socket, a client on TCP — because the properties under test are what
  * crosses the relay each way: an admitted request reaches the agent intact,
  * a refused one never does, a refused connection gets nothing at all, and a
- * worktree only ever sees and signs with its own project's keys.
+ * workspace only ever sees and signs with its own project's keys.
  */
 
 const cleanups: Array<() => void | Promise<void>> = []
@@ -120,9 +120,9 @@ interface Harness {
 
 async function startListener(opts: {
   agentSock: string
-  worktree?: string
+  workspace?: string
   repoUrl?: string
-  /** The worktree's project's keys, asked per message. */
+  /** The workspace's project's keys, asked per message. */
   allowedKeys?: () => Set<string>
   maxConnections?: number
   idleTimeoutMs?: number
@@ -130,7 +130,7 @@ async function startListener(opts: {
   const logs: string[] = []
   const server = createSshAgentServer({
     agentSock: opts.agentSock,
-    resolveWorktree: () => Promise.resolve(opts.worktree),
+    resolveWorkspace: () => Promise.resolve(opts.workspace),
     repoUrlFor: () => opts.repoUrl,
     allowedKeysFor: opts.allowedKeys ?? (() => new Set()),
     log: (m) => { logs.push(m) },
@@ -200,9 +200,9 @@ async function openConnection(port: number): Promise<{ request: (msg: Buffer) =>
 const SESSION = 'sess-1234abcd'
 
 describe('sshAgentGate', () => {
-  it('admits a watched worktree pod whose registered remote is SSH', () => {
+  it('admits a watched workspace pod whose registered remote is SSH', () => {
     expect(sshAgentGate(SESSION, 'git@github.com:acme/app.git'))
-      .toEqual({ ok: true, worktreeId: SESSION })
+      .toEqual({ ok: true, workspaceId: SESSION })
     expect(sshAgentGate(SESSION, 'ssh://git@example.com:2222/acme/app.git').ok).toBe(true)
   })
 
@@ -212,7 +212,7 @@ describe('sshAgentGate', () => {
     expect(sshAgentGate(undefined, 'git@github.com:acme/app.git').ok).toBe(false)
   })
 
-  it('refuses a worktree with no SSH remote — the same condition the server provisions on', () => {
+  it('refuses a workspace with no SSH remote — the same condition the server provisions on', () => {
     expect(sshAgentGate(SESSION, 'https://github.com/acme/app.git').ok).toBe(false)
     expect(sshAgentGate(SESSION, undefined).ok).toBe(false)
   })
@@ -255,7 +255,7 @@ describe('createAgentRequestFilter', () => {
     // The three an ssh client needs against constrained keys: without the
     // bind, an agent refuses to sign with a `-h <host>` key at all. Every
     // other request — add, remove-all, lock, any other extension — would
-    // mutate an agent every worktree shares, and a signature with another
+    // mutate an agent every workspace shares, and a signature with another
     // project's key is that project's credential.
     const res = run([
       agentMessage(REQUEST_IDENTITIES),
@@ -331,10 +331,10 @@ describe('createAgentReplyFilter', () => {
 })
 
 describe('createSshAgentServer', () => {
-  it('passes an entitled worktree\'s sign request through to the agent socket', async () => {
+  it('passes an entitled workspace\'s sign request through to the agent socket', async () => {
     const agent = await startFakeAgent()
     const { port } = await startListener({
-      agentSock: agent.sock, worktree: SESSION, repoUrl: 'git@github.com:acme/app.git',
+      agentSock: agent.sock, workspace: SESSION, repoUrl: 'git@github.com:acme/app.git',
       allowedKeys: () => new Set([b64(KEY_A)]),
     })
     // The request is written immediately after connect, i.e. while the gate
@@ -345,13 +345,13 @@ describe('createSshAgentServer', () => {
     expect(agent.received()).toEqual(request)
   })
 
-  it('shows and signs with only the keys of the worktree\'s project, re-read per message', async () => {
+  it('shows and signs with only the keys of the workspace\'s project, re-read per message', async () => {
     // The agent holds every project's keys; the relay is what keeps one
-    // project's worktree from listing or spending another's.
+    // project's workspace from listing or spending another's.
     const agent = await startFakeAgent([KEY_A, KEY_B])
     let allowed = new Set([b64(KEY_A)])
     const { port, logs } = await startListener({
-      agentSock: agent.sock, worktree: SESSION, repoUrl: 'git@github.com:acme/app.git',
+      agentSock: agent.sock, workspace: SESSION, repoUrl: 'git@github.com:acme/app.git',
       allowedKeys: () => allowed,
     })
     const conn = await openConnection(port)
@@ -369,11 +369,11 @@ describe('createSshAgentServer', () => {
   })
 
   it('answers a mutating request itself and never lets it reach the agent', async () => {
-    // The cross-worktree DoS this closes: the agent is install-wide, so one
-    // worktree locking or emptying it would strand every other worktree.
+    // The cross-workspace DoS this closes: the agent is install-wide, so one
+    // workspace locking or emptying it would strand every other workspace.
     const agent = await startFakeAgent()
     const { port, logs } = await startListener({
-      agentSock: agent.sock, worktree: SESSION, repoUrl: 'git@github.com:acme/app.git',
+      agentSock: agent.sock, workspace: SESSION, repoUrl: 'git@github.com:acme/app.git',
     })
     const reply = await ask(port, agentMessage(REMOVE_ALL_IDENTITIES))
     expect(reply).toEqual(agentMessage(AGENT_FAILURE))
@@ -384,7 +384,7 @@ describe('createSshAgentServer', () => {
   it('still serves a legitimate request pipelined behind a refused one', async () => {
     const agent = await startFakeAgent()
     const { port } = await startListener({
-      agentSock: agent.sock, worktree: SESSION, repoUrl: 'git@github.com:acme/app.git',
+      agentSock: agent.sock, workspace: SESSION, repoUrl: 'git@github.com:acme/app.git',
     })
     await ask(port, [agentMessage(LOCK), agentMessage(REQUEST_IDENTITIES)])
     expect(agent.received()[4]).toBe(REQUEST_IDENTITIES)
@@ -393,7 +393,7 @@ describe('createSshAgentServer', () => {
   it('drops a refused connection without writing a byte', async () => {
     const agent = await startFakeAgent()
     const { port, logs } = await startListener({
-      agentSock: agent.sock, worktree: SESSION, repoUrl: 'https://github.com/acme/app.git',
+      agentSock: agent.sock, workspace: SESSION, repoUrl: 'https://github.com/acme/app.git',
     })
     expect(await ask(port, agentMessage(SIGN_REQUEST))).toHaveLength(0)
     expect(logs.join('\n')).toContain('BLOCKED ssh-agent')
@@ -405,13 +405,13 @@ describe('createSshAgentServer', () => {
       agentSock: agent.sock, repoUrl: 'git@github.com:acme/app.git',
     })
     expect(await ask(port, agentMessage(SIGN_REQUEST))).toHaveLength(0)
-    expect(logs.join('\n')).toContain('not a known worktree pod')
+    expect(logs.join('\n')).toContain('not a known workspace pod')
   })
 
   it('closes the client when the agent socket is missing rather than hanging', async () => {
     const { port, logs } = await startListener({
       agentSock: path.join(os.tmpdir(), 'yaac-agent-does-not-exist.sock'),
-      worktree: SESSION,
+      workspace: SESSION,
       repoUrl: 'git@github.com:acme/app.git',
     })
     expect(await ask(port, agentMessage(SIGN_REQUEST))).toHaveLength(0)
@@ -421,7 +421,7 @@ describe('createSshAgentServer', () => {
   it('refuses new dials past the in-flight cap instead of holding agent fds', async () => {
     const agent = await startFakeAgent()
     const { port, logs } = await startListener({
-      agentSock: agent.sock, worktree: SESSION, repoUrl: 'git@github.com:acme/app.git',
+      agentSock: agent.sock, workspace: SESSION, repoUrl: 'git@github.com:acme/app.git',
       maxConnections: 1,
     })
     // Hold one open (no payload, so it never completes), then dial again.
@@ -441,7 +441,7 @@ describe('createSshAgentServer', () => {
     // and only real propagation can pass this.
     const agent = await startFakeAgent()
     const { port } = await startListener({
-      agentSock: agent.sock, worktree: SESSION, repoUrl: 'git@github.com:acme/app.git',
+      agentSock: agent.sock, workspace: SESSION, repoUrl: 'git@github.com:acme/app.git',
       idleTimeoutMs: 60_000,
     })
     await ask(port, agentMessage(REQUEST_IDENTITIES))
@@ -455,7 +455,7 @@ describe('createSshAgentServer', () => {
   it('reaps a connection that goes idle', async () => {
     const agent = await startFakeAgent()
     const { port } = await startListener({
-      agentSock: agent.sock, worktree: SESSION, repoUrl: 'git@github.com:acme/app.git',
+      agentSock: agent.sock, workspace: SESSION, repoUrl: 'git@github.com:acme/app.git',
       idleTimeoutMs: 150,
     })
     const idle = net.connect({ port, host: '127.0.0.1' })

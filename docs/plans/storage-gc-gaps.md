@@ -21,13 +21,13 @@ working set. For a ref whose pull failed, record the seeded copy's id, found
 by its restored bare name, so a transient registry error never costs the
 node an image it had. Then `podman rmi -f` every other image in the new
 generation. Removing an image in the new generation unlinks only that
-generation's hardlinks, so worktrees still mounting the predecessor are
+generation's hardlinks, so workspaces still mounting the predecessor are
 unaffected. This must be checked against the nested-containers e2e before
 it lands, because the opaque-rewrite markers live inside layer dirs.
 
 ## 2. The npm cache is never pruned
 
-The Verdaccio claim keeps every tarball any admitted worktree ever fetched
+The Verdaccio claim keeps every tarball any admitted workspace ever fetched
 (`npm-cache.ts` accepts this in its header). The fix is an age-based prune
 of tarballs by access time, run inside the Verdaccio pod. Verdaccio
 re-fetches a missing tarball from its uplink, so a pruned entry costs

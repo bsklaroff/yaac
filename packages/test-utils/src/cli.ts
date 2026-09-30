@@ -25,7 +25,7 @@ const ENTRY = TEST_CLI_ENTRY
  * Scoped to the ambient data dir (the test scratch base), which is one per
  * test rig — and so one per cluster — rather than to the host: rigs share
  * no API server, and a host-wide lock made every rig's server-backed files
- * wait on every other rig's, and on any worktree's containerless tiers.
+ * wait on every other rig's, and on any workspace's containerless tiers.
  * Nothing else a server-backed file binds may be host-wide for the same
  * reason, which is why every host port the suites bind is drawn by
  * `freeLocalPort` rather than fixed.
@@ -130,7 +130,7 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
   // The tier folders, through the same helper a server start uses.
   await ensureDataDir()
   // Mirror the namespace into the test process so src helpers used by
-  // assertions (listWorktreePods, containerExec, ...) hit the same
+  // assertions (listWorkspacePods, containerExec, ...) hit the same
   // namespace as the server subprocess.
   process.env.YAAC_K8S_NAMESPACE = TEST_NAMESPACE
 
@@ -146,7 +146,7 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
     // Spelled out rather than left to the spread. A spawned server is a fresh
     // process that loads none of the suite's setup files, so this flag is the
     // only thing standing between it and a real refresh grant — and a grant
-    // from behind a worktree's proxy rotates the hosting install's live
+    // from behind a workspace's proxy rotates the hosting install's live
     // credential whatever token the request carried (see vitest-setup). Too
     // load-bearing to depend on an ambient var being present.
     YAAC_E2E_NO_TOKEN_REFRESH: '1',
@@ -167,7 +167,7 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
     // prebuilt by the global setup and workers must never race a podman build.
     YAAC_IMAGE_PREWARM: '0',
     // Auto-titling would pull the llama.cpp binary + a ~114MB model under
-    // every e2e server (and retitle worktrees mid-assertion); the feature is
+    // every e2e server (and retitle workspaces mid-assertion); the feature is
     // unit-tested with a stubbed runner instead.
     YAAC_AUTO_TITLES: '0',
   }
@@ -184,10 +184,10 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
     }
     // removeScratchTree retries the teardown RACE — `force` swallows a
     // missing path but not ENOTEMPTY, and the scratch dir is still live when
-    // this runs. A worktree's worktree is hostPath-mounted into its pod as
+    // this runs. A workspace's checkout is hostPath-mounted into its pod as
     // /workspace, so a container that has not finished terminating can create
     // a file in a directory the walk just emptied; the detached teardown
-    // script (cleanupWorktreeDetached) outlives the server it was spawned from
+    // script (cleanupWorkspaceDetached) outlives the server it was spawned from
     // and is deleting under the same tree. Both settle in well under a second.
     //
     // What it does NOT retry is a root-owned leftover, which no amount of
@@ -324,7 +324,7 @@ async function spawnHostServer(env: NodeJS.ProcessEnv): Promise<SpawnedServer> {
     killGroup(child, 'SIGTERM')
     await new Promise<void>((resolve) => {
       // Give the server up to 15s to finish its current background-loop
-      // tick (worktree reconcile, blocked-host persist) before we
+      // tick (workspace reconcile, blocked-host persist) before we
       // force-kill. SIGKILL bypasses the shutdown handler's
       // `removeLock()` call, so a too-short timeout leaves stale lock
       // files and flakes tests that assert on lock cleanup.
@@ -395,7 +395,7 @@ export interface RunYaacOptions {
    * As a single string, the whole payload is written and stdin is
    * closed immediately. That works for commands that use a single
    * readline interface, but fails for `auth update` / `auth clear` /
-   * `worktree stream` which open a fresh readline per prompt: once the
+   * `workspace stream` which open a fresh readline per prompt: once the
    * stream ends, the first readline's flowing-mode reader eats all
    * remaining bytes before the next interface can see them.
    *

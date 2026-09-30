@@ -40,10 +40,10 @@ export function _resetPortsForTests(): void {
   ports.clear()
 }
 
-/** See `WorktreeDriver.forwardedPorts` — the identity mappings for whatever
+/** See `WorkspaceDriver.forwardedPorts` — the identity mappings for whatever
  *  the last sweep saw this workspace listening on. */
-export function workspacePorts(worktreeId: string): PortMapping[] {
-  return (ports.get(worktreeId) ?? []).map(({ port }) => ({ containerPort: port, hostPort: port }))
+export function workspacePorts(workspaceId: string): PortMapping[] {
+  return (ports.get(workspaceId) ?? []).map(({ port }) => ({ containerPort: port, hostPort: port }))
 }
 
 /** One sweep over every running workspace. Exported so a test can drive it
@@ -89,35 +89,35 @@ export function stopPortSweep(): void {
 }
 
 /** Drop a workspace's ports when it goes away. */
-export function forgetPorts(worktreeId: string): void {
-  ports.delete(worktreeId)
+export function forgetPorts(workspaceId: string): void {
+  ports.delete(workspaceId)
 }
 
 /**
- * See `WorktreeDriver.dialPort`: one TCP connection onto a port the
+ * See `WorkspaceDriver.dialPort`: one TCP connection onto a port the
  * workspace is listening on, for a forwarder whose listener is on another
  * machine.
  *
  * Only a LISTENER the sweep has surfaced, dialled at the address it is
  * bound to. What keeps every other service on this host out of reach is
- * the sweep's scope — it walks the worktree's own process tree, so the
+ * the sweep's scope — it walks the workspace's own process tree, so the
  * set is an allowlist of that tree's listeners with the sensitive-port
  * denylist on top — and dialling the recorded address rather than a
  * guessed loopback is what keeps a stranger on the OTHER loopback family
- * of the same port number from answering in the worktree's place. The
+ * of the same port number from answering in the workspace's place. The
  * pod driver also dials a declared port nothing listens on yet, because a
- * pod is a sandbox; this host is the user's machine. (A yaac-dev worktree's inner `yaac server` IS in
+ * pod is a sandbox; this host is the user's machine. (A yaac-dev workspace's inner `yaac server` IS in
  * its tree, so that port surfaces and is dialable — as under k8s.)
  *
- * The set is the LAST sweep's, not a live one: a port the worktree
+ * The set is the LAST sweep's, not a live one: a port the workspace
  * released and something else re-bound stays dialable for up to the
  * sweep interval. Re-validating per dial would cost an lsof per TCP
  * connection, and the window is bounded by `POLL_MS`.
  */
-export function dialWorkspacePort(worktreeId: string, port: number): Promise<Duplex> {
-  const listener = (ports.get(worktreeId) ?? []).find((l) => l.port === port)
+export function dialWorkspacePort(workspaceId: string, port: number): Promise<Duplex> {
+  const listener = (ports.get(workspaceId) ?? []).find((l) => l.port === port)
   if (!listener) {
-    return Promise.reject(new Error(`port ${String(port)} is not one this worktree is listening on`))
+    return Promise.reject(new Error(`port ${String(port)} is not one this workspace is listening on`))
   }
   return new Promise((resolve, reject) => {
     const socket = net.connect({ host: listener.host, port })

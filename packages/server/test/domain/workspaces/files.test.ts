@@ -1,0 +1,543 @@
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import { ServerError } from '@yaac/shared/errors'
+import { repoDir, setDataDir, workspaceDir } from '@yaac/shared/project-paths'
+import { testTmpBase } from '@yaac/test-utils/tmp'
+import { handleFixture, installFakeWorkspaceDriver, workspacePathsFixture } from '@yaac/test-utils/fake-driver'
+import { closeDb } from '#db/client'
+import { recordWorkspaceCreated } from '#db/workspace-store'
+import { createCheckout } from '#domain/git'
+import { execFileAsync } from '#lib/shell'
+import {
+  createWorkspaceFolder,
+  deleteWorkspaceEntry,
+  getWorkspaceGitStatus,
+  listWorkspaceDir,
+  listWorkspaceFiles,
+  readWorkspaceFile,
+  renameWorkspaceEntry,
+  writeWorkspaceFile,
+} from '#domain/workspaces'
+import { git } from '@yaac/test-utils/git'
+
+/**
+ * Real checkouts made by `createCheckout` from a main clone on this disk.
+ * Only the substrate is faked: the driver answers `find` with a running
+ * handle for the workspace asked for (a stopped one for `stopped`), and runs
+ * what it is asked to run inside a workspace as a host shell in that
+ * workspace's checkout — which, for a host workspace, is what it is.
+ */
+
+const SLUG = 'demo'
+let tmp: string
+/** A folder beside the data dir: what an escaping link reaches for. */
+let outside: string
+
+async function makeCheckout(id: string): Promise<string> {
+  const dir = workspaceDir(SLUG, id)
+  await createCheckout(repoDir(SLUG), dir, { branch: `agent/${id}`, baseBranch: 'main', remoteUrl: 'https://example.invalid/r.git' })
+  return dir
+}
+
+/** git inside a checkout. */
+function wtGit(id: string): (args: string[]) => Promise<string> {
+  return (args) => git(workspaceDir(SLUG, id), args)
+}
+
+async function refusal(p: Promise<unknown>): Promise<{ code: string; message: string }> {
+  const err = await p.then(() => null, (e: unknown) => e)
+  expect(err).toBeInstanceOf(ServerError)
+  return { code: (err as ServerError).code, message: (err as ServerError).message }
+}
+
+async function write(dir: string, rel: string, content: string | Buffer = ''): Promise<void> {
+  await fs.mkdir(path.dirname(path.join(dir, rel)), { recursive: true })
+  await fs.writeFile(path.join(dir, rel), content)
+}
+
+beforeAll(async () => {
+  tmp = await fs.mkdtemp(path.join(testTmpBase(), 'yaac-files-'))
+  setDataDir(path.join(tmp, 'data'))
+  outside = path.join(tmp, 'outside')
+  await write(outside, 'secret.txt', 'secret\n')
+
+  const repo = repoDir(SLUG)
+  await fs.mkdir(repo, { recursive: true })
+  await git(repo, ['init', '-b', 'main'])
+  await git(repo, ['config', 'user.email', 'test@test.com'])
+  await git(repo, ['config', 'user.name', 'Test'])
+  await write(repo, '.gitignore', 'node_modules/\n*.log\nbuild/\n')
+  await write(repo, 'a.txt', 'alpha\n')
+  await write(repo, 'b.txt', 'bravo\n')
+  await write(repo, 'd.txt', 'delta\n')
+  await write(repo, 'conflict.txt', 'base\n')
+  await write(repo, 'src/lib/util.ts', 'export {}\n')
+  await git(repo, ['add', '.'])
+  await git(repo, ['commit', '-m', 'initial'])
+  // A main clone's shape: the remote's branches under origin/.
+  await git(repo, ['update-ref', 'refs/remotes/origin/main', 'main'])
+  await git(repo, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+})
+
+// The fake is reset after every test, so it is installed before each.
+beforeEach(() => {
+  installFakeWorkspaceDriver({
+    find: (id) => Promise.resolve(handleFixture({
+      workspaceId: id, projectSlug: SLUG, jobName: id,
+      ...(id === 'stopped' ? { running: false, state: 'stopped' } : {}),
+    })),
+    workspacePaths: (jobName) => workspacePathsFixture({ workspaceDir: workspaceDir(SLUG, jobName) }),
+    exec: async (_jobName, cmd) => execFileAsync('sh', ['-c', cmd], { maxBuffer: 64 << 20 }),
+  })
+})
+
+afterAll(async () => {
+  await closeDb()
+  await fs.rm(tmp, { recursive: true, force: true })
+})
+
+describe('listWorkspaceFiles', () => {
+  let dir: string
+  beforeAll(async () => {
+    dir = await makeCheckout('list')
+    await write(dir, 'untracked.txt', 'u')
+    await write(dir, 'debug.log', 'ignored')
+    await write(dir, 'node_modules/x/index.js', 'ignored')
+    await write(dir, 'pkg/build/out.js', 'ignored')
+    await write(dir, 'pkg/keep.ts', 'kept')
+    await fs.rm(path.join(dir, 'd.txt'))
+    await fs.mkdir(path.join(dir, 'empty'))
+    await fs.mkdir(path.join(dir, 'nest/inner'), { recursive: true })
+    await fs.mkdir(path.join(dir, 'src/lib/fresh'))
+    await write(dir, 'newpkg/file.ts', 'n')
+    await fs.mkdir(path.join(dir, 'newpkg/tests'))
+    await fs.symlink('a.txt', path.join(dir, 'link.txt'))
+    await fs.symlink('src/lib', path.join(dir, 'lib'))
+    await fs.symlink(path.relative(dir, path.join(outside, 'secret.txt')), path.join(dir, 'escape'))
+    await fs.symlink('nowhere', path.join(dir, 'broken'))
+  })
+
+  it('lists tracked and untracked files, gitignore-aware, without deleted ones', async () => {
+    const files = await listWorkspaceFiles('list')
+    expect(files.paths).toEqual(expect.arrayContaining([
+      '.gitignore', 'a.txt', 'b.txt', 'src/lib/util.ts', 'untracked.txt', 'pkg/keep.ts', 'newpkg/file.ts',
+    ]))
+    expect(files.paths).not.toContain('d.txt')
+    expect(files.paths).not.toContain('debug.log')
+    expect(files.paths.some((p) => p.startsWith('node_modules'))).toBe(false)
+    expect(files.truncated).toBe(false)
+  })
+
+  it('reports each symlink with where it leads', async () => {
+    const { symlinks } = await listWorkspaceFiles('list')
+    expect(symlinks).toEqual({
+      'link.txt': { target: 'a.txt', dir: false },
+      lib: { target: 'src/lib', dir: true },
+      escape: { target: null, dir: false },
+      broken: { target: null, dir: false },
+    })
+  })
+
+  it('collapses wholly ignored folders and keeps individually ignored files', async () => {
+    const { ignored } = await listWorkspaceFiles('list')
+    expect(ignored).toEqual(expect.arrayContaining(['node_modules/', 'pkg/build/', 'debug.log']))
+    expect(ignored.some((p) => p.startsWith('node_modules/x'))).toBe(false)
+  })
+
+  it('finds folders holding no file, at any depth, but not ones that hold one', async () => {
+    const { emptyDirs } = await listWorkspaceFiles('list')
+    expect(emptyDirs).toEqual(expect.arrayContaining([
+      'empty', 'nest', 'nest/inner', 'src/lib/fresh', 'newpkg/tests',
+    ]))
+    expect(emptyDirs).not.toContain('newpkg')
+    expect(emptyDirs.some((d) => d.startsWith('node_modules') || d.startsWith('pkg'))).toBe(false)
+  })
+
+  it('reports git status against HEAD without writing the index', async () => {
+    await makeCheckout('status')
+    const inWt = wtGit('status')
+    const wt = workspaceDir(SLUG, 'status')
+    // A conflict first, while the tree is clean: the same file changed on
+    // both sides of a merge.
+    await git(repoDir(SLUG), ['commit', '--allow-empty', '-m', 'noop'])
+    await write(repoDir(SLUG), 'conflict.txt', 'theirs\n')
+    await git(repoDir(SLUG), ['add', 'conflict.txt'])
+    await git(repoDir(SLUG), ['commit', '-m', 'theirs'])
+    await write(wt, 'conflict.txt', 'ours\n')
+    await inWt(['add', 'conflict.txt'])
+    await inWt(['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-m', 'ours'])
+    // Borrowed through the alternate: the clone sees main's objects.
+    const theirs = (await git(repoDir(SLUG), ['rev-parse', 'main'])).trim()
+    await inWt(['-c', 'user.email=t@t', '-c', 'user.name=T', 'merge', theirs]).catch(() => { /* conflicts, as intended */ })
+
+    await write(wt, 'a.txt', 'changed\n')
+    await write(wt, 'staged.txt', 'new\n')
+    await inWt(['add', 'staged.txt'])
+    await write(wt, 'newdir/deep/x.txt', 'untracked\n')
+    await inWt(['mv', 'b.txt', 'renamed.txt'])
+    await fs.rm(path.join(wt, 'd.txt'))
+
+    const index = path.join(wt, '.git', 'index')
+    // Make a tracked file's stat data stale so a status WOULD refresh it.
+    const future = new Date(Date.now() + 60_000)
+    await fs.utimes(path.join(wt, 'src/lib/util.ts'), future, future)
+    const before = await fs.stat(index)
+
+    const { status, paths } = await listWorkspaceFiles('status')
+    expect(status).toEqual({
+      'a.txt': 'modified',
+      'staged.txt': 'added',
+      'newdir/deep/x.txt': 'untracked',
+      'renamed.txt': 'added',
+      'conflict.txt': 'conflicted',
+    })
+    expect(paths).not.toContain('d.txt')
+
+    const after = await fs.stat(index)
+    expect(after.ino).toBe(before.ino)
+    expect(after.mtimeMs).toBe(before.mtimeMs)
+  })
+
+  it('caps the listing and says so', async () => {
+    const wt = await makeCheckout('big')
+    const names = Array.from({ length: 50_001 }, (_, i) => `many/f${i}`)
+    await fs.mkdir(path.join(wt, 'many'))
+    for (let i = 0; i < names.length; i += 1000) {
+      await Promise.all(names.slice(i, i + 1000).map((n) => fs.writeFile(path.join(wt, n), '')))
+    }
+    const files = await listWorkspaceFiles('big')
+    expect(files.paths).toHaveLength(50_000)
+    expect(files.truncated).toBe(true)
+    // Every file here is untracked; the status map shares the cap.
+    expect(Object.keys(files.status)).toHaveLength(50_000)
+  }, 120_000)
+})
+
+describe('getWorkspaceGitStatus', () => {
+  // One commit on the checkout's branch, and one on main after the fork that
+  // the origin refresh brings into the checkout.
+  beforeAll(async () => {
+    // Forked from main as the tests above left it.
+    await git(repoDir(SLUG), ['update-ref', 'refs/remotes/origin/main', 'main'])
+    await makeCheckout('gs')
+    const run = wtGit('gs')
+    await run(['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '--allow-empty', '-m', 'agent work'])
+    await git(repoDir(SLUG), ['commit', '--allow-empty', '-m', 'landed on main'])
+    await git(repoDir(SLUG), ['update-ref', 'refs/remotes/origin/main', 'main'])
+    await run(['fetch', '-q', path.join(repoDir(SLUG), '.git'), 'refs/remotes/origin/*:refs/remotes/origin/*'])
+    await recordWorkspaceCreated({ projectSlug: SLUG, workspaceId: 'gs', baseBranch: 'main' })
+  })
+
+  it('counts against the fork branch by default and an explicit base on request', async () => {
+    const fork = await getWorkspaceGitStatus('gs')
+    expect(fork).toMatchObject({
+      base: 'main', comparison: { ref: 'origin/main', ahead: 1, behind: 1 },
+    })
+    expect(fork.comparison?.fetchedAt).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/)
+    // A branch never pushed is counted locally, and has no fetch to report.
+    await expect(getWorkspaceGitStatus('gs', 'agent/gs')).resolves.toEqual({
+      base: 'agent/gs', comparison: { ref: 'agent/gs', ahead: 0, behind: 0 },
+    })
+    await expect(getWorkspaceGitStatus('gs', 'gone')).resolves.toEqual({ base: 'gone', comparison: null })
+    // Not a branch name: a range would otherwise count something else.
+    await expect(getWorkspaceGitStatus('gs', 'main..HEAD')).resolves.toEqual({ base: 'main..HEAD', comparison: null })
+  })
+
+  it('answers only while the workspace runs, as the listing does', async () => {
+    expect((await refusal(getWorkspaceGitStatus('stopped', 'main'))).code).toBe('CONFLICT')
+    expect((await refusal(listWorkspaceFiles('stopped'))).code).toBe('CONFLICT')
+    // Stopped with nothing left on the substrate — a host workspace, say —
+    // is still a workspace to start, not one that does not exist.
+    installFakeWorkspaceDriver({ find: () => Promise.resolve(undefined) })
+    expect((await refusal(getWorkspaceGitStatus('gs'))).code).toBe('CONFLICT')
+    expect((await refusal(getWorkspaceGitStatus('nope'))).code).toBe('NOT_FOUND')
+  })
+})
+
+describe('listWorkspaceDir', () => {
+  let dir: string
+  beforeAll(async () => {
+    dir = await makeCheckout('dir')
+    await write(dir, 'node_modules/pkg/index.js', 'x')
+    await fs.mkdir(path.join(dir, 'node_modules/pkg/lib'))
+    await fs.symlink('index.js', path.join(dir, 'node_modules/pkg/main.js'))
+    await fs.symlink('node_modules/pkg', path.join(dir, 'vendor'))
+    await fs.symlink(path.relative(dir, outside), path.join(dir, 'away'))
+  })
+
+  it('lists an ignored folder’s children with their kinds', async () => {
+    const { entries, truncated } = await listWorkspaceDir('dir', 'node_modules/pkg')
+    expect(truncated).toBe(false)
+    expect(entries.sort((a, b) => a.name.localeCompare(b.name))).toEqual([
+      { name: 'index.js', dir: false },
+      { name: 'lib', dir: true },
+      { name: 'main.js', dir: false, symlink: { target: 'node_modules/pkg/index.js', dir: false } },
+    ])
+  })
+
+  it('follows a folder link that stays inside the workspace', async () => {
+    const { entries } = await listWorkspaceDir('dir', 'vendor')
+    expect(entries.map((e) => e.name).sort()).toEqual(['index.js', 'lib', 'main.js'])
+  })
+
+  it('refuses a link that leads outside, and a file', async () => {
+    expect(await refusal(listWorkspaceDir('dir', 'away')))
+      .toEqual({ code: 'VALIDATION', message: 'away points outside the workspace' })
+    expect((await refusal(listWorkspaceDir('dir', 'a.txt'))).code).toBe('VALIDATION')
+    expect((await refusal(listWorkspaceDir('dir', 'missing'))).code).toBe('NOT_FOUND')
+  })
+
+  it('caps a large folder and says so', async () => {
+    await fs.mkdir(path.join(dir, 'node_modules/huge'))
+    await Promise.all(Array.from({ length: 5_001 }, (_, i) =>
+      fs.writeFile(path.join(dir, `node_modules/huge/f${i}`), '')))
+    const { entries, truncated } = await listWorkspaceDir('dir', 'node_modules/huge')
+    expect(entries).toHaveLength(5_000)
+    expect(truncated).toBe(true)
+  })
+})
+
+describe('readWorkspaceFile', () => {
+  let dir: string
+  beforeAll(async () => {
+    dir = await makeCheckout('read')
+    await write(dir, 'nul.bin', Buffer.from([0x61, 0x00, 0x62]))
+    await write(dir, 'latin1.txt', Buffer.from([0x63, 0x61, 0x66, 0xe9]))
+    await write(dir, 'big.txt', 'x'.repeat(1024 * 1024 + 1))
+    await write(dir, 'exact.txt', 'x'.repeat(1024 * 1024))
+    await write(dir, 'sub/f.txt', 'in sub\n')
+    await fs.symlink('a.txt', path.join(dir, 'link.txt'))
+    await fs.symlink('sub', path.join(dir, 'lnk'))
+    await fs.symlink('hop2', path.join(dir, 'hop1'))
+    await fs.symlink('a.txt', path.join(dir, 'hop2'))
+    await fs.symlink(path.relative(dir, path.join(outside, 'secret.txt')), path.join(dir, 'up'))
+    await fs.symlink(path.join(outside, 'secret.txt'), path.join(dir, 'abs'))
+    await fs.symlink('.git', path.join(dir, 'gitlink'))
+    await fs.mkdir(path.join(dir, 'inner'))
+    await fs.symlink(path.relative(path.join(dir, 'inner'), outside), path.join(dir, 'inner/out'))
+    await fs.symlink('inner', path.join(dir, 'via'))
+  })
+
+  it('reads a file with its version, and omits the content while that version holds', async () => {
+    const file = await readWorkspaceFile('read', 'a.txt')
+    expect(file).toMatchObject({ path: 'a.txt', size: 6, binary: false, content: 'alpha\n' })
+    expect(file.version).toMatch(/^[0-9a-f]{64}$/)
+    const again = await readWorkspaceFile('read', 'a.txt', file.version)
+    expect(again).toEqual({ path: 'a.txt', version: file.version, size: 6, binary: false })
+    const stale = await readWorkspaceFile('read', 'a.txt', 'old')
+    expect(stale.content).toBe('alpha\n')
+  })
+
+  it('refuses paths that are not plainly inside the workspace', async () => {
+    for (const bad of ['/etc/passwd', '../x', 'a/../../x', 'a\0b', '.git/config', '.git']) {
+      expect((await refusal(readWorkspaceFile('read', bad))).code).toBe('VALIDATION')
+    }
+    expect((await refusal(readWorkspaceFile('read', 'missing.txt'))).code).toBe('NOT_FOUND')
+    expect((await refusal(readWorkspaceFile('read', 'sub'))).code).toBe('VALIDATION')
+  })
+
+  it('refuses a FIFO at once rather than waiting for a writer', async () => {
+    await execFileAsync('mkfifo', [path.join(dir, 'pipe')])
+    expect(await refusal(readWorkspaceFile('read', 'pipe')))
+      .toEqual({ code: 'VALIDATION', message: 'pipe is not a regular file' })
+  })
+
+  it('gives binary and oversized files no content', async () => {
+    expect(await readWorkspaceFile('read', 'nul.bin')).toMatchObject({ binary: true, content: null })
+    expect(await readWorkspaceFile('read', 'latin1.txt')).toMatchObject({ binary: true, content: null })
+    expect(await readWorkspaceFile('read', 'big.txt')).toMatchObject({
+      binary: false, content: null, size: 1024 * 1024 + 1,
+    })
+    expect((await readWorkspaceFile('read', 'exact.txt')).content).toHaveLength(1024 * 1024)
+  })
+
+  it('follows links that land inside the workspace', async () => {
+    expect((await readWorkspaceFile('read', 'link.txt')).content).toBe('alpha\n')
+    expect((await readWorkspaceFile('read', 'lnk/f.txt')).content).toBe('in sub\n')
+    expect((await readWorkspaceFile('read', 'hop1')).content).toBe('alpha\n')
+  })
+
+  it('refuses links that land outside, or in .git', async () => {
+    for (const bad of ['up', 'abs', 'gitlink', 'via/out/secret.txt']) {
+      expect(await refusal(readWorkspaceFile('read', bad)))
+        .toEqual({ code: 'VALIDATION', message: `${bad} points outside the workspace` })
+    }
+  })
+})
+
+describe('writeWorkspaceFile', () => {
+  let dir: string
+  const read = (rel: string): Promise<string> => fs.readFile(path.join(dir, rel), 'utf8')
+  beforeAll(async () => {
+    dir = await makeCheckout('write')
+    await write(dir, 'sub/t.txt', 'target\n')
+    await fs.symlink('sub/t.txt', path.join(dir, 'link.txt'))
+    await fs.symlink('sub', path.join(dir, 'lnk'))
+    await fs.symlink(path.relative(dir, path.join(outside, 'secret.txt')), path.join(dir, 'up'))
+    await fs.symlink(path.relative(dir, outside), path.join(dir, 'away'))
+    await fs.symlink('nowhere', path.join(dir, 'dangle'))
+  })
+
+  it('saves against the version it read, and refuses a stale one with the current', async () => {
+    const { version } = await readWorkspaceFile('write', 'a.txt')
+    const saved = await writeWorkspaceFile('write', 'a.txt', 'one\n', version)
+    if (!('saved' in saved)) throw new Error('the save was refused')
+    expect(saved.saved).toMatchObject({ path: 'a.txt', size: 4 })
+    expect(saved.saved.version).not.toBe(version)
+    expect(await read('a.txt')).toBe('one\n')
+    expect(await writeWorkspaceFile('write', 'a.txt', 'two\n', version))
+      .toEqual({ conflict: saved.saved.version })
+    expect(await read('a.txt')).toBe('one\n')
+  })
+
+  it('creates a file and its folders, and a create conflicts with what is there', async () => {
+    expect(await writeWorkspaceFile('write', 'x/y/new.txt', 'n', null))
+      .toMatchObject({ saved: { path: 'x/y/new.txt', size: 1 } })
+    expect(await read('x/y/new.txt')).toBe('n')
+    const { version } = await readWorkspaceFile('write', 'b.txt')
+    expect(await writeWorkspaceFile('write', 'b.txt', 'clobber', null)).toEqual({ conflict: version })
+    expect(await read('b.txt')).toBe('bravo\n')
+  })
+
+  it('never recreates a file that is gone', async () => {
+    await write(dir, 'doomed.txt', 'd')
+    const { version } = await readWorkspaceFile('write', 'doomed.txt')
+    await fs.rm(path.join(dir, 'doomed.txt'))
+    expect(await writeWorkspaceFile('write', 'doomed.txt', 'back', version)).toEqual({ conflict: null })
+    await expect(fs.stat(path.join(dir, 'doomed.txt'))).rejects.toThrow()
+  })
+
+  it('writes in place, keeping the mode and inode', async () => {
+    await write(dir, 'run.sh', '#!/bin/sh\n')
+    await fs.chmod(path.join(dir, 'run.sh'), 0o755)
+    const before = await fs.stat(path.join(dir, 'run.sh'))
+    const { version } = await readWorkspaceFile('write', 'run.sh')
+    await writeWorkspaceFile('write', 'run.sh', '#!/bin/sh\necho hi\n', version)
+    const after = await fs.stat(path.join(dir, 'run.sh'))
+    expect(after.ino).toBe(before.ino)
+    expect(after.mode).toBe(before.mode)
+    expect(await read('run.sh')).toBe('#!/bin/sh\necho hi\n')
+  })
+
+  it('saves through a link to the file it points to, leaving the link', async () => {
+    const { version } = await readWorkspaceFile('write', 'link.txt')
+    await writeWorkspaceFile('write', 'link.txt', 'via link\n', version)
+    expect(await read('sub/t.txt')).toBe('via link\n')
+    expect((await fs.lstat(path.join(dir, 'link.txt'))).isSymbolicLink()).toBe(true)
+  })
+
+  it('refuses a save through a link that leads outside, touching nothing', async () => {
+    expect((await refusal(writeWorkspaceFile('write', 'up', 'pwned', 'x'))).code).toBe('VALIDATION')
+    expect(await fs.readFile(path.join(outside, 'secret.txt'), 'utf8')).toBe('secret\n')
+  })
+
+  it('creates under a linked folder in its target, and refuses one that leads out', async () => {
+    await writeWorkspaceFile('write', 'lnk/made.txt', 'm', null)
+    expect(await read('sub/made.txt')).toBe('m')
+    expect((await refusal(writeWorkspaceFile('write', 'away/planted.txt', 'p', null))).code)
+      .toBe('VALIDATION')
+    expect(await fs.readdir(outside)).toEqual(['secret.txt'])
+  })
+
+  it('refuses to create through a dangling link', async () => {
+    expect((await refusal(writeWorkspaceFile('write', 'dangle', 'x', null))).code).toBe('VALIDATION')
+    expect(await fs.readlink(path.join(dir, 'dangle'))).toBe('nowhere')
+  })
+})
+
+describe('createWorkspaceFolder', () => {
+  let dir: string
+  beforeAll(async () => {
+    dir = await makeCheckout('folder')
+    await fs.mkdir(path.join(dir, 'real'))
+    await fs.symlink('real', path.join(dir, 'lnk'))
+    await fs.symlink(path.relative(dir, outside), path.join(dir, 'away'))
+  })
+
+  it('creates nested folders, and conflicts with an existing entry', async () => {
+    expect(await createWorkspaceFolder('folder', 'p/q/r')).toEqual({ path: 'p/q/r' })
+    expect((await fs.stat(path.join(dir, 'p/q/r'))).isDirectory()).toBe(true)
+    expect((await refusal(createWorkspaceFolder('folder', 'p/q'))).code).toBe('CONFLICT')
+    expect((await refusal(createWorkspaceFolder('folder', 'a.txt'))).code).toBe('CONFLICT')
+  })
+
+  it('creates under a linked folder in its target, and refuses one that leads out', async () => {
+    await createWorkspaceFolder('folder', 'lnk/made')
+    expect((await fs.stat(path.join(dir, 'real/made'))).isDirectory()).toBe(true)
+    expect((await refusal(createWorkspaceFolder('folder', 'away/planted'))).code).toBe('VALIDATION')
+    expect(await fs.readdir(outside)).toEqual(['secret.txt'])
+  })
+})
+
+describe('renameWorkspaceEntry', () => {
+  let dir: string
+  beforeAll(async () => {
+    dir = await makeCheckout('rename')
+    await write(dir, 'folder/inside.txt', 'i')
+    await fs.symlink('a.txt', path.join(dir, 'link'))
+    await fs.symlink(path.relative(dir, outside), path.join(dir, 'away'))
+  })
+
+  it('moves files and folders, within and across folders', async () => {
+    expect(await renameWorkspaceEntry('rename', 'b.txt', 'c.txt')).toEqual({ from: 'b.txt', to: 'c.txt' })
+    expect(await fs.readFile(path.join(dir, 'c.txt'), 'utf8')).toBe('bravo\n')
+    await renameWorkspaceEntry('rename', 'folder', 'moved')
+    expect(await fs.readFile(path.join(dir, 'moved/inside.txt'), 'utf8')).toBe('i')
+    await renameWorkspaceEntry('rename', 'c.txt', 'moved/deeper/c.txt')
+    expect(await fs.readFile(path.join(dir, 'moved/deeper/c.txt'), 'utf8')).toBe('bravo\n')
+  })
+
+  it('renames a link as the link', async () => {
+    await renameWorkspaceEntry('rename', 'link', 'relinked')
+    expect(await fs.readlink(path.join(dir, 'relinked'))).toBe('a.txt')
+    expect(await fs.readFile(path.join(dir, 'a.txt'), 'utf8')).toBe('alpha\n')
+  })
+
+  it('refuses a taken destination, a move into itself, .git, and a way out', async () => {
+    expect((await refusal(renameWorkspaceEntry('rename', 'a.txt', 'd.txt'))).code).toBe('CONFLICT')
+    expect((await refusal(renameWorkspaceEntry('rename', 'moved', 'moved/sub'))).code).toBe('VALIDATION')
+    expect((await refusal(renameWorkspaceEntry('rename', 'a.txt', '.git/hooks/x'))).code).toBe('VALIDATION')
+    expect((await refusal(renameWorkspaceEntry('rename', '.git', 'g'))).code).toBe('VALIDATION')
+    expect((await refusal(renameWorkspaceEntry('rename', 'a.txt', 'away/a.txt'))).code).toBe('VALIDATION')
+    expect((await refusal(renameWorkspaceEntry('rename', 'missing', 'x'))).code).toBe('NOT_FOUND')
+    expect(await fs.readdir(outside)).toEqual(['secret.txt'])
+    expect(await fs.readFile(path.join(dir, 'a.txt'), 'utf8')).toBe('alpha\n')
+  })
+})
+
+describe('deleteWorkspaceEntry', () => {
+  let dir: string
+  beforeAll(async () => {
+    dir = await makeCheckout('delete')
+    await fs.symlink(path.relative(dir, path.join(outside, 'secret.txt')), path.join(dir, 'link'))
+    await write(dir, 'tree/a/b.txt', 'b')
+    await write(dir, 'tree/c.txt', 'c')
+    await write(outside, 'deep/keep.txt', 'keep')
+    await write(dir, 'holder/plain.txt', 'p')
+    await fs.symlink(path.relative(path.join(dir, 'holder'), path.join(outside, 'deep')), path.join(dir, 'holder/out'))
+    await fs.symlink(path.relative(dir, outside), path.join(dir, 'away'))
+  })
+
+  it('deletes a file, and a link without what it points to', async () => {
+    await deleteWorkspaceEntry('delete', 'a.txt')
+    await expect(fs.stat(path.join(dir, 'a.txt'))).rejects.toThrow()
+    await deleteWorkspaceEntry('delete', 'link')
+    await expect(fs.lstat(path.join(dir, 'link'))).rejects.toThrow()
+    expect(await fs.readFile(path.join(outside, 'secret.txt'), 'utf8')).toBe('secret\n')
+  })
+
+  it('deletes a folder recursively, never following a link inside it', async () => {
+    await deleteWorkspaceEntry('delete', 'tree')
+    await expect(fs.stat(path.join(dir, 'tree'))).rejects.toThrow()
+    await deleteWorkspaceEntry('delete', 'holder')
+    await expect(fs.lstat(path.join(dir, 'holder'))).rejects.toThrow()
+    expect(await fs.readFile(path.join(outside, 'deep/keep.txt'), 'utf8')).toBe('keep')
+  })
+
+  it('refuses a path through a link that leads out, and a missing one', async () => {
+    expect((await refusal(deleteWorkspaceEntry('delete', 'away/secret.txt'))).code).toBe('VALIDATION')
+    expect(await fs.readFile(path.join(outside, 'secret.txt'), 'utf8')).toBe('secret\n')
+    expect((await refusal(deleteWorkspaceEntry('delete', 'missing'))).code).toBe('NOT_FOUND')
+  })
+})

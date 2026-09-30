@@ -4,12 +4,12 @@ import type http from 'node:http'
 /**
  * Tests for the proxy's placeholder-gated GitHub CLI (`gh`) credential
  * injection. Mirrors the relevant slice of `buildDynamicRules` /
- * `resolveGithubApiTokenForWorktree` in k8s/proxy/proxy.ts — the proxy runs in
+ * `resolveGithubApiTokenForWorkspace` in k8s/proxy/proxy.ts — the proxy runs in
  * its own container and can't be imported directly, so we copy the logic
  * under test.
  *
  * `gh` reads GH_TOKEN (seeded with the placeholder) and sends it to the GitHub
- * API host. Injection fires only when the worktree has a github.com HTTPS git
+ * API host. Injection fires only when the workspace has a github.com HTTPS git
  * credential AND the inbound Authorization header carries the placeholder
  * sentinel; the real token is swapped in while preserving gh's auth scheme
  * (`token ` or `Bearer `). Every other combination passes through unchanged.
@@ -36,7 +36,7 @@ function headerValue(
   return undefined
 }
 
-function resolveGithubApiTokenForWorktree(cred: HttpsCred, hostname: string): string | null {
+function resolveGithubApiTokenForWorkspace(cred: HttpsCred, hostname: string): string | null {
   if (!cred) return null
   if (ghApiHostForGitHost(cred.host) !== hostname) return null
   return cred.token
@@ -47,7 +47,7 @@ function buildGithubRules(
   hostname: string,
   reqHeaders: http.IncomingHttpHeaders,
 ): InjectionRule[] {
-  const ghApiToken = resolveGithubApiTokenForWorktree(cred, hostname)
+  const ghApiToken = resolveGithubApiTokenForWorkspace(cred, hostname)
   if (!ghApiToken) return []
   const incomingAuth = headerValue(reqHeaders, 'authorization')
   if (!incomingAuth || !incomingAuth.includes(PLACEHOLDER_GH_TOKEN)) return []
@@ -100,7 +100,7 @@ describe('gh CLI credential injection gating', () => {
     expect(rules).toEqual([])
   })
 
-  it('does not inject when the worktree has no github credential', () => {
+  it('does not inject when the workspace has no github credential', () => {
     const rules = buildGithubRules(null, 'api.github.com', {
       authorization: 'token ' + PLACEHOLDER_GH_TOKEN,
     })

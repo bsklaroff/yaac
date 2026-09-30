@@ -97,7 +97,7 @@ export const env = {
    * reachable by nothing at all — its Service would have no backend. What
    * replaces the loopback bind there is the pod's ingress NetworkPolicies,
    * which admit the node addresses and whatever fronts the Service, and
-   * nothing pod-shaped (see docs/server-in-cluster.md): a worktree pod
+   * nothing pod-shaped (see docs/server-in-cluster.md): a workspace pod
    * dialing the server pod directly presents a pod source IP and is
    * dropped. That makes the policy load-bearing rather than defence in
    * depth, which is why `yaac cluster check` probes it.
@@ -116,7 +116,7 @@ export const env = {
    * DNS name instead of through a `kubectl port-forward`, and `yaac server
    * start` refuses rather than spawning a second server beside the pod.
    * Declared by the manifest rather than sniffed from
-   * `KUBERNETES_SERVICE_HOST`, which is also injected into every worktree
+   * `KUBERNETES_SERVICE_HOST`, which is also injected into every workspace
    * pod and into anything else that happens to run in a cluster.
    */
   get inCluster(): boolean {
@@ -179,7 +179,7 @@ export const env = {
    * This acknowledges the operator has verified ClusterIP translation is
    * still kube-proxy's job; it does not weaken anything else. Getting it
    * wrong costs egress rather than opening it: netd's Envoy simply fails to
-   * dial the proxy's ClusterIP, and the worktree NetworkPolicy still denies
+   * dial the proxy's ClusterIP, and the workspace NetworkPolicy still denies
    * every world-ward destination but the node's listener range.
    */
   get kubeProxyExternal(): boolean {
@@ -187,7 +187,7 @@ export const env = {
   },
 
   /**
-   * `YAAC_PREWARM_POOL_SIZE` — prewarmed worktrees per active project (`0`
+   * `YAAC_PREWARM_POOL_SIZE` — prewarmed workspaces per active project (`0`
    * disables). Default 1; a non-integer or negative value falls back to 1.
    */
   get prewarmPoolSize(): number {
@@ -211,7 +211,7 @@ export const env = {
 
   /**
    * `YAAC_AUTO_TITLES` — background model-generated titles for untitled
-   * worktrees. Unset → on; empty, "0", and "false" (case-insensitive) → off.
+   * workspaces. Unset → on; empty, "0", and "false" (case-insensitive) → off.
    */
   get autoTitles(): boolean {
     const raw = process.env.YAAC_AUTO_TITLES
@@ -222,8 +222,8 @@ export const env = {
   },
 
   /**
-   * `YAAC_WORKTREE_ID` — the worktree this process runs inside, stamped into
-   * every worktree's environment by `createWorktree` (both drivers: k8s reads
+   * `YAAC_WORKSPACE_ID` — the workspace this process runs inside, stamped into
+   * every workspace's environment by `createWorkspace` (both drivers: k8s reads
    * it off the pod spec, containerless off the tmux server environment).
    * Undefined for a server running on a user's own machine.
    *
@@ -231,15 +231,17 @@ export const env = {
    * reached through the outer install's port-forward, a direct path that
    * passes through no `tailscale serve`, so an unproxied request to it is
    * local whatever Host it names (docs/remote-hosting.md). Empty is treated
-   * as unset so an explicit `YAAC_WORKTREE_ID=` clears it.
+   * as unset so an explicit `YAAC_WORKSPACE_ID=` clears it. A workspace an
+   * older install launched carries it as `YAAC_WORKTREE_ID` instead
+   * (docs/legacy-compat-shims.md).
    */
-  get worktreeId(): string | undefined {
-    const raw = (process.env.YAAC_WORKTREE_ID ?? '').trim()
+  get workspaceId(): string | undefined {
+    const raw = (process.env.YAAC_WORKSPACE_ID ?? process.env.YAAC_WORKTREE_ID ?? '').trim()
     return raw === '' ? undefined : raw
   },
 
   /**
-   * `YAAC_DRIVER` — which substrate this install runs worktrees on.
+   * `YAAC_DRIVER` — which substrate this install runs workspaces on.
    *
    * NOT what selects it. Placement does that: the server is a pod under
    * `k8s` and a host process under `containerless`, so the composition root
@@ -365,7 +367,7 @@ export const env = {
   },
 
   /**
-   * `YAAC_FORWARD_BIND` — bind address for worktree port-forward listeners.
+   * `YAAC_FORWARD_BIND` — bind address for workspace port-forward listeners.
    * Default loopback (today's behavior); a remote-hosting server sets its
    * tailnet IP so forwarded dev servers are reachable from other tailnet
    * devices. Deployment topology, not project config.
@@ -437,14 +439,14 @@ export const testEnv = {
 
 
   /**
-   * `YAAC_STARTING_GRACE_MS` — grace window protecting freshly-created worktree
-   * pods from the stale-worktree reaper. worktree-create's retry loop recreates
+   * `YAAC_STARTING_GRACE_MS` — grace window protecting freshly-created workspace
+   * pods from the stale-workspace reaper. workspace-create's retry loop recreates
    * the Job between attempts and does not start tmux until the last step, so
-   * without a grace period a concurrent reap pass (`reconcileStaleWorktrees`)
+   * without a grace period a concurrent reap pass (`reconcileStaleWorkspaces`)
    * can classify the pod as a zombie — firing
-   * cleanupWorktreeDetached, which removes the worktree's allowedHosts from the
+   * cleanupWorkspaceDetached, which removes the workspace's allowedHosts from the
    * proxy mid-creation. Default 60_000; a non-finite or negative value falls
-   * back to the default. Tests shrink it to provoke cleanup on worktrees they
+   * back to the default. Tests shrink it to provoke cleanup on workspaces they
    * just created.
    */
   get startingGraceMs(): number {
@@ -487,13 +489,13 @@ export const testEnv = {
    *
    * Set for the whole test suite, and the one env flag here that exists to
    * prevent damage rather than to shape behavior. A refresh grant ROTATES the
-   * credential, and a suite run inside a proxy-mediated yaac worktree cannot
+   * credential, and a suite run inside a proxy-mediated yaac workspace cannot
    * keep that local: the egress proxy rewrites the `refresh_token` body param
    * of anything POSTed to a token endpoint to the REAL stored token, without
    * checking what the request carried — so a test presenting a sentinel, a
    * fabricated string, or anything else still rotates the outer install's
    * live credential. The outer store then keeps the token that rotation
-   * spent, and every worktree using it is signed out.
+   * spent, and every workspace using it is signed out.
    *
    * Blocking the grant is what makes that unreachable, and it is blocked at
    * the grant rather than at a call site so no future caller can reintroduce

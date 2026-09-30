@@ -1,20 +1,20 @@
 /*
- * Verifies the git status bar above a worktree's panes in real Chromium:
+ * Verifies the git status bar above a workspace's panes in real Chromium:
  *   1. The bar says, in words, where HEAD stands against the reference branch
  *      ("Up to date with origin/main · fetched 5m ago", "3 commits ahead of
  *      origin/main", ...), with a branch icon before the ref, and agrees with
- *      GET /worktree/:id/git-status.
+ *      GET /workspace/:id/git-status.
  *   2. The pane area never changes height while the bar loads: the strip is
  *      laid out from the first frame, so no pane refits (and no SIGWINCH
  *      reaches the agent's TUI) when its answer lands.
  *   3. The sidebar row no longer carries the base-branch label.
  * Leaves a screenshot in SCREENSHOT_DIR.
  *
- * Needs a running `yaac server` with one live worktree. Run `pnpm build &&
+ * Needs a running `yaac server` with one live workspace. Run `pnpm build &&
  * yaac server restart` first, or you are looking at the frontend `dist/` held
  * when the server started.
  *
- * Run: node test-playwright-scripts/git-status-bar-test.js <worktree-id>
+ * Run: node test-playwright-scripts/git-status-bar-test.js <workspace-id>
  * (SCREENSHOT_DIR defaults to /tmp/yaac-shots; YAAC_DATA_DIR to ~/.yaac.
  * playwright is resolved from the global npm root; browsers live under
  * /opt/playwright-browsers)
@@ -47,9 +47,9 @@ function readServerLock() {
   throw new Error('no .server.lock found — is the server running? try: yaac server start')
 }
 
-const worktreeId = process.argv[2]
-if (!worktreeId) {
-  console.error('usage: node test-playwright-scripts/git-status-bar-test.js <worktree-id>')
+const workspaceId = process.argv[2]
+if (!workspaceId) {
+  console.error('usage: node test-playwright-scripts/git-status-bar-test.js <workspace-id>')
   process.exit(1)
 }
 
@@ -73,10 +73,10 @@ async function main() {
   const lock = readServerLock()
   const origin = `http://127.0.0.1:${lock.port}`
   const auth = { authorization: `Bearer ${lock.secret}` }
-  const { worktrees } = await (await fetch(`${origin}/api/worktree/list`, { headers: auth })).json()
-  const wt = worktrees.find((w) => w.worktreeId.startsWith(worktreeId))
-  if (!wt) throw new Error(`no running worktree ${worktreeId}`)
-  const status = await (await fetch(`${origin}/api/worktree/${wt.worktreeId}/git-status`, { headers: auth })).json()
+  const { workspaces } = await (await fetch(`${origin}/api/workspace/list`, { headers: auth })).json()
+  const wt = workspaces.find((w) => w.workspaceId.startsWith(workspaceId))
+  if (!wt) throw new Error(`no running workspace ${workspaceId}`)
+  const status = await (await fetch(`${origin}/api/workspace/${wt.workspaceId}/git-status`, { headers: auth })).json()
   console.log('git-status:', JSON.stringify(status))
 
   const token = await (await fetch(`${origin}/tokens`, {
@@ -88,7 +88,7 @@ async function main() {
   const browser = await chromium.launch()
   const page = await browser.newPage({ viewport: { width: 1400, height: 800 } })
   // Record every height the pane area takes once it holds a pane — before
-  // the snapshot lands there is no worktree, so nothing there to resize.
+  // the snapshot lands there is no workspace, so nothing there to resize.
   await page.addInitScript(() => {
     window.__wsHeights = []
     const sample = () => {
@@ -101,7 +101,7 @@ async function main() {
     }
     requestAnimationFrame(sample)
   })
-  const query = new URLSearchParams({ project: wt.projectSlug, worktree: wt.worktreeId, ...(token ? { token } : {}) })
+  const query = new URLSearchParams({ project: wt.projectSlug, workspace: wt.workspaceId, ...(token ? { token } : {}) })
   await page.goto(`${origin}/?${query}`)
   await page.waitForSelector('[aria-label="Browse files"]', { timeout: 20000 })
 

@@ -19,17 +19,17 @@ vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import {
   _resetRegistrationGcForTests,
-  allowWorktreeHost,
-  applyWorktreeRegistration,
-  buildWorktreeRegistration,
+  allowWorkspaceHost,
+  applyProxyRegistration,
+  buildProxyRegistration,
   deregisterWorkspaceEgress,
   reconcileRegistrationGc,
   registerWorkspaceEgress,
-  type WorktreeRegistration,
+  type ProxyRegistration,
 } from '#drivers/k8s/egress/proxy-registration'
 import { DEFAULT_ALLOWED_HOSTS, NESTED_PULL_HOSTS } from '#lib/allowed-hosts'
 import { setActiveClusterCache, type ClusterCache } from '#drivers/k8s/substrate'
-import { _resetWorktreeListChangedForTests, onWorktreeListChanged } from '#notify'
+import { _resetWorkspaceListChangedForTests, onWorkspaceListChanged } from '#notify'
 import type { PassContext } from '#drivers/contract'
 
 interface AppliedRegistration {
@@ -40,28 +40,28 @@ interface AppliedRegistration {
 
 const applied = (): AppliedRegistration[] =>
   mockApply.mock.calls.map(([m]) => m as AppliedRegistration)
-const payloadOf = (m: AppliedRegistration): WorktreeRegistration =>
-  JSON.parse(m.data['registration.json']) as WorktreeRegistration
+const payloadOf = (m: AppliedRegistration): ProxyRegistration =>
+  JSON.parse(m.data['registration.json']) as ProxyRegistration
 
 /** A registration object as `kubectl get` returns it. */
 function registrationObject(
-  worktreeId: string,
-  registration: WorktreeRegistration,
+  workspaceId: string,
+  registration: ProxyRegistration,
   creationTimestamp = '2026-09-01T00:00:00Z',
 ): AppliedRegistration & { metadata: { creationTimestamp: string } } {
   return {
     kind: 'ConfigMap',
     metadata: {
-      name: `yaac-proxy-reg-${worktreeId}`,
+      name: `yaac-proxy-reg-${workspaceId}`,
       namespace: 'test-ns',
-      labels: { 'app': 'yaac-proxy', 'yaac.proxy-input': 'registration', 'yaac.worktree-id': worktreeId, 'yaac.project': registration.projectSlug },
+      labels: { 'app': 'yaac-proxy', 'yaac.proxy-input': 'registration', 'yaac.workspace-id': workspaceId, 'yaac.project': registration.projectSlug },
       creationTimestamp,
     },
     data: { 'registration.json': JSON.stringify(registration) },
   }
 }
 
-const REG: WorktreeRegistration = {
+const REG: ProxyRegistration = {
   rules: [], allowedHosts: ['api.example.com'], tool: 'claude', projectSlug: 'demo',
 }
 
@@ -69,7 +69,7 @@ beforeEach(() => {
   mockApply.mockReset().mockResolvedValue(undefined)
   mockGetJson.mockReset().mockResolvedValue(null)
   mockRetry.mockReset().mockResolvedValue({ stdout: '', stderr: '' })
-  _resetWorktreeListChangedForTests()
+  _resetWorkspaceListChangedForTests()
   _resetRegistrationGcForTests()
 })
 
@@ -78,9 +78,9 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-describe('buildWorktreeRegistration', () => {
+describe('buildProxyRegistration', () => {
   it('builds secret-free, project-scoped reference rules from the secrets', () => {
-    const reg = buildWorktreeRegistration({
+    const reg = buildProxyRegistration({
       config: {},
       remoteUrl: 'https://github.com/acme/repo',
       tool: 'claude',
@@ -139,7 +139,7 @@ describe('buildWorktreeRegistration', () => {
   })
 
   it('resolves the default allowlist when config has no overrides', () => {
-    const reg = buildWorktreeRegistration({
+    const reg = buildProxyRegistration({
       config: {},
       remoteUrl: 'https://github.com/acme/repo',
       tool: 'codex',
@@ -152,18 +152,18 @@ describe('buildWorktreeRegistration', () => {
   })
 
   it('honors setAllowedUrls and addAllowedUrls from config', () => {
-    expect(buildWorktreeRegistration({
+    expect(buildProxyRegistration({
       config: { setAllowedUrls: ['only.example.com'] },
       remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretRules: {}, env: {},
     }).allowedHosts).toEqual(['only.example.com'])
-    expect(buildWorktreeRegistration({
+    expect(buildProxyRegistration({
       config: { addAllowedUrls: ['extra.example.com'] },
       remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretRules: {}, env: {},
     }).allowedHosts).toContain('extra.example.com')
   })
 
   it('auto-appends the registry/CDN pull hosts for nestedContainers sessions', () => {
-    const reg = buildWorktreeRegistration({
+    const reg = buildProxyRegistration({
       config: { nestedContainers: true },
       remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretRules: {}, env: {},
     })
@@ -180,7 +180,7 @@ describe('buildWorktreeRegistration', () => {
   })
 
   it('still appends the pull hosts on top of addAllowedUrls', () => {
-    const reg = buildWorktreeRegistration({
+    const reg = buildProxyRegistration({
       config: { nestedContainers: true, addAllowedUrls: ['extra.example.com'] },
       remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretRules: {}, env: {},
     })
@@ -189,7 +189,7 @@ describe('buildWorktreeRegistration', () => {
   })
 
   it('does NOT append the pull hosts under setAllowedUrls (full override)', () => {
-    const reg = buildWorktreeRegistration({
+    const reg = buildProxyRegistration({
       config: { nestedContainers: true, setAllowedUrls: ['only.example.com'] },
       remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretRules: {}, env: {},
     })
@@ -197,7 +197,7 @@ describe('buildWorktreeRegistration', () => {
   })
 
   it('leaves the allowlist untouched when nestedContainers is off', () => {
-    const reg = buildWorktreeRegistration({
+    const reg = buildProxyRegistration({
       config: {},
       remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretRules: {}, env: {},
     })
@@ -207,7 +207,7 @@ describe('buildWorktreeRegistration', () => {
   })
 
   it('parses upstream redirects from the e2e env hook', () => {
-    const reg = buildWorktreeRegistration({
+    const reg = buildProxyRegistration({
       config: {},
       remoteUrl: 'u',
       tool: 'opencode',
@@ -224,15 +224,15 @@ describe('buildWorktreeRegistration', () => {
   })
 })
 
-describe('applyWorktreeRegistration', () => {
-  it('writes the registration as a labelled ConfigMap the proxy indexes by worktree', async () => {
-    await applyWorktreeRegistration('w1', { ...REG, upstreamRedirects: { 'h': { host: 'mock', port: 1 } } })
+describe('applyProxyRegistration', () => {
+  it('writes the registration as a labelled ConfigMap the proxy indexes by workspace', async () => {
+    await applyProxyRegistration('w1', { ...REG, upstreamRedirects: { 'h': { host: 'mock', port: 1 } } })
     const [cm] = applied()
     expect(cm.kind).toBe('ConfigMap')
     expect(cm.metadata).toEqual({
       name: 'yaac-proxy-reg-w1',
       namespace: 'test-ns',
-      labels: { 'app': 'yaac-proxy', 'yaac.proxy-input': 'registration', 'yaac.worktree-id': 'w1', 'yaac.project': 'demo' },
+      labels: { 'app': 'yaac-proxy', 'yaac.proxy-input': 'registration', 'yaac.workspace-id': 'w1', 'yaac.project': 'demo' },
     })
     expect(payloadOf(cm)).toEqual({ ...REG, upstreamRedirects: { 'h': { host: 'mock', port: 1 } } })
   })
@@ -254,7 +254,7 @@ describe('registerWorkspaceEgress', () => {
 
     expect(mockApply).toHaveBeenCalledTimes(1)
     const [cm] = applied()
-    expect(cm.metadata.labels['yaac.worktree-id']).toBe('w1')
+    expect(cm.metadata.labels['yaac.workspace-id']).toBe('w1')
     const state = payloadOf(cm)
     expect(state.tool).toBe('codex')
     expect(state.projectSlug).toBe('demo')
@@ -283,7 +283,7 @@ describe('registerWorkspaceEgress', () => {
 })
 
 describe('deregisterWorkspaceEgress', () => {
-  it('deletes the worktree’s object, tolerating its absence', async () => {
+  it('deletes the workspace’s object, tolerating its absence', async () => {
     await deregisterWorkspaceEgress('w1')
     expect(mockRetry).toHaveBeenCalledWith(
       ['delete', 'configmap', 'yaac-proxy-reg-w1', '-n', 'test-ns', '--ignore-not-found'],
@@ -297,16 +297,16 @@ describe('deregisterWorkspaceEgress', () => {
   })
 })
 
-describe('allowWorktreeHost', () => {
+describe('allowWorkspaceHost', () => {
   let notified: number
   beforeEach(() => {
     notified = 0
-    onWorktreeListChanged(() => { notified += 1 })
+    onWorkspaceListChanged(() => { notified += 1 })
   })
 
   it('appends the host to the named workspace’s registration and pushes a snapshot', async () => {
     mockGetJson.mockResolvedValue(registrationObject('w1', REG))
-    await allowWorktreeHost({ workspaceId: 'w1', projectSlug: 'demo' }, 'new.example.com', { fanOutToProject: false })
+    await allowWorkspaceHost({ workspaceId: 'w1', projectSlug: 'demo' }, 'new.example.com', { fanOutToProject: false })
 
     expect(mockGetJson).toHaveBeenCalledWith(['get', 'configmap', 'yaac-proxy-reg-w1', '-n', 'test-ns'])
     const [cm] = applied()
@@ -319,14 +319,14 @@ describe('allowWorktreeHost', () => {
 
   it('rewrites nothing for a host already allowed', async () => {
     mockGetJson.mockResolvedValue(registrationObject('w1', REG))
-    await allowWorktreeHost({ workspaceId: 'w1', projectSlug: 'demo' }, 'api.example.com', { fanOutToProject: false })
+    await allowWorkspaceHost({ workspaceId: 'w1', projectSlug: 'demo' }, 'api.example.com', { fanOutToProject: false })
     expect(mockApply).not.toHaveBeenCalled()
   })
 
   it('surfaces a missing registration on the named target as an error', async () => {
     // The user clicked on that badge, so a miss is theirs to see.
     mockGetJson.mockResolvedValue(null)
-    await expect(allowWorktreeHost({ workspaceId: 'w1', projectSlug: 'demo' }, 'h.com', { fanOutToProject: false }))
+    await expect(allowWorkspaceHost({ workspaceId: 'w1', projectSlug: 'demo' }, 'h.com', { fanOutToProject: false }))
       .rejects.toThrow('not registered with the egress proxy')
   })
 
@@ -335,7 +335,7 @@ describe('allowWorktreeHost', () => {
       registrationObject('w1', REG),
       registrationObject('w2', { ...REG, allowedHosts: ['h.com'] }),
     ] })
-    await allowWorktreeHost({ workspaceId: 'w1', projectSlug: 'demo' }, 'h.com', { fanOutToProject: true })
+    await allowWorkspaceHost({ workspaceId: 'w1', projectSlug: 'demo' }, 'h.com', { fanOutToProject: true })
 
     // Listed by the project label rather than through the pod list: a
     // registration IS a registered workspace, and the proxy prunes each
@@ -368,7 +368,7 @@ describe('reconcileRegistrationGc', () => {
   function cacheOf(opts: { healthy: boolean; jobs?: string[] }): ClusterCache {
     return {
       healthy: () => opts.healthy,
-      worktreeJobs: () => (opts.jobs ?? []).map((worktreeId) => ({ worktreeId })),
+      workspaceJobs: () => (opts.jobs ?? []).map((workspaceId) => ({ workspaceId })),
     } as unknown as ClusterCache
   }
 
@@ -394,7 +394,7 @@ describe('reconcileRegistrationGc', () => {
     setActiveClusterCache(cacheOf({ healthy: false }))
     mockGetJson.mockResolvedValue({ items: [registrationObject('orphan', REG, OLD)] })
     await reconcileRegistrationGc(ctxOf([]))
-    // An unseeded cache reads as "every worktree is gone" — never act on it.
+    // An unseeded cache reads as "every workspace is gone" — never act on it.
     expect(mockGetJson).not.toHaveBeenCalled()
 
     setActiveClusterCache(cacheOf({ healthy: true }))

@@ -1,6 +1,6 @@
 /**
  * Client half of the ACP conversation stream: one WebSocket per attached chat
- * pane, mirroring `WorktreeTerminal`'s PTY socket (same reconnect-with-backoff,
+ * pane, mirroring `WorkspaceTerminal`'s PTY socket (same reconnect-with-backoff,
  * same "the agent outlives this tab" assumption).
  *
  * The pane never sees ACP itself — the server projects every `session/update`
@@ -25,7 +25,7 @@ export interface AcpStream {
   /** A prompt turn is in flight — the agent is working. */
   busy: boolean
   /** The pane has a live connection to the conversation. False while
-   *  reconnecting, or when the worktree has no live conversation yet. */
+   *  reconnecting, or when the workspace has no live conversation yet. */
   connected: boolean
   /** False when the socket wasn't open, so the caller can keep the user's
    *  text rather than clearing an input whose message went nowhere. */
@@ -53,11 +53,11 @@ export function mergeEvents(existing: AcpEvent[], incoming: AcpEvent[]): AcpEven
  * *transport*: an attach costs a WebSocket handshake and then the entire
  * conversation as one `hello` frame, which on a slow or lossy link is the
  * "Connecting to the agent…" wait, and re-paying it on every tab switch is the
- * one cost a pane can simply not incur. `WorktreeView` decides which panes stay
+ * one cost a pane can simply not incur. `WorkspaceView` decides which panes stay
  * mounted; there is nothing left for this hook to second-guess.
  */
 export function useAcpStream(
-  worktreeId: string,
+  workspaceId: string,
   agentSessionId: string,
 ): AcpStream {
   const [events, setEvents] = useState<AcpEvent[]>([])
@@ -66,7 +66,7 @@ export function useAcpStream(
   const socketRef = useRef<WebSocket | null>(null)
 
   useEffect(() => {
-    if (worktreeId === '' || agentSessionId === '') return
+    if (workspaceId === '' || agentSessionId === '') return
     let closed = false
     let delay = INITIAL_RECONNECT_DELAY_MS
     let retry: ReturnType<typeof setTimeout> | undefined
@@ -74,7 +74,7 @@ export function useAcpStream(
     const connect = (): void => {
       if (closed) return
       const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
-      const params = new URLSearchParams({ id: worktreeId, session: agentSessionId })
+      const params = new URLSearchParams({ id: workspaceId, session: agentSessionId })
       const sock = new WebSocket(`${scheme}://${window.location.host}/api/acp/attach?${params}`)
       socketRef.current = sock
 
@@ -102,7 +102,7 @@ export function useAcpStream(
           // beginning and mostly is, but it is also what a *replay* is made of:
           // `session/load` re-emits every past message as a live update, and
           // the record carries no boundary to close them with — so inferring
-          // from it leaves a restarted worktree pinned at `working…` with a
+          // from it leaves a restarted workspace pinned at `working…` with a
           // Stop button and no turn to stop. `turn-start` has no such second
           // meaning: the server emits it when a turn actually begins, including
           // one it recovered on reattaching to a working agent.
@@ -142,7 +142,7 @@ export function useAcpStream(
       socketRef.current?.close()
       socketRef.current = null
     }
-  }, [worktreeId, agentSessionId])
+  }, [workspaceId, agentSessionId])
 
   return {
     events,

@@ -8,14 +8,14 @@
  * "Storage is two claims"):
  *
  *  - GLOBAL is the RWX claim `yaac-global`. The server pod mounts it whole
- *    at `POD_GLOBAL_ROOT`; every worktree pod mounts subPaths of it.
+ *    at `POD_GLOBAL_ROOT`; every workspace pod mounts subPaths of it.
  *  - SERVER-LOCAL is the RWO claim `yaac-server-local`, mounted by the
- *    server pod alone at `POD_SERVER_LOCAL_ROOT`. No worktree pod may
+ *    server pod alone at `POD_SERVER_LOCAL_ROOT`. No workspace pod may
  *    mount it, and the resolver refuses a path under it.
  *  - NODE-LOCAL is a hostPath on the node, `NODE_LOCAL_NODE_ROOT/<hash>`
  *    (hashed so two installs on one cluster — the real one and every e2e
  *    namespace — never share a node directory), mounted by the server pod
- *    at `POD_NODE_LOCAL_ROOT` and by worktree pods per directory.
+ *    at `POD_NODE_LOCAL_ROOT` and by workspace pods per directory.
  *
  * The pod paths carry no hash: a pod belongs to one install.
  */

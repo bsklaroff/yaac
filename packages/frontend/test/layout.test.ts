@@ -6,7 +6,7 @@ import {
   dropTargetAt,
   focusPaneTarget,
   groupIndexOf,
-  isWorkspace,
+  isPaneLayout,
   moveColumn,
   moveTabInStrip,
   moveTargetToColumn,
@@ -16,13 +16,13 @@ import {
   renameTargets,
   singleColumn,
   withActive,
-  type Workspace,
+  type PaneLayout,
 } from '#lib/layout'
 
 const rect = { x: 0, y: 0, w: 1000, h: 600 }
 
 /** Two equal columns, each a single pane. */
-const two = (): Workspace => addColumn(singleColumn('agent'), 'shell:a')
+const two = (): PaneLayout => addColumn(singleColumn('agent'), 'shell:a')
 
 describe('singleColumn', () => {
   it('is one column of one active tab', () => {
@@ -139,7 +139,7 @@ describe('moveTargetToColumn', () => {
 
 describe('moveColumn', () => {
   /** Three single-pane columns: agent | shell:a | shell:b. */
-  const three = (): Workspace => addColumn(addColumn(singleColumn('agent'), 'shell:a'), 'shell:b')
+  const three = (): PaneLayout => addColumn(addColumn(singleColumn('agent'), 'shell:a'), 'shell:b')
 
   it('moves the column holding the target one slot, in either direction', () => {
     expect(paneTargets(moveColumn(three(), 'agent', 1))).toEqual(['shell:a', 'agent', 'shell:b'])
@@ -170,7 +170,7 @@ describe('moveColumn', () => {
 
 describe('moveTabInStrip', () => {
   /** One column of three tabs: agent, shell:a, shell:b (shell:b active). */
-  const strip = (): Workspace => addTab(addTab(singleColumn('agent'), 0, 'shell:a'), 0, 'shell:b')
+  const strip = (): PaneLayout => addTab(addTab(singleColumn('agent'), 0, 'shell:a'), 0, 'shell:b')
 
   it('reorders the target within the flat strip, in either direction', () => {
     expect(paneTargets(moveTabInStrip(strip(), 'agent', 1))).toEqual(['shell:a', 'agent', 'shell:b'])
@@ -217,7 +217,7 @@ describe('withActive', () => {
 
 describe('renameTargets', () => {
   it('moves a target and every target under it, keeping which is active', () => {
-    const ws: Workspace = [
+    const ws: PaneLayout = [
       { tabs: ['agent', 'file:src/a.ts'], active: 'file:src/a.ts' },
       { tabs: ['file:src/lib/b.ts', 'file:srcx.ts'], active: 'file:srcx.ts' },
     ]
@@ -297,20 +297,20 @@ describe('dropTargetAt', () => {
   })
 })
 
-describe('isWorkspace', () => {
+describe('isPaneLayout', () => {
   it('accepts valid workspaces, including the empty one', () => {
-    expect(isWorkspace([])).toBe(true)
-    expect(isWorkspace(singleColumn('agent'))).toBe(true)
-    expect(isWorkspace(addTab(singleColumn('agent'), 0, 'shell:a'))).toBe(true)
+    expect(isPaneLayout([])).toBe(true)
+    expect(isPaneLayout(singleColumn('agent'))).toBe(true)
+    expect(isPaneLayout(addTab(singleColumn('agent'), 0, 'shell:a'))).toBe(true)
   })
 
   it('rejects malformed structures', () => {
-    expect(isWorkspace(null)).toBe(false)
-    expect(isWorkspace({ tabs: ['a'], active: 'a' })).toBe(false)          // not an array of groups
-    expect(isWorkspace([{ tabs: [], active: 'a' }])).toBe(false)           // empty tabs
-    expect(isWorkspace([{ tabs: ['a'], active: 'b' }])).toBe(false)        // active not a member
-    expect(isWorkspace([{ tabs: ['a', ''], active: 'a' }])).toBe(false)    // empty tab id
-    expect(isWorkspace([{ tabs: ['a'] }])).toBe(false)                     // missing active
-    expect(isWorkspace([{ type: 'leaf', target: 'agent' }])).toBe(false)   // old tree shape
+    expect(isPaneLayout(null)).toBe(false)
+    expect(isPaneLayout({ tabs: ['a'], active: 'a' })).toBe(false)          // not an array of groups
+    expect(isPaneLayout([{ tabs: [], active: 'a' }])).toBe(false)           // empty tabs
+    expect(isPaneLayout([{ tabs: ['a'], active: 'b' }])).toBe(false)        // active not a member
+    expect(isPaneLayout([{ tabs: ['a', ''], active: 'a' }])).toBe(false)    // empty tab id
+    expect(isPaneLayout([{ tabs: ['a'] }])).toBe(false)                     // missing active
+    expect(isPaneLayout([{ type: 'leaf', target: 'agent' }])).toBe(false)   // old tree shape
   })
 })

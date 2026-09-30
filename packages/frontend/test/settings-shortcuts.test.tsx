@@ -60,9 +60,9 @@ function openShortcuts(): void {
 describe('Settings → Shortcuts', () => {
   it('lists every shortcut with its current chord', () => {
     openShortcuts()
-    expect(screen.getByText('New worktree')).toBeTruthy()
+    expect(screen.getByText('New workspace')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Alt+N' })).toBeTruthy()
-    expect(screen.getByText('Stop worktree')).toBeTruthy()
+    expect(screen.getByText('Stop workspace')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Alt+D' })).toBeTruthy()
   })
 
@@ -74,20 +74,20 @@ describe('Settings → Shortcuts', () => {
     fireEvent.keyDown(window, { code: 'KeyY', altKey: true })
 
     const chord = { code: 'KeyY', alt: true, ctrl: false, meta: false, shift: false }
-    await waitFor(() => expect(setShortcutOverride).toHaveBeenCalledWith('new-worktree', chord))
-    expect(useUiStore.getState().bindings['new-worktree']).toEqual(chord)
+    await waitFor(() => expect(setShortcutOverride).toHaveBeenCalledWith('new-workspace', chord))
+    expect(useUiStore.getState().bindings['new-workspace']).toEqual(chord)
     expect(screen.getByRole('button', { name: 'Alt+Y' })).toBeTruthy()
   })
 
   it('rejects a chord already bound to another command', () => {
     openShortcuts()
     fireEvent.click(screen.getByRole('button', { name: 'Alt+N' }))
-    // Alt+D is the delete-worktree default.
+    // Alt+D is the delete-workspace default.
     fireEvent.keyDown(window, { code: 'KeyD', altKey: true })
 
     expect(screen.getByText(/Already bound to/)).toBeTruthy()
     expect(setShortcutOverride).not.toHaveBeenCalled()
-    expect(useUiStore.getState().bindings['new-worktree']).toEqual(DEFAULT_BINDINGS['new-worktree'])
+    expect(useUiStore.getState().bindings['new-workspace']).toEqual(DEFAULT_BINDINGS['new-workspace'])
   })
 
   it('ignores a chord without a real modifier', () => {
@@ -100,24 +100,24 @@ describe('Settings → Shortcuts', () => {
   })
 
   it('refuses to reset a command whose default another command now holds', () => {
-    useUiStore.setState({ bindings: mergeBindings({ 'new-worktree': DEFAULT_BINDINGS['new-shell'] }) })
+    useUiStore.setState({ bindings: mergeBindings({ 'new-workspace': DEFAULT_BINDINGS['new-shell'] }) })
     openShortcuts()
     expect(screen.getByRole('button', { name: 'Unset' })).toBeTruthy()
     const resets = screen.getAllByRole('button', { name: 'Reset' })
-    // new-worktree's row is first; new-shell's (unset) row is second.
+    // new-workspace's row is first; new-shell's (unset) row is second.
     fireEvent.click(resets[1])
-    expect(screen.getByText(/Already bound to “New worktree”/)).toBeTruthy()
+    expect(screen.getByText(/Already bound to “New workspace”/)).toBeTruthy()
     expect(setShortcutOverride).not.toHaveBeenCalled()
   })
 
   it('reset all restores defaults and clears overrides on the server', () => {
     useUiStore.setState({
-      bindings: { ...DEFAULT_BINDINGS, 'new-worktree': { code: 'KeyY', alt: true, ctrl: false, meta: false, shift: false } },
+      bindings: { ...DEFAULT_BINDINGS, 'new-workspace': { code: 'KeyY', alt: true, ctrl: false, meta: false, shift: false } },
     })
     openShortcuts()
     fireEvent.click(screen.getByRole('button', { name: /Reset all/ }))
 
     expect(resetShortcuts).toHaveBeenCalledTimes(1)
-    expect(useUiStore.getState().bindings['new-worktree']).toEqual(DEFAULT_BINDINGS['new-worktree'])
+    expect(useUiStore.getState().bindings['new-workspace']).toEqual(DEFAULT_BINDINGS['new-workspace'])
   })
 })

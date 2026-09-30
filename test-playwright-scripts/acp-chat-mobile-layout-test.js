@@ -24,8 +24,8 @@
  * displaces the first, and a prompt sent from the box is never delivered.
  * The geometry is identical either way, but this script sends a message.
  *
- * Needs a running `yaac server` with a live ACP-mode worktree of the selected
- * project — `yaac worktree create <project> --tool claude --mode acp` — and
+ * Needs a running `yaac server` with a live ACP-mode workspace of the selected
+ * project — `yaac workspace create <project> --tool claude --mode acp` — and
  * spends one small prompt turn on the agent (the message carries the
  * unbreakable token, which is the point).
  *
@@ -176,7 +176,7 @@ try {
   await page.goto(`${APP_URL}/`)
   await page.waitForTimeout(4000)
 
-  // Walk in: project -> worktree -> pane. The mobile shell's screens are
+  // Walk in: project -> workspace -> pane. The mobile shell's screens are
   // stacked layers, so each query is scoped to the layer that owns it.
   const shell = page.locator('#root > div > div > div')
   const projectsLayer = shell.locator('> div').nth(0)
@@ -185,9 +185,9 @@ try {
   await projectRows.first().tap()
   await page.waitForTimeout(1500)
 
-  const worktreesLayer = shell.locator('> div').nth(1)
-  const row = worktreesLayer
-    .locator('.group.relative.mx-2:has([aria-label="Stop worktree"]) > button')
+  const workspacesLayer = shell.locator('> div').nth(1)
+  const row = workspacesLayer
+    .locator('.group.relative.mx-2:has([aria-label="Stop workspace"]) > button')
     .first()
   await row.waitFor({ state: 'visible', timeout: 30_000 })
   await row.tap()
@@ -195,7 +195,7 @@ try {
 
   const box = page.getByRole('textbox').last()
   await box.waitFor({ state: 'visible', timeout: 30_000 })
-  check('the worktree opens on its ACP chat pane',
+  check('the workspace opens on its ACP chat pane',
     await page.getByPlaceholder('Message the agent…').count() === 1)
 
   // ---- 1. a long unbroken token must not widen the pane ----

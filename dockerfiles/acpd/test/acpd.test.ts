@@ -112,7 +112,7 @@ describe('createAcpd', () => {
   it('still reports firstAttach when the previous client died before speaking', async () => {
     // An adapter's cold start takes seconds, so a client can attach and be
     // gone before it writes anything. Nothing handshook, so its successor must
-    // still run one — telling it otherwise sends it to address a worktree that
+    // still run one — telling it otherwise sends it to address a workspace that
     // was never created, and no later attach could ever repair that.
     const { sock } = await start(['cat'])
 
@@ -233,7 +233,7 @@ describe('createAcpd', () => {
     // Content reaches a pane through the record alone, so an agent that keeps
     // running with a broken record is answering into a view that will never
     // change again. Restarting is what makes that recoverable: the client
-    // reattaches, is told firstAttach, and its worktree/load refills the file.
+    // reattaches, is told firstAttach, and its workspace/load refills the file.
     const logPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'acpd-log-')), 'c.jsonl')
     tmpDirs.push(path.dirname(logPath))
     const { sock, daemon } = await start(['cat'], { logPath })
@@ -387,7 +387,7 @@ describe('createAcpd', () => {
     // this wrong does not look like a bad directory: spawn reports ENOENT for
     // a missing cwd exactly as it does for a missing binary, so the adapter
     // "cannot be found", acpd exits 127, tmux closes the window, and the
-    // worktree ends seconds after a create that reported success.
+    // workspace ends seconds after a create that reported success.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acpd-cwd-'))
     tmpDirs.push(dir)
     const logPath = path.join(dir, 'c.jsonl')

@@ -263,7 +263,7 @@ describe('deployServerWorkload', () => {
     // The SA and its ClusterRole exist before the pod that mounts the
     // token, and the ingress policy before the Service publishes the port
     // — a window where the API is reachable from pods is a window a
-    // worktree could use it.
+    // workspace could use it.
     const order = (kind: string): number =>
       (mockApply.mock.calls as Array<[Manifest]>).findIndex(([m]) => m.kind === kind)
     expect(order('ServiceAccount')).toBeLessThan(order('Deployment'))
@@ -301,7 +301,7 @@ describe('deployServerWorkload', () => {
     const pod = deployedPodSpec()
     // Trusted yaac code: plain runc, no sentry.
     expect(pod.runtimeClassName).toBeUndefined()
-    // The uid every path it pre-creates for a worktree pod is owned by —
+    // The uid every path it pre-creates for a workspace pod is owned by —
     // the one install decided, which on kind is this host's (the data dir
     // is a hostPath this machine owns, and virtiofs makes that uid a
     // ceiling). Group 0 is what makes the image's own files writable at
@@ -369,7 +369,7 @@ describe('deployServerWorkload', () => {
 
     // No git identity: it is a server SETTING, in the database the pod
     // already mounts. `YAAC_GIT_*` is the same identity travelling the other
-    // way, server into a worktree's environment.
+    // way, server into a workspace's environment.
     expect(env.YAAC_GIT_NAME).toBeUndefined()
 
     // A pod's loopback has no reachable backend, so the bind widens and the
@@ -453,7 +453,7 @@ describe('deployServerWorkload', () => {
   it('walls the API off from pods, and publishes it through the kind forwarder', async () => {
     await deploy({ log: vi.fn() })
 
-    // The node addresses and the fronting, and nothing else. A worktree
+    // The node addresses and the fronting, and nothing else. A workspace
     // pod dialing the Service or pod IP presents a POD source address,
     // which no rule names, and is dropped. A pod that got through could
     // claim a loopback Host and be the owner, so that is the entire wall,
@@ -830,7 +830,7 @@ describe('startClusterServer', () => {
   it('points an origin that answers 404 at a re-install, never at recreating the cluster', async () => {
     // A Deployment an older yaac installed runs an image whose routes
     // predate this CLI's: reached, so the fronting's "recreate it" advice
-    // (which loses every worktree) is wrong, and a re-install is the fix.
+    // (which loses every workspace) is wrong, and a re-install is the fix.
     vi.useFakeTimers()
     try {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('{}', { status: 404 }))))

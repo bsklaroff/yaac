@@ -1,4 +1,4 @@
-import { reconcileImageSalvage } from '#drivers/k8s/worktrees'
+import { reconcileImageSalvage } from '#drivers/k8s/workspaces'
 import { reconcileRegistrationGc } from '#drivers/k8s/egress'
 import { gcOrphanProjectRegistries, reconcileProjectRegistryGc } from '#drivers/k8s/cluster'
 import {
@@ -39,11 +39,11 @@ export function k8sReconcileSteps(): DriverReconcileSteps {
       } },
     ],
     maintenance: [
-      // Mid-worktree image salvage (nested engines → project registry).
-      // Throttled internally per worktree; salvages run detached.
+      // Mid-workspace image salvage (nested engines → project registry).
+      // Throttled internally per workspace; salvages run detached.
       { name: 'image-salvage', triggers: [], run: (ctx) => reconcileImageSalvage(ctx.terminating) },
       // Rebuild each project's node-local image store from its registry —
-      // the read-only lower a fresh nested worktree mounts. Between the two
+      // the read-only lower a fresh nested workspace mounts. Between the two
       // neighbours on purpose: after the salvage, so a just-pushed
       // generation is the one a build picks up, and before the registry
       // collect, which holds that registry read-only for minutes. Fires

@@ -2,7 +2,7 @@ import { shellQuote } from '#lib/shell'
 
 /**
  * Node tuning: the kernel and systemd settings every node that runs
- * worktree pods needs, applied by the gVisor installer DaemonSet
+ * workspace pods needs, applied by the gVisor installer DaemonSet
  * (gvisor.ts composes `nodeTuningScript` into its per-node pass).
  *
  * These are real-node concerns as much as kind-node ones — subagent
@@ -21,9 +21,9 @@ export const NODE_SYSTEMD_CONF_DIR = '/etc/systemd/system.conf.d'
 
 /**
  * `DefaultTasksMax=infinity`: systemd's per-unit task ceiling defaults to
- * 15% of the pid max, which a worktree's subagent fan-out exhausts
+ * 15% of the pid max, which a workspace's subagent fan-out exhausts
  * (`fork: resource temporarily unavailable`). Applies to units started
- * after the reexec — the pod scopes of every worktree that lands on the
+ * after the reexec — the pod scopes of every workspace that lands on the
  * node afterwards. The drop-in is what survives a reboot; the reexec is
  * keyed on the LIVE manager value (`systemctl show -p DefaultTasksMax`),
  * so a pass killed between writing the file and telling systemd converges
@@ -45,7 +45,7 @@ export const NODE_MIN_FREE_KBYTES = 262144
  * demand against a fixed budget; on a real node the pool is the node's
  * own. The stock 128 instances is not enough for a multi-node cluster:
  * netd's Envoy asserts on `inotify_fd_ >= 0` and dies with SIGSEGV, which
- * presents as every worktree losing its egress redirect rather than as
+ * presents as every workspace losing its egress redirect rather than as
  * anything mentioning inotify.
  */
 export const NODE_INOTIFY_MAX_USER_INSTANCES = 1024
@@ -107,7 +107,7 @@ export const NODE_TUNING_SYSCTLS: readonly NodeTuningSysctl[] = [
  * A write that fails ends the pass explicitly (`|| exit 1` — `set -e` is
  * suspended inside an `if` list, so the helper cannot rely on it), and with
  * it the node's readiness and its runtime label: a node yaac cannot tune
- * is a node whose worktrees would die late, so it is a node yaac does not
+ * is a node whose workspaces would die late, so it is a node yaac does not
  * schedule onto.
  */
 export function nodeTuningScript(): string {

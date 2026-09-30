@@ -27,12 +27,12 @@ describe('acpConversation', () => {
     expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBe(c)
   })
 
-  it('is scoped per worktree and per project, so ids cannot collide across them', () => {
+  it('is scoped per workspace and per project, so ids cannot collide across them', () => {
     registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, fake('a'))
 
     expect(acpConversation('demo', 'wt-2', 'acp-1')).toBeUndefined()
     expect(acpConversation('other', 'wt-1', 'acp-1')).toBeUndefined()
-    // Handles are reused across worktrees by construction — every worktree's
+    // Handles are reused across workspaces by construction — every workspace's
     // primary window is named for its tool.
     registerAcpConversation('demo', 'wt-2', { handle: 'claude', agentSessionId: 'acp-2' }, fake('b'))
     expect(acpConversationByHandle('demo', 'wt-1', 'claude'))

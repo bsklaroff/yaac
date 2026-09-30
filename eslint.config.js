@@ -39,7 +39,7 @@ const UNTIERED_DATA_DIR = [
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(domain/(agent-history|auth|git|projects|skills|titles|worktrees)|db|runtime/(agents|ports|status|terminals)|drivers/(shared|k8s/(cluster|container|egress|forwarders|image-engine|images|install|substrate|worktrees))|http)/.',
+  regex: '^#(domain/(agent-history|auth|git|projects|skills|titles|workspaces)|db|runtime/(agents|ports|status|terminals)|drivers/(shared|k8s/(cluster|container|egress|forwarders|image-engine|images|install|substrate|workspaces))|http)/.',
   message: 'This folder is sealed; import its barrel (e.g. #drivers/k8s/images).',
 }
 
@@ -47,7 +47,7 @@ const SEALED_FOLDERS = {
 // and the schema are db's own internal modules (`db/client.ts`,
 // `db/schema.ts`) rather than a specifier any layer could name, so this
 // is all that is left to ban: rows live behind the db barrel, and
-// observed facts enter through `applyWorktreeEvent` rather than through a
+// observed facts enter through `applyWorkspaceEvent` rather than through a
 // caller-side write (docs/layered-server.md). Reaching the tables from
 // outside would take a deep `#db/schema` import, which SEALED_FOLDERS
 // already refuses in src.
@@ -197,7 +197,7 @@ export default tseslint.config(
   // the database ban.
   //
   // Rows are the vocabulary here, and nothing else supplies it: a runtime
-  // observation becomes a row only by arriving as a `WorktreeEvent`, how a
+  // observation becomes a row only by arriving as a `WorkspaceEvent`, how a
   // row combines with one is a mediator's call, and a column that names a
   // place on disk holds a portable form (project-relative) — resolving it
   // takes layout knowledge this layer has no business holding.
@@ -278,7 +278,7 @@ export default tseslint.config(
   // including the stream types and the exec verdict) and `#drivers/driver`
   // (the registered instance); that is what lets a second driver inherit
   // the whole of it. It never reads rows — an observed fact leaves as a
-  // `WorktreeEvent` from a mediator above it — and never imports the
+  // `WorkspaceEvent` from a mediator above it — and never imports the
   // mediators themselves.
   {
     files: ['packages/server/src/runtime/**/*.ts'],
@@ -487,7 +487,7 @@ export default tseslint.config(
   // what keeps every substrate word out of a route.
   //
   // Api holding the accessor is not a licence to put policy in a route: a
-  // read that resolves a worktree, decides something and then acts is a
+  // read that resolves a workspace, decides something and then acts is a
   // mediator's, and lives in `#domain`. What belongs here is the other
   // kind — a display value the runtime already holds, asked for once and
   // rendered. The line is composition, not layer, and no lint rule can see
@@ -548,7 +548,7 @@ export default tseslint.config(
   },
 
   // The domain layer: the mediators. They read db, drive the runtime, own
-  // what a project and a worktree keep on disk, and apply what the runtime
+  // what a project and a workspace keep on disk, and apply what the runtime
   // reports — but never reach up into the api surface or the composition
   // root.
   {
@@ -625,7 +625,7 @@ export default tseslint.config(
   // the whole design exists to prevent. Keep it a conscious rule edit rather
   // than an autocomplete accident.
   //
-  // The delete flow is the third caller: deleting the open worktree hands the
+  // The delete flow is the third caller: deleting the open workspace hands the
   // selection to the row below it, which fills the pane the delete emptied
   // without walking a phone off the list the × was tapped on.
   //
@@ -636,16 +636,16 @@ export default tseslint.config(
     ignores: [
       'packages/frontend/src/App.tsx',
       'packages/frontend/src/lib/store.ts',
-      'packages/frontend/src/lib/stopWorktreeFlow.ts',
+      'packages/frontend/src/lib/stopWorkspaceFlow.ts',
     ],
     rules: {
       'no-restricted-syntax': [
         'error',
         'ImportExpression',
         {
-          selector: "Identifier[name='autoSelectWorktree'], Identifier[name='restoreActiveProject']",
-          message: 'autoSelectWorktree/restoreActiveProject are App\'s effect-side actions. Anything a user '
-            + 'taps must use selectWorktree/setActiveProject so the mobile shell navigates with it '
+          selector: "Identifier[name='autoSelectWorkspace'], Identifier[name='restoreActiveProject']",
+          message: 'autoSelectWorkspace/restoreActiveProject are App\'s effect-side actions. Anything a user '
+            + 'taps must use selectWorkspace/setActiveProject so the mobile shell navigates with it '
             + '(docs/mobile-layout.md).',
         },
       ],

@@ -52,7 +52,7 @@ describe('startEventsMonitor', () => {
     const h = harness()
     await vi.runOnlyPendingTimersAsync()
     expect(h.opens).toEqual(['ws://127.0.0.1:8787/api/events'])
-    h.sockets[0].message?.(JSON.stringify({ type: 'snapshot', data: { worktrees: [] } }))
+    h.sockets[0].message?.(JSON.stringify({ type: 'snapshot', data: { workspaces: [] } }))
     expect(h.snapshots).toHaveLength(1)
   })
 

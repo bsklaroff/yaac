@@ -24,7 +24,7 @@ const CONTAINER_KNOWN_HOSTS = '/home/yaac/.ssh/yaac/known_hosts'
  * the proxy — the same path HTTP(S) takes. CONNECT is what carries the real
  * host:port, so the allowlist sees a hostname; a raw port-22 redirect would
  * lose it. The proxy stamps the source pod IP, so identity is uniform and
- * nothing worktree-specific rides in the env.
+ * nothing workspace-specific rides in the env.
  *
  * The agent rendezvous is a TCP hop to the proxy rather than a shared host
  * directory: the in-workspace init re-exposes it as the UNIX socket

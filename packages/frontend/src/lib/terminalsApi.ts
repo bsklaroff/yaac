@@ -1,22 +1,22 @@
 import { api } from './api'
-import type { WorktreeTerminalEntry } from '@yaac/shared/types'
+import type { WorkspaceTerminalEntry } from '@yaac/shared/types'
 
-/** Terminals a worktree's container offers beyond the agent view: the other
- *  windows of the `yaac` tmux worktree (initCommands dev servers, scratch
+/** Terminals a workspace's container offers beyond the agent view: the other
+ *  windows of the `yaac` tmux workspace (initCommands dev servers, scratch
  *  shells, …). */
-export async function getWorktreeTerminals(worktreeId: string): Promise<WorktreeTerminalEntry[]> {
-  return api.worktree[':id'].terminals.$get({ param: { id: worktreeId } })
+export async function getWorkspaceTerminals(workspaceId: string): Promise<WorkspaceTerminalEntry[]> {
+  return api.workspace[':id'].terminals.$get({ param: { id: workspaceId } })
 }
 
-/** Create a scratch-shell window in the worktree's `yaac` tmux worktree.
+/** Create a scratch-shell window in the workspace's `yaac` tmux workspace.
  *  Returns the new entry so a pane can open without waiting for the next
  *  terminals poll. */
-export async function createShellTerminal(worktreeId: string): Promise<WorktreeTerminalEntry> {
-  return api.worktree[':id'].terminals.$post({ param: { id: worktreeId } })
+export async function createShellTerminal(workspaceId: string): Promise<WorkspaceTerminalEntry> {
+  return api.workspace[':id'].terminals.$post({ param: { id: workspaceId } })
 }
 
 /** Kill a window terminal — and whatever runs in it. The server refuses
  *  the agent window. */
-export async function killWorktreeTerminal(worktreeId: string, target: string): Promise<void> {
-  await api.worktree[':id'].terminals.close.$post({ param: { id: worktreeId }, json: { target } })
+export async function killWorkspaceTerminal(workspaceId: string, target: string): Promise<void> {
+  await api.workspace[':id'].terminals.close.$post({ param: { id: workspaceId }, json: { target } })
 }

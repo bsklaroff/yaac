@@ -1,10 +1,10 @@
-import { worktreeDriver } from '#drivers/driver'
+import { workspaceDriver } from '#drivers/driver'
 import { tmuxCmd } from '#runtime/agents'
-import { worktreeControlStreamSend } from '#runtime/status'
-import type { WorktreeTerminalEntry } from '@yaac/shared/types'
+import { workspaceControlStreamSend } from '#runtime/status'
+import type { WorkspaceTerminalEntry } from '@yaac/shared/types'
 
 /**
- * Enumerate and manage the terminals a worktree's pod offers the webapp —
+ * Enumerate and manage the terminals a workspace's pod offers the webapp —
  * the windows of the `yaac` tmux session. The first (lowest-index) window
  * is the agent itself: it's covered by the dedicated 'agent' target, so
  * listings skip it and kills refuse it. Scratch shells are plain windows
@@ -35,7 +35,7 @@ function parseWindows(stdout: string): WindowRow[] {
 
 /** Parse the window listing into webapp terminal entries — every window
  *  except the agent's (lowest index). */
-function parseWindowList(stdout: string): WorktreeTerminalEntry[] {
+function parseWindowList(stdout: string): WorkspaceTerminalEntry[] {
   const rows = parseWindows(stdout)
   if (rows.length === 0) return []
   const agentIndex = Math.min(...rows.map((r) => r.index))
@@ -45,7 +45,7 @@ function parseWindowList(stdout: string): WorktreeTerminalEntry[] {
 }
 
 /** Next free scratch-shell window name: shell, shell-2, shell-3, … */
-function nextShellName(existing: WorktreeTerminalEntry[]): string {
+function nextShellName(existing: WorkspaceTerminalEntry[]): string {
   const names = new Set(existing.filter((e) => SHELL_NAME.test(e.name)).map((e) => e.name))
   if (!names.has('shell')) return 'shell'
   for (let i = 2; ; i++) {
@@ -54,7 +54,7 @@ function nextShellName(existing: WorktreeTerminalEntry[]): string {
 }
 
 /**
- * Run a READ-ONLY tmux command against the worktree, preferring the
+ * Run a READ-ONLY tmux command against the workspace, preferring the
  * status watcher's persistent control-mode stream (no new stream dialed)
  * and falling back to a one-shot relay exec when no stream is up
  * (prewarmed spares, stream mid-respawn) or the stream send fails.
@@ -63,7 +63,7 @@ function nextShellName(existing: WorktreeTerminalEntry[]): string {
  * non-CMD_READONLY commands from it.
  */
 async function tmuxOut(jobName: string, tmuxArgs: string): Promise<string> {
-  const send = worktreeControlStreamSend(jobName)
+  const send = workspaceControlStreamSend(jobName)
   if (send) {
     try {
       return await send(tmuxArgs)
@@ -73,7 +73,7 @@ async function tmuxOut(jobName: string, tmuxArgs: string): Promise<string> {
     }
   }
   try {
-    const driver = worktreeDriver()
+    const driver = workspaceDriver()
     const { stdout } = await driver.exec(
       jobName,
       `${tmuxCmd(driver.workspacePaths(jobName))} ${tmuxArgs}`,
@@ -85,17 +85,17 @@ async function tmuxOut(jobName: string, tmuxArgs: string): Promise<string> {
   }
 }
 
-/** List a worktree's webapp-attachable terminals. */
-export async function listWorktreeTerminals(jobName: string): Promise<WorktreeTerminalEntry[]> {
+/** List a workspace's webapp-attachable terminals. */
+export async function listWorkspaceTerminals(jobName: string): Promise<WorkspaceTerminalEntry[]> {
   return parseWindowList(await tmuxOut(jobName, `list-windows -t yaac -F ${WINDOW_FORMAT}`))
 }
 
 /** Create a scratch-shell window in the `yaac` tmux session and return its
  *  entry. `-P -F` prints the new window's id, so the caller can attach
  *  (and open a pane) without waiting for the next terminals poll. */
-export async function createShellWindow(jobName: string): Promise<WorktreeTerminalEntry> {
-  const name = nextShellName(await listWorktreeTerminals(jobName))
-  const driver = worktreeDriver()
+export async function createShellWindow(jobName: string): Promise<WorkspaceTerminalEntry> {
+  const name = nextShellName(await listWorkspaceTerminals(jobName))
+  const driver = workspaceDriver()
   const paths = driver.workspacePaths(jobName)
   const { stdout } = await driver.exec(
     jobName,
@@ -120,7 +120,7 @@ export async function killWindowTerminal(jobName: string, target: string): Promi
   if (rows.find((r) => r.index === agentIndex)?.id === id) {
     throw new Error('refusing to kill the agent window')
   }
-  const driver = worktreeDriver()
+  const driver = workspaceDriver()
   await driver.exec(
     jobName,
     `${tmuxCmd(driver.workspacePaths(jobName))} kill-window -t ${id}`,

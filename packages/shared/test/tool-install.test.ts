@@ -28,7 +28,7 @@ describe('agentPackagePrefix', () => {
     const prefix = agentPackagePrefix(codex)
     expect(path.dirname(prefix)).toBe(path.join(nodeLocalRoot(), 'agent-tools'))
     // A bump installs beside the old version rather than over it, which is
-    // what lets a worktree launched against the old one keep running it.
+    // what lets a workspace launched against the old one keep running it.
     expect(agentPackagePrefix({ ...codex, version: '9.9.9' })).not.toBe(prefix)
     // A scoped package stays one path segment.
     expect(path.basename(prefix)).toBe(`@openai+codex@${codex.version}`)

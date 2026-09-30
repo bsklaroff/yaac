@@ -69,21 +69,21 @@ describe('push-pr skill', () => {
 })
 
 describe('yaac-mama skill', () => {
-  it('is discoverable and documents the worktree-bin usage shape', async () => {
+  it('is discoverable and documents the workspace-bin usage shape', async () => {
     expectShipped('yaac-mama')
     const body = await bodyOf('yaac-mama')
     expect(body).toContain('yaac-mama create [opts] "<prompt>"')
-    expect(body).toContain('yaac-mama queue --parent-worktree W [opts] "<prompt>"')
-    expect(body).toContain('yaac-mama edit-queued [--parent-worktree W] [opts] <queued> ["<prompt>"]')
+    expect(body).toContain('yaac-mama queue --parent-workspace W [opts] "<prompt>"')
+    expect(body).toContain('yaac-mama edit-queued [--parent-workspace W] [opts] <queued> ["<prompt>"]')
     expect(body).toContain(
       '# opts: [--tool T] [--model M] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]')
     expect(body).toContain('yaac-mama list')
     expect(body).toContain('yaac-mama group create "<name>"')
     // Stopping is in the subset, and the two things an agent has to know
-    // about it are that omitting the worktree means itself and that a
+    // about it are that omitting the workspace means itself and that a
     // self-stop's confirmation may never arrive.
-    expect(body).toContain('yaac-mama stop [<worktree>]')
-    expect(body).toContain('the worktree ending is the confirmation')
+    expect(body).toContain('yaac-mama stop [<workspace>]')
+    expect(body).toContain('the workspace ending is the confirmation')
     // The subset is the point of the skill, so it has to say so: an agent
     // reading this must not go looking for a delete or a restart.
     expect(body).toContain('strict subset')
@@ -91,7 +91,7 @@ describe('yaac-mama skill', () => {
 })
 
 describe('yaac-watch-prs skill', () => {
-  it('is discoverable and documents the worktree-bin usage shape', async () => {
+  it('is discoverable and documents the workspace-bin usage shape', async () => {
     expectShipped('yaac-watch-prs')
     expect(await bodyOf('yaac-watch-prs'))
       .toContain('yaac-watch-prs [--interval <seconds>] [--pr <number>] [--events <list>] [--once]')
@@ -99,10 +99,10 @@ describe('yaac-watch-prs skill', () => {
 })
 
 describe('review-pr skill', () => {
-  it('is discoverable and drives the watch and the self-stop through the worktree-bin commands', async () => {
+  it('is discoverable and drives the watch and the self-stop through the workspace-bin commands', async () => {
     expectShipped('review-pr')
     const body = await bodyOf('review-pr')
-    // A reviewer worktree watches its own PR's activity, and winds itself down
+    // A reviewer workspace watches its own PR's activity, and winds itself down
     // through yaac-mama once the PR is approved.
     expect(body).toContain('yaac-watch-prs --pr <n> --events commit,comment')
     expect(body).toContain('yaac-mama stop')
@@ -115,7 +115,7 @@ describe('review-pr skill', () => {
 })
 
 describe('spawn-pr-reviewers skill', () => {
-  it('is discoverable and drives both halves through the worktree-bin commands', async () => {
+  it('is discoverable and drives both halves through the workspace-bin commands', async () => {
     expectShipped('spawn-pr-reviewers')
     const body = await bodyOf('spawn-pr-reviewers')
     // The watch half scopes the generalized watcher to newly opened PRs; the

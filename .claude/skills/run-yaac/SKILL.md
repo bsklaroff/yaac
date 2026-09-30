@@ -4,13 +4,13 @@ description: Build, run, and drive yaac — the agent-sandbox manager (the `yaac
 ---
 
 yaac is the `yaac` CLI plus a server that serves the web app and runs
-worktrees on one of two substrates: **k8s** (server and worktrees are pods in
+workspaces on one of two substrates: **k8s** (server and workspaces are pods in
 a local kind cluster, set up by `yaac cluster install`) or **containerless**
-(server is a host process started by `yaac server start`; worktrees are host
+(server is a host process started by `yaac server start`; workspaces are host
 tmux servers). Paths below are relative to the repo root.
 
 This assumes a normal host. **If `/etc/yaac/certs` exists you are inside a
-yaac worktree pod** — skip to [Inside a yaac worktree](#inside-a-yaac-worktree).
+yaac workspace pod** — skip to [Inside a yaac workspace](#inside-a-yaac-workspace).
 
 ## Set up and run
 
@@ -40,7 +40,7 @@ change for a containerless server. If a fix "does nothing", compare
 ## A second instance beside an existing one
 
 With no `YAAC_DATA_DIR`, `yaac` drives the install in `~/.yaac` (its
-worktrees, its kind cluster named `yaac`). When that is the user's working
+workspaces, its kind cluster named `yaac`). When that is the user's working
 setup and you are testing rather than setting it up, leave it alone and run
 a second instance. Check whether one already exists first
 (`env | grep ^YAAC_ ; kind get clusters`); otherwise export these **in every
@@ -70,10 +70,10 @@ yaac cluster install && yaac cluster check
   don't need them. `yaac auth fake` placeholders are swapped only by a
   parent yaac's proxy, so on a bare host they reach the real API unswapped.
 
-**Tear down** (env still exported) — worktrees are real processes and pods:
+**Tear down** (env still exported) — workspaces are real processes and pods:
 
 ```bash
-yaac worktree list        # then `yaac worktree stop <id>` for each
+yaac workspace list        # then `yaac workspace stop <id>` for each
 yaac server stop
 yaac cluster delete --yes     # k8s: deletes the YAAC_KIND_CLUSTER cluster
 rm -rf "$YAAC_DATA_DIR" "$YAAC_DATA_DIR-client"
@@ -108,10 +108,10 @@ auth failed; raise `--settle` or add `--wait` for a half-rendered one.
 
 ## Drive the CLI
 
-`yaac project list`, `yaac worktree list`, `yaac auth list` (masked); full
-reference in `README.md` `## CLI`. `yaac worktree create <project>` attaches
+`yaac project list`, `yaac workspace list`, `yaac auth list` (masked); full
+reference in `README.md` `## CLI`. `yaac workspace create <project>` attaches
 to the session's tmux and never exits — from a script, time it out (the
-worktree survives) and clean up with `yaac worktree stop <id>`.
+workspace survives) and clean up with `yaac workspace stop <id>`.
 
 ## Test
 
@@ -126,10 +126,10 @@ pnpm test:api-k8s / test:e2e / test:e2e-cli # need a cluster (below)
 The k8s tiers run against whatever cluster `kubectl` points at, isolating
 their objects in per-run namespaces. Run a targeted file, not the whole suite.
 
-## Inside a yaac worktree
+## Inside a yaac workspace
 
-When `/etc/yaac/certs` exists you are in a k8s worktree pod (directly, or in a
-worktree of a containerless server inside one). That changes three things:
+When `/etc/yaac/certs` exists you are in a k8s workspace pod (directly, or in a
+workspace of a containerless server inside one). That changes three things:
 
 - **You are already isolated.** The server this repo's `yaac-config.json`
   starts is yours — check `curl -s http://127.0.0.1:8787/api/health`, run

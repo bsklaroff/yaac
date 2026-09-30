@@ -26,7 +26,7 @@ function cacheOf(state: ProxyState, refreshed: RefreshedToolCredentials = {}): C
 afterEach(() => { setActiveClusterCache(null) })
 
 describe('readBlockedHosts', () => {
-  it('answers one worktree’s record, and nothing outside a server', () => {
+  it('answers one workspace’s record, and nothing outside a server', () => {
     expect(readBlockedHosts('w1')).toEqual([])
     setActiveClusterCache(cacheOf({ blockedHosts: { w1: ['evil.example.com'] }, gitAuthFailures: {} }))
     expect(readBlockedHosts('w1')).toEqual(['evil.example.com'])

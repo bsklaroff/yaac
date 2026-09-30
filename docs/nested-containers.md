@@ -7,9 +7,9 @@ reference for the shipped subsystem.
 One opt-in capability is layered here: **`nestedContainers`** — an in-pod
 rootful podman (real root inside the gVisor sentry, the upstream
 docker-in-gvisor shape) so `docker build` / `docker run` / `docker compose
-up --build` work inside a worktree exactly as a project README instructs
+up --build` work inside a workspace exactly as a project README instructs
 (the `docker` CLI talks to podman's Docker-API socket). Non-nested
-worktrees are byte-for-byte unchanged.
+workspaces are byte-for-byte unchanged.
 
 It is config-only, set in `yaac-config.json`; there is no CLI flag.
 
@@ -27,7 +27,7 @@ change. This image also carries the proxy-CA trust wiring below.
 The engine runs as **real root inside the gVisor sentry** (the
 `gvisor-nested` RuntimeClass). In-sandbox root is a sentry fiction with no
 host authority, so none of the rootless apparatus (subuid maps, id-map
-helper caps, keyring/pivot_root workarounds) is needed. When a worktree is
+helper caps, keyring/pivot_root workarounds) is needed. When a workspace is
 nested, its pod gains:
 
 - **securityContext**: `seccompProfile: RuntimeDefault` plus
@@ -43,36 +43,36 @@ nested, its pod gains:
   data out of pod memory (reclaimable node page cache, not cgroup-pinned
   tmpfs pages). Root-owned, so no fsGroup/chown. The sentry's `size=` cap
   ENOSPCs oversized builds before kubelet eviction can fire.
-- **cross-worktree image cache**: the project's registry is the cache
-  (below), so a nested worktree can be scheduled on any node. A pod
+- **cross-workspace image cache**: the project's registry is the cache
+  (below), so a nested workspace can be scheduled on any node. A pod
   additionally mounts its node's *generation* of that cache read-only at
   `/var/lib/shared-images`, which storage.conf names as the engine's one
   `additionalimagestores` lower — a per-node materialization of the same
   registry, never a second source of truth.
 
-The pod's postStart setup script (`worktree-bin/yaac-worktree-init`) starts
+The pod's postStart setup script (`workspace-bin/yaac-workspace-init`) starts
 the engine in the background with one sudo'd shell: `podman system
 service` as root, a socket wait with a log-tail diagnostic on timeout,
 then handing the socket to the `yaac` user so both CLIs
 (`DOCKER_HOST`/`CONTAINER_HOST` → `/run/podman/podman.sock`) drive it;
-worktree-create gates on `docker version` over the stream relay before
-handing the worktree over. The service exports `BUILDAH_ISOLATION=chroot`:
+workspace-create gates on `docker version` over the stream relay before
+handing the workspace over. The service exports `BUILDAH_ISOLATION=chroot`:
 under buildah's default OCI isolation the sentry breaks the `RUN`-step
 stdio relay after tens of KB of output (EPIPE kills chatty steps like
 `apt-get`), while chroot isolation streams fine, keeps `RUN` on the pod
 netns, and holds setcap file caps on the tmpfs graphroot. Nothing
-supervises the engine: if it dies mid-worktree, the worktree is degraded
+supervises the engine: if it dies mid-workspace, the workspace is degraded
 until recreated.
 
-### Image cache (cross-worktree build cache)
+### Image cache (cross-workspace build cache)
 
-A worktree's built and pulled images are salvaged into the **project's own
-registry**, and reach the next worktree's engine as a read-only lower layer
+A workspace's built and pulled images are salvaged into the **project's own
+registry**, and reach the next workspace's engine as a read-only lower layer
 store, so `docker build` gets real layer-cache hits across a project's
-worktrees. The registry is the source of truth and the only thing that
-travels between nodes; the node store below is a cache of it, so a worktree
+workspaces. The registry is the source of truth and the only thing that
+travels between nodes; the node store below is a cache of it, so a workspace
 landing on a cold node just runs cold rather than being tied to the node
-its predecessor ran on. Every nested worktree therefore ensures the
+its predecessor ran on. Every nested workspace therefore ensures the
 per-project registry.
 
 The push runs **inside the sandbox**, and the constraint it respects is
@@ -87,7 +87,7 @@ their products with.
 The push compresses with **gzip**, and that is a correctness constraint
 rather than a tuning choice. buildah only considers a cache candidate
 whose manifest type equals the format the running build emits, and the
-store holds both types: the worktree's `docker` is the real Docker CLI
+store holds both types: the workspace's `docker` is the real Docker CLI
 against podman's Docker-compatible API, so `docker build` emits
 docker-schema2, while a bare `podman build` emits OCI. A push must
 therefore hand each image back as what it was, and the compression format
@@ -96,7 +96,7 @@ silently rewrites a schema2 image as OCI and every later `docker build`
 skips the whole cache. gzip has media types in both schemas, so it
 leaves either in place and the image id survives the round trip
 unchanged. Level 1 within gzip, because this compression runs inside the
-worktree sandbox where CPU is the scarce resource and the bytes land in a
+workspace sandbox where CPU is the scarce resource and the bytes land in a
 node-local registry.
 
 One salvage is two sudo-gated execs:
@@ -120,13 +120,13 @@ One salvage is two sudo-gated execs:
 
 ### The node-local image store
 
-The read side is not a per-worktree pull at all: the registry's contents
+The read side is not a per-workspace pull at all: the registry's contents
 are materialized ONCE PER NODE as a read-only containers/storage directory that
-every nested worktree of the project mounts at `/var/lib/shared-images`.
-A fresh worktree therefore sees the project's warm layers at first touch —
-no per-worktree pull, no decompression competing with the agent, and none
+every nested workspace of the project mounts at `/var/lib/shared-images`.
+A fresh workspace therefore sees the project's warm layers at first touch —
+no per-workspace pull, no decompression competing with the agent, and none
 of the 12GiB sentry graphroot spent on layers it did not build. Concurrent
-worktrees on a node share one copy of the bytes.
+workspaces on a node share one copy of the bytes.
 
 `store-writer.ts` owns it. A **generation** is a complete store under
 `<node-local root>/shared-images/<project id>/gen-<stamp>/` — on the node,
@@ -138,8 +138,8 @@ written last. It sits outside the project tree, alone among per-project
 paths, because a node-side pod writes it as root and the server's own uid
 could not `rm -rf` it at project removal; the one-shot pod that removes a
 project's whole node-local tree does that instead. Generations are
-write-once: worktree create pins the newest
-complete generation's *path* into the pod, so a running worktree's store
+write-once: workspace create pins the newest
+complete generation's *path* into the pod, so a running workspace's store
 can never change underneath it, and the writer's GC can read the live set
 straight off pod specs — a generation is droppable exactly when no pod
 mounts it.
@@ -181,11 +181,11 @@ chain slots of the generations dropped with them: an old generation's
 intermediates cache-hit nothing once its named image is gone. What counts
 as a generation is the retention pass's guard, both halves: a yaac-built
 repo (optionally under a push prefix) carrying a content-hash tag. The
-upstream mirrors and a worktree's own repo are left alone even when their
+upstream mirrors and a workspace's own repo are left alone even when their
 tags happen to have the content-hash shape — a repo retention has no say
 over is not one this narrows either. A generation whose config will not
 scrape ranks NEWEST rather than oldest: ranking is best-effort, and one
-transient fetch failure must not be what costs a worktree the generation
+transient fetch failure must not be what costs a workspace the generation
 its next build would have cache-hit.
 
 Two post-passes run before the marker. A **metadata assertion** fails the
@@ -197,10 +197,10 @@ locally":
 
 > A layer that REPLACES a directory records that as an overlay xattr on the
 > diff dir rather than as a file, and neither spelling survives the trip
-> into a worktree. `trusted.overlay.opaque` is invisible through gVisor's
+> into a workspace. `trusted.overlay.opaque` is invisible through gVisor's
 > gofer filesystem — every read of the `trusted.` namespace answers
 > EOPNOTSUPP. `user.overlay.opaque` *is* readable through the gofer, but the
-> worktree engine holds CAP_SYS_ADMIN in-sandbox, so containers/storage
+> workspace engine holds CAP_SYS_ADMIN in-sandbox, so containers/storage
 > takes its rootful path and mounts overlay without `userxattr`, reading
 > the `trusted.` name. Either way the marker goes unhonored and the
 > replaced directory's old entries resurrect in the merged view — a
@@ -240,13 +240,13 @@ memory.
 Both halves are best-effort and self-gating (no engine, no sudo, or no
 registry ⇒ a single cheap exec that does nothing; no generation ⇒ an empty
 store); a cold cache only ever costs a rebuild. Salvage runs
-**mid-worktree** (a periodic reconciler, so a project's large first salvage
-lands during the run) and at **worktree cleanup**, before the Job is
+**mid-workspace** (a periodic reconciler, so a project's large first salvage
+lands during the run) and at **workspace cleanup**, before the Job is
 deleted.
 
 "No engine" is the pod's own `YAAC_NESTED_ENGINE`, tested before the sudo
 that every in-pod leg runs behind, and the reconciler additionally skips
-pods without the `yaac.nested` label so a non-nested worktree is not sent a
+pods without the `yaac.nested` label so a non-nested workspace is not sent a
 probe at all. The test is deliberately not "is podman installed" — a
 binary's presence never implied an engine, and pods from images built
 before podman left the base ship it engineless. Running podman without one
@@ -257,11 +257,11 @@ user's checkout.
 
 Destinations carry no content hash: they are name-for-name, and the chain
 tags are slots keyed by (repo, tag, depth). That is what bounds the tag
-set, and it makes concurrent worktrees of one project last-salvage-wins on
+set, and it makes concurrent workspaces of one project last-salvage-wins on
 a shared name — and the node store, being a materialization of the
 registry, inherits exactly those semantics.
 Nothing corrupts (layers are content-addressed and a manifest PUT is
-atomic), and a chain left interleaved between two worktrees costs a wasted
+atomic), and a chain left interleaved between two workspaces costs a wasted
 pull, never a wrong cache hit: buildah matches a cache candidate on layer
 parentage *and* history, so a foreign intermediate never matches.
 
@@ -285,22 +285,22 @@ host engine — and letting `--delete-untagged` reclaim the rest. It is the
 only thing here that drops a name someone could still pull, so it is
 doubly guarded: the repo must be yaac-built (mirroring image-gc's
 `YAAC_IMAGE_REPO`), and the tag must have the content-hash shape, so a
-worktree's own `myapp:v1` and the cache's `yaac-cache-…` slots can never
+workspace's own `myapp:v1` and the cache's `yaac-cache-…` slots can never
 match. Everything else tagged is left alone: a tag in this registry is a
 promise to whoever pulls it.
 
-Retention is age-based, not liveness-based: a worktree pinned to a
+Retention is age-based, not liveness-based: a workspace pinned to a
 generation that has since been passed by `REGISTRY_GENERATIONS_KEPT` newer
 ones loses pullability, and a pod naming a retired tag would
 ImagePullBackOff on a restart. The budget is sized to make that rare — it
 is the width of the concurrently-live fleet, not a rebuild depth — but
-closing it properly would mean checking the tags live worktrees actually
+closing it properly would mean checking the tags live workspaces actually
 reference before retiring.
 
 `garbage-collect` is only safe when nothing can be pushing — a push that
 has uploaded blobs but not yet its manifest is indistinguishable from
 garbage. Upstream's answer is "read-only mode, or not running at all", and
-not-running is unusable here: an active project's worktree count never
+not-running is unusable here: an active project's workspace count never
 reaches zero, so a collect gated on idleness would never run for the
 registries that actually grow. The collect therefore takes a **read-only
 maintenance window** — the Deployment is rolled with
@@ -308,12 +308,12 @@ maintenance window** — the Deployment is rolled with
 catalog serving while pushes and deletes answer 405. A salvage push or
 retire that lands in the window fails best-effort and is retried next
 cycle (the ledger and the retired-shape memo only record what succeeded),
-while pulls — what a live worktree and its synced pods depend on — keep
+while pulls — what a live workspace and its synced pods depend on — keep
 working. The cost is two `Recreate` rollouts, a few seconds of
 unavailability at each edge of the window.
 
 It holds the same per-project mutex `ensureProjectRegistry` takes, so a
-worktree create cannot start mid-collect; it is throttled per project, runs
+workspace create cannot start mid-collect; it is throttled per project, runs
 one project per pass, detaches (reconcile steps run sequentially), and the
 restore to serving mode is unconditional so a failed collect never strands
 a registry in maintenance mode.
@@ -322,8 +322,8 @@ The throttle's clock is the REGISTRY's, not the server process's: a
 project the server has not collected in this run dates from its Service's
 `creationTimestamp`. Garbage is the previous generation of a rebuilt tag,
 so a registry younger than the interval has none however busy it has been,
-and collecting one would put the window on the registry a worktree create
-just stood up — while that worktree is pushing and pulling through it
+and collecting one would put the window on the registry a workspace create
+just stood up — while that workspace is pushing and pulling through it
 hardest. Reading the registry's own age instead also means a server
 restart cannot re-arm a window that is not due, and a registry that IS due
 is still due on the first pass after one.
@@ -333,7 +333,7 @@ form collapses the key to a scalar and registry 2.8 panics at boot.
 
 ## CA trust: the combined bundle
 
-Nested containers must trust the worktree's MITM proxy on the hosts it
+Nested containers must trust the workspace's MITM proxy on the hosts it
 intercepts **without** losing trust in the real public roots for the hosts
 it tunnels. CA-trust config splits into two incompatible shapes:
 
@@ -363,10 +363,10 @@ intercepted hosts and the real upstreams on tunnelled hosts.
   the roots track the package with no separate staleness burden.
   `combineCaBundle(roots, ca)` concatenates them (pure, unit-tested), and
   the proxy writes the result beside its CA into the `yaac-proxy-ca`
-  Secret at every boot (docs/worktree-egress.md).
+  Secret at every boot (docs/workspace-egress.md).
 - The server reads that Secret and writes both keys — `proxy-ca.pem`
   (bare) and `ca-bundle.pem` (combined) — into the `yaac-proxy-ca`
-  ConfigMap worktree pods mount, skipping the write when both already
+  ConfigMap workspace pods mount, skipping the write when both already
   match, so a roots refresh is just an object write, no image rebuild.
 - The ConfigMap mounts at `/etc/yaac/certs`; the nestable image's
   `containers.conf` re-exposes both files to nested containers via
@@ -400,36 +400,36 @@ store nor any CA env var, and need their own per-tool import.
 ## Per-project push registries
 
 A plain `registry:2` per project serves as the push-and-serve bus for the
-cross-worktree image cache: a worktree's built layers are salvaged and
-pushed there at teardown, and the next worktree pulls them. It has no
+cross-workspace image cache: a workspace's built layers are salvaged and
+pushed there at teardown, and the next workspace pulls them. It has no
 upstream egress — nested `docker pull` goes through the MITM proxy, not
 this registry.
 
 - Plain HTTP on **:5000**, blobs on a per-project RWO PVC, plain root
   (trusted infra, like the proxy). The `registry:2` image is digest-pinned
   and mirrored into the yaac registry.
-- Ensured for every **nested** worktree — it is what carries their
-  cross-worktree image cache.
+- Ensured for every **nested** workspace — it is what carries their
+  cross-workspace image cache.
 - **Per project, not shared**, because `registry:2` has no path ACLs: a
   shared writable registry would let one project overwrite another's tags.
-  Within a project it is a shared namespace by design: any worktree of the
+  Within a project it is a shared namespace by design: any workspace of the
   project can push a name (an upstream one like `postgres:16` included)
-  that every later nested worktree of the project resolves locally.
+  that every later nested workspace of the project resolves locally.
 - **Named by the project's immutable id** (`yaac-reg-<id>`, and its PVC,
   policies and one-shot pods after it), as is the node-local image store
   (`shared-images/<id>`). A project re-added under a freed slug therefore
   gets an empty registry and store of its own, whether or not the old
   one's removal succeeded — its catalog is never inherited.
-- Three policies: a worktrees→registry allow k8s NetworkPolicy (podSelector
-  requires the pod's `yaac.project-id` label *and* a `yaac.worktree-id`,
+- Three policies: a workspaces→registry allow k8s NetworkPolicy (podSelector
+  requires the pod's `yaac.project-id` label *and* a `yaac.workspace-id`,
   keeping it off the registry pod itself), a deny-all egress k8s
   NetworkPolicy on the registry pod, and a NetworkPolicy ingress lock
-  confining the registry pod's ingress to same-project worktrees plus the
+  confining the registry pod's ingress to same-project workspaces plus the
   host/remote-node entities.
 - Node containerd reaches it via a `hosts.toml` under
   `/etc/containerd/certs.d/` (see Service addressing below).
-- Lifecycle: created from worktree-create for a `nestedContainers`
-  worktree, removed on project removal. The `orphan-registry-gc` reconcile
+- Lifecycle: created from workspace-create for a `nestedContainers`
+  workspace, removed on project removal. The `orphan-registry-gc` reconcile
   step removes any of this install's registries whose `yaac.project-id` no
   live project holds, or that carry no id at all — every removal that
   failed, collected by id rather than by anything the removal left
@@ -444,7 +444,7 @@ so the immutable ClusterIP is allocated once and never migrates. The
 server reads the live IP whenever it needs one (at pod-create, and when
 writing the node `hosts.toml`).
 
-- **In-cluster clients** (worktree pods) reach these Services
+- **In-cluster clients** (workspace pods) reach these Services
   by their service-DNS names, resolved through the proxy's split-horizon
   DNS: the proxy forwards `*.cluster.local` to cluster CoreDNS and
   sinkholes bare `.svc` to avoid a DNS-exfil channel. No `hostAliases`,
@@ -456,15 +456,15 @@ writing the node `hosts.toml`).
 
 ## Egress integration
 
-Worktree egress is the netd / pod-watch model, not in-pod iptables. netd
-DNATs a worktree pod's outbound 443/80/ssh-sentinel at its veth to a
+Workspace egress is the netd / pod-watch model, not in-pod iptables. netd
+DNATs a workspace pod's outbound 443/80/ssh-sentinel at its veth to a
 node-local Envoy, which stamps the source IP into a PROXY-protocol
 preamble and forwards to the proxy's transparent listeners; the proxy
-resolves source-IP → worktree by reading the pod's `yaac.worktree-id` label
-off a pod-watch. Nested containers share the worktree pod's netns, so their
+resolves source-IP → workspace by reading the pod's `yaac.workspace-id` label
+off a pod-watch. Nested containers share the workspace pod's netns, so their
 `docker pull`/build traffic rides the same path with zero extra wiring;
 the proxy auto-appends the upstream registry + CDN hosts (docker.io,
-ghcr.io, quay.io and their CDNs) to the allowlist for nested worktrees, and
+ghcr.io, quay.io and their CDNs) to the allowlist for nested workspaces, and
 anything else is denied fail-closed. The in-cluster destination that
 matters (the project registry on :5000) is reached by its service-DNS name
 (Service addressing above) and admitted by the per-project NetworkPolicy.
@@ -474,4 +474,4 @@ matters (the project registry on :5000) is reached by its service-DNS name
 `yaac cluster check` gains a warn-level `nested-mount` probe: in-sandbox
 root runs `mount -t tmpfs` under the real nested containment, the sentry
 prerequisite for the rootful engine. It sits alongside the `gvisor` gate
-and the `runtime-stamp` sweep, which apply to every worktree.
+and the `runtime-stamp` sweep, which apply to every workspace.

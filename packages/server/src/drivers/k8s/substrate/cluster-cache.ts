@@ -8,8 +8,8 @@ import { k8sNamespace } from './kubectl'
 import {
   mapJobObject,
   mapPodObject,
-  worktreeJobSelector,
-  worktreePodSelector,
+  workspaceJobSelector,
+  workspacePodSelector,
   type JobInfo,
   type PodInfo,
 } from './pods'
@@ -25,7 +25,7 @@ import type { RefreshedToolCredentials } from '@yaac/shared/types'
 
 /**
  * Every informer the server runs, in one registry: the install-scoped
- * worktree pods and worktree Jobs watches, and the two objects the egress
+ * workspace pods and workspace Jobs watches, and the two objects the egress
  * proxy reports through. Consumers — the reconciler, the status-watcher
  * sync, the display path — read the caches and subscribe to `onDelta`
  * instead of listing the cluster.
@@ -33,7 +33,7 @@ import type { RefreshedToolCredentials } from '@yaac/shared/types'
 /** The install-scoped informers: a workspace and the unit holding it. The
  *  two the layers above have their own words for, and so the two anything
  *  forwarding a delta upward has to translate. */
-export const WORKSPACE_DELTA_SOURCES = ['worktree-pods', 'worktree-jobs'] as const
+export const WORKSPACE_DELTA_SOURCES = ['workspace-pods', 'workspace-jobs'] as const
 
 export type WorkspaceDeltaSource = typeof WORKSPACE_DELTA_SOURCES[number]
 /** The proxy's outputs: its record ConfigMap (a snapshot input) and the
@@ -59,19 +59,19 @@ export class ClusterCache {
   constructor(deps: ClusterCacheDeps = {}) {
     this.deps = deps
     const ns = k8sNamespace()
-    this.pods = this.buildCache('worktree-pods', {
+    this.pods = this.buildCache('workspace-pods', {
       path: `/api/v1/namespaces/${ns}/pods`,
-      labelSelector: worktreePodSelector(),
+      labelSelector: workspacePodSelector(),
       listFn: () => getCoreApi().listNamespacedPod(
-        { namespace: ns, labelSelector: worktreePodSelector() }),
+        { namespace: ns, labelSelector: workspacePodSelector() }),
       mapItem: mapPodObject,
       keyOf: (p) => p.podName,
     })
-    this.jobs = this.buildCache('worktree-jobs', {
+    this.jobs = this.buildCache('workspace-jobs', {
       path: `/apis/batch/v1/namespaces/${ns}/jobs`,
-      labelSelector: worktreeJobSelector(),
+      labelSelector: workspaceJobSelector(),
       listFn: () => getBatchApi().listNamespacedJob(
-        { namespace: ns, labelSelector: worktreeJobSelector() }),
+        { namespace: ns, labelSelector: workspaceJobSelector() }),
       mapItem: mapJobObject,
       keyOf: (j) => j.jobName,
     })
@@ -115,12 +115,12 @@ export class ClusterCache {
     this.listeners.add(fn)
   }
 
-  worktreePods(projectFilter?: string): PodInfo[] {
+  workspacePods(projectFilter?: string): PodInfo[] {
     const all = this.pods.items()
     return projectFilter ? all.filter((p) => p.projectSlug === projectFilter) : all
   }
 
-  worktreeJobs(): JobInfo[] {
+  workspaceJobs(): JobInfo[] {
     return this.jobs.items()
   }
 
@@ -135,7 +135,7 @@ export class ClusterCache {
   }
 
   healthy(source: WorkspaceDeltaSource): boolean {
-    if (source === 'worktree-pods') return this.pods.healthy()
+    if (source === 'workspace-pods') return this.pods.healthy()
     return this.jobs.healthy()
   }
 

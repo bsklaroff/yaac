@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
@@ -10,7 +10,7 @@ import { ServerError } from '@yaac/shared/errors'
 import { recordProject } from '#db'
 import type { ProjectMeta } from '@yaac/shared/types'
 
-// The live worktree count comes off the substrate; stubbed so the count a
+// The live workspace count comes off the substrate; stubbed so the count a
 // case asserts on is the one it set up.
 // The live count comes off the runtime; what it includes is asserted in
 // locate.test.ts.
@@ -19,7 +19,7 @@ const count = vi.fn()
 let tmpDir: string
 
 beforeEach(async () => {
-    installFakeWorktreeDriver({ countForProject: count })
+    installFakeWorkspaceDriver({ countForProject: count })
   tmpDir = await createTempDataDir()
   count.mockReset().mockResolvedValue(0)
 })
@@ -57,7 +57,7 @@ describe('getProjectDetail', () => {
       slug: 'foo',
       remoteUrl: 'https://example.com/foo',
       addedAt: '2026-01-01T00:00:00.000Z',
-      worktreeCount: 2,
+      workspaceCount: 2,
       config: { initCommands: ['pnpm build'] },
     })
     expect(count).toHaveBeenCalledWith('foo')
@@ -73,7 +73,7 @@ describe('getProjectDetail', () => {
     })
 
     const detail = await getProjectDetail('foo')
-    expect(detail.worktreeCount).toBe(0)
+    expect(detail.workspaceCount).toBe(0)
     expect(detail.config).toBeNull()
   })
 })

@@ -157,7 +157,7 @@ the gate does that.
 Every party addresses it the same way — by its Service FQDN
 (`yaac-registry.<default-ns>.svc.cluster.local:5000`), which is the prefix
 every yaac image ref carries. Builder pods pull parents from it and push
-products back; worktree pods pull final images from it unchanged; the
+products back; workspace pods pull final images from it unchanged; the
 in-cluster server dials the same name for its HEADs. The one exception is a
 host process — `yaac cluster install`, `cluster check`, the e2e global setup
 — which has no route into the pod network: it reaches the registry over a
@@ -247,7 +247,7 @@ store. Step cache cannot remove this leg; it is bounded instead:
 
 - Trusted-layer pushes use `--compression-format zstd`. It is free on the
   pushing side and roughly halves the empty-graphroot pod pull (the remainder
-  is layer extraction, not decompression). Worktree pods pull the same
+  is layer extraction, not decompression). Workspace pods pull the same
   manifests, so node containerd zstd support was confirmed before this
   shipped.
 - The pull is paid once per pod, and the common no-op path never creates
@@ -399,7 +399,7 @@ a new key or gate rolls it too.
   except the kind fronting's node port, where a `RUN` step would reach the
   server as its owner (docs/server-in-cluster.md "The ingress policy is the
   wall") — strictly better than a host build's unfiltered host-network
-  egress. Optionally routable through the worktree proxy later
+  egress. Optionally routable through the workspace proxy later
   with the combined CA bundle (see docs/nested-containers.md), the same
   mechanism nested builds already use.
 - **The `yaac.role=builder` label** (which carves builder pods out of the

@@ -10,7 +10,7 @@
  * real token leave one of them with invalid_grant, and claude answers
  * invalid_grant by clearing every stored credential holding the refresh
  * token it spent. That token is the placeholder, and the file is a project's
- * shared tool home, so one lost race signs out every worktree of the
+ * shared tool home, so one lost race signs out every workspace of the
  * project. So a refresh joins one in flight, or reuses a rotation made
  * moments ago, instead of spending the credential a second time.
  *
@@ -25,7 +25,7 @@
 
 /**
  * How long a rotation keeps answering the refreshes that come after it.
- * Long enough to cover a burst of worktrees starting together, and short
+ * Long enough to cover a burst of workspaces starting together, and short
  * enough that a refresh forced by a genuinely rejected token soon reaches
  * upstream again.
  */

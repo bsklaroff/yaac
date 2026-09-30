@@ -9,15 +9,15 @@ import {
   piDir,
   projectDir,
   repoDir,
-  worktreeDir,
+  workspaceDir,
 } from '@yaac/shared/project-paths'
 import { agentSessionIdSchema } from '@yaac/shared/types'
 import { openRoot, type ConfinedRoot } from '#lib/confined-fs'
 import {
-  applyWorktreeEvent,
+  applyWorkspaceEvent,
   getProjectAgentSessions,
-  listProjectWorktreeIds,
-  listWorktreeAgentSessions,
+  listProjectWorkspaceIds,
+  listWorkspaceAgentSessions,
   type AgentSessionLinkRow,
 } from '#db'
 import {
@@ -31,10 +31,10 @@ import {
 import { serverLog } from '#log'
 
 /**
- * Bring one worktree's agent history into the shape the runtime about to
- * launch it reaches (docs/worktree-storage.md), before it launches.
+ * Bring one workspace's agent history into the shape the runtime about to
+ * launch it reaches (docs/workspace-storage.md), before it launches.
  *
- * Every conversation the worktree ever held is moved out of the project's
+ * Every conversation the workspace ever held is moved out of the project's
  * shared tool homes into its own `history/` — whatever a pod wrote before
  * the history existed, and whatever a host run left there since. That is
  * the whole of it under a runtime that `layers` mounts over the tool homes:
@@ -56,10 +56,10 @@ import { serverLog } from '#log'
  */
 export async function convergeAgentHistory(
   slug: string,
-  worktreeId: string,
+  workspaceId: string,
   runtime: { layers: boolean },
 ): Promise<void> {
-  const history = agentHistoryDir(slug, worktreeId)
+  const history = agentHistoryDir(slug, workspaceId)
   await Promise.all(AGENT_HISTORY_PARTS.map((part) => fs.mkdir(path.join(history, part), { recursive: true })))
   await fs.mkdir(path.join(history, 'claude', CLAUDE_POD_CWD), { recursive: true })
   if (runtime.layers) {
@@ -74,25 +74,25 @@ export async function convergeAgentHistory(
     await fs.mkdir(path.join(codexDir(slug), 'sessions'), { recursive: true })
   }
 
-  const rows = await listWorktreeAgentSessions(slug, worktreeId)
-  const shared = await siblingConversations(slug, worktreeId)
-  const ids = await conversationIds(slug, worktreeId, rows, shared)
+  const rows = await listWorkspaceAgentSessions(slug, workspaceId)
+  const shared = await siblingConversations(slug, workspaceId)
+  const ids = await conversationIds(slug, workspaceId, rows, shared)
   for (const step of [
     () => moveClaude(slug, history, ids),
     () => moveCodex(slug, history, ids, shared, rows),
     () => movePi(slug, history, ids),
-    ...(runtime.layers ? [] : [() => linkOut(slug, worktreeId, history, shared)]),
+    ...(runtime.layers ? [] : [() => linkOut(slug, workspaceId, history, shared)]),
   ]) {
     await step().catch((err: unknown) => {
-      serverLog(`[agent-history] ${slug}/${worktreeId}: ${String(err)}`)
+      serverLog(`[agent-history] ${slug}/${workspaceId}: ${String(err)}`)
     })
   }
-  await repointRows(slug, worktreeId, rows.filter((r) => !shared.has(r.agentSessionId)))
+  await repointRows(slug, workspaceId, rows.filter((r) => !shared.has(r.agentSessionId)))
 }
 
 /**
  * Point each row whose file has left the shared home at where it went —
- * never a row a sibling shares, whose one path both worktrees read, read
+ * never a row a sibling shares, whose one path both workspaces read, read
  * off the disk rather than off this pass's moves — so a converge interrupted
  * between a rename and this write is repaired by the next one. Through the
  * one door for observed facts, like every path the registry records.
@@ -100,12 +100,12 @@ export async function convergeAgentHistory(
  * "Left" is judged `no-links`: a host create's folder link still leads to the
  * file, but a pod's reader, which follows no link, would not.
  */
-async function repointRows(slug: string, worktreeId: string, rows: AgentSessionLinkRow[]): Promise<void> {
+async function repointRows(slug: string, workspaceId: string, rows: AgentSessionLinkRow[]): Promise<void> {
   const project = projectDir(slug)
   const sessions = []
   for (const r of rows) {
     const stored = r.transcriptPath
-    const to = stored === undefined ? undefined : historyDestination(worktreeId, stored)
+    const to = stored === undefined ? undefined : historyDestination(workspaceId, stored)
     if (stored === undefined || to === undefined) continue
     const [tool, ...rel] = stored.split('/')
     const home = await openRoot(path.join(project, tool), 'no-links').catch(() => null)
@@ -114,15 +114,15 @@ async function repointRows(slug: string, worktreeId: string, rows: AgentSessionL
     sessions.push({ tool: r.tool, agentSessionId: r.agentSessionId, transcriptPath: to })
   }
   if (sessions.length > 0) {
-    await applyWorktreeEvent({ type: 'sessions-discovered', projectSlug: slug, worktreeId, sessions })
+    await applyWorkspaceEvent({ type: 'sessions-discovered', projectSlug: slug, workspaceId, sessions })
   }
 }
 
 /** Where a converge moves the file a shared-home path names, project-relative,
  *  or undefined for a path that is not one it moves. */
-function historyDestination(worktreeId: string, stored: string): string | undefined {
+function historyDestination(workspaceId: string, stored: string): string | undefined {
   const [tool, sub, ...rest] = stored.split('/')
-  const into = (part: string, ...tail: string[]): string => path.join('history', worktreeId, part, ...tail)
+  const into = (part: string, ...tail: string[]): string => path.join('history', workspaceId, part, ...tail)
   if (tool === 'claude' && sub === 'projects' && rest.length >= 2) return into('claude', CLAUDE_POD_CWD, ...rest.slice(1))
   if (tool === 'codex' && sub === 'sessions' && rest.length >= 1) return into('codex', ...rest)
   if (tool === 'pi' && sub === 'agent' && rest[0] === 'sessions' && rest.length >= 2) return into('pi', rest[rest.length - 1])
@@ -130,23 +130,27 @@ function historyDestination(worktreeId: string, stored: string): string | undefi
 }
 
 /**
- * Everything `convergeAgentHistory` made for a worktree: its history, and
+ * Everything `convergeAgentHistory` made for a workspace: its history, and
  * the links a host create planted in the shared homes pointing into it —
- * left behind, each would dangle in a directory every other worktree's
- * agent lists. Only for a worktree that is going away; a stop keeps it all.
+ * left behind, each would dangle in a directory every other workspace's
+ * agent lists. Only for a workspace that is going away; a stop keeps it all.
  */
-export async function removeAgentHistory(slug: string, worktreeId: string): Promise<void> {
-  const history = agentHistoryDir(slug, worktreeId)
+export async function removeAgentHistory(slug: string, workspaceId: string): Promise<void> {
+  const history = agentHistoryDir(slug, workspaceId)
   const links = [
-    ...(await checkoutForms(slug, worktreeId)).map((form) =>
-      path.join(claudeDir(slug), 'projects', claudeProjectDirName(form))),
+    // With the spelling of a checkout an older install made, whose create
+    // linked the folder its path named (docs/legacy-compat-shims.md).
+    ...[
+      ...await checkoutForms(slug, workspaceId),
+      ...await forms(slug, path.join(projectDir(slug), 'worktrees', workspaceId)),
+    ].map((form) => path.join(claudeDir(slug), 'projects', claudeProjectDirName(form))),
     ...(await fs.readdir(path.join(history, 'claude-file-history')).catch(() => []))
       .map((sid) => path.join(claudeDir(slug), 'file-history', sid)),
     ...(await filesUnder(path.join(history, 'codex')))
       .map((rel) => path.join(codexDir(slug), 'sessions', rel)),
   ]
   // Only a link that still leads into this history: the same name may since
-  // have been linked to another worktree's.
+  // have been linked to another workspace's.
   for (const link of links) {
     const to = await fs.readlink(link).catch(() => null)
     if (to !== null && path.resolve(path.dirname(link), to).startsWith(`${history}${path.sep}`)) await fs.unlink(link)
@@ -180,39 +184,39 @@ async function moveIn(home: ConfinedRoot, rel: string, dest: string): Promise<vo
 }
 
 /**
- * The conversations a sibling worktree's rows name. A conversation linked to
- * two worktrees — one resumed from another's under the shared home, before
+ * The conversations a sibling workspace's rows name. A conversation linked to
+ * two workspaces — one resumed from another's under the shared home, before
  * each had its own — has no single owner, so no converge moves it: it stays
  * in the shared home, readable by both, and a pod of either can no longer
  * resume it. Moving it would hand it to whichever converged first and take
  * it from the other.
  */
-async function siblingConversations(slug: string, worktreeId: string): Promise<Set<string>> {
-  const siblings = [...(await listProjectWorktreeIds(slug)).keys()].filter((id) => id !== worktreeId)
+async function siblingConversations(slug: string, workspaceId: string): Promise<Set<string>> {
+  const siblings = [...(await listProjectWorkspaceIds(slug)).keys()].filter((id) => id !== workspaceId)
   const links = await getProjectAgentSessions(slug, siblings)
   return new Set([...links.values()].flat().map((r) => r.agentSessionId))
 }
 
 /**
- * The conversations that are this worktree's: every one its rows name (not
+ * The conversations that are this workspace's: every one its rows name (not
  * only the active ones), every one acpd kept a record of — an ACP
  * conversation fires no hook, yet the SDK's claude still writes a
- * transcript — and the worktree id, which the pinned first conversation uses
+ * transcript — and the workspace id, which the pinned first conversation uses
  * before any row names it. Held to the id schema, since each is joined into
  * a path. Less any a sibling's rows name too (`siblingConversations`).
  */
 async function conversationIds(
   slug: string,
-  worktreeId: string,
+  workspaceId: string,
   rows: AgentSessionLinkRow[],
   shared: Set<string>,
 ): Promise<Set<string>> {
-  const records = (await fs.readdir(acpLogDir(slug, worktreeId)).catch(() => []))
+  const records = (await fs.readdir(acpLogDir(slug, workspaceId)).catch(() => []))
     .filter((name) => name.endsWith('.jsonl'))
     .map((name) => name.slice(0, -'.jsonl'.length))
-  const ids = [worktreeId, ...rows.map((r) => r.agentSessionId), ...records]
+  const ids = [workspaceId, ...rows.map((r) => r.agentSessionId), ...records]
   for (const id of ids.filter((i) => shared.has(i))) {
-    serverLog(`[agent-history] ${slug}/${worktreeId}: ${id} is a sibling's conversation too; left shared`)
+    serverLog(`[agent-history] ${slug}/${workspaceId}: ${id} is a sibling's conversation too; left shared`)
   }
   return new Set(ids.filter((id) => !shared.has(id) && agentSessionIdSchema.safeParse(id).success))
 }
@@ -302,7 +306,7 @@ async function moveCodex(
 }
 
 /**
- * pi's logs, from the shared session dir it wrote to before each worktree
+ * pi's logs, from the shared session dir it wrote to before each workspace
  * had its own (docs/legacy-compat-shims.md). pi names each for its
  * conversation, and nests some one folder down.
  */
@@ -331,7 +335,7 @@ async function movePi(slug: string, history: string, ids: Set<string>): Promise<
  * - the `memory` folder among those conversations, linked to the project's
  *   shared memory, which a pod mounts at the same place — claude keys
  *   memory on the checkout's git root, the checkout itself — so auto-memory
- *   is one thing on both drivers and across worktrees. The folder the host
+ *   is one thing on both drivers and across workspaces. The folder the host
  *   repo path names, where memory lived while checkouts were linked, is
  *   folded into the shared one. Two real folders are both left alone;
  *   memory is never merged.
@@ -342,10 +346,10 @@ async function movePi(slug: string, history: string, ids: Set<string>): Promise<
  * Every spelling of each path claude might file under gets a link — the
  * data dir as named, and as resolved (macOS's `/var` is `/private/var`).
  */
-async function linkOut(slug: string, worktreeId: string, history: string, shared: Set<string>): Promise<void> {
+async function linkOut(slug: string, workspaceId: string, history: string, shared: Set<string>): Promise<void> {
   const projects = path.join(claudeDir(slug), 'projects')
   const conversations = path.join(history, 'claude', CLAUDE_POD_CWD)
-  for (const form of await checkoutForms(slug, worktreeId)) {
+  for (const form of await checkoutForms(slug, workspaceId)) {
     const link = path.join(projects, claudeProjectDirName(form))
     const stat = await fs.lstat(link).catch(() => null)
     if (stat?.isDirectory() === true) {
@@ -365,7 +369,7 @@ async function linkOut(slug: string, worktreeId: string, history: string, shared
   }
 
   // claude keys memory on the checkout's git root, which is the checkout
-  // itself: its memory folder sits among this worktree's conversations, and
+  // itself: its memory folder sits among this workspace's conversations, and
   // is linked back to the project's shared one. An empty one is the pod's
   // mountpoint, left by a run under the other driver.
   const memory = path.join(projects, CLAUDE_POD_REPO)
@@ -422,8 +426,8 @@ async function forms(slug: string, of: string): Promise<string[]> {
   return [...new Set([of, path.join(real, rel)])]
 }
 
-const checkoutForms = (slug: string, worktreeId: string): Promise<string[]> =>
-  forms(slug, worktreeDir(slug, worktreeId))
+const checkoutForms = (slug: string, workspaceId: string): Promise<string[]> =>
+  forms(slug, workspaceDir(slug, workspaceId))
 const repoForms = (slug: string): Promise<string[]> => forms(slug, repoDir(slug))
 
 /** Every file below `dir`, relative to it; [] when there is no `dir`. */

@@ -9,8 +9,8 @@
 // the IDENTITY of every image yaac ships: the digest pin or content-hash tag
 // by which the server looks one up. PRODUCING those images belongs to
 // `#drivers/k8s/install`, and nothing here reaches into it.
-// Two kinds of consumer enter here: worktree create and its reconcilers
-// (which stand a worktree's slice of that datapath up and tear it down)
+// Two kinds of consumer enter here: workspace create and its reconcilers
+// (which stand a workspace's slice of that datapath up and tear it down)
 // and the image builders (which need the builder pod's admission guard and
 // its route to the registry) — plus the install feature above, which reads
 // the identities and the in-cluster layers both sides ensure.
@@ -40,7 +40,7 @@ export {
   buildProxyIngressNpManifest,
   buildServerFrontIngressNpManifest,
   buildServerIngressNpManifest,
-  buildWorktreeEgressNpManifest,
+  buildWorkspaceEgressNpManifest,
   egressAllButServerFront,
 } from './policy-manifests'
 export {
@@ -68,6 +68,7 @@ export {
   ensureProxyAuthSecret,
   ensureProxyResources,
   proxyServiceClusterIp,
+  relabelLegacyWorkspaces,
   removeProjectSecrets,
   resetProxyClusterIpCache,
   syncProjectSecrets,

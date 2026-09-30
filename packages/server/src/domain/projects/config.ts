@@ -3,7 +3,7 @@ import path from 'node:path'
 import { AGENT_TOOLS } from '@yaac/shared/types'
 import type { YaacConfig, InitCommandSpec } from '@yaac/shared/types'
 import { projectConfigDir } from '@yaac/shared/project-paths'
-import { worktreeDriver } from '#drivers/driver'
+import { workspaceDriver } from '#drivers/driver'
 import { isInfraPort } from '#lib/port-policy'
 
 const CACHE_VOLUME_KEY_RE = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/
@@ -29,7 +29,7 @@ export function resolveEphemeralModulesPaths(config: YaacConfig | null): string[
 
 /** tmux window names tagged 'reserved' across every supported agent tool —
  *  we reject these so an `initCommands` entry can never clobber the agent
- *  pane on a worktree whose tool is set to that name. */
+ *  pane on a workspace whose tool is set to that name. */
 const RESERVED_INIT_WINDOW_NAMES: ReadonlySet<string> = new Set(
   [...AGENT_TOOLS, 'init', 'yaac'],
 )
@@ -45,7 +45,7 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  *   - string[]              → collapses into a single `init` tmux window
  *   - InitCommandSpec[]     → one tmux window per entry (parallel execution)
  *
- * A mixed array is rejected so each worktree has a predictable window layout.
+ * A mixed array is rejected so each workspace has a predictable window layout.
  */
 export function parseInitCommands(raw: unknown): string[] | InitCommandSpec[] {
   if (!Array.isArray(raw)) {
@@ -271,7 +271,7 @@ export async function resolveProjectConfig(projectSlug: string): Promise<YaacCon
  * project without its nestable layer and report success.
  */
 export function retryImageBuild(id: string): boolean {
-  return worktreeDriver().retryImageBuild(
+  return workspaceDriver().retryImageBuild(
     id,
     (slug) => resolveProjectConfig(slug).then((cfg) => cfg ?? undefined),
   )

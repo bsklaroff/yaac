@@ -18,14 +18,14 @@
  *   7. Tree colors: green for untracked, yellow for an edited tracked file.
  *
  * Needs a running containerless `yaac server` (this script edits the checkout
- * directly on disk to play the agent) with one live worktree whose project
+ * directly on disk to play the agent) with one live workspace whose project
  * has a tracked README — e.g. `yaac project add
- * https://github.com/octocat/Hello-World.git` then `yaac worktree create
+ * https://github.com/octocat/Hello-World.git` then `yaac workspace create
  * hello-world`. Run `pnpm build && yaac server restart` first, or you are
  * looking at the frontend `dist/` held when the server started. It writes
  * pw-a.ts, pw-b.ts, .gitignore and node_modules/pkg into the checkout.
  *
- * Run: node test-playwright-scripts/file-editor.js <worktree-id>
+ * Run: node test-playwright-scripts/file-editor.js <workspace-id>
  * (set SCREENSHOT_DIR to change where the final screenshot lands; defaults to
  * /tmp/yaac-shots. YAAC_DATA_DIR defaults to ~/.yaac.)
  * (playwright is resolved from the global npm root; browsers live under
@@ -59,9 +59,9 @@ function readServerLock() {
   throw new Error('no .server.lock found — is the server running? try: yaac server start')
 }
 
-const worktreeId = process.argv[2]
-if (!worktreeId) {
-  console.error('usage: node test-playwright-scripts/file-editor.js <worktree-id>')
+const workspaceId = process.argv[2]
+if (!workspaceId) {
+  console.error('usage: node test-playwright-scripts/file-editor.js <workspace-id>')
   process.exit(1)
 }
 
@@ -83,10 +83,10 @@ async function eventually(fn, timeoutMs = 5000) {
 async function main() {
   const lock = readServerLock()
   const origin = `http://127.0.0.1:${lock.port}`
-  const { worktrees } = await (await fetch(`${origin}/api/worktree/list`)).json()
-  const wt = worktrees.find((w) => w.worktreeId.startsWith(worktreeId))
-  if (!wt) throw new Error(`no running worktree ${worktreeId}`)
-  const checkout = path.join(DATA_DIR, 'global', 'projects', wt.projectSlug, 'worktrees', wt.worktreeId)
+  const { workspaces } = await (await fetch(`${origin}/api/workspace/list`)).json()
+  const wt = workspaces.find((w) => w.workspaceId.startsWith(workspaceId))
+  if (!wt) throw new Error(`no running workspace ${workspaceId}`)
+  const checkout = path.join(DATA_DIR, 'global', 'projects', wt.projectSlug, 'workspaces', wt.workspaceId)
   const onDisk = (rel) => fs.readFileSync(path.join(checkout, rel), 'utf8')
   fs.writeFileSync(path.join(checkout, 'pw-a.ts'), 'export const a = 1\n')
   fs.writeFileSync(path.join(checkout, 'pw-b.ts'), 'export const b = 2\n')
@@ -99,7 +99,7 @@ async function main() {
   const page = await browser.newPage({ viewport: { width: 1600, height: 900 } })
   const puts = []
   page.on('request', (req) => { if (req.method() === 'PUT' && req.url().includes('/file')) puts.push(req.postData()) })
-  const query = new URLSearchParams({ project: wt.projectSlug, worktree: wt.worktreeId })
+  const query = new URLSearchParams({ project: wt.projectSlug, workspace: wt.workspaceId })
   await page.goto(`${origin}/?${query}`)
   await page.waitForSelector('[aria-label="Browse files"]', { timeout: 20000 })
   await page.locator('.xterm').first().click()

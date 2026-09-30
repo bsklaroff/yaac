@@ -25,9 +25,9 @@ const A = '4bfc59c6-1e83-4dd0-80f1-735294d5d2bb'
 const B = '00000000-0000-4000-8000-000000000000'
 let dataDir: string
 
-function marker(worktreeId: string, over: Partial<WorkspaceMarker> = {}): WorkspaceMarker {
+function marker(workspaceId: string, over: Partial<WorkspaceMarker> = {}): WorkspaceMarker {
   return {
-    projectSlug: 'demo', worktreeId, tool: 'claude', mode: 'tui',
+    projectSlug: 'demo', workspaceId, tool: 'claude', mode: 'tui',
     prewarm: false, createdAtMs: 1_000, ...over,
   }
 }
@@ -53,7 +53,7 @@ describe('rememberWorkspace', () => {
 
 describe('findWorkspace', () => {
   // Prefix expansion is domain's, over rows; the unit name is this driver's
-  // own. Only the exact worktree id matches.
+  // own. Only the exact workspace id matches.
   it('resolves by exact id only', () => {
     rememberWorkspace(marker(A))
     expect(findWorkspace(A)?.workspaceId).toBe(A)
@@ -62,7 +62,7 @@ describe('findWorkspace', () => {
     expect(findWorkspace('')).toBeUndefined()
   })
 
-  it('passes over an unclaimed spare, which is not a worktree', () => {
+  it('passes over an unclaimed spare, which is not a workspace', () => {
     rememberWorkspace(marker(A, { prewarm: true }))
     expect(findWorkspace(A)).toBeUndefined()
   })
@@ -89,7 +89,7 @@ describe('listWorkspaces', () => {
 })
 
 describe('countWorkspaces', () => {
-  it('excludes spares, which are not anyone\'s worktree yet', () => {
+  it('excludes spares, which are not anyone\'s workspace yet', () => {
     rememberWorkspace(marker(A))
     rememberWorkspace(marker(B, { prewarm: true }))
     expect(countWorkspaces()).toEqual({ demo: 1 })
@@ -129,27 +129,27 @@ describe('readMarkers', () => {
     await writeMarker(marker(A))
     await writeMarker(marker(B, { projectSlug: 'other' }))
     const found = await readMarkers()
-    expect(found.map((m) => m.worktreeId).sort()).toEqual([B, A].sort())
+    expect(found.map((m) => m.workspaceId).sort()).toEqual([B, A].sort())
   })
 
   it('takes identity from the path, not from what the file claims', async () => {
     // A state dir copied along with a project would otherwise announce
-    // itself as the worktree it was copied from.
+    // itself as the workspace it was copied from.
     await writeMarker(marker(A))
     const file = markerPath('demo', A)
     await fsp.writeFile(file, JSON.stringify({
-      ...marker(A), projectSlug: 'somewhere-else', worktreeId: 'not-this-one',
+      ...marker(A), projectSlug: 'somewhere-else', workspaceId: 'not-this-one',
     }))
     const [found] = await readMarkers()
-    expect(found).toMatchObject({ projectSlug: 'demo', worktreeId: A })
+    expect(found).toMatchObject({ projectSlug: 'demo', workspaceId: A })
   })
 
   it('skips an unreadable marker instead of failing the whole recovery', async () => {
     await writeMarker(marker(A))
     await fsp.mkdir(path.dirname(markerPath('demo', B)), { recursive: true })
     await fsp.writeFile(markerPath('demo', B), 'not json')
-    // One corrupt file must not cost every other worktree its recovery.
-    expect((await readMarkers()).map((m) => m.worktreeId)).toEqual([A])
+    // One corrupt file must not cost every other workspace its recovery.
+    expect((await readMarkers()).map((m) => m.workspaceId)).toEqual([A])
   })
 
   it('answers empty on an install that has never had a project', async () => {
@@ -161,13 +161,13 @@ describe('writeMarker', () => {
   it('records what only the launch knew', async () => {
     await writeMarker(marker(A, { tmuxPid: 4242, declaredTool: 'codex' }))
     const raw = JSON.parse(await fsp.readFile(markerPath('demo', A), 'utf8')) as WorkspaceMarker
-    expect(raw).toMatchObject({ worktreeId: A, tmuxPid: 4242, declaredTool: 'codex' })
+    expect(raw).toMatchObject({ workspaceId: A, tmuxPid: 4242, declaredTool: 'codex' })
   })
 })
 
 describe('sshAgentPidOf', () => {
   it('answers for a live workspace and for one recovered after a restart', async () => {
-    // Teardown reads this to end the process holding the worktree's ssh key,
+    // Teardown reads this to end the process holding the workspace's ssh key,
     // so it has to answer for a workspace this server did not launch — a
     // restart repopulates the same entries from the markers on disk.
     rememberWorkspace(marker(A, { sshAgentPid: 777 }))

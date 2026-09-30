@@ -8,7 +8,7 @@ import type { AgentSessionEntry } from '@yaac/shared/types'
  *
  * The live pane gets its events over a socket, which needs a running
  * workspace; this is the same events over a plain GET, which does not. That is
- * what lets a stopped worktree show what was actually said instead of only the
+ * what lets a stopped workspace show what was actually said instead of only the
  * question that started it.
  */
 
@@ -24,7 +24,7 @@ export type TranscriptResult = AcpEvent[] | typeof TRANSCRIPT_UNAVAILABLE
  * server would refuse costs no round trip: an `acp` one was recorded as it
  * happened, and a `tui` claude one is replayed from claude's own transcript.
  * Everything else keeps its history somewhere the server cannot read once the
- * worktree is gone — opencode's is a sqlite database inside the container.
+ * workspace is gone — opencode's is a sqlite database inside the container.
  */
 export function transcriptViewable(session: AgentSessionEntry): boolean {
   return session.mode === 'acp' || session.tool === 'claude'
@@ -41,12 +41,12 @@ export function transcriptViewable(session: AgentSessionEntry): boolean {
  * founding prompt.
  */
 export async function getSessionTranscript(
-  worktreeId: string,
+  workspaceId: string,
   agentSessionId: string,
 ): Promise<TranscriptResult> {
   try {
-    const { events } = await api.worktree[':id']['agent-sessions'][':sessionId'].transcript.$get({
-      param: { id: worktreeId, sessionId: agentSessionId },
+    const { events } = await api.workspace[':id']['agent-sessions'][':sessionId'].transcript.$get({
+      param: { id: workspaceId, sessionId: agentSessionId },
     })
     return events
   } catch (err) {

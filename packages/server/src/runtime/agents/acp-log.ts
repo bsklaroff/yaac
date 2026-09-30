@@ -34,22 +34,22 @@ import { serverLog } from '#log'
 import type { AcpEvent, AcpEventInit } from '@yaac/shared/acp'
 
 /** Which conversation's record: acpd names each `<agentSessionId>.jsonl` in
- *  its worktree's record dir. */
+ *  its workspace's record dir. */
 export interface AcpRecordRef {
   slug: string
-  worktreeId: string
+  workspaceId: string
   agentSessionId: string
 }
 
 /**
- * A conversation's record as a file under its worktree's record dir — a dir
+ * A conversation's record as a file under its workspace's record dir — a dir
  * the pod writes, so it is read confined to it (`SandboxFile`). Undefined for
  * an id that is not one: the id is joined into the path, and it comes from
  * the agent, so it is held to `agentSessionIdSchema` before it is.
  */
 export function acpRecord(ref: AcpRecordRef): SandboxFile | undefined {
   if (!agentSessionIdSchema.safeParse(ref.agentSessionId).success) return undefined
-  return { slug: ref.slug, dir: acpLogDir(ref.slug, ref.worktreeId), rel: `${ref.agentSessionId}.jsonl` }
+  return { slug: ref.slug, dir: acpLogDir(ref.slug, ref.workspaceId), rel: `${ref.agentSessionId}.jsonl` }
 }
 
 /** The most of a record the whole-file readers below will read. */
@@ -456,10 +456,10 @@ const TRUNCATED_PROMPT_TEXT =
   /"method":"session\/prompt".*?"prompt":\[\{"type":"text","text":("(?:[^"\\]|\\.)*")/
 
 /**
- * The conversation's opening user message — what labels a worktree in the
+ * The conversation's opening user message — what labels a workspace in the
  * sidebar.
  *
- * Taken from the record rather than watched on the live stream, so a worktree
+ * Taken from the record rather than watched on the live stream, so a workspace
  * can be labelled without a conversation being attached: the registry runs on
  * a reconciler tick, and coupling it to a live connection is the dependency the
  * record exists to break.

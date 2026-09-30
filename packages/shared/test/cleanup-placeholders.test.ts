@@ -77,7 +77,7 @@ describe('cleanupProjectClaudePlaceholders', () => {
   })
 
   it('clears the macOS Keychain item too, not just the file', async () => {
-    // On macOS the file is only half of it. A containerless worktree runs
+    // On macOS the file is only half of it. A containerless workspace runs
     // claude with CLAUDE_CONFIG_DIR set to the project's claude dir, and on
     // its first token refresh claude migrates the credential into the
     // Keychain item that dir names and deletes the file. Unlinking alone

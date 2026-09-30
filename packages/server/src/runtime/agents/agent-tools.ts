@@ -58,7 +58,7 @@ export async function getAgentSessionFirstMessage(
 
 /**
  * The tmux pane option a tool's in-pane reporter sets to the model it is
- * running (`worktree-bin/yaac-agent-report`) — claude from its `SessionStart`
+ * running (`workspace-bin/yaac-agent-report`) — claude from its `SessionStart`
  * and `PostModelSwitch` hooks, opencode and pi from a plugin and an extension
  * of their own.
  */
@@ -88,7 +88,7 @@ export function agentModelFormat(tool: AgentTool): string {
  * The tmux pane option a tool's reporter sets to the permission mode it is in,
  * in its own words: claude's mode name, from its `UserPromptSubmit` and `Stop`
  * hooks, and opencode's agent (`build`, `plan`), from its plugin. Both go
- * through the same script as the model (`worktree-bin/yaac-agent-report`).
+ * through the same script as the model (`workspace-bin/yaac-agent-report`).
  */
 export const MODE_PANE_OPTION = '@yaac-permission-mode'
 
@@ -119,7 +119,7 @@ export function splitAgentReport(value: string): { model: string; mode: string }
 /**
  * The tmux pane option naming the conversation a pane holds, as
  * `<tool>|<id>|<project-relative transcript>` — set by
- * `worktree-bin/yaac-agent-links` from claude's and codex's `SessionStart`
+ * `workspace-bin/yaac-agent-links` from claude's and codex's `SessionStart`
  * hooks, pi's extension and opencode's plugin, so it moves on every `/clear`,
  * `/new` or resume, and dies with its pane. A resume launch sets it first
  * (`nameSessionCommand`).
@@ -184,7 +184,7 @@ export function parsePaneSession(value: string): PaneSession | undefined {
  * Under `acp` it is a session mode id, read back through the adapter's
  * profile. Under `tui` it is what the tool's reporter published: claude's own
  * mode name, or opencode's agent, which only means something against the
- * posture the worktree runs under now (`current`). codex's is already a
+ * posture the workspace runs under now (`current`). codex's is already a
  * posture: its hooks can only tell `bypassPermissions` from everything else,
  * so the registry reads it from the rollout its pane names
  * (`getCodexPermissionMode`). pi has no modes.
@@ -260,10 +260,10 @@ export function classifyAgentObservation(tool: AgentTool, observed: string): Age
 }
 
 /**
- * The tmux window name for a worktree's Nth agent. The first keeps the bare
+ * The tmux window name for a workspace's Nth agent. The first keeps the bare
  * tool name, so every existing `yaac:<tool>` target — the prompt paste, the
  * CLI's `attach --agent`, the terminals listing — resolves exactly as before
- * no matter how many agents a worktree ends up holding. Extras are
+ * no matter how many agents a workspace ends up holding. Extras are
  * `<tool>-2`, `<tool>-3`, …
  */
 export function agentWindowName(tool: AgentTool, index: number): string {
@@ -274,11 +274,11 @@ export function agentWindowName(tool: AgentTool, index: number): string {
  * The agent tool a tmux window runs, or undefined when it is not an agent
  * window — the inverse of `agentWindowName`.
  *
- * Any tool matches, not just the worktree's: a worktree can hold a codex
- * conversation beside its claude ones, and matching only the worktree's tool
+ * Any tool matches, not just the workspace's: a workspace can hold a codex
+ * conversation beside its claude ones, and matching only the workspace's tool
  * would drop that window from the live pane set — which in turn leaves its
  * link inactive, so the next restart silently forgets a conversation that was
- * running when the worktree stopped.
+ * running when the workspace stopped.
  *
  * Init-command windows and scratch shells are excluded — they have no agent
  * status to classify. An agent a user starts by hand inside a *scratch*

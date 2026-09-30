@@ -10,7 +10,7 @@ describe('TerminalKeyBar', () => {
   it('types the keys a soft keyboard doesn’t have into the pane', () => {
     const send = vi.fn()
     const off = registerPtyInput(paneKey('s1', 'agent'), send)
-    render(<TerminalKeyBar worktreeId="s1" target="agent" />)
+    render(<TerminalKeyBar workspaceId="s1" target="agent" />)
 
     fireEvent.pointerDown(screen.getByLabelText('Escape'))
     expect(send).toHaveBeenLastCalledWith(PTY_KEYS.escape)
@@ -28,7 +28,7 @@ describe('TerminalKeyBar', () => {
 
   it('presses without taking focus, so the soft keyboard stays up', () => {
     const off = registerPtyInput(paneKey('s1', 'agent'), vi.fn())
-    render(<TerminalKeyBar worktreeId="s1" target="agent" />)
+    render(<TerminalKeyBar workspaceId="s1" target="agent" />)
     const event = new PointerEvent('pointerdown', { bubbles: true, cancelable: true })
     screen.getByLabelText('Escape').dispatchEvent(event)
     // The default action — moving focus out of xterm's hidden textarea, which
@@ -38,7 +38,7 @@ describe('TerminalKeyBar', () => {
   })
 
   it('is harmless when its pane has gone away mid-press', () => {
-    render(<TerminalKeyBar worktreeId="ghost" target="agent" />)
+    render(<TerminalKeyBar workspaceId="ghost" target="agent" />)
     expect(() => fireEvent.pointerDown(screen.getByLabelText('Escape'))).not.toThrow()
   })
 })

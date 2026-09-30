@@ -21,13 +21,13 @@ import { serverLog } from '#log'
  * it would make the OUTER install's proxy substitute the real token and
  * rotate it — while this server, which receives sentinels back, learns
  * nothing and stores nothing. The outer store keeps the spent token and every
- * worktree using it fails on its next refresh. Refreshing a credential we do
+ * workspace using it fails on its next refresh. Refreshing a credential we do
  * not own is the upstream install's job, never ours.
  *
  * Under test, no grant may go out at all. The reason is the same mechanism
  * seen from the other side: the proxy rewrites the `refresh_token` body param
  * of anything POSTed to a token endpoint without checking what the request
- * carried, so a suite running inside a mediated worktree rotates the real
+ * carried, so a suite running inside a mediated workspace rotates the real
  * credential no matter how obviously fake the token it presented. Fixture
  * expiries are not a defense — they only decide WHETHER a refresh is
  * attempted, and any attempt is already the damage.

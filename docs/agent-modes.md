@@ -1,6 +1,6 @@
 # Agent modes: `tui` and `acp`
 
-A yaac worktree runs a coding agent. *How* the server talks to that agent is
+A yaac workspace runs a coding agent. *How* the server talks to that agent is
 its **mode**, and there are two:
 
 | | `tui` | `acp` |
@@ -37,7 +37,7 @@ The choice matters most on a phone. A chat pane is a message list and a
 composer, so it needs nothing a soft keyboard can't provide; a TUI needs Esc,
 Tab, Ctrl and arrows, which is why the mobile shell gives a terminal pane an
 accessory key bar (`docs/mobile-layout.md`). `acp` is the mode to reach for
-when the worktree will be driven from one.
+when the workspace will be driven from one.
 
 ## tmux supervises both
 
@@ -63,7 +63,7 @@ tmux window                                   server
 So `tmux : PTY :: acpd : JSON-RPC` — one supervisor, two presentation
 transports. Everything downstream of "a conversation is a tmux window" is
 untouched: the launch exec, the restart that respawns what was live,
-window-close teardown, and worktree GC.
+window-close teardown, and workspace GC.
 
 acpd is shared by both runtimes and knows nothing about either. The launch
 command hands it everything that differs between them: the socket to bind, the
@@ -76,9 +76,9 @@ that was never installed.
 ## The driver seam
 
 `#runtime/agents` exposes `agentDriver(mode)`, returning an `AgentDriver` with
-`launchCmd(spec)` and `connect(worktree, sink, deps)` — a stream of
+`launchCmd(spec)` and `connect(workspace, sink, deps)` — a stream of
 `AgentObservation`s (`up`, `down`, `live-agents`, `status`,
-`command-channel`). `WorktreeStatusWatcher` consumes it and owns what both modes
+`command-channel`). `WorkspaceStatusWatcher` consumes it and owns what both modes
 need identically: respawn, backoff, and the streamd self-heal. That is why ACP
 mode added no second retry loop.
 
@@ -96,7 +96,7 @@ there and nowhere else — not in the driver, not in the route, not in React.
 The status store keys a conversation's busy/idle by its **handle**: the
 driver's address for it inside the pod — a tmux pane id (`%3`) under `tui`, the
 acpd socket's window name (`claude-2`) under `acp`. The store never learns
-which protocol produced a status. `worktree_agent_sessions.paneId` holds the
+which protocol produced a status. `workspace_agent_sessions.paneId` holds the
 same handle, which is how a live status joins back to its conversation.
 
 ## Where history lives
@@ -109,7 +109,7 @@ attached, so a turn completed with nobody watching is still recorded. It is in
 ACP's own vocabulary, so replaying it runs the *same* projection the live path
 does rather than a second translator that could disagree. It is on the host, so
 the server reads it without going through the pod — and can still read it once
-the pod is gone, which is what makes a stopped worktree's conversation readable
+the pod is gone, which is what makes a stopped workspace's conversation readable
 at all.
 
 Both directions matter: the agent echoes a user message only when replaying
@@ -121,11 +121,11 @@ the server retains nothing.
 
 ### Reading a conversation without a workspace
 
-A conversation is worth reading after its worktree has stopped, so
-`GET /worktree/:id/agent-sessions/:sessionId/transcript` answers with the same
+A conversation is worth reading after its workspace has stopped, so
+`GET /workspace/:id/agent-sessions/:sessionId/transcript` answers with the same
 `AcpEvent[]` a pane renders. It resolves from the *record* rather than a
-running workspace, which is what makes a stopped worktree's history the thing
-the stopped-worktrees view shows instead of only its founding ask.
+running workspace, which is what makes a stopped workspace's history the thing
+the stopped-workspaces view shows instead of only its founding ask.
 
 An `acp` conversation is a replay of acpd's record, as above. A `tui` one has
 no record — it was driven through a PTY — so claude's own session transcript is
@@ -164,18 +164,18 @@ continuously, which a chat pane tolerates far better than a terminal would.
 
 A pane keeps nothing of the conversation, then, but it does keep what has not
 been said yet. A chat pane can be torn down under a half-typed message — the
-worktree stops, the tab is closed, the page is reloaded — so that message lives
+workspace stops, the tab is closed, the page is reloaded — so that message lives
 in the webapp's ui store, keyed per conversation and persisted, rather than in
 the pane, and returns with it.
 
 A pane going *off-screen* is not one of those cases: like a terminal, it stays
-mounted and holds its socket, so switching tabs or worktrees is a visibility
+mounted and holds its socket, so switching tabs or workspaces is a visibility
 flip with no network on it at all. The conversation replaying on any attach is
 what makes a chat pane cheap to re-create, but it is also what makes attaching
 expensive — a handshake, then the whole conversation in one `hello` frame —
 and on a slow or lossy link that is the entire "Connecting to the agent…" wait.
 The same eager warm-up that pre-attaches terminals after a page load covers
-chat panes too, taking each worktree's default pane from its mode.
+chat panes too, taking each workspace's default pane from its mode.
 
 A sent message stays in the box until the server echoes it back, so a pane torn
 down inside that window restores text that may already have been delivered.
@@ -217,7 +217,7 @@ The record is named for the *conversation*, not the window: a window name is a
 slot, and a restart that drops an earlier conversation shifts the later ones
 down a slot, which under slot-naming would truncate one conversation's history
 onto another's file. On a resume the id is known at launch; on a fresh create
-the file starts under the worktree id and is renamed once `session/new`
+the file starts under the workspace id and is renamed once `session/new`
 answers.
 
 ## Reconnect
@@ -228,10 +228,10 @@ mid-conversation, possibly mid-turn. Three things follow.
 **The handshake runs once per agent process, not per connection.** acpd's first
 line on every attach is `_acpd/hello {firstAttach}`; when false, the client
 skips `initialize` and `session/new` and resumes consuming notifications for
-the worktree id it already holds. `firstAttach` tracks whether a client ever
+the workspace id it already holds. `firstAttach` tracks whether a client ever
 *spoke*, not whether one ever connected — a client that died during an
 adapter's cold start ran no handshake, and telling its successor otherwise
-would send it to address a worktree that was never created.
+would send it to address a workspace that was never created.
 
 **Busy state is recovered from the record.** ACP scopes turn state to the
 request: a turn is running iff *your* `session/prompt` is unanswered, and the
@@ -247,7 +247,7 @@ a `turn-start`, which is what lets a pane show a turn nobody there started.
 **A pane outlives its connection, not its conversation.** A conversation that
 is torn down takes its panes' sockets with it rather than only greying them
 out. A pane holds the conversation *object* it attached to, so a replacement
-registered under the same `acp:<id>` — which is what a worktree restart
+registered under the same `acp:<id>` — which is what a workspace restart
 produces — is invisible to it: the new conversation's boundaries go to its own
 subscribers, and a Stop sent down the old socket reaches a closed peer. Closing
 is what makes the pane re-attach, and re-attaching is what rebinds it.
@@ -270,7 +270,7 @@ that was.
 
 Recording works the same for both: the live agent set names each running
 conversation, and the registry records exactly those as active
-(docs/worktree-storage.md). Only where the id comes from differs — a `tui`
+(docs/workspace-storage.md). Only where the id comes from differs — a `tui`
 conversation's tool names it on its pane through a hook or plugin, while
 `session/new` hands an `acp` one's to the server directly.
 
@@ -296,13 +296,13 @@ id it was given). So the row names the model the
 way the create form did, and the sidebar label does not change when the agent
 first reports. A mode the adapter
 moves the session to travels the same way (a `current_mode_update`, or the
-`mode` option in a `config_option_update`), and becomes the worktree's posture
+`mode` option in a `config_option_update`), and becomes the workspace's posture
 (docs/permission-modes.md, "Following the agent").
 
 The row is still written by the reconciler's conversation sweep, and the
 handshake that mints the id moves nothing the informers watch — so the id
 landing in the live agent set is itself a reconcile trigger (`live-agents`,
-docs/event-driven-reconcile.md). Until the row exists an ACP worktree has no
+docs/event-driven-reconcile.md). Until the row exists an ACP workspace has no
 chat pane to show, only the raw agent window, which is acpd's log rather than
 a conversation — so a fresh ACP create holds until the row lands, and the
 webapp swaps its provisioning placeholder straight for the chat pane. A
@@ -321,8 +321,8 @@ Status is exact at turn boundaries, but three states are worth knowing.
 
 A **hung adapter** — process alive, prompt never answered — pins the
 conversation `running` indefinitely: nothing times out a `session/prompt`, and
-`worktree/cancel` is a notification a wedged agent will not act on. The way out
-is the pane's stop button, then a worktree restart.
+`workspace/cancel` is a notification a wedged agent will not act on. The way out
+is the pane's stop button, then a workspace restart.
 
 A **torn record** can pin a reattached conversation `running`. Recovery reads
 "last prompt unanswered" as a turn in flight, so a reply whose bytes never
@@ -330,7 +330,7 @@ landed leaves nothing to reclassify it — the agent's exit is recorded and
 clears it, but a lost write is not. It shows as working with nothing
 streaming, and nothing the pane can do releases it: a message queues behind
 the phantom turn, and Stop's `session/cancel` names a turn the adapter does
-not have, so it draws no reply. The way out is a worktree restart, which
+not have, so it draws no reply. The way out is a workspace restart, which
 starts a fresh acpd life and is therefore classified idle.
 
 **Stop cancels the running turn, not the queue.** Messages sent while the agent
@@ -349,8 +349,8 @@ those capabilities and the container boundary (gVisor, the egress proxy, the
 NetworkPolicy) stays the one thing constraining it.
 
 `session/request_permission` is the one request yaac does serve, and what it
-answers depends on the worktree's posture (docs/permission-modes.md). Under
-`bypass` it grants immediately: what constrains such a worktree is the sandbox
+answers depends on the workspace's posture (docs/permission-modes.md). Under
+`bypass` it grants immediately: what constrains such a workspace is the sandbox
 and a throwaway git checkout, not a prompt nobody is watching. Under every
 other posture the request is held open and forwarded to the chat pane, where
 the user answers it — the adapter is separately told the posture over
@@ -387,10 +387,10 @@ dropped on it. claude reads the image as the path is pasted, and codex and
 opencode attach it on the spot too; pi keeps the path as text and reads the
 file with its tool during the turn, as its own paste-image key does. So the
 terminal pane claims an image paste or drop before xterm sees it, uploads it
-(`POST /worktree/:id/attachments`), and pastes the path the server answers.
+(`POST /workspace/:id/attachments`), and pastes the path the server answers.
 
-The server keeps the file in `worktreeAttachmentsDir`, under the worktree's
-state dir, so it lasts for the worktree's current life and goes when it stops.
+The server keeps the file in `workspaceAttachmentsDir`, under the workspace's
+state dir, so it lasts for the workspace's current life and goes when it stops.
 An image a turn has already sent stays in the tool's own history across a
 restart, but a path can no longer be read after one. The path is the one the
 workspace sees (`WorkspacePaths.attachmentsDir`): a read-only mount at
@@ -413,7 +413,7 @@ route checks a file, by its magic bytes, and holds the message to the same
 record both take them at once. A message over it is refused whole rather than
 sent without an image, and the composer says so before sending. Because acpd
 records the prompt, the images are part of the conversation's history: a
-replayed user turn shows them, and so does a stopped worktree's transcript.
+replayed user turn shows them, and so does a stopped workspace's transcript.
 That is also why the browser shrinks them before they leave: the long edge to
 1568 px, the most a model reads, and a PNG still over 1 MB re-encoded as WebP
 (or JPEG) when that is smaller. A record keeps them for good, and every attach
@@ -450,5 +450,5 @@ Image puts beside the image.
 | Agent supervisor | `dockerfiles/acpd/` (baked into the base image; run from the install under containerless) |
 | Record location | `acpLogDir()` in `packages/shared/src/project-paths.ts` |
 | Wire types | `packages/shared/src/acp.ts` |
-| Chat pane | `packages/frontend/src/components/WorktreeChat.tsx`, `src/lib/acp.ts` |
-| Pasted images | `packages/frontend/src/lib/attachments.ts`, `packages/server/src/domain/worktrees/attachments.ts`, `packages/shared/src/attachments.ts` |
+| Chat pane | `packages/frontend/src/components/WorkspaceChat.tsx`, `src/lib/acp.ts` |
+| Pasted images | `packages/frontend/src/lib/attachments.ts`, `packages/server/src/domain/workspaces/attachments.ts`, `packages/shared/src/attachments.ts` |

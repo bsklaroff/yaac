@@ -7,7 +7,7 @@
  *     (Custom WindowControls only render in Electron; a browser build shows
  *     the rail without them.)
  *  3. The session header's "Changes" button opens the review-diff pane
- *     (SessionChanges accordion) as a workspace leaf; with a clean worktree
+ *     (SessionChanges accordion) as a workspace leaf; with a clean workspace
  *     it shows the "No changes yet" empty state, with edits it lists files.
  *
  * Run: node test-playwright-scripts/electron-port-styling-test.js

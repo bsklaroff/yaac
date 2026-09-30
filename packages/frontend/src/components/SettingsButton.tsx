@@ -93,7 +93,7 @@ function visibleSections(buildsImages: boolean): typeof SECTIONS {
     // 'server' switches which server the shell attaches to — only the
     // desktop shell can.
     (s.key !== 'server' || serverBridge())
-    // The user Dockerfile layers the worktree image; a server that builds
+    // The user Dockerfile layers the workspace image; a server that builds
     // none has nothing to layer.
     && (s.key !== 'userDockerfile' || buildsImages))
 }
@@ -102,7 +102,7 @@ function visibleSections(buildsImages: boolean): typeof SECTIONS {
  * Rail gear → settings. Notion-style modal: a left nav of sections over a
  * scrollable content pane (General: theme and sound; Credentials: tool sign-in +
  * git credentials). Open state lives in the store so other surfaces (the
- * new-worktree menu's "Sign in") can open it onto a specific section.
+ * new-workspace menu's "Sign in") can open it onto a specific section.
  */
 export function SettingsButton(
   /** 'rail' is the desktop rail's 40px chip; 'row' is the mobile project
@@ -214,7 +214,7 @@ export function SettingsButton(
               </Field>
               <Field
                 label="Sounds"
-                hint="Play a chime when a worktree needs your input."
+                hint="Play a chime when a workspace needs your input."
               >
                 <button
                   type="button"
@@ -286,7 +286,7 @@ function UserDockerfilePane(): JSX.Element {
           <>
             Files stored next to Dockerfile.user as its build context — reference them
             with <code className="text-text-dim">COPY</code>. Changes apply on the next
-            worktree create.
+            workspace create.
           </>
         )}
       >
@@ -300,7 +300,7 @@ function UserDockerfilePane(): JSX.Element {
  * Per-tool sign-in plus git credentials. Each tool row shows its stored
  * credential (masked) with a sign-out, or a sign-in expander: claude/codex can
  * import the native login already on the server's machine or take a pasted API
- * key; opencode takes a provider pick + API key. New-worktree creation is
+ * key; opencode takes a provider pick + API key. New-workspace creation is
  * blocked per tool until a credential lands here, and per project until it
  * has a git credential (GitCredentials).
  */
@@ -315,7 +315,7 @@ function CredentialsPane(): JSX.Element {
   return (
     <section>
       <h2 className="text-sm font-semibold">Credentials</h2>
-      <Field label="Agent tools" hint="Sign in to create worktrees with a tool. Keys stay on this machine — containers only ever see placeholders.">
+      <Field label="Agent tools" hint="Sign in to create workspaces with a tool. Keys stay on this machine — containers only ever see placeholders.">
         <div className="space-y-2 text-xs">
           {TOOLS.map((t) => (
             <ToolAuthRow
@@ -418,7 +418,7 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
   const providerOptions = PROVIDER_OPTIONS[tool]
   const [provider, setProvider] = useState<string>(defaultProvider(tool) ?? 'openrouter')
 
-  // Opened via a "Sign in" affordance elsewhere (new-worktree menu) — land
+  // Opened via a "Sign in" affordance elsewhere (new-workspace menu) — land
   // with this tool's form already open.
   useEffect(() => {
     if (autoExpand && !summary) setExpanded(true)
@@ -534,7 +534,7 @@ function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): J
   const label = tool === 'claude' ? 'Sign in with Claude' : 'Sign in with ChatGPT'
   const toolName = tool === 'claude' ? 'Claude Code' : 'Codex'
 
-  // Poll while the flow runs. A vanished worktree (server restart, expiry)
+  // Poll while the flow runs. A vanished workspace (server restart, expiry)
   // resets to the start button.
   useEffect(() => {
     if (login?.status !== 'running') return
@@ -916,7 +916,7 @@ function Field({ label, hint, children }: { label: string; hint?: ReactNode; chi
 }
 
 /**
- * The git identity this server's worktrees commit under.
+ * The git identity this server's workspaces commit under.
  *
  * A server setting rather than something read off its host: under `k8s` the
  * server is a pod with no git config to read, and on a remote install the
@@ -967,9 +967,9 @@ function GitIdentityField(): JSX.Element {
     <Field
       label="Git identity"
       hint={identity === null
-        ? 'Not set — worktrees cannot be created until it is. The yaac CLI and '
+        ? 'Not set — workspaces cannot be created until it is. The yaac CLI and '
           + 'the auth server fill this in from your machine\'s git config.'
-        : 'What worktrees on this server commit as.'}
+        : 'What workspaces on this server commit as.'}
     >
       <form onSubmit={(e) => void save(e)}>
         <div className="flex gap-2">

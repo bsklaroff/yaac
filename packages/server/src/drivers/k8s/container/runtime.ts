@@ -5,16 +5,16 @@ import { promisify } from 'node:util'
  * The host container engine, which on this side of the seam is the image
  * BUILD engine only: `yaac cluster install` runs `podman build`/`podman
  * push` through here, and the server never does — it resolves every image
- * from the in-cluster registry (docs/trust-split-builds.md). Worktrees run
+ * from the in-cluster registry (docs/trust-split-builds.md). Workspaces run
  * as Jobs, so nothing here addresses a workload.
  */
 export const execFileAsync = promisify(execFile)
 
 /**
  * The rootful podman system socket. On a Linux host it is managed by
- * systemd's `podman.socket`; inside a nested worktree pod the SAME path is
+ * systemd's `podman.socket`; inside a nested workspace pod the SAME path is
  * served by the sudo-started in-pod engine (`podman system service` —
- * podman's rootful default), opened to the yaac user at worktree setup.
+ * podman's rootful default), opened to the yaac user at workspace setup.
  */
 export const ROOTFUL_PODMAN_SOCKET = '/run/podman/podman.sock'
 
@@ -35,7 +35,7 @@ export function usesRootfulPodman(): boolean {
  * at the rootful system socket via `CONTAINER_HOST`, so both the image build
  * engine and the kind node land on the same rootful podman. Idempotent and
  * safe to call from every entrypoint; honours a `CONTAINER_HOST` the user set
- * themselves — including the worktree image's baked ENV (same socket path).
+ * themselves — including the workspace image's baked ENV (same socket path).
  * No-op on macOS (podman machine).
  */
 export function ensureRootfulPodmanHost(): void {

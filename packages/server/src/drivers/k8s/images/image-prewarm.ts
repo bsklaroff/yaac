@@ -1,6 +1,6 @@
 /**
  * Reconcile step that keeps every project's image chain built and
- * pushed, so worktree create finds warm images instead of paying a builder
+ * pushed, so workspace create finds warm images instead of paying a builder
  * pod (minutes after a Dockerfile.yaac edit) inside the create request.
  *
  * Each tick sweeps all projects and fires one detached prewarm task per
@@ -9,7 +9,7 @@
  * two projects needing the same base wait on one build, then their distinct
  * downstream layers build in parallel.
  *
- * The coordinator's single-flight dedup means a worktree create just joins
+ * The coordinator's single-flight dedup means a workspace create just joins
  * the sweep's build rather than starting a second one.
  * Skipped in e2e (images are prebuilt by the global setup; workers must
  * never race a build).
@@ -31,7 +31,7 @@ import {
 /** How long a failed chain build blocks the sweep from retrying. Hitting
  *  retry in the webapp (which forgets the failed entry) or editing the
  *  Dockerfile (which changes the tag) re-enables the sweep immediately;
- *  dismissing the row does not; worktree creates always bypass it. */
+ *  dismissing the row does not; workspace creates always bypass it. */
 const FAILED_RETRY_MS = 10 * 60_000
 
 /** Min interval between full sweeps. A warm-project sweep is cheap but not
@@ -39,7 +39,7 @@ const FAILED_RETRY_MS = 10 * 60_000
  *  layer — and at the 5s tick cadence that steady churn was a measurable
  *  slice of server CPU. A minute
  *  bounds how long a Dockerfile edit or an externally pruned image waits
- *  for the sweep; worktree creates bypass the sweep and build immediately. */
+ *  for the sweep; workspace creates bypass the sweep and build immediately. */
 export const PREWARM_SWEEP_INTERVAL_MS = 60_000
 
 /** Project ids with a prewarm task in flight; added synchronously before

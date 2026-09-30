@@ -3,10 +3,10 @@
  *
  * Under this driver the server is not a process beside the cluster but a
  * single-replica Deployment inside it (docs/server-in-cluster.md), which is
- * what lets server and worktree pods eventually share one claim instead of
+ * what lets server and workspace pods eventually share one claim instead of
  * one host filesystem. Everything that puts it there lives here: its image,
  * its RBAC, its Deployment, the ingress policies that are the only thing
- * between an untrusted worktree pod and an unauthenticated API, and the
+ * between an untrusted workspace pod and an unauthenticated API, and the
  * `server.json` that points every client at the published origin. What
  * fronts its Service — how the origin is reached from outside the cluster
  * — is the one per-backend piece, and it is handed in as a
@@ -151,7 +151,7 @@ function serverPodLabels(): Record<string, string> {
 
 /**
  * ServiceAccount the server acts as. Unlike the proxy's, this identity is
- * the yaac control plane — it creates worktree Jobs, applies the datapath,
+ * the yaac control plane — it creates workspace Jobs, applies the datapath,
  * and stands per-project registries up in namespaces of their own.
  */
 export function buildServerServiceAccountManifest(): Record<string, unknown> {
@@ -320,7 +320,7 @@ export function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: strin
     ['YAAC_K8S_NAMESPACE', testEnv.k8sNamespace],
     ['YAAC_IMAGE_PREFIX', testEnv.imagePrefix],
     ['YAAC_ALLOWED_HOSTS', hosting.allowedHosts.length > 0 ? hosting.allowedHosts.join(',') : undefined],
-    // The address the snapshot claims a worktree's forwarded ports answer
+    // The address the snapshot claims a workspace's forwarded ports answer
     // at. The server binds nothing either way, so this is a display value —
     // but it is the one a remote-hosting install must change (a tailnet IP,
     // matching `yaac forward --bind`), and the pod is where it is read.
@@ -406,7 +406,7 @@ export function torSocksUrlForPod(hostAddr?: string): string {
  *
  * Plain runc, no RuntimeClass: the server is yaac's own code, and a sentry
  * per infra pod is CPU spent on containment that buys nothing. Infra
- * priority, because a preempted server takes every worktree's control plane
+ * priority, because a preempted server takes every workspace's control plane
  * with it.
  */
 export function buildServerDeploymentManifest(
@@ -435,7 +435,7 @@ export function buildServerDeploymentManifest(
           enableServiceLinks: false,
           priorityClassName: PRIORITY_CLASS_INFRA,
           // The install identity, which this is the record of: every path
-          // the server pre-creates for a worktree pod is owned by it, and
+          // the server pre-creates for a workspace pod is owned by it, and
           // host-side callers read it back from here
           // (deployedInstallIdentity). No `fsGroup`: the claims' roots are
           // made the install's once, at install, and HOME is the image's
@@ -455,7 +455,7 @@ export function buildServerDeploymentManifest(
               // runs on plain runc in group 0 with a group-writable
               // /etc/passwd, which with ubuntu's setuid `su` and pam_unix's
               // `nullok` is enough to make the `yaac` line uid 0 with an
-              // empty password and `su` over the data-dir hostPath. Worktree
+              // empty password and `su` over the data-dir hostPath. Workspace
               // pods are the opposite case by design: in-pod root is a
               // feature there and the gVisor sentry is the boundary.
               securityContext: { allowPrivilegeEscalation: false },
@@ -480,7 +480,7 @@ export function buildServerDeploymentManifest(
               // Memory is capped because it is not compressible and PGlite
               // holds the database in the same process; cpu deliberately is
               // not, because a CFS quota on the control plane throttles
-              // every worktree's reconcile at once.
+              // every workspace's reconcile at once.
               resources: {
                 requests: { cpu: '250m', memory: '1Gi' },
                 limits: { memory: '6Gi' },
@@ -494,7 +494,7 @@ export function buildServerDeploymentManifest(
           ],
           // The three tiers (storage.ts). The claims are what install
           // bound; the node-local tree is this node's own, the same path
-          // every worktree pod on the node mounts its caches under.
+          // every workspace pod on the node mounts its caches under.
           volumes: [
             { name: 'global', persistentVolumeClaim: { claimName: GLOBAL_CLAIM_NAME } },
             { name: 'server-local', persistentVolumeClaim: { claimName: SERVER_LOCAL_CLAIM_NAME } },
@@ -512,7 +512,7 @@ export function buildServerDeploymentManifest(
  * Order matters three times: the SA and its ClusterRole exist before the
  * pod that mounts the token; both halves of the ingress wall are applied
  * before the Service publishes the port — a window in which the API is reachable from
- * pods is a window in which a worktree could use it; and the fronting is
+ * pods is a window in which a workspace could use it; and the fronting is
  * applied before the Deployment, because the origin it publishes (read off
  * the Ingress on a tailnet) is an input to the Deployment's environment.
  * On an existing kind install the Service apply is also what releases the

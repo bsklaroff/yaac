@@ -10,7 +10,7 @@ import type { AddressInfo } from 'node:net'
  * real http.Server.
  *
  * The stream carries the one edge the server has to be woken for — a
- * queued in-worktree `yaac-mama` request — and nothing else: everything
+ * queued in-workspace `yaac-mama` request — and nothing else: everything
  * the proxy observes travels as objects the server watches. Events carry
  * NO payload (the queue is drained over its own claim protocol), which is
  * what makes a dropped stream cost a reconnect rather than a lost update.

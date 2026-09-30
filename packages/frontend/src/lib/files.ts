@@ -8,16 +8,16 @@ import { ServerError } from '@yaac/shared/errors'
 import type {
   FileStatus,
   SymlinkTarget,
-  WorktreeDir,
-  WorktreeFile,
-  WorktreeFiles,
-  WorktreeFileSaved,
+  WorkspaceDir,
+  WorkspaceFile,
+  WorkspaceFiles,
+  WorkspaceFileSaved,
 } from '@yaac/shared/types'
 import { api, rawApi } from './api'
 import { FILE_STATUS_RANK } from './gitStatus'
-import { addColumn, addTab, groupIndexOf, moveTargetToColumn, paneTargets, type Workspace } from './layout'
+import { addColumn, addTab, groupIndexOf, moveTargetToColumn, paneTargets, type PaneLayout } from './layout'
 
-/** The one layout target a worktree's explorer uses. */
+/** The one layout target a workspace's explorer uses. */
 export const FILES_TARGET = 'files'
 
 const FILE_PREFIX = 'file:'
@@ -26,7 +26,7 @@ export function isFilesTarget(target: string): boolean {
   return target === FILES_TARGET
 }
 
-/** The editor pane of one file, by its path relative to the worktree. */
+/** The editor pane of one file, by its path relative to the workspace. */
 export function fileTarget(path: string): string {
   return `${FILE_PREFIX}${path}`
 }
@@ -40,25 +40,25 @@ export function fileTargetPath(target: string): string {
 }
 
 /** What names one open file across the app: its dirty mark and its saver. */
-export function fileKey(worktreeId: string, path: string): string {
-  return `${worktreeId}|${path}`
+export function fileKey(workspaceId: string, path: string): string {
+  return `${workspaceId}|${path}`
 }
 
 // ── API ────────────────────────────────────────────────────────────────
 
-export function listWorktreeFiles(worktreeId: string): Promise<WorktreeFiles> {
-  return api.worktree[':id'].files.$get({ param: { id: worktreeId } })
+export function listWorkspaceFiles(workspaceId: string): Promise<WorkspaceFiles> {
+  return api.workspace[':id'].files.$get({ param: { id: workspaceId } })
 }
 
-export function listWorktreeDir(worktreeId: string, path: string): Promise<WorktreeDir> {
-  return api.worktree[':id'].dir.$get({ param: { id: worktreeId }, query: { path } })
+export function listWorkspaceDir(workspaceId: string, path: string): Promise<WorkspaceDir> {
+  return api.workspace[':id'].dir.$get({ param: { id: workspaceId }, query: { path } })
 }
 
 /** `known`: the version the caller holds, which the server answers without
  *  content while it is still current. */
-export function readWorktreeFile(worktreeId: string, path: string, known?: string): Promise<WorktreeFile> {
-  return api.worktree[':id'].file.$get({
-    param: { id: worktreeId },
+export function readWorkspaceFile(workspaceId: string, path: string, known?: string): Promise<WorkspaceFile> {
+  return api.workspace[':id'].file.$get({
+    param: { id: workspaceId },
     query: known === undefined ? { path } : { path, known },
   })
 }
@@ -72,14 +72,14 @@ export class FileConflict extends Error {
 }
 
 /** Save against `baseVersion` (null: create). A refusal throws `FileConflict`. */
-export async function saveWorktreeFile(
-  worktreeId: string,
+export async function saveWorkspaceFile(
+  workspaceId: string,
   path: string,
   content: string,
   baseVersion: string | null,
-): Promise<WorktreeFileSaved> {
-  const res = await rawApi.worktree[':id'].file.$put({
-    param: { id: worktreeId },
+): Promise<WorkspaceFileSaved> {
+  const res = await rawApi.workspace[':id'].file.$put({
+    param: { id: workspaceId },
     json: { path, content, baseVersion },
   })
   if (res.status === 409) {
@@ -90,19 +90,19 @@ export async function saveWorktreeFile(
     const body = await res.json().catch(() => null) as { error?: { code: never; message: string } } | null
     throw new ServerError(body?.error?.code ?? 'INTERNAL', body?.error?.message ?? `server returned ${res.status}`)
   }
-  return await res.json() as WorktreeFileSaved
+  return await res.json() as WorkspaceFileSaved
 }
 
-export function createWorktreeFolder(worktreeId: string, path: string): Promise<{ path: string }> {
-  return api.worktree[':id'].folder.$post({ param: { id: worktreeId }, json: { path } })
+export function createWorkspaceFolder(workspaceId: string, path: string): Promise<{ path: string }> {
+  return api.workspace[':id'].folder.$post({ param: { id: workspaceId }, json: { path } })
 }
 
-export function renameWorktreeEntry(worktreeId: string, from: string, to: string): Promise<{ from: string; to: string }> {
-  return api.worktree[':id'].rename.$post({ param: { id: worktreeId }, json: { from, to } })
+export function renameWorkspaceEntry(workspaceId: string, from: string, to: string): Promise<{ from: string; to: string }> {
+  return api.workspace[':id'].rename.$post({ param: { id: workspaceId }, json: { from, to } })
 }
 
-export async function deleteWorktreeEntry(worktreeId: string, path: string): Promise<void> {
-  await api.worktree[':id'].file.$delete({ param: { id: worktreeId }, query: { path } })
+export async function deleteWorkspaceEntry(workspaceId: string, path: string): Promise<void> {
+  await api.workspace[':id'].file.$delete({ param: { id: workspaceId }, query: { path } })
 }
 
 // ── Savers ─────────────────────────────────────────────────────────────
@@ -115,7 +115,7 @@ export async function deleteWorktreeEntry(worktreeId: string, path: string): Pro
  *
  * A saver is registered while its pane is mounted, and outlives the pane
  * when it still holds unsaved text nobody chose to throw away (see
- * `WorktreeFile`); only `discardFileSavers` drops one on purpose.
+ * `WorkspaceFile`); only `discardFileSavers` drops one on purpose.
  */
 export interface FileSaver {
   flush(): Promise<boolean>
@@ -153,7 +153,7 @@ export function discardFileSavers(keys: string[]): void {
 export interface TreeNode {
   name: string
   path: string
-  /** A folder, or a symlink to one inside the worktree. */
+  /** A folder, or a symlink to one inside the workspace. */
   dir: boolean
   /** Folders only, folders first then by name. */
   children: TreeNode[]
@@ -177,7 +177,7 @@ export interface FileTree {
  * `showIgnored` — the ignored entries, flagged. Folder statuses are rolled
  * up from their files, strongest first.
  */
-export function buildTree(files: WorktreeFiles, showIgnored = false): FileTree {
+export function buildTree(files: WorkspaceFiles, showIgnored = false): FileTree {
   const root: TreeNode = { name: '', path: '', dir: true, children: [] }
   const index = new Map<string, TreeNode>([['', root]])
   const folder = (path: string): TreeNode => {
@@ -314,7 +314,7 @@ export function fileTabLabels(paths: string[]): Record<string, string> {
  * the active file pane, then of any column holding one; failing both, a new
  * column right of the explorer, and failing that one at the end.
  */
-export function placeFile(ws: Workspace, target: string, activeTarget?: string): Workspace {
+export function placeFile(ws: PaneLayout, target: string, activeTarget?: string): PaneLayout {
   if (paneTargets(ws).includes(target)) return ws
   const active = activeTarget && isFileTarget(activeTarget) ? groupIndexOf(ws, activeTarget) : -1
   const withFile = active !== -1 ? active : ws.findIndex((g) => g.tabs.some(isFileTarget))

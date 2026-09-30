@@ -1,27 +1,27 @@
 import type { RuntimeHandle } from '#drivers/contract'
-import { worktreeDriver } from '#drivers/driver'
+import { workspaceDriver } from '#drivers/driver'
 import {
   agentDriver,
   type AgentConnectDeps,
   type AgentObservation,
-  type DrivenWorktree,
+  type DrivenWorkspace,
 } from '#runtime/agents'
 import {
-  evictWorktreeStatus,
+  evictWorkspaceStatus,
   setAgentStatus,
   setLiveAgents,
-  setWorktreeStreamHealth,
+  setWorkspaceStreamHealth,
 } from './status-store'
 import {
-  registerWorktreeControlStream,
-  unregisterWorktreeControlStream,
+  registerWorkspaceControlStream,
+  unregisterWorkspaceControlStream,
   type ControlStreamSend,
 } from './control-stream-registry'
 import { serverLog } from '#log'
 import type { AgentMode, PermissionMode } from '@yaac/shared/types'
 
 /**
- * Per-worktree status watchers: one live driver connection per running worktree
+ * Per-workspace status watchers: one live driver connection per running workspace
  * pod, held open through the proxy relay into the pod's streamd. Together with
  * the pod watcher this replaces every timer-driven status probe.
  *
@@ -36,26 +36,26 @@ import type { AgentMode, PermissionMode } from '@yaac/shared/types'
  * status stays sticky, and nothing here ever feeds the stale reaper.
  */
 
-export interface WatchedWorktree extends DrivenWorktree {
-  /** Which driver observes this worktree, from the pod's `yaac.mode` label. */
+export interface WatchedWorkspace extends DrivenWorkspace {
+  /** Which driver observes this workspace, from the pod's `yaac.mode` label. */
   mode: AgentMode
 }
 
 export interface StatusWatcherDeps {
   /**
-   * The conversations yaac has already recorded for a worktree. Injected from
+   * The conversations yaac has already recorded for a workspace. Injected from
    * `main` rather than read here: the ACP driver needs it to re-address a live
    * agent, but the lookup is a database read, and `#runtime/status` importing
-   * `#domain/worktrees` would invert the one-directional dependency the two
+   * `#domain/workspaces` would invert the one-directional dependency the two
    * features are built on (teardown calls in here to evict; never the reverse).
    */
-  recordedSessions?: (session: WatchedWorktree) => Promise<Array<{ handle: string; agentSessionId: string }>>
+  recordedSessions?: (session: WatchedWorkspace) => Promise<Array<{ handle: string; agentSessionId: string }>>
   /**
-   * A worktree's permission posture, for the same reason and by the same route
+   * A workspace's permission posture, for the same reason and by the same route
    * as `recordedSessions`: the ACP driver tells its adapter which posture to
    * run in, and the answer is a row this layer may not read for itself.
    */
-  permissionMode?: (session: WatchedWorktree) => Promise<PermissionMode | undefined>
+  permissionMode?: (session: WatchedWorkspace) => Promise<PermissionMode | undefined>
   /**
    * Injected for tests — the stream-daemon self-heal (see scheduleRespawn).
    * Default: the driver's own `reviveStatusStream`.
@@ -73,7 +73,7 @@ export interface StatusWatcherDeps {
   log?: (msg: string) => void
 }
 
-export class WorktreeStatusWatcher {
+export class WorkspaceStatusWatcher {
   private connection: { close(): void } | null = null
   private registeredSend: ControlStreamSend | null = null
   private stopped = false
@@ -91,8 +91,8 @@ export class WorktreeStatusWatcher {
   private readonly maxRespawnDelayMs: number
   private readonly log: (msg: string) => void
 
-  constructor(readonly session: WatchedWorktree, private readonly deps: StatusWatcherDeps = {}) {
-    this.reviveStreamd = deps.reviveStreamd ?? ((jobName) => worktreeDriver().reviveStatusStream(jobName))
+  constructor(readonly session: WatchedWorkspace, private readonly deps: StatusWatcherDeps = {}) {
+    this.reviveStreamd = deps.reviveStreamd ?? ((jobName) => workspaceDriver().reviveStatusStream(jobName))
     this.heartbeatIntervalMs = deps.heartbeatIntervalMs ?? 20_000
     this.commandTimeoutMs = deps.commandTimeoutMs ?? 10_000
     this.respawnDelayMs = deps.respawnDelayMs ?? 1_000
@@ -137,18 +137,18 @@ export class WorktreeStatusWatcher {
 
   private onObservation(generation: number, obs: AgentObservation): void {
     if (generation !== this.generation || this.stopped) return
-    const { slug, worktreeId } = this.session
+    const { slug, workspaceId } = this.session
     switch (obs.kind) {
       case 'up':
-        setWorktreeStreamHealth(slug, worktreeId, true)
+        setWorkspaceStreamHealth(slug, workspaceId, true)
         this.backoffMs = this.respawnDelayMs
         this.consecutiveFailures = 0
         return
       case 'status':
-        setAgentStatus(slug, worktreeId, obs.handle, obs.status)
+        setAgentStatus(slug, workspaceId, obs.handle, obs.status)
         return
       case 'live-agents':
-        setLiveAgents(slug, worktreeId, obs.agents)
+        setLiveAgents(slug, workspaceId, obs.agents)
         return
       case 'command-channel':
         this.setCommandChannel(obs.send)
@@ -166,12 +166,12 @@ export class WorktreeStatusWatcher {
    */
   private setCommandChannel(send: ControlStreamSend | null): void {
     if (this.registeredSend) {
-      unregisterWorktreeControlStream(this.session.jobName, this.registeredSend)
+      unregisterWorkspaceControlStream(this.session.jobName, this.registeredSend)
       this.registeredSend = null
     }
     if (send) {
       this.registeredSend = send
-      registerWorktreeControlStream(this.session.jobName, send)
+      registerWorkspaceControlStream(this.session.jobName, send)
     }
   }
 
@@ -180,9 +180,9 @@ export class WorktreeStatusWatcher {
     if (generation !== this.generation) return
     this.generation++
     this.consecutiveFailures++
-    this.log(`[server] status-watcher ${this.session.worktreeId}: ${reason}`)
+    this.log(`[server] status-watcher ${this.session.workspaceId}: ${reason}`)
     this.teardown()
-    setWorktreeStreamHealth(this.session.slug, this.session.worktreeId, false)
+    setWorkspaceStreamHealth(this.session.slug, this.session.workspaceId, false)
     this.scheduleRespawn()
   }
 
@@ -201,9 +201,9 @@ export class WorktreeStatusWatcher {
     // apiserver with boots. Best-effort: if the pod is really dead the reaper
     // owns it.
     if (this.consecutiveFailures > 0 && this.consecutiveFailures % 3 === 0) {
-      this.log(`[server] status-watcher ${this.session.worktreeId}: re-execing streamd (self-heal)`)
+      this.log(`[server] status-watcher ${this.session.workspaceId}: re-execing streamd (self-heal)`)
       void this.reviveStreamd(this.session.jobName).catch((err: unknown) => {
-        this.log(`[server] status-watcher ${this.session.worktreeId}: streamd revive failed: ${String(err)}`)
+        this.log(`[server] status-watcher ${this.session.workspaceId}: streamd revive failed: ${String(err)}`)
       })
     }
     this.respawnTimer = setTimeout(() => {
@@ -215,14 +215,14 @@ export class WorktreeStatusWatcher {
 }
 
 /**
- * Keeps one `WorktreeStatusWatcher` per running, non-prewarmed workspace.
+ * Keeps one `WorkspaceStatusWatcher` per running, non-prewarmed workspace.
  * `sync` is driven by informer pod deltas: a pod that appears (or a claimed
  * spare that loses its prewarm label) gets a watcher; a pod that disappears
  * has its watcher stopped and its store entry evicted, so a restart reusing
- * the worktree id never sees stale status.
+ * the workspace id never sees stale status.
  */
 export class StatusWatcherManager {
-  private readonly watchers = new Map<string, WorktreeStatusWatcher>()
+  private readonly watchers = new Map<string, WorkspaceStatusWatcher>()
 
   constructor(private readonly deps: StatusWatcherDeps = {}) {}
 
@@ -236,23 +236,23 @@ export class StatusWatcherManager {
       if (!p.running || !p.workspaceId || !p.projectSlug || p.prewarmed) continue
       wanted.set(p.workspaceId, p)
     }
-    for (const [worktreeId, watcher] of this.watchers) {
-      if (wanted.has(worktreeId)) continue
+    for (const [workspaceId, watcher] of this.watchers) {
+      if (wanted.has(workspaceId)) continue
       watcher.stop()
-      this.watchers.delete(worktreeId)
-      evictWorktreeStatus(watcher.session.slug, worktreeId)
+      this.watchers.delete(workspaceId)
+      evictWorkspaceStatus(watcher.session.slug, workspaceId)
     }
-    for (const [worktreeId, workspace] of wanted) {
-      if (this.watchers.has(worktreeId)) continue
-      const watcher = new WorktreeStatusWatcher({
+    for (const [workspaceId, workspace] of wanted) {
+      if (this.watchers.has(workspaceId)) continue
+      const watcher = new WorkspaceStatusWatcher({
         slug: workspace.projectSlug,
-        worktreeId,
+        workspaceId,
         jobName: workspace.jobName,
         tool: workspace.tool,
         mode: workspace.mode,
       }, this.deps)
       watcher.start()
-      this.watchers.set(worktreeId, watcher)
+      this.watchers.set(workspaceId, watcher)
     }
   }
 

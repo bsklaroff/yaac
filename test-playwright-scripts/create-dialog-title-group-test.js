@@ -2,7 +2,7 @@
  * Verifies the create dialog's title and group controls in a real browser,
  * with real mouse and keyboard events:
  *
- *  1. The heading reads "New worktree" with a pencil beside it; clicking the
+ *  1. The heading reads "New workspace" with a pencil beside it; clicking the
  *     pencil turns it into a title editor, and Enter commits the typed title
  *     to the heading WITHOUT submitting the dialog.
  *  2. Picking "+ New group" in the Group dropdown swaps it for a focused name
@@ -58,14 +58,14 @@ const check = (ok, what) => {
 try {
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
   await page.goto(server.url)
-  await page.locator('[aria-label="New worktree"]').first().click({ timeout: 15_000 })
+  await page.locator('[aria-label="New workspace"]').first().click({ timeout: 15_000 })
   const dialog = page.getByRole('dialog')
   await dialog.getByLabel('Agent').waitFor()
 
   const heading = dialog.getByRole('heading')
-  check(await heading.textContent() === 'New worktree', 'heading starts as "New worktree"')
-  await dialog.getByRole('button', { name: 'Rename worktree' }).click()
-  const titleInput = dialog.getByLabel('Worktree title')
+  check(await heading.textContent() === 'New workspace', 'heading starts as "New workspace"')
+  await dialog.getByRole('button', { name: 'Rename workspace' }).click()
+  const titleInput = dialog.getByLabel('Workspace title')
   check(await titleInput.evaluate((el) => el === document.activeElement), 'pencil focuses the title editor')
   await page.keyboard.type('Fix the build')
   await page.screenshot({ path: path.join(shots, 'create-dialog-title-editing.png') })

@@ -4,8 +4,8 @@
  *
  * Exactly ONE target is chosen per pod, evaluated on every reconcile, so
  * there is no precedence to reason about — the selection IS the decision,
- * and it lives in ordinary code that unit tests can pin. A worktree pod in
- * an install namespace (`yaac.worktree-id`) is steered to that install's
+ * and it lives in ordinary code that unit tests can pin. A workspace pod in
+ * an install namespace (`yaac.workspace-id`) is steered to that install's
  * proxy; nothing else is redirected at all.
  *
  * Pure: a snapshot of pods in, a target per pod out. The watches and the
@@ -14,9 +14,9 @@
 
 /**
  * Must match the server's constants (netd cannot import from src/). This is
- * LABEL_WORKTREE_ID: the key every worktree pod carries.
+ * LABEL_WORKSPACE_ID: the key every workspace pod carries.
  */
-export const LABEL_WORKTREE_ID = 'yaac.worktree-id'
+export const LABEL_WORKSPACE_ID = 'yaac.workspace-id'
 /** Deployment/Service name of every yaac proxy. */
 export const PROXY_APP_NAME = 'yaac-proxy'
 
@@ -65,7 +65,7 @@ export interface SelectTargetsInput {
   outerProxyClusterIp: string | null
 }
 
-/** Every install-namespace worktree pod's destination. */
+/** Every install-namespace workspace pod's destination. */
 function outerTarget(input: SelectTargetsInput): EgressTarget | null {
   if (!input.outerProxyClusterIp) return null
   return { key: `outer/${input.installNamespace}`, ip: input.outerProxyClusterIp }
@@ -74,7 +74,7 @@ function outerTarget(input: SelectTargetsInput): EgressTarget | null {
 /**
  * Resolve every redirectable pod to exactly one egress target.
  *
- * Pods with no target (no worktree label; or a proxy pod, which must never
+ * Pods with no target (no workspace label; or a proxy pod, which must never
  * be redirected to itself) are simply absent from the result — netd
  * programs no rules for them, and their egress is whatever their
  * NetworkPolicy allows. That is why a missing target can only ever mean
@@ -85,13 +85,13 @@ export function selectTargets(input: SelectTargetsInput): PodTarget[] {
   const out: PodTarget[] = []
   for (const pod of input.pods) {
     if (!pod.podIp) continue
-    // Only this install's own worktree pods: a sibling install's pods are
+    // Only this install's own workspace pods: a sibling install's pods are
     // its netd's business, not ours.
     if (pod.namespace !== input.installNamespace) continue
     // The proxy must never be redirected — it is the thing egress is
     // redirected TO, and a self-redirect would be an infinite loop.
     if (pod.labels.app === PROXY_APP_NAME) continue
-    if (!pod.labels[LABEL_WORKTREE_ID]) continue
+    if (!pod.labels[LABEL_WORKSPACE_ID]) continue
     if (outer) out.push({ pod, target: outer })
   }
   // Stable order so the rendered rules and Envoy config are byte-stable

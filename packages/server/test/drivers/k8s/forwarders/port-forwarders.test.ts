@@ -1,5 +1,5 @@
 /**
- * The declaration registry: which ports a worktree is offered at, and the
+ * The declaration registry: which ports a workspace is offered at, and the
  * allocator that decides the host half.
  *
  * Nothing binds, so nothing has to be mocked to keep it from binding — the
@@ -16,27 +16,27 @@ vi.mock('#drivers/k8s/substrate/stream-relay', () => ({
 import { podExec } from '#drivers/k8s/substrate/stream-relay'
 import {
   MAX_FORWARDS_PER_SESSION,
-  addWorktreeForwarder,
-  declareWorktreeForwards,
-  getWorktreePorts,
-  hasWorktreeForwarders,
-  stopAllWorktreeForwarders,
-  stopWorktreeForwarders,
+  addWorkspaceForwarder,
+  declareWorkspaceForwards,
+  getWorkspacePorts,
+  hasWorkspaceForwarders,
+  stopAllWorkspaceForwarders,
+  stopWorkspaceForwarders,
 } from '#drivers/k8s/forwarders/port-forwarders'
-import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
+import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#notify'
 
 const mockExec = vi.mocked(podExec)
 
 // The registry is process-local and outlives a case, so a host port one
 // test promised would be walked past by the next.
 afterEach(() => {
-  stopAllWorktreeForwarders()
-  _resetWorktreeListChangedForTests()
+  stopAllWorkspaceForwarders()
+  _resetWorkspaceListChangedForTests()
 })
 
-describe('declareWorktreeForwards', () => {
-  it('answers the configured host port and holds it for the worktree', () => {
-    const declared = declareWorktreeForwards('sess-1', [
+describe('declareWorkspaceForwards', () => {
+  it('answers the configured host port and holds it for the workspace', () => {
+    const declared = declareWorkspaceForwards('sess-1', [
       { containerPort: 3000, hostPortStart: 3000 },
       { containerPort: 5432, hostPortStart: 15432 },
     ])
@@ -45,48 +45,48 @@ describe('declareWorktreeForwards', () => {
       { containerPort: 3000, hostPort: 3000 },
       { containerPort: 5432, hostPort: 15432 },
     ])
-    // Read back out of the registry: this is what the worktree listing
+    // Read back out of the registry: this is what the workspace listing
     // reports, and what a client forwarder binds.
-    expect(getWorktreePorts('sess-1')).toEqual(declared)
+    expect(getWorkspacePorts('sess-1')).toEqual(declared)
   })
 
-  it('walks past a host port another worktree was already promised', () => {
+  it('walks past a host port another workspace was already promised', () => {
     // Binding used to disambiguate two workspaces of one project both
     // asking for 3000 — whoever bound first won. With nothing bound, the
     // ledger has to do it, or both are told 3000 and only one can ever be
     // reached.
-    declareWorktreeForwards('sess-1', [{ containerPort: 3000, hostPortStart: 3000 }])
-    declareWorktreeForwards('sess-2', [{ containerPort: 3000, hostPortStart: 3000 }])
-    declareWorktreeForwards('sess-3', [{ containerPort: 3000, hostPortStart: 3000 }])
+    declareWorkspaceForwards('sess-1', [{ containerPort: 3000, hostPortStart: 3000 }])
+    declareWorkspaceForwards('sess-2', [{ containerPort: 3000, hostPortStart: 3000 }])
+    declareWorkspaceForwards('sess-3', [{ containerPort: 3000, hostPortStart: 3000 }])
 
-    expect(getWorktreePorts('sess-1')).toEqual([{ containerPort: 3000, hostPort: 3000 }])
-    expect(getWorktreePorts('sess-2')).toEqual([{ containerPort: 3000, hostPort: 3001 }])
-    expect(getWorktreePorts('sess-3')).toEqual([{ containerPort: 3000, hostPort: 3002 }])
+    expect(getWorkspacePorts('sess-1')).toEqual([{ containerPort: 3000, hostPort: 3000 }])
+    expect(getWorkspacePorts('sess-2')).toEqual([{ containerPort: 3000, hostPort: 3001 }])
+    expect(getWorkspacePorts('sess-3')).toEqual([{ containerPort: 3000, hostPort: 3002 }])
   })
 
   it('does not hand one config\'s own two entries the same host port', () => {
-    const declared = declareWorktreeForwards('sess-1', [
+    const declared = declareWorkspaceForwards('sess-1', [
       { containerPort: 3000, hostPortStart: 4000 },
       { containerPort: 3001, hostPortStart: 4000 },
     ])
     expect(declared.map((m) => m.hostPort)).toEqual([4000, 4001])
   })
 
-  it('registers nothing for a worktree that declares no forwards', () => {
-    // An empty entry would still read to the listing as "this worktree
+  it('registers nothing for a workspace that declares no forwards', () => {
+    // An empty entry would still read to the listing as "this workspace
     // holds forwards", which is what the restore pass gates on.
-    expect(declareWorktreeForwards('sess-1', [])).toEqual([])
-    expect(hasWorktreeForwarders('sess-1')).toBe(false)
+    expect(declareWorkspaceForwards('sess-1', [])).toEqual([])
+    expect(hasWorkspaceForwarders('sess-1')).toBe(false)
   })
 
-  it('merges with what the worktree already holds rather than replacing it', () => {
-    // The create batch can land after a reactive addWorktreeForwarder made
+  it('merges with what the workspace already holds rather than replacing it', () => {
+    // The create batch can land after a reactive addWorkspaceForwarder made
     // the entry (a forward-port during the create window); dropping either
     // side would lose a live offer.
-    declareWorktreeForwards('sess-1', [{ containerPort: 3000, hostPortStart: 19000 }])
-    declareWorktreeForwards('sess-1', [{ containerPort: 8080, hostPortStart: 19999 }])
+    declareWorkspaceForwards('sess-1', [{ containerPort: 3000, hostPortStart: 19000 }])
+    declareWorkspaceForwards('sess-1', [{ containerPort: 8080, hostPortStart: 19999 }])
 
-    expect(getWorktreePorts('sess-1')).toEqual([
+    expect(getWorkspacePorts('sess-1')).toEqual([
       { containerPort: 3000, hostPort: 19000 },
       { containerPort: 8080, hostPort: 19999 },
     ])
@@ -97,113 +97,113 @@ describe('declareWorktreeForwards', () => {
   // route that happened to ask for it.
   it('pushes a fresh snapshot when the offered set changes', () => {
     let pushes = 0
-    onWorktreeListChanged(() => { pushes += 1 })
+    onWorkspaceListChanged(() => { pushes += 1 })
 
-    declareWorktreeForwards('sess-1', [{ containerPort: 3000, hostPortStart: 19000 }])
+    declareWorkspaceForwards('sess-1', [{ containerPort: 3000, hostPortStart: 19000 }])
     expect(pushes).toBe(1)
-    declareWorktreeForwards('sess-1', [{ containerPort: 8080, hostPortStart: 19001 }])
+    declareWorkspaceForwards('sess-1', [{ containerPort: 8080, hostPortStart: 19001 }])
     expect(pushes).toBe(2)
-    stopWorktreeForwarders('sess-1')
+    stopWorkspaceForwarders('sess-1')
     expect(pushes).toBe(3)
     // Nothing left to drop: no entry, no change, no push.
-    stopWorktreeForwarders('sess-1')
+    stopWorkspaceForwarders('sess-1')
     expect(pushes).toBe(3)
   })
 })
 
-describe('getWorktreePorts', () => {
-  it('returns [] for a worktree nothing was declared for', () => {
-    expect(getWorktreePorts('sess-unknown')).toEqual([])
+describe('getWorkspacePorts', () => {
+  it('returns [] for a workspace nothing was declared for', () => {
+    expect(getWorkspacePorts('sess-unknown')).toEqual([])
   })
 })
 
-describe('stopWorktreeForwarders', () => {
-  it('drops the worktree\'s offers, freeing the host ports for the next one', () => {
-    declareWorktreeForwards('sess-1', [{ containerPort: 3000, hostPortStart: 3000 }])
-    stopWorktreeForwarders('sess-1')
+describe('stopWorkspaceForwarders', () => {
+  it('drops the workspace\'s offers, freeing the host ports for the next one', () => {
+    declareWorkspaceForwards('sess-1', [{ containerPort: 3000, hostPortStart: 3000 }])
+    stopWorkspaceForwarders('sess-1')
 
-    expect(getWorktreePorts('sess-1')).toEqual([])
-    expect(hasWorktreeForwarders('sess-1')).toBe(false)
+    expect(getWorkspacePorts('sess-1')).toEqual([])
+    expect(hasWorkspaceForwarders('sess-1')).toBe(false)
     // The number is free again — a create whose launch failed must not cost
     // the next one its port.
-    expect(declareWorktreeForwards('sess-2', [{ containerPort: 3000, hostPortStart: 3000 }]))
+    expect(declareWorkspaceForwards('sess-2', [{ containerPort: 3000, hostPortStart: 3000 }]))
       .toEqual([{ containerPort: 3000, hostPort: 3000 }])
   })
 })
 
-describe('stopAllWorktreeForwarders', () => {
+describe('stopAllWorkspaceForwarders', () => {
   it('is a no-op when nothing is declared', () => {
-    expect(() => stopAllWorktreeForwarders()).not.toThrow()
+    expect(() => stopAllWorkspaceForwarders()).not.toThrow()
   })
 
-  it('clears every worktree\'s offers', () => {
-    declareWorktreeForwards('sess-1', [{ containerPort: 3000, hostPortStart: 3000 }])
-    declareWorktreeForwards('sess-2', [{ containerPort: 3000, hostPortStart: 3000 }])
+  it('clears every workspace\'s offers', () => {
+    declareWorkspaceForwards('sess-1', [{ containerPort: 3000, hostPortStart: 3000 }])
+    declareWorkspaceForwards('sess-2', [{ containerPort: 3000, hostPortStart: 3000 }])
 
-    stopAllWorktreeForwarders()
+    stopAllWorkspaceForwarders()
 
-    expect(hasWorktreeForwarders('sess-1')).toBe(false)
-    expect(hasWorktreeForwarders('sess-2')).toBe(false)
+    expect(hasWorkspaceForwarders('sess-1')).toBe(false)
+    expect(hasWorkspaceForwarders('sess-2')).toBe(false)
   })
 })
 
-describe('addWorktreeForwarder', () => {
+describe('addWorkspaceForwarder', () => {
   beforeEach(() => {
     mockExec.mockClear()
     mockExec.mockResolvedValue({ stdout: '', stderr: '' })
   })
 
   it('offers the container port itself, creating the entry, and restates the bar', async () => {
-    const mapping = await addWorktreeForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8090)
+    const mapping = await addWorkspaceForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8090)
 
     expect(mapping).toEqual({ containerPort: 8090, hostPort: 8090 })
-    expect(getWorktreePorts('sess-1')).toEqual([{ containerPort: 8090, hostPort: 8090 }])
+    expect(getWorkspacePorts('sess-1')).toEqual([{ containerPort: 8090, hostPort: 8090 }])
     expect(mockExec.mock.calls[0]?.[1] ?? '').toContain(':8090->8090')
   })
 
   it('appends to an existing entry, and both go down together', async () => {
-    declareWorktreeForwards('sess-1', [{ containerPort: 3000, hostPortStart: 3000 }])
+    declareWorkspaceForwards('sess-1', [{ containerPort: 3000, hostPortStart: 3000 }])
 
-    await addWorktreeForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8091)
+    await addWorkspaceForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8091)
 
-    expect(getWorktreePorts('sess-1')).toEqual([
+    expect(getWorkspacePorts('sess-1')).toEqual([
       { containerPort: 3000, hostPort: 3000 },
       { containerPort: 8091, hostPort: 8091 },
     ])
-    stopWorktreeForwarders('sess-1')
-    expect(getWorktreePorts('sess-1')).toEqual([])
+    stopWorkspaceForwarders('sess-1')
+    expect(getWorkspacePorts('sess-1')).toEqual([])
   })
 
-  it('walks past a host port another worktree holds', async () => {
-    declareWorktreeForwards('sess-1', [{ containerPort: 8090, hostPortStart: 8090 }])
+  it('walks past a host port another workspace holds', async () => {
+    declareWorkspaceForwards('sess-1', [{ containerPort: 8090, hostPortStart: 8090 }])
 
-    const mapping = await addWorktreeForwarder('proj', 'sess-2', 'yaac-proj-sess-2', 8090)
+    const mapping = await addWorkspaceForwarder('proj', 'sess-2', 'yaac-proj-sess-2', 8090)
 
     expect(mapping).toEqual({ containerPort: 8090, hostPort: 8091 })
   })
 
   it('is idempotent per container port', async () => {
-    const first = await addWorktreeForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8090)
-    const again = await addWorktreeForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8090)
+    const first = await addWorkspaceForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8090)
+    const again = await addWorkspaceForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8090)
 
     expect(again).toEqual(first)
-    expect(getWorktreePorts('sess-1')).toHaveLength(1)
+    expect(getWorkspacePorts('sess-1')).toHaveLength(1)
   })
 
   it('concurrent requests for the same port converge on one offer', async () => {
     // Allocation and record are one synchronous step, so the race the
     // bound-socket version had to unwind afterwards cannot start.
     const [a, b] = await Promise.all([
-      addWorktreeForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8090),
-      addWorktreeForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8090),
+      addWorkspaceForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8090),
+      addWorkspaceForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8090),
     ])
 
     expect(a).toEqual(b)
-    expect(getWorktreePorts('sess-1')).toEqual([{ containerPort: 8090, hostPort: 8090 }])
+    expect(getWorkspacePorts('sess-1')).toEqual([{ containerPort: 8090, hostPort: 8090 }])
   })
 
   it('rejects once the per-session forward cap is reached', async () => {
-    declareWorktreeForwards(
+    declareWorkspaceForwards(
       'sess-1',
       Array.from({ length: MAX_FORWARDS_PER_SESSION }, (_, i) => ({
         containerPort: 9000 + i, hostPortStart: 9000 + i,
@@ -211,15 +211,15 @@ describe('addWorktreeForwarder', () => {
     )
 
     await expect(
-      addWorktreeForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8093),
+      addWorkspaceForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8093),
     ).rejects.toThrow(/already holds/)
   })
 
   it('keeps the offer when the cosmetic status-bar refresh fails', async () => {
     mockExec.mockRejectedValue(new Error('pod is gone'))
 
-    const mapping = await addWorktreeForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8090)
+    const mapping = await addWorkspaceForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8090)
 
-    expect(getWorktreePorts('sess-1')).toEqual([mapping])
+    expect(getWorkspacePorts('sess-1')).toEqual([mapping])
   })
 })

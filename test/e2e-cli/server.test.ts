@@ -16,7 +16,7 @@ import {
   RUNTIME_CLASS_GVISOR,
   SERVER_POD_PORT,
   runPodToCompletion,
-  worktreeIdLabels,
+  workspaceIdLabels,
 } from '@yaac/server/drivers/k8s/substrate'
 
 const execFileAsync = promisify(execFile)
@@ -89,12 +89,12 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
     expect(list.stdout).toContain('No projects found')
   })
 
-  it('walls the API off from a worktree-labelled pod, while the kubelet still reaches it', async () => {
+  it('walls the API off from a workspace-labelled pod, while the kubelet still reaches it', async () => {
     // The server pod's ingress policy is an explicit allow — the node
     // addresses, plus whatever fronts the Service — and on a
     // credential-optional install it is the whole of what keeps untrusted
     // code off the control plane (docs/server-in-cluster.md). So a pod
-    // shaped like a worktree, dialing the pod IP directly, must be dropped.
+    // shaped like a workspace, dialing the pod IP directly, must be dropped.
     // The other half is already proved by this file's fixture: the
     // Deployment rolled out, so the readiness probe from the node was
     // admitted by the same policy.
@@ -110,7 +110,7 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
       metadata: {
         name: 'yaac-e2e-server-wall-probe',
         namespace: TEST_NAMESPACE,
-        labels: worktreeIdLabels('e2e-server-wall-probe'),
+        labels: workspaceIdLabels('e2e-server-wall-probe'),
       },
       spec: {
         restartPolicy: 'Never',

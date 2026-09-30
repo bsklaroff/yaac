@@ -5,7 +5,7 @@ import { secretConfig } from './secret-key'
 import { symmetricDecrypt, symmetricEncrypt } from 'better-auth/crypto'
 import { ServerError } from '@yaac/shared/errors'
 import { serverLog } from '#log'
-import { notifyWorktreeListChanged } from '#notify'
+import { notifyWorkspaceListChanged } from '#notify'
 
 /**
  * The named git credentials, sealed at rest (docs/git-credentials.md).
@@ -107,7 +107,7 @@ export async function renameGitCredential(
   const rows = await db.update(gitCredentials).set({ name, publicKey })
     .where(eq(gitCredentials.id, id)).returning({ id: gitCredentials.id })
   // The listing names each project's credential.
-  notifyWorktreeListChanged()
+  notifyWorkspaceListChanged()
   return rows.length > 0
 }
 
@@ -127,7 +127,7 @@ export async function deleteGitCredential(id: string): Promise<boolean> {
     return rows.length > 0
   })
   // The listing names each project's credential.
-  notifyWorktreeListChanged()
+  notifyWorkspaceListChanged()
   return deleted
 }
 
@@ -161,6 +161,6 @@ export async function replaceGitCredential(
       .where(eq(gitCredentials.id, fresh.id)).returning()
     return renamed
   })
-  notifyWorktreeListChanged()
+  notifyWorkspaceListChanged()
   return row && toRow(row)
 }

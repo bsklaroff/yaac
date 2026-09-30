@@ -1,9 +1,9 @@
 import { api } from './api'
-import type { AgentMode, AgentTool, PermissionMode, QueuedWorktreeEntry } from '@yaac/shared/types'
+import type { AgentMode, AgentTool, PermissionMode, QueuedWorkspaceEntry } from '@yaac/shared/types'
 
 /**
- * Queued worktrees (docs/queued-worktrees.md): create requests saved to run
- * when their parent — a worktree, or another queued entry — stops. None of
+ * Queued workspaces (docs/queued-workspaces.md): create requests saved to run
+ * when their parent — a workspace, or another queued entry — stops. None of
  * these are optimistic: entries ride the snapshot, so the server's push is
  * what re-renders the sidebar.
  */
@@ -17,39 +17,39 @@ export interface QueuedSettings {
   mode: AgentMode
   permissionMode: PermissionMode
   branch: string
-  /** Blank leaves the launched worktree to be auto-titled. */
+  /** Blank leaves the launched workspace to be auto-titled. */
   title: string
   /** A group id, or null for the default list. */
   group: string | null
 }
 
-/** Queue a worktree to start when `parent` (a worktree or entry id) stops.
+/** Queue a workspace to start when `parent` (a workspace or entry id) stops.
  *  `draftId` names the draft it was made from, deleted once it is queued. */
-export async function queueWorktree(
+export async function queueWorkspace(
   project: string,
   parent: string,
   settings: QueuedSettings,
   draftId?: string,
-): Promise<QueuedWorktreeEntry> {
-  return await api.worktree.queue.create.$post({
+): Promise<QueuedWorkspaceEntry> {
+  return await api.workspace.queue.create.$post({
     json: { project, parent, ...settings, ...(draftId !== undefined ? { draftId } : {}) },
   })
 }
 
 /** Replace an entry's settings, and its parent when `parent` is given. */
-export async function updateQueuedWorktree(
+export async function updateQueuedWorkspace(
   id: string,
   patch: Partial<QueuedSettings> & { parent?: string },
-): Promise<QueuedWorktreeEntry> {
-  return await api.worktree.queue.update.$post({ json: { id, ...patch } })
+): Promise<QueuedWorkspaceEntry> {
+  return await api.workspace.queue.update.$post({ json: { id, ...patch } })
 }
 
 /** Delete an entry; its own queued children move up to its parent. */
-export async function discardQueuedWorktree(id: string): Promise<void> {
-  await api.worktree.queue.discard.$post({ json: { id } })
+export async function discardQueuedWorkspace(id: string): Promise<void> {
+  await api.workspace.queue.discard.$post({ json: { id } })
 }
 
 /** Start an entry now, whatever its parent is doing. */
-export async function runQueuedWorktree(id: string): Promise<{ worktreeId: string }> {
-  return await api.worktree.queue.run.$post({ json: { id } })
+export async function runQueuedWorkspace(id: string): Promise<{ workspaceId: string }> {
+  return await api.workspace.queue.run.$post({ json: { id } })
 }

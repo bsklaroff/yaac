@@ -6,16 +6,16 @@ import { AGENT_MODES, PERMISSION_MODES } from '@yaac/shared/types'
 import { projectAdd } from '#commands/project-add'
 import { projectList } from '#commands/project-list'
 import { groupCreate, groupDelete, groupList, groupMove } from '#commands/group'
-import { worktreeCreate } from '#commands/worktree-create'
-import { worktreeList } from '#commands/worktree-list'
-import { worktreeRename } from '#commands/worktree-rename'
-import { worktreeStop } from '#commands/worktree-stop'
-import { worktreeRestart } from '#commands/worktree-restart'
-import { worktreeAttach } from '#commands/worktree-attach'
-import { worktreeShell } from '#commands/worktree-shell'
-import { worktreeMonitor } from '#commands/worktree-monitor'
+import { workspaceCreate } from '#commands/workspace-create'
+import { workspaceList } from '#commands/workspace-list'
+import { workspaceRename } from '#commands/workspace-rename'
+import { workspaceStop } from '#commands/workspace-stop'
+import { workspaceRestart } from '#commands/workspace-restart'
+import { workspaceAttach } from '#commands/workspace-attach'
+import { workspaceShell } from '#commands/workspace-shell'
+import { workspaceMonitor } from '#commands/workspace-monitor'
 import { forward } from '#commands/forward'
-import { worktreeAgents } from '#commands/worktree-agents'
+import { workspaceAgents } from '#commands/workspace-agents'
 import { authUpdate } from '#commands/auth-update'
 import { authClear } from '#commands/auth-clear'
 import { authList } from '#commands/auth-list'
@@ -42,7 +42,7 @@ import { env } from '@yaac/shared/env'
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
 import { FAKE_AUTH_KINDS, type FakeAuthKind } from '@yaac/shared/types'
 import { clusterArgError, type ClusterInstallArgs } from '@yaac/server/drivers/k8s/install'
-import type { WorktreeMonitorOptions } from '#commands/worktree-monitor'
+import type { WorkspaceMonitorOptions } from '#commands/workspace-monitor'
 import type { ForwardOptions } from '#commands/forward'
 
 /**
@@ -184,7 +184,7 @@ async function rejectClusterOnContainerless(): Promise<boolean> {
     ? 'The running server uses the containerless driver'
     : 'This install runs the containerless driver'
   console.error(
-    `\n${where}: worktrees run on this host and there is no cluster to manage.`
+    `\n${where}: workspaces run on this host and there is no cluster to manage.`
     + '\n    Run `yaac host check` to verify this machine instead.',
   )
   process.exitCode = 1
@@ -311,7 +311,7 @@ server
 
 const cluster = program
   .command('cluster')
-  .description('Manage the kubernetes cluster yaac runs worktrees on')
+  .description('Manage the kubernetes cluster yaac runs workspaces on')
   .configureHelp({ formatHelp: nestedHelp })
 
 cluster
@@ -327,7 +327,7 @@ cluster
 cluster
   .command('install')
   .description('Converge this machine and its cluster to the installed yaac version: the kind cluster and CNI if there is none, the kind node fixups, every built-in image, and the in-cluster layers. Safe to re-run; never destructive.')
-  .option('--nodes <count>', 'Number of kind nodes to create (default 1; worktrees run on the workers, so 3 is the smallest real multi-node rehearsal). Ignored when the cluster already exists')
+  .option('--nodes <count>', 'Number of kind nodes to create (default 1; workspaces run on the workers, so 3 is the smallest real multi-node rehearsal). Ignored when the cluster already exists')
   .option('--byo', 'Bring your own cluster: install into the cluster your kubeconfig points at instead of creating one — gated on its nodes, its Calico, the Tailscale operator and its storage classes; the server is published on the tailnet')
   .option('--rwx-storage-class <name>', 'With --byo (required): the NFS-family StorageClass the shared yaac-global claim is provisioned from')
   .option('--rwo-storage-class <name>', 'With --byo: the StorageClass the server\'s own yaac-server-local claim is provisioned from (default: the cluster\'s default class)')
@@ -349,7 +349,7 @@ cluster
   .command('delete')
   .description(
     'Delete the kind cluster, including the in-cluster registry and its '
-    + 'images (keeps worktrees and their checkouts)',
+    + 'images (keeps workspaces and their checkouts)',
   )
   .option('-y, --yes', 'Skip the confirmation prompt')
   .action(async (options: { yes?: boolean }) => {
@@ -364,12 +364,12 @@ cluster
 
 const host = program
   .command('host')
-  .description('Inspect the host yaac runs containerless worktrees on')
+  .description('Inspect the host yaac runs containerless workspaces on')
   .configureHelp({ formatHelp: nestedHelp })
 
 host
   .command('check')
-  .description('Verify this machine can run containerless worktrees (tmux, git, and the npm that installs its pinned agents)')
+  .description('Verify this machine can run containerless workspaces (tmux, git, and the npm that installs its pinned agents)')
   .action(async () => {
     const { hostCheck } = await import('#commands/host-check')
     await hostCheck()
@@ -394,115 +394,115 @@ project
 
 const group = program
   .command('group')
-  .description('Manage the named groups a project\'s worktrees are filed under in the sidebar')
+  .description('Manage the named groups a project\'s workspaces are filed under in the sidebar')
   .configureHelp({ formatHelp: nestedHelp })
 
 group
   .command('create')
-  .description('Create an empty group (pinned, so it stays listed until it has worktrees)')
+  .description('Create an empty group (pinned, so it stays listed until it has workspaces)')
   .argument('<project>', 'Project slug')
   .argument('<name>', 'Group name')
   .action(groupCreate)
 
 group
   .command('list')
-  .description('List worktree groups and how many running worktrees each holds')
+  .description('List workspace groups and how many running workspaces each holds')
   .argument('[project]', 'Filter by project slug')
   .action(groupList)
 
 group
   .command('move')
-  .description('File a worktree under a group, creating the group if needed')
-  .argument('<worktree-id>', 'Worktree ID (or its unique prefix)')
+  .description('File a workspace under a group, creating the group if needed')
+  .argument('<workspace-id>', 'Workspace ID (or its unique prefix)')
   // Optional rather than a `--none` sentinel: commander eats a bare `--` as
   // its end-of-options marker, so it could never reach the handler.
-  .argument('[group]', 'Group name; omit it to return the worktree to the default list')
-  .option('--project <slug>', 'Project the worktree belongs to (required for a stopped worktree)')
+  .argument('[group]', 'Group name; omit it to return the workspace to the default list')
+  .option('--project <slug>', 'Project the workspace belongs to (required for a stopped workspace)')
   .action(groupMove)
 
 group
   .command('delete')
-  .description('Delete a group; its worktrees return to the default list (nothing is stopped)')
+  .description('Delete a group; its workspaces return to the default list (nothing is stopped)')
   .argument('<project>', 'Project slug')
   .argument('<group>', 'Group name')
   .action(groupDelete)
 
-const worktree = program
-  .command('worktree')
-  .description('Manage worktrees — a git worktree plus the container and agents running in it')
+const workspace = program
+  .command('workspace')
+  .description('Manage workspaces — a git clone plus the container and agents running in it')
   .configureHelp({ formatHelp: nestedHelp })
 
-worktree
+workspace
   .command('create')
-  .description('Create a new worktree for a project')
+  .description('Create a new workspace for a project')
   .argument('<project>', 'Project slug')
   .option('-t, --tool <tool>', 'Agent tool to use (claude, codex, opencode, or pi). Defaults to the agent this project was last created with, else claude')
-  .option('-b, --branch <branch>', 'Reference branch for the worktree (defaults to the remote default branch)')
-  .option('-p, --prompt <text>', 'Initial prompt typed into the agent once the worktree is up')
+  .option('-b, --branch <branch>', 'Reference branch for the workspace (defaults to the remote default branch)')
+  .option('-p, --prompt <text>', 'Initial prompt typed into the agent once the workspace is up')
   .option('-m, --model <model>', 'Model for the agent: an id or alias for claude/codex (e.g. opus), provider/model for opencode and pi. Defaults to the model this project last used for the tool, else a per-tool default')
   .addOption(new Option('--mode <mode>', 'How the agent is driven: tui runs its terminal UI, acp drives it over the Agent Client Protocol and renders a chat pane in the web app. Every tool has an adapter; a tool\'s adapter may offer fewer permission modes than its terminal UI').choices([...AGENT_MODES]))
   .addOption(new Option('--permission-mode <mode>', 'How much the agent may do before it asks: bypass acts freely, auto lets a reviewer model judge each action, accept-edits edits without asking but asks for the rest, manual asks for everything, plan explores and asks to act on a plan, read-only (codex\'s strictest, in place of plan) asks before any edit. Defaults to this project\'s last choice for the tool, else bypass in a container and accept-edits on the host. Not every tool has every mode (pi has only bypass)').choices([...PERMISSION_MODES]))
-  .option('-g, --group <group>', 'File the worktree under this sidebar group (by name; created if it does not exist)')
-  .action(async (project: string, options: Parameters<typeof worktreeCreate>[1]) => {
-    await worktreeCreate(project, options)
+  .option('-g, --group <group>', 'File the workspace under this sidebar group (by name; created if it does not exist)')
+  .action(async (project: string, options: Parameters<typeof workspaceCreate>[1]) => {
+    await workspaceCreate(project, options)
   })
 
-worktree
+workspace
   .command('list')
-  .description('List running worktrees')
+  .description('List running workspaces')
   .argument('[project]', 'Filter by project slug')
-  .option('-s, --stopped', 'List stopped worktrees (their checkouts are kept, and they can be restarted)')
+  .option('-s, --stopped', 'List stopped workspaces (their checkouts are kept, and they can be restarted)')
   .option('-n, --num <n>', 'With -s, cap stopped results to N rows (default 25)', (v) => Number.parseInt(v, 10))
   .option('-a, --all', 'With -s, show all stopped rows without a cap')
-  .action(worktreeList)
+  .action(workspaceList)
 
-worktree
+workspace
   .command('rename')
-  .description('Set a worktree\'s title — the label the sidebar shows in place of its id')
-  .argument('<worktree-id>', 'Worktree ID or unique prefix')
+  .description('Set a workspace\'s title — the label the sidebar shows in place of its id')
+  .argument('<workspace-id>', 'Workspace ID or unique prefix')
   .argument('<title>', 'New title (quote it if it has spaces)')
-  .action(worktreeRename)
+  .action(workspaceRename)
 
-worktree
+workspace
   .command('stop')
-  .description('Stop a worktree: tear down its container, keep its checkout and diff')
-  .argument('<worktree-id>', 'Worktree ID or unique prefix')
-  .action(worktreeStop)
+  .description('Stop a workspace: tear down its container, keep its checkout and diff')
+  .argument('<workspace-id>', 'Workspace ID or unique prefix')
+  .action(workspaceStop)
 
-worktree
+workspace
   .command('restart')
-  .description('Restart a worktree: kill its container, reuse its checkout, resume the agents that were running')
-  .argument('<worktree-id>', 'Worktree ID or unique prefix')
-  .action(async (worktreeId: string) => {
-    await worktreeRestart(worktreeId)
+  .description('Restart a workspace: kill its container, reuse its checkout, resume the agents that were running')
+  .argument('<workspace-id>', 'Workspace ID or unique prefix')
+  .action(async (workspaceId: string) => {
+    await workspaceRestart(workspaceId)
   })
 
-worktree
+workspace
   .command('agents')
-  .description('List the agent sessions a worktree holds (open ones first)')
-  .argument('<worktree-id>', 'Worktree ID or unique prefix')
-  .action(worktreeAgents)
+  .description('List the agent sessions a workspace holds (open ones first)')
+  .argument('<workspace-id>', 'Workspace ID or unique prefix')
+  .action(workspaceAgents)
 
-worktree
+workspace
   .command('attach')
-  .description('Attach to the worktree\'s tmux session')
-  .argument('<worktree-id>', 'Worktree ID or unique prefix')
+  .description('Attach to the workspace\'s tmux session')
+  .argument('<workspace-id>', 'Workspace ID or unique prefix')
   .addHelpText('after', '\nTmux shortcuts:\n  Ctrl-B C  Open a new shell\n  Ctrl-B N  Switch to the next window\n  Ctrl-B P  Switch to the previous window')
-  .action(worktreeAttach)
+  .action(workspaceAttach)
 
-worktree
+workspace
   .command('shell')
-  .description('Open an interactive zsh shell in the worktree container')
-  .argument('<worktree-id>', 'Worktree ID or unique prefix')
-  .action(worktreeShell)
+  .description('Open an interactive zsh shell in the workspace container')
+  .argument('<workspace-id>', 'Workspace ID or unique prefix')
+  .action(workspaceShell)
 
-worktree
+workspace
   .command('monitor')
-  .description('Poll and display running worktrees in real-time')
+  .description('Poll and display running workspaces in real-time')
   .argument('[project]', 'Filter by project slug')
   .option('-n, --interval <seconds>', 'Refresh interval in seconds', '5')
-  .action(async (project: string | undefined, options: WorktreeMonitorOptions) => {
-    await worktreeMonitor(project, options)
+  .action(async (project: string | undefined, options: WorkspaceMonitorOptions) => {
+    await workspaceMonitor(project, options)
   })
 
 const config = program
@@ -529,23 +529,23 @@ config
 
 config
   .command('git-identity')
-  .description('Show the git identity worktrees commit under, or set it with --name and --email')
+  .description('Show the git identity workspaces commit under, or set it with --name and --email')
   .option('--name <name>', 'Git user.name to set')
   .option('--email <email>', 'Git user.email to set')
   .action(configGitIdentity)
 
-// Top-level, not under `worktree`: with no session named it forwards for
+// Top-level, not under `workspace`: with no session named it forwards for
 // every running one, which is the resident-forwarder shape the desktop
 // app runs in its tray.
 program
   .command('forward')
-  .description('Bind the ports a worktree offers on this machine, tunnelling each connection to the server')
-  .argument('[worktree-id]', 'Worktree ID, ID prefix, or name — omit to forward every running worktree')
+  .description('Bind the ports a workspace offers on this machine, tunnelling each connection to the server')
+  .argument('[workspace-id]', 'Workspace ID, ID prefix, or name — omit to forward every running workspace')
   .option('-p, --port <container[:host]>', 'Forward this port instead of what the server offers (repeatable)', collect, [])
   .option('-b, --bind <address>', 'Address to bind (default 127.0.0.1)')
   .addHelpText('after', '\nThe server cannot bind ports on your machine — under the k8s driver it runs\nas a pod, and under containerless they are bound on the server\'s own machine —\nso this holds the listener and tunnels each connection to it. Against a\ncontainerless server on this machine there is nothing to tunnel and it refuses;\nan explicit --bind is taken as "I know what I am binding" and proceeds.\nRuns until interrupted.')
-  .action(async (worktreeId: string | undefined, options: ForwardOptions) => {
-    await forward(worktreeId, options)
+  .action(async (workspaceId: string | undefined, options: ForwardOptions) => {
+    await forward(workspaceId, options)
   })
 
 const remote = program
@@ -601,7 +601,7 @@ auth
 
 auth
   .command('fake')
-  .description('Seed fake credentials so worktrees authenticate via a parent proxy (local/dev + yaac-in-yaac); refused for a kind already holding a real credential')
+  .description('Seed fake credentials so workspaces authenticate via a parent proxy (local/dev + yaac-in-yaac); refused for a kind already holding a real credential')
   .addArgument(
     new Argument(
       '<kinds...>',

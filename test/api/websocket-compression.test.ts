@@ -87,7 +87,7 @@ describe('WebSocket compression', () => {
     // /events carries the whole server snapshot on every state change and is
     // the most compressible payload in the app; /pty/attach carries the
     // ANSI-heavy terminal repaints. The PTY route closes the socket right
-    // after the upgrade here (no such worktree), which is fine — the
+    // after the upgrade here (no such workspace), which is fine — the
     // handshake, and so the negotiation, has already happened by then.
     for (const path of ['/api/events', '/api/pty/attach?id=nonexistent']) {
       const headers = await upgrade(server.lock.port, path)
@@ -95,10 +95,10 @@ describe('WebSocket compression', () => {
     }
   })
 
-  // An attach names its worktree by exact id, and one naming none is refused
-  // before any lookup: an empty id must never match whichever worktree the
+  // An attach names its workspace by exact id, and one naming none is refused
+  // before any lookup: an empty id must never match whichever workspace the
   // runtime lists first.
-  it('refuses an attach with no worktree id, before upgrading', async () => {
+  it('refuses an attach with no workspace id, before upgrading', async () => {
     for (const path of ['/api/pty/attach', '/api/pty/attach?id=', '/api/forward/attach?port=80', '/api/acp/attach?session=s1']) {
       await expect(upgrade(server.lock.port, path), path)
         .rejects.toThrow(/no upgrade: HTTP 400/)
