@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // controllable. Must be hoisted before importing the module under test.
 type ExecResult = { stdout: string; stderr: string }
 type ExecCallback = (err: unknown, res?: ExecResult) => void
-const execFileMock = vi.fn<(file: string, args: readonly string[]) => Promise<ExecResult>>()
+const execFileMock = vi.fn<(file: string, args: readonly string[], opts: unknown) => Promise<ExecResult>>()
 const execMock = vi.fn<(command: string) => Promise<ExecResult>>()
 const stdinEndMock = vi.fn<(input?: string) => void>()
 const stdinOnMock = vi.fn<(event: string, listener: () => void) => void>()
@@ -16,7 +16,7 @@ vi.mock('node:child_process', () => ({
     cb?: ExecCallback,
   ) => {
     const actualCb = (typeof opts === 'function' ? opts : cb) as ExecCallback
-    void execFileMock(file, args).then(
+    void execFileMock(file, args, typeof opts === 'function' ? undefined : opts).then(
       (res) => actualCb(null, res),
       (err: unknown) => actualCb(err),
     )
@@ -104,7 +104,7 @@ describe('kubectlWithRetry', () => {
     const result = await kubectlWithRetry(['get', 'pods'])
     expect(result.stdout).toBe('ok')
     expect(execFileMock).toHaveBeenCalledTimes(1)
-    expect(execFileMock).toHaveBeenCalledWith('kubectl', ['get', 'pods'])
+    expect(execFileMock).toHaveBeenCalledWith('kubectl', ['get', 'pods'], expect.objectContaining({ maxBuffer: 64 << 20 }))
   })
 
   it('retries on transient errors and eventually succeeds', async () => {
@@ -137,7 +137,7 @@ describe('kubectlWithRetry', () => {
   it('pipes opts.input to kubectl stdin', async () => {
     execFileMock.mockResolvedValue({ stdout: '', stderr: '' })
     await kubectlWithRetry(['apply', '-f', '-'], { input: '{"kind":"Job"}' })
-    expect(execFileMock).toHaveBeenCalledWith('kubectl', ['apply', '-f', '-'])
+    expect(execFileMock).toHaveBeenCalledWith('kubectl', ['apply', '-f', '-'], expect.objectContaining({ maxBuffer: 64 << 20 }))
     expect(stdinEndMock).toHaveBeenCalledWith('{"kind":"Job"}')
     // Subscribed before the write: a shutdown SIGTERMs the process group, so
     // the child can be gone before it reads and the EPIPE that follows would
@@ -156,7 +156,7 @@ describe('kubectlGetJson', () => {
     execFileMock.mockResolvedValue({ stdout: '{"items":[1,2]}', stderr: '' })
     const result = await kubectlGetJson<{ items: number[] }>(['get', 'pods', '-n', 'yaac'])
     expect(result).toEqual({ items: [1, 2] })
-    expect(execFileMock).toHaveBeenCalledWith('kubectl', ['get', 'pods', '-n', 'yaac', '-o', 'json'])
+    expect(execFileMock).toHaveBeenCalledWith('kubectl', ['get', 'pods', '-n', 'yaac', '-o', 'json'], expect.anything())
   })
 
   it('returns null when the object does not exist', async () => {
@@ -251,7 +251,7 @@ describe('kubectlApply', () => {
     execFileMock.mockResolvedValue({ stdout: 'job created', stderr: '' })
     const manifest = { apiVersion: 'batch/v1', kind: 'Job' }
     await kubectlApply(manifest)
-    expect(execFileMock).toHaveBeenCalledWith('kubectl', ['apply', '-f', '-'])
+    expect(execFileMock).toHaveBeenCalledWith('kubectl', ['apply', '-f', '-'], expect.anything())
     expect(stdinEndMock).toHaveBeenCalledWith(JSON.stringify(manifest))
   })
 })
@@ -264,7 +264,7 @@ describe('ensureKubernetes', () => {
   it('resolves when the API server answers kubectl version', async () => {
     execFileMock.mockResolvedValue({ stdout: '{}', stderr: '' })
     await expect(ensureKubernetes()).resolves.toBeUndefined()
-    expect(execFileMock).toHaveBeenCalledWith('kubectl', ['version', '--output', 'json'])
+    expect(execFileMock).toHaveBeenCalledWith('kubectl', ['version', '--output', 'json'], expect.anything())
   })
 
   it('throws a pointed setup error when the cluster is unreachable', async () => {
@@ -285,7 +285,7 @@ describe('execFileAsync', () => {
     await expect(execFileAsync('kind', ['version'])).resolves.toEqual({
       stdout: 'kind v0.30.0', stderr: '',
     })
-    expect(execFileMock).toHaveBeenCalledWith('kind', ['version'])
+    expect(execFileMock).toHaveBeenCalledWith('kind', ['version'], expect.objectContaining({ maxBuffer: 64 << 20 }))
   })
 
   it('rejects without retrying when the binary fails', async () => {
