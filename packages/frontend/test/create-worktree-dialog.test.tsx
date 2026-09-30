@@ -637,6 +637,8 @@ describe('CreateWorktreeDialog', () => {
         worktreeGroups: GROUPS,
       }))
       await openWith({ editId: 'q1' })
+      // An untitled entry's edit keeps the create dialog's heading.
+      expect(heading()).toBe('New worktree')
       expect(select('Group').value).toBe('g-review')
       fireEvent.change(select('Group'), { target: { value: option('Group', '+ New group').value } })
       const name = screen.getByLabelText('New group name')

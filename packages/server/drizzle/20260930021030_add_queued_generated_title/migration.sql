@@ -1,0 +1,1 @@
+ALTER TABLE "queued_worktrees" ADD COLUMN "generated_title" text;

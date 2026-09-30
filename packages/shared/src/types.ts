@@ -1303,6 +1303,10 @@ export interface QueuedWorktreeEntry {
   /** The user's title for the worktree it launches, which is then not
    *  auto-titled. */
   title?: string
+  /** Model-generated from the prompt, once the title sweep has run for an
+   *  untitled entry. A `title` outranks it; without one, the worktree it
+   *  launches carries it. */
+  generatedTitle?: string
   /** The sidebar group it launches into; absent is the default list. */
   groupId?: string
   /** 'YYYY-MM-DD HH:MM:SS' (UTC). */

@@ -85,6 +85,7 @@ export {
   listQueuedWorktreeRows,
   releaseQueuedChildren,
   releaseQueuedWorktree,
+  setQueuedWorktreeTitle,
   updateQueuedWorktree,
   type QueuedParent,
   type QueuedWorktreeRow,

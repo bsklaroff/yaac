@@ -105,11 +105,13 @@ export async function queueWorktree(
   projectSlug: string,
   request: QueueRequest,
   source: QueueSource,
+  generatedTitle?: string,
 ): Promise<QueuedWorktreeEntry> {
   checkPrompt(request.prompt)
   const parent = await resolveParent(projectSlug, request.parent)
   const settings = await resolveSettings(projectSlug, parent, request, source)
-  return (await toEntries([await insertQueuedWorktree(projectSlug, parent.pointer, settings)]))[0]
+  const row = await insertQueuedWorktree(projectSlug, parent.pointer, settings, generatedTitle)
+  return (await toEntries([row]))[0]
 }
 
 /**
@@ -276,6 +278,7 @@ async function launch(row: QueuedWorktreeRow): Promise<string | undefined> {
   }
   if (!claimed) return undefined
 
+  const title = row.title ?? row.generatedTitle
   void (async () => {
     try {
       await runProvisioned(worktreeId, (onProgress) => startWorktree({
@@ -287,7 +290,7 @@ async function launch(row: QueuedWorktreeRow): Promise<string | undefined> {
         permissionMode: row.permissionMode,
         branch: row.branch,
         prompt: row.prompt,
-        ...(row.title !== undefined ? { title: row.title } : {}),
+        ...(title !== undefined ? { title } : {}),
         ...(row.groupId !== undefined ? { groupId: row.groupId } : {}),
         rememberDefaults: false,
         // The children already point at `worktreeId`; a spare would list
@@ -516,6 +519,7 @@ async function toEntries(rows: QueuedWorktreeRow[]): Promise<QueuedWorktreeEntry
       permissionMode: r.permissionMode,
       branch: r.branch,
       ...(r.title !== undefined ? { title: r.title } : {}),
+      ...(r.generatedTitle !== undefined ? { generatedTitle: r.generatedTitle } : {}),
       ...(r.groupId !== undefined ? { groupId: r.groupId } : {}),
       createdAt: formatUtcTimestamp(r.createdAt.getTime()),
       ...(r.launchError !== undefined ? { launchError: r.launchError } : {}),

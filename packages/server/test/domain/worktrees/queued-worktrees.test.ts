@@ -40,6 +40,7 @@ import {
   failQueuedLaunch,
   getQueuedWorktreeRow,
   releaseQueuedWorktree,
+  setQueuedWorktreeTitle,
 } from '#db/queued-worktree-store'
 import { recordProject } from '#db/project-store'
 import { recordWorktreeCreated, recordWorktreeStopped } from '#db/worktree-store'
@@ -343,6 +344,13 @@ describe('runQueuedWorktree', () => {
     // Its chain now waits on the worktree it became, and the parent keeps
     // running undisturbed.
     expect((await getQueuedWorktreeRow(child.id))?.parentWorktreeId).toBe(worktreeId)
+
+    // Untitled by the user, an entry launches under the title generated for it.
+    await setQueuedWorktreeTitle(child.id, 'after', 'Generated')
+    expect((await listQueuedWorktrees()).find((e) => e.id === child.id)?.generatedTitle).toBe('Generated')
+    await runQueuedWorktree(child.id)
+    await launched(2)
+    expect(mockCreate.mock.calls[1][1]).toMatchObject({ initialPrompt: 'after', title: 'Generated' })
   })
 
   it('keeps the prompt when the launch fails, and shows the error once, on the entry', async () => {

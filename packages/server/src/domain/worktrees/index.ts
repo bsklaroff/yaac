@@ -59,7 +59,7 @@ export { listWorktreeGroups, resolveGroup } from './groups'
 export { dismissWorktreePort, forwardWorktreePort } from './forward-port'
 export { listActiveWorktrees } from './list'
 export { purgeProjectBytes } from './project-purge'
-export { discardDraftWorktree, listDraftWorktrees, saveDraftWorktree } from './drafts'
+export { discardDraftWorktree, draftGeneratedTitle, listDraftWorktrees, saveDraftWorktree } from './drafts'
 export { removeProject } from './project-teardown'
 export { reconcilePrewarmPool } from './prewarm-reconcile'
 export {

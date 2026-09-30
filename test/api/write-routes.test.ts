@@ -14,7 +14,8 @@ import {
 import { getProjectWorktreeRows, recordWorktreeCreated } from '@yaac/server/db/worktree-store'
 import { getProjectRow, recordProject } from '@yaac/server/db/project-store'
 import { listWorktreeGroups } from '@yaac/server/domain/worktrees/groups'
-import { getQueuedWorktreeRow } from '@yaac/server/db/queued-worktree-store'
+import { getQueuedWorktreeRow, listQueuedWorktreeRows } from '@yaac/server/db/queued-worktree-store'
+import { setDraftWorktreeTitle } from '@yaac/server/db/draft-worktree-store'
 import { listDraftWorktrees } from '@yaac/server/domain/worktrees/drafts'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { closeDb } from '@yaac/server/db/client'
@@ -1158,13 +1159,20 @@ describe('write routes', () => {
       await (await client.worktree.create.$post({ json: { project: 'demo', draftId: failed } })).text()
       expect(await ids()).toEqual([failed])
 
+      // Untitled, what is made from a draft keeps the title generated for it —
+      // while it is still the draft's prompt.
+      await setDraftWorktreeTitle(failed, 'someday', 'Someday')
       mockCreateWorktree.mockResolvedValueOnce({
         worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
       })
-      await (await client.worktree.create.$post({ json: { project: 'demo', draftId: failed } })).text()
+      await (await client.worktree.create.$post({
+        json: { project: 'demo', prompt: 'someday', draftId: failed },
+      })).text()
       expect(await ids()).toEqual([])
+      expect(mockCreateWorktree.mock.lastCall?.[1]).toMatchObject({ title: 'Someday' })
 
       const queued = await draft()
+      await setDraftWorktreeTitle(queued, 'someday', 'Someday')
       expect((await client.worktree.queue.create.$post({
         json: { project: 'demo', parent: 'nope', prompt: 'p', draftId: queued },
       })).status).toBe(404)
@@ -1174,6 +1182,16 @@ describe('write routes', () => {
         json: { project: 'demo', parent: 'parent', prompt: 'someday', draftId: queued },
       })).status).toBe(200)
       expect(await ids()).toEqual([])
+      expect((await listQueuedWorktreeRows('demo'))[0]).toMatchObject({ generatedTitle: 'Someday' })
+      expect((await listQueuedWorktreeRows('demo'))[0]).not.toHaveProperty('title')
+
+      // An edited prompt leaves the draft's title behind.
+      const edited = await draft()
+      await setDraftWorktreeTitle(edited, 'someday', 'Someday')
+      await client.worktree.queue.create.$post({
+        json: { project: 'demo', parent: 'parent', prompt: 'another day', draftId: edited },
+      })
+      expect((await listQueuedWorktreeRows('demo'))[1]).not.toHaveProperty('generatedTitle')
     })
   })
 

@@ -432,9 +432,12 @@ export const queuedWorktrees = snakeCase.table('queued_worktrees', {
   /** The reference branch to fork from (no `origin/` prefix); fetched fresh
    *  from origin at launch, so the child starts from its latest tip. */
   branch: text().notNull(),
-  /** The user's title for the worktree it launches; null leaves that
-   *  worktree to be auto-titled from its prompt. */
+  /** The user's title for the worktree it launches; set, it outranks
+   *  `generatedTitle`. */
   title: text(),
+  /** Model-generated from the prompt; cleared when the prompt changes.
+   *  Without a user title, the worktree it launches carries this one. */
+  generatedTitle: text(),
   /** The sidebar group it launches into; null is the default list. Chosen
    *  when it is queued (its parent's group unless named), and cleared when
    *  the group is deleted. */

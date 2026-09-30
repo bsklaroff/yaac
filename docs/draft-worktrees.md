@@ -49,8 +49,9 @@ A title set on the dialog's heading is the draft's `title`, and the worktree or
 entry created from it carries it. Without one, the title sweep
 (`reconcileGeneratedTitles`) titles drafts as it does live worktrees: a
 prompt long enough to need summarizing gets one model attempt, written to
-the draft's `generatedTitle`, which is shown but never carried into what is
-created — that worktree is titled from its own prompt. Changing the prompt
+the draft's `generatedTitle`. What is created from the draft carries it —
+a worktree as its title, a queue entry as its own `generatedTitle` — unless
+the user titled it or changed the prompt before creating. Changing the prompt
 clears the generated title, and the attempt is keyed on the prompt as well
 as the draft, so the new prompt gets its own. The write is conditional on
 the draft still holding the prompt it was generated from. The sweep runs on
