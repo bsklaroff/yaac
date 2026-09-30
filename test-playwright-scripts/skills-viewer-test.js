@@ -3,57 +3,24 @@
  * server's webapp, in Chromium: the Skills button in the sidebar header opens
  * a dialog listing the personal/plugin/project SKILL.md files for the
  * selected agent, clicking a skill shows its full SKILL.md, and the agent
- * selector (Claude/Codex/OpenCode) rescans that tool's dirs.
+ * selector (Claude/Codex/OpenCode/Pi) rescans that tool's dirs.
  *
  * Seeds a personal Claude skill and a Codex skill under
- * $YAAC_DATA_DIR/global/projects/<slug>/ and removes them afterwards, so it
+ * <data dir>/global/projects/<slug>/ and removes them afterwards, so it
  * is safe to re-run. The project (repo) tier is not seeded: it is read from
  * origin/<branch>, so a working-tree file would not be listed.
  *
- * Run: PROJECT=<slug> node test-playwright-scripts/skills-viewer-test.js
- * (set SCREENSHOT_DIR to also capture the open overlay)
- * Needs a running server (`yaac server start`) with a project configured;
- * its loopback origin needs no credential.
+ * Needs a running `yaac server` with a project (PROJECT, default yaac).
+ *
+ * Run: YAAC_DATA_DIR=... PROJECT=<slug> node test-playwright-scripts/skills-viewer-test.js
  */
-import { execSync } from 'node:child_process'
 import fs from 'node:fs'
-import { createRequire } from 'node:module'
-import os from 'node:os'
 import path from 'node:path'
-
-const require = createRequire(import.meta.url)
-
-function requirePlaywright() {
-  try {
-    return require('playwright')
-  } catch {
-    const globalRoot = execSync('npm root -g').toString().trim()
-    return require(path.join(globalRoot, 'playwright'))
-  }
-}
-
-function readServerLock() {
-  const candidates = [
-    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, 'server-local', '.server.lock'),
-    path.join(os.homedir(), '.yaac', 'server-local', '.server.lock'),
-  ].filter(Boolean)
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
-  }
-  throw new Error(`no .server.lock found (tried ${candidates.join(', ')}) — is the server running?`)
-}
-
-let failures = 0
-function check(name, cond, detail = '') {
-  const mark = cond ? 'PASS' : 'FAIL'
-  if (!cond) failures++
-  console.log(`${mark}  ${name}${detail ? `  [${detail}]` : ''}`)
-}
+import { DATA_DIR, SHOTS, check, finish, origin, requirePlaywright, until } from './lib.js'
 
 /** Base dir for a project's on-disk config/repo (mirrors @yaac/shared paths). */
 function projectBase(slug) {
-  const dataDir = process.env.YAAC_DATA_DIR || path.join(os.homedir(), '.yaac')
-  return path.join(dataDir, 'global', 'projects', slug)
+  return path.join(DATA_DIR, 'global', 'projects', slug)
 }
 
 /** Seed a personal Claude skill and a Codex skill; return their dirs. */
@@ -72,66 +39,50 @@ function seedSkills(slug) {
   return fixtures.map(([dir]) => dir)
 }
 
-async function main() {
-  const { chromium } = requirePlaywright()
-  const project = process.env.PROJECT || 'yaac'
-  const lock = readServerLock()
-  const base = `http://127.0.0.1:${lock.port}`
-  const seededDirs = seedSkills(project)
+const { chromium } = requirePlaywright()
+const project = process.env.PROJECT || 'yaac'
+const seededDirs = seedSkills(project)
 
-  const appUrl = `${base}/`
+const browser = await chromium.launch()
+const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
+page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
 
-  const browser = await chromium.launch()
-  const viewport = { width: 1400, height: 900 }
-  const page = await browser.newPage({ viewport, bypassCSP: true })
-  page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
+try {
+  await page.goto(`${origin}/?project=${project}`)
 
-  try {
-    await page.goto(`${appUrl}?project=${project}`)
+  const skillsBtn = page.getByRole('button', { name: 'Skills', exact: true })
+  await skillsBtn.waitFor({ state: 'visible', timeout: 15000 })
+  await skillsBtn.click()
 
-    const skillsBtn = page.getByRole('button', { name: 'Skills', exact: true })
-    await skillsBtn.waitFor({ state: 'visible', timeout: 15000 })
-    await skillsBtn.click()
+  const dialog = page.getByRole('dialog')
+  await dialog.waitFor({ state: 'visible' })
+  await page.waitForTimeout(400) // open transition
 
-    const dialog = page.getByRole('dialog')
-    await dialog.waitFor({ state: 'visible' })
-    await page.waitForTimeout(400) // open transition
+  const personal = dialog.getByRole('button', { name: /\/hello-personal/ })
+  await personal.waitFor({ state: 'visible', timeout: 10000 })
+  check('claude: personal skill listed', await personal.count() >= 1)
 
-    const personal = dialog.getByRole('button', { name: /\/hello-personal/ })
-    await personal.waitFor({ state: 'visible', timeout: 10000 })
-    check('claude: personal skill listed', await personal.count() >= 1)
+  await personal.first().click()
+  // The body loads on its own fetch after the click.
+  const body = await until(page, () => document.querySelector('[role="dialog"]')?.textContent
+    .includes('This is the personal skill body'), null, 10_000).then(() => true, () => false)
+  check('detail pane shows the skill body', body)
+  check('detail pane shows allowed-tools',
+    await dialog.getByText(/Read, Grep/).count() >= 1)
 
-    await personal.first().click()
-    await page.waitForTimeout(300)
-    check('detail pane shows the skill body',
-      await dialog.getByText('This is the personal skill body').count() >= 1)
-    check('detail pane shows allowed-tools',
-      await dialog.getByText(/Read, Grep/).count() >= 1)
+  await page.screenshot({ path: path.join(SHOTS, 'skills-viewer-claude.png') })
 
-    if (process.env.SCREENSHOT_DIR) {
-      await page.screenshot({ path: path.join(process.env.SCREENSHOT_DIR, 'skills-viewer-claude.png') })
-    }
+  await dialog.getByRole('button', { name: 'Codex', exact: true }).click()
+  const codex = dialog.getByRole('button', { name: /\/hello-codex/ })
+  await codex.waitFor({ state: 'visible', timeout: 10000 })
+  check('codex: selector re-scans and lists the codex skill', await codex.count() >= 1)
+  check('codex: claude skill no longer listed',
+    await dialog.getByRole('button', { name: /\/hello-personal/ }).count() === 0)
 
-    await dialog.getByRole('button', { name: 'Codex', exact: true }).click()
-    const codex = dialog.getByRole('button', { name: /\/hello-codex/ })
-    await codex.waitFor({ state: 'visible', timeout: 10000 })
-    check('codex: selector re-scans and lists the codex skill', await codex.count() >= 1)
-    check('codex: claude skill no longer listed',
-      await dialog.getByRole('button', { name: /\/hello-personal/ }).count() === 0)
-
-    if (process.env.SCREENSHOT_DIR) {
-      await page.screenshot({ path: path.join(process.env.SCREENSHOT_DIR, 'skills-viewer-codex.png') })
-    }
-  } finally {
-    await browser.close()
-    for (const dir of seededDirs) fs.rmSync(dir, { recursive: true, force: true })
-  }
-
-  console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) FAILED.`)
-  process.exit(failures === 0 ? 0 : 1)
+  await page.screenshot({ path: path.join(SHOTS, 'skills-viewer-codex.png') })
+} finally {
+  await browser.close()
+  for (const dir of seededDirs) fs.rmSync(dir, { recursive: true, force: true })
 }
 
-main().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})
+finish()

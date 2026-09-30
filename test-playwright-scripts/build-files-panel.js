@@ -1,111 +1,85 @@
 /*
- * Verifies the settings-panel Build files manager (BuildFiles.tsx) against a
- * live server with real mouse/keyboard events: opens Settings → User
- * Dockerfile, creates a text file via the "New file" form, edits and saves it
- * in the CodeMirror editor, uploads a binary file through the hidden
- * file-input, confirms the list rows (path, size, binary flag), deletes both
- * rows through the per-row delete button (accepting the confirm dialog), and
- * finally screenshots the Project Config section's Build files block.
+ * Verifies the settings panel's Build files manager (BuildFiles.tsx) in real
+ * Chromium, under Settings → User Dockerfile:
+ *   1. "New file" creates verify/hello.txt; typing in its CodeMirror editor
+ *      and pressing Save shows "Saved".
+ *   2. "Upload files" takes a binary file, and its row says "binary · ".
+ *   3. "Upload folder" includes dotfiles and nested dot-dirs, and "New file"
+ *      accepts a dotfile path (`.vimrc`).
+ *   4. Each row's delete button (confirm accepted) removes it, leaving the
+ *      build dir as it was.
+ * SCREENSHOT_DIR gets build-files-user.png.
  *
- * Run: node test-playwright-scripts/build-files-panel.js
- * Needs a running server (`yaac server start` / `pnpm watch`). Screenshots
- * land in /tmp/yaac-shots/build-files-*.png.
+ * k8s only: a containerless server builds no images, so it hides the
+ * Dockerfile sections and its build-files routes answer NOT_SUPPORTED.
+ *
+ * Run: YAAC_DATA_DIR=... node test-playwright-scripts/build-files-panel.js
  */
-import { execSync } from 'node:child_process'
 import fs from 'node:fs'
-import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
+import { requirePlaywright, origin, check, finish, SHOTS } from './lib.js'
 
-const require = createRequire(import.meta.url)
+const { chromium } = requirePlaywright()
 
-if (!process.env.PLAYWRIGHT_BROWSERS_PATH && fs.existsSync('/opt/playwright-browsers')) {
-  process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/playwright-browsers'
+// A folder holding a dotfile, a nested dotfile and a visible file, plus a
+// loose binary file.
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-build-files-'))
+const base = path.basename(dir)
+fs.writeFileSync(path.join(dir, '.hidden-rc'), 'set -x\n')
+fs.writeFileSync(path.join(dir, 'visible.txt'), 'v\n')
+fs.mkdirSync(path.join(dir, '.config'))
+fs.writeFileSync(path.join(dir, '.config', 'nested.conf'), 'n\n')
+const bin = path.join(os.tmpdir(), 'yaac-verify-blob.bin')
+fs.writeFileSync(bin, Buffer.from([0, 1, 2, 3, 4, 5, 6, 7]))
+
+const browser = await chromium.launch()
+const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
+page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
+page.on('dialog', (dialog) => void dialog.accept())
+await page.goto(`${origin}/`)
+await page.locator('[title="Settings"]').first().click()
+await page.getByRole('button', { name: 'User Dockerfile' }).click()
+await page.getByText('Build files').waitFor()
+const row = (rel) => page.getByRole('button', { name: rel, exact: true })
+const shown = (loc) => loc.waitFor({ timeout: 10_000 }).then(() => true, () => false)
+
+// 1. New file, edit, save.
+await page.getByPlaceholder(/new file path/).fill('verify/hello.txt')
+await page.getByRole('button', { name: 'New file' }).click()
+await row('verify/hello.txt').waitFor()
+const editor = page.locator('.cm-content').nth(1) // the first is Dockerfile.user
+await editor.waitFor()
+await editor.click()
+await page.keyboard.type('hello from the panel')
+await page.getByRole('button', { name: 'Save' }).last().click()
+check('an edit to a new file saves', await shown(page.getByText('Saved')))
+
+// 2. Binary upload.
+await page.locator('input[aria-label="Upload files"]').setInputFiles(bin)
+check('an uploaded binary file is flagged', await shown(page.getByText(/binary · /)))
+
+// 3. Dotfiles.
+await page.locator('input[aria-label="Upload folder"]').setInputFiles(dir)
+await row(`${base}/visible.txt`).waitFor()
+for (const rel of [`${base}/.hidden-rc`, `${base}/.config/nested.conf`]) {
+  check(`folder upload includes ${rel}`, await row(rel).count() === 1)
+}
+await page.getByPlaceholder(/new file path/).fill('.vimrc')
+await page.getByRole('button', { name: 'New file' }).click()
+check('New file accepts a dotfile path', await shown(row('.vimrc')))
+await page.screenshot({ path: path.join(SHOTS, 'build-files-user.png') })
+
+// 4. Delete every row this run made.
+for (const rel of ['verify/hello.txt', 'yaac-verify-blob.bin', '.vimrc',
+  `${base}/.hidden-rc`, `${base}/.config/nested.conf`, `${base}/visible.txt`]) {
+  const del = page.locator(`[aria-label="Delete ${rel}"]`)
+  await del.click()
+  check(`deleting ${rel} removes its row`,
+    await del.waitFor({ state: 'detached' }).then(() => true, () => false))
 }
 
-function requirePlaywright() {
-  try {
-    return require('playwright')
-  } catch {
-    const globalRoot = execSync('npm root -g').toString().trim()
-    return require(path.join(globalRoot, 'playwright'))
-  }
-}
-
-function readServerLock() {
-  const candidates = [
-    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.server.lock'),
-    path.join(os.homedir(), '.yaac', '.server.lock'),
-  ].filter(Boolean)
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
-  }
-  throw new Error('no .server.lock found — is the server running?')
-}
-
-async function main() {
-  const { chromium } = requirePlaywright()
-  const lock = readServerLock()
-  const shots = '/tmp/yaac-shots'
-  fs.mkdirSync(shots, { recursive: true })
-
-  const browser = await chromium.launch()
-  const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
-  page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
-  page.on('dialog', (dialog) => {
-    console.log(`  [dialog] ${dialog.message()} -> accept`)
-    void dialog.accept()
-  })
-
-  await page.goto(`http://127.0.0.1:${lock.port}/`)
-
-  // Settings → User Dockerfile section.
-  await page.locator('[title="Settings"]').first().click()
-  await page.locator('button', { hasText: 'User Dockerfile' }).first().click()
-  await page.getByText('Build files').waitFor()
-
-  // Create a text file via the New file form.
-  await page.getByPlaceholder(/new file path/).fill('verify/hello.txt')
-  await page.getByRole('button', { name: 'New file' }).click()
-  await page.getByRole('button', { name: 'verify/hello.txt', exact: true }).waitFor()
-  console.log('created verify/hello.txt via New file form')
-
-  // Wait for the new file's editor to mount, or keystrokes land elsewhere.
-  await page.locator('.cm-content').nth(1).waitFor()
-  const editor = page.locator('.cm-content').nth(1)
-  await editor.click()
-  await page.keyboard.type('hello from the panel')
-  await page.getByRole('button', { name: 'Save' }).last().click()
-  await page.getByText('Saved').waitFor()
-  console.log('edited + saved through CodeMirror')
-
-  // Upload a binary file through the hidden input.
-  const tmpBin = path.join(os.tmpdir(), 'yaac-verify-blob.bin')
-  fs.writeFileSync(tmpBin, Buffer.from([0, 1, 2, 3, 4, 5, 6, 7]))
-  await page.locator('input[aria-label="Upload files"]').setInputFiles(tmpBin)
-  await page.getByText('yaac-verify-blob.bin').waitFor()
-  await page.getByText(/binary · /).waitFor()
-  console.log('uploaded a binary file; row shows the binary flag')
-
-  await page.screenshot({ path: `${shots}/build-files-user.png` })
-
-  // Delete both rows (confirm dialogs auto-accepted above).
-  await page.locator('[aria-label="Delete verify/hello.txt"]').click()
-  await page.locator('[aria-label="Delete verify/hello.txt"]').waitFor({ state: 'detached' })
-  await page.locator('[aria-label="Delete yaac-verify-blob.bin"]').click()
-  await page.locator('[aria-label="Delete yaac-verify-blob.bin"]').waitFor({ state: 'detached' })
-  console.log('deleted both rows through the UI')
-
-  // Project Config section renders the same panel per project.
-  await page.locator('button', { hasText: 'Project Config' }).first().click()
-  await page.getByText('Build files').waitFor()
-  await page.screenshot({ path: `${shots}/build-files-project.png` })
-  console.log(`screenshots -> ${shots}/build-files-user.png, ${shots}/build-files-project.png`)
-
-  await browser.close()
-}
-
-main().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})
+await browser.close()
+fs.rmSync(dir, { recursive: true, force: true })
+fs.rmSync(bin, { force: true })
+finish()

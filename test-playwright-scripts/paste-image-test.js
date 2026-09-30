@@ -12,63 +12,18 @@
  *   4. The chat composer shows a pasted image as a removable thumbnail and
  *      sends it; it then appears in the user's turn and the composer empties.
  *
- * Needs a running containerless `yaac server` with two live claude workspaces
- * of one project: a terminal one and a chat one, e.g. `yaac project add
- * https://github.com/octocat/Hello-World.git <cred>`, then `yaac workspace
- * create hello-world --tool claude` and `... --tool claude --mode acp`
- * (in a yaac workspace, `yaac auth fake claude-oauth github` supplies the
- * credentials). Run `pnpm build && yaac server restart` first, or you are
- * looking at the frontend `dist/` held when the server started. Spends one
- * small prompt turn on the chat agent.
+ * Needs a running containerless `yaac server` (the upload's path is then a
+ * host path) with two live claude workspaces: a terminal one (`yaac
+ * workspace create <project> --tool claude`) and a chat one (`... --mode
+ * acp`). Spends one small prompt turn on the chat agent.
  *
- * Run: node test-playwright-scripts/paste-image-test.js <tui-workspace-id> <acp-workspace-id>
- * (set SCREENSHOT_DIR to change where screenshots land; defaults to
- * /tmp/yaac-shots. YAAC_DATA_DIR defaults to ~/.yaac.)
- * (playwright is resolved from the global npm root; browsers live under
- * /opt/playwright-browsers)
+ * Run: YAAC_DATA_DIR=... node test-playwright-scripts/paste-image-test.js
  */
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
-import { execSync } from 'node:child_process'
-import { createRequire } from 'node:module'
+import { SHOTS, api, check, finish, origin, requirePlaywright } from './lib.js'
 
-const require = createRequire(import.meta.url)
-
-if (!process.env.PLAYWRIGHT_BROWSERS_PATH && fs.existsSync('/opt/playwright-browsers')) {
-  process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/playwright-browsers'
-}
-
-function requirePlaywright() {
-  try {
-    return require('playwright')
-  } catch {
-    const globalRoot = execSync('npm root -g').toString().trim()
-    return require(path.join(globalRoot, 'playwright'))
-  }
-}
-
-const { chromium } = requirePlaywright()
-const DATA_DIR = process.env.YAAC_DATA_DIR ?? path.join(os.homedir(), '.yaac')
-const SHOTS = process.env.SCREENSHOT_DIR ?? '/tmp/yaac-shots'
-
-function readServerLock() {
-  return JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'server-local', '.server.lock'), 'utf8'))
-}
-
-const [tuiId, acpId] = process.argv.slice(2)
-if (!tuiId || !acpId) {
-  console.error('usage: node test-playwright-scripts/paste-image-test.js <tui-workspace-id> <acp-workspace-id>')
-  process.exit(1)
-}
-
-const failures = []
-function check(ok, label, detail = '') {
-  console.log(`${ok ? 'OK  ' : 'FAIL'} ${label}${ok || !detail ? '' : ` — ${detail}`}`)
-  if (!ok) failures.push(label)
-}
-
-/** Poll with `page.evaluate`; `waitForFunction` is blocked by the app's CSP. */
+/** Poll an async predicate; `page.waitForFunction` is blocked by the app's CSP. */
 async function eventually(fn, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs
   for (;;) {
@@ -118,107 +73,83 @@ function pngSize(file) {
   return { width: b.readUInt32BE(16), height: b.readUInt32BE(20) }
 }
 
-async function main() {
-  fs.mkdirSync(SHOTS, { recursive: true })
-  const lock = readServerLock()
-  const origin = `http://127.0.0.1:${lock.port}`
-  const auth = { authorization: `Bearer ${lock.secret}` }
-  const { workspaces } = await (await fetch(`${origin}/api/workspace/list`, { headers: auth })).json()
-  const find = (id) => {
-    const wt = workspaces.find((w) => w.workspaceId.startsWith(id))
-    if (!wt) throw new Error(`no running workspace ${id}`)
-    return wt
-  }
-  const tui = find(tuiId)
-  const acp = find(acpId)
-  const attachments = path.join(DATA_DIR, 'global', 'projects', tui.projectSlug, 'sessions', tui.workspaceId, 'attachments')
-  const token = () => fetch(`${origin}/tokens`, {
-    method: 'POST',
-    headers: { ...auth, 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'one-time' }),
-  }).then((r) => r.json()).then((b) => b.token)
-
-  const browser = await chromium.launch()
-  try {
-    const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
-    await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin })
-    const page = await ctx.newPage()
-    page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
-
-    // ── the terminal pane ────────────────────────────────────────────────
-    await page.goto(`${origin}/?${new URLSearchParams({ project: tui.projectSlug, workspace: tui.workspaceId, token: await token() })}`)
-    await page.locator('.xterm').first().waitFor({ timeout: 30_000 })
-    await eventually(async () => (await screenText(page)).includes('❯'), 60_000)
-    await page.locator('.xterm').first().click()
-    // Clear the input: a rerun may find earlier attachments there.
-    const images = async () => ((await screenText(page)).match(/\[Image #\d+\]/g) ?? []).length
-    if (await images() > 0) await page.keyboard.press('Control+C')
-    await eventually(async () => (await images()) === 0)
-
-    const upload = page.waitForResponse((r) => r.url().endsWith('/attachments') && r.request().method() === 'POST')
-    await fire(page, { selector: ':focus', kind: 'paste', w: 3000, h: 2000 })
-    check(await eventually(async () => (await images()) === 1), 'a pasted image becomes a claude [Image #N]')
-    // The uploaded file's path (earlier runs' uploads may still exist).
-    const answered = await (await upload).json().catch(() => ({}))
-    const uploaded = answered.path && path.join(attachments, path.basename(answered.path))
-    check(uploaded !== undefined && fs.existsSync(uploaded), 'the image was uploaded to the workspace')
-    if (uploaded !== undefined && fs.existsSync(uploaded)) {
-      const { width, height } = pngSize(uploaded)
-      check(width === 1568 && height === 1045, 'downscaled to 1568 px on the long edge', `${width}x${height}`)
-    }
-
-    await fire(page, { selector: ':focus', kind: 'paste', w: 40, h: 40, text: 'pasted-words' })
-    check(
-      await eventually(async () => (await screenText(page)).includes('pasted-words')),
-      'a paste carrying text still pastes the text',
-    )
-
-    await fire(page, { selector: '.xterm', kind: 'drop', w: 64, h: 48 })
-    check(await eventually(async () => (await images()) === 2), 'a dropped image becomes a second one')
-
-    await page.evaluate(async () => {
-      const canvas = new OffscreenCanvas(32, 32)
-      canvas.getContext('2d').fillRect(0, 0, 32, 32)
-      const blob = await canvas.convertToBlob({ type: 'image/png' })
-      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
-    })
-    await page.locator('.xterm').first().click()
-    await page.keyboard.press('Control+Shift+V')
-    check(await eventually(async () => (await images()) === 3), 'a real Ctrl+Shift+V of a clipboard image becomes a third')
-    await page.screenshot({ path: path.join(SHOTS, 'paste-image-terminal.png') })
-
-    // ── the chat pane ────────────────────────────────────────────────────
-    await page.goto(`${origin}/?${new URLSearchParams({ project: acp.projectSlug, workspace: acp.workspaceId, token: await token() })}`)
-    const box = page.locator('textarea[placeholder]').first()
-    await box.waitFor({ timeout: 30_000 })
-    await eventually(() => box.getAttribute('placeholder').then((p) => p === 'Message the agent…'), 60_000)
-    await box.click()
-    await fire(page, { selector: ':focus', kind: 'paste', w: 200, h: 120 })
-    check(
-      await eventually(() => page.locator('[aria-label="Remove image"]').count().then((n) => n === 1)),
-      'a pasted image shows as one removable thumbnail',
-    )
-    // Count from here: a reused conversation replays earlier images.
-    const sentImages = () => page.locator('.whitespace-pre-wrap img').count()
-    const before = await sentImages()
-    await box.fill('reply with just the word ok')
-    await page.getByRole('button', { name: 'Send' }).click()
-    const echoed = await eventually(async () => (await box.inputValue()) === ''
-      && (await page.locator('[aria-label="Remove image"]').count()) === 0, 60_000)
-    check(echoed, 'the echo empties the composer, text and image')
-    check(
-      await eventually(async () => (await sentImages()) === before + 1),
-      'the user\'s turn shows the image it carried',
-    )
-    await page.screenshot({ path: path.join(SHOTS, 'paste-image-chat.png') })
-  } finally {
-    await browser.close()
-  }
-  console.log(failures.length === 0 ? '\nall checks passed' : `\n${failures.length} check(s) failed`)
-  process.exit(failures.length === 0 ? 0 : 1)
+const { workspaces } = await api('/workspace/list')
+const live = (mode) => {
+  const w = workspaces.find((w) => w.agentSessions.some((a) => a.mode === mode && a.active && a.tool === 'claude'))
+  if (!w) throw new Error(`no live claude ${mode} workspace`)
+  return w
 }
+const tui = live('tui')
+const acp = live('acp')
+const open = (w) => `${origin}/?project=${w.projectSlug}&workspace=${w.workspaceId}`
 
-main().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})
+const { chromium } = requirePlaywright()
+const browser = await chromium.launch()
+try {
+  const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
+  await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin })
+  const page = await ctx.newPage()
+  page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
+
+  // ── the terminal pane ────────────────────────────────────────────────
+  await page.goto(open(tui))
+  await page.locator('.xterm').first().waitFor({ timeout: 30_000 })
+  await eventually(async () => (await screenText(page)).includes('❯'), 60_000)
+  await page.locator('.xterm').first().click()
+  // Clear the input: a rerun may find earlier attachments there.
+  const images = async () => ((await screenText(page)).match(/\[Image #\d+\]/g) ?? []).length
+  if (await images() > 0) await page.keyboard.press('Control+C')
+  await eventually(async () => (await images()) === 0)
+
+  const upload = page.waitForResponse((r) => r.url().endsWith('/attachments') && r.request().method() === 'POST')
+  await fire(page, { selector: ':focus', kind: 'paste', w: 3000, h: 2000 })
+  check('a pasted image becomes a claude [Image #N]', await eventually(async () => (await images()) === 1))
+  const uploaded = (await (await upload).json().catch(() => ({}))).path
+  check('the image was uploaded to the workspace', uploaded !== undefined && fs.existsSync(uploaded))
+  if (uploaded !== undefined && fs.existsSync(uploaded)) {
+    const { width, height } = pngSize(uploaded)
+    check('downscaled to 1568 px on the long edge', width === 1568 && height === 1045, `${width}x${height}`)
+  }
+
+  await fire(page, { selector: ':focus', kind: 'paste', w: 40, h: 40, text: 'pasted-words' })
+  check('a paste carrying text still pastes the text',
+    await eventually(async () => (await screenText(page)).includes('pasted-words')))
+
+  await fire(page, { selector: '.xterm', kind: 'drop', w: 64, h: 48 })
+  check('a dropped image becomes a second one', await eventually(async () => (await images()) === 2))
+
+  await page.evaluate(async () => {
+    const canvas = new OffscreenCanvas(32, 32)
+    canvas.getContext('2d').fillRect(0, 0, 32, 32)
+    const blob = await canvas.convertToBlob({ type: 'image/png' })
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+  })
+  await page.locator('.xterm').first().click()
+  await page.keyboard.press('Control+Shift+V')
+  check('a real Ctrl+Shift+V of a clipboard image becomes a third', await eventually(async () => (await images()) === 3))
+  await page.screenshot({ path: path.join(SHOTS, 'paste-image-terminal.png') })
+
+  // ── the chat pane ────────────────────────────────────────────────────
+  await page.goto(open(acp))
+  const box = page.locator('textarea[placeholder]').first()
+  await box.waitFor({ timeout: 30_000 })
+  await eventually(() => box.getAttribute('placeholder').then((p) => p === 'Message the agent…'), 60_000)
+  await box.click()
+  await fire(page, { selector: ':focus', kind: 'paste', w: 200, h: 120 })
+  check('a pasted image shows as one removable thumbnail',
+    await eventually(() => page.locator('[aria-label="Remove image"]').count().then((n) => n === 1)))
+  // Count from here: a reused conversation replays earlier images.
+  const sentImages = () => page.locator('.whitespace-pre-wrap img').count()
+  const before = await sentImages()
+  await box.fill('reply with just the word ok')
+  await page.getByRole('button', { name: 'Send' }).click()
+  const echoed = await eventually(async () => (await box.inputValue()) === ''
+    && (await page.locator('[aria-label="Remove image"]').count()) === 0, 60_000)
+  check('the echo empties the composer, text and image', echoed)
+  check('the user\'s turn shows the image it carried',
+    await eventually(async () => (await sentImages()) === before + 1))
+  await page.screenshot({ path: path.join(SHOTS, 'paste-image-chat.png') })
+} finally {
+  await browser.close()
+}
+finish()

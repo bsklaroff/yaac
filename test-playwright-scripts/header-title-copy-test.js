@@ -1,149 +1,53 @@
 /*
- * Checks what lands on the clipboard when the workspace header title is
- * selected and copied. A title <span> that is a direct flex child is
- * blockified, and copying a block's text can add leading and trailing
- * newlines. This compares candidate DOM structures in real Chromium to find
- * one that copies as a single clean line.
+ * Verifies that copying the workspace header title puts exactly the title on
+ * the clipboard, with no stray newlines. The title is a flex item, so
+ * Chromium's own copy of a triple-click selection adds line breaks;
+ * WorkspaceTitle's copy handler trims them. jsdom cannot select text like a
+ * browser, so this triple-clicks and drag-selects the real header in
+ * Chromium. It retitles the workspace to "My session title".
  *
- * Structures compared (title text = "My session title"):
- *   A current   flex > span.truncate[text]                 (span is a flex item)
- *   B innerspan flex > span.truncate > span[text]          (inline text wrapper)
- *   C wrapdiv   flex > div.truncate > span.inline[text]    (text not a flex item)
- *   D baseline  block div[text]
- *   E baseline  bare inline span[text] (no flex ancestor)
+ * Needs a running `yaac server` with one live workspace (see lib.js).
  *
- * For each, it selects the text node's contents via a Range, fires a real copy,
- * and reads navigator.clipboard.readText(), printing JSON.stringify so any
- * \n is visible. The winner is whichever returns exactly "My session title".
- *
- * Run: node test-playwright-scripts/header-title-copy-test.js
- * (playwright resolved from the global npm root; browsers under
- * /opt/playwright-browsers)
+ * Run: YAAC_DATA_DIR=... node test-playwright-scripts/header-title-copy-test.js <workspace-id>
  */
-import { execSync } from 'node:child_process'
-import http from 'node:http'
-import { createRequire } from 'node:module'
-import path from 'node:path'
+import { requirePlaywright, origin, api, check, finish } from './lib.js'
 
-const require = createRequire(import.meta.url)
-function requirePlaywright() {
-  try {
-    return require('playwright')
-  } catch {
-    const globalRoot = execSync('npm root -g').toString().trim()
-    return require(path.join(globalRoot, 'playwright'))
-  }
-}
-
+const { chromium } = requirePlaywright()
 const TITLE = 'My session title'
+const { workspaces } = await api('/workspace/list')
+const wt = workspaces.find((w) => w.workspaceId.startsWith(process.argv[2] ?? '\0'))
+if (!wt) {
+  console.error('usage: node test-playwright-scripts/header-title-copy-test.js <live-workspace-id>')
+  process.exit(1)
+}
+await api(`/workspace/${wt.workspaceId}/title`, { method: 'POST', body: { title: TITLE } })
 
-const HTML = `<!doctype html><meta charset=utf8>
-<style>
-  .row { display:flex; align-items:center; gap:6px; width:280px; }
-  .truncate { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .flex1 { flex:1 1 0%; }
-  .inline { display:inline; }
-  button { flex:0 0 auto; width:20px; height:20px; }
-</style>
+const browser = await chromium.launch()
+const context = await browser.newContext({ viewport: { width: 1400, height: 800 } })
+await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+const page = await context.newPage()
+await page.goto(`${origin}/?${new URLSearchParams({ project: wt.projectSlug, workspace: wt.workspaceId })}`)
+const label = page.locator('span.select-text', { hasText: TITLE }).first()
+await label.waitFor({ timeout: 20_000 })
+const box = await label.boundingBox()
+const y = box.y + box.height / 2
 
-<!-- A: current — span.truncate is the flex item -->
-<div class="row"><span id="A" class="truncate flex1">${TITLE}</span><button>·</button></div>
-
-<!-- B: text wrapped in an inner inline span, outer span still the flex item -->
-<div class="row"><span class="truncate flex1"><span id="B">${TITLE}</span></span><button>·</button></div>
-
-<!-- C: flex item is a div; text lives in an inline span (not a flex item) -->
-<div class="row"><div class="truncate flex1"><span id="C" class="inline">${TITLE}</span></div><button>·</button></div>
-
-<!-- D: plain block div -->
-<div id="D">${TITLE}</div>
-
-<!-- E: bare inline span, no flex ancestor -->
-<span id="E">${TITLE}</span>
-
-<!-- F: real-shape flex item (block, truncate) but with a copy interceptor that
-     writes the trimmed selection — the fix we intend to ship. -->
-<div class="row"><span id="F" class="truncate flex1">${TITLE}</span><button>·</button></div>
-<script>
-  document.getElementById('F').addEventListener('copy', (e) => {
-    e.clipboardData.setData('text/plain', (window.getSelection().toString() || '').trim())
-    e.preventDefault()
-  })
-</script>
-`
-
-async function boxOf(page, id) {
-  return await page.evaluate((elId) => {
-    const r = document.getElementById(elId).getBoundingClientRect()
-    return { x: r.x, y: r.y, width: r.width, height: r.height }
-  }, id)
+async function copied() {
+  await page.keyboard.press('ControlOrMeta+c')
+  const text = await page.evaluate(() => navigator.clipboard.readText())
+  await page.evaluate(() => window.getSelection().removeAllRanges())
+  return text
 }
 
-async function readClipboardAfterCopy(page) {
-  return await page.evaluate(async () => {
-    document.execCommand('copy')
-    await new Promise((r) => setTimeout(r, 20))
-    const text = await navigator.clipboard.readText()
-    window.getSelection().removeAllRanges()
-    return text
-  })
-}
+await page.mouse.click(box.x + box.width / 2, y, { clickCount: 3 })
+const tripled = await copied()
+check('a triple-click copies just the title', tripled === TITLE, JSON.stringify(tripled))
+await page.mouse.move(box.x + 1, y)
+await page.mouse.down()
+await page.mouse.move(box.x + box.width + 40, y, { steps: 8 })
+await page.mouse.up()
+const dragged = await copied()
+check('a drag past the end copies just the title', dragged === TITLE, JSON.stringify(dragged))
 
-// Realistic user selection: triple-click the title (selects the "line").
-async function tripleClickCopy(page, id) {
-  const b = await boxOf(page, id)
-  await page.mouse.click(b.x + Math.min(30, b.width / 2), b.y + b.height / 2, { clickCount: 3 })
-  return await readClipboardAfterCopy(page)
-}
-
-// Realistic user selection: drag across the title (~150px) on one row.
-async function dragCopy(page, id) {
-  const b = await boxOf(page, id)
-  const y = b.y + b.height / 2
-  await page.mouse.move(b.x + 1, y)
-  await page.mouse.down()
-  await page.mouse.move(b.x + Math.min(150, b.width - 1), y, { steps: 8 })
-  await page.mouse.up()
-  return await readClipboardAfterCopy(page)
-}
-
-async function main() {
-  // The Clipboard API needs a secure context; http://127.0.0.1 qualifies,
-  // a data: URL does not.
-  const server = http.createServer((_req, res) => {
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-    res.end(HTML)
-  })
-  await new Promise((r) => server.listen(0, '127.0.0.1', r))
-  const port = server.address().port
-
-  const { chromium } = requirePlaywright()
-  const browser = await chromium.launch()
-  const context = await browser.newContext()
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  const page = await context.newPage()
-  await page.goto(`http://127.0.0.1:${port}/`)
-
-  const labels = {
-    A: 'current   flex > span.truncate[text]',
-    B: 'innerspan flex > span.truncate > span[text]',
-    C: 'wrapdiv   flex > div.truncate > span.inline[text]',
-    D: 'baseline  block div[text]',
-    E: 'baseline  bare inline span[text]',
-    F: 'FIX       flex item + copy interceptor (trim)',
-  }
-  console.log(`expected clean copy = ${JSON.stringify(TITLE)}\n`)
-  for (const id of ['A', 'B', 'C', 'D', 'E', 'F']) {
-    const tc = await tripleClickCopy(page, id)
-    const dr = await dragCopy(page, id)
-    const ok = (s) => (s === TITLE ? '✅' : '❌')
-    console.log(`${id}  ${labels[id]}`)
-    console.log(`   ${ok(tc)} triple-click = ${JSON.stringify(tc)}`)
-    console.log(`   ${ok(dr)} drag         = ${JSON.stringify(dr)}`)
-  }
-
-  await browser.close()
-  server.close()
-}
-
-main().catch((e) => { console.error(e); process.exit(1) })
+await browser.close()
+finish()

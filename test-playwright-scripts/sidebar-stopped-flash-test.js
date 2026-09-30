@@ -3,7 +3,7 @@
  * Chromium against a live server: the "Stopped workspaces" entry point and a
  * group's ghost rows must never blink out while the list refetches.
  *
- *  1. Creating a workspace (CLI) and stopping workspaces (row menu and CLI)
+ *  1. Creating a workspace (API) and stopping workspaces (row menu and API)
  *     never empties the entry point or drops a ghost row.
  *  2. Restarting a stopped entry, from the overlay or a ghost row, removes it
  *     from the list on click, and it does not reappear as the restart
@@ -18,80 +18,40 @@
  *
  * Every list-stopped response is held for DELAY_MS so a blink during a
  * refetch is visible; an in-page sampler records the entry point, the death
- * dot and the ghost rows every 10ms. Check 3 makes POST /workspace/restart
+ * dot and the ghost rows every 10ms. Check 3 makes POST /api/workspace/restart
  * return 500.
  *
- * Workspaces are `pi` in ACP mode with the fake OpenRouter credential, so no
- * model is called (a claude workspace on a containerless host would use the
- * host's real login). If there is no unseen death for check 5, the script
- * kills a workspace's tmux server and waits (up to ~4 min) for the stale
- * reaper to record one. Workspaces it creates are titled "PW …" and left
- * stopped.
+ * Workspaces are `pi` in ACP mode with the fake OpenRouter credential and no
+ * prompt, so no model is called. If there is no unseen death for check 5, the
+ * script kills a workspace's tmux server and waits (up to ~5 min) for the
+ * stale reaper to record one. Workspaces it creates are titled "PW …" and
+ * left stopped.
  *
- * Drives the app the server serves from `dist/`, reading the port from
- * $YAAC_DATA_DIR/server-local/.server.lock (data dir defaults to ~/.yaac),
- * so run `pnpm build` + `yaac server restart` first. OTHER must be a second
- * project with no stopped workspaces.
- *
- * Run: PROJECT=yaac OTHER=hello-world node test-playwright-scripts/sidebar-stopped-flash-test.js
- * (SCREENSHOT_DIR for screenshots; defaults to /tmp/yaac-shots)
+ * Needs a running server with two projects, OTHER having no stopped
+ * workspaces (e.g. `yaac project add https://github.com/octocat/Hello-World.git
+ * <credential>`).
+ * Run: YAAC_DATA_DIR=<data dir> node test-playwright-scripts/sidebar-stopped-flash-test.js
+ * (PROJECT defaults to yaac, OTHER to hello-world)
  */
-import fs from 'node:fs'
 import { execSync } from 'node:child_process'
-import { createRequire } from 'node:module'
-import os from 'node:os'
 import path from 'node:path'
+import { requirePlaywright, origin, api, check, finish, SHOTS, createWorkspace, createWorkspaces } from './lib.js'
 
-const require = createRequire(import.meta.url)
-
-if (!process.env.PLAYWRIGHT_BROWSERS_PATH && fs.existsSync('/opt/playwright-browsers')) {
-  process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/playwright-browsers'
-}
-
-function requirePlaywright() {
-  try {
-    return require('playwright')
-  } catch {
-    const globalRoot = execSync('npm root -g').toString().trim()
-    return require(path.join(globalRoot, 'playwright'))
-  }
-}
-
-function readServerLock() {
-  const dataDir = process.env.YAAC_DATA_DIR ?? path.join(os.homedir(), '.yaac')
-  const p = path.join(dataDir, 'server-local', '.server.lock')
-  if (!fs.existsSync(p)) throw new Error(`no ${p} — is the server running?`)
-  return JSON.parse(fs.readFileSync(p, 'utf8'))
-}
-
-let failures = 0
-function check(name, cond, detail = '') {
-  if (!cond) failures++
-  console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${detail ? `  [${detail}]` : ''}`)
-}
-
-const PROJECT = process.env.PROJECT
-const OTHER = process.env.OTHER
-if (!PROJECT || !OTHER) throw new Error('set PROJECT=<slug> OTHER=<slug with no stopped workspaces>')
+const PROJECT = process.env.PROJECT ?? 'yaac'
+const OTHER = process.env.OTHER ?? 'hello-world'
 const GROUP = 'PW'
 // Per-run suffix so titles never collide with ghosts from an earlier run.
 const RUN = Date.now().toString(36).slice(-4)
 const T = (name) => `PW ${name} ${RUN}`
+/** A pi ACP workspace in GROUP. */
+const spec = (title) => ({ project: PROJECT, tool: 'pi', mode: 'acp', group: GROUP, title })
 const DELAY_MS = 2500
-const SHOTS = process.env.SCREENSHOT_DIR ?? '/tmp/yaac-shots'
-const origin = `http://127.0.0.1:${readServerLock().port}`
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-// Node's fetch can reuse a pooled socket the server just closed; one retry
-// covers that race.
-const api = async (url, init) => {
-  try { return await fetch(url, init) } catch { await sleep(200); return fetch(url, init) }
-}
 
-const yaac = (args) => execSync(`yaac ${args}`, { input: '', stdio: ['pipe', 'pipe', 'pipe'] }).toString()
-const stoppedList = async (project) =>
-  (await api(`${origin}/api/workspace/list-stopped?project=${project}`)).json()
-const isLive = (id) => yaac('workspace list').includes(id.slice(0, 8))
-async function until(what, cond, timeoutMs = 60_000) {
+const stoppedList = (project) => api(`/workspace/list-stopped?project=${project}`)
+const isLive = async (id) => (await api('/workspace/list')).workspaces.some((w) => w.workspaceId === id)
+const stop = (workspaceId) => api('/workspace/stop', { method: 'POST', body: { workspaceId } })
+async function waitFor(what, cond, timeoutMs = 60_000) {
   const end = Date.now() + timeoutMs
   while (Date.now() < end) {
     if (await cond()) return
@@ -99,16 +59,6 @@ async function until(what, cond, timeoutMs = 60_000) {
   }
   throw new Error(`timed out waiting for ${what}`)
 }
-async function create(title) {
-  const out = yaac(`workspace create ${PROJECT} -t pi --mode acp -g ${GROUP} -p "${title}"`)
-  const id = out.match(/Workspace ([0-9a-f-]{36})/)?.[1]
-  if (!id) throw new Error(`create printed no id:\n${out}`)
-  await api(`${origin}/api/workspace/${id}/title`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title }),
-  })
-  return id
-}
-const stop = (id) => yaac(`workspace stop ${id}`)
 
 const { chromium } = requirePlaywright()
 const browser = await chromium.launch()
@@ -116,22 +66,18 @@ const made = []
 try {
   // A live anchor keeps the group on screen; B and C are its ghost rows.
   console.log('setting up workspaces…')
-  made.push(await create(T('anchor')))
-  const B = await create(T('ghost B'))
-  const C = await create(T('ghost C'))
-  made.push(B, C)
-  stop(B)
-  stop(C)
   let death = (await stoppedList(PROJECT)).find((e) => e.deathReason && !e.seen)
+  const [anchor, B, C, D] = await createWorkspaces(
+    ['anchor', 'ghost B', 'ghost C', ...(death ? [] : ['death'])].map((n) => spec(T(n))))
+  made.push(anchor, B, C, ...(D ? [D] : []))
+  await Promise.all([stop(B), stop(C)])
   if (!death) {
     console.log('making an unseen death (waiting on the stale reaper)…')
-    const D = await create(T('death'))
-    made.push(D)
     const tmux = execSync('ps -eo args').toString().split('\n')
       .find((l) => l.includes('new-session') && l.includes(D))?.match(/-S (\S+)/)?.[1]
     if (!tmux) throw new Error(`no tmux server found for ${D}`)
     execSync(`tmux -S ${tmux} kill-server`)
-    await until('the reaper to record the death', async () =>
+    await waitFor('the reaper to record the death', async () =>
       (await stoppedList(PROJECT)).some((e) => e.workspaceId === D && e.deathReason), 300_000)
     death = (await stoppedList(PROJECT)).find((e) => e.workspaceId === D)
   }
@@ -140,7 +86,6 @@ try {
 
   const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
-  fs.mkdirSync(SHOTS, { recursive: true })
 
   // Fetch first, then hold, so each response reflects the server's state
   // from before whatever the page does in the meantime.
@@ -157,7 +102,7 @@ try {
     served++
   })
   const settle = async () => {
-    await until('list-stopped to go quiet', () => inflight === 0, 30_000)
+    await waitFor('list-stopped to go quiet', () => inflight === 0, 30_000)
     await sleep(300)
   }
 
@@ -218,7 +163,7 @@ try {
 
   // (1) Start and stop workspaces.
   await mark('p1')
-  const E = await create(T('flash E'))
+  const E = await createWorkspace(spec(T('flash E')))
   made.push(E)
   await aside.getByText(T('flash E'), { exact: true }).waitFor({ timeout: 20_000 })
   await settle()
@@ -229,10 +174,10 @@ try {
   await page.getByRole('alertdialog').getByRole('button', { name: 'Stop', exact: true }).click()
   await ghost(T('flash E')).waitFor({ timeout: 30_000 })
   await settle()
-  const F = await create(T('flash F'))
+  const F = await createWorkspace(spec(T('flash F')))
   made.push(F)
   await settle()
-  stop(F)
+  await stop(F)
   await ghost(T('flash F')).waitFor({ timeout: 30_000 })
   await settle()
   await mark('p1-end')
@@ -252,7 +197,7 @@ try {
   await overlay.getByText(T('ghost B'), { exact: true }).first().click()
   await overlay.getByRole('button', { name: /Restart/ }).click()
   await page.getByRole('alertdialog').getByRole('button', { name: 'Restart' }).click()
-  await until('B to be live again', () => isLive(B), 60_000)
+  await waitFor('B to be live again', () => isLive(B), 60_000)
   await settle()
   await mark('p2a-end')
   const p2a = await phase('p2a')
@@ -268,7 +213,7 @@ try {
   await ghost(T('ghost C')).hover()
   await ghost(T('ghost C')).locator('..').getByRole('button', { name: 'Restart workspace' }).click()
   await page.getByRole('alertdialog').getByRole('button', { name: 'Restart' }).click()
-  await until('C to be live again', () => isLive(C), 60_000)
+  await waitFor('C to be live again', () => isLive(C), 60_000)
   await settle()
   await mark('p2b-end')
   const p2b = await phase('p2b')
@@ -278,7 +223,7 @@ try {
     p2b.slice(after2b).every((s) => s.entry === before2b - 1 && !s.ghosts.includes(T('ghost C'))))
 
   // (3) A failed restart, then dismissed.
-  stop(B)
+  await stop(B)
   await ghost(T('ghost B')).waitFor({ timeout: 30_000 })
   await settle()
   await page.route('**/workspace/restart', (route) => route.fulfill({
@@ -325,8 +270,8 @@ try {
   // (5) Open an unseen death while a refetch fetched before the ack is held.
   check('(5) the unseen death shows a dot (precondition)', await aside.locator('[title*="died unexpectedly"]').count() > 0)
   await mark('p5')
-  stop(C)
-  await until('a refetch to be in flight', () => inflight > 0, 20_000)
+  await stop(C)
+  await waitFor('a refetch to be in flight', () => inflight > 0, 20_000)
   await entry.click()
   await overlay.getByText(deathLabel, { exact: true }).first().click()
   const clickedAt = await page.evaluate(() => performance.now())
@@ -351,9 +296,8 @@ try {
 } finally {
   await browser.close()
   for (const id of made) {
-    try { if (isLive(id)) stop(id) } catch { /* best-effort */ }
+    try { if (await isLive(id)) await stop(id) } catch { /* best-effort */ }
   }
 }
 
-console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`)
-process.exit(failures === 0 ? 0 : 1)
+finish()

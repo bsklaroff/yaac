@@ -1,176 +1,96 @@
 /*
- * Verifies the frontend's typed Hono API client
- * (packages/frontend/src/lib/api.ts and the lib/*Api modules) against a
- * running server, through the webapp in real Chromium:
- *   - initial load         → GET /whoami, GET /auth/list, /shortcuts/get
- *   - open Settings        → its batch of GETs
- *   - New workspace → Create→ POST /workspace/create (NDJSON stream)
- *   - Rename workspace      → POST /workspace/:id/title
- *   - Stop workspace        → POST /workspace/stop
- * Every same-origin API response is captured (method, path, status); the run
- * asserts the app identified itself, rendered its main view, produced no
- * page errors, and that each exercised endpoint answered 2xx.
+ * Smoke-tests the frontend's typed Hono API client (packages/frontend/src/
+ * lib/api.ts and the lib/*Api modules) against a running server, through
+ * the webapp in real Chromium. It drives the initial load (GET /whoami),
+ * Settings, New workspace → Create (the NDJSON create stream), a header
+ * rename and a stop (Alt+D), capturing every same-origin API response, and asserts each
+ * exercised endpoint answered 2xx, nothing answered 4xx/5xx and the page
+ * threw no errors.
  *
- * Run: PROJECT=<slug> node test-playwright-scripts/rpc-client-e2e-test.js
- * Needs a running server (`yaac server start`) whose project can create a
- * workspace — a git credential it can fetch with, a server git identity, and a
- * claude credential (`yaac auth fake claude-oauth` is enough: the agent never
- * has to answer); reads the port from
- * $YAAC_DATA_DIR/server-local/.server.lock (or ~/.yaac). The workspace it
- * creates is stopped at the end (UI, then API fallback). (playwright is
- * resolved from the global npm root; browsers live under
- * /opt/playwright-browsers)
+ * Needs a running `yaac server` whose project (PROJECT, default yaac) can
+ * create a workspace: a git credential, a git identity and a claude
+ * credential (`yaac auth fake claude-oauth` is enough). The workspace it
+ * creates is stopped at the end.
+ *
+ * Run: YAAC_DATA_DIR=... PROJECT=<slug> node test-playwright-scripts/rpc-client-e2e-test.js
  */
-import { execSync } from 'node:child_process'
-import fs from 'node:fs'
-import { createRequire } from 'node:module'
-import os from 'node:os'
-import path from 'node:path'
+import { api, check, finish, origin, requirePlaywright, until } from './lib.js'
 
-const require = createRequire(import.meta.url)
+const project = process.env.PROJECT || 'yaac'
+const isAsset = (p) => !p.startsWith('/api/') || p === '/api/events'
 
-function requirePlaywright() {
-  try {
-    return require('playwright')
-  } catch {
-    const globalRoot = execSync('npm root -g').toString().trim()
-    return require(path.join(globalRoot, 'playwright'))
+const { chromium } = requirePlaywright()
+const browser = await chromium.launch()
+const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
+const pageErrors = []
+page.on('pageerror', (err) => { pageErrors.push(err.message); console.log(`  [page error] ${err.message}`) })
+
+const calls = []
+page.on('response', (res) => {
+  const p = new URL(res.url()).pathname
+  if (!isAsset(p)) calls.push({ method: res.request().method(), path: p, status: res.status() })
+})
+// The webapp pre-generates the workspace id and sends it in the create body.
+let createdId = null
+page.on('request', (req) => {
+  if (req.method() === 'POST' && new URL(req.url()).pathname === '/api/workspace/create') {
+    createdId = JSON.parse(req.postData() ?? '{}').workspaceId ?? null
   }
-}
+})
+const hit = (method, re) => calls.filter((c) => c.method === method && re.test(c.path))
+const ok2xx = (cs) => cs.length > 0 && cs.every((c) => c.status >= 200 && c.status < 300)
 
-function readServerLock() {
-  const candidates = [
-    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, 'server-local', '.server.lock'),
-    path.join(os.homedir(), '.yaac', 'server-local', '.server.lock'),
-  ].filter(Boolean)
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
-  }
-  throw new Error(`no .server.lock found (tried ${candidates.join(', ')}) — is the server running?`)
-}
+try {
+  await page.goto(`${origin}/?project=${project}`)
+  await page.getByTitle('New workspace').first().waitFor({ timeout: 20_000 })
 
-let failures = 0
-function check(name, cond, detail = '') {
-  console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${detail ? `  [${detail}]` : ''}`)
-  if (!cond) failures++
-}
+  const beforeSettings = calls.length
+  await page.getByTitle('Settings').click()
+  await page.waitForTimeout(2000)
+  const settingsCalls = calls.slice(beforeSettings)
+  check('Settings loaded its data', ok2xx(settingsCalls), settingsCalls.map((c) => `${c.path} ${c.status}`).join(', '))
+  await page.keyboard.press('Escape')
 
-const isAsset = (p) =>
-  p === '/' || p.startsWith('/assets') || /\.(js|css|woff2?|svg|png|ico|map)$/.test(p)
-
-async function main() {
-  const { chromium } = requirePlaywright()
-  const project = process.env.PROJECT || 'yaac'
-  const lock = readServerLock()
-  const base = `http://127.0.0.1:${lock.port}`
-
-  const appUrl = `${base}/?project=${project}`
-
-  const browser = await chromium.launch()
-  const page = await browser.newPage({ viewport: { width: 1400, height: 900 }, bypassCSP: true })
-
-  const pageErrors = []
-  page.on('pageerror', (err) => { pageErrors.push(err.message); console.log(`  [page error] ${err.message}`) })
-
-  // Every same-origin API response (method, path, status).
-  const api = []
-  page.on('response', (res) => {
-    let p
-    try { p = new URL(res.url()).pathname } catch { return }
-    if (isAsset(p) || p === '/api/events') return
-    api.push({ method: res.request().method(), path: p, status: res.status() })
-  })
-  // The webapp pre-generates the workspace id and sends it in the create body.
-  let createdWorkspaceId = null
-  page.on('request', (req) => {
-    if (req.method() !== 'POST' || new URL(req.url()).pathname !== '/api/workspace/create') return
-    try { createdWorkspaceId = JSON.parse(req.postData() ?? '{}').workspaceId ?? null } catch { /* asserted below */ }
-  })
-  const hit = (method, pathRe) => api.filter((c) => c.method === method && pathRe.test(c.path))
-  const ok2xx = (calls) => calls.length > 0 && calls.every((c) => c.status >= 200 && c.status < 300)
-
-  try {
-    // ---- load + identity probe (GET /whoami) ---------------------------
-    await page.goto(appUrl)
-    await page.waitForSelector('[title="New workspace"]', { timeout: 20_000 })
-    check('app rendered main view (identified + initial loads)', true)
-
-    // ---- Settings: a batch of GETs --------------------------------------
-    const beforeSettings = api.length
-    await page.click('[title="Settings"]')
-    await page.waitForTimeout(2000)
-    const settingsCalls = api.slice(beforeSettings).filter((c) => c.method === 'GET')
-    check('Settings loaded its data', ok2xx(settingsCalls),
-      settingsCalls.map((c) => `${c.path} ${c.status}`).join(', '))
-    await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
-
-    // ---- create a workspace (New workspace → Create) ----------------------
-    await page.getByTitle('New workspace').first().click()
-    const create = page.getByRole('button', { name: 'Create', exact: true })
-    await create.waitFor({ state: 'visible', timeout: 15_000 })
-    await page.waitForFunction(() => {
-      const b = [...document.querySelectorAll('button')].find((x) => x.textContent === 'Create')
-      return b !== undefined && !b.disabled
-    }, null, { timeout: 15_000 })
-    await create.click()
-    console.log('workspace create clicked; waiting for the terminal to mount…')
-    await page.waitForFunction(() => (window.__xterms?.size ?? 0) > 0, null, { timeout: 300_000 })
-    await page.waitForTimeout(1500)
-    check('workspace created and opened', !!createdWorkspaceId, `id=${createdWorkspaceId}`)
-
-    // ---- rename (POST /workspace/:id/title) ------------------------------
-    let renamed = false
-    try {
-      // The workspace header's rename, not the sidebar row's.
-      await page.locator('[aria-label="Rename workspace"]:not(aside *)').click()
-      const field = page.getByLabel('Workspace title')
-      await field.fill(`rpc-e2e-${Date.now()}`)
-      await field.press('Enter')
-      renamed = true
-    } catch (e) { console.log(`  [rename] ${e.message}`) }
+  await page.getByTitle('New workspace').first().click()
+  const create = page.getByRole('button', { name: 'Create', exact: true })
+  await until(page, () => [...document.querySelectorAll('button')]
+    .some((b) => b.textContent === 'Create' && !b.disabled))
+  await create.click()
+  console.log('create clicked; waiting for the workspace to run…')
+  await until(page, () => /[?&]workspace=/.test(location.search), null, 60_000)
+  for (let i = 0; i < 120; i++) {
+    const { workspaces } = await api('/workspace/list')
+    if (workspaces.some((w) => w.workspaceId === createdId && w.status !== 'provisioning')) break
     await page.waitForTimeout(1000)
-    check('rename drove a title write', renamed)
-
-    // ---- stop (POST /workspace/stop) -------------------------------------
-    let stopped = false
-    try {
-      await page.locator('[aria-label="Stop workspace"]').first().click({ force: true })
-      await page.locator('text=Stop workspace?').waitFor({ state: 'visible', timeout: 5000 })
-      await page.getByRole('button', { name: 'Stop', exact: true }).click()
-      stopped = true
-    } catch (e) { console.log(`  [stop] ${e.message}`) }
-    await page.waitForTimeout(3000)
-    check('stop drove a workspace-stop write', stopped)
-
-    // ---- assert the endpoints answered 2xx ------------------------------
-    check('GET /whoami → 2xx', ok2xx(hit('GET', /^\/api\/whoami$/)))
-    check('GET /auth/list → 2xx', ok2xx(hit('GET', /^\/api\/auth\/list$/)))
-    check('GET /shortcuts/get → 2xx', ok2xx(hit('GET', /^\/api\/shortcuts\/get$/)))
-    check('POST /workspace/create → 2xx', ok2xx(hit('POST', /^\/api\/workspace\/create$/)))
-    if (renamed) check('POST /workspace/:id/title → 2xx', ok2xx(hit('POST', /^\/api\/workspace\/[^/]+\/title$/)))
-    if (stopped) check('POST /workspace/stop → 2xx', ok2xx(hit('POST', /^\/api\/workspace\/stop$/)))
-    check('no page errors', pageErrors.length === 0, pageErrors.join(' | '))
-    check('no API 4xx/5xx (except benign 404 skew probes)',
-      api.every((c) => c.status < 400 || c.status === 404),
-      api.filter((c) => c.status >= 400).map((c) => `${c.method} ${c.path} ${c.status}`).join(', '))
-
-    console.log('\n--- captured API calls ---')
-    for (const c of api) console.log(`  ${c.method.padEnd(6)} ${String(c.status).padEnd(4)} ${c.path}`)
-  } finally {
-    await browser.close()
-    // Cleanup fallback: if the UI stop didn't land, stop it via the API.
-    if (createdWorkspaceId) {
-      await fetch(`${base}/api/workspace/stop`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ workspaceId: createdWorkspaceId }),
-      }).catch(() => {})
-    }
   }
+  check('workspace created and opened', createdId !== null, `id=${createdId}`)
 
-  console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}`)
-  process.exit(failures === 0 ? 0 : 1)
+  // The workspace header's rename, not the sidebar row's.
+  await page.locator('[aria-label="Rename workspace"]:not(aside *)').click()
+  const field = page.getByLabel('Workspace title')
+  await field.fill(`rpc-e2e-${Date.now()}`)
+  await field.press('Enter')
+  await page.waitForTimeout(1000)
+
+  await page.locator('body').click({ position: { x: 700, y: 20 } })
+  await page.keyboard.press('Alt+d')
+  await page.getByRole('button', { name: 'Stop', exact: true }).click({ timeout: 5000 })
+  await page.waitForTimeout(3000)
+
+  check('GET /whoami → 2xx', ok2xx(hit('GET', /^\/api\/whoami$/)))
+  check('GET /auth/list → 2xx', ok2xx(hit('GET', /^\/api\/auth\/list$/)))
+  check('GET /shortcuts/get → 2xx', ok2xx(hit('GET', /^\/api\/shortcuts\/get$/)))
+  check('POST /workspace/create → 2xx', ok2xx(hit('POST', /^\/api\/workspace\/create$/)))
+  check('POST /workspace/:id/title → 2xx', ok2xx(hit('POST', /^\/api\/workspace\/[^/]+\/title$/)))
+  check('POST /workspace/stop → 2xx', ok2xx(hit('POST', /^\/api\/workspace\/stop$/)))
+  check('no page errors', pageErrors.length === 0, pageErrors.join(' | '))
+  check('no API 4xx/5xx', calls.every((c) => c.status < 400),
+    calls.filter((c) => c.status >= 400).map((c) => `${c.method} ${c.path} ${c.status}`).join(', '))
+  console.log('\n--- captured API calls ---')
+  for (const c of calls) console.log(`  ${c.method.padEnd(6)} ${String(c.status).padEnd(4)} ${c.path}`)
+} finally {
+  await browser.close()
+  // Stop it via the API too, in case the UI stop did not land.
+  if (createdId) await api('/workspace/stop', { method: 'POST', body: { workspaceId: createdId } }).catch(() => {})
 }
-
-main().catch((err) => { console.error(err); process.exit(1) })
+finish()

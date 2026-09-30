@@ -24,66 +24,22 @@
  *   5. closes the overlay; the pill stays in its muted "builds" history
  *      state (screenshot).
  *
+ * k8s only: a containerless server builds no images (its Dockerfile route
+ * answers 501), so this cannot run in a yaac dev workspace. The pill and
+ * overlay states themselves are unit-tested in packages/frontend/test.
+ *
  * Run: node test-playwright-scripts/image-build-ux-test.js [--project hello-world]
- * Needs a running server with a wired cluster and the project registered
- * (`yaac auth fake github && yaac project add <url> fake-github`). Reads port from
- * $YAAC_DATA_DIR/.server.lock. Screenshots go to $SCREENSHOT_DIR (or $TMPDIR).
- * playwright is resolved from the global npm root; browsers live under
- * /opt/playwright-browsers.
+ * Needs a server with a wired cluster (see lib.js) and the project
+ * registered. Screenshots: $SCREENSHOT_DIR/ibux-*.png.
  */
-import { execFileSync } from 'node:child_process'
-import fs from 'node:fs'
-import { createRequire } from 'node:module'
-import os from 'node:os'
 import path from 'node:path'
-
-const require = createRequire(import.meta.url)
-
-function requirePlaywright() {
-  try {
-    return require('playwright')
-  } catch {
-    const globalRoot = execFileSync('npm', ['root', '-g']).toString().trim()
-    return require(path.join(globalRoot, 'playwright'))
-  }
-}
-
-function readServerLock() {
-  const candidates = [
-    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.server.lock'),
-    path.join(os.homedir(), '.yaac', '.server.lock'),
-  ].filter(Boolean)
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
-  }
-  throw new Error(`no .server.lock found (tried ${candidates.join(', ')}) — is the server running?`)
-}
+import { api, check, finish, origin, requirePlaywright, SHOTS } from './lib.js'
 
 const PROJECT = process.argv.includes('--project')
   ? process.argv[process.argv.indexOf('--project') + 1]
   : 'hello-world'
-const SHOT_DIR = process.env.SCREENSHOT_DIR || process.env.TMPDIR || os.tmpdir()
-
-let failures = 0
-function check(name, cond, detail = '') {
-  const mark = cond ? 'PASS' : 'FAIL'
-  if (!cond) failures++
-  console.log(`${mark}  ${name}${detail ? `  [${detail}]` : ''}`)
-}
-
-async function readDockerfile(base) {
-  const res = await fetch(`${base}/api/project/${PROJECT}/dockerfile`)
-  if (!res.ok) throw new Error(`dockerfile GET failed: HTTP ${res.status}`)
-  return (await res.json()).content
-}
-
-async function writeDockerfile(base, content) {
-  return fetch(`${base}/api/project/${PROJECT}/dockerfile`, {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ content }),
-  })
-}
+const dockerfileRoute = `/project/${PROJECT}/dockerfile`
+const writeDockerfile = (content) => api(dockerfileRoute, { method: 'PUT', body: { content } })
 
 function warnManualRestore() {
   console.error(`\n!! ${PROJECT}'s Dockerfile.yaac is STILL the cache-busting stub.`)
@@ -95,11 +51,10 @@ function warnManualRestore() {
  * Put the project's Dockerfile.yaac back. A failed restore counts as a
  * failure and prints how to fix it by hand.
  */
-async function restoreDockerfile(base, original) {
+async function restoreDockerfile(original) {
   try {
-    const res = await writeDockerfile(base, original)
-    check('Dockerfile.yaac restored', res.ok, `HTTP ${res.status}`)
-    if (!res.ok) warnManualRestore()
+    await writeDockerfile(original)
+    check('Dockerfile.yaac restored', true)
   } catch (err) {
     check('Dockerfile.yaac restored', false, err.message)
     warnManualRestore()
@@ -107,9 +62,7 @@ async function restoreDockerfile(base, original) {
 }
 
 async function shot(page, name) {
-  fs.mkdirSync(SHOT_DIR, { recursive: true })
-  await page.screenshot({ path: path.join(SHOT_DIR, name) })
-  console.log(`  shot → ${path.join(SHOT_DIR, name)}`)
+  await page.screenshot({ path: path.join(SHOTS, name) })
 }
 
 const BUILDING = '[aria-label="Show image build progress"]'
@@ -117,33 +70,25 @@ const HISTORY = '[aria-label="Show image build history"]'
 const DISMISS = '[aria-label="Dismiss build entry"]'
 
 async function main() {
+  const originalDockerfile = (await api(dockerfileRoute)).content
   const { chromium } = requirePlaywright()
-  const lock = readServerLock()
-  const base = `http://127.0.0.1:${lock.port}`
-
   const browser = await chromium.launch()
-  const page = await browser.newPage({ viewport: { width: 1400, height: 900 }, bypassCSP: true })
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
-
-  const originalDockerfile = await readDockerfile(base)
 
   // Node's default SIGINT handling skips `finally`, so restore explicitly.
   process.once('SIGINT', () => {
     console.error('\ninterrupted — restoring Dockerfile.yaac...')
-    void restoreDockerfile(base, originalDockerfile).finally(() => process.exit(130))
+    void restoreDockerfile(originalDockerfile).finally(() => process.exit(130))
   })
 
   try {
-    await page.goto(`${base}/`)
-    // The only project is auto-selected; the sidebar's + button shows the
-    // app has loaded.
-    await page.waitForSelector('[title="New session"]', { timeout: 20_000 })
-    check('workspace loaded, project auto-selected', true)
+    await page.goto(`${origin}/?project=${PROJECT}`)
+    await page.locator('aside').waitFor({ timeout: 20_000 })
 
     // A unique RUN line gives the layer a tag the registry does not hold.
     const bust = `ARG BASE_IMAGE\nFROM \${BASE_IMAGE}\nRUN echo ibux-${process.pid}-${Date.now()}\n`
-    const put = await writeDockerfile(base, bust)
-    check('cache-busting Dockerfile.yaac accepted', put.ok, `HTTP ${put.status}`)
+    await writeDockerfile(bust)
 
     // 1. The building pill. The prewarm sweep runs every 60s, so this may
     // wait a full interval.
@@ -174,12 +119,11 @@ async function main() {
     await shot(page, 'ibux-4-history-pill.png')
   } finally {
     // Restore the project; registry GC removes the extra tag later.
-    await restoreDockerfile(base, originalDockerfile)
+    await restoreDockerfile(originalDockerfile)
     await browser.close()
   }
 
-  console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
-  process.exit(failures === 0 ? 0 : 1)
+  finish()
 }
 
 main().catch((err) => { console.error(err); process.exit(1) })

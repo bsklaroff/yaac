@@ -19,55 +19,13 @@
  * Creates no workspace. Drafts it saves are discarded by the end; if a check
  * fails midway, discard leftovers from the sidebar.
  *
- * Drives the app the server itself serves (`dist/`) over loopback, reading
- * the port from $YAAC_DATA_DIR/server-local/.server.lock (data dir defaults
- * to ~/.yaac) — so run `pnpm build` + `yaac server restart` first.
- *
- * Run: PROJECT=<slug> node test-playwright-scripts/draft-workspaces-ui-test.js
- * (SCREENSHOT_DIR for screenshots; defaults to /tmp/yaac-shots.
- *  playwright is resolved from the global npm root; browsers live under
- *  /opt/playwright-browsers)
+ * Run: YAAC_DATA_DIR=<data dir> PROJECT=<slug> node test-playwright-scripts/draft-workspaces-ui-test.js
  */
-import fs from 'node:fs'
-import { execSync } from 'node:child_process'
-import { createRequire } from 'node:module'
-import os from 'node:os'
 import path from 'node:path'
-
-const require = createRequire(import.meta.url)
-
-if (!process.env.PLAYWRIGHT_BROWSERS_PATH && fs.existsSync('/opt/playwright-browsers')) {
-  process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/playwright-browsers'
-}
-
-function requirePlaywright() {
-  try {
-    return require('playwright')
-  } catch {
-    const globalRoot = execSync('npm root -g').toString().trim()
-    return require(path.join(globalRoot, 'playwright'))
-  }
-}
-
-function readServerLock() {
-  const dataDir = process.env.YAAC_DATA_DIR ?? path.join(os.homedir(), '.yaac')
-  const p = path.join(dataDir, 'server-local', '.server.lock')
-  if (!fs.existsSync(p)) throw new Error(`no ${p} — is the server running?`)
-  return JSON.parse(fs.readFileSync(p, 'utf8'))
-}
-
-let failures = 0
-function check(name, cond, detail = '') {
-  if (!cond) failures++
-  console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${detail ? `  [${detail}]` : ''}`)
-}
+import { check, finish, origin, requirePlaywright, SHOTS } from './lib.js'
 
 const PROJECT = process.env.PROJECT
 if (!PROJECT) throw new Error('set PROJECT=<slug>')
-const SHOTS = process.env.SCREENSHOT_DIR ?? '/tmp/yaac-shots'
-const lock = readServerLock()
-const origin = `http://127.0.0.1:${lock.port}`
-
 const stamp = Date.now()
 const idea = `pw draft ${stamp}`
 
@@ -77,17 +35,16 @@ try {
   const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
   await page.goto(`${origin}/?project=${PROJECT}`)
-  fs.mkdirSync(SHOTS, { recursive: true })
 
   const aside = page.locator('aside')
   const drafts = aside.getByRole('group', { name: 'Drafts' })
   const prompt = page.getByLabel('Prompt')
   const question = page.getByRole('alertdialog')
   const open = async () => {
-    await aside.getByRole('button', { name: 'New workspace' }).click()
+    await aside.getByRole('button', { name: 'New workspace', exact: true }).click()
     await prompt.waitFor({ state: 'visible' })
   }
-  await aside.getByRole('button', { name: 'New workspace' }).waitFor({ timeout: 15_000 })
+  await aside.getByRole('button', { name: 'New workspace', exact: true }).waitFor({ timeout: 15_000 })
 
   // (1) Nothing to show.
   check('no Drafts section without drafts', await drafts.count() === 0)
@@ -170,5 +127,4 @@ try {
 } finally {
   await browser.close()
 }
-console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`)
-process.exit(failures === 0 ? 0 : 1)
+finish()

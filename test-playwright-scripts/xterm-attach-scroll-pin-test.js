@@ -1,5 +1,5 @@
 /*
- * Verifies that a freshly attached session terminal starts with the agent's
+ * Verifies that a freshly attached agent terminal starts with the agent's
  * bottom line visible, and that a keypress reveals nothing new.
  *
  * The bug: if the view session is created already attached, the shared
@@ -7,322 +7,96 @@
  * `status off`). The shrink drops the row below the agent's cursor (Claude's
  * hint line) and the grow restores a history line at the top instead, so the
  * screen sits one row low until the agent repaints. attachArgs in
- * pty-bridge.ts avoids this: create detached, turn status off, then attach.
+ * packages/server/src/runtime/terminals/pty-bridge.ts avoids this: create
+ * detached, turn status off, then attach.
  *
  * xterm itself can't cause this: the tmux client keeps the alternate buffer
- * for the whole attach, so viewportY === baseY === 0 (also asserted). The
- * script reads Terminal objects via the window.__xterms test hook, since
- * xterm 6 does not mirror scroll state into the DOM.
+ * for the whole attach, so viewportY === baseY (also checked). Terminal
+ * objects are read through the window.__xterms test hook, since xterm does
+ * not mirror scroll state into the DOM.
  *
- * Each trial opens the webapp on the session (?project=&session=), samples
- * opacity and viewportY/baseY every animation frame, logs /pty/attach WS
- * frames, and compares the bottom buffer rows before and after a keypress.
- * Between trials the tmux window is resized back to 500x200 (kubectl exec)
- * so each attach replays the prewarm-style shrink.
+ * Each trial first resizes the workspace's tmux window to 500x200 through
+ * its host socket (containerless driver) so the attach replays a large
+ * shrink, then opens the webapp on the workspace, samples viewportY/baseY
+ * every animation frame once the terminal is revealed, and compares the
+ * bottom rows before and after an ArrowRight (a no-op in an idle prompt).
  *
- * Run: node test-playwright-scripts/xterm-attach-scroll-pin-test.js <sessionId>|claim [trials] [dpr] [viewportWxH]
- * e.g. node test-playwright-scripts/xterm-attach-scroll-pin-test.js <id> 5 2 900x520
- * With `claim`, each trial claims a prewarmed spare via POST /session/create,
- * samples its first attach, saves before/after-keypress screenshots to the
- * OS temp dir, deletes the session, and waits for the pool to respawn a
- * spare.
- * Needs a running server and, for <sessionId>, a session whose agent has
- * booted. Reads the port from $YAAC_DATA_DIR/.server.lock (or ~/.yaac).
+ * Needs a running containerless server with a claude TUI workspace whose
+ * agent is idle (`yaac workspace create yaac --tool claude`); defaults to
+ * the first one listed. Leaves the workspace running.
+ * Run: [YAAC_DATA_DIR=<dir>] node test-playwright-scripts/xterm-attach-scroll-pin-test.js [workspaceId] [trials] [dpr] [WxH]
  */
-import { execSync } from 'node:child_process'
-import fs from 'node:fs'
-import { createRequire } from 'node:module'
+import { execFileSync } from 'node:child_process'
+import crypto from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
+import { api, check, DATA_DIR, finish, origin, requirePlaywright, SHOTS, until } from './lib.js'
 
-const require = createRequire(import.meta.url)
+const [idArg, trialsArg = '3', dprArg = '2', sizeArg = '900x520'] = process.argv.slice(2)
+const trials = Number(trialsArg)
+const dpr = Number(dprArg)
+const [vw, vh] = sizeArg.split('x').map(Number)
 
-function requirePlaywright() {
-  try {
-    return require('playwright')
-  } catch {
-    const globalRoot = execSync('npm root -g').toString().trim()
-    return require(path.join(globalRoot, 'playwright'))
-  }
-}
+const { workspaces } = await api('/workspace/list')
+const ws = idArg
+  ? workspaces.find((w) => w.workspaceId.startsWith(idArg))
+  : workspaces.find((w) => w.tool === 'claude' && w.status !== 'stopped')
+if (!ws) throw new Error('no claude workspace found; create one with `yaac workspace create yaac --tool claude`')
 
-function readServerLock() {
-  const candidates = [
-    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.server.lock'),
-    path.join(os.homedir(), '.yaac', '.server.lock'),
-  ].filter(Boolean)
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
-  }
-  throw new Error(`no .server.lock found (tried ${candidates.join(', ')}) — is the server running?`)
-}
+/** The workspace's tmux socket, as the containerless driver derives it (paths.ts). */
+const hash = (s, n) => crypto.createHash('sha256').update(s).digest('hex').slice(0, n)
+const sock = path.join(os.tmpdir(), `yaac-${hash(path.resolve(DATA_DIR), 8)}`, `${hash(ws.workspaceId, 12)}.sock`)
+const tmux = (...args) => execFileSync('tmux', ['-S', sock, ...args], { encoding: 'utf8' }).trim()
 
-const TMUX = 'tmux -S /tmp/yaac-tmux/server'
+const { chromium } = requirePlaywright()
+const browser = await chromium.launch()
+for (let i = 1; i <= trials; i++) {
+  tmux('resize-window', '-t', 'yaac:^', '-x', '500', '-y', '200')
+  tmux('set-option', '-w', '-t', 'yaac:^', 'window-size', 'latest')
+  await new Promise((r) => setTimeout(r, 3000)) // let the agent repaint at the big size
+  console.log(`\n=== trial ${i}/${trials}: window ${tmux('display', '-p', '-t', 'yaac:^', '#{window_width}x#{window_height}')} ===`)
 
-function podName(sessionId) {
-  const out = execSync(
-    `kubectl get pods -n yaac -l batch.kubernetes.io/job-name=yaac-yaac-${sessionId}`
-    + ` -o jsonpath='{.items[0].metadata.name}'`,
-  ).toString().trim()
-  if (!out) throw new Error(`no pod found for session ${sessionId}`)
-  return out
-}
-
-/** Resets the tmux window to the oversized prewarm size, with `latest`
- *  sizing, so the next attach repeats the shrink. */
-function resetWindow(pod) {
-  execSync(
-    `kubectl exec -n yaac ${pod} -c session -- sh -c "${TMUX} resize-window -t yaac:^ -x 500 -y 200`
-    + ` && ${TMUX} set-option -w -t yaac:^ window-size latest"`,
-  )
-}
-
-function windowSize(pod) {
-  return execSync(
-    `kubectl exec -n yaac ${pod} -c session -- sh -c "${TMUX} display -p -t yaac:^`
-    + ` '#{window_width}x#{window_height}'"`,
-  ).toString().trim()
-}
-
-/** Claim a prewarmed spare via the server API; returns its sessionId. */
-async function claimSpare(base) {
-  const res = await fetch(`${base}/session/create`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ project: 'yaac' }),
-  })
-  if (!res.ok) throw new Error(`create failed: HTTP ${res.status}`)
-  for (const line of (await res.text()).trim().split('\n')) {
-    const ev = JSON.parse(line)
-    if (ev.type === 'error') throw new Error(`create failed: ${ev.error.message}`)
-    if (ev.type === 'result') return ev.result.sessionId
-  }
-  throw new Error('create stream ended without a result')
-}
-
-async function deleteSession(base, sessionId) {
-  await fetch(`${base}/session/delete`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ sessionId }),
-  }).catch(() => {})
-}
-
-async function waitForSpare(base) {
-  for (let i = 0; i < 60; i++) {
-    const out = execSync(
-      'kubectl get pods -n yaac -l yaac.prewarmed=true'
-      + ` -o jsonpath='{range .items[*]}{.status.phase}{"\\n"}{end}'`,
-    ).toString()
-    if (out.split('\n').includes('Running')) return
-    await new Promise((r) => setTimeout(r, 5000))
-  }
-  throw new Error('no prewarmed spare became Running within 5min')
-}
-
-async function runTrial(browser, base, code, sessionId, label, dpr, vw, vh, shotPrefix) {
-  const page = await browser.newPage({
-    viewport: { width: vw, height: vh },
-    deviceScaleFactor: dpr,
-    bypassCSP: true,
-  })
+  const page = await browser.newPage({ viewport: { width: vw, height: vh }, deviceScaleFactor: dpr })
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
-  try {
-    await page.addInitScript(() => {
-      // Log /pty/attach binary frames while still calling the app's
-      // onmessage handler.
-      const OrigWS = window.WebSocket
-      window.__wsFrames = []
-      window.WebSocket = class extends OrigWS {
-        constructor(...args) {
-          super(...args)
-          if (String(args[0]).includes('/api/pty/attach')) {
-            let handler = null
-            Object.defineProperty(this, 'onmessage', {
-              set: (fn) => { handler = fn },
-              get: () => handler,
-              configurable: true,
-            })
-            this.addEventListener('message', (e) => {
-              if (typeof e.data !== 'string') {
-                window.__wsFrames.push({ t: performance.now(), bytes: e.data.byteLength })
-              }
-              if (handler) handler.call(this, e)
-            })
-          }
-        }
+  await page.addInitScript(() => {
+    // Sample the first terminal every frame once it is revealed.
+    window.__samples = []
+    const tick = () => {
+      const term = window.__xterms && [...window.__xterms][0]
+      if (term?.element && getComputedStyle(term.element.parentElement).opacity === '1') {
+        const buf = term.buffer.active
+        window.__samples.push({ t: performance.now(), vy: buf.viewportY, by: buf.baseY })
       }
-      // Sample the first terminal every frame, and log its scroll/resize
-      // events in order.
-      window.__samples = []
-      window.__events = []
-      let hooked = null
-      const tick = () => {
-        const term = window.__xterms ? [...window.__xterms][0] : undefined
-        if (term && hooked !== term) {
-          hooked = term
-          term.onScroll((y) => window.__events.push({ t: performance.now(), ev: 'scroll', y }))
-          term.onResize((s) => window.__events.push({
-            t: performance.now(), ev: 'resize', cols: s.cols, rows: s.rows,
-          }))
-        }
-        if (term && term.element) {
-          const c = term.element.parentElement
-          const buf = term.buffer.active
-          window.__samples.push({
-            t: performance.now(),
-            op: getComputedStyle(c).opacity,
-            vy: buf.viewportY,
-            by: buf.baseY,
-            len: buf.length,
-            rows: term.rows,
-            cols: term.cols,
-          })
-        }
-        if (!window.__done) requestAnimationFrame(tick)
-      }
-      requestAnimationFrame(tick)
-    })
-
-    // URL selection takes precedence over localStorage.
-    await page.goto(`${base}/?bootstrap=${code}&project=yaac&session=${sessionId}`)
-    await page.waitForFunction(() => window.__samples.length > 0, null, { timeout: 60_000 })
-    await page.waitForFunction(
-      () => window.__samples.some((s) => s.op === '1'),
-      null,
-      { timeout: 15_000 },
-    )
-    // If the attach lost the bottom line, the repaint a keypress forces makes
-    // it appear. Capture the bottom rows around the press.
-    await page.waitForTimeout(2500)
-    if (shotPrefix) await page.screenshot({ path: `${shotPrefix}-pre-key.png` })
-    const bottomRows = () => page.evaluate(() => {
-      const t = [...window.__xterms][0]
-      const buf = t.buffer.active
-      const rows = []
-      for (let y = t.rows - 3; y < t.rows; y++) {
-        rows.push(buf.getLine(buf.baseY + y)?.translateToString(true) ?? '')
-      }
-      return rows
-    })
-    const rowsPre = await bottomRows()
-    const tKey = await page.evaluate(() => performance.now())
-    await page.click('.xterm-screen')
-    await page.keyboard.press('ArrowRight')
-    await page.waitForTimeout(500)
-    const rowsPost = await bottomRows()
-    if (shotPrefix) await page.screenshot({ path: `${shotPrefix}-post-key.png` })
-
-    const data = await page.evaluate(() => {
-      window.__done = true
-      return { samples: window.__samples, events: window.__events, wsFrames: window.__wsFrames }
-    })
-
-    const { samples, events, wsFrames } = data
-    const revealIdx = samples.findIndex((s) => s.op === '1')
-    const reveal = samples[revealIdx]
-    const off = (s) => s.by - s.vy // rows above bottom
-    const post = samples.slice(revealIdx).filter((s) => s.t < tKey)
-    const preKey = post[post.length - 1]
-    const afterKey = samples.filter((s) => s.t >= tKey + 100)
-    const end = afterKey[afterKey.length - 1]
-
-    const fmt = (ms) => `${Math.round(ms - reveal.t)}ms`
-    console.log(`\n=== trial ${label} (dpr=${dpr} ${vw}x${vh}) ===`)
-    console.log(`grid ${reveal.cols}x${reveal.rows}; reveal at t=${Math.round(reveal.t)}ms;`
-      + ` offAtReveal=${off(reveal)} rows (vy=${reveal.vy} by=${reveal.by} len=${reveal.len})`)
-    const drift = post.filter((s) => off(s) !== 0)
-    console.log(`post-reveal frames off-bottom: ${drift.length}/${post.length}`
-      + (drift.length ? ` (first at ${fmt(drift[0].t)}, off=${off(drift[0])})` : ''))
-    console.log(`pre-key: off=${off(preKey)} rows; after key: off=${end ? off(end) : '?'}`
-      + ` (vy ${preKey.vy} -> ${end?.vy})`)
-    const lateWs = wsFrames.filter((f) => f.t > reveal.t)
-    console.log(`ws frames: total=${wsFrames.length}`
-      + ` (${wsFrames.reduce((a, f) => a + f.bytes, 0)}B), after reveal=${lateWs.length}`
-      + (lateWs.length ? ` [${lateWs.slice(0, 8).map((f) => `${fmt(f.t)}:${f.bytes}B`).join(' ')}]` : ''))
-    console.log(`term events: ${events.slice(-14)
-      .map((e) => `${fmt(e.t)}:${e.ev}${e.ev === 'scroll' ? `=${e.y}` : `=${e.cols}x${e.rows}`}`)
-      .join(' ') || '(none)'}`)
-    // ArrowRight changes nothing visible in an idle input box, so the bottom
-    // rows must match. A blank bottom row under content means the hint line
-    // was lost.
-    const changed = rowsPre.join('\n') !== rowsPost.join('\n')
-    const bottomBlank = rowsPre[2].trim() === '' && rowsPre.some((r) => r.trim() !== '')
-    console.log(`bottom rows pre-key: ${JSON.stringify(rowsPre.map((r) => r.slice(0, 40)))}`)
-    if (changed) console.log(`CHANGED post-key:    ${JSON.stringify(rowsPost.map((r) => r.slice(0, 40)))}`)
-    return {
-      offAtReveal: off(reveal),
-      offPreKey: off(preKey),
-      keySnap: preKey.vy !== end?.vy,
-      keyRevealed: changed,
-      bottomBlank,
+      if (!window.__done) requestAnimationFrame(tick)
     }
-  } finally {
-    await page.close()
-  }
+    requestAnimationFrame(tick)
+  })
+  await page.goto(`${origin}/?project=${ws.projectSlug}&workspace=${ws.workspaceId}`)
+  await until(page, () => window.__samples.length > 0, undefined, 60_000)
+  await page.waitForTimeout(2500)
+
+  const bottomRows = () => page.evaluate(() => {
+    const t = [...window.__xterms][0]
+    const buf = t.buffer.active
+    return [t.rows - 3, t.rows - 2, t.rows - 1].map((y) => buf.getLine(buf.baseY + y)?.translateToString(true) ?? '')
+  })
+  const pre = await bottomRows()
+  await page.screenshot({ path: `${SHOTS}/scroll-pin-${i}-pre-key.png` })
+  await page.click('.xterm-screen')
+  await page.keyboard.press('ArrowRight')
+  await page.waitForTimeout(500)
+  const post = await bottomRows()
+  const samples = await page.evaluate(() => { window.__done = true; return window.__samples })
+  await page.close()
+
+  console.log(`bottom rows: ${JSON.stringify(pre.map((r) => r.slice(0, 50)))}`)
+  const drift = samples.filter((s) => s.vy !== s.by)
+  check(`trial ${i}: viewport stays pinned to the bottom`, drift.length === 0, `${drift.length}/${samples.length} frames off`)
+  check(`trial ${i}: bottom row is not blank under content`,
+    !(pre[2].trim() === '' && pre.some((r) => r.trim() !== '')))
+  check(`trial ${i}: keypress reveals nothing new`, pre.join('\n') === post.join('\n'),
+    `post=${JSON.stringify(post.map((r) => r.slice(0, 50)))}`)
 }
-
-async function main() {
-  const sessionId = process.argv[2]
-  const trials = Number(process.argv[3] ?? 5)
-  const dpr = Number(process.argv[4] ?? 2)
-  const [vw, vh] = (process.argv[5] ?? '900x520').split('x').map(Number)
-  if (!sessionId) {
-    throw new Error('usage: node xterm-attach-scroll-pin-test.js <sessionId> [trials] [dpr] [WxH]')
-  }
-
-  const { chromium } = requirePlaywright()
-  const lock = readServerLock()
-  const base = `http://127.0.0.1:${lock.port}`
-  const claimMode = sessionId === 'claim'
-  const pod = claimMode ? null : podName(sessionId)
-  if (pod) console.log(`session pod: ${pod}; window ${windowSize(pod)}`)
-
-  const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader'] })
-  const results = []
-  try {
-    for (let i = 1; i <= trials; i++) {
-      let trialSession = sessionId
-      let shotPrefix = null
-      if (claimMode) {
-        console.log(`waiting for a prewarmed spare…`)
-        await waitForSpare(base)
-        trialSession = await claimSpare(base)
-        shotPrefix = path.join(os.tmpdir(), `scroll-pin-claim-${i}`)
-        console.log(`claimed spare ${trialSession} (screenshots at ${shotPrefix}-*.png)`)
-      } else if (i > 1) {
-        // Let the server reap the previous view session, then restore the
-        // oversized window and let the agent repaint.
-        await new Promise((r) => setTimeout(r, 1500))
-        resetWindow(pod)
-        await new Promise((r) => setTimeout(r, 3000))
-        console.log(`window reset to ${windowSize(pod)}`)
-      }
-      const codeRes = await fetch(`${base}/api/auth/bootstrap-code`)
-      if (!codeRes.ok) throw new Error(`bootstrap-code failed: HTTP ${codeRes.status}`)
-      const { code } = await codeRes.json()
-      try {
-        results.push(
-          await runTrial(browser, base, code, trialSession, `${i}/${trials}`, dpr, vw, vh, shotPrefix))
-      } finally {
-        if (claimMode) await deleteSession(base, trialSession)
-      }
-    }
-  } finally {
-    await browser.close()
-  }
-
-  const bad = results.filter((r) => r.offPreKey !== 0 || r.keySnap || r.keyRevealed || r.bottomBlank)
-  console.log(`\n${bad.length}/${results.length} trials failed`
-    + ` (offAtReveal rows: ${results.map((r) => r.offAtReveal).join(',')};`
-    + ` keySnap: ${results.map((r) => r.keySnap).join(',')};`
-    + ` keypress changed bottom rows: ${results.map((r) => r.keyRevealed).join(',')};`
-    + ` bottom row blank: ${results.map((r) => r.bottomBlank).join(',')})`)
-  console.log(bad.length === 0 ? 'ALL PASS' : 'FAILURES')
-  process.exit(bad.length === 0 ? 0 : 1)
-}
-
-main().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})
+await browser.close()
+console.log(`screenshots: ${SHOTS}/scroll-pin-*.png`)
+finish()

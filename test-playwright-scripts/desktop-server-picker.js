@@ -17,11 +17,13 @@
  *  6. Settings → Server in the SPA lists that origin and no local row.
  *
  * Uses its own throwaway data dir and server, so it never touches your
- * install.
+ * install; export YAAC_SERVER_PORT to keep that server off the default port.
  *
  * Prerequisites (this needs a real Electron, which needs a real desktop):
  *   - `pnpm build` at the repo root, then `pnpm --filter @yaac/desktop build`
  *     (the shell always runs the tsup output, even in dev).
+ *   - The Electron binary: `node packages/desktop/node_modules/electron/install.js`
+ *     if `electron/path.txt` is missing.
  *   - Electron's system libraries. On a bare container it will not start; run
  *     ldd against the unpacked electron binary and check nothing reports
  *     "not found". On Ubuntu 26.04 that is:
@@ -34,34 +36,18 @@
  *   node test-playwright-scripts/desktop-server-picker.js
  *   xvfb-run -a node test-playwright-scripts/desktop-server-picker.js
  *
- * Screenshots land in /tmp/yaac-shots/desktop-*.png.
+ * Screenshots: $SCREENSHOT_DIR/desktop-*.png (default /tmp/yaac-shots).
  */
-import { execFileSync, execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
-import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-
-const require = createRequire(import.meta.url)
-
-if (!process.env.PLAYWRIGHT_BROWSERS_PATH && fs.existsSync('/opt/playwright-browsers')) {
-  process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/playwright-browsers'
-}
-
-function requirePlaywright() {
-  try {
-    return require('playwright')
-  } catch {
-    const globalRoot = execSync('npm root -g').toString().trim()
-    return require(path.join(globalRoot, 'playwright'))
-  }
-}
+import { check, finish, requirePlaywright, SHOTS } from './lib.js'
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const DESKTOP = path.join(REPO, 'packages', 'desktop')
 const CLI = path.join(REPO, 'dist', 'cli.js')
-const SHOT_DIR = '/tmp/yaac-shots'
 
 // Its own data dir, so the machine's real `server.json` is never touched.
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-desktop-e2e-'))
@@ -81,15 +67,20 @@ function yaacQuiet(...args) {
   }
 }
 
+/** The origin `yaac server start` registered in server.json. */
 function serverOrigin() {
-  const lock = JSON.parse(fs.readFileSync(path.join(DATA_DIR, '.server.lock'), 'utf8'))
-  return `http://127.0.0.1:${lock.port}`
+  return JSON.parse(fs.readFileSync(CONFIG, 'utf8')).url
 }
 
-function check(label, ok, detail) {
-  console.log(`  ${ok ? '✓' : '✗'} ${label}${detail ? ` — ${detail}` : ''}`)
-  if (!ok) process.exitCode = 1
-  return ok
+/**
+ * Poll `fn(arg)` in the window until it holds. Not `waitForFunction`, which
+ * needs `unsafe-eval` and the SPA's CSP forbids it.
+ */
+async function until(win, fn, arg, timeoutMs) {
+  for (const end = Date.now() + timeoutMs; ; await new Promise((r) => setTimeout(r, 250))) {
+    if (await win.evaluate(fn, arg).catch(() => false)) return
+    if (Date.now() > end) throw new Error(`timed out waiting for ${fn.name || 'condition'}`)
+  }
 }
 
 /**
@@ -118,18 +109,11 @@ async function launch(electron) {
 }
 
 /** Wait until the window is showing the picker (not the splash). */
-async function waitForPicker(win) {
-  await win.waitForFunction(() => document.querySelector('#add') !== null, null, { timeout: 30_000 })
-}
+const waitForPicker = (win) => until(win, () => document.querySelector('#add') !== null, null, 30_000)
 
 /** Wait until the window has landed on a served SPA at `origin`. */
-async function waitForApp(win, origin) {
-  await win.waitForFunction(
-    (o) => location.origin === o && document.querySelector('#add') === null,
-    origin,
-    { timeout: 60_000 },
-  )
-}
+const waitForApp = (win, origin) =>
+  until(win, (o) => location.origin === o && document.querySelector('#add') === null, origin, 60_000)
 
 /**
  * Quit the shell. It is a tray app that keeps running when its window
@@ -158,9 +142,8 @@ function stopAuthDaemon() {
 }
 
 async function shot(win, name) {
-  fs.mkdirSync(SHOT_DIR, { recursive: true })
-  await win.screenshot({ path: path.join(SHOT_DIR, `desktop-${name}.png`) })
-  console.log(`    screenshot -> ${SHOT_DIR}/desktop-${name}.png`)
+  await win.screenshot({ path: path.join(SHOTS, `desktop-${name}.png`) })
+  console.log(`    screenshot -> ${SHOTS}/desktop-${name}.png`)
 }
 
 async function main() {
@@ -207,19 +190,7 @@ async function main() {
   console.log('\n2. adding a dead origin → inline rejection, still on the picker')
   await win.fill('input[name="url"]', 'http://127.0.0.1:1')
   await win.click('button.add')
-  try {
-    await win.waitForFunction(
-      () => /cannot reach/i.test(document.getElementById('status')?.textContent ?? ''),
-      null,
-      { timeout: 30_000 },
-    )
-  } catch (err) {
-    console.error(`    status was: ${JSON.stringify(await win.evaluate(
-      () => document.getElementById('status')?.textContent ?? '(no #status on this page)',
-    ).catch(() => '(page gone)'))}`)
-    console.error(`    url was: ${await win.evaluate(() => location.href).catch(() => '?')}`)
-    throw err
-  }
+  await until(win, () => /cannot reach/i.test(document.getElementById('status')?.textContent ?? ''), null, 30_000)
   const rejection = await win.textContent('#status')
   check('the failure is shown', /cannot reach/i.test(rejection), rejection.trim())
   check('still on the picker', (await win.locator('#add').count()) === 1)
@@ -285,4 +256,5 @@ main()
     fs.rmSync(DATA_DIR, { recursive: true, force: true })
     fs.rmSync(CLIENT_DIR, { recursive: true, force: true })
     console.log('\ncleaned up the throwaway data dir')
+    finish()
   })

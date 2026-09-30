@@ -102,7 +102,7 @@ describe('sidebar resize', () => {
 
   // The handle's z-10 must stay inside the sidebar's stacking context, or it
   // would cover popups portaled to <body>. jsdom can only check the class;
-  // test-playwright-scripts/sidebar-popup-over-resize-handle.js checks the
+  // test-playwright-scripts/sidebar-resize-drag.js checks the
   // real layering.
   it('keeps the handle stacked inside the sidebar', () => {
     const handle = renderSidebar()

@@ -106,7 +106,9 @@ function ResizeHandle(): JSX.Element {
  * The card clips rows to its rounded corners, so the resize handle hangs off
  * an unclipped outer wrapper. That wrapper is `isolate` so the handle's z-10
  * lifts it over the pane but not over Base UI popups (portaled to <body>),
- * such as the new-workspace form, which would otherwise lose clicks to it.
+ * such as the plan-usage popover, which would otherwise lose clicks to it.
+ * The fixed `#root` (index.css) confines it too; the wrapper does not rely on
+ * that.
  */
 export function Sidebar({
   projectSlug,

@@ -23,7 +23,7 @@ import { playChime } from './lib/sound'
 import { isElectron } from './lib/platform'
 import { CreateWorkspaceDialog } from './components/CreateWorkspaceDialog'
 import { StopWorkspaceDialog } from './components/StopWorkspaceDialog'
-import type { ServerSnapshot, WorkspaceListEntry } from '@yaac/shared/types'
+import type { WorkspaceListEntry } from '@yaac/shared/types'
 
 /** `unidentified` carries the server's explanation of why it could not
  *  identify this device, or the error from asking. */
@@ -74,7 +74,7 @@ function App(): JSX.Element {
         </div>
       </FullScreen>
     )
-  } else content = <Shell snapshot={snapshot} connected={connected} />
+  } else content = <Shell connected={connected} />
 
   // In Electron the title bar is hidden and the window controls float over
   // the UI. Full-screen states reserve a draggable strip for them; the
@@ -88,7 +88,14 @@ function App(): JSX.Element {
   )
 }
 
-function Shell({ snapshot, connected }: { snapshot: ServerSnapshot | undefined; connected: boolean }): JSX.Element {
+/*
+ * Reads the snapshot from the query cache itself rather than taking App's as
+ * a prop: a component that selects a project the moment the cache lists it
+ * (NewProjectButton) can re-render Shell before App has, and the fallback
+ * below would then miss the project in a stale prop and switch back.
+ */
+function Shell({ connected }: { connected: boolean }): JSX.Element {
+  const snapshot = useSnapshot()
   const activeProjectSlug = useUiStore((s) => s.activeProjectSlug)
   const setActiveProject = useUiStore((s) => s.setActiveProject)
   const restoreActiveProject = useUiStore((s) => s.restoreActiveProject)
