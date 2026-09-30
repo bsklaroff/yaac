@@ -91,6 +91,10 @@ export function WorktreeTerminal({
       fontSize: 13,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
       cursorBlink: true,
+      // Scrollback lives in tmux. Any xterm kept of its own would only fill
+      // up when the terminal ends up on its normal screen (e.g. after a
+      // reattach), and every line scrolled into it flashes xterm's scrollbar.
+      scrollback: 0,
       // Alt is our hand-the-mouse-to-tmux modifier (see patchForcedSelection
       // below); don't let xterm also fake arrow-key presses on Alt+click.
       altClickMovesCursor: false,
