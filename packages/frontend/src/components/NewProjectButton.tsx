@@ -8,15 +8,12 @@ import { AUTH_LIST_KEY } from '#lib/useAuthList'
 import { useUiStore } from '#lib/store'
 
 /**
- * Rail "+": add a project by cloning a git repo, with the git credential it
- * will authenticate with — a stored one of the kind its remote takes, or a
- * new one (GitCredentialPicker). On success selects the new project; an SSH
- * clone first shows the host key it trusted. A failed clone keeps any
- * credential just created, offered for the retry.
+ * Add-project button and dialog: clone a git repo with a credential chosen in
+ * `GitCredentialPicker`. On success, selects the new project; an SSH clone
+ * first shows the host key it trusted.
  */
 export function NewProjectButton(
-  /** 'rail' is the desktop rail's 40px chip; 'row' is the mobile project
-   *  screen's full-width labelled row. */
+  /** 'rail': the desktop rail chip. 'row': the mobile projects-screen row. */
   { variant = 'rail' }: { variant?: 'rail' | 'row' } = {},
 ): JSX.Element {
   const setActiveProject = useUiStore((s) => s.setActiveProject)
@@ -36,7 +33,7 @@ export function NewProjectButton(
 
   const add = async (credentialId: string): Promise<void> => {
     const { slug, knownHostsEntry } = await addProject(remoteUrl, credentialId)
-    // The credential now lists one more project.
+    // Refresh the credential's project list.
     void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
     setActiveProject(slug)
     if (knownHostsEntry !== null) setTrusted(knownHostsEntry)

@@ -1,16 +1,11 @@
 /**
- * The impure iptables side: which binary to drive, and applying the
- * rendered chain.
+ * Runs iptables: picks the backend and applies the chain rendered by
+ * rules.ts.
  *
- * Backend detection is not optional. A kind node's `iptables` alternative
- * points at **iptables-legacy**, and Felix writes its chains through
- * whichever backend the node uses — so netd writing nft rules on a legacy
- * node would produce a chain that exists, counts packets, and is never
- * consulted by the packet path Calico and kube-proxy actually use. The
- * failure is silent and looks exactly like "the redirect isn't working",
- * so netd probes instead of assuming: the backend holding the live
- * `cali-*` chains wins, falling back to whichever holds more rules, and
- * finally to legacy (the kind default).
+ * Nodes may use iptables-legacy (kind's default) or iptables-nft, and
+ * rules written to the other backend are silently ignored. netd therefore
+ * picks the backend holding Calico's `cali-*` chains, then the one with
+ * more rules, then legacy.
  */
 
 import { spawn } from 'node:child_process'
@@ -26,10 +21,8 @@ export interface IptablesRunner {
 }
 
 /**
- * spawn rather than execFile: `iptables-restore` takes its document on
- * stdin, and the rendered chain can exceed a comfortable argv anyway.
- * Rejects with the command's stderr, which is where iptables reports the
- * offending line number.
+ * Uses spawn so `iptables-restore` can read its document on stdin. Rejects
+ * with the command's stderr, which names the offending line.
  */
 export const defaultRunner: IptablesRunner = {
   run: (file, args, opts) => new Promise((resolve, reject) => {
@@ -66,15 +59,18 @@ export function backendBinaries(backend: IptablesBackend): {
 }
 
 /**
- * Choose the backend Calico and kube-proxy are actually using. Scores each
- * by whether it carries Calico's chains (decisive) and otherwise by rule
- * count; a backend whose binaries are missing scores -1 and can never win.
+ * Score a backend's `-t nat` dump: Calico's chains win outright, otherwise
+ * the rule count.
  */
 export function scoreBackendDump(natDump: string): number {
   if (natDump.includes('cali-PREROUTING')) return 1_000_000
   return natDump.split('\n').filter((l) => l.startsWith('-A')).length
 }
 
+/**
+ * Pick the backend Calico and kube-proxy use. A backend whose binaries
+ * fail scores -1; ties go to legacy, kind's default.
+ */
 export async function detectBackend(
   runner: IptablesRunner = defaultRunner,
 ): Promise<IptablesBackend> {
@@ -89,23 +85,15 @@ export async function detectBackend(
   }
   const legacy = scores.get('legacy') ?? -1
   const nft = scores.get('nft') ?? -1
-  // Ties (both empty, both unavailable) resolve to legacy: it is what a
-  // kind node's `iptables` alternative points at.
   return nft > legacy ? 'nft' : 'legacy'
 }
 
 /**
- * Ensure nat PREROUTING jumps to netd's chain, exactly once.
- *
- * APPENDED, never inserted — the hard constraint that keeps netd out of
- * Felix's way (see rules.ts). Appending also puts the redirect after
- * kube-proxy's KUBE-SERVICES, so ClusterIP flows are DNAT'd to their
- * backends and terminate before ever reaching it: in-cluster service
- * traffic is excluded for free rather than by an exclusion list netd would
- * have to keep in sync.
- *
- * `-C` first so re-running is a no-op; the chain must already exist, which
- * the restore document guarantees.
+ * Ensure nat PREROUTING jumps to netd's chain, exactly once. The jump is
+ * appended, never inserted, so it stays out of Felix's way (see rules.ts)
+ * and runs after kube-proxy's KUBE-SERVICES, which means ClusterIP traffic
+ * is already DNAT'd and never redirected. The chain must already exist
+ * (the restore document creates it).
  */
 export async function ensurePreroutingJump(
   backend: IptablesBackend,
@@ -119,7 +107,7 @@ export async function ensurePreroutingJump(
     await runner.run(iptables, spec('-C'))
     return
   } catch {
-    // Not present (or the chain did not exist yet) — fall through to add.
+    // Not present yet; add it below.
   }
   await runner.run(iptables, spec('-A'))
 }
@@ -134,9 +122,8 @@ export async function applyRestore(
 }
 
 /**
- * Drop the whole redirect chain — used on shutdown so a netd that is
- * being replaced never leaves rules pointing at listeners that are gone.
- * Best-effort: a missing chain is success.
+ * Remove the redirect chain on shutdown so no rules point at listeners
+ * that are gone. Best-effort; a missing chain is fine.
  */
 export async function teardownChain(
   backend: IptablesBackend,

@@ -39,23 +39,15 @@ describe('workspaceStop', () => {
 })
 
 /**
- * Unit coverage for `stopWorkspace`: the prefix expansion over rows, the
- * NOT_FOUND / RUNTIME_UNAVAILABLE error shapes, the pod-less-Job
- * fallback, and the handoff to `cleanupWorkspaceDetached` with the matched
- * session's metadata. Uses mocked pod/Job listings so no cluster is
- * needed.
- *
- * The actual reap-the-Job behaviour is exercised end-to-end by the
- * e2e session-delete tests.
+ * `stopWorkspace` against mocked pod/Job listings, so no cluster is needed.
+ * Deleting the Job itself is covered by the e2e tests.
  */
 describe('stopWorkspace', () => {
   let tmpDir: string
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
-    // The real k8s driver, with only `listWorkspacePods`/`listWorkspaceJobs`
-    // mocked below: what this file exercises is the resolve-then-teardown
-    // pipeline, so the driver has to be the real one.
+    // The real k8s driver; only the pod/Job listings are mocked.
     installRealWorkspaceDriver()
     mockListPods.mockReset()
     mockListJobs.mockReset()
@@ -93,14 +85,11 @@ describe('stopWorkspace', () => {
       workspaceId: 'abcd1234',
       projectSlug: 'demo',
     })
-    // Cleanup is pod-scoped and still speaks workspaceId; the returned info is
-    // workspace-scoped.
     expect(cleanupSpy).toHaveBeenCalledWith({
       jobName: info.jobName, projectSlug: info.projectSlug, workspaceId: info.workspaceId,
     })
   })
 
-  // Expanded over the recorded rows, then handed to the runtime exactly.
   it('resolves by workspace-id prefix', async () => {
     await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'abcd1234' })
     mockListPods.mockResolvedValueOnce([pod()])
@@ -109,7 +98,7 @@ describe('stopWorkspace', () => {
     expect(cleanupSpy).toHaveBeenCalledTimes(1)
   })
 
-  // Unit names are the runtime's own: nothing a client sends is one.
+  // Job and pod names are internal; clients only send workspace ids.
   it('does not resolve a job or pod name', async () => {
     for (const name of ['yaac-demo-abcd1234', 'yaac-demo-abcd1234-p0d42']) {
       mockListPods.mockResolvedValueOnce([pod()])
@@ -139,8 +128,6 @@ describe('stopWorkspace', () => {
       workspaceId: 'podless1',
       projectSlug: 'demo',
     })
-    // Cleanup is pod-scoped and still speaks workspaceId; the returned info is
-    // workspace-scoped.
     expect(cleanupSpy).toHaveBeenCalledWith({
       jobName: info.jobName, projectSlug: info.projectSlug, workspaceId: info.workspaceId,
     })

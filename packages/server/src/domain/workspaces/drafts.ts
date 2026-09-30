@@ -1,8 +1,7 @@
 /**
- * Draft workspaces (docs/draft-workspaces.md): what the create dialog held when
- * the user closed it and chose to keep it. Nothing runs from a draft on its
- * own — the dialog reopens on it, and creating or queueing from there
- * discards it.
+ * Draft workspaces (docs/draft-workspaces.md): create-dialog contents the
+ * user chose to keep. Nothing runs from a draft; creating or queueing from
+ * it discards it.
  */
 import {
   deleteDraftWorkspace,
@@ -17,8 +16,8 @@ import { formatUtcTimestamp } from '@yaac/shared/time'
 import { normalizeTitle } from '@yaac/shared/titles'
 import type { DraftWorkspaceEntry, DraftWorkspaceSettings } from '@yaac/shared/types'
 
-/** Save a new draft, or replace draft `id`'s settings. A blank title is
- *  none, leaving the draft to be auto-titled. */
+/** Save a new draft, or replace draft `id`'s settings. A blank title leaves
+ *  the draft to be auto-titled. */
 export async function saveDraftWorkspace(
   projectSlug: string,
   { title, ...rest }: DraftWorkspaceSettings,
@@ -38,9 +37,8 @@ export async function discardDraftWorkspace(id: string): Promise<void> {
   if (!await deleteDraftWorkspace(id)) throw new ServerError('NOT_FOUND', `draft workspace ${id} not found`)
 }
 
-/** The title generated for draft `id` while it still describes `prompt` —
- *  what a workspace or entry created from the draft carries rather than being
- *  titled again. */
+/** Draft `id`'s generated title, if the draft's prompt is still `prompt`.
+ *  Reused by a workspace created from the draft instead of titling again. */
 export async function draftGeneratedTitle(
   projectSlug: string,
   id: string | undefined,

@@ -41,9 +41,8 @@ function buildClientHello(serverName?: string): Buffer {
 }
 
 /**
- * Capture the raw ClientHello Node's real TLS stack sends — the listener
- * must parse what actual clients produce, not just our synthetic bytes.
- * Loopback only; no network.
+ * Capture the raw ClientHello Node's TLS stack sends (loopback only), so
+ * the parser is tested on real client bytes too.
  */
 function captureRealClientHello(servername: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {

@@ -74,8 +74,6 @@ import {
   registryReachable,
 } from '#drivers/k8s/container'
 import { PACKAGE_ROOT, globalRoot, serverLocalRoot } from '@yaac/shared/paths'
-// CheckResult lives in @yaac/shared/types, not here with its producer, so
-// consumers can name the shape without importing the check suite.
 import type { CheckResult } from '@yaac/shared/types'
 
 /** Probe image used for the end-to-end registry-pull + hostPath check. */
@@ -93,114 +91,52 @@ const KIND_SETUP_FIX = [
 ].join('\n')
 
 /**
- * The kind-node-container state install applies and the node-fixups check
- * verifies: what only a node CONTAINER has, and so cannot ride the
- * installer DaemonSet the way the sysctls and TasksMax do (node-tuning.ts
- * in the substrate). Shared with install.ts (which imports them) so `yaac
- * cluster install` and the check can never drift apart.
+ * Settings of the kind node container that install applies and the
+ * node-fixups check verifies. Node-level tuning that the installer
+ * DaemonSet can apply lives in substrate/node-tuning.ts instead.
  */
 export const NODE_PIDS_LIMIT = 32768
 /**
- * kubelet cAdvisor housekeeping interval (default 10s). Its per-container
- * process stats readlink EVERY open fd of EVERY process in each container
- * cgroup per tick; a gVisor workspace sandbox concentrates ~9k host fds in
- * one sentry process (directfs handles, gofer channels), so at the default
- * interval kubelet alone burned 1.5–2 cores on a 5-workspace node (pprof:
- * >90% in cadvisor processStatsFromProcs → syscall.Readlink). Even at 60s
- * a 4-workspace node still measured kubelet at ~1.1 cores with >90% of its
- * profile in the same readlink storm, so the interval is stretched to
- * 300s; the cost is slower node-level stats (metrics/eviction reaction) —
- * workspace OOMs are enforced by the pod memcg limit and are unaffected.
+ * kubelet cAdvisor housekeeping interval (default 10s). Each tick readlinks
+ * every open fd in each container, and a gVisor sandbox holds ~9k host fds,
+ * so at the default (and even at 60s) kubelet burned 1-2 cores. At 300s
+ * node-level stats are slower; workspace OOMs are enforced by the pod's
+ * memory cgroup and are unaffected.
  */
 export const NODE_KUBELET_HOUSEKEEPING_INTERVAL = '300s'
-/** kubeadm-written kubelet flags file the fixup edits (kind node fs —
- *  persists across node restarts, unlike the sysctl fixups). */
+/** kubeadm's kubelet flags file on the kind node, edited by the fixup. */
 export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
 
 /**
- * Run the full preflight suite for the kubernetes backend. Returns every
- * result plus an overall ok flag (false when any hard check failed).
+ * Run the full preflight suite for the Kubernetes backend. Returns every
+ * result, and `ok: false` when any check failed. Roughly in order:
  *
- * Checks, in order:
- *   1. kubectl binary present
- *   2. cluster API server reachable
- *   3. node inventory: how many nodes, how many of them can schedule a
- *      workspace, and are they all Ready — then the node pool's
- *      `architecture` (one, and this machine's) and `node-os` (stock
- *      containerd on a mutable OS), the two node gates `--byo` installs on
- *   4. podman present (the image build engine)
- *   5. the in-cluster registry answering (through this process's route to
- *      it — a kubectl port-forward, or the outer project registry nested)
- *   6. yaac namespace exists / can be created
- *   6a. storage: the `yaac-global` and `yaac-server-local` claims exist
- *      and are Bound, their volumes are `Retain`, and on kind their
- *      hostPaths are the data dir's own tier folders — the probe below
- *      mounts the global claim, so a missing one gates it
- *   6b. node fixups (warn-only, kind nodes only): the kubelet housekeeping
- *      interval and the node container's pids-limit that `yaac cluster
- *      install` applies through podman — the two settings a node container
- *      has and a real node does not — detect and point at
- *      `yaac cluster install`
- *   6c. gvisor: the gvisor/gvisor-nested RuntimeClasses exist, at least one
- *      node carries the label they schedule on (the installer DaemonSet
- *      landed the runtime somewhere), AND a pod on the gvisor class is
- *      actually sentry-sandboxed (dmesg fingerprint) — workspace pods cannot
- *      run without all three
- *   6d. node-tuning (warn-only): the sysctls and systemd's live
- *      DefaultTasksMax the installer DaemonSet applies on every pass are in
- *      place on every node it runs on, read back through its pods — so it
- *      works on a node yaac has no shell on, and a node that restarted
- *      reads as tuned again once the installer's first pass lands
- *   7. end-to-end probe: push a tiny image to the registry, run a pod
- *      from its cluster ref (on the default gvisor tier) that mounts the
- *      `yaac-global` claim, reads a nonce a PEER pod (runc, at the install
- *      uid, the claim mounted whole — the server's footing) wrote there,
- *      and writes a marker back at the workspace uid — proves in-cluster
- *      registry pulls, that both sides see the same bytes, AND unprivileged
- *      writes through the gofer in one shot; the peer also round-trips a
- *      second nonce while the pod runs, cross-node where the cluster has
- *      nodes to spread them over, which is the coherence latency the pass
- *      detail reports
- *   8. egress enforcement: a workspace-labeled pod (gvisor, like real
- *      workspaces) cannot reach the apiserver (CNI enforces policy) and
- *      cannot dial a proxy transparent port directly (the forgery lock —
- *      those ports are admitted from the node CIDRs only, so nothing but
- *      netd's Envoy can reach them)
- *   8b. multi-node readiness (warn-only, multi-node clusters only):
- *      one pinned probe pod per workspace-eligible node proves the three
- *      things a workspace needs from the node it lands on — the gvisor
- *      RuntimeClass is accepted there (runsc-nodes), its containerd can
- *      pull from the registry (registry-nodes), and the global claim is
- *      the same bytes a peer at the server's footing sees (volume-nodes)
- *   9. datapath: calico-node is Ready (NetworkPolicy is enforced at all)
- *      and yaac-netd is Ready (workspace egress has a redirect).
- *      half of the same guarantee, warn-level until it is deployed
- *   9b. veth-source: the pod → veth binding the redirect keys on actually
- *      resolves on every node, for the configured prefix. Not covered by
- *      the datapath gate: netd's readiness is Envoy's config ack, which is
- *      green with zero pod → veth mappings, so a wrong prefix leaves a Ready
- *      netd whose chain has no per-pod rules in it
- *  10. nested-mount (warn-only): under the nested workspace securityContext
- *      (gvisor-nested + the engine's in-sandbox caps) in-sandbox root can
- *      mount a tmpfs — the core sentry prerequisite for the rootful in-pod
- *      engine (nestedContainers; suid/file-caps are covered by the e2e)
- *  10a. storage-semantics: the POSIX semantics of what backs the global
- *      claim, as a gvisor pod sees them — ownership, O_EXCL, atomic
- *      rename, hardlinks, locks, fsync, mmap, append, xattrs
- *      (k8s/probes/fsprobe.py) — the probes a byo install's storage class
- *      is judged by, and fail-level on every backend: a workspace on
- *      storage that fails one breaks in ways nothing downstream names
- *  11. runtime-stamp (warn-only): every UNTRUSTED pod — the workspace pods,
- *      by their yaac.workspace-id label — carries a gvisor-tier
- *      runtimeClassName. Trusted infra (proxy, registries, node-write)
- *      deliberately stamps none and runs on runc.
+ * - kubectl present and the API server reachable (either failing stops the
+ *   run).
+ * - nodes: how many can take a workspace, whether all are Ready, and the
+ *   `architecture` and `node-os` gates `--byo` installs on.
+ * - podman present; the in-cluster registry answering; the namespace.
+ * - storage: both claims Bound, `Retain`, and the right backing.
+ * - PriorityClasses present.
+ * - node-fixups (kind only, warn): kubelet housekeeping and pids limit.
+ * - gvisor: RuntimeClasses exist, a node is labeled, and a pod on the class
+ *   really is sandboxed. node-tuning (warn): sysctls and TasksMax applied.
+ * - Pod probes, run concurrently: the end-to-end probe (registry pull and
+ *   the global claim shared with a peer pod), egress enforcement, the npm
+ *   cache, per-node readiness on multi-node clusters, nested-mount (warn),
+ *   and storage semantics.
+ * - datapath: Calico and netd Ready; veth-source: netd's pod-to-veth
+ *   mapping resolves on every node.
+ * - vap: ValidatingAdmissionPolicy available (builds need it).
+ * - runtime-stamp (warn): every workspace pod names a gvisor RuntimeClass.
+ *
+ * Once a check fails, the pod-based gates that depend on it are skipped.
  */
 export async function runClusterCheck(
 ): Promise<{ ok: boolean; results: CheckResult[] }> {
   const results: CheckResult[] = []
   const add = (r: CheckResult): void => { results.push(r) }
 
-  // 1. kubectl present
   try {
     await execFileAsync('kubectl', ['version', '--client', '--output', 'json'])
     add({ name: 'kubectl', status: 'pass', detail: 'installed' })
@@ -212,7 +148,6 @@ export async function runClusterCheck(
     return { ok: false, results }
   }
 
-  // 2. cluster reachable.
   try {
     await execFileAsync('kubectl', ['version', '--output', 'json'], { timeout: 10_000 })
     add({ name: 'cluster', status: 'pass', detail: 'API server reachable' })
@@ -225,14 +160,10 @@ export async function runClusterCheck(
     return { ok: false, results }
   }
 
-  // 3. node inventory — the input to the multi-node readiness gates below.
-  // Whether a node can take a workspace is a question about the SESSION pod's
-  // tolerations as much as the node's taints, and those live on the gvisor
-  // RuntimeClass (the admission controller merges them into every pod naming
-  // it), so the class is read here and handed down to the sweep rather than
-  // re-read there. A cluster with no such class — a fresh install — yields
-  // no tolerations, which is the honest answer for pods that stamp no
-  // class.
+  // Node inventory. Whether a workspace fits on a node depends on the
+  // tolerations declared on the gvisor RuntimeClass, which admission
+  // merges into every pod naming it. No class (a fresh install) means no
+  // tolerations.
   const gvisorScheduling = await gvisorRuntimeClass()
   let nodes: ClusterNode[] = []
   try {
@@ -241,12 +172,9 @@ export async function runClusterCheck(
   } catch (err) {
     add({ name: 'nodes', status: 'warn', detail: `could not list nodes (${truncate(err)})` })
   }
-  // The node pool's architecture and OS, as `--byo` gates them at install:
-  // repeated on every run, so a pool that later gains a foreign node is
-  // reported here instead of failing to pull without explanation.
+  // Re-run the `--byo` platform gates, in case a node was added since.
   for (const r of await runNodePlatformChecks()) add(r)
 
-  // 4. podman (build engine)
   try {
     await execFileAsync('podman', ['--version'])
     add({ name: 'podman', status: 'pass', detail: 'installed (image build engine)' })
@@ -257,10 +185,8 @@ export async function runClusterCheck(
     })
   }
 
-  // 5. registry. Reachability here means "this process can reach it",
-  // which for a top-level install is a kubectl port-forward into the
-  // registry Deployment — so a failure is either an absent Deployment or
-  // an apiserver that will not forward, never a host networking question.
+  // From the host this goes through a kubectl port-forward, so a failure
+  // means a missing Deployment or an apiserver that will not forward.
   if (await registryReachable()) {
     add(await registryGateResult())
   } else {
@@ -274,7 +200,6 @@ export async function runClusterCheck(
     })
   }
 
-  // 6. namespace
   try {
     await ensureNamespace()
     add({ name: 'namespace', status: 'pass', detail: `"${k8sNamespace()}" present` })
@@ -286,17 +211,9 @@ export async function runClusterCheck(
     })
   }
 
-  // 6a. The storage claims — what the server pod and every probe below
-  // mount; read-only, so it runs before the probe gates rather than behind
-  // them.
   add(await runStorageCheck())
-
-  // PriorityClasses — cluster-scoped objects the pod builders name;
-  // read-only likewise.
   add(await runPriorityClassCheck())
 
-  // 6b–7. node fixups + gvisor + end-to-end probe (skipped when
-  // prerequisites already failed)
   const PROBE_GATES = [
     'node-fixups', 'gvisor', 'node-tuning', 'probe', 'egress', 'npm-cache',
     'datapath', 'veth-source',
@@ -314,22 +231,17 @@ export async function runClusterCheck(
   }
   add(await runNodeFixupsCheck())
   add(await runGvisorRuntimeCheck())
-  // After the gvisor gate, which is what proves the installer DaemonSet
-  // exists at all; warn-only, so it gates nothing below.
   add(await runNodeTuningCheck())
 
-  // The e2e probe schedules a pod on the gvisor tier — with the
-  // RuntimeClass missing it would sit Pending to its full timeout, so a
-  // gvisor failure gates it.
+  // The probes run on the gvisor RuntimeClass; without it they would sit
+  // Pending until timeout.
   if (results.some((r) => r.status === 'fail')) {
     skipFrom('probe', 'skipped — fix the failures above first')
     return { ok: false, results }
   }
-  // The identity every probe pod runs at: a workspace pod's, which is the
-  // one install stamped on the server Deployment — not this machine's,
-  // which on a byo install means nothing to the claim. A failed read is
-  // reported as itself rather than guessed past: a probe at the wrong uid
-  // fails as a misleading "write never reached its peer".
+  // Probe pods run as the workspace uid/gid recorded on the server
+  // Deployment, not this machine's. If it cannot be read, fail here rather
+  // than let a wrong-uid probe fail with a misleading message.
   let identity: InstallIdentity
   try {
     identity = await deployedInstallIdentity((await readServerConfig())?.byo === true)
@@ -342,14 +254,8 @@ export async function runClusterCheck(
     skipFrom('egress', 'skipped — fix the failures above first')
     return { ok: false, results }
   }
-  // 8. The three pod-based probes, CONCURRENTLY. Each starts its own
-  // gVisor sandbox, and serially they were most of the check's wall time
-  // (~19s of a 71s `cluster install`). They share nothing: distinct pod
-  // names, distinct nonce files, and the policies the egress probe
-  // applies are the ones the server applies anyway. The gvisor gate above
-  // still runs first, so none of them can sit Pending to its timeout
-  // waiting for a RuntimeClass that will never appear — which is the one
-  // ordering that was ever load-bearing.
+  // The pod probes run concurrently: each starts its own gVisor sandbox,
+  // which is slow, and they share no pods or files.
   const [
     probeResult, egressResult, npmCacheResult, nestedMountResult, multiNodeResults, semanticsResult,
   ] = await Promise.all([
@@ -364,48 +270,17 @@ export async function runClusterCheck(
   add(egressResult)
   add(npmCacheResult)
 
-  // 9. datapath: Calico enforcing + netd up. (No top-level relay gate:
-  // the server reaches the relay through a kubectl port-forward, the same
-  // apiserver access the checks above already prove — there is no
-  // cluster-shape wiring to verify.)
   add(await runDatapathCheck())
-
-  // 9b. veth-source: the redirect's pod → veth binding actually resolves on
-  // every node, for the prefix netd was configured with. Separate from the
-  // datapath gate above because the two fail differently and the datapath
-  // gate CANNOT see this one: netd's readiness is Envoy's config ack, which
-  // is green with zero pod → veth mappings. So a wrong prefix (or a CNI that
-  // writes no per-workload route) leaves netd Ready, its chain empty of
-  // per-pod rules, and every workspace quietly without egress. Re-checked on
-  // every run, not just at `--byo` time, since a node pool added later
-  // can differ from the one adoption sampled.
+  // netd reports Ready even with no pod-to-veth mappings, so a wrong veth
+  // prefix is only caught here.
   add(await runVethSourceCheck())
-
-  // 8b. multi-node readiness. Ran above, alongside the other pod probes;
-  // reported here because a node that cannot pull or cannot see the shared
-  // dir is a *scheduling* failure, and the datapath verdict above is what
-  // tells you whether the node has a redirect at all.
+  // Reported after the datapath, which says whether a node has a redirect
+  // at all.
   for (const r of multiNodeResults) add(r)
-
-  // 10. nested userns-mount probe (warn-only: only nestedContainers
-  // workspaces need it — the tripwire for containerd versions where the
-  // namespaced SYS_ADMIN grant does not unlock the mount family). Ran
-  // above, alongside the other pod probes.
   add(nestedMountResult)
-
-  // 10a. What backs the global claim, judged by the spike's probes. Ran
-  // above, alongside the other pod probes.
   add(semanticsResult)
-
-  // 10b. ValidatingAdmissionPolicy availability: the builder-pod guard
-  // refuses to apply without it, fail-closed, so no image can be built.
   add(await runVapAvailabilityCheck())
-
-  // 11. runtime-stamp sweep (warn-only): every untrusted pod must carry a
-  // gvisor-tier runtimeClassName.
   add(await runRuntimeStampSweep())
-
-  // 12. the server pod's git identity vs this host's (warn-only).
 
   return { ok: !results.some((r) => r.status === 'fail'), results }
 }
@@ -413,20 +288,11 @@ export async function runClusterCheck(
 
 
 /**
- * What the readiness gates need to know about one node. `schedulable` is
- * "a workspace pod could land here", and it is answered by real per-taint
- * matching (untoleratedTaints) against the tolerations the gvisor
- * RuntimeClass merges into every sandboxed pod — not by "carries no taint at
- * all", which is the same answer only while nothing tolerates anything, and
- * which would report a deliberately tainted workspaces pool as zero usable
- * nodes. `excludedBecause` is the human half of that verdict, empty when the
- * node is schedulable: a narrowed sweep has to be able to say WHICH nodes it
- * left out and why, or a node sitting under a transient memory-pressure
- * taint just silently stops being reported on.
- *
- * `runtimeHandlers` is the kubelet's report of the runtimes containerd
- * registered (kubernetes >= 1.30); it is empty on clusters that do not
- * publish it, which is why it only ever *adds* confidence below.
+ * What the readiness gates need to know about one node. `schedulable` means
+ * a workspace pod could land here: the node is not cordoned and every taint
+ * is tolerated by the gvisor RuntimeClass. `excludedBecause` says why not,
+ * so reports can name skipped nodes. `runtimeHandlers` is the kubelet's list
+ * of containerd runtimes (Kubernetes 1.30+), empty on older clusters.
  */
 interface ClusterNode {
   name: string
@@ -447,10 +313,8 @@ interface RawNodeItem {
 }
 
 /**
- * Why a workspace cannot land on this node, or '' when one can. Cordoning is
- * reported separately from its taints even though kubernetes also expresses
- * it as one, because the two have different repairs (`kubectl uncordon` vs.
- * a toleration the RuntimeClass has to declare).
+ * Why a workspace cannot land on this node, or '' when one can. Cordoning
+ * is reported apart from taints because the fix differs.
  */
 function workspaceExclusion(node: RawNodeItem, tolerations: PodToleration[]): string {
   if (node.spec?.unschedulable === true) return 'cordoned'
@@ -498,12 +362,8 @@ const SESSION_SCHEDULING_FIX =
   + 'node reads eligible whatever it is carrying.'
 
 /**
- * The node inventory line. Multi-node is a supported topology now (the
- * local backend renders it with `yaac cluster install --nodes N`), so node
- * count alone is never a warning — what is worth flagging is a node that
- * cannot take work: NotReady, or cordoned/tainted in a way no workspace pod
- * tolerates. The readiness gates below say whether the nodes that CAN take a
- * workspace are actually equipped for one.
+ * The node inventory result. Warns on NotReady nodes or when no node can
+ * take a workspace; node count alone is fine (`--nodes N` is supported).
  */
 function nodeInventoryResult(nodes: ClusterNode[]): CheckResult {
   if (nodes.length === 0) {
@@ -529,9 +389,7 @@ function nodeInventoryResult(nodes: ClusterNode[]): CheckResult {
   if (nodes.length === 1) {
     return { name: 'nodes', status: 'pass', detail: 'single-node cluster' }
   }
-  // The excluded nodes are named even on a pass: "2 of 3" without saying
-  // which one dropped out reads as a healthy cluster right up until the node
-  // that dropped out was the one under memory pressure.
+  // Name excluded nodes even on a pass.
   return {
     name: 'nodes', status: 'pass',
     detail: `${nodes.length} nodes, ${eligible.length} able to schedule sessions`
@@ -544,19 +402,15 @@ const NODE_FIXUPS_FIX =
   + 'state), which a cluster recreate drops. Re-apply them with: yaac cluster install'
 
 /**
- * Warn-level detection for the kind-only node fixups `yaac cluster install`
- * applies through podman: the kubelet housekeeping interval and the node
- * container's pids ceiling. Both fail late — kubelet burns cores, workspaces
- * die mid-flight under subagent fan-out — so workspaces can look healthy on
- * a cluster without them. Probing is kind-specific (node name == podman
- * container name): a node that is not a podman container self-skips, which
- * is the byo shape. The sysctls and TasksMax are the installer DaemonSet's
- * and are verified by the node-tuning gate below, on every backend.
+ * Warn if the kind-only node fixups `yaac cluster install` applies through
+ * podman are missing: the kubelet housekeeping interval and the node
+ * container's pids limit. Their absence shows up late (kubelet CPU burn,
+ * workspaces dying under subagent fan-out). Skips byo installs and nodes
+ * that are not podman containers.
  */
 async function runNodeFixupsCheck(): Promise<CheckResult> {
-  // Keyed on the record, not on podman happening to hold containers named
-  // like the nodes: kind-byo's nodes ARE podman containers, and a byo
-  // install's node settings are its pool's, which nothing here may exec.
+  // Checked explicitly: a byo install on kind also has podman node
+  // containers, but their settings are not yaac's to manage.
   if ((await readServerConfig())?.byo) {
     return {
       name: 'node-fixups', status: 'skip',
@@ -586,8 +440,6 @@ async function runNodeFixupsCheck(): Promise<CheckResult> {
           detail: `node "${node}" is not a podman container — kind node fixups not applicable`,
         }
       }
-      // Default-interval cAdvisor housekeeping burns whole kubelet cores
-      // against gVisor sandboxes — see NODE_KUBELET_HOUSEKEEPING_INTERVAL.
       if (report.includes('hk=missing')) {
         missing.add('kubelet housekeeping-interval (cAdvisor stats CPU)')
       }
@@ -642,20 +494,17 @@ interface RawPvRead {
 }
 
 /**
- * The storage gate: both claims exist and are Bound, and their volumes are
- * `Retain` (a claim or namespace delete must never take the data with it).
- * Then per shape, told apart by the volume's class, which is what makes a
- * volume static — not by its source, since local-path (k3s's default
- * class, and kind-byo's) provisions hostPath volumes too. A static volume
- * (kind's pair, the empty class) must be a hostPath into the data dir's own
- * tier folder — anything else is a claim bound to bytes that are not this
- * install's. A provisioned volume (byo) must carry this install's labels —
- * its install id, when one is recorded — which are what a re-install
- * re-adopts it by; and the RWX one must
- * be NFS-family — judged on its class, which can be replaced under an
- * install, else on its own driver — and mounted with `actimeo` at most 1,
- * the coherence bound every cross-pod handoff on the shared tier assumes.
- * Fail-level: the server pod and every probe below mount the global claim.
+ * The storage gate (fail-level; the server pod and the probes mount the
+ * global claim). Both claims must be Bound with `Retain` volumes, so
+ * deleting a claim or namespace never deletes data. Then, by volume class:
+ *
+ * - No class (kind's static volumes): a hostPath into this data dir's own
+ *   tier folder. (Checked by class, not source, because local-path also
+ *   provisions hostPath volumes.)
+ * - Provisioned (byo): carries this install's labels, which re-install
+ *   uses to find it. The global volume must also be NFS-family and mounted
+ *   with `actimeo<=1`, the cross-pod visibility delay the shared tier
+ *   assumes.
  */
 async function runStorageCheck(): Promise<CheckResult> {
   const ns = k8sNamespace()
@@ -746,9 +595,8 @@ async function sharedVolumeProblems(volumeName: string, pv: RawPvRead | null): P
 
 /**
  * The two `--byo` node gates (byo-gates.ts), fail-level on every backend:
- * yaac's images are built for this machine's architecture, and the gVisor
- * installer needs stock containerd on a mutable OS. Trivially green on a
- * kind cluster this machine created; the point is a pool that drifts.
+ * nodes must match this machine's architecture (images are built here),
+ * and run stock containerd on a mutable OS for the gVisor installer.
  */
 async function runNodePlatformChecks(): Promise<CheckResult[]> {
   let nodes: PlatformNode[]
@@ -779,10 +627,6 @@ async function runNodePlatformChecks(): Promise<CheckResult[]> {
   ]
 }
 
-/**
- * The node-tuning fix line names the install namespace, so it is a
- * function like gvisorFix().
- */
 function nodeTuningFix(): string {
   return 'The gVisor installer DaemonSet applies these on every pass (on every node '
     + 'it lands on, and every ten minutes), so a node that just restarted reads '
@@ -792,22 +636,12 @@ function nodeTuningFix(): string {
 }
 
 /**
- * Warn-level verification of the node tuning the installer DaemonSet
- * applies: the sysctls and systemd's live DefaultTasksMax (node-tuning.ts).
- * Read back through the installer's own pod on each node — `kubectl exec`,
- * never podman — so it works on a node yaac has no shell on. The read is
- * sound for the same reason the write is: none of the sysctls is
- * namespaced and the pod has no user namespace, so its `/proc/sys` is the
- * kernel's, and hostPID lets it ask the node's own systemd. A sysctl the
- * kernel does not have reads as absent and is skipped, as the script
- * skips it.
- *
- * Every node the DaemonSet is meant to cover is accounted for: a pod that
- * is not Running is reported unverified with its phase, an exec that fails
- * is unverified, and a node with no pod at all shows up as the gap between
- * the DaemonSet's desired count and the pods found. None of them passes —
- * the installer not being there is exactly the state in which nothing
- * re-applied the tuning.
+ * Warn-level check that the installer DaemonSet's node tuning is in place
+ * (the sysctls and systemd's live DefaultTasksMax; node-tuning.ts). Reads
+ * them via `kubectl exec` into the installer pod on each node, so it works
+ * without node shell access. A sysctl the kernel lacks is skipped. Nodes
+ * whose installer pod is missing, not Running, or cannot be exec'd count
+ * as unverified, never as passing.
  */
 async function runNodeTuningCheck(): Promise<CheckResult> {
   const ns = k8sNamespace()
@@ -827,8 +661,6 @@ async function runNodeTuningCheck(): Promise<CheckResult> {
       '-o', 'jsonpath={.status.desiredNumberScheduled}',
     ])
     const desired = Number(desiredRaw.trim() || '0')
-    // One line per sysctl (`<path>=<value>`, or `absent`) and one for the
-    // live manager value.
     const probe = NODE_TUNING_SYSCTLS
       .map((t) => `echo ${t.path}=$(cat /proc/sys/${t.path} 2>/dev/null || echo absent)`)
       .concat('echo tasksmax=$(nsenter -t 1 -m -- systemctl show -p DefaultTasksMax --value 2>/dev/null)')
@@ -898,12 +730,10 @@ async function runNodeTuningCheck(): Promise<CheckResult> {
 }
 
 /**
- * The registry check once it answers: is its write gate up? An anonymous
- * upload must be refused, or any builder pod can overwrite the trusted
- * chain — and a registry rolled by an install that predates the gate is
- * open while still answering every read. The upload is only started,
- * never finished; on an open registry that leaves an empty upload session
- * its own purge reclaims.
+ * Once the registry answers, check that anonymous writes are refused;
+ * otherwise any builder pod could overwrite trusted images. The probe
+ * upload is only started, never finished; an open registry purges the
+ * empty session itself.
  */
 async function registryGateResult(): Promise<CheckResult> {
   let status: number | null = null
@@ -931,11 +761,7 @@ async function registryGateResult(): Promise<CheckResult> {
   }
 }
 
-/**
- * Make the probe image available in the local registry (pulling/tagging
- * the busybox source once) and return its in-cluster ref — shared by every
- * probe that schedules a pod.
- */
+/** Push the busybox probe image to the registry; returns its cluster ref. */
 async function ensureProbeImage(): Promise<string> {
   try {
     await execFileAsync('podman', ['image', 'inspect', PROBE_LOCAL_TAG])
@@ -948,11 +774,7 @@ async function ensureProbeImage(): Promise<string> {
 
 const GVISOR_PROBE_POD_NAME = 'yaac-cluster-check-gvisor'
 
-/**
- * The gVisor fix line. A function, not a const: it names the install
- * namespace, which is per-install (and per-e2e-run) and must not be
- * captured at import time.
- */
+/** A function because the namespace must not be read at import time. */
 function gvisorFix(): string {
   return 'Install the gVisor runtime with: yaac cluster install\n'
     + '(applies the yaac-gvisor-install DaemonSet, which drops pinned runsc + '
@@ -967,12 +789,10 @@ const PRIORITY_CLASS_FIX =
   + '(the yaac server also re-applies them on every start)'
 
 /**
- * The PriorityClass gate: every yaac pod but the workspace pods of a nested
- * install names one, and the apiserver REJECTS a pod naming a class it does
- * not have — for a workspace that means the Job applies fine and then hangs
- * with no pod, which is the failure this probe exists to name. Drifted
- * values (a class an older yaac installed with different numbers) only warn:
- * the pods still schedule, they just rank wrong.
+ * The PriorityClass gate. The apiserver rejects a pod naming a missing
+ * class, so a workspace Job would apply and then hang with no pod. Values
+ * that differ from this yaac's only warn: pods still schedule, just ranked
+ * wrong.
  */
 async function runPriorityClassCheck(): Promise<CheckResult> {
   const expected = buildPriorityClassManifests() as Array<{
@@ -1021,24 +841,15 @@ async function runPriorityClassCheck(): Promise<CheckResult> {
 }
 
 /**
- * The gVisor gate: workspace pods run under `runtimeClassName: gvisor` with no
- * user namespace, so a cluster without the RuntimeClasses (or with a handler
- * that silently falls through to runc — which would run in-container root
- * UNSANDBOXED) cannot run workspaces safely. Two halves: the RuntimeClasses
- * exist, and a pod on the gvisor class is provably inside the sentry —
- * gVisor's dmesg prints its own boot messages ("Starting gVisor..."), while a
- * runc pod sees the node kernel's ring buffer.
+ * The gVisor gate. Workspace pods rely on gVisor for isolation, so a
+ * missing RuntimeClass, or a handler that silently runs runc, is unsafe.
+ * Checks that:
  *
- * Between the two sits the node label the installer DaemonSet stamps, which
- * is what the RuntimeClasses schedule on. It is checked separately because
- * of what its absence looks like otherwise: the probe pod below would sit
- * Pending until the timeout and report "runsc cannot run pods on this node",
- * when the truth is that no node has the runtime yet and the scheduler is
- * refusing to place it anywhere. On a cluster whose RuntimeClasses predate
- * the selector, sandboxed pods do still schedule (the classes are only
- * replaced together with the installer that satisfies them) — so this reads
- * as "not converged yet", not "nothing can run". How MANY nodes carry it is
- * a multi-node readiness question, not this gate's.
+ * 1. both RuntimeClasses exist;
+ * 2. at least one node has the installer's label (otherwise the probe pod
+ *    would just sit Pending with a misleading error);
+ * 3. a pod on the gvisor class is really sandboxed: gVisor's dmesg shows
+ *    its own boot messages, while runc shows the node kernel's.
  */
 async function runGvisorRuntimeCheck(): Promise<CheckResult> {
   try {
@@ -1123,14 +934,9 @@ async function runGvisorRuntimeCheck(): Promise<CheckResult> {
 }
 
 /**
- * Sandbox invariant sweep (warn-only): every pod hosting UNTRUSTED code
- * carries a gvisor-tier runtimeClassName. That's the workspace pods, found
- * by the yaac.workspace-id label the session builder stamps. Trusted infra
- * — proxy, registries, node-write pods — deliberately stamps no runtime
- * and runs on runc, so it is NOT flagged. An unsandboxed match is either
- * from a gVisor-less yaac era or from a builder/values knob that lost the
- * stamp. Warn rather than fail — such pods still run, just without the
- * sentry.
+ * Warn when a workspace pod (by its `yaac.workspace-id` label) does not
+ * name a gvisor RuntimeClass. Trusted infra pods run on runc and are not
+ * checked.
  */
 async function runRuntimeStampSweep(): Promise<CheckResult> {
   const ns = k8sNamespace()
@@ -1172,28 +978,20 @@ async function runRuntimeStampSweep(): Promise<CheckResult> {
 }
 
 /**
- * The shell helper a peer pod times with: milliseconds since the epoch.
- * busybox's `date` has no `%N`, but its `adjtimex` reads the clock to the
- * microsecond without setting anything (mode 0 needs no capability).
+ * Shell function printing epoch milliseconds. busybox `date` has no `%N`;
+ * `adjtimex` in read-only mode needs no capability.
  */
 const PEER_MS_FN =
   'ms() { adjtimex | awk \'/tv_sec/{s=$2}/tv_usec/{u=$2}END{print s*1000+int(u/1000)}\'; }'
 
 /**
- * A PEER pod: the other end of a probe that needs someone to write the
- * global claim and read it back. It stands where the host used to — which
- * only worked while the claim's bytes were on the machine running the
- * check — and is what a server pod is to a workspace: runc, at the install
- * identity, mounting `yaac-global` whole. So on kind, where the claim is a
- * hostPath into this machine's data dir, it proves exactly what the host
- * half did; on a byo cluster it is the only half that can exist.
+ * A peer pod that plays the server's role for a probe: runc, at the install
+ * identity, with `yaac-global` mounted whole. It exchanges nonces with the
+ * probe pod through the claim.
  *
- * Its node is in the environment so a report can say whether the exchange
- * crossed nodes. `pair` labels it and asks the scheduler, as a preference,
- * to keep it off any node already running a pod with the same label — its
- * probe carries that label too — so on a multi-node cluster the round trip
- * is cross-node, the coherence number a network-backed class is judged by,
- * and on one node it still schedules.
+ * `pair` labels it and prefers a different node from any pod with the
+ * same label, so on a multi-node cluster the exchange crosses nodes. Its
+ * node name is in the environment for reporting.
  */
 function buildPeerPodManifest(opts: {
   name: string
@@ -1209,7 +1007,7 @@ function buildPeerPodManifest(opts: {
     metadata: { name: opts.name, namespace: k8sNamespace(), labels: pairLabels(opts.pair) },
     spec: {
       restartPolicy: 'Never',
-      // Its script is bounded; this bounds a peer an aborted check left Pending.
+      // Bounds a peer left Pending by an aborted check.
       activeDeadlineSeconds: 300,
       automountServiceAccountToken: false,
       enableServiceLinks: false,
@@ -1256,7 +1054,7 @@ function reported(logs: string, key: string): string | undefined {
   return new RegExp(`^${key}=(.*)$`, 'm').exec(logs)?.[1]
 }
 
-/** Best-effort delete of a probe's peer once the probe can no longer need it. */
+/** Best-effort delete of a probe's peer pod. */
 async function releasePeer(name: string): Promise<void> {
   await execFileAsync('kubectl', [
     'delete', 'pod', name, '-n', k8sNamespace(), '--ignore-not-found', '--wait=false',
@@ -1264,18 +1062,16 @@ async function releasePeer(name: string): Promise<void> {
 }
 
 const PEER_POD_NAME = 'yaac-cluster-check-peer'
-/** Every run's scratch is a directory of its own, named by its nonce, so
- *  nothing an interrupted run left behind can be mistaken for this one's. */
+/** Each run's scratch dir is named by its nonce, so leftovers from an
+ *  interrupted run are never mistaken for this one's. */
 const PROBE_DIR_PREFIX = '.cluster-check-probe-'
 
 /**
- * The peer's half of the end-to-end probe. It clears any earlier run's
- * scratch, publishes the nonce (tmp + rename, so the probe never reads it
- * half-written), waits for the probe's beacon, then writes the second nonce
- * and times the acknowledgement — the round trip through the claim, in both
- * directions. Last it reports whether the probe's own write reached it, and
- * removes the scratch. Bounded throughout, and never a failure itself: the
- * check reads what it printed.
+ * The peer's half of the end-to-end probe: clear old scratch, publish the
+ * nonce atomically, wait for the probe's beacon, then write a second nonce
+ * and time the probe's acknowledgement (the round trip through the claim).
+ * Finally report whether the probe's write arrived, and clean up. All waits
+ * are bounded; the check judges what it prints.
  */
 const PEER_PROBE_SCRIPT = [
   PEER_MS_FN,
@@ -1294,17 +1090,15 @@ const PEER_PROBE_SCRIPT = [
 ].join('\n')
 
 /**
- * The probe's half: wait for the peer's nonce, print what it read, write
- * the marker the peer checks for, announce itself, and acknowledge the
- * second nonce. It writes at the workspace identity, under gVisor, which is
- * the write every workspace's first unprivileged setup step depends on.
+ * The probe's half: wait for the peer's nonce, print it, write a marker for
+ * the peer, signal the beacon, and acknowledge the second nonce. It runs at
+ * the workspace uid under gVisor, like workspace setup.
  */
 const PROBE_SCRIPT = [
   'd="/probe/$1"',
   'echo "PROBE_NODE=$NODE_NAME"',
   'i=0; while [ $i -lt 3000 ] && [ ! -f "$d/nonce" ]; do sleep 0.02; i=$((i+1)); done',
   'echo "PROBE_READ=$(cat "$d/nonce" 2>/dev/null)"',
-  // No nonce means no peer to talk to: the check says so from the empty read.
   '[ -f "$d/nonce" ] || exit 0',
   'echo ok > "$d/write" || exit 1',
   'echo > "$d/beacon"',
@@ -1313,11 +1107,10 @@ const PROBE_SCRIPT = [
 ].join('\n')
 
 /**
- * The one check that exercises the full wiring: registry pull from inside
- * the cluster, a sandboxed pod at the workspace identity reading and writing
- * the global claim, and a peer at the server's footing seeing the same
- * bytes. Failure modes map to the pieces `yaac cluster install` wires: the
- * containerd registry config, the claim and its volume, the runtime.
+ * End-to-end probe: a gVisor pod at the workspace uid pulls from the
+ * registry, and exchanges reads and writes through the global claim with a
+ * peer pod in the server's role. Each failure points at the part `yaac
+ * cluster install` sets up: registry config, the claim, or the runtime.
  */
 async function runEndToEndProbe(identity: InstallIdentity): Promise<CheckResult> {
   const nonce = crypto.randomUUID()
@@ -1325,8 +1118,6 @@ async function runEndToEndProbe(identity: InstallIdentity): Promise<CheckResult>
   const ns = k8sNamespace()
   const { runAsUser } = installSecurityContext(identity)
   try {
-    // Make sure the probe image exists locally, then push it through the
-    // same registry path workspace images take.
     const imageRef = await ensureProbeImage()
 
     const manifest = {
@@ -1336,14 +1127,8 @@ async function runEndToEndProbe(identity: InstallIdentity): Promise<CheckResult>
       spec: {
         restartPolicy: 'Never',
         affinity: pairAntiAffinity('probe'),
-        // Mirror the workspace-pod containment (see buildPodJobManifest):
-        // a host pod carries the gvisor RuntimeClass (no userns), so the
-        // probe proves reads/writes on the claim work through the gofer at
-        // the workspace uid.
+        // Same runtime and uid as a workspace pod (buildPodJobManifest).
         ...runtimeClassSpec(),
-        // Run at the identity a workspace pod runs at, and prove a WRITE
-        // works there — workspace setup's first unprivileged write (the
-        // workspace gitdir pointer) fails exactly here when it does not.
         securityContext: {
           seccompProfile: { type: 'RuntimeDefault' },
           ...installSecurityContext(identity),
@@ -1355,8 +1140,6 @@ async function runEndToEndProbe(identity: InstallIdentity): Promise<CheckResult>
           env: [{ name: 'NODE_NAME', valueFrom: { fieldRef: { fieldPath: 'spec.nodeName' } } }],
           volumeMounts: [{ name: 'probe', mountPath: '/probe' }],
         }],
-        // The claim, not a hostPath: what every workspace pod mounts its
-        // subPaths of, and what the server pod has mounted whole.
         volumes: [{ name: 'probe', persistentVolumeClaim: { claimName: GLOBAL_CLAIM_NAME } }],
       },
     }
@@ -1365,9 +1148,7 @@ async function runEndToEndProbe(identity: InstallIdentity): Promise<CheckResult>
       kubectl: (args: string[]) => execFileAsync('kubectl', args),
       apply: kubectlApply,
     }
-    // Run to a terminal phase; image-pull errors and mount failures both
-    // surface here. The peer runs alongside, and is released early when
-    // the probe fails — there is nothing left for it to wait for.
+    // The peer runs alongside and is deleted early if the probe fails.
     const probeRun = runPodToCompletion(manifest, { ...runOpts, timeoutMs: 90_000 })
     const peerRun = runPodToCompletion(buildPeerPodManifest({
       name: PEER_POD_NAME, imageRef, identity, pair: 'probe',
@@ -1411,10 +1192,7 @@ async function runEndToEndProbe(identity: InstallIdentity): Promise<CheckResult>
           + 'and, on kind, the extraMounts entry in your kind config.',
       }
     }
-    // The pod's write must reach the peer: this is the proof that a
-    // workspace's unprivileged uid can mutate the claim the server reads
-    // (workspace, config dirs) — a read-only probe passes on clusters where
-    // every workspace still dies on its first write.
+    // A workspace's uid must be able to write what the server reads.
     if (reported(peer.logs, 'PEER_SAW_WRITE') !== 'ok') {
       return {
         name: 'probe', status: 'fail',
@@ -1447,14 +1225,13 @@ async function runEndToEndProbe(identity: InstallIdentity): Promise<CheckResult>
 const FSPROBE_CONFIGMAP_NAME = 'yaac-cluster-check-fsprobe'
 
 /**
- * fsprobe checks a failure of which is reported but does not fail the
- * gate, each with the reason nothing on the shared tier needs it. Waived by
- * name, never by backend: the same workspace runs on every one.
+ * fsprobe checks whose failure is reported but does not fail the gate, each
+ * with the reason. Waived by name on every backend, never per backend.
  */
 const WAIVED_SEMANTICS: Record<string, string> = {
-  // NFS before 4.2 — EFS, Azure Files and a 4.1 mount — has no xattrs, and
-  // the one user.* xattr yaac writes (the image store's overlay markers)
-  // lives on the node-local tier.
+  // NFS before 4.2 (e.g. EFS, Azure Files) has no xattrs. The only user.*
+  // xattr yaac writes (image-store overlay markers) is on the node-local
+  // tier.
   'user.* xattr': 'nothing yaac keeps on the shared tier uses xattrs',
 }
 const FSPROBE_POD_NAME = 'yaac-cluster-check-fsprobe'
@@ -1467,15 +1244,10 @@ const STORAGE_SEMANTICS_FIX =
   + 'on a byo cluster it is the storage class, and the claim needs one that passes.'
 
 /**
- * The POSIX semantics of what backs the global claim, as a sandboxed pod
- * at the workspace uid sees them — the spike's `fsprobe.py` (k8s/probes/),
- * delivered by a ConfigMap this check applies and deletes, run by the
- * pinned podman mirror because it ships python3 and is already in the
- * registry. Every check must pass; the detail names the failures.
- * Fail-level on every backend, kind included: the same workspace runs on
- * both, and a probe a backend genuinely cannot pass is fixed or waived by
- * name here, never a branch per backend. A probe that could not run at all
- * fails too, since unverified storage is not a pass.
+ * Check the POSIX semantics of the global claim's storage as a gVisor pod
+ * at the workspace uid sees them, using k8s/probes/fsprobe.py (shipped in a
+ * temporary ConfigMap, run in the builder image because it has python3).
+ * Fail-level on every backend; a probe that cannot run also fails.
  */
 async function runStorageSemanticsProbe(identity: InstallIdentity): Promise<CheckResult> {
   const ns = k8sNamespace()
@@ -1502,7 +1274,7 @@ async function runStorageSemanticsProbe(identity: InstallIdentity): Promise<Chec
           name: 'probe',
           image: imageRef,
           imagePullPolicy: 'IfNotPresent',
-          // The probe leaves its scratch dir behind; nothing else reads it.
+          // fsprobe leaves its scratch dir behind.
           command: ['sh', '-c', 'python3 /probes/fsprobe.py /probe; rc=$?; rm -rf /probe/fsprobe-*; exit $rc'],
           volumeMounts: [
             { name: 'probe', mountPath: '/probe' },
@@ -1569,16 +1341,15 @@ const MULTI_NODE_GATES = ['runsc-nodes', 'registry-nodes', 'volume-nodes'] as co
 
 const NODE_PROBE_POD_PREFIX = 'yaac-cluster-check-node'
 const SWEEP_PEER_POD_NAME = 'yaac-cluster-check-sweep-peer'
-/** The sweep's scratch directory prefix — distinct from the e2e probe's,
- *  which runs concurrently and clears its own. */
+/** Distinct from the end-to-end probe's prefix, which runs concurrently
+ *  and clears its own. */
 const SWEEP_DIR_PREFIX = '.cluster-check-nodes-'
 
 /**
  * The sweep's peer (see buildPeerPodManifest): publish the nonce, wait
- * until every node's probe has left its marker — or until the check says
- * the probes are done, which is how a node whose pod never ran stops
- * holding the sweep for the whole bound — then report the markers it saw
- * and clear the scratch.
+ * until every node's probe left its marker or the check writes `done`
+ * (so a node whose pod never ran does not hold it up), then report the
+ * markers it saw and clean up.
  */
 const SWEEP_PEER_SCRIPT = [
   `rm -rf /probe/${SWEEP_DIR_PREFIX}*`,
@@ -1598,12 +1369,9 @@ const SWEEP_PEER_SCRIPT = [
 ].join('\n')
 
 /**
- * Which gate owns a probe pod that never ran. A pod that does not start
- * says nothing by itself — the same Pending is a node that cannot pull, a
- * node whose containerd has no runsc handler, and a node missing the home
- * extraMount — so the failure is attributed from the kubelet's own event
- * before it is reported, and `unknown` is carried as *unverified* on every
- * gate rather than silently passing one of them.
+ * Which gate a probe pod that never ran is blamed on, read from the
+ * kubelet's event (the pod phase alone cannot tell). `unknown` shows up as
+ * unverified on every gate rather than passing any of them.
  */
 type ProbeBlame = 'registry' | 'volume' | 'runsc' | 'unknown'
 
@@ -1611,8 +1379,8 @@ interface NodeProbeOutcome {
   node: string
   /** Terminal phase of the pinned probe pod ('Pending' when it never ran). */
   phase: string
-  /** The sentry fingerprint showed up in the logs. Bonus, not a verdict:
-   *  the probe runs at the workspace uid, which may not read dmesg at all. */
+  /** The gVisor fingerprint appeared in dmesg. Informational only: the
+   *  workspace uid may not be able to read dmesg. */
   sandboxed: boolean
   sawNonce: boolean
   wroteMarker: boolean
@@ -1623,21 +1391,14 @@ interface NodeProbeOutcome {
 }
 
 /**
- * The gvisor RuntimeClass as the cluster holds it — the single source of
- * truth for where a sandboxed pod may go, because the RuntimeClass admission
- * controller merges both halves of `scheduling` into every pod naming the
- * class. So this reads what the SCHEDULER will see, not what a manifest
- * builder intended:
+ * The live gvisor RuntimeClass. Admission merges its `scheduling` into
+ * every pod naming it, so this is what decides where sandboxed pods go:
  *
- *  - `handler`: the containerd handler the class names.
- *  - `nodeSelector`: where such a pod may land. The gVisor installer stamps
- *    the label it selects on, so a node outside it is a node the runtime has
- *    not reached — reported as a runsc-nodes finding, not dropped.
- *  - `tolerations`: what such a pod tolerates, which is how a tainted
- *    workspaces pool is usable at all. Empty on the local backend (nothing is
- *    tainted there but the control plane, which workspaces genuinely cannot
- *    use), and empty on a cluster with no class at all — where the blanket
- *    "no taint tolerated" answer is the correct one.
+ *  - `handler`: the containerd handler it names.
+ *  - `nodeSelector`: the label the gVisor installer puts on nodes it has
+ *    set up. A node outside it is reported under runsc-nodes.
+ *  - `tolerations`: what sandboxed pods tolerate, e.g. a tainted workspace
+ *    pool. Empty locally, and when the class is missing.
  */
 interface GvisorScheduling {
   handler: string
@@ -1665,12 +1426,9 @@ async function gvisorRuntimeClass(): Promise<GvisorScheduling> {
 }
 
 /**
- * The most recent Warning event the kubelet recorded for a pod, as
- * `reason: message`. Read AFTER the pod is gone (runPodToCompletion deletes
- * it), which works because events outlive their object — and is why this is
- * a separate call rather than a field of the pod status the poll already
- * sees: a pod stuck in Pending has no containerStatuses at all when the
- * failure is a volume mount.
+ * The pod's most recent Warning event, as `reason: message`. Events outlive
+ * the pod, so this works after runPodToCompletion deletes it, and it covers
+ * mount failures, which leave no containerStatuses.
  */
 async function podFailureEvent(podName: string): Promise<string> {
   try {
@@ -1690,18 +1448,10 @@ async function podFailureEvent(podName: string): Promise<string> {
 }
 
 /**
- * Attribute a probe pod that never ran to the gate that can actually fix
- * it. The mount check comes first on purpose: kubelet sets volumes up
- * before it pulls, so a node missing the home extraMount fails at
- * FailedMount having never touched the registry — reporting that as a
- * registry problem would hand the user a fix (install rewrites
- * hosts.toml) that cannot address it.
- *
- * Nothing matches on the bare word "sandbox": `FailedCreatePodSandBox` is
- * also what kubelet reports when the CNI cannot wire a pod up, and sending
- * a CNI-broken node to the runsc repair helps no one. Unrecognized is a
- * better answer than confidently wrong — it lands as unverified on every
- * gate, which is visible and true.
+ * Blame a probe pod that never ran on the gate whose fix applies. Mounts
+ * are checked first because kubelet mounts volumes before pulling. The bare
+ * word "sandbox" is not matched: `FailedCreatePodSandBox` also covers CNI
+ * failures. Anything unrecognized is `unknown`.
  */
 function blameProbeFailure(event: string): ProbeBlame {
   if (/FailedMount|MountVolume|hostPath|FailedAttachVolume|PersistentVolumeClaim|not bound/i.test(event)) return 'volume'
@@ -1713,21 +1463,14 @@ function blameProbeFailure(event: string): ProbeBlame {
 }
 
 /**
- * One pinned probe pod on one node, mirroring what a workspace asks of the
- * node it lands on: pull the image from the registry (`Always`, so a
- * cached copy cannot mask an unreachable registry), run on the gvisor
- * RuntimeClass, and read *and write* the shared data dir at the workspace
- * uid through the gofer.
+ * One probe pod pinned to one node, doing what a workspace needs from that
+ * node: pull from the registry (`Always`, so a cached image cannot hide a
+ * broken registry), run on the gvisor RuntimeClass, and read and write the
+ * global claim at the workspace uid.
  *
- * `nodeName` rather than a nodeSelector: this is a per-node question, and
- * bypassing the scheduler is what makes the answer about the node instead
- * of about where the scheduler felt like putting the pod. Bypassing the
- * scheduler is not bypassing kubelet, though — a `NoExecute` taint evicts a
- * pod that does not tolerate it however it got bound — which is why the pod
- * names the gvisor RuntimeClass and inherits its tolerations along with its
- * handler, exactly as a workspace pod does. Nothing here declares a toleration
- * of its own: a probe that tolerated more than a workspace would report a node
- * as usable that no workspace can reach.
+ * `nodeName` bypasses the scheduler so the answer is about this node. The
+ * pod gets the RuntimeClass's tolerations and declares none of its own, so
+ * it tolerates exactly what a workspace pod does.
  */
 async function probeNode(
   node: ClusterNode,
@@ -1768,14 +1511,10 @@ async function probeNode(
           ],
           volumeMounts: [{ name: 'probe', mountPath: '/probe' }],
         }],
-        // The global claim, as a workspace pod on this node would mount it.
         volumes: [{ name: 'probe', persistentVolumeClaim: { claimName: GLOBAL_CLAIM_NAME } }],
       },
     }, {
-      // Shorter than the e2e probe's: these run one per node, and a pinned
-      // pod that has not started inside a minute is stuck on something this
-      // reports (an image it cannot pull, a runtime it cannot find) rather
-      // than merely slow.
+      // A pinned pod not done within a minute is stuck, not slow.
       timeoutMs: 60_000,
       kubectl: (args) => execFileAsync('kubectl', args),
       apply: kubectlApply,
@@ -1813,40 +1552,19 @@ function nodeList(names: string[]): string {
 }
 
 /**
- * The multi-node readiness sweep: for each node a workspace could actually
- * land on, does that node have the three things a workspace needs?
+ * Multi-node readiness (warn-level; skipped on a single node, which the
+ * other gates already cover). For each node a workspace could land on:
  *
- *  - **runsc-nodes** — the gvisor RuntimeClass is accepted there. Three
- *    sources, cheapest first: a workspace-capable node the installer
- *    DaemonSet has not labelled cannot even be scheduled a sandboxed pod,
- *    which is the DaemonSet's own not-converged-here signal; otherwise a
- *    node whose kubelet publishes `status.runtimeHandlers` is judged by
- *    that; otherwise by its probe pod, since containerd refuses a pod whose
- *    handler it never registered. The `gvisor` gate above proves the
- *    handler really is the sentry, and that SOME node carries the label —
- *    how many is this gate's question.
- *  - **registry-nodes** — that node's containerd can pull from the local
- *    registry (the probe pulls `Always`).
- *  - **volume-nodes** — the global claim is the same bytes the server
- *    sees from that node, and the workspace uid can write it.
+ *  - **runsc-nodes**: the gvisor runtime is there. Judged by the
+ *    installer's node label, then the kubelet's `status.runtimeHandlers`
+ *    if published, then the probe pod's outcome.
+ *  - **registry-nodes**: the node's containerd can pull from the registry.
+ *  - **volume-nodes**: the node sees the same global claim as the server,
+ *    and the workspace uid can write it.
  *
- * A pod that never runs is attributed to ONE of them from the kubelet's
- * event (blameProbeFailure) and left *unverified* — never passed — on the
- * others: the three failures are indistinguishable from the pod phase
- * alone, and the whole value of splitting them is that each carries the
- * repair for its own cause.
- *
- * Every gate's detail carries what the sweep did NOT cover — the nodes no
- * workspace can land on, each with its reason. A sweep that narrows silently
- * is worse than one that does not narrow: a node that dropped out under a
- * transient pressure taint, or a joining node still carrying kubelet's
- * `uninitialized` taint, would otherwise be invisible behind an "all N
- * workspace-eligible nodes" pass.
- *
- * Warn-level throughout, and skipped on a single-node cluster where the
- * `gvisor`, `probe` and `egress` gates already cover the only node: this
- * exists to catch the topology drift a multi-node cluster introduces, not
- * to re-litigate what the single-node gates decided.
+ * A probe pod that never ran is blamed on one gate (blameProbeFailure) and
+ * shown as unverified on the others. Every detail also names the nodes the
+ * sweep skipped and why.
  */
 async function runMultiNodeReadiness(
   nodes: ClusterNode[],
@@ -1865,26 +1583,16 @@ async function runMultiNodeReadiness(
 
   const { handler, nodeSelector } = gvisorScheduling
 
-  // Two different populations, and conflating them is how this gate would
-  // miss the very thing it is for. `workspaceCapable` is where a workspace
-  // could run if the runtime were there — Ready, uncordoned, and carrying no
-  // taint the gvisor RuntimeClass's tolerations fail to cover.
-  // `eligible` narrows that to where a sandboxed pod can be SCHEDULED
-  // today: the RuntimeClass's nodeSelector matches the label the installer
-  // DaemonSet stamps once it has converged on a node. So a workspace-capable
-  // node OUTSIDE the selector is not out of scope — it is precisely a node
-  // the runtime has not reached, which is a runsc-nodes finding, not a
-  // reason to stop reporting on it.
+  // `workspaceCapable`: Ready, uncordoned, taints tolerated. `eligible`:
+  // also matches the RuntimeClass nodeSelector, so a sandboxed pod can be
+  // scheduled there today. Capable but unlabelled nodes are nodes the
+  // runtime has not reached yet, reported under runsc-nodes.
   const workspaceCapable = nodes.filter((n) => n.ready && n.schedulable)
   const eligible = workspaceCapable.filter((n) =>
     Object.entries(nodeSelector).every(([k, v]) => n.labels[k] === v))
   const unlabelled = workspaceCapable.filter((n) => !eligible.includes(n))
 
-  // What the sweep is NOT reporting on, carried into every gate's detail.
-  // Narrowing to the nodes a workspace can use is right; doing it silently is
-  // not — "all 2 workspace-eligible nodes pulled" on a three-node cluster
-  // reads as full coverage whether the third node is a control plane or a
-  // worker that just picked up a disk-pressure taint.
+  // Nodes the sweep skips, named in every gate's detail.
   const skipped = [
     ...nodes.filter((n) => !n.ready).map((n) => `${n.name} (NotReady)`),
     ...nodes.filter((n) => n.ready && !n.schedulable)
@@ -1914,10 +1622,8 @@ async function runMultiNodeReadiness(
   const dir = `${SWEEP_DIR_PREFIX}${nonce}`
   try {
     const imageRef = await ensureProbeImage()
-    // The peer is where each node's write has to land: the claim as the
-    // server's footing sees it. It runs alongside the node probes, and is
-    // told they are done once they are, so a node whose pod never ran costs
-    // the sweep nothing past its own timeout.
+    // Each node's write must reach the peer, which plays the server. It is
+    // told when the node probes finish, so a stuck node does not hold it.
     const peerRun = runPodToCompletion(buildPeerPodManifest({
       name: SWEEP_PEER_POD_NAME, imageRef, identity, pair: 'sweep',
       script: SWEEP_PEER_SCRIPT, args: [dir, nonce, String(eligible.length)],
@@ -1943,11 +1649,8 @@ async function runMultiNodeReadiness(
     const withCause = (o: NodeProbeOutcome): string =>
       `${o.node} (${o.failureHint || o.phase})`
 
-    // Per node, not per cluster: a node whose kubelet publishes the handler
-    // list is judged by it, and one that publishes nothing (an older
-    // kubelet beside a newer one) falls back to its own pod outcome. A
-    // cluster-wide "someone published, so everyone is judged by the field"
-    // would flag the silent node as missing runsc while its probe ran fine.
+    // Decided per node: a kubelet that publishes runtimeHandlers is judged
+    // by them, otherwise by the node's probe pod.
     const runscVerdict = (n: ClusterNode): 'ok' | 'missing' | 'unknown' => {
       if (handler !== '' && n.runtimeHandlers.length > 0) {
         return n.runtimeHandlers.includes(handler) ? 'ok' : 'missing'
@@ -1978,8 +1681,7 @@ async function runMultiNodeReadiness(
         }
       }
       if (unverified.length > 0) {
-        // No fix: the gate that owns the failure carries it, and repeating
-        // an unrelated one here is how a user gets sent to the wrong repair.
+        // No fix here; the gate blamed for the failure carries it.
         return {
           name, status: 'warn',
           detail: `unverified on ${nodeList(unverified)} — their probe pod did not run `
@@ -2042,13 +1744,10 @@ const NETPOL_PROBE_POD_NAME = 'yaac-cluster-check-egress'
 const NFS_PORT = 2049
 
 /**
- * The NFS server the global claim's volume names (csi-driver-nfs's
- * `server` attribute), resolved to an address the probe pod can dial with
- * no DNS of its own: a session pod has none, so a name would fail to
- * resolve and read as "blocked". A Service name resolves to its ClusterIP,
- * anything else through this machine's resolver. `null` when the volume
- * names no server (a hostPath, or a driver that does not say); `ip`
- * undefined when it names one that cannot be resolved here.
+ * The NFS server named by the global volume (csi-driver-nfs's `server`
+ * attribute), resolved to an IP here because the probe pod has no working
+ * DNS. `null` when the volume names no server; `ip` undefined when the name
+ * cannot be resolved.
  */
 async function sharedVolumeNfsServer(): Promise<{ server: string; ip?: string } | null> {
   const pvc = await kubectlGetJson<RawPvcRead>(['get', 'pvc', GLOBAL_CLAIM_NAME, '-n', k8sNamespace()])
@@ -2069,24 +1768,18 @@ async function sharedVolumeNfsServer(): Promise<{ server: string; ip?: string } 
 }
 
 /**
- * Verify the CNI actually enforces the workspace egress NetworkPolicy. A
- * policy on a non-enforcing CNI silently fails OPEN — workspaces would have
- * unrestricted egress and the proxy allowlist would be advisory. The
- * probe pod carries the workspace-id label (so the policy selects it; it
- * stays invisible to listWorkspacePods, which also filters on this
- * install's data-dir-hash) and tries to reach the kube-apiserver's
- * ClusterIP — always present, always reachable in the absence of policy,
- * and addressed by IP so the verdict does not depend on DNS.
+ * Verify the CNI enforces workspace egress policy; a non-enforcing CNI
+ * fails open. A pod labeled like a workspace (but without the data-dir
+ * label, so listWorkspacePods ignores it) must fail to reach, by IP:
+ * the apiserver, the proxy's transparent port, the registry, the yaac
+ * server, and the global volume's NFS server. Targets that do not exist
+ * are reported as unverified.
  */
 async function runNetworkPolicyProbe(): Promise<CheckResult> {
   const ns = k8sNamespace()
   try {
-    // The cluster-level egress lockdown: the workspace NetworkPolicy admits
-    // world-ward egress ONLY to the node's netd listener range, so a pod
-    // cannot address the internet directly and cannot dial the proxy's
-    // transparent ports at all — those are admitted from the node CIDRs
-    // only (netd's Envoy is the sole legitimate caller, and the sole
-    // originator of PROXY-protocol preambles).
+    // Workspace egress is allowed only to netd's listener range, and the
+    // proxy's transparent ports admit only node addresses (netd's Envoy).
     const nodeCidrs = await nodeIpBlocks()
     await kubectlApply(buildWorkspaceEgressNpManifest(nodeCidrs))
     await kubectlApply(buildProxyIngressNpManifest(nodeCidrs))
@@ -2101,13 +1794,9 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
       }
     }
 
-    // When the proxy is deployed, also assert the forgery lock from the
-    // same workspace-labeled pod: it must NOT be able to dial a transparent
-    // port directly. The block is on the pod's own egress (the workspace
-    // policy's default-deny above), not the proxy ingress. A direct connect that
-    // SUCCEEDS would let a pod inject a forged PROXY-protocol source and
-    // impersonate another workspace. Absent proxy → skip this half (it deploys
-    // lazily on the first workspace create).
+    // A direct dial to a transparent port would let a pod forge a
+    // PROXY-protocol header and impersonate another workspace. The proxy
+    // deploys on first workspace create, so it may be absent.
     let proxyIp: string | null = null
     try {
       const { stdout } = await execFileAsync('kubectl', [
@@ -2122,11 +1811,8 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
         + ' && echo NP_PROXY_OPEN || echo NP_PROXY_LOCKED'
       : ''
 
-    // Third leg, same pod: the registry serves every image anonymously and
-    // is the bus the trusted chain travels on, so "a workspace cannot reach
-    // it" is a security property and worth asserting rather than assuming. Addressed by
-    // ClusterIP, not by name — a DNS failure would otherwise read as a
-    // pass. Absent Service → skip (nothing to reach).
+    // The registry serves every image anonymously and carries the trusted
+    // images, so workspaces must not reach it.
     let registryIp: string | null = null
     try {
       const { stdout } = await execFileAsync('kubectl', [
@@ -2142,17 +1828,9 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
         + ' && echo NP_REGISTRY_OPEN || echo NP_REGISTRY_LOCKED'
       : ''
 
-    // Fourth leg, same pod: the SERVER. A request naming a loopback Host is
-    // its owner and the server pod binds 0.0.0.0, so its ingress
-    // NetworkPolicies — the node addresses, plus whatever fronts its
-    // Service, and nothing pod-shaped — are the entire wall between an
-    // untrusted workspace and the owner's control plane
-    // (docs/server-in-cluster.md). That makes it exactly the kind of
-    // property to PROVE on every install rather than assume was applied,
-    // like the apiserver and forgery-lock denials above. Absent Service →
-    // this cluster has not been converged yet (or was created before the
-    // server was published through it), so there is nothing to reach and
-    // nothing to prove; install is what puts one there.
+    // The server treats a loopback Host as its owner, so its ingress
+    // policies are all that keep workspaces off the control plane
+    // (docs/server-in-cluster.md).
     let serverIp: string | null = null
     try {
       const { stdout } = await execFileAsync('kubectl', [
@@ -2167,12 +1845,9 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
         + ' && echo NP_SERVER_OPEN || echo NP_SERVER_LOCKED'
       : ''
 
-    // Fifth leg, same pod: the NFS server behind the global claim, where
-    // the volume names one. It speaks AUTH_SYS and trusts whatever uid a
-    // client claims, so a sandbox that could reach it could read and write
-    // every project as anyone — the session policy is what stops that, and
-    // this proves it holds on the cluster at hand. Absent on kind, whose
-    // volume is a hostPath.
+    // The NFS server trusts any client-claimed uid (AUTH_SYS), so a
+    // workspace reaching it could read and write every project. Not
+    // present on kind.
     const nfs = await sharedVolumeNfsServer()
     const nfsCheck = nfs?.ip
       ? `; nc -w 4 ${nfs.ip} ${String(NFS_PORT)} </dev/null >/dev/null 2>&1`
@@ -2190,10 +1865,8 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
       },
       spec: {
         restartPolicy: 'Never',
-        // The gvisor tier, like the real workspace pods this probe stands in
-        // for — so the verdict also covers policy enforcement on netstack
-        // traffic (the egress model is host-side/veth-level and must hold
-        // regardless of the pod's runtime).
+        // Same runtime as workspace pods, so gVisor netstack traffic is
+        // covered.
         runtimeClassName: RUNTIME_CLASS_GVISOR,
         containers: [{
           name: 'probe',
@@ -2277,10 +1950,9 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
           + 'yaac server so ensureProxyResources re-applies both.',
       }
     }
-    // The proxy dials whatever a workspace's allowlist names, so without its
-    // egress policy a `*` workspace reaches the kind fronting's node port
-    // through it and is the server's owner — a path no probe from a
-    // session pod can take directly, so the policy's presence is asserted.
+    // Without its egress policy, the proxy would let a workspace with a `*`
+    // allowlist reach the server's node port as its owner. No pod probe can
+    // test that path, so check the policy exists.
     if (proxyIp && !await kubectlGetJson(['get', 'networkpolicy', PROXY_EGRESS_NP_NAME, '-n', ns])) {
       return {
         name: 'egress', status: 'fail',
@@ -2290,11 +1962,6 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
       }
     }
     if (logs.includes('NP_BLOCKED')) {
-      // Both extra legs are skipped when their target is absent, so the
-      // clauses are COMPOSED rather than concatenated: appending a bare
-      // ", nor the image registry" after the "proxy not deployed"
-      // parenthetical leaves a sentence with nothing for the "nor" to
-      // continue.
       const denied: string[] = []
       if (proxyIp) denied.push('a transparent port directly (forgery lock holds)')
       if (registryIp) denied.push('the image registry')
@@ -2332,7 +1999,7 @@ const NPM_CACHE_PROBE_POD_NAME = 'yaac-cluster-check-npm-cache'
  *  pnpm fetches one. */
 const NPM_CACHE_PROBE_PATHS = ['is-number', 'is-number/-/is-number-7.0.0.tgz']
 
-/** A function, like gvisorFix: it names the per-install namespace. */
+/** A function because the namespace must not be read at import time. */
 function npmCacheFix(): string {
   return 'Re-run `yaac cluster install`, which deploys the npm cache. Inspect it with '
     + `\`kubectl -n ${k8sNamespace()} get pods,pvc -l app=${NPM_CACHE_APP_NAME}\` and `
@@ -2340,17 +2007,14 @@ function npmCacheFix(): string {
 }
 
 /**
- * The npm cache serves a workspace: a workspace-labelled pod on the gvisor
- * tier, admitted to the cache as a project that uses it would be, fetches
- * a packument and its tarball through the cache's Service — which proves
- * the cache's workspace policies, its ingress wall, and its own route to
- * npmjs in one go. Addressed by ClusterIP, as the
- * egress probe addresses its targets, so the verdict does not hang on DNS.
+ * Check the npm cache serves workspaces: a gVisor pod labeled like a
+ * workspace of a cache-using project fetches a packument and tarball via
+ * the cache's ClusterIP. This covers the network policies and the cache's
+ * route to npmjs.
  *
- * A cache with no ready pod — or none at all — is a warn, not a fail: a
- * workspace created now is not pointed at it (`servingNpmCacheUrl`), and
- * pnpm installs from npmjs, slower and nothing worse. A ready cache that
- * does not serve IS a fail, because every new workspace installs through it.
+ * No ready cache is a warn: new workspaces then install from npmjs
+ * (`servingNpmCacheUrl`). A ready cache that fails to serve is a fail,
+ * since new workspaces would install through it.
  */
 async function runNpmCacheProbe(): Promise<CheckResult> {
   const ns = k8sNamespace()
@@ -2376,8 +2040,6 @@ async function runNpmCacheProbe(): Promise<CheckResult> {
       metadata: {
         name: NPM_CACHE_PROBE_POD_NAME,
         namespace: ns,
-        // Labelled like a workspace of a project that uses the cache: the
-        // cache's own policies admit exactly those.
         labels: { ...workspaceIdLabels('cluster-check-npm-cache-probe'), [LABEL_NPM_CACHE]: 'true' },
       },
       spec: {
@@ -2418,8 +2080,8 @@ async function runNpmCacheProbe(): Promise<CheckResult> {
 
 /**
  * `container: reason` for every not-ready netd container, from
- * `kubectl get pods -o json`. Unparseable input yields nothing — this only
- * ever enriches a failure that has already been decided.
+ * `kubectl get pods -o json`. Returns nothing on unparseable input; it only
+ * adds detail to a failure already reported.
  */
 export function netdNotReadyContainers(podsJson: string): string[] {
   let parsed: {
@@ -2450,16 +2112,9 @@ export function netdNotReadyContainers(podsJson: string): string[] {
 }
 
 /**
- * The datapath gate: Calico must be enforcing, and netd must be up with
- * its redirect chain programmed.
- *
- * These are the two components workspace egress depends on, and they fail in
- * opposite directions — which is why both are checked. Calico missing means
- * NO policy enforcement, so the whole egress lockdown is advisory (the
- * behavioural half of that is the `egress` probe above). netd missing means
- * no redirect at all, which is fail-CLOSED: workspaces simply lose egress.
- * A user staring at "every workspace lost the internet" needs to be told
- * which of the two it is.
+ * The datapath gate: calico-node and netd must both be Ready. Without
+ * Calico, egress policy is not enforced (fails open); without netd,
+ * workspaces have no redirect and lose egress (fails closed).
  */
 async function runDatapathCheck(): Promise<CheckResult> {
   try {
@@ -2487,9 +2142,8 @@ async function runDatapathCheck(): Promise<CheckResult> {
       const { stdout: pods } = await execFileAsync('kubectl', [
         'get', 'pods', '-n', k8sNamespace(), '-l', `app=${NETD_APP_NAME}`, '-o', 'json',
       ]).catch(() => ({ stdout: '' }))
-      // Which container is unhealthy is the whole diagnosis here: netd's
-      // readiness is Envoy's config ack, so a broken Envoy sidecar reads
-      // exactly like a broken netd from the DaemonSet's counters alone.
+      // Name the unhealthy container: netd's readiness is Envoy's config
+      // ack, so the DaemonSet counts cannot tell netd and Envoy apart.
       const blocked = netdNotReadyContainers(pods)
       return {
         name: 'datapath', status: 'fail',
@@ -2518,13 +2172,8 @@ async function runDatapathCheck(): Promise<CheckResult> {
 }
 
 /**
- * The pod → veth gate. Reads every netd pod's own node routing table and
- * applies the same verdict `--byo` applies (assessVethSource), so
- * setup and check cannot disagree about what a working redirect source
- * looks like.
- *
- * Cheap: one `kubectl exec` per node into a container that is already
- * running, no pod to schedule.
+ * The pod-to-veth gate: read each node's routing table through its netd
+ * pod and judge it with `assessVethSource`, the same verdict `--byo` uses.
  */
 async function runVethSourceCheck(): Promise<CheckResult> {
   const prefix = cniVethPrefix()
@@ -2544,17 +2193,10 @@ async function runVethSourceCheck(): Promise<CheckResult> {
 const NESTED_PROBE_POD_NAME = 'yaac-cluster-check-nested'
 
 /**
- * Warn-level gate for nestedContainers workspaces (the rootful in-sandbox
- * engine). Reproduces the core sentry prerequisite the engine depends on,
- * under the real nested containment (gvisor-nested + the engine's in-sandbox
- * caps, no userns): the in-sandbox root must be able to `mount` (SYS_ADMIN
- * honored under the sentry) — every container start and `docker build` RUN
- * does overlay/proc/tmpfs mounts. A cluster whose runsc-nested handler is
- * broken (or absent) fails to start the pod at all. The richer prerequisites
- * the engine also needs — `allow-suid` for the `sudo`-started service, file
- * caps on the tmpfs graphroot — are verified end to end by the
- * nested-containers e2e;
- * this probe stays busybox-simple (no sudo/setcap in the probe image).
+ * Warn-level gate for nestedContainers workspaces. Under gvisor-nested with
+ * the engine's capabilities, in-sandbox root must be able to mount a tmpfs,
+ * as every container start and `docker build` step does. Other engine
+ * needs (setuid, file caps) are covered by the nested-containers e2e.
  */
 async function runNestedMountProbe(): Promise<CheckResult> {
   const ns = k8sNamespace()
@@ -2568,15 +2210,12 @@ async function runNestedMountProbe(): Promise<CheckResult> {
         restartPolicy: 'Never',
         automountServiceAccountToken: false,
         enableServiceLinks: false,
-        // The nested tier: gvisor-nested, no userns — the sentry is the
-        // containment (mirrors buildPodJobManifest's nested+gvisor path).
         runtimeClassName: RUNTIME_CLASS_GVISOR_NESTED,
         securityContext: { seccompProfile: { type: 'RuntimeDefault' } },
         containers: [{
           name: 'probe',
           image: imageRef,
-          // Run as in-sandbox root (the rootful engine's shape) with its
-          // in-sandbox caps; SYS_ADMIN is what mount() needs.
+          // Root with the engine's caps; mount() needs SYS_ADMIN.
           securityContext: {
             runAsUser: 0,
             capabilities: { add: NESTED_ENGINE_CAPS },
@@ -2630,10 +2269,8 @@ const NESTED_MOUNT_FIX =
 
 /**
  * The builder-pod guard is a ValidatingAdmissionPolicy, and
- * `ensureBuilderRoleGuard` refuses to apply without the API (fail-closed,
- * no opt-out) — so an install that lacks it cannot build an image at all.
- * Probes via `vapAvailable`, the exact gate the guard applies, so check
- * and gate cannot drift.
+ * `ensureBuilderRoleGuard` refuses to proceed without the API, so no image
+ * can be built. Uses the same `vapAvailable` test as the guard.
  */
 async function runVapAvailabilityCheck(): Promise<CheckResult> {
   if (await vapAvailable()) {

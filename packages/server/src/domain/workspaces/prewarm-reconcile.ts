@@ -1,11 +1,9 @@
 /**
- * Reconcile step that keeps the prewarmed-workspace pool at its target:
- * one spare per active project, warmed as that project's untouched create
- * (a claim that asks for something else retools it). Spawns spares via
- * `createWorkspace({ prewarm: true })` and reaps excess / idle ones — and ones
- * in an agent mode the project no longer creates in — via `cleanupWorkspace`.
- * The decision is the pure `computePrewarmPlan`; this wrapper just lists pods,
- * reads what they were warmed as, and drives the side effects.
+ * Reconcile step that keeps one prewarmed spare per active project, warmed
+ * with the project's default create settings. The pure `computePrewarmPlan`
+ * decides; this lists pods, finds spares in an outdated agent mode, and
+ * spawns (`createWorkspace({ prewarm: true })`) or reaps
+ * (`cleanupWorkspace`).
  */
 import crypto from 'node:crypto'
 import { workspaceDriver } from '#drivers/driver'
@@ -24,13 +22,9 @@ import { env } from '@yaac/shared/env'
 import type { RuntimeHandle } from '#drivers/contract'
 
 /**
- * Fire a prewarm spawn under `workspaceId`, dropping it from `inFlight` when
- * it settles.
- *
- * Warmed as the project's untouched create — what the create form would
- * submit if opened and confirmed, agent mode included, since the webapp is
- * who claims spares — so the usual claim runs the agent on as booted.
- * Resolved at spawn time, so a spare always reflects the latest choice.
+ * Spawn a spare under `workspaceId` with what the create form would submit
+ * by default (including the remembered agent mode, since the webapp claims
+ * spares), then drop it from `inFlight`.
  */
 async function spawnSpare(projectSlug: string, workspaceId: string): Promise<void> {
   try {
@@ -66,39 +60,22 @@ export async function reconcilePrewarmPool(snapshot?: RuntimeSnapshot): Promise<
   })
 
   for (const target of toReap) {
-    // A spare that is reaped unclaimed never became a workspace, so no
-    // workspace sweep would ever collect its checkout or its git admin dir —
-    // its row is flagged `spare` and filtered out of every listing.
-    //
-    // The AWAITED teardown, not the detached one: the detached variant
-    // resolves before its `kubectl delete job` has even started, so removing
-    // the checkout off the back of it would race a pod still mounting
-    // /workspace — and a crash in that window would leave a claimable
-    // labeled spare whose checkout is gone. `cleanupWorkspace` returns only
-    // once the Job and its pod are really gone, and says so: a delete that
-    // timed out with the pod still terminating resolves false, and then the
-    // bytes stay put for the startup sweep rather than being pulled out from
-    // under it.
-    //
-    // Not awaited by the tick, so a slow teardown never stalls the pool; a
-    // failure here is collected by the startup sweep instead, since once the
-    // pod is gone the planner (which sees only pods) can never retry it.
-    // The row goes last, and only once the bytes are actually gone: while it
-    // survives, the spare flag is what tells the startup sweep this checkout
-    // was never a workspace, so dropping it over a failed rm would strand
-    // whatever the teardown left. `deleteSpareWorkspaceRow` is guarded on the
-    // flag, so it can only ever take the row it was warmed with.
+    // No workspace sweep collects a spare's state, so delete it here. Uses
+    // the awaited teardown so the checkout is removed only once the pod is
+    // really gone. Each step runs only if the previous succeeded; the
+    // flagged row goes last, so the orphan sweep can still recognize and
+    // retry what is left. Not awaited, so a slow teardown does not stall the
+    // tick.
     void cleanupWorkspace(target)
       .then((podGone) => podGone && deleteWorkspaceState(target.projectSlug, target.workspaceId))
       .then(async (removed) => {
         if (removed) await deleteSpareWorkspaceRow(target.projectSlug, target.workspaceId)
       })
-      .catch(() => { /* swept at startup — see gcOrphanWorkspaceState */ })
+      .catch(() => { /* see gcOrphanSpares in cleanup.ts */ })
   }
 
   for (const spawn of toSpawn) {
-    // Minted and recorded BEFORE awaiting anything so a concurrent tick sees
-    // it — and knows its pod, once listed, for this spawn's.
+    // Recorded before any await so a concurrent tick sees it.
     const workspaceId = crypto.randomUUID()
     inFlight.set(workspaceId, spawn.projectSlug)
     void spawnSpare(spawn.projectSlug, workspaceId)
@@ -106,13 +83,10 @@ export async function reconcilePrewarmPool(snapshot?: RuntimeSnapshot): Promise<
 }
 
 /**
- * The spares warmed in a different agent mode than their project now creates
- * in — which no claim from the webapp can take, since the mode is fixed into
- * the pod at warm time. A spare whose row names no mode predates the column
- * and counts too; the pool replaces it once.
- *
- * Unreadable rows answer "not stale": reaping on a failed read would churn a
- * pod over a hiccup, and the next pass asks again.
+ * Spares warmed in a different agent mode than their project now creates in.
+ * The mode is fixed at warm time, so the webapp cannot claim them. A row with
+ * no mode (written before the column) counts as stale. Unreadable rows count
+ * as not stale.
  */
 async function staleModeSpares(pods: RuntimeHandle[]): Promise<Set<string>> {
   const spares = pods.filter((p) => p.prewarmed && p.projectSlug && !claiming.has(p.jobName))

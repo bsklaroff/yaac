@@ -14,22 +14,20 @@ import { claudeBundleIsNewer, codexBundleIsNewer } from './credential-sync'
 import type { RefreshedToolCredentials } from '@yaac/shared/types'
 
 /**
- * The host store's two-way link with the runtime that injects from it.
+ * Two-way sync between the host credential store and the runtime that
+ * injects from it.
  *
- * Down: every writer of the host store — a login, a clear, a git credential
- * added, renamed, removed or assigned, a plan-usage refresh that rotated a token — calls
- * `pushCredentialsToRuntime` afterwards, and the runtime is handed the whole
- * set. Wholesale because the set is one install-wide thing, and because
- * nothing re-reads it on a schedule of its own: the store is the authority,
- * and a runtime is told.
+ * Down: every writer of the host store (login, clear, git credential
+ * changes, a plan-usage refresh that rotated a token) calls
+ * `pushCredentialsToRuntime`, which sends the whole set. The store is the
+ * authority; nothing re-reads it on a schedule.
  *
- * Up: a runtime that mediates egress captures the rotation a workspace's
- * refresh produced, and `adoptRefreshedToolCredentials` is how that reaches
- * the store — the newest-wins compare every other writer uses, then a push
- * so the runtime sees its own capture echoed and stops preferring it.
+ * Up: a runtime that mediates egress captures token rotations from a
+ * workspace's refresh; `adoptRefreshedToolCredentials` stores them if newer,
+ * then pushes so the runtime sees its capture echoed back.
  */
 
-/** One push; the failure, if any, logged and handed back. */
+/** One push. Logs and returns any failure. */
 async function pushOnce(): Promise<Error | undefined> {
   try {
     const [tools, git] = await Promise.all([
@@ -44,19 +42,15 @@ async function pushOnce(): Promise<Error | undefined> {
   }
 }
 
-// Latest-wins coalescing: two overlapping writers would otherwise read
-// the store and hand their reads over in either order, and the runtime
-// could be left behind the store until the next write. One push runs at a
-// time; a request that lands while one is running is served by exactly one
-// more, which reads the store after every write that asked for it.
+// One push at a time, so overlapping writers can't deliver stale reads out
+// of order. Requests during a push are served by one more push, which reads
+// the store after all of them.
 let inflight: Promise<Error | undefined> | null = null
 let rerun = false
 
-/** Hand the runtime the whole credential set, never rejecting: the write
- *  that prompted this already succeeded, and the next push carries the same
- *  set. Resolves once a push that read the store after this call has
- *  completed — to that push's failure, for the caller whose write must not
- *  be reported done while the runtime still holds what it replaced. */
+/** Send the runtime the whole credential set. Never rejects; resolves, once
+ *  a push that read the store after this call finishes, to that push's
+ *  failure, for callers that must report it. */
 export function pushCredentialsToRuntime(): Promise<Error | undefined> {
   if (inflight) {
     rerun = true
@@ -78,13 +72,10 @@ export function pushCredentialsToRuntime(): Promise<Error | undefined> {
 }
 
 /**
- * Adopt what the runtime captured into the host store, where it is newer.
- *
- * The same rules as every other writer: a sentinel is never a credential,
- * an api-key or signed-out store has nothing a rotation could supersede
- * (and must not be signed back in by one), and a compare-and-set guards
- * the write — the store may have moved while this read it, and the writer
- * that moved it stored something at least as fresh.
+ * Store credentials the runtime captured, where newer. A placeholder is
+ * never adopted; an api-key or signed-out store is not overwritten; and a
+ * compare-and-set skips the write if the store changed meanwhile (that
+ * writer stored something at least as fresh).
  */
 export async function adoptRefreshedToolCredentials(
   refreshed: RefreshedToolCredentials,

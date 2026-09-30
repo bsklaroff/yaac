@@ -1,12 +1,10 @@
 /**
  * The client half of a port forward — `startForward`.
  *
- * Driven against a REAL WebSocket server standing in for yaac's
- * `/api/forward/attach`, because what this module is is the splice between a
- * TCP socket and a WebSocket: mocking either end would leave nothing under
- * test. The far end here echoes, so a byte that comes back proves the
- * whole round trip — the listener bound, the socket opened with the right
- * URL and bearer, and both directions spliced.
+ * Runs against a real WebSocket server standing in for
+ * `/api/forward/attach`, since the module is the splice between a TCP
+ * socket and a WebSocket. The server echoes, so a byte that comes back
+ * proves the whole round trip.
  */
 import { describe, it, expect, afterEach } from 'vitest'
 import net from 'node:net'
@@ -82,8 +80,8 @@ describe('startForward', () => {
 
     expect(await roundTrip(handle.hostPort, 'hello')).toBe('hello')
 
-    // No credential rides the upgrade: the server identifies the caller
-    // from the request itself, exactly as it does for the PTY.
+    // No credential is sent; the server identifies the caller from the
+    // request, as for the PTY.
     const [upgrade] = server.upgrades
     expect(upgrade.authorization).toBeUndefined()
     expect(upgrade.path).toContain('/api/forward/attach')
@@ -92,8 +90,7 @@ describe('startForward', () => {
   })
 
   it('opens one WebSocket per accepted TCP connection', async () => {
-    // v1 frames it this way on purpose (the kubectl shape): nothing is
-    // multiplexed, so nothing has to be framed.
+    // Raw bytes, unframed: v1 multiplexes nothing.
     const server = await fakeServer()
     cleanups.push(server.close)
     const handle = track(await startForward(
@@ -108,9 +105,8 @@ describe('startForward', () => {
   })
 
   it('holds the client\'s first bytes until the tunnel is open', async () => {
-    // A TCP client writes the moment it connects; the WebSocket handshake
-    // has not finished yet. Bytes written into a socket nothing is reading
-    // would be lost silently, which looks like a hang rather than a fault.
+    // A TCP client may write before the WebSocket handshake finishes; those
+    // bytes must be buffered, not lost.
     const server = await fakeServer({
       onSocket: (ws) => {
         ws.on('message', (data: Buffer) => ws.send(data))
@@ -127,9 +123,8 @@ describe('startForward', () => {
   })
 
   it('reports a refused tunnel per connection, leaving the listener up', async () => {
-    // The dial happens inside the cluster where this process cannot look,
-    // so a 4xxx close code is the whole diagnosis — and it must not take
-    // the forward down with it: the next connection may well work.
+    // The dial happens in the cluster, so the 4xxx close code is the only
+    // diagnosis. It must not stop the forward; the next connection may work.
     const server = await fakeServer({
       onSocket: (ws) => ws.close(4001, 'dial failed'),
     })
@@ -151,8 +146,7 @@ describe('startForward', () => {
   })
 
   it('rejects when the host port is already taken', async () => {
-    // The one failure a forward cannot work around, and the one the server
-    // could never have reported — the machine that binds is this one.
+    // Only this machine can report a failed bind.
     const squatter = net.createServer()
     await new Promise<void>((resolve) => squatter.listen(0, '127.0.0.1', resolve))
     cleanups.push(() => new Promise<void>((resolve) => squatter.close(() => resolve())))
@@ -166,14 +160,10 @@ describe('startForward', () => {
   })
 
   it('speaks wss to an https origin, and ws to an http one', () => {
-    // The remote-server shape: the scheme has to follow the origin's, or
-    // the upgrade is made in the clear against a TLS listener.
-    //
-    // Asserted on the URL rather than on a failed connection to a
-    // made-up hostname. That form only holds where DNS says the name does
-    // not exist — inside a sandboxed workspace, whose proxy accepts the dial
-    // and drops the handshake, the error names no host at all and the test
-    // fails for a reason that has nothing to do with this module.
+    // The scheme must follow the origin's, or the upgrade goes out in the
+    // clear to a TLS listener. Checked on the URL, not a failed connection:
+    // inside a sandboxed workspace the proxy accepts any dial, so the
+    // connection error would not name the host.
     const spec = { session: 'sess-1', containerPort: 5173, hostPort: 0 }
     expect(tunnelUrl({ baseUrl: 'https://srv.example.ts.net' }, spec))
       .toBe('wss://srv.example.ts.net/api/forward/attach?id=sess-1&port=5173')

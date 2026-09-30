@@ -8,37 +8,23 @@ import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
 import type { AcpContent, AcpImage } from '@yaac/shared/acp'
 
 /**
- * The chat pane: an ACP conversation, rendered as messages instead of
- * terminal bytes.
+ * The chat pane for an `acp` conversation; `WorkspaceTerminal` fills the
+ * same slot for `tui`. Like the terminal, it stays mounted with its socket
+ * open while off-screen, because re-attaching is slow on a bad link;
+ * `visible` only decides focus. The draft lives in the ui store so it
+ * survives the pane unmounting or a reload.
  *
- * This is the `acp` half of the pane-target split — the same slot
- * `WorkspaceTerminal` fills for a `tui` conversation, chosen by the pane's
- * target rather than by anything this component knows. It owns its transport
- * and its scroll state, and it follows the terminal's keep-alive discipline: a
- * pane that goes off-screen stays mounted and holds its socket, because the
- * expensive part of a chat pane is not the conversation (that lives on the
- * server and replays on any attach) but the attach itself, and re-paying it on
- * every switch is what makes the pane feel slow on a bad link. `visible`
- * therefore only decides focus.
- *
- * It is still unmounted for good when the workspace goes away or the pane is
- * closed — and by a reload — so the one thing a teardown must not cost, the
- * user's own words, lives in the ui store rather than here.
- *
- * What a conversation *looks* like is `AcpTranscript`'s, not this component's:
- * a stopped workspace's history is the same conversation with no socket behind
- * it. What is left here is everything that needs one — the stream, the draft,
- * the composer, and the scroll-follow that keeps a streaming reply in view.
+ * Rendering is `AcpTranscript`'s job (shared with stopped workspaces). This
+ * component owns the stream, the draft, the composer and scroll-follow.
  */
 
-/** What the input box held when a `user` event was sent — the text parts only,
- *  so it compares against a draft rather than against a rendering of one. */
+/** The text parts of a `user` event, for comparing against a draft. */
 function promptText(content: AcpContent[]): string {
   return content.filter((c) => c.type === 'text').map((c) => c.text).join('')
 }
 
-/** What identifies a sent message's echo: its text and how many images rode
- *  with it, since a message may be images alone. */
+/** Identifies a sent message's echo by its text and image count, since a
+ *  message may be images alone. */
 function echoKey(text: string, images: number): string {
   return `${text}\u0000${String(images)}`
 }
@@ -56,27 +42,22 @@ export function WorkspaceChat({
   const setChatDraft = useUiStore((s) => s.setChatDraft)
   const setChatSent = useUiStore((s) => s.setChatSent)
   /**
-   * The draft is held locally and mirrored into the store, rather than read
-   * from it: this pane is the only writer, so a keystroke needs no round trip
-   * through a subscription. The seed is a plain initializer because the pane is
-   * keyed by conversation — a different one is a different mount, never a prop
-   * change under this state.
+   * The draft is local state mirrored into the store, so typing needs no
+   * store round trip. The pane is keyed by conversation, so seeding once on
+   * mount is enough.
    */
   const [draft, setDraft] = useState(
     () => useUiStore.getState().chatDrafts[chatDraftKey(workspaceId, agentSessionId)]?.text ?? '',
   )
   /**
-   * A message handed to the socket but not yet echoed back by the server.
-   * Writing to a socket is not evidence the server received anything — the
-   * connection can drop in between — so the text stays in the box until the
-   * conversation's own `user` event comes back. If the connection blips first,
-   * what the user typed is still there to send again.
+   * A message sent on the socket but not yet echoed back as a `user` event.
+   * The text stays in the box until the echo arrives, so a dropped connection
+   * leaves it there to send again.
    */
   const [awaitingEcho, setAwaitingEcho] = useState<string | null>(null)
   /**
-   * Images attached to the draft (docs/agent-modes.md, "Images"), sent inline
-   * with it. Unlike the text they are not kept in the store: base64 images are
-   * too big for what it persists, so a reload drops them.
+   * Images attached to the draft (docs/agent-modes.md, "Images"). Too large
+   * to persist in the store, so a reload drops them.
    */
   const [images, setImages] = useState<AcpImage[]>([])
   /** The attached images as of this render, for an attach finishing later. */
@@ -84,9 +65,8 @@ export function WorkspaceChat({
   imagesRef.current = images
   const [imageError, setImageError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  /** What this pane mounted with — the draft, and the message a previous mount
-   *  had handed to the socket without seeing its echo — plus whether the two
-   *  have been reconciled against the replayed history yet (see below). */
+  /** The draft and in-flight message this pane mounted with, and whether
+   *  they have been checked against the replayed history yet. */
   const restoredRef = useRef(draft)
   const restoredSentRef = useRef(
     useUiStore.getState().chatDrafts[chatDraftKey(workspaceId, agentSessionId)]?.sent,
@@ -97,9 +77,8 @@ export function WorkspaceChat({
   const pinnedRef = useRef(true)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
-  // Follow the tail only while the reader is already there: an agent
-  // streaming a long reply must not yank someone back who scrolled up to read
-  // an earlier tool call.
+  // Follow the tail only while the reader is already at it, so streaming
+  // never yanks someone who scrolled up.
   const onScroll = (): void => {
     const el = scrollRef.current
     if (!el) return
@@ -110,17 +89,9 @@ export function WorkspaceChat({
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight
   }, [groups])
 
-  // Grow the box to the message. A textarea is `rows` tall and scrolls its own
-  // content, so a five-line message would be written through a one-line slot;
-  // measuring instead makes the box show what is being typed, up to the
-  // max-height the class sets (past which it goes back to scrolling, so a
-  // pasted essay can't eat the conversation). Reset to `auto` first — the
-  // measurement is of the content, and a previous explicit height would be the
-  // floor scrollHeight reports. In a layout effect so the box is never painted
-  // at the wrong height, and keyed on the draft so a restored one (mount, or a
-  // send that failed) is sized on arrival rather than on the next keystroke.
-  // Growing takes the height out of the conversation above, so a reader at the
-  // tail is put back on it — the last message is what they were looking at.
+  // Grow the textarea to fit the draft, up to its CSS max-height. Reset to
+  // `auto` first so scrollHeight measures the content. Growing shrinks the
+  // conversation, so keep a reader at the tail pinned there.
   useLayoutEffect(() => {
     const el = inputRef.current
     if (!el) return
@@ -130,14 +101,8 @@ export function WorkspaceChat({
     if (list && pinnedRef.current) list.scrollTop = list.scrollHeight
   }, [draft])
 
-  // The pane shrinking under the reader is the same event as the conversation
-  // growing under them, and wants the same answer. A scroller keeps its
-  // scrollTop when its box gets shorter, so the tail slides out of sight below
-  // the fold — and on a phone the thing that shrinks it is the soft keyboard,
-  // which means tapping the box to reply is what loses the message being
-  // replied to. (A rotation and the terminal key bar do it too.) Same
-  // condition as everywhere else here: follow only a reader who was already at
-  // the tail.
+  // Keep a pinned reader at the tail when the list shrinks, e.g. when a
+  // phone's soft keyboard opens.
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
@@ -152,29 +117,15 @@ export function WorkspaceChat({
     if (visible) inputRef.current?.focus()
   }, [visible])
 
-  // Keep the store's copy in step, so the text is still there when the pane is
-  // torn down off-screen and mounted again. Re-mirroring the restored value on
-  // mount is a no-op the setter absorbs.
   useEffect(() => {
     setChatDraft(workspaceId, agentSessionId, draft)
   }, [draft, workspaceId, agentSessionId, setChatDraft])
 
   /**
-   * Settle a restored in-flight message, once, when the first `hello` lands.
-   *
-   * A sent message stays in the box until the server echoes it, so a pane torn
-   * down inside that window restores text that may well have been delivered —
-   * showing the user their own message twice and inviting them to send it
-   * again. Two questions decide it, and they need different evidence. Is the
-   * box holding *the message that was sent*, rather than words that merely
-   * read like it? That is the `sent` marker: string equality against the
-   * conversation's history would clear a freshly typed "ok" just because the
-   * last "ok" was delivered. And did it actually arrive? That is the replayed
-   * history, which is the only thing that knows.
-   *
-   * Both yes: the message landed, and the box is emptied. Either no: the text
-   * stays put, which is the whole point of holding it. The marker is dropped
-   * regardless — the history has spoken, so nothing is in flight any more.
+   * On first connect, settle a message a previous mount sent but never saw
+   * echoed. Clear the box only if it still holds that exact message (the
+   * `sent` marker, so a freshly typed identical text is kept) and the replayed
+   * history's last user message matches it. The marker is dropped either way.
    */
   useEffect(() => {
     if (reconciledRef.current || !connected) return
@@ -186,13 +137,11 @@ export function WorkspaceChat({
     let lastUser: string | undefined
     for (const e of events) if (e.type === 'user') lastUser = promptText(e.content)
     if (lastUser !== sent) return
-    // Only if the box is still untouched — text typed while the socket was
-    // coming up is newer than anything the history can speak to.
+    // Keep anything typed while connecting.
     setDraft((cur) => (cur === restoredRef.current ? '' : cur))
   }, [connected, events, workspaceId, agentSessionId, setChatSent])
 
-  // The server confirms a message by echoing it as a `user` event. Until then
-  // the text stays put; the echo is what clears it.
+  // The server's `user` echo confirms a send and clears the box.
   useEffect(() => {
     if (awaitingEcho === null) return
     const echoed = events.some((e) => e.type === 'user'
@@ -205,30 +154,26 @@ export function WorkspaceChat({
     }
   }, [events, awaitingEcho, workspaceId, agentSessionId, setChatSent])
 
-  // A connection that drops before the echo means the message may never have
-  // arrived. Stop waiting so the box is usable again — with the text still in
-  // it, ready to send once more.
+  // A drop before the echo means the message may not have arrived; unlock
+  // the box with the text still in it.
   useEffect(() => {
     if (!connected) setAwaitingEcho(null)
   }, [connected])
 
-  // So does an error. An echo can be waited on forever otherwise: a
-  // conversation whose record has failed keeps its connection and its status,
-  // and simply never says anything again — which would leave the box locked
-  // on a message the user cannot even retype.
+  // So does an error: a conversation whose record failed stays connected but
+  // never echoes, which would lock the box forever.
   useEffect(() => {
     if (events.length > 0 && events[events.length - 1].type === 'error') setAwaitingEcho(null)
   }, [events])
 
   const submit = (): void => {
     const text = draft.trim()
-    // `busy` matters as much as `connected`: Enter would otherwise bypass the
-    // gate the Send button enforces and put a second prompt turn in flight.
+    // Checks `busy` so Enter cannot start a second turn the Send button
+    // would block.
     if ((text === '' && images.length === 0) || !connected || busy || awaitingEcho !== null) return
     if (send({ type: 'prompt', text, ...(images.length > 0 ? { images } : {}) })) {
       setAwaitingEcho(echoKey(text, images.length))
-      // Recorded where it outlives this pane: if the pane is torn down before
-      // the echo, its successor needs to know this exact text was in flight.
+      // Stored so a remount before the echo knows this text was in flight.
       setChatSent(workspaceId, agentSessionId, text)
       pinnedRef.current = true
     }
@@ -240,31 +185,25 @@ export function WorkspaceChat({
     setImageError(null)
     void Promise.all(files.map(async (f) => toAcpImage(await prepareImage(f))))
       .then((added) => {
-        // The server holds a message to this total too; saying so here is
-        // what tells the user before they send, rather than after.
+        // The server enforces the same limit; check it before sending.
         const next = [...imagesRef.current, ...added]
         if (next.reduce((n, image) => n + imageBytes(image), 0) > MAX_ATTACHMENT_BYTES) {
           setImageError('a message\'s images may total 5 MB')
           return
         }
-        // Ahead of the render, so an attach finishing before it builds on
-        // this one instead of the same stale base.
+        // Update now so a concurrent attach builds on this one.
         imagesRef.current = next
         setImages(next)
       })
       .catch((err: unknown) => setImageError(err instanceof Error ? err.message : String(err)))
   }
 
-  /** Answer a permission ask. Reports whether it left, so a card whose click
-   *  never made it onto a dead socket can offer its buttons again. */
+  /** Answer a permission ask. Returns whether it was sent, so the card can
+   *  re-offer its buttons if the socket was down. */
   const answerPermission = (requestId: string, optionId?: string): boolean =>
     send({ type: 'permission', requestId, ...(optionId !== undefined ? { optionId } : {}) })
 
-  /**
-   * A turn parked on a question. It is `busy` — its prompt is unanswered — but
-   * calling it "working…" under the card asking the user to act is the one
-   * place that label misreads the room.
-   */
+  /** A turn waiting on a permission answer: busy, but not "working…". */
   const awaitingPermission = groups.some((g) => g.kind === 'permission' && g.decided === undefined)
 
   return (
@@ -296,7 +235,6 @@ export function WorkspaceChat({
             <LoadingIcon size={12} className="animate-spin" />
             <span>
               working
-              {/* The dots are decoration: a screen reader hears "working". */}
               <span className="working-dots" aria-hidden="true"><i>.</i><i>.</i><i>.</i></span>
             </span>
           </div>
@@ -359,8 +297,6 @@ export function WorkspaceChat({
               attach(files)
             }}
             onKeyDown={(e) => {
-              // Enter sends, shift-enter newlines — the convention every agent
-              // TUI in the sibling panes already uses.
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
                 submit()
@@ -368,8 +304,8 @@ export function WorkspaceChat({
             }}
             placeholder={connected ? 'Message the agent…' : 'Reconnecting…'}
             readOnly={awaitingEcho !== null}
-            // (index.css raises this to 16px at phone width, along with every
-            // other text control — under that, focusing one zooms iOS Safari.)
+            // index.css raises this to 16px on phones so iOS Safari does not
+            // zoom on focus.
             className="max-h-40 min-h-8 flex-1 resize-none rounded-md border border-hairline
               bg-surface-2 px-2.5 py-1.5 text-sm text-text placeholder:text-text-faint
               focus:outline-none"

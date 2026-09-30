@@ -1,50 +1,25 @@
 /**
- * Envoy configuration rendering.
+ * Renders the Envoy config netd hands to a co-located stock Envoy through
+ * file-based xDS: an LDS and a CDS document that Envoy hot-reloads. All
+ * functions here are pure; netd.ts writes the files.
  *
- * netd drives a co-located stock Envoy through file-based xDS: it writes
- * an LDS and a CDS document, and Envoy hot-reloads them — no restarts, no
- * control-plane gRPC, no custom forwarder code. Everything here is pure
- * (desired state in, config documents out); the writer does the atomic
- * rename.
+ * Each install has three listeners (https, http, tunnel) and one cluster
+ * per egress target per leg. A connection's target is chosen by its
+ * source pod IP, not by the port it arrived on. Key settings:
  *
- * THREE listeners per install, one per leg, and one cluster per egress
- * target per leg. A connection's target is chosen by its SOURCE, not by
- * the port it arrived on:
+ * - `original_dst` listener filter: recovers the pre-DNAT destination so
+ *   the PROXY-protocol header can carry the host the workload dialed.
+ * - `source_prefix_ranges`: one /32 per pod. There is no
+ *   `default_filter_chain`, so an unprogrammed source is closed.
+ * - PROXY protocol v2 upstream: Envoy stamps the observed source and
+ *   original destination; the proxy parses it (k8s/proxy/pp2.ts) to find
+ *   the workspace. A pod cannot spoof another pod's source.
+ * - `enable_reuse_port: false`: otherwise two installs that picked the
+ *   same ports would both bind them and the kernel would split traffic.
+ *   With it off, the second bind fails and netd picks another trio.
  *
- *   listener :H ──source 10.244.0.9/32 ──▶ cluster outer ──PP2──▶ ip:10256
- *              └─source 10.244.0.14/32 ─▶ cluster outer ──PP2──▶ ip:10256
- *
- * Four things are load-bearing:
- *
- * - `original_dst` listener filter. The per-pod rule DNATs the packet to
- *   this listener, so the socket's own local address is the node, not the
- *   host the workload asked for. The filter recovers the pre-DNAT
- *   destination from conntrack (SO_ORIGINAL_DST) and installs it as the
- *   connection's local address, which is what the PROXY-protocol header
- *   below then carries. Without it the proxy would learn only that
- *   *something* was redirected, losing the target the allowlist is
- *   evaluated against for non-TLS/non-HTTP flows.
- * - `filter_chain_match.source_prefix_ranges`. Routing on the source pod
- *   IP is what lets every target share one listener trio, so a target
- *   appearing or leaving never moves a port out from under a live flow.
- *   Matching is exact-prefix per pod, and there is deliberately NO
- *   `default_filter_chain`: a source netd has not programmed matches
- *   nothing and Envoy closes the connection, which is the same
- *   fail-closed direction as a missing DNAT rule.
- * - `proxy_protocol` upstream transport (V2). Envoy stamps the downstream
- *   connection's real source and (post-`original_dst`) original
- *   destination. The proxy parses it with k8s/proxy/pp2.ts and resolves
- *   source IP → workspace. It stamps the address it OBSERVES, so a pod that
- *   dials a listener directly cannot claim to be another pod.
- * - `enable_reuse_port: false`. Envoy's default is true, and several
- *   installs run hostNetwork Envoys in one netns as the same uid — with
- *   the default, two installs that chose the same trio would BOTH bind it
- *   and the kernel would split connections between them, which is silent
- *   cross-install misrouting. Disabled, the loser fails to bind, netd's
- *   listener gate sees the rejection, and it re-probes for a free trio.
- *
- * Clusters are plain STATIC endpoints on the proxy's ClusterIP, which Envoy
- * dials from the node root netns (kube-proxy's DNAT applies normally).
+ * Clusters are STATIC endpoints on the proxy's ClusterIP. See
+ * docs/workspace-egress.md.
  */
 
 import type { EgressTarget, PodTarget } from 'yaac-netd/targets'
@@ -80,17 +55,14 @@ export function listenerName(installNamespace: string, leg: TrioLeg): string {
 /** One target's share of a listener: the pod IPs whose flows it serves. */
 export interface FilterChainSpec {
   targetKey: string
-  /** Source pod IPs, sorted — byte-stability of the document depends on it. */
+  /** Source pod IPs, sorted so the rendered document is stable. */
   podIps: string[]
 }
 
 /**
- * Group a selection into one filter chain per egress target.
- *
- * Sorted at both levels (targets by key, sources by IP) so an unchanged
- * selection renders byte-identical documents pass after pass — the memo
- * that suppresses no-op writes, and the version stamp the listener gate
- * waits on, both depend on that.
+ * Group a selection into one filter chain per egress target. Both levels
+ * are sorted so an unchanged selection renders identical bytes, which the
+ * no-op write check and the version stamp rely on.
  */
 export function groupChains(selected: PodTarget[]): FilterChainSpec[] {
   const byKey = new Map<string, Set<string>>()
@@ -109,10 +81,8 @@ export interface LdsInput {
   trio: ListenerTrio
   chains: FilterChainSpec[]
   /**
-   * Opaque version stamp Envoy uses to decide a document changed. netd
-   * passes a hash of the rendered content, so an unchanged reconcile is a
-   * genuine no-op for Envoy even if the file is rewritten — and the same
-   * stamp is what the listener gate waits to see acknowledged.
+   * Version stamp for the document. netd passes a hash of the rendered
+   * content; the listener gate waits for Envoy to report this version.
    */
   versionInfo: string
 }
@@ -197,12 +167,9 @@ function clusterResource(
 }
 
 /**
- * The LDS document (a DiscoveryResponse) for the current selection.
- *
- * Renders nothing at all when no pod is programmed: a listener with an
- * empty `filter_chains` is invalid config, and with no pods there is
- * nothing to serve anyway. The trio stays reserved regardless — the
- * allocator holds the slot for the netd pod's lifetime.
+ * The LDS document (a DiscoveryResponse) for the current selection. Empty
+ * when no pod is programmed, since a listener with no filter chains is
+ * invalid. The trio's ports stay reserved either way.
  */
 export function renderLds(input: LdsInput): Record<string, unknown> {
   const chains = input.chains.filter((c) => c.podIps.length > 0)
@@ -215,7 +182,7 @@ export function renderLds(input: LdsInput): Record<string, unknown> {
   return { version_info: input.versionInfo, resources }
 }
 
-/** The names the LDS document above declares — what the gate waits for. */
+/** Listener names renderLds declares, for the listener gate. */
 export function ldsListenerNames(input: Pick<LdsInput, 'installNamespace' | 'chains'>): string[] {
   if (input.chains.every((c) => c.podIps.length === 0)) return []
   return LEGS.map((leg) => listenerName(input.installNamespace, leg))
@@ -237,18 +204,13 @@ export function renderCds(input: CdsInput): Record<string, unknown> {
 }
 
 /**
- * The static bootstrap. Only wiring: an admin endpoint and the two
- * file-based xDS sources. Every listener and cluster is dynamic, so netd
- * owns the whole datapath surface and the image stays a stock Envoy.
+ * The static bootstrap: an admin endpoint and the two file-based xDS
+ * sources. All listeners and clusters are dynamic.
  *
- * The admin endpoint is a UNIX SOCKET, not a TCP port. These Envoys run
- * with hostNetwork, and several installs share a node (the real one plus
- * an e2e run's), so any fixed loopback port is a guaranteed collision —
- * the second Envoy dies with "Address already in use" before it serves
- * anything. The socket lives in each install's own config volume, so it
- * cannot collide by construction, it is unreachable off-node for free, and
- * netd (which shares that volume) can reach it to gate on listener state.
- * Triage: `curl --unix-socket <adminPath> http://localhost/stats`.
+ * The admin endpoint is a unix socket in the install's config volume, not
+ * a TCP port, because several installs' hostNetwork Envoys can share a
+ * node and a fixed port would collide. Debug with
+ * `curl --unix-socket <adminPath> http://localhost/stats`.
  */
 export function renderBootstrap(opts: {
   ldsPath: string

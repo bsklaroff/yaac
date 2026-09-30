@@ -4,8 +4,7 @@
  * `POST /project/:slug/rebuild`): zero or more `{type:'progress'}` events
  * followed by exactly one terminal `{type:'result'}` or `{type:'error'}`.
  *
- * Browser-safe on purpose (no node imports) — the webapp consumes the same
- * streams as the CLI.
+ * Browser-safe (no node imports), since the webapp reads these streams too.
  */
 import { ServerError, type ErrorCode } from '#errors'
 
@@ -15,17 +14,11 @@ type NdjsonEvent<T> =
   | { type: 'error'; error: { code: ErrorCode; message: string } }
 
 /**
- * Read an NDJSON event stream, invoking `onProgress` per progress event
- * (default: print to the console, the CLI behavior) and returning the
- * terminal `result` payload. Throws with the server's message if the stream
- * carries an `error` event or ends without a result. A trailing line without
- * a final newline is still processed.
- *
- * An `error` event throws a `ServerError` carrying the server's own code,
- * not a bare `Error`: these streams answer 200 and put the failure in the
- * body, so this is the only place the code can survive to a caller that
- * branches on it (the webapp offers to install a `MISSING_TOOL`). Callers
- * that only print `.message` — the CLI — read the same as before.
+ * Read an NDJSON event stream, calling `onProgress` for each progress event
+ * (default: print it) and returning the `result` payload. An `error` event
+ * throws a `ServerError` with the server's code, so callers can branch on
+ * it (e.g. the webapp offers to install a `MISSING_TOOL`). Also throws if
+ * the stream ends without a result.
  */
 export async function consumeNdjsonStream<T>(
   res: Response,

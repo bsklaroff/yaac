@@ -1,20 +1,15 @@
 /**
- * The agent binaries a host runs its workspaces with, each from yaac's own
- * install of the package that ships it.
+ * The agent binaries the containerless driver runs, each from yaac's own
+ * install of its package. The driver installs a package the first time a
+ * create needs it and puts every package's bin dir ahead of the host's PATH.
+ * This lives in shared because the e2e tier stages stand-in agents at these
+ * paths.
  *
- * Only a runtime with no image to supply the tools needs this — the
- * containerless driver, which installs a package the first time a create
- * needs one of its binaries and puts every package's bin dir ahead of the
- * host's own PATH. It lives in shared rather than beside that driver because
- * the e2e tier stages its stand-in agents at exactly these paths.
- *
- * Pinned to `AGENT_CLIS` and `ACP_ADAPTERS`, the same versions the image
- * installs: yaac's postures are written against each CLI's flags and read
- * back from what it reports, so a host running another release is a host
- * where a posture can silently mean something else. That is why a CLI the
- * host already has is never used: a codex behind the latest release opens an
- * update screen, one ahead of it can have dropped a policy yaac launches, and
- * either reads as yaac being broken.
+ * Versions are pinned to `AGENT_CLIS` and `ACP_ADAPTERS`, the same ones the
+ * image installs, because yaac's permission postures were verified against
+ * those releases. A CLI the host already has is never used: an older codex
+ * opens an update screen, and a newer one may have dropped a flag yaac
+ * passes.
  */
 import path from 'node:path'
 import { nodeLocalPath } from '#project-paths'
@@ -24,21 +19,16 @@ export interface AgentPackage {
   package: string
   version: string
   /**
-   * Whether npm runs the package's lifecycle scripts — opt-in, so a pin bump
-   * that adds one is a deliberate change rather than third-party code picked
-   * up silently. Only claude and opencode need theirs: each postinstall puts
-   * the native binary in place, and without it the CLI refuses to start.
-   * codex's binary arrives as an exact-pinned optionalDependency, which is
-   * installed either way; pi's postinstall fetches a platform binary yaac does
-   * not need; the adapters have none.
+   * Whether npm runs the package's lifecycle scripts. Opt-in, so no
+   * third-party script runs unreviewed. Only claude and opencode need theirs,
+   * to put their native binary in place.
    */
   runScripts: boolean
 }
 
 /**
- * Keyed by the BINARY a launch execs — an agent CLI, or an ACP adapter that
- * is a separate program. opencode's adapter is its CLI (`opencode acp`), so
- * it has one entry.
+ * Keyed by the binary a launch execs: an agent CLI, or an ACP adapter that
+ * is a separate program. opencode's adapter is its CLI (`opencode acp`).
  */
 export const AGENT_PACKAGES: Record<string, AgentPackage> = Object.fromEntries([
   ...AGENT_TOOLS.map((tool): [string, AgentPackage] =>
@@ -52,11 +42,9 @@ export const AGENT_PACKAGES: Record<string, AgentPackage> = Object.fromEntries([
 ])
 
 /**
- * NODE-LOCAL: the npm prefix one pinned package is installed under — its
- * binaries land in `<prefix>/bin`. Named by package and version, so a
- * prefix never changes once it exists: a version bump installs beside it,
- * and a workspace launched against the old one keeps running what it
- * started with.
+ * NODE-LOCAL: the npm prefix a pinned package is installed under (binaries
+ * in `<prefix>/bin`). Named by package and version, so a version bump
+ * installs beside the old one and running workspaces keep theirs.
  */
 export function agentPackagePrefix({ package: pkg, version }: AgentPackage): string {
   return nodeLocalPath('agent-tools', `${pkg.replace('/', '+')}@${version}`)

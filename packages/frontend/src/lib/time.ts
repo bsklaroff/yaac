@@ -1,6 +1,5 @@
-/** Human relative age ("5m ago") from a UTC 'YYYY-MM-DD HH:MM:SS' time — the
- *  wire shape of every server timestamp (`formatUtcTimestamp`); '' if unset
- *  or unparseable. */
+/** A relative age ("5m ago") from a server timestamp (UTC
+ *  'YYYY-MM-DD HH:MM:SS'); '' if unset or unparseable. */
 export function relativeAge(utc: string | undefined): string {
   if (!utc) return ''
   const t = Date.parse(utc.replace(' ', 'T') + 'Z')

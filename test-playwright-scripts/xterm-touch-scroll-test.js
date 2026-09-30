@@ -2,32 +2,29 @@
 /*
  * xterm-touch-scroll-test.js
  *
- * Verifies that a one-finger swipe scrolls a tmux pane on a touch device —
- * the behavior packages/frontend/src/lib/touch-scroll.ts exists to provide —
- * in a real headless Chromium against a real tmux, with no cluster or server.
+ * Verifies that a one-finger swipe scrolls a tmux pane on a touch device
+ * (packages/frontend/src/lib/touch-scroll.ts), in headless Chromium against a
+ * real tmux, with no cluster or server.
  *
- * It matters here rather than in a unit test because every part of the claim
- * is a browser fact jsdom cannot have an opinion about: that xterm ships no
- * touch handling of its own, that a touch pan synthesizes no wheel event, that
- * `touch-action: none` is what lets a touchmove be canceled, and that
- * canceling it also suppresses the compatibility click (so a swipe cannot also
- * press whatever it started over — patchClickForwarding would hand that to the
- * TUI).
+ * This can't be a jsdom unit test: it depends on browser behavior. xterm has
+ * no touch handling, a touch pan produces no wheel event, a touchmove is
+ * only cancelable under `touch-action: none`, and canceling it also
+ * suppresses the compatibility click (otherwise patchClickForwarding would
+ * send the swipe to the TUI as a click).
  *
- * The pipeline is the real @xterm/xterm bundle, with the real touch-scroll
- * source bundled from disk at runtime, over a WS bridge into a `tmux attach`
- * running with `mouse on` — so a swipe scrolls only if it becomes an SGR wheel
- * report tmux acts on. Chromium runs in a phone-sized touch context and the
- * gestures are dispatched through CDP as real touch input.
+ * Pipeline: the real xterm.js with touch-scroll.ts bundled from source, over
+ * a WS bridge to `tmux attach` with `mouse on`, so a swipe scrolls only if it
+ * becomes an SGR wheel report tmux acts on. Chromium runs in a phone-sized
+ * touch context and gestures are sent through CDP as real touch input.
  *
- * Checks (PASS/FAIL per line):
- *   - unpatched, a swipe scrolls nothing and synthesizes no wheel (the bug);
- *   - patched, a swipe down reveals earlier history, and back up returns to
- *     the live bottom of the pane;
- *   - patched, a swipe fires no click, while a tap still fires exactly one;
- *   - a swipe under the slop threshold is left alone entirely;
- *   - a flick glides on well past a held drag of the same length, and a tap
- *     during the glide stops it without firing a click.
+ * Checks:
+ *   - unpatched, a swipe scrolls nothing and produces no wheel event;
+ *   - patched, swiping down reveals earlier history and swiping up returns
+ *     to the bottom;
+ *   - patched, a swipe fires no click, and a tap fires exactly one;
+ *   - a swipe under the slop threshold is ignored;
+ *   - a flick glides well past a held drag of the same length, and a tap
+ *     during the glide stops it without a click.
  *
  * Run (inside a yaac dev session; needs tmux and /opt/yaac/streamd for the
  * prebuilt node-pty):
@@ -55,7 +52,7 @@ const WORKSPACE = path.resolve(path.dirname(new URL(import.meta.url).pathname), 
 const FRONTEND = path.join(WORKSPACE, 'packages/frontend')
 const XTERM_DIR = path.dirname(require.resolve('@xterm/xterm/package.json', { paths: [FRONTEND] }))
 const FIT_DIR = path.dirname(require.resolve('@xterm/addon-fit/package.json', { paths: [FRONTEND] }))
-// The prebuilt in-pod pty binding (the session image ships it built).
+// node-pty prebuilt in the session image.
 const nodePty = require('/opt/yaac/streamd/node_modules/@lydell/node-pty')
 const { WebSocketServer } = require('ws')
 
@@ -69,17 +66,15 @@ const check = (ok, label, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail ? `  — ${detail}` : ''}`)
 }
 
-// ── tmux with mouse reporting and a deep history ────────────────────────────
+// tmux with mouse reporting and a deep history.
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'touch-scroll-'))
 const SOCK = path.join(stage, 'tmux.sock')
 sh(`tmux -S ${SOCK} -f /dev/null new-session -d -s touch -x 120 -y 40`)
 sh(`tmux -S ${SOCK} set-option -g history-limit 50000 \\; set-option -g mouse on \\; set-option -g status off`)
-// No trailing `clear`: its E3 erase would wipe the very scrollback the swipe
-// has to reveal.
+// No trailing `clear`: it would wipe the scrollback the swipe reveals.
 sh(`tmux -S ${SOCK} send-keys -t touch "seq -f 'history line %g' 1 ${HISTORY_LINES}" Enter`)
 await sleep(2500)
 
-// ── Bundle the real touch-scroll source for the browser ─────────────────────
 const esbuildDir = fs.readdirSync(path.join(WORKSPACE, 'node_modules/.pnpm'))
   .find((d) => d.startsWith('esbuild@'))
 const esbuild = require(path.join(WORKSPACE, 'node_modules/.pnpm', esbuildDir, 'node_modules/esbuild'))
@@ -91,17 +86,14 @@ const touchBundle = (await esbuild.build({
   globalName: 'TouchScroll',
 })).outputFiles[0].text
 
-// The one CSS rule the handler depends on, taken from the app's own
-// stylesheet rather than restated — a swipe is only cancelable if the browser
-// was told not to pan (see index.css). Whatever value is in there is what gets
-// tested: the invariant is that one-finger touchmoves stay cancelable, which
-// the run below measures rather than assuming from the keyword.
+// The handler needs .xterm's touch-action rule, so copy it from the app's
+// index.css. The run below checks that touchmoves stay cancelable under
+// whatever value it has.
 const appCss = fs.readFileSync(path.join(FRONTEND, 'src/index.css'), 'utf8')
 const touchActionRule = appCss.match(/\.xterm\s*\{[^}]*touch-action:[^}]*\}/)?.[0]
 const touchActionValue = touchActionRule?.match(/touch-action:\s*([^;}]+)/)?.[1].trim()
 check(!!touchActionRule, 'index.css sets touch-action on .xterm', `touch-action: ${touchActionValue}`)
 
-// ── Harness page ────────────────────────────────────────────────────────────
 const PAGE = `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/xterm.css">
@@ -132,8 +124,8 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8">
   const el = document.querySelector('.xterm')
   el.addEventListener('click', () => { m.clicks++ })
   el.addEventListener('wheel', () => { m.wheels++ })
-  // A touchmove the browser has already claimed for its own panning arrives
-  // uncancelable — which is the failure this whole CSS rule exists to prevent.
+  // A touchmove the browser has claimed for panning arrives uncancelable,
+  // which the touch-action rule exists to prevent.
   el.addEventListener('touchmove', (e) => {
     m.touchmoves++
     if (!e.cancelable) m.uncancelable++
@@ -192,7 +184,6 @@ wss.on('connection', (ws, req) => {
 })
 const httpPort = await new Promise((r) => server.listen(0, '127.0.0.1', () => r(server.address().port)))
 
-// ── Browser ─────────────────────────────────────────────────────────────────
 const browser = await pw.chromium.launch()
 const ctx = await browser.newContext({
   viewport: { width: 390, height: 844 },
@@ -203,8 +194,7 @@ const ctx = await browser.newContext({
 
 /** Open a page (patched or not) and wait for the attach redraw to go quiet. */
 async function open(patch) {
-  // Leave copy mode so every run scrolls from the same bottom-of-history
-  // baseline.
+  // Leave copy mode so every run starts from the bottom.
   try { sh(`tmux -S ${SOCK} send-keys -t touch -X cancel`) } catch { /* not in copy mode */ }
   const page = await ctx.newPage()
   const cdp = await ctx.newCDPSession(page)
@@ -215,11 +205,10 @@ async function open(patch) {
   return { page, cdp }
 }
 
-/** Drag one finger `dy` px from the middle of the screen (positive = down),
- *  holding still for `holdMs` before lifting — long enough by default that
- *  the release is a drag's, with no glide after it. Every event carries an
- *  explicit timestamp 16ms after the last (the handler measures the finger by
- *  event time), so the gesture's speed doesn't depend on CDP latency. */
+/** Drags one finger `dy` px (positive = down), holding for `holdMs` before
+ *  lifting; the default hold is long enough that no glide follows. Events
+ *  carry explicit timestamps 16ms apart, since the handler measures speed by
+ *  event time, so CDP latency doesn't affect it. */
 async function swipe(cdp, dy, { steps = 20, id = 1, holdMs = 150, settleMs = 900 } = {}) {
   const x = 195
   let y = dy > 0 ? 250 : 600
@@ -246,8 +235,7 @@ async function tap(cdp) {
   await sleep(300)
 }
 
-/** The lowest `history line N` visible, which is where in the history the
- *  pane is sitting. */
+/** The first `history line N` on screen: where in the history the pane is. */
 const topLine = (rows) => {
   for (const r of rows) {
     const m = r.match(/history line (\d+)/)
@@ -256,7 +244,7 @@ const topLine = (rows) => {
   return null
 }
 
-// ── 1. Unpatched: the bug ───────────────────────────────────────────────────
+// 1. Unpatched: swipes don't scroll.
 {
   const { page, cdp } = await open(false)
   const before = topLine(await page.evaluate(() => window.__screen()))
@@ -267,14 +255,13 @@ const topLine = (rows) => {
     `top line ${before} → ${after}`)
   check(m.touchmoves > 0, 'unpatched: touch events do reach the page', `${m.touchmoves} touchmoves`)
   check(m.wheels === 0, 'unpatched: the browser synthesizes no wheel from touch')
-  // Not a check: with no handler to claim it, Chromium marks every move after
-  // the first uncancelable regardless of the touch-action value — which is why
-  // cancelability is only meaningful to assert on the patched page below.
+  // Logged, not checked: with no handler, Chromium marks moves after the
+  // first uncancelable whatever touch-action says.
   console.log(`      (unclaimed gesture: ${m.uncancelable}/${m.touchmoves} moves uncancelable)`)
   await page.close()
 }
 
-// ── 2. Patched: the swipe scrolls, and comes back ───────────────────────────
+// 2. Patched: a swipe scrolls, and scrolls back.
 {
   const { page, cdp } = await open(true)
   const bottom = topLine(await page.evaluate(() => window.__screen()))
@@ -282,8 +269,7 @@ const topLine = (rows) => {
   const scrolled = topLine(await page.evaluate(() => window.__screen()))
   check(scrolled !== null && bottom !== null && scrolled < bottom,
     'patched: a swipe down reveals earlier history', `top line ${bottom} → ${scrolled}`)
-  // ~400px of travel at a 5-line report every ~5 cell-heights is roughly one
-  // screen; assert the order of magnitude, not an exact line count.
+  // ~400px is roughly one screen; check the order of magnitude only.
   const moved = bottom - scrolled
   check(moved >= 10 && moved <= 120, 'patched: it scrolls about as far as the finger moved',
     `${moved} lines`)
@@ -300,22 +286,19 @@ const topLine = (rows) => {
   const tapped = (await page.evaluate(() => window.__m)).clicks
   check(tapped === 1, 'patched: a tap still fires exactly one click', `${tapped} clicks`)
 
-  // Under the slop the gesture is left entirely alone.
   const atRest = topLine(await page.evaluate(() => window.__screen()))
   await swipe(cdp, 6, { steps: 3 })
   const afterNudge = topLine(await page.evaluate(() => window.__screen()))
   check(afterNudge === atRest, 'patched: a sub-slop nudge scrolls nothing',
     `top line ${atRest} → ${afterNudge}`)
 
-  // The discriminating case for the CSS value. A drag that creeps through the
-  // slop leaves the first moves unclaimed, which is the browser's cue to
-  // decide the gesture is its own — under any touch-action that still permits
-  // it something, every later move then arrives uncancelable and the rest of
-  // the swipe is lost. Under a value that permits nothing, the handler picks
-  // it up at the slop and scrolls normally.
+  // This case tests the touch-action value. A slow drag leaves its first
+  // moves unclaimed; if touch-action permits any panning, the browser then
+  // takes the gesture and later moves are uncancelable. With `none`, the
+  // handler picks it up at the slop and scrolls.
   await page.evaluate(() => { window.__m.uncancelable = 0; window.__m.touchmoves = 0 })
   const beforeCreep = topLine(await page.evaluate(() => window.__screen()))
-  await swipe(cdp, 400, { steps: 100 }) // 4px a move — the first two are sub-slop
+  await swipe(cdp, 400, { steps: 100 }) // 4px per move; the first two are sub-slop
   const afterCreep = topLine(await page.evaluate(() => window.__screen()))
   const creep = await page.evaluate(() => window.__m)
   check(creep.uncancelable === 0, 'patched: a slow drag stays cancelable throughout',
@@ -326,23 +309,22 @@ const topLine = (rows) => {
   await page.close()
 }
 
-// ── 3. Patched: a flick glides, and a tap stops the glide ───────────────────
+// 3. Patched: a flick glides, and a tap stops the glide.
 {
   const { page, cdp } = await open(true)
   const bottom = topLine(await page.evaluate(() => window.__screen()))
   await swipe(cdp, 200, { steps: 8 }) // held: a drag
   const dragged = topLine(await page.evaluate(() => window.__screen()))
   const dragLines = bottom - dragged
-  // Same travel, lifted while moving (200px in ~130ms, ~1.5px/ms).
+  // Same travel, lifted while moving (~1.5px/ms).
   await swipe(cdp, 200, { steps: 8, holdMs: 0, settleMs: 3000 })
   const flicked = topLine(await page.evaluate(() => window.__screen()))
   const flickLines = dragged - flicked
   check(dragLines > 0 && flickLines >= dragLines * 3,
     'patched: a flick glides on well past the same drag', `drag ${dragLines} lines, flick ${flickLines} lines`)
 
-  // Flick again (away from the bottom, so the glide can't run out of history)
-  // and tap mid-glide — once it is provably gliding, so the stop and no-click
-  // checks can't pass or fail against a gesture that never glided.
+  // Flick again and tap mid-glide, but only after confirming it is gliding,
+  // so the stop and no-click checks are meaningful.
   const clicks = (await page.evaluate(() => window.__m)).clicks
   await swipe(cdp, 200, { steps: 8, holdMs: 0, settleMs: 150 })
   const gliding = topLine(await page.evaluate(() => window.__screen()))

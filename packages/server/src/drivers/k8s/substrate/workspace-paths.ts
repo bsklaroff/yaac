@@ -7,18 +7,12 @@ import {
 import type { WorkspacePaths } from '#drivers/contract'
 
 /**
- * Where a workspace pod's things are, as the pod itself sees them — this
- * driver's answer to `WorkspaceDriver.workspacePaths`.
+ * The k8s answer to `WorkspaceDriver.workspacePaths`: paths as seen inside
+ * a workspace pod. Each pod has its own mount namespace, so every workspace
+ * uses the same constant paths.
  *
- * Every workspace answers the SAME paths, and can: each pod has its own
- * mount namespace, so one constant per path collides with nothing. The tmux
- * socket in particular sits on a pod-local emptyDir that no other pod and
- * nothing host-side can open, which is why the paths need no workspace in
- * them and why the argument is unused.
- *
- * The constants themselves stay in `@yaac/shared/paths` because the image's
- * own scripts (`workspace-bin/yaac-workspace-init`, the acpd COPY target) are
- * built against the same spellings; this is where they enter the contract.
+ * The constants live in `@yaac/shared/paths` because the image's scripts
+ * (`workspace-bin/yaac-workspace-init`, the acpd COPY target) use them too.
  */
 export function k8sWorkspacePaths(): WorkspacePaths {
   return {
@@ -26,9 +20,8 @@ export function k8sWorkspacePaths(): WorkspacePaths {
     workspaceDir: '/workspace',
     scratchDir: '/tmp',
     acpSockDir: CONTAINER_ACP_DIR,
-    // The pod's ssh identities come from the egress proxy's forwarded agent,
-    // so nothing in a workspace here binds one of its own. Named for the
-    // contract's sake; no k8s path reads it.
+    // Required by the contract but unused: k8s pods get ssh identities
+    // from the egress proxy's forwarded agent.
     sshAgentSock: '/run/yaac/ssh-agent.sock',
     acpLogDir: CONTAINER_ACP_LOG_DIR,
     attachmentsDir: CONTAINER_ATTACHMENTS_DIR,

@@ -4,9 +4,8 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { testTmpBase, e2eMkdtemp, setHermeticScratch, removeScratchTree } from '#tmp'
 
-// This file runs under the `unit:test-utils` project, so unit-setup has
-// already put the module in hermetic mode. Each case sets the mode it is
-// asserting on, and the hook restores the unit-run default.
+// unit-setup has already set hermetic mode. Each case sets the mode it
+// checks, and the hook restores the default.
 afterEach(() => {
   vi.unstubAllEnvs()
   setHermeticScratch(true)
@@ -20,25 +19,24 @@ describe('testTmpBase', () => {
   })
 
   it('stays the OS tmpdir for a hermetic run even with a custom data dir', () => {
-    // A unit run must not follow YAAC_DATA_DIR onto a virtiofs/network
-    // filesystem: its assertions are timestamp-sensitive.
+    // Unit tests are timestamp-sensitive, so they avoid YAAC_DATA_DIR,
+    // which may be on a virtiofs/network filesystem.
     setHermeticScratch(true)
     vi.stubEnv('YAAC_DATA_DIR', '/srv/yaac-data')
     expect(testTmpBase()).toBe(os.tmpdir())
   })
 
   it('hangs off the default data dir for a pod-facing (api/e2e) run', () => {
-    // Node-visible by contract — `yaac cluster check` mounts the data dir
-    // into a pod on every setup. os.tmpdir() carries no such guarantee.
+    // `yaac cluster check` proves the data dir is visible to the node;
+    // os.tmpdir() has no such guarantee.
     setHermeticScratch(false)
     vi.stubEnv('YAAC_DATA_DIR', undefined)
     expect(testTmpBase()).toBe(path.join(os.homedir(), '.yaac', 'e2e-tmp'))
   })
 
   it('follows YAAC_DATA_DIR for a pod-facing run (the nested-session case)', () => {
-    // Inside a nested yaac the pod's /tmp and $HOME are overlay
-    // filesystems the node cannot see; $YAAC_DATA_DIR is the node-shared
-    // mount at the same absolute path on both sides.
+    // In a nested yaac, /tmp and $HOME are invisible to the node, while
+    // $YAAC_DATA_DIR is mounted at the same path on both sides.
     setHermeticScratch(false)
     vi.stubEnv('YAAC_DATA_DIR', '/Users/ben/.yaac/nested')
     expect(testTmpBase()).toBe('/Users/ben/.yaac/nested/e2e-tmp')
@@ -86,10 +84,8 @@ describe('removeScratchTree', () => {
   })
 
   it('salvages what it can and reports an unreadable subtree instead of throwing', async () => {
-    // Stands in for what e2e runs leave behind: a 0700 root-owned libpod/
-    // inside a hostPath-mounted workspace, which the test user cannot empty.
-    // Mode 0 reproduces the same unreadable-directory case from the owner's
-    // side, without needing root to set up.
+    // Stands in for the root-owned 0700 libpod/ that e2e runs leave in a
+    // workspace. Mode 0 gives the same unreadable dir without root.
     setHermeticScratch(true)
     const dir = await e2eMkdtemp('yaac-rm-stuck-')
     const locked = path.join(dir, 'workspaces', 'wt-1', 'libpod')
@@ -103,7 +99,7 @@ describe('removeScratchTree', () => {
     try {
       const stuck = await removeScratchTree(dir)
 
-      // Reported, not thrown — a test must not fail over litter it cannot remove.
+      // Reported, not thrown.
       expect(stuck).toEqual([locked])
       // Everything outside the locked subtree is gone.
       await expect(fs.stat(deletable)).rejects.toThrow()
@@ -117,8 +113,8 @@ describe('removeScratchTree', () => {
   })
 
   it('still retries a transient ENOTEMPTY rather than giving up', async () => {
-    // A terminating pod writing under a tree the walk just emptied is a race
-    // that resolves; it must not be confused with a permission fact.
+    // A terminating pod writing into a just-emptied dir is a transient race,
+    // not a permission problem.
     setHermeticScratch(true)
     const dir = await e2eMkdtemp('yaac-rm-race-')
     await fs.mkdir(path.join(dir, 'sub'), { recursive: true })

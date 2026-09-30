@@ -4,15 +4,11 @@ import type { z } from 'zod'
 import { ServerError } from '@yaac/shared/errors'
 
 /**
- * `zValidator` that *throws* a `ServerError('VALIDATION')` on bad input rather
- * than returning an error response. `app.onError` then serializes it to the
- * same `{ error: { code: 'VALIDATION', message } }` (400) body as any other
- * thrown error — so validation joins the single throw→onError error path.
- *
- * Throwing (vs. the hook returning `c.json(...)`) also keeps the failure out
- * of the route's inferred response type, so `AppType` stays pure-success and
- * clients can read `res.json()` with no error-member union to narrow. Every
- * route validates through this wrapper.
+ * `zValidator` that throws `ServerError('VALIDATION')` on bad input, so
+ * `app.onError` serializes it like any other error (400). Throwing instead of
+ * returning `c.json(...)` also keeps errors out of each route's inferred
+ * response type, so clients read `res.json()` without narrowing. Every route
+ * validates through this wrapper.
  */
 export const zv = <T extends z.ZodType, Target extends keyof ValidationTargets>(
   target: Target,

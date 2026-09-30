@@ -24,8 +24,7 @@ function makeDeps(cfg: ServerConfig | null): ServerSwitchDeps & {
   return {
     readServerConfig: vi.fn().mockResolvedValue(cfg),
     writeServerConfig: vi.fn().mockResolvedValue(undefined),
-    // The real withServerSelected is pure — use it verbatim via a thin copy
-    // of its contract to keep assertions on what gets persisted.
+    // A minimal copy of withServerSelected's contract.
     select: (existing, url) => ({
       url,
       enabled: true,
@@ -44,8 +43,6 @@ function makeDeps(cfg: ServerConfig | null): ServerSwitchDeps & {
 describe('parseServerSelection', () => {
   it('accepts a url and rejects everything else', () => {
     expect(parseServerSelection({ url: 'https://a.ts.net' })).toEqual({ url: 'https://a.ts.net' })
-    // The shape that used to mean "the local server" is now just malformed:
-    // every server is named by its origin.
     expect(parseServerSelection({ kind: 'local' })).toBeNull()
     expect(parseServerSelection({ url: '' })).toBeNull()
     expect(parseServerSelection({ url: 42 })).toBeNull()
@@ -92,8 +89,7 @@ describe('applyServerSwitch', () => {
   })
 
   it('re-selecting the already-selected server is a real retry, not a no-op', async () => {
-    // From the disconnected page this IS the retry button: the config
-    // already names this origin and the window still needs to land on it.
+    // On the disconnected page this is the retry button.
     const deps = makeDeps(CFG)
     expect(await applyServerSwitch({ url: 'https://a.ts.net' }, deps)).toEqual({ ok: true })
     expect(deps.probeServer).toHaveBeenCalledWith('https://a.ts.net')
@@ -101,8 +97,6 @@ describe('applyServerSwitch', () => {
   })
 
   it('carries the install driver through a switch', async () => {
-    // The record of what kind of install this is shares the file with the
-    // selection; switching servers must not drop it.
     const deps = makeDeps({ ...CFG, driver: 'k8s' })
     await applyServerSwitch({ url: 'https://b.ts.net' }, deps)
     expect(deps.writeServerConfig.mock.calls[0][0]).toMatchObject({ driver: 'k8s' })

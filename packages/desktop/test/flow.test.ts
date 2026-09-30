@@ -47,7 +47,6 @@ describe('runFlow', () => {
   })
 
   it('a server elsewhere takes the identical path', async () => {
-    // Nothing in the flow asks where a server runs: it is an origin either way.
     const { deps, ensure } = fakeDeps({
       resolve: [REMOTE],
       probe: () => Promise.resolve({ kind: 'tailnet', login: 'a@b', name: 'A' }),
@@ -57,8 +56,7 @@ describe('runFlow', () => {
   })
 
   it('nothing selected → the picker failure, with no server ever contacted', async () => {
-    // The shell starts no server. The page this lands on is the fix, so the
-    // hint sends the user there rather than to a terminal.
+    // The hint points at the picker, not a terminal.
     const { deps, ensure } = fakeDeps({
       resolve: [new Error(
         'No yaac server selected.\n'
@@ -101,8 +99,7 @@ describe('runFlow', () => {
         detail: 'cannot reach the yaac server at http://127.0.0.1:8787',
       },
     })
-    // A server on THIS machine: the hint names the command that brings it
-    // back, because the picker is now the whole window for that user.
+    // A server on this machine: the hint names the command to start it.
     if (!result.ok) {
       expect(result.error.hint).toContain('yaac server start')
       expect(result.error.hint).toMatch(/pick a different server/)
@@ -117,7 +114,6 @@ describe('runFlow', () => {
       ok: false,
       error: { title: 'Could not connect to https://srv.ts.net', detail: refusal },
     })
-    // Nothing to start for a server elsewhere, so no command is named.
     if (!result.ok) expect(result.error.hint).not.toContain('yaac server start')
   })
 
@@ -131,9 +127,8 @@ describe('runFlow', () => {
 
   it('rendererBaseUrl overrides the landing origin (Vite dev), not the target', async () => {
     const { deps, statuses } = fakeDeps({ rendererBaseUrl: 'http://localhost:1420/' })
-    // The trailing slash is normalized, never doubled.
     expect(await runFlow(deps)).toEqual({ ok: true, url: 'http://localhost:1420/' })
-    // The probe still talked to the real target; only the final URL is overridden.
+    // The probe still talked to the real target.
     expect(statuses).toContain(`Connecting to ${LOCAL.baseUrl}…`)
     expect(statuses).toContain('Opening http://localhost:1420…')
   })
@@ -168,9 +163,7 @@ describe('probeIdentity', () => {
   })
 
   it('forces the build-skew warning off — the shell has no build identity', async () => {
-    // With a build id injected and a remote target reporting a different
-    // one, the shared client would warn on stderr; the shell must not
-    // (it has no build identity — the id here belongs to no shell code).
+    // The ids differ, so the shared client would normally warn on stderr.
     vi.stubEnv('YAAC_BUILD_ID', 'shell-build')
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const fetchImpl: typeof globalThis.fetch = () =>

@@ -1,23 +1,15 @@
 /**
- * The Kubernetes objects the proxy is told through, and the ones it reports
- * through — their names, their labels, and the codecs between an object's
- * `data` and the proxy's in-memory views.
+ * Names, labels and codecs for the Kubernetes objects the proxy reads and
+ * writes (docs/workspace-egress.md). The server writes the inputs (the
+ * credentials Secret, a secrets Secret per project, a registration ConfigMap
+ * per workspace); the proxy writes the outputs (refreshed OAuth bundles, the
+ * CA, blocked-host and git-auth-failure records). Each object has one writer.
  *
- * Everything the proxy needs arrives as objects it watches (the credentials
- * Secret, one Secret per project's secret values, one ConfigMap per workspace
- * registration) and everything it reports goes out as objects the server
- * watches (the refreshed OAuth bundles, the CA, the blocked-host and
- * git-auth-failure records). One writer per object: the server writes the
- * inputs, this process writes the outputs, and nothing is ever read back
- * from the process that wrote it (docs/workspace-egress.md).
- *
- * Pure and unit-tested: a decoder that goes wrong
- * fails SILENTLY — the credential simply does not arrive, or a registration
- * is dropped and the workspace fails closed — so the shapes are pinned here
- * rather than inside the listener that cannot be imported.
+ * Kept pure so tests can pin the shapes: a broken decoder fails silently
+ * (a credential never arrives, or a workspace fails closed).
  *
  * Names and labels must match packages/server/src/drivers/k8s/substrate/
- * proxy-constants.ts (the proxy cannot import src/).
+ * proxy-constants.ts (the proxy cannot import server code).
  */
 
 import { OPENCODE_PROVIDER_HOSTS, PI_PROVIDER_HOSTS } from './tool-providers.generated'
@@ -26,11 +18,10 @@ import { OPENCODE_PROVIDER_HOSTS, PI_PROVIDER_HOSTS } from './tool-providers.gen
  *  `registration`. The server stamps it; the three informers select on it. */
 export const LABEL_PROXY_INPUT = 'yaac.proxy-input'
 /** Label naming which output an object is: `refreshed`, `ca` or `state`.
- *  Pre-created by the server (RBAC cannot scope `create` by name), written
- *  here, watched there. */
+ *  The server pre-creates these, since RBAC cannot scope `create` by name. */
 export const LABEL_PROXY_OUTPUT = 'yaac.proxy-output'
-/** The workspace a registration ConfigMap belongs to — the same key every
- *  workspace pod carries (pod-watch.ts). */
+/** The workspace a registration ConfigMap belongs to (same key as
+ *  pod-watch.ts). */
 export const LABEL_WORKSPACE_ID = 'yaac.workspace-id'
 
 export const CREDENTIALS_SECRET_NAME = 'yaac-proxy-credentials'
@@ -77,9 +68,9 @@ export type HttpsCredentialEntry = { token: string; projects: string[] }
  *  known_hosts line that project trusts for it. */
 export type SshProjectGrant = { slug: string; host: string; knownHostsEntry: string }
 
-/** One ssh identity for the agent: the OpenSSH-encoded private key, its
- *  public line (`<type> <base64 blob> <comment>` — the blob is what the
- *  agent protocol names the key by) and the projects it is assigned to. */
+/** One ssh identity: the OpenSSH private key, its public line
+ *  (`<type> <base64 blob> <comment>`; the agent protocol identifies keys by
+ *  the blob) and the projects it is assigned to. */
 export type SshCredentialEntry = { privateKey: string; publicKey: string; projects: SshProjectGrant[] }
 
 /** Everything the credentials Secret carries, decoded. */
@@ -100,11 +91,9 @@ export const EMPTY_CREDENTIALS: ProxyCredentials = {
 
 /**
  * An injection as registered. Instead of a literal `value`, it may carry a
- * `secretRef` naming one of the values in a project's secrets Secret (plus
- * an optional header `prefix`, e.g. "Bearer "). References keep
- * registrations secret-free; the value is resolved per request from the
- * secrets map, which also means a rotation applies to live workspaces
- * immediately.
+ * `secretRef` naming a value in the project's secrets Secret (plus an
+ * optional header `prefix`, e.g. "Bearer "). The reference is resolved per
+ * request, so registrations hold no secrets and rotations apply at once.
  */
 export type RegisteredInjection = {
   action: 'set_header' | 'replace_header' | 'remove_header' | 'replace_body_param'
@@ -121,11 +110,9 @@ export type HostInjectionRule = {
 }
 
 /**
- * Per-workspace upstream redirect: when the proxy MITMs `hostname`, forward
- * the inner HTTP request to this target instead of the real upstream. Only
- * applied inside the MITM path — the client still sees a TLS handshake for
- * the original hostname, and credential injection still runs before
- * forward. Test-only: lets e2e route "api.anthropic.com" to a mock pod.
+ * Test-only upstream redirect: when the proxy MITMs a hostname, forward the
+ * decrypted request here instead (e.g. "api.anthropic.com" to a mock pod).
+ * The client still sees TLS for the original host, and injection still runs.
  */
 export type UpstreamRedirect = { host: string; port: number; tls?: boolean }
 
@@ -254,16 +241,10 @@ function decodeCodex(o: Record<string, unknown> | null): CodexCreds | null {
 }
 
 /**
- * The provider must be recorded and known to this registry: it selects the
- * host the key is swapped on, so defaulting a missing one would inject the
- * key on a vendor the user never chose. Validated against the host map
- * rather than assumed — matching the server, which treats a credential
- * without a usable provider as unconfigured. Disagreeing here would report
- * the tool as authed on /tools while the server thinks it is not.
- *
- * hasOwn, not a truthiness index: the map is a plain object, so keys from
- * its prototype chain ("constructor", "toString", …) would index to a truthy
- * inherited member and pass.
+ * Decode an API-key credential whose provider must be present in `hosts`,
+ * since the provider picks the host the key is injected on. Like the server,
+ * a credential without a known provider counts as unconfigured. `hasOwn`
+ * keeps prototype keys like "constructor" from matching.
  */
 function decodeApiKeyTool(
   o: Record<string, unknown> | null,
@@ -276,9 +257,8 @@ function decodeApiKeyTool(
   return { kind: 'api-key', apiKey: o.apiKey, provider }
 }
 
-/** The second field of an OpenSSH public key line, canonicalized — the
- *  base64 of the key blob the agent protocol names the key by — or null
- *  when the line has none. */
+/** The canonicalized base64 key blob (second field) of an OpenSSH public
+ *  key line, or null when the line has none. */
 export function publicKeyBlob(publicKey: string): string | null {
   const field = publicKey.trim().split(/\s+/)[1]
   if (!field) return null
@@ -305,8 +285,7 @@ function decodeSshGrant(grant: unknown): SshProjectGrant | null {
   return nonEmpty(slug) && nonEmpty(host) && nonEmpty(knownHostsEntry) ? { slug, host, knownHostsEntry } : null
 }
 
-/** A key whose public line names no blob is dropped: the relay could never
- *  offer or sign with it, so loading it would only look like it works. */
+/** Keys whose public line has no blob are dropped; the relay can't use them. */
 function decodeSsh(entries: unknown[]): SshCredentialEntry[] {
   const out: SshCredentialEntry[] = []
   for (const entry of entries) {
@@ -336,12 +315,11 @@ export function sshKeyBlobsByProject(ssh: SshCredentialEntry[]): Map<string, Set
 }
 
 /**
- * The credentials Secret: one key per tool's host-store file (`claude.json`,
- * `codex.json`, `opencode.json`, `pi.json`, each the file's JSON verbatim)
- * plus the git credentials, each a JSON array of entries scoped to the
- * projects they are assigned to — `git-tokens.json` (HTTPS tokens) and
- * `ssh-keys.json` (ssh keys). A missing or malformed key reads as "no
- * credential of that kind"; a malformed entry is dropped on its own.
+ * The credentials Secret: one key per tool's credentials file (`claude.json`,
+ * `codex.json`, `opencode.json`, `pi.json`), plus `git-tokens.json` and
+ * `ssh-keys.json`, JSON arrays of project-scoped entries. A missing or
+ * malformed key means no credential of that kind; a malformed entry is
+ * dropped on its own.
  */
 export function decodeCredentials(secret: RawObject): ProxyCredentials {
   return {
@@ -381,10 +359,8 @@ function decodeRedirects(raw: unknown): Record<string, UpstreamRedirect> | undef
 
 /**
  * A registration ConfigMap: the workspace id from its label and the payload
- * from `registration.json`. `tool` and `projectSlug` are required — all
- * agent-credential injection is gated on the tool, and git-auth-failure
- * records are keyed by the owning project — so a registration without them
- * is dropped, which fails that workspace closed rather than half-open.
+ * from `registration.json`. A registration missing `tool` or `projectSlug` is
+ * dropped, so that workspace fails closed.
  */
 export function decodeRegistration(
   cm: RawObject,
@@ -454,7 +430,7 @@ export function decodeState(cm: RawObject): ProxyState {
   return state
 }
 
-// ── Encoders (what the proxy writes) ───────────────────────────────────
+// ── Encoders ───────────────────────────────────────────────────────────
 
 function secretData(entries: Record<string, string>): Record<string, string> {
   return Object.fromEntries(
@@ -463,9 +439,9 @@ function secretData(entries: Record<string, string>): Record<string, string> {
 }
 
 /**
- * The refreshed-bundles Secret's `data`, one credentials-file per key —
- * the shape the server's own loaders read, so adopting one is a plain save.
- * Only the keys given are encoded; a merge patch leaves the other alone.
+ * The refreshed-bundles Secret's `data`, one credentials file per key in the
+ * shape the server's loaders read. Only the given keys are encoded, so a
+ * merge patch leaves the other untouched.
  */
 export function encodeRefreshed(bundles: RefreshedBundles): Record<string, string> {
   const savedAt = new Date().toISOString()
@@ -481,13 +457,13 @@ export function encodeRefreshed(bundles: RefreshedBundles): Record<string, strin
   return secretData(entries)
 }
 
-/** The CA Secret's `data`: the key, the cert, and the combined trust bundle
- *  `{system roots} ∪ {CA}` nested containers replace their trust set with. */
+/** The CA Secret's `data`: key, cert, and the system roots plus the CA as
+ *  one trust bundle for nested containers. */
 export function encodeCa(ca: CaMaterial & { bundlePem: string }): Record<string, string> {
   return secretData({ 'ca.key': ca.keyPem, 'ca.pem': ca.certPem, 'ca-bundle.pem': ca.bundlePem })
 }
 
-/** The state ConfigMap's `data` — plain text, as ConfigMaps are. */
+/** The state ConfigMap's `data`. */
 export function encodeState(state: ProxyState): Record<string, string> {
   return {
     'blocked-hosts.json': JSON.stringify(state.blockedHosts, null, 2) + '\n',

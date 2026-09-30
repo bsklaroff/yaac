@@ -3,15 +3,13 @@ import fs from 'node:fs/promises'
 import type * as createModule from '#domain/workspaces/create'
 import type * as toolAuthModule from '@yaac/shared/tool-auth'
 
-// Queueing composes real rows, real create resolution and the real launch
-// path. The create itself is the boundary: past it lies the substrate, and
-// what a queued launch hands it is what these assertions are about.
+// Rows, create resolution and the launch path are real. createWorkspace is
+// stubbed, and the tests assert on what a queued launch passes to it.
 vi.mock('#domain/workspaces/create', async (importOriginal) => ({
   ...(await importOriginal<typeof createModule>()),
   createWorkspace: vi.fn(),
 }))
-// The host's tool credentials, read off disk: real unless a case says what
-// the host is signed in with.
+// The host's tool credentials: real unless a case overrides them.
 vi.mock('@yaac/shared/tool-auth', async (importOriginal) => {
   const actual = await importOriginal<typeof toolAuthModule>()
   return { ...actual, loadToolAuthEntry: vi.fn(actual.loadToolAuthEntry) }
@@ -62,8 +60,8 @@ beforeEach(async () => {
   await fs.mkdir(projectDir('proj'), { recursive: true })
   await createTestRepo(repoDir('proj'))
   await recordProject({ slug: 'proj', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
-  // A create records the workspace's row, as the real one does — a launched
-  // entry keeps a foreign key to it.
+  // Record the row as the real create does; a launched entry has a foreign
+  // key to it.
   mockCreate.mockReset().mockImplementation(async (slug, opts) => {
     await recordWorkspaceCreated({ projectSlug: slug, workspaceId: opts.workspaceId ?? 'minted' })
     return {
@@ -127,8 +125,8 @@ describe('queueWorkspace', () => {
   it('stores every setting concrete, defaulted from the parent workspace', async () => {
     await workspace('parent-1', { tool: 'codex', model: 'gpt-5.5', permissionMode: 'accept-edits' })
     const entry = await queueWorkspace('proj', { parent: 'parent-1', prompt: 'follow up' }, 'user')
-    // The parent's current model, its posture, and its REFERENCE branch —
-    // not its own agent branch.
+    // The parent's current model, permission mode, and base branch (not
+    // its agent branch).
     expect(entry).toMatchObject({
       parentWorkspaceId: 'parent-1',
       tool: 'codex',
@@ -142,20 +140,20 @@ describe('queueWorkspace', () => {
     // A different tool takes the create defaults for that tool instead.
     const other = await queueWorkspace('proj', { parent: 'parent', prompt: 'x', tool: 'claude' }, 'user')
     expect(other).toMatchObject({ tool: 'claude', model: FALLBACK_MODELS.claude, branch: 'develop' })
-    // …and a prefix names the parent like an id does.
+    // A prefix names the parent like an id does.
     expect(other.parentWorkspaceId).toBe('parent-1')
   })
 
   it('stores a branch for a parent still provisioning and for one whose row predates it', async () => {
-    // A workspace mid-create has its row but no conversation yet: its
-    // provisioning row names the tool.
+    // Mid-create there is no conversation yet, so the provisioning row
+    // supplies the tool.
     await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'booting', permissionMode: 'bypass', baseBranch: 'main' })
     registerProvisioning({ workspaceId: 'booting', projectSlug: 'proj', tool: 'opencode', kind: 'create' })
     const early = await queueWorkspace('proj', { parent: 'booting', prompt: 'x' }, 'user')
     expect(early).toMatchObject({ tool: 'opencode', permissionMode: 'bypass', branch: 'main' })
     expect(early.model).not.toBe('')
 
-    // No recorded base: origin's default branch, stored concretely.
+    // No recorded base: origin's default branch is stored.
     await workspace('old', { baseBranch: null })
     const fromOld = await queueWorkspace('proj', { parent: 'old', prompt: 'x' }, 'user')
     expect(fromOld.branch).toMatch(/^(main|master)$/)
@@ -180,7 +178,7 @@ describe('queueWorkspace', () => {
     const c = await queueWorkspace('proj', { parent: b.id, prompt: 'c', title: ' ' }, 'user')
     expect(c.groupId).toBe(review.groupId)
     expect(c.title).toBeUndefined()
-    // Named by name, or none at all; a name matching no group creates it.
+    // A group given by name, or none; an unknown name creates the group.
     expect((await queueWorkspace('proj', { parent: 'top', prompt: 'd', group: 'other' }, 'user')).groupId)
       .not.toBe(review.groupId)
     expect((await queueWorkspace('proj', { parent: 'top', prompt: 'e', group: null }, 'user')).groupId)
@@ -190,8 +188,8 @@ describe('queueWorkspace', () => {
   })
 
   it('queues under a create still in flight, before its row exists, by its full id', async () => {
-    // `id=$(yaac-mama create …); yaac-mama queue --parent-workspace "$id"` — the id
-    // is answered before the create has recorded anything.
+    // `id=$(yaac-mama create …); yaac-mama queue --parent-workspace "$id"`:
+    // the id comes back before the create has recorded anything.
     registerProvisioning({ workspaceId: 'spawned', projectSlug: 'proj', tool: 'codex', kind: 'create', branch: 'feature' })
     const entry = await queueWorkspace('proj', { parent: 'spawned', prompt: 'x' }, 'user')
     expect(entry).toMatchObject({ parentWorkspaceId: 'spawned', tool: 'codex', branch: 'feature' })
@@ -221,11 +219,11 @@ describe('queueWorkspace', () => {
 
   it('refuses rather than stores an empty model when the catalog has none for the tool', async () => {
     await workspace('p')
-    // Signed in with a provider the model catalog lists nothing for.
+    // Signed in with a provider the model catalog has no models for.
     vi.mocked(loadToolAuthEntry).mockResolvedValueOnce({ tool: 'opencode', opencodeProvider: 'nowhere' } as never)
     await expect(queueWorkspace('proj', { parent: 'p', prompt: 'x', tool: 'opencode' }, 'user'))
       .rejects.toThrow(/no model is known for opencode; pick one/)
-    // Naming one is the way out.
+    // Naming a model fixes it.
     vi.mocked(loadToolAuthEntry).mockResolvedValueOnce({ tool: 'opencode', opencodeProvider: 'nowhere' } as never)
     expect((await queueWorkspace('proj', { parent: 'p', prompt: 'x', tool: 'opencode', model: 'nowhere/m' }, 'user')).model)
       .toBe('nowhere/m')
@@ -234,13 +232,13 @@ describe('queueWorkspace', () => {
   it('holds an agent to its own posture as the ceiling', async () => {
     await workspace('sibling', { permissionMode: 'bypass' })
     const ceiling = { ceiling: 'accept-edits' as const }
-    // Inherited from a looser parent: stepped down to the caller's own.
+    // Inherited from a more permissive parent: capped at the caller's mode.
     expect((await queueWorkspace('proj', { parent: 'sibling', prompt: 'x' }, ceiling)).permissionMode)
       .toBe('accept-edits')
-    // Asked for above it: refused.
+    // Asking for more is refused.
     await expect(queueWorkspace('proj', { parent: 'sibling', prompt: 'x', permissionMode: 'bypass' }, ceiling))
       .rejects.toThrow(/more permissive than this workspace's own/)
-    // A tool with nothing at or below it: refused.
+    // A tool with no mode at or below it is refused.
     await expect(queueWorkspace('proj', { parent: 'sibling', prompt: 'x', tool: 'pi' }, ceiling))
       .rejects.toThrow(/pi has no permission mode/)
   })
@@ -284,7 +282,7 @@ describe('updateQueuedWorkspace', () => {
     // Mid-launch, E itself cannot be edited.
     await expect(updateQueuedWorkspace(e.id, { prompt: 'x' }, 'user')).rejects.toMatchObject({ code: 'CONFLICT' })
 
-    // Two edits racing to close a cycle between them: one of them loses.
+    // Of two edits that together would close a cycle, one loses.
     await failQueuedLaunch(e.id, 'w', 'x')
     const x = await queueWorkspace('proj', { parent: 'top', prompt: 'x' }, 'user')
     const y = await queueWorkspace('proj', { parent: 'top', prompt: 'y' }, 'user')
@@ -341,11 +339,10 @@ describe('runQueuedWorkspace', () => {
       groupId: group.groupId,
     })])
     await settled(entry.id, true)
-    // Its chain now waits on the workspace it became, and the parent keeps
-    // running undisturbed.
+    // Its chain now waits on the new workspace; the parent keeps running.
     expect((await getQueuedWorkspaceRow(child.id))?.parentWorkspaceId).toBe(workspaceId)
 
-    // Untitled by the user, an entry launches under the title generated for it.
+    // With no user title, an entry launches with its generated title.
     await setQueuedWorkspaceTitle(child.id, 'after', 'Generated')
     expect((await listQueuedWorkspaces()).find((e) => e.id === child.id)?.generatedTitle).toBe('Generated')
     await runQueuedWorkspace(child.id)
@@ -363,7 +360,7 @@ describe('runQueuedWorkspace', () => {
     await settled(entry.id, false)
     expect(await getQueuedWorkspaceRow(entry.id)).toMatchObject({ prompt: 'go', launchError: 'image build exploded' })
     expect((await getQueuedWorkspaceRow(child.id))?.parentQueuedId).toBe(entry.id)
-    // Not a second time as a failed provisioning row.
+    // The failure is not also shown as a provisioning row.
     expect(listProvisioning()).toEqual([])
   })
 })
@@ -380,8 +377,8 @@ describe('listQueuedWorkspaces', () => {
     expect(listed.map((e) => e.id)).toEqual([b.id])
     expect(listed[0].orphaned).toBeUndefined()
 
-    // A released child whose launch failed under a workspace whose own create
-    // failed: nothing left to nest under.
+    // A released child whose launch failed, under a parent whose create
+    // failed, has nothing to nest under.
     clearAllProvisioningForTests()
     await releaseQueuedWorkspace(b.id)
     await claimQueuedLaunch(b.id, 'b-launch')
@@ -412,9 +409,8 @@ describe('reconcileQueuedWorkspaces', () => {
     await workspace('p')
     const up = await queueWorkspace('proj', { parent: 'p', prompt: 'up' }, 'user')
     const upChild = await queueWorkspace('proj', { parent: up.id, prompt: 'after up' }, 'user')
-    // What a server restart mid-launch leaves: a claim nothing is running.
-    // Its workspace may well be live — but that says nothing about whether
-    // the agent was started or the prompt typed, so it is not taken as done.
+    // A server restart mid-launch leaves a stale claim. A live workspace does
+    // not prove the agent started or got its prompt, so it is not done.
     await claimQueuedLaunch(up.id, 'came-up')
 
     await reconcileQueuedWorkspaces()
@@ -441,7 +437,6 @@ describe('reconcileQueuedWorkspaces', () => {
     expect(mockCreate.mock.calls[0][1].initialPrompt).toBe('a')
     expect((await getQueuedWorkspaceRow(b.id))?.releasedAt).toBeUndefined()
 
-    // Nothing released, nothing to do.
     await reconcileQueuedWorkspaces()
     expect(mockCreate).toHaveBeenCalledTimes(1)
   })

@@ -1,43 +1,32 @@
 /*
- * Verifies the stopped-workspaces overlay in real Chromium (1400x900): a
- * loaded conversation must stay inside the overlay.
+ * Verifies in Chromium (1400x900) that a conversation loaded in the
+ * stopped-workspaces overlay stays inside the overlay.
  *
- * The detail pane is a flex item beside the fixed-width list, and a
- * conversation is full of things whose min-content width is enormous — a
- * read tool call is source lines with `white-space: pre`, a fenced block is
- * the same, a diff is wider still. A flex item's automatic minimum size is
- * its content's, so without an explicit floor the detail column sizes itself
- * to the widest line in the transcript: the pane runs off the right of the
- * overlay and takes the Restart button with it, which is the one control the
- * view exists for.
+ * The detail pane is a flex item beside the fixed-width list. Transcripts
+ * hold very wide unbreakable content (`white-space: pre` tool output, fenced
+ * blocks, diffs), and a flex item's default minimum width is its content's.
+ * Without an explicit floor, the pane grows to the widest line and pushes
+ * the Restart button off the overlay.
  *
- * What it asserts:
- *  1. The detail pane is no wider than the overlay it sits in.
- *  2. The Restart button is inside the overlay's box, and hit-testable at its
- *     own center (nothing has pushed it out from under the pointer).
- *  3. Wide transcript content scrolls inside its own block rather than
- *     widening the pane — the code the tool call read is still reachable.
+ * Checks:
+ *  1. The detail pane is no wider than the overlay.
+ *  2. The Restart button is inside the overlay and hit-testable at its
+ *     center.
+ *  3. Wide content scrolls inside its own block instead of widening the pane.
  *
- * Desktop widths only; the same pane on a phone (where it owns the whole
- * screen) is `mobile-overlay-panes-test.js`.
+ * Desktop only; mobile-overlay-panes-test.js covers the phone layout.
  *
- * The conversation is stubbed at the two routes the pane reads — the stopped
- * listing and one conversation's transcript — so the script needs no agent
- * turn, no credentials and no stopped workspace of its own: the events are
- * exactly the ACP events a claude conversation produces, and everything from
- * the fetch down is the real app.
+ * The stopped listing and the transcript routes are stubbed with the ACP
+ * events a claude conversation produces, so no agent turn, credentials or
+ * stopped workspace is needed. Everything below the fetch is the real app.
  *
- * Drives the app the server itself serves (`dist/`), reading the port
- * from $YAAC_DATA_DIR/.server.lock — so run `pnpm build` +
- * `yaac server restart` first, or you are looking at the frontend as it was.
- *
- * Needs a running `yaac server` with at least one project.
+ * Drives the app the server serves from `dist/`, reading the port from
+ * $YAAC_DATA_DIR/.server.lock, so run `pnpm build` + `yaac server restart`
+ * first. Needs a running `yaac server` with at least one project.
  *
  * Run: node test-playwright-scripts/stopped-transcript-overflow-test.js
- * (set SCREENSHOT_DIR to capture the overlay; defaults to /tmp/yaac-shots,
- * APP_URL to point it elsewhere).
- * (playwright is resolved from the global npm root; browsers live under
- * /opt/playwright-browsers)
+ * (SCREENSHOT_DIR sets the screenshot dir, default /tmp/yaac-shots; APP_URL
+ * points it at another origin).
  */
 import fs from 'node:fs'
 import os from 'node:os'
@@ -73,9 +62,8 @@ const LONG_LINE =
   'const resolved = await coordinator.ensureImage(project, chain, { requirePrebuilt: true, registry: "localhost:5000", tag: contentHash })'
   + ' // a trailing comment of the kind an agent writes, which keeps the line going well past any width a two-pane overlay could give it'
 
-/** The conversation, as the ACP events acpd would have recorded: prose, a
- *  fenced block, and a read tool call whose body is a file. Each carries
- *  unbreakable width of its own kind, because they overflow differently. */
+/** ACP events as acpd records them: prose, a fenced block, a read tool call
+ *  and an edit diff. Each overflows in a different way. */
 const EVENTS = [
   { type: 'user', seq: 0, content: [{ type: 'text', text: 'why is the build cache missing?' }] },
   {
@@ -100,8 +88,7 @@ const EVENTS = [
       content: [{ type: 'content', content: { type: 'text', text: Array.from({ length: 12 }, () => LONG_LINE).join('\n') } }],
     },
   },
-  // An edit opens by default, so its diff is on screen without a click —
-  // which makes it the widest thing the pane renders unprompted.
+  // An edit is expanded by default, so its diff is visible without a click.
   {
     type: 'tool',
     seq: 3,
@@ -145,9 +132,6 @@ const lock = readServerLock()
 const origin = process.env.APP_URL ?? `http://127.0.0.1:${lock.port}`
 const browser = await chromium.launch()
 try {
-  // Desktop only: below the breakpoint the same column takes the whole
-  // screen, and its geometry there is what `mobile-overlay-panes-test.js`
-  // measures.
   await run({ name: 'desktop', viewport: { width: 1400, height: 900 } })
 } finally {
   await browser.close()
@@ -170,19 +154,18 @@ async function run({ name, viewport }) {
   await page.locator('text=Stopped workspaces').first().click({ timeout: 15_000 })
   const popup = page.locator('[role="dialog"]').last()
   await popup.waitFor({ state: 'visible', timeout: 10_000 })
-  // The transcript arrives on its own fetch; wait for the conversation itself.
+  // The transcript arrives on a separate fetch.
   await popup.locator('text=why is the build cache missing?').first().waitFor({ timeout: 10_000 })
   await popup.locator('text=/build-coordinator/').first().waitFor({ timeout: 10_000 })
 
   const restart = popup.locator('button', { hasText: 'Restart' }).last()
   const box = async (loc) => await loc.boundingBox()
   const popupBox = await box(popup)
-  // The detail pane is the overlay's second column — the one holding Restart.
+  // The detail pane is the overlay column holding Restart.
   const detailBox = await page.evaluate(() => {
     const btn = [...document.querySelectorAll('[role="dialog"] button')]
       .find((b) => b.textContent?.trim() === 'Restart')
     if (!btn) return null
-    // Walk up to the flex column the master/detail row lays out.
     let el = btn.parentElement
     while (el && !(el.parentElement?.classList.contains('gap-3'))) el = el.parentElement
     const r = el?.getBoundingClientRect()
@@ -209,8 +192,7 @@ async function run({ name, viewport }) {
         && restartBox.x >= popupBox.x - 1,
       `the Restart button is inside the overlay (button right ${Math.round(restartBox.x + restartBox.width)}px vs overlay right ${Math.round(popupBox.x + popupBox.width)}px)`,
     )
-    // Inside the box is not the same as reachable: an ancestor that overflows
-    // can leave the button under something else.
+    // An overflowing ancestor can cover the button even inside the box.
     const hit = await page.evaluate(({ x, y }) => {
       const el = document.elementFromPoint(x, y)
       return el?.closest('button')?.textContent?.trim() ?? null
@@ -218,14 +200,12 @@ async function run({ name, viewport }) {
     check(hit === 'Restart', `the Restart button is hit-testable (found ${JSON.stringify(hit)})`)
   }
 
-  // The page itself must not have grown a horizontal scrollbar.
   const doc = await page.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,
     inner: window.innerWidth,
   }))
   check(doc.scrollWidth <= doc.inner, `the page does not scroll sideways (${doc.scrollWidth} <= ${doc.inner})`)
 
-  // Wide content is still readable: its own block scrolls.
   const scrollable = await page.evaluate(() => [...document.querySelectorAll('[role="dialog"] *')]
     .some((el) => el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).overflowX !== 'visible'))
   check(scrollable, 'wide transcript content scrolls inside its own block')

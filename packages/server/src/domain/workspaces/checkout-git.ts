@@ -3,38 +3,34 @@ import { shellQuote } from '#lib/shell'
 import type { FileStatus } from '@yaac/shared/types'
 
 /**
- * What the file explorer asks of a checkout's git, asked INSIDE the running
- * workspace (docs/file-editor.md). A checkout's git dir is the workspace's
- * own: the agent writes its config, and the server never runs git against it
- * after creating it (docs/server-git.md). Whatever the workspace's git runs,
- * it runs there, as the workspace.
+ * Git queries for the file explorer, run inside the running workspace
+ * (docs/file-editor.md). The checkout's git dir belongs to the workspace (the
+ * agent can edit its config), so the server never runs git against it on the
+ * host (docs/server-git.md).
  */
 
 /** Ends each section of the listing script's NUL-separated output. */
 const SECTION = '@@yaac-section@@'
 
-/** What `listCheckoutFiles` reads off a workspace's checkout. */
 export interface CheckoutListing {
   /** Tracked and untracked files, gitignore-aware, minus those deleted from
    *  disk. */
   paths: string[]
   /** Ignored files, and each wholly ignored folder as one `dir/` entry. */
   ignored: string[]
-  /** Untracked folders, each collapsed to one entry without its trailing
-   *  slash — the only record git keeps of a folder holding no file. */
+  /** Untracked folders, one entry each, without the trailing slash. This is
+   *  the only way git reports a folder with no files in it. */
   untrackedDirs: string[]
   status: Record<string, FileStatus>
 }
 
 /**
- * The file list of a running workspace's checkout: four `ls-files` and one
- * `status`, each NUL-separated and ended by a section marker, so one exec
- * answers all of them and a run that died partway has too few sections to
- * pass for an empty checkout.
+ * List a running workspace's checkout in one exec: four `ls-files` and one
+ * `status`, each ended by a section marker, so a run that died partway has
+ * too few sections to pass for an empty checkout.
  *
- * `status` skips submodules outright and takes no optional locks, so its
- * opportunistic index refresh is never written back under the agent's own
- * git.
+ * `status` skips submodules and takes no optional locks, so it never writes
+ * an index refresh underneath the agent's own git.
  */
 export async function listCheckoutFiles(jobName: string): Promise<CheckoutListing> {
   const driver = workspaceDriver()
@@ -59,8 +55,7 @@ export async function listCheckoutFiles(jobName: string): Promise<CheckoutListin
   const [listed, deleted, ignored, untrackedDirs, status] = sections
   const gone = new Set(deleted)
   return {
-    // A file both tracked and modified is listed once per index stage when
-    // conflicted, so the list is deduplicated too.
+    // A conflicted file is listed once per index stage.
     paths: [...new Set(listed)].filter((p) => !gone.has(p)),
     ignored,
     untrackedDirs: untrackedDirs.filter((p) => p.endsWith('/')).map((p) => p.slice(0, -1)),
@@ -79,11 +74,10 @@ export async function checkoutAheadBehind(
   jobName: string,
   base: string,
 ): Promise<{ ref: string; ahead: number; behind: number; remote: boolean } | null> {
-  // Git's own ref-name rules, which also keep `base` from reading as a range.
+  // Git's ref-name rules; also stops `base` from being read as a range.
   if (!/^[^\s~^:?*[\\]+$/.test(base) || base.includes('..') || base.includes('@{')) return null
   const driver = workspaceDriver()
-  // `--`: a file of that name in the checkout must not turn an unresolvable
-  // revision into a pathspec.
+  // `--` stops a same-named file from turning a bad revision into a pathspec.
   const script = `cd ${driver.workspacePaths(jobName).workspaceDir} || exit 3; `
     + 'for ref in "refs/remotes/origin/$1" "refs/heads/$1"; do '
     + 'n=$(git rev-list --left-right --count "$ref...HEAD" -- 2>/dev/null) && { echo "$ref $n"; exit 0; }; '

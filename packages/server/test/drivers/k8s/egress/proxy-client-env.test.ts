@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
 
-// The auth secret is read off the cluster; kubectl is the boundary.
+// The auth secret is read from the cluster through kubectl.
 const mockKubectlGetJson = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
   ...(await importOriginal<typeof kubectlModule>()),
@@ -22,9 +22,9 @@ describe('ProxyClient.getCaTrustEnv', () => {
   })
 
   it('points the own-bundle (replace-semantics) vars at the combined bundle', () => {
-    // curl / requests / cargo / git-libcurl ignore SSL_CERT_FILE and REPLACE
-    // their trust set with this single file — so it must be the superset
-    // {public roots} ∪ {proxy CA}, never the bare CA.
+    // curl, requests, cargo and git ignore SSL_CERT_FILE and replace their
+    // whole trust set with this file, so it must hold the public roots plus
+    // the proxy CA.
     expect(env).toContain(`CURL_CA_BUNDLE=${PROXY_CA_BUNDLE_PATH}`)
     expect(env).toContain(`REQUESTS_CA_BUNDLE=${PROXY_CA_BUNDLE_PATH}`)
     expect(env).toContain(`CARGO_HTTP_CAINFO=${PROXY_CA_BUNDLE_PATH}`)
@@ -48,9 +48,8 @@ describe('ProxyClient.attachIfRunning', () => {
   afterEach(() => { globalThis.fetch = realFetch })
 
   it('dials the proxy Service by name, with no tunnel in between', async () => {
-    // The server is a pod of the proxy's own namespace, so the control API
-    // is an ordinary Service dial (docs/server-in-cluster.md) — there is no
-    // host-side relay to establish first, and so nothing to be "not started".
+    // The server runs in the proxy's namespace, so this is a plain Service
+    // dial (docs/server-in-cluster.md).
     mockKubectlGetJson.mockResolvedValue({ data: { secret: Buffer.from('s3').toString('base64') } })
     const mock = vi.fn().mockResolvedValue({ ok: true })
     globalThis.fetch = mock as unknown as typeof fetch
@@ -59,8 +58,8 @@ describe('ProxyClient.attachIfRunning', () => {
   })
 
   it('takes a caller-supplied origin when it is handed one', async () => {
-    // The e2e harness drives this client from the HOST, where a ClusterIP
-    // names nothing; `controlOrigin` is how it says where to dial instead.
+    // The e2e harness runs this client on the host, where cluster DNS does
+    // not resolve, and passes `controlOrigin` instead.
     mockKubectlGetJson.mockResolvedValue({ data: { secret: Buffer.from('s3').toString('base64') } })
     const mock = vi.fn().mockResolvedValue({ ok: true })
     globalThis.fetch = mock as unknown as typeof fetch

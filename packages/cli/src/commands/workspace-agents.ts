@@ -2,13 +2,11 @@ import { api } from '#commands/api'
 import { truncatePrompt } from '#commands/workspace-list'
 
 /**
- * `yaac workspace agents <id>` — the conversations a workspace holds.
+ * `yaac workspace agents <id>`: list a workspace's agent conversations.
  *
- * Active ones first: those are what a restart brings back, and the rest are
- * the workspace's history (a conversation left behind by `/clear`, or one
- * whose window was closed). The id column is the tool's own conversation id —
- * the id the agent itself knows it by, useful for resuming one by hand
- * inside the workspace.
+ * Active ones come first, since a restart brings those back; the rest are
+ * history (left behind by `/clear` or a closed window). The id column is the
+ * tool's own conversation id, for resuming one by hand inside the workspace.
  */
 export async function workspaceAgents(idOrName: string): Promise<void> {
   const agents = await api.workspace[':id']['agent-sessions'].$get({

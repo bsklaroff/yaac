@@ -51,8 +51,8 @@ function stubSnapshot(imageBuilds: ImageBuildEntry[]): void {
 
 describe('ImageBuildIndicator', () => {
   it('shows a muted history pill when only finished builds remain in scope', () => {
-    // Finished rows persist until dismissed, so the pill stays as an entry
-    // point to review/clear them — otherwise the persisted history is unreachable.
+    // Finished rows stay until dismissed, so the pill stays too, as the way
+    // to reach them.
     stubSnapshot([build({ status: 'succeeded' })])
     render(<ImageBuildIndicator projectSlug="proj" />)
     const pill = screen.getByRole('button', { name: 'Show image build history' })

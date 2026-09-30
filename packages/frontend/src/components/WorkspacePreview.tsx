@@ -13,11 +13,9 @@ import {
 import type { PortMapping } from '@yaac/shared/types'
 
 /**
- * The subset of Electron's WebviewTag DOM API the preview drives. The element
- * is created imperatively (below), so this is a plain cast target — no JSX
- * intrinsic-element augmentation, which avoids cross-tsconfig type friction.
- * The methods are called optionally (`?.()`) so a stray call outside Electron
- * can't throw.
+ * The part of Electron's WebviewTag API the preview uses. The element is
+ * created imperatively, so this is just a cast target. Methods are called
+ * with `?.()` so a call outside Electron can't throw.
  */
 interface PreviewWebview extends HTMLElement {
   reload(): void
@@ -39,16 +37,13 @@ const DEVICE_PRESETS: { label: string; width: number | null; Icon: typeof Deskto
 ]
 
 /**
- * A per-workspace embedded browser pane pointed at a dev server running inside
- * the workspace pod (reached over a loopback forwarded port). The chrome —
- * back/forward/reload, an editable address, open-external, and an overflow
- * menu (home / copy URL / responsive widths / hard reload / devtools) —
- * follows the app theme; the webview shows the app in its own colors,
- * VS-Code-terminal style.
+ * A per-workspace embedded browser pane showing a dev server in the
+ * workspace through a forwarded port, with navigation controls, an address
+ * bar and a menu (home, copy URL, responsive widths, hard reload, devtools).
  *
- * The <webview> is created and driven imperatively in a ref: letting React
- * reconcile it would reload the page (losing scroll/route) on every parent
- * render. Only available in Electron; a browser build shows a fallback link.
+ * The <webview> is managed imperatively through a ref, because letting React
+ * reconcile it would reload the page on every parent render. Electron only;
+ * a browser shows a link instead.
  */
 export function WorkspacePreview({
   workspaceId,
@@ -99,13 +94,13 @@ export function WorkspacePreview({
         setCanBack(wv.canGoBack())
         setCanForward(wv.canGoForward())
       } catch {
-        // methods throw before the guest attaches; a later event re-syncs
+        // Throws before the guest attaches; a later event re-syncs.
       }
     }
     const onStart = (): void => { setLoading(true); setFailed(false) }
     const onStop = (): void => { setLoading(false); syncNav() }
     const onFail = (e: Event): void => {
-      // -3 (ABORTED) fires on ordinary redirects/reloads, not a real failure.
+      // -3 (ABORTED) fires on ordinary redirects and reloads.
       const code = (e as unknown as { errorCode?: number }).errorCode
       if (code !== undefined && code !== -3) { setFailed(true); setLoading(false) }
     }
@@ -152,7 +147,7 @@ export function WorkspacePreview({
     setEditing(null)
   }
 
-  // Browser build (no webview): the same link the header's port chips offer.
+  // In a browser, offer the same link as the header's port chips.
   if (!electron) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
@@ -216,8 +211,7 @@ export function WorkspacePreview({
           className="min-w-0 flex-1 rounded bg-bg px-2 py-0.5 font-mono text-[11px] text-text-dim
             outline-none focus:text-text"
         />
-        {/* Active responsive width: a clearable pill so it's obvious why the
-            page is narrow, and one click back to full. */}
+        {/* The active responsive width, clickable to reset to full. */}
         {activePreset && activePreset.width !== null && (
           <button
             onClick={() => setDeviceWidth(null)}
@@ -274,8 +268,7 @@ export function WorkspacePreview({
       </div>
 
       <div className="relative min-h-0 flex-1 bg-bg">
-        {/* Center the (optionally width-constrained) device frame; the bg-bg
-            backdrop shows as letterboxing on the sides when constrained. */}
+        {/* Center the device frame; bg-bg shows on the sides when narrowed. */}
         <div className="absolute inset-0 flex justify-center overflow-hidden">
           <div
             ref={hostRef}

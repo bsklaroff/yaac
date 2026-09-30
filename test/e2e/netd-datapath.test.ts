@@ -27,14 +27,10 @@ import {
 } from '@yaac/server/drivers/k8s/substrate/kubectl'
 
 /**
- * Datapath-level gates for the netd redirect — the properties that make
- * the egress model SAFE rather than merely working. The behavioural
- * "traffic reaches the right place" coverage lives in
- * transparent-egress.test.ts; everything here is about what happens when
- * the redirect is absent, late, or attacked.
- *
- * All of it asserts on the node's real dataplane, so it needs a host with
- * a wired-up cluster.
+ * Safety properties of the netd egress redirect: what happens when the
+ * redirect is absent, late, damaged, or attacked. Whether traffic reaches
+ * the right place is covered by transparent-egress.test.ts. Asserts on the
+ * node's real dataplane, so it needs a wired-up cluster.
  */
 
 let restoreNamespace: (() => void) | null = null
@@ -78,8 +74,6 @@ async function waitForPodRunning(
     const pod = await kubectlGetJson<RawPod>(['get', 'pod', name, '-n', namespace])
     phase = pod?.status?.phase ?? 'Unknown'
     if (phase === 'Running') {
-      // The pod that just came up is the one the following assertions are
-      // about, so its node is the one whose netd they must read.
       await focusNetdOnPod(name)
       return
     }
@@ -127,18 +121,10 @@ async function startWorkspacePod(
 }
 
 /**
- * The node whose netd the probes below should read.
- *
- * netd is a DaemonSet and each instance programs ONLY the pods on its own
- * node — a pod elsewhere is deliberately "emit nothing". So "the netd" is
- * meaningless once the cluster has more than one node: reading an
- * arbitrary instance yields an empty chain and reports as netd having
- * failed to render. Every probe therefore has to name the node it means,
- * which is the node hosting the pod under test.
- *
- * Null until a pod is up (netd's own startup/restart gates ask about the
- * DaemonSet, not about any pod), and single-node clusters never notice
- * either way because there is only one instance to resolve.
+ * The node whose netd the probes read. Each netd instance programs only
+ * pods on its own node, so on a multi-node cluster the probes must read the
+ * instance on the node hosting the pod under test. Null (any node) until a
+ * pod is up. `waitForPodRunning` sets it.
  */
 let netdTargetNode: string | null = null
 
@@ -151,15 +137,9 @@ async function focusNetdOnPod(name: string, namespace = k8sNamespace()): Promise
 }
 
 /**
- * A LIVE netd pod for this install, on the node the probes are focused on.
- *
- * Deliberately not `ds/yaac-netd`: kubectl resolves a DaemonSet to
- * whichever of its pods it lists first, and a terminating pod is still
- * `phase: Running` — so it gets picked and the command then dies with
- * `pods "..." not found`. The netd-restart test leaves exactly that state
- * behind for whatever runs next, which made every later probe flaky.
- * Resolving per call, and skipping anything with a deletionTimestamp,
- * removes the race.
+ * A ready, non-terminating netd pod for this install on `netdTargetNode`.
+ * Not `ds/yaac-netd`: kubectl may resolve that to a terminating pod (still
+ * `phase: Running`), as the netd-restart test leaves behind.
  */
 async function netdPodName(timeoutMs = 120_000): Promise<string> {
   interface RawPodList {
@@ -178,11 +158,8 @@ async function netdPodName(timeoutMs = 120_000): Promise<string> {
     const name = (list?.items ?? []).find((pod) =>
       !pod.metadata?.deletionTimestamp
       && (netdTargetNode === null || pod.spec?.nodeName === netdTargetNode)
-      // READY, not merely Running: netd's readiness marker is written only
-      // after a reconcile reaches the dataplane, so a Ready pod is one whose
-      // chain is programmed and whose startup line is logged. A pod can be
-      // `phase: Running` with only its Envoy container up, which is how a
-      // probe ends up reading an empty log or an empty chain.
+      // Ready means netd has programmed its chain and logged it; Running
+      // may mean only the Envoy container is up.
       && (pod.status?.conditions ?? [])
         .some((c) => c.type === 'Ready' && c.status === 'True'),
     )?.metadata?.name
@@ -206,9 +183,8 @@ async function netdLogs(): Promise<string> {
     ], { timeout: 60_000 })
     return stdout
   } catch (err) {
-    // Replaced between resolving it and reading it; callers poll. Keep the
-    // reason: an empty read here otherwise reports as a bare timeout, and
-    // "no READY netd pod" and "logs unreadable" want very different triage.
+    // The pod was replaced mid-read; callers poll. Keep the reason for
+    // their timeout message.
     lastNetdLogsError = err instanceof Error ? err.message : String(err)
     return ''
   }
@@ -250,8 +226,7 @@ async function netdExec(args: string[]): Promise<string> {
       ], { timeout: 60_000 })
       return stdout
     } catch (err) {
-      // Same race as above: the pod can be replaced between resolving it
-      // and exec'ing into it. Re-resolve and retry a bounded number of times.
+      // The pod may have been replaced; re-resolve and retry.
       if (attempt >= 2) throw err
       await new Promise((r) => setTimeout(r, 1000))
     }
@@ -259,13 +234,9 @@ async function netdExec(args: string[]): Promise<string> {
 }
 
 /**
- * THIS install's redirect chain, read from its own netd's startup line.
- *
- * Deliberately not discovered from `nat PREROUTING`: several installs
- * share the node (the real one plus this run's), each with its own
- * appended `YAAC_RDR_*` jump, so picking a jump out of that chain is
- * ambiguous — and picking the wrong one silently inspects another
- * install's rules. netd logs the chain it owns, so ask it.
+ * This install's redirect chain name, read from its netd's startup log.
+ * Several installs can share a node, each with its own `YAAC_RDR_*` jump in
+ * nat PREROUTING, so the chain cannot be picked out from there.
  */
 async function redirectChain(timeoutMs = 120_000): Promise<string> {
   const deadline = Date.now() + timeoutMs
@@ -274,8 +245,7 @@ async function redirectChain(timeoutMs = 120_000): Promise<string> {
     last = await netdLogs()
     const chain = /\bchain=(YAAC_RDR_\w+)/.exec(last)?.[1]
     if (chain) return chain
-    // A just-replaced netd is Ready before its log is necessarily
-    // readable, so poll rather than failing the first empty read.
+    // A just-replaced netd can be Ready before its log is readable.
     if (Date.now() >= deadline) {
       throw new Error(`netd never logged its chain (last read error: ${lastNetdLogsError}; `
         + `pods: ${await netdDiagnostics()}):\n${last.slice(-500)}`)
@@ -284,7 +254,7 @@ async function redirectChain(timeoutMs = 120_000): Promise<string> {
   }
 }
 
-/** Assert this install's jump really is appended into nat PREROUTING. */
+/** The nat PREROUTING rules, as `iptables -S` lines. */
 async function preroutingJumps(): Promise<string[]> {
   const stdout = await netdExec(['iptables-legacy', '-t', 'nat', '-S', 'PREROUTING'])
   return stdout.split('\n').filter(Boolean)
@@ -357,13 +327,8 @@ async function setNetdScheduled(scheduled: boolean): Promise<void> {
 
 /**
  * Wait for the netd DaemonSet to be fully out of service (`0`) or fully
- * back (`'all'`).
- *
- * `'all'` rather than a literal count: a DaemonSet's ready count is one
- * per eligible node, so any fixed number is a bet on the cluster's size.
- * Comparing against `desiredNumberScheduled` asks the question the tests
- * actually mean — "is every instance that should exist back?" — and reads
- * the same on one node as on five.
+ * back (`'all'`, compared against `desiredNumberScheduled` so it works on
+ * any number of nodes).
  */
 async function waitForNetdReady(want: 0 | 'all', timeoutMs = 180_000): Promise<void> {
   interface RawDs { status?: { numberReady?: number; desiredNumberScheduled?: number } }
@@ -404,9 +369,8 @@ describe('netd datapath gates', () => {
     await applyProxyRegistration(sessionLate, {
       rules: [], allowedHosts: [MITM_HOST], tool: 'claude', projectSlug: 'netd-late',
     })
-    // The forger gets NOTHING on its allowlist, so any success in the
-    // spoof case below is a real attribution failure rather than its own
-    // legitimate egress.
+    // The forger's allowlist is empty, so any success in the spoof case is
+    // a real attribution failure.
     await applyProxyRegistration(sessionRaw, {
       rules: [], allowedHosts: [], tool: 'claude', projectSlug: 'netd-raw',
     })
@@ -415,8 +379,7 @@ describe('netd datapath gates', () => {
   }, 600_000)
 
   afterAll(async () => {
-    // Always restore netd — a leaked nodeSelector would strand every
-    // later test in the run with no session egress.
+    // A leaked nodeSelector would leave later tests with no egress.
     await setNetdScheduled(true).catch(() => { /* ok */ })
     await waitForNetdReady('all').catch(() => { /* ok */ })
     await Promise.all([deleteTestPod(podA), deleteTestPod(podLate), deleteTestPod(podRaw)])
@@ -434,14 +397,13 @@ describe('netd datapath gates', () => {
     const podIp = pod?.status?.podIP
     expect(podIp).toBeTruthy()
 
-    // netd resolves the pod to the veth its frames arrive on and matches on
-    // THAT, not on the source IP — the identity a workload cannot forge.
+    // netd matches on the pod's veth, which a workload cannot forge, not
+    // on its source IP.
     const stdout = await netdExec(['sh', '-c', 'ip route show | grep -F " dev cali" || true'])
     const veth = new RegExp(`^${podIp!.replace(/\./g, '\\.')} dev (\\S+)`, 'm').exec(stdout)?.[1]
     expect(veth, `no Calico route for ${podIp}`).toBeTruthy()
 
-    // Poll rather than snapshot: netd is eventually consistent, so the
-    // rules for a just-Ready pod may land a beat after its egress does.
+    // netd is eventually consistent, so poll.
     const mine = await (async (): Promise<string[]> => {
       const deadline = Date.now() + 60_000
       let last: string[] = []
@@ -455,9 +417,8 @@ describe('netd datapath gates', () => {
     expect(mine, `no rules for ${veth} (pod ${podIp})`).toHaveLength(3)
     expect(mine.every((l) => l.includes('-j DNAT'))).toBe(true)
 
-    // World-scoped: pod-to-pod traffic must never be redirected. The
-    // exclusions lead the chain as RETURNs — iptables allows one
-    // destination per rule, and a cluster can allocate from several CIDRs.
+    // Pod-to-pod traffic is never redirected: one RETURN per cluster CIDR
+    // leads the chain.
     const all = await redirectChainRules()
     const returns = all.filter((l) => l.includes('-j RETURN'))
     expect(returns.length).toBeGreaterThan(0)
@@ -466,9 +427,8 @@ describe('netd datapath gates', () => {
     const lastReturn = all.map((l) => l.includes('-j RETURN')).lastIndexOf(true)
     expect(lastReturn, 'exclusions must precede every DNAT rule').toBeLessThan(firstDnat)
 
-    // The jump is APPENDED, after Calico's and kube-proxy's — netd must
-    // never compete with Felix for position, and landing after
-    // KUBE-SERVICES is what keeps ClusterIP traffic out of the redirect.
+    // The jump is appended after Calico's and kube-proxy's, so it never
+    // competes with Felix and ClusterIP traffic stays out of the redirect.
     const jumps = await preroutingJumps()
     const myChain = await redirectChain()
     const mineAt = jumps.findIndex((l) => l.endsWith(`-j ${myChain}`))
@@ -479,11 +439,8 @@ describe('netd datapath gates', () => {
   }, 300_000)
 
   it('never competes with Calico for chain position (survives a Felix restart)', async () => {
-    // The constraint that killed the TPROXY design: Felix re-inserts its
-    // own jumps at the top of every base chain it manages, so a rule that
-    // must run BEFORE cali-* is demoted on every reprogram. netd's jump is
-    // appended into nat PREROUTING, which Calico leaves uncontended — so a
-    // full Felix restart must change nothing.
+    // Felix re-inserts its jumps at the top of every chain it manages.
+    // netd's jump is appended, so a Felix restart must change nothing.
     expect(await egressWorks(podA)).toBe(true)
     await kubectlWithRetry([
       'delete', 'pod', '-n', 'kube-system', '-l', 'k8s-app=calico-node', '--wait=false',
@@ -495,20 +452,16 @@ describe('netd datapath gates', () => {
   }, 600_000)
 
   it('fails CLOSED when netd is absent — a pod born without a redirect has no egress', async () => {
-    // The single most important property of the split: netd owns only the
-    // redirect, so losing it costs egress and can never grant it. A pod
-    // created while netd is gone must reach nothing at all, then gain
-    // redirected egress when netd returns.
+    // netd only redirects, so losing it must remove egress, never grant
+    // it. A pod created while netd is gone reaches nothing until it returns.
     await setNetdScheduled(false)
     await waitForNetdReady(0)
 
     await startWorkspacePod(podLate, sessionLate, proxyHost)
     await waitForPodRunning(podLate)
 
-    // Not the redirect target...
     expect((await shInPod(podLate, egressProbe)).exit).not.toBe(0)
-    // ...and not the real internet either: 443-to-world matches no rule in
-    // the session NetworkPolicy, so it dies on the FORWARD path.
+    // Direct internet access is also blocked by the session NetworkPolicy.
     const direct = await shInPod(
       podLate, 'curl -sS --max-time 10 -o /dev/null https://1.1.1.1/ ',
     )
@@ -529,23 +482,15 @@ describe('netd datapath gates', () => {
     ])
     await waitForNetdReady('all')
 
-    // Rebuilt from cluster state, not from anything netd persisted: the
-    // reconcile is a pure function of pods + Services + node routes.
+    // netd rebuilds its rules from cluster state; it persists nothing.
     expect(await rulesFor()).toContain('-j DNAT')
     expect(await egressWorks(podA)).toBe(true)
   }, 600_000)
 
   it('re-asserts a deleted PREROUTING jump and refills a flushed chain, without restarting', async () => {
-    // Two independent self-heal paths, damaged together so one reconcile
-    // period covers both — the wait, not the damage, is what these cost,
-    // and netd's pass is unconditional so repairing both at once proves
-    // exactly what repairing them separately did:
-    //   - a deleted jump is invisible in netd's rendering (the desired
-    //     chain is byte-identical), so nothing but an unconditional
-    //     re-assert every pass would ever notice it was gone;
-    //   - the write-only-on-change memo describes what netd WROTE, not
-    //     what the kernel kept, so only the periodic pass discarding it
-    //     heals a flushed chain.
+    // Two independent repairs, damaged together to share one reconcile
+    // wait. The desired chain is unchanged in both cases, so only netd's
+    // unconditional periodic pass notices the kernel state is gone.
     const chain = await redirectChain()
     await netdExec(['iptables-legacy', '-t', 'nat', '-D', 'PREROUTING', '-j', chain])
     await netdExec(['iptables-legacy', '-t', 'nat', '-F', chain])
@@ -568,16 +513,10 @@ describe('netd datapath gates', () => {
   }, 600_000)
 
   it('never redirects a workspace pod belonging to another install', async () => {
-    // netd watches EVERY namespace, and several installs share a node (the
-    // real `yaac` one plus this e2e run's). Unscoped, each install's netd
-    // DNATs the other's pods at its own proxy; both jumps hang off nat
-    // PREROUTING by append, so the first-appended chain wins and the
-    // loser's pods reach a proxy that cannot resolve them — silent, total
-    // egress loss, decided by restart order.
-    //
-    // Both pods exist before the assertion and OURS is waited for, so one
-    // reconcile pass has demonstrably seen both. A bare "no rules appeared"
-    // check could otherwise pass by running early.
+    // netd watches every namespace and several installs share a node. If
+    // it claimed another install's pods, whichever jump came first would
+    // send them to a proxy that cannot resolve them. Our own pod's rules are
+    // awaited first, so a reconcile has seen both pods.
     const foreignNs = `yaac-sibling-${suffix}`
     const foreignPod = `yaac-netd-foreign-${suffix}`
 
@@ -610,10 +549,7 @@ describe('netd datapath gates', () => {
       })
       await waitForPodRunning(foreignPod, 120_000, foreignNs)
 
-      // Each pod is judged by the netd on ITS OWN node: these two can land
-      // on different nodes, and netd only ever programs local pods, so a
-      // single instance would show one of them missing for the mundane
-      // reason that it is somewhere else.
+      // Read each pod's rules from the netd on its own node.
       await focusNetdOnPod(podA)
       expect(
         await waitForTrioPorts(k8sNamespace(), podA),
@@ -632,19 +568,14 @@ describe('netd datapath gates', () => {
   }, 600_000)
 
   it('cannot borrow another session\'s identity by forging a source IP', async () => {
-    // The redirect is keyed on the veth a frame ARRIVES on, and Envoy
-    // stamps the address it actually observes — so spoofing a source IP
-    // cannot move a connection onto another session's allowlist. The
-    // forger is given an EMPTY allowlist and the victim a permissive one,
-    // so any success here is a real attribution failure.
-    // A dedicated pod: it needs NET_RAW/NET_ADMIN and the gvisor-nested
-    // tier, and a pod spec cannot be patched into that after creation.
+    // The redirect is keyed on the arriving veth and Envoy records the
+    // observed address, so a spoofed source IP cannot borrow another
+    // workspace's allowlist. The forger needs NET_RAW/NET_ADMIN and the
+    // gvisor-nested tier, hence its own pod.
     await startWorkspacePod(podRaw, sessionRaw, proxyHost, { netRaw: true })
     await waitForPodRunning(podRaw)
 
-    // Sanity: the forger has no allowlist of its own, so it cannot reach
-    // the host legitimately. Without this the spoof assertion below could
-    // pass simply because everything is broken.
+    // The forger cannot reach the host legitimately...
     expect((await shInPod(podRaw, egressProbe)).exit).not.toBe(0)
 
     interface RawPod { status?: { podIP?: string } }
@@ -652,8 +583,7 @@ describe('netd datapath gates', () => {
     const victimIp = victim?.status?.podIP
     expect(victimIp).toBeTruthy()
 
-    // Baseline: the victim's own allowlist really does permit this host,
-    // so a pass below cannot be "the host was blocked for everyone".
+    // ...while the victim can.
     expect(await egressWorks(podA)).toBe(true)
 
     const spoofed = await shInPod(podRaw,

@@ -5,20 +5,17 @@ import { deleteBuildFile, listBuildFiles, readBuildFile, renameBuildFile, writeB
 import { requireDriverFeature } from '#http'
 
 /**
- * Routes over one build dir's support files, mounted twice: under
- * `/project/:slug/build-files` and `/config/user-build-files`, with
- * `resolveRoot` supplying the scope's build dir per request.
+ * Routes over one build dir's support files, mounted under
+ * `/project/:slug/build-files` and `/config/user-build-files`; `resolveRoot`
+ * gives the build dir per request.
  *
- * Writes take JSON — `content` for text (the editor), `contentBase64` for
- * uploads — rather than multipart, so uploads ride the same typed RPC
- * client, validator, and error envelope as every other route. The ~33%
- * base64 overhead is irrelevant at build-context scale, and folder uploads
- * are per-file requests, which keeps request sizes bounded and progress
- * reporting trivial.
+ * Writes take JSON (`content` for text, `contentBase64` for uploads) rather
+ * than multipart, so uploads use the same typed RPC client, validator and
+ * error envelope as every other route. Base64 overhead is negligible at this
+ * scale, and folder uploads send one request per file.
  *
- * The whole sub-app refuses on a runtime that builds no images: every file
- * here exists to be COPYed by a Dockerfile, so on a server that runs no
- * builds these routes would be a working editor over files nothing reads.
+ * The sub-app refuses on a runtime that builds no images, since nothing
+ * would read these files.
  */
 export function buildFilesApp(resolveRoot: (c: Context) => Promise<string>) {
   return new Hono()

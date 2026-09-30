@@ -24,7 +24,7 @@ import {
   type ShortcutKey,
 } from '#lib/shortcuts'
 
-/** An Alt-held keydown for `code`, override any field. */
+/** An Alt keydown for `code`, with optional field overrides. */
 const key = (code: string, over: Partial<ShortcutKey> = {}): ShortcutKey => ({
   altKey: true, ctrlKey: false, metaKey: false, shiftKey: false, code, ...over,
 })
@@ -274,13 +274,12 @@ describe('mergeBindings', () => {
     }, false)
     expect(merged['open-files']).toEqual(DEFAULT_BINDINGS['open-files'])
     expect(merged['new-shell']).toEqual(DEFAULT_BINDINGS['new-shell'])
-    // Cmd+S is not the save chord off macOS, so that one stands.
+    // Off macOS, Cmd+S isn't reserved, so it is kept.
     expect(merged['open-changes']).toEqual(chord('KeyS', { alt: false, meta: true }))
   })
 
   it('lets an override win over a default it collides with, leaving that command unbound', () => {
-    // Alt+T / Alt+G became the new-shell / open-changes defaults after
-    // overrides on them could already have been saved.
+    // Saved overrides may use chords that are now other commands' defaults.
     const merged = mergeBindings({ 'new-workspace': chord('KeyT'), 'view-tiles': chord('KeyG') })
     expect(merged['new-shell']).toEqual(UNBOUND)
     expect(merged['open-changes']).toEqual(UNBOUND)
@@ -289,7 +288,7 @@ describe('mergeBindings', () => {
     // An unbound command matches nothing, even a keydown with an empty code.
     expect(matchShortcut(merged, key('', { altKey: false }))).toBeNull()
     expect(formatChord(UNBOUND)).toBe('Unset')
-    // Two overrides never unbind each other's (overridden) command.
+    // An override never unbinds another overridden command.
     expect(mergeBindings({ 'new-shell': chord('KeyY'), 'new-workspace': chord('KeyT') })['new-shell'])
       .toEqual(chord('KeyY'))
   })

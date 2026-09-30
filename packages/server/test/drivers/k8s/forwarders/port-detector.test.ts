@@ -39,9 +39,9 @@ function pod(workspaceId: string, over: Partial<PodInfo> = {}): PodInfo {
 }
 
 /**
- * A tiny in-process stand-in for the relay `ports` stream: a loopback TCP
- * server the injected dialPorts connects to, with a handle to write lines
- * into the newest stream.
+ * A stand-in for the relay `ports` stream: a loopback TCP server that the
+ * injected dialPorts connects to, with a handle to write lines into the
+ * newest connection.
  */
 async function startFakePortsServer(): Promise<{
   dial: () => Promise<net.Socket>
@@ -98,8 +98,7 @@ describe('getUnforwardedPorts', () => {
     expect(getUnforwardedPorts('s2')).toEqual([3000])
   })
 
-  // A dismissal exists only in this module's memory, so it is the only
-  // thing that can tell a client the popover row is gone.
+  // Dismissals live only in this module, so it must push the change.
   it('pushes a fresh snapshot when a dismissal lands, and not when it is refused', () => {
     _resetWorkspaceListChangedForTests()
     let pushes = 0
@@ -114,9 +113,9 @@ describe('getUnforwardedPorts', () => {
   })
 
   it('refuses to dismiss a port that is not currently surfaced', () => {
-    // Un-detected session, un-detected port, an already-forwarded port,
-    // and a filtered (sensitive) port are all refused — otherwise the
-    // dismissed set could be grown for sessions the sync never cleans up.
+    // Unknown workspace, undetected port, already-forwarded port and
+    // filtered port are all refused, so the dismissed set cannot grow for
+    // workspaces the sync never cleans up.
     expect(dismissWorkspacePort('nope', 8080)).toBe(false)
     _setDetectedPortsForTests('s1', [3000, 9229])
     expect(dismissWorkspacePort('s1', 8080)).toBe(false)

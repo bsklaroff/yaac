@@ -37,18 +37,18 @@ describe('toAgentSessionEntry', () => {
       status: 'waiting',
       waitingSinceMs: 1_700_000_000_000,
       prompt: 'fix the thing',
-      // The single format every surface shows — the reason one mapper serves
-      // all three (both forms are `string`, so tsc cannot catch a drift).
+      // Every surface shows this format. Both forms are strings, so tsc
+      // would not catch a mismatch.
       lastActiveAt: '2026-03-04 05:06:07',
     })
   })
 
-  // Every surface names an agent the way the create form did, so the model
-  // goes out with the catalog's name beside it — when the catalog has one.
+  // The catalog's display name goes out beside the model id when there is
+  // one, matching how the create form names it.
   it('names the model from the catalog, and sends the bare id where it has none', () => {
     expect(toAgentSessionEntry(link({ model: 'claude-opus-5-5' })))
       .toMatchObject({ model: 'claude-opus-5-5', modelName: 'Opus 5.5' })
-    // A dated snapshot a transcript reports resolves through its alias.
+    // A dated snapshot id resolves through its alias.
     expect(toAgentSessionEntry(link({ model: 'claude-sonnet-4-5-20250929' })).modelName)
       .toBe('Sonnet 4.5')
     const typed = toAgentSessionEntry(link({ model: 'claude-next' }))
@@ -65,8 +65,8 @@ describe('toAgentSessionEntry', () => {
       ordinal: 2,
       active: false,
     })
-    // Absent rather than undefined: this is how a client tells a conversation
-    // that is still open from one that merely was.
+    // Keys are absent, not undefined: that is how a client tells an open
+    // conversation from a closed one.
     expect('status' in entry).toBe(false)
     expect('lastActiveAt' in entry).toBe(false)
     expect('prompt' in entry).toBe(false)

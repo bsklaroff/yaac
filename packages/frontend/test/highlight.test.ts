@@ -72,7 +72,7 @@ describe('editorLanguage', () => {
     const ts = editorLanguage('ts')
     expect(editorLanguage('ts')).toBe(ts)
     expect(ts.name).toBe('typescript')
-    // A stream mode is a language too, so every table entry reaches an editor.
+    // Legacy stream modes work as editor languages too.
     expect(editorLanguage('dockerfile').parser.parse('FROM alpine').length).toBe('FROM alpine'.length)
   })
 })
@@ -148,13 +148,12 @@ describe('languageForFence', () => {
   })
 
   it('does not answer with something off Object.prototype', () => {
-    // A fence's name comes from whatever the agent typed, and these are
-    // ordinary-looking words — a plain lookup would hand back a function where
-    // a language belongs, and the tokenizer would throw on it.
+    // Fence names are untrusted; on a plain object these would return
+    // prototype functions instead of null.
     expect(languageForFence('constructor')).toBeNull()
     expect(languageForFence('__proto__')).toBeNull()
     expect(languageForFence('toString')).toBeNull()
-    // Same table, same hole, reached through a file path instead.
+    // The same through a file path.
     expect(languageForPath('src/x.constructor')).toBeNull()
     expect(languageForPath('constructor')).toBeNull()
   })

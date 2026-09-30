@@ -1,38 +1,30 @@
 /**
- * streamd — the in-pod stream daemon session pods run so the yaac server
- * can reach them over plain TCP (via the proxy relay) instead of kubectl
- * exec. Baked into the base image at /opt/yaac/streamd and started by
- * session-create's setup exec; listens on the pod IP (gVisor netstack)
- * like any Service backend.
+ * streamd — the in-pod stream daemon that lets the yaac server reach a
+ * workspace pod over plain TCP (via the proxy relay) instead of kubectl exec.
+ * Baked into the base image at /opt/yaac/streamd and started by the pod's
+ * setup; listens on the pod IP.
  *
  * Every connection starts with ONE JSON handshake line:
  *   {"token": "<streamToken>", "kind": "pty"|"ctrl"|"exec"|"tcp", ...params}
  * answered by one JSON reply line ({"ok":true} or {"ok":false,"error"}),
  * after which the stream's payload flows:
  *
- * - tcp  {port}         raw byte splice to 127.0.0.1/::1:<port> (the
- *                       in-pod dial keeps localhost-bound dev servers
- *                       reachable — the reason the relay can't just dial
- *                       podIP:port itself).
+ * - tcp  {port}         raw byte splice to localhost:<port>, dialed in-pod
+ *                       so localhost-bound dev servers are reachable.
  * - ctrl {cmd: [argv]}  spawn argv with piped stdio, no TTY; stdin/stdout
  *                       spliced raw (tmux control mode is a line
  *                       protocol). Socket close ⇔ process kill/exit.
  * - exec {cmd: [argv]}  one-shot: run argv, then send a single JSON line
- *                       {exitCode, stdout, stderr} (bounded) and close —
- *                       the containerExec replacement for session pods.
+ *                       {exitCode, stdout, stderr} (bounded) and close.
  * - pty  {cmd, cols, rows}  spawn argv under a PTY; framed both ways
  *                       (see framing.js). Resize frames drive TIOCSWINSZ.
  * - ports {}            push the pod's localhost-reachable LISTEN ports
- *                       (see ports.js) as one JSON line {ports:[...]} —
- *                       immediately, then on every change, and re-sent as
- *                       a keepalive so the server can detect a wedged
- *                       stream. streamd's own listen port is excluded
- *                       authoritatively.
+ *                       (see ports.js) as JSON lines {ports:[...]}; see
+ *                       handlePorts.
  *
- * The token is per-session (HMAC of the install's proxy secret and the
- * session id), handed to the pod as YAAC_STREAM_TOKEN. It is defense in
- * depth alongside the ingress NetworkPolicy — a session leaking its own token
- * gains nothing (the listener only reaches its own pod).
+ * The token is per workspace (derived from the install's proxy secret),
+ * handed to the pod as YAAC_STREAM_TOKEN. It is defense in depth alongside
+ * the ingress NetworkPolicy; a leaked token opens only its own pod.
  */
 
 import net from 'node:net'
@@ -48,9 +40,9 @@ export const DEFAULT_STREAM_PORT = 10300
 /** Handshake-line cap + deadline (it precedes any payload byte). */
 const HANDSHAKE_MAX_BYTES = 16 * 1024
 const HANDSHAKE_TIMEOUT_MS = 10_000
-/** Cap on concurrent streams — a runaway client fails fast, not the pod. */
+/** Cap on concurrent streams, so a runaway client cannot exhaust the pod. */
 const MAX_STREAMS = 128
-/** Per-stream caps on buffered exec output. */
+/** Per-stream cap on buffered exec output. */
 const EXEC_OUTPUT_MAX_BYTES = 4 * 1024 * 1024
 /** Grace between SIGTERM on socket close and the follow-up SIGKILL. */
 const CHILD_KILL_GRACE_MS = 2_000
@@ -88,14 +80,11 @@ function handleTcp(socket, params, leftover) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     return { ok: false, error: 'tcp: invalid port' }
   }
-  // 'localhost' (not a literal IP) so dev servers bound to either 127.0.0.1
-  // or ::1 are reachable — the same reason the old relay used `nc localhost`.
+  // 'localhost' reaches servers bound to either 127.0.0.1 or ::1.
   const target = net.connect({ port, host: 'localhost', allowHalfOpen: true })
   target.setNoDelay(true)
-  // Keep buffering client bytes until the dial lands: the socket is in
-  // flowing mode (the handshake reader had a listener), and flowing data
-  // with no listener is DISCARDED — a client that pipelines payload right
-  // behind its handshake would lose it.
+  // Buffer client bytes until the dial lands. The socket is already in
+  // flowing mode, so data with no listener would be discarded.
   let pending = leftover
   const buffer = (chunk) => { pending = Buffer.concat([pending, chunk]) }
   socket.on('data', buffer)
@@ -116,15 +105,14 @@ function handleCtrl(socket, params, leftover) {
   if (!isArgv(params.cmd)) return { ok: false, error: 'ctrl: cmd must be a non-empty argv array' }
   const child = spawn(params.cmd[0], params.cmd.slice(1), { stdio: ['pipe', 'pipe', 'pipe'] })
   child.on('error', () => socket.destroy())
-  // stderr is chatter (the exit closes the stream either way) — drain it so
-  // the child can't block on a full pipe.
+  // Drain stderr so the child cannot block on a full pipe.
   child.stderr.resume()
   if (leftover.length > 0) child.stdin.write(leftover)
   socket.pipe(child.stdin)
   child.stdout.pipe(socket)
   child.stdin.on('error', () => socket.destroy())
-  // End our write side on exit; destroySoon flushes buffered output first
-  // and then fully closes even if the peer never half-closes its side.
+  // destroySoon flushes output, then closes even if the peer never
+  // half-closes.
   child.on('exit', () => socket.destroySoon())
   socket.on('close', () => killChild(child))
   socket.on('error', () => killChild(child))
@@ -147,11 +135,8 @@ function handleExec(socket, params) {
   child.stdout.on('data', (chunk) => { stdout = collect(stdout, chunk) })
   child.stderr.on('data', (chunk) => { stderr = collect(stderr, chunk) })
   child.on('error', (err) => {
-    // The command never ran — spawn itself failed (ENOMEM, EMFILE). Said as
-    // its own field rather than an exit code alone, because 127 is exactly
-    // what a genuine command-not-found exits with, and the server has to
-    // tell "this tool is not in the image" (a verdict about the workspace)
-    // from "this pod could not fork" (a verdict about nothing).
+    // spawn itself failed (ENOMEM, EMFILE). `spawnFailed` lets the server
+    // tell this from a real command-not-found, which also exits 127.
     socket.end(JSON.stringify({
       exitCode: 127, spawnFailed: true, stdout: '', stderr: String(err.message),
     }) + '\n')
@@ -172,11 +157,10 @@ function handleExec(socket, params) {
 }
 
 /**
- * `ports` stream: push the pod's localhost-reachable LISTEN set as JSON
- * lines. One line immediately (right after the {ok} reply), one on every
- * change, and a keepalive re-send of the unchanged set so the server can
- * distinguish "nothing new" from a dead stream. The poll only runs while
- * a ports stream is open — an idle daemon costs nothing.
+ * `ports` stream: push the pod's localhost-reachable LISTEN ports as JSON
+ * lines: once right after the {ok} reply, on every change, and as a periodic
+ * keepalive so the server can tell a quiet pod from a dead stream. streamd's
+ * own port is always excluded.
  */
 function handlePorts(socket, _params, _leftover, ctx) {
   let lastKey = null
@@ -188,8 +172,6 @@ function handlePorts(socket, _params, _leftover, ctx) {
     } catch {
       ports = []
     }
-    // The daemon's own listener is infra, never a forward candidate —
-    // excluded here authoritatively rather than trusting the server.
     ports = ports.filter((p) => p !== ctx.boundPort())
     const key = ports.join(',')
     const now = Date.now()
@@ -199,8 +181,7 @@ function handlePorts(socket, _params, _leftover, ctx) {
     socket.write(JSON.stringify({ ports }) + '\n')
   }
   const timer = setInterval(emit, ctx.portsPollMs)
-  // First emit is deferred so the {ok} handshake reply (written after
-  // this handler returns) stays the first line on the wire.
+  // Deferred so the {ok} reply, written after this returns, comes first.
   setImmediate(emit)
   socket.on('close', () => clearInterval(timer))
   socket.on('error', () => clearInterval(timer))
@@ -214,9 +195,8 @@ function handlePty(socket, params, leftover) {
   let ptyProc
   try {
     ptyProc = pty.spawn(params.cmd[0], params.cmd.slice(1), {
-      // The terminal type the spawned client (tmux attach) renders for.
-      // Must stay xterm-256color (the session image's TERM): a lesser
-      // entry like xterm-color drops civis/cnorm and 256-color output.
+      // Must match the image's TERM; lesser entries drop cursor hiding
+      // and 256-color output.
       name: 'xterm-256color',
       cols,
       rows,
@@ -265,13 +245,8 @@ function handlePty(socket, params, leftover) {
   if (leftover.length > 0) onFrames(leftover)
   socket.on('data', onFrames)
 
-  // Output rides a micro-batcher (see batcher.js): coalescing the child's
-  // burst of small writes into one frame per window keeps every downstream
-  // hop at one message per batch and lets the browser paint a tmux redraw
-  // atomically instead of fragment by fragment.
-  // Flow control: node-pty has no pull API, so pause the pty when the
-  // socket's buffer backs up and resume on drain (a flooding child — `yes`
-  // — must not balloon server memory).
+  // Output is batched (see batcher.js). node-pty has no pull API, so pause
+  // the pty when the socket backs up and resume on drain.
   const batcher = createOutputBatcher((buf) => {
     const writable = socket.write(encodeFrame(FRAME_DATA, buf))
     if (!writable && typeof ptyProc.pause === 'function') ptyProc.pause()
@@ -282,14 +257,13 @@ function handlePty(socket, params, leftover) {
   })
   ptyProc.onExit(({ exitCode }) => {
     try {
-      batcher.flush() // ordering: all output precedes the exit frame
+      batcher.flush() // all output precedes the exit frame
       socket.write(encodeFrame(FRAME_EXIT, { code: exitCode }))
     } catch { /* socket gone */ }
     socket.end()
   })
-  // A PTY stream has no half-close semantics: a client EOF is a detach.
-  // Without this, a graceful client FIN would leave our (allowHalfOpen)
-  // side open forever with the child still running.
+  // A client EOF on a PTY stream is a detach; with allowHalfOpen the
+  // socket and child would otherwise stay up forever.
   socket.on('end', () => {
     kill()
     socket.destroy()
@@ -302,11 +276,7 @@ function handlePty(socket, params, leftover) {
   return { ok: true }
 }
 
-/**
- * Create the daemon (not yet listening). Injectable options keep it
- * unit-testable in-process: tests pass an ephemeral `port` and their own
- * `token`.
- */
+/** Create the daemon (not yet listening). */
 export function createStreamd({
   token,
   port = DEFAULT_STREAM_PORT,
@@ -325,16 +295,11 @@ export function createStreamd({
     boundPort: () => boundPort,
   }
 
-  // allowHalfOpen: a client EOF (end of stdin for a ctrl stream, or a
-  // forwarded TCP peer's half-close) must reach the child/target while
-  // their output keeps flowing back — the default auto-close would kill
-  // the child before it flushes. pipe() propagates the end() in each
-  // direction; the 'close' handlers still reap the counterpart.
+  // allowHalfOpen: a client EOF must reach the child or target while its
+  // output keeps flowing back.
   const server = net.createServer({ allowHalfOpen: true }, (socket) => {
     socket.on('error', () => { /* per-stream errors close the stream */ })
-    // The output batcher above already decides when a write goes out; Nagle
-    // holding it back for a companion can only add a delayed-ACK interval of
-    // latency to exactly the frames that care about it.
+    // The batcher already decides when to write; Nagle would only add latency.
     socket.setNoDelay(true)
     let buf = Buffer.alloc(0)
     const timer = setTimeout(() => socket.destroy(), HANDSHAKE_TIMEOUT_MS)

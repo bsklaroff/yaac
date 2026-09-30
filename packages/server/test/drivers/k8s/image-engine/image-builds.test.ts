@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
-  // clearAllImageBuildsForTests is the module's state-reset hook, not a
-  // function under test — the seven entry points below are.
+  // State-reset hook, not a unit under test.
   clearAllImageBuildsForTests,
   dismissImageBuild,
   failImageBuild,
@@ -61,8 +60,8 @@ describe('registerImageBuild', () => {
   })
 
   it('keeps a running entry for the same tag alongside a new one', () => {
-    // The coordinator single-flights per tag, so this shouldn't happen for
-    // builds — but a push and a build of one tag may legitimately coexist.
+    // The coordinator runs one build per tag, but a push and a build of one
+    // tag can coexist.
     register({ action: 'build' })
     register({ action: 'push', layer: 'push' })
     expect(listImageBuilds()).toHaveLength(2)
@@ -104,8 +103,7 @@ describe('listImageBuilds', () => {
       if (i < 2) runningIds.push(id)
       else {
         failImageBuild(id, 'x')
-        // A couple of dismissed rows so the cap drops those before the
-        // still-visible finished ones.
+        // Some dismissed rows, which the cap drops before visible ones.
         if (i % 8 === 0) dismissImageBuild(id)
       }
       vi.advanceTimersByTime(10)
@@ -137,9 +135,8 @@ describe('ingestImageBuildLine', () => {
     const notify = vi.mocked(notifyWorkspaceListChanged)
     notify.mockClear()
 
-    // Lines that aren't STEP progress leave the entry's step untouched —
-    // including near-misses, so a changed podman format degrades to
-    // status + raw log rather than reporting nonsense.
+    // Non-STEP lines, including near-misses, leave the step unchanged, so a
+    // changed podman format falls back to status and raw log.
     for (const line of ['random output', '--> a1b2c3', 'COMMIT yaac-base:abc', 'almost STEP 1/2: nope']) {
       ingestImageBuildLine(id, line)
     }

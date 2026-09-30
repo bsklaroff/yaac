@@ -4,13 +4,9 @@ import { Dialog } from '@base-ui/react/dialog'
 import { useOpenerFocus } from '#lib/useOpenerFocus'
 
 /**
- * A centered modal: dimmed backdrop, a rounded card that scales in and out,
- * and full-screen below the `md` breakpoint, where a centered card would be
- * cramped. Settings and the create dialog are built on it; each passes its
- * own size (and layout) in `className`.
- *
- * Controlled — the caller owns `open`, usually from the UI store, so any
- * surface can open it without holding a trigger.
+ * A centered modal card over a dimmed backdrop, full-screen on small screens.
+ * Callers pass size and layout in `className` and control `open`, usually
+ * from the UI store so any surface can open it.
  */
 export function Modal({
   open,

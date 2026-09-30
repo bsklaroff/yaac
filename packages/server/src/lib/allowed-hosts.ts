@@ -58,10 +58,7 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'www.bitbucket.org',
   'api.bitbucket.org',
 
-  // Container registries
-  // The docker.io image-pull hosts live in NESTED_PULL_HOSTS below — a
-  // non-nested workspace never runs `docker pull`, so they are appended to
-  // the allowlist only when `nestedContainers` is on.
+  // Container registries (docker.io pull hosts are in NESTED_PULL_HOSTS)
   'hub.docker.com',
   'www.docker.com',
   'download.docker.com',
@@ -307,16 +304,11 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
 ]
 
 /**
- * Upstream container-registry + CDN hosts that a `nestedContainers`
- * workspace's in-pod `docker pull` reaches, appended to the workspace
- * allowlist when `nestedContainers` is on (see `buildProxyRegistration`)
- * so the pull rides the pod-netns redirect → relay → proxy transparent
- * listener and is judged, fail-closed, by SNI. Kept out of
- * DEFAULT_ALLOWED_HOSTS because a non-nested workspace never pulls images;
- * `setAllowedUrls` fully overrides the allowlist and these are NOT
- * re-appended under it (the user takes complete control). ghcr.io and
- * pkg-containers.githubusercontent.com are already in the base list, so
- * they are not duplicated here.
+ * Registry and CDN hosts an in-pod `docker pull` reaches. Appended to the
+ * allowlist only for `nestedContainers` workspaces (see
+ * `buildProxyRegistration`), since other workspaces never pull images. Not
+ * appended when `setAllowedUrls` replaces the allowlist. ghcr.io and
+ * pkg-containers.githubusercontent.com are already in the default list.
  */
 export const NESTED_PULL_HOSTS: string[] = [
   // docker.io
@@ -375,7 +367,7 @@ export function resolveAllowedHosts(config: YaacConfig): string[] {
     resolved = DEFAULT_ALLOWED_HOSTS
   }
 
-  // Warn if critical hosts are not reachable
+  // Warn if critical hosts are not allowed.
   if (resolved.length === 1 && resolved[0] === '*') {
     return resolved
   }

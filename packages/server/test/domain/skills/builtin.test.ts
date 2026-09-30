@@ -7,9 +7,7 @@ import { claudeDir, piDir, setDataDir } from '@yaac/shared/project-paths'
 import {
   builtinSkillsDir, builtinSkillMounts, reconcileSharedSkillRoots, sharedSkillRoots, stageBuiltinSkills,
 } from '#domain/skills'
-// setBuiltinSkillsDir is the feature's test hook (restore the packaged default
-// between cases); TOOL_SKILL_ROOTS is the policy constant the mounts derive
-// from. Neither is under test here.
+// Test hook and policy constant used for setup, not under test.
 import { setBuiltinSkillsDir, TOOL_SKILL_ROOTS } from '#domain/skills/builtin'
 
 const SLUG = 'proj'
@@ -46,7 +44,7 @@ describe('stageBuiltinSkills', () => {
     const src = path.join(tmp, 'src')
     await writeSkill(src, 'welcome')
     await writeSkill(src, 'alpha')
-    // A multi-file skill — nested assets must come along.
+    // A multi-file skill: nested assets must be copied too.
     await fs.mkdir(path.join(src, 'welcome', 'refs'), { recursive: true })
     await fs.writeFile(path.join(src, 'welcome', 'driver.mjs'), 'export default 1\n')
     await fs.writeFile(path.join(src, 'welcome', 'refs', 'note.md'), 'note\n')
@@ -56,7 +54,7 @@ describe('stageBuiltinSkills', () => {
     await fs.writeFile(path.join(src, 'not-a-skill', 'README.md'), 'x')
     await writeSkill(src, '.hidden')
     await fs.writeFile(path.join(src, 'README.md'), 'x')
-    // A symlinked skill dir counts — an install may link rather than copy.
+    // A symlinked skill dir counts; an install may link rather than copy.
     await fs.symlink(path.join(src, 'alpha'), path.join(src, 'linked'), 'dir')
 
     const dest = path.join(tmp, 'stage')
@@ -90,8 +88,7 @@ describe('stageBuiltinSkills', () => {
 describe('sharedSkillRoots', () => {
   it('names every tool\'s host skills root under the project config dirs', () => {
     const roots = sharedSkillRoots(SLUG)
-    // The host counterpart of the in-pod roots: same four tools, so a skill
-    // is there whichever tool the project's workspaces run.
+    // One host root per in-pod root, so every tool sees the skills.
     expect(roots).toHaveLength(TOOL_SKILL_ROOTS.length)
     expect(roots).toContain(path.join(claudeDir(SLUG), 'skills'))
     expect(roots).toContain(path.join(piDir(SLUG), 'agent', 'skills'))
@@ -100,8 +97,8 @@ describe('sharedSkillRoots', () => {
 })
 
 describe('reconcileSharedSkillRoots', () => {
-  /** An install shipping `names`, at a dir named like a real one — the name
-   *  is what marks the links it plants as ours. */
+  /** An install shipping `names`. The `builtin-skills` dir name is what
+   *  marks its links as ours. */
   async function install(names: string[], where = 'install'): Promise<string> {
     const dir = path.join(tmp, where, 'builtin-skills')
     for (const name of names) await writeSkill(dir, name)
@@ -116,8 +113,8 @@ describe('reconcileSharedSkillRoots', () => {
       for (const name of ['alpha', 'welcome']) {
         const entry = path.join(root, name)
         expect((await fs.lstat(entry)).isSymbolicLink()).toBe(true)
-        // Read THROUGH the link: what the agent finds is the installed skill,
-        // so an upgrade moves every workspace at once with nothing to restage.
+        // Read through the link, so an upgrade updates every workspace
+        // without restaging.
         expect(await fs.readFile(path.join(entry, 'SKILL.md'), 'utf8')).toContain(`name: ${name}`)
       }
     }
@@ -135,8 +132,7 @@ describe('reconcileSharedSkillRoots', () => {
     const mine = path.join(tmp, 'mine')
     await writeSkill(mine, 'alpha', 'also-theirs')
     await fs.symlink(path.join(mine, 'alpha'), path.join(root, 'alpha'), 'dir')
-    // Not a skill at all, under a third: unreadable as metadata is a reason to
-    // leave a thing alone, never to remove it.
+    // Not a skill at all, under a third. Anything unreadable is left alone.
     await fs.writeFile(path.join(root, 'notes'), 'not a skill dir\n')
 
     const src = await install(['welcome', 'alpha', 'notes'])
@@ -146,17 +142,15 @@ describe('reconcileSharedSkillRoots', () => {
     expect(await fs.readFile(path.join(root, 'welcome', 'SKILL.md'), 'utf8')).toContain('the-users-own')
     expect(await fs.readlink(path.join(root, 'alpha'))).toBe(path.join(mine, 'alpha'))
     expect(await fs.readFile(path.join(root, 'notes'), 'utf8')).toBe('not a skill dir\n')
-    // Only that project's claude root was contested; the rest still get all.
+    // Only the claude root was contested; the other roots get every skill.
     expect(await fs.readlink(path.join(piDir(SLUG), 'agent', 'skills', 'welcome')))
       .toBe(path.join(src, 'welcome'))
   })
 
   it('claims a user link into a dir they named builtin-skills, but never its target', async () => {
-    // The predicate's one accepted false positive, and the property that
-    // bounds it: ownership is per machine (any `builtin-skills`-parented
-    // link) so a moved install's links stay recognizable, which costs a link
-    // the user aimed into a dir of that name. Only the LINK is ever ours —
-    // rm does not follow one, so what they pointed at survives either verdict.
+    // Any link into a `builtin-skills` dir counts as ours, so a moved
+    // install's links stay recognizable. The cost is a user link into a dir
+    // of that name, but only the link is touched, never its target.
     const root = path.join(claudeDir(SLUG), 'skills')
     await fs.mkdir(root, { recursive: true })
     const theirs = path.join(tmp, 'notes', 'builtin-skills')
@@ -171,7 +165,7 @@ describe('reconcileSharedSkillRoots', () => {
     // A shipped name is re-aimed at this install; an unshipped one is pruned.
     expect(await fs.readlink(path.join(root, 'welcome'))).toBe(path.join(src, 'welcome'))
     await expect(fs.lstat(path.join(root, 'ideas'))).rejects.toThrow()
-    // Both of their skills are still exactly where they wrote them.
+    // Both of their skills are untouched.
     expect(await fs.readFile(path.join(theirs, 'welcome', 'SKILL.md'), 'utf8'))
       .toContain('theirs-shipped-name')
     expect(await fs.readFile(path.join(theirs, 'ideas', 'SKILL.md'), 'utf8'))
@@ -181,7 +175,7 @@ describe('reconcileSharedSkillRoots', () => {
   it('re-aims a moved install\'s links and removes a retired skill\'s', async () => {
     const root = path.join(claudeDir(SLUG), 'skills')
     await fs.mkdir(root, { recursive: true })
-    // What an upgrade leaves behind: links into an install dir that is gone.
+    // An upgrade leaves links into an install dir that is gone.
     const old = path.join(tmp, 'old-version', 'builtin-skills')
     await fs.symlink(path.join(old, 'welcome'), path.join(root, 'welcome'), 'dir')
     await fs.symlink(path.join(old, 'retired'), path.join(root, 'retired'), 'dir')
@@ -190,13 +184,13 @@ describe('reconcileSharedSkillRoots', () => {
     expect(await reconcileSharedSkillRoots(src, SLUG, 'link')).toEqual(['welcome'])
 
     expect(await fs.readlink(path.join(root, 'welcome'))).toBe(path.join(src, 'welcome'))
-    // A retired skill is only ever removed here — nothing else reads the root.
+    // Nothing else cleans the root, so a retired skill is removed here.
     await expect(fs.lstat(path.join(root, 'retired'))).rejects.toThrow()
   })
 
   it('survives two creates of the same project racing on the same roots', async () => {
-    // Both sweeps want the same links in the same shared dirs, so losing the
-    // race means the link is already there — never a failed workspace create.
+    // Both sweeps want the same links, so losing the race must not fail the
+    // create.
     const src = await install(['welcome', 'alpha'])
     const [a, b] = await Promise.all([
       reconcileSharedSkillRoots(src, SLUG, 'link'),
@@ -208,13 +202,10 @@ describe('reconcileSharedSkillRoots', () => {
   })
 
   it('survives a concurrent prune taking the staging link mid-re-aim', async () => {
-    // The staging link answers the prune's own description — a link of ours
-    // under a name this install does not ship — so a concurrent create of
-    // this project can remove it inside the rename window. That create is
-    // converging the same name, so losing the race must not fail this one.
-    // The interleaving is one syscall wide, so the filesystem (a process
-    // boundary, and the only thing stubbed in this file) is where it is
-    // staged rather than left to chance.
+    // The staging link looks like one of ours under an unshipped name, so a
+    // concurrent create can prune it before the rename. That create is
+    // converging the same name, so this one must not fail. The race is one
+    // syscall wide, so it is staged by stubbing `fs.rename`.
     const root = path.join(claudeDir(SLUG), 'skills')
     await fs.mkdir(root, { recursive: true })
     const old = path.join(tmp, 'old-version', 'builtin-skills')
@@ -231,8 +222,8 @@ describe('reconcileSharedSkillRoots', () => {
     } finally {
       spy.mockRestore()
     }
-    // Nothing of ours is left over, and the name still resolves — to the old
-    // link here, which the create that won the race re-aims.
+    // No staging leftovers, and the name still resolves (to the old link,
+    // which the winning create re-aims).
     expect((await fs.readdir(root)).filter((e) => e.startsWith('.'))).toEqual([])
     expect((await fs.lstat(path.join(root, 'welcome'))).isSymbolicLink()).toBe(true)
   })
@@ -248,8 +239,7 @@ describe('reconcileSharedSkillRoots', () => {
 
   it('makes every mountpoint itself, so the kubelet never creates one root-owned', async () => {
     const root = path.join(claudeDir(SLUG), 'skills')
-    // Their own skill under a shipped name, and their own link under another:
-    // the mount lands over them, but the NAME is still not ours to rewrite.
+    // The user's own skill and link under shipped names are left as is.
     await writeSkill(root, 'welcome', 'the-users-own')
     const mine = path.join(tmp, 'mine')
     await writeSkill(mine, 'alpha', 'also-theirs')
@@ -260,8 +250,7 @@ describe('reconcileSharedSkillRoots', () => {
 
     expect(await fs.readFile(path.join(root, 'welcome', 'SKILL.md'), 'utf8')).toContain('the-users-own')
     expect(await fs.readlink(path.join(root, 'alpha'))).toBe(path.join(mine, 'alpha'))
-    // Every uncontested name is a real, empty directory before any pod exists —
-    // the content rides in on the mount, so empty is the finished state.
+    // Uncontested names are empty directories; the mount supplies content.
     for (const other of sharedSkillRoots(SLUG).filter((r) => r !== root)) {
       for (const name of ['alpha', 'welcome']) {
         const entry = path.join(other, name)
@@ -275,8 +264,8 @@ describe('reconcileSharedSkillRoots', () => {
     const src = await install(['welcome', 'alpha'])
     const claudeRoot = path.join(claudeDir(SLUG), 'skills')
 
-    // containerless → k8s: a link of ours aims at an install path no pod can
-    // resolve, so every one becomes a mountpoint.
+    // containerless → k8s: pods cannot resolve our links, so each becomes a
+    // mountpoint.
     await reconcileSharedSkillRoots(src, SLUG, 'link')
     expect(await reconcileSharedSkillRoots(src, SLUG, 'mountpoint')).toEqual(['alpha', 'welcome'])
     for (const root of sharedSkillRoots(SLUG)) {
@@ -286,11 +275,10 @@ describe('reconcileSharedSkillRoots', () => {
         expect(st.isDirectory()).toBe(true)
       }
     }
-    // Re-running is the same state, not a second one: every create re-runs it.
+    // Every create re-runs this, so it must be idempotent.
     await reconcileSharedSkillRoots(src, SLUG, 'mountpoint')
 
-    // k8s → containerless: the spent mountpoints are reclaimed and linked, so
-    // the skill is there for an agent that reads the dir directly.
+    // k8s → containerless: the mountpoints become links again.
     await reconcileSharedSkillRoots(src, SLUG, 'link')
     expect(await fs.readFile(path.join(claudeRoot, 'welcome', 'SKILL.md'), 'utf8'))
       .toContain('name: welcome')
@@ -300,11 +288,11 @@ describe('reconcileSharedSkillRoots', () => {
   it('reclaims a spent mountpoint only under a name it ships', async () => {
     const root = path.join(claudeDir(SLUG), 'skills')
     await fs.mkdir(root, { recursive: true })
-    // A pod run of an older yaac: one mountpoint for a name still shipped, one
-    // for a skill since retired. Only the first is a name we need.
+    // Mountpoints left by an older yaac: one for a shipped name, one for a
+    // retired skill.
     await fs.mkdir(path.join(root, 'welcome'))
     await fs.mkdir(path.join(root, 'yaac-spawn'))
-    // And an empty dir the user made to fill later, under no shipped name.
+    // An empty dir the user made, under no shipped name.
     await fs.mkdir(path.join(root, 'mine-to-be'))
 
     const src = await install(['welcome'])

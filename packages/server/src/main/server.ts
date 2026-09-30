@@ -25,41 +25,33 @@ import { PACKAGE_ROOT } from '@yaac/shared/paths'
 export interface ServerAppDeps {
   buildId: string
   /**
-   * Reports whether startup initialization (DB open + first-boot
-   * migrations) has finished. Surfaced on `/health` as `ready` so `yaac
-   * server start` can wait for genuine readiness — the port binds and the
-   * lock is written before that init runs, and the init blocks the single
-   * event loop, so a bare liveness probe can pass in the responsive window
-   * beforehand and print "server started" prematurely. Defaults to
-   * always-ready for in-process tests that never boot the DB.
+   * Whether startup init (DB open and first-boot migrations) has finished,
+   * reported on `/health` as `ready`. The port and lock exist before init,
+   * so `yaac server start` waits on this rather than bare liveness.
+   * Defaults to always-ready for tests that never open the DB.
    */
   isReady?: () => boolean
 }
 
 /**
- * Build the hono app. Kept as a factory so tests can instantiate it
- * without actually binding a TCP socket (hono apps expose `fetch` which
- * can be driven with `new Request(...)` directly).
+ * Build the Hono app. A factory so tests can drive `app.fetch` directly
+ * without binding a socket.
  */
 export function buildApp(deps: ServerAppDeps) {
   const isReady = deps.isReady ?? (() => true)
   const app = new Hono<IdentityEnv>()
 
   app.use('*', requestLogger())
-  // Stamp every response with the server build so a remote CLI (which
-  // can't compare lock buildIds) can warn on version skew.
+  // Lets a remote CLI detect version skew.
   app.use('*', async (c, next) => {
     await next()
     c.res.headers.set('x-yaac-build-id', deps.buildId)
   })
   app.use('*', hostHeaderCheck())
   app.use('*', denyBrowserCors())
-  // Reject cross-site requests two ways (both browser-set, JS-unforgeable,
-  // and effective on WS upgrades, which are never preflighted), because a
-  // browser's identity is ambient — loopback or tailnet, a malicious site's
-  // request would carry it: the request's Origin (which must be the very
-  // origin it was sent to, port included), and the Fetch-metadata
-  // Sec-Fetch-Site signal.
+  // A browser's identity is ambient (loopback or tailnet), so reject
+  // cross-site requests by Origin (must match the target origin exactly)
+  // and Sec-Fetch-Site. Both are browser-set and apply to WS upgrades too.
   app.use('*', originHeaderCheck())
   app.use('*', fetchSiteCheck())
   app.use('*', identify())
@@ -74,8 +66,7 @@ export function buildApp(deps: ServerAppDeps) {
     404,
   ))
 
-  // Serve the built SPA bundle when present (production: dist/frontend).
-  // Absent in dev/test (Vite serves the app instead), so guard on it.
+  // Serve the built SPA when present (production). In dev, Vite serves it.
   const frontendDir = path.join(PACKAGE_ROOT, 'frontend')
   if (existsSync(path.join(frontendDir, 'index.html'))) {
     registerStaticRoutes(app, frontendDir)
@@ -86,10 +77,9 @@ export function buildApp(deps: ServerAppDeps) {
 }
 
 /**
- * Every HTTP route a client calls, mounted under `/api` (as are the
- * WebSocket routes server-run adds) so none can collide with the SPA's
- * paths and the dev proxy forwards one prefix. `AppType` is this sub-app:
- * clients address routes without the prefix and `createApiClient` adds it.
+ * Every HTTP route, mounted under `/api` (like server-run's WebSocket
+ * routes) so none collide with SPA paths. `AppType` is this sub-app;
+ * `createApiClient` adds the prefix.
  */
 function apiRoutes(isReady: () => boolean, buildId: string) {
   return new Hono<IdentityEnv>()
@@ -97,21 +87,18 @@ function apiRoutes(isReady: () => boolean, buildId: string) {
       ok: true,
       buildId,
       ready: isReady(),
-      // Which substrate this server runs, or null before the composition
-      // root has registered one. Here as well as on the snapshot because a
-      // caller may need it before it is identified: `yaac cluster …`
-      // asks this to decide whether it means anything against THIS server,
-      // rather than trusting its own shell's YAAC_DRIVER — a server started
-      // elsewhere leaves no trace in it.
+      // The driver, or null before one is registered. On /health because
+      // `yaac cluster …` needs it before identifying, to know what THIS
+      // server runs.
       driver: hasWorkspaceDriver() ? workspaceDriver().kind : null,
     }))
-    // Who the server takes this caller to be — the SPA's bootstrap and the
-    // clients' "will this server take my requests" probe.
+    // The SPA's bootstrap and the clients' "will this server accept me"
+    // probe.
     .get('/whoami', (c) => c.json(c.get('principal')))
     .route('/project', projectApp)
     .route('/workspace', workspaceApp)
-    // Where an older install's `yaac-mama`, still staged in a containerless
-    // workspace it launched, posts (docs/legacy-compat-shims.md).
+    // Legacy path an older staged `yaac-mama` still posts to
+    // (docs/legacy-compat-shims.md).
     .route('/worktree', mamaApp)
     .route('/auth', authApp)
     .route('/shortcuts', shortcutsApp)

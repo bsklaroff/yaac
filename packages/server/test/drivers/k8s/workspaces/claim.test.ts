@@ -1,12 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
 
-// kubectl is the process boundary; the label constants, the selector and the
-// patch this builds stay real, since they are what the test is about. Both
-// entry points are stubbed because `kubectlGetJson` reaches its own module's
-// `kubectlWithRetry` directly, not through the namespace a partial mock
-// replaces — stubbing only the latter would leave the lookup shelling out
-// for real.
+// Mock kubectl. Both entry points are stubbed because `kubectlGetJson` calls
+// its module's `kubectlWithRetry` directly, bypassing a partial mock.
 const mockKubectl = vi.hoisted(() => vi.fn())
 const mockGetJson = vi.hoisted(() => vi.fn())
 const mockApply = vi.hoisted(() => vi.fn())
@@ -58,7 +54,7 @@ describe('claimSpareWorkspace', () => {
     expect(selector).toContain(`${LABEL_WORKSPACE_ID}=s1`)
     expect(selector).toContain(`yaac.data-dir-hash=${dataDirHash()}`)
     expect(selector).toContain(`${LABEL_PREWARMED}=true`)
-    // The pod name is the runtime's own, resolved here and never asked for.
+    // The pod name is looked up, not passed in.
     expect(patchArgv()).toContain('yaac-proj-s1-abcde')
   })
 
@@ -68,10 +64,8 @@ describe('claimSpareWorkspace', () => {
     expect(patchArgv()).toBeUndefined()
   })
 
-  // The load-bearing half. A selector only filters the LIST — `kubectl label
-  // -l` would patch unconditionally afterwards, so two claimants could both
-  // list the spare still prewarmed and both believe they won. The `test` op
-  // is what makes the API server itself reject the second.
+  // A selector only filters the listing, so two claimants could both win.
+  // The JSON-patch `test` op makes the API server reject the second.
   it('writes under a compare-and-swap on the spare still being one', async () => {
     await claimSpareWorkspace('s1', 'codex')
 
@@ -92,9 +86,7 @@ describe('claimSpareWorkspace', () => {
     })
   })
 
-  // Always stamped, even when it is the tool the spare already booted: what
-  // the workspace DECLARES is what a spawn from it reads, and leaving that
-  // to a conditional would make the guarantee depend on the caller's luck.
+  // Always stamped, since workspaces spawned from this one read it.
   it('stamps the tool even when it already matches', async () => {
     await claimSpareWorkspace('s1', 'claude')
     expect(patchOps()).toContainEqual({
@@ -102,10 +94,8 @@ describe('claimSpareWorkspace', () => {
     })
   })
 
-  // What losing the race looks like on the wire: the API server fails the
-  // whole patch. Not a transient error, so it is never retried into a win —
-  // it surfaces, and the claim path reads a throw as "fall back to a cold
-  // create".
+  // Losing the race fails the whole patch. It is not retried; the caller
+  // falls back to a cold create.
   it('propagates the rejected compare-and-swap when another claim won', async () => {
     mockKubectl.mockRejectedValue(Object.assign(
       new Error('the server rejected our request'),
@@ -141,14 +131,13 @@ describe('claimSpareWorkspace and the npm cache', () => {
   const execArgv = (): string[] | undefined =>
     mockKubectl.mock.calls.map(([a]) => a as string[]).find((a) => a[0] === 'exec')
 
-  // A spare is warmed long before it is claimed: pointed at a cache that
-  // has since gone down, every install would fail, so the claim re-decides.
+  // The cache may have gone down since the spare was warmed.
   it('re-decides a spare\'s registry against the cache as it is at claim time', async () => {
     stage({ admitted: true, serving: false })
     await claimSpareWorkspace('s1', 'codex')
     const down = execArgv()!
     expect(down).toEqual(expect.arrayContaining(['exec', 'yaac-proj-s1-abcde', '--']))
-    // No URL: the script only strips the cache's own line.
+    // No URL: the script only removes the cache's line.
     expect(down.at(-1)).toBe('')
     expect(down.join(' ')).toContain('registry=http://yaac-npm-cache')
 
@@ -188,8 +177,7 @@ describe('registerWorkspace', () => {
   }
   const kubectlVerbs = (): string[] => mockKubectl.mock.calls.map(([a]) => (a as string[])[0])
 
-  // A pod the cache still applies to keeps it: re-registering is the whole
-  // of the work, and the pod is never looked up.
+  // If the cache still applies, only the registration is rewritten.
   it('writes the registration from the config it is handed', async () => {
     await registerWorkspace(reg({ config: { setAllowedUrls: ['*'] } }))
 
@@ -198,9 +186,8 @@ describe('registerWorkspace', () => {
     expect(mockKubectl).not.toHaveBeenCalled()
   })
 
-  // The cache fetches outside the proxy, so a pod admitted to it when its
-  // project's allowlist named npmjs keeps a path the narrowed allowlist
-  // refuses — until the label the cache's policies admit it by comes off.
+  // The cache fetches outside the proxy, so a pod keeps npm access through
+  // it until its cache label is removed.
   it('takes a pod off the npm cache once its allowlist stops admitting npmjs', async () => {
     await registerWorkspace(reg({ config: { setAllowedUrls: ['api.example.com'] } }))
 
@@ -208,8 +195,7 @@ describe('registerWorkspace', () => {
     const selector = flag(getArgv(), '-l').split(',')
     expect(selector).toContain(`${LABEL_WORKSPACE_ID}=s1`)
     expect(selector).toContain(`${LABEL_NPM_CACHE}=true`)
-    // ~/.npmrc first, so installs never point at a cache the pod can no
-    // longer reach; the label after.
+    // ~/.npmrc first, so installs never use a cache the pod cannot reach.
     expect(kubectlVerbs()).toEqual(['exec', 'label'])
     const [exec, label] = mockKubectl.mock.calls.map(([a]) => a as string[])
     expect(exec).toEqual(expect.arrayContaining(['yaac-proj-s1-abcde', '--']))
@@ -228,8 +214,6 @@ describe('registerWorkspace', () => {
     expect(mockKubectl).not.toHaveBeenCalled()
   })
 
-  // A revocation that did not land must fail the claim rather than hand
-  // the pod over still admitted.
   it('propagates a failed revocation', async () => {
     mockKubectl.mockImplementation((args: string[]) => args[0] === 'label'
       ? Promise.reject(new Error('apiserver down'))

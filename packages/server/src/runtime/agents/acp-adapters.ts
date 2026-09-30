@@ -1,21 +1,13 @@
 /**
- * What each tool's ACP adapter is, and everything about it that differs from
- * the others: how it is launched, how it is told a posture, how it is told a
- * model, and whether it rebuilds a conversation's history when reconnected.
+ * Per-tool facts about each ACP adapter: how it is launched, how it is told
+ * a permission posture and a model, and whether it replays history on
+ * reconnect. Kept in one table because the facts are related (e.g. a tool
+ * that cannot take a model at launch must be sent one over the protocol).
  *
- * One table rather than four branches scattered through the driver and the
- * client, because these facts are not independent — a tool that cannot take a
- * model at launch is exactly the tool that has to be sent one over
- * the protocol, and the posture it can honor follows from the modes its adapter
- * advertises. Read together they are a description of an adapter; read apart
- * they are four `if (tool === …)` chains that drift.
- *
- * Every value here was verified against `ACP_ADAPTERS[tool].verified`, which
- * is both the version `dockerfiles/Dockerfile.tools` installs and the one a
- * host install pins to (a test ties the record to the Dockerfile). That
- * matters more than it looks: an adapter that stops advertising a mode does
- * not fail, it silently runs in its default one, so nothing but a version
- * check tells us the table went stale.
+ * Every value was verified against `ACP_ADAPTERS[tool].verified`, the
+ * version `dockerfiles/Dockerfile.tools` installs and host installs pin (a
+ * test ties them together). An adapter that drops a mode does not fail; it
+ * silently runs its default, so only the version check catches drift.
  */
 import { ACP_ADAPTERS, type AgentTool, type PermissionMode } from '@yaac/shared/types'
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
@@ -24,49 +16,40 @@ import { opencodeConfigArg } from './agent-command'
 import type { AgentLaunchSpec } from './drivers'
 
 export interface AcpAdapterProfile {
-  /** What the tmux window execs, as an argv the launch command joins with
-   *  spaces. Never quoted — the whole launch string is embedded in a
-   *  single-quoted `respawn-window '<cmd>'`. */
+  /** The command the tmux window runs, joined with spaces. Never quoted: the
+   *  launch string is embedded in a single-quoted `respawn-window '<cmd>'`. */
   argv: string[]
   /** `NAME=value` assignments prefixed to that command. */
   env(spec: AgentLaunchSpec): string[]
   /**
-   * yaac's postures as the session mode ids this adapter advertises. A posture
-   * that is absent is one the adapter has no mode for — either because it is
-   * carried some other way (opencode's rules ride `OPENCODE_PERMISSION` at
-   * launch) or because the tool has no such notion (pi). Absent means "send
-   * nothing", never "send the default".
+   * yaac postures mapped to this adapter's session mode ids. A missing
+   * posture means "send nothing" (not "send the default"): it is either
+   * carried another way (opencode's rules in `OPENCODE_PERMISSION`) or has
+   * no meaning for the tool (pi).
    */
   modeIds: Partial<Record<PermissionMode, string>>
-  /** Mode ids no posture launches in that the session can still move to,
-   *  read as the posture they behave as. */
+  /** Mode ids no posture launches in but the session can switch to, mapped to
+   *  the posture they behave as. */
   readsAs?: Record<string, PermissionMode>
   /**
-   * Where the model is chosen. `env` settles it before the agent starts;
-   * `set_config_option` settles it after the handshake, as the `model`
-   * config option, for an adapter that otherwise reads its model from the
-   * tool's own settings. Never `session/set_model`: neither pinned adapter
-   * that needs this answers it (opencode removed it in v2, and pi-acp 0.0.33
-   * answers "Method not found"), while both advertise `model` among their
-   * `configOptions`.
+   * How the model is set: `env` before launch, or `set_config_option` (the
+   * `model` config option) after the handshake. Never `session/set_model`:
+   * opencode v2 removed it and pi-acp 0.0.33 answers "Method not found",
+   * while both advertise `model` in `configOptions`.
    */
   modelVia: 'env' | 'set_config_option'
   /**
-   * Whether a `session/request_permission` still reaches the user under the
-   * `bypass` posture. True for an adapter whose asks are not permission
-   * prompts at all: pi has no permission system, and what it asks are its
-   * extensions' own questions ("which of these?"), which auto-answering would
-   * answer *for* the user rather than spare them.
+   * Whether `session/request_permission` still reaches the user under
+   * `bypass`. True for pi, which has no permission system; its asks are
+   * extension questions that auto-answering would answer for the user.
    */
   forwardAsksUnderBypass: boolean
 }
 
-/** The model an ACP conversation should run, for the profiles that need one
- *  named. pi is the case that makes this more than `spec.model`: its provider
- *  decides which api-key env var the egress proxy swaps, so a pi conversation
- *  with no explicit override still has to name that provider's default model
- *  rather than inherit whatever pi's own settings hold. Every other tool sends
- *  only what the create asked for. */
+/** The model to name for an ACP conversation. For pi, the provider decides
+ *  which api-key env var the egress proxy swaps, so with no override it
+ *  still names that provider's default model rather than whatever pi's
+ *  settings hold. Other tools send only what the create asked for. */
 export function acpLaunchModel(spec: AgentLaunchSpec): string | undefined {
   if (spec.tool !== 'pi') return spec.model
   return spec.model ?? piProviderInfo(spec.piProvider ?? PI_DEFAULT_PROVIDER).defaultModel
@@ -74,19 +57,14 @@ export function acpLaunchModel(spec: AgentLaunchSpec): string | undefined {
 
 const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
   /**
-   * claude's adapter names a mode for every posture — the case every other
-   * profile is a departure from.
+   * Has a mode for every posture.
    *
-   * Its model is `ANTHROPIC_MODEL`, the one launch-time input it resolves a
-   * model from: it reads no flags of its own, so a `--model` on its argv is
-   * silently dropped and the session opens on the account's default. What it
-   * then reports is its picker's alias for that model where it has one
-   * (`opus[1m]`), else the id it was given.
+   * The model comes only from `ANTHROPIC_MODEL`; the adapter ignores argv,
+   * so `--model` would be silently dropped. It reports the picker's alias
+   * (`opus[1m]`) where one exists.
    *
-   * The one mode id that does not read across is `manual`: ACP's id for "ask
-   * me about everything" is `default`, which the adapter labels "Manual". It
-   * also offers `dontAsk` (deny anything not pre-approved), which yaac never
-   * selects and reads as `manual`: nothing unapproved runs unasked.
+   * ACP's `default` mode is "Manual". `dontAsk` (deny anything not
+   * pre-approved) is never selected by yaac and reads as `manual`.
    */
   claude: {
     argv: [ACP_ADAPTERS.claude.binary],
@@ -104,28 +82,16 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
   },
 
   /**
-   * codex-acp takes no flags at all: everything is environment.
+   * Configured only through env. The model goes in `CODEX_CONFIG`: there is
+   * no `--model`, and `session/set_model` ids carry an effort suffix
+   * (`gpt-5.2-codex[medium]`) that `MODEL_RE` excludes. `NO_BROWSER=1` stops
+   * the ChatGPT login from opening a browser.
    *
-   * `CODEX_CONFIG` is merged into the codex session config, which is how a
-   * model is named — codex-acp's own `--model` does not exist, and the model
-   * ids its `session/set_model` accepts carry a reasoning-effort suffix
-   * (`gpt-5.2-codex[medium]`) that yaac's `MODEL_RE` deliberately excludes.
-   * The plain id is what `codex --model` takes too, so one spelling serves
-   * both modes.
-   *
-   * `NO_BROWSER=1` because the adapter's ChatGPT login would otherwise try to
-   * open one; a workspace authenticates from the credentials it was launched
-   * with or not at all.
-   *
-   * Its three modes are codex's approval × sandbox grid, collapsed, and none
-   * is a read-only sandbox — the one it calls `read-only` is codex's default
-   * preset, yaac's `accept-edits` — which is why yaac's `read-only` is not a
-   * posture codex can be created with under acp.
-   *
-   * Its own default is `agent` — NOT the codex CLI's `read-only` preset — so
-   * this is the one adapter where failing to set a mode lands somewhere weaker
-   * than an `accept-edits` create asked for. That is why a failed
-   * `session/set_mode` is reported in the pane rather than only logged.
+   * Its three modes collapse codex's approval × sandbox grid, and none is a
+   * read-only sandbox (its `read-only` is yaac's `accept-edits`), so yaac's
+   * `read-only` is not available under acp. Its default is `agent`, weaker
+   * than `accept-edits`, which is why a failed `session/set_mode` is shown
+   * in the pane rather than only logged.
    */
   codex: {
     argv: [ACP_ADAPTERS.codex.binary],
@@ -145,26 +111,15 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
   },
 
   /**
-   * opencode is its own adapter — `opencode acp` — so there is no second
-   * package to install and no version that can drift from the CLI's.
+   * `opencode acp` is built in, so no separate package can drift from the
+   * CLI. Posture uses the same `OPENCODE_CONFIG_CONTENT` document as the TUI.
    *
-   * Its posture is the same `OPENCODE_CONFIG_CONTENT` document the TUI is
-   * launched with, built by the same function: opencode reads it per process
-   * whichever front end is running, so one table answers for both modes.
-   *
-   * Two halves of that document are NOT honored under acp, both verified
-   * against the pinned build:
-   *
-   *  - `default_agent` is ignored, so `plan` — one of opencode's own agents —
-   *    has to be selected over the protocol instead. It is the only posture
-   *    with a mode id here; the rest are entirely permission rules. The
-   *    rules still travel in the config, and they are most of what `plan`
-   *    means: the agent adds `edit deny`, but says nothing about running
-   *    commands.
-   *  - `model` is ignored, so a `--model` create is honored by a
-   *    `session/set_config_option` after the handshake. Its `session/set_model`
-   *    was removed in v2 — it answers "Method not found" — which is why the
-   *    method is part of this profile rather than one spelling for everyone.
+   * Verified against the pinned build, acp ignores two parts of it:
+   *  - `default_agent`, so `plan` is selected over the protocol. The
+   *    permission rules still travel in the config and supply most of what
+   *    `plan` means (the agent itself only adds `edit deny`).
+   *  - `model`, so the model is set with `session/set_config_option`
+   *    (`session/set_model` was removed in v2).
    */
   opencode: {
     argv: [ACP_ADAPTERS.opencode.binary, 'acp'],
@@ -175,23 +130,14 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
   },
 
   /**
-   * pi-acp drives `pi --mode rpc`, so the pi CLI has to be beside it, and it
-   * takes neither flags nor configuration environment: the model is sent
-   * after the handshake, as the `model` config option — the one route its
-   * `setSessionConfigOption` answers (its `session/set_model` is not routed).
+   * pi-acp drives `pi --mode rpc` (so the pi CLI must be installed) and
+   * takes no flags or config env. The model is sent after the handshake as
+   * the `model` config option. This matters: pi's model id names the
+   * provider, which decides the api-key var the egress proxy swaps.
    *
-   * That is not a cosmetic difference. pi's model id names its provider
-   * (`openrouter/…`), and the provider decides which api-key variable the
-   * egress proxy swaps — so a pi conversation that never sends one is a pi
-   * conversation authenticating against whatever provider pi's shared settings
-   * happen to name.
-   *
-   * Its `availableModes` are THINKING levels (`off`…`xhigh`), not postures, and
-   * `session/set_mode` rejects anything else — so no posture maps to a mode
-   * here, and pi stays `bypass`-only in both agent modes. What it does ask
-   * about are its extensions' own questions, which is why they are forwarded
-   * even under `bypass`: there is no permission being waived, only a person
-   * being asked to choose.
+   * Its `availableModes` are thinking levels (`off`…`xhigh`), not postures,
+   * so pi is `bypass`-only. Its asks are extension questions, so they are
+   * forwarded even under `bypass`.
    */
   pi: {
     argv: [ACP_ADAPTERS.pi.binary],
@@ -203,21 +149,17 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
 }
 
 /**
- * The adapter profile for a tool. Total: every tool has an adapter, so there
- * is no "this tool cannot do acp" case for a caller to handle — what a create
- * can still be refused for is a POSTURE the adapter has no mode for
- * (`ACP_SUPPORTED_PERMISSION_MODES`).
+ * The adapter profile for a tool. Every tool has one; a create can still be
+ * refused for a posture the adapter lacks (`ACP_SUPPORTED_PERMISSION_MODES`).
  */
 export function acpAdapterFor(tool: AgentTool): AcpAdapterProfile {
   return PROFILES[tool]
 }
 
 /**
- * The posture a session mode id stands for — `modeIds` read backwards, then
- * `readsAs` — which is how a mode the adapter moved to by itself becomes the
- * conversation's posture. Undefined for an id no posture maps to (pi's
- * thinking levels), which is left unrecorded rather than rounded to a
- * neighbour.
+ * The posture a session mode id stands for (`modeIds` reversed, then
+ * `readsAs`), used when the adapter switches mode on its own. Undefined for
+ * ids no posture maps to (pi's thinking levels).
  */
 export function acpPermissionModeFor(
   profile: Pick<AcpAdapterProfile, 'modeIds' | 'readsAs'>,
@@ -229,12 +171,12 @@ export function acpPermissionModeFor(
     : undefined)
 }
 
-/** Test-only: the table itself, to check it against the shared adapter list
- *  and the versions the image installs. */
+/** Test-only: the table, to check against the shared adapter list and the
+ *  image's versions. */
 export const _ACP_PROFILES = PROFILES
 
-/** Whether this adapter has to be TOLD its model after the handshake, rather
- *  than being launched with one. */
+/** Whether the model must be sent after the handshake rather than at
+ *  launch. */
 export function acpModelIsProtocol(profile: AcpAdapterProfile): boolean {
   return profile.modelVia === 'set_config_option'
 }

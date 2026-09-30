@@ -7,10 +7,8 @@ import { editorLanguage, type HighlightLanguage } from '#lib/highlight'
 import { findPanel } from '#components/ui/FindPanel'
 
 /**
- * The app's editor look, in both themes: the chrome comes from the palette's
- * CSS variables, and tokens get the `tok-*` classes the diff view already
- * colors (index.css), so the editors and the diff always match. Long lines
- * wrap rather than scroll sideways, and find is the app's own panel.
+ * Editor theme from the palette's CSS variables. Tokens use the diff view's
+ * `tok-*` classes (index.css) so editors and diffs match.
  */
 const editorTheme = [
   EditorView.theme({
@@ -41,8 +39,8 @@ const editorTheme = [
   findPanel,
 ]
 
-/** The one change that turns `from` into `to`: their common prefix and
- *  suffix are left alone, so a cursor outside the edit stays put. */
+/** The single edit that turns `from` into `to`, leaving their common prefix
+ *  and suffix alone so a cursor outside the edit stays put. */
 function minimalChange(from: string, to: string): { from: number; to: number; insert: string } {
   let start = 0
   const max = Math.min(from.length, to.length)
@@ -53,13 +51,11 @@ function minimalChange(from: string, to: string): { from: number; to: number; in
 }
 
 /**
- * Thin controlled CodeMirror wrapper. Keeps the editor library referenced
- * in one place (mirrors lib/icons.ts). To fill a sized container, pass
+ * Controlled CodeMirror wrapper. To fill a sized container, pass
  * `height="100%"` and size the frame via `className` (e.g. `flex-1 min-h-0`).
  *
- * A `value` that changes from outside — a file reloaded from disk — lands as
- * one minimal edit rather than through the wrapper's own `value` prop, which
- * would replace the whole document and lose the cursor and scroll with it.
+ * An outside change to `value` (e.g. a reload from disk) is applied as one
+ * minimal edit, so the cursor and scroll position survive.
  */
 export function CodeEditor({
   value,

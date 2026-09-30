@@ -1,15 +1,13 @@
-// The server side of the stream relay, exercised against an in-process
-// fake that speaks the wire protocol (relay auth line → streamd handshake
-// line → {ok} reply → payload). The REAL relay and streamd are covered by
-// k8s/proxy + dockerfiles/streamd tests and e2e; this file pins the
-// client: handshake pipelining, error surfacing, and each adapter facade.
+// The client side of the stream relay, against an in-process fake speaking
+// the wire protocol (relay auth line, streamd handshake line, {ok} reply,
+// payload). The real relay and streamd have their own tests
+// (docs/stream-relay.md).
 import net from 'node:net'
 import crypto from 'node:crypto'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-// The relay's own boundary is the socket (a real listener below); its two
-// cluster reads — the proxy auth secret and, when nested, the inner proxy's
-// pod IP — are kubectl child processes, so those run for real too.
+// The socket is a real listener. The two kubectl reads (the proxy auth
+// secret and, when nested, the inner proxy's pod IP) are mocked below.
 type ExecResult = { stdout: string; stderr: string }
 type ExecCallback = (err: unknown, res?: ExecResult) => void
 const execFileMock = vi.fn<(file: string, args: readonly string[]) => Promise<ExecResult>>()
@@ -44,8 +42,7 @@ import {
   podStreamToken,
   waitForStreamd,
 } from '#drivers/k8s/substrate'
-// Internals: the dial-failure type the relay throws, the cache reset, and
-// the exec/boot seam waitForStreamd takes.
+// Internals, for setup and assertions only.
 import {
   RelayDialError,
   _resetRelayCacheForTests,
@@ -157,14 +154,14 @@ describe('relayDial', () => {
     })
     const socket = await relayDial(SID, { kind: 'ctrl', cmd: ['tmux'] })
     const r = received!
-    // Both names — see relayDial: this path has no currency gate.
+    // Sends both the token and the workspace id (see relayDial).
     expect(r.auth).toEqual({ token: SECRET, workspaceId: SID })
     expect(r.handshake).toEqual({
       token: await podStreamToken(SID),
       kind: 'ctrl',
       cmd: ['tmux'],
     })
-    // Bytes past the reply line survive the handshake read (unshifted).
+    // Bytes after the reply line are not lost.
     const got = await new Promise<string>((resolve) => {
       socket.once('data', (c: Buffer) => resolve(c.toString('utf8')))
       socket.resume()
@@ -194,10 +191,7 @@ describe('relayDial', () => {
   })
 
   it('dials the proxy Service when no explicit relay address is set', async () => {
-    // The address the DEPLOYMENT states, derived rather than required: the
-    // server is a pod of the proxy's own namespace, so the relay is an
-    // ordinary Service dial and there is no child process in between for a
-    // bad stream to condemn.
+    // The server pod shares the proxy's namespace, so it dials the Service.
     vi.stubEnv('YAAC_RELAY_ADDR', '')
     await expect(relayDial(SID, { kind: 'tcp', port: 80 }, { timeoutMs: 2_000 }))
       .rejects.toThrow(/yaac-proxy\.test-ns\.svc\.cluster\.local|ENOTFOUND|EAI_AGAIN/)
@@ -243,10 +237,8 @@ describe('podExec', () => {
   })
 
   it("floors a caller's budget so a tight probe can't time out a live relay", async () => {
-    // The stale reaper asks for 2s (features/status/liveness.ts). The dial
-    // deadline derives from that budget and is a verdict on the shared
-    // transport, so the budget is floored before it becomes one: a reply
-    // past the caller's ask still lands.
+    // The stale reaper asks for 2s (runtime/status/liveness.ts); a slower
+    // reply must still count rather than fail the transport.
     await withRelay((r) => {
       setTimeout(() => r.socket.end(
         '{"ok":true}\n' + JSON.stringify({ exitCode: 0, stdout: 'late', stderr: '' }) + '\n',
@@ -256,15 +248,11 @@ describe('podExec', () => {
     expect(result.stdout).toBe('late')
   })
 
-  // Only a command that RAN AND EXITED is a verdict about the pod: a
-  // RelayExecError reads as `dead` at the stale reaper, which tears the
-  // workspace down in the same pass. These three results all carry a nonzero
-  // exit code without the command having got that far, so each would
-  // otherwise be a deleted-live-workspace path.
+  // The stale reaper treats a RelayExecError as `dead` and tears the
+  // workspace down, so only a command that actually ran and exited may
+  // produce one.
   it('reports a signal-killed command as transport, not a nonzero exit', async () => {
-    // streamd reports `code ?? 1` for a signalled child, so the OOM killer
-    // taking the probe's sh/tmux looks exactly like `tmux has-session`
-    // finding nothing — while the agent it was probing for is still alive.
+    // A probe killed by the OOM killer must not look like a missing session.
     await withRelay((r) => {
       r.socket.end('{"ok":true}\n'
         + JSON.stringify({ exitCode: 1, stdout: '', stderr: '', signal: 'SIGKILL' }) + '\n')
@@ -277,10 +265,8 @@ describe('podExec', () => {
   })
 
   it('reports a spawn failure as transport, not the 127 it carries', async () => {
-    // 127 is also what a genuine command-not-found exits with, which is the
-    // verdict `verifyAgentWindowAlive` reads as "that tool is not in this
-    // image" — so streamd says which one this is rather than leaving the
-    // code to mean both.
+    // A real command-not-found also exits 127, so streamd marks spawn
+    // failures separately.
     await withRelay((r) => {
       r.socket.end('{"ok":true}\n'
         + JSON.stringify({ exitCode: 127, spawnFailed: true, stdout: '', stderr: 'ENOMEM' }) + '\n')
@@ -302,8 +288,6 @@ describe('podExec', () => {
   })
 
   it('still reports a real command-not-found as a nonzero exit', async () => {
-    // The counterpart of the spawn-failure case: sh ran and exited 127
-    // because the tool is missing, which IS a verdict about the image.
     await withRelay((r) => {
       r.socket.end('{"ok":true}\n'
         + JSON.stringify({ exitCode: 127, stdout: '', stderr: 'codex: not found' }) + '\n')
@@ -314,9 +298,8 @@ describe('podExec', () => {
   })
 
   it('does not retry a transport failure past dispatch — the command may have run', async () => {
-    // The handshake was accepted, so streamd HAS the command; the reply
-    // is then lost. Re-issuing would be a re-run, not a retry — which for
-    // a `new-window` means a duplicate window, not a harmless repeat.
+    // streamd already accepted the command, so a retry would run it twice
+    // (e.g. a duplicate `new-window`).
     let dials = 0
     await withRelay((r) => {
       dials++
@@ -335,7 +318,7 @@ describe('dialCtrlStream', () => {
   it('buffers pre-dial writes, delivers data, and emits exit on close', async () => {
     await withRelay((r) => {
       okThen(r)
-      // Echo whatever arrives (incl. the pre-dial buffered write).
+      // Echo everything, including writes buffered before the dial.
       r.socket.on('data', (c: Buffer) => r.socket.write(c))
       if (r.leftover.length > 0) r.socket.write(r.leftover)
     })
@@ -394,9 +377,8 @@ describe('dialPtyStream', () => {
 
   it('coalesces consecutive data frames in one chunk into one callback', async () => {
     await withRelay((r) => {
-      // One TCP write carrying three data frames then the exit: the data
-      // must dispatch as ONE callback (one WS message downstream), and all
-      // of it must land before the exit fires.
+      // One TCP write with three data frames and the exit: the data arrives
+      // as one callback, before the exit.
       okThen(r, Buffer.concat([
         encodeFrame(FRAME_DATA, Buffer.from('a')),
         encodeFrame(FRAME_DATA, Buffer.from('b')),
@@ -430,8 +412,7 @@ describe('dialPtyStream', () => {
 })
 
 describe('waitForStreamd', () => {
-  // Fake timers make Date.now() advance through the injected sleep, so the
-  // heal threshold and deadline are exercised without real waiting.
+  // Fake timers advance Date.now() through the injected sleep.
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
 
@@ -487,9 +468,8 @@ describe('waitForStreamd', () => {
   })
 
   it('still heals when the budget expires before the halfway mark is observed', async () => {
-    // A probe cycle can straddle both marks on a short budget (the claim
-    // path's 10s). Giving up without ever re-booting streamd would skip
-    // the one thing that fixes the case this exists for.
+    // On a short budget (the claim path's 10s) one probe can span both the
+    // halfway mark and the deadline; streamd must still be restarted.
     const deps = makeDeps(vi.fn().mockImplementation(() => {
       vi.advanceTimersByTime(9_000) // one slow cycle: past halfway AND past the deadline
       return Promise.reject(new RelayDialError('no route'))

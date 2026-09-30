@@ -11,21 +11,13 @@ import type {
 import type { RuntimeHandle, RuntimeSnapshot, StrayUnit, TeardownTarget } from '#drivers/contract'
 
 /**
- * What this driver knows about the workspaces it is holding.
- *
- * The cluster driver reads this from the apiserver, which is a durable
- * record kept by something other than the server. Nothing on a bare host
- * plays that role, so it is kept twice: a marker file per workspace, which
- * is what survives a server restart, and this in-memory table, which is
- * what answers reads without touching disk.
- *
- * A tmux server outliving the server that started it is the whole premise
- * of the containerless design — agents keep running across a `yaac server
- * restart` — so recovery is not an edge case here, it is the ordinary path.
+ * The workspaces this driver holds (the k8s driver asks the apiserver
+ * instead). Kept as a marker file per workspace, which survives a server
+ * restart, and an in-memory table that answers reads. Workspaces routinely
+ * outlive the server, so recovery from markers is the normal path.
  */
 
-/** The durable half: what the marker file holds. Deliberately small — every
- *  field is something only the launch knew and nothing can re-derive. */
+/** The marker file: what only the launch knew. */
 export interface WorkspaceMarker {
   projectSlug: string
   workspaceId: string
@@ -34,50 +26,36 @@ export interface WorkspaceMarker {
   mode: AgentMode
   prewarm: boolean
   createdAtMs: number
-  /** The tmux server's pid at launch. The port scan starts from it, and it
-   *  is advisory: pids are recycled, so it is only ever used alongside a
-   *  liveness check that proves the socket still answers. */
+  /** The tmux server's pid, for the port scan. Pids are recycled, so it is
+   *  only used alongside a socket liveness check. */
   tmuxPid?: number
-  /**
-   * The ssh-agent started for this workspace, when its project authenticates
-   * over SSH. Recorded because the agent holds a private key in memory and
-   * must not outlive the workspace: teardown signals this, and a recovery
-   * scan that finds the workspace dead sweeps it.
-   *
-   * Advisory in the same way `tmuxPid` is — a pid can be recycled — so it is
-   * only ever signalled alongside evidence the workspace was actually
-   * running.
-   */
+  /** The workspace's ssh-agent (SSH remotes only), which holds a private
+   *  key and is killed at teardown. Verified before signalling, since pids
+   *  are recycled. */
   sshAgentPid?: number
   /**
-   * The launch's own environment entries — the caller's and the git wiring,
-   * as the launch resolved them — minus every credential, which stays in
-   * memory only (`WorkspaceSpec.secretEnvKeys`). What a restarted server lays
-   * over the floor so a command it runs in the workspace still sees the
-   * workspace's tool homes and settings (see `workspaceRunEnvironment`). Absent
-   * on a marker written before it was recorded.
+   * The launch's own env entries (caller's and git's) minus credentials, so
+   * a restarted server can rebuild `workspaceRunEnvironment`. Absent on
+   * older markers.
    */
   launchEnv?: Record<string, string>
 }
 
-/** The in-memory half: the marker plus what observation has since decided. */
+/** In-memory entry: the marker plus observed state. */
 interface Entry {
   marker: WorkspaceMarker
   running: boolean
   deathCause: WorkspaceDeathCause
-  /** A teardown has started; it renders as terminating and is not a reaper
-   *  target. */
+  /** A teardown has started. */
   terminating: boolean
-  /** The workspace's whole process environment, credentials included —
-   *  held for a workspace this server launched, and never written down, so
-   *  a restart loses it (the marker's `launchEnv` is what survives). */
+  /** The full environment, credentials included; in memory only, for
+   *  workspaces this server launched. */
   env?: NodeJS.ProcessEnv
 }
 
 const entries = new Map<string, Entry>()
 
-/** Forget everything — tests only; a live server's table is emptied by the
- *  teardowns that empty the host. */
+/** Test helper: forget everything. */
 export function _resetRegistryForTests(): void {
   entries.clear()
 }
@@ -102,11 +80,7 @@ export function markTerminating(workspaceId: string): void {
   if (entry) entry.terminating = true
 }
 
-/**
- * Record what a liveness observation saw, answering whether it CHANGED
- * anything — the caller reports upward only on a real edge, so a poll or a
- * repeated stream error costs no snapshot.
- */
+/** Record observed liveness; returns whether it changed. */
 export function observeLiveness(
   workspaceId: string,
   running: boolean,
@@ -152,8 +126,7 @@ function toHandle(entry: Entry): RuntimeHandle {
     mode: marker.mode,
     running: entry.running,
     state: entry.running ? 'running' : 'failed',
-    // Nothing labels a host process. Empty rather than invented: a label is
-    // substrate vocabulary, and no caller above the driver reads these.
+    // Host processes have no labels.
     labels: {},
     createdAtMs: marker.createdAtMs,
     prewarmed: marker.prewarm,
@@ -167,8 +140,8 @@ function handleFor(workspaceId: string): RuntimeHandle | undefined {
   return entry ? toHandle(entry) : undefined
 }
 
-/** The workspace for this exact workspace id. An unclaimed spare is not a
- *  workspace, so it matches only when asked for — a failed warm's teardown. */
+/** The workspace with this exact id; unclaimed spares only with
+ *  `spares`. */
 export function findWorkspace(
   workspaceId: string,
   opts: { spares?: boolean } = {},
@@ -196,7 +169,7 @@ export function listWorkspaces(projectSlug?: string): RuntimeHandle[] {
     .map(toHandle)
 }
 
-/** Live counts per project, spares EXCLUDED (see the contract). */
+/** See `WorkspaceDriver.count`. */
 export function countWorkspaces(): Record<string, number> {
   const counts: Record<string, number> = {}
   for (const e of entries.values()) {
@@ -206,20 +179,14 @@ export function countWorkspaces(): Record<string, number> {
   return counts
 }
 
-/** How many one project is running, spares INCLUDED (see the contract). */
+/** See `WorkspaceDriver.countForProject`. */
 export function countForProject(projectSlug: string): number {
   return [...entries.values()]
     .filter((e) => e.marker.projectSlug === projectSlug && e.running).length
 }
 
-/**
- * A pass's view of the runtime.
- *
- * `strayUnits` is always empty and always will be: a stray unit is a Job
- * outliving its pod, and here the tmux server IS the unit — when it is gone
- * there is nothing left holding anything, which the liveness edge already
- * reported.
- */
+/** A pass's view of the runtime. `strayUnits` is always empty: the tmux
+ *  server is the unit, so nothing can outlive it. */
 export function createRuntimeSnapshot(resync = false): RuntimeSnapshot {
   const workspaces = listWorkspaces()
   return {
@@ -229,17 +196,12 @@ export function createRuntimeSnapshot(resync = false): RuntimeSnapshot {
   }
 }
 
-/** Write the durable record. Best-effort at the call site's discretion —
- *  a marker that fails to write costs recovery after a restart, not the
- *  launch itself. */
+/** Write the marker atomically. */
 export async function writeMarker(marker: WorkspaceMarker): Promise<void> {
   const file = markerPath(marker.projectSlug, marker.workspaceId)
   await fs.mkdir(path.dirname(file), { recursive: true })
-  // Written whole or not at all. A torn marker reads as unparseable, and
-  // recovery rightly skips one of those rather than tearing down what it
-  // cannot identify — which would leave a live tmux server that is never
-  // recovered, never watched and never reaped, with its agents running on
-  // invisibly while the row goes stopped.
+  // A torn marker would be skipped at recovery, leaving its tmux server
+  // running untracked.
   const tmp = `${file}.tmp`
   await fs.writeFile(tmp, JSON.stringify(marker, null, 2))
   await fs.rename(tmp, file)
@@ -250,13 +212,9 @@ export async function removeMarker(projectSlug: string, workspaceId: string): Pr
 }
 
 /**
- * Every marker on disk — what a fresh server has instead of a listing from
- * the substrate.
- *
- * Reads the projects tree directly because nothing else can: which projects
- * exist is a row question the layers above own, and a driver is handed the
- * answer only inside a reconcile pass. Recovery runs before the first pass,
- * so it enumerates the same directories the markers were written into.
+ * Every marker on disk, read on server start. Walks the projects tree
+ * directly, since recovery runs before any reconcile pass could supply the
+ * project list.
  */
 export async function readMarkers(): Promise<WorkspaceMarker[]> {
   const root = getProjectsDir()
@@ -282,9 +240,8 @@ export async function readMarkers(): Promise<WorkspaceMarker[]> {
       try {
         const raw = await fs.readFile(markerPath(slug, id), 'utf8')
         const marker = JSON.parse(raw) as WorkspaceMarker
-        // The path is the authority on identity, not the file's contents: a
-        // marker copied along with a directory would otherwise claim to be
-        // the workspace it was copied from.
+        // Identity comes from the path, so a copied marker cannot claim to
+        // be its original.
         found.push({ ...marker, projectSlug: slug, workspaceId: id })
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -305,14 +262,7 @@ export function restoreWorkspace(
   entries.set(marker.workspaceId, { marker, running, deathCause, terminating: false })
 }
 
-/**
- * The ssh-agent pid a workspace's marker records, if it started one.
- *
- * Read by teardown, which has to end the process holding this workspace's
- * private key. Off the in-memory entry rather than the file so it answers
- * for a workspace recovered after a server restart too — `readMarkers`
- * repopulates the same entries.
- */
+/** The workspace's recorded ssh-agent pid, for teardown. */
 export function sshAgentPidOf(workspaceId: string): number | undefined {
   return entries.get(workspaceId)?.marker.sshAgentPid
 }

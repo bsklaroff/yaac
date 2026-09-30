@@ -1,41 +1,36 @@
 /**
- * Registry of live per-workspace tmux control-mode command channels, keyed
- * by the workspace's Job name. Each running workspace's status watcher
- * (`status-watcher.ts`) holds one persistent `kubectl exec` stream to
- * the in-pod tmux server; it registers a send function here so other
- * server paths (the webapp terminals listing) can ride that stream
- * instead of spawning a fresh `kubectl exec` per call — the probe-volume
- * reduction that matters because every exec costs an apiserver→kubelet
- * connection plus a task in the pod's gVisor sentry.
+ * Registry of live per-workspace tmux control-mode channels, keyed by the
+ * workspace's unit (Job) name. Each status watcher registers its stream's
+ * send function so other read-only queries (the terminal listing) can reuse
+ * it instead of a fresh exec, which is costly under k8s (an apiserver to
+ * kubelet connection plus a gVisor task per call).
  *
- * The watcher's client attaches read-only, so ONLY tmux commands marked
- * CMD_READONLY (list-windows, display-message, capture-pane, …) may be
- * sent through it; mutations (new-window, kill-window) must keep using
- * containerExec. Callers must treat a registered channel as best-effort:
- * a rejected send means the stream just died — fall back to exec.
+ * The client attaches read-only, so only CMD_READONLY tmux commands
+ * (list-windows, display-message, capture-pane, …) may be sent; mutations
+ * use the driver's exec. Treat a channel as best-effort and fall back to
+ * exec when a send is rejected.
  */
 
 export type ControlStreamSend = (command: string) => Promise<string>
 
 const registry = new Map<string, ControlStreamSend>()
 
-/** Make a workspace's control-mode channel available. Replaces any earlier
- *  registration for the Job (a watcher respawn supersedes its old stream). */
+/** Register a workspace's channel, replacing any earlier one (a watcher
+ *  respawn supersedes its old stream). */
 export function registerWorkspaceControlStream(jobName: string, send: ControlStreamSend): void {
   registry.set(jobName, send)
 }
 
 /**
- * Remove a registration, but only if it still points at `send` — a
- * watcher tearing down stream generation N must not remove the
- * generation-N+1 channel that already replaced it.
+ * Remove a registration only if it still points at `send`, so tearing down
+ * an old stream never removes its replacement.
  */
 export function unregisterWorkspaceControlStream(jobName: string, send: ControlStreamSend): void {
   if (registry.get(jobName) === send) registry.delete(jobName)
 }
 
-/** The workspace's live command channel, or undefined when no watcher
- *  stream is up (prewarmed spares, stream mid-respawn, non-server CLI). */
+/** The workspace's live channel, or undefined when no watcher stream is up
+ *  (spares, mid-respawn, outside the server). */
 export function workspaceControlStreamSend(jobName: string): ControlStreamSend | undefined {
   return registry.get(jobName)
 }

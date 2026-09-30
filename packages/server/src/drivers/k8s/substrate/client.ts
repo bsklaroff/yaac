@@ -1,11 +1,10 @@
 import { BatchV1Api, CoreV1Api, KubeConfig } from '@kubernetes/client-node'
 
 /**
- * Lazy singletons for the typed API-server client (reads/watches only —
- * writes and exec stay on kubectl, see docs/event-driven-reconcile.md).
- * `loadFromDefault()` resolves the same kubeconfig kubectl does (KUBECONFIG
- * env included), so the client and the kubectl paths always talk to the
- * same cluster.
+ * Lazy singletons for the typed API-server client, used for reads and
+ * watches (docs/event-driven-reconcile.md). `loadFromDefault()` resolves
+ * the same kubeconfig as kubectl, including `KUBECONFIG`, so both talk to
+ * the same cluster.
  */
 let kubeConfig: KubeConfig | null = null
 let coreApi: CoreV1Api | null = null

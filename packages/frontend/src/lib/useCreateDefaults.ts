@@ -12,24 +12,24 @@ import {
   type PermissionMode,
 } from '@yaac/shared/types'
 
-/** Everything a create for one agent is made of, and the models it offers. */
+/** The create settings for one agent, and the models it offers. */
 export interface AgentSetup {
   model: string
   permissionMode: PermissionMode
   mode: AgentMode
-  /** The credential's model list, newest first — the form's suggestions. */
+  /** The credential's model list, newest first, shown as suggestions. */
   models: ModelOption[]
-  /** What the tool runs when nothing is remembered; tagged in the list. */
+  /** The tool's own default model, marked in the list. */
   defaultModel: string
 }
 
 export interface CreateDefaults {
-  /** The snapshot and the credential list have both landed. Until then the
-   *  fallbacks are unknowable — a missing snapshot would read a
-   *  containerless server as sandboxed and offer `bypass` — so nothing may
-   *  create. */
+  /** The snapshot and the credential list have both loaded. Creating is
+   *  blocked until then, since the defaults depend on them (without the
+   *  snapshot, a containerless server would look sandboxed and get
+   *  `bypass`). */
   ready: boolean
-  /** The project has a git credential; without one nothing may create. */
+  /** The project has a git credential, which creating requires. */
   hasGitCredential: boolean
   /** The agent this project was last created with, else claude. */
   lastTool: AgentTool
@@ -37,16 +37,14 @@ export interface CreateDefaults {
   lastBranch?: string
   /** The agents with a stored credential; only these can create. */
   configured: ReadonlySet<AgentTool>
-  /** What an untouched create for `tool` would run — the same resolution the
-   *  server makes (`resolveToolCreateDefaults`), so the form shows exactly
-   *  what submitting it untouched launches. */
+  /** The settings an unedited create for `tool` would use, resolved as the
+   *  server does (`resolveToolCreateDefaults`). */
   forTool: (tool: AgentTool) => AgentSetup
 }
 
 /**
- * The create form's defaults for a project, from the project's remembered
- * choices in the snapshot and each credential's model list. The create dialog
- * opens on them, so "open, Enter" creates with them as they stand.
+ * The create form's defaults for a project, from its remembered choices in
+ * the snapshot and each credential's model list.
  */
 export function useCreateDefaults(projectSlug: string | null): CreateDefaults {
   const snapshot = useSnapshot()
@@ -79,13 +77,10 @@ export function useCreateDefaults(projectSlug: string | null): CreateDefaults {
 }
 
 /**
- * Start a create with every choice made, through the shared provisioning
- * flow: an optimistic row that names the model from its first frame,
- * auto-opened so progress streams into the main pane. The id is generated up
- * front so the row is selectable and survives a reload.
- *
- * Everything is sent, so everything becomes the project's defaults for that
- * agent — pressing Create accepts what the form shows.
+ * Start a create through the shared provisioning flow (see
+ * `useProvisionWorkspace`). The id is generated here so the row is
+ * selectable and survives a reload. Every setting is sent, so all of them
+ * become the project's defaults for that agent.
  */
 export function useCreateWorkspace(): (
   projectSlug: string,
@@ -108,8 +103,7 @@ export function useCreateWorkspace(): (
       (sid, onProgress) =>
         createWorkspace(projectSlug, tool, onProgress, sid, {
           ...(branch !== undefined ? { branch } : {}),
-          // Empty only when the credential's provider lists no models at
-          // all; the server then launches without one.
+          // Empty when the provider lists no models; launch without one.
           ...(model !== '' ? { model } : {}),
           permissionMode,
           mode,

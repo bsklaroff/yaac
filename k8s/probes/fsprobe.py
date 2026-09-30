@@ -2,9 +2,10 @@
 """POSIX filesystem semantics probe.
 
 Usage: fsprobe.py <dir>
-Exercises the operations the multi-node storage plan calls out for the
-NFS-under-gVisor spike: creation ownership, O_EXCL, atomic rename,
-hardlinks, and fcntl/flock locking.
+Checks the filesystem operations workspaces rely on (ownership, O_EXCL,
+atomic rename, hardlinks, locks, fsync, mmap, append, symlinks, xattrs).
+`yaac cluster check` runs it against the global claim from a sandboxed pod
+(see docs/cluster-setup.md). Exits non-zero if any check fails.
 """
 import errno
 import fcntl
@@ -81,7 +82,6 @@ def t_hardlink():
         raise AssertionError("inode differs: %d vs %d" % (sa.st_ino, sb.st_ino))
     if sa.st_nlink != 2:
         raise AssertionError("nlink is %d, expected 2" % sa.st_nlink)
-    # mutate through one name, observe through the other
     with open(b, "w") as f:
         f.write("mutated")
     with open(a) as f:
@@ -96,11 +96,9 @@ def t_hardlink():
 def t_fcntl_lock():
     p = os.path.join(base, "lockfile")
     fd = os.open(p, os.O_CREAT | os.O_RDWR, 0o644)
-    # F_SETLK a write lock on the whole file
     lk = struct.pack("hhllhh", fcntl.F_WRLCK, 0, 0, 0, 0, 0)
     fcntl.fcntl(fd, fcntl.F_SETLK, lk)
-    # A second fd in this same process/sandbox: POSIX locks are per-process,
-    # so re-locking from the same pid succeeds. Fork to get a real conflict.
+    # POSIX locks are per-process, so fork to get a real conflict.
     r, w = os.pipe()
     pid = os.fork()
     if pid == 0:

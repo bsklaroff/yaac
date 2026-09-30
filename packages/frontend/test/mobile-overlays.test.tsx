@@ -48,9 +48,8 @@ beforeAll(() => {
 const realMatchMedia = window.matchMedia
 
 /**
- * Report the viewport as phone-sized (or not) to `useIsMobile`, which is what
- * every overlay below asks before deciding whether it has room for two panes.
- * jsdom's own matchMedia always answers "no match", i.e. desktop.
+ * Make `useIsMobile` report a phone-sized viewport (or not). jsdom's own
+ * matchMedia always reports no match, i.e. desktop.
  */
 function setMobileViewport(mobile: boolean): void {
   window.matchMedia = ((q: string) => ({
@@ -89,9 +88,8 @@ describe('MasterDetail', () => {
   }
 
   it('keeps both panes mounted and hides one of them only below the breakpoint', () => {
-    // Desktop shows both, so neither pane may carry an unconditional `hidden` —
-    // the hiding is `max-md:` only, and which pane it lands on flips with
-    // detailOpen.
+    // Desktop shows both panes, so hiding is `max-md:` only, on whichever
+    // pane detailOpen hides.
     const closed = panes(false)
     const [masterClosed, detailClosed] = Array.from(closed.children) as HTMLElement[]
     expect(masterClosed.className).not.toContain('max-md:hidden')
@@ -102,7 +100,7 @@ describe('MasterDetail', () => {
     const [masterOpen, detailOpen] = Array.from(open.children) as HTMLElement[]
     expect(masterOpen.className).toContain('max-md:hidden')
     expect(detailOpen.className).not.toContain('max-md:hidden')
-    // Both stay in the tree either way — going back must not refetch.
+    // Both stay mounted, so going back doesn't refetch.
     expect(screen.getByText('the list')).toBeTruthy()
     expect(screen.getByText('the detail')).toBeTruthy()
   })
@@ -119,8 +117,7 @@ describe('MasterDetail', () => {
       />,
     )
     const back = screen.getByRole('button', { name: 'Back to skills' })
-    // Desktop has both panes side by side, so the chevron would navigate
-    // nowhere there.
+    // No back chevron on desktop, where both panes show.
     expect(back.className).toContain('md:hidden')
     fireEvent.click(back)
     expect(onBack).toHaveBeenCalledTimes(1)
@@ -164,9 +161,8 @@ describe('StoppedWorkspacesButton on a phone', () => {
   it('opens on the list, with no row read until one is tapped', async () => {
     await openOverlay()
     await screen.findByText('Add tests')
-    // The detail pane is off-screen, so the top row is not auto-selected —
-    // and viewing a detail is what acknowledges a death, which must not
-    // happen to a row nobody opened.
+    // The detail pane is off-screen, so the top row isn't auto-selected;
+    // viewing a detail would mark its death as seen.
     expect(screen.queryByText('fix the parser')).toBeNull()
     expect(screen.queryByRole('button', { name: /Restart/ })).toBeNull()
     await flushEffects()
@@ -235,7 +231,7 @@ describe('SkillsButton on a phone', () => {
     await screen.findByText('/deploy')
     expect(screen.getByText('/lint')).toBeTruthy()
     await flushEffects()
-    // The body fetch belongs to the detail pane, which nobody has opened.
+    // The body is fetched only when the detail pane opens.
     expect(getSkillBody).not.toHaveBeenCalled()
   })
 
@@ -272,24 +268,22 @@ describe('ImageBuildsOverlay on a phone', () => {
     render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={[build()]} />)
     await flushEffects()
     expect(screen.getByText('base layer')).toBeTruthy()
-    // Desktop auto-follows the running build; a phone would be tailing a log
-    // nobody can see.
+    // Unlike desktop, mobile doesn't auto-follow the running build's log.
     expect(getImageBuildLog).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByText('base layer'))
     await waitFor(() => expect(screen.getByText(/STEP 1\/2/)).toBeTruthy())
     const detailPane = screen.getByText(/STEP 1\/2/).parentElement as HTMLElement
 
-    // Back re-hides the log pane. Its text stays in the DOM — the tail is kept
-    // mounted so returning to it doesn't re-fetch from the top.
+    // Back hides the log pane but keeps it mounted, so returning doesn't
+    // refetch.
     fireEvent.click(screen.getByRole('button', { name: 'Back to builds' }))
     await waitFor(() => expect(detailPane.className).toContain('max-md:hidden'))
     expect(screen.getByText('base layer')).toBeTruthy()
   })
 
   it('reopens on the list rather than on the last log read', async () => {
-    // Unlike the other two overlays this one stays mounted while closed, so a
-    // pick outlives a close and would otherwise still be showing on reopen.
+    // This overlay stays mounted while closed, so its pick must be reset.
     const { rerender } = render(
       <ImageBuildsOverlay open onOpenChange={() => {}} builds={[build()]} />,
     )

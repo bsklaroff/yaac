@@ -2,12 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import type * as toolAuthInteractiveModule from '@yaac/shared/tool-auth-interactive'
 
-// On macOS the real CLI never writes the scratch `.credentials.json` — the
-// login lands only in the Keychain, under a service name suffixed with a hash
-// of CLAUDE_CONFIG_DIR. These tests mock the keychain reads so the detection
-// paths in the server watcher run anywhere (regression: the watcher used to
-// read only the un-suffixed host service and reported keychain-only logins
-// as failures).
+// On macOS the real CLI writes no scratch `.credentials.json`; the login
+// lands only in the Keychain, under a service name suffixed with a hash of
+// CLAUDE_CONFIG_DIR. The Keychain reads are mocked so these tests run on any
+// OS.
 const keychain = vi.hoisted(() => ({
   read: vi.fn<(service?: string) => string | null>(() => null),
   del: vi.fn<(service: string) => void>(),
@@ -66,8 +64,7 @@ describe('claude web login detected via the macOS keychain', () => {
   })
 
   it('a config-dir-scoped keychain item completes the login and is swept', async () => {
-    // The scratch login has its own hash-suffixed item; the un-suffixed
-    // shared host item is never consulted.
+    // Only the scratch login's hash-suffixed item is read, never the user's.
     keychain.read.mockImplementation((service) => (service ? KEYCHAIN_BUNDLE : null))
 
     const started = await startToolLogin('claude')
@@ -78,8 +75,7 @@ describe('claude web login detected via the macOS keychain', () => {
     if (saved?.kind !== 'oauth') return
     expect(saved.claudeAiOauth.accessToken).toBe('sk-ant-oat01-from-keychain')
 
-    // Every read targets the scoped service — the host item is never touched —
-    // and the post-login cleanup sweeps that same item.
+    // Reads and the post-login cleanup both target the scoped item.
     const services = keychain.read.mock.calls.map((c) => c[0])
     expect(services.length).toBeGreaterThan(0)
     for (const service of services) {

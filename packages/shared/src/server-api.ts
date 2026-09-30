@@ -4,11 +4,9 @@ import { readServerConfig } from '#server-config'
 import { createApiClient, type FetchLike } from '#api-core'
 
 /**
- * Where a request goes. Every client resolves the same one thing — an
- * origin — whether the server is a host process on this machine, a pod of
- * this machine's cluster, or a server across the network. There is no
- * local case (see `resolveServerTarget`), and no credential: the server
- * derives who is calling from the request itself.
+ * Where requests go: an origin, whether the server is on this machine, in
+ * its cluster, or remote. No credential is needed; the server identifies
+ * the caller from the request.
  */
 export interface ServerTarget {
   /** Origin (no trailing slash), e.g. http://127.0.0.1:8787. */
@@ -16,27 +14,21 @@ export interface ServerTarget {
 }
 
 export interface ApiClientOptions {
-  /**
-   * Injected for tests. Resolves the server target to use for requests.
-   */
+  /** Test hook overriding {@link resolveServerTarget}. */
   resolveTarget?: () => Promise<ServerTarget>
   fetchImpl?: typeof fetch
   /**
-   * False for pure clients that ship no server code (the desktop shell,
-   * the auth daemon): they have no build identity to compare, and any
-   * server they can reach serves them its own matching SPA. Defaults to
-   * true.
+   * False for clients with no build id of their own to compare (the
+   * desktop shell, the auth daemon). Defaults to true.
    */
   warnOnBuildSkew?: boolean
 }
 
 /**
- * Returns a fetch-shaped function that targets the resolved server:
- * lazily resolves + caches the target and warns once on build skew. Input
- * paths may be a bare pathname or a full URL — only the path+search are
- * used; the host is always the resolved target. A 401 is the server
- * refusing to identify this device, and its message says why, so it goes
- * back to the caller like any other error body. Consumed by `getApiClient`.
+ * A fetch function aimed at the resolved server. The target is resolved on
+ * the first request (so the client can be a module singleton) and cached;
+ * a build-id mismatch is warned about once. Only the input's path and
+ * query are used.
  */
 export function createServerFetch(
   opts: ApiClientOptions = {},
@@ -45,13 +37,7 @@ export function createServerFetch(
   const resolveTarget = opts.resolveTarget ?? resolveServerTarget
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch
 
-  // Resolved on the first request, not at construction, so a module can hold
-  // the client as a singleton: `server.json` (and any test env override) is
-  // read when the first call goes out, not at import.
   let target: ServerTarget | undefined
-  // Once per client: server and CLI upgrade independently — even on this
-  // machine, where the server may be a Deployment carrying an older bundle
-  // — so surface a mismatch without failing on it.
   let buildSkewChecked = false
 
   return async (input, init = {}) => {
@@ -62,12 +48,8 @@ export function createServerFetch(
     try {
       res = await fetchImpl(`${active.baseUrl}${extractPathAndSearch(input)}`, { ...init, headers })
     } catch (err) {
-      // A transport failure against a configured target is the ordinary
-      // "the server is not up" case once the server is a Deployment
-      // (docs/server-in-cluster.md): the origin is fixed and always
-      // resolvable, so nothing upstream can turn it into the lock
-      // resolution's "not running" message. Undici's bare `fetch failed`
-      // is what that would otherwise surface as.
+      // Usually means the server is not running; replace undici's bare
+      // "fetch failed" with a message saying how to start it.
       throw new Error(unreachableServerMessage(active.baseUrl, err))
     }
     if (warnOnBuildSkew && !buildSkewChecked && res.headers.get('x-yaac-build-id')) {
@@ -83,9 +65,8 @@ export function createServerFetch(
 }
 
 /**
- * Why a request to `origin` did not go out, and what to do about it.
- * Loopback gets the local recovery (start it); anything else is a remote
- * whose reachability is the user's network, not a command of ours.
+ * Error text for an unreachable server. A loopback origin also gets the
+ * commands that start it.
  */
 export function unreachableServerMessage(origin: string, cause: unknown): string {
   const detail = cause instanceof Error ? cause.message : String(cause)
@@ -103,10 +84,9 @@ function extractPathAndSearch(input: string): string {
 }
 
 /**
- * A build-id difference between the server and this client, as a warning.
- * Never an error on the request path: they upgrade independently, and even
- * a server on this machine may be a Deployment carrying an older bundle.
- * Null when the server didn't report a build id or the ids match.
+ * A warning when the server's build id differs from this client's; null
+ * when they match or the server reported none. Only a warning, since the
+ * two upgrade independently.
  */
 export function describeBuildSkew(
   serverBuildId: string | null,
@@ -114,9 +94,7 @@ export function describeBuildSkew(
   origin?: string,
 ): string | null {
   if (!serverBuildId || serverBuildId === cliBuildId) return null
-  // A loopback origin is a server on this machine (docs/server-in-cluster.md),
-  // where the skew has one cause — the bundle moved and the running server
-  // has not been rolled onto it — and one pair of fixes.
+  // On this machine, skew means the running server predates the install.
   const fix = origin !== undefined && isLoopbackOrigin(origin)
     ? ' — roll the server onto this build with `yaac server restart` '
       + '(or `yaac cluster install`)'
@@ -126,17 +104,13 @@ export function describeBuildSkew(
 }
 
 /**
- * Whether an origin names a listener on THIS machine.
- *
- * The only "is the server local?" question there is. Every target comes
- * from the same place (`server.json`), so nothing about where a target was
- * resolved from says which machine it is on — a host server and an
- * in-cluster one are both registered there, both at a loopback origin.
+ * Whether an origin is on this machine. Host and in-cluster servers are
+ * both registered at loopback origins, so this is the only way to tell a
+ * local server.
  */
 export function isLoopbackOrigin(origin: string): boolean {
   try {
-    // `URL.hostname` keeps the brackets on an IPv6 literal, so `[::1]` never
-    // equals `::1` — strip them before comparing.
+    // `URL.hostname` keeps an IPv6 literal's brackets.
     const hostname = new URL(origin).hostname.replace(/^\[|\]$/g, '')
     return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1'
   } catch {
@@ -145,19 +119,10 @@ export function isLoopbackOrigin(origin: string): boolean {
 }
 
 /**
- * Resolve the server every request goes to. Two steps, no local case:
- *
- * 1. `YAAC_SERVER_URL` — the test injection hook: tests boot an in-process
- *    server and point the CLI at it without writing any config. Production
- *    never sets it. Above `server.json` so a test data dir carrying one
- *    can't hijack a hermetic run.
- * 2. The **selected** entry of `~/.yaac-client/server.json`.
- *
- * A server on this machine is in that file like any other: `yaac server
- * start` registers the host server it spawns, `yaac cluster install` the
- * Deployment it applies (`registerServer` in `#server-config`). So no
- * client reads the lock — which is the server's own file, belongs to the
- * pod's uid under k8s, and carries a port that means nothing off the pod.
+ * Resolve the server requests go to: `YAAC_SERVER_URL` (a test hook,
+ * checked first so a stray `server.json` in a test data dir cannot win),
+ * else the selected entry of `~/.yaac-client/server.json`. Clients never
+ * read the server lock file.
  */
 export async function resolveServerTarget(): Promise<ServerTarget> {
   const envUrl = testEnv.serverUrlOverride
@@ -169,10 +134,8 @@ export async function resolveServerTarget(): Promise<ServerTarget> {
 }
 
 /**
- * What every client says when `server.json` names no server. All three
- * commands are listed because which one applies is a property of the
- * install, and this message is precisely what is printed when nothing on
- * disk says which kind of install it is.
+ * Printed when `server.json` selects no server. Lists every command since
+ * nothing on disk says which kind of install this is.
  */
 export const NO_SERVER_SELECTED =
   'No yaac server selected.\n'
@@ -180,10 +143,7 @@ export const NO_SERVER_SELECTED =
   + 'install` on a k8s install),\n'
   + '    or point at one with `yaac remote set <url>`.'
 
-/**
- * Print the error's message and exit 1. Calls `process.exit` —
- * never returns.
- */
+/** Print the error's message and exit 1. */
 export function exitOnApiError(err: unknown): never {
   const message = err instanceof Error ? err.message : String(err)
   console.error(message)
@@ -191,12 +151,8 @@ export function exitOnApiError(err: unknown): never {
 }
 
 /**
- * Typed Hono API client for the server. Built by the shared `createApiClient`
- * (so a non-2xx rejects with a `ServerError` and a success resolves to its
- * unwrapped body — callers never check `res.ok` or call `res.json()`), over a
- * fetch from `createServerFetch` (so target resolution and the build-skew
- * warning are shared). Synchronous — the target resolves
- * lazily on the first request — so callers can hold the result as a singleton.
+ * Typed Hono API client for the server (see `createApiClient`), over
+ * {@link createServerFetch}. Safe to hold as a singleton.
  *
  * Usage:
  *   const projects = await api.project.list.$get()
@@ -204,9 +160,7 @@ export function exitOnApiError(err: unknown): never {
 export function getApiClient(opts: ApiClientOptions = {}) {
   const serverFetch = createServerFetch(opts)
 
-  // `hc` bakes the base URL into every request. `createServerFetch`
-  // discards it via `extractPathAndSearch` and routes to the live
-  // server's port, so this host is just a placeholder.
+  // The base URL below is a placeholder; createServerFetch replaces the host.
   const fetchLike: FetchLike = (input, init) => {
     const url = typeof input === 'string'
       ? input

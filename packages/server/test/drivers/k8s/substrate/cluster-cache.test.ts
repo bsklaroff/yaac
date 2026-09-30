@@ -6,11 +6,9 @@ import type * as clientNode from '@kubernetes/client-node'
 import type { KubernetesListObject, KubernetesObject } from '@kubernetes/client-node'
 
 /**
- * The registry's boundary is @kubernetes/client-node: its API classes are
- * what speak HTTP to the apiserver. Faking the list calls (and leaving
- * KubeConfig real, loaded from a temp kubeconfig) runs the client
- * singletons, the informer supervision and every object mapper for real —
- * only the wire is fake.
+ * Only the @kubernetes/client-node list calls are faked. KubeConfig is real
+ * (loaded from a temp kubeconfig), so the client singletons, informer
+ * supervision and object mappers all run for real.
  */
 type ListMock = ReturnType<typeof vi.fn<
   (opts?: { namespace?: string; labelSelector?: string }) => Promise<KubernetesListObject<KubernetesObject>>
@@ -50,8 +48,7 @@ import {
   setActiveClusterCache,
   workspaceIdLabels,
 } from '#drivers/k8s/substrate'
-// Internals, for setup only: the client reset hook, the informer surface the
-// fake implements, and the job-name label the raw pod fixtures carry.
+// Setup values and a reset hook, not units under test.
 import { _resetK8sClientForTests } from '#drivers/k8s/substrate/client'
 import type { DeltaSource } from '#drivers/k8s/substrate/cluster-cache'
 import type { InformerLike } from '#drivers/k8s/substrate/informer-cache'
@@ -81,8 +78,8 @@ class FakeInformer implements InformerLike {
   startImpl: () => Promise<void> = () => Promise.resolve()
   private readonly handlers = new Map<string, Array<(arg?: unknown) => void>>()
 
-  // Cast: InformerLike['on'] is overloaded per verb; the fake stores every
-  // handler uniformly and replays them via emit().
+  // Cast: InformerLike['on'] is overloaded per verb; the fake stores all
+  // handlers the same way and replays them via emit().
   on = ((verb: string, cb: (arg?: unknown) => void): void => {
     const list = this.handlers.get(verb) ?? []
     list.push(cb)
@@ -178,8 +175,7 @@ describe('ClusterCache', () => {
   const ns = k8sNamespace()
 
   it('starts the two install-scoped informers and seeds them off the typed client', async () => {
-    // The list path yields deserialized class instances — Date timestamps,
-    // where the watch path delivers ISO strings. Both must map.
+    // Lists return Date timestamps; watches return ISO strings. Both must map.
     const created = new Date('2026-07-21T00:00:00Z')
     listNamespacedPodMock.mockImplementation(() => {
       const raw = rawPod('p1', 'alpha') as { metadata: { creationTimestamp: unknown } }
@@ -205,8 +201,8 @@ describe('ClusterCache', () => {
     expect(jobs?.informer.startCalls).toBe(1)
     expect(jobs?.selector).toContain('yaac.data-dir-hash')
 
-    // The seed list goes through the memoized CoreV1Api/BatchV1Api clients,
-    // scoped to the install namespace and the same selector as the watch.
+    // The initial list uses the shared API clients, scoped to the install
+    // namespace with the watch's selector.
     expect(listNamespacedPodMock).toHaveBeenCalledWith({
       namespace: ns,
       labelSelector: pods?.selector,
@@ -231,7 +227,7 @@ describe('ClusterCache', () => {
     await flush()
     const state = informers.get(`/api/v1/namespaces/${ns}/configmaps`)
     const refreshed = informers.get(`/api/v1/namespaces/${ns}/secrets`)
-    // One object each, found by its output label rather than its name.
+    // Each object is found by its output label, not its name.
     expect(state?.selector).toBe('app=yaac-proxy,yaac.proxy-output=state')
     expect(refreshed?.selector).toBe('app=yaac-proxy,yaac.proxy-output=refreshed')
     expect(listNamespacedConfigMapMock).toHaveBeenCalledWith({ namespace: ns, labelSelector: state?.selector })
@@ -258,13 +254,13 @@ describe('ClusterCache', () => {
       metadata: { name: 'yaac-proxy-refreshed', labels: { 'yaac.proxy-output': 'refreshed' } },
       data: {
         'claude.json': Buffer.from(JSON.stringify(file)).toString('base64'),
-        // A malformed slot is dropped, not guessed at.
+        // A malformed entry is dropped.
         'codex.json': Buffer.from('{"kind":"oauth","codexOauth":{}}').toString('base64'),
       },
     })
     expect(cache.refreshedCredentials()).toEqual({ claude })
     expect(deltas).toContain('proxy-refreshed')
-    // An object without the label is not ours.
+    // An object without the label is ignored.
     refreshed!.informer.emit('add', { metadata: { name: 'yaac-proxy-auth' }, data: {} })
     expect(cache.refreshedCredentials()).toEqual({ claude })
     cache.stop()
@@ -275,7 +271,7 @@ describe('ClusterCache', () => {
     cache.start()
     await flush()
     const jobs = informers.get(`/apis/batch/v1/namespaces/${ns}/jobs`)!.informer
-    // A Job without the session labels is not ours (nor is a shapeless one).
+    // A Job without workspace labels, or with no shape at all, is ignored.
     jobs.emit('add', { metadata: { name: 'some-other-job', creationTimestamp: '2026-07-21T00:00:00Z' } })
     jobs.emit('add', {})
     expect(cache.workspaceJobs()).toEqual([])
@@ -290,19 +286,18 @@ describe('ClusterCache', () => {
     const pods = informers.get(`/api/v1/namespaces/${ns}/pods`)!.informer
     pods.emit('add', rawPod('p1', 'alpha'))
     pods.emit('add', rawPod('p2', 'beta'))
-    // A pod with no yaac labels is not ours — dropped, not fatal.
+    // A pod with no yaac labels is ignored, not fatal.
     pods.emit('add', { metadata: { name: 'kube-proxy' } })
     expect(deltas.filter((d) => d === 'workspace-pods')).toHaveLength(2)
     expect(cache.workspacePods().map((p) => p.podName).sort()).toEqual(['p1', 'p2'])
     expect(cache.workspacePods('alpha').map((p) => p.podName)).toEqual(['p1'])
 
-    // An update that maps to the identical row is not a delta; a delete is.
+    // An update that maps to the same row is not a delta; a delete is.
     pods.emit('update', rawPod('p1', 'alpha'))
     expect(deltas.filter((d) => d === 'workspace-pods')).toHaveLength(2)
     pods.emit('delete', rawPod('p1', 'alpha'))
     expect(cache.workspacePods().map((p) => p.podName)).toEqual(['p2'])
     expect(deltas.filter((d) => d === 'workspace-pods')).toHaveLength(3)
-    // Deleting a row the cache never held is a no-op.
     pods.emit('delete', rawPod('ghost'))
     expect(deltas.filter((d) => d === 'workspace-pods')).toHaveLength(3)
     cache.stop()
@@ -349,14 +344,14 @@ describe('ClusterCache', () => {
     await vi.advanceTimersByTimeAsync(1_000)
     expect(pods.startCalls).toBe(2)
 
-    // Rapid second failure → doubled delay.
+    // A quick second failure doubles the delay.
     pods.emit('error', new Error('watch died again'))
     await vi.advanceTimersByTimeAsync(1_000)
     expect(pods.startCalls).toBe(2)
     await vi.advanceTimersByTimeAsync(1_000)
     expect(pods.startCalls).toBe(3)
 
-    // A failure after ≥60s of uptime restarts at the base delay again.
+    // After 60s or more of uptime, the delay resets to the base.
     await vi.advanceTimersByTimeAsync(61_000)
     pods.emit('error', new Error('watch died once more'))
     await vi.advanceTimersByTimeAsync(1_000)
@@ -394,13 +389,13 @@ describe('ClusterCache', () => {
     await flush()
     expect(cache.workspacePods().map((p) => p.podName)).toEqual(['p1'])
 
-    // A missed DELETE + missed ADD: the next relist replaces the whole set.
+    // A missed DELETE and ADD: the next relist replaces the whole set.
     listNamespacedPodMock.mockImplementation(() => listOf(rawPod('p2')))
     await vi.advanceTimersByTimeAsync(60_000)
     expect(cache.workspacePods().map((p) => p.podName)).toEqual(['p2'])
     expect(deltas.filter((d) => d === 'workspace-pods')).toHaveLength(2)
 
-    // A failed relist is a cluster hiccup: keep what we have, log, retry later.
+    // A failed relist keeps the current set and retries later.
     listNamespacedPodMock.mockImplementation(() => Promise.reject(new Error('apiserver down')))
     await vi.advanceTimersByTimeAsync(60_000)
     expect(cache.workspacePods().map((p) => p.podName)).toEqual(['p2'])

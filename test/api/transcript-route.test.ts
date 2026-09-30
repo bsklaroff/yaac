@@ -13,11 +13,10 @@ import type { AcpEvent } from '@yaac/shared/acp'
 /**
  * The transcript route over real HTTP, against real files.
  *
- * The route matrix only states what this answers on an empty server; what a
- * *recorded* conversation comes back as is the thing worth proving, and it is
- * the reason a stopped workspace is worth clicking. Nothing here is mocked
- * below the route: the rows are written through the store and the transcripts
- * through the filesystem, because "readable with no pod" is the claim.
+ * The route matrix covers only the empty server; this checks what a
+ * recorded conversation returns. Nothing below the route is mocked: rows are
+ * written through the store and transcripts to disk, since the point is
+ * that a transcript is readable with no pod.
  */
 
 const SLUG = 'demo'
@@ -77,8 +76,8 @@ describe('GET /workspace/:id/agent-sessions/:sessionId/transcript', () => {
   })
 
   it('serves a tui claude conversation from claude\'s own transcript', async () => {
-    // The half with no record at all: driven through a PTY, replayed on
-    // demand through the ACP adapter's own translation.
+    // yaac records no events for a TUI conversation; claude's transcript
+    // is replayed through the ACP adapter's translation.
     await recordAgentSessions(SLUG, WORKSPACE, [
       { tool: 'claude', agentSessionId: TUI_SESSION, mode: 'tui' },
     ])
@@ -115,8 +114,8 @@ describe('GET /workspace/:id/agent-sessions/:sessionId/transcript', () => {
   })
 
   it('answers 501 for a tool whose history is not readable from the host', async () => {
-    // opencode's history is a sqlite database inside the container. Refusing
-    // says so; an empty conversation would read as "nothing was said".
+    // opencode's history is a sqlite database inside the container. An
+    // empty conversation would wrongly read as "nothing was said".
     await recordAgentSessions(SLUG, WORKSPACE, [
       { tool: 'opencode', agentSessionId: 'oc-1', mode: 'tui' },
     ])

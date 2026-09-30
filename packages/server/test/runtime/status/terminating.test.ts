@@ -39,17 +39,14 @@ describe('terminating registry', () => {
     expect(isWorkspaceTerminating('s1')).toBe(false)
   })
 
-  // A mark greys the row, so it is a snapshot input and has to announce
-  // itself — otherwise a CLI- or reaper-issued stop showed nothing until the
-  // pod's deletionTimestamp delta landed, which is the gap the mark exists
-  // to cover in the first place.
+  // A mark greys out the row, so it must trigger a snapshot push; otherwise
+  // a stop from the CLI or reaper would not show until the pod changed.
   it('pushes a fresh snapshot when a mark lands or is cleared, and not otherwise', () => {
     let pushes = 0
     onWorkspaceListChanged(() => { pushes += 1 })
 
     markWorkspaceTerminating('s1')
     expect(pushes).toBe(1)
-    // Idempotent: a re-mark changes nothing visible.
     markWorkspaceTerminating('s1')
     expect(pushes).toBe(1)
     markWorkspaceTerminating('')
@@ -57,13 +54,11 @@ describe('terminating registry', () => {
 
     clearWorkspaceTerminating('s1')
     expect(pushes).toBe(2)
-    // Nothing left to clear.
     clearWorkspaceTerminating('s1')
     expect(pushes).toBe(2)
   })
 
-  // Pruning runs inside the display-list build, so the build that prunes a
-  // mark already renders the un-greyed row; notifying would only re-enter it.
+  // Pruning happens while building the snapshot, so a push would be redundant.
   it('does not push when pruning', () => {
     markWorkspaceTerminating('s1', 1_000)
     let pushes = 0

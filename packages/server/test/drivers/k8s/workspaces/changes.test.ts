@@ -1,9 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-// The real module with only `podExec` stubbed: its two error classes are
-// what the folder classifies a failed run BY, so a factory that returned the
-// stub alone would hand `changes.ts` an undefined `RelayExecError` to branch
-// on and quietly pass every failure through untranslated.
+// Stub only `podExec`; changes.ts needs the module's real error classes.
 vi.mock('#drivers/k8s/substrate/stream-relay', async (importOriginal) => ({
   ...await importOriginal<typeof StreamRelay>(),
   podExec: vi.fn(),
@@ -54,13 +51,8 @@ describe('getWorkspaceChanges', () => {
     expect(cmd).toContain("yaac-changes '' 'main'")
   })
 
-  // The pane polls every few seconds and each open tab polls on its own, so
-  // identical concurrent requests must ride one exec rather than piling work
-  // onto the pod.
+  // Every open tab polls, so identical concurrent requests share one exec.
   it('coalesces identical concurrent requests into a single pod exec', async () => {
-    // Build the gate up front: the exec body only runs on a later microtask,
-    // so a `release` captured from inside the executor would still be unset by
-    // the time we open it.
     let release!: () => void
     const gate = new Promise<void>((r) => { release = r })
     mockExec.mockImplementation(async () => {
@@ -77,14 +69,13 @@ describe('getWorkspaceChanges', () => {
     expect(mockExec).toHaveBeenCalledTimes(1)
     expect(a).toBe(b)
     expect(b).toBe(c)
-    // A later request re-execs — the coalescing window is only "in flight".
+    // Only in-flight requests are shared.
     mockExec.mockResolvedValue({ stdout: EMPTY, stderr: '' })
     await getWorkspaceChanges('yaac-proj-abc', undefined, 'main')
     expect(mockExec).toHaveBeenCalledTimes(2)
   })
 
-  // Different bases are different diffs, but they share one pod-side index, so
-  // they must run one at a time rather than racing on its lock.
+  // Different bases share one git index in the pod, so they run in turn.
   it('serializes differing requests for the same session', async () => {
     let running = 0
     let peak = 0
@@ -103,17 +94,14 @@ describe('getWorkspaceChanges', () => {
     expect(peak).toBe(1)
   })
 
-  // A pod-side failure must reach the caller as an error. Rendering it as an
-  // empty changeset is the "No changes" bug.
+  // A failure must not be shown as "No changes".
   it('throws rather than reporting no changes when the run failed partway', async () => {
     mockExec.mockResolvedValue({ stdout: 'BASE cafe1234\nFORK 1\n@@NUMSTAT@@\n', stderr: '' })
     await expect(getWorkspaceChanges('yaac-proj-abc')).rejects.toThrow(/completion marker/)
   })
 
-  // The script's exit codes are this folder's vocabulary, so a run that
-  // exited nonzero has to leave it in the CONTRACT's — the code is what the
-  // mediator reads to answer an unusable caller-named base with a 400, and a
-  // substrate error is not a vocabulary the layer above may name.
+  // Callers map the exit code (e.g. a bad base → 400), so it must arrive
+  // as the contract's error type.
   it('restates a nonzero exit as the contract error, carrying the code', async () => {
     mockExec.mockRejectedValue(
       new RelayExecError('command exited 4 in yaac-proj-abc: ', CHANGES_BASE_UNRESOLVED, '', ''),
@@ -125,10 +113,8 @@ describe('getWorkspaceChanges', () => {
     expect((err as WorkspaceExecError).cause).toBeInstanceOf(RelayExecError)
   })
 
-  // The other direction, and the one that matters most: a workspace the exec
-  // never reached proves nothing about the base. Translated, it would arrive
-  // upstream indistinguishable from a real verdict and a cluster blip would
-  // be answered as the caller's bad ref.
+  // A transport failure says nothing about the base, so it must not look
+  // like a script verdict.
   it('passes a transport failure through untranslated', async () => {
     const dial = new RelayDialError('stream relay dial (yaac-pro...): connection refused')
     mockExec.mockRejectedValue(dial)

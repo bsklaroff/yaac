@@ -1,7 +1,5 @@
-// Tests for the `ports` stream kind: the /proc/net/tcp{,6} LISTEN parser
-// (loopback/wildcard reachability filter, IPv6, torn/hostile input) and
-// the push behavior over a live streamd — initial set, change push,
-// keepalive re-send, and the daemon's own-port exclusion.
+// Tests for the `ports` stream kind: the /proc/net/tcp{,6} parser and the
+// push behavior over a live streamd.
 import net from 'node:net'
 import fs from 'node:fs/promises'
 import os from 'node:os'
@@ -186,20 +184,18 @@ describe('ports stream kind', () => {
 
   it('pushes the initial set, then a change, then keepalives; excludes its own port', async () => {
     const { port, procDir } = await startDaemon()
-    // Include the daemon's own listen port — it must be filtered out.
+    // The daemon's own port must be filtered out.
     await fs.writeFile(path.join(procDir, 'tcp'), procFile([
       procRow('0100007F', '1F90', '0A'), // 8080
       procRow('0100007F', port.toString(16).toUpperCase().padStart(4, '0'), '0A'),
     ]))
     const stream = await openPortsStream(port)
 
-    // Initial push (the very first may race the file write and see the
-    // empty pre-write set; the next poll then pushes the real one).
+    // The first push may race the file write and be empty.
     let ports = (JSON.parse(await stream.next()) as { ports: number[] }).ports
     if (ports.length === 0) ports = (JSON.parse(await stream.next()) as { ports: number[] }).ports
     expect(ports).toEqual([8080])
 
-    // A new listener appears → a change push within a poll tick or two.
     await fs.writeFile(path.join(procDir, 'tcp'), procFile([
       procRow('0100007F', '1F90', '0A'),
       procRow('00000000', '1F95', '0A'), // 8085
@@ -207,7 +203,7 @@ describe('ports stream kind', () => {
     const changed = JSON.parse(await stream.next()) as { ports: number[] }
     expect(changed.ports).toEqual([8080, 8085])
 
-    // No further change → the unchanged set re-arrives as a keepalive.
+    // With no change, the same set re-arrives as a keepalive.
     const keepalive = JSON.parse(await stream.next(2000)) as { ports: number[] }
     expect(keepalive.ports).toEqual([8080, 8085])
   })

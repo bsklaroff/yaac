@@ -2,14 +2,13 @@ import type { MiddlewareHandler } from 'hono'
 import { serverLog } from '#log'
 import type { IdentityEnv } from './web-auth'
 
-// The identity gate lives in `./web-auth`, and the Host/Origin/Sec-Fetch-Site
-// guards with it. This module keeps the CORS preflight refusal and the
-// request log.
+// CORS preflight refusal and the request log. The identity gate and the
+// Host/Origin/Sec-Fetch-Site guards live in `./web-auth`.
 
 /**
- * Browser `fetch` is not allowed to talk to the server cross-origin: refuse
- * the preflight outright, so a non-simple cross-origin request never reaches
- * a route. The `Origin` on an actual request is judged by `originHeaderCheck`.
+ * Refuse every CORS preflight, so a non-simple cross-origin browser request
+ * never reaches a route. The `Origin` of an actual request is checked by
+ * `originHeaderCheck`.
  */
 export function denyBrowserCors(): MiddlewareHandler {
   return async (c, next) => {
@@ -19,9 +18,8 @@ export function denyBrowserCors(): MiddlewareHandler {
 }
 
 /**
- * Log path + status + duration, and the tailnet user a request came from —
- * the audit trail of which person did what. Never log request/response
- * bodies.
+ * Log method, path, status, duration and the tailnet user, as an audit trail.
+ * Never log request or response bodies.
  */
 export function requestLogger(): MiddlewareHandler<IdentityEnv> {
   return async (c, next) => {

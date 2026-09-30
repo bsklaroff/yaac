@@ -1,30 +1,25 @@
 import { listLiveWorkspaceRows, listStoppedWorkspaceIds } from './workspace-store'
 
 /**
- * What the server records as existing — what the stale reaper judges an
- * absence against. A runtime with no record is a leak to clean up; a record
- * with no runtime is a create that died; and the substrate cannot tell one
- * from the other, which is why the reaper reads this rather than only
- * looking at pods.
+ * The workspaces the server has recorded, which the stale reaper compares
+ * against the runtime. A runtime with no record is a leak; a record with no
+ * runtime is a create that died. The substrate alone can't tell these apart.
  *
- * Read fresh at the top of the reaper's pass, so absence is only ever
- * judged against a set from the same pass. A read failure must stand the
- * sweeps down (say nothing, reap nothing), never read as an empty set — an
- * empty set is a legitimate answer only when the rows really say so.
+ * Read fresh at the start of each reaper pass. A read failure must make the
+ * pass do nothing, never be treated as an empty set.
  */
 export interface DesiredWorkspaces {
   live: DesiredWorkspace[]
-  /** `<projectSlug>/<workspaceId>` of workspaces already recorded as stopped —
-   *  what tells a teardown yaac issued from one that happened to it. */
+  /** `<projectSlug>/<workspaceId>` of workspaces recorded as stopped, which
+   *  tells a teardown yaac issued apart from an unexpected one. */
   stopped: string[]
 }
 
 export interface DesiredWorkspace {
   projectSlug: string
   workspaceId: string
-  /** Whether its agent ever got going. Separates an interrupted create from a
-   *  workspace with real history whose runtime was removed out from under it,
-   *  which is the difference between `never-started` and `orphaned`. */
+  /** Whether its agent ever started: separates an interrupted create
+   *  (`never-started`) from a workspace whose runtime vanished (`orphaned`). */
   ran: boolean
 }
 

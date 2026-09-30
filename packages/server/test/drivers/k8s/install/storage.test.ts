@@ -1,11 +1,8 @@
 /**
- * The two claims, bound through both storage shapes, exercised through the
- * barrel. kubectl is the process boundary: behind it sits a small fake of
- * the apiserver's storage objects — claims, volumes, and a provisioner that
- * binds nothing until a pod consumes the claim, as a `WaitForFirstConsumer`
- * class does — so the real manifests, patches and binder pod are what the
- * assertions land on. The static shape is driven against a data dir on
- * real disk.
+ * The two storage claims, bound through both storage shapes. kubectl is
+ * backed by a small fake of the apiserver's claims and volumes, with a
+ * provisioner that binds only once a pod uses the claim (like a
+ * `WaitForFirstConsumer` class). The static shape uses a real data dir.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
@@ -50,14 +47,13 @@ interface Obj {
 
 /**
  * The fake apiserver's storage. A claim naming a volume binds at once; a
- * claim naming only a class stays Pending until the binder pod consumes it,
- * which provisions a volume the way the class says — `Delete`, the class's
- * own mount options — exactly as an operator's naive class would.
+ * claim naming only a class stays Pending until the binder pod uses it, then
+ * gets a volume with the class's settings (`Delete`, its mount options).
  */
 let claims: Map<string, Obj>
 let volumes: Map<string, Obj>
 let classOptions: string[]
-/** What the binder pod prints; a case edits (a squashing export, say). */
+/** What the binder pod prints; a test may change it. */
 let binderLogs: string
 let binderPhase: string
 
@@ -185,9 +181,9 @@ describe('ensureStorageClaims', () => {
       app: 'yaac-server', 'yaac.install-namespace': 'test-ns',
       'yaac.data-dir-hash': 'ddh16', 'yaac.claim': 'yaac-global',
     })
-    // `Retain` keeps a claim or namespace delete off the host bytes; the
-    // empty class is what makes the pair static; `Directory`, never
-    // `DirectoryOrCreate`, because a kubelet-made directory is root-owned.
+    // `Retain` survives a claim or namespace delete; the empty class makes
+    // the binding static; `Directory`, since a kubelet-created directory
+    // would be root-owned.
     expect(globalPv.spec).toMatchObject({
       accessModes: ['ReadWriteMany'],
       persistentVolumeReclaimPolicy: 'Retain',
@@ -201,13 +197,12 @@ describe('ensureStorageClaims', () => {
     })
     expect(globalPvc.metadata).toMatchObject({ name: 'yaac-global', namespace: 'test-ns' })
     expect(globalPvc.spec).toMatchObject({ storageClassName: '', volumeName: 'yaac-global-ddh16' })
-    // The static shape runs no binder: the host made the dirs as its user.
+    // No binder pod: the host created the dirs as its user.
     expect(applied().some((m) => m.kind === 'Pod')).toBe(false)
     expect(log.mock.calls.flat().join('\n')).toMatch(/yaac-server-local bound/)
   })
 
   it('static: clears the stale claim reference of a Released volume before binding', async () => {
-    // The claim was deleted by hand; the Retain volume survived it.
     volumes.set('yaac-global-ddh16', {
       kind: 'PersistentVolume', metadata: { name: 'yaac-global-ddh16' },
       spec: { claimRef: { namespace: 'test-ns', name: 'yaac-global', uid: 'old' } },
@@ -250,8 +245,8 @@ describe('ensureStorageClaims', () => {
       })
       const verdict = expect(ensureStorageClaims({ shape: staticShape() }))
         .rejects.toThrow(/yaac-global claim did not bind/)
-      // The host dirs are made first — real I/O the fake clock does not
-      // wait for — so start the clock once the claims are applied.
+      // The host dirs are real I/O, so advance the clock only once the
+      // claims are applied.
       await vi.waitFor(() => { expect(mockApply).toHaveBeenCalledTimes(4) })
       for (let i = 0; i < 200; i += 1) await vi.advanceTimersByTimeAsync(1_000)
       await verdict
@@ -261,8 +256,7 @@ describe('ensureStorageClaims', () => {
   })
 
   it('classes: provisions through the named classes, binds by consuming, and pins what bound', async () => {
-    // The naive class an operator writes: `Delete`, and no coherence bound
-    // on attribute caching. Every step after provisioning is load-bearing.
+    // A typical class: `Delete`, and a long attribute cache.
     classOptions = ['nfsvers=4.1', 'soft', 'actimeo=30']
     binderLogs = 'BIND_CHOWNED=/claims/global\nBIND_CHOWNED=/claims/server-local\n'
     const log = vi.fn()
@@ -272,11 +266,11 @@ describe('ensureStorageClaims', () => {
     expect(globalPvc.spec).toMatchObject({ storageClassName: 'nfs-class', accessModes: ['ReadWriteMany'] })
     expect(globalPvc.spec.volumeName).toBeUndefined()
     expect(localPvc.spec).toMatchObject({ storageClassName: 'block-class', accessModes: ['ReadWriteOnce'] })
-    // A class provisions a real disk for the RWO claim, so it asks for one.
+    // The RWO claim requests a real size.
     expect(localPvc.spec.resources?.requests.storage).toMatch(/Gi$/)
 
-    // The binder is the first consumer — nothing binds without it — and it
-    // runs as root to make each volume root the install identity's.
+    // The binder pod is the first consumer, so it triggers binding. It runs
+    // as root to chown each volume root to the install's user.
     const binder = applied().find((m) => m.kind === 'Pod')!
     expect(binder.metadata.name).toBe('yaac-storage-bind')
     expect(binder.spec.securityContext).toEqual({ runAsUser: 0, runAsGroup: 0 })
@@ -286,21 +280,19 @@ describe('ensureStorageClaims', () => {
 
     const globalPv = volumes.get('pvc-yaac-global-provisioned')!
     const localPv = volumes.get('pvc-yaac-server-local-provisioned')!
-    // Retain whatever the class said, so a namespace delete keeps the data.
+    // Retain regardless of class, so a namespace delete keeps the data.
     expect(globalPv.spec.persistentVolumeReclaimPolicy).toBe('Retain')
     expect(localPv.spec.persistentVolumeReclaimPolicy).toBe('Retain')
-    // The class's options kept — `soft` included, the operator's trade —
-    // and yaac's coherence bound over the class's 30.
+    // The class's options are kept, except actimeo, which yaac lowers.
     expect(globalPv.spec.mountOptions).toEqual(['nfsvers=4.1', 'soft', 'actimeo=1'])
     expect(localPv.spec.mountOptions).toEqual([])
-    // Labelled with the install id, which is how this install — and only
-    // this one — finds them again.
+    // Labelled with the install id so only this install re-adopts them.
     expect(globalPv.metadata.labels).toMatchObject({
       'yaac.install-id': 'install-1', 'yaac.install-namespace': 'test-ns', 'yaac.claim': 'yaac-global',
     })
   })
 
-  /** A volume that outlived its claim, labelled as `labels` say. */
+  /** A volume that outlived its claim. */
   const looseVolume = (name: string, labels: Record<string, string>, over: Partial<Obj['spec']> = {}, phase = 'Released'): void => {
     volumes.set(name, {
       kind: 'PersistentVolume',
@@ -314,13 +306,12 @@ describe('ensureStorageClaims', () => {
   }
 
   it('classes: re-adopts this install\'s Released volume, and no other install\'s', async () => {
-    // Distractors a looser match would take: the same claim, still Bound
-    // (someone's live volume); another namespace's; and the same install
-    // id's volume under a claim of another name.
+    // Near-misses: still Bound, another namespace's, and another claim
+    // name under the same install id.
     looseVolume('pvc-bound', { 'yaac.install-id': 'install-1' }, {}, 'Bound')
     looseVolume('pvc-other-ns', { 'yaac.install-id': 'install-1', 'yaac.install-namespace': 'other-ns' })
     looseVolume('pvc-other-claim', { 'yaac.install-id': 'install-1', 'yaac.claim': 'something-else' })
-    // A namespace delete: the claims are gone, the Retain volumes are not.
+    // After a namespace delete, the Retain volumes remain.
     looseVolume('pvc-old-global', { 'yaac.install-id': 'install-1', 'yaac.data-dir-hash': 'ddh16' })
     const log = vi.fn()
     await ensureStorageClaims({ shape: classShape, log })
@@ -330,16 +321,14 @@ describe('ensureStorageClaims', () => {
     expect(JSON.parse(patches()[0].at(-1)!)).toMatchObject({ spec: { claimRef: { uid: null } } })
     expect(patches()[0][2]).toBe('pvc-old-global')
     expect(claims.get('yaac-global')?.spec.volumeName).toBe('pvc-old-global')
-    // Only the claim that had nothing to re-adopt was provisioned.
     expect(volumes.has('pvc-yaac-server-local-provisioned')).toBe(true)
     expect(volumes.has('pvc-yaac-global-provisioned')).toBe(false)
     expect(log.mock.calls.flat().join('\n')).toMatch(/Re-adopting yaac-global's volume pvc-old-global/)
   })
 
   it('classes: refuses another install\'s volume from the same data-dir path, and this one\'s under another class', async () => {
-    // Same path hash, another install (the same `~/.yaac` on another
-    // machine, or this one's server.json lost): its database and
-    // credentials, adopted only on purpose.
+    // Same path hash but another install id (e.g. the same `~/.yaac` on
+    // another machine). Its data must only be adopted on purpose.
     looseVolume('pvc-theirs', { 'yaac.install-id': 'install-2', 'yaac.data-dir-hash': 'ddh16' })
     const foreign = ensureStorageClaims({ shape: classShape })
     await expect(foreign).rejects.toThrow(/volume pvc-theirs .* not by this one \(its install id is install-2, this install's is install-1\)/)
@@ -347,14 +336,13 @@ describe('ensureStorageClaims', () => {
     expect(applied()).toEqual([])
     expect(patches()).toEqual([])
 
-    // Set aside (hash label dropped), it no longer matches, and a fresh
-    // volume is provisioned beside it.
+    // With the hash label removed it no longer matches, and a new volume
+    // is provisioned.
     delete volumes.get('pvc-theirs')!.metadata.labels!['yaac.data-dir-hash']
     await ensureStorageClaims({ shape: classShape })
     expect(claims.get('yaac-global')?.spec.volumeName).toBe('pvc-yaac-global-provisioned')
 
-    // This install's own volume, in a class other than the one named: the
-    // claim would otherwise skip the class gate.
+    // This install's volume under a different class is refused too.
     claims.clear()
     volumes.clear()
     looseVolume('pvc-mine', { 'yaac.install-id': 'install-1' }, { storageClassName: 'old-class' })
@@ -369,7 +357,7 @@ describe('ensureStorageClaims', () => {
 
     await ensureStorageClaims({ shape: classShape })
     expect(applied().filter((m) => m.kind === 'PersistentVolumeClaim')).toEqual([])
-    // Someone flipped the policy back: a re-install is how it heals.
+    // A re-install restores a policy someone changed back.
     expect(volumes.get('pvc-yaac-global-provisioned')!.spec.persistentVolumeReclaimPolicy).toBe('Retain')
 
     await expect(ensureStorageClaims({ shape: { ...classShape, rwx: 'other-class' } }))
@@ -377,8 +365,7 @@ describe('ensureStorageClaims', () => {
   })
 
   it('classes: the binder claims empty roots and refuses one holding another install\'s data', async () => {
-    // The binder's own script, run under a real sh against real
-    // directories (its `/claims` rebased), at this process's own identity.
+    // The binder's script, run by a real sh against real directories.
     await ensureStorageClaims({ shape: classShape })
     const [, , script] = applied().find((m) => m.kind === 'Pod')!.spec.containers![0].command
     const claimsDir = path.join(tmpDir, 'claims')
@@ -390,26 +377,26 @@ describe('ensureStorageClaims', () => {
       })
     }
     for (const root of ['global', 'server-local']) await fs.mkdir(path.join(claimsDir, root), { recursive: true })
-    // A freshly formatted block volume carries lost+found; that is empty.
+    // A fresh block volume has lost+found, which counts as empty.
     await fs.mkdir(path.join(claimsDir, 'server-local', 'lost+found'))
     expect(await bind('install-1')).toMatchObject({ code: 0 })
     expect(await fs.readFile(path.join(claimsDir, 'global', '.yaac-install'), 'utf8')).toBe('install-1')
     expect(((await fs.stat(path.join(claimsDir, 'global'))).mode & 0o7777).toString(8)).toBe('2775')
-    // Idempotent for the install it names, once there is data under it.
+    // Idempotent for the same install, even with data present.
     await fs.writeFile(path.join(claimsDir, 'global', 'db'), 'rows')
     expect(await bind('install-1')).toMatchObject({ code: 0 })
 
-    // Another install handed the same directories (a class with a fixed
-    // subDir): refused by the marker, and nothing written.
+    // Another install given the same directories (a class with a fixed
+    // subDir) is refused by the marker.
     const other = await bind('install-2')
     expect(other.code).toBe(1)
     expect(other.out).toContain(`BIND_FOREIGN=${claimsDir}/global=install-1`)
     expect(await fs.readFile(path.join(claimsDir, 'global', '.yaac-install'), 'utf8')).toBe('install-1')
-    // ...and a root with content but no marker is someone's too.
+    // A root with content but no marker is refused too.
     await fs.rm(path.join(claimsDir, 'global', '.yaac-install'))
     expect((await bind('install-2')).out).toContain(`BIND_FOREIGN=${claimsDir}/global=`)
 
-    // Surfaced by install as a refusal naming both installs and the fix.
+    // Install reports it naming both installs and the fix.
     claims.clear()
     volumes.clear()
     binderLogs = 'BIND_FOREIGN=/claims/global=install-9\n'

@@ -1,30 +1,21 @@
 /*
- * Verifies that the mobile shell stays over the space the user can see when a
- * soft keyboard opens — the geometry jsdom cannot answer, and that no desktop
- * browser produces on its own.
+ * Verifies that the mobile shell covers exactly the visible area when a soft
+ * keyboard opens. On iOS the keyboard both shrinks and slides the visual
+ * viewport (scrolling the focused composer into view), so `#root` is
+ * `position: fixed` at `--app-top` with height `--app-height`, both set by
+ * useVisualViewportHeight().
  *
- * A keyboard does not only shrink the visual viewport, it slides it: iOS
- * scrolls the focused control (the ACP chat composer, the one real input in a
- * pane) into view and never scrolls back. An app anchored to the layout
- * viewport is then sized to the visible region but sitting above it — the
- * shell squeezed against the top, the page's background showing below the
- * pane, and a finger free to drag around in the gap. `#root` is
- * `position: fixed` at `--app-top`, published by useVisualViewportHeight()
- * alongside `--app-height`, so it covers the visible band exactly.
- *
- * Chromium has no soft keyboard, so the script installs a fake
- * `window.visualViewport` before the app loads and drives it: the hook reads
- * nothing else, and what is being checked is what the CSS does with the two
- * values, not how a real keyboard produces them.
+ * Chromium has no soft keyboard, so the script installs and drives a fake
+ * `window.visualViewport` before the app loads. It checks what the CSS does
+ * with those values.
  *
  *  1. At rest the root covers the whole viewport.
  *  2. Keyboard up (shorter viewport, slid down): the root covers exactly the
  *     visible band — nothing of the page below it, nothing cut off above.
- *  3. Pinch-zoom pans the visual viewport too, and that pan is the user
- *     looking around: the root must NOT chase it, or a zoomed page cannot be
- *     panned at all.
- *  4. Above the breakpoint none of this applies — the desktop keeps its own
- *     sizing, since there the visual viewport only moves under zoom.
+ *  3. After the keyboard closes, the root covers the whole viewport again.
+ *  4. A pinch-zoom pan must not move the root, or a zoomed page could not be
+ *     panned.
+ *  5. Above the breakpoint the hook sets nothing.
  *
  * Drives the app the server itself serves (`dist/`), reading the port
  * from $YAAC_DATA_DIR/.server.lock — so run `pnpm build` +
@@ -67,9 +58,10 @@ function readServerLock() {
   throw new Error(`no .server.lock found (tried ${candidates.join(', ')}) — is the server running?`)
 }
 
-/** Poll an in-page predicate until it holds. Not `page.waitForFunction`: the
- *  served app sends a script-src CSP with no `unsafe-eval`, and that API
- *  compiles its predicate with `new Function` inside the page. */
+/**
+ * Poll an in-page predicate until it holds. Not `page.waitForFunction`,
+ * which needs `unsafe-eval` and the app's CSP forbids it.
+ */
 async function until(page, fn, arg, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs
   for (;;) {
@@ -89,14 +81,14 @@ function check(name, cond, detail = '') {
 const PHONE = { width: 390, height: 844 }
 const DESKTOP = { width: 1200, height: 844 }
 
-/** A drivable stand-in for `window.visualViewport`, installed before any app
- *  code runs. Same surface the hook uses: height, offsetTop, scale, and the
- *  resize/scroll events a real one fires when the keyboard moves it. */
+/**
+ * A drivable fake `window.visualViewport`, installed before app code runs:
+ * height, offsetTop, scale, and resize/scroll events.
+ */
 function fakeVisualViewport() {
   const listeners = { resize: new Set(), scroll: new Set() }
-  // Undriven, it just reports the window — read lazily, because this runs
-  // before the page's viewport meta is parsed and `innerHeight` at that moment
-  // is the 980px-wide fallback layout, not the phone's.
+  // Until driven, it reports the window, read lazily: at install time the
+  // viewport meta is not parsed yet.
   const state = { height: null, width: null, offsetTop: 0, offsetLeft: 0, scale: 1 }
   const vv = {
     get height() { return state.height ?? window.innerHeight },
@@ -117,7 +109,7 @@ function fakeVisualViewport() {
   }
 }
 
-/** Where the shell actually sits, against where the user can actually see. */
+/** Where the shell sits, compared with the visible area. */
 function rootReport() {
   return () => {
     const r = document.getElementById('root').getBoundingClientRect()

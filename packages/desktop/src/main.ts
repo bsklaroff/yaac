@@ -1,18 +1,13 @@
 /**
- * Entry: wire Electron to the boot flow. Untested glue — the logic lives in
- * the sibling modules (#flow, #server-process, #messages, #attention,
- * #events, #tray-icon, #menu, #theme-bg, #window-state).
+ * Electron entry point: untested glue over the sibling modules, which hold
+ * the logic.
  *
- * The shell is a client of whatever server `server.json` names — it never
- * owns one, and never starts one: close hides to the tray, Quit quits the
- * shell only, and the server keeps running (it was never ours to stop).
- * With no server reachable the window shows the picker (`#connect-page`)
- * rather than an error dialog over nothing. While in the tray it follows
- * the `/events` stream to surface waiting workspaces
- * (dock badge, tray status, notifications). Each window
- * open also ensures the auth-daemon best-effort — and
- * like the server, Quit leaves it running (machine-scoped, shared with the
- * CLI; never ours to stop).
+ * The shell is a client of whatever server `server.json` names and never
+ * starts or stops one. Close hides to the tray; Quit exits the shell and
+ * leaves the server and the auth daemon running. With no server reachable
+ * the window shows the picker (connect-page.ts). While running it follows
+ * `/events` to show waiting workspaces (dock badge, tray, notifications) and
+ * to hold the workspaces' port forwards.
  */
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -47,25 +42,17 @@ app.setName('yaac')
 let win: BrowserWindow | null = null
 let tray: Tray | null = null
 let quitting = false
-// macOS animates full-screen transitions and documents isFullScreen() as
-// stale until enter-/leave-full-screen fires — zoom clicks are ignored while
-// a requested transition is in flight so a double-click can't re-request it.
+// Zoom clicks are ignored during a full-screen transition (see window-zoom.ts).
 const fsGuard = createFsTransitionGuard()
 let events: { stop: () => void } | null = null
 let forwarder: DesktopForwarder | null = null
-// One monitor per attached server: its first-snapshot seeding suppresses a
-// notification burst on launch, and WS reconnects must not re-notify ongoing
-// waits. Replaced only on a server switch, where the new server's ongoing
-// waits deserve the same silence.
+// One monitor per server, kept across WS reconnects so ongoing waits don't
+// re-notify. Replaced on a server switch.
 let attention = new AttentionMonitor()
-// True while the window is showing the picker rather than a server's SPA.
-// A window in that state is not a window to merely re-show: whatever the
-// user did about the failure (started a server, ran `yaac remote set`)
-// happened OUTSIDE it, and only re-running the flow can notice.
+// True while the window shows the picker. Re-showing such a window re-runs
+// the boot flow, since the user may have fixed things from a terminal.
 let onConnectPage = false
 
-// The one place a target comes from, shared by the flow, the
-// events socket and the forwarder: `server.json`, like every other client.
 const resolveTarget = resolveServerTarget
 
 function windowStateFile(): string {
@@ -84,25 +71,20 @@ async function createWindow(): Promise<BrowserWindow> {
     minHeight: 560,
     title: 'yaac',
     show: false,
-    // Native backing matched to the OS appearance so resizes don't flash
-    // the opposite shell color at the edges.
     backgroundColor: backgroundColorFor(nativeTheme.shouldUseDarkColors),
-    // Hide the title bar AND the native traffic lights (setWindowButtonVisibility
-    // below) — the SPA draws its own monochrome controls (WindowControls.tsx)
-    // and reserves draggable strips (.titlebar-drag) so the window still moves.
+    // The traffic lights are hidden too (setWindowButtonVisibility below); the
+    // SPA draws its own controls (WindowControls.tsx) and drag strips.
     titleBarStyle: 'hidden',
-    // The renderer is web content from the server origin — no Node, sandboxed;
-    // the preload exposes only the minimal window-control bridge.
+    // The renderer is web content from the server: sandboxed, no Node.
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
       preload: path.join(path.dirname(fileURLToPath(import.meta.url)), 'preload.cjs'),
-      // Let the attention chime play without a prior click (it fires on a
-      // background event — a workspace flipping to waiting), not a user gesture.
+      // The attention chime plays on a background event, not a user gesture.
       autoplayPolicy: 'no-user-gesture-required',
-      // Enable the <webview> the workspace preview embeds. Guests are hardened
-      // and pinned to loopback below (will-attach-webview + web-contents-created).
+      // For the workspace preview. Guests are hardened and pinned to loopback
+      // below (will-attach-webview, web-contents-created).
       webviewTag: true,
     },
   })
@@ -110,8 +92,6 @@ async function createWindow(): Promise<BrowserWindow> {
   fsGuard.settle()
   w.on('enter-full-screen', () => fsGuard.settle())
   w.on('leave-full-screen', () => fsGuard.settle())
-  // Harden every preview <webview> before it attaches: strip any preload,
-  // force Node off / isolation on, and refuse a src off loopback.
   w.webContents.on('will-attach-webview', (_e, webPreferences, params) => {
     hardenGuestWebPreferences(webPreferences as unknown as Record<string, unknown>)
     params.src = sanitizeWebviewSrc(params.src)
@@ -122,16 +102,14 @@ async function createWindow(): Promise<BrowserWindow> {
   }
   nativeTheme.on('updated', onThemeChange)
   w.on('closed', () => nativeTheme.removeListener('updated', onThemeChange))
-  // The SPA's external links (forwarded ports, upstream docs) are
-  // target="_blank": route them to the system browser, never a child window.
+  // target="_blank" links open in the system browser.
   w.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('http://') || url.startsWith('https://')) void shell.openExternal(url)
     return { action: 'deny' }
   })
   // Close hides to the tray; only an explicit Quit destroys the window.
   w.on('close', (e) => {
-    // getNormalBounds(): the last windowed geometry even when the window is
-    // currently maximized or full screen.
+    // getNormalBounds() is the windowed geometry even when maximized.
     void saveWindowState(windowStateFile(), w.getNormalBounds())
     if (!quitting) {
       e.preventDefault()
@@ -142,10 +120,8 @@ async function createWindow(): Promise<BrowserWindow> {
 }
 
 /**
- * Run the resolve → identify flow and land the window on the server's
- * origin, or on the picker when there is no server that will take this
- * device. Re-run in full whenever the window must be (re)created, which
- * also picks up a server that came back while the shell sat in the tray.
+ * Run the boot flow and load the server's origin, or the picker when no
+ * server will accept this device. Returns whether a server was loaded.
  */
 async function openWindow(): Promise<boolean> {
   if (!win || win.isDestroyed()) win = await createWindow()
@@ -173,9 +149,8 @@ async function openWindow(): Promise<boolean> {
   try {
     await w.loadURL(result.url)
     onConnectPage = false
-    // Only now: a shell with no server has nothing to subscribe to, and a
-    // retry loop against a target that does not resolve would spin for as
-    // long as the window sat on the picker.
+    // Started only once a server is reachable, so the picker doesn't spin a
+    // reconnect loop.
     startEvents()
     return true
   } catch (err) {
@@ -185,9 +160,8 @@ async function openWindow(): Promise<boolean> {
 }
 
 /**
- * Put the window on the picker. Everything that follows a server goes
- * quiet first — there is no server to follow, and a stale badge would
- * claim workspaces are waiting on a server this shell cannot reach.
+ * Show the picker. Events, forwards and the badge are cleared first so
+ * nothing claims state from a server the shell cannot reach.
  */
 async function showConnectPage(w: BrowserWindow, error: LaunchError): Promise<void> {
   onConnectPage = true
@@ -208,14 +182,11 @@ function showWindow(): void {
   if (win && !win.isDestroyed()) {
     win.show()
     win.focus()
-    // Re-resolve when the window is sitting on the picker: the user very
-    // likely just went and started a server, and showing them the same
-    // stale failure again is the one thing that cannot help.
+    // The user may have started a server since the picker was shown.
     if (onConnectPage) void openWindow()
     return
   }
-  // Window gone (e.g. a renderer crash destroyed it) — full re-open, which
-  // lands on the picker if the server is gone.
+  // The window was destroyed (e.g. a renderer crash).
   void openWindow()
 }
 
@@ -276,9 +247,8 @@ function openEventsSocket(url: string): EventsSocket {
 function startEvents(): void {
   events?.stop()
   forwarder?.stop()
-  // The same stream drives both: a snapshot carries the attention signal
-  // AND the port mappings the server is offering, and this process is the
-  // only long-lived client that can bind them (docs/server-in-cluster.md).
+  // Each snapshot carries both the attention signal and the port forwards
+  // on offer (docs/port-forward-tunnel.md).
   forwarder = startForwarder({ resolveTarget })
   events = startEventsMonitor({
     resolveTarget,
@@ -292,12 +262,8 @@ function startEvents(): void {
 }
 
 /**
- * After a server switch: clear the badge/tray, seed a fresh attention
- * monitor (the new server's ongoing waits deserve the same launch
- * silence), and re-run the boot flow so the window lands on the new
- * origin. `openWindow` restarts the events socket on success and shows the
- * picker again on failure, so a switch to a server that dies between the
- * probe and the landing ends somewhere useful.
+ * After a server switch: reset the badge and attention monitor, then re-run
+ * the boot flow to load the new origin (or the picker if it fails).
  */
 function relandOnNewServer(): void {
   attention = new AttentionMonitor()
@@ -305,8 +271,8 @@ function relandOnNewServer(): void {
   void openWindow()
 }
 
-// The SPA's Server settings section (desktop-only) drives these. Handlers
-// reply with the outcome before the reland tears the calling renderer down.
+// Server picker IPC. Handlers reply before relanding, which destroys the
+// calling page.
 const serverSwitchDeps: ServerSwitchDeps = {
   readServerConfig,
   writeServerConfig,
@@ -315,9 +281,7 @@ const serverSwitchDeps: ServerSwitchDeps = {
   normalizeUrl: normalizeServerUrl,
 }
 ipcMain.handle('server:targets', () => getServerTargets(serverSwitchDeps))
-// The picker's "Try again": re-run the whole flow. On success the window
-// lands on the SPA; on failure it re-renders the picker with the current
-// failure and the current rows, so a server registered meanwhile shows up.
+// The picker's "Try again". A failure re-renders the picker with fresh rows.
 ipcMain.handle('server:retry', async () => {
   const ok = await openWindow()
   return ok ? { ok: true } : { ok: false, error: 'still no server' }
@@ -336,8 +300,7 @@ ipcMain.handle('server:add-remote', async (_e, url: unknown) => {
   return outcome
 })
 
-// The custom window controls (WindowControls.tsx) drive the window through the
-// preload bridge. Registered once, they act on whichever window is current.
+// Window controls from WindowControls.tsx, via the preload bridge.
 ipcMain.on('window:minimize', () => win?.minimize())
 ipcMain.on('window:toggle-maximize', (_e, altKey: unknown) => {
   if (!win || fsGuard.active()) return
@@ -358,10 +321,8 @@ ipcMain.on('window:open-external', (_e, url: unknown) => {
   if (typeof url === 'string' && /^https?:/.test(url)) void shell.openExternal(url)
 })
 
-// Constrain preview <webview> guests: open any new window or navigation off
-// loopback (an OAuth hop, an external link) in the system browser rather
-// than inside the preview, which stays pinned to the dev server — reached
-// through the loopback listeners this app's forwarder holds.
+// Preview <webview> guests stay on loopback; new windows and off-loopback
+// navigations open in the system browser instead.
 app.on('web-contents-created', (_event, contents) => {
   if (contents.getType() !== 'webview') return
   contents.setWindowOpenHandler(({ url }) => {
@@ -377,12 +338,8 @@ app.on('web-contents-created', (_event, contents) => {
 })
 
 async function boot(): Promise<void> {
-  // Role-based menus: the app presents under its own name and Cmd-C/V/
-  // Select-All reach the embedded xterm terminals via editMenu.
   Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate()))
-  // No quit-on-failure: a shell that cannot reach a server still has
-  // something to offer — the picker that fixes it — and the tray is what
-  // keeps it alive while the user goes and starts one.
+  // A failed boot still shows the picker, so the shell keeps running.
   await openWindow()
   createTray()
 }
@@ -392,8 +349,7 @@ void app.whenReady().then(boot)
 // Dock icon click (macOS) and tray both reopen the hidden window.
 app.on('activate', () => showWindow())
 
-// The tray keeps the shell alive with every window closed (hidden); quitting
-// is explicit (tray Quit / Cmd-Q). The server is not ours to stop either way.
+// Stay in the tray; quitting is explicit (tray Quit or Cmd-Q).
 app.on('window-all-closed', () => { /* stay in the tray */ })
 
 app.on('before-quit', () => {

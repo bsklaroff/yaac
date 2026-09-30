@@ -15,7 +15,7 @@ describe('workspaceMonitor', () => {
     const writeSpy = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
 
-    // Abort after first iteration via a setTimeout rejection
+    // Stop the loop on the second tick.
     let iterations = 0
     vi.mocked(workspaceList).mockImplementation(() => {
       iterations++
@@ -43,32 +43,27 @@ describe('workspaceMonitor', () => {
     vi.mocked(workspaceList).mockImplementation(() => {
       iterations++
       if (iterations >= 2) throw new Error('stop')
-      // Simulate workspaceList writing a line via console.log
       console.log('session line')
       return Promise.resolve()
     })
 
-    // Suppress console.log output from appearing on real stdout
+    // Route console.log through the spied process.stdout.write.
     vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
-      // console.log writes to process.stdout.write which is already spied
       const msg = args.map(String).join(' ') + '\n'
       process.stdout.write(msg)
     })
 
     await expect(workspaceMonitor(undefined, { interval: '1' })).rejects.toThrow('stop')
 
-    // Every newline written during rendering should be preceded by \x1B[K (erase to EOL)
     const renderWrites = written.filter((s) => s.includes('\n'))
     for (const w of renderWrites) {
       const newlines = [...w.matchAll(/\n/g)]
       for (const m of newlines) {
         const idx = m.index
-        // Check that \x1B[K appears just before this newline
         expect(w.slice(idx - 3, idx)).toBe('\x1B[K')
       }
     }
 
-    // \x1B[J should appear after each completed render cycle
     expect(written).toContain('\x1B[J')
   })
 
@@ -80,7 +75,6 @@ describe('workspaceMonitor', () => {
     const resumeSpy = vi.fn()
     const onSpy = vi.fn()
 
-    // Simulate a TTY stdin
     const origIsTTY = process.stdin.isTTY
     const origSetRawMode = process.stdin.setRawMode?.bind(process.stdin)
     Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true })
@@ -101,7 +95,6 @@ describe('workspaceMonitor', () => {
     expect(resumeSpy).toHaveBeenCalled()
     expect(onSpy).toHaveBeenCalledWith('data', expect.any(Function))
 
-    // Restore
     Object.defineProperty(process.stdin, 'isTTY', { value: origIsTTY, configurable: true })
     Object.defineProperty(process.stdin, 'setRawMode', { value: origSetRawMode, configurable: true })
   })

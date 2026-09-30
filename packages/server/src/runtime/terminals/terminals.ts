@@ -4,12 +4,10 @@ import { workspaceControlStreamSend } from '#runtime/status'
 import type { WorkspaceTerminalEntry } from '@yaac/shared/types'
 
 /**
- * Enumerate and manage the terminals a workspace's pod offers the webapp —
- * the windows of the `yaac` tmux session. The first (lowest-index) window
- * is the agent itself: it's covered by the dedicated 'agent' target, so
- * listings skip it and kills refuse it. Scratch shells are plain windows
- * too ('shell', 'shell-2', …), created on demand — there are no separate
- * shell tmux sessions.
+ * List and manage a workspace's webapp terminals: the windows of its `yaac`
+ * tmux session. The lowest-index window is the agent, reached through the
+ * 'agent' target, so listings skip it and kills refuse it. Scratch shells
+ * ('shell', 'shell-2', …) are ordinary windows created on demand.
  */
 
 /** The name stays last — it may contain pipes. */
@@ -54,13 +52,10 @@ function nextShellName(existing: WorkspaceTerminalEntry[]): string {
 }
 
 /**
- * Run a READ-ONLY tmux command against the workspace, preferring the
- * status watcher's persistent control-mode stream (no new stream dialed)
- * and falling back to a one-shot relay exec when no stream is up
- * (prewarmed spares, stream mid-respawn) or the stream send fails.
- * Mutating commands (new-window, kill-window) must not come through
- * here — the watcher's client is attached read-only and tmux refuses
- * non-CMD_READONLY commands from it.
+ * Run a read-only tmux command, preferring the status watcher's control-mode
+ * stream and falling back to a one-shot exec when no stream is up (spares,
+ * mid-respawn) or the send fails. Mutating commands must not use this: the
+ * watcher's client is read-only and tmux refuses them.
  */
 async function tmuxOut(jobName: string, tmuxArgs: string): Promise<string> {
   const send = workspaceControlStreamSend(jobName)
@@ -68,8 +63,8 @@ async function tmuxOut(jobName: string, tmuxArgs: string): Promise<string> {
     try {
       return await send(tmuxArgs)
     } catch {
-      // Stream just died (the watcher is tearing it down and will
-      // respawn) — fall through to the one-shot path for this call.
+      // The stream just died (the watcher will respawn it); use the one-shot
+      // path.
     }
   }
   try {
@@ -90,9 +85,9 @@ export async function listWorkspaceTerminals(jobName: string): Promise<Workspace
   return parseWindowList(await tmuxOut(jobName, `list-windows -t yaac -F ${WINDOW_FORMAT}`))
 }
 
-/** Create a scratch-shell window in the `yaac` tmux session and return its
- *  entry. `-P -F` prints the new window's id, so the caller can attach
- *  (and open a pane) without waiting for the next terminals poll. */
+/** Create a scratch-shell window and return its entry. `-P -F` prints the
+ *  new window's id, so the caller can attach without waiting for the next
+ *  terminals poll. */
 export async function createShellWindow(jobName: string): Promise<WorkspaceTerminalEntry> {
   const name = nextShellName(await listWorkspaceTerminals(jobName))
   const driver = workspaceDriver()
@@ -108,9 +103,9 @@ export async function createShellWindow(jobName: string): Promise<WorkspaceTermi
   return { target: `window:${id}`, name }
 }
 
-/** Kill a window (and whatever runs in it). The agent window is refused —
- *  killing it would take down the agent (and, if it's the last window, the
- *  whole tmux session, reaping the session as a zombie). */
+/** Kill a window and what runs in it. The agent window is refused: killing
+ *  it stops the agent (and, as the last window, the whole tmux session,
+ *  which then gets reaped as a zombie). */
 export async function killWindowTerminal(jobName: string, target: string): Promise<void> {
   const id = target.startsWith('window:') ? target.slice('window:'.length) : ''
   if (!WINDOW_ID.test(id)) throw new Error(`not a window target: ${target}`)

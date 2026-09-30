@@ -2,13 +2,10 @@ import type { JSX, ReactNode } from 'react'
 import { NavBackIcon } from '#lib/icons'
 
 /**
- * The bar at the top of a mobile screen: an optional back chevron, a title
- * that takes whatever width is left, and a right-hand action cluster.
- *
- * Back goes through `history.back()` rather than setting the screen directly,
- * so the header chevron, the Android back button and the iOS edge-swipe are
- * all literally the same navigation — see MobileShell, which owns the history
- * entries.
+ * Top bar of a mobile screen: optional back button, title, and actions.
+ * Callers pass a back handler that goes through browser history, so the
+ * button, Android back and iOS edge-swipe behave the same (see
+ * `useMobileHistory` in #lib/mobileHistory).
  */
 export function MobileHeader({
   onBack,
@@ -16,7 +13,6 @@ export function MobileHeader({
   title,
   actions,
 }: {
-  /** Omitted on the root screen, which has nothing to go back to. */
   onBack?: () => void
   backLabel?: string
   title: ReactNode

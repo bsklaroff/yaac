@@ -1,39 +1,25 @@
 /*
- * Verifies that an ACP-mode workspace surfaces the model it is answering as,
- * in both places the label appears — the sidebar row and the chat pane's tab.
+ * Verifies that an ACP workspace shows the model it is using in the sidebar
+ * row and the chat pane's tab:
  *
- * The tui path is covered by unit tests and is easy to drive by hand; the acp
- * path is the one that needs a real browser, because the conversation only
- * exists as a live JSON-RPC session and its model is read from the transcript
- * the adapter writes underneath it. What this pins:
+ *  1. Before the agent has answered, both show only the tool name (the
+ *     conversation exists from `session/new`, before any model has spoken).
+ *  2. After one turn, both show `<Tool> · <Model>` (e.g. "Claude · Opus 5"),
+ *     read from the transcript the adapter writes.
  *
- *  1. Before the agent has answered, both surfaces read the bare tool name.
- *     An ACP conversation is registered the moment `session/new` returns —
- *     well before any model has spoken — so "registered" must not be mistaken
- *     for "has a model".
- *  2. After one turn, both surfaces read `<Tool> · <Model>` (e.g.
- *     "Claude · Opus 5"). This is the whole point: the model is read from the
- *     transcript, and an ACP conversation is the tool's own SDK writing the
- *     same file its TUI would.
+ * The label updates on the next reconcile sweep, so the script waits for it.
  *
- * The label lands on the next reconcile sweep rather than with the reply, so
- * this waits for it (up to ~2 resync ticks) instead of asserting immediately.
+ * Uses the app the server serves from `dist/` (port from
+ * $YAAC_DATA_DIR/.server.lock), so run `pnpm build` and `yaac server
+ * restart` first.
  *
- * Drives the app the server itself serves (`dist/`), reading the port
- * from $YAAC_DATA_DIR/.server.lock — so run `pnpm build` +
- * `yaac server restart` first, or you are looking at the frontend as it was.
+ * Needs a running `yaac server` with a live ACP workspace in the selected
+ * project (`yaac workspace create <project> --tool claude --mode acp`) whose
+ * agent has not answered yet, and sends it one small prompt.
  *
- * Needs a running `yaac server` with a live ACP-mode workspace of the selected
- * project — `yaac workspace create <project> --tool claude --mode acp` — whose
- * agent has NOT yet answered (check 1 asserts the empty state), and spends one
- * small prompt turn on it.
- *
- * NOTE: a workspace created while the server was already up may be watched by
- * the tui driver instead of the acp one — `StatusWatcherManager.sync` keeps the
- * first watcher it made for a workspace, so a mode learned later never takes
- * effect. `yaac server restart` re-syncs from the recorded marker and attaches
- * the ACP driver. Symptom: no socat process against the workspace's acpd
- * socket, and the pane never leaves "No messages yet".
+ * If the pane stays on "No messages yet", the workspace may be watched as tui:
+ * `StatusWatcherManager.sync` keeps a workspace's first watcher. `yaac server
+ * restart` fixes it.
  *
  * Run: node test-playwright-scripts/acp-model-label-test.js
  * (SCREENSHOT_DIR to capture the surfaces; defaults to /tmp/yaac-shots.
@@ -74,10 +60,8 @@ function readServerLock() {
 }
 
 /**
- * Poll an in-page predicate until it holds. Not `page.waitForFunction`: the
- * served app sends a script-src CSP with no `unsafe-eval`, and that API
- * compiles its predicate with `new Function` inside the page. `page.evaluate`
- * goes through the debugger instead, which the CSP does not govern.
+ * Poll an in-page predicate until it holds. Not `page.waitForFunction`,
+ * which needs `unsafe-eval` and the app's CSP forbids it.
  */
 async function until(page, fn, arg, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs
@@ -99,8 +83,7 @@ const SHOTS = process.env.SCREENSHOT_DIR ?? '/tmp/yaac-shots'
 const lock = readServerLock()
 const origin = `http://127.0.0.1:${lock.port}`
 
-/** The live ACP workspace to drive: the one named, else the first the server
- *  reports whose primary conversation is acp-mode. */
+/** The ACP workspace to drive: WORKSPACE_ID, else the first acp one listed. */
 async function pickWorkspace() {
   const res = await fetch(`${origin}/api/workspace/list`)
   if (!res.ok) throw new Error(`workspace list failed: HTTP ${res.status}`)
@@ -120,23 +103,17 @@ async function pickWorkspace() {
 }
 
 /**
- * The two places the label is rendered, read out of the DOM.
- *
- * Neither is marked with anything, so both are found by shape — the label's
- * own text — and told apart by which side of the sidebar they sit on. That is
- * the point: a test that queried a test id would pass even if the label were
- * rendered somewhere the user never looks.
+ * The two rendered labels, found by their text and told apart by whether
+ * they are inside the sidebar.
  */
 function readLabels() {
   return () => {
     const LABEL = /^(Claude|Codex|OpenCode|Pi)( · .+)?$/
     const aside = document.querySelector('aside')
     const text = (el) => (el.textContent ?? '').trim()
-    // The sidebar row's meta line: the last matching span inside the sidebar,
-    // which is where the row puts it (the title runs full-width above it).
+    // The sidebar row's meta line: the last matching span in the sidebar.
     const sidebar = [...(aside?.querySelectorAll('span') ?? [])]
       .map(text).filter((t) => LABEL.test(t)).pop()
-    // The pane's tab strip: the same shape, outside the sidebar.
     const tab = [...document.querySelectorAll('button')]
       .filter((b) => !aside?.contains(b))
       .map(text).find((t) => LABEL.test(t))
@@ -162,7 +139,7 @@ try {
 
   fs.mkdirSync(SHOTS, { recursive: true })
 
-  // (1) Registered, but nothing has answered yet — the bare tool name.
+  // (1) Nothing has answered yet: the tool name only.
   const before = await page.evaluate(readLabels())
   check('sidebar reads the bare tool name before any reply', before.sidebar === 'Claude',
     JSON.stringify(before.sidebar))
@@ -170,14 +147,12 @@ try {
     JSON.stringify(before.tab))
   await page.screenshot({ path: path.join(SHOTS, 'acp-model-before.png') })
 
-  // One small turn, sent through the pane the user would use.
   const box = page.locator('textarea[placeholder]').first()
   await box.click()
   await box.fill('Reply with exactly the word ok and nothing else.')
   await page.getByRole('button', { name: 'Send' }).click()
 
-  // The reply lands in the pane first; the label follows on the next reconcile
-  // sweep, which is why this waits rather than asserting straight after.
+  // The label follows the reply on the next reconcile sweep.
   await until(page, () => {
     const t = document.body.textContent ?? ''
     return /\bok\b/i.test(t)

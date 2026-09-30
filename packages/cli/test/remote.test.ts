@@ -95,8 +95,8 @@ describe('yaac remote commands', () => {
     })
 
     it('reports an unidentified device in the server\'s words, without persisting', async () => {
-      // A tagged device (or Funnel) reaching the server through tailscale
-      // serve: the server is up, and will not say who this is.
+      // A tagged device (or Funnel) via tailscale serve: the server is up
+      // but cannot identify the caller.
       vi.stubGlobal('fetch', vi.fn()
         .mockResolvedValueOnce(jsonResponse({ ok: true, buildId: 'cli-build' }))
         .mockResolvedValueOnce(jsonResponse({

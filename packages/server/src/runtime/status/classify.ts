@@ -5,10 +5,9 @@ import type { RuntimeHandle } from '#drivers/contract'
 import type { StaleWorkspaceInfo } from '@yaac/shared/types'
 
 /**
- * Split the workspace list into the ones the renderer should show as active
- * workspaces, the ones the caller should tear down, and implicitly (by
- * omission) the ones that are still inside the startup grace window.
- * Production callers pass `testEnv.startingGraceMs` for `graceMs`.
+ * Split workspaces into those to show as active and those to tear down;
+ * the rest (omitted) are still in the startup grace window. Production
+ * passes `testEnv.startingGraceMs` as `graceMs`.
  */
 export async function classifyWorkspaces(
   workspaces: RuntimeHandle[],
@@ -26,10 +25,8 @@ export async function classifyWorkspaces(
   const indeterminate: RuntimeHandle[] = []
   const terminating: RuntimeHandle[] = []
   for (const p of workspaces) {
-    // A workspace on its way out (deletionTimestamp set, or a delete just issued)
-    // is neither active nor stale: it renders as a "terminating…" row and is
-    // already being torn down, so keep it out of both the probe path and the
-    // reaper's targets.
+    // A terminating workspace is shown as "terminating…" and already being
+    // torn down, so it is neither probed nor reaped.
     if (p.terminating || (!!p.workspaceId && isWorkspaceTerminating(p.workspaceId))) {
       terminating.push(p)
       continue
@@ -41,23 +38,21 @@ export async function classifyWorkspaces(
         continue
       }
       if (liveness === 'unknown') {
-        // Inconclusive probe on a still-running pod — keep it. Reaping
-        // here on a transient kubectl-exec failure would destroy a
-        // healthy workspace (Job and all, no recovery). It stays in the
-        // running bucket; a genuinely dead pod is still caught later by
-        // the pod-phase (running=false) and orphan-Job paths.
+        // Inconclusive probe on a running pod: keep it. Reaping on a transient
+        // exec failure would destroy a healthy workspace; a really dead pod
+        // is still caught by the pod-phase and orphan-Job paths.
         running.push(p)
         indeterminate.push(p)
         continue
       }
-      // liveness === 'dead' — fall through to stale classification.
+      // liveness === 'dead': classify as stale below.
     }
 
     const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
     if (ageMs < graceMs) continue
 
-    // Classify the death while the evidence still exists: a zombie's runtime
-    // is healthy (only tmux died), a stopped one carries a derived cause.
+    // Record the cause while the evidence exists: a zombie's runtime is
+    // healthy (only tmux died); a stopped one has a derived cause.
     const zombie = p.running
     stale.push({
       jobName: p.jobName,
@@ -71,14 +66,11 @@ export async function classifyWorkspaces(
 }
 
 /**
- * Display-path tmux liveness, fed by the status watchers instead of a
- * probe: a healthy control-mode stream is conclusive proof the in-pod
- * tmux server is up; anything else is merely `unknown` (watcher still
- * connecting, respawning after a blip, server just started). Never
- * `dead` — display must not drop a workspace on stream state. Genuinely
- * dead workspaces leave the list when their pod goes away (pod watch) or
- * when the stale reaper — which keeps its own conclusive probes —
- * tears them down.
+ * tmux liveness for display, from the status watchers rather than a probe:
+ * a healthy control-mode stream proves tmux is up; anything else is
+ * `unknown`. Never `dead`, so display never drops a workspace on stream
+ * state; dead ones leave when their pod goes or the stale reaper (which runs
+ * its own probes) removes them.
  */
 export function watcherDisplayLiveness(target: ProbeTarget): Promise<TmuxLiveness> {
   return Promise.resolve(

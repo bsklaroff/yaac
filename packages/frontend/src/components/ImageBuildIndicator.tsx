@@ -4,18 +4,9 @@ import { ImageBuildsOverlay } from '#components/ImageBuildsOverlay'
 import { useSnapshot } from '#lib/useSnapshot'
 
 /**
- * Sidebar-header pill shown while the server builds or pushes container images
- * (workspace create or the background prewarm sweep), when a build failed, or
- * when finished builds remain in the history. Clicking opens the
- * fullscreen overlay with per-build status and the live podman log tail.
- * Finished rows persist until dismissed, so the pill stays (in a muted
- * "done" state) as an entry point to review or clear them; it hides only once
- * there is nothing left in scope.
- *
- * Scoped to the active project: only builds that project requested (its
- * chain layers, joined shared layers), plus project-less shared
- * infrastructure builds (the proxy sidecar), which always show. A build for
- * a different project stays hidden until you switch to it.
+ * Sidebar-header pill for image builds: running, failed, or finished ones not
+ * yet dismissed (shown muted). Clicking opens `ImageBuildsOverlay`. Shows the
+ * active project's builds plus project-less ones such as the proxy sidecar.
  */
 export function ImageBuildIndicator({ projectSlug }: { projectSlug: string | null }): JSX.Element | null {
   const allBuilds = useSnapshot()?.imageBuilds ?? []
@@ -26,10 +17,7 @@ export function ImageBuildIndicator({ projectSlug }: { projectSlug: string | nul
   )
   const running = builds.filter((b) => b.status === 'running').length
   const failed = builds.filter((b) => b.status === 'failed').length
-  // Keep the overlay mounted while open so a build finishing under the user
-  // doesn't yank the dialog away. Otherwise the pill hides only when nothing
-  // is left in scope — persisted succeeded rows keep it (muted) so they stay
-  // reachable and dismissable.
+  // Stay mounted while the overlay is open, even if the list empties.
   if (builds.length === 0 && !open) return null
 
   return (

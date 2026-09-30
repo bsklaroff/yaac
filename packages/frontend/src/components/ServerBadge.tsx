@@ -3,8 +3,7 @@ import { ServerIcon } from '#lib/icons'
 import { serverBridge } from '#lib/desktopServer'
 import { useUiStore } from '#lib/store'
 
-/** The chit's text: host[:port] of the origin, since the scheme is noise at
- *  this size. Anything unparseable is shown verbatim rather than hidden. */
+/** host[:port] of the origin, or the origin as-is if it doesn't parse. */
 export function serverLabel(origin: string): string {
   try {
     return new URL(origin).host || origin
@@ -14,17 +13,10 @@ export function serverLabel(origin: string): string {
 }
 
 /**
- * Sidebar-header chit naming the server this window is attached to, and the
- * way into Settings → Server to point it somewhere else.
- *
- * Desktop-shell only, on both halves of that: the shell has no address bar,
- * so which server it's on is otherwise invisible, and the switcher this opens
- * exists only behind the same bridge — a browser tab is already attached to
- * the origin that served it, and shows it in the URL bar.
- *
- * The origin is read off the window rather than the bridge: the shell lands
- * the window on the server it attaches to, so `location` is the answer for a
- * remote and a local server alike, with no async round-trip.
+ * Sidebar-header badge naming the connected server; opens Settings → Server.
+ * Desktop app only: it has no address bar, and the server switcher needs the
+ * desktop bridge. The window is loaded from the server, so
+ * `location.origin` names it.
  */
 export function ServerBadge(): JSX.Element | null {
   const openSettings = useUiStore((s) => s.openSettings)
@@ -37,10 +29,8 @@ export function ServerBadge(): JSX.Element | null {
       onClick={() => openSettings('server')}
       title={`Connected to ${origin} — open server settings`}
       aria-label="Open server settings"
-      // The only shrinkable chit in the row — every other one is shrink-0 — so
-      // it takes its natural width whenever the sidebar has the room and gives
-      // way (truncating) only when the row genuinely runs out. No max-width:
-      // a host long enough to need one is exactly the host worth reading.
+      // The only shrinkable badge in the row: it truncates only when space
+      // runs out.
       className="flex min-w-0 items-center gap-1 rounded bg-surface-2 px-1 py-0.5 text-xs
         font-medium text-text-dim transition hover:bg-surface-3 hover:text-text"
     >

@@ -21,21 +21,16 @@ export async function readLock(): Promise<ServerLock | null> {
 export async function writeLock(lock: ServerLock): Promise<void> {
   const p = serverLockPath()
   await fs.mkdir(path.dirname(p), { recursive: true })
-  // Write to a temp file first, then rename so a reader never observes a
-  // half-written lock. chmod 600 because the file contains a bearer secret.
+  // Temp file + rename so a reader never sees a half-written lock.
   const tmp = `${p}.${process.pid}.tmp`
   await fs.writeFile(tmp, JSON.stringify(lock), { mode: 0o600 })
   await fs.rename(tmp, p)
 }
 
 /**
- * The lease half of a fresh lock: an identity this process alone holds, the
- * hostname (or pod name) that says whose pid namespace the `pid` field
- * belongs to, and a first heartbeat.
- *
- * Minted here rather than at the call site so the three always travel
- * together — a lock carrying an instance but no host would be judged by a
- * pid in the wrong namespace.
+ * The lease fields of a fresh lock: a random instance id, this host's name,
+ * and a first heartbeat. Created together so no lock carries one without
+ * the others.
  */
 export function newLeaseFields(): Pick<ServerLock, 'instance' | 'host' | 'heartbeatAt'> {
   return {
@@ -46,14 +41,10 @@ export function newLeaseFields(): Pick<ServerLock, 'instance' | 'host' | 'heartb
 }
 
 /**
- * Renew our lease in place, and report whether we still hold it.
- *
- * Read-compare-write rather than a blind rewrite: if another server has
- * taken the lock over (ours went stale while this process was paused, and
- * it lost the race it should have lost), the heartbeat must not resurrect
- * us as the apparent owner. `false` means "this process is no longer the
- * install's server", which is a fact the caller has to act on rather than
- * paper over.
+ * Renew our lease and report whether we still hold it. Checks the instance
+ * first so a server whose lease went stale (e.g. while paused) never
+ * overwrites a successor's lock. `false` means this process is no longer
+ * the install's server.
  */
 export async function renewLease(instance: string): Promise<boolean> {
   const cur = await readLock()
@@ -63,22 +54,12 @@ export async function renewLease(instance: string): Promise<boolean> {
 }
 
 /**
- * Atomically acquire the server lock. POSIX `O_EXCL` guarantees only one
- * process wins the create, even when two `yaac server run` invocations race
- * past the pre-bind fast-path check in runServer and both try to take the
- * lock at the same moment.
+ * Atomically acquire the server lock; `O_EXCL` ensures only one racing
+ * process wins the create. Returns `{ acquired: false, existing }` when
+ * another live server holds it, and the caller then cleans up and exits.
  *
- * Returns `{ acquired: true }` when this process now owns the lock — the
- * file has been written with `lock`'s contents and mode 0600.
- *
- * Returns `{ acquired: false, existing }` when another live server holds
- * the lock. The caller is responsible for tearing down any resources it
- * allocated (e.g. a bound server) and exiting idempotently.
- *
- * A stale lock (dead pid, or `/health` unresponsive) is reclaimed: the
- * file is unlinked only if it still matches the stale lock we observed —
- * a compare-and-delete on the lease instance — so a fresh lock that raced into
- * place between our read and unlink isn't clobbered. The create is then
+ * A stale lock is deleted, but only if its instance still matches the one
+ * we read, so a fresh lock written in between survives; then the create is
  * retried.
  */
 export async function acquireLock(
@@ -104,10 +85,7 @@ export async function acquireLock(
     if (existing && await isLockLive(existing)) {
       return { acquired: false, existing }
     }
-    // Stale lock (or garbage mid-write). Compare-and-delete so we don't
-    // clobber a fresh lock that landed between readLock() and unlink().
-    // A null `existing` here means readLock() couldn't parse the file —
-    // unlink unconditionally in that case so we can retry.
+    // An unparseable file (`existing` null) is deleted unconditionally.
     try {
       const cur = await readLock()
       const stillStale = !existing || !cur || cur.instance === existing.instance
@@ -122,18 +100,10 @@ export async function acquireLock(
 }
 
 /**
- * Remove the server lock file.
- *
- * With `expectedInstance`, only unlink when the on-disk lock still names that
- * holder. This guards against a zombified shutdown (e.g. a previous server
- * that hung past `stopServer`'s 3s force-remove timeout) clobbering a
- * successor server's lock when it eventually unblocks. The holder is the
- * lease instance, because a pid does not identify a server across pods.
- *
- * Without it, unlink unconditionally — appropriate for callers
- * that have already classified the lock as stale (dead pid / unresponsive
- * /health, or an expired lease) and simply need to clear the file before a
- * fresh spawn.
+ * Remove the server lock file. With `expectedInstance`, only if the lock
+ * still names that instance, so a server that hung during shutdown cannot
+ * later delete its successor's lock. Without it, unconditionally, for
+ * callers that already judged the lock stale.
  */
 export async function removeLock(expectedInstance?: string): Promise<void> {
   if (expectedInstance !== undefined) {

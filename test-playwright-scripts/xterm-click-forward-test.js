@@ -1,28 +1,21 @@
 /*
- * Browser test for the webapp terminal's click-forwarding patch
- * (patchClickForwarding in packages/frontend/src/lib/selection.ts), driven the
- * way a user drives it: real Chromium, real xterm.js from node_modules, real
- * (trusted) mouse events via Playwright.
+ * Verifies the terminal click-forwarding patch (patchClickForwarding in
+ * packages/frontend/src/lib/selection.ts) in Chromium with the real xterm.js
+ * and trusted Playwright mouse events.
  *
- * Simulates tmux `mouse on` with button-event + SGR tracking (1002h + 1006h),
- * wires the terminal exactly like SessionTerminal.tsx (patchForcedSelection +
- * patchKeepSelection + patchClickForwarding), captures everything xterm would
- * send to the pty, and asserts the behavior the patch promises:
+ * Simulates tmux `mouse on` (button-event + SGR tracking, 1002h + 1006h),
+ * applies the same patches as WorkspaceTerminal.tsx, records everything
+ * xterm would send to the pty, and checks:
  *
- *   - a plain single click is forwarded as one SGR press+release (button 0),
- *     so a TUI button is clickable with no modifier — and it makes no
- *     selection;
- *   - a plain drag still selects locally and forwards NO click (copy path
- *     untouched);
- *   - a plain click after a prior (kept-alive) selection still forwards, i.e.
- *     the leftover selection doesn't swallow the click;
- *   - an Alt+click is reported to tmux exactly once (by xterm itself, with the
- *     alt-modifier bit) and NOT also forwarded by our patch — no double click;
- *   - a double-click still selects a word (copy via double-click survives).
+ *   - a plain click is forwarded as one SGR press + release (button 0) and
+ *     makes no selection, so TUI buttons work without a modifier;
+ *   - a plain drag still selects locally and forwards no click;
+ *   - a plain click after a kept-alive selection still forwards;
+ *   - Alt+click is reported once, by xterm with the alt bit, and not also
+ *     forwarded by the patch;
+ *   - a double-click still selects a word.
  *
  * Run: node test-playwright-scripts/xterm-click-forward-test.js
- * (playwright is resolved from the global npm root; browsers live under
- * /opt/playwright-browsers)
  */
 import { execFileSync, execSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -33,8 +26,7 @@ import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-// @xterm/xterm is a dep of packages/frontend and isn't hoisted to the repo
-// root, so resolve it from there rather than assuming a root node_modules path.
+// @xterm/xterm is a dep of packages/frontend only (not hoisted to the root).
 const frontendRequire = createRequire(path.join(ROOT, 'packages/frontend/package.json'))
 const XTERM_DIR = path.dirname(frontendRequire.resolve('@xterm/xterm/package.json'))
 
@@ -93,7 +85,7 @@ async function main() {
   await page.addScriptTag({ path: patch.outFile })
   patch.cleanup()
 
-  // Build the terminal wired exactly like SessionTerminal.tsx.
+  // Wire the terminal like WorkspaceTerminal.tsx.
   await page.evaluate(() => {
     const term = new window.Terminal({ cursorBlink: false, altClickMovesCursor: false })
     window.term = term
@@ -131,11 +123,11 @@ async function main() {
       window.reports = []
       return r
     })
-  // SGR press/release for the plain (unmodified) left button: code 0.
+  // SGR press/release for the unmodified left button (code 0).
   const plainPresses = (r) => r.match(/\x1b\[<0;\d+;\d+M/g) || []
   const plainReleases = (r) => r.match(/\x1b\[<0;\d+;\d+m/g) || []
 
-  // --- 1. a plain single click forwards exactly one press + one release ---
+  // 1. A plain click forwards one press + one release.
   await takeReports()
   const spot = at(5, 2)
   await page.mouse.click(spot.x, spot.y)
@@ -148,7 +140,7 @@ async function main() {
   check('plain click forwards one SGR release (button 0)', plainReleases(clickReports).length === 1)
   check('plain click makes no selection', (await selection()) === '')
 
-  // --- 2. a plain drag still selects and forwards no click ---
+  // 2. A plain drag selects and forwards no click.
   await takeReports()
   const from = at(6, 3)
   const to = at(15, 3)
@@ -161,10 +153,8 @@ async function main() {
   check('plain drag selects text', dragSel.length > 0, JSON.stringify(dragSel))
   check('plain drag forwards no click', !dragReports.includes('\x1b[<'), JSON.stringify(dragReports))
 
-  // --- 3. a plain click after a leftover selection still forwards ---
-  // The prior drag's selection is kept alive; the click must still reach the
-  // TUI (a single click resets the selection, so nothing is "selected" at the
-  // mouseup that decides to forward).
+  // 3. A click after the drag's kept-alive selection still forwards: the
+  // click clears the selection before the mouseup decides to forward.
   await takeReports()
   const spot3 = at(2, 6)
   await page.mouse.click(spot3.x, spot3.y)
@@ -176,10 +166,8 @@ async function main() {
   )
   check('that click cleared the leftover selection', (await selection()) === '')
 
-  // --- 4. Alt+click is reported once by xterm and NOT double-forwarded ---
-  // Under Alt, shouldForceSelection is false, so xterm reports the click itself
-  // with the alt-modifier bit (button code 8). Our patch must stay out of the
-  // way: no second, unmodified (code 0) report.
+  // 4. Under Alt, xterm reports the click itself with the alt bit (code 8);
+  // the patch must not add a second, code-0 report.
   await takeReports()
   await page.keyboard.down('Alt')
   const spot4 = at(8, 4)
@@ -190,7 +178,7 @@ async function main() {
   check('alt+click is reported to tmux (alt bit set)', altPresses.length === 1, JSON.stringify(altReports))
   check('alt+click is not also forwarded as a plain click', plainPresses(altReports).length === 0)
 
-  // --- 5. double-click still selects a word (copy via double-click works) ---
+  // 5. A double-click selects a word.
   await takeReports()
   const spot5 = at(3, 7) // inside "line7"
   await page.mouse.dblclick(spot5.x, spot5.y)

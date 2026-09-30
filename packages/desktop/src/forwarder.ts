@@ -4,31 +4,21 @@ import type { ServerTarget } from '@yaac/shared/server-api'
 import type { ServerSnapshot } from '@yaac/shared/types'
 
 /**
- * The desktop shell as the resident port forwarder.
+ * The desktop shell as a resident port forwarder. The server can't bind
+ * ports on the user's machine (under `k8s` it is a pod), so a client holds
+ * the listeners. This process is long-lived and already receives every
+ * snapshot's `forwardedPorts` over `/events`, so the webapp's
+ * `127.0.0.1:<port>` links work whenever the app runs. See
+ * docs/port-forward-tunnel.md.
  *
- * The server cannot bind ports on the user's machine — under `k8s` it is a
- * pod, so a port it bound would be on the pod's loopback — so the listener
- * has to live in a client. This process is the natural one: it is
- * long-lived, tray-scoped, and already holds `/events`, which carries the
- * mapping (`forwardedPorts` on every workspace) in every snapshot. So the
- * same stream that drives the badge drives the forwards, and the webapp's
- * `127.0.0.1:<port>` links are true whenever the app is running.
- *
- * Bound to loopback and nothing else. A desktop app quietly serving a
- * developer's dev servers to the local network would be a surprise, and
- * the machine that wants to publish them is a headless one running `yaac
- * forward --bind`.
+ * It binds loopback only. To publish forwards on the network, use
+ * `yaac forward --bind`.
  */
 
 /**
- * Every forward the snapshot says is on offer, across every workspace.
- *
- * Empty against a containerless server on this machine, where the
- * workspace's own processes already hold the ports and binding them would
- * be a retry loop that can never settle — or a port taken from a dev
- * server that has not booted yet (`serverNeedsForwarder`). Against a
- * remote containerless server the same mappings are bound here exactly as
- * a pod's are, which is what makes the preview pane's loopback URL true.
+ * Every forward the snapshot offers, across all workspaces. Empty for a
+ * containerless server on this machine, whose workspace processes already
+ * hold the ports themselves (`serverNeedsForwarder`).
  */
 export function snapshotForwards(snapshot: ServerSnapshot, baseUrl: string): ForwardSpec[] {
   if (!serverNeedsForwarder(snapshot.driver, baseUrl)) return []
@@ -42,9 +32,7 @@ export function snapshotForwards(snapshot: ServerSnapshot, baseUrl: string): For
 }
 
 export interface ForwarderDeps {
-  /** Fresh target per rebuild — the machine may have been re-pointed at
-   *  another server, exactly as the events monitor re-resolves per
-   *  connection. */
+  /** Re-resolved on every snapshot, since the server may have changed. */
   resolveTarget(): Promise<ServerTarget>
   createSet?: typeof createForwardSet
   /** Bind failures and dropped connections, for the log. */
@@ -52,9 +40,7 @@ export interface ForwarderDeps {
 }
 
 export interface DesktopForwarder {
-  /** Reconcile against a snapshot. Safe to call on every one — an
-   *  unchanged offer is not restarted, so a snapshot pushed for an
-   *  unrelated reason costs nothing. */
+  /** Reconcile against a snapshot. Unchanged forwards are not restarted. */
   apply(snapshot: ServerSnapshot): void
   stop(): void
 }
@@ -65,17 +51,14 @@ export function startForwarder(deps: ForwarderDeps): DesktopForwarder {
   let set: ForwardSet | null = null
   let targetUrl: string | null = null
   let stopped = false
-  // One reconcile at a time, and only the LATEST snapshot pending: they
-  // arrive faster than binds settle, and a queue of them would replay
-  // states the server has already left.
+  // One reconcile at a time, keeping only the latest pending snapshot:
+  // snapshots arrive faster than binds settle.
   let running: Promise<void> = Promise.resolve()
   let pending: ServerSnapshot | null = null
 
-  /** Answers the origin the set now targets. */
+  /** Returns the origin the set targets; a new server gets a fresh set. */
   const rebuild = async (): Promise<string> => {
     const target = await deps.resolveTarget()
-    // A switched server is a different set of forwards, so the old ones go
-    // rather than being reconciled onto the new target.
     if (set && targetUrl === target.baseUrl) return target.baseUrl
     set?.close()
     targetUrl = target.baseUrl

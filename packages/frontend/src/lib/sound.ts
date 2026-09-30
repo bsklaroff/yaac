@@ -1,19 +1,14 @@
 /**
- * The attention chime — cuelume's 'chime' cue (a soft two-note ascending
- * bell, C6 → G6, with a gentle shimmer tail), synthesized live via Web
- * Audio; no audio files. cuelume is days old with a single release, so it
- * carries an exception to the release-age guard in pnpm-workspace.yaml —
- * adopted after reading its full source. We use only this one cue; its
- * declarative binding layer is unused.
+ * The attention chime: cuelume's 'chime' cue (a soft two-note bell),
+ * synthesized with Web Audio, so there are no audio files. cuelume has an
+ * exception to the release-age guard in pnpm-workspace.yaml.
  */
 import { play } from 'cuelume'
 
 /**
- * Play the attention chime. Safe to call from anywhere — cuelume lazily
- * creates its shared AudioContext, resumes it if the browser started it
- * suspended (pre-gesture), and is a no-op when Web Audio is unavailable
- * (jsdom, old browsers). Callers gate on the user's sound preference
- * before calling.
+ * Play the attention chime. Safe to call anywhere: cuelume creates and
+ * resumes its AudioContext as needed and does nothing without Web Audio
+ * (jsdom, old browsers). Callers check the user's sound preference first.
  */
 export function playChime(): void {
   play('chime')

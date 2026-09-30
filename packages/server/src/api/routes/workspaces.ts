@@ -67,10 +67,9 @@ import { workspaceDriver } from '#drivers/driver'
 import { ServerError } from '@yaac/shared/errors'
 import { MAX_TEXT_FILE_BYTES } from '#lib/text-file'
 import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
-// A group name is stored under `normalizeTitle`, which caps at this — so it
-// is also what every route may ACCEPT. A larger bound would take a name in,
-// truncate it on the way to the table, and let two distinct long names
-// sharing a prefix resolve to one group.
+// Group names are stored through `normalizeTitle`, which truncates at
+// MAX_TITLE_LENGTH, so routes accept no longer. Otherwise two long names
+// sharing a prefix would resolve to one group.
 import { MAX_TITLE_LENGTH, normalizeTitle } from '@yaac/shared/titles'
 import {
   AGENT_MODES,
@@ -80,9 +79,8 @@ import {
   PERMISSION_MODES,
 } from '@yaac/shared/types'
 
-// A queued workspace's settings, as both queue writes take them. Each field
-// present replaces what would otherwise be resolved; none can be null,
-// because an entry never holds a setting it has not decided.
+// A queued workspace's settings, shared by both queue writes. A present field
+// overrides what would otherwise be resolved at launch. None is nullable.
 const queuedSettings = {
   prompt: z.string().min(1).max(MAX_PROMPT_LENGTH),
   tool: z.enum(AGENT_TOOLS).optional(),
@@ -90,18 +88,17 @@ const queuedSettings = {
   mode: z.enum(AGENT_MODES).optional(),
   permissionMode: z.enum(PERMISSION_MODES).optional(),
   branch: z.string().min(1).max(255).optional(),
-  // The user's title for the workspace; blank leaves it to be auto-titled.
+  // Blank leaves the workspace to be auto-titled.
   title: z.string().max(500).optional(),
 }
 
-// The group a queued workspace launches into, by id or name (a name matching
-// no group is created, as on a create); null is the default list. Omitted,
-// a queue takes its parent's and an update keeps the entry's.
+// The group a queued workspace launches into, by id or name (an unknown name
+// creates the group); null means ungrouped. If omitted, a queue takes its
+// parent's group and an update keeps the entry's.
 const queuedGroup = z.string().min(1).max(MAX_TITLE_LENGTH).nullable().optional()
 
-// The draft workspace a create or queue was made from
-// (docs/draft-workspaces.md). It is deleted once the create or queue has
-// succeeded, so a failed one keeps the draft and its prompt.
+// The draft a create or queue was made from (docs/draft-workspaces.md). It is
+// deleted only after success, so a failure keeps the draft.
 const draftId = z.string().min(1).optional()
 
 async function dropDraft(id: string | undefined): Promise<void> {
@@ -109,20 +106,14 @@ async function dropDraft(id: string | undefined): Promise<void> {
 }
 
 /**
- * The in-workspace command channel, for a runtime whose workspaces reach
- * this server directly — `yaac-mama` inside a containerless workspace.
+ * `yaac-mama` endpoint for containerless workspaces, which can reach the
+ * server directly. (A k8s pod can't, so its requests queue at the egress
+ * proxy and the reconcile drain collects them.) Both paths end in
+ * `runMamaCommand`, which holds the command allowlist.
  *
- * The push half of what the k8s proxy's queue does by pull. A pod cannot
- * dial the host, so its requests are held at the proxy and collected by
- * the reconcile drain; a host process just posts here. Both land in
- * `runMamaCommand`, which is the single place the command allowlist lives.
- *
- * Authenticated per WORKSPACE, not per user: the bearer is the opaque
- * token minted for this workspace at create, and it is what identifies the
- * caller — the request never says which workspace it is, so nothing it
- * sends can claim to be another one. The identity gate sees a local
- * caller (a containerless workspace posts to loopback), and this check is
- * the stricter, per-workspace one on top of it.
+ * Authenticated per workspace: the bearer token minted at create identifies
+ * the caller, so a request cannot claim to be another workspace. This sits on
+ * top of the normal identity gate, which sees a loopback caller.
  */
 export const mamaApp = new Hono().post(
   '/mama',
@@ -132,9 +123,8 @@ export const mamaApp = new Hono().post(
     body: z.string().max(10000).optional(),
   })),
   async (c) => {
-    // A k8s workspace has a channel, and it is not this one — it holds no
-    // token to present, and issuing it one would put a server credential
-    // inside the sandbox the whole substrate exists to keep it out of.
+    // k8s workspaces use the proxy channel. Giving them a token would put a
+    // server credential inside the sandbox.
     if (workspaceDriver().kind !== 'containerless') {
       throw new ServerError(
         'NOT_SUPPORTED',
@@ -147,8 +137,8 @@ export const mamaApp = new Hono().post(
     if (!caller) throw new ServerError('UNAUTHENTICATED', 'unknown or revoked yaac-mama token')
 
     const { command, args, body } = c.req.valid('json')
-    // The caller's tool comes off the runtime, the same fact the drain
-    // reads from pod labels — not from the request, which could claim any.
+    // Take the caller's tool from the runtime, not the request, which could
+    // claim any.
     const handle = await workspaceDriver().find(caller.workspaceId).catch(() => null)
     const outcome = await runMamaCommand(
       {
@@ -158,8 +148,8 @@ export const mamaApp = new Hono().post(
       },
       { command, args: args ?? {}, body: body ?? '' },
     )
-    // 422 for a refusal, mirroring what the proxy hands a queued caller,
-    // so the script's two transports report failure identically.
+    // 422 for a refusal, matching the proxy path so both transports report
+    // failure the same way.
     return outcome.ok
       ? c.json({ output: outcome.output })
       : c.json({ error: outcome.error }, 422)
@@ -190,50 +180,43 @@ export const workspaceApp = new Hono()
     '/create',
     zv('json', z.object({
       project: z.string().min(1),
-      // Pre-generated by the webapp so the provisioning row is selectable and
-      // reload-matchable before any round-trip; the CLI omits it and the
-      // server mints one.
+      // Pre-generated by the webapp so the provisioning row is usable before
+      // any round-trip; the CLI omits it and the server mints one.
       workspaceId: z.string().uuid().optional(),
       tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
-      // Which protocol drives the agent. `acp` needs a tool with an adapter
-      // in the image; createWorkspace rejects the combination before it
-      // provisions anything.
+      // Which protocol drives the agent. `acp` with a tool that has no
+      // adapter is rejected before anything is provisioned.
       mode: z.enum(['tui', 'acp']).optional(),
-      // Reference branch for the fresh workspace (no `origin/` prefix).
-      // Omitted → the remote default branch.
+      // Base branch without `origin/`; defaults to the remote default branch.
       branch: z.string().min(1).optional(),
       // Initial prompt typed into the agent pane once it's up.
       prompt: z.string().min(1).max(10000).optional(),
-      // Model override for the agent's launch command (`--model <model>`;
-      // `provider/model` for opencode and pi — see buildAgentCmd). MODEL_RE
-      // keeps it safe to embed in the single-quoted agent launch command.
+      // Model override (`provider/model` for opencode and pi; see
+      // buildAgentCmd). MODEL_RE keeps it safe to embed in the single-quoted
+      // launch command.
       model: z.string().regex(MODEL_RE).max(100).optional(),
-      // How much the agents may do before stopping to ask. Omitted → what
-      // this project last had chosen, else the driver's default. Present is
-      // taken as a person's choice and becomes the project's next default.
-      // A posture the tool lacks is a 400, not a downgrade.
+      // Defaults to the project's last choice, else the driver's default. A
+      // value given here becomes the project's next default. A mode the tool
+      // lacks is a 400, not a downgrade.
       permissionMode: z.enum(PERMISSION_MODES).optional(),
-      // Sidebar group to file the workspace under, by id or name; a name
-      // matching no group is created. Resolved before anything is
-      // provisioned, so a typo'd group is not a half-built workspace.
+      // Sidebar group by id or name; an unknown name creates the group.
       group: z.string().min(1).max(MAX_TITLE_LENGTH).optional(),
-      // The user's title; blank (or omitted) leaves it to be auto-titled.
+      // Blank or omitted leaves the workspace to be auto-titled.
       title: z.string().max(500).optional(),
       draftId,
     })),
     async (c) => {
       const body = c.req.valid('json')
       const workspaceId = body.workspaceId ?? randomUUID()
-      // A client-chosen id is claimed once. Refused here, as a plain 409
-      // before any stream opens, when a workspace already holds it; the row
-      // insert inside the create is what enforces it against a race.
+      // A client-chosen id already in use is a plain 409 before the stream
+      // opens. The row insert inside the create guards against races.
       if (body.workspaceId !== undefined && await findWorkspaceRow(workspaceId)) {
         throw new ServerError('CONFLICT', `workspace id ${workspaceId} is already in use`)
       }
-      // Reserved synchronously, before the stream: a second create on an id
-      // still provisioning is refused rather than sharing its row. A
-      // reservation the create never takes over (a bad group or model) is
-      // dropped, not left failed — its error is already in the stream.
+      // Reserve the id before streaming, so a second create on an id still
+      // provisioning is refused. If the create fails before taking over the
+      // reservation (bad group or model), it is dropped rather than left
+      // failed; the error is already in the stream.
       registerProvisioning({
         workspaceId,
         projectSlug: body.project,
@@ -242,12 +225,11 @@ export const workspaceApp = new Hono()
         reserved: true,
       })
       return streamProvisioned(c, workspaceId, async (onProgress) => {
-        // Resolved before anything is provisioned, so a typo'd group is not a
-        // half-built workspace.
+        // Resolve first so a typo'd group doesn't leave a half-built workspace.
         const groupId = body.group === undefined
           ? undefined
           : (await resolveGroup(body.project, body.group, { create: true })).groupId
-        // Untitled, it keeps the title its draft was shown under.
+        // Without a title, keep the one its draft was shown under.
         const title = normalizeTitle(body.title ?? '')
           || await draftGeneratedTitle(body.project, body.draftId, body.prompt)
         const created = await startWorkspace({
@@ -261,8 +243,7 @@ export const workspaceApp = new Hono()
           ...(body.prompt !== undefined ? { prompt: body.prompt } : {}),
           ...(title ? { title } : {}),
           ...(groupId !== undefined ? { groupId } : {}),
-          // A person asked for this; it becomes the project's next defaults,
-          // from any client.
+          // A user request, so its settings become the project's defaults.
           rememberDefaults: true,
           claimSpare: true,
         }, onProgress)
@@ -276,23 +257,18 @@ export const workspaceApp = new Hono()
     zv('json', z.object({
       // An id or its unique prefix.
       workspaceId: z.string().min(1),
-      // No `mode` here, deliberately: a workspace comes back the way it went
-      // down, so restart resolves it from `agent_sessions` rather than from
-      // the caller. Accepting one would advertise a choice this route does
-      // not have — it would be silently ignored. No `gitUser` either: the
-      // identity a workspace commits under is a server setting now, so a
-      // caller sending one would be a second answer to a settled question.
+      // No `mode`: a workspace restarts in the mode it had, read from
+      // `agent_sessions`. No `gitUser`: the commit identity is a server
+      // setting.
     })),
     async (c) => {
       const body = c.req.valid('json')
-      // Resolved first, so the row, the stream and the restart are all keyed
-      // on the exact id — never on whatever prefix a CLI user typed.
+      // Resolve the prefix first so the row, stream and restart all use the
+      // exact id.
       const target = await resolveRestartTarget(body.workspaceId)
-      // Registered here rather than left to restartWorkspace's own `ensure`,
-      // so a restart of a workspace already provisioning is a plain 409, and
-      // filed under the group the row records — a groupless row would park
-      // the restarting workspace at the top of the sidebar for the whole
-      // restart.
+      // Registered here rather than by restartWorkspace's own `ensure`, so a
+      // restart of a workspace already provisioning is a plain 409, and the
+      // row is filed under the workspace's group instead of the sidebar top.
       registerProvisioning({
         workspaceId: target.workspaceId,
         projectSlug: target.projectSlug,
@@ -313,9 +289,9 @@ export const workspaceApp = new Hono()
       return c.json(info)
     },
   )
-  // Acknowledge that the user has viewed an abnormal death's detail, clearing
-  // the "Stopped workspaces" notification dot / row highlight. Persisted on the
-  // workspace row so the mark is durable and shared across clients.
+  // Record that the user viewed an abnormal death's detail, clearing the
+  // "Stopped workspaces" dot and row highlight. Stored on the workspace row,
+  // so it is shared across clients.
   .post(
     '/mark-death-seen',
     zv('json', z.object({
@@ -328,8 +304,7 @@ export const workspaceApp = new Hono()
       return c.body(null, 204)
     },
   )
-  // The same acknowledgement for a whole project at once ("mark all as read"),
-  // so a burst of deaths doesn't have to be clicked through row by row.
+  // The same for every workspace in a project ("mark all as read").
   .post(
     '/mark-all-deaths-seen',
     zv('json', z.object({ projectSlug: z.string().min(1) })),
@@ -338,17 +313,16 @@ export const workspaceApp = new Hono()
       return c.body(null, 204)
     },
   )
-  // Queued workspaces (docs/queued-workspaces.md): create requests saved to
-  // run when their parent — a workspace, or another entry — stops naturally.
-  // JSON rather than a provisioning stream: nothing about queueing is slow,
-  // and a Run now's progress is its provisioning row in the snapshot. The
-  // user's own surface, so no permission ceiling applies here; that limits
-  // agents (`yaac-mama queue`).
+  // Queued workspaces (docs/queued-workspaces.md): create requests that run
+  // when their parent (a workspace or another entry) stops naturally. Plain
+  // JSON rather than a provisioning stream, since queueing is fast and a "Run
+  // now" reports progress through its provisioning row. No permission ceiling
+  // applies here; that only limits agents (`yaac-mama queue`).
   .post(
     '/queue/create',
     zv('json', z.object({
       project: z.string().min(1),
-      // A workspace id or a queued entry's id (or a unique prefix of either).
+      // A workspace id or queued entry id, or a unique prefix of either.
       parent: z.string().min(1),
       ...queuedSettings,
       group: queuedGroup,
@@ -389,9 +363,8 @@ export const workspaceApp = new Hono()
     zv('json', z.object({ id: z.string().min(1) })),
     async (c) => c.json(await runQueuedWorkspace(c.req.valid('json').id)),
   )
-  // Draft workspaces (docs/draft-workspaces.md): create-dialog contents kept
-  // for later. A save without an id makes a new draft; with one it replaces
-  // that draft's fields wholesale.
+  // Draft workspaces (docs/draft-workspaces.md): saved create-dialog contents.
+  // A save without an id creates a draft; with one it replaces all fields.
   .post(
     '/draft/save',
     zv('json', z.object({
@@ -418,12 +391,10 @@ export const workspaceApp = new Hono()
     },
   )
   .route('/', mamaApp)
-  // The sidebar-group routes. All take an explicit projectSlug (like
-  // /mark-death-seen) rather than resolving a container: a group's members can
-  // be stopped workspaces with no pod to resolve, and the group itself has no
-  // container at all.
-  // Every group of a project, for a client that holds no snapshot — the CLI's
-  // `yaac group list`. The webapp reads the same rows off `/events`.
+  // Sidebar-group routes. All take an explicit projectSlug rather than
+  // resolving a container, since members may be stopped workspaces.
+  // The list is for clients without a snapshot (`yaac group list`); the
+  // webapp reads the same rows from `/events`.
   .get(
     '/group/list',
     zv('query', z.object({ project: z.string().optional() })),
@@ -436,19 +407,16 @@ export const workspaceApp = new Hono()
     '/group/create',
     zv('json', z.object({
       projectSlug: z.string().min(1),
-      // The founding workspace, when the group is being made around one (the
-      // sidebar's "new group from this workspace"). Omitted, the group is born
-      // empty and pinned — `yaac group create` names a group before anything
-      // is in it.
+      // The first member ("new group from this workspace"). If omitted, the
+      // group starts empty and pinned (as with `yaac group create`).
       workspaceId: z.string().min(1).optional(),
       name: z.string().min(1).max(MAX_TITLE_LENGTH),
     })),
     async (c) => {
       const { projectSlug, workspaceId, name } = c.req.valid('json')
       const group = await createWorkspaceGroup(projectSlug, name, workspaceId ?? null)
-      // The stored name, not the typed one: the store normalizes (whitespace
-      // collapsed, length capped), and a caller that echoes what it sent
-      // would report a group that is not the one now in the table.
+      // Return the stored name, which the store normalizes (whitespace
+      // collapsed, length capped).
       return c.json({ groupId: group.groupId, name: group.name })
     },
   )
@@ -490,33 +458,27 @@ export const workspaceApp = new Hono()
       return c.body(null, 204)
     },
   )
-  // File a workspace under a group NAMED rather than identified — `yaac group
-  // move` and `yaac-mama group move`, where the caller is a person or an
-  // agent who has seen names and never an id. Distinct from `/set-group`
-  // below, which is the sidebar's precise instrument: a drag onto a group
-  // that has since been deleted must fail, not resurrect it by name.
+  // File a workspace under a group given by name or id (`yaac group move`,
+  // `yaac-mama group move`). The sidebar uses `/set-group` instead, where a
+  // drag onto a since-deleted group must fail rather than recreate it by name.
   .post(
     '/group/move',
     zv('json', z.object({
       projectSlug: z.string().min(1),
       workspaceId: z.string().min(1),
-      // A group id or name; null returns the workspace to the default list.
+      // A group id or name; null makes the workspace ungrouped.
       group: z.string().min(1).max(MAX_TITLE_LENGTH).nullable(),
-      // Create the group when the name matches none. For a caller that is
-      // naming the group rather than picking one.
+      // Create the group when no group has this name.
       create: z.boolean().optional(),
     })),
     async (c) => {
       const { projectSlug, workspaceId, group, create } = c.req.valid('json')
-      // An id or its unique short prefix, which is what every surface prints
-      // — the membership write itself matches exactly, so a prefix reaching
-      // it would file nothing and report success.
+      // Accept an id or unique prefix (what every surface prints). The
+      // membership write matches exactly, so an unresolved prefix would
+      // silently file nothing.
       const found = await resolveWorkspace(workspaceId, { projectSlug })
       if (!found.ok) {
-        // An ambiguous prefix is an under-specified request, not a missing
-        // workspace: the caller holds the right id and typed too little of
-        // it, so saying "no such workspace" sends it looking for the wrong
-        // thing.
+        // An ambiguous prefix is a validation error, not a missing workspace.
         throw found.reason === 'ambiguous'
           ? new ServerError(
             'VALIDATION',
@@ -529,12 +491,11 @@ export const workspaceApp = new Hono()
         ? null
         : await resolveGroup(projectSlug, group, { create: create ?? false })
       await setWorkspaceGroup(projectSlug, resolved, target?.groupId ?? null)
-      // The NAME too: the caller may have passed an id (the ambiguity error
-      // tells it to), and echoing a uuid back at a person is not an answer.
+      // Include the name, since the caller may have passed an id.
       return c.json({ groupId: target?.groupId ?? null, name: target?.name ?? null })
     },
   )
-  // File a workspace under a group, or return it to the default list (null).
+  // File a workspace under a group by id, or ungroup it (null).
   .post(
     '/set-group',
     zv('json', z.object({
@@ -549,8 +510,8 @@ export const workspaceApp = new Hono()
     },
   )
   .post('/provisioning/:id/dismiss', (c) => {
-    // Drop a provisioning entry (only meaningful for a failed one — successful
-    // ones self-clean once the real workspace lists). Idempotent for any id.
+    // Drop a failed provisioning entry (successful ones clear themselves).
+    // Idempotent for any id.
     removeProvisioning(c.req.param('id'))
     return c.body(null, 204)
   })
@@ -558,29 +519,24 @@ export const workspaceApp = new Hono()
     '/:id/title',
     zv('json', z.object({ title: z.string().max(500) })),
     async (c) => {
-      // The RECORD, not a container: a title lives on the host, so renaming
-      // a waiting, stopped or just-died workspace is fine — and renaming one
-      // before restarting it is a normal thing to do. Resolving a container
-      // here 404'd every workspace without a live pod.
+      // Resolve the record, not a container, so a stopped or dead workspace
+      // can be renamed too.
       const { projectSlug, workspaceId } = await resolveWorkspaceRecord(c.req.param('id'))
       await setWorkspaceTitle(projectSlug, workspaceId, c.req.valid('json').title)
       return c.body(null, 204)
     },
   )
-  // A workspace's conversations, active first — `yaac workspace agents <id>`
-  // and the webapp's history list.
+  // A workspace's conversations, active first (`yaac workspace agents <id>`
+  // and the webapp's history list).
   .get('/:id/agent-sessions', async (c) => {
-    // Resolved from the record, not a pod: a stopped workspace keeps its
-    // conversations, and listing them is most of the point of the command.
+    // Resolved from the record, so a stopped workspace works too.
     const { projectSlug, workspaceId } = await resolveWorkspaceRecord(c.req.param('id'))
     const links = await listWorkspaceAgentSessions(projectSlug, workspaceId)
     return c.json(links.map((l) => toAgentSessionEntry(l)))
   })
-  // One conversation's history, as the events the chat pane renders. Resolved
-  // from the record for the same reason the listing above is, and the whole
-  // point of it: a stopped workspace's conversation is still readable, which is
-  // what the stopped-workspaces view shows instead of just the founding ask.
-  // A conversation whose tool leaves no host transcript refuses with 501.
+  // One conversation's history as chat-pane events. Resolved from the record
+  // so the stopped-workspaces view can read it. A tool that leaves no host
+  // transcript gets a 501.
   .get('/:id/agent-sessions/:sessionId/transcript', async (c) => {
     const { projectSlug, workspaceId } = await resolveWorkspaceRecord(c.req.param('id'))
     const events = await getAgentSessionTranscript(
@@ -592,24 +548,23 @@ export const workspaceApp = new Hono()
     const { jobName } = await resolveWorkspaceContainer(c.req.param('id'), { requireRunning: true })
     return c.json(await listWorkspaceTerminals(jobName))
   })
-  // The workspace's review diff — everything changed in the workspace since it
-  // forked from the base branch (committed + working + untracked). An optional
-  // `base` overrides the branch it's diffed against (fork point vs origin/<base>).
+  // The review diff: everything changed since the workspace forked from its
+  // base branch (committed, working and untracked). `base` overrides the
+  // branch it is diffed against.
   .get(
     '/:id/changes',
     zv('query', z.object({ base: z.string().min(1).max(255).optional() })),
     async (c) => c.json(await getWorkspaceChanges(c.req.param('id'), c.req.valid('query').base)),
   )
-  // The status bar's ahead/behind, read off the server's own refs like the
-  // file editor below, so a stopped workspace answers too.
+  // Ahead/behind for the status bar, read from the server's own refs so a
+  // stopped workspace answers too.
   .get(
     '/:id/git-status',
     zv('query', z.object({ base: z.string().min(1).max(255).optional() })),
     async (c) => c.json(await getWorkspaceGitStatus(c.req.param('id'), c.req.valid('query').base)),
   )
-  // The file editor (docs/file-editor.md). Served from the server's own view
-  // of the checkout, resolved from the record: a stopped workspace browses and
-  // edits like a running one, under either driver.
+  // The file editor (docs/file-editor.md). Served from the server's view of
+  // the checkout, so stopped workspaces work too, under either driver.
   .get('/:id/files', async (c) => c.json(await listWorkspaceFiles(c.req.param('id'))))
   .get(
     '/:id/dir',
@@ -624,15 +579,13 @@ export const workspaceApp = new Hono()
       return c.json(await readWorkspaceFile(c.req.param('id'), path, known))
     },
   )
-  // A null `baseVersion` creates. A save against a stale version is refused
-  // with the version the file has now (null: it is gone) — the one error
-  // body that carries more than the code, because the editor saves against
-  // it next.
+  // A null `baseVersion` creates the file. A save against a stale version is
+  // refused with the file's current version (null if deleted), which the
+  // editor saves against next.
   .put(
     '/:id/file',
-    // Refused before it is buffered, not after it is parsed. Twice the
-    // editable size leaves room for JSON's escaping (a newline or a quote is
-    // two bytes on the wire); the exact bound is the domain's.
+    // Refuse oversized bodies before buffering. Twice the editable size
+    // allows for JSON escaping; the domain enforces the exact limit.
     bodyLimit({
       maxSize: 2 * MAX_TEXT_FILE_BYTES + 64 * 1024,
       onError: () => { throw new ServerError('TOO_LARGE', 'the file is over the editable size') },
@@ -654,8 +607,8 @@ export const workspaceApp = new Hono()
       return c.json(result.saved)
     },
   )
-  // An image pasted into a terminal pane: the raw bytes in, the path to paste
-  // in their place out.
+  // An image pasted into a terminal pane: takes raw bytes, returns the path
+  // to paste instead.
   .post(
     '/:id/attachments',
     bodyLimit({
@@ -708,24 +661,19 @@ export const workspaceApp = new Hono()
     },
   )
   .get('/:id', async (c) => c.json(await getWorkspaceDetail(c.req.param('id'))))
-  // The egress and port-relay routes below refuse on a runtime that
-  // mediates neither. Guarded BEFORE the id resolve, because what this
-  // server can do is not a property of the workspace being asked about — a
-  // 404 for an id that happens not to exist would hide the real answer.
-  // The driver's own verbs still answer empty, which is what keeps the
-  // snapshot composing them unconditionally.
+  // The egress and port-relay routes below refuse on a runtime without those
+  // features, checked before the id is resolved (see `requireDriverFeature`).
   .get('/:id/blocked-hosts', async (c) => {
     requireDriverFeature('egress')
     return c.json(await getWorkspaceBlockedHosts(c.req.param('id')))
   })
-  // Allow a previously-blocked host (webapp click-to-allow). The proxy prunes
-  // the host from its recorded blocked set, so the snapshot we push clears the
-  // badge. Persist/fan-out policy lives in the domain verb.
+  // Allow a previously blocked host (webapp click-to-allow). The proxy drops
+  // it from its blocked set, which clears the badge in the next snapshot.
   .post(
     '/:id/allow-host',
     zv('json', z.object({
-      // A bare hostname or wildcard pattern — the grammar hostMatchesPattern
-      // (#lib/allowed-hosts) matches against; no scheme/path/port.
+      // A bare hostname or wildcard pattern as hostMatchesPattern
+      // (#lib/allowed-hosts) understands it; no scheme, path or port.
       host: z.string().regex(/^[A-Za-z0-9*._-]+$/, 'host must be a bare hostname or *.wildcard pattern'),
       persist: z.boolean().optional(),
     })),
@@ -736,10 +684,9 @@ export const workspaceApp = new Hono()
       return c.body(null, 204)
     },
   )
-  // Forward a detected-but-unforwarded port (webapp click-to-forward). The
-  // port must be in the workspace's surfaced unforwarded set — the runtime
-  // rejects anything else, so the route can't be driven to open an arbitrary
-  // port. Persist/fan-out policy lives in the domain verb.
+  // Forward a detected, unforwarded port (webapp click-to-forward). The
+  // runtime rejects any port not in that detected set, so this can't open an
+  // arbitrary port.
   .post(
     '/:id/forward-port',
     zv('json', z.object({
@@ -755,9 +702,8 @@ export const workspaceApp = new Hono()
       return c.json(mapping)
     },
   )
-  // Hide a detected port for this workspace (in-memory; resets with the server).
-  // Same guard as forward-port: only a currently-surfaced port is
-  // dismissable, so the dismissed set can't be grown arbitrarily.
+  // Hide a detected port (in memory; resets with the server). As with
+  // forward-port, only a currently detected port can be dismissed.
   .post(
     '/:id/dismiss-port',
     zv('json', z.object({ containerPort: z.number().int().min(1).max(65535) })),

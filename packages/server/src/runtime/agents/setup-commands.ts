@@ -1,13 +1,11 @@
 /**
- * Pure builders for the pod-side setup commands session-create runs over
- * the stream relay after the pod is Ready and streamd answers. Each string
- * is a shell command tail executed as `sh -c <cmd>` in the pod (one shell
- * pass — the same contract `containerExec` had). Kept pure so the exact
- * command text is unit-testable.
+ * Pure builders for the in-workspace setup commands run after the
+ * workspace is ready. Each is a command tail run as `sh -c <cmd>` (one
+ * shell pass). Pure so the exact text is unit-testable.
  *
- * The tool-agnostic base setup (git identity, tmux server + options,
- * streamd) lives in `workspace-bin/yaac-workspace-init`, the pod's postStart
- * hook; only the steps that need host coordination remain here.
+ * Tool-agnostic base setup (git identity, tmux, streamd) is done by
+ * `workspace-bin/yaac-workspace-init`; only steps needing host coordination
+ * are here.
  */
 import {
   initWindowCommand,
@@ -23,17 +21,13 @@ import type { WorkspacePaths } from '#drivers/contract'
 import type { AgentTool, YaacConfig } from '@yaac/shared/types'
 
 /**
- * Point the checkout's clone at the main clone's objects, as this launch's
- * workspace sees them, then bring its `origin/*` up to the main clone's —
- * one exec, run in the workspace on every launch, on every driver.
+ * Point the checkout at the main clone's objects, then bring its `origin/*`
+ * up to date from the main clone: one exec, on every launch and driver.
  *
- * The alternates line is the only path-shaped git state a checkout carries
+ * The alternates line is the checkout's only path-dependent git state
  * (docs/server-git.md). It is always the main clone's objects dir as the
- * SERVER sees it: a pod mounts the main clone read-only at that same path,
- * and a host workspace sees the server's paths as they are, so one string
- * holds everywhere. Rewriting it every launch is what heals a checkout
- * whose data dir moved, or that was last started by a server that sees the
- * data dir elsewhere.
+ * server sees it; pods mount the main clone at that same path. Rewriting it
+ * every launch heals a checkout whose data dir moved.
  */
 export function buildCloneLinkExec(repoGitDir: string, paths: WorkspacePaths): string {
   return `printf '%s\\n' '${shellEscape(`${repoGitDir}/objects`)}' > ${paths.workspaceDir}/.git/objects/info/alternates`
@@ -41,15 +35,11 @@ export function buildCloneLinkExec(repoGitDir: string, paths: WorkspacePaths): s
 }
 
 /**
- * Fast-forward the checkout's `origin/*` to the main clone's, from the main
- * clone on this disk: every object is already reachable through the
- * alternates line, so nothing crosses the network and no credential is
- * used. Never forced, so a ref the agent fetched ahead of the main clone is
- * not moved back (git rejects that one ref and moves the rest); no
- * `--prune`, so a ref the agent fetched that the main clone has not seen
- * stays; and no FETCH_HEAD, which the agent's own `fetch` + `merge
- * FETCH_HEAD` may be between. Its status is ignored: a ref it could not
- * move is retried by the next refresh.
+ * Fast-forward the checkout's `origin/*` from the main clone on disk. The
+ * objects are reachable via alternates, so there is no network or
+ * credential use. Not forced (an agent-fetched ref ahead of the main clone
+ * is kept), no `--prune`, and no FETCH_HEAD (the agent may be between its
+ * own fetch and merge). Failures are ignored; the next refresh retries.
  */
 export function buildOriginRefreshExec(repoGitDir: string, paths: WorkspacePaths): string {
   return `git -C ${paths.workspaceDir} fetch --quiet --no-tags --no-write-fetch-head `
@@ -57,12 +47,10 @@ export function buildOriginRefreshExec(repoGitDir: string, paths: WorkspacePaths
 }
 
 /**
- * Resolve and validate the project's init windows. Rejects every tool
- * name, not just the active tool's: a prewarmed spare can be retooled at
- * claim time, which renames the agent window to the requested tool — an
- * init window with that name would make the tmux target ambiguous.
- * Validation lives here (called before any resource is provisioned) so a
- * bad config fails the create before a workspace or Job exists.
+ * Resolve and validate the project's init windows. Every tool name is
+ * rejected as a window name, since a spare can be retooled at claim time
+ * and a same-named init window would make the tmux target ambiguous. Runs
+ * before anything is provisioned, so a bad config fails early.
  */
 export function validateInitWindows(config: YaacConfig): InitWindow[] {
   const windows = resolveInitWindows(config)
@@ -78,29 +66,24 @@ export function validateInitWindows(config: YaacConfig): InitWindow[] {
 }
 
 /**
- * Create the init-command windows (parallel to the agents) and swap the
- * keepalive placeholder for the real agent — one exec. respawn-window -k
- * kills the `sleep infinity` the postStart hook opened the session with
- * and starts the first agent in the same window, preserving the tmux
- * options configured there.
+ * Create the init-command windows and replace the keepalive placeholder
+ * with the first agent, in one exec. `respawn-window -k` kills the
+ * postStart hook's `sleep infinity` and keeps the window's tmux options.
  *
- * `agentCmds` is one entry per agent session being started, in restore
- * order: a fresh create passes one, and a restart passes whatever was live
- * when the workspace stopped. Only the first can respawn the placeholder;
- * the rest open their own windows.
+ * `agentCmds` has one entry per conversation to start, in restore order: one
+ * for a fresh create, whatever was live for a restart. Only the first
+ * respawns the placeholder; the rest get their own windows.
  *
- * Each entry carries its own tool, because a workspace's conversations need
- * not share one: a codex conversation resumed into a claude workspace must
- * land in a `codex-2` window, not `claude-2` — the window name is what the
- * status watcher reads to pick a tool's status grammar, so a misnamed window
- * gets classified against a title format its agent never emits.
+ * Each entry has its own tool, since a codex conversation resumed into a
+ * claude workspace must land in `codex-2`: the window name selects the
+ * status parser.
  */
 export interface AgentWindowSpec {
   tool: AgentTool
   cmd: string
-  /** The conversation it resumes, named on its pane by the same tmux command
-   *  that starts it: codex and opencode announce a resumed conversation only
-   *  at its next turn, and a pane naming none reads as holding none. */
+  /** The conversation it resumes, named on its pane by the command that
+   *  starts it: codex and opencode announce a resumed conversation only at
+   *  its next turn. */
   resumes?: string
 }
 
@@ -113,23 +96,17 @@ export function buildWindowsExec(
   const [primary, ...extra] = agents
   const named = (target: string, spec?: AgentWindowSpec): string =>
     spec?.resumes !== undefined ? ` \\; ${nameSessionCommand(target, spec.tool, spec.resumes)}` : ''
-  // Every agent window in ONE tmux invocation: tmux runs a client's command
-  // group to completion before reading another client's, so the watcher's
-  // listing sees all of them or none, each already naming what it resumes.
+  // One tmux invocation for all agent windows: tmux runs a client's command
+  // group to completion, so the watcher sees all of them or none.
   //
-  // The placeholder window carries the workspace's tool name, so the primary
-  // agent respawns into it whatever tool it runs. A primary whose tool
-  // differs is a case restart cannot currently produce (ordinal 0 is the
-  // workspace's own agent), and renaming the window would break every
-  // `yaac:<tool>` target.
+  // The placeholder window has the workspace's tool name, so the primary
+  // respawns into it regardless of tool (restart never makes the primary a
+  // different tool, and renaming would break `yaac:<tool>` targets).
   const agentCmds = [`respawn-window -k -t yaac:${tool} '${primary?.cmd ?? ''}'${named(`yaac:${tool}`, primary)}`]
   extra.forEach((spec, i) => {
-    // -d so the extra agents don't steal the active window from the primary,
-    // which is what the user attaches to. -c because a new window otherwise
-    // starts in the cwd of the client that asked for it — this exec's, `/` in
-    // a pod — where the primary inherits the session's: an agent resumed
-    // from the wrong directory looks its conversation up under the wrong
-    // project.
+    // -d keeps the primary as the active window. -c because a new window
+    // otherwise starts in this exec's cwd (`/` in a pod), and an agent
+    // resumed from the wrong directory looks up the wrong project.
     const name = agentWindowName(spec.tool, i + 1)
     agentCmds.push(`new-window -d -t yaac -n ${name} -c ${paths.workspaceDir} '${spec.cmd}'${named(`yaac:${name}`, spec)}`)
   })

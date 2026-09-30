@@ -14,12 +14,9 @@ import type { AgentTool, ModelOption } from '@yaac/shared/types'
 
 /**
  * The models a tool can be created with, from the baked catalog, newest
- * first. claude and codex take bare ids (their vendor's models.dev list);
- * opencode and pi take `provider/model` for the provider their credential
- * names, and pi reads its own registry rather than models.dev.
- *
- * A convenience, not an allowlist — each tool accepts any id it recognizes,
- * and yaac only shape-checks what it is handed.
+ * first. claude and codex use bare ids (their vendor's models.dev list);
+ * opencode and pi use `provider/model` for their credential's provider, and
+ * pi uses its own registry. Not an allowlist: yaac only shape-checks ids.
  */
 export function modelsForTool(tool: AgentTool, provider: string | undefined): ModelOption[] {
   if (tool === 'claude' || tool === 'codex') {
@@ -37,13 +34,10 @@ function option(tool: AgentTool, id: string): ModelOption {
 }
 
 /**
- * The model a create runs when its project remembers none for this tool.
- *
- * claude and codex answer a hand-pinned id (`FALLBACK_MODELS`). pi answers its
- * own per-provider default — what it launched with before yaac named a model
- * at all. opencode has no default of its own to borrow, so it takes pi's for
- * the same provider when opencode's catalog lists that model, else the
- * provider's newest.
+ * The model a create uses when its project remembers none for this tool:
+ * a pinned id for claude and codex (`FALLBACK_MODELS`), pi's own
+ * per-provider default for pi, and for opencode pi's default for the same
+ * provider if opencode's catalog lists it, else the provider's newest.
  */
 export function defaultModelFor(tool: AgentTool, provider: string | undefined): string {
   if (tool === 'claude' || tool === 'codex') return FALLBACK_MODELS[tool]
@@ -59,21 +53,19 @@ export function defaultModelFor(tool: AgentTool, provider: string | undefined): 
   return qualifiedHead(MODELS_BY_PROVIDER, p)
 }
 
-/** A provider's first (newest) model, qualified — or '' for a provider the
- *  catalog lists nothing for, which a create then launches without. */
+/** A provider's newest model as `provider/model`, or '' if the catalog lists
+ *  none (the create then launches without a model). */
 function qualifiedHead(catalog: Record<string, string[]>, provider: string): string {
   const head = catalog[provider]?.[0]
   return head !== undefined ? `${provider}/${head}` : ''
 }
 
 /**
- * What a model id is called, from the catalog the tool's ids come from, or
- * undefined when the catalog has no name for it.
+ * A model id's display name from the tool's catalog, or undefined.
  *
- * Looked up as reported and then without the decorations a transcript adds
- * but the catalog does not carry: a `-YYYYMMDD` snapshot suffix (curation keeps
- * only the alias) and a `[1m]`-style context suffix. claude's names drop their
- * leading "Claude", which the tool label beside them already says.
+ * Tries the id as reported, then without a `[1m]`-style context suffix and a
+ * `-YYYYMMDD` snapshot suffix, which the catalog doesn't carry. claude's
+ * names drop the leading "Claude", since the tool label already says it.
  */
 export function modelDisplayName(tool: AgentTool, id: string): string | undefined {
   let names: Record<string, string> | undefined
@@ -93,14 +85,11 @@ export function modelDisplayName(tool: AgentTool, id: string): string | undefine
 }
 
 /**
- * A model an agent reported, as the catalog's id for it, so every surface can
- * name it the way the create form did.
- *
- * An id the catalog already names is kept. One it does not is matched by the
- * name the agent gave it: claude's ACP adapter answers with its picker's
- * alias where it has one (`opus[1m]`), and calls that one "Opus 5.5" — the
- * catalog's name for `claude-opus-5-5`. With no name, or one the catalog
- * lacks, the report stands as it came.
+ * Map a model an agent reported to the catalog's id, so every surface names
+ * it as the create form did. A known id is kept; otherwise match on the
+ * reported name (claude's ACP adapter reports aliases like `opus[1m]` named
+ * "Opus 5.5", the catalog's name for `claude-opus-5-5`). Failing that, the
+ * reported id is returned.
  */
 export function catalogModel(tool: AgentTool, id: string, name: string | undefined): string {
   if (name === undefined || modelDisplayName(tool, id) !== undefined) return id

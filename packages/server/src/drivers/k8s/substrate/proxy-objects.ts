@@ -6,11 +6,9 @@ import type { GitAuthFailure, RefreshedToolCredentials } from '@yaac/shared/type
 import { claudeOAuthBundleSchema, codexOAuthBundleSchema } from '@yaac/shared/types'
 
 /**
- * The server's read side of the objects the proxy writes: the state
- * ConfigMap (blocked hosts, git-auth failures) and the refreshed-bundles
- * Secret. Both are watched by the `ClusterCache` and mapped here; the
- * decoders are the validation boundary — a malformed entry is dropped,
- * never guessed at, exactly as the file readers they replaced did.
+ * Decoders for the objects the proxy writes: the state ConfigMap (blocked
+ * hosts, git-auth failures) and the refreshed-credentials Secret. The
+ * `ClusterCache` watches both. Malformed entries are dropped.
  */
 
 /** Everything the proxy records about what it denied or saw rejected. */

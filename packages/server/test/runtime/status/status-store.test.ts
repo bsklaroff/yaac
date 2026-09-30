@@ -14,8 +14,7 @@ import {
 } from '#runtime/status/status-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#notify'
 
-// The store is a snapshot input, so what it announces it announces straight
-// on #notify — the hub is the only consumer, and these tests stand in for it.
+// The store announces changes on #notify; these tests listen there.
 beforeEach(() => {
   _resetWorkspaceStatusStoreForTests()
   _resetWorkspaceListChangedForTests()
@@ -67,24 +66,20 @@ describe('setAgentStatus', () => {
     expect(listener).not.toHaveBeenCalled()
   })
 
-  // Per-conversation status and waiting spells ride the snapshot too
-  // (agentLiveness → liveStatus), so a sibling's flip that leaves the
-  // workspace aggregate alone is still visible to a client — a per-tab dot,
-  // and which agent's stamp the workspace's spell comes from.
+  // Per-agent status is in the snapshot too, so a change must push even
+  // when the workspace's overall status is unchanged.
   it('fires when a sibling flips but the workspace aggregate does not', () => {
     setAgentStatus('demo', 's1', '%0', 'waiting')
     setAgentStatus('demo', 's1', '%1', 'running')
     const listener = vi.fn()
     onWorkspaceListChanged(listener)
 
-    // %1 running→waiting: aggregate was already `waiting` and stays there,
-    // but %1's own dot moved.
+    // %1 running→waiting: overall stays `waiting`.
     setAgentStatus('demo', 's1', '%1', 'waiting')
     expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
     expect(listener).toHaveBeenCalledTimes(1)
 
-    // %0 waiting→running: still `waiting` overall (%1 waits), but %0's dot
-    // moved and the workspace's spell should now come from %1.
+    // %0 waiting→running: still `waiting` overall because of %1.
     setAgentStatus('demo', 's1', '%0', 'running')
     expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
     expect(listener).toHaveBeenCalledTimes(2)
@@ -218,10 +213,8 @@ describe('evictWorkspaceStatus', () => {
 })
 
 describe('onStreamHealthLost', () => {
-  // This is the stale reaper's edge. The display path infers "stream healthy
-  // ⇒ tmux alive", so losing health is exactly when that inference expires
-  // and the reaper's own probes have to run — in-pod tmux death being
-  // invisible to every cluster watch.
+  // Triggers the stale reaper: while the stream is healthy tmux is assumed
+  // alive, so losing it is when probes must run again.
   it('fires when a healthy stream goes unhealthy', () => {
     setAgentStatus('demo', 's1', '%0', 'running')
     const listener = vi.fn()
@@ -230,9 +223,7 @@ describe('onStreamHealthLost', () => {
     expect(listener).toHaveBeenCalledTimes(1)
   })
 
-  // The transition and nothing else. This one dirties a reconcile pass, and
-  // a pass per turn boundary would be a pod sweep per turn — the same trap
-  // onLiveAgentsChanged is built to avoid.
+  // Only the transition fires, since each firing triggers a reconcile pass.
   it('does not fire on attach, on a status flip, or on a repeat drop', () => {
     const listener = vi.fn()
     onStreamHealthLost(listener)
@@ -244,7 +235,7 @@ describe('onStreamHealthLost', () => {
     expect(listener).toHaveBeenCalledTimes(1)
     setWorkspaceStreamHealth('demo', 's1', false)
     expect(listener).toHaveBeenCalledTimes(1)
-    // Reattaching is not a loss either; the next drop is.
+    // Reattaching does not fire; the next drop does.
     setWorkspaceStreamHealth('demo', 's1', true)
     expect(listener).toHaveBeenCalledTimes(1)
     setWorkspaceStreamHealth('demo', 's1', false)
@@ -264,31 +255,26 @@ describe('onStreamHealthLost', () => {
 })
 
 describe('onLiveAgentsChanged', () => {
-  // This is what marks the reconciler dirty, and the whole reason an `acp`
-  // conversation's row does not wait out the 60s resync: its id arrives from
-  // the in-pod handshake, which no cluster watch can see.
+  // Marks the reconciler dirty, so an `acp` conversation's id (which no
+  // cluster watch sees) is recorded without waiting for the 60s resync.
   it('fires when a conversation appears, goes, or learns its id', () => {
     const listener = vi.fn()
     onLiveAgentsChanged(listener)
     setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude' }])
     expect(listener).toHaveBeenCalledTimes(1)
-    // The handshake answering: same handle, now addressable.
+    // Same handle, now with its session id.
     setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude', agentSessionId: 'conv-a' }])
     expect(listener).toHaveBeenCalledTimes(2)
     setLiveAgents('demo', 's1', [])
     expect(listener).toHaveBeenCalledTimes(3)
   })
 
-  // A driver republishes the same set on every sweep, and every turn boundary
-  // writes a status — neither is a reason to sweep the pods again.
+  // Drivers republish the same set on every sweep; that must not fire.
   it('does not fire for a re-publish of the same set, or for a status flip', () => {
     setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude', agentSessionId: 'conv-a' }])
     const listener = vi.fn()
     onLiveAgentsChanged(listener)
-    // Fresh literals, not a copy of the array: both drivers rebuild their
-    // agent objects on every publish, so a `changed` computed by reference
-    // equality would pass a copied-array test and then fire once per sweep
-    // per workspace in production.
+    // Fresh objects, as drivers publish, so reference equality would fail.
     setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude', agentSessionId: 'conv-a' }])
     setAgentStatus('demo', 's1', 'claude-1', 'running')
     setAgentStatus('demo', 's1', 'claude-1', 'waiting')

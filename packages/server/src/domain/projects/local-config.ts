@@ -7,9 +7,8 @@ import { ServerError } from '@yaac/shared/errors'
 import type { YaacConfig } from '@yaac/shared/types'
 
 /**
- * Write (or replace) the per-project config/yaac-config.json. Validates
- * the incoming config with the same parser used at load time so malformed
- * input fails at the edge.
+ * Write the per-project yaac-config.json, validated with the load-time
+ * parser.
  */
 export async function writeProjectConfig(slug: string, rawConfig: unknown): Promise<YaacConfig> {
   await assertProjectExists(slug)
@@ -31,10 +30,9 @@ export async function writeProjectConfig(slug: string, rawConfig: unknown): Prom
 }
 
 /**
- * Append a host to a config's egress allowlist, returning a new config. Adds to
- * setAllowedUrls when the project pins an exact list (preserving that full
- * override); otherwise to addAllowedUrls. De-duplicates, so re-adding the same
- * host is a no-op. Pure.
+ * Return a config with `host` added to its egress allowlist: to
+ * setAllowedUrls if the project pins an exact list, else to addAllowedUrls.
+ * No-op if already present.
  */
 export function withAllowedHost(config: YaacConfig, host: string): YaacConfig {
   const key = config.setAllowedUrls ? 'setAllowedUrls' : 'addAllowedUrls'
@@ -42,13 +40,8 @@ export function withAllowedHost(config: YaacConfig, host: string): YaacConfig {
   return list.includes(host) ? config : { ...config, [key]: [...list, host] }
 }
 
-/**
- * Persist a new allowed host into a project's stored config overlay so every
- * future workspace of the project inherits it. Read-modify-write of
- * config/yaac-config.json, re-validated by writeProjectConfig (which also
- * re-runs the same parse the read did, so a stored-and-reloaded overlay
- * round-trips unchanged).
- */
+/** Add an allowed host to a project's stored config, so future workspaces
+ *  inherit it. */
 export async function addAllowedHostToProjectConfig(slug: string, host: string): Promise<YaacConfig> {
   let overlay: YaacConfig | null
   try {
@@ -60,10 +53,8 @@ export async function addAllowedHostToProjectConfig(slug: string, host: string):
 }
 
 /**
- * Append a container port to a config's `portForward` list, returning a new
- * config. The host port starts at the container port itself (the same default
- * a hand-written entry would usually pick). De-duplicates by containerPort,
- * so re-adding a forwarded port is a no-op. Pure.
+ * Return a config with a `portForward` entry for `containerPort`, using the
+ * same number as the starting host port. No-op if already present.
  */
 export function withPortForward(config: YaacConfig, containerPort: number): YaacConfig {
   const list = config.portForward ?? []
@@ -71,12 +62,8 @@ export function withPortForward(config: YaacConfig, containerPort: number): Yaac
   return { ...config, portForward: [...list, { containerPort, hostPortStart: containerPort }] }
 }
 
-/**
- * Persist a new port forward into a project's stored config overlay so every
- * future workspace of the project inherits it — the `persist: true` half of the
- * webapp's "forward this port" action. Same read-modify-write as
- * addAllowedHostToProjectConfig.
- */
+/** Add a port forward to a project's stored config, so future workspaces
+ *  inherit it (the webapp's "forward this port" with `persist: true`). */
 export async function addPortForwardToProjectConfig(
   slug: string,
   containerPort: number,
@@ -91,10 +78,8 @@ export async function addPortForwardToProjectConfig(
 }
 
 /**
- * Read the per-project yaac-config.json as raw text ('' when absent),
- * without parsing. The editing flow needs the verbatim bytes so a
- * malformed file can be opened and repaired — the parsed read would
- * throw on exactly the files most in need of editing.
+ * The per-project yaac-config.json as raw text ('' when absent), unparsed so
+ * a malformed file can be opened and fixed.
  */
 export async function readProjectConfigRaw(slug: string): Promise<string> {
   await assertProjectExists(slug)
@@ -106,10 +91,8 @@ export async function readProjectConfigRaw(slug: string): Promise<string> {
 }
 
 /**
- * Remove the per-project yaac-config.json. No-op if absent. Only the
- * config file — the config dir also holds the project's build dir
- * (Dockerfile.yaac + its build-context files), which clearing the JSON
- * overlay must not touch.
+ * Remove the per-project yaac-config.json, if present. Only that file: the
+ * config dir also holds the build dir.
  */
 export async function removeProjectConfig(slug: string): Promise<void> {
   await assertProjectExists(slug)

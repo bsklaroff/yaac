@@ -41,15 +41,15 @@ describe('normalizeTool', () => {
   })
 
   it('returns claude for unknown tool values', () => {
-    // A workspace stamped with a tool this build does not know still has to
-    // render and be exec'd into, so the resolved value is always runnable.
+    // A workspace with a tool this build doesn't know must still render and
+    // accept exec.
     expect(normalizeTool('unknown')).toBe('claude')
   })
 })
 
 describe('PERMISSION_MODES', () => {
-  // Every list of postures — the create form's dropdown, the CLI's choices —
-  // reads as the hierarchy, most permissive first.
+  // Every posture list (form dropdown, CLI choices) is most permissive
+  // first.
   it('runs most permissive first, and so does every tool\'s list', () => {
     expect(PERMISSION_MODES).toEqual(['bypass', 'auto', 'accept-edits', 'manual', 'plan', 'read-only'])
     for (const tool of AGENT_TOOLS) {
@@ -70,25 +70,22 @@ describe('toolSupportsPermissionMode', () => {
   })
 
   it('answers for the ADAPTER under acp, which offers fewer postures', () => {
-    // The one that surprises: codex has a read-only sandbox, codex-acp does
-    // not — it collapses codex's approval × sandbox grid into three modes, the
-    // one it calls `read-only` being codex's default preset. Refusing is the
-    // point; a create that quietly ran `read-only` as something weaker would
-    // be handing back an unrestrained workspace.
+    // codex has a read-only sandbox, but codex-acp does not: its mode named
+    // `read-only` is codex's default preset. Running it as that would give
+    // an unrestrained workspace, so it is refused.
     expect(toolSupportsPermissionMode('codex', 'read-only', 'tui')).toBe(true)
     expect(toolSupportsPermissionMode('codex', 'read-only', 'acp')).toBe(false)
     expect(toolSupportsPermissionMode('codex', 'manual', 'acp')).toBe(false)
     expect(toolSupportsPermissionMode('codex', 'auto', 'acp')).toBe(true)
-    // opencode keeps all four: `plan` is one of its own agents, and the rest
-    // ride the same permission config its TUI reads.
+    // opencode keeps all four: `plan` is one of its agents, the rest use the
+    // permission config its TUI reads.
     expect(supportedPermissionModes('opencode', 'acp')).toEqual(SUPPORTED_PERMISSION_MODES.opencode)
     // claude's adapter names a mode for all five of its postures.
     expect(supportedPermissionModes('claude', 'acp')).toEqual(SUPPORTED_PERMISSION_MODES.claude)
   })
 
   it('never offers a posture over acp that the tool itself does not have', () => {
-    // acp is a different way to drive the same tool, never a way to reach a
-    // restraint the tool has no notion of.
+    // acp never adds a posture the tool itself lacks.
     for (const tool of AGENT_TOOLS) {
       for (const mode of supportedPermissionModes(tool, 'acp')) {
         expect(toolSupportsPermissionMode(tool, mode, 'tui'), `${tool}/${mode}`).toBe(true)
@@ -97,11 +94,9 @@ describe('toolSupportsPermissionMode', () => {
   })
 
   it('never defaults a create into a posture its adapter cannot take', () => {
-    // A create that names no posture takes `defaultPermissionMode`, which is
-    // not checked against either column — it is the answer of last resort. So
-    // every cell of it has to be a posture the adapter actually has, or a
-    // containerless create for that tool would launch into the adapter's own
-    // default with nothing refusing it and nothing saying so.
+    // `defaultPermissionMode` is used unchecked when a create names no
+    // posture, so every entry must be one the adapter has; otherwise the
+    // adapter would silently run its own default.
     for (const driver of ['k8s', 'containerless'] as const) {
       for (const tool of AGENT_TOOLS) {
         const fallback = defaultPermissionMode(driver, tool)
@@ -113,9 +108,8 @@ describe('toolSupportsPermissionMode', () => {
 })
 
 /**
- * The one resolution both ends make — the create form to show a field, the
- * server to launch it — so the form always shows what an untouched create
- * would run.
+ * Used by both the create form and the server, so the form shows what an
+ * untouched create would run.
  */
 describe('resolveToolCreateDefaults', () => {
   const resolve = (args: Partial<Parameters<typeof resolveToolCreateDefaults>[0]> = {}) =>
@@ -133,27 +127,24 @@ describe('resolveToolCreateDefaults', () => {
       .toEqual({ model: 'claude-sonnet-5', permissionMode: 'plan' })
   })
 
-  // Recorded under the terminal, asked for in chat: codex's adapter has no
-  // plan mode, so the remembered posture falls through rather than being
-  // refused — it was a preference, not a demand.
-  // With nothing that strict, the agent mode's strictest — never the
-  // driver default, which in a container is bypass.
+  // A remembered posture is a preference, so it falls back rather than
+  // being refused: to the strictest available, never the driver default
+  // (bypass in a container).
   it('lands a remembered posture the agent mode has nothing as strict as on its strictest', () => {
     expect(resolve({ tool: 'codex', agentMode: 'acp', remembered: { permissionMode: 'read-only' } }).permissionMode)
       .toBe('accept-edits')
     expect(resolve({ tool: 'pi', remembered: { permissionMode: 'plan' } }).permissionMode).toBe('bypass')
   })
 
-  // A posture this build does not rank — one a newer build added, read back
-  // with a bare cast — compares with nothing, so it is the strictest there is.
+  // A posture this build doesn't rank (added by a newer build) is treated
+  // as the strictest.
   it('lands a remembered posture this build does not rank on the strictest', () => {
     const unranked = 'dontAsk' as PermissionMode
     expect(resolve({ tool: 'codex', remembered: { permissionMode: unranked } }).permissionMode).toBe('read-only')
     expect(resolve({ tool: 'claude', remembered: { permissionMode: unranked } }).permissionMode).toBe('plan')
   })
 
-  // One it still has something as strict as becomes that, never the default:
-  // a restraint someone chose does not quietly loosen.
+  // A chosen restriction never quietly loosens.
   it('lands a remembered posture the tool lacks on its nearest one no looser', () => {
     expect(resolve({ tool: 'codex', remembered: { permissionMode: 'plan' } }).permissionMode).toBe('read-only')
     expect(resolve({ tool: 'codex', remembered: { permissionMode: 'manual' } }).permissionMode).toBe('read-only')
@@ -161,9 +152,8 @@ describe('resolveToolCreateDefaults', () => {
     expect(resolve({ tool: 'opencode', remembered: { permissionMode: 'auto' } }).permissionMode).toBe('accept-edits')
   })
 
-  // A `provider/model` id names the vendor its key authenticates against; one
-  // for a provider the stored credential no longer names would send the
-  // request to a host the proxy swaps no key on.
+  // A `provider/model` id for a provider other than the stored credential's
+  // would hit a host the proxy swaps no key on.
   it('drops a remembered model for a provider the credential no longer names', () => {
     const remembered = { model: 'openrouter/moonshotai/kimi-k2.6' }
     expect(resolve({ tool: 'opencode', provider: 'openrouter', remembered }).model).toBe(remembered.model)
@@ -175,9 +165,8 @@ describe('resolveToolCreateDefaults', () => {
 
 describe('AGENT_CLIS', () => {
   it('names the version the workspace image installs', () => {
-    // yaac launches each posture as the CLI's own flags and reads the CLI's own
-    // reports back as one, so the image must run the release those were
-    // checked against — the same one a host install asks npm for.
+    // yaac's posture flags were verified against this release, so the image
+    // must run the same one a host install gets from npm.
     const dockerfile = fs.readFileSync(
       path.resolve(import.meta.dirname, '../../../dockerfiles/Dockerfile.tools'),
       'utf8',
@@ -195,13 +184,11 @@ describe('AGENT_CLIS', () => {
 
 describe('ACP_ADAPTERS', () => {
   it('names the version the workspace image installs', () => {
-    // `verified` is what yaac's description of each adapter was checked
-    // against — above all the session modes it advertises, which are read as
-    // permission postures. An adapter that stops advertising one does not
-    // fail; the session silently runs in its default. So nothing but this
-    // catches an image bump that moved the vocabulary out from under
-    // `ACP_SUPPORTED_PERMISSION_MODES` and the driver's mode ids: re-verify
-    // against the new version, then move `verified` here.
+    // `verified` is the version yaac's session-mode mapping was checked
+    // against. An adapter that drops a mode fails silently (the session runs
+    // in its default), so on an image bump re-verify
+    // `ACP_SUPPORTED_PERMISSION_MODES` and the driver's mode ids, then move
+    // `verified`.
     const dockerfile = fs.readFileSync(
       path.resolve(import.meta.dirname, '../../../dockerfiles/Dockerfile.tools'),
       'utf8',

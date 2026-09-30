@@ -1,21 +1,17 @@
 /*
- * Browser test for the webapp terminal's selection patches
- * (src/frontend/lib/selection.ts), driven the same way a user drives it:
- * real Chromium, real xterm.js from the repo's node_modules, real (trusted)
- * mouse/keyboard events via Playwright.
+ * Verifies the terminal selection patches
+ * (packages/frontend/src/lib/selection.ts) in Chromium with the real
+ * xterm.js and trusted Playwright mouse/keyboard events.
  *
- * Simulates tmux by enabling the mouse-tracking modes tmux requests:
- *   1002h (button-event tracking) + 1006h (SGR), re-asserted on "redraws"
- *   the way tmux does, and 1003h (any-motion tracking — what tmux forwards
- *   when a pane TUI subscribes to the mouse).
+ * Simulates the mouse modes tmux requests: 1002h (button-event tracking) +
+ * 1006h (SGR), re-sent on redraws as tmux does, and 1003h (any-motion,
+ * which tmux enables when a pane's TUI subscribes to the mouse).
  *
- * Covers: plain drag = local selection with nothing reported to the pty;
- * Alt+drag = SGR mouse reports to the pty; and the selection surviving
- * keystrokes, typing, bare mouse motion under 1003, and mouse-mode churn.
+ * Checks: a plain drag selects locally and sends nothing to the pty; Alt+drag
+ * sends SGR mouse reports; the selection survives keystrokes, typing, bare
+ * mouse motion under 1003, and mouse-mode changes.
  *
  * Run: node test-playwright-scripts/xterm-selection-test.js
- * (playwright is resolved from the global npm root; browsers live under
- * /opt/playwright-browsers)
  */
 import { execFileSync, execSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -79,7 +75,7 @@ async function main() {
   await page.addScriptTag({ path: patch.outFile })
   patch.cleanup()
 
-  // Build the terminal wired exactly like SessionTerminal.tsx.
+  // Apply WorkspaceTerminal.tsx's selection patches.
   await page.evaluate(() => {
     const term = new window.Terminal({ cursorBlink: false, altClickMovesCursor: false })
     window.term = term
@@ -123,19 +119,19 @@ async function main() {
     await page.mouse.up()
   }
 
-  // --- 1. plain drag selects locally, nothing reported to tmux ---
+  // 1. A plain drag selects locally and reports nothing.
   await takeReports()
   await dragSelect(1, 6, 15)
   const sel = await selection()
   check('plain drag selects text', sel.length > 0, JSON.stringify(sel))
   check('plain drag reports nothing to tmux', (await takeReports()) === '')
 
-  // --- 2. bare mouse move under 1002 (no motion tracking) ---
+  // 2. Bare mouse move under 1002 (no motion tracking).
   await page.mouse.move(...Object.values(at(30, 5)))
   await page.mouse.move(...Object.values(at(2, 6)))
   check('mouse move (1002) keeps selection', (await selection()) === sel)
 
-  // --- 3. keyboard input ---
+  // 3. Keyboard input.
   await page.evaluate(() => window.term.focus())
   await page.keyboard.press('ArrowDown')
   check('arrow key is sent to pty', (await takeReports()).includes('\x1b[B'))
@@ -143,32 +139,32 @@ async function main() {
   await page.keyboard.type('hi')
   check('typing keeps selection', (await selection()) === sel)
 
-  // --- 4. tmux redraw churn: redundant DECSET of the current mode ---
+  // 4. tmux redraw: re-sending the current mode.
   await write('\x1b[?1002h\x1b[?1006h')
   check('mode re-assert keeps selection', (await selection()) === sel, JSON.stringify(await selection()))
 
-  // --- 5. protocol switch to any-motion (TUI subscribed to the mouse) ---
+  // 5. Switch to any-motion tracking.
   await write('\x1b[?1003h')
   check('protocol switch keeps selection', (await selection()) === sel, JSON.stringify(await selection()))
 
-  // --- 6. bare mouse move under 1003: motion IS reported, selection stays ---
+  // 6. Under 1003, motion is reported and the selection stays.
   await takeReports()
   await page.mouse.move(...Object.values(at(25, 3)))
   await page.mouse.move(...Object.values(at(28, 4)), { steps: 3 })
   check('mouse motion is reported to tmux under 1003', (await takeReports()).includes('\x1b[<'))
   check('mouse move (1003) keeps selection', (await selection()) === sel, JSON.stringify(await selection()))
 
-  // --- 7. alt+drag is handed to tmux and leaves the selection alone ---
+  // 7. Alt+drag goes to tmux and leaves the selection alone.
   await takeReports()
   await page.keyboard.down('Alt')
   await dragSelect(2, 4, 12)
   await page.keyboard.up('Alt')
   const altReports = await takeReports()
-  // SGR button codes carry the alt-modifier bit (8): press = <8, drag = <40.
+  // Alt sets bit 8 in the SGR button code: press = <8, drag = <40.
   check('alt+drag reports mouse to tmux', /\x1b\[<(8|40);/.test(altReports), JSON.stringify(altReports.slice(0, 40)))
   check('alt+drag leaves the local selection alone', (await selection()) === sel, JSON.stringify(await selection()))
 
-  // --- 8. a new plain drag replaces the selection; a click clears it ---
+  // 8. A new drag replaces the selection; a click clears it.
   await dragSelect(3, 6, 10)
   const sel2 = await selection()
   check('new drag replaces selection', sel2.length > 0 && sel2 !== sel, JSON.stringify(sel2))

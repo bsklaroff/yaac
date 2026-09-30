@@ -1,18 +1,12 @@
 /**
- * Registry of the live `AcpConversation` objects, so anything holding a
- * conversation's *name* can reach the connection driving it.
+ * Registry of live `AcpConversation`s, so per-client code (a WebSocket
+ * handler, prompt delivery) can reach a conversation owned by the
+ * long-lived status watcher. Like the tmux control-stream registry, an
+ * entry is borrowed; only the registering driver may close it.
  *
- * The same shape as the tmux control-stream registry, and for the same reason:
- * the connection is owned by the long-lived status watcher, but the things
- * that need it — a WebSocket handler, a prompt delivery — are created per
- * client and cannot own the agent's lifetime. An entry is a *borrow*, never a
- * handle to close; the driver that registered it is the only thing allowed to.
- *
- * A conversation has two names and is indexed under both, because the two
- * callers legitimately hold different ones. A pane addresses it by ACP session
- * id (its `acp:<id>` target, which survives a restart because the database
- * remembers it); the driver addresses it by handle — the tmux window / acpd
- * socket name — which is what it knows before the handshake has produced an id.
+ * Indexed by two names: panes use the ACP session id (their `acp:<id>`
+ * target, remembered in the DB across restarts), and the driver uses the
+ * handle (tmux window / acpd socket name), known before the handshake.
  */
 
 import type { AcpConversation } from './acp-client'
@@ -28,9 +22,8 @@ function handleKey(slug: string, workspaceId: string, handle: string): string {
 }
 
 /**
- * Publish a conversation. `agentSessionId` is absent until the handshake
- * produces one, so a fresh conversation is first registered by handle alone
- * and re-registered once `session/new` answers.
+ * Publish a conversation. A fresh one is registered by handle alone, then
+ * again once `session/new` supplies its id.
  */
 export function registerAcpConversation(
   slug: string,
@@ -55,9 +48,8 @@ export function unregisterAcpConversation(
   }
 }
 
-/** The live conversation a pane's `acp:<id>` target names, or undefined when
- *  none is connected right now (the workspace is booting, or its connection is
- *  mid-respawn). */
+/** The live conversation for a pane's `acp:<id>` target, or undefined when
+ *  none is connected (booting, or reconnecting). */
 export function acpConversation(
   slug: string,
   workspaceId: string,
@@ -66,7 +58,7 @@ export function acpConversation(
   return byName.get(sessionKey(slug, workspaceId, agentSessionId))
 }
 
-/** The same, by the driver's in-pod handle. */
+/** The same, by the driver's handle. */
 export function acpConversationByHandle(
   slug: string,
   workspaceId: string,
@@ -82,24 +74,14 @@ export function _resetAcpRegistryForTests(): void {
 }
 
 /**
- * The model a conversation was launched to run, for the adapters that can only
- * be told one over the protocol (`modelVia: 'set_config_option'`).
+ * Launch models for adapters told their model over the protocol
+ * (`modelVia: 'set_config_option'`), parked between building the launch
+ * command and the handshake seconds later. Keyed by launch id: the
+ * workspace id for a fresh conversation, the agent's id for a resumed one.
  *
- * A launch command is authored in one place and the handshake that must carry
- * its model runs in another, seconds later and driven by a different object —
- * so the value is parked here between them rather than threaded through a
- * launch spec, a database column and a connection dep that nothing else would
- * use. Keyed by the conversation's launch id, which is unique by construction:
- * a fresh conversation is launched under its workspace's id, a resumed one under
- * the id the agent minted.
- *
- * Taken once, then forgotten: a reattach must NOT re-send it. The adapter is
- * already holding the model from the first attach, and the user may have
- * changed it since — re-asserting the launch value on a relay hiccup would
- * silently undo their choice. A server that restarts between the launch and the
- * first attach therefore loses the override and the conversation runs the
- * adapter's default; the driver logs that when a fresh attach finds nothing
- * parked.
+ * Taken once: a reattach must not re-send it, since the user may have
+ * changed the model. If the server restarts between launch and first
+ * attach the override is lost and the driver logs it.
  */
 const launchModels = new Map<string, string>()
 

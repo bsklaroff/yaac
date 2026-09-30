@@ -1,18 +1,10 @@
 /**
- * Single-flight orchestration over the image dependency graph.
- *
- * `resolveImageChain` gives each project an ordered list of content-hash
- * tagged layers; this module realizes those layers (and registry pushes)
- * with at most one podman process per tag. Tags are content-addressed, so
- * two projects (or two concurrent workspace creates) that need the same step
- * coalesce onto one build and fan out again on their distinct downstream
- * layers.
- *
- * The server is a single process and every production caller is
- * server-side, so module-level maps are sufficient mutual exclusion (same
- * argument as the prewarm pool's in-flight counters). Winners own the
- * build-registry entry lifecycle (register → ingest log → finish/fail);
- * joiners only attach their project and await the shared promise.
+ * Builds and pushes each project's image chain (from `resolveImageChain`),
+ * running at most one build or push per tag at a time. Tags are content
+ * hashes, so concurrent creates or projects needing the same layer share
+ * one build. Module-level maps are enough locking because the server is a
+ * single process. The first caller owns the build row; later callers
+ * attach their project and await the same promise.
  */
 import { engineForLayer } from './build-engine'
 import { BuilderPodLease } from './builder-pod'
@@ -35,10 +27,8 @@ interface BuildContext {
   project: ProjectRef
   reason: ImageBuildReason
   /**
-   * Builder-pod lease for trust-split untrusted layers, owned by the
-   * ensureImage call that created it — adjacent untrusted layers of one
-   * chain build in the same pod. Ignored by the host engine. Required so no
-   * build path can reach the cluster engine without one.
+   * Builder pod shared by the untrusted layers of one `ensureImage` call,
+   * which owns and releases it.
    */
   lease: BuilderPodLease
 }
@@ -47,31 +37,25 @@ const inflightBuilds = new Map<string, { id: string; promise: Promise<void> }>()
 const inflightPushes = new Map<string, Promise<string>>()
 
 /**
- * Tags verified present (image store / registry respectively) this server
- * run. Content-hash tags are immutable — nothing publishes new bytes under
- * an existing tag — so a verified tag never needs re-checking: this trades
- * a `podman image exists` child process (and a registry HEAD) per layer per
- * create for one per tag per run. The residual staleness (someone prunes
- * the podman store or wipes the registry mid-run) surfaces as a fail-fast
- * ErrImagePull on the next workspace pod, same as any missing immutable tag.
+ * Tags confirmed to be in the registry during this server run (built, or
+ * pushed). Tags are content hashes and never change, so each needs checking
+ * only once. If the registry is wiped mid-run, the next pod fails fast with
+ * ErrImagePull. `forgetVerifiedTags` clears them after GC.
  */
 const realizedTags = new Set<string>()
 const pushedTags = new Set<string>()
 
 /**
- * True while this server is building or pushing an image. Every build ends
- * in registry writes (its step cache, then its product), so the main registry
- * collect stands down on it — the one pusher class the registry's own
- * filesystem signals see late.
+ * True while this server is building or pushing an image. Builds write to
+ * the registry, so main registry GC skips its collect while this is true.
  */
 export function imageWorkInFlight(): boolean {
   return inflightBuilds.size > 0 || inflightPushes.size > 0
 }
 
 /**
- * Forget which tags were verified present. The main registry's GC calls
- * this after it retires tags: a verified tag that has since been retired
- * would otherwise be handed to a pod as a ref that 404s.
+ * Forget which tags were verified present. Main registry GC calls this after
+ * retiring tags, so a retired tag is not handed to a pod.
  */
 export function forgetVerifiedTags(): void {
   realizedTags.clear()
@@ -79,10 +63,8 @@ export function forgetVerifiedTags(): void {
 }
 
 /**
- * Build one layer, coalescing with any in-flight build of the same tag.
- * The winner creates the build-registry entry and owns its lifecycle;
- * joiners attach their project and share the outcome (including a
- * failure, which rejects every waiter).
+ * Build one layer, joining any in-flight build of the same tag. All callers
+ * share the outcome, including a failure.
  */
 export function buildLayerShared(layer: ImageLayer, ctx: BuildContext): Promise<void> {
   const existing = inflightBuilds.get(layer.tag)
@@ -99,8 +81,7 @@ export function buildLayerShared(layer: ImageLayer, ctx: BuildContext): Promise<
     reason: ctx.reason,
   })
   const promise = runBuild(id, layer, ctx)
-  // Set synchronously (before any await inside runBuild resolves) so a
-  // same-tick caller joins instead of double-building.
+  // Set before any await so a same-tick caller joins this build.
   inflightBuilds.set(layer.tag, { id, promise })
   return promise
 }
@@ -128,11 +109,10 @@ async function runBuild(
 }
 
 /**
- * Push a built tag to the local registry, coalescing concurrent pushes of
- * the same tag. Skips both the push and the registry entry when the tag is
- * already present (content-hash tags are immutable) — the background sweep
- * calls this every tick and must not mint a "succeeded push" row each time.
- * Returns the in-cluster ref, like `pushImageToRegistry`.
+ * Push a built tag to the local registry, joining any in-flight push of the
+ * same tag. When the tag is already there, skips the push and creates no
+ * build row (the prewarm sweep calls this every tick). Returns the
+ * in-cluster ref.
  */
 export async function pushImageShared(
   tag: string,
@@ -185,33 +165,23 @@ export interface EnsureImageOpts {
 }
 
 /**
- * Ensures the full image chain is built for a project.
+ * Ensure a project's full image chain is in the registry, and return the
+ * final image tag.
  *
- * Layer 1: yaac-base (Dockerfile.default — Ubuntu + system packages + Node)
- *   Skipped when Dockerfile.yaac is standalone (any FROM that isn't ${BASE_IMAGE}).
- * Layer 1a: yaac-tools (Dockerfile.tools — claude, codex, opencode, etc.)
- *   Included whenever the canonical base is in use.
- * Layer 1b (optional): yaac-nestable (Dockerfile.nestable — in-pod rootless
- *   podman + docker CLI/compose), only when `nestedContainers` is set.
- * Layer 2: yaac-proj-<id> from Dockerfile.yaac — when present:
- *   - layered on Dockerfile.tools / Dockerfile.nestable (when Dockerfile.yaac
- *     uses `ARG BASE_IMAGE` + `FROM ${BASE_IMAGE}`)
- *   - or standalone (replaces the canonical base + tools + nestable)
- * Layer 3 (optional): yaac-user-<id> (~/.yaac/Dockerfile.user, builds on top)
+ * Layer 1: yaac-base (Dockerfile.default: Ubuntu, system packages, Node).
+ *   Skipped when Dockerfile.yaac is standalone (FROM isn't ${BASE_IMAGE}).
+ * Layer 1a: yaac-tools (Dockerfile.tools: claude, codex, opencode, etc.),
+ *   whenever the base is used.
+ * Layer 1b (optional): yaac-nestable (Dockerfile.nestable: in-pod rootful
+ *   podman and the docker CLI), only when `nestedContainers` is set.
+ * Layer 2: yaac-proj-<id> from Dockerfile.yaac, when present: either layered
+ *   on the layers above (`FROM ${BASE_IMAGE}`) or standalone.
+ * Layer 3 (optional): yaac-user-<id> from ~/.yaac/Dockerfile.user.
  *
- * Missing layers build through the single-flight coordinator, so concurrent
- * callers (simultaneous creates, the background prewarm sweep) never run
- * duplicate podman builds of the same tag.
- *
- * Returns the final image name to use for containers.
- *
- * @param imagePrefix - Override for image name prefix. Used by tests to
- *   build isolated images that don't interfere with the running application.
- * @param requirePrebuilt - When true, throw instead of building if the base
- *   image is missing or stale. Used by e2e tests so parallel workers fail
- *   fast instead of racing to build the same image.
- * @param nestedContainers - Include the nestable layer (from the project's
- *   `nestedContainers` config, passed by createWorkspace).
+ * @param imagePrefix - Image name prefix; tests use their own.
+ * @param requirePrebuilt - Throw instead of building a missing layer. Used
+ *   by e2e tests so parallel workers fail fast.
+ * @param nestedContainers - Include the nestable layer.
  */
 export async function ensureImage(
   project: ProjectRef,
@@ -224,16 +194,12 @@ export async function ensureImage(
   const { layers, finalTag } = await resolveImageChain(project, prefix, nestedContainers)
   const reason = opts.reason ?? 'session'
 
-  // One builder pod per request, shared by adjacent untrusted layers.
-  // Created lazily on the first cluster-pod build; a no-op release when
-  // every layer was already in the registry.
+  // One builder pod per call, created only if a layer needs building.
   const lease = new BuilderPodLease()
   try {
     for (const [i, layer] of layers.entries()) {
-      // The registry is authoritative for every layer: it is what a pod
-      // pulls from, whichever side produced the tag. An in-flight build
-      // means the tag is not there yet — join it rather than trusting the
-      // check (podman commits a tag only at the end).
+      // The registry decides whether a layer exists. If a build of the tag
+      // is in flight, join it instead of checking.
       if (!inflightBuilds.has(layer.tag)) {
         if (realizedTags.has(layer.tag)) continue
         if (await registryHasTag(layer.tag)) {

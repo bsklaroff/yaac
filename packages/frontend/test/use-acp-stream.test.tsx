@@ -5,13 +5,9 @@ import { useAcpStream } from '#lib/acp'
 import type { AcpEvent, AcpServerMessage } from '@yaac/shared/acp'
 
 /**
- * The chat pane's transport state machine — attach, replay, busy tracking,
- * reconnect. It is hand-rolled and it decides whether a reconnect shows the
- * conversation or a corrupted merge of two, so it is worth driving rather
- * than trusting.
- *
- * The socket is stubbed at the global, which is the real boundary: everything
- * below `WebSocket` is the browser's, everything above is the code under test.
+ * The chat pane's transport state machine: attach, replay, busy tracking and
+ * reconnect. A bug here can merge two conversations on reconnect. The global
+ * `WebSocket` is stubbed, since everything below it belongs to the browser.
  */
 
 /** A WebSocket the test opens, feeds and closes by hand. */
@@ -72,10 +68,9 @@ const latest = (): FakeSocket => FakeSocket.instances[FakeSocket.instances.lengt
 
 describe('useAcpStream', () => {
   it('holds one socket for as long as it is mounted, and drops it on unmount', async () => {
-    // Mounting is the gate: an off-screen pane stays mounted and keeps its
-    // connection, so a switch back costs nothing. What must not happen is a
-    // socket outliving the pane, or an unmount being mistaken for a drop and
-    // reconnected — a closed pane would then hold a connection forever.
+    // An off-screen pane stays mounted and keeps its connection, so switching
+    // back is free. The socket must not outlive the pane, and an unmount must
+    // not be mistaken for a drop and reconnected.
     vi.useFakeTimers()
     const { unmount } = renderHook(() => useAcpStream('wt-1', 'acp-1'))
     act(() => {
@@ -94,8 +89,8 @@ describe('useAcpStream', () => {
   })
 
   it('opens no socket for a conversation that has no id yet', () => {
-    // A workspace whose agent has not minted a session id is addressed by
-    // nothing; dialling would attach to whatever answers to the empty string.
+    // Without a session id there is nothing to attach to; dialling would
+    // attach to whatever answers to the empty string.
     renderHook(() => useAcpStream('wt-1', ''))
     expect(FakeSocket.instances).toHaveLength(0)
   })
@@ -142,9 +137,8 @@ describe('useAcpStream', () => {
     })
     await waitFor(() => expect(result.current.events).toHaveLength(2))
 
-    // acpd truncated and a new agent life is being recorded. Merging would
-    // leave the old life's events stranded behind the new one's, interleaving
-    // two conversations into a transcript that never existed.
+    // acpd truncated its record and a new agent process is being recorded.
+    // Merging would interleave two conversations into one transcript.
     act(() => {
       latest().deliver(hello([agent(0, 'new one')]))
     })
@@ -153,9 +147,9 @@ describe('useAcpStream', () => {
   })
 
   it('tracks busy across a turn, and clears it on an error', async () => {
-    // Only the server's explicit boundaries move this. `turn-start` covers the
-    // turns the pane cannot infer as well as the ones it could: a turn already
-    // running when the server reattached to the agent was sent by nobody here.
+    // Only the server's explicit turn boundaries change busy. `turn-start`
+    // also covers turns the pane could not infer, such as one already running
+    // when the server reattached to the agent.
     const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1'))
     act(() => {
       latest().open()
@@ -171,7 +165,7 @@ describe('useAcpStream', () => {
     }))
     await waitFor(() => expect(result.current.busy).toBe(false))
 
-    // An error ends the turn too — otherwise a failed turn spins forever.
+    // An error also ends the turn, or a failed turn would spin forever.
     act(() => latest().deliver({ type: 'event', event: { type: 'turn-start', seq: 2 } }))
     await waitFor(() => expect(result.current.busy).toBe(true))
     act(() => latest().deliver({
@@ -182,12 +176,10 @@ describe('useAcpStream', () => {
   })
 
   it('stays idle through a replayed conversation, which carries no turn boundaries', async () => {
-    // What a restart looks like from here: `session/load` re-emits the whole
-    // conversation as live updates, so past user messages arrive one at a time
-    // exactly as a fresh one would. Nothing closes them — boundaries describe
-    // what is happening now and are never recorded — so a pane that read a
-    // `user` event as "a turn began" would sit at `working…` for good, offering
-    // a Stop button with no turn behind it.
+    // After a restart, `session/load` re-emits the whole conversation as live
+    // updates, so past user messages arrive like fresh ones. Turn boundaries
+    // are never recorded, so treating a `user` event as a turn start would
+    // leave the pane stuck at `working…`.
     const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1'))
     act(() => {
       latest().open()
@@ -235,7 +227,7 @@ describe('useAcpStream', () => {
 
     act(() => latest().deliver({ type: 'health', connected: false }))
     await waitFor(() => expect(result.current.connected).toBe(false))
-    // The conversation is still on screen — only the connection went away.
+    // Only the connection went away; the conversation stays on screen.
     expect(result.current.events).toHaveLength(1)
   })
 
@@ -274,9 +266,8 @@ describe('useAcpStream', () => {
   })
 
   it('surfaces the user echo that tells a pane its message was received', async () => {
-    // Writing to a socket is not evidence the server got anything. The
-    // conversation echoing the message back as a `user` event is, and that is
-    // what the pane waits for before it clears the box.
+    // A socket write does not prove the server got the message. The pane
+    // waits for the `user` event echo before it clears the input.
     const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1'))
     act(() => {
       latest().open()

@@ -22,19 +22,12 @@ import {
 const execFileAsync = promisify(execFile)
 
 /**
- * `yaac server start|stop|restart|logs` against a server that is a
- * Deployment (docs/server-in-cluster.md).
+ * `yaac server start|stop|restart|logs` against a server that runs as a
+ * Deployment (docs/server-in-cluster.md). Assertions read the Deployment's
+ * replica count and pods; the host-process form is covered by
+ * test/e2e-containerless/server-lifecycle.test.ts.
  *
- * There is no host process to signal here, so none of the host-lifecycle
- * claims apply — a pid is per-namespace, the bound port is on the pod's own
- * loopback, and "spawn a second one" is precisely what these verbs exist to
- * prevent. What replaces them is the Deployment's replica count and its
- * pods, so that is what this file reads. The host-process form of the same
- * commands is asserted in test/e2e-containerless/server-lifecycle.test.ts.
- *
- * ONE server for the file, per the fixture discipline: every case here
- * leaves it running (or puts it back), so the expensive part — applying the
- * workload and rolling it out — is paid once.
+ * One server for the file: every case leaves it running or restores it.
  */
 describe('yaac server lifecycle against the in-cluster Deployment', () => {
   let testEnv: YaacTestEnv
@@ -73,9 +66,8 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
   }
 
   it('the server that answers the CLI is a pod, and the lock says so', async () => {
-    // The install identity the CLI is talking to is a Deployment's pod, not
-    // a process of this machine — which is exactly what the lock's `host`
-    // field records, and why nothing here may judge it by `pid`.
+    // The server is a pod, not a local process, so the lock's `host`
+    // identifies it and `pid` means nothing here.
     const pods = await serverPods()
     expect(pods).toHaveLength(1)
     const lock = await readLock()
@@ -90,14 +82,11 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
   })
 
   it('walls the API off from a workspace-labelled pod, while the kubelet still reaches it', async () => {
-    // The server pod's ingress policy is an explicit allow — the node
-    // addresses, plus whatever fronts the Service — and on a
-    // credential-optional install it is the whole of what keeps untrusted
-    // code off the control plane (docs/server-in-cluster.md). So a pod
-    // shaped like a workspace, dialing the pod IP directly, must be dropped.
-    // The other half is already proved by this file's fixture: the
-    // Deployment rolled out, so the readiness probe from the node was
-    // admitted by the same policy.
+    // The server pod's ingress policy admits only the node addresses and
+    // whatever fronts the Service; it is what keeps workspace code off the
+    // control plane (docs/server-in-cluster.md). A workspace-like pod
+    // dialing the pod IP must be dropped. The allowed side is shown by the
+    // fixture's rollout: the node's readiness probe got through.
     const { stdout: podIp } = await execFileAsync('kubectl', [
       'get', 'pods', '-n', TEST_NAMESPACE, '-l', 'app=yaac-server',
       '-o', 'jsonpath={.items[0].status.podIP}',
@@ -134,7 +123,7 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
     const res = await runYaac(testEnv.env, 'server', 'start')
     expect(res.exitCode, res.stderr).toBe(0)
     expect(res.stderr).toMatch(/server started at http:\/\/127\.0\.0\.1:/)
-    // Scaling a Deployment that is already at one replica replaces nothing.
+    // Already at one replica, so nothing is replaced.
     expect(await serverPods()).toEqual(before)
     expect(await replicas()).toBe(1)
   })
@@ -150,12 +139,10 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
     const [after] = await serverPods()
     expect(after).not.toBe(before)
     const afterLock = await readLock()
-    // A new pod is a new lease holder: the instance is minted per boot, and
-    // the host is the pod's own name.
+    // A new pod: the instance id is per boot and the host is the pod name.
     expect(afterLock!.instance).not.toBe(beforeLock!.instance)
     expect(afterLock!.host).toBe(after)
 
-    // Still reachable at the same published origin the fixture holds.
     const health = await fetch(`http://127.0.0.1:${server.lock.port}/api/health`)
     expect(health.status).toBe(200)
     expect(await health.json()).toMatchObject({ ok: true, ready: true })
@@ -167,8 +154,7 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
     expect(stop.stderr).toMatch(/Deployment scaled to 0/)
     expect(await replicas()).toBe(0)
 
-    // Stop is a scale, not a delete: the workload — and with it the RBAC and
-    // the ingress policy — is still there for a `start` to undo.
+    // Stop scales to zero; the workload, RBAC and ingress policy remain.
     const start = await runYaac(testEnv.env, 'server', 'start')
     expect(start.exitCode, start.stderr).toBe(0)
     expect(await replicas()).toBe(1)
@@ -191,8 +177,7 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
     const claims = pod.volumes.filter((v) => v.persistentVolumeClaim).map((v) => v.persistentVolumeClaim?.claimName)
     expect(claims.sort()).toEqual(['yaac-global', 'yaac-server-local'])
     expect(pod.volumes.find((v) => v.name === 'node-local')?.hostPath?.path).toMatch(/^\/var\/lib\/yaac\/node\//)
-    // The harness adds its scratch base as a fourth mount (the mock remotes
-    // and source repos live beside the data dir); the data dir itself is
+    // The harness mounts its scratch base too, but the data dir itself is
     // reached only through the claims.
     for (const v of pod.volumes) {
       expect(v.hostPath?.path.startsWith(testEnv.dataDir)).not.toBe(true)
@@ -201,7 +186,6 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
     expect(mounts).toMatchObject({
       global: '/yaac/global', 'server-local': '/yaac/server-local', 'node-local': '/yaac/node-local',
     })
-    // And both claims bound their static volumes into this file's data dir.
     const { stdout: pvcs } = await execFileAsync('kubectl', [
       'get', 'pvc', '-n', TEST_NAMESPACE, '-o', 'jsonpath={range .items[*]}{.metadata.name}={.status.phase}{"\\n"}{end}',
     ])
@@ -209,21 +193,17 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
   })
 
   it('`server logs` prints the log the pod wrote into the server-local claim', async () => {
-    // Read through the pod (`kubectl exec … tail`), not off this host: on a
-    // byo install the server-local claim is a volume this machine never
-    // sees, so every k8s install reads its log where it is mounted.
+    // Read through the pod: on a byo install this host cannot see the
+    // server-local volume.
     const logs = await runYaac(testEnv.env, 'server', 'logs')
     expect(logs.exitCode, logs.stderr).toBe(0)
-    // Bound on the pod interface, not a loopback: a pod's loopback has no
-    // reachable backend, so the Deployment sets YAAC_BIND_ADDR=0.0.0.0.
+    // The Deployment sets YAAC_BIND_ADDR=0.0.0.0 so the Service can reach it.
     expect(logs.stdout).toMatch(/\[server\] listening on 0\.0\.0\.0:/)
   })
 
   it('`server logs -n` and `--lines` take the tail of that same file', async () => {
-    // Line COUNTS, not line contents: a live server appends to this file
-    // while the assertion runs (the kubelet probes /health every 2s), so
-    // "the last line is the one I just wrote" is a race. What the options
-    // promise is how many lines come back, and that is stable.
+    // Assert line counts, not contents: health probes append lines while
+    // the test runs.
     const whole = await runYaac(testEnv.env, 'server', 'logs')
     expect(whole.exitCode, whole.stderr).toBe(0)
     expect(whole.stdout.split('\n').filter(Boolean).length).toBeGreaterThan(2)
@@ -245,8 +225,7 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
       let stdout = ''
       child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
       await waitFor(() => /\[server\] listening on 0\.0\.0\.0:/.test(stdout), 30_000)
-      // A request of our own, so there is a line the follow must pick up
-      // that was not in the file when it started.
+      // A new line the follow must pick up.
       const before = stdout.length
       await fetch(`http://127.0.0.1:${String(server.lock.port)}/api/health`)
       await waitFor(() => stdout.slice(before).includes('GET /api/health 200'), 20_000)

@@ -61,8 +61,7 @@ describe('scanJsonlForward', () => {
   })
 
   it('scans a line that never ends in time linear in its length', async () => {
-    // A transcript is the agent's to write: one with no newline must not
-    // cost the event loop the square of its size.
+    // A huge line must not take quadratic time to scan.
     await fs.writeFile(jsonlPath, 'x'.repeat(16 * 1024 * 1024) + '\n' + JSON.stringify({ type: 'user', text: 'after' }) + '\n')
     const started = Date.now()
     const result = await scanJsonlForward(file, (entry) => (entry as { text?: string }).text)

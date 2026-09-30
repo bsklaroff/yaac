@@ -53,39 +53,32 @@ import {
 const execFileAsync = promisify(execFile)
 
 const UPSTREAM_REGISTRY_PORT = 5000
-/** The image the mock upstream serves; pullable + runnable (busybox). */
+/** The busybox image the mock upstream serves. */
 const UPSTREAM_IMAGE_REF = 'docker.io/library/probe-busybox:1'
 const BUSYBOX_SOURCE = 'docker.io/library/busybox:1.36'
 
 interface MockUpstreamRegistry {
-  /** kind-network IP — the proxy's upstream-redirect target. */
+  /** kind-network IP, the proxy's upstream-redirect target. */
   host: string
   port: number
   stop: () => Promise<void>
 }
 
 /**
- * Stand-in for registry-1.docker.io: a plain registry:2 podman container
- * on the kind network (the same wiring as the local registry — cluster
- * pods reach kind-network containers through the node's SNAT), seeded
- * with a runnable busybox image pushed through its published loopback
- * port. The proxy's upstreamRedirects map swaps the MITM'd
- * registry-1.docker.io hop for this container, so in-session
- * `docker pull` exercises the full redirect → relay → proxy →
- * SNI-allowlist path without touching the real internet. registry:2
- * answers /v2/ unauthenticated, so no token round-trip to auth.docker.io
- * happens.
+ * Stand-in for registry-1.docker.io: a registry:2 podman container on the
+ * kind network, seeded with busybox through its published loopback port.
+ * The proxy's upstream redirects send registry-1.docker.io here, so an
+ * in-workspace `docker pull` takes the real egress and allowlist path
+ * without the internet. registry:2 needs no auth, so auth.docker.io is
+ * never called.
  *
- * Not a cluster pod on purpose: seeding a pod-hosted registry would need
- * a host-side `kubectl port-forward`, but `podman push` executes inside
- * the podman machine VM, whose loopback is not the host's — a published
- * container port is bound in the VM too, which is exactly what the push
- * can reach.
+ * It is a host container rather than a pod because `podman push` may run
+ * inside a podman machine VM, which can reach a published container port
+ * but not a host-side port-forward.
  */
 async function startMockUpstreamRegistry(): Promise<MockUpstreamRegistry> {
-  // The image the local registry already runs — normally present; pull as
-  // a fallback. The owner label is what the global setup's leaked-container
-  // sweep selects on.
+  // Usually present already (the local registry runs it). The owner label
+  // lets the global setup sweep a leaked container.
   try {
     await execFileAsync('podman', ['image', 'inspect', 'docker.io/library/registry:2'])
   } catch {
@@ -149,12 +142,9 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
   let mockRegistry: MockUpstreamRegistry | null = null
   let serverEnv: NodeJS.ProcessEnv
   /**
-   * One nested-containers session shared by the network-path and
-   * CA-bundle cases below. Neither mutates state the other reads, and
-   * provisioning a nested-containers session is expensive enough that
-   * one apiece was the bulk of this file's runtime. The layer-cache case
-   * still creates its own pair — it asserts on what survives a session
-   * DELETE, so it cannot borrow a live one.
+   * One nested-containers workspace shared by the network, registry and
+   * CA-bundle cases. The layer-cache case creates its own, since it asserts
+   * on what survives a workspace stop.
    */
   let sharedJob = ''
   let sharedSessionId = ''
@@ -162,8 +152,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
   let sharedProjectId = ''
   /** A registry stood up for an id no project holds (the isolation test). */
   let orphanRegistryId = ''
-  /** Every project id a registry was stood up for, so afterAll can sweep
-   *  them. */
+  /** Project ids a registry was created for, swept in afterAll. */
   const createdRegistries: string[] = []
 
   async function seedCredentials(): Promise<void> {
@@ -190,8 +179,8 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     const fakeRemote = `https://github.com/test-org/${slug}.git`
     await git(repoPath, ['remote', 'set-url', 'origin', fakeRemote])
     await registerTestProject(server!, slug, fakeRemote)
-    // A re-add's credential needs a name of its own: the first add's
-    // outlives the project's removal.
+    // The first add's credential outlives the project, so a re-add needs a
+    // new name.
     await assignTestGitCredential(
       server!, slug, 'fake-ghp-token', opts.seeded ? `${slug} token (re-add)` : undefined,
     )
@@ -224,7 +213,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     return pod
   }
 
-  /** Wait for the detached cleanup (image salvage → job delete) to finish. */
+  /** Wait for the detached cleanup (image salvage, then job delete) to finish. */
   async function waitForJobGone(jobName: string, timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
@@ -237,9 +226,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     throw new Error(`job ${jobName} still exists after ${timeoutMs}ms`)
   }
 
-  // One server, one mock set, one upstream registry for the whole file:
-  // every test here wants the same wiring, and standing it up per test
-  // cost three server spawns and nine mock-pod starts for three tests.
+  // One server, mock set and upstream registry for the whole file.
   beforeAll(async () => {
     await requirePodman()
     await requireCluster()
@@ -292,14 +279,11 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
   }, 300_000)
 
   /**
-   * Wait until EVERY node has a COMPLETE image-store generation for the
-   * project — a `gen-…` directory carrying the DONE marker the writer pod
-   * writes last. The server enumerates exactly this to decide what a new
-   * pod mounts, and the writer runs one pod per node; session 2 may land
-   * on any node, and one whose writer has not finished would run cold.
-   * The store is NODE-LOCAL under this run's own install hash, a tree the
-   * kind extraMount does not bind to the host, so it is read through the
-   * node itself (`podman exec`, the node being a container).
+   * Wait until every node has a complete image-store generation for the
+   * project (a `gen-*` dir with the writer pod's DONE marker). A new pod
+   * mounts only a complete generation, and the next workspace may land on
+   * any node. The store is node-local and not bound to the host, so it is
+   * read with `podman exec` on the kind node container.
    */
   async function waitForStoreGeneration(projectId: string, timeoutMs: number): Promise<void> {
     const parent = nodeLocalHostPath(imageStoreDir(projectId))
@@ -323,11 +307,10 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
   }
 
   /**
-   * Why a session's engine cannot see the store — for a failure message,
-   * since the cluster (and the server's log with it) is gone by the time
-   * anyone reads one: which node each session's pod ran on and whether it
-   * was a prewarmed spare, every node's store generations, what the
-   * session has mounted, and the server's store and prewarm lines.
+   * Failure diagnostics for a workspace whose engine cannot see the store,
+   * captured now because the cluster is gone by the time anyone reads
+   * them: pod placement, each node's store generations, the workspace's
+   * mounts, and the server's store and prewarm log lines.
    */
   async function podPlacement(job: string): Promise<string> {
     const pods = await kubectlGetJson<{
@@ -362,16 +345,13 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     const slug = 'nested-cache'
     await setupProject(slug)
 
-    // --- Session 1 ---
     const session1 = await createWorkspace(slug)
     const name1 = session1.jobName
 
-    // Architectural wiring: the docker CLI speaks to the ROOTFUL in-pod
-    // podman socket, the engine takes the node-local image store as its one
-    // read-only lower (a cache of the project registry, which is still what
-    // the salvage pushes to and what survives a node dying), and the
-    // registry is reachable as an insecure (plain HTTP) registry via the
-    // per-project drop-in.
+    // The docker CLI talks to the rootful in-pod podman, the engine uses
+    // the node-local image store (a cache of the project registry) as a
+    // read-only store, and the project registry is configured as plain
+    // HTTP.
     const { stdout: dockerVer } = await execInJob(name1, ['docker', 'version'], { timeout: 30_000 })
     expect(dockerVer.toLowerCase()).toContain('podman')
     const { stdout: storageConf } = await execInJob(name1, [
@@ -382,23 +362,20 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
       'cat', '/etc/containers/registries.conf.d/yaac-project-registry.conf',
     ])
     const registryHost = /location = "([^"]+)"/.exec(regConf)?.[1] ?? ''
-    // Named by the project's id, never its slug.
+    // Named by project id, not slug.
     expect(registryHost.startsWith(`yaac-reg-${session1.projectId!}.`), registryHost).toBe(true)
     expect(registryHost.endsWith(':5000'), registryHost).toBe(true)
     expect(regConf).toContain('insecure = true')
 
-    // The rootful graphroot (a root-owned tmpfs at /var/lib/containers) is
-    // populated by the engine; assert a root write lands.
+    // The rootful graphroot (/var/lib/containers) is writable by root.
     const { stdout: graphProbe } = await execInJob(name1, [
       'sh', '-c',
       'sudo sh -c "echo probe > /var/lib/containers/.yaac-write-probe" && echo WRITABLE',
     ])
     expect(graphProbe.trim()).toBe('WRITABLE')
 
-    // Build a two-step image (FROM scratch — no network involved). The
-    // second step exists so the build leaves an INTERMEDIATE image behind:
-    // that is what a later, divergent build has to match, and it only
-    // survives if the salvage carried the ancestor chain too.
+    // A two-step FROM scratch build, so it leaves an intermediate image
+    // that a later divergent build can reuse if the salvage kept it.
     const buildProbe = (tag: string, lastStep: string): string =>
       'mkdir -p /tmp/b && cd /tmp/b && '
       + 'echo cache-payload > marker && '
@@ -415,73 +392,47 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     }
     const imageId1 = await inspect(name1, 'yaac-cache-probe:v1', 'Id')
     const parentId1 = await inspect(name1, 'yaac-cache-probe:v1', 'Parent')
-    // The CONTENT identity: diff_ids are digests of the UNCOMPRESSED
-    // layers, so they are the part a re-compression cannot touch, and they
-    // are what podman's build cache matches on.
+    // diff_ids digest the uncompressed layers, so recompression cannot
+    // change them, and podman's build cache matches on them.
     const layers1 = await inspect(name1, 'yaac-cache-probe:v1', 'RootFS.Layers')
     expect(layers1).toMatch(/sha256:[0-9a-f]{64}/)
-    // Both real ids (the `sha256:` prefix is engine-dependent) — in
-    // particular a NON-empty parent, since every "reused the intermediate"
-    // assertion below would pass vacuously against two empty strings.
+    // Real ids, including a non-empty parent, so the comparisons below are
+    // not vacuous.
     expect(imageId1).toMatch(/^(sha256:)?[0-9a-f]{64}$/)
     expect(parentId1).toMatch(/^(sha256:)?[0-9a-f]{64}$/)
 
-    // --- Delete session 1 ---
-    // Detached cleanup order: image salvage (in-pod survey → in-pod push to
-    // the project registry) → job delete. Job absence proves the whole
-    // pipeline ran.
-    // Where session 1 ran, for a failure below: its pod is gone by then.
+    // Stopping runs the image salvage (push to the project registry), then
+    // deletes the job. Record placement first for diagnostics.
     const session1Placement = await podPlacement(name1)
     const { exitCode: delExit } = await runYaac(serverEnv, 'workspace', 'stop', session1.workspaceId)
     expect(delExit).toBe(0)
     await waitForJobGone(name1, 300_000)
 
-    // The salvage's push is what triggers a node image-store rebuild, and a
-    // create only mounts a generation that is already COMPLETE — so a
-    // session started before the writer pod finishes gets a cold engine.
-    // That is the intended product behavior (a create must never block on a
-    // multi-minute build), which makes waiting the test's job, not the
-    // server's.
+    // The salvage triggers a store rebuild. Create never waits for it, so
+    // the test does.
     await waitForStoreGeneration(session1.projectId!, 600_000)
 
-    // --- Session 2 ---
     const session2 = await createWorkspace(slug)
     expect(session2.workspaceId).not.toBe(session1.workspaceId)
 
-    // The store is mounted, and genuinely read-only to the session —
-    // enforced host-side by the gofer rather than by anything in-sandbox:
-    // the engine runs as real root with CAP_SYS_ADMIN inside the sentry, so
-    // nothing in the pod is what stops one session corrupting the store
-    // every other session on the node reads. Probed on session 2, not
-    // session 1: a create only mounts a generation that is already
-    // complete, so session 1 (which is what triggers the first build) has
-    // no store mounted at all and its /var/lib/shared-images is the image's
-    // own writable directory.
+    // The store is read-only even to in-pod root. gVisor's gofer enforces
+    // that outside the sandbox, protecting a store every workspace on the
+    // node shares. Probed on workspace 2, since workspace 1 had no store.
     const { stdout: roProbe } = await execInJob(session2.jobName, [
       'sh', '-c', 'sudo touch /var/lib/shared-images/probe 2>&1 || echo READ-ONLY',
     ])
     expect(roProbe).toContain('READ-ONLY')
 
-    // The salvage's product is visible in the project's registry: the image
-    // under its own name, and its ancestor chain under bounded
-    // `yaac-cache-<tag>-<n>` tags in the same repo.
+    // The salvaged image is in the project registry, with its ancestors
+    // under `yaac-cache-<tag>-<n>` tags in the same repo.
     const { stdout: catalog } = await execInJob(session2.jobName, [
       'sh', '-c', `curl -fsS --max-time 20 http://${registryHost}/v2/_catalog`,
     ], { timeout: 30_000 })
-    // ONE repo, under the name the ENGINE knows the image by. The probe is
-    // built through the session's docker CLI, which resolves an unqualified
-    // `-t yaac-cache-probe:v1` the way `docker pull nginx` resolves — to
-    // docker.io (Dockerfile.nestable's unqualified-search-registries) — so
-    // the engine reports `docker.io/library/yaac-cache-probe:v1` where a
-    // native `podman build` would have said `localhost/...`. The salvage
-    // keeps a registry-qualified name whole (it is what a later prime pulls
-    // and re-tags by, which is how `yaac-cache-probe:v1` resolves again in
-    // session 2 below) and strips only the `localhost/` prefix.
-    //
-    // The claim worth guarding is the ONE-repo one: a single catalog entry
-    // for this image, never a second alias beside it — the copies would
-    // share no layer blobs, since the salvage compresses at level 1 where
-    // a host push writes gzip's default level.
+    // Exactly one repo, named as the engine knows the image. docker
+    // resolves an unqualified tag to docker.io (Dockerfile.nestable's
+    // unqualified-search-registries), and the salvage keeps that name so
+    // it resolves again in workspace 2. A second alias repo would share no
+    // layer blobs with the first.
     const probeRepos = (JSON.parse(catalog) as { repositories: string[] })
       .repositories.filter((r) => r.endsWith('yaac-cache-probe'))
     expect(probeRepos).toEqual(['docker.io/library/yaac-cache-probe'])
@@ -493,9 +444,8 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     expect(tags).toContain('"v1"')
     expect(tags).toContain('"yaac-cache-v1-1"')
 
-    // The node image store carries them into session 2's engine as a
-    // read-only lower, so session 1's image is reachable there by NAME and
-    // is the SAME IMAGE CONTENT: every uncompressed layer digest matches.
+    // Workspace 2's engine sees the same image by name, with the same
+    // layers.
     const s2Id = await inspect(session2.jobName, 'yaac-cache-probe:v1', 'Id')
     if (!/^(sha256:)?[0-9a-f]{64}$/.test(s2Id)) {
       throw new Error(`session 2 cannot resolve yaac-cache-probe:v1 (${s2Id})\n`
@@ -503,35 +453,21 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     }
     const s2Parent = await inspect(session2.jobName, 'yaac-cache-probe:v1', 'Parent')
     expect(await inspect(session2.jobName, 'yaac-cache-probe:v1', 'RootFS.Layers')).toBe(layers1)
-    // Byte-identical IDENTITY, both for the image and the intermediate it
-    // hangs off. An image id is its config digest, so this is the assertion
-    // that guards the round trip's one hard requirement: the salvage must
-    // not rewrite an image on the way through the registry. It would if the
-    // push forced a compression the source manifest schema has no media
-    // type for (zstd on docker-schema2 — SALVAGE_COMPRESSION), and the
-    // rewritten image then carries the wrong manifest type for the build
-    // that wants it: buildah only matches a cache candidate whose type
-    // equals the format the build emits, so every "Using cache" below would
-    // go quiet while every content assertion above stayed green.
+    // Identical image and parent ids: the salvage must not rewrite the
+    // image. Forcing a compression the manifest type cannot express (see
+    // SALVAGE_COMPRESSION) would change its type, and buildah would then
+    // stop matching it as a cache candidate.
     expect(s2Id).toBe(imageId1)
     expect(s2Parent).toBe(parentId1)
 
-    // Rebuilding the identical Dockerfile must REUSE the salvaged layers
-    // rather than re-run the steps — the entire point of carrying them
-    // through the registry.
-    //
-    // Asserted on the builder's own cache accounting, not on image ids: a
-    // re-run of a deterministic `COPY` lands the same diff_ids whether it
-    // hit cache or not, so "Using cache" is the only signal that separates
-    // reuse from a cheap rebuild.
+    // An identical rebuild must reuse the salvaged layers. Check "Using
+    // cache", since a re-run COPY yields the same ids anyway.
     const { stdout: v2Out } = await execInJob(session2.jobName, ['sh', '-c',
       buildProbe('yaac-cache-probe:v2', 'marker2') + ' 2>&1'], { timeout: 120_000 })
     expect(v2Out, `identical rebuild re-ran its steps:\n${v2Out}`).toContain('Using cache')
 
-    // And a build that DIVERGES at the last step still hits the cache for
-    // the shared PREFIX: the first COPY comes from the salvaged ancestor
-    // chain (the `yaac-cache-v1-1` tag above), which this pod never built
-    // itself, and only the final step runs.
+    // A build that diverges at the last step still reuses the shared
+    // prefix from the salvaged ancestor (`yaac-cache-v1-1`).
     const { stdout: v3Out } = await execInJob(session2.jobName, ['sh', '-c',
       buildProbe('yaac-cache-probe:v3', 'marker3') + ' 2>&1'], { timeout: 120_000 })
     expect(v3Out, `divergent rebuild reused no prefix:\n${v3Out}`).toContain('Using cache')
@@ -542,8 +478,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
 
   it('pulls through the proxy, serves on localhost, runs compose builds, and denies non-allowlisted pulls', async () => {
     const name = sharedJob
-    // Helper: poll an in-session curl until it succeeds (the container
-    // takes a beat to bind after `docker run`/`compose up`).
+    // Poll until the container has bound its port.
     const curlUntil = async (url: string): Promise<string> => {
       for (let i = 0; i < 40; i++) {
         try {
@@ -558,42 +493,32 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
       return ''
     }
 
-    // Allowlisted pull: docker.io resolves to registry-1.docker.io, whose
-    // 443 dial rides the pod-netns REDIRECT → relay → proxy transparent
-    // listener (PP2 session identity), is judged against the allowlist
-    // (auto-extended for nested sessions), MITM'd (the engine trusts the
-    // proxy CA via SSL_CERT_FILE), and upstream-redirected to the mock
-    // registry.
+    // Allowlisted pull: registry-1.docker.io goes through the egress
+    // redirect to the proxy, which checks the allowlist (extended for
+    // nested workspaces), MITMs it (the engine trusts the proxy CA via
+    // SSL_CERT_FILE), and forwards to the mock registry.
     await execInJob(name, [
       'sh', '-c', `docker pull ${UPSTREAM_IMAGE_REF}`,
     ], { timeout: 180_000 })
 
-    // A process INSIDE a nested container reaches the network too: under
-    // netns=host the container shares the pod netns, so its DNS hits the
-    // relay stub and its egress rides the same REDIRECT → relay → proxy
-    // path as the engine's pulls above. Three signals prove the container
-    // is on the managed network and the proxy governs it:
-    //  (a) DNS resolves to the relay stub's dummy IP (the container uses
-    //      the pod resolver, whose udp/53 is REDIRECTed to the stub).
+    // Nested containers share the pod's network namespace, so their DNS
+    // and egress go through the proxy too:
+    //  (a) external names resolve to the proxy's DNS sinkhole address.
     const { stdout: nestedDns } = await execInJob(name, [
       'sh', '-c',
       `docker run --rm ${UPSTREAM_IMAGE_REF} nslookup registry-1.docker.io 2>&1 `
       + '| grep -c 198.18.0.1 || true',
     ], { timeout: 120_000 })
     expect(Number(nestedDns.trim())).toBeGreaterThan(0)
-    //  (b) a TCP connect to an allowlisted host:443 is accepted — the
-    //      container's outbound 443 is REDIRECTed to the loopback relay
-    //      (which forwards to the proxy), so the connection establishes.
+    //  (b) a TCP connect to an allowlisted host:443 succeeds.
     const { stdout: nestedTcp } = await execInJob(name, [
       'sh', '-c',
       `docker run --rm ${UPSTREAM_IMAGE_REF} `
       + `sh -c 'nc -w 5 -z registry-1.docker.io 443 && echo NESTED_NET_OK || echo NESTED_NET_FAIL'`,
     ], { timeout: 120_000 })
     expect(nestedTcp).toContain('NESTED_NET_OK')
-    //  (c) an HTTP request to a NON-allowlisted host is denied by the proxy
-    //      with 403 — fail-closed governance applies to nested containers,
-    //      not just the engine. (HTTP, not HTTPS, so busybox needs no TLS;
-    //      the 403 proves the request reached the proxy and was judged.)
+    //  (c) plain HTTP to a non-allowlisted host gets the proxy's 403
+    //      (HTTP so busybox needs no TLS).
     const { stdout: nestedBlocked } = await execInJob(name, [
       'sh', '-c',
       `docker run --rm ${UPSTREAM_IMAGE_REF} `
@@ -601,11 +526,8 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     ], { timeout: 120_000 })
     expect(Number(nestedBlocked.trim())).toBeGreaterThan(0)
 
-    // docker run: nested containers share the pod netns (netns="host"), so
-    // a container's listener is directly reachable on the session's
-    // loopback at its own port — `curl localhost:<port>` just works. (The
-    // `-p` publish flag is a no-op under host networking; the app binds
-    // the port itself.)
+    // With the shared network namespace, a container's listener is on the
+    // workspace's localhost (no `-p` needed).
     await execInJob(name, [
       'sh', '-c',
       `docker run -d --name web ${UPSTREAM_IMAGE_REF} `
@@ -613,10 +535,8 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     ], { timeout: 120_000 })
     expect((await curlUntil('http://localhost:18080/')).trim()).toBe('hello-from-nested')
 
-    // docker compose up --build: the Dockerfile's RUN step exercises the
-    // build path's overlay/proc/tmpfs mounts under the sentry.
-    // network_mode: host keeps the service on the pod netns (the same
-    // localhost-reachability as `docker run` above).
+    // compose up --build: the RUN step exercises the build's mounts under
+    // gVisor, and network_mode: host keeps the service on localhost.
     await execInJob(name, [
       'sh', '-c',
       'mkdir -p /tmp/composeproj && cd /tmp/composeproj && '
@@ -629,12 +549,9 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
       'sh', '-c', 'cd /tmp/composeproj && docker compose down',
     ], { timeout: 60_000 }).catch(() => { /* best-effort */ })
 
-    // Chatty RUN step: floods stdout past the sentry's stdio-relay break
-    // (buildah's default oci isolation dies with EPIPE after a few tens
-    // of KB of RUN output — killing e.g. apt-get in real base builds —
-    // while quiet builds pass). The engine runs with
-    // BUILDAH_ISOLATION=chroot (session-create's engine start) exactly so
-    // this survives; FINAL_MARKER proves the step ran to completion.
+    // A RUN step with lots of output. Under gVisor, buildah's default oci
+    // isolation dies with EPIPE after a few tens of KB of output, so the
+    // engine uses BUILDAH_ISOLATION=chroot (yaac-workspace-init).
     const { stdout: floodOut } = await execInJob(name, [
       'sh', '-c',
       'mkdir -p /tmp/floodbuild && cd /tmp/floodbuild && '
@@ -644,8 +561,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     expect(floodOut).toContain('FINAL_MARKER')
     expect(floodOut).not.toContain('broken pipe')
 
-    // Blocked pull: example.com is not on the allowlist — the proxy
-    // denies at the SNI judgment, fail-closed and fast (no hang).
+    // A non-allowlisted pull fails fast rather than hanging.
     const started = Date.now()
     let blockedFailed = false
     try {
@@ -664,36 +580,28 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     const regName = projectRegistryName(sharedProjectId)
     const regHost = projectRegistryHost(sharedProjectId)
 
-    // --- Appears, with an allocator-assigned (no longer pinned) ClusterIP ---
     const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
       'get', 'service', regName, '-n', k8sNamespace(),
     ])
     const regVip = svc?.spec?.clusterIP
     expect(regVip).toBeTruthy()
 
-    // The proxy's split-horizon DNS forwards `*.svc` to cluster DNS, so the
-    // registry name resolves to its live ClusterIP from inside the session —
-    // no hostAliases, no pin.
+    // The proxy's DNS forwards cluster names to cluster DNS, so the
+    // registry resolves to its ClusterIP from the workspace.
     const { stdout: hostsOut } = await execInJob(name, [
       'getent', 'hosts', projectRegistryHostname(sharedProjectId),
     ])
     expect(hostsOut).toContain(regVip)
 
-    // The per-project workspaces NetworkPolicy is the SOLE hole through the
-    // workspace-egress policy's default-deny (no blanket in-cluster allowance
-    // anymore): plain-HTTP :5000 answers from inside the session.
+    // The per-project NetworkPolicy is the only in-cluster exception to
+    // the workspace egress default-deny.
     const { stdout: ping } = await execInJob(name, [
       'sh', '-c', `curl -fsS --max-time 5 http://${regHost}/v2/ >/dev/null && echo REG_OK`,
     ], { timeout: 30_000 })
     expect(ping).toContain('REG_OK')
 
-    // --- Cross-project isolation (issue #17) ---
-    // Stand up a SECOND project's registry (no session needed) and assert
-    // this project's session cannot reach it: nothing admits the flow —
-    // the workspace-egress policy has no in-cluster allowance, the other
-    // project's workspaces NetworkPolicy does not select this pod, and the
-    // other registry's ingress policy does not admit it. curl must time out
-    // (policy drop), not answer.
+    // Another project's registry must be unreachable: no policy admits
+    // this pod, so curl times out.
     const other = { slug: 'nested-registry-other', id: crypto.randomUUID() }
     orphanRegistryId = other.id
     createdRegistries.push(other.id)
@@ -705,9 +613,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     ], { timeout: 30_000 })
     expect(cross).toContain('CROSS_BLOCKED')
 
-    // --- Push from the session by svc name ---
-    // The registry is already project-scoped, so the ref needs no
-    // per-project repo prefix — push straight to <host>/probe:v1.
+    // Push by Service name. The registry is per project, so no repo prefix.
     await execInJob(name, [
       'sh', '-c',
       'mkdir -p /tmp/p && cd /tmp/p && '
@@ -721,11 +627,9 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     ], { timeout: 30_000 })
     expect((JSON.parse(tags) as { tags: string[] }).tags).toContain('v1')
 
-    // --- Node containerd pulls the pushed ref via hosts.toml ---
-    // The image is FROM scratch (no entrypoint), so a SUCCESSFUL pull
-    // ends in a container-create error — what this asserts is that the
-    // pull itself never fails (ErrImagePull would mean the node could
-    // not resolve the svc host to the pinned-VIP URL).
+    // The node can pull the pushed ref (via hosts.toml). The image has no
+    // entrypoint, so a successful pull ends in a container-create error;
+    // only ErrImagePull counts as failure.
     const podName = `reg-pull-probe-${crypto.randomBytes(3).toString('hex')}`
     await kubectlWithRetry([
       'run', podName, `--image=${regHost}/probe:v1`,
@@ -770,24 +674,15 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
   }, 900_000)
 
   it('trusts the MITM CA for own-bundle tools (curl) via the combined bundle', async () => {
-    // The own-bundle tools (curl, requests, cargo, git-libcurl) ignore
-    // SSL_CERT_FILE and REPLACE their trust set with a single *_CA_BUNDLE
-    // file. Pointed at the lone proxy CA they reject the real cert of every
-    // tunnelled host; pointed at the combined bundle {public roots} ∪ {proxy
-    // CA} they trust both intercepted and tunnelled hosts. This proves the
-    // combined bundle is (1) functionally trusted by curl on a MITM'd host,
-    // (2) a real superset (public roots + the proxy CA), and (3) wired into
-    // nested containers AND `docker build` RUN steps — the exact place a
-    // nested Dockerfile's `RUN curl ...` needs it. See
-    // docs/nested-containers.md.
+    // Tools like curl, requests, cargo and git ignore SSL_CERT_FILE and use
+    // a single *_CA_BUNDLE file, so it must hold the public roots plus the
+    // proxy CA (docs/nested-containers.md). Checks that the bundle works,
+    // contains both, and reaches nested containers and build RUN steps.
     const name = sharedJob
 
-    // (1) Functional: the session's own curl (OpenSSL-linked, honors
-    // CURL_CA_BUNDLE) reaches a MITM'd host. github.com is allowlisted and
-    // redirected to the mock git server, so the proxy MITMs it — curl must
-    // validate the proxy-signed leaf against the combined bundle. No `-f`:
-    // any HTTP status proves the TLS handshake validated; a rejected cert
-    // makes curl exit non-zero with http_code 000.
+    // (1) curl validates the proxy's leaf for github.com (MITM'd to the
+    // mock git server). Any HTTP status means TLS passed; a rejected cert
+    // gives 000.
     let httpCode = ''
     for (let i = 0; i < 20; i++) {
       try {
@@ -802,8 +697,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     }
     expect(httpCode).toMatch(/^[1-9]\d{2}$/)
 
-    // (2) Superset: the bundle the vars point at contains the proxy CA AND
-    // the full public root set (so tunnelled upstreams keep validating).
+    // (2) The bundle has the public roots and the proxy CA.
     const { stdout: subjects } = await execInJob(name, [
       'sh', '-c',
       'openssl crl2pkcs7 -nocrl -certfile /etc/yaac/certs/ca-bundle.pem '
@@ -813,9 +707,8 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     expect(certCount).toBeGreaterThan(100)        // public roots present
     expect(subjects).toContain('yaac Proxy CA')   // proxy MITM CA present
 
-    // (3a) Nested container: containers.conf mounts the combined bundle and
-    // points every own-bundle var at it. busybox has no curl, but the trust
-    // wiring curl would read is provably present in the nested container.
+    // (3a) containers.conf mounts the bundle into nested containers and
+    // points every *_CA_BUNDLE var at it.
     const { stdout: nestedEnv } = await execInJob(name, [
       'sh', '-c',
       `docker run --rm ${UPSTREAM_IMAGE_REF} sh -c `
@@ -831,18 +724,14 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     ])
     expect(Number(nestedLines[4])).toBeGreaterThan(100)
 
-    // (3b) `docker build` RUN step. buildah does NOT apply containers.conf
-    // [containers] env to build RUN steps (verified — CURL_CA_BUNDLE is empty
-    // there), but it DOES apply [containers] volumes. Build-time trust rides a
-    // ca-certificates DROP-IN: the bare proxy CA is bind-mounted into
-    // /usr/local/share/ca-certificates/, which `update-ca-certificates` folds
-    // into the image's real roots. Two RUN steps assert the mechanism with no
-    // network and no curl (busybox lacks both):
-    //   (i)  the drop-in is present in the build and IS the proxy CA, AND
-    //   (ii) the EBUSY regression is gone — replacing the managed bundle the
-    //        exact way update-ca-certificates does (temp file + `mv`) must
-    //        succeed. With a bind-mount over that file it failed
-    //        "mv: ... Device or resource busy"; with the drop-in it does not.
+    // (3b) buildah applies containers.conf volumes but not env to RUN
+    // steps, so build-time trust is a ca-certificates drop-in: the proxy CA
+    // is mounted into /usr/local/share/ca-certificates/ for
+    // `update-ca-certificates` to pick up. The RUN steps check that
+    //   (i)  the drop-in is the proxy CA, and
+    //   (ii) the OS bundle can still be replaced the way
+    //        update-ca-certificates does it (temp file + `mv`), which a
+    //        bind mount over that file would block with EBUSY.
     const dropIn = '/usr/local/share/ca-certificates/yaac-proxy-ca.crt'
     const osStore = '/etc/ssl/certs/ca-certificates.crt'
     const dockerfile =
@@ -857,8 +746,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     ], { timeout: 180_000, maxAttempts: 1 })
   }, 900_000)
 
-  // Runs last on purpose: it stops the shared session and removes the
-  // project, which every test above needs intact.
+  // Runs last: it stops the shared workspace and removes the project.
   it('keeps the project registry across workspace stop, and never hands it to a re-added project', async () => {
     const slug = 'nested-shared'
     const regName = projectRegistryName(sharedProjectId)
@@ -867,18 +755,14 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     expect(exitCode).toBe(0)
     sharedSessionId = ''
 
-    // --- The registry is per-PROJECT, so it outlives the workspace ---
+    // The registry is per project, so it outlives the workspace.
     const depAfterDelete = await kubectlGetJson<{ metadata?: { name?: string } }>([
       'get', 'deployment', regName, '-n', k8sNamespace(),
     ])
     expect(depAfterDelete?.metadata?.name).toBe(regName)
 
-    // --- Remove the project and add the same remote back ---
-    // The re-added project gets a fresh id, so its registry is a different
-    // Service with an empty catalog — the `probe:v1` the old one holds
-    // (pushed above) must not be visible to it, whether or not the old
-    // registry's removal succeeded.
-    // No CLI verb removes a project; the webapp's route is the one door.
+    // Remove the project (API only; no CLI verb) and re-add the same
+    // remote. The new project id gets a new, empty registry.
     const removed = await makeServerApiClient(server!).project[':slug'].$delete({ param: { slug } })
     expect(removed.ok, await removed.text()).toBe(true)
     await setupProject(slug, { seeded: true })
@@ -894,13 +778,11 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
       'sh', '-c', `curl -fsS --max-time 20 http://${projectRegistryHost(readded.projectId!)}/v2/_catalog`,
     ], { timeout: 60_000 })
     expect((JSON.parse(catalog) as { repositories: string[] }).repositories).toEqual([])
-    // The removal took the old registry with it.
+    // The old registry was removed with the project.
     expect(await kubectlGetJson(['get', 'service', regName, '-n', k8sNamespace()])).toBeNull()
 
-    // --- An orphan (no live project holds its id) is swept by id ---
-    // The isolation test's second registry was never a project's. `now` is
-    // pushed past the sweep's minimum age, which exists for registries a
-    // pass stands up after reading the live set.
+    // A registry whose id no project holds is swept. `now` is pushed past
+    // the sweep's minimum age.
     const otherName = projectRegistryName(orphanRegistryId)
     await gcOrphanProjectRegistries(
       new Set(createdRegistries.filter((id) => id !== orphanRegistryId && id !== sharedProjectId)),

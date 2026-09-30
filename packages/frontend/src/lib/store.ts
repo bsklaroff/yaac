@@ -18,21 +18,18 @@ const MOBILE_SCREEN_LS_KEY = 'yaac.mobilescreen.v1'
 const SIDEBAR_WIDTH_LS_KEY = 'yaac.sidebarwidth.v1'
 const EDITOR_FONT_LS_KEY = 'yaac.editorfontsize.v1'
 
-/** Desktop workspace-sidebar width, in px: the drag handle's resting place and
- *  the bounds it may be dragged between. The floor keeps a row's name and its
- *  chits legible; the ceiling keeps the pane the larger half on a laptop. */
+/** Desktop sidebar width in px: the default and the drag bounds. */
 export const DEFAULT_SIDEBAR_WIDTH = 256
 export const MIN_SIDEBAR_WIDTH = 180
 export const MAX_SIDEBAR_WIDTH = 640
 
-/** Hold a dragged/restored width inside the bounds (exported for tests). */
+/** Clamp a sidebar width to the bounds. */
 export function clampSidebarWidth(px: number): number {
   if (!Number.isFinite(px)) return DEFAULT_SIDEBAR_WIDTH
   return Math.round(Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, px)))
 }
 
-/** Persisted sidebar width, falling back to the default when unset or
- *  unparseable (exported for tests). */
+/** Saved sidebar width, or the default when unset or invalid. */
 export function loadSidebarWidth(): number {
   try {
     if (typeof localStorage !== 'undefined') {
@@ -46,14 +43,14 @@ export function loadSidebarWidth(): number {
   return DEFAULT_SIDEBAR_WIDTH
 }
 
-/** Persist the sidebar width; best-effort (exported for tests). */
+/** Save the sidebar width (best-effort). */
 export function persistSidebarWidth(px: number): void {
   try {
     if (typeof localStorage !== 'undefined') localStorage.setItem(SIDEBAR_WIDTH_LS_KEY, String(px))
   } catch { /* non-fatal — the width just won't stick */ }
 }
 
-/** Whether the attention chime plays; defaults on (exported for tests). */
+/** Whether the attention chime plays; on by default. */
 export function loadSoundEnabled(): boolean {
   try {
     if (typeof localStorage !== 'undefined') return localStorage.getItem(SOUND_LS_KEY) !== '0'
@@ -61,7 +58,7 @@ export function loadSoundEnabled(): boolean {
   return true
 }
 
-/** Persist the sound preference; best-effort (exported for tests). */
+/** Save the sound preference (best-effort). */
 export function persistSoundEnabled(enabled: boolean): void {
   try {
     if (typeof localStorage !== 'undefined') localStorage.setItem(SOUND_LS_KEY, enabled ? '1' : '0')
@@ -76,8 +73,7 @@ export const MAX_EDITOR_FONT_SIZE = 24
 const clampEditorFontSize = (px: number): number =>
   Math.min(MAX_EDITOR_FONT_SIZE, Math.max(MIN_EDITOR_FONT_SIZE, Math.round(px)))
 
-/** Persisted editor font size, clamped; the default when unset or unparseable
- *  (exported for tests). */
+/** Saved editor font size, clamped, or the default when unset or invalid. */
 export function loadEditorFontSize(): number {
   try {
     const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(EDITOR_FONT_LS_KEY) : null
@@ -87,33 +83,23 @@ export function loadEditorFontSize(): number {
 }
 
 /**
- * Which of the three mobile screens is showing. Below the mobile breakpoint
- * the desktop's rail / sidebar / pane columns become full-screen views the
- * user moves between; above it this is inert and nothing reads it.
+ * Which of the three mobile screens is showing (docs/mobile-layout.md).
+ * Unused above the mobile breakpoint.
  *
- * Deliberately explicit rather than derived from
- * `activeProjectSlug`/`selectedWorkspaceId`, which it looks like it could be:
- * App fills the pane on the user's behalf when a project switch or a
- * vanished workspace leaves the selection empty, so a derived screen would
- * jump straight past the workspace list on every project tap.
- *
- * Navigation follows user *intent* instead, which means each change has two
- * actions: the one a tap goes through moves the screen (`setActiveProject`,
- * `selectWorkspace`, `openWorkspace`) and the one the app's own effects go
- * through does not (`restoreActiveProject`, `autoSelectWorkspace`).
+ * Stored rather than derived from the selection, because App auto-selects a
+ * workspace after a project switch, and a derived screen would then skip
+ * the workspace list. So user actions (`setActiveProject`,
+ * `selectWorkspace`, `openWorkspace`) change the screen, and the app's own
+ * (`restoreActiveProject`, `autoSelectWorkspace`) don't.
  */
 export type MobileScreen = 'projects' | 'workspaces' | 'pane'
 
 /**
- * Read the persisted mobile screen, so a reload on a phone comes back to the
- * view it left (exported for tests).
+ * The saved mobile screen, so a reload returns to it.
  *
- * With nothing persisted, a `?workspace=` in the URL means this is a shared
- * link being opened somewhere for the first time — the sender pointed at a
- * workspace, so open it. The two conditions have to be taken together:
- * persistSelection mirrors the selection into the URL on every change, so
- * after any use the param is always there and on its own it would drag every
- * reload back to the pane.
+ * With nothing saved, this is a first visit, so a `?workspace=` link opens
+ * the pane. The URL alone can't decide, since persistSelection always
+ * writes the params.
  */
 export function loadMobileScreen(): MobileScreen {
   try {
@@ -132,19 +118,18 @@ export function loadMobileScreen(): MobileScreen {
   return 'projects'
 }
 
-/** Persist the mobile screen; best-effort (exported for tests). */
+/** Save the mobile screen (best-effort). */
 export function persistMobileScreen(screen: MobileScreen): void {
   try {
     if (typeof localStorage !== 'undefined') localStorage.setItem(MOBILE_SCREEN_LS_KEY, screen)
   } catch { /* non-fatal */ }
 }
 
-/** How the workspace renders its terminals: a tiling window manager, or
- *  one-at-a-time tabs (better on small screens). */
+/** How a workspace's panes are shown: side-by-side columns, or one tab at a
+ *  time. */
 export type ViewMode = 'tiles' | 'tabs'
 
-/** Persisted view mode; first-run default keys off the viewport width
- *  (exported for tests). */
+/** Saved view mode; on first run, based on the viewport width. */
 export function loadViewMode(viewportWidth?: number): ViewMode {
   try {
     if (typeof localStorage !== 'undefined') {
@@ -162,18 +147,17 @@ function persistViewMode(mode: ViewMode): void {
   } catch { /* non-fatal */ }
 }
 
-/** The project + workspace the shell is currently viewing — persisted so a
- *  reload, or a shared/bookmarked link, reopens the same view. */
+/** The selected project and workspace, saved so a reload or a shared link
+ *  reopens the same view. */
 export interface PersistedSelection {
   projectSlug: string | null
   workspaceId: string | null
 }
 
 /**
- * Read the persisted selection. The URL query wins over localStorage — a
- * shared `?project=…&workspace=…` link should override the last local view —
- * with localStorage as the fallback for a bare reload. The workspace is only a
- * hint: App drops it if that workspace is no longer active. Exported for tests.
+ * The saved selection. The URL query wins over localStorage, so a shared
+ * link overrides the last local view. App drops the workspace if it is no
+ * longer active.
  */
 export function loadSelection(): PersistedSelection {
   try {
@@ -202,11 +186,9 @@ export function loadSelection(): PersistedSelection {
 }
 
 /**
- * Persist the selection to localStorage and mirror it into the URL bar as
- * `?project=&workspace=` query params (replaceState — no navigation; unrelated
- * params like `token` are preserved). The SPA is served only at `/`, so
- * query params (not a path) keep deep links working on a hard reload.
- * Best-effort. Exported for tests.
+ * Save the selection to localStorage and to the URL's `?project=&workspace=`
+ * params (with replaceState; other params are kept). Query params rather
+ * than a path, because the SPA is only served at `/`. Best-effort.
  */
 export function persistSelection(projectSlug: string | null, workspaceId: string | null): void {
   try {
@@ -221,16 +203,13 @@ export function persistSelection(projectSlug: string | null, workspaceId: string
       else url.searchParams.delete('project')
       if (workspaceId) url.searchParams.set('workspace', workspaceId)
       else url.searchParams.delete('workspace')
-      // Keep whatever state the current entry carries — the mobile shell
-      // stamps its screen there, and replacing it with {} would blank the
-      // entry the back button reads on the way out.
+      // Keep the entry's state, where the mobile shell stores its screen.
       window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash)
     }
   } catch { /* history failures are non-fatal */ }
 }
 
-/** Read the persisted pinned plan-usage metric key (a UsageBadge
- *  `metricKey`), null when nothing is pinned (exported for tests). */
+/** The saved pinned plan-usage metric (a UsageBadge `metricKey`), or null. */
 export function loadPinnedUsageMetric(): string | null {
   try {
     if (typeof localStorage !== 'undefined') {
@@ -241,8 +220,7 @@ export function loadPinnedUsageMetric(): string | null {
   return null
 }
 
-/** Persist the pinned plan-usage metric key (null clears the pin);
- *  best-effort (exported for tests). */
+/** Save the pinned plan-usage metric (null clears it); best-effort. */
 export function persistPinnedUsageMetric(key: string | null): void {
   try {
     if (typeof localStorage === 'undefined') return
@@ -251,8 +229,7 @@ export function persistPinnedUsageMetric(key: string | null): void {
   } catch { /* non-fatal — the pin just won't stick */ }
 }
 
-/** Read persisted pane layouts, dropping anything structurally
- *  invalid (exported for tests). */
+/** Saved workspace layouts, dropping any that are invalid. */
 export function loadPersistedLayouts(): Record<string, PaneLayout | null> {
   try {
     if (typeof localStorage === 'undefined') return {}
@@ -270,10 +247,8 @@ export function loadPersistedLayouts(): Record<string, PaneLayout | null> {
   }
 }
 
-/** Read persisted read-waiting marks (workspaceId → waitingSinceMs of the spell
- *  that was viewed), dropping anything that isn't a number (exported for
- *  tests). Stale marks are pruned against the first snapshot by
- *  syncWaitingRead. */
+/** Saved read-waiting marks (workspaceId → the viewed waitingSinceMs),
+ *  dropping non-numbers. syncWaitingRead prunes stale marks. */
 export function loadReadWaiting(): Record<string, number> {
   try {
     if (typeof localStorage === 'undefined') return {}
@@ -291,47 +266,40 @@ export function loadReadWaiting(): Record<string, number> {
   }
 }
 
-/** Persist read-waiting marks; best-effort (exported for tests). */
+/** Save read-waiting marks (best-effort). */
 export function persistReadWaiting(marks: Record<string, number>): void {
   try {
     if (typeof localStorage === 'undefined') return
     localStorage.setItem(READ_WAITING_LS_KEY, JSON.stringify(marks))
   } catch {
-    // quota/serialization failures are non-fatal — marks just won't stick
+    // Non-fatal: the marks just won't persist.
   }
 }
 
-/** Key a chat pane's draft by its conversation: a workspace can run several ACP
- *  sessions at once, each its own pane with its own half-typed message. Same
- *  `id|target` shape WorkspaceView keys its mounted panes with (neither id
- *  contains a pipe). */
+/** A chat draft's key: one per conversation, since a workspace can have
+ *  several chat panes. */
 export function chatDraftKey(workspaceId: string, agentSessionId: string): string {
   return `${workspaceId}|${agentSessionId}`
 }
 
 /**
- * One chat pane's input box, as it survives the pane.
+ * One chat pane's input box, kept after the pane unmounts.
  *
- * `sent` is the exact text this box last handed to the socket without seeing
- * the server's echo. It is what makes "is the box holding a message that was
- * already delivered?" an identity question rather than a guess: the pane can
- * ask whether the text it restored is *the one it sent*, instead of whether it
- * merely reads like the last thing the conversation heard — which a user
- * retyping "ok" would too.
+ * `sent` is the exact text last sent before the server echoed it. It lets
+ * the pane tell whether restored text was already delivered, rather than
+ * guessing from whether it matches the last message.
  */
 export interface ChatDraft {
   text: string
   sent?: string
 }
 
-/** A draft this long is a paste, not a message being typed. It stays in memory
- *  (so navigating away still keeps it) but never reaches localStorage, where it
- *  could exhaust the quota and take every other key's writes down with it. */
+/** Drafts longer than this stay in memory but aren't saved to localStorage,
+ *  where they could exhaust the quota for every other key. */
 const MAX_PERSISTED_DRAFT = 64 * 1024
 
-/** Read persisted chat drafts (conversation key → box state), dropping
- *  anything not shaped like a draft (exported for tests). Stale keys are
- *  pruned against the first snapshot by syncChatDrafts. */
+/** Saved chat drafts, dropping invalid entries. syncChatDrafts prunes stale
+ *  keys. */
 export function loadChatDrafts(): Record<string, ChatDraft> {
   try {
     if (typeof localStorage === 'undefined') return {}
@@ -354,7 +322,7 @@ export function loadChatDrafts(): Record<string, ChatDraft> {
   }
 }
 
-/** Persist chat drafts; best-effort (exported for tests). */
+/** Save chat drafts (best-effort). */
 export function persistChatDrafts(drafts: Record<string, ChatDraft>): void {
   try {
     if (typeof localStorage === 'undefined') return
@@ -364,41 +332,37 @@ export function persistChatDrafts(drafts: Record<string, ChatDraft>): void {
     )
     localStorage.setItem(CHAT_DRAFTS_LS_KEY, JSON.stringify(storable))
   } catch {
-    // quota/serialization failures are non-fatal — drafts just won't stick
+    // Non-fatal: the drafts just won't persist.
   }
 }
 
-/** Persist pane layouts; best-effort (exported for tests). */
+/** Save workspace layouts (best-effort). */
 export function persistLayouts(layouts: Record<string, PaneLayout | null>): void {
   try {
     if (typeof localStorage === 'undefined') return
     localStorage.setItem(LAYOUTS_LS_KEY, JSON.stringify(layouts))
   } catch {
-    // quota/serialization failures are non-fatal — layouts just won't stick
+    // Non-fatal: the layouts just won't persist.
   }
 }
 
 /**
- * Insert a special (non-terminal) pane — preview, changes or the explorer —
- * into a workspace's pane layout as a new equal-width column beside the existing
- * panes; a workspace already showing it is returned unchanged. Exported for
- * tests.
+ * Add a special pane (preview, changes or the explorer) to a workspace's
+ * layout as a new column. Unchanged if it is already there.
  */
 export function injectPaneLeaf(base: PaneLayout | null, target: string): PaneLayout {
   return addColumn(base ?? singleColumn('agent'), target)
 }
 
-/** The preview-specific injector (kept for the auto-open/open-preview paths). */
+/** `injectPaneLeaf` for the preview pane. */
 export function injectPreviewLeaf(base: PaneLayout | null): PaneLayout {
   return injectPaneLeaf(base, PREVIEW_TARGET)
 }
 
 /**
- * Merge server-snapshot provisioning rows with local optimistic ones, deduped
- * by workspaceId (the snapshot wins — it carries the live message/error), sorted
- * by createdAt then id for a stable sidebar order. The optimistic copy only
- * fills the gap between clicking create and the first snapshot frame; once the
- * snapshot knows the id, App prunes it.
+ * Merge the snapshot's provisioning rows with optimistic ones, by
+ * workspaceId (the snapshot wins), sorted by createdAt then id. App prunes
+ * an optimistic row once the snapshot has it.
  */
 export function mergeProvisioning(
   snapshot: ProvisioningWorkspaceEntry[],
@@ -413,11 +377,9 @@ export function mergeProvisioning(
 }
 
 /**
- * The view state of a pane that is torn down whenever it goes off-screen
- * (Changes, the explorer), kept here so it survives that: which entries are
- * expanded, where the list was scrolled, the filter, and — for the explorer
- * — whether ignored files show. In memory only: a tab or workspace switch
- * keeps it, a reload does not.
+ * View state of a pane that unmounts when off-screen (Changes, the
+ * explorer), kept here so it survives: expanded entries, scroll position,
+ * filter, and whether ignored files show. In memory only.
  */
 export interface PaneView {
   /** Missing means the pane has not loaded yet (Changes seeds it then). */
@@ -433,11 +395,9 @@ export function paneViewKey(workspaceId: string, pane: string): string {
 }
 
 /**
- * Whether a workspace is waiting and its current waiting spell hasn't been
- * viewed. A read mark stores the spell's waitingSinceMs, so a mark from an
- * earlier spell (workspace ran and is waiting again — even across a page
- * reload) no longer matches and the workspace re-flags. A missing
- * waitingSinceMs (server predating the field) is normalized to 0.
+ * Whether a workspace is waiting and hasn't been viewed since it started
+ * waiting. A read mark stores the waitingSinceMs it saw, so waiting again
+ * later flags the workspace again. A missing waitingSinceMs counts as 0.
  */
 export function isUnreadWaiting(
   workspace: Pick<WorkspaceListEntry, 'workspaceId' | 'status' | 'waitingSinceMs'>,
@@ -447,11 +407,9 @@ export function isUnreadWaiting(
 }
 
 /**
- * Whether a deleted workspace died for an abnormal reason the user hasn't looked
- * at yet. Only the stale reaper sets deathReason (a plain user delete leaves it
- * null), so this flags exactly the unexpected deaths. `seen` is server-persisted
- * on the workspace row and resets to false when a reused id dies anew, so
- * a re-death re-flags without any client-side spell keying.
+ * Whether a stopped workspace died unexpectedly and the user hasn't seen it
+ * yet. Only the stale reaper sets deathReason. `seen` is stored on the
+ * server and resets when the workspace dies again.
  */
 export function isUnseenDeath(
   entry: Pick<StoppedWorkspaceEntry, 'deathReason' | 'seen'>,
@@ -460,13 +418,8 @@ export function isUnseenDeath(
 }
 
 /**
- * Per-project count of unread waiting workspaces — waiting and not yet viewed
- * during the current waiting spell. Drives the rail attention badge, so a
- * waiting workspace the user has already looked at doesn't keep flagging.
- * Terminating workspaces never count: the server marks them `stopping` (and
- * forces their status off 'waiting'), and a UI-initiated delete not yet
- * reflected in the snapshot is covered by `pendingDeleteIds` — either way a
- * workspace on its way out must not flash the badge.
+ * Per-project count of unread waiting workspaces, for the rail's badge.
+ * Stopping workspaces (per the server or `pendingDeleteIds`) don't count.
  */
 export function unreadWaitingBySlug(
   workspaces: Pick<WorkspaceListEntry, 'workspaceId' | 'projectSlug' | 'status' | 'waitingSinceMs' | 'stopping'>[],
@@ -484,36 +437,24 @@ export function unreadWaitingBySlug(
 }
 
 /**
- * The workspace that fills a pane nobody chose to empty, or null to leave it
- * empty. Which workspace is open otherwise follows the sidebar — clicking a row
- * opens it, deleting one hands the selection to the row below (see
- * `successorRow`) — so this answers only the two cases where the selection
- * goes through no act of the user's:
- *   1. the project changed under it (a rail tap, or a fallback when the active
- *      project is gone), and
- *   2. the open workspace vanished (a CLI delete, the stale reaper), which
- *      includes it being torn down with no row left to inherit from.
- * Both take the topmost row: there is no neighbour to walk to — except a
- * create that claimed a prewarmed spare, whose row resolves into the spare's
- * own id (`claims`): that one follows it there, waiting for it to list. And
- * a selection whose provision is still in flight (`inFlight`) waits rather
- * than moving: a snapshot can miss its row and its workspace both — builds
- * coalesce, and read the two at different moments — and the create's own
- * result may yet name where it went.
+ * The workspace to select when the selection is left empty without the user
+ * choosing it, or null to leave it empty. This covers two cases:
+ *   1. the active project changed, and
+ *   2. the selected workspace vanished (stopped from the CLI, reaped).
+ * Both select the top row, except:
+ *   - a create that claimed a prewarmed spare (`claims`) follows the spare's
+ *     id once it is listed;
+ *   - a selection whose provision is still in flight (`inFlight`) waits,
+ *     since a snapshot can briefly miss both its row and its workspace.
  *
- * Null on a first paint with nothing persisted (nobody has chosen a workspace
- * yet, and the sidebar is right there) and on a deselect. A provisioning row
- * counts as a selection like any other — it is a sidebar row — so auto-open
- * on create is left to stick.
+ * Null on a first load with nothing saved, and after a deselect.
  */
 export function resolveVacantSelection(args: {
   /** The active project as of the previous render; null before there was one. */
   previousProjectSlug: string | null
   activeProjectSlug: string | null
   selectedWorkspaceId: string | null
-  /** The sidebar's selectable rows top-to-bottom (`sidebarRowIds`) — display
-   *  order, not snapshot order, and terminating rows already dropped: a dying
-   *  container is not somewhere to be. */
+  /** The sidebar's selectable rows in display order (`sidebarRowIds`). */
   rowIds: string[]
   claims: Record<string, string>
   inFlight: string[]
@@ -537,10 +478,9 @@ export type SettingsSection =
   | 'general' | 'shortcuts' | 'credentials' | 'project' | 'userDockerfile' | 'server'
 
 /**
- * What the create dialog was opened for. It creates, queues and edits:
- * `editId` edits that queued entry; otherwise `parent` (a workspace or queued
- * entry id) opens it with Start set to after that one stops, and neither
- * opens it on "Now".
+ * What the create dialog was opened for. `editId` edits that queued entry;
+ * `parent` (a workspace or queued entry id) sets Start to after that one
+ * stops; with neither, Start is "Now".
  */
 export interface CreateWorkspaceDialogOpts {
   projectSlug: string
@@ -548,271 +488,222 @@ export interface CreateWorkspaceDialogOpts {
   editId?: string
   /** Reopen a saved draft (docs/draft-workspaces.md) on its fields. */
   draftId?: string
-  /** Put the cursor in the prompt — Alt+N, then type, then Enter. */
+  /** Focus the prompt field. */
   focus?: 'prompt'
 }
 
-/** Local-only UI state (not server state — that lives in the snapshot). */
+/** Client-side UI state. Server state lives in the snapshot. */
 interface UiState {
   /** Project whose workspaces the sidebar is scoped to (rail selection). */
   activeProjectSlug: string | null
   /** Workspace shown in the main pane. */
   selectedWorkspaceId: string | null
-  /** Bumped every time a workspace is selected or opened. The view watches it
-   *  to pull keyboard focus into that workspace's primary pane — a plain
-   *  textarea focus, never a synthetic click (which would clobber any
-   *  local selection in the terminal). */
+  /** Bumped when a workspace is selected or opened; the view then focuses
+   *  its primary pane. */
   focusNonce: number
-  /** Per-workspace counter; bumping one forces that terminal to remount +
-   *  reattach (e.g. after a restart) without disturbing the others. */
+  /** Per-workspace counter; bumping one remounts and reattaches that
+   *  workspace's terminals (e.g. after a restart). */
   terminalNonces: Record<string, number>
-  /** Per-workspace pane layout: a row of equal-width columns, each a tabbed group.
-   *  Missing key = the default single agent column; null = an explicitly
-   *  emptied workspace. */
+  /** Per-workspace pane layout. A missing key means the default single
+   *  column; null means explicitly emptied. */
   layouts: Record<string, PaneLayout | null>
-  /** Per-workspace container port the (single) preview pane currently shows.
-   *  Missing = show the first forwarded port. */
+  /** Per-workspace port the preview pane shows; missing means the first
+   *  forwarded port. */
   previewPort: Record<string, number>
-  /** Point the preview pane at another forwarded port (toolbar dropdown). */
+  /** Show another forwarded port in the preview pane. */
   setPreviewPort: (workspaceId: string, containerPort: number) => void
-  /** Open/focus the preview pane (the header chip). Seeds the shown port
-   *  when unset. */
+  /** Open or focus the preview pane, setting its port if unset. */
   openPreview: (workspaceId: string, containerPort?: number) => void
-  /** Open/focus the changes (review-diff) pane for a workspace. */
+  /** Open or focus a workspace's Changes pane. */
   openChanges: (workspaceId: string) => void
-  /** Open/focus the file explorer for a workspace. */
+  /** Open or focus a workspace's file explorer. */
   openFiles: (workspaceId: string) => void
-  /** Open/focus the editor pane of one file (see `placeFile`). */
+  /** Open or focus one file's editor pane (see `placeFile`). */
   openFile: (workspaceId: string, path: string) => void
-  /** Open files with unsaved text, by `fileKey`. Each editor pane sets and
-   *  clears its own; the tab strip draws the dirty dot from it, and the page
-   *  guards unloading while any is set. */
+  /** Open files with unsaved text, by `fileKey`. Drives the tab's dirty dot
+   *  and the page's unload warning. */
   dirtyFiles: Record<string, true>
   setFileDirty: (workspaceId: string, path: string, dirty: boolean) => void
-  /** A file or folder was renamed: its open panes, and theirs under it,
-   *  follow it along with their dirty marks. */
+  /** After a file or folder rename, move its open panes (and those under
+   *  it) and their dirty marks to the new path. */
   renameFiles: (workspaceId: string, from: string, to: string) => void
   /** Close the editor panes of these files. */
   closeFiles: (workspaceId: string, paths: string[]) => void
-  /** Whether the workspace sidebar is shown. Desktop only — the mobile shell
-   *  gives the workspace list a screen of its own. */
+  /** Whether the workspace sidebar is shown (desktop only). */
   sidebarOpen: boolean
-  /** The workspace sidebar's width in px, set by its drag handle. Desktop
-   *  only, like `sidebarOpen`; persisted, and clamped to the bounds above. */
+  /** The sidebar's width in px, set by its drag handle (desktop only).
+   *  Saved and clamped. */
   sidebarWidth: number
   setSidebarWidth: (px: number) => void
-  /** Which mobile screen is showing (inert above the mobile breakpoint).
-   *  Persisted. */
+  /** Which mobile screen is showing. Saved. */
   mobileScreen: MobileScreen
-  /** Move to a mobile screen directly. The back affordances go through
-   *  `history.back()` instead, so the history stack stays in step. */
+  /** Move to a mobile screen directly. Back buttons use `goBackScreen`
+   *  instead, to keep browser history in step. */
   setMobileScreen: (screen: MobileScreen) => void
-  /** Light/dark preference. 'system' follows the OS; setThemePref persists it
-   *  and reflects it onto <html data-theme> for the CSS palette (index.css). */
+  /** Light/dark preference (see #lib/theme). */
   themePref: ThemePref
   setThemePref: (pref: ThemePref) => void
   /** Whether the attention chime plays when a workspace flips to waiting. */
   soundEnabled: boolean
   setSoundEnabled: (enabled: boolean) => void
-  /** File-pane editor font size in px, shared by every file pane. Persisted;
-   *  the setter clamps to MIN/MAX_EDITOR_FONT_SIZE. */
+  /** Editor font size in px for all file panes. Saved and clamped. */
   editorFontSize: number
   setEditorFontSize: (px: number) => void
-  /** Tiling WM vs one-at-a-time tabs (persisted; small screens default
-   *  to tabs). The layout tree stays canonical in both modes. */
+  /** Tiles or tabs. Saved; small screens default to tabs. */
   viewMode: ViewMode
   /** Plan-usage metric pinned to the sidebar pill (a UsageBadge
-   *  `metricKey`); null shows the tightest limit. Persisted. */
+   *  `metricKey`); null shows the tightest limit. Saved. */
   pinnedUsageMetric: string | null
   setPinnedUsageMetric: (key: string | null) => void
-  /** Per-workspace active terminal: the visible tab in tabs mode, the
-   *  last-focused pane in tiles mode. Tab-switch shortcuts cycle from it. */
+  /** Per-workspace active pane: the visible tab in tabs mode, the
+   *  last-focused pane in tiles mode. Cycle shortcuts start from it. */
   activeTabs: Record<string, string>
-  /** Per-workspace base branch the Changes pane diffs against. In-memory —
-   *  survives a tab/workspace switch, not a reload. Absent = the workspace's
-   *  own fork base (@{upstream}), i.e. today's default. */
+  /** Per-workspace branch the Changes pane diffs against; absent means the
+   *  workspace's fork base. In memory only. */
   changesBase: Record<string, string>
-  /** Set (or, with undefined, clear back to the default) a workspace's Changes
-   *  base branch. */
+  /** Set a workspace's Changes base branch; undefined resets it. */
   setChangesBase: (workspaceId: string, branch: string | undefined) => void
-  /** View state of the off-screen-torn-down panes, by `paneViewKey`. */
+  /** View state of panes that unmount off-screen, by `paneViewKey`. */
   paneView: Record<string, PaneView>
   /** Merge into a pane's view state. */
   setPaneView: (key: string, patch: PaneView) => void
-  /** Half-typed ACP messages, keyed by chatDraftKey(workspaceId,
-   *  agentSessionId). Lives here — not in WorkspaceChat's local state — because
-   *  a chat pane is torn down whenever it goes off-screen, which would
-   *  otherwise throw away whatever the user was in the middle of writing.
-   *  Persisted (unlike the Changes pane's view state): typed text is the
-   *  user's own work, and a reload should not eat it. */
+  /** Unsent chat messages, by `chatDraftKey`. Kept here rather than in
+   *  WorkspaceChat so a draft outlives its pane, and saved so it survives a
+   *  reload. */
   chatDrafts: Record<string, ChatDraft>
-  /** Record (or, with '', clear) a conversation's half-typed message. Editing
-   *  the text drops any `sent` marker: the box no longer holds the message
-   *  that went to the socket. */
+  /** Set (or, with '', clear) a conversation's draft. Also drops any `sent`
+   *  marker, since the text no longer matches what was sent. */
   setChatDraft: (workspaceId: string, agentSessionId: string, text: string) => void
-  /** Mark the text a conversation's box just handed to the socket, or clear
-   *  the mark (undefined) once the server's echo settles it. */
+  /** Record the text just sent, or clear it (undefined) once the server
+   *  echoes it. */
   setChatSent: (workspaceId: string, agentSessionId: string, sent: string | undefined) => void
-  /** GC drafts belonging to workspaces the snapshot no longer lists. Keyed on
-   *  the workspace alone: an agent session that goes inactive and comes back
-   *  with the same id is the same conversation, and keeps its draft. */
+  /** Drop drafts of workspaces the snapshot no longer lists. Drafts of
+   *  inactive sessions are kept, since a session can come back. */
   syncChatDrafts: (workspaceIds: string[]) => void
-  /** One-shot "focus the explorer's filter" request, raised by the open-files
-   *  shortcut alongside opening it. The mounted explorer consumes it (focuses
-   *  its input, then clears the flag), so one mounted later — e.g. opened by
-   *  the header button — never steals focus for a stale press. */
+  /** One-time request from the open-files shortcut to focus the explorer's
+   *  filter. The explorer clears it once handled. */
   filesFindPending: boolean
   setFilesFindPending: (pending: boolean) => void
-  /** Locally-initiated provisioning rows, shown the instant create/restart is
-   *  clicked. The server snapshot's `provisioning[]` is the source of truth;
-   *  these only bridge the gap until the first snapshot frame carries the id,
-   *  then they're pruned. */
+  /** Optimistic provisioning rows, shown until the snapshot's
+   *  `provisioning[]` lists the id. */
   optimisticProvisioning: ProvisioningWorkspaceEntry[]
-  /** Create id → the prewarmed spare it claimed, learned from whichever
-   *  says so first: the snapshot's row (`claimedId`) or the create's own
-   *  result. What lets a selection on the creating row follow it into the
-   *  workspace that replaces it (`resolveVacantSelection`). */
+  /** Create id → the prewarmed spare it claimed, from the snapshot row
+   *  (`claimedId`) or the create's result. Lets the selection follow the
+   *  create (`resolveVacantSelection`). */
   claims: Record<string, string>
   recordClaim: (workspaceId: string, claimedId: string) => void
-  /** Drop a claim once it has been followed, or once it no longer holds
-   *  (the create failed, or fell back to listing under its own id). */
+  /** Drop a claim once followed or no longer valid. */
   forgetClaim: (workspaceId: string) => void
-  /** Provisions this tab started whose request hasn't settled yet. */
+  /** Provisions started by this tab whose request hasn't finished. */
   inFlightProvisions: string[]
   setProvisionInFlight: (workspaceId: string, inFlight: boolean) => void
-  /** Workspaces whose delete was confirmed — rendered as "stopping…"
-   *  optimistically (bridging the gap before the snapshot carries the
-   *  server's own `stopping` flag) until the snapshot drops them. */
+  /** Workspaces whose stop was confirmed, shown as stopping until the
+   *  snapshot drops them. */
   pendingDeleteIds: string[]
-  /** Just-deleted workspaces (that had history) shown optimistically in the
-   *  deleted-workspaces view until the server's list-deleted catches up. */
+  /** Just-stopped workspaces, shown in the stopped list until the server's
+   *  list includes them. */
   optimisticStopped: StoppedWorkspaceEntry[]
-  /** Read marks for waiting workspaces: workspaceId → waitingSinceMs of the
-   *  spell the user viewed. Keying by spell means a mark from an earlier
-   *  wait never hides a new one, even across reloads or a page that was
-   *  closed through the whole round trip. Persisted; syncWaitingRead GCs
-   *  marks whose spell is over. */
+  /** Read marks: workspaceId → the waitingSinceMs the user viewed (see
+   *  isUnreadWaiting). Saved; syncWaitingRead drops stale marks. */
   readWaiting: Record<string, number>
-  /** Keyboard-shortcut bindings (command id → chord). Starts at the factory
-   *  defaults and is replaced once the server's saved overrides load at
-   *  startup; the window keydown listeners read this at event time. */
+  /** Shortcut bindings (command id → chord): the defaults until the saved
+   *  overrides load. */
   bindings: BindingMap
-  /** Replace the whole binding map — used to hydrate the saved overrides. */
+  /** Replace the whole binding map, e.g. with the saved overrides. */
   setBindings: (bindings: BindingMap) => void
   /** Rebind a single command. */
   setBinding: (id: ShortcutId, chord: Chord) => void
   /** Restore every command to its factory default. */
   resetBindings: () => void
-  /** True while the settings pane is capturing a chord for a rebind. The
-   *  workspace keydown listeners bail on it, so the recorded chord doesn't also
-   *  fire the command it's being bound to. */
+  /** True while settings is recording a chord, so shortcuts don't fire. */
   recordingShortcut: boolean
   setRecordingShortcut: (recording: boolean) => void
-  /** Whether the settings modal is open. Lives here (not in the gear button)
-   *  so other surfaces — e.g. a "Sign in" item in the new-workspace menu — can
-   *  open settings onto a specific section. */
+  /** Whether the settings modal is open. Kept here so any component can
+   *  open settings onto a section. */
   settingsOpen: boolean
-  /** Section the settings modal shows; sticky across open/close. */
+  /** Section the settings modal shows; kept across open and close. */
   settingsSection: SettingsSection
-  /** Tool whose sign-in form the credentials section auto-expands — set when
-   *  settings was opened via a "Sign in" affordance; cleared on close. */
+  /** Tool whose sign-in form the credentials section expands, when opened
+   *  from a "Sign in" button. Cleared on close. */
   settingsFocusTool: AgentTool | null
-  /** Project whose git-credential row the credentials section scrolls to and
-   *  highlights — set by an "Add git authentication" affordance; cleared on
-   *  close. */
+  /** Project whose git-credential row the credentials section scrolls to,
+   *  when opened from "Add git authentication". Cleared on close. */
   settingsFocusProject: string | null
-  /** Open settings — optionally onto a section, with a tool's sign-in form
-   *  expanded or a project's git-credential row in view. Without args it
-   *  reopens on the last-viewed section. */
+  /** Open settings, optionally onto a section, tool or project. Without
+   *  args it reopens the last section. */
   openSettings: (section?: SettingsSection, focusTool?: AgentTool, focusProject?: string) => void
   closeSettings: () => void
   setSettingsSection: (section: SettingsSection) => void
-  /** The create dialog, when open. Mounted once in App and opened from here
-   *  so Alt+N, the row menus and the stop dialog reach it without threading
-   *  props. */
+  /** The create dialog's options when open. Mounted once in App and opened
+   *  from anywhere through here. */
   createWorkspaceDialog: CreateWorkspaceDialogOpts | null
   openCreateWorkspace: (opts: CreateWorkspaceDialogOpts) => void
   closeCreateWorkspace: () => void
-  /** A queued entry the user just queued or moved from the create dialog,
-   *  and the id it now waits on. The sidebar opens the set it landed in —
-   *  sets otherwise start collapsed — once the snapshot shows it under that
-   *  parent (not, mid-move, under the one it left), then clears it. */
+  /** A queued entry just created or moved from the create dialog, and its
+   *  new parent. The sidebar expands its set once the snapshot shows it
+   *  there, then clears this. */
   revealQueued: { id: string; parent: string } | null
   setRevealQueued: (reveal: { id: string; parent: string } | null) => void
-  /** Whether the full-screen deleted-workspaces view is open. Opened from the
-   *  sidebar header; scoped to the active project when rendered. */
+  /** Whether the stopped-workspaces overlay is open (for the active project). */
   stoppedOverlayOpen: boolean
-  /** A workspace the overlay should open onto, set when it was opened from
-   *  that workspace's own row rather than from the header. Consumed by the
-   *  overlay on open and cleared with it, so it never outlives the gesture. */
+  /** The workspace the overlay opens onto, when opened from that
+   *  workspace's row. Cleared on close. */
   stoppedOverlayFocus: string | null
   openStoppedOverlay: (workspaceId?: string) => void
   closeStoppedOverlay: () => void
-  /** Whether the full-screen skills view is open. Opened from the sidebar
-   *  header; scoped to the active project when rendered. */
+  /** Whether the skills overlay is open (for the active project). */
   skillsOverlayOpen: boolean
   openSkillsOverlay: () => void
   closeSkillsOverlay: () => void
-  /** Add a locally-initiated provisioning row (dedup by id). */
+  /** Add an optimistic provisioning row (deduplicated by id). */
   addOptimisticProvisioning: (entry: ProvisioningWorkspaceEntry) => void
-  /** Patch a tracked optimistic row's message or error (no-op if absent). */
+  /** Update an optimistic row's message or error, if it exists. */
   updateOptimisticProvisioning: (
     workspaceId: string,
     patch: { message?: string; error?: string },
   ) => void
-  /** Drop an optimistic row — once the snapshot knows the id, or on dismiss. */
+  /** Drop an optimistic row, once the snapshot has it or on dismiss. */
   removeOptimisticProvisioning: (workspaceId: string) => void
   setActiveProject: (slug: string | null) => void
-  /** The app picked a project on the user's behalf — App's recovery from a
-   *  missing or never-set `activeProjectSlug`. Like `setActiveProject` but it
-   *  leaves the mobile screen alone, so a cold load lands on the project list
-   *  rather than being thrown one screen in by a default nobody chose. */
+  /** Like `setActiveProject`, for when App picks a project itself. Leaves
+   *  the mobile screen alone (see MobileScreen). */
   restoreActiveProject: (slug: string) => void
-  /** The user picked a workspace (a sidebar/list tap) — on mobile this is what
-   *  advances to the pane screen. */
+  /** The user picked a workspace; on mobile this moves to the pane screen. */
   selectWorkspace: (id: string | null) => void
-  /** The app picked a workspace on the user's behalf — the row below a deleted
-   *  one, or the top row when a project switch or a vanished workspace emptied
-   *  the selection. Identical to `selectWorkspace` except that it leaves the
-   *  mobile screen alone — otherwise merely opening a project (or deleting a
-   *  workspace from the list) would fling the user past its workspace list. */
+  /** Like `selectWorkspace`, for when the app picks a workspace itself (see
+   *  resolveVacantSelection, successorRow). Leaves the mobile screen alone. */
   autoSelectWorkspace: (id: string) => void
   /** Jump to a specific workspace, switching the active project to match. */
   openWorkspace: (projectSlug: string, workspaceId: string) => void
   reconnectTerminal: (workspaceId: string) => void
-  /** Replace a workspace's pane layout (built with the pure helpers in
-   *  lib/layout). */
+  /** Replace a workspace's layout (see #lib/layout). */
   setWorkspaceLayout: (workspaceId: string, layout: PaneLayout | null) => void
   toggleSidebar: () => void
   setViewMode: (mode: ViewMode) => void
-  /** Record a workspace's active terminal without moving keyboard focus —
-   *  for focus changes the DOM already made (clicking into a pane). */
+  /** Record a workspace's active pane without moving focus, for focus the
+   *  DOM already moved (a click into a pane). */
   setActiveTab: (workspaceId: string, target: string) => void
-  /** Make a terminal active AND pull keyboard focus into it — for tab
-   *  clicks and the tab-switch shortcuts. */
+  /** Make a pane active and focus it, for tab clicks and shortcuts. */
   focusTerminal: (workspaceId: string, target: string) => void
-  /** Optimistically hide a workspace being deleted. */
+  /** Mark a workspace as stopping, optimistically. */
   beginDelete: (workspaceId: string) => void
-  /** Stop hiding a workspace — on delete error (restore) or once the snapshot
-   *  confirms it's gone (prune). */
+  /** Clear the stopping mark, when the stop fails or the snapshot drops the
+   *  workspace. */
   endDelete: (workspaceId: string) => void
-  /** Optimistically show a just-deleted workspace in the Deleted group. */
+  /** Optimistically add a just-stopped workspace to the stopped list. */
   addOptimisticStopped: (entry: StoppedWorkspaceEntry) => void
-  /** Drop an optimistic deleted entry — once list-deleted includes it, or on
+  /** Drop an optimistic stopped entry, once the server's list has it or on
    *  restart. */
   removeOptimisticStopped: (workspaceId: string) => void
-  /** Mark a workspace's current waiting spell as seen (it's open in the main
-   *  pane). Pass the entry's waitingSinceMs (normalized: missing → 0). */
+  /** Mark a waiting workspace as viewed. Pass its waitingSinceMs (0 if
+   *  missing). */
   markWaitingRead: (workspaceId: string, waitingSinceMs: number) => void
-  /** GC read marks against the currently-waiting (workspaceId, waitingSinceMs)
-   *  pairs: a mark whose spell is over (workspace running, gone, or waiting
-   *  anew) no longer matches anything and is dropped. Correctness doesn't
-   *  depend on this — isUnreadWaiting compares spells — it only keeps the
-   *  persisted map from growing. */
+  /** Drop read marks that no longer match a waiting workspace. Only keeps the
+   *  saved map from growing; isUnreadWaiting is correct without it. */
   syncWaitingRead: (waiting: { workspaceId: string; waitingSinceMs: number }[]) => void
 }
 
-/** Open (or surface) a special pane as its own column, and focus it. */
+/** Open a special pane as its own column (if not already open) and focus it. */
 function openSpecialPane(s: UiState, workspaceId: string, target: string): Partial<UiState> {
   const base = workspaceId in s.layouts ? s.layouts[workspaceId] : singleColumn('agent')
   const injected = injectPaneLeaf(base, target)
@@ -826,11 +717,9 @@ function openSpecialPane(s: UiState, workspaceId: string, target: string): Parti
 const initialSelection = loadSelection()
 
 /**
- * Whether the window-level shortcut listeners must leave a keypress alone:
- * the settings pane is recording a rebind, or the create dialog is open. In
- * the dialog, Alt+N would remount it over what was typed, Alt+D would put a
- * stop behind it one Enter away, and on macOS Option+N / Option+D are how a
- * prompt gets its ñ and ∂.
+ * Whether shortcuts are off: while settings records a rebind, or while the
+ * create dialog is open (where they could discard the prompt or queue a
+ * stop, and on macOS Option chords type characters such as ñ).
  */
 export function shortcutsSuspended(state: Pick<UiState, 'recordingShortcut' | 'createWorkspaceDialog'>): boolean {
   return state.recordingShortcut || state.createWorkspaceDialog !== null
@@ -933,20 +822,15 @@ export const useUiStore = create<UiState>((set) => ({
   recordClaim: (workspaceId, claimedId) => set((s) => (
     s.claims[workspaceId] === claimedId ? s : { claims: { ...s.claims, [workspaceId]: claimedId } }
   )),
-  // Switching projects clears the open workspace — the sidebar now shows a
-  // different project's workspaces, so the old selection no longer belongs.
-  // On mobile that lands on the project's workspace list; clearing the project
-  // entirely (its removal) falls back to the project list, which is the only
-  // screen with anything left to do.
+  // Switching projects clears the selection. On mobile it shows the
+  // project's workspace list, or the project list when cleared.
   setActiveProject: (slug) => set({
     activeProjectSlug: slug,
     selectedWorkspaceId: null,
     mobileScreen: slug ? 'workspaces' : 'projects',
   }),
   restoreActiveProject: (slug) => set({ activeProjectSlug: slug, selectedWorkspaceId: null }),
-  // Only a real selection navigates: `selectWorkspace(null)` is a deselect
-  // (dismissing a failed provisioning row), which should leave the user on
-  // the list they dismissed it from.
+  // A deselect (null) doesn't change the mobile screen.
   selectWorkspace: (id) => set((s) => ({
     selectedWorkspaceId: id,
     focusNonce: s.focusNonce + 1,
@@ -1083,11 +967,8 @@ export const useUiStore = create<UiState>((set) => ({
   setChatDraft: (workspaceId, agentSessionId, text) => set((s) => {
     const key = chatDraftKey(workspaceId, agentSessionId)
     const cur = s.chatDrafts[key]
-    // Unchanged text is a no-op, so a pane re-mirroring the draft it just
-    // restored doesn't churn the state.
     if ((cur?.text ?? '') === text) return s
-    // Edited text is no longer the message that went to the socket, so the
-    // marker goes with it — what's in the box now is new work either way.
+    // New text drops the `sent` marker.
     const next = { ...s.chatDrafts }
     if (text === '') delete next[key]
     else next[key] = { text }
@@ -1098,8 +979,7 @@ export const useUiStore = create<UiState>((set) => ({
     const cur = s.chatDrafts[key]
     if ((cur?.sent) === sent) return s
     const next = { ...s.chatDrafts }
-    // An emptied box with nothing in flight leaves no key behind — a settled
-    // message shouldn't linger in the persisted map as an empty draft.
+    // Don't keep an empty draft with nothing in flight.
     if (sent === undefined && (cur?.text ?? '') === '') delete next[key]
     else if (sent === undefined) next[key] = { text: cur?.text ?? '' }
     else next[key] = { text: cur?.text ?? '', sent }
@@ -1114,12 +994,8 @@ export const useUiStore = create<UiState>((set) => ({
     return Object.keys(kept).length === Object.keys(s.chatDrafts).length ? s : { chatDrafts: kept }
   }),
   focusTerminal: (workspaceId, target) => set((s) => {
-    // Also surface the target in its column: cycle shortcuts / preview / changes
-    // may focus a pane that's currently a hidden tab, and it must become the
-    // column's active (visible) tab. Missing key = the default agent column;
-    // withActive is a no-op (same reference) when the target is already active
-    // or absent — only then touch `layouts`, so a plain focus doesn't churn the
-    // persisted workspace.
+    // Also make it its column's visible tab. `layouts` changes only if
+    // withActive changed something, so a plain focus doesn't rewrite storage.
     const cur = workspaceId in s.layouts ? s.layouts[workspaceId] : singleColumn('agent')
     const next = withActive(cur, target)
     return {
@@ -1163,22 +1039,17 @@ export const useUiStore = create<UiState>((set) => ({
   }),
 }))
 
-// Pane layouts survive reloads. Workspace ids are stable across restarts
-// (restart resumes the same id), so a restored workspace gets its old layout
-// back too.
+// Save layouts. A restart keeps the workspace id, so the layout survives it.
 useUiStore.subscribe((state, prev) => {
   if (state.layouts !== prev.layouts) persistLayouts(state.layouts)
 })
 
-// The sidebar's dragged width survives reloads. Written per changed pixel
-// during a drag — a two-digit string, so no debounce is worth the state.
+// Save the sidebar width; small enough to write on every drag step.
 useUiStore.subscribe((state, prev) => {
   if (state.sidebarWidth !== prev.sidebarWidth) persistSidebarWidth(state.sidebarWidth)
 })
 
-// The active project + workspace survive reloads and are mirrored into the URL
-// bar so a link is shareable. Only the workspace is liveness-gated — App drops a
-// restored selection whose workspace is no longer active.
+// Save the selection and mirror it into the URL, so a link is shareable.
 useUiStore.subscribe((state, prev) => {
   if (
     state.activeProjectSlug !== prev.activeProjectSlug
@@ -1188,25 +1059,19 @@ useUiStore.subscribe((state, prev) => {
   }
 })
 
-// Read marks survive reloads so already-viewed waiting workspaces don't
-// re-flag. Marks are keyed by the server's waitingSinceMs, so a workspace
-// that waited anew while the page was closed carries a different spell
-// timestamp and correctly shows unread; restored stale marks are GC'd
-// against the first snapshot.
+// Save read marks so viewed waiting workspaces don't flag again on reload.
 useUiStore.subscribe((state, prev) => {
   if (state.readWaiting !== prev.readWaiting) persistReadWaiting(state.readWaiting)
 })
 
-/** How long a keystroke waits before the draft map is re-serialized. */
+/** Delay before saving chat drafts after a change. */
 const CHAT_DRAFT_PERSIST_MS = 400
 
 let draftTimer: ReturnType<typeof setTimeout> | undefined
 let unwrittenDrafts: Record<string, ChatDraft> | null = null
 
-/** Write any pending draft change now. Called when the page is going away — a
- *  tab closed mid-sentence must not lose the last few hundred milliseconds of
- *  typing — and exported for tests, which would otherwise have to wait out the
- *  timer. Idempotent: with nothing unwritten it does nothing. */
+/** Save any pending draft change now, e.g. when the page is closing. Does
+ *  nothing if there is none. */
 export function flushChatDrafts(): void {
   if (draftTimer !== undefined) {
     clearTimeout(draftTimer)
@@ -1217,9 +1082,7 @@ export function flushChatDrafts(): void {
   unwrittenDrafts = null
 }
 
-// Drafts survive reloads, but on a trailing timer rather than per keystroke:
-// alone among the persisted maps this one changes on every character typed,
-// and each write re-serializes the whole thing.
+// Save drafts on a trailing timer, since they change on every keystroke.
 useUiStore.subscribe((state, prev) => {
   if (state.chatDrafts === prev.chatDrafts) return
   unwrittenDrafts = state.chatDrafts
@@ -1227,24 +1090,19 @@ useUiStore.subscribe((state, prev) => {
   draftTimer = setTimeout(flushChatDrafts, CHAT_DRAFT_PERSIST_MS)
 })
 
-// `pagehide` is the primary signal, but mobile and bfcache kill paths skip it;
-// a hidden `visibilitychange` is the one browsers reliably deliver. Flushing on
-// both costs nothing — the second firing finds nothing unwritten.
 if (typeof window !== 'undefined') {
-  // Unsaved editor text holds the page. With autosave that is only the last
-  // second of typing (a save in flight included — a file is dirty until its
-  // save lands), a paused conflict, or a failing save.
+  // Warn before leaving with unsaved editor text.
   window.addEventListener('beforeunload', (e) => {
     if (Object.keys(useUiStore.getState().dirtyFiles).length > 0) e.preventDefault()
   })
+  // Flush drafts on pagehide, and on a hidden visibilitychange, since some
+  // mobile and bfcache paths skip pagehide.
   window.addEventListener('pagehide', flushChatDrafts)
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') flushChatDrafts()
   })
 }
-// The mobile screen survives reloads alongside the selection it goes with, so
-// a phone that reloads mid-conversation comes back to the pane rather than to
-// the project list.
+// Save the mobile screen so a reload returns to it.
 useUiStore.subscribe((state, prev) => {
   if (state.mobileScreen !== prev.mobileScreen) persistMobileScreen(state.mobileScreen)
 })

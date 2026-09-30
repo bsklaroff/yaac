@@ -1,18 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 
 /**
- * Tests for the proxy's git-auth-failure detection. Mirrors
- * `isGitSmartHttpPath` / `noteGitUpstreamStatus` in k8s/proxy/proxy.ts —
- * the proxy runs in its own container and can't be imported directly, so we
- * copy the logic under test (same convention as proxy-github-gate.test.ts).
+ * Tests for the proxy's git-auth-failure detection, mirrored from
+ * `isGitSmartHttpPath` / `noteGitUpstreamStatus` in k8s/proxy/proxy.ts
+ * (which can't be imported).
  *
- * The proxy calls this on every MITM'd response whose request went to the
- * workspace's git host with an injected credential: 401/403 on a git
- * smart-HTTP path records a failure against the workspace's PROJECT
- * (write-through to disk) — the credential is the project's, so one bad
- * token flags every workspace of the project — a later 2xx on the same host
- * from any of the project's workspaces clears it, and everything else is
- * inert.
+ * A 401/403 on a git smart-HTTP path records a failure against the
+ * workspace's project, since the credential is the project's. A later 2xx
+ * on the same host from any of the project's workspaces clears it.
  */
 
 interface GitAuthFailureRecord {
@@ -45,10 +40,10 @@ function noteGitUpstreamStatus(
 ): void {
   if (!isGitSmartHttpPath(requestPath)) return
   const projectSlug = workspaceProject.get(workspaceId)
-  if (!projectSlug) return // unregistered workspace — can't attribute
+  if (!projectSlug) return
   const byHost = gitAuthFailuresByProject.get(projectSlug)
   if (status === 401 || status === 403) {
-    if (byHost?.has(hostname)) return // repeat failure — no disk traffic
+    if (byHost?.has(hostname)) return
     const hosts = byHost ?? new Map<string, GitAuthFailureRecord>()
     hosts.set(hostname, { status, atMs: Date.now() })
     gitAuthFailuresByProject.set(projectSlug, hosts)

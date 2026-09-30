@@ -8,17 +8,16 @@ import { getKubeConfig } from './client'
 import { serverLog } from '#log'
 
 /**
- * Watch-fed cache of one resource kind, mapped to a yaac domain type.
- * client-node's informer owns the watch stream, resourceVersion tracking,
- * and relist-on-410; everything it does NOT own is supervised here,
- * verified against the 1.4.0 source:
+ * Watch-fed cache of one resource kind, mapped to a yaac type. client-node's
+ * informer handles the watch stream, resourceVersion and relist on 410.
+ * This class covers what it does not (checked against client-node 1.4.0):
  *
- * - On any non-410 error (failed list included) the informer emits `error`
- *   and STOPS — restart-with-backoff is ours.
- * - There is no periodic resync, so a ghost row from an event lost while
- *   the watch was down would live forever — the relist timer bounds it.
- * - The list path yields deserialized class instances (Date timestamps),
- *   the watch path raw JSON (string timestamps) — `mapItem` sees both.
+ * - On any other error, including a failed list, the informer emits
+ *   `error` and stops. We restart it with backoff.
+ * - It has no periodic resync, so an event lost while the watch was down
+ *   would leave a stale entry forever. A periodic relist bounds that.
+ * - The list path yields class instances (Date timestamps) and the watch
+ *   path raw JSON (string timestamps). `mapItem` must accept both.
  */
 
 /** Informer surface the cache drives — lets tests inject a fake. */
@@ -98,8 +97,8 @@ export class InformerCache<T> {
   }
 
   /**
-   * Seeded and watch-connected — the cache may be trusted for absence
-   * (a destructive consumer falls back to a live list when false).
+   * Seeded and watch-connected, so a missing item really is absent. When
+   * false, destructive consumers should do a live list instead.
    */
   healthy(): boolean {
     return this.seeded && this.connected
@@ -115,8 +114,8 @@ export class InformerCache<T> {
     informer.on('delete', (obj) => this.remove(obj))
     informer.on('connect', () => { this.connected = true })
     informer.on('error', (err) => this.onError(err))
-    // Seed through our own relist so `items()` is meaningful even if the
-    // watch path is broken; the informer's start() lists again (once).
+    // Seed via our own relist so `items()` works even if the watch is
+    // broken.
     void this.relist()
     this.startInformer()
     this.relistTimer = setInterval(() => void this.relist(), this.deps.relistIntervalMs)
@@ -143,8 +142,7 @@ export class InformerCache<T> {
   private onError(err: unknown): void {
     if (this.stopped) return
     this.connected = false
-    // An informer the apiserver disconnected after a long life is routine —
-    // restart near-immediately. Rapid failures back off up to the max.
+    // A disconnect after a long run is routine, so reset the backoff.
     if (Date.now() - this.startedAtMs >= 60_000) this.backoffMs = this.deps.restartDelayMs
     this.deps.log(`[server] informer ${this.deps.path}: ${String(err)} — restart in ${this.backoffMs}ms`)
     if (this.restartTimer) return

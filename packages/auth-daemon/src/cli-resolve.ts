@@ -2,10 +2,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 /**
- * Locating vendor CLIs (`claude` / `codex`) on the server host — a plain
- * $PATH lookup, like the shell would do. Note the server's PATH is frozen at
- * launch, so a CLI installed mid-session is only found if it lands in a
- * directory that was already on the PATH.
+ * Finds vendor CLIs (`claude`, `codex`) with a plain $PATH lookup. The
+ * process's PATH is fixed at launch, so a CLI installed later is found only
+ * if it lands in a directory already on that PATH.
  */
 
 /** The first `dirs` entry holding an executable file `name`, as a full path. */
@@ -17,7 +16,7 @@ export function findExecutable(name: string, dirs: string[]): string | null {
       fs.accessSync(candidate, fs.constants.X_OK)
       if (fs.statSync(candidate).isFile()) return candidate
     } catch {
-      // not here — keep looking
+      // not here
     }
   }
   return null

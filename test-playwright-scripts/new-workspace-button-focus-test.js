@@ -1,12 +1,10 @@
 /*
- * Verifies that closing the create dialog opened from the sidebar's + ("New
- * workspace") never hands focus back to the + — so no focus ring is left
- * drawn around it — whichever way it closes: Escape, the ×, a click on the
- * backdrop, or Enter (a submit: it creates a real workspace with the empty
- * prompt — stop them afterwards with `yaac workspace stop` — or, with no agent
- * credential, hands off to Settings, which is then dismissed). Each is tried after a
- * mouse click on the + and after keyboard activation (focus it, press Enter),
- * the latter being the path where the browser would draw :focus-visible.
+ * Verifies that closing the create dialog opened from the sidebar's + never
+ * returns focus to the +, so no focus ring is left on it. Tries each way of
+ * closing (Escape, ×, backdrop click, Enter) after opening by mouse and by
+ * keyboard (where :focus-visible would show). Enter submits: it creates a
+ * real workspace with an empty prompt (stop it afterwards with `yaac
+ * workspace stop`) or, with no agent credential, opens Settings.
  *
  * Run against the server's own `dist/` (`pnpm build` + `yaac server restart`):
  *   PROJECT=<slug> node test-playwright-scripts/new-workspace-button-focus-test.js
@@ -89,11 +87,10 @@ try {
       }))
       check(`opened by ${how}, closed by ${by}: + not focused, no ring`,
         !state.focused && !state.ring, `activeElement=${state.active}`)
-      // A created workspace's terminal takes focus a few seconds on; let it,
-      // or it lands mid-way through the next case and passes it falsely.
+      // Let a new workspace's terminal take focus before the next case.
       if (by === 'Enter') {
-        // Polled with evaluate: the app's CSP refuses waitForFunction's eval.
-        // No terminal ever comes on the Settings hand-off, hence the cap.
+        // Polled with evaluate (the CSP blocks waitForFunction), with a cap
+        // since Settings opens no terminal.
         for (let i = 0; i < 40; i++) {
           if (await page.evaluate(() => document.activeElement?.classList.contains('xterm-helper-textarea'))) break
           await page.waitForTimeout(250)

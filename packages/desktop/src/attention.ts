@@ -1,9 +1,8 @@
 import type { AgentTool, ServerSnapshot } from '@yaac/shared/types'
 
 /**
- * The attention model: turn a server snapshot into the "needs me" signal the
- * desktop shell surfaces (dock badge + notifications). All pure so it's
- * headless-unit-testable; main.ts owns the Electron side effects.
+ * Turns server snapshots into the "needs attention" signal the shell shows
+ * (dock badge and notifications). main.ts owns the Electron side effects.
  */
 
 export interface WaitingWorkspace {
@@ -29,9 +28,8 @@ export function selectWaiting(snapshot: ServerSnapshot): WaitingWorkspace[] {
 }
 
 /**
- * Identity for a single waiting *spell*: the workspace plus when the wait began.
- * A fresh spell (new `waitingSinceMs`) yields a new key so it re-notifies;
- * an ongoing wait keeps its key so it doesn't.
+ * Key for one wait: the workspace plus when the wait began. A new wait gets
+ * a new key and notifies again; an ongoing wait keeps its key.
  */
 export function waitingKey(s: WaitingWorkspace): string {
   return `${s.workspaceId}#${s.waitingSinceMs ?? ''}`
@@ -79,11 +77,9 @@ export function parseSnapshotMessage(raw: string): ServerSnapshot | null {
 }
 
 /**
- * Folds successive snapshots into the current waiting count and the workspaces
- * that *just* entered a wait. The first snapshot only seeds state (returns no
- * notifications), so connecting to a server with pre-existing waits doesn't
- * fire a burst — and reconnects reuse the same monitor, so they don't re-notify
- * ongoing waits either.
+ * Folds successive snapshots into the waiting count and the workspaces that
+ * just started waiting. The first snapshot only seeds state, so connecting to
+ * a server with existing waits doesn't fire a burst of notifications.
  */
 export class AttentionMonitor {
   private prevKeys: Set<string> = new Set()

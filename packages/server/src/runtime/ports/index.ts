@@ -1,15 +1,9 @@
-// The port-forwarding machinery: driver-neutral orchestration over the
-// contract's `declareForwards` and `dialPort`.
+// Driver-neutral port forwarding over the contract's `declareForwards` and
+// `dialPort`: which ports a workspace carries, keeping the tmux bar in
+// step, and bridging a client socket to a connection in the workspace.
+// Where a forward is offered and how a dial travels are the driver's.
 //
-// What lives here is everything that is the same whichever substrate runs
-// the workspace — deciding which ports a workspace should carry, keeping
-// the tmux bar's advertisement in step, and bridging one client's socket to
-// one connection inside the workspace. What a forward is offered at, and
-// what a dial actually traverses, are the driver's half and stay on the
-// contract.
-//
-// Adding a name here widens the interface and obliges a unit test in
-// packages/server/test/runtime/ports/.
+// Each export needs a unit test in packages/server/test/runtime/ports/.
 
 export { restoreAllWorkspaceForwarders } from './restore'
 export {

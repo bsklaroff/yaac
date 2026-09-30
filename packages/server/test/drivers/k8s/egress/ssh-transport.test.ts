@@ -30,17 +30,15 @@ describe('workspaceSshTransport', () => {
     }])
     const gitSsh = env.find((e) => e.startsWith('GIT_SSH_COMMAND='))
     expect(gitSsh).toContain('UserKnownHostsFile=/home/yaac/.ssh/yaac/known_hosts')
-    // The whole point of shipping our own file: an unknown host must fail
-    // rather than be accepted on first sight.
+    // An unknown host fails rather than being trusted on first use.
     expect(gitSsh).toContain('StrictHostKeyChecking=yes')
-    // And nothing the user's own ssh config could weaken.
+    // No user ssh config can weaken this.
     expect(gitSsh).toContain('-F /dev/null')
   })
 
   it('points identity at the forwarded agent — never a key inside the workspace', () => {
-    // The rendezvous is a TCP hop to the proxy, re-exposed in-pod as the
-    // socket SSH_AUTH_SOCK names, so a pod scheduled away from the proxy
-    // still gets an agent.
+    // The agent is a TCP connection to the proxy, exposed in the pod as
+    // the SSH_AUTH_SOCK socket, so it works on any node.
     const { env, mounts } = workspaceSshTransport(KNOWN_HOSTS, '10.96.0.5')
 
     expect(env).toContain(`SSH_AUTH_SOCK=${SSH_AGENT_SOCKET_PATH}`)

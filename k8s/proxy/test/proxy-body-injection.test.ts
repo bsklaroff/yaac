@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 
 /**
- * Tests for the proxy's body injection logic.
- * These functions mirror the implementation in podman/proxy-sidecar/proxy.ts.
+ * Tests for the proxy's body injection logic, mirrored from k8s/proxy/proxy.ts
+ * (which can't be imported).
  */
 
 function applyBodyInjections(
@@ -36,10 +36,9 @@ function applyBodyInjections(
 const PLACEHOLDER_REFRESH_TOKEN = 'yaac-ph-refresh'
 
 /**
- * Whether a request body presents the placeholder refresh token — the one
- * fact gating both halves of an OAuth refresh in the proxy. Mirrored here as
- * the rest of this file is; `proxy-codex-oauth.test.ts` covers the predicate
- * itself in detail, so the cases below use it only to compose the decision.
+ * Whether a request body presents the placeholder refresh token, which gates
+ * both halves of an OAuth refresh in the proxy. Tested in detail in
+ * `proxy-codex-oauth.test.ts`.
  */
 function bodyHasPlaceholderRefreshToken(body: Buffer, contentType: string | undefined): boolean {
   if (body.length === 0) return false
@@ -139,17 +138,10 @@ describe('applyBodyInjections', () => {
   })
 
   describe('the OAuth refresh gate', () => {
-    // The gate no longer lives in this function — it is the call site's
-    // decision, mirrored here: swaps are assembled only for a request that
-    // presented the placeholder we issued.
-    //
-    // Why it has to exist: a refresh grant SPENDS the token it presents and
-    // issues a replacement. Injecting the real token into a request that
-    // never held our placeholder rotates the account on behalf of whatever
-    // process sent it — any pod can reach this endpoint — while the response
-    // capture, gated on the same fact, declines to record the replacement.
-    // The host store is then left holding a token the rotation already
-    // spent, and every workspace using it is signed out.
+    // The call site swaps only for a request that presented our placeholder.
+    // A refresh grant spends the token it presents, so swapping for any
+    // other request would rotate the account without capturing the new
+    // token, signing every workspace out.
     const REAL_REFRESH_TOKEN = 'real-refresh-token'
     const swapsFor = (body: Buffer, contentType: string): Array<{ name: string; value: string }> =>
       bodyHasPlaceholderRefreshToken(body, contentType)
@@ -168,8 +160,7 @@ describe('applyBodyInjections', () => {
     })
 
     it('lets every other refresh travel as itself', () => {
-      // A fabricated token from a test fixture, another tool's credential, a
-      // stray script — all pass through and fail upstream on their own.
+      // Anything else passes through untouched and fails upstream.
       for (const token of ['someone-elses-token', 'sk-ant-ort01-fabricated', '']) {
         const body = grant(token)
         const out = applyBodyInjections(body, 'application/json', swapsFor(body, 'application/json'))

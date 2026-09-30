@@ -47,7 +47,6 @@ describe('WorkspaceTitle', () => {
     // Selectable for copy/paste (opts out of the Electron drag region).
     expect(label.className).toContain('select-text')
     expect(screen.getByRole('button', { name: 'Rename workspace' })).toBeTruthy()
-    // Not editing yet: no input on screen.
     expect(screen.queryByRole('textbox')).toBeNull()
   })
 
@@ -60,8 +59,7 @@ describe('WorkspaceTitle', () => {
     render(<WorkspaceTitle workspaceId="s1" title="Existing name" prompt="p" />)
     const input = openEditor()
     expect(input.value).toBe('Existing name')
-    // Cursor at the end (not a full select-all, which would clear on the first
-    // keystroke) — so the existing title stays editable.
+    // Cursor at the end, not select-all, which the first keystroke would clear.
     expect(input.selectionStart).toBe('Existing name'.length)
     expect(input.selectionEnd).toBe('Existing name'.length)
   })
@@ -94,7 +92,6 @@ describe('WorkspaceTitle', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
 
     expect(renameWorkspace).toHaveBeenCalledWith('s1', 'New name')
-    // Editor closes back to the label.
     expect(screen.queryByRole('textbox')).toBeNull()
   })
 
@@ -126,9 +123,9 @@ describe('WorkspaceTitle', () => {
   })
 
   it('does not persist the prompt fallback when an untitled workspace is committed unchanged', () => {
-    // The header shows the prompt while a model title is still pending; edit →
-    // Enter with no change must not write a title row (which would permanently
-    // block the auto-generated title).
+    // The header shows the prompt while a generated title is pending. Pressing
+    // Enter with no change must not write a title row, which would block the
+    // generated title for good.
     render(<WorkspaceTitle workspaceId="s1" title="" prompt="my first message" />)
     const input = openEditor()
     expect(input.value).toBe('my first message')
@@ -150,7 +147,7 @@ describe('WorkspaceTitle', () => {
   it('trims surrounding whitespace before comparing and committing', () => {
     render(<WorkspaceTitle workspaceId="s1" title="Kept" prompt="p" />)
     const input = openEditor()
-    // Same title with padding — should be treated as a no-op.
+    // Same title with padding is a no-op.
     fireEvent.change(input, { target: { value: '  Kept  ' } })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(renameWorkspace).not.toHaveBeenCalled()

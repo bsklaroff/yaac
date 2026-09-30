@@ -19,47 +19,30 @@ import { testEnv } from '@yaac/shared/env'
 import type { ToolLoginView } from '@yaac/shared/types'
 
 /**
- * Web-driven tool sign-in: the server runs the vendor's own browser login in
- * a subprocess. Both CLIs open the user's browser themselves and complete via
- * a localhost callback, so with the server on the same machine as the browser
- * (the supported setup) the whole flow is hands-free — the webapp only shows
- * "finish in your browser" and polls for the outcome.
+ * Web-driven tool sign-in: runs the vendor's own browser login in a
+ * subprocess on the user's machine. Both CLIs open the browser themselves and
+ * complete through a localhost callback, so the webapp only shows "finish in
+ * your browser" and polls for the outcome.
  *
- *  - claude: `claude auth login` under a PTY (it's an Ink TUI), with
- *    CLAUDE_CONFIG_DIR pointed at a scratch dir so the flow starts from a
- *    clean slate (no re-login prompts) and the host's own config is never
- *    touched. Success is detected by watching for the credentials the CLI
- *    writes — the scratch `.credentials.json`, or on macOS the Keychain item
- *    scoped to the scratch config dir (the CLI suffixes the service name
- *    with a config-dir hash) — then persisted as a full OAuth bundle. The
- *    scratch Keychain item is deleted with the scratch dir so live tokens
- *    never linger.
- *  - codex: `codex login` over pipes with CODEX_HOME pointed at a scratch
- *    dir; it exits 0 after the localhost:1455 callback, leaving an
- *    `auth.json` that is persisted like an import.
- *
- * Session lifecycle (one per tool, 15-minute timeout, post-finish linger for
- * the webapp's polling) lives in the shared cli-session registry.
+ *  - claude: `claude auth login` under a PTY (it is an Ink TUI), with
+ *    CLAUDE_CONFIG_DIR set to a scratch dir so the flow starts clean and the
+ *    user's own config is untouched. Success is detected by polling for the
+ *    credentials it writes: the scratch `.credentials.json`, or on macOS a
+ *    Keychain item scoped to the scratch dir. That item is deleted along with
+ *    the scratch dir.
+ *  - codex: `codex login` over pipes with CODEX_HOME set to a scratch dir. It
+ *    exits 0 after the callback, leaving an `auth.json` to persist.
  */
 
 /** How often the claude watcher looks for freshly-written credentials. */
 const CLAUDE_POLL_MS = 500
 
 /**
- * Where a completed login's credentials go. Defaults to the local
- * persistence — the data-dir credential files, and those alone — which is
- * right when this code runs inside the machine that owns the data dir. The
- * auth server overrides it with an RPC `PUT /auth/:tool` so bundles land
- * on the (possibly remote) main server instead of this machine, and that
- * is the path every production sign-in takes (`runAuthDaemon` installs it
- * unconditionally; the CLI PUTs directly).
- *
- * Which matters, because the route does something this default cannot:
- * seeding the credential into each project's tool home depends on whether
- * the server's runtime mediates egress — a sentinel where a proxy will swap
- * it, the real bundle where nothing would — and that is a fact about the
- * server, not about this machine. A local consumer of this default would
- * persist the bundle and seed nothing.
+ * Where a completed login's credentials go. The default writes the local
+ * data-dir credential files only. `runAuthDaemon` always replaces it with a
+ * `PUT /auth/:tool` to the server, because only the server knows how to seed
+ * each project's tool home (a proxy-swapped sentinel under k8s, the real
+ * credential under containerless).
  */
 type PersistToolLogin = typeof persistToolLogin
 let persistResult: PersistToolLogin = persistToolLogin
@@ -92,8 +75,7 @@ export function clearAllToolLoginsForTests(): void {
   registry.clearAllForTests()
 }
 
-/** Kill every login subprocess — auth-daemon shutdown, so vendor CLIs
- *  never outlive the broker that relays them. */
+/** Kill every login subprocess (auth-daemon shutdown). */
 export function killAllToolLogins(): void {
   registry.clearAllForTests()
 }
@@ -115,11 +97,10 @@ async function readFreshClaudeCreds(s: LoginSession): Promise<string | null> {
   try {
     return await fs.readFile(path.join(s.scratchDir, '.credentials.json'), 'utf8')
   } catch {
-    // not written (yet) — fall through to the keychain
+    // not written yet
   }
-  // macOS: the CLI prefers the Keychain over the scratch file, under a
-  // service name suffixed with a hash of CLAUDE_CONFIG_DIR — the scratch
-  // login gets its own item, so its mere presence marks completion.
+  // On macOS the CLI writes to the Keychain instead, under a service name
+  // derived from CLAUDE_CONFIG_DIR, so the scratch login gets its own item.
   return readClaudeKeychainPayload(claudeKeychainService(s.scratchDir))
 }
 
@@ -147,8 +128,8 @@ async function persistCodexScratchAuth(scratchDir: string): Promise<void> {
     await persistResult('codex', { apiKey: bundle.accessToken, kind: 'oauth', codexBundle: bundle })
     return
   }
-  // Browser login always lands in ChatGPT mode today; tolerate an api-key
-  // shape anyway rather than failing a completed login.
+  // Browser login yields ChatGPT OAuth; accept an API key anyway rather than
+  // fail a completed login.
   const parsed = JSON.parse(raw) as Record<string, unknown>
   for (const key of ['OPENAI_API_KEY', 'api_key', 'apiKey']) {
     const val = parsed[key]
@@ -174,8 +155,7 @@ function spawnClaude(s: LoginSession, argv: string[]): void {
   s.poller.unref?.()
   proc.onExit(() => {
     if (s.view.status !== 'running' || s.persisting) return
-    // The CLI may exit right as (or just after) it writes the credentials —
-    // give the watcher one final look before calling it a failure.
+    // The CLI may exit just after writing credentials; check once more.
     void pollClaude(s).then(() => {
       if (s.view.status === 'running' && !s.persisting) {
         registry.finish(s, 'error', outputTail(s.buf) || 'claude auth login exited before completing.')
@@ -194,8 +174,7 @@ function spawnCodex(s: LoginSession, argv: string[]): void {
   child.stdout.on('data', (d: Buffer) => { registry.ingest(s, d.toString('utf8')) })
   child.stderr.on('data', (d: Buffer) => { registry.ingest(s, d.toString('utf8')) })
   child.on('error', (err) => {
-    // Belt-and-braces: the preflight resolution should catch a missing CLI,
-    // but a spawn ENOENT (deleted between resolve and spawn) means the same.
+    // ENOENT: the CLI vanished between the $PATH lookup and the spawn.
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') s.view.cliMissing = true
     registry.finish(s, 'error', err.message)
   })
@@ -212,20 +191,16 @@ function spawnCodex(s: LoginSession, argv: string[]): void {
 }
 
 /**
- * Start (or restart) the sign-in flow for a tool. Any still-running flow for
- * the same tool is cancelled first — clients drive one at a time. `id` is
- * supplied by the relay (the main server mints flow ids so its routes can
- * answer synchronously); direct callers/tests may omit it.
+ * Start (or restart) the sign-in flow for a tool, cancelling any flow still
+ * running for it. The relay passes the server-minted `id` so the server's
+ * routes can answer synchronously; tests may omit it.
  */
 export async function startToolLogin(tool: 'claude' | 'codex', id?: string): Promise<ToolLoginView> {
   const existing = registry.liveForTool(tool)
   if (existing) cancelToolLogin(existing.view.id)
 
-  // Scratch config homes live beside the data dir, not in /tmp — codex
-  // refuses to set up its helper binaries under a temp dir and warns
-  // loudly. CLIENT-LOCAL: the login runs the vendor's own CLI against a
-  // browser on this machine, so nothing off it ever reads this. mkdtemp
-  // does not create parents, hence the explicit root.
+  // Not under /tmp: codex refuses to install its helper binaries in a temp
+  // dir. mkdtemp does not create parents, hence ensureClientLocalRoot.
   await ensureClientLocalRoot()
   const scratchDir = await fs.mkdtemp(path.join(clientLocalRoot(), 'login-'))
   const s = registry.create(
@@ -238,16 +213,14 @@ export async function startToolLogin(tool: 'claude' | 'codex', id?: string): Pro
   if (!argv) {
     const cli = resolveToolCliPath(tool)
     if (!cli) {
-      // Decided up front: a PTY spawn of a missing binary gives no usable
-      // signal (silent exit 1). The webapp turns cliMissing into an
-      // "Install …" button instead of a retry.
+      // Checked up front because a PTY spawn of a missing binary just exits
+      // 1. The webapp shows an "Install" button for cliMissing.
       s.view.cliMissing = true
       registry.finish(s, 'error', tool === 'claude'
         ? 'Claude Code is not installed on this machine.'
         : 'Codex is not installed on this machine.')
       return getToolLogin(s.view.id)
     }
-    // Spawn the path the preflight resolved so both always agree.
     argv = tool === 'claude' ? [cli, 'auth', 'login'] : [cli, 'login']
   }
   try {
@@ -265,23 +238,16 @@ export function getToolLogin(id: string): ToolLoginView {
 }
 
 /**
- * The only stdin a login CLI legitimately needs: the authorize page's
- * `code#state` paste-back — base64url characters plus the `#` separator.
- * (The observed shape is two ~43-char base64url strings; 512 is headroom.)
+ * The only input a login CLI needs: the authorize page's `code#state`
+ * paste-back (base64url plus `#`; about 87 chars in practice).
  */
 const LOGIN_INPUT_RE = /^[A-Za-z0-9_#-]{1,512}$/
 
 /**
- * Forward the pasted authorize code to the CLI — how the user answers
- * claude's "Paste code here if prompted >" after following the printed URL
- * manually (that page displays a code instead of hitting the localhost
- * callback).
- *
- * Validation is a strict whitelist, not a control-char blacklist: the write
- * lands on the login CLI's PTY, so nothing that could read as a key chord,
- * escape sequence, or extra line may pass. The process is always the vendor
- * login CLI spawned directly (argv exec — no shell is ever involved), but
- * the accepted alphabet keeps the surface minimal regardless.
+ * Forward a pasted authorize code to claude's "Paste code here if prompted >"
+ * prompt, used when the user opened the printed URL by hand. The input goes
+ * to a PTY, so it is checked against a strict allow-list to keep out escape
+ * sequences, key chords and extra lines.
  */
 export function sendToolLoginInput(id: string, text: string): ToolLoginView {
   const s = registry.getById(id)

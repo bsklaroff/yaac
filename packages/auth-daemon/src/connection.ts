@@ -14,12 +14,10 @@ import type { AgentKind, AgentOp } from '@yaac/shared/auth-agent-protocol'
 import type { ToolInstallView, ToolLoginView } from '@yaac/shared/types'
 
 /**
- * The agent half of the auth relay: one outbound WebSocket to the main
- * server's /agent/auth, executing start/input/cancel ops against the
- * local login/install managers and pushing view snapshots back whenever
- * they change. Views are sampled from the local in-process registries
- * (cheap) so changes reach the server within one tick — the wire itself
- * is pure push.
+ * The auth daemon's side of the auth relay: one outbound WebSocket to the
+ * server's /api/agent/auth. It runs start/input/cancel ops against the local
+ * login and install managers, and samples their views every few hundred ms,
+ * pushing each one that changed back to the server.
  */
 
 /** How often local flow views are sampled for changes. */
@@ -28,11 +26,9 @@ const VIEW_SAMPLE_MS = 300
 const BACKOFF_MIN_MS = 1000
 const BACKOFF_MAX_MS = 10_000
 /**
- * Heartbeat: ping the server on this cadence and expect a pong before the
- * next tick. A half-open TCP connection (server host slept, NAT dropped the
- * mapping, network partition) delivers no 'close', so without this the push
- * socket would sit dead — silently swallowing sends and never reconnecting.
- * A missed pong terminates the socket, which fires 'close' → reconnect.
+ * Ping interval. A half-open TCP connection (host slept, NAT dropped the
+ * mapping) never emits 'close', so a ping left unanswered by the next tick
+ * terminates the socket, which triggers a reconnect.
  */
 const HEARTBEAT_MS = 15_000
 
@@ -68,8 +64,7 @@ export function connectAuthAgent(opts: {
   let heartbeat: NodeJS.Timeout | null = null
   let reconnectTimer: NodeJS.Timeout | null = null
 
-  // id → kind for flows this connection is responsible for pushing, and
-  // the last serialized view sent so unchanged samples stay quiet.
+  // Flows this connection pushes, and the last view sent for each.
   const tracked = new Map<string, AgentKind>()
   const lastSent = new Map<string, string>()
 
@@ -77,7 +72,7 @@ export function connectAuthAgent(opts: {
     try {
       return kind === 'login' ? getToolLogin(id) : getToolInstall(id)
     } catch {
-      return null // cancelled or lingered out — stop tracking
+      return null // cancelled or expired
     }
   }
 
@@ -94,7 +89,7 @@ export function connectAuthAgent(opts: {
       if (lastSent.get(id) === serialized) continue
       lastSent.set(id, serialized)
       ws.send(serialized)
-      // One final push carries the terminal state; nothing changes after.
+      // A finished flow's view never changes again.
       if (view.status !== 'running') {
         tracked.delete(id)
         lastSent.delete(id)
@@ -117,8 +112,7 @@ export function connectAuthAgent(opts: {
       try {
         sendToolLoginInput(op.id, op.text)
       } catch (err) {
-        // The server validated before sending; a residual failure (flow
-        // ended between hops) just surfaces via the next view push.
+        // The flow ended after the server validated; the next view shows it.
         opts.log(`login input rejected: ${String(err)}`)
       }
       return
@@ -136,9 +130,8 @@ export function connectAuthAgent(opts: {
     const sock = new WebSocket(wsUrl)
     ws = sock
 
-    // Flips true on every pong; the next heartbeat tick reads it to decide
-    // whether the last ping was answered. Seeded true so the first tick,
-    // one interval after 'open', doesn't fault a freshly-opened socket.
+    // Whether the last ping was answered. Starts true so the first tick
+    // doesn't fault a fresh socket.
     let alive = true
     sock.on('pong', () => { alive = true })
 
@@ -149,8 +142,6 @@ export function connectAuthAgent(opts: {
       sampler.unref?.()
       heartbeat = setInterval(() => {
         if (!alive) {
-          // Previous ping went unanswered — the peer is gone. terminate()
-          // skips the close handshake and emits 'close' at once → reconnect.
           sock.terminate()
           return
         }
@@ -175,8 +166,7 @@ export function connectAuthAgent(opts: {
       sampler = null
       if (heartbeat) clearInterval(heartbeat)
       heartbeat = null
-      // Flows can't reach the server anymore — kill them so vendor CLIs
-      // don't linger headless (the server marks its views failed too).
+      // Kill flows that can no longer report, so vendor CLIs don't linger.
       for (const [id, kind] of tracked) {
         if (kind === 'login') cancelToolLogin(id)
         else cancelToolInstall(id)

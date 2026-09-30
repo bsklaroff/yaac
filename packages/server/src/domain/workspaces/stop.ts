@@ -13,17 +13,11 @@ export interface StoppedWorkspaceInfo {
 }
 
 /**
- * Resolve a workspace by its id or unique prefix and schedule a
- * detached cleanup (delete the Job + prune the workspace dirs). The *git
- * workspace* is deliberately kept — that is what makes this a stop rather
- * than a delete, and what a later restart re-attaches to.
- *
- * This is a NATURAL stop — the user's, or an agent's `yaac-mama stop` — and
- * the only one: a death, a restart's teardown and a failed resume never come
- * through here. So it is where the workspaces queued after this one are
- * started (docs/queued-workspaces.md). Throws
- * `NOT_FOUND` if nothing matches, `RUNTIME_UNAVAILABLE` if the cluster
- * can't be reached.
+ * Stop a workspace by id or prefix: schedule a detached teardown, keeping the
+ * checkout for restart. This is the only natural stop (user or `yaac-mama
+ * stop`; deaths and restarts do not come here), so it also launches the
+ * workspaces queued after this one (docs/queued-workspaces.md). Throws
+ * `NOT_FOUND` or `RUNTIME_UNAVAILABLE`.
  */
 export async function stopWorkspace(idOrPrefix: string): Promise<StoppedWorkspaceInfo> {
   const target = await workspaceDriver().findForTeardown(await resolveWorkspaceId(idOrPrefix))
@@ -34,12 +28,8 @@ export async function stopWorkspace(idOrPrefix: string): Promise<StoppedWorkspac
     )
   }
 
-  // Last chance to notice a token this workspace's agent refreshed. Under an
-  // unmediated runtime that refresh landed in the project's tool home and
-  // nowhere else, and stopping removes the thing whose liveness was holding
-  // the host's own refresh back — so adopt it now rather than leaving the
-  // host store stale until the next sweep. Best-effort: a stop must not fail
-  // because a credential could not be read.
+  // Adopt any token the agent refreshed (without a proxy it exists only in
+  // the project's tool home). Best-effort.
   await harvestToolCredentials({ slug: target.projectSlug })
     .catch((err: unknown) => serverLog(`[server] credential harvest on stop failed: ${String(err)}`))
 
@@ -48,10 +38,8 @@ export async function stopWorkspace(idOrPrefix: string): Promise<StoppedWorkspac
     projectSlug: target.projectSlug,
     workspaceId: target.workspaceId,
   })
-  // Once the stop is recorded, not once the runtime is gone: a child has its
-  // own checkout and runtime, and nothing of the parent's in its way. A
-  // failure here leaves the stop done; the reconcile step launches whatever
-  // was released and not started.
+  // No need to wait for the runtime to be gone. On failure, the reconcile
+  // step launches whatever was released.
   await startQueuedChildren(target.projectSlug, target.workspaceId)
     .catch((err: unknown) => serverLog(`[server] starting queued workspaces on stop failed: ${String(err)}`))
   return {

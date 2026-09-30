@@ -16,23 +16,20 @@ import { PathLabel } from '#components/ui/PathLabel'
 import type { WorkspaceChange } from '@yaac/shared/types'
 
 /**
- * The workspace review pane: what the agent changed in its workspace since it
- * forked from the base branch. Files are an accordion — click one to expand
- * its diff inline (full width), so nothing is wasted on a side column. Polls
- * the server so it updates as work lands; read-only for now.
+ * The review pane: what the agent changed since forking from the base branch.
+ * Files form an accordion; clicking one expands its diff inline. Polls the
+ * server so it updates as work lands.
  */
 export function WorkspaceChanges({ workspaceId, projectSlug, baseBranch, focusKey }: {
   workspaceId: string
   projectSlug: string
   baseBranch?: string
-  /** Bumped (while this is the pane to focus) when it is opened or cycled to,
-   *  like a terminal's: the pane takes focus, so Cmd/Ctrl-F then reaches it
-   *  with no mouse. */
+  /** Bumped when the pane is opened or cycled to, so it takes focus and
+   *  Cmd/Ctrl-F works without the mouse. */
   focusKey?: number
 }): JSX.Element {
-  // The base branch this diff is compared against. Absent ⇒ the workspace's own
-  // fork base (server default); a value ⇒ diff against origin/<value>'s fork
-  // point. Lives in the store keyed by workspace id, so it survives a tab switch.
+  // The diff base: unset means the server's default fork base, otherwise
+  // origin/<value>'s fork point. Stored per workspace to survive tab switches.
   const base = useUiStore((s) => s.changesBase[workspaceId])
   const setChangesBase = useUiStore((s) => s.setChangesBase)
   const { data, isLoading, isError, refetch } = useQuery({
@@ -45,23 +42,20 @@ export function WorkspaceChanges({ workspaceId, projectSlug, baseBranch, focusKe
   const files = useMemo(() => data?.files ?? [], [data?.files])
   const diffMap = useMemo(() => indexDiffsByPath(data?.diff ?? ''), [data?.diff])
 
-  // The pane's view state — the find query, the expanded set, the scroll
-  // offset — lives in the store keyed by workspace, so it survives the pane
-  // being torn down on a tab or workspace switch.
+  // View state (find query, expanded files, scroll) lives in the store per
+  // workspace, so it survives the pane unmounting.
   const viewKey = paneViewKey(workspaceId, CHANGES_TARGET)
   const view = useUiStore((s) => s.paneView[viewKey])
   const setPaneView = useUiStore((s) => s.setPaneView)
 
-  // Find. The query filters the file list by path or diff content. The fixed
-  // Cmd/Ctrl-F (findChord) jumps to the box from anywhere in the focused
-  // pane, and keeps its browser meaning everywhere else.
+  // The find query filters files by path or diff content. Cmd/Ctrl-F
+  // (findChord) focuses it from anywhere in the pane.
   const find = view?.find ?? ''
   const setFind = (query: string): void => setPaneView(viewKey, { find: query })
   const findRef = useRef<HTMLInputElement | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
-    // The root only exists once loading settles, hence isLoading in the deps.
-    // Focus already inside the pane (the find box) stays put.
+    // The root exists only once loading settles, hence isLoading in deps.
     const root = rootRef.current
     if (focusKey === undefined || !root || root.contains(document.activeElement)) return
     root.focus()
@@ -77,10 +71,8 @@ export function WorkspaceChanges({ workspaceId, projectSlug, baseBranch, focusKe
     [files, diffMap, find],
   )
 
-  // Which files are expanded. A missing entry means we haven't loaded this
-  // workspace's changes yet: auto-open the first file so the pane isn't empty
-  // on arrival, then leave it to the user — an existing entry (even an empty
-  // one) is their choice and never gets re-seeded.
+  // Expanded files. With no stored entry yet, open the first file; after
+  // that the set (even empty) is the user's choice.
   const expandedList = view?.expanded
   const expanded = useMemo(() => new Set(expandedList ?? []), [expandedList])
   useEffect(() => {
@@ -96,12 +88,9 @@ export function WorkspaceChanges({ workspaceId, projectSlug, baseBranch, focusKe
   }
   const openFile = useUiStore((s) => s.openFile)
 
-  // Scroll offset: returning to the pane lands where the user left off. On
-  // remount the diff is already cached and the expanded state is applied
-  // synchronously, so the content height is present by layout time; restore
-  // once (guarded), then let the user drive. Later polls that
-  // don't change the file list won't re-run this — and if they do, the guard
-  // keeps us from yanking the scroll out from under the user.
+  // Restore the saved scroll offset once on mount. The diff is cached, so
+  // the content height is ready by layout time; the guard keeps later polls
+  // from moving the scroll.
   const listRef = useRef<HTMLDivElement | null>(null)
   const restoredScroll = useRef(false)
   useLayoutEffect(() => {
@@ -111,9 +100,8 @@ export function WorkspaceChanges({ workspaceId, projectSlug, baseBranch, focusKe
     el.scrollTop = useUiStore.getState().paneView[viewKey]?.scroll ?? 0
   }, [viewKey, files.length])
 
-  // Base picker. It shares the sidebar's branch cache (projectBranchesKey), so a
-  // refresh in either place is seen by both; opening it refreshes from the
-  // remote in the background, exactly like the new-workspace popover.
+  // Base picker. Shares the branch cache (projectBranchesKey) with other
+  // pickers; opening it refreshes from the remote in the background.
   const queryClient = useQueryClient()
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerQuery, setPickerQuery] = useState('')
@@ -129,22 +117,17 @@ export function WorkspaceChanges({ workspaceId, projectSlug, baseBranch, focusKe
       .catch(() => { /* stale-but-instant list stays */ })
   }, [pickerOpen, projectSlug, queryClient])
 
-  // Every pick is sent as an explicit base, including the workspace's own fork
-  // branch. Clearing it instead would fall back to the server's default base,
-  // which is read live from the workspace's git config — and an agent that
-  // pushes with `git push -u` rewrites that to its own remote branch, whose
-  // fork point is HEAD ("No changes"). An explicit base always diffs against
-  // origin/<branch>, which is what the label promises.
+  // Always send an explicit base, even the workspace's own fork branch. The
+  // server default reads the workspace's git config, which `git push -u`
+  // repoints at the agent's own branch, making the diff empty.
   const pickBase = (branch: string): void => {
     setChangesBase(workspaceId, branch)
     setPickerOpen(false)
     setPickerQuery('')
   }
-  // Prefer a human branch name; fall back to a short SHA only when neither the
-  // override nor the workspace's tracked branch is known.
   const baseLabel = base ?? baseBranch ?? (data?.base ? data.base.slice(0, 7) : 'base')
 
-  // Totals follow the filter, so the header always describes the listed files.
+  // Totals cover only the filtered files.
   const totals = visible.reduce((a, f) => ({ add: a.add + f.additions, del: a.del + f.deletions }), { add: 0, del: 0 })
 
   if (isLoading) {
@@ -169,12 +152,10 @@ export function WorkspaceChanges({ workspaceId, projectSlug, baseBranch, focusKe
     )
   }
   return (
-    // Focusable, so a click on the diff (or opening the pane) puts focus in
-    // the pane where Cmd/Ctrl-F can see it.
+    // Focusable so Cmd/Ctrl-F works after clicking in the pane.
     <div ref={rootRef} tabIndex={-1} onKeyDown={onKeyDown} className="flex h-full flex-col bg-surface outline-none">
-      {/* Header is always present (even with no changes) so the base picker
-          stays reachable — otherwise a base that yields an empty diff would
-          trap the user with no way to switch back. */}
+      {/* Always rendered so the base picker stays reachable when a base
+          yields an empty diff. */}
       <div className="flex h-7 shrink-0 items-center gap-2 border-b border-hairline px-2 text-[11px] text-text-dim">
         <Popover.Root
           open={pickerOpen}
@@ -224,8 +205,7 @@ export function WorkspaceChanges({ workspaceId, projectSlug, baseBranch, focusKe
             <span className="text-[#f85149]">−{totals.del}</span>
           </>
         ) : (
-          // Only "no changes" when the fork point actually resolved — otherwise
-          // committed work simply wasn't in the diff to begin with.
+          // Without a resolved fork point, committed work is not in the diff.
           <span className="text-text-faint">{data && !data.baseResolved ? 'nothing uncommitted' : 'no changes'}</span>
         )}
         <div className="ml-auto flex shrink-0 items-center gap-1">
@@ -244,7 +224,6 @@ export function WorkspaceChanges({ workspaceId, projectSlug, baseBranch, focusKe
             onChange={(e) => setFind(e.target.value)}
             onKeyDown={(e) => {
               if (e.key !== 'Escape') return
-              // First Escape clears the filter, a second one leaves the box.
               e.stopPropagation()
               if (find !== '') setFind('')
               else e.currentTarget.blur()
@@ -260,10 +239,8 @@ export function WorkspaceChanges({ workspaceId, projectSlug, baseBranch, focusKe
 
       {files.length === 0 ? (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 px-4 text-center">
-          {/* An unresolved base means the diff ran against HEAD, so committed
-              work is missing from it — claiming "no changes" there is a lie.
-              Name the branch we couldn't find instead, so the fix (push it, or
-              pick another base) is obvious. */}
+          {/* An unresolved base means the diff ran against HEAD and misses
+              committed work, so name the missing branch instead. */}
           {data && !data.baseResolved ? (
             <>
               <p className="text-xs text-text-dim">Nothing uncommitted</p>
@@ -312,8 +289,7 @@ function FileAccordion({
   open: boolean
   diff: ParsedFileDiff | undefined
   onToggle: () => void
-  /** Open the file in an editor pane — the shortest way from reviewing a
-   *  change to fixing it. */
+  /** Open the file in an editor pane. */
   onOpen: () => void
 }): JSX.Element {
   const meta = CHANGE_STATUS[file.status]

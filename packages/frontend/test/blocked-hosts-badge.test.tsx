@@ -17,8 +17,7 @@ beforeAll(() => {
   }
 })
 
-// Auto-cleanup only registers when vitest runs with globals; this suite
-// doesn't, so unmount explicitly to keep the renders isolated.
+// Without vitest globals there is no auto-cleanup, so unmount explicitly.
 afterEach(() => {
   cleanup()
   vi.mocked(allowBlockedHost).mockClear()
@@ -36,7 +35,7 @@ describe('BlockedHostsBadge', () => {
 
     const trigger = screen.getByRole('button', { name: '2 blocked hosts' })
     expect(trigger.textContent).toBe('2 blocked hosts')
-    // The host list moved from a hover tooltip into the click popover.
+    // The host list is in the click popover, not a hover tooltip.
     expect(trigger.getAttribute('title')).toBeNull()
   })
 
@@ -55,7 +54,7 @@ describe('BlockedHostsBadge', () => {
     render(<BlockedHostsBadge hosts={HOSTS} workspaceId="sess-1" iconSize={12} />)
     openPopover()
 
-    // Collapsed by default — no actions shown.
+    // Collapsed by default, with no actions shown.
     expect(screen.queryByText('Allow for this workspace')).toBeNull()
 
     fireEvent.click(screen.getByText('registry.npmjs.org'))

@@ -1,31 +1,25 @@
 /**
- * Ephemeral runsc builder pods — the `cluster-pod` build engine
- * (docs/trust-split-builds.md).
+ * Ephemeral runsc builder pods for untrusted layers (`Dockerfile.yaac`,
+ * `Dockerfile.user`), which never run on the host podman engine
+ * (docs/trust-split-builds.md). Each `ensureImage` call gets one gVisor pod
+ * running podman, shared by its untrusted layers through a
+ * `BuilderPodLease`. Per layer:
  *
- * Untrusted Dockerfiles (`Dockerfile.yaac` / `Dockerfile.user` — user- and
- * agent-editable) never execute on the host podman engine. Each build
- * request gets a throwaway gVisor pod running the pinned podman-stable
- * image; adjacent untrusted layers in one chain reuse the pod via a
- * BuilderPodLease. Per layer the flow is:
- *
- *   1. bootstrap /etc/containers/storage.conf (native overlay on the
- *      sentry tmpfs graphroot — the stock image forces fuse-overlayfs,
- *      which is broken under runsc),
- *   2. materialize the parent: pull `<registry-host>/P` + retag to the bare
- *      tag so `--build-arg BASE_IMAGE=P` matches host builds,
+ *   1. on pod creation, write a storage.conf using native overlay (the
+ *      stock image's fuse-overlayfs does not work under runsc),
+ *   2. pull the parent from the registry and retag it to the bare tag so
+ *      `--build-arg BASE_IMAGE=P` resolves,
  *   3. stream the build context in as a tar over `kubectl exec -i`,
- *      honoring `.containerignore` exactly like `contextHash()`,
- *   4. hand the pod a registry write grant for exactly this layer's repo and
+ *      honoring `.containerignore` like `contextHash()`,
+ *   4. give the pod a registry write grant for only this layer's repo and
  *      the project's step-cache repo,
- *   5. `podman build --isolation chroot` with registry step cache
- *      (`--cache-from`/`--cache-to`, per-project repo),
- *   6. delta push the product (parent blobs cross-repo-mount, never
- *      re-upload),
+ *   5. `podman build --isolation chroot` with the registry step cache,
+ *   6. push the product (parent blobs are cross-repo mounted, not
+ *      re-uploaded),
  *   7. delete the pod (the reap sweep catches leaks).
  *
- * The registry is the only image bus: parents come from it, products and
- * per-step cache images go back to it, and the host store never sees these
- * tags.
+ * Parents, products and step-cache images all live in the registry; the
+ * host store never sees these tags.
  */
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
@@ -67,58 +61,41 @@ import { serverLog, pipeToServerLog } from '#log'
 import { stringHash, type ImageLayer } from '#drivers/k8s/image-engine'
 
 /**
- * Sentry tmpfs cap for the builder graphroot: parent chain (~5GB for the
- * tools chain) + build products + per-step cache images. Larger than the
- * workspace pods' 8Gi because a build holds parent AND product layers
- * simultaneously. Pure scratch — dies with the pod.
+ * Sentry tmpfs cap for the builder graphroot. Larger than a workspace
+ * pod's because a build holds the parent chain (~5GB), its product and
+ * step-cache images at once.
  */
 export const BUILDER_GRAPHROOT_TMPFS_BYTES = 16 * 1024 ** 3
 
-/** emptyDir sizeLimit: sentry cap + slack (same rationale as workspaces —
- *  eviction must stay unreachable behind the sentry's ENOSPC). */
+/** emptyDir sizeLimit, above the tmpfs cap so the sentry hits ENOSPC
+ *  before kubelet evicts the pod. */
 export const BUILDER_GRAPHROOT_SIZELIMIT_BYTES = BUILDER_GRAPHROOT_TMPFS_BYTES + 1024 ** 3
 
-/** Pod memory limit. Layer data lives in the disk-backed graphroot, not
- *  memory, so this bounds build processes only. */
+/** Pod memory limit for build processes (layer data is disk-backed). */
 export const BUILDER_MEMORY_LIMIT_BYTES = 8 * 1024 ** 3
 
 /**
- * Scheduler reservation for a builder, well under the limit above. Explicit
- * because kubernetes defaults an omitted request UP TO the limit: a
- * limits-only builder reserved the whole 8Gi ceiling, which on a
- * request-saturated node is 8 workspaces' worth of memory that one routine
- * build would have to displace to schedule. Compression is the same bet
- * workspaces make — a build's steady state is well below its peak, and the
- * peak is still allowed by the limit.
+ * Memory request, well under the limit. Set explicitly because Kubernetes
+ * defaults a missing request to the limit, and reserving 8Gi would crowd
+ * out several workspaces on a busy node.
  */
 export const BUILDER_MEMORY_REQUEST_BYTES = 2 * 1024 ** 3
 
-/** cpu floor, no ceiling — same reasoning as workspace pods (a CFS quota
- *  would only make builds slower on an idle node). Builds are burstier
- *  than a workspace, hence the larger share. */
+/** CPU request with no limit, so builds use an idle node fully. */
 export const BUILDER_CPU_REQUEST_MILLIS = 500
 
 /**
- * Whole-pod bound, and with idle per-phase budgets below it the only cap on
- * how long a build may run. It stops two things: a pod the server crashed
- * away from, and a build that is wedged but chatty — one that keeps printing
- * and so never trips an idle budget.
- *
- * Four hours is a chosen "hours, not minutes" value, not derived from
- * anything: far above any honest chain (a cold multi-layer chain compiling a
- * toolchain), far below never. Raising it costs what the reap comment below
- * describes — a stuck builder parks its memory reservation for that long,
- * and two builders do not fit on a typical node — which is bounded by
- * `release()` deleting the pod inline on failure and by the reaper deleting
- * every pod that predates this server process.
+ * Maximum builder pod lifetime: the only total cap on a build, since the
+ * per-step budgets below are idle timeouts. It catches a pod the server
+ * abandoned and a stuck build that keeps printing output. Four hours is an
+ * arbitrary value well above any real build.
  */
 export const BUILDER_ACTIVE_DEADLINE_SECONDS = 4 * 3600
 
 /**
- * Per-phase exec budgets (ms). Every one is an *idle* budget — time since
- * the step last produced output (see streaming-proc.ts) — not a cap on the
- * step's duration. Only the pod's readiness wait is a true total: nothing
- * streams while a pod schedules.
+ * Per-step exec budgets (ms). All are idle timeouts (time since the step
+ * last printed; see container/streaming-proc.ts) except the readiness wait,
+ * which is a total.
  */
 export const BUILDER_READY_TIMEOUT_MS = 60_000
 export const BUILDER_PULL_IDLE_TIMEOUT_MS = 180_000
@@ -126,13 +103,12 @@ export const BUILDER_BUILD_IDLE_TIMEOUT_MS = 600_000
 export const BUILDER_PUSH_IDLE_TIMEOUT_MS = 120_000
 export const BUILDER_CONTEXT_IDLE_TIMEOUT_MS = 120_000
 
-/** Hard cap on any one exec: the pod is gone by then, so kubectl is too. */
+/** Hard cap on any one exec: past the pod's own deadline. */
 const BUILDER_EXEC_TOTAL_TIMEOUT_MS = (BUILDER_ACTIVE_DEADLINE_SECONDS + 300) * 1000
 
 /**
- * `--cache-ttl` bound on registry step-cache reads: entries older than
- * this are treated as misses, so poisoned or stale cache ages out and the
- * cache repos' useful window is bounded for GC sizing.
+ * `--cache-ttl` for step-cache reads. Older entries are misses, so stale or
+ * poisoned cache ages out and GC knows how long entries matter.
  */
 export const BUILD_CACHE_TTL = '168h'
 
@@ -140,18 +116,11 @@ export const BUILD_CACHE_TTL = '168h'
 export const BUILDER_CONTEXT_DIR = '/tmp/yaac-build-ctx'
 
 /**
- * Per-project registry repo for `--cache-from`/`--cache-to` step-cache
- * images. Per PROJECT on purpose: cache entries are consumed by key with
- * no provenance check, so a hostile build can poison future cache hits —
- * a per-project repo confines that to the project whose image the
- * attacker already controls. `Dockerfile.user` layers cache into the repo
- * of the project being built.
- *
- * Named by the project's immutable id, so a project re-added under a freed
- * slug never reads the old one's entries as cache hits.
- *
- * The build's write grant (`builderGrantRepos`) names this repo, and the
- * registry's write gate refuses a write to any other project's.
+ * Per-project registry repo for step-cache images. Cache entries are used
+ * without a provenance check, so a hostile build could poison later hits;
+ * a per-project repo limits that to the project the attacker already
+ * controls. Named by project id, so a new project reusing a slug starts
+ * with an empty cache.
  */
 export function buildCacheRepo(projectId: string): string {
   return `yaac-buildcache-${projectId}`
@@ -161,29 +130,24 @@ export function buildCacheRepo(projectId: string): string {
 export const BUILDER_AUTHFILE = '/run/yaac-registry-auth.json'
 
 /**
- * The repositories a layer's build may write: the product's own repo and
- * the project's step-cache repo. The grant a builder pod holds names
- * exactly these, so a hostile `RUN` step that reads it can write nothing a
- * different project — or the trusted chain — consumes.
+ * The repos a layer's build may write: its own product repo and the
+ * project's step-cache repo. A hostile `RUN` step that reads the grant can
+ * write nothing another project or the trusted chain uses.
  */
 function builderGrantRepos(layer: ImageLayer, projectId: string): string[] {
   return [layer.tag.slice(0, layer.tag.lastIndexOf(':')), buildCacheRepo(projectId)]
 }
 
-/** Builder pod name: hash of the first layer tag + entropy, so concurrent
- *  builds of distinct chains never collide and names stay label-safe. */
+/** Builder pod name: a hash of the first layer tag plus random bytes. */
 export function builderPodName(seedTag: string): string {
   return `yaac-builder-${stringHash(seedTag).slice(0, 8)}-${crypto.randomBytes(2).toString('hex')}`
 }
 
 /**
- * Builder pod manifest. gVisor (plain `gvisor` handler — chroot builds
- * need no raw sockets), the nested-engine cap set (no host authority under
- * the sentry), no SA token, seccomp RuntimeDefault, and the graphroot on a
- * disk-backed sentry-internal tmpfs via the `dev.gvisor.spec.mount.*`
- * annotations (spike-verified under the plain handler). Parked on `sleep`;
- * the server drives it with `kubectl exec` so build logs stream into the
- * build-tracking registry exactly like a host build's piped output.
+ * Builder pod manifest: plain `gvisor` runtime (chroot builds need no raw
+ * sockets), the nested-engine capabilities, no service account token, and
+ * the graphroot on a sentry-internal tmpfs. The container just sleeps; the
+ * server drives it with `kubectl exec` and streams the build logs.
  */
 export function buildBuilderPodManifest(name: string, imageRef: string): Record<string, unknown> {
   return {
@@ -204,10 +168,7 @@ export function buildBuilderPodManifest(name: string, imageRef: string): Record<
       automountServiceAccountToken: false,
       enableServiceLinks: false,
       runtimeClassName: RUNTIME_CLASS_GVISOR,
-      // Above workspaces (a build one is waiting on should outlive it under
-      // node pressure), but the builder class forbids preemption: a build
-      // that waits for room costs a workspace create some latency, where a
-      // preempted workspace pod is gone for good (backoffLimit 0).
+      // Outranks workspaces but never preempts one (see priority-classes.ts).
       priorityClassName: PRIORITY_CLASS_BUILDER,
       securityContext: {
         seccompProfile: { type: 'RuntimeDefault' },
@@ -241,11 +202,9 @@ export function buildBuilderPodManifest(name: string, imageRef: string): Record<
 }
 
 /**
- * First-exec bootstrap: replace the stock image's storage.conf. It forces
- * `mount_program = fuse-overlayfs`, which is broken under runsc — native
- * overlay on the sentry tmpfs graphroot is the spike-validated
- * configuration. `pull_options` keeps partial-image (zstd:chunked) pull
- * support enabled, matching the stock file.
+ * Replace the stock storage.conf, which forces fuse-overlayfs (broken under
+ * runsc), with native overlay. `pull_options` keeps zstd:chunked partial
+ * pulls enabled, as in the stock file.
  */
 export function builderStorageConfScript(): string {
   return [
@@ -264,12 +223,9 @@ export function builderStorageConfScript(): string {
 }
 
 /**
- * Materialize the parent image in the pod's store: `FROM ${BASE_IMAGE}`
- * resolves locally, so this leg cannot be removed by step cache — only
- * skipped when the pod already holds the tag (pod reuse: the second
- * untrusted layer's parent is the first layer's freshly built product).
- * The registry ref is retagged to the bare tag so build args match host
- * builds byte-for-byte.
+ * Pull the parent image into the pod and retag it to the bare tag, since
+ * `FROM ${BASE_IMAGE}` resolves locally. Skipped when the pod already has
+ * it (a reused pod just built the previous layer).
  */
 export function builderParentPullScript(parentTag: string, clusterHost: string): string {
   const remote = `${clusterHost}/${parentTag}`
@@ -282,12 +238,9 @@ export function builderParentPullScript(parentTag: string, clusterHost: string):
 }
 
 /**
- * `podman build` argv for the in-pod build (everything after `podman`).
- *
- * There is no --no-cache variant, and nothing above asks for one: a layer
- * builds only when its content-hash tag is missing, so the step cache can
- * only ever be reused for inputs that have not changed. The absence is
- * deliberate, not an oversight.
+ * `podman build` argv (everything after `podman`). There is no `--no-cache`
+ * option: a layer only builds when its content-hash tag is missing, and the
+ * step cache only matches unchanged steps.
  */
 export function builderBuildArgs(
   layer: ImageLayer,
@@ -297,14 +250,12 @@ export function builderBuildArgs(
     cacheRepo: string
   },
 ): string[] {
-  // Registry step cache: an edited Dockerfile re-runs only its changed
-  // steps in any fresh pod (validated: all-hit rebuild ~1.3s in a wiped
-  // store). Reads bounded by BUILD_CACHE_TTL.
+  // With the registry step cache, an edited Dockerfile reruns only its
+  // changed steps, even in a fresh pod.
   const cacheRef = `${opts.clusterHost}/${opts.cacheRepo}`
   const args = [
     'build',
-    // chroot isolation: RUN steps execute in a chroot inside the sandbox
-    // instead of a nested OCI runtime — the spike-validated mode.
+    // RUN steps run in a chroot rather than a nested OCI runtime.
     '--isolation', 'chroot',
     '--tls-verify=false',
     '--authfile', BUILDER_AUTHFILE,
@@ -351,8 +302,6 @@ export async function planBuildContext(
 
   const dockerfileRel = path.relative(contextDir, dockerfilePath)
   if (dockerfileRel.startsWith('..') || path.isAbsolute(dockerfileRel)) {
-    // Never true for the untrusted layers resolveImageChain emits (their
-    // dockerfile always lives in the context dir); guard against misuse.
     throw new Error(
       `dockerfile ${dockerfilePath} is outside its build context ${contextDir}`,
     )
@@ -374,17 +323,17 @@ export async function planBuildContext(
 }
 
 interface PodExecOptions {
-  /** Stream only — the one input this takes is the context tar. */
+  /** stdin, e.g. the context tar. */
   input?: NodeJS.ReadableStream
   onLog?: (line: string) => void
   logPrefix: string
-  /** Silence, not duration, that ends the step (see streaming-proc.ts). */
+  /** Idle timeout (see container/streaming-proc.ts). */
   idleTimeoutMs: number
 }
 
 /**
- * `kubectl exec -i` into the builder pod, streaming stdout/stderr lines to
- * the server log and the caller (the build-tracking registry).
+ * `kubectl exec -i` into the builder pod, streaming output lines to the
+ * server log and the caller.
  */
 async function execInBuilderPod(
   podName: string,
@@ -397,8 +346,6 @@ async function execInBuilderPod(
     onLog: opts.onLog,
     logPrefix: opts.logPrefix,
     idleTimeoutMs: opts.idleTimeoutMs,
-    // No exec can outlive the pod it runs in, so the pod's own deadline is
-    // this one's hard cap.
     timeoutMs: BUILDER_EXEC_TOTAL_TIMEOUT_MS,
     label: `builder exec [${command.join(' ').slice(0, 120)}]`,
     tailLines: 20,
@@ -406,9 +353,9 @@ async function execInBuilderPod(
 }
 
 /**
- * Stream the planned context files into the pod as a tar over exec stdin,
- * extracting to BUILDER_CONTEXT_DIR (wiped first — pod reuse must not leak
- * a previous layer's context into this build).
+ * Stream the context files into the pod as a tar over exec stdin, into a
+ * freshly wiped BUILDER_CONTEXT_DIR (a reused pod still has the previous
+ * layer's context).
  */
 async function streamContextToPod(
   podName: string,
@@ -416,9 +363,8 @@ async function streamContextToPod(
   files: string[],
   opts: { onLog?: (line: string) => void; logPrefix: string },
 ): Promise<void> {
-  // File list via a temp file (not argv: data-dir contexts can exceed argv
-  // limits; not stdin: stdin carries the archive). tar runs with
-  // cwd=context so `-T` names resolve relative on both GNU and BSD tar.
+  // The file list goes in a temp file: it can exceed argv limits, and
+  // stdin carries the archive.
   const listDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-build-ctx-'))
   const listFile = path.join(listDir, 'files.txt')
   await fs.writeFile(listFile, files.map((f) => `${f}\n`).join(''))
@@ -453,11 +399,9 @@ async function streamContextToPod(
   }
 }
 
-/** Builder egress: everywhere a build fetches from — upstream package
- *  registries, the image registry — but never the kind fronting's node
- *  port, which would hand a `RUN` step the server as its owner
- *  (`egressAllButServerFront`). The world-deny policy excludes builders, so
- *  this is the policy that governs them. */
+/** Builder egress: anywhere except the kind fronting's node port, which
+ *  would give a `RUN` step access to the server. The world-deny policy
+ *  excludes builders, so this is the policy that applies to them. */
 function buildBuilderEgressNetworkPolicyManifest(nodeCidrs: string[]): Record<string, unknown> {
   return {
     apiVersion: 'networking.k8s.io/v1',
@@ -475,12 +419,9 @@ function buildBuilderEgressNetworkPolicyManifest(nodeCidrs: string[]): Record<st
 }
 
 /**
- * Apply the builder-role admission guard and egress policy, and refresh
- * the world-deny policy when it already exists in this namespace — an
- * older server may have written it without the builder exclusion, which
- * would leave builder pods selected by a default-deny they need to be
- * outside of. Only refreshed (never introduced): namespaces without it
- * keep their existing posture.
+ * Apply the builder-role admission guard and egress policy. Also re-apply
+ * the world-deny policy if it exists, since an older server may have
+ * written it without the builder exclusion.
  */
 async function ensureBuilderNetworkPolicies(): Promise<void> {
   await ensureBuilderRoleGuard()
@@ -492,11 +433,8 @@ async function ensureBuilderNetworkPolicies(): Promise<void> {
 }
 
 /**
- * One builder pod, lazily created and shared by the untrusted layers of a
- * single build request. `acquire` is idempotent (first caller creates the
- * pod, later callers reuse it); `release` deletes it. The creator
- * (ensureImage) owns release; a coordinator joiner shares only the build
- * promise, never the lease.
+ * One builder pod, created on first `acquire` and shared by the untrusted
+ * layers of one `ensureImage` call, which calls `release` to delete it.
  */
 export class BuilderPodLease {
   private podName: string | null = null
@@ -523,9 +461,7 @@ export class BuilderPodLease {
         + `Run \`yaac cluster check\`.\n${detail}`,
       )
     }
-    // The registry is what a builder pod pulls its parent from and pushes
-    // its product to, so an install whose registry never came up must fail
-    // here rather than inside the pod.
+    // Fail here, not inside the pod, if the registry is not up.
     await ensureMainRegistry()
     const imageRef = await ensureBuilderImage()
     await ensureBuilderNetworkPolicies()
@@ -573,19 +509,13 @@ interface BuilderPodStatus {
 }
 
 /**
- * Why a builder pod never reached Ready, in one line, from its status.
- * `kubectl wait` reports only that it timed out, which reads as "the build
- * is broken" for the two failures that are really about the node: the pod
- * never scheduled (another builder's 8 GiB reservation is the usual reason)
- * or its image never pulled. Returns null when the status says nothing
- * useful — the caller then keeps the bare timeout.
+ * One-line reason a builder pod failed, from its status: hit its deadline,
+ * never scheduled, or its container is stuck waiting (e.g. image pull).
+ * `kubectl wait` only reports a timeout. Null when the status says nothing
+ * useful.
  */
 export function builderPodBlockReason(pod: BuilderPodStatus | null): string | null {
   if (pod?.status?.reason === 'DeadlineExceeded') {
-    // The one failure the exec's own budgets cannot describe: a build that
-    // kept producing output never trips the idle timeout, so the pod's
-    // whole-pod deadline is what ended it — and kubectl, whose connection
-    // died with the pod, only reports a signal.
     return 'stopped at the whole-pod deadline '
       + `(activeDeadlineSeconds=${BUILDER_ACTIVE_DEADLINE_SECONDS}) — the build `
       + 'was still producing output, so no per-step idle budget applied'
@@ -624,17 +554,13 @@ async function deleteBuilderPod(name: string): Promise<void> {
 }
 
 /**
- * The cluster-pod engine's build: acquire the lease's pod (creating it on
- * first use), materialize the parent, stream the context, build with the
- * registry step cache, and push the product.
+ * Build one layer in the lease's builder pod and push it. The lease's
+ * owner, not this function, deletes the pod.
  */
 export async function buildLayerInPod(
   layer: ImageLayer,
   ctx: EngineBuildContext,
 ): Promise<void> {
-  // The lease belongs to the ensureImage call that created it — adjacent
-  // untrusted layers share one pod, and that caller's `finally` releases
-  // it. Nothing here owns the pod's lifetime.
   const pod = await ctx.lease.acquire(layer.tag)
   const clusterHost = registryHost()
   const logPrefix = `[build ${layer.tag}] `
@@ -642,8 +568,8 @@ export async function buildLayerInPod(
   try {
     await runLayerBuild(pod, layer, ctx, clusterHost, execOpts)
   } catch (err) {
-    // A failed exec may be the pod dying under it (the deadline above all),
-    // which kubectl can only report as a signal — ask the pod itself.
+    // If the pod died (e.g. its deadline), kubectl only reports a signal,
+    // so ask the pod why.
     const blocked = await builderPodBlockDetail(pod)
     if (!blocked) throw err
     throw new Error(`${err instanceof Error ? err.message : String(err)}\n${blocked}`)
@@ -669,8 +595,8 @@ async function runLayerBuild(
   const plan = await planBuildContext(layer.context, layer.dockerfile)
   await streamContextToPod(pod, layer.context, plan.files, execOpts)
 
-  // Over stdin, never argv. Valid as long as the pod can live: a pod reused
-  // across layers gets a fresh grant for each one.
+  // Sent over stdin, not argv. Each layer gets a fresh grant, valid for
+  // the pod's lifetime.
   const authFile = await registryAuthFile(
     clusterHost,
     builderGrantRepos(layer, ctx.project.id),
@@ -692,12 +618,9 @@ async function runLayerBuild(
     { ...execOpts, idleTimeoutMs: BUILDER_BUILD_IDLE_TIMEOUT_MS },
   )
 
-  // Delta push: parent blobs were just pulled from this registry, so
-  // podman's blob-info cache cross-repo-mounts them (~1.2s measured).
-  // Always pushes (no HEAD skip) — this build only ran because the
-  // coordinator saw the tag missing (`registryHasTag` is the exists check
-  // for a cluster-pod layer), so the push is the product's first publish;
-  // a HEAD here would cost an exec to learn what we already know.
+  // Parent blobs came from this registry, so podman cross-repo mounts
+  // them instead of re-uploading. No HEAD check: the build only ran because
+  // the tag was missing.
   await execInBuilderPod(
     pod,
     [
@@ -708,21 +631,17 @@ async function runLayerBuild(
   )
 }
 
-/** Age past which a builder pod is unconditionally a leak: comfortably
- *  above BUILDER_ACTIVE_DEADLINE_SECONDS, so no live build can reach it. */
+/** Age past which a builder pod is always a leak (above its deadline). */
 export const BUILDER_REAP_AGE_MS = 5 * 3600_000
 
 const BUILDER_REAP_INTERVAL_MS = 10 * 60_000
 let lastReapMs = 0
 
 /**
- * When this server process started. A builder pod older than this belongs to
- * a previous one — the data-dir lock admits a single server per install, and
- * the selector is already scoped to this install — so it is a leak no matter
- * how young it is. Reaping it on age alone would leave its 8 GiB memory
- * reservation parked on the node, and since two builders do not fit on a
- * typical node, EVERY build after a restart fails to schedule until the
- * dead pod's active deadline fires hours later.
+ * When this server process started. Only one server runs per install, so
+ * a builder pod created earlier is a leak. Reaping it right away frees its
+ * memory reservation, which could otherwise block every build after a
+ * restart for hours.
  */
 const SERVER_START_MS = Date.now()
 
@@ -732,11 +651,9 @@ export function _resetBuilderReapForTests(): void {
 }
 
 /**
- * Background sweep for leaked builder pods (server crashed mid-build):
- * deletes this install's role=builder pods that are terminal (the active
- * deadline already stopped them), predate this server process, or are older
- * than any live build can be. Internally throttled; the normal path deletes
- * pods inline in `release`.
+ * Delete leaked builder pods: ones that are terminal, predate this server
+ * process, or are older than any live build can be. Throttled. Normally
+ * `release` deletes pods inline.
  */
 export async function reconcileBuilderPodGc(
   now = Date.now(),

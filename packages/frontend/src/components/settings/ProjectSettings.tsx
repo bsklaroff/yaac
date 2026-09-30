@@ -14,21 +14,18 @@ import { useSnapshot } from '#lib/useSnapshot'
 import { useUiStore } from '#lib/store'
 
 /**
- * Settings section for the per-machine, per-project overlay files: the
- * project's `yaac-config.json` and `Dockerfile.yaac`. A picker chooses the
- * project (defaulting to the workspace's active one) so any project can be
- * edited here regardless of what's open in the rail.
+ * Settings section for a project's overlay files: `yaac-config.json` and
+ * `Dockerfile.yaac`. A picker chooses the project, defaulting to the active
+ * one.
  */
 export function ProjectSettings(): JSX.Element {
   const projects = useSnapshot()?.projects ?? []
   const activeProjectSlug = useUiStore((s) => s.activeProjectSlug)
-  // Defaults to the workspace's active project. The settings dialog's portal
-  // unmounts on close (keepMounted=false), so this remounts — and re-defaults
-  // to the current project — every time the menu is reopened.
+  // The dialog unmounts on close, so this re-defaults to the active project
+  // each time settings open.
   const [picked, setPicked] = useState<string | null>(activeProjectSlug)
 
-  // Keep the selection valid as projects load/change: fall back to the
-  // active project, then the first project.
+  // If the pick disappears, fall back to the active project, then the first.
   const slug = picked && projects.some((p) => p.slug === picked)
     ? picked
     : (activeProjectSlug && projects.some((p) => p.slug === activeProjectSlug)
@@ -55,13 +52,11 @@ export function ProjectSettings(): JSX.Element {
 
   const filesApi = useMemo(() => (slug ? projectBuildFilesApi(slug) : null), [slug])
 
-  // A containerless server runs no images, so a project has no Dockerfile
-  // and no build context — the editors below would write files nothing
-  // ever builds.
+  // A containerless server builds no images, so the Dockerfile editors are
+  // hidden.
   const buildsImages = useSnapshot()?.driver !== 'containerless'
-  // The same driver, asked a different question: whether an egress proxy
-  // stands between a workspace and the network, which is what decides
-  // whether a secret's value can be kept out of the workspace at all.
+  // Only with an egress proxy can a secret's value stay out of the
+  // workspace.
   const mediatedEgress = useSnapshot()?.driver !== 'containerless'
 
   const loadDockerfile = useCallback(
@@ -123,8 +118,6 @@ export function ProjectSettings(): JSX.Element {
             </div>
           </div>
 
-          {/* A driver that builds no images has nothing to build these
-              into: the editor would keep saving files nothing ever reads. */}
           {buildsImages && <><div className="mt-6">
             <div className="text-xs font-medium text-text">Dockerfile</div>
             <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">

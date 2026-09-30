@@ -6,16 +6,11 @@ import { createRequire } from 'node:module'
 import { claudeTranscriptAsAcp } from '#runtime/agents/claude-acp-replay'
 
 /**
- * A tui claude conversation read as ACP events.
- *
- * The assertions are deliberately about *what a reader sees* rather than about
- * a mapping table: this module writes none of the translation — the pinned
- * `claude-agent-acp` does, through the same function its own `session/load`
- * calls — so pinning each field to a literal would be testing that package's
- * choices, and would break every time it improved a title. What is worth
- * holding is that a real transcript comes out as the conversation it was, that
- * the entries which are not conversation stay out, and that a file that is
- * missing or damaged costs nothing.
+ * A tui claude conversation replayed as ACP events. The translation is done
+ * by the pinned `claude-agent-acp`, so these tests check the overall
+ * conversation rather than exact field values: real turns come through,
+ * non-conversation entries stay out, and a missing or damaged file is
+ * harmless.
  */
 
 const SESSION = '11111111-2222-3333-4444-555555555555'
@@ -25,10 +20,9 @@ afterEach(async () => {
   for (const d of dirs.splice(0)) await fs.rm(d, { recursive: true, force: true })
 })
 
-// Each test writes its own conversation, so the chain starts over with it.
 beforeEach(() => { parent = null })
 
-/** A transcript on disk, one JSON object per line as claude writes it. */
+/** A transcript file, one JSON object per line. */
 async function transcript(entries: unknown[], trailing = ''): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-claude-replay-'))
   dirs.push(dir)
@@ -38,10 +32,8 @@ async function transcript(entries: unknown[], trailing = ''): Promise<string> {
 }
 
 /**
- * Entries thread themselves onto the one before, because that chain is the
- * transcript's real structure: claude links every turn to its parent, and the
- * SDK reader walks those links rather than the file order. A fixture with the
- * links left out reads as a conversation of one message.
+ * Each entry links to the previous one as its parent, as claude writes
+ * them; the SDK follows those links rather than file order.
  */
 let uuid = 0
 let parent: string | null = null
@@ -88,11 +80,8 @@ describe('claudeTranscriptAsAcp', () => {
 
     const events = await claudeTranscriptAsAcp(await fs.readFile(file, 'utf8'), SESSION)
 
-    // The shape of the conversation: what was asked, what was thought, what
-    // was said, the tool that ran, and the plan it kept.
     expect(events.map((e) => e.type))
       .toEqual(['user', 'thought', 'agent', 'tool', 'tool', 'plan', 'agent'])
-    // Sequence numbers are the projection's, and a pane orders by them.
     expect(events.map((e) => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6])
 
     const [ask, thought, said] = events
@@ -102,9 +91,8 @@ describe('claudeTranscriptAsAcp', () => {
     expect(said.type === 'agent' && said.content[0])
       .toEqual({ type: 'text', text: 'Looking at the router.' })
 
-    // The tool call is emitted, then completed by its result — the pane
-    // collapses the pair onto the latest state, so the last one must carry
-    // both the call's identity and its outcome.
+    // The pane keeps only the latest update per call, so the last one must
+    // carry both the call and its result.
     const calls = events.filter((e) => e.type === 'tool').map((e) => e.call)
     expect(calls[0].toolCallId).toBe('tu_1')
     expect(calls[0].kind).toBe('read')
@@ -113,8 +101,7 @@ describe('claudeTranscriptAsAcp', () => {
     expect(calls[1].status).toBe('completed')
     expect(JSON.stringify(calls[1].content)).toContain('export const router = 1')
 
-    // TodoWrite is a plan to a reader, not a tool row — the step under way
-    // named by its `activeForm`, as claude's own TUI shows it.
+    // TodoWrite becomes a plan; the current step shows its `activeForm`.
     const plan = events.find((e) => e.type === 'plan')
     expect(plan?.type === 'plan' && plan.entries.map((p) => [p.content, p.status])).toEqual([
       ['read the router', 'completed'],
@@ -124,15 +111,13 @@ describe('claudeTranscriptAsAcp', () => {
 
   it('leaves out the entries that are bookkeeping rather than conversation', async () => {
     const file = await transcript([
-      // A slash command persists three synthetic user entries; none of them is
-      // something a person said.
+      // The three synthetic user entries a slash command writes.
       user('<local-command-caveat>Caveat: …</local-command-caveat>', { isMeta: true }),
       user('<command-name>model</command-name>'),
       user('<local-command-stdout>Set model to Opus</local-command-stdout>'),
       { type: 'summary', summary: 'A conversation about routers', leafUuid: 'uuid-1' },
       user('the real question'),
-      // claude's synthetic auth message stays in a transcript forever; a
-      // replay that rendered it would resurface a stale login prompt.
+      // claude's synthetic login message, which must not be replayed.
       assistant([{ type: 'text', text: 'Not logged in · Please run /login' }], {
         message: {
           role: 'assistant', model: '<synthetic>',
@@ -157,8 +142,7 @@ describe('claudeTranscriptAsAcp', () => {
         { type: 'tool_use', id: 'tu_1', name: 'Bash', input: { command: 'false', description: 'run tests' } },
       ]),
       user([{ type: 'tool_result', tool_use_id: 'tu_1', content: 'exit 1', is_error: true }]),
-      // The pod died mid-tool: a call with no result. Truthful is better than
-      // tidy — the conversation really did stop here.
+      // The pod died mid-tool: a call with no result.
       assistant([
         { type: 'tool_use', id: 'tu_2', name: 'Bash', input: { command: 'sleep 100', description: 'wait' } },
       ]),
@@ -187,8 +171,7 @@ describe('claudeTranscriptAsAcp', () => {
   })
 
   it('tolerates a transcript still being appended to', async () => {
-    // A read can land mid-write, so the last line is routinely a fragment.
-    // Losing it must not cost the turns that completed before it.
+    // The last line may be half-written.
     const file = await transcript(
       [user('a question'), assistant([{ type: 'text', text: 'an answer' }])],
       '{"type":"assistant","uuid":"uuid-9","mes',
@@ -198,8 +181,7 @@ describe('claudeTranscriptAsAcp', () => {
   })
 
   it('reads a conversation whose id is not the shape the SDK validates', async () => {
-    // Every recorded claude conversation id is a UUID, so this is a guard on a
-    // malformed row — but answering with an empty history would hide it.
+    // Guards against a malformed row; an empty history would hide it.
     const file = await transcript([
       user('still readable'),
       assistant([{ type: 'text', text: 'indeed' }]),
@@ -211,11 +193,8 @@ describe('claudeTranscriptAsAcp', () => {
 
 describe('the pinned adapter', () => {
   it('is the same version the workspace image installs', async () => {
-    // The two translations must be one. A live acp conversation is recorded by
-    // the adapter baked into the tools image; a stopped tui one is replayed by
-    // the copy the server imports. Same function, same version — otherwise the
-    // transcript a user reads after stopping a workspace can differ from what
-    // they watched, which is the whole failure this module exists to avoid.
+    // Live acp conversations use the adapter in the tools image; replays use
+    // the server's copy. Different versions could render them differently.
     const dockerfile = await fs.readFile(
       new URL('../../../../../dockerfiles/Dockerfile.tools', import.meta.url), 'utf8',
     )

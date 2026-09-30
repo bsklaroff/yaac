@@ -17,8 +17,8 @@ vi.mock('#drivers/k8s/forwarders/port-detector', () => ({
 
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
-// The relay is the process boundary: a `tcp` stream through the pod's
-// streamd. What matters here is that a dial asks for exactly that.
+// The relay is the boundary: a dial should open a `tcp` stream through the
+// pod's streamd.
 vi.mock('#drivers/k8s/substrate/stream-relay', () => ({
   relayDial: vi.fn(),
 }))
@@ -113,9 +113,8 @@ describe('forwardWorkspacePort', () => {
 
 describe('dialWorkspacePort', () => {
   it('opens a tcp stream on a declared port, and hands the caller the stream itself', async () => {
-    // One dial per forwarded TCP connection — the kubectl shape — so there
-    // is nothing to register and nothing to hand back but the stream: the
-    // caller destroying it is what ends the pair.
+    // One dial per forwarded TCP connection. Only the stream is returned;
+    // the caller ends the connection by destroying it.
     mockDeclared.mockReturnValue([{ containerPort: 5173, hostPort: 5173 }])
     const stream = { destroy: vi.fn() }
     mockRelayDial.mockResolvedValue(stream as never)
@@ -129,8 +128,8 @@ describe('dialWorkspacePort', () => {
     mockIsDetected.mockImplementation((_id, port) => port === 3000)
     await expect(dialWorkspacePort('sess-1', 3000)).resolves.toBeDefined()
 
-    // yaac's own relay port is neither declared nor surfaced: the tunnel
-    // must not become a way into the pod's control surface.
+    // yaac's relay port is refused, so the tunnel cannot reach the pod's
+    // control endpoints.
     await expect(dialWorkspacePort('sess-1', 10260)).rejects.toThrow(/neither declared nor a detected/)
     expect(mockRelayDial).toHaveBeenCalledTimes(1)
   })

@@ -15,10 +15,9 @@ import { generateSshKey } from '#lib/ssh-key'
 const execFileAsync = promisify(execFile)
 
 /**
- * The server's own ssh-agent, exercised by real OpenSSH clients: `ssh-add
- * -L` lists what the store holds, and `ssh-keygen -Y sign` — given only the
- * PUBLIC key — gets its signature through the socket. That is the whole of
- * what git-over-ssh asks of an agent.
+ * The server's ssh-agent, driven by real OpenSSH clients: `ssh-add -L` lists
+ * the stored keys, and `ssh-keygen -Y sign`, given only the public key, signs
+ * through the socket. Listing and signing are all git-over-ssh needs.
  */
 
 let tmpDir: string
@@ -46,7 +45,7 @@ describe('startGitSshAgent', () => {
     const b = generateSshKey('yaac b')
     const aRow = await insertGitCredential({ name: 'a', kind: 'ssh', secret: a.seed.toString('base64'), publicKey: a.publicKey })
     await insertGitCredential({ name: 'b', kind: 'ssh', secret: b.seed.toString('base64'), publicKey: b.publicKey })
-    // A token is no identity.
+    // An https token is not listed as an identity.
     await insertGitCredential({ name: 'gh', kind: 'https', secret: 'ghp_x' })
 
     await startGitSshAgent()
@@ -54,15 +53,13 @@ describe('startGitSshAgent', () => {
     expect((await fs.stat(gitSshAgentSock())).mode & 0o777).toBe(0o600)
 
     const { stdout } = await execFileAsync('ssh-add', ['-L'], { env: agentEnv() })
-    // The comment an agent lists is the credential's name, so `ssh-add -l`
-    // on a host says which credential a key is.
+    // Each key's comment is its credential's name.
     expect(stdout.trim().split('\n')).toEqual([
       a.publicKey.replace(/ yaac a$/, ' a'),
       b.publicKey.replace(/ yaac b$/, ' b'),
     ])
 
-    // A signature through the agent, from nothing but the public half on
-    // disk — exactly the shape of the server's git invocation.
+    // Sign with only the public key on disk, as the server's git calls do.
     const pub = path.join(workDir, 'a.pub')
     const msg = path.join(workDir, 'msg')
     await fs.writeFile(pub, `${a.publicKey}\n`)
@@ -86,8 +83,8 @@ describe('startGitSshAgent', () => {
 
   it('refuses everything but list and sign', async () => {
     await startGitSshAgent()
-    // SSH_AGENTC_ADD_IDENTITY (17) carrying nothing: an agent that admitted
-    // it would let any process of this uid load keys into the server.
+    // An empty SSH_AGENTC_ADD_IDENTITY (17). Accepting it would let any
+    // process of this uid load keys into the server.
     const reply = await new Promise<Buffer>((resolve, reject) => {
       const sock = net.connect(gitSshAgentSock())
       sock.once('data', (d: Buffer) => { sock.destroy(); resolve(d) })

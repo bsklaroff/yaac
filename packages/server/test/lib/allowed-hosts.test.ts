@@ -34,7 +34,7 @@ describe('NESTED_PULL_HOSTS', () => {
   it('holds the registry pull hosts not already covered by the base list', () => {
     expect(NESTED_PULL_HOSTS).toContain('registry-1.docker.io')
     expect(NESTED_PULL_HOSTS).toContain('quay.io')
-    // ghcr.io / pkg-containers stay in the base list — no duplication here.
+    // ghcr.io is already in the base list.
     expect(NESTED_PULL_HOSTS).not.toContain('ghcr.io')
     for (const host of NESTED_PULL_HOSTS) {
       expect(DEFAULT_ALLOWED_HOSTS).not.toContain(host)

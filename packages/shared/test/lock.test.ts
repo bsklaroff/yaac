@@ -34,8 +34,8 @@ describe('auth server lock', () => {
 
   it('returns null for a missing, malformed, or wrong-shaped lock', async () => {
     expect(await readAuthDaemonLock()).toBeNull()
-    // The lock is CLIENT-LOCAL, beside the data dir — writing it directly
-    // has to make that root, which only a real write would have done.
+    // The lock lives in the client-local dir beside the data dir, so the
+    // write must create that dir.
     await fs.mkdir(path.dirname(authDaemonLockPath()), { recursive: true })
     await fs.writeFile(authDaemonLockPath(), 'not json')
     expect(await readAuthDaemonLock()).toBeNull()

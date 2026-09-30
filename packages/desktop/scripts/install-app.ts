@@ -20,10 +20,9 @@ if (!app) throw new Error('no built yaac.app under dist-app/ — run `pnpm app:b
 
 function install(dest: string): void {
   rmSync(dest, { recursive: true, force: true })
-  // `ditto` copies the .app bundle preserving its internal symlinks (the
-  // Electron framework's `Versions/Current → A`). A cpSync with `dereference`
-  // rewrites those into absolute paths and breaks the bundle — Electron then
-  // can't find icudtl.dat and the GPU process fatally crashes on launch.
+  // `ditto` preserves the bundle's internal symlinks (Electron's
+  // `Versions/Current → A`); cpSync breaks them and Electron then crashes on
+  // launch because it can't find icudtl.dat.
   execFileSync('ditto', [app as string, dest])
 }
 

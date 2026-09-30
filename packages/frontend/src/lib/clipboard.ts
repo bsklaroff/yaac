@@ -1,8 +1,8 @@
 /** A clipboard intent decoded from a terminal keydown. */
 export type ClipboardAction = 'copy' | 'paste'
 
-/** Just the keyboard-event fields the decision needs — keeps this pure and
- *  trivial to unit test without synthesizing a full KeyboardEvent. */
+/** The keyboard-event fields the decision needs, so tests need not build a
+ *  full KeyboardEvent. */
 export type ClipboardKey = Pick<KeyboardEvent, 'ctrlKey' | 'metaKey' | 'shiftKey' | 'key'>
 
 /**

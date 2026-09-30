@@ -1,16 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { refreshClaudeBundledSkills } from '#domain/skills'
-// The in-memory cache the refresh writes: read to assert, reset between cases.
-// Not under test — parsing is exercised through the refresh itself.
+// The refresh's in-memory cache, read to assert and reset between cases.
 import { getClaudeBundledSkills, setClaudeBundledSkills } from '#domain/skills/claude-bundled'
 
-// A trimmed commands-reference table exercising every row shape the parser has
-// to survive: two plain built-in commands (no marker), a [Skill] row with
-// escaped-pipe args + a markdown link + a trailing version note, a [Workflow]
-// row (deep-research), a [Skill] row whose min-version comment precedes the
-// marker, a marked row that repeats an earlier command, a marked row whose
-// description is nothing but the marker, a marked row whose command cell is not
-// a `/name` invocation, and a stray pipe line that is not a table row at all.
+// A trimmed commands-reference table covering every row shape the parser
+// handles: plain built-ins (no marker), a [Skill] row with escaped pipes, a
+// link and a version note, a [Workflow] row, a min-version comment before the
+// marker, a repeated command, a marker-only description, a command cell that
+// is not a `/name` invocation, and a stray pipe line that is not a table row.
 const SAMPLE = [
   '| Command | Purpose |',
   '| --- | --- |',
@@ -50,8 +47,8 @@ describe('refreshClaudeBundledSkills', () => {
     expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal)
 
     const skills = getClaudeBundledSkills()
-    // Plain built-ins, the repeat of /code-review, the marker-only row, and the
-    // struck-through command are all excluded; the rest keep source order.
+    // Plain built-ins, the repeated /code-review, the marker-only row and the
+    // non-`/name` row are excluded; the rest keep source order.
     expect(skills.map((s) => s.name)).toEqual(['code-review', 'deep-research', 'simplify'])
 
     const cr = skills.find((s) => s.name === 'code-review')
@@ -79,8 +76,8 @@ describe('refreshClaudeBundledSkills', () => {
     await refreshClaudeBundledSkills()
     expect(getClaudeBundledSkills()).toEqual(previous)
 
-    // A page that fetches fine but has no bundled rows (a docs restructure)
-    // must not blank out a good cache.
+    // A page with no bundled rows (say, after a docs restructure) must not
+    // blank out a good cache.
     fetchMock.mockResolvedValue(okResponse('| `/help` | Show help. |\nnot a table'))
     await refreshClaudeBundledSkills()
     expect(getClaudeBundledSkills()).toEqual(previous)

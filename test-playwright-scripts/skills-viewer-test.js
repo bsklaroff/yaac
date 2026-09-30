@@ -1,23 +1,19 @@
 /*
- * Verifies the project Skills viewer (SkillsButton + overlay) end-to-end in the
- * real webapp: the ✨ button in the sidebar header opens a near-fullscreen
- * dialog that lists the project's personal/plugin/project SKILL.md files for the
- * selected agent, and clicking a skill loads its full SKILL.md into a detail
- * pane. A per-agent selector (Claude/Codex/OpenCode) re-scans that tool's dirs.
+ * Verifies the project Skills viewer (SkillsButton + overlay) in the running
+ * server's webapp, in Chromium: the Skills button in the sidebar header opens
+ * a dialog listing the personal/plugin/project SKILL.md files for the
+ * selected agent, clicking a skill shows its full SKILL.md, and the agent
+ * selector (Claude/Codex/OpenCode) rescans that tool's dirs.
  *
- * Drives the running yaac server's webapp in real Chromium. Self-contained: it
- * seeds a personal Claude skill and a Codex skill into the project's on-disk
- * skill dirs (under $YAAC_DATA_DIR/global/projects/<slug>/…), runs the checks,
- * then removes them again — so it is safe to re-run and leaves no residue.
- * The project (repo) tier is not seeded: it is read from origin/<branch>, so
- * a working-tree file would never be listed.
+ * Seeds a personal Claude skill and a Codex skill under
+ * $YAAC_DATA_DIR/global/projects/<slug>/ and removes them afterwards, so it
+ * is safe to re-run. The project (repo) tier is not seeded: it is read from
+ * origin/<branch>, so a working-tree file would not be listed.
  *
  * Run: PROJECT=<slug> node test-playwright-scripts/skills-viewer-test.js
- * (set SCREENSHOT_DIR to also capture a screenshot of the open overlay)
- * Needs a running server (`yaac server start`) with a project configured; the
- * browser loads its loopback origin, which needs no credential.
- * (playwright is resolved from the global npm root; browsers live under
- * /opt/playwright-browsers)
+ * (set SCREENSHOT_DIR to also capture the open overlay)
+ * Needs a running server (`yaac server start`) with a project configured;
+ * its loopback origin needs no credential.
  */
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -93,7 +89,6 @@ async function main() {
   try {
     await page.goto(`${appUrl}?project=${project}`)
 
-    // Open the Skills overlay from the sidebar header.
     const skillsBtn = page.getByRole('button', { name: 'Skills', exact: true })
     await skillsBtn.waitFor({ state: 'visible', timeout: 15000 })
     await skillsBtn.click()
@@ -102,12 +97,10 @@ async function main() {
     await dialog.waitFor({ state: 'visible' })
     await page.waitForTimeout(400) // open transition
 
-    // Claude tier: the seeded personal skill should be listed.
     const personal = dialog.getByRole('button', { name: /\/hello-personal/ })
     await personal.waitFor({ state: 'visible', timeout: 10000 })
     check('claude: personal skill listed', await personal.count() >= 1)
 
-    // Clicking a skill loads its full SKILL.md body into the detail pane.
     await personal.first().click()
     await page.waitForTimeout(300)
     check('detail pane shows the skill body',
@@ -119,12 +112,10 @@ async function main() {
       await page.screenshot({ path: path.join(process.env.SCREENSHOT_DIR, 'skills-viewer-claude.png') })
     }
 
-    // Switch the per-agent selector to Codex → its own dir is scanned.
     await dialog.getByRole('button', { name: 'Codex', exact: true }).click()
     const codex = dialog.getByRole('button', { name: /\/hello-codex/ })
     await codex.waitFor({ state: 'visible', timeout: 10000 })
     check('codex: selector re-scans and lists the codex skill', await codex.count() >= 1)
-    // The claude-only skill should no longer be present under Codex.
     check('codex: claude skill no longer listed',
       await dialog.getByRole('button', { name: /\/hello-personal/ }).count() === 0)
 

@@ -24,8 +24,7 @@ describe('connectPageHtml', () => {
 
   it('offers one Connect row per saved server, marking the selected one', () => {
     const html = connectPageHtml(STATE)
-    // Every row gets a button — including the selected one, which is the
-    // retry when that server is the one that could not be reached.
+    // The selected row gets a button too: it is the retry.
     expect(html.match(/class="connect" data-url=/g)).toHaveLength(2)
     expect(html).toContain('data-url="http://127.0.0.1:8787"')
     expect(html).toContain('data-url="https://b.ts.net"')
@@ -43,14 +42,9 @@ describe('connectPageHtml', () => {
     })
     expect(html).toContain('No servers configured yet.')
     expect(html).not.toContain('class="connect"')
-    // The way out for someone who goes and runs `yaac server start`: this
-    // page cannot see that happen, so it must be able to ask again.
     expect(html).toContain('id="retry"')
-    // Its own control, not another `.add`: the add form's submit answers
-    // that selector, and two buttons behind one selector is how a script
-    // driving this page ends up clicking the wrong thing.
+    // Retry has its own id so `.add` matches only the form's submit button.
     expect(html.match(/class="add"/g) ?? []).toHaveLength(1)
-    // The add form is the only way out of this state, so it must be here.
     expect(html).toContain('name="url"')
     expect(html).not.toContain('name="token"')
   })
@@ -85,11 +79,7 @@ describe('connectPageUrl', () => {
   })
 })
 
-/**
- * The page's own script, executed against a real DOM and a stub of the
- * preload bridge. The string assertions above prove the markup; these prove
- * the wiring — which is the half that can silently do nothing.
- */
+/** The page's inline script, run against jsdom and a stub preload bridge. */
 describe('connectPageHtml (running in a document)', () => {
   interface Calls { switchTo: unknown[]; addRemote: unknown[][]; closed: number; retried: number }
 
@@ -116,19 +106,15 @@ describe('connectPageHtml (running in a document)', () => {
   }
 
   /**
-   * Put the page's markup in the document and run its inline script against
-   * it. Parsed and executed separately rather than through `document.write`,
-   * which replaces the Window jsdom is holding — and with it the bridge the
-   * script is supposed to find.
+   * Put the page's markup in the document and run its inline script. Not
+   * `document.write`, which would replace the window holding the stub bridge.
    */
   function render(state: ConnectPageState): void {
     const parsed = new DOMParser().parseFromString(connectPageHtml(state), 'text/html')
     document.body.innerHTML = parsed.body.innerHTML
     const code = parsed.querySelector('script')?.textContent ?? ''
     expect(code).not.toBe('')
-    // Running the page's own script IS the subject here — it is what wires
-    // the buttons to the bridge, and nothing else executes it.
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval, @typescript-eslint/no-unsafe-call -- see above
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval, @typescript-eslint/no-unsafe-call -- running the page's inline script is the subject under test
     new Function(code)()
   }
 
@@ -142,7 +128,6 @@ describe('connectPageHtml (running in a document)', () => {
     await settle()
     expect(calls.switchTo).toEqual([{ url: 'https://b.ts.net' }])
     expect(document.getElementById('status')?.textContent).toContain('cannot reach it')
-    // Re-enabled, so a transient failure can be retried from the same page.
     expect(row?.disabled).toBe(false)
   })
 
@@ -169,8 +154,6 @@ describe('connectPageHtml (running in a document)', () => {
   })
 
   it('Try again re-runs the flow, which is the only exit from a zero-row picker', async () => {
-    // With no rows to pick, re-resolving is the ONLY way
-    // forward for someone who just started a server in a terminal.
     const calls = mount({
       error: { title: 'No yaac server selected' },
       targets: { current: null, saved: [] },

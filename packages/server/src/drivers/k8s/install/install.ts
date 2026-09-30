@@ -57,8 +57,7 @@ import { ensureRootfulPodmanHost, ROOTFUL_PODMAN_SOCKET } from '#drivers/k8s/con
 import { SERVER_FRONT_PORT } from '#drivers/k8s/substrate'
 import { BYO_INSTALL_IDENTITY, deployServerWorkload } from './server-deploy'
 import { TAILNET_HOSTNAME, kindFronting, tailnetFronting } from './server-fronting'
-// The install root as an identity string, compared with the one a live
-// server Deployment was installed from.
+// The data dir identifies the install.
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { PACKAGE_ROOT, getDataDir, nodeLocalRoot } from '@yaac/shared/paths'
 import { CALICO_DIR, calicoManifestCachePath } from '@yaac/shared/project-paths'
@@ -66,70 +65,44 @@ import { resolveServerPort } from '@yaac/shared/server-port'
 import { env } from '@yaac/shared/env'
 
 /**
- * `yaac cluster install` — ONE idempotent verb that converges this machine
- * and its cluster to the yaac version that is installed. Brew (or any
- * package manager) can only install binaries; everything per-user and
- * stateful — the rootful libkrun machine, the kind cluster, Calico, the
- * kind node fixups, every built-in image, the in-cluster layers — happens
- * here, with actionable error messages.
+ * `yaac cluster install`: one idempotent command that brings this machine
+ * and its cluster up to the installed yaac version. It sets up the rootful
+ * libkrun podman machine (macOS), the kind cluster, Calico, the kind node
+ * fixups, every built-in image and the in-cluster layers.
  *
- * It is safe to run at any time, and it is what an upgrade runs: `npm
- * update` then `yaac cluster install`. A cluster that already exists is
- * converged, never recreated, so teardown normally only happens through an
- * explicit `yaac cluster delete` — the one command whose job is to lose
- * running workspaces. The single exception is the macOS machine bootstrap
- * below, which cannot converge a machine on the wrong provider or from a
- * podman too old to start it: those are `podman machine rm -f`, and both
- * are gated behind an interactive confirm that defaults to No and refuses
- * outright when there is no TTY.
+ * Safe to run at any time; an upgrade is `npm update` then this. An
+ * existing cluster is updated in place, never recreated. The only
+ * destructive step is recreating a macOS podman machine that has the wrong
+ * provider or is too old, and that asks for confirmation (No without a TTY).
  *
- * `--nodes N` chooses the topology of a cluster this run CREATES: one
- * control-plane node by default, plus N-1 workers when asked for. Every
- * per-node step below (fixups, hosts.toml, the runsc install) already runs
- * over the enumerated node set, so multi-node is a config-rendering change
- * here. Against a cluster that already exists the flag is a no-op with a
- * note — the node count is fixed when the cluster is created.
+ * `--nodes N` sets the node count of a cluster this run creates (one
+ * control-plane plus N-1 workers). On an existing cluster it is ignored
+ * with a note.
  *
- * `--byo` (bring your own cluster) is the one mode that does not assume
- * yaac owns the cluster: it creates nothing and installs no CNI, gates the
- * cluster the kubeconfig points at on everything that would otherwise fail
- * silently (the node pool, the CNI, the Tailscale operator, the storage
- * classes, the install's identity), then applies the same in-cluster layers
- * every other run converges, binds the claims from the named classes, and
- * deploys the server behind the tailnet — at a fixed install uid, and
- * without ever exec'ing into a node.
+ * `--byo` installs into the cluster the kubeconfig points at instead of
+ * creating one. It installs no CNI, checks up front everything that would
+ * otherwise fail silently (node pool, CNI, Tailscale operator, storage
+ * classes, install identity), then applies the same in-cluster layers and
+ * deploys the server behind the tailnet, without exec'ing into a node.
  *
- * Two kinds of state need re-applying on an existing cluster, and both are
- * unconditional here. The kind node fixups — the node container's pids
- * ceiling and the kubelet housekeeping flag — are podman state and
- * kubeadm's flags file, which only a node CONTAINER has and which no
- * in-cluster agent can set. The in-cluster layers — the gVisor runtime,
- * the PriorityClasses, netd, the images — change with the yaac version,
- * and re-applying them is how an existing cluster picks up an upgrade.
- * Node TUNING (the sysctls, DefaultTasksMax) is in-cluster state now: the
- * gVisor installer DaemonSet applies it on every node it lands on and on a
- * timer, so a node that restarted repairs itself with no re-run here.
+ * Every run re-applies the kind node fixups (podman and kubelet settings
+ * no in-cluster agent can set) and the in-cluster layers (gVisor runtime,
+ * PriorityClasses, netd, images), which is how an existing cluster picks up
+ * an upgrade. Node sysctls are applied by the gVisor installer DaemonSet
+ * instead (substrate/node-tuning.ts).
  */
 
 /**
- * Calico version installed as the CNI + policy engine.
- *
- * The manifest itself is not vendored — it is 350 KB of upstream YAML, and
- * carrying it in the repo (and in the npm artifact) buys nothing that the
- * pin does not: k8s/calico/ holds the SHA-256 of the release manifest, and
- * setup fetches the bytes on demand and refuses anything that does not
- * match. A version bump is then a two-line change (this const + the
- * checksum), and the install is exactly as reproducible as a vendored copy.
+ * Calico version installed as the CNI and policy engine. The manifest is
+ * not vendored: k8s/calico/ holds its SHA-256, and install downloads it and
+ * refuses a mismatch. A version bump changes this and the checksum.
  */
 export const CALICO_VERSION = '3.32.1'
 
 /** Committed integrity pin for the fetched manifest (bare hex sha256). */
 const CALICO_SHA256_FILE = path.join(CALICO_DIR, 'calico.yaml.sha256')
 
-/**
- * Upstream release manifest for a Calico version — the classic
- * KDD/iptables install, at the tag rather than a moving branch.
- */
+/** Upstream release manifest (the KDD/iptables install) for a version tag. */
 export function calicoManifestUrl(version: string = CALICO_VERSION): string {
   return `https://raw.githubusercontent.com/projectcalico/calico/v${version}/manifests/calico.yaml`
 }
@@ -139,16 +112,9 @@ function sha256Hex(text: string): string {
 }
 
 /**
- * The pinned Calico manifest, from the per-version cache when it is there
- * and verified, else downloaded once and cached.
- *
- * The checksum is the whole trust story: the cache is inside the data dir
- * (writable, long-lived) and the download crosses the network, so both are
- * verified against the committed hash on every use and a mismatch is fatal
- * rather than "install it anyway". Fetching costs nothing in practice —
- * setup already reaches the network for Calico's ~235 MB of images, the
- * kind node image and the gVisor release — and the cache means a cluster
- * recreate does not refetch.
+ * The pinned Calico manifest, from the per-version cache or downloaded and
+ * cached. Both the cached and downloaded copies are checked against the
+ * committed hash on every use; a mismatch is fatal.
  */
 export async function ensureCalicoManifest(deps: ClusterInstallDeps): Promise<string> {
   const pin = await deps.readTextFile(CALICO_SHA256_FILE)
@@ -197,21 +163,16 @@ export interface ClusterInstallOptions {
   /** `--byo`: the class `yaac-server-local` uses; default: the cluster's default. */
   rwoStorageClass?: string
   /**
-   * Publish the server on the machine's Tailscale tailnet through the
-   * Tailscale Kubernetes operator, instead of at this machine's loopback.
-   * The operator is a prerequisite the cluster owner installs; this refuses
-   * up front without it (`verifyTailnetOperator`). `--byo` implies it, so
-   * alongside `--byo` it changes nothing.
+   * Publish the server on the Tailscale tailnet through the Tailscale
+   * Kubernetes operator, instead of on this machine's loopback. The cluster
+   * owner installs the operator; install refuses without it. Implied by
+   * `--byo`.
    */
   tailnet?: boolean
   /**
-   * kind nodes to create: one control-plane plus `nodes - 1` workers.
-   * Undefined (the default) means one node. Create-time only — an existing
-   * cluster's node count is fixed, and install never recreates one.
-   *
-   * A string is accepted so the CLI can hand the raw `--nodes` text
-   * through: converting first would turn `--nodes three` into `NaN` and the
-   * error could no longer quote what was actually typed.
+   * kind nodes to create: one control-plane plus `nodes - 1` workers
+   * (default one). Only applies when creating a cluster. A string is
+   * accepted so the error can quote the raw `--nodes` text.
    */
   nodes?: number | string
 }
@@ -220,9 +181,8 @@ export interface ClusterInstallDeps {
   /** execFile-style runner, injectable for tests. */
   run: typeof execFileAsync
   /**
-   * Runner for long, chatty subprocesses (kind create, calico apply,
-   * podman machine init): inherits stdout/stderr so the user sees live
-   * progress, optionally piping `input` to stdin.
+   * Runner for long subprocesses (kind create, calico apply, podman machine
+   * init) that shows their output live; optionally pipes `input` to stdin.
    */
   runStreaming: (
     file: string,
@@ -232,37 +192,27 @@ export interface ClusterInstallDeps {
   log: (message: string) => void
   /** Interactive yes/no gate for destructive steps; false when not a TTY. */
   confirm: (question: string) => Promise<boolean>
-  /** Stands the in-cluster registry up (Deployment + Service + the node
-   *  containerd hosts.toml) and returns its cluster host; injectable so
+  /** Deploys the in-cluster registry (and each node's containerd
+   *  hosts.toml) and returns its host. The steps below are injectable so
    *  unit tests never touch the cluster. */
   ensureRegistry: () => Promise<string>
-  /** Applies the builder-role admission guard, which gates the sandboxed
-   *  builder pods. Injectable for the same reason as ensureRegistry. */
+  /** Applies the builder-role admission guard for sandboxed builder pods. */
   ensureBuilderGuard: () => Promise<void>
-  /** Applies the netd DaemonSet (its images come from buildImages).
-   *  Injectable for the same reason as ensureRegistry. */
+  /** Applies the netd DaemonSet (its images come from buildImages). */
   ensureNetd: () => Promise<void>
-  /** Stands the npm cache up (its image comes from buildImages).
-   *  Injectable for the same reason as ensureRegistry. */
+  /** Deploys the npm cache (its image comes from buildImages). */
   ensureNpmCache: () => Promise<void>
-  /** Builds and pushes every yaac-shipped image, and mirrors the pinned
-   *  upstreams. The one step that needs a container engine — everything
-   *  else here is kubectl and kind. Injectable for the same reason as
-   *  ensureRegistry. */
+  /** Builds and pushes every yaac-shipped image and mirrors the pinned
+   *  upstream images. The only step that needs a container engine. */
   buildImages: (log: (message: string) => void) => Promise<void>
-  /** Applies the gVisor installer DaemonSet + the RuntimeClasses.
-   *  Injectable for the same reason as the two above. */
+  /** Applies the gVisor installer DaemonSet and the RuntimeClasses. */
   ensureGvisorRuntime: () => Promise<void>
-  /** Installs the infra/workspace PriorityClasses. Injectable for the same
-   *  reason as the two above. */
+  /** Installs the PriorityClasses. */
   ensurePriorityClasses: () => Promise<void>
-  /** Builds, applies and publishes the server Deployment, returning the
-   *  origin it is reachable at (docs/server-in-cluster.md). Injectable for
-   *  the same reason as the steps above — it is the one that needs both a
-   *  container engine and a rolled-out workload. */
+  /** Builds, applies and publishes the server Deployment, returning its
+   *  origin (docs/server-in-cluster.md). */
   deployServer: typeof deployServerWorkload
-  /** The host's global git identity, `null` when unconfigured. Injectable
-   *  so unit tests are not judged by the machine's git config. */
+  /** Runs the final cluster check. */
   check: () => Promise<{ ok: boolean; results: CheckResult[] }>
   platform: NodeJS.Platform
   homedir: () => string
@@ -287,10 +237,8 @@ function runStreamingDefault(
       stdio: [opts.input !== undefined ? 'pipe' : 'ignore', 'inherit', 'inherit'],
     })
     if (opts.input !== undefined) {
-      // Same reason as execFileWithInput in drivers/k8s/substrate/kubectl.ts: an
-      // unhandled stdin 'error' (EPIPE, when the child is gone before it
-      // reads) is an uncaught exception, and the close/error handlers below
-      // already reject with something a caller can act on.
+      // An unhandled EPIPE on stdin would crash the process; the handlers
+      // below already report the failure (see execFileWithInput).
       child.stdin?.on('error', () => { /* reported via the handlers below */ })
       child.stdin?.end(opts.input)
     }
@@ -314,10 +262,8 @@ export async function confirmDefault(question: string): Promise<boolean> {
 }
 
 /**
- * The host/TTY wiring every install runs on unless the caller substitutes
- * its own. Built on call, not at module scope: this module is reachable
- * from the feature barrel, and a module-scope object would make merely
- * importing the barrel bind podman, the registry, and the check suite.
+ * The real deps. Built per call rather than at module scope, so importing
+ * this module does not bind podman, the registry and the check suite.
  */
 function defaultDeps(): ClusterInstallDeps {
   return {
@@ -326,9 +272,7 @@ function defaultDeps(): ClusterInstallDeps {
     log: (m) => { console.log(m) },
     confirm: confirmDefault,
     ensureRegistry: async () => {
-      // Forced: install exists to re-write wiring a node or VM restart may
-      // have dropped, and a fresh run has just created the cluster under
-      // it.
+      // Forced, to rewrite node wiring a restart or new cluster lacks.
       await ensureMainRegistry({ force: true })
       return registryHost()
     },
@@ -352,9 +296,6 @@ function defaultDeps(): ClusterInstallDeps {
     fileExists: (p) => fs.access(p).then(() => true).catch(() => false),
     listDir: (p) => fs.readdir(p).catch(() => [] as string[]),
     fetchText: async (url) => {
-      // Node's fetch rather than curl: this runs on the host (unlike the
-      // gVisor fetch, which happens inside the node), and install should
-      // not grow a host binary dependency for one GET.
       const res = await fetch(url, { signal: AbortSignal.timeout(120_000) })
       if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`)
       return res.text()
@@ -362,31 +303,21 @@ function defaultDeps(): ClusterInstallDeps {
   }
 }
 
-/**
- * Environment for every `kind` invocation: yaac runs kind's nodes under
- * podman (KIND_EXPERIMENTAL_PROVIDER is kind's own knob for that) so the
- * nodes and the registry share one engine, one network, one lifecycle.
- */
+/** Environment for every `kind` invocation: run kind's nodes on podman. */
 export function kindEnv(): NodeJS.ProcessEnv {
   // eslint-disable-next-line no-process-env -- forward the full host env to the kind subprocess, adding its provider knob
   return { ...process.env, KIND_EXPERIMENTAL_PROVIDER: 'podman' }
 }
 
 /**
- * Converge the machine and the cluster, then finish with a cluster check.
- * Returns the check's overall verdict; throws ClusterInstallError with a
- * user-actionable message when a step cannot proceed.
+ * Set up the machine and cluster, then run a cluster check and return its
+ * verdict. Throws ClusterInstallError with an actionable message when a
+ * step cannot proceed.
  *
- * The three phases are the same every run: get a cluster (create one only
- * if there is none), re-apply the node state that a restart drops, and
- * converge the in-cluster layers plus the images they name. Only the first
- * differs between a fresh machine and an upgrade, which is why there is one
- * verb rather than a mode flag.
- *
- * The finishing check is load-bearing for `--byo` specifically: its
- * `egress` gate is the positive NetworkPolicy probe the CNI verification
- * deliberately does not try to infer, so a `false` return there means "the
- * cluster's policy engine is not enforcing" and the CLI exits non-zero.
+ * Each run gets a cluster (creating one only if none exists), re-applies
+ * node state a restart drops, and applies the in-cluster layers and their
+ * images. For `--byo`, the check's `egress` probe is the only proof that
+ * NetworkPolicy is enforced.
  */
 export async function runClusterInstall(
   opts: ClusterInstallOptions = {},
@@ -396,39 +327,31 @@ export async function runClusterInstall(
   const nodeCount = resolveNodeCount(opts)
   const recorded = await readServerConfig()
   refuseByoSwitch(recorded, opts)
-  // Minted once, by the first run, and recorded before anything is made:
-  // a run that fails halfway has already stamped this id on what it made,
-  // so the next run recognizes it as its own.
+  // Created by the first run and reused, so a run that failed halfway
+  // recognizes the objects it made.
   const installId = recorded?.installId ?? crypto.randomUUID()
 
   const cluster = env.kindCluster
-  // A byo install creates no cluster, so kind is not part of its shopping
-  // list — the target is whatever cluster the kubeconfig points at.
+  // A byo install creates no cluster, so it does not need kind.
   const kindVersion = await requireBinaries(deps, { requireKind: !opts.byo })
 
-  // The gates run FIRST — right after the shopping list, ahead of the
-  // podman bootstrap — so an install that cannot work costs the user
-  // nothing but the diagnosis: the cluster and this host are untouched.
+  // Run the byo checks before changing anything on the cluster or host.
   const byoStorage = opts.byo ? await verifyByoCluster(deps, opts, installId) : undefined
 
   if (deps.platform === 'darwin') await ensurePodmanMachineSetup(deps)
   else await ensureRootfulPodmanReachable(deps)
 
   if (opts.byo) {
-    // Whatever this process cached about "the cluster" was learned from a
-    // different one. No node fixups: they are node-CONTAINER state, and a
-    // byo install execs into no node — the node tuning rides the
-    // installer DaemonSet onto every node regardless.
+    // Drop cached facts about another cluster. No node fixups: those are
+    // kind node-container settings.
     resetClusterCidrCache()
   } else {
     await preflightKindProvider(deps, kindVersion)
     if ((await kindNodes(deps, cluster)).length === 0) {
       await createKindCluster(deps, cluster, nodeCount)
-      // The node `/32`s and pod CIDRs of whatever cluster this process last
-      // looked at say nothing about the one just created. Rendering a policy
-      // for the wrong one fails closed on node addresses, and a stale
-      // pod-CIDR list makes netd's leading RETURNs miss, DNAT'ing pod-to-pod
-      // as world.
+      // Cached node and pod CIDRs belong to whatever cluster this process
+      // saw before. Stale pod CIDRs would make netd treat pod-to-pod
+      // traffic as internet egress.
       resetClusterCidrCache()
       await installCalico(deps, cluster)
       for (const node of await kindNodes(deps, cluster)) await applyKindNodeFixups(deps, node)
@@ -441,11 +364,8 @@ export async function runClusterInstall(
         )
       }
       deps.log(`Converging the existing kind cluster "${cluster}"...`)
-      // Re-applied every run: cheap, idempotent, and the one way a cluster
-      // created by an older yaac picks the pair up. Anything this process
-      // cached about "the node" must not be reused below either — a podman
-      // machine restart is the usual reason to be here, and the node's
-      // address may have moved under it.
+      // A podman machine restart may have moved the node's address, so
+      // drop cached CIDRs. Fixups are re-applied every run.
       resetClusterCidrCache()
       for (const node of await kindNodes(deps, cluster)) {
         await startStoppedKindNode(deps, node)
@@ -453,34 +373,28 @@ export async function runClusterInstall(
       }
       await waitForApiServer(deps, cluster)
     }
-    // Before any layer lands: the layers go to the kubeconfig's current
-    // context, so it has to be this machine's kind cluster.
+    // Layers go to the kubeconfig's current context, so it must be this
+    // machine's kind cluster.
     const current = await verifyKindContext(deps, cluster)
     await recordInstall({
       driver: 'k8s', installId, clusterUid: current.uid, kubeContext: current.context, byo: undefined,
     })
   }
-  // Once there is a cluster to ask, and before any layer lands on it: an
-  // operator that is not there costs the diagnosis and nothing else.
+  // Before any layer is applied.
   if (opts.tailnet && !opts.byo) await verifyTailnetOperator(deps)
 
   await installPriorityClasses(deps)
   await installRegistry(deps)
   await installBuilderGuard(deps)
-  // After the registry, which is where every image lands, and before the
-  // two layers that name one: the gVisor installer pod and netd both pull
-  // from it and neither builds anything itself.
+  // After the registry (images are pushed there) and before the gVisor
+  // installer and netd, which pull from it.
   await buildImages(deps)
   await installGvisorRuntime(deps)
   await deployNetd(deps)
   await deployNpmCache(deps)
-  // Last of the CNI gates, and only on byo, because it needs netd on a
-  // node: netd is hostNetwork and ships iproute2, so it is the node's own
-  // view of the routing table.
+  // Needs netd running, since netd sees the node's routing table.
   if (opts.byo) await verifyAdoptedVethSource(deps)
-  // Last of the workload steps: the server depends on every layer above it
-  // (its images come from the registry, its dials go through the proxy and
-  // netd), and it is the one that starts DOING things with them.
+  // Last: the server depends on every layer above.
   await deployServer(deps, opts, installId, byoStorage)
 
   deps.log('\nVerifying with cluster check...')
@@ -491,18 +405,10 @@ export async function runClusterInstall(
     return true
   }
   deps.log('\nCluster is not ready — fix the failures above and re-run `yaac cluster install`.')
-  // Every mode installs BEFORE it verifies, so a failed check leaves the
-  // in-cluster layers in place and a usable-looking cluster behind. The
-  // exit code is the only artifact of the failure, and nothing re-checks
-  // between explicit `cluster check` runs — so say plainly what that
-  // means rather than leaving it to be inferred from a red line.
-  //
-  // The `egress` gate is the one where it really bites: it is the positive
-  // NetworkPolicy probe, and a cluster that fails it runs workspaces whose
-  // egress lockdown is ADVISORY — they still work, and the proxy allowlist
-  // silently covers only what the redirect steers (443/80/the sentinel).
-  // That is a containment weakening with no symptom, which is exactly the
-  // class of failure this whole gate exists to make loud.
+  // The layers are already applied, so the cluster looks usable. A failed
+  // `egress` gate means NetworkPolicy is not enforced: workspaces still
+  // work, but the proxy allowlist covers only redirected ports. Warn
+  // loudly, since nothing else would show it.
   if (results.some((r) => r.name === 'egress' && r.status === 'fail')) {
     deps.log(
       '\nThe egress gate FAILED, and the install is already in place. Do not start '
@@ -518,27 +424,19 @@ export async function runClusterInstall(
 const KIND_NODES_SECTION = /^nodes:\n([\s\S]+)$/m
 
 /**
- * The kind config to feed `kind create cluster`: `$HOME` substituted (kind
- * expands no environment variables), the install's node-local extraMount
- * added, and the node list grown to `nodes` entries.
+ * The config for `kind create cluster`: `$HOME` substituted (kind expands no
+ * env vars), the node-local extraMount and server port mapping added, and
+ * worker nodes appended.
  *
- * Two extraMounts ride every node. `$HOME → $HOME` is what lets the static
- * PVs behind the two claims resolve on the node (docs/server-in-cluster.md
- * "Storage is two claims"). The second binds `<dataDir>/node-local` to the
- * install's node path, `/var/lib/yaac/node/<hash>`, so the NODE-LOCAL tier
- * — the pnpm stores, the image stores, the working copies — lives on the
- * host disk and survives a cluster delete rather than dying with the node
- * container. It is per install (the hash) because one host can run more
- * than one, and it is written here because kind binds mounts only at
- * create time.
+ * Each node gets two extraMounts. `$HOME → $HOME` lets the static PVs
+ * behind the storage claims resolve on the node (docs/server-in-cluster.md
+ * "Storage is two claims"). The second binds `<dataDir>/node-local` to
+ * `/var/lib/yaac/node/<hash>`, so node-local data (pnpm and image stores,
+ * working copies) lives on host disk and survives a cluster delete.
  *
- * Workers are COPIES of the bundled control-plane entry with the role
- * swapped, which is the whole trick behind the multi-node rehearsal: the
- * copy carries both extraMounts, and since every kind node container
- * shares this one host's filesystem, both paths keep resolving to the same
- * bytes on whichever node a workspace lands. Everything else in the file is
- * cluster-scoped (containerd registry patch, kubelet swap patch,
- * disableDefaultCNI), and kind applies those to every node itself.
+ * Workers are copies of the control-plane entry with the role swapped, so
+ * they carry the same mounts. All nodes share the host filesystem, so the
+ * paths resolve to the same bytes on every node.
  */
 export function renderKindConfig(
   raw: string,
@@ -553,11 +451,8 @@ export function renderKindConfig(
   const substituted = `${raw.replaceAll('$HOME', opts.homedir).trimEnd()}\n`
     + `  - hostPath: ${opts.nodeLocalHostPath}\n`
     + `    containerPath: ${opts.nodeLocalNodePath}\n`
-  // The server's published loopback endpoint: the host end of the port the
-  // fronting forwarder binds on the control-plane node. HOST-scoped, so it
-  // belongs to exactly one node — the control-plane entry the bundled file
-  // holds — and must not ride the worker copies below, where N nodes would
-  // race for one host port and kind would refuse the cluster.
+  // The server's host port mapping goes on the control-plane node only;
+  // copying it to workers would make them compete for one host port.
   const published = `${substituted.trimEnd()}\n`
     + '  extraPortMappings:\n'
     + `  - containerPort: ${String(SERVER_FRONT_PORT)}\n`
@@ -581,13 +476,9 @@ export function renderKindConfig(
 }
 
 /**
- * All the setup-time binaries up front, reported together so a fresh
- * machine gets one complete shopping list instead of failing serially.
- * Returns `kind version`'s output.
- *
- * `requireKind` is false under `--byo`: nothing is created there, and the
- * cluster need not be a kind one at all. podman stays required
- * either way — it is the image build engine.
+ * Check for every required binary and report all missing ones at once.
+ * Returns `kind version`'s output. kind is optional under `--byo`; podman
+ * is always needed to build images.
  */
 async function requireBinaries(
   deps: ClusterInstallDeps,
@@ -623,13 +514,10 @@ async function requireBinaries(
 }
 
 /**
- * kind must be v0.33.0 or newer, for two reasons: k8s/kind-config.yaml pins
- * a node image published for that release (kind only guarantees an image
- * works with the release that built it), and podman 6.0's container label
- * format breaks how kind <= v0.32.0 enumerates its node containers (`kind
- * get clusters` exits 125 — kind#4201). Returns the fix message for an
- * older kind, null otherwise (unparseable output is left to the functional
- * preflight).
+ * kind must be v0.33.0 or newer: k8s/kind-config.yaml pins a node image
+ * built for that release, and podman 6 breaks node enumeration in older
+ * kind (kind#4201). Returns a fix message for an older kind, else null
+ * (including for unparseable output).
  */
 function diagnoseOldKind(kindVersionOut: string): string | null {
   const match = /v(\d+)\.(\d+)\.\d+/.exec(kindVersionOut)
@@ -643,14 +531,10 @@ function diagnoseOldKind(kindVersionOut: string): string | null {
 }
 
 /**
- * The Linux counterpart to `ensurePodmanMachineSetup`: yaac runs kind on the
- * rootful podman engine (the calico-node DaemonSet needs the host netfilter
- * and routing access rootless podman does not delegate — see
- * docs/cluster-setup.md#linux-rootful-podman). `ensureRootfulPodmanHost` points
- * our env at the rootful socket; here we verify it actually answers, so `kind
- * create` fails with an actionable message instead of a bare connection error.
- * Unlike macOS, yaac can't provision the socket (it's root-owned and
- * systemd-activated), so this only checks and instructs.
+ * Linux counterpart to `ensurePodmanMachineSetup`: point at the rootful
+ * podman socket (calico-node needs host netfilter and routing access; see
+ * docs/cluster-setup.md "Linux: rootful podman") and check that it answers.
+ * yaac cannot enable the root-owned socket itself, so it only instructs.
  */
 async function ensureRootfulPodmanReachable(deps: ClusterInstallDeps): Promise<void> {
   ensureRootfulPodmanHost()
@@ -670,10 +554,8 @@ async function ensureRootfulPodmanReachable(deps: ClusterInstallDeps): Promise<v
 }
 
 /**
- * Functional preflight for the kind/podman pair: `kind get clusters` is
- * exactly the call the kind#4201 skew breaks (exit 125), and on a healthy
- * pair it is a harmless read. Diagnose an old kind explicitly instead of
- * letting cluster creation die with a bare exit code.
+ * Check that kind works with podman before creating anything: `kind get
+ * clusters` is the call kind#4201 breaks.
  */
 async function preflightKindProvider(deps: ClusterInstallDeps, kindVersion: string): Promise<void> {
   const old = diagnoseOldKind(kindVersion)
@@ -702,10 +584,8 @@ async function kindNodes(deps: ClusterInstallDeps, cluster: string): Promise<str
 }
 
 /**
- * Start a kind node container that is not running. kind creates its nodes
- * with no restart policy, so a host reboot leaves every node Exited — and
- * `kind get nodes` still lists them, which sends install down the converge
- * path, whose first step execs into the node.
+ * Start a stopped kind node container. kind nodes have no restart policy,
+ * so they are Exited after a host reboot but still listed.
  */
 async function startStoppedKindNode(deps: ClusterInstallDeps, node: string): Promise<void> {
   const { stdout } = await deps.run('podman', ['inspect', '--format', '{{.State.Running}}', node])
@@ -717,10 +597,8 @@ async function startStoppedKindNode(deps: ClusterInstallDeps, node: string): Pro
 const API_SERVER_TIMEOUT_MS = 120_000
 
 /**
- * Wait until the cluster's API server answers /readyz. Free on a running
- * cluster; after a node start (or one the user just ran) the apiserver
- * static pod takes several seconds to come up, and every layer below it
- * is an apply against it.
+ * Wait until the API server answers /readyz. After a node start it takes a
+ * few seconds to come up.
  */
 async function waitForApiServer(deps: ClusterInstallDeps, cluster: string): Promise<void> {
   const context = `kind-${cluster}`
@@ -743,13 +621,9 @@ async function waitForApiServer(deps: ClusterInstallDeps, cluster: string): Prom
 }
 
 /**
- * Create the kind cluster from the bundled k8s/kind-config.yaml, rendered
- * for the requested node count (see renderKindConfig). No --wait: the
- * config disables the default CNI, so nodes cannot go Ready until Calico
- * is installed.
- *
- * Only ever called when there is no cluster: install has no destructive
- * path, so nothing here deletes.
+ * Create the kind cluster from k8s/kind-config.yaml (see renderKindConfig).
+ * No `--wait`: the default CNI is disabled, so nodes cannot go Ready until
+ * Calico is installed.
  */
 async function createKindCluster(
   deps: ClusterInstallDeps,
@@ -761,15 +635,12 @@ async function createKindCluster(
   if (raw === null) {
     throw new ClusterInstallError(`Bundled kind config not found at ${configPath} — broken install?`)
   }
-  // The node-local bind's host side has to exist before `kind create`:
-  // podman refuses a bind of a missing source, or creates it as root.
+  // podman refuses a missing bind source, or creates it as root.
   await fs.mkdir(nodeLocalRoot(), { recursive: true })
   const config = renderKindConfig(raw, {
     homedir: deps.homedir(),
     nodes,
-    // The host end of the server's fronting, reserved here because kind
-    // writes port mappings only when a cluster is CREATED — which is why an
-    // older cluster cannot be converged into publishing one.
+    // kind sets port mappings only at cluster creation.
     serverHostPort: resolveServerPort(),
     nodeLocalHostPath: nodeLocalRoot(),
     nodeLocalNodePath: nodeLocalNodePath(),
@@ -794,20 +665,13 @@ async function createKindCluster(
 }
 
 /**
- * Install Calico (pinned by checksum) as the CNI and policy engine. kindnet's
- * NetworkPolicy engine fails OPEN — a new pod's first packets flow before
- * its IP reaches the engine's nftables set — and workspace egress lockdown
- * needs fail CLOSED. Calico's Felix gives that off the shelf: until it has
- * programmed a workload's endpoint, traffic on that veth falls through the
- * dispatch chain's "Unknown interface" DROP.
+ * Install Calico as the CNI and policy engine. kindnet's NetworkPolicy
+ * fails open (a new pod's first packets flow before policy applies);
+ * Calico drops traffic on a veth until it has programmed the endpoint.
  *
- * Applied straight from the release manifest (no CLI to install, no chart
- * to template): it is the classic KDD/iptables manifest, deliberately not
- * the Tigera operator — yaac needs no operator-managed lifecycle, and the
- * plain manifest keeps the installed object set auditable. Policy is
- * enforced from plain `networking.k8s.io/v1` NetworkPolicy only; yaac
- * installs no Calico CRs, which is what keeps the managed-cloud ports
- * cheap (their provider-managed Calicos do not support Calico CRDs).
+ * Uses the plain release manifest rather than the Tigera operator, and yaac
+ * uses only standard NetworkPolicy (no Calico CRs), so provider-managed
+ * Calico installs work too.
  */
 async function installCalico(deps: ClusterInstallDeps, cluster: string): Promise<void> {
   const raw = await ensureCalicoManifest(deps)
@@ -816,9 +680,7 @@ async function installCalico(deps: ClusterInstallDeps, cluster: string): Promise
   deps.log(`Installing Calico ${CALICO_VERSION} (CNI + NetworkPolicy)...`)
   try {
     await deps.runStreaming('kubectl', ['--context', context, 'apply', '-f', '-'], { input: raw })
-    // The DaemonSet going Available is what makes the node Ready (the CNI
-    // config only lands once calico-node has started), so wait on it first
-    // and let the node wait be the cheap confirmation.
+    // Nodes go Ready only once calico-node has started, so wait on it first.
     await deps.run('kubectl', [
       '--context', context,
       'rollout', 'status', 'daemonset/calico-node', '-n', 'kube-system', '--timeout=300s',
@@ -836,21 +698,11 @@ async function installCalico(deps: ClusterInstallDeps, cluster: string): Promise
 }
 
 /**
- * The bring-your-own-CNI gate: everything `installCalico` would otherwise
- * have guaranteed by construction, verified against the cluster instead.
- *
- * Refuses rather than warns, because every one of these fails SILENTLY.
- * Calico in its eBPF dataplane, a replaced kube-proxy, an empty pod-CIDR
- * exclusion set — none of them stops a workspace from starting; they show up
- * as "workspaces have no egress" or, worse, as a redirect chain that counts
- * packets and never fires. The full reasoning per check is in cni-adopt.ts.
- *
- * The NetworkPolicy half is deliberately not decided here: "Calico is
- * installed" does not mean policy is enforced (policy-only Calico over a
- * foreign IPAM is a supported topology and a misconfigured one looks
- * identical until a workspace escapes), so it is left to the `egress` gate of
- * the cluster check that finishes every setup — a positive probe from a
- * workspace-labeled pod, whose failure makes this command exit non-zero.
+ * `--byo` CNI check: verify what `installCalico` would otherwise guarantee
+ * (details in cni-adopt.ts). Refuses rather than warns, since each problem
+ * (eBPF dataplane, replaced kube-proxy, missing pod CIDRs) fails silently
+ * as missing egress. Whether NetworkPolicy is enforced is left to the
+ * final check's `egress` probe.
  */
 async function verifyAdoptedCni(deps: ClusterInstallDeps): Promise<void> {
   deps.log('Verifying the CNI this cluster already runs...')
@@ -867,17 +719,9 @@ async function verifyAdoptedCni(deps: ClusterInstallDeps): Promise<void> {
 }
 
 /**
- * The `--tailnet` gate: the Tailscale Kubernetes operator has to be there
- * before the tailnet fronting's Ingress can mean anything, and it is the
- * cluster owner's to install (one helm command). Three reads, all refusals
- * rather than warnings — an Ingress of the tailnet class with no operator
- * simply never gets a hostname, and install would sit out the publish
- * timeout and refuse anyway, after applying every layer.
- *
- * Absence and "could not ask" are kept apart, the way the adoption gate
- * keeps them: a kubeconfig pointing nowhere is an unknown, not a missing
- * operator, and saying "not installed" there would send the operator to
- * the wrong fix.
+ * `--tailnet` check: the Tailscale Kubernetes operator must be installed,
+ * or the server's Ingress never gets a hostname. A failed read is reported
+ * separately from a missing object, since they need different fixes.
  */
 async function verifyTailnetOperator(deps: ClusterInstallDeps, flag = '--tailnet'): Promise<void> {
   deps.log(`Verifying the Tailscale Kubernetes operator (${flag})...`)
@@ -915,12 +759,10 @@ async function verifyTailnetOperator(deps: ClusterInstallDeps, flag = '--tailnet
 }
 
 /**
- * Every `--byo` gate, in order, before anything is applied or built: the
- * node pool, the CNI, the Tailscale operator, the storage classes, the
- * install's identity, the cluster and the environment. Each reads through
- * `deps.run`, and each refuses — the cluster and this host are left
- * untouched. Then the install is recorded, and the two classes the claims
- * bind through are returned.
+ * Every `--byo` check, before anything is applied or built: nodes, CNI,
+ * Tailscale operator, storage classes, install identity, cluster and
+ * environment. Each refuses on failure. Then records the install and
+ * returns the storage classes for the claims.
  */
 async function verifyByoCluster(
   deps: ClusterInstallDeps,
@@ -967,9 +809,8 @@ function refuseIfAny(heading: string, problems: string[]): void {
 }
 
 /**
- * A kubectl read as JSON: null when the object is provably absent, and a
- * refusal naming what could not be read when the question itself failed —
- * "not there" and "could not ask" send the operator to different fixes.
+ * A kubectl read as JSON: null when the object is absent; throws a refusal
+ * naming `what` when the read itself failed.
  */
 async function readKubectlJson<T>(deps: ClusterInstallDeps, args: string[], what: string): Promise<T | null> {
   try {
@@ -991,12 +832,9 @@ interface RawStorageClass {
 }
 
 /**
- * The classes a byo install binds its claims through: the named RWX class
- * exists and is NFS-family — the only shared storage the spike measured —
- * the named RWO class exists, and the cluster has a default class, which
- * the image registry and the npm cache provision through (and which the
- * RWO claim uses when none is named). A missing default is refused here
- * rather than discovered as a Pending registry claim.
+ * Check the byo storage classes: the RWX class exists and is NFS-family,
+ * the RWO class (if named) exists, and there is a default class, which the
+ * registry and npm cache use (and the RWO claim when none is named).
  */
 async function verifyStorageClasses(
   deps: ClusterInstallDeps,
@@ -1040,14 +878,9 @@ interface RawServerDeployment {
 }
 
 /**
- * One data dir, one install, and one install per namespace. A server
- * Deployment already in the namespace was stamped with its install's id,
- * and installing over another install's would take over its claims — the
- * fix is to install from that install's data dir, or into a namespace of
- * this one's own. A data dir already recorded as the containerless driver
- * is a different install altogether. Keyed on the records, never on
- * whether tier folders exist on this machine: a byo install's classes may
- * provision them anywhere.
+ * One install per data dir and per namespace. Refuses a data dir recorded
+ * as containerless, and a namespace whose server Deployment carries
+ * another install's id (installing over it would take over its storage).
  */
 async function verifyInstallIdentity(deps: ClusterInstallDeps, installId: string): Promise<void> {
   if ((await readServerConfig())?.driver === 'containerless') {
@@ -1075,11 +908,8 @@ async function verifyInstallIdentity(deps: ClusterInstallDeps, installId: string
 }
 
 /**
- * A data dir is a kind install or a byo one for its whole life, and
- * install must know which BEFORE it touches anything: plain `cluster
- * install` on a byo data dir would otherwise go down the kind path —
- * creating a kind cluster here, switching the current context to it, or
- * converging kind-shaped layers onto the cloud cluster.
+ * A data dir stays a kind install or a byo install for its whole life.
+ * Refuse a run whose `--byo` flag does not match the recorded install.
  */
 function refuseByoSwitch(recorded: InstallRecord | null, opts: ClusterInstallOptions): void {
   if (recorded?.driver !== 'k8s' || !!opts.byo === !!recorded.byo) return
@@ -1091,12 +921,9 @@ function refuseByoSwitch(recorded: InstallRecord | null, opts: ClusterInstallOpt
 }
 
 /**
- * The kind path's cluster check: every layer goes to the kubeconfig's
- * current context, so it must be this machine's kind cluster — by name,
- * and by the apiserver kind itself reports for it, which a same-named
- * context from another kubeconfig does not share. No recorded uid is
- * compared: a kind cluster deleted and re-created is a new cluster, and
- * the same install. Returns the cluster, to record.
+ * Check that kubectl's current context is this machine's kind cluster, by
+ * name and by API server address. The cluster uid is not compared, since a
+ * recreated kind cluster is still the same install. Returns the cluster.
  */
 async function verifyKindContext(deps: ClusterInstallDeps, cluster: string): Promise<CurrentCluster> {
   const expected = `kind-${cluster}`
@@ -1117,16 +944,10 @@ async function verifyKindContext(deps: ClusterInstallDeps, cluster: string): Pro
 }
 
 /**
- * The other half of the gate, which needs a node: netd's pod → veth source
- * must actually exist for the configured prefix. `cali*` is correct only
- * where Calico does the IPAM — policy-only Calico over the AWS VPC CNI
- * gives `eni*` — and a prefix that matches nothing renders a redirect chain
- * with no per-pod rules in it, which is indistinguishable from a healthy
- * netd until a workspace tries to reach the internet.
- *
- * Fail-soft on an unreachable netd (the cluster check's datapath gate owns
- * that verdict), fail-hard on a node that has the routes but not under this
- * prefix — that is the misconfiguration this exists to catch.
+ * `--byo` check that needs netd running: pod veths must match the
+ * configured prefix (`cali*` only where Calico does IPAM; the AWS VPC CNI
+ * uses `eni*`). A wrong prefix gives a redirect with no per-pod rules.
+ * Warns if netd is unreachable (the cluster check covers that).
  */
 async function verifyAdoptedVethSource(deps: ClusterInstallDeps): Promise<void> {
   const prefix = cniVethPrefix()
@@ -1142,32 +963,17 @@ async function verifyAdoptedVethSource(deps: ClusterInstallDeps): Promise<void> 
   else deps.log(`  recorded: pod → veth source: ${detail}`)
 }
 
-/**
- * Image references in the Calico manifest. Parsed rather than hard-coded
- * so a version bump stays a two-line change: repin, and the sideload
- * follows whatever the new manifest names.
- */
+/** Image references in the Calico manifest. */
 export function calicoImageRefs(manifestYaml: string): string[] {
   const refs = manifestYaml.match(/^\s*image:\s*(\S+)\s*$/gm) ?? []
   return [...new Set(refs.map((line) => line.replace(/^\s*image:\s*/, '').trim()))].sort()
 }
 
 /**
- * Put Calico's images on the node before applying the manifest.
- *
- * Without this, the install spends over a minute waiting on the node to
- * pull ~235 MB from quay.io — and pays it again on every recreate, since
- * the node's image store dies with the node. calico-node's init
- * containers pull serially (cni, then node), so the waits compound.
- *
- * Pulling to the HOST engine instead makes that cost one-time: the host
- * store survives cluster recreation, so later setups only stream the
- * layers into the node, which is roughly ten times faster than fetching
- * them again. Every image is `imagePullPolicy: IfNotPresent`, so a
- * preloaded one is used as-is and no pull happens at all.
- *
- * Fails soft: on any error the manifest still applies and the node falls
- * back to pulling for itself — slower, but not broken.
+ * Load Calico's images (~235 MB) onto the node from the host podman store
+ * before applying the manifest. The host store survives cluster recreation,
+ * so the download happens once. On any error the node pulls the images
+ * itself, which is slower.
  */
 async function sideloadCalicoImages(
   deps: ClusterInstallDeps,
@@ -1191,9 +997,7 @@ async function sideloadCalicoImages(
         await deps.run('podman', ['pull', ref], { timeout: 600_000 })
       }
     }
-    // `kind load docker-image` is the obvious call and does not work
-    // under the podman provider; saving an archive ourselves and loading
-    // that does. The tar is large but short-lived.
+    // `kind load docker-image` does not work with podman; an archive does.
     const archive = path.join(os.tmpdir(), `yaac-calico-${process.pid}.tar`)
     try {
       deps.log('Loading Calico images onto the node...')
@@ -1214,30 +1018,16 @@ async function sideloadCalicoImages(
 }
 
 /**
- * The kind-only node fixups: what a node CONTAINER has and a real node
- * does not, so neither can ride the installer DaemonSet the way the
- * sysctls and DefaultTasksMax do (node-tuning.ts in the substrate).
+ * Settings specific to kind node containers, which the installer DaemonSet
+ * cannot apply:
  *
- *  - The kubelet housekeeping interval (see
- *    NODE_KUBELET_HOUSEKEEPING_INTERVAL — default-interval cAdvisor stats
- *    burned whole cores against gVisor sandboxes), edited into kubeadm's
- *    flags file. A managed pool's kubelet config is the provider's; on a
- *    byo cluster this is a pool setting, documented per target.
- *  - The node container's own pids ceiling, a property of the podman
- *    container that nothing inside it can raise. It persists across a
- *    container restart and is lost only with the container itself.
- *
- * No registry wiring here: both the main and the per-project registries are
- * in-cluster workloads whose containerd `hosts.toml` is written by one-shot
- * pods that hostPath-mount the node's `certs.d` directory, so nothing about
- * the image path assumes the node is a container on this host's engine.
+ *  - the kubelet housekeeping interval (NODE_KUBELET_HOUSEKEEPING_INTERVAL),
+ *    written into kubeadm's flags file;
+ *  - the node container's pids limit, which only podman can raise.
  */
 async function applyKindNodeFixups(deps: ClusterInstallDeps, node: string): Promise<void> {
   deps.log(`Applying kind node fixups to ${node}...`)
-  // kubelet housekeeping interval: prepend the flag to the kubeadm-written
-  // flags env (idempotent — skipped when the exact flag is already there;
-  // any stale different-value copy is stripped first) and restart kubelet
-  // only when the file actually changed.
+  // Replace any old value and restart kubelet, only if the flag is missing.
   const hkFlag = `--housekeeping-interval=${NODE_KUBELET_HOUSEKEEPING_INTERVAL}`
   await deps.run('podman', ['exec', node, 'sh', '-c',
     `if ! grep -q -- '${hkFlag}' ${NODE_KUBELET_FLAGS_ENV}; then `
@@ -1249,15 +1039,9 @@ async function applyKindNodeFixups(deps: ClusterInstallDeps, node: string): Prom
 }
 
 /**
- * Stand the in-cluster registry up. Runs AFTER the cluster exists and the
- * PriorityClasses are installed, and before anything pushes an image — it is a Deployment now, not a host
- * container, and its pod names the infra class.
- *
- * Deliberately NOT fail-soft: the registry is the only image bus, so
- * without it no workspace image can be pushed, no node can pull one, and no
- * builder pod can fetch a parent. Finishing an install without it would trade a
- * clear error here for an opaque ImagePullBackOff at the first workspace
- * create.
+ * Deploy the in-cluster registry. Runs after the PriorityClasses (its pod
+ * names one) and before any image push. Failure is fatal: every image goes
+ * through the registry.
  */
 async function installRegistry(deps: ClusterInstallDeps): Promise<void> {
   deps.log('Deploying the in-cluster image registry...')
@@ -1266,14 +1050,8 @@ async function installRegistry(deps: ClusterInstallDeps): Promise<void> {
 }
 
 /**
- * Build and push every yaac-shipped image, and mirror the pinned upstreams
- * (builtin-images.ts). The only step that needs a container engine, and the
- * reason install still requires podman while the server no longer does.
- *
- * Deliberately NOT fail-soft, and deliberately BEFORE the layers that name
- * these images: nothing else builds them, so a run that skipped this would
- * leave a cluster whose first workspace create fails on a registry lookup —
- * pointing back at the command that just declined to do the work.
+ * Build and push every yaac-shipped image and mirror the pinned upstreams
+ * (builtin-images.ts). Failure is fatal: nothing else builds them.
  */
 async function buildImages(deps: ClusterInstallDeps): Promise<void> {
   await deps.buildImages(deps.log)
@@ -1281,9 +1059,8 @@ async function buildImages(deps: ClusterInstallDeps): Promise<void> {
 
 /**
  * Apply the builder-role admission guard, which reserves the
- * `yaac.role=builder` label the sandboxed builders carry. Fails soft: the
- * builder engine re-ensures it lazily before every untrusted build and
- * throws loudly there.
+ * `yaac.role=builder` label. Failure only logs: untrusted builds re-apply
+ * it before running.
  */
 async function installBuilderGuard(deps: ClusterInstallDeps): Promise<void> {
   try {
@@ -1298,15 +1075,8 @@ async function installBuilderGuard(deps: ClusterInstallDeps): Promise<void> {
 }
 
 /**
- * Install the infra/workspace PriorityClasses. Re-applied every run: like
- * the gVisor RuntimeClasses, these are cluster-scoped objects the manifest
- * builders name, so this is how a cluster created by an older yaac gets
- * them on upgrade (the server re-ensures them at boot as well).
- *
- * Deliberately NOT fail-soft: a pod naming a class the apiserver doesn't
- * have is rejected, and a Job whose pod is rejected hangs rather than
- * failing, so finishing an install without them would trade a clear error here
- * for a mystifying one at the next workspace create.
+ * Install the PriorityClasses. Failure is fatal: a pod naming a missing
+ * class is rejected, and its Job hangs.
  */
 async function installPriorityClasses(deps: ClusterInstallDeps): Promise<void> {
   deps.log('Installing the yaac PriorityClasses (infra > sessions)...')
@@ -1314,17 +1084,9 @@ async function installPriorityClasses(deps: ClusterInstallDeps): Promise<void> {
 }
 
 /**
- * Apply the gVisor installer DaemonSet and, once it has converged, the
- * RuntimeClasses — so a freshly-set-up cluster can run sandboxed pods
- * before any workspace exists, and so `check`'s gvisor gate has something to
- * verify. Re-applied every run: it is how a cluster created by an older
- * yaac picks up a runsc version bump.
- *
- * Deliberately NOT fail-soft, unlike netd below. Nothing else installs the
- * runtime (there is no lazy re-ensure on the workspace-create path), and
- * every workspace pod names a RuntimeClass whose nodeSelector only matches an
- * installed node — so finishing an install with this broken would trade a clear
- * error here for every workspace sitting Pending later.
+ * Apply the gVisor installer DaemonSet and then the RuntimeClasses.
+ * Failure is fatal: nothing else installs the runtime, and without it every
+ * workspace pod stays Pending.
  */
 async function installGvisorRuntime(deps: ClusterInstallDeps): Promise<void> {
   deps.log('Installing the gVisor runtime (installer DaemonSet + RuntimeClasses)...')
@@ -1341,27 +1103,9 @@ async function installGvisorRuntime(deps: ClusterInstallDeps): Promise<void> {
 }
 
 /**
- * Build/push the netd + Envoy images and apply the DaemonSet, so a
- * freshly-set-up cluster can redirect workspace egress before any workspace
- * exists — and so `check`'s datapath gate has something to verify.
- *
- * Re-applied every run: like the gVisor install, this is how an existing
- * cluster picks netd up on a yaac upgrade.
- *
- * Fails soft. The server re-ensures netd on every proxy bootstrap
- * (ensureProxyResources), so a transient registry or build hiccup here
- * self-heals on first workspace create rather than aborting the whole setup;
- * the cluster check that follows reports it either way.
- */
-/**
- * Build, deploy and publish the server itself.
- *
- * Unlike the layers above it, a failure here is fatal: netd can be retried
- * by the server, but nothing retries the server. This is also where the
- * install stops being about a cluster and starts being about an install —
- * the step it delegates to records the driver this data dir now runs and
- * writes the `server.json` every client on this machine resolves through,
- * so `yaac workspace list` talks to the pod without being told to.
+ * Build, deploy and publish the server. Failure is fatal. This step also
+ * writes the `server.json` that clients on this machine use to find the
+ * server.
  */
 async function deployServer(
   deps: ClusterInstallDeps,
@@ -1390,9 +1134,8 @@ async function deployServer(
     )
   }
   const fronting = opts.tailnet ? tailnetFronting({ hostname: TAILNET_HOSTNAME }) : kindFronting()
-  // The host's own uid on kind: the claims are hostPaths into this
-  // machine's data dir, and on macOS virtiofs makes the host uid a ceiling
-  // nothing in the cluster can raise (docs/server-in-cluster.md).
+  // Run as the host's uid on kind, since the claims are hostPaths into this
+  // machine's data dir (docs/server-in-cluster.md).
   const identity = processIdentity()
   const origin = await deps.deployServer({
     fronting, identity, installId, storage: { kind: 'static' }, torHostAddr, log: deps.log,
@@ -1401,13 +1144,9 @@ async function deployServer(
 }
 
 /**
- * The host's IPv4 address on the kind network — where a pod reaches a
- * listener bound on the host. `undefined` when it cannot be read, which is a
- * degraded Tor setup rather than a failed install.
- *
- * A dual-stack kind network has one subnet per family, so the template emits
- * every gateway separated by spaces and we take the IPv4 one — concatenating
- * them would yield a single unparseable address.
+ * The host's IPv4 address on the kind network, where a pod can reach a
+ * host listener. `undefined` when it cannot be read. A dual-stack network
+ * has one gateway per family, so pick the IPv4 one.
  */
 async function hostAddrOnKindNetwork(deps: ClusterInstallDeps): Promise<string | undefined> {
   try {
@@ -1420,6 +1159,11 @@ async function hostAddrOnKindNetwork(deps: ClusterInstallDeps): Promise<string |
   }
 }
 
+/**
+ * Apply the netd DaemonSet. Failure only logs: the server re-applies netd
+ * on every proxy bootstrap (ensureProxyResources), and the cluster check
+ * reports it.
+ */
 async function deployNetd(deps: ClusterInstallDeps): Promise<void> {
   deps.log('Deploying the netd egress redirect (DaemonSet)...')
   try {
@@ -1434,9 +1178,8 @@ async function deployNetd(deps: ClusterInstallDeps): Promise<void> {
 }
 
 /**
- * Stand up the npm cache workspaces install through. Fails soft: until it
- * serves, the workspace env names no registry and pnpm goes to npmjs, which
- * is slower and nothing worse — and `cluster check` says so.
+ * Deploy the npm cache. Failure only logs: workspaces fall back to npmjs,
+ * which is slower, and `cluster check` reports it.
  */
 async function deployNpmCache(deps: ClusterInstallDeps): Promise<void> {
   deps.log('Deploying the npm cache (Verdaccio)...')
@@ -1456,10 +1199,9 @@ async function deployNpmCache(deps: ClusterInstallDeps): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Effective `[machine] provider` after applying containers.conf sources in
- * order (base file first, then conf.d drop-ins alphabetically — later
- * sources override). Unparseable sources are skipped, matching podman's
- * be-liberal reading enough for this one key.
+ * Effective `[machine] provider` from containers.conf sources in order
+ * (base file, then conf.d drop-ins alphabetically; later wins).
+ * Unparseable sources are skipped.
  */
 export function effectiveMachineProvider(sources: string[]): string | undefined {
   let provider: string | undefined
@@ -1474,10 +1216,8 @@ export function effectiveMachineProvider(sources: string[]): string | undefined 
 }
 
 /**
- * True when `podman machine start` failed because the machine was
- * provisioned by an older podman (config-version gate): the fix is a
- * destructive rm + re-init, which the caller prompts for. Heuristic on
- * podman's wording, matched loosely across versions.
+ * True when `podman machine start` failed because an older podman created
+ * the machine, which must be recreated. Matches podman's wording loosely.
  */
 export function isLegacyMachineError(stderr: string): boolean {
   return /older version|previous version|incompatible|machine reset|must be recreated|needs to be recreated/i
@@ -1485,9 +1225,8 @@ export function isLegacyMachineError(stderr: string): boolean {
 }
 
 /**
- * VM sizing for `podman machine init`. The README's canonical numbers are
- * 8 cpus / 32 GiB; scale down for smaller hosts (half the host RAM, capped
- * at the canonical values, floored at something workspaces can survive on).
+ * VM size for `podman machine init`: up to 8 cpus and 32 GiB, using half
+ * the host RAM on smaller hosts, with a 2 cpu / 4 GiB floor.
  */
 export function defaultMachineResources(
   totalmemBytes: number,
@@ -1542,20 +1281,13 @@ async function initMachine(deps: ClusterInstallDeps): Promise<void> {
 }
 
 /**
- * Drive the macOS machine into the state yaac needs — the two non-default
- * settings the README used to describe by hand, plus migration traps from
- * pre-brew installs:
- *   - provider = libkrun (virtiofs that reports real file ownership, which
- *     gVisor workspace pods need: the runsc gofer does hostPath I/O as node
- *     root while the sentry enforces DAC on the ownership the gofer sees.
- *     applehv/vz virtiofs reports the accessing process as every file's
- *     owner — the root gofer sees root-owned files, so non-root workspace
- *     uids can never write hostPath mounts) — written as a
- *     containers.conf.d drop-in;
+ * Set up the macOS podman machine:
+ *   - provider libkrun, via a containers.conf.d drop-in. Its virtiofs
+ *     reports real file ownership; with applehv/vz, gVisor's root gofer
+ *     sees every file as root-owned and non-root workspaces cannot write
+ *     hostPath mounts;
  *   - rootful (kind's podman provider requires it);
- *   - a machine provisioned under podman 5.x lacks the 6.0 machine image's
- *     guest wiring (vsock qemu-guest-agent for timesync) and trips podman's
- *     config-version gate on start → prompt for the destructive rm+re-init.
+ *   - a machine created by podman 5.x must be recreated (with a prompt).
  */
 export async function ensurePodmanMachineSetup(deps: ClusterInstallDeps): Promise<void> {
   // Provider: base containers.conf, then conf.d drop-ins (later wins).
@@ -1628,8 +1360,6 @@ async function startMachine(deps: ClusterInstallDeps): Promise<void> {
         `podman machine start failed:\n  ${stderr.trim().split('\n')[0]}`,
       )
     }
-    // Machine provisioned by an older podman: the 6.0 machine image ships
-    // the timesync guest wiring, so recreation is required (not just nice).
     const recreate = await deps.confirm(
       `Podman machine "${machine.Name}" was created by an older podman and must be `
       + 'recreated. Remove and re-init it? (destroys the machine, and with it the '

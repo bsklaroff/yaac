@@ -1,23 +1,19 @@
 /*
- * Browser test for the webapp terminal's WebGL renderer fix
- * (src/frontend/lib/webgl-renderer.ts): xterm's stock DOM renderer lays rows
- * out on the CSS-pixel grid, and at fractional devicePixelRatios (browser
- * zoom, hidpi scaling) the per-row rounding leaves hairline seams of page
- * background between adjacent rows — the "extra blank space that slices up
- * solid-colored animations". The WebGL renderer rasterizes on the
- * device-pixel grid and must not show any seams.
+ * Verifies that the WebGL terminal renderer
+ * (packages/frontend/src/lib/webgl-renderer.ts) shows no seams between rows.
+ * xterm's DOM renderer lays rows out in CSS pixels, so at fractional
+ * devicePixelRatios (browser zoom, hidpi scaling) rounding leaves hairlines
+ * of background between rows, slicing up solid-colored output. The WebGL
+ * renderer draws in device pixels and should have none.
  *
- * Renders a block of solid red rows (terminal options copied from
- * SessionTerminal.tsx) at several devicePixelRatios, screenshots at device
- * scale, and scans pixel rows inside the block for seams: rows containing no
- * red at all. The DOM renderer runs as the control — expected to seam at at
- * least one fractional DPR, proving the harness can see the bug — and the
- * WebGL renderer (via the real createWebglController, bundled from source)
- * must render zero seam rows at every DPR.
+ * Renders a block of solid red rows (terminal options as in
+ * WorkspaceTerminal.tsx) at several DPRs, screenshots at device scale, and
+ * counts pixel rows inside the block with no red. The DOM renderer is the
+ * control and must seam at some fractional DPR, proving the harness can see
+ * the bug. The WebGL renderer (via the real createWebglController) must show
+ * zero seams at every DPR.
  *
  * Run: node test-playwright-scripts/xterm-webgl-row-gaps-test.js
- * (playwright is resolved from the global npm root; browsers live under
- * /opt/playwright-browsers)
  */
 import { execFileSync, execSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -28,8 +24,7 @@ import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-// pnpm's strict layout doesn't hoist @xterm/xterm to the repo root — it's a
-// frontend dep — so probe the package-local symlink too.
+// @xterm/xterm is a frontend dep that pnpm may not hoist to the root.
 const XTERM_DIR = [
   path.join(ROOT, 'node_modules/@xterm/xterm'),
   path.join(ROOT, 'packages/frontend/node_modules/@xterm/xterm'),
@@ -76,8 +71,8 @@ function check(name, cond, detail = '') {
 }
 
 /**
- * Render the solid block with the given renderer at the given DPR and count
- * seam rows: device-pixel rows inside the block with no red pixel at all.
+ * Renders the red block with the given renderer and DPR, and counts seam
+ * rows: device-pixel rows inside the block with no red pixel.
  */
 async function measureSeams(browser, bundleFile, dpr, useWebgl) {
   const context = await browser.newContext({
@@ -96,7 +91,7 @@ async function measureSeams(browser, bundleFile, dpr, useWebgl) {
   await page.addScriptTag({ path: path.join(XTERM_DIR, 'lib/xterm.js') })
   await page.addScriptTag({ path: bundleFile })
 
-  // Terminal options mirror SessionTerminal.tsx.
+  // Terminal options as in WorkspaceTerminal.tsx.
   const webglLoaded = await page.evaluate((wantWebgl) => {
     const term = new window.Terminal({
       fontSize: 13,
@@ -109,8 +104,7 @@ async function measureSeams(browser, bundleFile, dpr, useWebgl) {
     term.open(document.getElementById('t'))
     if (!wantWebgl) return null
     window.webglr.createWebglController(term).setVisible(true)
-    // The WebGL renderer appends a <canvas> to the screen element; the DOM
-    // renderer uses a .xterm-rows div instead. A canvas means WebGL activated.
+    // Only the WebGL renderer adds a <canvas> to the screen element.
     return document.querySelector('.xterm-screen canvas') !== null
   }, useWebgl)
   if (useWebgl && !webglLoaded) {
@@ -118,7 +112,6 @@ async function measureSeams(browser, bundleFile, dpr, useWebgl) {
     return { error: 'WebGL addon failed to load (no WebGL2 in this browser)' }
   }
 
-  // A block of rows fully painted with a solid red background.
   await page.evaluate(
     (rows) =>
       new Promise((res) => {
@@ -127,12 +120,12 @@ async function measureSeams(browser, bundleFile, dpr, useWebgl) {
       }),
     BLOCK_ROWS
   )
-  // One settled frame: both renderers paint on rAF after the write parses.
+  // Wait two frames: both renderers paint on rAF after the write.
   await page.evaluate(() => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res))))
 
   const shot = await page.locator('.xterm-screen').screenshot({ scale: 'device' })
 
-  // Decode in-page (browser PNG decoder + 2D canvas) and scan pixel rows.
+  // Decode the PNG in the page and scan pixel rows.
   const result = await page.evaluate(async (b64) => {
     const img = new Image()
     img.src = 'data:image/png;base64,' + b64
@@ -171,7 +164,7 @@ async function measureSeams(browser, bundleFile, dpr, useWebgl) {
 async function main() {
   const { chromium } = requirePlaywright()
   const bundle = buildRendererBundle()
-  // SwiftShader flags keep WebGL2 available in headless runs without a GPU.
+  // SwiftShader keeps WebGL2 available in headless runs without a GPU.
   const browser = await chromium.launch({
     args: ['--enable-unsafe-swiftshader'],
   })
@@ -186,7 +179,6 @@ async function main() {
     if (!dom.error) domSeamsAnywhere += dom.seams
     check(`webgl renderer has no row seams at dpr=${dpr}`, !webgl.error && webgl.seams === 0, webglDetail)
   }
-  // Control: the harness must be able to see the bug it guards against.
   check(
     'DOM renderer control reproduces row seams at some fractional DPR',
     domSeamsAnywhere > 0,

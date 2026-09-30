@@ -1,13 +1,13 @@
 import { api } from './api'
 
 /**
- * The sidebar's workspace groups. Every call is addressed by (project, …)
- * rather than through a container lookup, because a group outlives the
- * containers of its members: a stopped workspace can be dragged out of a group,
- * and a pinned group can hold nothing but ghost rows.
+ * The sidebar's workspace groups. Calls are addressed by project rather than
+ * by a running workspace, because a group outlives its members: a stopped
+ * workspace can be dragged out of a group, and a pinned group may hold only
+ * stopped rows.
  *
- * None of these are optimistic. Group state rides the snapshot, so the server
- * push is what re-renders the sidebar — the same way the row's rename does.
+ * None of these are optimistic: group state arrives in the snapshot, so the
+ * server's push re-renders the sidebar.
  */
 
 /** Create a group around a workspace; the founding member goes in with it. */
@@ -27,8 +27,7 @@ export async function renameWorkspaceGroup(
   await api.workspace.group.rename.$post({ json: { projectSlug, groupId, name } })
 }
 
-/** Pin (or unpin) a group — whether it stays listed once its last live
- *  workspace stops. */
+/** A pinned group stays listed after its last live workspace stops. */
 export async function setWorkspaceGroupPinned(
   projectSlug: string,
   groupId: string,
@@ -37,8 +36,8 @@ export async function setWorkspaceGroupPinned(
   await api.workspace.group['set-pinned'].$post({ json: { projectSlug, groupId, pinned } })
 }
 
-/** Delete a group. Its workspaces are not touched — they return to the default
- *  list, which is why this needs no confirmation. */
+/** Delete a group. Its workspaces return to the default list, so this needs
+ *  no confirmation. */
 export async function deleteWorkspaceGroup(
   projectSlug: string,
   groupId: string,
@@ -46,8 +45,8 @@ export async function deleteWorkspaceGroup(
   await api.workspace.group.delete.$post({ json: { projectSlug, groupId } })
 }
 
-/** File a workspace under a group, or (with `null`) return it to the default
- *  list. The drop half of sidebar drag-and-drop. */
+/** Move a workspace into a group, or (with `null`) back to the default list.
+ *  Called on a sidebar drag-and-drop. */
 export async function setWorkspaceGroup(
   projectSlug: string,
   workspaceId: string,

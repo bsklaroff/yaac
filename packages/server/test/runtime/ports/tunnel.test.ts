@@ -1,9 +1,6 @@
 /**
- * The server half of the port-forward tunnel — `attachPortTunnel`.
- *
- * Mocked at the contract boundary only: the driver answers the dial with a
- * real `PassThrough` pair, so the splice runs for real and the assertions
- * are about bytes arriving where they should.
+ * `attachPortTunnel`, the server half of the port-forward tunnel. The
+ * driver's dial is mocked with real streams, so the bytes flow for real.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { Duplex, PassThrough } from 'node:stream'
@@ -20,8 +17,7 @@ import type { WorkspaceDriver } from '#drivers/contract'
 
 const dialPort = vi.fn<WorkspaceDriver['dialPort']>()
 
-/** A fake client socket that records what the bridge sent it, and lets a
- *  test push frames in as the client would. */
+/** A fake client socket that records what it was sent and accepts frames. */
 function fakeSocket(): TunnelSocketLike & {
   sent: Buffer[]
   closed: { code?: number; reason?: string } | null
@@ -44,12 +40,9 @@ function fakeSocket(): TunnelSocketLike & {
 }
 
 /**
- * A workspace-side connection: what the bridge writes lands in `written`,
- * and `reply` is what the workspace sends back.
- *
- * Handed over PAUSED, exactly as `dialPort` promises — the real k8s dial
- * pauses its socket after the relay handshake, and a bridge that never
- * resumes carries nothing in either direction with no error anywhere.
+ * A workspace-side connection: writes land in `written`, and `reply` sends
+ * data back. Returned paused, as `dialPort` promises, so the bridge must
+ * resume it.
  */
 function fakeConnection(): { stream: Duplex; written: () => string; reply: (s: string) => void } {
   const inbound = new PassThrough()
@@ -93,9 +86,7 @@ describe('attachPortTunnel', () => {
   })
 
   it('reads what the workspace sent before the bridge was wired up', async () => {
-    // The stream arrives paused precisely so this cannot be lost: a
-    // protocol whose server greets first (SMTP, a database handshake) puts
-    // its whole greeting on the wire before anything here is listening.
+    // Protocols where the server speaks first (SMTP, databases) depend on it.
     const conn = fakeConnection()
     conn.reply('220 ready\r\n')
     dialPort.mockResolvedValue(conn.stream)
@@ -108,9 +99,7 @@ describe('attachPortTunnel', () => {
   })
 
   it('holds bytes written before the dial lands rather than dropping them', async () => {
-    // Every HTTP client writes its whole request immediately. Losing that
-    // to a race with the pod's stream setup would look like a hang, not an
-    // error — the request simply never arrives.
+    // HTTP clients send the whole request at once; losing it looks like a hang.
     const conn = fakeConnection()
     let land = (): void => { /* replaced */ }
     dialPort.mockReturnValue(new Promise((resolve) => {
@@ -130,9 +119,7 @@ describe('attachPortTunnel', () => {
   })
 
   it('closes with a distinguishable code when the dial fails', async () => {
-    // A client cannot see inside the cluster, so the close code is the
-    // whole diagnosis it gets — and it has to be tellable from a dev
-    // server that simply hung up.
+    // The client must be able to tell this from the dev server hanging up.
     dialPort.mockRejectedValue(new Error('nothing listening on 5173'))
     const sock = fakeSocket()
 
@@ -153,14 +140,12 @@ describe('attachPortTunnel', () => {
     await settle()
 
     expect(sock.closed).not.toBeNull()
-    // A normal end, not the dial-failed code: the tunnel worked and the
-    // far end hung up.
+    // A normal close, not the dial-failed code.
     expect(sock.closed?.code).toBeUndefined()
   })
 
   it('destroys the workspace connection when the client hangs up', async () => {
-    // Otherwise a closed browser tab leaves a stream open in the pod for
-    // every connection it ever made.
+    // Otherwise closed tabs would leak streams in the pod.
     const conn = fakeConnection()
     dialPort.mockResolvedValue(conn.stream)
     const sock = fakeSocket()

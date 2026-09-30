@@ -16,10 +16,9 @@ import {
 } from 'yaac-proxy-sidecar/objects'
 
 /**
- * The codecs between an object's `data` and the proxy's views. A decoder
- * that goes wrong fails silently — the credential simply does not arrive —
- * so each shape is pinned here, with the same rejections the file readers
- * they replaced applied.
+ * The codecs between an object's `data` and the proxy's views. A broken
+ * decoder fails silently (the credential never arrives), so each shape is
+ * pinned here.
  */
 
 const b64 = (s: string): string => Buffer.from(s, 'utf8').toString('base64')
@@ -198,7 +197,7 @@ describe('encodeRefreshed', () => {
   it('round-trips through decodeRefreshed in the credentials-file shape', () => {
     const data = encodeRefreshed({ claude: CLAUDE_BUNDLE, codex: CODEX_BUNDLE })
     expect(Object.keys(data).sort()).toEqual(['claude.json', 'codex.json'])
-    // The server's own loader reads this shape, so adopting is a plain save.
+    // The shape the server's loader reads.
     const claudeFile = JSON.parse(Buffer.from(data['claude.json'], 'base64').toString('utf8')) as Record<string, unknown>
     expect(claudeFile.kind).toBe('oauth')
     expect(claudeFile.claudeAiOauth).toEqual(CLAUDE_BUNDLE)

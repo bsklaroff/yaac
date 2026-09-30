@@ -2,10 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { timingSafeStrEqual } from 'yaac-proxy-sidecar/secure-compare'
 
 /**
- * Tests for the constant-time bearer compare backing the proxy control-API
- * auth check (`checkAuth` in proxy.ts). We assert the boolean contract — the
- * timing property itself isn't observable from a unit test — including that a
- * length mismatch returns false rather than throwing out of `timingSafeEqual`.
+ * Tests for the constant-time bearer compare behind the proxy control API's
+ * `checkAuth`. Only the boolean result is testable, including that a length
+ * mismatch returns false instead of throwing from `timingSafeEqual`.
  */
 describe('timingSafeStrEqual', () => {
   it('is true only for byte-identical strings', () => {

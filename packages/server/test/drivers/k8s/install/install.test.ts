@@ -3,8 +3,8 @@ import fs from 'node:fs/promises'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 
 vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
-  // The REAL predicate: these suites drive the absent-vs-unevaluable
-  // split, which is the whole point of the adoption gate's reads.
+  // The real predicate: these tests rely on telling "absent" apart from
+  // "could not evaluate".
   isKubectlAbsentError: (await importOriginal<
     { isKubectlAbsentError: (err: unknown) => boolean }
   >()).isKubectlAbsentError,
@@ -20,21 +20,19 @@ vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
 }))
 
 import { ClusterInstallError, runClusterInstall } from '#drivers/k8s/install'
-// The deps shape is part of the public interface (runClusterInstall takes one);
-// CALICO_VERSION is a pinned setup value for the assertions.
+// Setup value and the deps type runClusterInstall takes.
 import { CALICO_VERSION, type ClusterInstallDeps } from '#drivers/k8s/install/install'
 import { nodeIpBlocks, resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
 import { kubectlGetJson } from '#drivers/k8s/substrate/kubectl'
 import { NODE_KUBELET_HOUSEKEEPING_INTERVAL } from '#drivers/k8s/install/check'
-// Setup value: the node end of the server's published port, which the
-// rendered kind config has to reserve.
+// Setup values: the server's node port, which the kind config reserves.
 import { SERVER_FRONT_PORT, nodeLocalNodePath } from '#drivers/k8s/substrate'
 import { nodeLocalRoot } from '@yaac/shared/paths'
 import { readServerConfig, serverConfigPath, writeServerConfig } from '@yaac/shared/server-config'
 
 afterEach(async () => {
   vi.unstubAllEnvs()
-  // What a case recorded about the install must not reach the next one.
+  // Clear the install record between tests.
   await fs.rm(serverConfigPath(), { force: true })
 })
 
@@ -63,12 +61,11 @@ function happyRun(file: string, args: string[]): Promise<{ stdout: string; stder
   if (file === 'kind' && args[0] === 'get' && args[1] === 'nodes') {
     return Promise.resolve({ stdout: 'yaac-control-plane\n', stderr: '' })
   }
-  // The gVisor install probes the node arch before fetching binaries.
   if (file === 'podman' && args[0] === 'exec' && args.includes('uname')) {
     return Promise.resolve({ stdout: 'aarch64\n', stderr: '' })
   }
   // kubectl's current context is this machine's kind cluster, by name and
-  // by the apiserver kind reports for it.
+  // by apiserver.
   if (file === 'kubectl' && args[0] === 'config' && args[1] === 'current-context') {
     return Promise.resolve({ stdout: `kind-${process.env.YAAC_KIND_CLUSTER ?? 'yaac'}\n`, stderr: '' })
   }
@@ -83,11 +80,9 @@ function happyRun(file: string, args: string[]): Promise<{ stdout: string; stder
 }
 
 /**
- * deps.run for a machine with NO cluster yet. `kind get nodes` answers
- * empty the first time — install's "is there a cluster?" question — and
- * lists the node afterwards, which is the sequence a real create produces.
- * Every other install test runs against `happyRun`, whose cluster already
- * exists: that is the converge path, and the one an upgrade takes.
+ * deps.run for a machine with no cluster yet: `kind get nodes` is empty on
+ * the first call and lists the node afterwards, as a real create does.
+ * Other tests use `happyRun`, where the cluster already exists.
  */
 function freshRun(): RunMock {
   let asked = 0
@@ -108,10 +103,9 @@ const FAKE_CALICO_SHA256 = crypto.createHash('sha256')
   .update(FAKE_CALICO_MANIFEST, 'utf8').digest('hex')
 
 /**
- * Stand-in kind config with the shape the renderer requires: cluster-scoped
- * wiring first (kind applies it to every node), then a `nodes:` list as the
- * last section holding exactly one control-plane entry with the $HOME
- * extraMount — the entry `--nodes` copies into workers.
+ * Stand-in kind config in the shape the renderer needs: cluster-wide
+ * settings first, then a final `nodes:` list with one control-plane entry
+ * (with the $HOME extraMount) that `--nodes` copies into workers.
  */
 const FAKE_KIND_CONFIG = [
   'kind: Cluster',
@@ -127,10 +121,7 @@ const FAKE_KIND_CONFIG = [
   '',
 ].join('\n')
 
-/**
- * readTextFile over the three files setup reads: the Calico checksum pin,
- * the cached Calico manifest, and the kind config.
- */
+/** readTextFile for the Calico checksum pin, the cached manifest and the kind config. */
 function fakeCalicoReadTextFile(p: string): Promise<string | null> {
   if (p.endsWith('.sha256')) return Promise.resolve(`${FAKE_CALICO_SHA256}  calico.yaml\n`)
   if (p.includes('calico')) return Promise.resolve(FAKE_CALICO_MANIFEST)
@@ -166,9 +157,8 @@ function makeDeps(
     homedir: overrides.homedir ?? ((): string => '/home/tester'),
     totalmem: overrides.totalmem ?? ((): number => 64 * 1024 ** 3),
     cpuCount: overrides.cpuCount ?? ((): number => 10),
-    // Setup reads the kind config (with $HOME to substitute) and, for
-    // Calico, the committed checksum plus a manifest that matches it —
-    // here the cached copy, so no download is attempted.
+    // The kind config, the Calico checksum pin and a matching cached
+    // manifest, so no download is attempted.
     readTextFile: overrides.readTextFile ?? vi.fn(fakeCalicoReadTextFile),
     writeTextFile: overrides.writeTextFile ?? vi.fn().mockResolvedValue(undefined),
     fetchText: overrides.fetchText ?? vi.fn().mockResolvedValue(FAKE_CALICO_MANIFEST),
@@ -184,8 +174,7 @@ function makeDeps(
 /** The flags a byo install is run with, unless a case says otherwise. */
 const BYO = { byo: true, rwxStorageClass: 'byo-nfs' } as const
 
-/** Kubernetes' spelling of this machine's architecture — what a node the
- *  images can run on reports. */
+/** This machine's architecture as Kubernetes names it. */
 const HOST_ARCH = process.arch === 'x64' ? 'amd64' : process.arch
 
 /** The StorageClasses a byo cluster serves: an NFS class and a default block one. */
@@ -241,7 +230,6 @@ interface AdoptFacts {
   nodeInfo?: Record<string, string>
   /** The StorageClasses the cluster serves (default BYO_CLASSES). */
   classes?: object[]
-  /** The live yaac-server Deployment's YAAC_DATA_DIR; omitted means none deployed. */
   /** A server Deployment already in the namespace, and whose it is. */
   deployed?: { installId?: string; dataDir: string }
   /** The current context's cluster: its kube-system namespace's uid. */
@@ -251,10 +239,9 @@ interface AdoptFacts {
 }
 
 /**
- * deps.run answering every kubectl read the `--byo` gates make, on
- * top of the healthy-host responses. Absence is modelled as kubectl's own
- * NotFound wording — which is what a cluster serving no Calico CRD actually
- * says, and what the gate must distinguish from a read it could not make.
+ * deps.run answering every kubectl read the `--byo` checks make, on top of
+ * the healthy-host responses. Absence uses kubectl's NotFound wording, which
+ * the checks must tell apart from a read that failed.
  */
 function adoptRun(facts: AdoptFacts = {}): RunMock {
   const json = (v: unknown): Promise<{ stdout: string; stderr: string }> =>
@@ -357,8 +344,8 @@ function adoptRun(facts: AdoptFacts = {}): RunMock {
 }
 
 /**
- * The pod-CIDR sources `clusterPodCidrs`/the gate read through
- * `kubectlGetJson` (a different process boundary than deps.run).
+ * Stage the pod-CIDR reads, which go through `kubectlGetJson` rather than
+ * deps.run.
  */
 function stageAdoptCidrs(opts: { pools?: string[]; nodeCidrs?: string[] } = {}): void {
   resetClusterCidrCache()
@@ -379,9 +366,8 @@ function stageAdoptCidrs(opts: { pools?: string[]; nodeCidrs?: string[] } = {}):
 }
 
 /**
- * deps.run for a cluster that already exists, with the Tailscale operator
- * in one of three states: there, provably absent (kubectl's own NotFound),
- * or unknowable (an apiserver that does not answer).
+ * deps.run for an existing cluster with the Tailscale operator present,
+ * absent (NotFound), or unknown (apiserver not answering).
  */
 function tailnetRun(operator: 'present' | 'absent' | 'unreachable'): RunMock {
   return vi.fn((file: string, args: string[]) => {
@@ -402,7 +388,7 @@ function tailnetRun(operator: 'present' | 'absent' | 'unreachable'): RunMock {
   }) as RunMock
 }
 
-/** Every line the setup logged, joined — the gate's record lives here. */
+/** Everything install logged, joined. */
 function logged(deps: { log: unknown }): string {
   return vi.mocked(deps.log as (m: string) => void).mock.calls.map(([m]) => m).join('\n')
 }
@@ -419,8 +405,7 @@ function calicoReads(rest: (p: string) => string | null) {
 }
 
 describe('runClusterInstall', () => {
-  // Workspaces install from npmjs without it, so a cache that will not come
-  // up is a note, not a failed install.
+  // Workspaces fall back to npmjs, so a failed cache is only a note.
   it('finishes the install when the npm cache cannot be deployed', async () => {
     const log = vi.fn()
     const deps = makeDeps({
@@ -436,46 +421,41 @@ describe('runClusterInstall', () => {
     const ok = await runClusterInstall({}, deps)
 
     expect(ok).toBe(true)
-    // The registry is an in-cluster Deployment, so it is stood up AFTER
-    // the cluster exists, not before it.
+    // The registry is an in-cluster Deployment, so it comes after the
+    // cluster exists.
     expect(deps.ensureRegistry).toHaveBeenCalledOnce()
-    // Admission guard reserving yaac.role=builder for the sandboxed builders.
     expect(deps.ensureBuilderGuard).toHaveBeenCalledOnce()
-    // netd deployed before the check, so the datapath gate has something
-    // to verify on a freshly-created cluster.
+    // netd is deployed before the check, so the datapath check has
+    // something to verify.
     expect(deps.ensureNetd).toHaveBeenCalledOnce()
-    // Cluster-scoped objects the manifest builders name — a pod naming a
-    // missing PriorityClass is rejected, so setup installs them.
+    // A pod naming a missing PriorityClass is rejected, so install creates
+    // them.
     expect(deps.ensurePriorityClasses).toHaveBeenCalledOnce()
 
-    // Every built-in image built and pushed, after the registry they land
-    // in and before the layers that name one.
+    // Built-in images are pushed after the registry exists and before the
+    // layers that use them.
     expect(deps.buildImages).toHaveBeenCalledOnce()
     expect(vi.mocked(deps.buildImages).mock.invocationCallOrder[0])
       .toBeGreaterThan(vi.mocked(deps.ensureRegistry).mock.invocationCallOrder[0])
     expect(vi.mocked(deps.buildImages).mock.invocationCallOrder[0])
       .toBeLessThan(vi.mocked(deps.ensureNetd).mock.invocationCallOrder[0])
 
-    // Created from the bundled config with $HOME substituted, under the
-    // podman provider — and NOTHING deleted: install has no destructive
-    // path, so a cluster it finds is converged rather than replaced.
+    // Created from the bundled config under the podman provider, and nothing
+    // deleted: install converges an existing cluster rather than replacing
+    // it.
     const runCalls = deps.run.mock.calls
     expect(runCalls.some(([f, a]) => f === 'kind' && a[0] === 'delete')).toBe(false)
     const createCall = deps.runStreaming.mock.calls.find(([f, a]) => f === 'kind' && a[0] === 'create')
     expect(createCall).toBeDefined()
     expect(createCall?.[2]?.input).toContain('/home/tester')
     expect(createCall?.[2]?.input).not.toContain('$HOME')
-    // ...carrying the host end of the server's fronting. Written HERE and
-    // only here: kind adds port mappings when a cluster is created, which
-    // is why an older cluster is refused rather than converged.
+    // The config carries the server's port mapping. kind sets mappings only
+    // at create, which is why an older cluster is refused.
     expect(createCall?.[2]?.input).toContain(`containerPort: ${String(SERVER_FRONT_PORT)}`)
     expect(createCall?.[2]?.input).toContain('listenAddress: "127.0.0.1"')
 
-    // The server itself is deployed, after every layer it depends on: its
-    // image comes from the registry, its dials go through the proxy and
-    // netd, and it is the one step that starts USING them.
+    // The server is deployed last, after everything it uses.
     expect(deps.deployServer).toHaveBeenCalledOnce()
-    // ...fronted the kind way: the forwarder behind the port mapping.
     expect(vi.mocked(deps.deployServer).mock.calls[0][0].fronting.kind).toBe('kind')
     expect(vi.mocked(deps.deployServer).mock.invocationCallOrder[0])
       .toBeGreaterThan(vi.mocked(deps.ensureNetd).mock.invocationCallOrder[0])
@@ -483,16 +463,15 @@ describe('runClusterInstall', () => {
       .toBeLessThan(vi.mocked(deps.check).mock.invocationCallOrder[0])
     expect(createCall?.[2]?.env?.KIND_EXPERIMENTAL_PROVIDER).toBe('podman')
 
-    // The npm cache, once its image is mirrored and before the server whose
-    // workspaces install through it.
+    // The npm cache, after its image is mirrored and before the server.
     expect(deps.ensureNpmCache).toHaveBeenCalledOnce()
     expect(vi.mocked(deps.ensureNpmCache).mock.invocationCallOrder[0])
       .toBeGreaterThan(vi.mocked(deps.buildImages).mock.invocationCallOrder[0])
     expect(vi.mocked(deps.ensureNpmCache).mock.invocationCallOrder[0])
       .toBeLessThan(vi.mocked(deps.deployServer).mock.invocationCallOrder[0])
 
-    // Calico applied from the verified manifest, then rolled out and the
-    // node waited Ready (nodes cannot go Ready before the CNI is up).
+    // Calico is applied from the verified manifest, then the node must go
+    // Ready (it cannot before the CNI is up).
     const calicoApply = deps.runStreaming.mock.calls
       .find(([f, a]) => f === 'kubectl' && a.includes('apply') && a.includes('-f'))
     expect(calicoApply?.[2]?.input).toContain('calico-node')
@@ -501,11 +480,8 @@ describe('runClusterInstall', () => {
     expect(runCalls.some(([f, a]) => f === 'kubectl' && a.includes('--for=condition=Ready'))).toBe(true)
 
     // The kind node fixups: the kubelet housekeeping flag via podman exec,
-    // then the node container's pids ceiling. NOT the sysctls or TasksMax —
-    // those are the installer DaemonSet's, applied on every node it lands
-    // on — and NO registry wiring: neither the kind network join nor a
-    // hosts.toml write survives here; the registries write their own from
-    // in-cluster pods.
+    // then the node container's pids limit. Sysctls and TasksMax belong to
+    // the installer DaemonSet, and registry wiring to in-cluster pods.
     const execCmds = runCalls
       .filter(([f, a]) => f === 'podman' && a[0] === 'exec')
       .map(([, a]) => a[a.length - 1])
@@ -513,8 +489,8 @@ describe('runClusterInstall', () => {
     expect(execCmds.some((c) => c.includes('DefaultTasksMax'))).toBe(false)
     expect(execCmds.some((c) => c.includes('min_free_kbytes'))).toBe(false)
     expect(execCmds.some((c) => c.includes('inotify'))).toBe(false)
-    // kubelet housekeeping interval: idempotent kubeadm-flags.env edit,
-    // restarting kubelet only when the flag was absent.
+    // Idempotent kubeadm-flags.env edit; kubelet restarts only if the flag
+    // was missing.
     expect(execCmds.some((c) =>
       c.includes(`--housekeeping-interval=${NODE_KUBELET_HOUSEKEEPING_INTERVAL}`)
       && c.includes('/var/lib/kubelet/kubeadm-flags.env')
@@ -522,17 +498,13 @@ describe('runClusterInstall', () => {
     expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'update' && a.includes('32768'))).toBe(true)
     expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'network')).toBe(false)
 
-    // gVisor: an in-cluster installer DaemonSet, so setup itself never
-    // touches a node for it — no podman exec, no host-side download.
+    // gVisor comes from an in-cluster DaemonSet, so install never touches a
+    // node for it.
     expect(deps.ensureGvisorRuntime).toHaveBeenCalledOnce()
     expect(runCalls.some(([f]) => f === 'sh')).toBe(false)
     expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'cp')).toBe(false)
     expect(execCmds.some((c) => c.includes('runsc') || c.includes('restart containerd'))).toBe(false)
-    // ...and it lands after the REGISTRY is stood up, since its image is
-    // mirrored through it — the same dependency netd has. (The old anchor
-    // was the kind-network join, which no longer exists: the registry is an
-    // in-cluster Deployment, so there is no container to attach to a
-    // podman network.)
+    // After the registry, since its image is mirrored there (as netd's is).
     const gvisorOrder = vi.mocked(deps.ensureGvisorRuntime).mock.invocationCallOrder[0]
     const registryOrder = vi.mocked(deps.ensureRegistry).mock.invocationCallOrder[0]
     expect(gvisorOrder).toBeGreaterThan(registryOrder)
@@ -541,10 +513,9 @@ describe('runClusterInstall', () => {
   })
 
   it('aborts when the PriorityClasses cannot be installed', async () => {
-    // Unlike the registry Service and netd (both re-ensured lazily by the
-    // server), a missing PriorityClass makes the apiserver REJECT every pod
-    // that names one — and a rejected session pod hangs its Job instead of
-    // failing it. So this one is not fail-soft.
+    // Unlike the registry and netd (which the server re-ensures), a missing
+    // PriorityClass makes the apiserver reject every pod naming it, and a
+    // rejected workspace pod hangs its Job. So this failure is fatal.
     const deps = makeDeps({
       ensurePriorityClasses: vi.fn().mockRejectedValue(new Error('apiserver said no')),
     })
@@ -560,17 +531,13 @@ describe('runClusterInstall', () => {
       }),
     })
     await expect(runClusterInstall({}, deps)).resolves.toBe(false)
-    // A generic failure gets the generic line and nothing more.
     expect(logged(deps)).not.toMatch(/Do not start sessions/)
   })
 
   it('spells out what a failed egress gate leaves behind, since the install stays', async () => {
-    // Every mode installs BEFORE it verifies, so the exit code is the only
-    // artifact of a failed check and nothing re-checks between explicit
-    // `cluster check` runs. For the egress gate that means sessions whose
-    // lockdown is applied but not ENFORCED — they work, and the proxy
-    // allowlist silently covers only the ports the redirect steers. A red
-    // line in a list is not enough for a containment weakening.
+    // Install applies before it verifies, and nothing re-checks later. A
+    // failed egress check means lockdown is applied but not enforced, so it
+    // needs more than a red line in a list.
     const deps = makeDeps({
       check: vi.fn().mockResolvedValue({
         ok: false,
@@ -595,9 +562,8 @@ describe('runClusterInstall', () => {
 
   it("hands the server pod the host's IPv4 gateway on a dual-stack kind network", async () => {
     vi.stubEnv('YAAC_USE_TOR', '1')
-    // A dual-stack kind network has one subnet per family, so the gateway
-    // template emits two addresses: only the v4 one is an address a pod can
-    // dial a host-bound Tor at, and joining them is not an address at all.
+    // A dual-stack kind network has a gateway per family; only the IPv4 one
+    // works as the host address for Tor.
     const deps = makeDeps({
       run: vi.fn((file: string, args: string[]) => (
         file === 'podman' && args[0] === 'network' && args[1] === 'inspect'
@@ -626,8 +592,7 @@ describe('runClusterInstall', () => {
 
     await runClusterInstall({}, deps)
 
-    // The install still finishes — the pod just keeps its configured SOCKS
-    // URL, which is a Tor that cannot be reached rather than a failed setup.
+    // The install still finishes; the pod keeps its configured SOCKS URL.
     expect(deps.deployServer).toHaveBeenCalledWith(
       expect.objectContaining({ torHostAddr: undefined }),
     )
@@ -640,18 +605,17 @@ describe('runClusterInstall', () => {
 
     const input = deps.runStreaming.mock.calls
       .find(([f, a]) => f === 'kind' && a[0] === 'create')?.[2]?.input ?? ''
-    // One control plane, two workers — the workers are copies of the
-    // control-plane entry, so every node gets the $HOME bind that keeps
-    // hostPath resolving to the same bytes wherever a session lands.
+    // One control plane and two workers copied from it, so every node gets
+    // the $HOME bind that keeps hostPaths consistent.
     expect(input.match(/^- role: control-plane$/gm)).toHaveLength(1)
     expect(input.match(/^- role: worker$/gm)).toHaveLength(2)
     expect(input.match(/hostPath: \/home\/tester$/gm)).toHaveLength(3)
-    // And the node-local bind rides the copies too: `<dataDir>/node-local`
-    // onto the install's node path, per node.
+    // Each node also gets the node-local bind.
     expect(input.match(new RegExp(`hostPath: ${nodeLocalRoot()}$`, 'gm'))).toHaveLength(3)
     expect(input.match(new RegExp(`containerPath: ${nodeLocalNodePath()}$`, 'gm'))).toHaveLength(3)
     expect(input).not.toContain('$HOME')
-    // Cluster-scoped wiring is NOT duplicated: kind applies it to every node.
+    // Cluster-wide settings are not duplicated; kind applies them to all
+    // nodes.
     expect(input.match(/config_path/g)).toHaveLength(1)
   })
 
@@ -671,37 +635,29 @@ describe('runClusterInstall', () => {
     await runClusterInstall({ nodes: 3 }, deps)
 
     const allNodes = ['yaac-control-plane', 'yaac-worker', 'yaac-worker2']
-    // The container-side fixups are per-node state: a node missing them
-    // burns kubelet cores no matter what the other nodes have.
+    // The fixups are per node, so each node gets them.
     const fixupWrites = run.mock.calls
       .filter(([f, a]) => f === 'podman' && a[0] === 'exec'
         && String(a[a.length - 1]).includes('--housekeeping-interval='))
       .map(([, a]) => a[1])
     expect(fixupWrites).toEqual(allNodes)
-    // The per-node REGISTRY wiring is deliberately NOT in this loop: both
-    // registries are in-cluster Services now, and their containerd
-    // hosts.toml is written by one-shot pods that loop the live node list
-    // themselves (pinned in main-registry.test.ts). Setup never execs a
-    // node for it, so nothing here can go stale against a node added later.
+    // Registry hosts.toml is written by in-cluster pods that cover every node
+    // (see main-registry.test.ts), never by a node exec.
     expect(run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'exec'
       && String(a[a.length - 1]).includes('hosts.toml'))).toBe(false)
-    // Same for the pids ceiling on the node container...
+    // The pids limit is set on each node container.
     expect(run.mock.calls
       .filter(([f, a]) => f === 'podman' && a[0] === 'update' && a.includes('32768'))
       .map(([, a]) => a[a.length - 1])).toEqual(allNodes)
-    // The runsc install is deliberately NOT in this loop: it is a DaemonSet
-    // that lands on every node itself (including nodes added later, which a
-    // host-side loop over today's node list would never reach), so setup
-    // applies it once. `cluster check`'s runsc-nodes gate is what verifies
-    // it converged everywhere.
+    // gVisor is a DaemonSet that covers every node, including later ones, so
+    // it is applied once. `cluster check`'s runsc-nodes check verifies it.
     expect(deps.ensureGvisorRuntime).toHaveBeenCalledOnce()
     expect(run.mock.calls.some(([f, a]) =>
       f === 'podman' && a[0] === 'cp' && String(a[2]).includes('/runsc'))).toBe(false)
   })
 
   it('rejects a --nodes value it cannot honor before touching the host', async () => {
-    // Out of range, non-integer, and non-numeric — the CLI hands the raw
-    // text through, so the message quotes what was typed, not "NaN".
+    // The message quotes the raw input, not "NaN".
     for (const nodes of [0, 99, 2.5, 'three']) {
       const deps = makeDeps()
       const err = await runClusterInstall({ nodes }, deps).catch((e: unknown) => e)
@@ -728,7 +684,6 @@ describe('runClusterInstall', () => {
     expect(msg).toContain('podman')
     expect(msg).toContain('kind')
     expect(msg).toContain('kubectl')
-    // Nothing was mutated.
     expect(deps.ensureRegistry).not.toHaveBeenCalled()
     expect(deps.runStreaming).not.toHaveBeenCalled()
   })
@@ -789,11 +744,9 @@ describe('runClusterInstall', () => {
   })
 
   it('drops the CIDR caches so a long-lived process cannot render for the old cluster', async () => {
-    // An install can outlive a cluster (delete, then install again).
-    // Reusing the old node `/32`s in the same process names a host that no
-    // longer exists (every policy fails closed), and reusing the old pod
-    // CIDRs makes netd's leading RETURNs miss, DNAT'ing pod-to-pod into the
-    // proxy.
+    // A cluster can be deleted and recreated in one process. Cached node
+    // addresses would then be dead and cached pod CIDRs wrong, so the cache
+    // is reset.
     resetClusterCidrCache()
     const stageNode = (ip: string): void => {
       vi.mocked(kubectlGetJson).mockResolvedValue({
@@ -805,19 +758,15 @@ describe('runClusterInstall', () => {
 
     await runClusterInstall({}, makeDeps({ run: freshRun() }))
 
-    // The rebuilt cluster's node has a new address; a live cache would
-    // still answer with the dead one.
+    // The new node's address, not the cached one.
     stageNode('10.89.0.9')
     expect(await nodeIpBlocks()).toEqual(['10.89.0.9/32'])
   })
 
   it('admits every node by tunnel address as well as InternalIP', async () => {
-    // Calico sources host-originated traffic to a pod on ANOTHER node from
-    // the sending node's overlay tunnel address, not its InternalIP. A
-    // policy naming only InternalIPs therefore drops netd's Envoy on every
-    // cross-node hop to the proxy, which presents as "sessions on some
-    // nodes have no egress at all" — and never reproduces on one node,
-    // where Calico exempts local host-to-pod traffic from workload policy.
+    // Calico sends cross-node host-to-pod traffic from the node's tunnel
+    // address, not its InternalIP, so a policy naming only InternalIPs drops
+    // netd's Envoy on cross-node hops. This never shows on a single node.
     resetClusterCidrCache()
     vi.mocked(kubectlGetJson).mockResolvedValue({
       items: [
@@ -829,8 +778,7 @@ describe('runClusterInstall', () => {
           metadata: { annotations: { 'projectcalico.org/IPv4VXLANTunnelAddr': '10.244.86.128' } },
           status: { addresses: [{ type: 'InternalIP', address: '10.89.0.20' }] },
         },
-        // A node the overlay has not annotated yet still contributes its
-        // InternalIP rather than dropping out of the policy entirely.
+        // A node without a tunnel address yet still contributes its InternalIP.
         { status: { addresses: [{ type: 'InternalIP', address: '10.89.0.19' }] } },
       ],
     })
@@ -863,19 +811,15 @@ describe('runClusterInstall', () => {
     expect(ok).toBe(true)
     expect(deps.ensureRegistry).toHaveBeenCalledOnce()
     expect(deps.ensureBuilderGuard).toHaveBeenCalledOnce()
-    // Re-applied on every run: that is how an existing cluster picks netd,
-    // the PriorityClasses, a runsc version bump and new images up on a yaac
-    // upgrade. Node state is the installer DaemonSet's — the runtime AND the
-    // tuning, re-applied whenever a node appears — so what an install still
-    // owns per node is the kind-node-container pair no in-cluster agent can
-    // set (the pids ceiling, the kubelet flag).
+    // Re-applied on every run, which is how an existing cluster picks up yaac
+    // upgrades. Install still owns only the kind node container settings (pids
+    // limit, kubelet flag); the installer DaemonSet does the rest per node.
     expect(deps.ensureNetd).toHaveBeenCalledOnce()
     expect(deps.ensurePriorityClasses).toHaveBeenCalledOnce()
     expect(deps.ensureGvisorRuntime).toHaveBeenCalledOnce()
     expect(deps.buildImages).toHaveBeenCalledOnce()
-    // No delete, no create, no Calico — only the fixups, the layers and
-    // the check. This is the whole safety property of the verb: running it
-    // against a machine with live workspaces costs nothing.
+    // No delete, create or Calico, so re-running install on a cluster with
+    // live workspaces is safe.
     expect(deps.run.mock.calls.some(([f, a]) => f === 'kind' && a[0] === 'delete')).toBe(false)
     expect(deps.runStreaming).not.toHaveBeenCalled()
     expect(deps.run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'exec')).toBe(true)
@@ -885,8 +829,8 @@ describe('runClusterInstall', () => {
   it('starts a node a host reboot left stopped, and waits for its API server', async () => {
     vi.useFakeTimers()
     try {
-      // kind nodes carry no restart policy, so after a reboot the node is
-      // listed but Exited, and its apiserver answers only once it is back.
+      // kind nodes have no restart policy, so after a reboot the node is Exited
+      // and its apiserver answers only once it is started.
       let readyzAsked = 0
       const deps = makeDeps({
         run: vi.fn((file: string, args: string[]) => {
@@ -900,8 +844,8 @@ describe('runClusterInstall', () => {
         }) as RunMock,
       })
       const ok = runClusterInstall({}, deps)
-      // Install reads its record off disk first — real I/O the fake clock
-      // does not wait for — so start the clock once the polling has.
+      // Install first reads its record from disk (real I/O), so advance the
+      // clock once polling has started.
       await vi.waitFor(() => { expect(readyzAsked).toBeGreaterThan(0) })
       await vi.advanceTimersByTimeAsync(10_000)
       await expect(ok).resolves.toBe(true)
@@ -909,12 +853,10 @@ describe('runClusterInstall', () => {
       const calls = deps.run.mock.calls.map(([f, a]) => `${f} ${a.join(' ')}`)
       const started = calls.indexOf('podman start yaac-control-plane')
       expect(started).toBeGreaterThanOrEqual(0)
-      // Started before anything execs into it, and polled until it answers.
       expect(calls.findIndex((c) => c.startsWith('podman exec'))).toBeGreaterThan(started)
       expect(readyzAsked).toBe(3)
       expect(logged(deps)).toMatch(/Starting the stopped kind node yaac-control-plane/)
 
-      // A running node is left alone.
       const running = makeDeps()
       await runClusterInstall({}, running)
       expect(running.run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'start')).toBe(false)
@@ -946,8 +888,8 @@ describe('runClusterInstall', () => {
   })
 
   it('lands layers only on this machine\'s kind cluster, and records it before the first', async () => {
-    // A context of another name, and one of the right name that points at
-    // another apiserver (a KUBECONFIG switch): both refused before any layer.
+    // Another context name, and the right name pointing at another apiserver:
+    // both refused before anything is applied.
     for (const [context, server] of [['prod', 'https://127.0.0.1:41234'], ['kind-yaac', 'https://10.0.0.5:6443']]) {
       const deps = makeDeps({
         run: vi.fn((file: string, args: string[]) => {
@@ -962,17 +904,15 @@ describe('runClusterInstall', () => {
     }
     expect(await readServerConfig()).toBeNull()
 
-    // This machine's cluster is recorded by its uid — and a kind cluster
-    // re-created under the same install is simply recorded again.
+    // A kind cluster re-created under the same install is recorded again.
     await writeServerConfig({ url: '', enabled: false, saved: [], driver: 'k8s', installId: 'kind-one', clusterUid: 'uid-gone' })
     await expect(runClusterInstall({}, makeDeps())).resolves.toBe(true)
     expect(await readServerConfig()).toMatchObject({ installId: 'kind-one', clusterUid: 'uid-kind', kubeContext: 'kind-yaac' })
   })
 
   it('notes that --nodes cannot change an existing cluster, and converges anyway', async () => {
-    // A node count is fixed when the cluster is created, and re-running the
-    // command with the flags you first typed has to stay ordinary — so this
-    // is a note, not a refusal.
+    // The node count is fixed at create, but re-running with the original
+    // flags must still work, so this is only a note.
     const deps = makeDeps()
     await expect(runClusterInstall({ nodes: 3 }, deps)).resolves.toBe(true)
     expect(logged(deps)).toMatch(/--nodes is ignored/)
@@ -1006,7 +946,6 @@ describe('runClusterInstall', () => {
     expect(envs.length).toBeGreaterThan(0)
     for (const env of envs) {
       expect(env.KIND_EXPERIMENTAL_PROVIDER).toBe('podman')
-      // The full host env rides along, not just the provider knob.
       expect(Object.keys(env).length).toBeGreaterThan(1)
     }
   })
@@ -1029,10 +968,10 @@ describe('runClusterInstall', () => {
     }
 
     const pair = (args: string[], flag: string): string => args[args.indexOf(flag) + 1]
-    // README canon on a big host: 8 cpus / 32 GiB.
+    // Large host: 8 cpus / 32 GiB.
     let args = await initArgs(128 * 1024 ** 3, 12)
     expect([pair(args, '--cpus'), pair(args, '--memory')]).toEqual(['8', '32768'])
-    // Half the host memory on a smaller machine.
+    // Smaller host: half its memory.
     args = await initArgs(16 * 1024 ** 3, 4)
     expect([pair(args, '--cpus'), pair(args, '--memory')]).toEqual(['4', '8192'])
     // Floor: 2 cpus / 4 GiB.
@@ -1061,28 +1000,28 @@ describe('runClusterInstall', () => {
             if (fragIsDropIn !== isDropIn) continue
             if (path.includes(frag)) return Promise.resolve(body)
           }
-          // A containers.conf path with nothing staged for it is absent.
+          // Unstaged paths are absent.
           if (path.includes('containers.conf')) return Promise.resolve(null)
           return fakeCalicoReadTextFile(path)
         }),
       })
       await runClusterInstall({}, deps)
-      // A drop-in is written only when the effective provider is not libkrun.
+      // A drop-in is written only when the provider is not already libkrun.
       return vi.mocked(deps.writeTextFile).mock.calls
         .some(([p]) => String(p).includes('99-yaac-machine-provider.conf'))
     }
 
-    // No source at all, and a source with no machine provider: yaac must pin one.
+    // No config, or no provider set: yaac pins one.
     expect(await withSources({})).toBe(true)
     expect(await withSources({ 'containers.conf': '[engine]\nfoo = "bar"\n' })).toBe(true)
-    // A base containers.conf already naming libkrun: nothing to write.
+    // Already libkrun: nothing to write.
     expect(await withSources({ 'containers.conf': '[machine]\nprovider = "libkrun"\n' })).toBe(false)
     // A later drop-in overrides an earlier source...
     expect(await withSources(
       { 'containers.conf': '[machine]\nprovider = "applehv"\n', '10-x.conf': '[machine]\nprovider = "libkrun"\n' },
       ['10-x.conf'],
     )).toBe(false)
-    // ...and an unparseable drop-in is skipped without losing the earlier value.
+    // ...and an unparseable drop-in is skipped.
     expect(await withSources(
       { 'containers.conf': '[machine]\nprovider = "libkrun"\n', '10-x.conf': 'not [ valid toml' },
       ['10-x.conf'],
@@ -1098,7 +1037,7 @@ describe('runClusterInstall', () => {
     return makeDeps({ platform: 'darwin', ...overrides })
   }
 
-  /** machine list responses: first call, then all later calls. */
+  /** `podman machine list` responses: the first call, then all later ones. */
   function machineRun(
     first: object[],
     later: object[],
@@ -1121,12 +1060,10 @@ describe('runClusterInstall', () => {
     const deps = darwinDeps({ run })
     await runClusterInstall({}, deps)
 
-    // Provider drop-in written (no containers.conf on disk in this test).
     const write = vi.mocked(deps.writeTextFile).mock.calls[0]
     expect(write[0]).toContain('containers.conf.d/99-yaac-machine-provider.conf')
     expect(write[1]).toContain('provider = "libkrun"')
 
-    // init --rootful with scaled resources, then start.
     const init = deps.runStreaming.mock.calls.find(([, a]) => a[1] === 'init')
     expect(init?.[1]).toContain('--rootful')
     expect(run.mock.calls.some(([f, a]) => f === 'podman' && a[1] === 'start')).toBe(true)
@@ -1155,7 +1092,6 @@ describe('runClusterInstall', () => {
     })
     await runClusterInstall({}, deps)
     expect(deps.writeTextFile).not.toHaveBeenCalled()
-    // Already rootful and running: nothing to stop/set/start.
     expect(run.mock.calls.some(([f, a]) => f === 'podman' && a[1] === 'start')).toBe(false)
   })
 
@@ -1255,14 +1191,12 @@ describe('runClusterInstall', () => {
   })
 
   it('uses the cached Calico manifest when it matches the pin, without downloading', async () => {
-    // Calico is installed only with the cluster, so every case below is on
-    // the create path.
+    // Calico is installed only when creating the cluster.
     const deps = makeDeps({ run: freshRun() })
     await runClusterInstall({}, deps)
     expect(deps.fetchText).not.toHaveBeenCalled()
     expect(vi.mocked(deps.writeTextFile).mock.calls.some(([p]) => String(p).includes('calico')))
       .toBe(false)
-    // The manifest reaches the cluster on kubectl apply's stdin.
     const apply = deps.runStreaming.mock.calls
       .find(([f, a]) => f === 'kubectl' && a.includes('apply'))
     expect((apply?.[2] as { input?: string })?.input).toBe(FAKE_CALICO_MANIFEST)
@@ -1280,8 +1214,8 @@ describe('runClusterInstall', () => {
   })
 
   it('re-downloads when the cached Calico copy no longer matches the pin', async () => {
-    // A tampered-with or truncated cache must not be trusted just because
-    // it is on disk — the checksum is checked on every use, not on write.
+    // A cached manifest is checked against the pin on every use, so a
+    // tampered or truncated cache is rejected.
     const deps = makeDeps({
       run: freshRun(),
       readTextFile: calicoReads(() => 'kind: DaemonSet # tampered\n'),
@@ -1338,10 +1272,9 @@ describe('runClusterInstall', () => {
   })
 
   it('--tailnet refuses before anything is applied when the operator is absent', async () => {
-    // A Service of the tailnet class with no operator never gets a
-    // hostname, so install would sit out the publish timeout after
-    // applying every layer. Refusing here costs the diagnosis and the
-    // helm command, and nothing else.
+    // Without the operator the Ingress never gets a hostname, and install
+    // would wait out the publish timeout. Refuse up front with the helm
+    // command.
     const deps = makeDeps({ run: tailnetRun('absent') })
     const err = await runClusterInstall({ tailnet: true }, deps).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ClusterInstallError)
@@ -1353,9 +1286,8 @@ describe('runClusterInstall', () => {
   })
 
   it('--tailnet reports an operator it could not evaluate, never as absent', async () => {
-    // An apiserver that does not answer is an unknown. Calling it "not
-    // installed" would send the operator to helm when the fix is the
-    // kubeconfig.
+    // An unreachable apiserver is unknown, not "not installed"; the fix is
+    // the kubeconfig, not helm.
     const deps = makeDeps({ run: tailnetRun('unreachable') })
     const err = await runClusterInstall({ tailnet: true }, deps).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ClusterInstallError)
@@ -1374,25 +1306,23 @@ describe('runClusterInstall', () => {
 
     expect(ok).toBe(true)
     // Nothing destructive and no CNI: the cluster and its Calico are the
-    // user's, which is the entire point of the mode.
+    // user's.
     expect(deps.run.mock.calls.some(([f, a]) => f === 'kind' && a[0] === 'delete')).toBe(false)
     expect(deps.runStreaming).not.toHaveBeenCalled()
     expect(deps.fetchText).not.toHaveBeenCalled()
     expect(deps.run.mock.calls.some(([f, a]) =>
       f === 'kubectl' && a.includes('daemonset/calico-node'))).toBe(false)
 
-    // ...but every in-cluster layer an owned cluster gets, it gets.
+    // Every in-cluster layer is still installed.
     expect(deps.ensurePriorityClasses).toHaveBeenCalledOnce()
     expect(deps.ensureRegistry).toHaveBeenCalledOnce()
     expect(deps.ensureBuilderGuard).toHaveBeenCalledOnce()
     expect(deps.ensureGvisorRuntime).toHaveBeenCalledOnce()
     expect(deps.ensureNetd).toHaveBeenCalledOnce()
 
-    // And the server: behind the tailnet (a cloud cluster has no loopback
-    // to publish at), at the fixed byo uid, its claims provisioned from the
-    // named RWX class and the cluster's default block class, stamped with
-    // a fresh install id — recorded, with the cluster it went into, as a
-    // byo install before anything was applied.
+    // The server is behind the tailnet (no loopback on a cloud cluster), at
+    // the fixed byo uid, with claims from the named RWX class and the default
+    // block class, and a new install id recorded before anything is applied.
     const deploy = vi.mocked(deps.deployServer).mock.calls[0][0]
     expect(deploy.fronting.kind).toBe('tailnet')
     expect(deploy.identity).toEqual({ uid: 1000, gid: 1000 })
@@ -1403,16 +1333,14 @@ describe('runClusterInstall', () => {
     })
     expect(logged(deps)).toContain('Cluster is ready for yaac sessions')
 
-    // A byo install execs into no node: the kind node fixups are a node
-    // CONTAINER's settings, and these nodes are the pool's.
+    // No node exec: the kind fixups are for kind node containers.
     expect(deps.run.mock.calls.some(([f, a]) => f === 'podman' && (a[0] === 'exec' || a[0] === 'update')))
       .toBe(false)
-    // The finishing check is what positively probes NetworkPolicy
-    // enforcement — "Calico is installed" is not evidence of it.
+    // The final check is what actually verifies NetworkPolicy enforcement.
     expect(deps.check).toHaveBeenCalledOnce()
 
-    // The verification's record, which is the audit trail for a cluster
-    // yaac does not own.
+    // The logged findings are the audit trail for a cluster yaac does not
+    // own.
     const log = logged(deps)
     expect(log).toContain('chainInsertMode: Insert')
     expect(log).toContain('10.244.0.0/24')
@@ -1432,7 +1360,7 @@ describe('runClusterInstall', () => {
   })
 
   it('--byo refuses the flag combinations it cannot honor, before touching anything', async () => {
-    // --nodes renders nodes install creates, and a byo install creates none.
+    // --nodes configures nodes install creates; byo creates none.
     for (const [opts, message] of [
       [{ ...BYO, nodes: 3 }, /--nodes cannot be combined with --byo/],
       [{ byo: true }, /--byo needs --rwx-storage-class/],
@@ -1466,7 +1394,7 @@ describe('runClusterInstall', () => {
       const err = await runClusterInstall(BYO, deps).catch((e: unknown) => e)
       expect(err).toBeInstanceOf(ClusterInstallError)
       expect((err as Error).message).toMatch(message)
-      // Ahead of the podman bootstrap: nothing on this host was touched either.
+      // Refused before touching podman on this host.
       expect(deps.run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'info')).toBe(false)
       expect(deps.ensureRegistry).not.toHaveBeenCalled()
       expect(deps.buildImages).not.toHaveBeenCalled()
@@ -1511,23 +1439,21 @@ describe('runClusterInstall', () => {
 
   it('--byo refuses another install\'s Deployment, another cluster, a switch of kind, and a Tor listener here', async () => {
     stageAdoptCidrs()
-    // A server Deployment of another install in the namespace: installing
-    // over it would take its storage. Refused before anything is recorded.
+    // Another install's server in the namespace: installing over it would
+    // take its storage.
     let deps = makeDeps({ run: adoptRun({ deployed: { installId: 'theirs', dataDir: '/elsewhere/.yaac' } }) })
     let err = await runClusterInstall(BYO, deps).catch((e: unknown) => e)
     expect((err as Error).message)
       .toMatch(/another install \(install id theirs, installed from the data dir \/elsewhere\/\.yaac; this data dir's is [0-9a-f-]{36}\)/)
     expect(await readServerConfig()).toBeNull()
 
-    // ...while this install's own is a re-install, converging — whatever
-    // path it was installed from.
+    // This install's own server is a re-install.
     const mine = { url: '', enabled: false, saved: [], driver: 'k8s' as const, installId: 'mine', byo: true }
     await writeServerConfig({ ...mine, clusterUid: 'uid-byo', kubeContext: 'byo-context' })
     deps = makeDeps({ run: adoptRun({ deployed: { installId: 'mine', dataDir: '/elsewhere/.yaac' } }) })
     await expect(runClusterInstall(BYO, deps)).resolves.toBe(true)
 
-    // Recorded in one cluster, run against another: by uid, whatever the
-    // context is called.
+    // Recorded in one cluster, run against another: matched by uid.
     await writeServerConfig({ ...mine, clusterUid: 'uid-prod', kubeContext: 'prod' })
     deps = makeDeps({ run: adoptRun({ context: 'dev', clusterUid: 'uid-dev' }) })
     err = await runClusterInstall(BYO, deps).catch((e: unknown) => e)
@@ -1537,8 +1463,7 @@ describe('runClusterInstall', () => {
     expect((err as Error).message).toMatch(/same name but is a different cluster/)
     expect(deps.ensureRegistry).not.toHaveBeenCalled()
 
-    // A byo data dir never goes down the kind path, nor a kind one up the
-    // byo path — refused before a single command runs.
+    // A byo data dir cannot take the kind path, nor a kind one the byo path.
     deps = makeDeps({ run: adoptRun() })
     err = await runClusterInstall({}, deps).catch((e: unknown) => e)
     expect((err as Error).message).toMatch(/This data dir is a --byo install\. Re-run with --byo/)
@@ -1548,7 +1473,7 @@ describe('runClusterInstall', () => {
     expect((err as Error).message).toMatch(/This data dir is a kind install, so --byo cannot install from it/)
     expect(deps.run).not.toHaveBeenCalled()
 
-    // A data dir recorded as the containerless driver is a different install.
+    // A containerless data dir is refused too.
     await writeServerConfig({ url: 'http://127.0.0.1:8787', enabled: true, saved: [], driver: 'containerless' })
     deps = makeDeps({ run: adoptRun() })
     err = await runClusterInstall(BYO, deps).catch((e: unknown) => e)
@@ -1563,10 +1488,9 @@ describe('runClusterInstall', () => {
   })
 
   it('--byo refuses Calico\'s eBPF dataplane, from the CR or the container env', async () => {
-    // The hard one. eBPF host-routing short-circuits host netfilter exactly
-    // the way Cilium does, so netd's nat DNAT at the veth peer would never
-    // see pod egress: the chain exists, counts zero, and every session
-    // silently loses the internet. A warning would be read past.
+    // eBPF host routing bypasses host netfilter (as Cilium does), so netd's
+    // DNAT would never see workspace egress and every workspace would silently
+    // lose the internet. This must refuse, not warn.
     const cases: AdoptFacts[] = [
       { felix: [{ spec: { bpfEnabled: true } }] },
       {
@@ -1592,8 +1516,7 @@ describe('runClusterInstall', () => {
       expect(err).toBeInstanceOf(ClusterInstallError)
       expect((err as Error).message).toMatch(/eBPF dataplane/)
       expect((err as Error).message).toContain('bpfEnabled')
-      // The gate runs before anything is applied: a cluster that cannot
-      // work costs the user the diagnosis and nothing else.
+      // Refused before anything is applied.
       expect(deps.ensureRegistry).not.toHaveBeenCalled()
       expect(deps.ensureNetd).not.toHaveBeenCalled()
       expect(deps.check).not.toHaveBeenCalled()
@@ -1610,42 +1533,37 @@ describe('runClusterInstall', () => {
       return (err as Error).message
     }
 
-    // No Calico at all — which is also how a Cilium cluster reads, and
-    // there is no configuration of Cilium the veth-peer redirect survives.
+    // No Calico, which is also how a Cilium cluster looks; Cilium cannot
+    // support the veth redirect.
     expect(await refuse({ calico: null })).toMatch(/no calico-node found/)
     expect(await refuse({ calico: null })).toMatch(/Cilium is not supported/)
 
-    // Present but not rolled out: policy is the enforcement plane, so a
-    // node without Felix is a node with no session egress lockdown.
+    // Not fully rolled out: a node without Felix has no egress lockdown.
     expect(await refuse({
       calico: { status: { numberReady: 1, desiredNumberScheduled: 3 } },
     })).toMatch(/calico-node is 1\/3 ready/)
 
-    // No kube-proxy: netd's Envoy dials the yaac proxy by ClusterIP from
-    // the host netns, and nothing would translate it.
+    // netd's Envoy dials the proxy's ClusterIP from the host network, which
+    // needs kube-proxy.
     expect(await refuse({ kubeProxyPods: [] })).toMatch(/no kube-proxy pod found/)
-    // Calico replacing kube-proxy is the same failure, declared.
+    // So does Calico replacing kube-proxy.
     expect(await refuse({ felix: [{ spec: { bpfKubeProxyIptablesCleanupEnabled: true } }] }))
       .toMatch(/replacing kube-proxy/)
 
-    // Nothing publishes a pod CIDR. An empty exclusion set makes netd DNAT
-    // pod-to-pod 443/80 into the proxy, so this refuses rather than
-    // falling back to kind's default the way the per-apply path does.
+    // No pod CIDR: an empty set would redirect pod-to-pod traffic into the
+    // proxy, so adopt mode refuses instead of assuming kind's default.
     const noCidrs = await refuse({}, { pools: [], nodeCidrs: [] })
     expect(noCidrs).toMatch(/no pod CIDR could be resolved/)
     expect(noCidrs).toContain('YAAC_POD_CIDRS')
 
-    // netd names system-node-critical, and the apiserver rejects a pod
-    // naming a class it does not have — for a DaemonSet that means no netd
-    // pod is ever created.
+    // netd uses system-node-critical; without it no netd pod is created.
     expect(await refuse({ systemNodeCritical: false }))
       .toMatch(/system-node-critical PriorityClass is missing/)
   })
 
   it('--byo records Append chainInsertMode and the node-podCIDR-only shape as warnings', async () => {
-    // Neither breaks the datapath — netd appends its own jump and never
-    // competes with Felix for position — but both are things the operator
-    // of a cluster yaac does not own should be told.
+    // Neither breaks the datapath (netd appends its own jump), but the
+    // operator should be told.
     stageAdoptCidrs({ pools: [], nodeCidrs: ['10.244.0.0/24'] })
     const deps = makeDeps({ run: adoptRun({ felix: [{ spec: { chainInsertMode: 'Append' } }] }) })
     await expect(runClusterInstall(BYO, deps)).resolves.toBe(true)
@@ -1658,11 +1576,9 @@ describe('runClusterInstall', () => {
   })
 
   it('--byo honors an explicit pod-CIDR and veth-prefix config, verifying the prefix on a node', async () => {
-    // Policy-only Calico over a foreign IPAM: pod IPs appear in no IPPool
-    // and no spec.podCIDR, and workload veths are named `eni*`. Both are
-    // configuration — and the prefix is verified against the node's real
-    // routing table, since a prefix that matches nothing renders a redirect
-    // chain with no per-pod rules, indistinguishable from a healthy netd.
+    // Policy-only Calico over another IPAM: pod IPs in no IPPool or podCIDR,
+    // and `eni*` veths. Both are configured, and the prefix is checked against
+    // the node's real routes, since a prefix matching nothing looks healthy.
     vi.stubEnv('YAAC_POD_CIDRS', '172.31.0.0/16')
     vi.stubEnv('YAAC_CNI_VETH_PREFIX', 'eni')
     stageAdoptCidrs({ pools: [], nodeCidrs: [] })
@@ -1679,9 +1595,8 @@ describe('runClusterInstall', () => {
   })
 
   it('--byo refuses a veth prefix that resolves nothing, and names the one that would', async () => {
-    // The pod → veth binding is netd's ONLY source of the identity a
-    // sandboxed workload cannot forge. Read through netd itself, which is
-    // hostNetwork and ships iproute2, so it is the node's own view.
+    // netd identifies pods by veth, which a sandboxed workload cannot forge.
+    // Routes are read through netd, which runs on the host network.
     stageAdoptCidrs()
     const deps = makeDeps({
       run: adoptRun({ routes: '10.0.3.41 dev enia7b3c9d1e2f4 scope link' }),
@@ -1689,17 +1604,15 @@ describe('runClusterInstall', () => {
     const err = await runClusterInstall(BYO, deps).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ClusterInstallError)
     expect((err as Error).message).toMatch(/no per-workload host route matches cali\*/)
-    // The suggested prefix is the veth FAMILY, not the family plus however
-    // many leading hash characters happen to be letters: hex digits are
-    // letters too, so `enia7b3c9d1e2f4` must yield `eni`, not `enia` (which
-    // would match exactly the one veth the user was shown).
+    // Hex digits are letters too, so `enia7b3c9d1e2f4` must suggest `eni`,
+    // not `enia`.
     expect((err as Error).message).toMatch(/YAAC_CNI_VETH_PREFIX=eni\b/)
-    // This one runs LAST, after netd is on a node — there is no other way
-    // to see the routing table — so the layers below it were applied.
+    // This check runs after netd is on a node (the only way to see the
+    // routes), so earlier layers were applied.
     expect(deps.ensureNetd).toHaveBeenCalledOnce()
 
-    // A CNI writing no per-workload route at all cannot be adopted either,
-    // and there is no prefix to suggest.
+    // A CNI with no per-workload routes cannot be adopted, and there is no
+    // prefix to suggest.
     stageAdoptCidrs()
     const bare = makeDeps({ run: adoptRun({ routes: 'default via 10.89.0.1 dev eth0' }) })
     await expect(runClusterInstall(BYO, bare))
@@ -1707,11 +1620,8 @@ describe('runClusterInstall', () => {
   })
 
   it('--byo refuses a check it could not EVALUATE, not just one that failed', async () => {
-    // The fail-open this gate cannot afford. Absence is a fact with meaning
-    // — no FelixConfiguration means Felix runs its iptables defaults — so a
-    // read that merely ERRORED must not read as absence, or an RBAC-denied
-    // FelixConfiguration would wave an eBPF cluster straight through and
-    // land as silent no-egress.
+    // A failed read must not count as absence: an RBAC-denied
+    // FelixConfiguration would otherwise let an eBPF cluster through.
     for (const denied of ['felix', 'kube-proxy', 'nodes', 'calico'] as const) {
       stageAdoptCidrs()
       const deps = makeDeps({ run: adoptRun({ denied }) })
@@ -1720,11 +1630,8 @@ describe('runClusterInstall', () => {
       expect((err as Error).message).toMatch(/could not be evaluated/)
       expect((err as Error).message).toMatch(/Forbidden/)
       expect(deps.ensureRegistry).not.toHaveBeenCalled()
-      // A read that FAILED must not also be reported as an absence the gate
-      // never established: two refusals, one of them pointing at the wrong
-      // fix, is a dishonest diagnosis even when both refuse. "No calico-node
-      // in kube-system" reads as a Cilium cluster; "no kube-proxy" sends the
-      // user to YAAC_KUBE_PROXY_EXTERNAL. Neither was established.
+      // A failed read must not also be reported as an absence, which would
+      // point at the wrong fix.
       const absenceClaims: Record<typeof denied, RegExp> = {
         calico: /no calico-node found/,
         'kube-proxy': /no kube-proxy pod found/,
@@ -1732,16 +1639,12 @@ describe('runClusterInstall', () => {
         felix: /eBPF dataplane/,
       }
       expect((err as Error).message).not.toMatch(absenceClaims[denied])
-      // Nor may the RECORD claim one. "chainInsertMode: Insert (Felix
-      // default — nothing sets it)" is a statement about the cluster, and
-      // an audit trail asserting one the gate never established is worse
-      // than one that stays silent.
+      // Nor may the log claim a finding the check never established.
       if (denied === 'felix') expect(logged(deps)).not.toMatch(/chainInsertMode/)
     }
 
-    // The pod-CIDR sources read through a different runner, so an RBAC
-    // denial scoped to `ippools` alone would otherwise present as "Calico
-    // publishes no pool" and silently narrow the exclusion set.
+    // An RBAC denial on `ippools` alone must not look like "no pools" and
+    // narrow the exclusion set.
     resetClusterCidrCache()
     vi.mocked(kubectlGetJson).mockImplementation(((args: string[]) => {
       if (args[1]?.startsWith('ippools')) {
@@ -1757,10 +1660,8 @@ describe('runClusterInstall', () => {
     expect((cidrErr as Error).message).toMatch(/pod-CIDR source: Calico IPPools/)
     expect(cidrDeps.ensureRegistry).not.toHaveBeenCalled()
 
-    // A CRD the cluster does not serve at all is the OTHER outcome, and it
-    // must stay a fact: a provider-managed Calico serves no
-    // FelixConfiguration, which means Felix's iptables defaults — exactly
-    // what yaac wants.
+    // A CRD the cluster does not serve is genuine absence: no
+    // FelixConfiguration means Felix's iptables defaults, which is fine.
     stageAdoptCidrs()
     const ok = makeDeps({ run: adoptRun() })
     await expect(runClusterInstall(BYO, ok)).resolves.toBe(true)
@@ -1777,9 +1678,7 @@ describe('runClusterInstall', () => {
       return (err as Error).message
     }
 
-    // Felix honors per-node overrides, so reading only `default` would miss
-    // a cluster whose default leaves bpfEnabled unset and whose
-    // `node.<name>` object turns it on.
+    // Felix has per-node overrides, so `node.<name>` objects are read too.
     expect(await refuse({
       felix: [
         { metadata: { name: 'default' }, spec: { chainInsertMode: 'Insert' } },
@@ -1787,7 +1686,7 @@ describe('runClusterInstall', () => {
       ],
     })).toMatch(/eBPF dataplane/)
 
-    // Felix's env boolean parsing is wider than true|1 — `yes` enables it.
+    // Felix accepts more true spellings than true|1, such as `yes`.
     const withEnv = (value?: string, valueFrom?: object): AdoptFacts => ({
       calico: {
         status: { numberReady: 1, desiredNumberScheduled: 1 },
@@ -1807,14 +1706,12 @@ describe('runClusterInstall', () => {
       expect(await refuse(withEnv(truthy))).toMatch(/eBPF dataplane/)
     }
 
-    // A `valueFrom` entry carries no literal value, so the manifest does not
-    // say what the dataplane is — and "cannot tell" must not collapse into
-    // "off", which is the direction that ends in silent no-egress.
+    // A `valueFrom` entry has no literal value, so the dataplane is unknown,
+    // which must refuse rather than count as off.
     expect(await refuse(withEnv(undefined, { configMapKeyRef: { name: 'felix', key: 'bpf' } })))
       .toMatch(/valueFrom/)
 
-    // The recognizably-false spellings still pass, or the gate would refuse
-    // every healthy cluster that sets the variable explicitly.
+    // Recognized false values still pass.
     for (const falsey of ['false', 'no', '0', 'off', 'F']) {
       stageAdoptCidrs()
       const deps = makeDeps({ run: adoptRun(withEnv(falsey)) })
@@ -1823,17 +1720,14 @@ describe('runClusterInstall', () => {
   })
 
   it('--byo finds kube-proxy however the cluster labels it, and accepts a declared external one', async () => {
-    // kubeadm/EKS/kind stamp `k8s-app`; GKE and AKS stamp `component`. A
-    // label mismatch would falsely REFUSE the very clusters this mode
-    // advertises — fail-closed, but an adoption blocker.
+    // kubeadm/EKS/kind label kube-proxy `k8s-app`; GKE and AKS use
+    // `component`.
     stageAdoptCidrs()
     const gke = makeDeps({ run: adoptRun({ kubeProxyLabel: 'component' }) })
     await expect(runClusterInstall(BYO, gke)).resolves.toBe(true)
 
-    // k3s runs kube-proxy in-process inside the kubelet: no pod, no
-    // DaemonSet, no label. Self-managed k3s is a PRIMARY target, so the
-    // refusal names the case and an explicit acknowledgement clears it —
-    // recorded, since it is the one check an operator can wave through.
+    // k3s runs kube-proxy inside the kubelet, with no pod. The refusal names
+    // the case and an explicit acknowledgement clears it (and is logged).
     stageAdoptCidrs()
     const k3sRefusal = await runClusterInstall(
       BYO, makeDeps({ run: adoptRun({ kubeProxyPods: [] }) }),
@@ -1849,9 +1743,8 @@ describe('runClusterInstall', () => {
   })
 
   it('--byo warns per NODE about kube-proxy and refuses per NODE about veths', async () => {
-    // One running kube-proxy proves the cluster has one; it says nothing
-    // about the node a session actually lands on. A node without one loses
-    // egress by itself while the rest work, which reads as intermittent.
+    // Each workspace-capable node needs its own kube-proxy, or its workspaces
+    // lose egress while others work.
     const nodes = [{ name: 'cp' }, { name: 'w1' }, { name: 'w2' }]
     stageAdoptCidrs()
     const partial = makeDeps({
@@ -1866,11 +1759,8 @@ describe('runClusterInstall', () => {
     await expect(runClusterInstall(BYO, partial)).resolves.toBe(true)
     expect(logged(partial)).toMatch(/no running kube-proxy on 1 session-capable node\(s\): w2/)
 
-    // Which nodes count is answered by real per-taint matching against the
-    // gvisor RuntimeClass's tolerations — the same model `cluster check`
-    // uses. A dedicated sessions pool is a TAINTED pool plus a matching
-    // toleration on the class, so a blanket "any taint disqualifies" rule
-    // would read it as zero session-capable nodes and check nothing at all.
+    // Nodes are matched against the gvisor RuntimeClass's tolerations, as
+    // `cluster check` does, so a tainted workspace pool counts.
     stageAdoptCidrs()
     const pool = makeDeps({
       run: adoptRun({
@@ -1882,14 +1772,12 @@ describe('runClusterInstall', () => {
       }),
     })
     await expect(runClusterInstall(BYO, pool)).resolves.toBe(true)
-    // pool-2 is tolerated and therefore in scope, and IS uncovered; the
-    // control plane is not tolerated, so it is out of scope entirely.
+    // pool-2 is tolerated, so in scope and uncovered; the control plane is
+    // not tolerated, so out of scope.
     expect(logged(pool)).toMatch(/no running kube-proxy on 1 session-capable node\(s\): pool-2/)
     expect(logged(pool)).not.toMatch(/\bcp\b/)
 
-    // The veth sweep is per node too, and `exec daemonset/...` would have
-    // sampled only one: on a heterogeneous fleet (mixed pools or AMIs) one
-    // node's routing table says nothing about the others'.
+    // The veth check runs per node, since nodes in mixed pools can differ.
     stageAdoptCidrs()
     const mixed = makeDeps({
       run: adoptRun({
@@ -1897,8 +1785,7 @@ describe('runClusterInstall', () => {
         routes: {
           'yaac-netd-0': ADOPT_ROUTES,
           'yaac-netd-1': ADOPT_ROUTES,
-          // This node's CNI names its veths differently — its sessions
-          // would get a redirect chain with no rules in it.
+          // This node's CNI names veths differently.
           'yaac-netd-2': '10.0.3.41 dev enia7b3c9d1e2f4 scope link',
         },
       }),
@@ -1909,10 +1796,8 @@ describe('runClusterInstall', () => {
     expect((err as Error).message).toMatch(/2 other node\(s\) resolve fine/)
     expect((err as Error).message).toMatch(/YAAC_CNI_VETH_PREFIX=eni\b/)
 
-    // But a node with NO per-workload route of any kind is ambiguous, not a
-    // mismatch: netd and kube-proxy are hostNetwork and own no veth, so
-    // that is also exactly what a freshly added node looks like. Warn where
-    // others resolve; only refuse when nothing anywhere does.
+    // A node with no workload routes may just be new (netd and kube-proxy
+    // own no veth), so it only warns unless no node resolves.
     stageAdoptCidrs()
     const idle = makeDeps({
       run: adoptRun({
@@ -1929,10 +1814,8 @@ describe('runClusterInstall', () => {
   })
 
   it('--byo refuses a YAAC_POD_CIDRS entry it cannot use rather than dropping it', async () => {
-    // A typo'd entry that merely vanished would leave the exclusion set
-    // NARROWER than what the operator wrote, with nothing to tell them: the
-    // recorded list shows only what survived. Narrower means those pods'
-    // 443/80 goes into the proxy.
+    // Silently dropping a typo would narrow the exclusion set, sending those
+    // pods' 443/80 into the proxy, so bad entries are refused.
     vi.stubEnv('YAAC_POD_CIDRS', '172.31.0.0/16, 172.31/16, 999.1.1.1/99, 10.0.0.0/33')
     stageAdoptCidrs()
     const deps = makeDeps({ run: adoptRun() })
@@ -1940,9 +1823,8 @@ describe('runClusterInstall', () => {
     expect(err).toBeInstanceOf(ClusterInstallError)
     const msg = (err as Error).message
     expect(msg).toMatch(/not usable IPv4 CIDRs/)
-    // Out-of-range octets and masks are rejected too — they would otherwise
-    // reach iptables-restore, which rejects the WHOLE document on one bad
-    // line and stalls every redirect update on the node.
+    // Out-of-range values are refused too; one bad line makes
+    // iptables-restore reject the whole update.
     expect(msg).toContain('172.31/16')
     expect(msg).toContain('999.1.1.1/99')
     expect(msg).toContain('10.0.0.0/33')
@@ -1950,10 +1832,8 @@ describe('runClusterInstall', () => {
   })
 
   it('--byo treats an unreachable netd as unverified rather than refused', async () => {
-    // netd deploys fail-soft (the server re-ensures it on every proxy
-    // bootstrap), so "I could not read the routing table" is a different
-    // claim from "this cluster has no workload routes" — and the cluster
-    // check's datapath gate is what owns the first one.
+    // "Could not read routes" is not "no workload routes"; the cluster
+    // check's datapath check covers the first.
     stageAdoptCidrs()
     const deps = makeDeps({ run: adoptRun({ routes: null }) })
     await expect(runClusterInstall(BYO, deps)).resolves.toBe(true)
@@ -1986,7 +1866,7 @@ describe('runClusterInstall', () => {
     const pulled = deps.run.mock.calls
       .filter(([f, a]) => f === 'podman' && a[0] === 'image' && a[1] === 'exists')
       .map(([, a]) => a[2])
-    // Deduped and sorted; prose and non-image keys are not refs.
+    // Deduped and sorted; prose and non-image keys are skipped.
     expect(pulled.filter((r) => r.includes('calico'))).toEqual([
       'quay.io/calico/cni:v3.32.1',
       'quay.io/calico/node:v3.32.1',

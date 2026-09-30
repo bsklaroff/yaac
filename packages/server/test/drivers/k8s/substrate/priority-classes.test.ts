@@ -1,8 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-// The process boundary: the kubectl child the ensure shells out to. The
-// whole module is stubbed (not just kubectlApply) because the barrel's other
-// modules import its rest at link time.
+// Mock kubectl. The whole module is stubbed because other barrel modules
+// import the rest of it.
 vi.mock('#drivers/k8s/substrate/kubectl', () => ({
   isKubectlAbsentError: vi.fn(() => false),
   kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
@@ -25,8 +24,7 @@ import {
   buildPriorityClassManifests,
   ensurePriorityClasses,
 } from '#drivers/k8s/substrate'
-// Internal, for the name only: the session tier is stamped inside
-// pod-spec (priorityClassSpec) and covered through the Job manifest.
+// Internal, for the name only.
 import { PRIORITY_CLASS_WORKSPACE } from '#drivers/k8s/substrate/priority-classes'
 import { kubectlApply } from '#drivers/k8s/substrate/kubectl'
 
@@ -58,8 +56,7 @@ describe('buildPriorityClassManifests', () => {
     for (const c of all) {
       expect(c.apiVersion).toBe('scheduling.k8s.io/v1')
       expect(c.kind).toBe('PriorityClass')
-      // A globalDefault class would silently re-rank every unstamped pod in
-      // the cluster, including workloads that are not ours.
+      // A global default would re-rank every other pod in the cluster.
       expect(c.globalDefault).toBe(false)
       expect(c.description).not.toBe('')
     }
@@ -70,24 +67,20 @@ describe('buildPriorityClassManifests', () => {
       .toBeGreaterThan(byName(PRIORITY_CLASS_BUILDER).value)
     expect(byName(PRIORITY_CLASS_BUILDER).value)
       .toBeGreaterThan(byName(PRIORITY_CLASS_WORKSPACE).value)
-    // Kubernetes reserves values above 1e9 for its own system-* classes;
-    // exceeding it makes the apiserver reject the object.
+    // Values above 1e9 are reserved for system classes.
     expect(byName(PRIORITY_CLASS_INFRA).value).toBeLessThanOrEqual(1_000_000_000)
-    // Above the unstamped default so a live session outranks whatever else
-    // shares the cluster.
+    // Above the default so workspaces outrank other pods.
     expect(byName(PRIORITY_CLASS_WORKSPACE).value).toBeGreaterThan(0)
   })
 
   it('lets infra preempt, and nothing below it', () => {
-    // A preempted pod is deleted, and a session Job (backoffLimit 0,
-    // restartPolicy Never) does not replace it. So nothing under the infra
-    // tier may buy its own scheduling with a session's life — a builder
-    // outranks sessions for eviction while still waiting for room.
+    // A preempted workspace pod is never replaced, so only infra may
+    // preempt. Builders outrank workspaces but wait for room.
     expect(byName(PRIORITY_CLASS_WORKSPACE).preemptionPolicy).toBe('Never')
     expect(byName(PRIORITY_CLASS_BUILDER).preemptionPolicy).toBe('Never')
-    // Infra keeps the default. Nested installs depend on that: the syncer
-    // copies preemptionPolicy to the host while dropping the class name, and
-    // an explicit value there would make every synced infra pod rejected.
+    // Infra must leave it unset: in nested installs the syncer copies
+    // preemptionPolicy to the host without the class, and the host would
+    // reject the pod.
     expect(byName(PRIORITY_CLASS_INFRA).preemptionPolicy).toBeUndefined()
   })
 })
@@ -101,8 +94,7 @@ describe('ensurePriorityClasses', () => {
     await ensurePriorityClasses()
     expect(vi.mocked(kubectlApply).mock.calls.map(([m]) => m)).toEqual(classes())
 
-    // `apply` is the idempotence: a second run sends the same bytes, so a
-    // server boot against an already-installed cluster changes nothing.
+    // Idempotent: a second run applies the same objects.
     await ensurePriorityClasses()
     expect(vi.mocked(kubectlApply)).toHaveBeenCalledTimes(classes().length * 2)
   })

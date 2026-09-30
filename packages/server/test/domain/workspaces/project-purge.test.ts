@@ -4,9 +4,8 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { handleFixture, installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 
-// Session teardown spawns a detached script, so it is faked at the feature
-// boundary; everything the RUNTIME holds is faked at the contract, and the
-// directories below are removed for real, under the temp data dir.
+// Session teardown spawns a detached script, so it is mocked. The runtime is
+// a fake driver; directories are removed for real under the temp data dir.
 vi.mock('#domain/workspaces/cleanup', () => ({ cleanupWorkspaceDetached: vi.fn() }))
 
 import { cleanupWorkspaceDetached } from '#domain/workspaces/cleanup'
@@ -60,8 +59,7 @@ describe('purgeProjectBytes', () => {
 
     await purgeProjectBytes(DEMO)
 
-    // First argument only: the fake's delegation passes its optional opts
-    // through, so the recorded call carries a trailing undefined.
+    // First argument only: the fake records a trailing undefined opts.
     expect(mockList.mock.calls.map(([slug]) => slug)).toEqual(['demo'])
     expect(mockCleanup.mock.calls.map(([c]) => c)).toEqual([
       { jobName: 'yaac-demo-a', projectSlug: 'demo', workspaceId: 'a' },
@@ -70,15 +68,14 @@ describe('purgeProjectBytes', () => {
     expect(mockDestroySubstrate).toHaveBeenCalledWith(DEMO)
 
     await expect(fs.access(projectDir('demo'))).rejects.toThrow()
-    // The node-local tree is the runtime's to remove — it lives on the
-    // node the workspaces ran on, which may not be this filesystem.
+    // The node-local tree is the driver's to remove; it may live on
+    // another machine.
     await expect(fs.access(nodeLocalProjectPath(DEMO.id))).resolves.toBeUndefined()
     await expect(fs.access(projectDir('keeper'))).resolves.toBeUndefined()
   })
 
-  // Best-effort throughout: a runtime that cannot be reached must not stop
-  // the directories going away, and the id-keyed orphan GCs sweep the
-  // rest.
+  // Best effort: an unreachable runtime must not keep the directories
+  // around. The orphan GCs sweep whatever is left.
   it('still removes the dirs when the runtime is unreachable', async () => {
     await writeProject('demo', DEMO.id)
     mockList.mockRejectedValue(new Error('connection refused'))

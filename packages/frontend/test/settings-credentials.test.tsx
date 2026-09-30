@@ -80,8 +80,7 @@ async function openCredentials(): Promise<void> {
   fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
   fireEvent.click(screen.getByRole('button', { name: 'Credentials' }))
   await waitFor(() => expect(screen.getByText(/claude/)).toBeTruthy())
-  // The rows render before the list lands; wait for it, so a row reads the
-  // credential rather than the signed-out state it starts in.
+  // Wait for the list, so rows show credentials rather than signed out.
   await waitFor(() => expect(vi.mocked(getAuthList)).toHaveBeenCalled())
   await vi.mocked(getAuthList).mock.results[0]?.value
   await new Promise((r) => setTimeout(r, 0))
@@ -226,7 +225,7 @@ describe('Settings → Credentials → web sign-in', () => {
     fireEvent.submit(input.closest('form') as HTMLFormElement)
 
     await waitFor(() => expect(screen.getByText(/Expected the code from the authorize page/)).toBeTruthy())
-    // Still in the running panel — the paste box and Cancel survive the rejection.
+    // After the rejection the paste box and Cancel are still shown.
     expect(screen.getByPlaceholderText('paste code here if prompted')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
@@ -240,7 +239,7 @@ describe('Settings → Credentials → web sign-in', () => {
     fireEvent.click(within(toolRow('claude')).getByRole('button', { name: 'Sign in' }))
     fireEvent.click(screen.getByRole('button', { name: 'Sign in with Claude' }))
 
-    // Success re-pulls the credentials list (the row flips to configured).
+    // Success refetches the credentials list.
     await waitFor(() => expect(vi.mocked(getAuthList).mock.calls.length).toBeGreaterThan(1))
     expect(await screen.findByText('Signed in successfully.')).toBeTruthy()
   })
@@ -344,8 +343,8 @@ describe('Settings → Credentials → git', () => {
   const pickerOptions = (row: HTMLElement): string[] =>
     [...within(row).getByLabelText<HTMLSelectElement>('Git credential').options].map((o) => o.textContent ?? '')
 
-  /** Open the row's confirmation, check a stray Enter cannot confirm it, and
-   *  answer the dialog's description. */
+  /** Open the row's confirmation, check a stray Enter can't confirm it, and
+   *  return the dialog. */
   async function openConfirm(row: HTMLElement, action: string, confirmLabel: string): Promise<HTMLElement> {
     fireEvent.click(within(row).getByRole('button', { name: action }))
     const dialog = await screen.findByRole('alertdialog')
@@ -374,7 +373,7 @@ describe('Settings → Credentials → git', () => {
     expect(within(token).getByText('alpha')).toBeTruthy()
     expect(within(token).queryByText('No assigned projects')).toBeNull()
     expect(within(key).getByText('No assigned projects')).toBeTruthy()
-    // A key shows its public half, labelled, to copy — or to view whole.
+    // An SSH key shows its public key to copy or expand.
     expect(within(key).getByText('Public key:')).toBeTruthy()
     expect(within(key).getByRole('button', { name: 'Copy' })).toBeTruthy()
     const shown = within(key).getByText('ssh-ed25519 AAAAkey gitlab-key')
@@ -384,8 +383,8 @@ describe('Settings → Credentials → git', () => {
     fireEvent.click(within(key).getByRole('button', { name: 'Hide' }))
     expect(shown.className).toContain('truncate')
 
-    // The projects without one, at the bottom — each offered only what its
-    // remote can use, a new one named for the project.
+    // Projects without a credential are listed last, each offered only what
+    // its remote can use, with a new one named for the project.
     expect(screen.getByText('Projects without git authentication')).toBeTruthy()
     expect(pickerOptions(projectRow('beta'))).toEqual(['Choose a git credential…', 'gitlab-key', 'New SSH key…'])
     expect(pickerOptions(projectRow('gamma')))
@@ -393,7 +392,7 @@ describe('Settings → Credentials → git', () => {
     fireEvent.change(within(projectRow('gamma')).getByLabelText('Git credential'), { target: { value: 'new' } })
     expect(within(projectRow('gamma')).getByLabelText<HTMLInputElement>('Credential name').value).toBe('gamma-token')
 
-    // Assigning trusts the host's key, shown once beta sits under its credential.
+    // Assigning trusts the host key, which is shown under the credential.
     vi.mocked(setProjectGitCredential).mockResolvedValue('gitlab.com ssh-ed25519 HOSTKEY')
     vi.mocked(getAuthList).mockResolvedValue({
       ...CLAUDE_CONFIGURED, gitCredentials: [TOKEN, { ...KEY, projects: ['beta'] }],
@@ -420,21 +419,21 @@ describe('Settings → Credentials → git', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
     await waitFor(() => expect(renameGitCredential).toHaveBeenCalledWith('c-key', 'gitlab-deploy-key'))
 
-    // Cancel leaves it be.
+    // Cancel keeps it.
     let dialog = await openConfirm(credentialRow('alpha-token'), 'Delete', 'Delete')
     expect(within(dialog).getByText(/alpha will be left with no git credential/)).toBeTruthy()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
 
-    // A credential in use deletes all the same, on the confirm's click.
+    // A credential in use can still be deleted.
     dialog = await openConfirm(credentialRow('alpha-token'), 'Delete', 'Delete')
     expect(deleteGitCredential).not.toHaveBeenCalled()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }))
     await waitFor(() => expect(deleteGitCredential).toHaveBeenCalledWith('c-token'))
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
 
-    // Deleted, but the proxy was not told: the list is refetched (the row
-    // is gone) and the warning outlives the row it came from.
+    // Deleted, but the proxy wasn't updated: the row goes and the warning
+    // stays.
     vi.mocked(deleteGitCredential).mockRejectedValueOnce(
       new Error('The credential is deleted, but the egress proxy could not be updated'),
     )
@@ -503,12 +502,11 @@ describe('Settings → Credentials → git', () => {
     useUiStore.getState().openSettings('credentials', undefined, 'alpha')
     renderSettings()
 
-    // alpha has a credential, so its row under it opens on "Change".
+    // alpha's row is under its credential and highlighted.
     await waitFor(() => expect(within(projectRow('alpha')).getByRole('button', { name: 'Assign' })).toBeTruthy())
     expect(projectRow('alpha').className).toMatch(/ring-accent/)
     expect(projectRow('beta').className).not.toMatch(/ring-accent/)
-    // alpha-token is its own and the only token, so only a new one is offered
-    // — named past alpha-token, which stays taken.
+    // alpha-token is its current and only token, so only a new one is offered.
     expect(pickerOptions(projectRow('alpha'))).toEqual(['New HTTPS token…'])
     expect(within(projectRow('alpha')).getByLabelText<HTMLInputElement>('Credential name').value)
       .toBe('alpha-token-2')

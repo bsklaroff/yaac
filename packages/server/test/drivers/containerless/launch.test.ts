@@ -11,9 +11,8 @@ import { agentBinDirs } from '@yaac/shared/tool-install'
 import { substrateFixture } from '@yaac/test-utils/fake-driver'
 import type { WorkspaceMount, WorkspaceSpec } from '#drivers/contract'
 
-// Mocked at the process boundary — this driver's whole substrate is
-// `child_process`, so with it stubbed the launch runs for real: the real
-// mkdirs, the real symlinks, the real marker, and the real command text.
+// Only host process calls are mocked, so the launch's mkdirs, symlinks,
+// marker and command text are real.
 import type * as hostModule from '#drivers/containerless/host'
 
 const mockRunHost = vi.hoisted(() => vi.fn())
@@ -69,8 +68,8 @@ beforeEach(() => {
   setDataDir(dataDir)
   _resetRegistryForTests()
   mockRunHost.mockReset()
-  // '4242' answers both the tmux server pid probe and `ssh-add -L`; the
-  // agent case overrides the latter where the public key matters.
+  // '4242' answers both the tmux pid probe and `ssh-add -L`; the ssh-agent
+  // cases override the latter.
   mockRunHost.mockResolvedValue({ stdout: '4242', stderr: '' })
   mockRunHost.mockImplementation((argv: string[]) =>
     argv[0] === 'ssh-add' && argv[1] === '-L'
@@ -96,15 +95,15 @@ describe('launchWorkspace', () => {
     await launchWorkspace(spec())
     const newSession = tmuxCalls().find((a) => a.includes('new-session'))
     expect(newSession).toBeDefined()
-    // `sleep infinity` is what `probeAgentPaneState` reads as "started but
-    // no agent yet"; starting the agent here instead would let a
-    // fast-failing tool end the session before setup finished.
+    // `probeAgentPaneState` reads `sleep infinity` as "no agent yet".
+    // Starting the agent here would let a fast-failing tool end the session
+    // before setup finished.
     expect(newSession).toContain('sleep infinity')
     expect(newSession).toContain('yaac')
-    // The window carries the tool name, which is the `yaac:<tool>` target
-    // every later respawn and probe addresses.
+    // The window is named for the tool, the `yaac:<tool>` target later
+    // respawns and probes use.
     expect(newSession).toContain('claude')
-    // Windows open in the checkout, not wherever the server happens to be.
+    // Windows open in the checkout, not the server's cwd.
     expect(newSession).toContain(workspaceDir('demo', UUID))
   })
 
@@ -113,15 +112,15 @@ describe('launchWorkspace', () => {
     expect(handle.running).toBe(true)
     expect(listWorkspaces()).toHaveLength(1)
 
-    // The marker is the substrate's only durable record: without it a
-    // restarted server cannot know the workspace exists at all.
+    // The marker is the only durable record; a restarted server finds the
+    // workspace through it.
     const marker = JSON.parse(await fsp.readFile(
       path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'workspace.json'),
       'utf8',
     )) as { workspaceId: string; tool: string; tmuxPid: number }
     expect(marker.workspaceId).toBe(UUID)
     expect(marker.tool).toBe('claude')
-    // Read back from tmux so the port scan has a tree root to walk.
+    // Read from tmux, as the root of the port scan's process tree.
     expect(marker.tmuxPid).toBe(4242)
   })
 
@@ -133,11 +132,11 @@ describe('launchWorkspace', () => {
     }))
     const newSession = mockRunHost.mock.calls
       .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
-    // The workspace itself gets everything...
+    // The session gets every variable...
     expect(newSession.env).toMatchObject({ ANTHROPIC_API_KEY: 'sk-real', YAAC_MAMA_TOKEN: 'bearer' })
 
-    // ...while the file a restart reads it back from holds what the create
-    // added, and neither the secrets nor the host's inherited environment.
+    // ...but the marker, which a restart reads, holds only what the create
+    // added: no secrets and no inherited host environment.
     const raw = await fsp.readFile(
       path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'workspace.json'),
       'utf8',
@@ -156,13 +155,13 @@ describe('launchWorkspace', () => {
     ]
     await launchWorkspace(spec({ mounts }))
 
-    // A container's mount becomes a symlink here — the contract's own note
-    // that "a host-process driver reads a hostPath as a bind or a symlink".
+    // A container mount becomes a symlink here, as the driver contract
+    // allows.
     const home = path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
     expect(await fsp.realpath(path.join(home, '.claude')))
       .toBe(await fsp.realpath(claudeSrc))
-    // HOME is what makes the links reachable; without it the agent would
-    // read the SERVER user's config instead of the workspace's.
+    // HOME points at the links; otherwise the agent would read the server
+    // user's config.
     const newSession = tmuxCalls().find((a) => a.includes('new-session'))
     expect(newSession).toBeDefined()
     const env = mockRunHost.mock.calls
@@ -175,15 +174,15 @@ describe('launchWorkspace', () => {
     const mounts: WorkspaceMount[] = [
       { source: { kind: 'hostPath', path: claudeSrc }, mountPath: '/home/yaac/.claude' },
     ]
-    // A create retries its launch after a failed attempt, so every step has
-    // to tolerate the last attempt's state.
+    // A create retries failed launches, so every step must tolerate the
+    // previous attempt's state.
     await launchWorkspace(spec({ mounts }))
     await expect(launchWorkspace(spec({ mounts }))).resolves.toBeDefined()
   })
 
   it('puts the staged helper scripts and the pinned agents where the workspace will find them', async () => {
-    // A pod gets these from `/usr/local/bin` already being on PATH; there is
-    // no writable system bin here, so they go in the workspace's own.
+    // A pod has these in `/usr/local/bin`; here they go in the workspace's
+    // own bin dir.
     const staged = path.join(dataDir, 'staged-yaac-mama')
     await fsp.writeFile(staged, '#!/bin/sh\n')
     const mounts: WorkspaceMount[] = [
@@ -195,8 +194,8 @@ describe('launchWorkspace', () => {
     expect(await fsp.realpath(path.join(binDir, 'yaac-mama'))).toBe(await fsp.realpath(staged))
     const env = mockRunHost.mock.calls
       .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
-    // Then yaac's pinned agents, ahead of the host's own: a codex the user
-    // installed is at whatever version they last updated it to.
+    // Then yaac's pinned agents, ahead of the host's (which may be any
+    // version).
     const [first, ...rest] = env.env.PATH?.split(path.delimiter) ?? []
     expect(first).toBe(binDir)
     expect(rest.slice(0, agentBinDirs().length)).toEqual(agentBinDirs())
@@ -204,16 +203,13 @@ describe('launchWorkspace', () => {
   })
 
   it('translates an env value naming a mounted path to that mount\'s source', async () => {
-    // The caller writes env against the container layout on both substrates,
-    // because that is the filesystem every driver was written against. Here
-    // the value resolves to the directory the mount came from — the project's
-    // own — rather than to the private HOME's link to it. Both name the same
-    // files; a tool that keys anything on the string it was handed can tell
-    // them apart, and would get a per-workspace home from the link.
+    // Callers write env against the container layout. Here a value resolves
+    // to the mount's source (the project's dir), not the private HOME's link
+    // to it, since a tool keying on the path string would otherwise get a
+    // per-workspace value.
     //
-    // The user's own values do NOT move: a yaac dev host runs as a user whose
-    // home is literally /home/yaac, so rewriting anything container-shaped
-    // would silently redirect a real host path they passed in.
+    // Unmounted values are left alone: a yaac dev host's user home really is
+    // /home/yaac, so rewriting them would redirect real host paths.
     const piSrc = path.join(dataDir, 'global', 'projects', 'demo', 'pi')
     const claudeSrc = path.join(dataDir, 'global', 'projects', 'demo', 'claude')
     const cachedSrc = path.join(dataDir, 'node-local', 'projects', 'demo', '.cached-packages')
@@ -239,25 +235,22 @@ describe('launchWorkspace', () => {
       .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
     expect(env.env.PI_CODING_AGENT_SESSION_DIR)
       .toBe(path.join(piSrc, 'agent', 'sessions'))
-    // A tool's two variables describing one home stay consistent with each
-    // other, because one rule produced both.
     expect(env.env.PI_CODING_AGENT_DIR).toBe(path.join(piSrc, 'agent'))
-    // The project's dir, not this workspace's: claude names its macOS Keychain
-    // item after this string, and a per-workspace one would let the first
-    // token refresh take the credential away from every sibling workspace.
+    // The project's dir, not the workspace's: claude names its macOS
+    // Keychain item after it, and a per-workspace name would let one token
+    // refresh break every sibling workspace.
     const home = path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
     expect(env.env.CLAUDE_CONFIG_DIR).toBe(claudeSrc)
     expect(env.env.CLAUDE_CONFIG_DIR).not.toContain(home)
-    // pnpm's store is the project's, shared by every workspace — and on the
-    // same filesystem as the checkouts, so node_modules hardlinks into it.
+    // The project's shared pnpm store, on the checkouts' filesystem so
+    // node_modules can hardlink into it.
     expect(env.env.pnpm_config_store_dir).toBe(path.join(cachedSrc, 'pnpm-store'))
     expect(env.env.npm_config_store_dir).toBe(path.join(cachedSrc, 'pnpm-store'))
     expect(env.env.MY_OWN_PATH).toBe('/home/yaac/notes')
   })
 
   it('resolves a value under a nested mount to the innermost source', async () => {
-    // Otherwise a path inside the inner mount would be expressed against the
-    // outer one's source, which is a different directory on this filesystem.
+    // Resolving against the outer mount would give the wrong directory.
     const claudeSrc = path.join(dataDir, 'global', 'projects', 'demo', 'claude')
     const skillSrc = path.join(dataDir, 'staged-skill')
     await fsp.mkdir(skillSrc, { recursive: true })
@@ -274,8 +267,7 @@ describe('launchWorkspace', () => {
   })
 
   it('refuses a mount it has no host equivalent for rather than dropping it', async () => {
-    // Silently skipping would hand back a workspace missing the thing its
-    // config asked for, failing much later and somewhere unrelated.
+    // Skipping silently would fail much later somewhere unrelated.
     const mounts: WorkspaceMount[] = [
       { source: { kind: 'hostPath', path: '/opt/sock' }, mountPath: '/var/run/thing.sock' },
     ]
@@ -284,10 +276,9 @@ describe('launchWorkspace', () => {
   })
 
   it('leaves a redirect INTO the checkout alone, so git never sees a link', async () => {
-    // A pod mounts node_modules onto other storage and git never sees it. A
-    // symlink is not a mount: git reports it untracked (so `git add -A`
-    // commits an absolute host path), and the ephemeral-modules guard trips
-    // on the driver's own link, which made a stopped workspace unrestartable.
+    // Unlike a pod mount, a symlink is visible to git: `git add -A` would
+    // commit an absolute host path, and the ephemeral-modules guard would
+    // trip on it, making a stopped workspace unrestartable.
     const modules = path.join(dataDir, 'modules-cache')
     const mounts: WorkspaceMount[] = [
       { source: { kind: 'hostPath', path: modules }, mountPath: '/workspace/node_modules' },
@@ -298,9 +289,8 @@ describe('launchWorkspace', () => {
   })
 
   it('skips a mount that would nest inside another rather than writing through it', async () => {
-    // A pod layers a builtin skill over a mounted tool home; here the tool
-    // home is a symlink into shared project state, so writing the skill
-    // would leave one workspace's staging where every workspace reads.
+    // Here the tool home is a symlink into shared project state, so writing
+    // a builtin skill into it would affect every workspace.
     const claudeSrc = path.join(dataDir, 'global', 'projects', 'demo', 'claude')
     const skillSrc = path.join(dataDir, 'staged-skill')
     await fsp.mkdir(skillSrc, { recursive: true })
@@ -313,9 +303,8 @@ describe('launchWorkspace', () => {
   })
 
   it('writes git identity into the workspace home, never the server user\'s', async () => {
-    // A name git's config syntax would otherwise mangle: a backslash breaks
-    // the file, `#` starts a comment, quotes vanish, and a newline opens a
-    // section of its own.
+    // A backslash, `#`, quotes and a newline would all break git config
+    // syntax unless escaped.
     const name = 'Ada "The" \\Lovelace #1\n[core]\n\tpager = touch /tmp/x'
     await launchWorkspace(spec({
       env: [`YAAC_GIT_NAME=${name}`, 'YAAC_GIT_EMAIL=ada@example.com'],
@@ -328,35 +317,31 @@ describe('launchWorkspace', () => {
     expect(await read('user.email')).toBe('ada@example.com\n')
     await expect(read('core.pager')).rejects.toThrow()
     const gitconfig = await fsp.readFile(gitconfigPath, 'utf8')
-    // Both repo roots are trusted, exactly as the pod's init hook does.
+    // Both repo roots are trusted, as in a pod.
     expect(gitconfig).toContain(workspaceDir('demo', UUID))
 
-    // And git is pointed AT that file: the workspace inherits the server's
-    // environment, so a server started with GIT_CONFIG_GLOBAL set would
-    // otherwise have every setting here silently ignored.
+    // GIT_CONFIG_GLOBAL points at that file; an inherited value would
+    // otherwise make git ignore it.
     const env = mockRunHost.mock.calls
       .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
     expect(env.env.GIT_CONFIG_GLOBAL).toBe(path.join(home, '.gitconfig'))
   })
 
   it('hands the workspace\'s own git the real HTTPS credential', async () => {
-    // There is no proxy here to inject one in flight, and the checkout's
-    // `origin` is deliberately tokenless — so a workspace given nothing
-    // cannot fetch or push at all.
+    // No proxy injects a token here, and `origin` has none, so the
+    // workspace needs a credential helper to fetch or push.
     await launchWorkspace(spec({
       gitCredential: { kind: 'https', host: 'github.com', token: 'ghp_a/b+c%d' },
     }))
     const home = path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
 
     const gitconfig = await fsp.readFile(path.join(home, '.gitconfig'), 'utf8')
-    // The empty helper first: git takes the FIRST helper that answers, so a
-    // host with a system-wide one would otherwise answer with the user's own
-    // stored credential for that host rather than the one yaac resolved.
+    // An empty helper first resets the list, so a system-wide helper cannot
+    // answer with the user's own stored credential.
     expect(gitconfig).toContain('helper =\n')
     expect(gitconfig).toContain('helper = store')
 
-    // Percent-encoded, because git url-decodes both halves on the way back
-    // in and a token is opaque bytes that may hold a reserved character.
+    // Percent-encoded, since git URL-decodes the stored credential.
     const creds = path.join(home, '.git-credentials')
     expect(await fsp.readFile(creds, 'utf8'))
       .toBe('https://x-access-token:ghp_a%2Fb%2Bc%25d@github.com\n')
@@ -364,18 +349,16 @@ describe('launchWorkspace', () => {
   })
 
   it('holds an SSH key in a per-workspace agent, never in the workspace', async () => {
-    // A pod gets its identity from the proxy's forwarded ssh-agent. There is
-    // no proxy here, so the workspace gets an agent of its own — and the key
-    // reaches it over stdin, so a stopped workspace (or one whose host
-    // rebooted before anyone pressed stop) leaves no usable private key on
-    // disk. What lands in the home is the public half.
+    // With no proxy, the workspace gets its own ssh-agent. The key is piped
+    // in over stdin, so no private key is left on disk; the home holds only
+    // the public key.
     const knownHosts = path.join(dataDir, 'global', 'projects', 'demo', 'known_hosts')
     await launchWorkspace(spec({
       gitCredential: { kind: 'ssh', privateKey: PRIVATE_KEY },
       ssh: { knownHostsFile: knownHosts },
     }))
 
-    // Piped in, never written: this is the whole point of the agent.
+    // Piped in, never written to disk.
     expect(mockRunHostWithInput).toHaveBeenCalledWith(
       ['ssh-add', '-'], PRIVATE_KEY, expect.anything(),
     )
@@ -386,24 +369,20 @@ describe('launchWorkspace', () => {
     const env = mockRunHost.mock.calls
       .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
     expect(env.env.SSH_AUTH_SOCK).toContain('-ssh.sock')
-    // Emptied by the invocation that creates the session, before anything
-    // can attach: every attach would otherwise copy the attaching client's
-    // SSH_AUTH_SOCK — the server's, the host user's agent — into the session
-    // environment the agent's later windows inherit.
+    // Cleared when the session is created, before any attach; otherwise
+    // each attach would copy the host user's SSH_AUTH_SOCK into the session.
     const newSession = tmuxCalls().find((a) => a.includes('new-session')) ?? []
     expect(newSession.slice(-5)).toEqual([';', 'set-option', '-g', 'update-environment', ''])
     const sshCmd = env.env.GIT_SSH_COMMAND ?? ''
-    // `-i` on the PUBLIC key under IdentitiesOnly is how ssh is pinned to
-    // this agent identity without the private half ever being on disk.
+    // `-i` with the public key and IdentitiesOnly pins ssh to the agent's
+    // identity.
     expect(sshCmd).toContain(`-i ${pub}`)
     expect(sshCmd).toContain('IdentitiesOnly=yes')
-    // Host verification is not weakened by having no sandbox: an unknown key
-    // fails here exactly as it does in a pod.
+    // Host key verification is as strict as in a pod.
     expect(sshCmd).toContain(`UserKnownHostsFile=${knownHosts}`)
     expect(sshCmd).toContain('StrictHostKeyChecking=yes')
 
-    // Nothing under the workspace's home holds the private key — not the
-    // credential store, and not a stray copy of the key itself.
+    // No file under the home holds the private key.
     for (const entry of await fsp.readdir(home, { recursive: true, withFileTypes: true })) {
       if (!entry.isFile()) continue
       const body = await fsp.readFile(path.join(entry.parentPath, entry.name), 'utf8')
@@ -412,9 +391,8 @@ describe('launchWorkspace', () => {
   })
 
   it('ends the agent a previous life left running before binding a new one', async () => {
-    // Unlinking the socket alone would leave that agent running and
-    // unreachable, still holding the key — the one thing the arrangement
-    // exists to prevent. A relaunch is ordinary: a retried create, a restart.
+    // On relaunch (a retried create or restart), unlinking the socket alone
+    // would leave the old agent running with the key.
     const sshSpec = (): WorkspaceSpec => spec({
       gitCredential: { kind: 'ssh', privateKey: PRIVATE_KEY },
       ssh: { knownHostsFile: path.join(dataDir, 'global', 'projects', 'demo', 'known_hosts') },
@@ -441,15 +419,15 @@ describe('launchWorkspace', () => {
   })
 
   it('refuses an SSH credential with no host list rather than skipping the check', async () => {
-    // The degraded workspace would be one that verifies no host key at all.
+    // Otherwise the workspace would verify no host key at all.
     await expect(launchWorkspace(spec({
       gitCredential: { kind: 'ssh', privateKey: PRIVATE_KEY },
     }))).rejects.toThrow(/known_hosts/)
   })
 
   it('clears a credential the last launch left behind', async () => {
-    // A relaunch is not always for the same answer: a rotated token, a remote
-    // moved to SSH, or a workspace restarted with no credential at all.
+    // A relaunch may bring a rotated token, a switch to SSH, or no
+    // credential at all.
     const home = path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
     await launchWorkspace(spec({
       gitCredential: { kind: 'https', host: 'github.com', token: 'first' },
@@ -468,8 +446,8 @@ describe('launchWorkspace', () => {
     await launchWorkspace(spec())
     const call = mockRunHost.mock.calls
       .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
-    // The agents run as this user; handing them the server's configuration
-    // invites a workspace to reconfigure the server that launched it.
+    // Agents run as this user, so passing the server's config would let a
+    // workspace reconfigure its server.
     expect(Object.keys(call.env).filter((k) => k.startsWith('YAAC_')))
       .toEqual(expect.arrayContaining(['YAAC_GIT_NAME']))
     expect(call.env.YAAC_DATA_DIR).toBeUndefined()
@@ -477,15 +455,13 @@ describe('launchWorkspace', () => {
   })
 
   it('drops the host variables that would re-point a tool away from its home', async () => {
-    // Every tool home is staged HOME-relative, so the private HOME only
-    // decides anything if the tools resolve their defaults. One of these
-    // inherited and the agent reads the SERVER user's config — with real
-    // credentials in it — and writes its sessions where nothing looks.
+    // Tool homes are staged relative to HOME, which only works if the tools
+    // use their defaults. An inherited override would point the agent at
+    // the server user's config and credentials.
     const claudeSrc = path.join(dataDir, 'global', 'projects', 'demo', 'claude')
     const hostConfig = path.join(dataDir, 'the-host-user')
     const saved = { ...process.env }
-    // Every name the driver clears, poisoned from the list itself — a case
-    // that restated the names would keep passing when one was added.
+    // Set every name from the list itself, so new entries are covered.
     for (const key of TOOL_HOME_VARS) process.env[key] = path.join(hostConfig, key)
     const progress: string[] = []
     try {
@@ -497,9 +473,8 @@ describe('launchWorkspace', () => {
       process.env = saved
     }
 
-    // Ignoring a user's environment is otherwise indistinguishable from
-    // honoring it — the agent reads the project's config either way, and
-    // only the user knows they had pointed it somewhere else.
+    // Dropping a user's variable is otherwise invisible, so the create says
+    // so.
     const notice = progress.find((m) => m.includes('CLAUDE_CONFIG_DIR'))
     expect(notice, 'the create never said it was ignoring anything').toBeDefined()
     expect(notice).toContain('CODEX_HOME')
@@ -509,17 +484,16 @@ describe('launchWorkspace', () => {
     for (const key of TOOL_HOME_VARS) {
       expect(call.env[key], `${key} reached the workspace`).toBeUndefined()
     }
-    // Dropped rather than pinned, so the tools land on their own defaults —
-    // which is what the staged home is built out of.
+    // Dropped rather than pinned, so the tools use their defaults, which the
+    // staged home provides.
     const home = path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
     expect(call.env.HOME).toBe(home)
     expect(await fsp.realpath(path.join(home, '.claude'))).toBe(await fsp.realpath(claudeSrc))
   })
 
   it('drops the markers of the agent session that started the server', async () => {
-    // A server started from inside a claude session carries that session's
-    // child markers, and a claude that inherits CLAUDE_CODE_CHILD_SESSION
-    // stops saving its transcript.
+    // A server started from a claude session inherits its markers, and a
+    // claude with CLAUDE_CODE_CHILD_SESSION stops saving its transcript.
     const saved = { ...process.env }
     for (const key of AGENT_SESSION_VARS) process.env[key] = '1'
     process.env.GIT_EDITOR = 'true'
@@ -533,15 +507,14 @@ describe('launchWorkspace', () => {
     for (const key of AGENT_SESSION_VARS) {
       expect(call.env[key], `${key} reached the workspace`).toBeUndefined()
     }
-    // The session's no-op editor goes too, or a terminal's `git commit`
-    // aborts on an empty message.
+    // The session's no-op editor is dropped too, or `git commit` in a
+    // terminal aborts on an empty message.
     expect(call.env.GIT_EDITOR).toBeUndefined()
   })
 
   it('lets a caller\'s own env win over the inherited host value', async () => {
-    // The deny lists are about what LEAKS in. A value the create put on the
-    // spec is a stated decision (envPassthrough, config.env), and a workspace
-    // that ignored it would be honoring the host over its own config.
+    // The deny lists only filter inherited values. A value the create put on
+    // the spec (envPassthrough, config.env) is kept.
     const saved = process.env.XDG_CONFIG_HOME
     process.env.XDG_CONFIG_HOME = path.join(dataDir, 'the-host-user', '.config')
     const progress: string[] = []
@@ -557,17 +530,14 @@ describe('launchWorkspace', () => {
     const call = mockRunHost.mock.calls
       .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
     expect(call.env.XDG_CONFIG_HOME).toBe('/etc/xdg-they-asked-for')
-    // And the create does not claim to have ignored a value it is handing
-    // straight to the agent — the notice reports what was actually dropped,
-    // not what the host merely happened to set.
+    // The notice lists only what was actually dropped.
     expect(progress.some((m) => m.includes('XDG_CONFIG_HOME'))).toBe(false)
   })
 
   it('survives a tmux that refuses its cosmetic options', async () => {
-    // Every option is a display or input preference; a workspace whose bells
-    // do not ring beats a create that failed after the session came up.
-    // (The session's own invocation empties `update-environment`, which is
-    // not cosmetic, so it is not the one refused here.)
+    // These options are cosmetic, so a refusal must not fail the create.
+    // (`update-environment` is set in the new-session call and is not refused
+    // here.)
     mockRunHost.mockImplementation((argv: string[]) =>
       argv.includes('set-option') && !argv.includes('new-session')
         ? Promise.reject(new Error('unknown option'))

@@ -14,40 +14,31 @@ import type {
 } from '@yaac/shared/types'
 
 /**
- * The workspace spine: one row per workspace id for every workspace
- * yaac has created. Reads that used to walk transcript directories, git
- * config, and four side tables come from here; the cluster stays
- * authoritative for whether a workspace is *running*, and the agent-session
- * store (its sibling) owns which conversations live inside it.
+ * One row per workspace yaac has created. The runtime is authoritative for
+ * whether a workspace is running; the agent-session store holds its
+ * conversations.
  *
- * Write discipline, in one line each:
- *  - `recordWorkspaceCreated` is the only INSERT, and never upserts: a
- *    workspace id is claimed once, across every project. It runs at every
- *    fresh create, including the one that warms a prewarmed spare — a
- *    spare's row carries `spare: true`, and `claimSpareWorkspace` is what
- *    clears it. A restart is `recordWorkspaceResumed`, an UPDATE.
- *  - Everything else is an UPDATE, which no-ops for a row that doesn't
- *    exist. That is what keeps workspaces from a foreign data dir invisible
- *    without a single existence check.
- *  - Every listing filters `spare` out, so an unclaimed spare is as
- *    invisible to the user as it was when it had no row — but, unlike then,
- *    the startup sweep can still ask what a dead pod's workspace was.
- *  - A row is written BEFORE the workspace's Job, so no pod can ever be
- *    rowless — the row is what makes a pod a session, and a pod without
- *    one is invisible to every path that reads recorded state.
- *  - No *stop* deletes a row: a `stoppedAt` row IS the stopped-workspace
- *    listing, and a restart reuses the id and clears the column. The two
- *    deletes are scoped to something other than a running workspace going
- *    away — `deleteProjectWorkspaces` (the project is gone) and
- *    `deleteWorkspaceRow` (a create that never came up, rolling back its own
- *    insert).
+ * Write rules:
+ *  - `recordWorkspaceCreated` is the only INSERT and never upserts: an id is
+ *    claimed once across all projects. It also runs when warming a spare
+ *    (`spare: true`, cleared by `claimSpareWorkspace`). A restart is
+ *    `recordWorkspaceResumed`, an UPDATE.
+ *  - Everything else is an UPDATE, which no-ops for a missing row, so
+ *    workspaces from a foreign data dir stay invisible without checks.
+ *  - Listings filter out spares, but the startup sweep can still look up a
+ *    dead spare's row.
+ *  - The row is written before the runtime starts, so every runtime has
+ *    one; a runtime without a row is invisible to everything that reads
+ *    recorded state.
+ *  - A stop never deletes a row: rows with `stoppedAt` are the stopped
+ *    listing, and a restart clears it. Rows are deleted only when the project
+ *    is removed (`deleteProjectWorkspaces`) or a create that never came up
+ *    rolls back (`deleteWorkspaceRow`).
  *
- * `recordWorkspaceCreated` propagates its failures: the row is what makes a
- * pod a session, so a create that can't record one has not created a
- * session and must not report success. Every other write is best-effort in
- * the same sense the old stores were — a lost title or stop stamp degrades
- * a listing, and must never block a teardown. Reads propagate; a broken DB
- * there is a real error.
+ * `recordWorkspaceCreated` throws on failure, since a create without a row
+ * must not report success. Most other writes are best-effort: a lost title
+ * or stop stamp degrades a listing but must never block a teardown. Reads
+ * propagate errors.
  */
 
 /** A workspace row as the display paths consume it. */
@@ -57,22 +48,22 @@ export interface WorkspaceRow {
   createdAt: Date
   title?: string
   baseBranch?: string
-  /** The sidebar group it is filed under; absent is the default list. */
+  /** The sidebar group it is filed under; absent means ungrouped. */
   groupId?: string
   stoppedAt?: Date
   deathReason?: WorkspaceDeathReason
   deathDetail?: string
   deathSeen: boolean
-  /** An unclaimed prewarmed spare. Only the point reads surface one — every
-   *  listing here filters them out. */
+  /** An unclaimed prewarmed spare. Only point reads return one; listings
+   *  filter them out. */
   spare: boolean
-  /** When the pod currently hosting it came up, if one is. */
+  /** When its current runtime came up, if it has one. */
   lifeStartedAt?: Date
-  /** The permission posture its agents run under, as last reported — what a
-   *  restart relaunches in and what `yaac-mama create` caps a sibling at. */
+  /** Its agents' last reported permission mode: what a restart relaunches in
+   *  and what `yaac-mama create` caps a sibling at. */
   permissionMode: PermissionMode
-  /** The model and agent mode its first agent launched with — what a spare
-   *  claim matches against. Absent on rows older than the columns. */
+  /** The first agent's launch model and agent mode, which a spare claim
+   *  matches against. Absent on rows older than these columns. */
   model?: string
   mode?: AgentMode
 }
@@ -83,11 +74,10 @@ export interface WorkspaceCreatedInput {
   workspaceId: string
   /** Branch the workspace forked from. */
   baseBranch?: string
-  /** Record it as an unclaimed prewarmed spare. Set only by warming; the
-   *  flag is never cleared here, because clearing it is a claim and a claim
-   *  must be able to fail (see `claimSpareWorkspace`). */
+  /** Record it as an unclaimed prewarmed spare. Set only when warming; only
+   *  `claimSpareWorkspace` clears it. */
   spare?: boolean
-  /** The permission posture its agents launch in. */
+  /** The permission mode its agents launch in. */
   permissionMode?: PermissionMode
   /** The model and agent mode its first agent launches with. */
   model?: string
@@ -116,25 +106,20 @@ function toRow(r: Row): WorkspaceRow {
   }
 }
 
-/** Every read but the point lookups excludes unclaimed spares: a spare is
- *  not a workspace, and nothing that lists, counts, or reaps workspaces should
- *  see one. */
+/** Every read except point lookups excludes unclaimed spares, which are not
+ *  workspaces yet. */
 const notSpare = eq(workspaces.spare, false)
 
 const key = (projectSlug: string, workspaceId: string) =>
   and(eq(workspaces.projectSlug, projectSlug), eq(workspaces.workspaceId, workspaceId))
 
 /**
- * Record a workspace as created — a plain INSERT, because a workspace id is
- * claimed exactly once. Posting an id that is already taken, in this project
- * or any other, is a `CONFLICT` that leaves the existing row as it was: an
- * upsert here re-stamped the live workspace, and the create's own failure
- * path then tore that workspace down as if it were its own.
+ * Record a workspace as created: a plain INSERT, since an id is claimed once.
+ * An id already taken in any project is a `CONFLICT` that leaves the existing
+ * row alone (an upsert would let the failing create tear down the existing
+ * workspace as its own).
  *
- * Throws on a failed write, and callers must treat that as a failed create:
- * a pod with no row is invisible to everything that reads recorded state
- * (the stopped listing, restart, titles), so handing one back would be
- * worse than failing.
+ * Throws on failure; callers must treat that as a failed create.
  */
 export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Promise<void> {
   const db = await getDb()
@@ -143,9 +128,6 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
       projectSlug: input.projectSlug,
       workspaceId: input.workspaceId,
       ...(input.baseBranch !== undefined ? { baseBranch: input.baseBranch } : {}),
-      // Only ever set here, never cleared: a claim is what clears it, and it
-      // has to be able to fail loudly (a silently-missed flip would leave a
-      // real workspace looking reapable).
       ...(input.spare === true ? { spare: true } : {}),
       ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
@@ -159,16 +141,12 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
 }
 
 /**
- * Record a stopped workspace as coming back up: re-stamp the live fields and
- * clear the previous life's stop — a restarted workspace must not keep showing
- * as stopped (or as having died). `createdAt`, the title and the sidebar
- * group are deliberately left alone; they belong to the workspace, not to one
- * of its lives — which is what puts a restarted workspace back in the group
- * its ghost row was sitting in.
+ * Record a stopped workspace as restarting: update the launch fields and
+ * clear the stop and death. `createdAt`, title and group are kept, so the
+ * workspace returns to its group.
  *
- * Never inserts. A stop keeps its row, so a restartable workspace always has
- * one; a pod whose row is missing is one yaac has no record of (a reset or
- * restored DB), and `NOT_FOUND` is the right answer for it.
+ * Never inserts. Stopped workspaces keep their rows, so a missing row (for
+ * example after a DB reset) is `NOT_FOUND`.
  */
 export async function recordWorkspaceResumed(
   input: Pick<WorkspaceCreatedInput, 'projectSlug' | 'workspaceId' | 'permissionMode' | 'model' | 'mode'>,
@@ -190,21 +168,17 @@ export async function recordWorkspaceResumed(
 }
 
 /**
- * Turn an unclaimed spare into a workspace: clear the flag, and stamp what the
- * claimant is handed — the base branch the claim resolved and the launch the
- * agent now runs (posture, mode, model), with no stop or death from before.
- * `createdAt` becomes the claim time: the workspace is born when someone is
- * handed it, not when the pool warmed it, so the sidebar's age and order
- * match the request that made it. An UPDATE of the spare's own row, never a
- * second insert: warming claimed the id, and this hands that row over.
+ * Turn an unclaimed spare into a workspace: clear the flag, clear any stop
+ * or death, and stamp the claimed launch (permission mode, model, agent
+ * mode). `createdAt` becomes the claim time, so the sidebar's age and order
+ * match the request. (The base branch arrives separately, via
+ * `base-branch-resolved`.)
  *
- * The one spare write a caller must be able to fail on. The startup sweep
- * DELETES a checkout on the strength of `spare = true`, so a silently-lost
- * flip would leave a real workspace — one a user is about to be handed —
- * marked reapable, and the next server start would take their work with it.
- * So this throws where every other spare write shrugs — including when no
- * unclaimed spare row matched — and the claim runs it before touching the
- * spare, so a failure costs nothing but a cold create.
+ * Unlike other spare writes, this throws on failure, including when no
+ * unclaimed spare matched: the startup sweep deletes checkouts marked
+ * `spare`, so a lost update would later delete the user's work. The claim
+ * runs this before touching the spare, so a failure only costs a cold
+ * create.
  */
 export async function claimSpareWorkspace(
   projectSlug: string,
@@ -231,10 +205,8 @@ export async function claimSpareWorkspace(
 }
 
 /**
- * Forget a reaped spare. Guarded on the flag inside the query, so the sweep
- * that calls it cannot delete a real workspace's row even if it asks: the
- * cost of being wrong is a checkout the user expected to restart into, and
- * the guard belongs next to the column rather than at the call site.
+ * Delete a reaped spare's row. The query itself requires `spare = true`, so
+ * it can never delete a real workspace's row.
  */
 export async function deleteSpareWorkspaceRow(
   projectSlug: string,
@@ -245,37 +217,26 @@ export async function deleteSpareWorkspaceRow(
 }
 
 /**
- * Put a claimed spare back to being a spare — the rollback for a claim that
- * failed before it touched the pod. Everything the claim stamped goes back
- * to `warmed`, the row as it was read before the claim: the next claim
- * decides from `model` and `permissionMode` whether the booted agent can be
- * handed over as-is, so a row still carrying the failed claim's launch would
- * hand over an agent running in another posture than the row says.
+ * Roll back a claim that failed before touching the runtime: restore the row
+ * to `warmed` (as read before the claim). The next claim checks `model` and
+ * `permissionMode` to decide if the running agent can be handed over, so the
+ * failed claim's values must not remain. Deleting the row instead would make
+ * the spare unreapable, since the sweep finds dead spares through
+ * `listProjectWorkspaceIds`.
  *
- * Without this the row would have to be deleted, and a spare pod whose row is
- * gone is unreapable: `listProjectWorkspaceIds` is what the sweep collects a
- * dead spare's checkout on, so a rowless one would keep its checkout forever.
- * Re-flagging hands the pod back to the ordinary spare lifecycle instead —
- * a later claim can take it, and if none does the sweep collects it.
+ * Also deletes the conversations the claim recorded. Otherwise a later claim
+ * for a different tool would inherit an active ordinal-0 conversation (where
+ * the tool and founding prompt are read), and nothing else would prune it.
  *
- * The conversation the claim recorded goes too, because a spare has none: its
- * warm-time agent is pinned to its own id and belongs to nobody. Left behind,
- * that link would be an active ordinal-0 conversation on a workspace that does
- * not exist yet — and ordinal 0 is where the workspace's tool and founding ask
- * are read from, so a later claim for a *different* tool would inherit it.
- * Nothing else would ever collect it either: a spare reaped unclaimed is not
- * a failed create, so no rollback prunes its links.
- *
- * Best-effort, unlike the claim: this runs while a claim is already failing,
- * and the caller is about to fall back to a cold create either way.
+ * Best-effort: the caller falls back to a cold create either way.
  */
 export async function restoreSpareWorkspace(warmed: WorkspaceRow): Promise<void> {
   const { projectSlug, workspaceId } = warmed
   try {
     await deleteWorkspaceAgentSessions(projectSlug, workspaceId)
   } catch {
-    // Non-fatal, and separately caught so it cannot skip the flag below —
-    // the flag is what makes the pod reapable at all.
+    // Caught separately so it can't skip restoring the flag, which is what
+    // makes the spare reapable.
   }
   try {
     const db = await getDb()
@@ -293,22 +254,15 @@ export async function restoreSpareWorkspace(warmed: WorkspaceRow): Promise<void>
 }
 
 /**
- * Record that a pod has come up for this workspace, and invalidate every
- * handle the previous one left behind — in one transaction, because the two
- * are the same fact.
+ * Record that a new runtime (a "life") has come up, and clear every handle
+ * the previous life recorded, in one transaction. Handles restart with each
+ * life (tmux pane ids at `%0`, acpd sockets at the tool's name), so an old
+ * handle would name something in the new life, and the ACP driver
+ * re-addresses conversations by recorded handle
+ * (`recordedConversationHandles`).
  *
- * A **life** is one pod. Handles restart with it — tmux pane ids at `%0`,
- * acpd sockets at the tool's name — so a handle the last life recorded would
- * name one *this* life owns, and the ACP driver re-addresses a conversation
- * by its recorded handle (`recordedConversationHandles`). Clearing them as
- * the life is stamped is what makes that impossible, and doing it atomically
- * is what stops a crash between the two halves from leaving stale handles
- * against a fresh life.
- *
- * Propagates its failures. Every other write here is best-effort, but a life
- * that was not stamped leaves a dead pod's panes on the rows, which is
- * exactly the corruption this exists to prevent — the create should fail
- * instead.
+ * Throws on failure, unlike most writes here: stale handles are the
+ * corruption this prevents, so the create should fail instead.
  */
 export async function recordWorkspaceLife(
   projectSlug: string,
@@ -329,13 +283,12 @@ export async function recordWorkspaceLife(
 }
 
 /**
- * Stamp the stop time, plus the cause when a reaper (not the user) tore the
- * session down. Always writes the death columns so a reused id can't
- * inherit a stale cause, and resets `deathSeen` so a re-died workspace
- * re-flags the notification.
+ * Stamp the stop time, plus the cause when a reaper (not the user) stopped
+ * it. Always writes the death columns so a stale cause can't carry over, and
+ * resets `deathSeen` so a new death shows the notification again.
  *
- * Deliberately does not touch `workspace_agent_sessions.active`: freezing
- * that set as the pod's last observed state is what a restart reads back.
+ * Leaves `workspace_agent_sessions.active` alone: that last observed set is
+ * what a restart brings back.
  */
 export async function recordWorkspaceStopped(
   projectSlug: string,
@@ -355,8 +308,8 @@ export async function recordWorkspaceStopped(
   }
 }
 
-/** The stop state a row carried before a restart re-stamped it live —
- *  captured so a failed restart can put it back exactly as it was. */
+/** A row's stop state before a restart cleared it, so a failed restart can
+ *  restore it. */
 export interface PriorStop {
   stoppedAt: Date
   deathReason?: WorkspaceDeathReason
@@ -364,8 +317,7 @@ export interface PriorStop {
   deathSeen: boolean
 }
 
-/** The prior stop of a row, if it had one. Read before a restart clears
- *  it, so the restart's rollback has something to restore. */
+/** The row's stop state, if it is stopped. */
 export function priorStopOf(row: WorkspaceRow | undefined): PriorStop | undefined {
   if (row?.stoppedAt === undefined) return undefined
   return {
@@ -377,11 +329,9 @@ export function priorStopOf(row: WorkspaceRow | undefined): PriorStop | undefine
 }
 
 /**
- * Put a row's stop back the way a restart found it. Distinct from
- * `recordWorkspaceStopped`, which stamps a *new* stop: that would replace
- * the recorded cause with nothing (an OOM-killed session whose restart
- * fails would forget it died of OOM) and re-raise the notification the user
- * already dismissed.
+ * Restore a row's stop as the restart found it. `recordWorkspaceStopped`
+ * would instead drop the recorded cause (e.g. an OOM) and re-raise a
+ * notification the user already dismissed.
  */
 export async function restoreWorkspaceStop(
   projectSlug: string,
@@ -397,7 +347,7 @@ export async function restoreWorkspaceStop(
       deathSeen: prior.deathSeen,
     }).where(key(projectSlug, workspaceId))
   } catch {
-    // Non-fatal: the reaper records a row whose pod never arrived.
+    // Non-fatal: the reaper handles a row whose runtime never arrived.
   }
 }
 
@@ -415,8 +365,8 @@ export async function clearWorkspaceStopped(
       deathSeen: false,
     }).where(key(projectSlug, workspaceId))
   } catch {
-    // Non-fatal — a running workspace is excluded from the stopped listing by
-    // its pod anyway.
+    // Non-fatal: a running workspace is excluded from the stopped listing
+    // anyway.
   }
 }
 
@@ -426,14 +376,13 @@ export async function recordDeathSeen(projectSlug: string, workspaceId: string):
     const db = await getDb()
     await db.update(workspaces).set({ deathSeen: true }).where(key(projectSlug, workspaceId))
   } catch {
-    // Non-fatal — a lost write just re-shows the dot.
+    // Non-fatal: a lost write just re-shows the dot.
   }
 }
 
 /**
- * Mark every recorded abnormal death in a project seen (the user dismissed
- * the whole stopped-workspaces notification at once). Scoped to rows that
- * actually died, so it can't pre-acknowledge a death that hasn't happened.
+ * Mark every recorded abnormal death in a project as seen ("mark all as
+ * read"). Only rows that actually died are touched.
  */
 export async function recordAllDeathsSeen(projectSlug: string): Promise<void> {
   try {
@@ -443,17 +392,14 @@ export async function recordAllDeathsSeen(projectSlug: string): Promise<void> {
       isNotNull(workspaces.deathReason),
     ))
   } catch {
-    // Non-fatal — a lost write just re-shows the dot.
+    // Non-fatal: a lost write just re-shows the dot.
   }
 }
 
 /**
- * Record the bearer this workspace's `yaac-mama` will present, as a SHA-256
- * of the token itself.
- *
- * Written at launch by the runtimes whose workspaces reach the server
- * directly; nothing reads it back but `findWorkspaceByMamaToken`. No
- * notification: it changes nothing anyone renders.
+ * Store the SHA-256 of the bearer token this workspace's `yaac-mama` will
+ * present. Written at launch for runtimes whose workspaces reach the server
+ * directly (containerless). No notification, since nothing rendered changes.
  */
 export async function setWorkspaceMamaTokenHash(
   projectSlug: string,
@@ -465,14 +411,10 @@ export async function setWorkspaceMamaTokenHash(
 }
 
 /**
- * Which workspace presented this token, if any — the containerless
- * attribution step, standing where the proxy's source-IP lookup stands under
- * k8s.
- *
- * Takes the token and hashes it here rather than taking a hash, so no caller
- * can be handed the shape of what is stored. A stopped workspace still
- * matches: its tmux server may be gone, but a request arriving on its token
- * is still *from* it, and the commands are scoped by project either way.
+ * Which workspace owns this `yaac-mama` token, if any. Under containerless
+ * this identifies the caller, as the proxy's source-IP lookup does under k8s.
+ * Hashes the token here so callers never handle the stored form. A stopped
+ * workspace still matches; commands are project-scoped either way.
  */
 export async function findWorkspaceByMamaToken(
   token: string,
@@ -489,10 +431,9 @@ export async function findWorkspaceByMamaToken(
 
 /**
  * Set (or, with a blank title, clear) a workspace's display title.
- *
- * `ifUntitled` makes the write conditional on the row still having no title,
- * checked in the same statement — what the title generator uses so a rename
- * landing while its model runs is never overwritten.
+ * `ifUntitled` writes only if the row still has no title, checked in the same
+ * statement, so the title generator never overwrites a rename made while it
+ * ran.
  */
 export async function setWorkspaceTitle(
   projectSlug: string,
@@ -510,8 +451,7 @@ export async function setWorkspaceTitle(
   notifyWorkspaceListChanged()
 }
 
-/** Every row of a project, keyed by workspace id — one query per project per
- *  list build, replacing the per-session transcript parse + git config read. */
+/** Every row of a project, keyed by workspace id, in one query. */
 export async function getProjectWorkspaceRows(
   projectSlug: string,
 ): Promise<Map<string, WorkspaceRow>> {
@@ -532,9 +472,9 @@ export async function listWorkspaceRows(projectSlug?: string): Promise<Workspace
 }
 
 /**
- * A workspace's row by its exact id, in whichever project holds it — ids are
- * unique across projects. Unclaimed spares are not workspaces and never match.
- * Prefix expansion is `resolveWorkspace`'s, in domain, never this.
+ * A workspace's row by exact id, in whichever project holds it (ids are
+ * unique across projects). Unclaimed spares never match. Prefix matching is
+ * done by `resolveWorkspace` in domain.
  */
 export async function findWorkspaceRow(workspaceId: string): Promise<WorkspaceRow | undefined> {
   if (workspaceId === '') return undefined
@@ -544,9 +484,7 @@ export async function findWorkspaceRow(workspaceId: string): Promise<WorkspaceRo
   return rows[0] ? toRow(rows[0]) : undefined
 }
 
-/** One workspace's row, or undefined. The point read the reaper and any
- *  (slug, id)-keyed caller wants — the table only grows, so `listWorkspaceRows`
- *  is the wrong tool for asking about one workspace. */
+/** One workspace's row, or undefined. Includes spares. */
 export async function getWorkspaceRow(
   projectSlug: string,
   workspaceId: string,
@@ -556,9 +494,8 @@ export async function getWorkspaceRow(
   return rows[0] ? toRow(rows[0]) : undefined
 }
 
-/** Workspace ids that carry a recorded stop — what the stale reaper needs to
- *  tell its own teardown from an out-of-band one, without loading every row
- *  (prompts included) on every tick. */
+/** `<slug>/<id>` of workspaces with a recorded stop, which the stale reaper
+ *  uses to tell its own teardowns from out-of-band ones. */
 export async function listStoppedWorkspaceIds(): Promise<Set<string>> {
   const db = await getDb()
   const rows = await db.select({
@@ -569,9 +506,8 @@ export async function listStoppedWorkspaceIds(): Promise<Set<string>> {
 }
 
 /**
- * Roll back the insert of a create that failed: the workspace never came up,
- * so it should leave no trace. Scoped to that — a workspace that ever ran is
- * recorded as stopped, never removed.
+ * Roll back a failed create's insert. Only for workspaces that never came
+ * up; one that ran is recorded as stopped instead.
  */
 export async function deleteWorkspaceRow(
   projectSlug: string,
@@ -581,9 +517,8 @@ export async function deleteWorkspaceRow(
   await db.delete(workspaces).where(key(projectSlug, workspaceId))
 }
 
-/** Record the branch the workspace forked from, once provisioning resolves
- *  it. Split from the create insert so the row can exist before the Job
- *  without waiting on the (concurrent) workspace checkout. */
+/** Record the branch the workspace forked from, for a claimed spare that was
+ *  re-branched. */
 export async function setWorkspaceBaseBranch(
   projectSlug: string,
   workspaceId: string,
@@ -593,12 +528,12 @@ export async function setWorkspaceBaseBranch(
     const db = await getDb()
     await db.update(workspaces).set({ baseBranch }).where(key(projectSlug, workspaceId))
   } catch {
-    // Non-fatal: the session runs, and its fork branch falls back to the
-    // checkout's own upstream (workspaceForkBranch).
+    // Non-fatal: the fork branch falls back to the checkout's upstream
+    // (workspaceForkBranch).
   }
 }
 
-/** Record a posture the running agent moved to. */
+/** Record the permission mode the running agent moved to. */
 export async function setWorkspacePermissionMode(
   projectSlug: string,
   workspaceId: string,
@@ -609,16 +544,14 @@ export async function setWorkspacePermissionMode(
 }
 
 /**
- * Workspaces recorded as live (no recorded stop) — the reaper's input for
- * spotting a row whose pod is gone. `ran` says whether the agent ever got
- * going: a captured opening message or a transcript on disk can only exist
- * if it did, which is what separates an interrupted create from a workspace
- * with history whose Job was removed out-of-band.
+ * Workspaces with no recorded stop, which the reaper checks for a missing
+ * runtime. `ran` is true if the agent ever started (a captured opening
+ * message or transcript exists), separating an interrupted create from a
+ * workspace whose runtime was removed out-of-band.
  *
- * Unclaimed spares are excluded, and that exclusion is load-bearing: the
- * reaper tears down anything in this set whose pod it cannot find, and a
- * warm spare's pod is deliberately not a workspace pod. Their own sweep
- * (`listProjectWorkspaceIds`) collects them.
+ * Unclaimed spares must be excluded: the reaper tears down anything here
+ * without a workspace runtime. Spares have their own sweep
+ * (`listProjectWorkspaceIds`).
  */
 export async function listLiveWorkspaceRows(): Promise<Array<{
   projectSlug: string
@@ -630,13 +563,8 @@ export async function listLiveWorkspaceRows(): Promise<Array<{
     projectSlug: workspaces.projectSlug,
     workspaceId: workspaces.workspaceId,
   }).from(workspaces).where(and(isNull(workspaces.stoppedAt), notSpare))
-  // Two queries rather than a correlated subquery: the link table is small
-  // (one row per conversation) and this stays readable.
-  //
-  // The *existence* of a link proves nothing — session create records one up
-  // front, before the agent is launched. Evidence that the agent actually ran
-  // is a captured opening message or a transcript on disk; without either,
-  // the create was interrupted before the agent got going.
+  // A link alone proves nothing, since create records one before launching
+  // the agent; a prompt or transcript does.
   const links = await db.select({
     projectSlug: workspaceAgentSessions.projectSlug,
     workspaceId: workspaceAgentSessions.workspaceId,
@@ -658,17 +586,13 @@ export async function listLiveWorkspaceRows(): Promise<Array<{
 }
 
 /**
- * Every workspace id of a project, each mapped to whether it is an unclaimed
- * spare — what the orphan sweep collects a dead spare's checkout on the
- * strength of, and what it tells a surviving log from a stray by.
+ * Every workspace id of a project, mapped to whether it is an unclaimed
+ * spare. The orphan sweep uses this to delete dead spares' checkouts: on disk
+ * a reaped spare and a stopped workspace look the same, and deleting the
+ * wrong one loses the user's uncommitted work.
  *
- * The question a spare's row exists to answer: once its pod is gone, a
- * reaped spare and a stopped workspace look identical on disk, and deleting
- * the wrong one takes a user's uncommitted work with it.
- *
- * One id-only read for the whole project, not a lookup per candidate: the
- * sweep runs every resync, and PGlite answers on the event loop, so a query
- * per stopped workspace stalls every terminal the server is relaying.
+ * One query for the whole project, since PGlite runs on the event loop and a
+ * query per candidate would stall terminal relaying.
  */
 export async function listProjectWorkspaceIds(projectSlug: string): Promise<Map<string, boolean>> {
   const db = await getDb()
@@ -679,12 +603,8 @@ export async function listProjectWorkspaceIds(projectSlug: string): Promise<Map<
 }
 
 /**
- * Forget a project's workspaces. The other delete in this module, and it is
- * the project going away — not a workspace: `project remove` takes the
- * checkouts and transcripts with it, so leaving the rows would list
- * workspaces whose restart resolves into a directory that no longer exists.
- * Its conversations go too, via `deleteProjectAgentSessions` — the caller
- * runs both, since the two tables live in different stores.
+ * Delete a project's workspace rows, on project removal (which also deletes
+ * the checkouts). The caller also runs `deleteProjectAgentSessions`.
  */
 export async function deleteProjectWorkspaces(projectSlug: string): Promise<void> {
   const db = await getDb()

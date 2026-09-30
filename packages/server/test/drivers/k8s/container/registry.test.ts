@@ -27,12 +27,10 @@ const FORWARD_PORT = 41234
 /** Set to fail the port-forward the way a missing Deployment does. */
 let forwardFails = false
 
-// The process boundary in both directions: `spawn` covers the kubectl
-// port-forward child AND the tracked podman push, so the port-forward
-// module underneath runs for real rather than being stubbed out.
+// `spawn` fakes both the kubectl port-forward and the podman push, so the
+// port-forward module runs for real.
 vi.mock('node:child_process', () => ({
-  // The barrel pulls in runtime.ts, which reaches kubectl.ts; both promisify
-  // a child_process binding at module eval. Only the two below are called.
+  // Other barrel modules promisify `exec` at load time; it is never called.
   exec: vi.fn(),
   execFile: (
     file: string,
@@ -78,8 +76,7 @@ vi.mock('node:child_process', () => ({
   },
 }))
 
-// serverLog/pipeToServerLog write files / wire up stream piping — silence
-// them so the spawn fake above can stay minimal.
+// Silenced so the spawn fake above can stay minimal.
 vi.mock('#log', () => ({
   serverLog: vi.fn(),
   pipeToServerLog: vi.fn(),
@@ -97,9 +94,7 @@ import {
   registryRef,
   registryTagState,
 } from '#drivers/k8s/container'
-// State-reset hooks for the shared port-forward registry and the memoized
-// grant key (module state that would otherwise leak between cases), not
-// units under test.
+// State-reset hooks, not units under test.
 import { _resetPortForwardsForTests } from '#drivers/k8s/substrate/port-forward'
 import { _resetRegistryGrantKeyForTests } from '#drivers/k8s/container/registry-grant'
 
@@ -110,10 +105,9 @@ const GRANT_SECRET = JSON.stringify({
 })
 
 /**
- * A push's `--authfile`, checked the way the registry's write gate checks
- * its grant: for the engine's endpoint, signed by the cluster key,
- * unexpired, and for every repo (`*`). Private while it exists, and gone
- * once the push is.
+ * Check a push's `--authfile` the way the registry's write gate checks a
+ * grant: for the engine's endpoint, signed by the cluster key, unexpired,
+ * and for every repo (`*`). The file is mode 0600 and deleted after the push.
  */
 function expectAdminAuthFile(push: SpawnedChild, endpoint: string): void {
   const authFile = push.authFile!
@@ -146,25 +140,20 @@ const fetchMock = vi.fn<typeof fetch>()
 const CLUSTER_HOST = 'yaac-registry.yaac.svc.cluster.local:5000'
 /** Where this process reaches it: the fake port-forward's local end. */
 const ENDPOINT = `127.0.0.1:${FORWARD_PORT}`
-/**
- * Where the podman ENGINE reaches it under podman machine — same forwarded
- * port, host swapped for the VM's alias of the host loopback.
- */
+/** Where podman reaches it under podman machine: the VM's alias for the host. */
 const VM_ENDPOINT = `host.containers.internal:${FORWARD_PORT}`
 
 const realPlatform = process.platform
 
 /**
- * Pin the host platform: it is what decides whether podman shares this
- * process's netns (Linux) or runs in a VM (macOS), and therefore which
- * address a push target carries. Pinned in `beforeEach` so the suite asserts
- * one platform's behaviour at a time rather than the developer's.
+ * Pin the host platform, which decides whether podman shares this process's
+ * network (Linux) or runs in a VM (macOS), and so which push address it gets.
  */
 function stubPlatform(platform: NodeJS.Platform): void {
   Object.defineProperty(process, 'platform', { value: platform, configurable: true })
 }
 
-/** Only the podman children (the port-forward child is not a push). */
+/** The podman children, excluding the port-forward. */
 function podmanPushes(): SpawnedChild[] {
   return spawnedChildren.filter((c) => c.file === 'podman')
 }
@@ -201,8 +190,8 @@ function fetchResponse(init: { ok: boolean; status?: number }): Response {
 
 describe('registryHost', () => {
   it('is the registry Service FQDN in the default namespace', () => {
-    // Pinned to the DEFAULT namespace, not k8sNamespace(): per-run e2e
-    // namespaces must keep sharing one image store.
+    // Always the `yaac` namespace, not k8sNamespace(): per-run e2e
+    // namespaces share one image store.
     vi.stubEnv('YAAC_K8S_NAMESPACE', 'yaac-test-abc123')
     expect(registryHost()).toBe(CLUSTER_HOST)
   })
@@ -219,8 +208,7 @@ describe('registryEndpoint', () => {
     await expect(registryEndpoint()).resolves.toBe(ENDPOINT)
     await expect(registryEndpoint()).resolves.toBe(ENDPOINT)
 
-    // One long-lived child per server run, into the Deployment in the
-    // registry's own (default) namespace, on an ephemeral local port.
+    // One long-lived child per server run, on an ephemeral local port.
     expect(forwardArgs()).toEqual([[
       'port-forward', '-n', 'yaac', 'deploy/yaac-registry', '0:5000',
     ]])
@@ -265,11 +253,10 @@ describe('registryReachable', () => {
   it('returns false on other statuses, and re-forwards after a dead transport', async () => {
     fetchMock.mockResolvedValueOnce(fetchResponse({ ok: false, status: 500 }))
     await expect(registryReachable()).resolves.toBe(false)
-    // A 500 is the registry answering, so the forward is fine and kept.
+    // A 500 means the registry answered, so the forward is kept.
     expect(forwardArgs()).toHaveLength(1)
 
-    // A transport error is not: the cached child is dropped so the next
-    // call cannot spend the whole server run talking to a dead forward.
+    // A transport error drops the forward so the next call makes a new one.
     fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'))
     await expect(registryReachable()).resolves.toBe(false)
     fetchMock.mockResolvedValueOnce(fetchResponse({ ok: true }))
@@ -298,8 +285,8 @@ describe('registryHasTag', () => {
     await expect(registryHasTag('yaac-tools:missing')).resolves.toBe(false)
     fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'))
     await expect(registryHasTag('yaac-tools:abc')).resolves.toBe(false)
-    // No route at all reads as "absent" too, so the caller pushes and
-    // fails loudly there rather than skipping a push that never happened.
+    // No route also reads as absent, so the caller pushes and fails loudly
+    // there instead of skipping the push.
     forwardFails = true
     invalidateRegistryEndpoint()
     await expect(registryHasTag('yaac-tools:abc')).resolves.toBe(false)
@@ -312,9 +299,8 @@ describe('registryTagState', () => {
     await expect(registryTagState('yaac-tools:abc')).resolves.toBe('present')
     fetchMock.mockResolvedValueOnce(fetchResponse({ ok: false, status: 404 }))
     await expect(registryTagState('yaac-tools:abc')).resolves.toBe('absent')
-    // Anything short of a 404 is not evidence the tag is gone: a caller
-    // that deletes on absence must not read a slow or restarting registry
-    // as an empty one.
+    // Only a 404 means absent, so a caller that deletes on absence never
+    // mistakes a slow or restarting registry for an empty one.
     fetchMock.mockResolvedValueOnce(fetchResponse({ ok: false, status: 503 }))
     await expect(registryTagState('yaac-tools:abc')).resolves.toBe('unknown')
     fetchMock.mockRejectedValueOnce(new Error('timeout'))
@@ -336,13 +322,12 @@ describe('pushImageToRegistry', () => {
   it('pushes to the local endpoint and returns the CLUSTER ref', async () => {
     fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 404 }))
     const ref = await pushImageToRegistry('yaac-tools:abc')
-    // The two addresses of one registry: podman uploads through the
-    // forwarded loopback port, while the ref a pod pulls is the svc FQDN.
-    // Blob storage is keyed by repository path, so they name the same bytes.
+    // podman uploads through the forwarded loopback port; pods pull by the
+    // Service FQDN. Both name the same repository path.
     expect(ref).toBe(`${CLUSTER_HOST}/yaac-tools:abc`)
     expect(podmanPushes()).toHaveLength(1)
-    // With an admin grant: the registry's write gate refuses a write
-    // without one. In a file, never argv, where any local `ps` reads it.
+    // The write gate needs an admin grant. It goes in a file, not argv,
+    // where `ps` would show it.
     expect(podmanPushes()[0].args.join(' ')).not.toContain('--creds')
     expect(withoutAuthFile(podmanPushes()[0])).toEqual([
       'push', '--tls-verify=false', 'yaac-tools:abc', `${ENDPOINT}/yaac-tools:abc`,
@@ -350,11 +335,9 @@ describe('pushImageToRegistry', () => {
   })
 
   it('targets the VM alias under podman machine, keeping the forwarded port', async () => {
-    // Under podman machine the push runs INSIDE the VM, where 127.0.0.1 is
-    // the VM's own loopback and the forward's host-side listener is refused.
-    // Targeting the loopback there costs three retries per blob, lands
-    // nothing, and leaves registryHasTag() unable to skip the next attempt —
-    // so the endpoint podman gets must differ from the one the server dials.
+    // Under podman machine the push runs inside the VM, where 127.0.0.1 is
+    // the VM's own loopback, so podman needs a different address than the
+    // server dials.
     stubPlatform('darwin')
     fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 404 }))
     const ref = await pushImageToRegistry('yaac-tools:abc')
@@ -362,12 +345,10 @@ describe('pushImageToRegistry', () => {
     expect(withoutAuthFile(podmanPushes()[0], VM_ENDPOINT)).toEqual([
       'push', '--tls-verify=false', 'yaac-tools:abc', `${VM_ENDPOINT}/yaac-tools:abc`,
     ])
-    // The host is swapped, the PORT is not: it is a host port either way, and
-    // a second forward would hand podman a port nothing is listening on.
+    // Same port, and no second forward.
     expect(podmanPushes()[0].args.at(-1)).toContain(`:${FORWARD_PORT}/`)
     expect(forwardArgs()).toHaveLength(1)
-    // The server's OWN reachability check keeps using the loopback — the two
-    // endpoints are resolved separately and must not collapse into one.
+    // The server's own check still uses the loopback.
     expect(fetchMock.mock.calls[0][0]).toContain(ENDPOINT)
   })
 
@@ -377,7 +358,7 @@ describe('pushImageToRegistry', () => {
     await expect(pushImageToRegistry('yaac-tools:abc')).rejects.toThrow(
       'podman push exited with code 125',
     )
-    // The grant does not outlive a failed push either.
+    // The grant file is removed after a failed push too.
     expect(fs.existsSync(podmanPushes()[0].authFile!.path)).toBe(false)
   })
 
@@ -394,8 +375,8 @@ describe('pushImageToRegistry', () => {
     fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 404 }))
     const onLog = vi.fn()
     await pushImageToRegistry('yaac-tools:abc', { onLog })
-    // The runner wraps `onLog` (it keeps a tail for failure messages), so
-    // the thread-through is asserted by driving a line through the wrapper.
+    // The runner wraps `onLog` to keep a tail for error messages, so drive
+    // a line through the wrapper.
     const piped = vi.mocked(pipeToServerLog).mock.calls
       .filter((c) => c[1] === '[push yaac-tools:abc] ').at(-1)
     expect(piped).toBeDefined()

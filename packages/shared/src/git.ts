@@ -5,16 +5,12 @@ import { env } from '#env'
 const execFileAsync = promisify(execFile)
 
 /**
- * ssh does not honor ALL_PROXY / HTTPS_PROXY, so Tor routing for ssh has
- * to go through `-o ProxyCommand=...`. OpenBSD `nc -X 5 -x` passes the
- * destination hostname unchanged to the SOCKS5 proxy, so Tor resolves DNS
- * at its exit (no local-DNS leak). Whatever runs the server must ship
- * OpenBSD `nc` — macOS does, and Dockerfile.server installs
- * `netcat-openbsd` for the in-cluster server.
- *
- * Note: these opts must NOT be passed to `ssh-keyscan` — its `-O` flag
- * only accepts `hashalg`, not ProxyCommand. For host-key fetches under
- * Tor, drive `ssh` instead (see fetchKnownHostsEntry in #domain/git).
+ * ssh options that route through Tor when `YAAC_USE_TOR` is set. ssh
+ * ignores proxy env vars, so this uses a ProxyCommand with OpenBSD `nc`,
+ * which passes the hostname to the SOCKS5 proxy so DNS resolves at the Tor
+ * exit. Requires OpenBSD `nc` (macOS has it; Dockerfile.server installs
+ * it). `ssh-keyscan` cannot take these options (see fetchKnownHostsEntry
+ * in #domain/git).
  */
 export function torSshOpts(): string[] {
   if (!env.useTor) return []
@@ -25,12 +21,9 @@ export function torSshOpts(): string[] {
 }
 
 /**
- * Join ssh argv into a GIT_SSH_COMMAND string. git tokenizes that env var
- * with shell rules, so an arg containing spaces (e.g. a ProxyCommand value)
- * must be quoted or it word-splits — ssh then sees garbage flags and runs
- * a truncated ProxyCommand. POSIX single-quote escape: replace `'` with
- * `'\''` and wrap in `'…'`. We only quote args that need it so the result
- * stays readable.
+ * Join ssh argv into a GIT_SSH_COMMAND string. git splits that value with
+ * shell rules, so args containing spaces or shell characters (such as a
+ * ProxyCommand) are single-quoted.
  */
 export function formatSshCommand(args: string[]): string {
   return args.map(shellQuoteArg).join(' ')
@@ -42,9 +35,8 @@ function shellQuoteArg(s: string): string {
 }
 
 /**
- * Read the user's global git identity. Returns `null` if either
- * `user.name` or `user.email` is unset, or if `git` itself fails —
- * the answer `seedGitIdentityFromShell` hands the server.
+ * The user's global git name and email, or `null` if either is unset or
+ * `git` fails.
  */
 export async function getGitUserConfig(): Promise<{ name: string; email: string } | null> {
   const read = async (key: string): Promise<string> =>
@@ -54,7 +46,6 @@ export async function getGitUserConfig(): Promise<{ name: string; email: string 
     if (name && email) return { name, email }
     return null
   } catch {
-    // unset (`--get` exits 1), or no git at all
     return null
   }
 }

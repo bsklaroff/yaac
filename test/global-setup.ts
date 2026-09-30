@@ -24,24 +24,18 @@ const execFileAsync = promisify(execFile)
 const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 
 /**
- * Build the CLI the suites spawn, then hand them their own copy of it
- * (TEST_CLI_DIR — see packages/test-utils/src/cli.ts). They run the built
- * bundle rather than the source under tsx because a fresh process pays tsx's
- * transpile every time — seconds per spawn, minutes per run — so it has to
- * exist and be current before any worker starts. Building here,
- * unconditionally, is what makes "the suite tested a stale bundle"
- * unrepresentable: an incremental tsup pass is ~200ms, the asset copies a
- * few seconds.
+ * Build the CLI and copy it to TEST_CLI_DIR
+ * (packages/test-utils/src/cli-bundle.ts) for the suites to spawn. A bundle
+ * avoids paying the tsx transpile on every spawn, and building every run
+ * (an incremental pass takes seconds) means the suites never test a stale
+ * bundle.
  *
- * Assets, not just cli.js: the bundle runs in bundled mode (tsup sets
- * YAAC_BUNDLED), where PACKAGE_ROOT is the directory holding cli.js — so the
- * migrations, k8s manifests, builtin skills and workspace-bin scripts must be
- * sitting beside it or a spawned server dies on its first query.
+ * The assets are copied too: in bundled mode PACKAGE_ROOT is the directory
+ * holding cli.js, so the migrations, k8s manifests, builtin skills and
+ * workspace-bin scripts must sit beside it. The SPA is built only if it
+ * never has been, since it is slow and no suite reads it.
  */
 async function buildCliBundle(): Promise<void> {
-  // build:assets copies packages/frontend/dist rather than building it, so a
-  // tree that has never built the SPA needs that first. Only the frontend is
-  // conditional — it is the one slow step, and no suite reads it.
   if (!await fileExists(path.join(REPO_ROOT, 'packages', 'frontend', 'dist', 'index.html'))) {
     await execFileAsync('pnpm', ['build:frontend'], { cwd: REPO_ROOT, maxBuffer: 32 * 1024 * 1024 })
   }
@@ -49,11 +43,8 @@ async function buildCliBundle(): Promise<void> {
     await execFileAsync('pnpm', [script], { cwd: REPO_ROOT, maxBuffer: 32 * 1024 * 1024 })
   }
 
-  // Snapshot it out of dist/ before the workers start. `pnpm watch` builds
-  // into dist/ on every save with `clean: true`, so a save landing mid-run
-  // would delete the binary the suites are spawning; from here on they read
-  // only this copy. Replaced wholesale rather than merged so a rename or a
-  // deletion in dist/ can't leave a stale file behind to be spawned.
+  // Copy out of dist/, which `pnpm watch` wipes on every save. Replace the
+  // copy wholesale so no stale file survives a rename or deletion.
   await fs.rm(TEST_CLI_DIR, { recursive: true, force: true })
   await fs.cp(path.join(REPO_ROOT, 'dist'), TEST_CLI_DIR, { recursive: true })
 }
@@ -68,15 +59,10 @@ async function fileExists(p: string): Promise<boolean> {
 }
 
 /**
- * Remove every podman container this rig's suites left on the host engine.
- * Workspaces run as kubernetes Jobs, so the only such containers are helpers
- * a test ran under podman directly (nested-containers' mock upstream
- * registry) — leaked when a run is interrupted before its afterAll.
- *
- * Selected by the owner label (`testContainerOwnerLabel`), never by image
- * or name prefix: test rigs share one host engine, and a prefix sweep at
- * one rig's setup or teardown would remove a container the other rig's run
- * is using right then.
+ * Remove podman containers this rig's tests started directly on the host
+ * engine (e.g. nested-containers' mock upstream registry) and leaked when a
+ * run was interrupted. Selected by `testContainerOwnerLabel`, not by name,
+ * because several rigs can share one engine.
  */
 async function pruneTestContainers(): Promise<void> {
   let stdout: string
@@ -88,10 +74,8 @@ async function pruneTestContainers(): Promise<void> {
   } catch { return /* podman not ready — main setup will probe again */ }
 
   const names = stdout.split('\n').map((line) => line.trim()).filter(Boolean)
-  // Remove one at a time: a bulk `podman rm` aborts on the first bad
-  // entry, and podman's container store sometimes holds orphan refs to
-  // deleted storage layers ("container not known") that fail rm even
-  // with --ignore. Isolate those so healthy containers still get cleaned.
+  // One at a time: a bulk rm aborts on the first orphan entry ("container
+  // not known"), which fails even with --ignore.
   await Promise.all(names.map((name) =>
     execFileAsync('podman', ['rm', '-f', '--ignore', name])
       .catch(() => {}),
@@ -99,11 +83,9 @@ async function pruneTestContainers(): Promise<void> {
 }
 
 /**
- * Delete leaked per-run test namespaces (`yaac-test-<runId>`) from prior
- * interrupted runs, and the cluster-scoped RBAC each run's netd owns
- * (ClusterRole/Binding names are global, so they do not cascade with the
- * namespace). Cheap best-effort sweep — every error (kubectl missing,
- * cluster unreachable) is swallowed.
+ * Best-effort delete of leftover per-run test namespaces (`yaac-test-*`)
+ * and the cluster-scoped objects they own, which do not go away with the
+ * namespace. Errors (no kubectl, no cluster) are ignored.
  */
 async function cleanupLeakedTestNamespaces(): Promise<void> {
   try {
@@ -121,11 +103,8 @@ async function cleanupLeakedTestNamespaces(): Promise<void> {
       )
     }
   } catch { /* kubectl or cluster absent — nothing to sweep */ }
-  // netd's and the test server's ClusterRole/Binding, and the PVs behind
-  // each file's storage claims, are cluster-scoped, so deleting the
-  // namespace above leaves them behind. Filter on the owning install
-  // namespace — a bare `app=yaac-netd` selector would also match the REAL
-  // install's objects and break the developer's own cluster.
+  // ClusterRoles/Bindings, PVs and StorageClasses. Filter on the install
+  // namespace label so the developer's real install is left alone.
   try {
     const { stdout } = await execFileAsync('kubectl', [
       'get', 'clusterrole,clusterrolebinding,pv,storageclass', '-l', 'app in (yaac-netd,yaac-server)',
@@ -146,106 +125,79 @@ async function cleanupLeakedTestNamespaces(): Promise<void> {
 }
 
 /**
- * Pre-build all container images used by e2e tests, and push them to the
- * local OCI registry so cluster pods can pull them.
+ * Build the CLI, pre-build every image the e2e tests use, and push them to
+ * the local registry so cluster pods can pull them. Each tag is a content
+ * hash of its sources (e.g. yaac-test-base:<hash>), which tests compute the
+ * same way to find the expected tag.
  *
- * Each image is tagged with a content hash of its source files
- * (e.g. yaac-test-base:<hash>). This means the tag itself encodes
- * whether the image is up to date — no label inspection needed.
- * Test code computes the same hash to derive the expected tag.
+ * vitest runs this in its main process, which never sees a project's `env`,
+ * so e2e-byo's env (kind-byo's kubeconfig and data dir) is applied by hand.
  */
 export async function setup(project: TestProject): Promise<void> {
-  // vitest runs this in its main process, which the project's `env` never
-  // reaches — and e2e-byo's env IS its cluster (kind-byo's kubeconfig and
-  // data dir). Without it every step below would talk to whichever
-  // cluster this shell happens to point at.
   if (project.name.startsWith('e2e-byo')) Object.assign(process.env, project.config.env)
-  // kind-byo is not something this setup can stand up: say so before
-  // paying for a build.
   if (testBackend() === 'byo') await requireKindByo()
 
-  // Before anything else, and before the podman gate below: every suite that
-  // loads @yaac/test-utils/cli spawns dist/cli.js, podman or no podman.
+  // Before the podman check: every suite needs the CLI.
   await buildCliBundle()
-  // byo-install-suite drives the kind-byo install itself, whose server
-  // built its own images at install: none of the prebuilts below is
-  // pulled by it, and pushing them all into kind-byo's registry costs more
-  // disk than the rest of the run.
+  // byo-install-suite's install builds its own images, so the prebuilts
+  // would only waste kind-byo registry disk.
   if (project.name === 'e2e-byo-install') return
 
-  // Skip when podman is unavailable — tests that need it will fail on their own.
-  // Build images on the same rootful engine the cluster pulls from — otherwise
-  // they land in a rootless store the kind node can't see.
+  // Use the rootful engine the kind node pulls from. Without podman, skip;
+  // tests that need it fail on their own.
   ensureRootfulPodmanHost()
   let podmanAvailable = false
   try {
     await execFileAsync('podman', ['info', '--format', 'json'])
     podmanAvailable = true
-  } catch { /* not installed or not running — tests that need it will fail */ }
+  } catch { /* not installed or not running */ }
   if (!podmanAvailable) return
 
-  // Wipe leaked build-engine containers from prior runs — orphans whose
-  // conmons died hang the podman service under subsequent build load.
+  // Leaked containers with dead conmons hang podman under build load.
   await pruneTestContainers()
 
-  // --- The trusted chain: base (Dockerfile.default) → tools
-  // (Dockerfile.tools) → nestable (Dockerfile.nestable) ---
-  // Resolved by the same helper the server's chain resolution and `yaac
-  // cluster install` use, under the suite's own `yaac-test` prefix, so the
-  // tags here ARE the tags a test worker looks up — hash composition
-  // cannot drift between the two.
+  // The trusted chain (base -> tools -> nestable), resolved by the same
+  // helper the server and `yaac cluster install` use, so the tags match what
+  // test workers look up.
   const { base, tools, nestable } = await resolveTrustedLayers('yaac-test')
   for (const layer of [base, tools, nestable]) {
     await ensureImageByTag(layer.tag, layer.dockerfile, layer.context, layer.buildArgs)
   }
 
-  // --- Proxy (k8s/proxy/) ---
   const proxyHash = await contextHash(PROXY_DIR)
   const proxyTag = `yaac-test-proxy:${proxyHash}`
   await ensureImageByTag(proxyTag, path.join(PROXY_DIR, 'Dockerfile'), PROXY_DIR)
 
-  // --- netd (k8s/netd/) --- the per-node egress redirect daemon. Built
-  // here like the proxy so no test worker races a build; its Envoy
-  // sidecar is a digest-pinned mirror, handled below.
   const netdHash = await contextHash(NETD_DIR)
   const netdTag = `yaac-test-netd:${netdHash}`
   await ensureImageByTag(netdTag, path.join(NETD_DIR, 'Dockerfile'), NETD_DIR)
 
-  // Session/mock pods pull images from the local registry, not the podman
-  // store — push everything up front so test workers never race a push.
-  // pushImageToRegistry no-ops when the content-hash tag is already there.
+  // Pods pull from the local registry. Push up front so workers never race
+  // a push; already-present tags are skipped.
   if (await registryReachable()) {
-    // The trusted chain goes up zstd-compressed: these are the blobs a
-    // sandboxed builder pod pulls as its parent, and zstd is measurably
-    // faster there (see TRUSTED_PARENT_COMPRESSION).
+    // zstd for the builder pods' parent layers (see
+    // TRUSTED_PARENT_COMPRESSION).
     for (const tag of [base.tag, tools.tag, nestable.tag]) {
       await pushImageToRegistry(tag, { compressionFormat: TRUSTED_PARENT_COMPRESSION })
     }
     for (const tag of [proxyTag, netdTag]) {
       await pushImageToRegistry(tag)
     }
-    // The digest-pinned upstreams every install mirrors: registry:2 for
-    // the per-project registries, netd's Envoy, the builder pods' podman,
-    // the gVisor installer's curl, and the npm cache's Verdaccio.
-    // Pull-or-skip, then push. The installer's curl is unused by any e2e
-    // today — mirrored so a test that does exercise the installer fails on
-    // what it is testing, not a missing image.
+    // Digest-pinned upstreams every install mirrors (registry:2, Envoy,
+    // podman, curl, Verdaccio). curl is unused by e2e today but mirrored so
+    // a future installer test does not fail on a missing image.
     await mirrorPinnedUpstreams()
-    // --- The dev server (dist-test/) --- the k8s tiers no longer spawn a
-    // host server: their server is a Deployment, exactly as an install's is
-    // (docs/server-in-cluster.md), so its image is a prebuilt like every
-    // other. Built from the frozen CLI bundle above, so the image a worker
-    // deploys is the same bundle its `runYaac` calls run.
+    // The k8s tiers' server runs as a Deployment (docs/server-in-cluster.md).
+    // Its image is built from the CLI bundle above, the same one `runYaac`
+    // spawns.
     await buildTestServerImage()
   } else {
     console.log('[global-setup] local registry not reachable — e2e tests requiring a cluster will fail')
   }
 
-  // Reclaim superseded test-image generations. Last, so this run's own
-  // images have already been pushed, and they are passed as a keep set
-  // since on an older checkout they are not the newest built. Skipped
-  // where several test rigs share this engine: there the host runs
-  // `pnpm gc:test-images` while every rig is idle (see gcTestImages).
+  // Reclaim old test-image tags, keeping this run's (on an older checkout
+  // they are not the newest). Skipped on a shared engine, where the host
+  // runs `pnpm gc:test-images` while every rig is idle.
   if (process.env.YAAC_TEST_SHARED_ENGINE !== '1') {
     const ownTags = [base.tag, tools.tag, nestable.tag, proxyTag, netdTag, await testServerImageTag()]
     const retired = await gcTestImages(ownTags).catch((err: unknown) => {

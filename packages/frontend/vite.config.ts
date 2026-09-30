@@ -12,20 +12,17 @@ interface IncomingLike { headers: Record<string, string | string[] | undefined> 
 interface ProxyLike { on(event: string, listener: (out: OutgoingLike, req: IncomingLike) => void): void }
 
 /**
- * The dev server proxies API + WS traffic to the server every client
- * reaches: the selected origin in `server.json` (docs/server-selection.md),
- * or `YAAC_SERVER_URL` to point it elsewhere. Never the lock — under k8s
- * its port is the one the pod binds, which on the host is some unrelated
- * listener. Nothing selected refuses to start, with the message every
- * client prints; select or start a server, then restart the dev server.
+ * The dev server proxies API and WebSocket traffic to the selected server in
+ * `server.json` (docs/server-selection.md), or to `YAAC_SERVER_URL`. It never
+ * uses the lock file's port: under k8s that is the pod's port, not a host
+ * one. With no server selected it refuses to start.
  */
 async function serverProxy() {
   const target = (await resolveServerTarget()).baseUrl
-  // `changeOrigin` rewrites Host to the server's; Origin has to follow it,
-  // because the server admits only a request whose Origin is the origin it
-  // was sent to (`isAllowedOrigin`). Only this dev page's own Origin is
-  // rewritten: anything else — a forwarded dev server on another port — goes
-  // through as sent and is refused, as it would be without the proxy.
+  // `changeOrigin` rewrites Host to the server's, and Origin must match it
+  // because the server only admits same-origin requests (`isAllowedOrigin`).
+  // Only this dev page's own Origin is rewritten; any other Origin passes
+  // through unchanged and is refused, as it would be without the proxy.
   const sameOrigin = {
     target,
     changeOrigin: true,
@@ -37,7 +34,6 @@ async function serverProxy() {
       }
     },
   }
-  // Every route the server answers, HTTP and WebSocket, is under /api.
   return { '/api': { ...sameOrigin, ws: true } }
 }
 
@@ -47,14 +43,11 @@ export default defineConfig(async ({ command }) => ({
   server: {
     port: 1420,
     strictPort: true,
-    // A build proxies nothing, so it needs no server.
     ...(command === 'serve' ? { proxy: await serverProxy() } : {}),
   },
   build: {
-    // The package's own dist; the root build copies it into the publish
-    // artifact (dist/frontend). Building straight into the root dist/ would
-    // couple this build to tsup's clean:true ordering — a bare `tsup` after
-    // a build would silently delete the webapp.
+    // The root build copies this into dist/frontend. Building straight into
+    // the root dist/ would let tsup's clean:true delete the webapp.
     outDir: path.resolve(import.meta.dirname, 'dist'),
     emptyOutDir: true,
   },

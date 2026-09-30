@@ -90,9 +90,9 @@ describe('applyWorkspaceEvent', () => {
     expect(await rowOf('wt-p')).toMatchObject({ model: 'claude-opus-5-5', mode: 'tui' })
   })
 
-  // A workspace id is claimed once, across every project: an upsert here let
-  // a create posting a live workspace's id re-stamp it, then tear it down as
-  // its own when the create failed.
+  // A workspace id is claimed once across all projects: otherwise a create
+  // posting a live workspace's id could re-stamp it and then tear it down
+  // as its own when the create failed.
   it('refuses a fresh create on a taken id, in this project or another, leaving the row be', async () => {
     await applyWorkspaceEvent({ type: 'base-branch-resolved', projectSlug: 'proj', workspaceId: 'wt-1', baseBranch: 'main' })
     await stopped('wt-1', { cause: { reason: 'oom' } })
@@ -294,10 +294,8 @@ describe('applyWorkspaceEvent', () => {
     expect(await rowOf('wt-1')).toBeDefined() // kept, not erased
   })
 
-  // Rows are a snapshot input, and this is the one door they change
-  // through — so it is also the one place they announce themselves. Every
-  // event pushes, whatever it landed in; the hub diffs before broadcasting,
-  // so an event that changed nothing visible costs a rebuild, not a push.
+  // Rows are a snapshot input and this is the only door they change
+  // through, so every event notifies; the hub diffs before broadcasting.
   it('pushes a fresh snapshot for every event it applies', async () => {
     const before = pushes
     await created('wt-2')

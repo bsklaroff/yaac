@@ -1,31 +1,19 @@
-// The public interface of the status feature. Everything outside this
-// directory imports `#runtime/status`; the SEALED_FOLDERS lint rule stops
-// src from reaching past this file. Modules in here import each other by
-// relative path, which is why they are unaffected by that rule.
+// Barrel for `#runtime/status`. It answers two questions about a running
+// workspace: is it still there (tmux/pane liveness probes, terminating
+// marks) and what is its agent doing (the watcher-fed status store). It
+// observes only; teardown calls in here to evict cached state, never the
+// reverse.
 //
-// This feature answers two questions about a running workspace, and only
-// those: *is it still there* (the tmux/pane liveness probes and the
-// terminating marks) and *what is its agent doing* (the watcher-fed status
-// store). It reads pods and talks to tmux; it never creates, restarts or
-// tears anything down. Workspace teardown calls in here to evict what it
-// cached — never the other way round — which is what keeps the dependency
-// on `#domain/workspaces` one-directional.
+// Liveness is tri-state, and `unknown` must never be treated as `dead`: the
+// stale reaper acts on the verdict, so a cluster blip read as death would
+// destroy a healthy workspace. Callers get the tri-state or a safe boolean,
+// never the raw probe.
 //
-// The tri-state liveness verdicts are the reason this is worth sealing.
-// `unknown` must never be flattened into `dead` by a caller: the stale
-// reaper acts on the verdict, so a cluster blip read as death reaps a
-// healthy workspace, Job and all, with no recovery. Callers get
-// the tri-state or the deliberately-safe boolean, never the probe itself.
+// How an agent is observed belongs to its `AgentDriver` (`#runtime/agents`),
+// so the watcher's respawn/backoff logic serves both `tui` and `acp`. The
+// store keys statuses by the driver's opaque conversation handle.
 //
-// What this feature does NOT own is how an agent is observed. That is an
-// `AgentDriver` (`#runtime/agents`), picked per workspace from its mode, so
-// the watcher's respawn/backoff/self-heal is written once and both `tui`
-// and `acp` workspaces run through it. The store keys statuses by the
-// driver's opaque handle for a conversation, never by anything
-// tmux-shaped.
-//
-// Adding a name here widens the interface and obliges a unit test in
-// packages/server/test/features/status/.
+// Each export needs a unit test in packages/server/test/runtime/status/.
 
 export { classifyWorkspaces } from './classify'
 export { observeWorkspaces, type WorkspaceRuntimeReport } from './observe'

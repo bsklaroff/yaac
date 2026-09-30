@@ -3,28 +3,19 @@ import clsx from 'clsx'
 import { NavBackIcon } from '#lib/icons'
 
 /**
- * The two-pane body the full-screen overlays share (skills, stopped workspaces,
- * image builds): a fixed-width master list beside a detail pane that fills the
- * rest.
+ * The list-beside-detail body shared by the full-screen overlays (skills,
+ * stopped workspaces, image builds).
  *
- * Below md there is no room for both — a 20rem list next to a detail pane
- * leaves the detail a few dozen pixels — so the two panes become one screen
- * deep: the list gets the whole overlay until a row is picked, then the detail
- * takes over with a back chevron to the list. Both stay mounted and only the
- * off-screen one is hidden, so going back doesn't refetch or lose scroll.
+ * On small screens only one pane shows: the list until a row is picked, then
+ * the detail with a back chevron. Both stay mounted so going back keeps
+ * scroll and data.
  *
- * `detailOpen` is the caller's "the user picked a row" bit, not "a row is
- * selected" — every one of these overlays auto-selects its first row so the
- * desktop detail pane is never blank, and that auto-pick must not count as a
- * navigation on a phone.
+ * `detailOpen` means the user picked a row, not that one is selected: the
+ * overlays auto-select a row for desktop, and that must not navigate on a
+ * phone.
  *
- * The detail pane is floored at `min-w-0` because a flex item's automatic
- * minimum size is its content's, and what these panes show is exactly the
- * content that has none worth honoring: a conversation's source lines, diffs
- * and fenced blocks are `white-space: pre`, so the column would size itself to
- * the widest line in the transcript, run off the right of the overlay and take
- * the actions at its foot with it. Floored, each of those blocks scrolls
- * inside its own scroller, which is where a long line belongs.
+ * The detail pane is `min-w-0` so wide `white-space: pre` content (diffs,
+ * code blocks) scrolls in its own box instead of widening the column.
  */
 export function MasterDetail({
   detailOpen,

@@ -1,26 +1,22 @@
 /*
- * Shows and verifies the sidebar server chit (ServerBadge.tsx) in real
- * Chromium, and doubles as the way to LOOK at it by hand — the chit only
- * renders behind the `window.yaacServer` bridge the Electron preload
- * installs, so a plain browser tab never shows it and there is nothing to
- * eyeball without standing the bridge up.
+ * Verifies the sidebar server chit (ServerBadge.tsx) in Chromium, and is the
+ * way to look at it by hand: the chit renders only when the Electron
+ * preload's `window.yaacServer` bridge exists, so a plain browser never
+ * shows it.
  *
- *  1. No bridge (plain browser tab): no chit. This is the shipped behavior —
- *     a browser already names its origin in the URL bar.
- *  2. Bridge injected pre-load (what the preload does): the chit sits in the
- *     sidebar's status-chit row beside the usage pill, showing host:port of
- *     the origin, and clicking it opens Settings on the Server section.
- *  3. Bridge injected POST-load, the recipe for poking at this from devtools:
- *     paste the bridge, then toggle the sidebar to force a React re-render.
- *     Nothing subscribes to `window.yaacServer`, so without a re-render the
- *     chit does not appear on its own.
+ *  1. No bridge (plain browser tab): no chit.
+ *  2. Bridge injected before load (as the preload does): the chit sits in
+ *     the sidebar's status-chit row, shows the origin's host:port, and
+ *     clicking it opens Settings on the Server section.
+ *  3. Bridge injected after load (the devtools recipe): paste the bridge,
+ *     then toggle the sidebar. Nothing subscribes to `window.yaacServer`, so
+ *     the chit appears only after a re-render.
  *
- * Screenshots land in /tmp/yaac-shots/server-badge-*.png — the cropped
- * sidebar ones are the useful ones to look at.
+ * Screenshots land in /tmp/yaac-shots/server-badge-*.png.
  *
- * Drives the app the server itself serves (`dist/`), reading the port
- * from $YAAC_DATA_DIR/.server.lock — so run `pnpm build` +
- * `yaac server restart` first, or you are looking at the frontend as it was.
+ * Drives the app the server serves from `dist/`, reading the port from
+ * $YAAC_DATA_DIR/.server.lock, so run `pnpm build` + `yaac server restart`
+ * first to see current frontend code.
  *
  * Run: node test-playwright-scripts/server-badge-chit-test.js
  * Needs a running server (`yaac server start` / `pnpm watch`).
@@ -59,13 +55,11 @@ function readServerLock() {
 
 const SHOTS = '/tmp/yaac-shots'
 const CHIT = '[aria-label="Open server settings"]'
-// Kept in sync with store.ts by hand — this is a standalone node script, not
-// part of the frontend's module graph.
+// Copied from packages/frontend/src/lib/store.ts; keep in sync by hand.
 const MIN_SIDEBAR_WIDTH = 180
 const MAX_SIDEBAR_WIDTH = 640
 
-/** The bridge body, shared by the pre-load and post-load paths — and the
- *  same text the devtools recipe in the header pastes. */
+/** The bridge stub, injected before or after load (and the devtools recipe). */
 const BRIDGE = () => {
   window.yaacServer = {
     targets: () => Promise.resolve({
@@ -79,9 +73,8 @@ const BRIDGE = () => {
 
 async function openApp(page, lock) {
   await page.goto(`http://127.0.0.1:${lock.port}/`)
-  // waitForURL, not waitForFunction: the app's CSP has no 'unsafe-eval', and
-  // a string predicate evaluated in the page trips it once the served
-  // document (rather than the pre-navigation one) is current.
+  // Wait on a locator, not waitForFunction: the app's CSP has no
+  // 'unsafe-eval', which a string predicate evaluated in the page trips.
   await page.locator('aside').first().waitFor({ state: 'visible', timeout: 15_000 })
 }
 
@@ -96,7 +89,7 @@ async function main() {
     if (!ok) failures.push(label)
   }
 
-  // --- 1. Plain browser: no bridge → no chit.
+  // 1. Plain browser: no bridge, no chit.
   {
     const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
     page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
@@ -106,7 +99,7 @@ async function main() {
     await page.close()
   }
 
-  // --- 2. Bridge injected pre-load, as the Electron preload does.
+  // 2. Bridge injected before load, as the Electron preload does.
   const context = await browser.newContext({ viewport: { width: 1400, height: 900 } })
   await context.addInitScript(BRIDGE)
   const page = await context.newPage()
@@ -122,15 +115,12 @@ async function main() {
   check((await chit.getAttribute('title')).includes(await page.evaluate(() => window.location.origin)),
     'chit tooltip carries the full origin')
 
-  // The chit belongs to the sidebar's chit row, beside the usage pill.
   check(await chit.evaluate((el) => el.parentElement.className.includes('empty:hidden')),
     'chit sits in the sidebar status-chit row')
 
   await page.locator('aside').first().screenshot({ path: path.join(SHOTS, 'server-badge-sidebar.png') })
   await page.screenshot({ path: path.join(SHOTS, 'server-badge-app.png') })
 
-  // Clicking opens settings on the Server section — the one place the chit
-  // leads, and the reason it is gated on the same bridge that section is.
   await chit.click()
   await page.getByText('Add a server').waitFor({ timeout: 10_000 })
   check(true, 'clicking the chit opens Settings on the Server section')
@@ -138,10 +128,9 @@ async function main() {
   await page.keyboard.press('Escape')
   await page.close()
 
-  // --- 2b. The chit takes the room a wide sidebar gives it, and only
-  // truncates when the row really is too narrow. This is measured against a
-  // long host stuffed into the label, because the origin under test is a
-  // short loopback one — a tailscale host is what exposes a width cap.
+  // 2b. The chit uses the width a wide sidebar gives it and truncates only
+  // when the row is too narrow. The local origin is a short loopback host,
+  // so a long tailscale-style host is swapped into the label to measure.
   for (const [width, shouldFit] of [[MAX_SIDEBAR_WIDTH, true], [MIN_SIDEBAR_WIDTH, false]]) {
     const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
     await ctx.addInitScript(BRIDGE)
@@ -180,14 +169,14 @@ async function main() {
     await p.close()
   }
 
-  // --- 3. The devtools recipe: bridge pasted post-load, then a re-render.
+  // 3. The devtools recipe: bridge pasted after load, then a re-render.
   {
     const p = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
     p.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
     await openApp(p, lock)
     await p.evaluate(BRIDGE)
     check(await p.locator(CHIT).count() === 0, 'pasted bridge alone does not repaint the chit')
-    // Hide + show the sidebar: the cheapest re-render of the row that has it.
+    // Hiding and showing the sidebar re-renders the chit row.
     await p.locator('[aria-label="Hide sidebar"]').first().click()
     await p.locator('[aria-label="Show sidebar"]').first().click()
     await p.locator(CHIT).first().waitFor({ state: 'visible', timeout: 10_000 })

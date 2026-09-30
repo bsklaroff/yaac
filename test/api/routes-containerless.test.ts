@@ -12,15 +12,12 @@ import {
 /**
  * Every route, against a containerless server.
  *
- * The twin of `routes-k8s.test.ts`, over the SAME table — see
- * `route-matrix.ts` for why the two share one.
+ * The twin of `routes-k8s.test.ts`, over the same table (see
+ * `route-matrix.ts`).
  *
- * No driver is installed here: this file's own project registers the real
- * containerless one at module scope, standing in for the composition root.
- * The REAL driver rather than a fake is the point — a fake would answer
- * whatever it was told to, while this exercises the actual assembly,
- * including every verb that degrades to empty and every route that refuses
- * because this substrate has no such feature.
+ * This project's setup file registers the real containerless driver, not a
+ * fake, so the test covers every verb that degrades to empty and every
+ * route that refuses because this substrate lacks the feature.
  */
 
 const app = (): ReturnType<typeof buildApp> => buildApp({ buildId: 'matrix' })
@@ -40,9 +37,6 @@ describe('every route, containerless', () => {
     assertMatrixCoversEveryRoute()
   })
 
-  // The project's setup file is what installed it, so this is also the
-  // check that the split did not leave this file running against the k8s
-  // driver its twin uses.
   it('runs against the containerless driver', () => {
     expect(workspaceDriver().kind).toBe('containerless')
   })
@@ -55,8 +49,8 @@ describe('every route, containerless', () => {
     })
   }
 
-  // A refusal has to be legible, not just a status: a client that renders
-  // per driver never sees one, so whoever does is a human reading it.
+  // A client that renders per driver never sees a refusal, so whoever does
+  // is a human who needs a readable reason.
   for (const route of ROUTE_MATRIX.filter((r) => r.containerless === 501)) {
     it(`${label(route)} says why it is unsupported`, async () => {
       const res = await request(route)

@@ -3,45 +3,22 @@ import { env } from '@yaac/shared/env'
 import type { DriverKind } from '@yaac/shared/types'
 
 /**
- * Which substrate an install runs, and how a process knows.
+ * Which substrate this server runs (docs/server-in-cluster.md). A server
+ * running as a pod of its cluster is `k8s`; a host process is
+ * `containerless`. There is no per-start choice.
  *
- * **Placement is the driver** (docs/server-in-cluster.md). A server that is
- * a pod of the cluster it manages runs `k8s`; a server that is a process on
- * your machine runs `containerless`. There is no third combination, so
- * there is nothing to choose per start and no flag to choose it with — what
- * a start does is *notice* which of the two it is, and write it down.
- *
- * Writing it down is still load-bearing, because the answer outlives the
- * process that gave it: a CLIENT that cannot reach the server has to know
- * whether the fix is `yaac server start` or `yaac cluster install`. But
- * this process is not what writes it. The record rides in `server.json`
- * beside the origin and token, written by whichever COMMAND stood the
- * server up — `yaac server start` for a host process, `yaac cluster
- * install` for the Deployment — so the one write that points this machine
- * at a server also says what kind of install it is. Reading it back is
- * `recordedDriver` in `@yaac/shared`, where the desktop shell can see it.
- *
- * The crossing that USED to need arbitrating here — a start that moved an
- * install from one substrate to the other, stranding whatever the outgoing
- * one still ran — cannot be expressed any more. `yaac cluster install` is
- * the only way to become a k8s install, and it already refuses to run
- * against a containerless one.
+ * The answer is recorded in the client-local `server.json` by the command
+ * that stood the server up (`yaac server start` or `yaac cluster install`),
+ * so a client that cannot reach the server knows which command fixes it.
+ * `recordedDriver` in `@yaac/shared` reads it back. `yaac cluster install`
+ * refuses a containerless data dir, so an install cannot switch substrates.
  */
 
 /**
- * The driver this process runs.
- *
- * `YAAC_IN_CLUSTER` is set by the server Deployment's manifest and by
- * nothing else, so it is exactly the question "am I the pod?" — which is
- * exactly the question "which substrate is this". A host process reaching
- * this point is a containerless server by construction;
- * `assertHostServerAllowed` is what stops one being started against a k8s
- * install in the first place.
- *
- * Nothing is written here. The record is CLIENT-LOCAL — not mounted into
- * the pod by design, and not this process's to keep even on a host, where
- * `yaac server run` may be a foreground server the operator drove directly.
- * The command that stood the server up records it (see the module doc).
+ * The driver this process runs. `YAAC_IN_CLUSTER` is set only by the server
+ * Deployment, so it means "this is the pod". A host process is containerless;
+ * `assertHostServerAllowed` keeps one from starting against a k8s install.
+ * Nothing is recorded here (see the module comment).
  */
 export function resolveDriverKind(): DriverKind {
   return env.inCluster ? 'k8s' : 'containerless'
@@ -49,16 +26,12 @@ export function resolveDriverKind(): DriverKind {
 
 /**
  * Refuse to start a host server on a data dir whose install runs in the
- * cluster.
+ * cluster: that would put two writers on one PGlite database, and the host
+ * server would reap every workspace as podless.
  *
- * Two servers on one data dir is two writers of one PGlite database, and
- * the host one would additionally see every workspace as podless and reap
- * it. The recorded driver is the tripwire, and the message names the only
- * command that starts THIS install's server.
- *
- * Run by the PARENT of a detached start as well as by the child: a child
- * that throws dies before its log is wired, so the operator would otherwise
- * wait out the ready poll and be told the server "did not become ready".
+ * Also run by the parent of a detached start, since a child that throws
+ * before its log is wired would otherwise surface only as "did not become
+ * ready".
  */
 export async function assertHostServerAllowed(): Promise<void> {
   if (env.inCluster) return

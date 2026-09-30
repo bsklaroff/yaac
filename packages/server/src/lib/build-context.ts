@@ -1,34 +1,26 @@
 /**
- * What an OCI build context is made of: which files are in it, and how big it
- * is allowed to get. Pure filesystem and text — no podman, no cluster, no
- * image tagging.
+ * Which files make up an OCI build context and how large it may get. Pure
+ * filesystem code, no podman or cluster.
  *
- * Dependency-free vocabulary rather than part of #drivers/k8s/images because
- * two features answer to it. Images hashes this set into a tag and streams it to
- * a sandboxed builder pod; projects lists the same set for the build-files
- * API and enforces the same cap at upload time, so a folder a build would
- * reject cannot be assembled in the first place. Housed in the images barrel,
- * that second consumer was a feature reaching sideways for a definition
- * neither of them owns.
+ * In `#lib` because two features use it: the k8s image code hashes this file
+ * set into a tag and streams it to a builder pod, and the build-files API
+ * lists the same set and enforces the same size cap at upload time.
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
 /**
- * Sanity cap on a streamed build context. Contexts are dedicated build dirs
- * (Dockerfile + user-managed support files); the build-files API mirrors this
- * cap at upload time so a folder that grows past it fails there rather than
- * at the next build.
+ * Size cap on a streamed build context. The build-files API enforces it at
+ * upload time too, so an oversized folder fails there rather than at the
+ * next build.
  */
 export const BUILDER_CONTEXT_MAX_BYTES = 512 * 1024 ** 2
 
 /**
  * Parse a .containerignore into the set of context-relative paths to skip.
- * The hash must exclude exactly what `podman build` excludes, so instead of
- * replicating podman's full glob matcher we support only literal paths
- * (`node_modules`, `test`, `a/b.txt`) and fail loudly on anything fancier —
- * a silently-mismatched pattern would let the image tag and the built image
- * drift apart.
+ * The hash must exclude exactly what `podman build` excludes, so only
+ * literal paths are supported; anything else throws rather than letting the
+ * image tag and the built image silently disagree.
  */
 export function parseContainerIgnore(content: string): Set<string> {
   const patterns = new Set<string>()
@@ -48,11 +40,10 @@ export function parseContainerIgnore(content: string): Set<string> {
 }
 
 /**
- * Recursively collect a build context's regular files (context-relative
- * paths), skipping ignored entries. Symlinks and empty directories are
- * excluded — matching `contextHash`, which defines what the content-hash
- * tag covers. Shared with the builder-pod context streamer so the bytes
- * shipped to a sandboxed build are exactly the bytes the tag hashed.
+ * Recursively collect a build context's regular files as context-relative
+ * paths, skipping ignored entries, symlinks and empty directories. The
+ * content-hash tag and the builder-pod streamer both use this, so the bytes
+ * shipped are exactly the bytes hashed.
  */
 export async function collectContextFiles(root: string, rel: string, ignore: Set<string>): Promise<string[]> {
   const entries = await fs.readdir(path.join(root, rel), { withFileTypes: true })
@@ -70,9 +61,8 @@ export async function collectContextFiles(root: string, rel: string, ignore: Set
 }
 
 /**
- * Whether a Dockerfile layers onto the image below it in the chain, rather
- * than starting from its own base. Both halves are required: the ARG
- * declares the parameter, the FROM actually consumes it.
+ * Whether a Dockerfile layers onto the previous image in the chain: it must
+ * both declare `ARG BASE_IMAGE` and use it in `FROM`.
  */
 export function isLayered(dockerfileContent: string): boolean {
   return /^ARG\s+BASE_IMAGE\b/m.test(dockerfileContent)

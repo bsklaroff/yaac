@@ -10,46 +10,37 @@ import {
 /** Label keys attached to every workspace Job and its Pod. */
 export const LABEL_PROJECT = 'yaac.project'
 /**
- * The project's immutable id (`ProjectRef`), on workspace pods and on every
- * object the project's registry and image store own. What the registry's
- * NetworkPolicies select a project's pods by, and what the orphan GCs key
- * on, so an object can never be claimed by a later project of the same
- * slug. Absent on a pod that predates it, which therefore reaches no
- * id-named registry and is skipped by the image salvage.
+ * The project's immutable id (`ProjectRef`), on workspace pods and on the
+ * project's registry and image-store objects. Registry NetworkPolicies and
+ * the orphan GCs key on it, so a later project with the same slug can never
+ * claim an object. Pods from older installs lack it; they reach no
+ * id-named registry and are skipped by image salvage.
  */
 export const LABEL_PROJECT_ID = 'yaac.project-id'
 /**
- * The workspace a pod runs. Every list query, informer and cluster-side
- * NetworkPolicy podSelector matches on this key, so it is what makes a
- * workspace pod findable at all.
+ * The workspace a pod runs. Every list query, informer and NetworkPolicy
+ * podSelector for workspace pods matches on it.
  */
 export const LABEL_WORKSPACE_ID = 'yaac.workspace-id'
 export const LABEL_DATA_DIR_HASH = 'yaac.data-dir-hash'
 export const LABEL_TOOL = 'yaac.tool'
 /**
- * Which protocol drives the workspace's agents — `tui` or `acp` (AgentMode).
- * Stamped only for `acp`, so every pod that predates modes (and every TUI pod)
- * simply lacks it and reads as `tui`. It rides a label rather than a DB lookup
- * because the status watcher picks its driver from informer deltas, where a
- * per-pod query would put the database on the pod-event hot path.
+ * The workspace's agent mode (`AgentMode`). Set only for `acp`; a pod
+ * without it is `tui`. A label lets the status watcher pick its driver from
+ * informer events without a database query per pod event.
  */
 export const LABEL_MODE = 'yaac.mode'
 /**
- * Marks a workspace pod as a prewarmed spare — fully provisioned with its
- * agent booted and waiting, but not yet handed to a user. Spares are hidden
- * from user-facing views and claimed on `workspace create` by removing this
- * label (see `src/server/prewarm.ts`). Stamped only when present, so a
- * normal workspace pod simply lacks the label.
+ * Marks a workspace pod as a prewarmed spare: provisioned with its agent
+ * booted, but not yet handed to a user. Spares are hidden from user views,
+ * and `workspace create` claims one by removing this label. Absent on
+ * normal workspace pods.
  */
 export const LABEL_PREWARMED = 'yaac.prewarmed'
 /**
- * Marks a workspace pod as running the in-pod container engine
- * (`nestedContainers`). Stamped only when present, like LABEL_PREWARMED, so
- * a pod predating it reads as non-nested — which costs a nested workspace
- * alive across the upgrade its MID-LIFE image salvage until it is recreated,
- * never a salvage that should not run. It rides a label because the salvage
- * reconciler picks its workspaces out of informer deltas, where the pod spec
- * that carries the engine's env is not in hand.
+ * Marks a workspace pod that runs the in-pod container engine
+ * (`nestedContainers`). Absent otherwise. A label lets the image salvage
+ * step pick nested workspaces from informer data, which lacks the pod spec.
  */
 export const LABEL_NESTED = 'yaac.nested'
 
@@ -59,11 +50,10 @@ export function workspaceIdLabels(workspaceId: string): Record<string, string> {
 }
 
 /**
- * Kubernetes object names must be lowercase DNS-1123 and the `job-name`
- * label on pods caps the Job name at 63 chars. `yaac-` (5) + UUID (36) +
- * separator (1) leaves 21 chars for the slug, so long project names are
- * truncated. Uniqueness comes from the workspace UUID, and the full slug
- * always travels in the `yaac.project` label.
+ * Job name for a workspace. Names must be lowercase DNS-1123, and the
+ * pods' `job-name` label caps them at 63 chars, leaving 21 for the slug
+ * after `yaac-`, the UUID and a separator. The UUID makes it unique; the
+ * full slug is in the `yaac.project` label.
  */
 export function workspaceJobName(projectSlug: string, workspaceId: string): string {
   const safeSlug = projectSlug
@@ -75,11 +65,8 @@ export function workspaceJobName(projectSlug: string, workspaceId: string): stri
 }
 
 /**
- * Recover the workspace id from a workspace Job name — always its last 36
- * chars: the UUID tail survives `workspaceJobName`'s collapsing untouched (a
- * UUID has no consecutive dashes, and the slug part is trimmed before the
- * join). Lets jobName-keyed call sites reach the relay, which addresses
- * streams by workspace id.
+ * The workspace id from a workspace Job name: its last 36 chars, which
+ * `workspaceJobName` never alters (a UUID has no consecutive dashes).
  */
 export function workspaceIdFromJobName(jobName: string): string {
   if (jobName.length < 36) throw new Error(`not a workspace job name: ${jobName}`)
@@ -87,10 +74,8 @@ export function workspaceIdFromJobName(jobName: string): string {
 }
 
 /**
- * Terminal-state evidence from a dead or dying pod — what the stale reaper
- * reads to derive a workspace death reason before its own teardown deletes
- * the pod (and with it, the only record of why the workspace died). Absent
- * on healthy pods.
+ * Why a dead or dying pod stopped. The stale reaper reads it to record a
+ * death reason before teardown deletes the pod. Absent on healthy pods.
  */
 export interface PodTerminalState {
   /** Pod-level `status.reason`, e.g. `Evicted`. */
@@ -121,10 +106,8 @@ export interface PodInfo {
   phase: string
   /** True when the pod is Running and not terminating. */
   running: boolean
-  /** The pod has a deletionTimestamp — Kubernetes is tearing it down. Kept
-   *  distinct from `running` (which folds it in) so the display path can
-   *  render the workspace as a "terminating…" placeholder instead of dropping
-   *  it or misreading it as stale. */
+  /** The pod has a deletionTimestamp. Lets the UI show "terminating…"
+   *  rather than dropping the workspace or treating it as stale. */
   terminating: boolean
   /** Pod creationTimestamp as epoch ms. */
   createdAtMs: number
@@ -144,17 +127,14 @@ export function isNested(pod: PodInfo): boolean {
 }
 
 /**
- * Job-name label kubernetes stamps on every pod a Job creates. The
- * canonical prefixed form exists on all supported clusters (added in
- * k8s 1.27); the legacy unprefixed `job-name` is deliberately not
- * consulted.
+ * Job-name label Kubernetes puts on every pod a Job creates (the prefixed
+ * form, k8s 1.27+).
  */
 export const JOB_NAME_LABEL = 'batch.kubernetes.io/job-name'
 
 /**
- * Timestamps arrive as ISO strings from kubectl JSON and informer watch
- * events (raw JSON), but as `Date` instances from informer list calls
- * (client-node deserializes those into generated classes) — accept both.
+ * Timestamps are ISO strings from kubectl and watch events, but `Date`s
+ * from client-node list calls.
  */
 const timestampSchema = z.union([z.string().min(1), z.date()])
 
@@ -163,14 +143,10 @@ export function toEpochMs(ts: string | Date): number {
 }
 
 /**
- * Every field below is guaranteed: name/creationTimestamp/phase by the
- * API server, the yaac labels by workspace-create (the label selector
- * admits only yaac-created workspace objects). A validation failure is
- * therefore a yaac bug or a hand-edited object — fail the whole list
- * loudly up-front rather than mapping rows with silently empty fields.
- *
- * Exported (with `mapPodItem`) so the informer cache can validate
- * and map individual watch-event objects with the same rules.
+ * Schema for a workspace pod. The API server guarantees name, timestamp and
+ * phase, and workspace create sets the labels, so a failure means a yaac bug
+ * or a hand-edited object. A kubectl list then fails as a whole; a single
+ * informer event is skipped.
  */
 export const podItemSchema = z.object({
   metadata: z.object({
@@ -186,10 +162,8 @@ export const podItemSchema = z.object({
   }),
   status: z.object({
     phase: z.string().min(1),
-    // Terminal-state evidence (all optional — absent on healthy pods):
-    // pod-level reason/message cover evictions, the first container status
-    // covers the workspace container's exit (index 0 is the workspace container,
-    // the same invariant workspace-create's waitForJobPodReady relies on).
+    // Terminal-state evidence: pod reason/message cover evictions, and
+    // containerStatuses[0] (the workspace container) covers its exit.
     reason: z.string().optional(),
     message: z.string().optional(),
     containerStatuses: z.array(z.object({
@@ -289,10 +263,8 @@ function parseListPayload<T>(schema: z.ZodType<T>, payload: unknown, kind: strin
 }
 
 /**
- * List workspace pods for this yaac install (scoped by the data-dir-hash
- * label), optionally filtered to one project. The k8s replacement for
- * `podman.listContainers({filters: {label: ['yaac.data-dir=...']}})`.
- * Throws when the payload fails podListSchema validation.
+ * List this install's workspace pods, optionally for one project. Throws
+ * when the payload fails validation.
  */
 export async function listWorkspacePods(projectFilter?: string): Promise<PodInfo[]> {
   const list = await kubectlGetJson<unknown>([
@@ -313,9 +285,8 @@ export function workspacePodSelector(projectFilter?: string): string {
 }
 
 /**
- * The pod hosting this exact workspace id. Spares are skipped unless asked
- * for: an unclaimed spare is not a workspace, and only a teardown — which
- * must reach a failed warm's own unit — addresses one.
+ * The pod for a workspace id. Unclaimed spares are skipped unless
+ * `spares` is set (teardown needs to reach a failed spare).
  */
 export function findWorkspacePod(
   pods: PodInfo[],
@@ -345,9 +316,8 @@ export interface RunPodOptions {
 
 export interface PodRunResult {
   /**
-   * Terminal phase; the sentinel `Deleted` when the pod vanished mid-poll
-   * (deleted out from under us — it can never complete); or the last
-   * phase seen when the deadline passed.
+   * Terminal phase; `Deleted` if the pod disappeared while polling; or the
+   * last phase seen when the deadline passed.
    */
   phase: string
   /** Pod logs, best-effort ('' when unavailable). */
@@ -355,12 +325,10 @@ export interface PodRunResult {
 }
 
 /**
- * Run a one-shot pod (restartPolicy: Never) to completion: delete any
- * stray namesake, apply the manifest, poll to a terminal phase, fetch the
- * logs, and always delete the pod afterwards. Polling (not `kubectl
- * wait`) so a Failed pod returns immediately instead of burning the whole
- * timeout. Name and namespace come from the manifest; the caller owns the
- * verdict on the returned phase/logs.
+ * Run a one-shot pod (restartPolicy: Never) to completion: delete any stray
+ * pod of the same name, apply, poll to a terminal phase, fetch logs, and
+ * always delete the pod afterwards. Polls rather than using `kubectl wait`
+ * so a Failed pod returns immediately. The caller judges the result.
  */
 export async function runPodToCompletion(
   manifest: Record<string, unknown>,
@@ -378,10 +346,7 @@ export async function runPodToCompletion(
       const pod = await kubectlGetJson<{ status?: { phase?: string } }>([
         'get', 'pod', name, '-n', namespace,
       ])
-      // NotFound after a successful apply means something deleted the pod
-      // out from under us (a namesake run in another process, an external
-      // sweep). It can never reach a terminal phase — fail fast instead
-      // of polling NotFound until the deadline.
+      // Something else deleted the pod; it will never finish.
       if (pod === null) {
         phase = 'Deleted'
         break
@@ -401,10 +366,9 @@ export async function runPodToCompletion(
 }
 
 /**
- * List workspace Jobs for this install. Used by the orphan-Job sweep: a Job
- * whose pod was evicted/deleted out-of-band is invisible to the pod-based
- * reaper, so the reconciler cross-references this list.
- * Throws when the payload fails jobListSchema validation.
+ * List this install's workspace Jobs, for the orphan-Job sweep (a Job whose
+ * pod was deleted is invisible to the pod-based reaper). Throws when the
+ * payload fails validation.
  */
 export async function listWorkspaceJobs(): Promise<JobInfo[]> {
   const list = await kubectlGetJson<unknown>([

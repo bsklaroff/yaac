@@ -10,20 +10,16 @@ export interface TypeaheadItem {
 }
 
 /**
- * A bordered text input over a filtered suggestion list — the branch pickers
- * and the create form's model and branch fields. Purely presentational: the
- * parent owns the `query` text, the items, and what a selection does.
+ * A text input over a filtered suggestion list (branch pickers, the create
+ * form's model and branch fields). The parent owns the query, the items and
+ * what a selection does.
  *
- * Filters on label and value alike, so a model is found by its name ("opus")
- * or its id ("claude-opus"). ↑/↓ move a highlight through the rows and Enter
- * picks the highlighted one — and only then: an Enter with nothing
- * highlighted is left to bubble, which is how the create form submits from
- * inside the field. `autoHighlight` highlights the first row as soon as the
- * user types, for a field whose typed text is a search rather than a value.
- * Only items can be picked — typed text is never a value of its own — so a
- * search matching nothing says so. Escape with the list open calls
- * `onDismiss` and goes no further, so a dialog around the field is not
- * closed by it.
+ * Filters on label and value, so a model matches "opus" or "claude-opus".
+ * ↑/↓ move a highlight and Enter picks it; with nothing highlighted Enter
+ * bubbles, so the create form can submit. `autoHighlight` highlights the
+ * first row on typing. Only items can be picked, never free text. Escape
+ * with the list open calls `onDismiss` and stops there, so a surrounding
+ * dialog stays open.
  */
 export function Typeahead({
   items,
@@ -60,8 +56,7 @@ export function Typeahead({
   /** A trailing tag for a row (e.g. "default"). */
   tag?: (item: TypeaheadItem) => ReactNode
   autoHighlight?: boolean
-  /** Focus left the input — rows never take it (see their onMouseDown), so
-   *  this is the user moving on, not picking. */
+  /** Focus left the input. Rows never take focus, so this is not a pick. */
   onBlur?: () => void
   /** Escape was pressed with the list open — close it. */
   onDismiss?: () => void
@@ -75,8 +70,6 @@ export function Typeahead({
   const active = shown && highlight < rows.length ? highlight : -1
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>): void => {
-    // The list is open even when nothing matches, so Escape still abandons
-    // the search rather than reaching the dialog.
     if (e.key === 'Escape' && showList && onDismiss !== undefined) {
       e.preventDefault()
       e.stopPropagation()
@@ -89,7 +82,7 @@ export function Typeahead({
       const step = e.key === 'ArrowDown' ? 1 : -1
       setHighlight((h) => (Math.max(h, -1) + step + rows.length) % rows.length)
     } else if (e.key === 'Enter' && active >= 0 && !e.nativeEvent.isComposing) {
-      // Taken here, so the form around the field does not also submit.
+      // Keep the surrounding form from also submitting.
       e.preventDefault()
       e.stopPropagation()
       onSelect(rows[active].value)
@@ -127,8 +120,8 @@ export function Typeahead({
               <button
                 type="button"
                 onClick={() => onSelect(item.value)}
-                // Keep focus in the input, so picking a row is not first a
-                // blur that could close the list under the click.
+                // Keep focus in the input so a blur cannot close the list
+                // mid-click.
                 onMouseDown={(e) => e.preventDefault()}
                 onMouseEnter={() => setHighlight(i)}
                 aria-selected={i === active}
@@ -138,10 +131,8 @@ export function Typeahead({
                 )}
               >
                 {icon?.({ size: 11, className: 'shrink-0 text-text-faint' })}
-                {/* The label is never cut off — it keeps its width, wrapping
-                    only if even the whole row is too narrow — while the
-                    detail gets what is left (truncating) and doubles as the
-                    spacer that pushes the tag to the right edge. */}
+                {/* The label keeps its width; the detail truncates and pushes
+                    the tag to the right edge. */}
                 <span className="min-w-0 break-words">{item.label}</span>
                 <span className="min-w-0 flex-1 truncate pl-2 text-right text-[10px] text-text-faint">
                   {item.detail}

@@ -1,9 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
 
-// kubectl is the one way this module reaches the cluster: every write is
-// an apply or a delete, and the one read (a widening) is a get. The
-// manifest builders in #drivers/k8s/cluster run for real.
+// kubectl is this module's only route to the cluster. The manifest builders
+// in #drivers/k8s/cluster run for real.
 const mockApply = vi.hoisted(() => vi.fn())
 const mockGetJson = vi.hoisted(() => vi.fn())
 const mockRetry = vi.hoisted(() => vi.fn())
@@ -96,8 +95,8 @@ describe('buildProxyRegistration', () => {
       },
       env: {},
     })
-    // The ref is scoped by project: one project's rule must not be able to
-    // resolve another's secret out of the proxy's shared map.
+    // Refs are scoped by project so one project cannot resolve another's
+    // secret from the proxy's shared map.
     expect(reg.rules).toEqual([
       {
         hostPattern: 'api.example.com',
@@ -130,8 +129,7 @@ describe('buildProxyRegistration', () => {
         injections: [{ action: 'set_header', name: 'authorization', secretRef: 'acme-repo/BASIC', prefix: 'Basic ' }],
       },
     ])
-    // The registration lives in a plain ConfigMap — it never sees a value,
-    // which is true by construction: only names reach this function.
+    // The registration is a plain ConfigMap and holds only secret names.
     expect(JSON.stringify(reg)).not.toContain('sekrit')
     expect(reg.repoUrl).toBe('https://github.com/acme/repo')
     expect(reg.tool).toBe('claude')
@@ -170,12 +168,11 @@ describe('buildProxyRegistration', () => {
     for (const host of NESTED_PULL_HOSTS) {
       expect(reg.allowedHosts).toContain(host)
     }
-    // The docker.io pull hosts were moved out of the base list, so they
-    // appear exactly once (appended), never duplicated.
+    // The pull hosts are not in the base list, so they appear exactly once.
     expect(
       reg.allowedHosts.filter((h) => h === 'registry-1.docker.io'),
     ).toHaveLength(1)
-    // The shared default list itself must never be mutated.
+    // The shared default list is not mutated.
     expect(DEFAULT_ALLOWED_HOSTS).not.toContain('cdn01.quay.io')
   })
 
@@ -239,9 +236,8 @@ describe('applyProxyRegistration', () => {
 })
 
 describe('registerWorkspaceEgress', () => {
-  // The caller supplies decisions — which config, tool and remote apply —
-  // and this is where they become an allowlist and a rule set. That split is
-  // the point of the verb, so it is what the test pins.
+  // The caller decides which config, tool and remote apply; this turns
+  // those decisions into an allowlist and rule set.
   it('assembles the registration from the caller’s decisions, applies it, and answers with it', async () => {
     const written = await registerWorkspaceEgress({
       workspaceId: 'w1',
@@ -260,15 +256,14 @@ describe('registerWorkspaceEgress', () => {
     expect(state.projectSlug).toBe('demo')
     expect(state.repoUrl).toBe('https://github.com/example/repo.git')
     expect(state.allowedHosts).toContain('api.example.com')
-    // The defaults ride along: a registration is the WHOLE allowlist, never
-    // a patch, so an incomplete one would leave the workspace reaching less
-    // than it should (fail-closed, but wrongly).
+    // A registration is the whole allowlist, not a patch, so it must
+    // include the defaults.
     expect(state.allowedHosts).toEqual(expect.arrayContaining([...DEFAULT_ALLOWED_HOSTS]))
     expect(written).toEqual(state)
   })
 
-  // A claimed spare re-registers rather than being patched, so the caller
-  // has to hear a failed registration — it is what fails the claim.
+  // A claimed spare re-registers, and a failed registration must fail the
+  // claim.
   it('propagates a failed registration', async () => {
     mockApply.mockRejectedValue(new Error('apiserver down'))
     await expect(registerWorkspaceEgress({
@@ -290,7 +285,7 @@ describe('deregisterWorkspaceEgress', () => {
     )
   })
 
-  // A workspace that is going away must never be held up by the datapath.
+  // Removing a workspace must not be blocked by the proxy.
   it('swallows a failed delete', async () => {
     mockRetry.mockRejectedValue(new Error('apiserver down'))
     await expect(deregisterWorkspaceEgress('w1')).resolves.toBeUndefined()
@@ -312,7 +307,7 @@ describe('allowWorkspaceHost', () => {
     const [cm] = applied()
     expect(cm.metadata.name).toBe('yaac-proxy-reg-w1')
     expect(payloadOf(cm).allowedHosts).toEqual(['api.example.com', 'new.example.com'])
-    // Everything else the registration said survives the rewrite.
+    // The rest of the registration is kept.
     expect(payloadOf(cm)).toMatchObject({ tool: 'claude', projectSlug: 'demo' })
     expect(notified).toBe(1)
   })
@@ -324,7 +319,7 @@ describe('allowWorkspaceHost', () => {
   })
 
   it('surfaces a missing registration on the named target as an error', async () => {
-    // The user clicked on that badge, so a miss is theirs to see.
+    // The user asked for this, so a miss is reported to them.
     mockGetJson.mockResolvedValue(null)
     await expect(allowWorkspaceHost({ workspaceId: 'w1', projectSlug: 'demo' }, 'h.com', { fanOutToProject: false }))
       .rejects.toThrow('not registered with the egress proxy')
@@ -337,9 +332,8 @@ describe('allowWorkspaceHost', () => {
     ] })
     await allowWorkspaceHost({ workspaceId: 'w1', projectSlug: 'demo' }, 'h.com', { fanOutToProject: true })
 
-    // Listed by the project label rather than through the pod list: a
-    // registration IS a registered workspace, and the proxy prunes each
-    // one's blocked record as the widened object lands.
+    // Listed by project label, not via pods: each registration is a
+    // workspace, and the proxy prunes its blocked record once widened.
     expect(mockGetJson).toHaveBeenCalledWith([
       'get', 'configmap', '-n', 'test-ns',
       '-l', 'app=yaac-proxy,yaac.proxy-input=registration,yaac.project=demo',
@@ -385,7 +379,7 @@ describe('reconcileRegistrationGc', () => {
     ] })
     await reconcileRegistrationGc(ctxOf(['live'], ['terminating']))
 
-    // Named by a handle, by a Job, mid-teardown, or too young to judge: kept.
+    // Kept: named by a handle or a Job, mid-teardown, or too young to judge.
     expect(mockRetry.mock.calls.map(([args]) => (args as string[])[2]))
       .toEqual(['yaac-proxy-reg-orphan'])
   })
@@ -394,7 +388,7 @@ describe('reconcileRegistrationGc', () => {
     setActiveClusterCache(cacheOf({ healthy: false }))
     mockGetJson.mockResolvedValue({ items: [registrationObject('orphan', REG, OLD)] })
     await reconcileRegistrationGc(ctxOf([]))
-    // An unseeded cache reads as "every workspace is gone" — never act on it.
+    // An unseeded cache would look like every workspace is gone, so skip.
     expect(mockGetJson).not.toHaveBeenCalled()
 
     setActiveClusterCache(cacheOf({ healthy: true }))

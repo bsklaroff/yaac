@@ -1,26 +1,16 @@
 /**
- * The yaac server, as a workload of the cluster it manages.
+ * Deploys the yaac server as a single-replica Deployment in the cluster it
+ * manages (docs/server-in-cluster.md): its image, RBAC, Deployment, the
+ * ingress policies that keep workspace pods off its API, and the
+ * `server.json` that points clients at its origin. How the Service is
+ * reached from outside is a `ServerFronting` (server-fronting.ts).
  *
- * Under this driver the server is not a process beside the cluster but a
- * single-replica Deployment inside it (docs/server-in-cluster.md), which is
- * what lets server and workspace pods eventually share one claim instead of
- * one host filesystem. Everything that puts it there lives here: its image,
- * its RBAC, its Deployment, the ingress policies that are the only thing
- * between an untrusted workspace pod and an unauthenticated API, and the
- * `server.json` that points every client at the published origin. What
- * fronts its Service — how the origin is reached from outside the cluster
- * — is the one per-backend piece, and it is handed in as a
- * `ServerFronting` (server-fronting.ts) rather than decided here.
+ * Only the CLI applies the Deployment; a server that rolled itself could
+ * get stuck in a state it cannot roll back from.
  *
- * Install-only, like the rest of this folder. The server never applies its
- * own Deployment — a workload that rolls itself is a workload that can roll
- * itself into a state it cannot roll back out of.
- *
- * The pod's storage is the three tiers as three mounts (storage.ts): the
- * `yaac-global` and `yaac-server-local` claims and the node's own
- * node-local tree, at fixed pod paths the Deployment names in the three
- * root variables. `YAAC_DATA_DIR` keeps naming the host's data dir, as an
- * identity string: `dataDirHash()`, every label and every row carry over.
+ * The pod mounts the three storage tiers (storage.ts) at fixed pod paths.
+ * `YAAC_DATA_DIR` still names the host's data dir, so `dataDirHash()` and
+ * every label match the host's.
  */
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
@@ -64,9 +54,7 @@ import {
 } from '#drivers/k8s/image-engine'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#drivers/k8s/container'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
-// The install root itself, not a place to put bytes: the pod is handed it
-// as `YAAC_DATA_DIR` so its identity (`dataDirHash()`, every label) is the
-// host's; what it MOUNTS are the three tier roots.
+// The data dir is passed to the pod as an identity, not for storage.
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { getDataDir, globalRoot, nodeLocalRoot, serverLocalRoot, serverLogPath } from '@yaac/shared/paths'
 import { readLock } from '@yaac/shared/lock'
@@ -79,15 +67,9 @@ import {
 import { env, testEnv } from '@yaac/shared/env'
 
 /**
- * Build context of the server image: the BUNDLE, not the source tree.
- *
- * `dist/` is the only directory the npm tarball ships and the only place
- * the server exists as a single runnable artifact, so it is both what the
- * image needs to contain and what its content hash should be taken over. In
- * the bundle `PACKAGE_ROOT` already IS that directory; from a source
- * checkout it is the repo root, and `dist/` under it is what `pnpm build`
- * produces — so a dev who has not built yet gets a missing-Dockerfile error
- * naming the build rather than an image of a stale tree.
+ * Build context of the server image: the built bundle (`dist/`), not the
+ * source tree. In an npm install `PACKAGE_ROOT` is the bundle; in a source
+ * checkout it is `dist/` under the repo root, produced by `pnpm build`.
  */
 export function serverImageContext(): string {
   return env.bundled ? PACKAGE_ROOT : path.join(PACKAGE_ROOT, 'dist')
@@ -98,13 +80,9 @@ function serverDockerfile(context = serverImageContext()): string {
 }
 
 /**
- * The server image's tag: the content hash of the bundle it contains.
- *
- * Same contract as every other yaac-shipped image — an unchanged bundle
- * costs one registry HEAD, and a rebuilt one is a different image, which is
- * exactly the signal the Deployment rolls on. Content only, no uid: the
- * image is uid-agnostic (docs/arbitrary-uid-images.md), so the tag a host
- * finds in the registry is always an image it can run.
+ * The server image's tag: a content hash of the bundle. A changed bundle
+ * gets a new tag, which rolls the Deployment. The image works for any uid
+ * (docs/arbitrary-uid-images.md), so the uid is not part of the tag.
  */
 export async function resolveServerImageTag(
   context = serverImageContext(),
@@ -114,15 +92,9 @@ export async function resolveServerImageTag(
 }
 
 /**
- * Build (or skip) the server image and push it to the cluster registry.
- *
- * `context` names the bundle to package, and defaults to this install's own.
- * The e2e tiers pass their frozen copy of it instead (`dist-test/`), because
- * a suite that hashed the live `dist/` would re-tag mid-run the moment `pnpm
- * watch` rebuilt it — the same reason the CLI those suites spawn is a
- * snapshot; they name their image prefix outright for the same reason, since
- * the process that BUILDS it and the process that looks it up are different
- * ones and only one of them has the suite's env.
+ * Build the server image if the registry lacks it, and push it. The e2e
+ * tiers pass a frozen copy of the bundle (`dist-test/`) and their own
+ * prefix, so a `pnpm watch` rebuild mid-run cannot change the tag.
  */
 export async function ensureServerImage(
   context = serverImageContext(),
@@ -144,15 +116,14 @@ export async function ensureServerImage(
   return pushImageToRegistry(tag)
 }
 
-/** Every pod of the server carries the install identity, like the proxy's. */
+/** Server pod labels, including the install identity. */
 function serverPodLabels(): Record<string, string> {
   return { app: SERVER_APP_NAME, [LABEL_DATA_DIR_HASH]: dataDirHash() }
 }
 
 /**
- * ServiceAccount the server acts as. Unlike the proxy's, this identity is
- * the yaac control plane — it creates workspace Jobs, applies the datapath,
- * and stands per-project registries up in namespaces of their own.
+ * ServiceAccount the server acts as: it creates workspace Jobs, applies
+ * the datapath, and creates per-project registry namespaces.
  */
 export function buildServerServiceAccountManifest(): Record<string, unknown> {
   return {
@@ -167,42 +138,28 @@ export function buildServerServiceAccountManifest(): Record<string, unknown> {
 }
 
 /**
- * Name of the server's ClusterRole and ClusterRoleBinding.
- *
- * Namespace-suffixed for the same reason netd's are: cluster-scoped objects
- * do not belong to a namespace, and one cluster hosts more than one install
- * — the real `yaac` one, plus an ephemeral `yaac-test-<run-id>` per e2e
- * file. A shared name would have the last applier own everyone's binding.
+ * Name of the server's ClusterRole and ClusterRoleBinding, suffixed with
+ * the namespace since several installs (e.g. e2e runs) share a cluster.
  */
 export function serverClusterScopedName(): string {
   return `${SERVER_SA_NAME}-${k8sNamespace()}`
 }
 
 /**
- * Labels on the server's cluster-scoped RBAC. The install namespace is
- * stamped because these objects do NOT cascade when their namespace is
- * deleted, so the e2e sweep needs a way to find an interrupted run's
- * leftovers without matching the real install's.
+ * Labels on the server's cluster-scoped RBAC. These are not deleted with
+ * the namespace, so the install namespace label lets the e2e sweep find an
+ * interrupted run's leftovers.
  */
 export function serverClusterScopedLabels(): Record<string, string> {
   return { app: SERVER_APP_NAME, [LABEL_INSTALL_NAMESPACE]: k8sNamespace() }
 }
 
 /**
- * What the server is allowed to do, enumerated by resource.
- *
- * Cluster-scoped rather than a namespaced Role, and not because the server
- * is careless with namespaces: per-project registries live in namespaces
- * the server CREATES at runtime, so a binding into namespaces that exist
- * today could not cover them. The cluster-scoped objects it applies at
- * every start (PriorityClasses, RuntimeClasses, the builder-role admission
- * guard) need the same reach.
- *
- * Verbs are full on what the server owns and read-only on what it only
- * observes (nodes, events, the storage classes a registry claim binds
- * through). `roles`/`rolebindings` are here because the server applies the
- * proxy's own RBAC on start; RBAC's escalation check still binds it to
- * granting no more than it holds.
+ * The server's permissions. Cluster-scoped because per-project registries
+ * live in namespaces the server creates at runtime, and because it applies
+ * cluster-scoped objects on start (PriorityClasses, RuntimeClasses, the
+ * builder-role admission guard). Full access to what it owns, read-only on
+ * what it only observes.
  */
 export function buildServerClusterRoleManifest(): Record<string, unknown> {
   return {
@@ -224,9 +181,8 @@ export function buildServerClusterRoleManifest(): Record<string, unknown> {
       { apiGroups: ['batch'], resources: ['jobs'], verbs: ['*'] },
       { apiGroups: ['networking.k8s.io'], resources: ['networkpolicies'], verbs: ['*'] },
       {
-        // Namespaced RBAC because the server applies the proxy's own SA
-        // and Role on start; the cluster-scoped pair for netd's
-        // ClusterRole and binding, which it applies beside the proxy.
+        // The server applies the proxy's Role and netd's ClusterRole on
+        // start. RBAC's escalation check still limits what it can grant.
         apiGroups: ['rbac.authorization.k8s.io'],
         resources: ['roles', 'rolebindings', 'clusterroles', 'clusterrolebindings'],
         verbs: ['*'],
@@ -269,44 +225,31 @@ export function buildServerClusterRoleBindingManifest(): Record<string, unknown>
 export interface ServerEnvOptions {
   /**
    * The host's address on the kind network, when `YAAC_USE_TOR` is set.
-   * Absent leaves the configured URL alone, which is right for a Tor that
-   * already listens on a routable address and wrong only for a loopback
-   * one — where install has already warned.
+   * Absent leaves the configured Tor URL unchanged.
    */
   torHostAddr?: string
   /**
-   * What the fronting says the Deployment must state for the origin it
-   * published — the tailnet name it admits. Unioned with what the install
-   * shell already carries, never replacing it.
+   * Allowed hosts the fronting requires (the tailnet name), merged with
+   * those set in the install shell.
    */
   remoteHosting?: RemoteHosting
 }
 
 /**
- * Environment the Deployment hands the server: what it can no longer read
- * off a host, plus the host-side shims it must not take.
+ * The server pod's environment. `YAAC_DATA_DIR` is the host's path, so the
+ * install's identity is unchanged; the three root variables are where the
+ * storage tiers are mounted (docs/server-in-cluster.md "Storage is two
+ * claims"). `YAAC_IN_CLUSTER` makes the registry client dial the
+ * registry's Service directly.
  *
- * `YAAC_DATA_DIR` names the same absolute path the host uses, so the
- * install's identity (`dataDirHash()`, every pod label, the DB) carries
- * over unchanged; the three root variables are where the tiers are
- * MOUNTED, which is what the path helpers resolve into inside the pod
- * (docs/server-in-cluster.md "Storage is two claims"). `YAAC_RELAY_ADDR` points
- * at the proxy Service, which deletes the stream relay's port-forward hop.
- * `YAAC_IN_CLUSTER` is what the registry client reads to dial the registry's
- * Service DNS instead of forwarding to it.
- *
- * The pass-throughs are settings that belong to the DEPLOYMENT rather than
- * to a shell: there is no shell in a pod to set them in afterwards, and the
- * datapath half (the veth prefix, the pod CIDRs) is applied by the SERVER
- * on every start, so it has to reach the pod that applies it. The cost is
- * that they arrive from whatever environment ran `yaac cluster install`.
+ * Pass-through settings are copied from the environment that ran
+ * `yaac cluster install`, since a pod has no shell to set them in later.
  */
 export function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: string; value: string }> {
   const hosting = effectiveRemoteHosting(opts.remoteHosting)
   const vars: Array<{ name: string; value: string }> = [
     { name: 'YAAC_IN_CLUSTER', value: '1' },
-    // A pod's loopback has no reachable backend; the ingress NetworkPolicy
-    // is what takes over from the loopback bind (see policy-manifests).
+    // The ingress NetworkPolicy restricts access instead of a loopback bind.
     { name: 'YAAC_BIND_ADDR', value: '0.0.0.0' },
     { name: 'YAAC_SERVER_PORT', value: String(SERVER_POD_PORT) },
     { name: 'YAAC_DATA_DIR', value: getDataDir() },
@@ -320,27 +263,17 @@ export function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: strin
     ['YAAC_K8S_NAMESPACE', testEnv.k8sNamespace],
     ['YAAC_IMAGE_PREFIX', testEnv.imagePrefix],
     ['YAAC_ALLOWED_HOSTS', hosting.allowedHosts.length > 0 ? hosting.allowedHosts.join(',') : undefined],
-    // The address the snapshot claims a workspace's forwarded ports answer
-    // at. The server binds nothing either way, so this is a display value —
-    // but it is the one a remote-hosting install must change (a tailnet IP,
-    // matching `yaac forward --bind`), and the pod is where it is read.
+    // Display address for forwarded ports; a remote-hosting install sets
+    // it (e.g. a tailnet IP matching `yaac forward --bind`).
     ['YAAC_FORWARD_BIND', env.forwardBind === '127.0.0.1' ? undefined : env.forwardBind],
     ['YAAC_USE_TOR', env.useTor ? '1' : undefined],
-    // Only meaningful alongside USE_TOR, and only as an address the POD can
-    // reach — `torSocksUrlForPod` rewrites the host loopback into the
-    // host's address on the kind network.
     ['YAAC_HOST_TOR_SOCKS_URL', env.useTor ? torSocksUrlForPod(opts.torHostAddr) : undefined],
-    // Datapath knobs the SERVER applies on every start (netd's redirect,
-    // the pod-CIDR RETURNs), so they have to reach the pod that applies
-    // them rather than staying in the install's shell.
+    // Datapath settings the server applies on every start.
     ['YAAC_CNI_VETH_PREFIX', env.cniVethPrefix],
     ['YAAC_POD_CIDRS', env.podCidrs.length > 0 ? env.podCidrs.join(',') : undefined],
     ['YAAC_KUBE_PROXY_EXTERNAL', env.kubeProxyExternal ? '1' : undefined],
     ['YAAC_E2E_SKIP_FETCH', testEnv.e2eSkipFetch ? '1' : undefined],
-    // The encryption key for stored secrets, when the operator states one
-    // rather than letting the server generate its own into the data dir.
-    // A pod has no shell to export it in, so this is the only way it can
-    // arrive — same reason as the two host-header knobs above.
+    // Encryption keys for stored secrets, when the operator sets them.
     ['YAAC_SECRETS', env.secrets === null
       ? undefined
       : env.secrets.map((s) => `${String(s.version)}:${s.value}`).join(',')],
@@ -353,37 +286,25 @@ export function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: strin
 }
 
 /**
- * The remote-hosting posture the Deployment ends up with: the fronting's
- * answer unioned with the install shell's. The shell half stays because it
- * is how a kind install is fronted by a host-side `tailscale serve`
- * (docs/remote-hosting.md); the fronting half is how an install that
- * publishes its own tailnet name admits it.
+ * Allowed hosts: the fronting's plus the install shell's (the latter covers
+ * a kind install behind a host-side `tailscale serve`; see
+ * docs/remote-hosting.md).
  */
 function effectiveRemoteHosting(fromFronting: RemoteHosting = { allowedHosts: [] }): RemoteHosting {
   return { allowedHosts: [...new Set([...fromFronting.allowedHosts, ...env.allowedHosts])] }
 }
 
 /**
- * The host's Tor SOCKS endpoint, addressed from inside the cluster.
- *
- * `YAAC_USE_TOR` names a listener on the host, which for a host process
- * meant loopback. A pod's loopback is its own, so the loopback halves of
- * the URL are rewritten to the host's address on the kind network — the
- * same address the node CIDRs are derived from. Tor has to be listening on
- * that interface and not only on 127.0.0.1 — nothing here can verify that,
- * so install says so when it hands the address over, because the failure
- * otherwise surfaces as every git fetch hanging.
+ * The host's Tor SOCKS URL as seen from a pod: a loopback host is replaced
+ * with the host's address on the kind network. Tor must listen on that
+ * interface, which install warns about; otherwise git fetches hang.
  */
 export function torSocksUrlForPod(hostAddr?: string): string {
   const raw = env.torSocksUrl
   if (hostAddr === undefined) return raw
   try {
     const url = new URL(raw)
-    // `[::1]` with the brackets, because that is what the URL parser
-    // produces for an IPv6 host — comparing against a bare `::1` matches
-    // nothing, and the miss is silent: the pod keeps a loopback SOCKS URL
-    // and every git fetch hangs, which is the exact failure this rewrite
-    // exists to prevent.
+    // The URL parser keeps the brackets on an IPv6 host.
     const LOOPBACK = ['127.0.0.1', 'localhost', '[::1]', '::1']
     if (LOOPBACK.includes(url.hostname)) {
       url.hostname = hostAddr
@@ -395,19 +316,10 @@ export function torSocksUrlForPod(hostAddr?: string): string {
 }
 
 /**
- * The server Deployment.
- *
- * `Recreate` at one replica, because PGlite is an embedded single-writer
- * database and two servers of one install are two writers of one directory.
- * The lock's lease is the guard that actually enforces that on kind, where
- * the RWO claim is a hostPath with no attach exclusivity to fall back on,
- * and the strategy is what keeps the lease from having to arbitrate on
- * every roll.
- *
- * Plain runc, no RuntimeClass: the server is yaac's own code, and a sentry
- * per infra pod is CPU spent on containment that buys nothing. Infra
- * priority, because a preempted server takes every workspace's control plane
- * with it.
+ * The server Deployment. One replica with `Recreate`, since PGlite allows a
+ * single writer (on kind the lock's lease enforces it, as a hostPath claim
+ * has no attach exclusivity). Runs on runc, since it is yaac's own code,
+ * at infra priority.
  */
 export function buildServerDeploymentManifest(
   imageRef: string,
@@ -420,7 +332,6 @@ export function buildServerDeploymentManifest(
     metadata: {
       name: SERVER_APP_NAME,
       namespace: k8sNamespace(),
-      // The install id is the record of whose Deployment this is.
       labels: { app: SERVER_APP_NAME, ...(envOpts.installId ? { [LABEL_INSTALL_ID]: envOpts.installId } : {}) },
     },
     spec: {
@@ -434,30 +345,19 @@ export function buildServerDeploymentManifest(
           automountServiceAccountToken: true,
           enableServiceLinks: false,
           priorityClassName: PRIORITY_CLASS_INFRA,
-          // The install identity, which this is the record of: every path
-          // the server pre-creates for a workspace pod is owned by it, and
-          // host-side callers read it back from here
-          // (deployedInstallIdentity). No `fsGroup`: the claims' roots are
-          // made the install's once, at install, and HOME is the image's
-          // own rootfs, writable through group 0.
+          // The install's uid/gid, read back by deployedInstallIdentity.
+          // No `fsGroup`: install already chowned the claim roots.
           securityContext: installSecurityContext(identity),
-          // A rolled server should not sit in the drain while every
-          // watcher's connection times out; its shutdown path is bounded to
-          // ~6s by design.
           terminationGracePeriodSeconds: 30,
           containers: [
             {
               name: 'server',
               image: imageRef,
               imagePullPolicy: 'IfNotPresent',
-              // No setuid path to real root. The server needs none — its
-              // image has no sudo — and without this there is one: the pod
-              // runs on plain runc in group 0 with a group-writable
-              // /etc/passwd, which with ubuntu's setuid `su` and pam_unix's
-              // `nullok` is enough to make the `yaac` line uid 0 with an
-              // empty password and `su` over the data-dir hostPath. Workspace
-              // pods are the opposite case by design: in-pod root is a
-              // feature there and the gVisor sentry is the boundary.
+              // Blocks setuid: with a group-writable /etc/passwd, setuid
+              // `su` would otherwise allow becoming root on runc. Workspace
+              // pods don't get this: root inside them is a feature (sudo),
+              // and gVisor is their boundary.
               securityContext: { allowPrivilegeEscalation: false },
               ports: [{ containerPort: SERVER_POD_PORT }],
               env: buildServerEnv(envOpts),
@@ -465,22 +365,15 @@ export function buildServerDeploymentManifest(
                 httpGet: {
                   path: '/api/health',
                   port: SERVER_POD_PORT,
-                  // The kubelet dials the POD IP, so its Host header is the
-                  // pod IP — which the server's DNS-rebind guard rejects
-                  // with a 403 (only loopback and YAAC_ALLOWED_HOSTS pass,
-                  // by design). Stating the header keeps that guard exactly
-                  // as strict while letting the probe describe the request
-                  // it is actually standing in for: a client dialing the
-                  // published loopback origin.
+                  // The server's DNS-rebind guard would reject the pod
+                  // IP as Host.
                   httpHeaders: [{ name: 'Host', value: '127.0.0.1' }],
                 },
                 periodSeconds: 2,
                 failureThreshold: 60,
               },
-              // Memory is capped because it is not compressible and PGlite
-              // holds the database in the same process; cpu deliberately is
-              // not, because a CFS quota on the control plane throttles
-              // every workspace's reconcile at once.
+              // No CPU limit: throttling the server would slow every
+              // workspace's reconcile.
               resources: {
                 requests: { cpu: '250m', memory: '1Gi' },
                 limits: { memory: '6Gi' },
@@ -492,9 +385,7 @@ export function buildServerDeploymentManifest(
               ],
             },
           ],
-          // The three tiers (storage.ts). The claims are what install
-          // bound; the node-local tree is this node's own, the same path
-          // every workspace pod on the node mounts its caches under.
+          // The three storage tiers (storage.ts).
           volumes: [
             { name: 'global', persistentVolumeClaim: { claimName: GLOBAL_CLAIM_NAME } },
             { name: 'server-local', persistentVolumeClaim: { claimName: SERVER_LOCAL_CLAIM_NAME } },
@@ -507,18 +398,10 @@ export function buildServerDeploymentManifest(
 }
 
 /**
- * Apply the server workload, its fronting, and wait for both to roll.
- *
- * Order matters three times: the SA and its ClusterRole exist before the
- * pod that mounts the token; both halves of the ingress wall are applied
- * before the Service publishes the port — a window in which the API is reachable from
- * pods is a window in which a workspace could use it; and the fronting is
- * applied before the Deployment, because the origin it publishes (read off
- * the Ingress on a tailnet) is an input to the Deployment's environment.
- * On an existing kind install the Service apply is also what releases the
- * old NodePort on the node before the forwarder binds it.
- *
- * Returns the published origin.
+ * Apply the server workload and its fronting, wait for both to roll out,
+ * and return the published origin. Order matters: RBAC before the pod;
+ * ingress policies before the Service, so workspaces never see an open
+ * API; and the fronting before the Deployment, whose env needs the origin.
  */
 export async function ensureServerDeployment(
   imageRef: string,
@@ -576,24 +459,17 @@ interface RawServerDeployment {
 }
 
 /**
- * The uid and gid a byo install's pods run as. A constant rather than
- * the uid of the machine running install: an NFS server passes uids
- * through raw, that machine means nothing to it, and ownership has to stay
- * stable whichever machine re-installs (docs/server-in-cluster.md "The uid
- * everything runs as").
+ * The uid and gid a byo install's pods run as. Fixed rather than the
+ * installing machine's uid, so NFS ownership stays stable whichever machine
+ * re-installs (docs/server-in-cluster.md "The uid everything runs as").
  */
 export const BYO_INSTALL_IDENTITY: InstallIdentity = { uid: 1000, gid: 1000 }
 
 /**
- * The identity this install's pods run as, as the live server Deployment
- * records it — the Deployment is the record, as the Ingress is for the
- * fronting. For the host-side callers that are not install (`cluster
- * check`'s probe pods, the e2e harness), which cannot derive it from their
- * own uid: on a byo install the machine running the CLI is not the
- * install's uid at all. With no Deployment to ask (an install that stopped
- * before its server), it is what install would have deployed: the byo
- * constant, or on kind this machine's own uid. A failed read throws rather
- * than guessing.
+ * The uid/gid this install's pods run as, read from the live server
+ * Deployment. Used by `cluster check`'s probe pods and the e2e harness.
+ * With no Deployment, falls back to what install would deploy: the byo
+ * constant, or this machine's uid on kind. A failed read throws.
  */
 export async function deployedInstallIdentity(byo: boolean): Promise<InstallIdentity> {
   const dep = await kubectlGetJson<RawServerDeployment>([
@@ -615,12 +491,10 @@ export async function serverDeploymentExists(): Promise<boolean> {
 }
 
 /**
- * Stop the server that is there, build the image, apply the workload, wait
- * for the published origin to answer, and point this machine's clients at
- * it — the whole of "the server now runs in the cluster", as one step
- * `yaac cluster install` injects and unit tests replace.
- *
- * Returns the origin it published, which is what install prints.
+ * Stop any running server pod, build the image, set up storage, apply the
+ * workload, wait for the origin to answer, and register it in
+ * `server.json`. Returns the origin. `yaac cluster install` injects this so
+ * unit tests can replace it.
  */
 export async function deployServerWorkload(
   opts: ServerEnvOptions & {
@@ -629,10 +503,7 @@ export async function deployServerWorkload(
     identity: InstallIdentity
     /** Who this install is (`server.json`'s `installId`). */
     installId: string
-    /**
-     * What backs the two claims: kind's static pair into this machine's
-     * data dir, or the classes a byo install provisions them from.
-     */
+    /** Static volumes (kind) or storage classes (byo) for the claims. */
     storage: { kind: 'static' } | { kind: 'classes'; rwx: string; rwo: string }
     log: (message: string) => void
   },
@@ -642,9 +513,7 @@ export async function deployServerWorkload(
     opts.log('Stopping the running server pod...')
     await stopClusterServer()
   }
-  // The image first: the class path's binder pod runs it, and on a node-
-  // pinned RWO class that pod decides the node the server lands on, so the
-  // pull it pays is the server's own.
+  // Build the image first: the storage binder pod runs it.
   opts.log('Building the server image (from the bundle)...')
   const imageRef = await ensureServerImage()
   const shape: StorageShape = opts.storage.kind === 'static'
@@ -657,21 +526,16 @@ export async function deployServerWorkload(
     : { ...opts.storage, identity: opts.identity, installId: opts.installId, binderImage: imageRef }
   await ensureStorageClaims({ shape, log: opts.log })
   opts.log(`Deploying the yaac server (${imageRef})...`)
-  // Pass the options straight through rather than re-listing the fields:
-  // every `ServerEnvOptions` member is optional, so a hand-copied list lets
-  // the next field added go missing from the Deployment with no compile error.
+  // Pass opts whole: every `ServerEnvOptions` field is optional, so a
+  // copied field list could silently drop a new one.
   const origin = await ensureServerDeployment(imageRef, opts.fronting, opts.identity, opts)
   await waitForPublishedServer(origin, opts.fronting)
-  // Point every client on this machine at the published origin, and record
-  // that this data dir IS a k8s install, so a later `yaac server start`
-  // from an ordinary shell finds the Deployment instead of spawning a
-  // second server beside it. The registration is shared with `yaac server
-  // start` — an install is not special, it just stands up a Deployment
-  // instead of a process (docs/server-in-cluster.md).
+  // Point this machine's clients at the origin and record the data dir as
+  // k8s, so `yaac server start` manages the Deployment rather than
+  // spawning a host server (docs/server-in-cluster.md).
   await registerServer(origin, 'k8s')
-  // A fronting with no loopback path puts this machine's own CLI behind the
-  // identity rule like any other device, and a tagged device has no user to
-  // be. Said now rather than on the next command.
+  // Without a loopback path this CLI must pass the identity check too;
+  // warn now if it cannot.
   await probeServer(origin).catch((err: unknown) => {
     if (err instanceof IdentityRejectedError) {
       opts.log(`WARNING: ${err.message}\n    The CLI on this machine cannot use this server `
@@ -682,21 +546,13 @@ export async function deployServerWorkload(
 }
 
 /**
- * Refuse to deploy the pod while a HOST server still holds this data dir.
- *
- * The documented upgrade is `npm update`, then install — run, ordinarily,
- * on an install whose server is up. Deploying into that leaves two writers
- * on one directory, and `waitForPublishedServer` would not catch it: on a
- * cluster predating the port mapping, the loopback origin it probes is
- * answered by the OLD HOST SERVER. Install would then report success and
- * write a `server.json` that points every client at the process it was
- * meant to replace — a green banner over a permanent
- * dual-writer. One refusal, before anything is applied.
+ * Refuse to deploy while a host server holds this data dir: that would be
+ * two writers on one database, and the host server could even answer the
+ * origin probe, making install look successful.
  */
 async function refuseIfHostServerRunning(): Promise<void> {
   const lock = await readLock()
-  // An off-host lock is skipped because it is this install's own pod:
-  // rolling that IS what install does, sequenced by `Recreate`.
+  // An off-host lock is this install's own pod, which install rolls.
   if (!lock || !isSameHostLock(lock) || !await isLockLive(lock)) return
   throw new Error(
     'a yaac server is already running on this data dir as a host process '
@@ -708,17 +564,9 @@ async function refuseIfHostServerRunning(): Promise<void> {
 }
 
 /**
- * Wait for the ROLLED server to answer at its published origin, and turn
- * "it never does" into a diagnosis of why.
- *
- * A Deployment that is Available while the origin refuses is not a server
- * problem: on kind it is a cluster created before the port mapping existed
- * (which cannot be converged, only recreated), on a tailnet it is this
- * machine not being able to reach the name the operator published. The
- * fronting knows which, so it supplies the text. An origin that answers
- * but never with a ready server was reached, so that text is wrong for it:
- * the likeliest cause is a Deployment an older yaac installed, whose image
- * predates this CLI's routes, and `yaac cluster install` rolls the current one.
+ * Wait for the rolled-out server to report ready at its origin. On timeout,
+ * an unreachable origin gets the fronting's diagnosis; a reachable but
+ * never-ready one most likely runs an older yaac image.
  */
 async function waitForPublishedServer(origin: string, fronting: ServerFronting): Promise<void> {
   const deadline = Date.now() + fronting.publishTimeoutMs
@@ -751,11 +599,7 @@ async function waitForPublishedServer(origin: string, fronting: ServerFronting):
   )
 }
 
-/**
- * The fronting this install's live Ingress records, which is what the
- * start and restart verbs wait on. Read fresh each time: nothing on disk
- * says which fronting was installed, and the cluster does.
- */
+/** The installed fronting, read from the live cluster (see frontingOfIngress). */
 async function installedFronting(): Promise<ServerFronting> {
   const ingress = await kubectlGetJson<Record<string, unknown>>([
     'get', 'ingress', SERVER_APP_NAME, '-n', k8sNamespace(),
@@ -772,11 +616,8 @@ async function waitForInstalledServer(): Promise<string> {
 }
 
 /**
- * `yaac server start` against an install whose server is a Deployment:
- * scale it back to one and wait, returning the origin it answers at. The
- * counterpart to `stopClusterServer`, and NOT a substitute for `yaac
- * cluster install` — it starts the server that is already deployed, it
- * does not deploy one.
+ * `yaac server start`: scale the existing Deployment back to one replica
+ * and return the origin once it answers. It does not deploy anything.
  */
 export async function startClusterServer(): Promise<string> {
   await deleteLogReader()
@@ -789,31 +630,24 @@ export async function startClusterServer(): Promise<string> {
 }
 
 /**
- * `yaac server stop`: scale to zero. Deleting the Deployment would be the
- * other reading of "stop", and the wrong one — it would take the RBAC and
- * the Service with it, so the thing that undid a `stop` would have to be a
- * full install rather than a `start`.
+ * `yaac server stop`: scale to zero, keeping the Deployment so `start` can
+ * bring it back without a full install.
  */
 export async function stopClusterServer(): Promise<void> {
   await scaleServerDeployment(0)
-  // Wait on the POD going away, not on a replica count reaching zero: a
-  // Deployment at zero replicas omits `status.replicas` altogether, so a
-  // jsonpath wait for `=0` matches nothing and burns its whole timeout on
-  // every successful stop. `--for=delete` over the selector also answers
-  // instantly when there is no pod left to wait for.
+  // Wait for the pod to go: a Deployment at zero replicas omits
+  // `status.replicas`, so waiting on the count would always time out.
   await kubectlWithRetry([
     'wait', 'pod', '-n', k8sNamespace(), '-l', `app=${SERVER_APP_NAME}`,
     '--for=delete', '--timeout=60s',
   ], { timeout: 70_000, maxAttempts: 1 }).catch(() => {
-    // The scale is recorded either way; a slow drain is not a failure to
-    // stop, and the lease going stale is what any successor waits on.
+    // A slow drain is not a failed stop; a successor waits on the lease.
   })
 }
 
 /**
- * `yaac server restart`: roll the pod and return the origin it answers at.
- * `Recreate` means the old pod is gone before the new one is scheduled, so
- * the lease never has two holders.
+ * `yaac server restart`: roll the pod and return the origin once it
+ * answers. `Recreate` removes the old pod before starting the new one.
  */
 export async function restartClusterServer(): Promise<string> {
   await deleteLogReader()
@@ -828,23 +662,11 @@ export async function restartClusterServer(): Promise<string> {
 }
 
 /**
- * `yaac server logs` on a byo install: `tail` over the log the server
- * writes into its server-local claim, which is a volume this machine never
- * sees. (A kind install's claim is a hostPath into this machine's data
- * dir, so its CLI reads the file directly, whatever state the pod is in.)
- *
- * Read in the server pod when its container is running. When it is not —
- * crash-looping, still starting, or scaled to zero, which is exactly when
- * the log is wanted — read through a short-lived reader pod that mounts the
- * claim read-only: the claim is free then, and the reader is pinned to the
- * server pod's node if there is one, where an attach-once volume already
- * is. The flags are `tail`'s own: `-n +1` is the whole file, `-n N` its
- * last N lines (a negative N clamped to none), `-F` follows it across the
- * server's rotations.
- *
- * `tail`'s stderr is held back and printed only on a failure: in follow
- * mode it narrates retries nobody asked for, and when the exec itself fails
- * kubectl's message is the whole diagnosis.
+ * `yaac server logs` on a byo install, where the log is on a volume this
+ * machine cannot see (kind's CLI reads the host file directly). Runs
+ * `tail` in the server pod if it is running, otherwise in a short-lived
+ * reader pod that mounts the claim read-only, on the server pod's node if
+ * it has one. `tail`'s stderr is shown only on failure.
  */
 export async function clusterServerLogs(opts: { follow?: boolean; lines?: number } = {}): Promise<void> {
   const pods = (await kubectlGetJson<{ items?: RawServerPod[] }>([
@@ -859,10 +681,7 @@ export async function clusterServerLogs(opts: { follow?: boolean; lines?: number
   await deleteLogReader(true)
   await kubectlApply(await buildLogReaderManifest(pods.find((p) => p.spec?.nodeName)?.spec?.nodeName))
   try {
-    // Ready before the exec: `kubectl exec` waits for a pod it picks out of
-    // a workload, never for one it is handed by name, so an exec into a
-    // reader still pulling or starting fails at once with "container not
-    // found".
+    // `kubectl exec` by pod name does not wait for the container to start.
     await kubectlWithRetry([
       'wait', '--for=condition=Ready', `pod/${LOG_READER_POD_NAME}`, '-n', k8sNamespace(),
       `--timeout=${String(LOG_READER_START_S)}s`,
@@ -890,10 +709,9 @@ const LOG_READER_POD_NAME = 'yaac-server-log-reader'
 const LOG_READER_START_S = 120
 
 /**
- * Remove the log reader: after a read, before the next one (`wait`), and
- * before a start or restart — a reader holding an attach-once claim on one
- * node would otherwise keep a server scheduled onto another stuck
- * `ContainerCreating` for as long as a `logs -f` runs, or its deadline.
+ * Remove the log reader after a read, before the next one, and before a
+ * start or restart, since it can hold an attach-once claim the server
+ * needs on another node.
  */
 async function deleteLogReader(wait = false): Promise<void> {
   await kubectlWithRetry([
@@ -904,9 +722,9 @@ async function deleteLogReader(wait = false): Promise<void> {
 const LOG_READER_DEADLINE_S = 3600
 
 /**
- * The reader: the server's own image and identity (both read off the
- * Deployment), the server-local claim read-only at the server's own path,
- * and nothing to do but wait to be exec'd into.
+ * The log reader pod: the server's image and identity (from the
+ * Deployment), with the server-local claim mounted read-only, sleeping
+ * until exec'd into.
  */
 async function buildLogReaderManifest(nodeName: string | undefined): Promise<Record<string, unknown>> {
   const dep = await kubectlGetJson<RawServerDeployment>([

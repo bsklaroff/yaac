@@ -121,7 +121,7 @@ describe('nodeLocalDirsOf', () => {
       { source: { kind: 'hostPath', path: path.join(cachedPackagesDir('demo'), 'modules', 'w1', 'node_modules') }, mountPath: '/workspace/node_modules' },
       { source: { kind: 'hostPath', path: cachedPackagesDir('demo') }, mountPath: '/twice' },
       { source: { kind: 'hostPath', path: path.join(claudeDir('demo'), 'settings.json'), type: 'File' }, mountPath: '/f' },
-      // A store generation: a node-side writer's, mounted read-only.
+      // An image store generation, mounted read-only.
       { source: { kind: 'hostPath', path: path.join(imageStoreDir('demo'), 'gen-1'), type: 'DirectoryOrCreate' }, mountPath: '/var/lib/shared-images', readOnly: true },
       { source: { kind: 'emptyDir' }, mountPath: '/tmp/yaac-tmux' },
     ].map((m) => resolveMountSource(m as PodMount))

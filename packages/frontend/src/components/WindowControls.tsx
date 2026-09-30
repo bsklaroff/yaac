@@ -21,11 +21,9 @@ const DOT = 'no-drag flex h-3 w-3 items-center justify-center rounded-full bg-te
   + 'text-[8px] font-bold leading-none text-black/0 transition-colors group-hover/wc:text-black/60'
 
 /**
- * Custom window controls, drawn where the native macOS traffic lights would be
- * (the desktop main process hides them). Three dots — close / minimize / zoom
- * — monochrome at rest; hovering the row lights them up in the familiar
- * red/amber/green and reveals their glyphs, like the real thing. The row is a
- * drag handle; the buttons opt out with .no-drag.
+ * Custom close / minimize / zoom dots in place of the macOS traffic lights,
+ * which the desktop shell hides. Monochrome until hovered. The row is a drag
+ * handle; the buttons opt out with .no-drag.
  */
 export function WindowControls({ className }: { className?: string }): JSX.Element {
   return (
@@ -51,8 +49,6 @@ export function WindowControls({ className }: { className?: string }): JSX.Eleme
       <button
         type="button"
         aria-label="Zoom window"
-        // Only the macOS shell maps the zoom button to native full screen (with
-        // ⌥ for plain zoom).
         title={IS_MAC ? 'Full screen (⌥ to zoom)' : 'Zoom'}
         className={clsx(DOT, 'group-hover/wc:bg-[#28c840]')}
         onClick={(e) => windowApi()?.toggleMaximize(e.altKey)}

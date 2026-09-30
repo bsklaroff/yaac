@@ -12,12 +12,9 @@ import { openExactDir, openRoot, type ConfinedPathError } from '#lib/confined-fs
 type ConfinedFs = typeof confinedFs
 
 /**
- * A real tree holding everything a sandbox can plant below a root it writes:
- * links that stay in, links that lead out, a dangling one, a FIFO, a socket
- * and a sparse file far past any cap. Every case runs the helper against it
- * for real — with `/proc/self/fd` (Linux, the path a sandboxing server runs)
- * and without it (a macOS containerless server), by hiding `/proc/self/fd`
- * from the one `existsSync` the module asks.
+ * A real tree with what a sandbox could plant: links inside and outside the
+ * root, a dangling link, a FIFO, a socket and a huge sparse file. Every case
+ * runs twice: with `/proc/self/fd` (Linux) and without it (as on macOS).
  */
 
 let tmp: string
@@ -65,8 +62,7 @@ const text = async (b: Promise<Buffer | null>): Promise<string | null> => (await
 
 async function reason(p: Promise<unknown>): Promise<string> {
   const err = await p.then(() => null, (e: unknown) => e)
-  // By name, not `instanceof`: the fallback run re-imports the module, and
-  // with it the class.
+  // By name: the fallback run re-imports the module, so `instanceof` fails.
   return err instanceof Error && err.name === 'ConfinedPathError' ? (err as ConfinedPathError).reason : `not confined: ${String(err)}`
 }
 
@@ -119,7 +115,7 @@ function contract(load: () => Promise<ConfinedFs>): void {
       expect((await fs.lstat(path.join(dir, 'settings.json'))).isFile()).toBe(true)
       expect(await reason(r.writeAtomic('out-dir/planted.txt', 'x'))).toBe('outside')
     }
-    // Names a writer could have guessed are simply other files.
+    // A file named like the writer's temp file must not interfere.
     await fs.writeFile(path.join(dir, `.settings.json.${String(process.pid)}.0.tmp`), '')
     await (await openRoot(dir, 'no-links')).writeAtomic('settings.json', 'again')
     expect((await fs.readdir(dir)).sort())
@@ -160,7 +156,7 @@ function contract(load: () => Promise<ConfinedFs>): void {
     const { openRoot } = await load()
     const r = await openRoot(tmp, 'inside', { base: root })
     expect(await text(r.readFile('dir-link/f.txt', { maxBytes: 1024 }))).toBe('in sub')
-    // The root, not the base, is what a link must stay in.
+    // Links must stay inside the root, not the base.
     expect(await text(r.readFile('out-link', { maxBytes: 1024 }))).toBe('secret')
   })
 }

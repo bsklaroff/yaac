@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type * as createModule from '#domain/workspaces/create'
 
-// A stop drives the runtime's teardown (the fake driver's) and, once the
-// stop is recorded, the create of whatever was queued after it — the
-// create being the process boundary here.
+// A stop runs the (fake) driver's teardown, then creates whatever was queued
+// after the stopped workspace. createWorkspace is the stubbed boundary.
 vi.mock('#domain/workspaces/create', async (importOriginal) => ({
   ...(await importOriginal<typeof createModule>()),
   createWorkspace: vi.fn(),
@@ -37,8 +36,8 @@ beforeEach(async () => {
   await recordProject({ slug: 'proj', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
   await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'parent', baseBranch: 'main', permissionMode: 'auto' })
   vi.mocked(cleanupWorkspaceDetached).mockReset().mockResolvedValue()
-  // A create records the workspace's row, as the real one does — a launched
-  // entry keeps a foreign key to it.
+  // Record the row as the real create does; a launched entry has a foreign
+  // key to it.
   mockCreate.mockReset().mockImplementation(async (slug, opts) => {
     await recordWorkspaceCreated({ projectSlug: slug, workspaceId: opts.workspaceId ?? 'x' })
     return {
@@ -54,8 +53,8 @@ afterEach(async () => {
 })
 
 describe('stopWorkspace', () => {
-  // An unclaimed spare is not a workspace: its exact id reaches the runtime
-  // (no row knows it), but a stop never asks the runtime for spares.
+  // A stop never asks the driver for spares, so even a spare's exact id is
+  // not found.
   it('does not stop an unclaimed spare, even by its exact id', async () => {
     const asked: Array<{ spares?: boolean } | undefined> = []
     installFakeWorkspaceDriver({
@@ -79,7 +78,7 @@ describe('stopWorkspace', () => {
     expect(await stopWorkspace('parent')).toMatchObject({ workspaceId: 'parent', projectSlug: 'proj' })
     expect(cleanupWorkspaceDetached).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'parent' }))
 
-    // Both direct children start, together, from their stored settings.
+    // Both direct children start from their stored settings.
     await vi.waitFor(() => { expect(mockCreate).toHaveBeenCalledTimes(2) })
     expect(mockCreate.mock.calls.map((c) => c[1].initialPrompt).sort()).toEqual(['child', 'sibling'])
     expect(mockCreate.mock.calls[0][1]).toMatchObject({ branch: 'main', permissionMode: 'auto' })
@@ -87,7 +86,7 @@ describe('stopWorkspace', () => {
       expect(await getQueuedWorkspaceRow(child.id)).toBeUndefined()
       expect(await getQueuedWorkspaceRow(sibling.id)).toBeUndefined()
     })
-    // The grandchild waits on the workspace the child became, for ITS stop.
+    // The grandchild now waits for the child's new workspace to stop.
     const becameId = mockCreate.mock.calls.find((c) => c[1].initialPrompt === 'child')?.[1].workspaceId
     const waiting = await getQueuedWorkspaceRow(grandchild.id)
     expect(waiting).toMatchObject({ parentWorkspaceId: becameId })

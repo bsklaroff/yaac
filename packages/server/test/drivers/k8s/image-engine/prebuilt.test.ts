@@ -13,8 +13,8 @@ describe('missingPrebuiltImage', () => {
   })
 
   it('points a test run at its own prebuild instead', () => {
-    // An e2e run's images come from test/global-setup.ts, so sending it to
-    // `cluster install` would send it to the wrong prebuild.
+    // An e2e run's images come from test/global-setup.ts, not
+    // `cluster install`.
     vi.stubEnv('YAAC_REQUIRE_PREBUILT_IMAGES', '1')
     const err = missingPrebuiltImage('netd', 'yaac-test-netd:abc123')
     expect(err.message).toContain('Restart the test run')

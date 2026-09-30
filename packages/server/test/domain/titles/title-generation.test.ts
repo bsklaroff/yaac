@@ -3,16 +3,15 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
-// The real store stays — the candidates are its rows, and a race is asserted
-// on the row itself; only the title writer is stubbed, for the call assertions.
+// The real store supplies the candidate rows; only the title writer is
+// stubbed, so calls to it can be asserted.
 vi.mock('#db/workspace-store', async (importOriginal) => ({
   ...(await importOriginal<typeof storeModule>()),
   setWorkspaceTitle: vi.fn(),
 }))
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
-// The one boundary this feature has: every download and every inference is a
-// subprocess. Faking it here lets the summarizer and the pinned llama.cpp
-// runtime behind it run for real.
+// Every download and inference is a subprocess. Faking execFileAsync lets
+// the summarizer and llama.cpp setup logic run for real.
 vi.mock('#lib/shell', async (importOriginal) => ({
   ...(await importOriginal<typeof shellModule>()),
   execFileAsync: vi.fn(),
@@ -21,8 +20,6 @@ vi.mock('#lib/shell', async (importOriginal) => ({
 import { reconcileGeneratedTitles } from '#domain/titles'
 import { _resetTitleGenerationForTests } from '#domain/titles/title-generation'
 import { _resetTitleSummarizerForTests } from '#domain/titles/title-summarizer'
-// Setup values: the pinned release tag names the asset we expect fetched,
-// and the title cap bounds what may be persisted.
 import { LLAMA_CPP_TAG } from '#domain/titles/llama-cpp'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { getProjectWorkspaceRows, setWorkspaceTitle } from '#db/workspace-store'
@@ -50,8 +47,8 @@ const MODEL_FILE = 'Qwen2.5-0.5B-Instruct-IQ4_XS.gguf'
 const PROMPT = 'please refactor the widget factory into a proper plugin system'
 const TITLE = 'Refactor widget factory into plugins'
 
-/** Let the detached generation tasks finish. They probe the real filesystem
- *  for the cached binary and model, so a single tick is not enough. */
+/** Let the detached generation tasks finish. They probe the real
+ *  filesystem, so a single tick is not enough. */
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 25; i++) await new Promise((r) => setTimeout(r, 1))
 }
@@ -63,26 +60,24 @@ let homeDir: string
 let calls: ExecCall[]
 /** Model stdout for one inference, keyed on the templated input it was given. */
 let reply: (input: string) => Promise<string>
-/** Whether the host can load the OpenMP runtime the release links against.
- *  False makes every binary in the release die in the loader, exactly as a
- *  minimal Ubuntu does — including the smoke check that exists to catch it. */
+/** Whether the host has the OpenMP runtime the release links against. When
+ *  false, every binary fails in the loader, as on a minimal Ubuntu. */
 let openMpPresent: boolean
 /** Whether the rootless `apt-get download libgomp1` repair can succeed. */
 let aptAvailable: boolean
 const platformDesc = Object.getOwnPropertyDescriptor(process, 'platform')!
 const archDesc = Object.getOwnPropertyDescriptor(process, 'arch')!
 
-/** Every `sh -c …` command the feature shelled out for. */
+/** Every `sh -c …` command run. */
 const shCommands = (): string[] => calls.filter((c) => c.file === 'sh').map((c) => c.args[1])
-/** The two fetches of a clean setup: the pinned release, then the model. The
- *  OpenMP repair is a shell-out too, so it is named separately below. */
+/** The release and model downloads, excluding the OpenMP repair. */
 const downloads = (): string[] => shCommands().filter((c) => !c.includes('libgomp1'))
-/** The rootless `libgomp1` fetch the smoke check triggers on a host missing it. */
+/** The rootless `libgomp1` fetch run when the smoke check fails. */
 const openMpFetches = (): string[] => shCommands().filter((c) => c.includes('libgomp1'))
-/** The post-extraction smoke check — `--version`, the cheapest run there is. */
+/** The post-extraction `--version` smoke check. */
 const smokeChecks = (): ExecCall[] =>
   calls.filter((c) => c.file !== 'sh' && c.args[0] === '--version')
-/** Real llama-completion inferences: not a shell-out, not the smoke check. */
+/** llama-completion inference calls (not shell-outs or smoke checks). */
 const inferences = (): ExecCall[] =>
   calls.filter((c) => c.file !== 'sh' && c.args[0] !== '--version')
 /** The templated payload the model was asked to title. */
@@ -99,8 +94,8 @@ function session(overrides: Partial<Seeded> = {}): Seeded {
   return { projectSlug: 'p', workspaceId: 's1', prompt: PROMPT, ...overrides }
 }
 
-/** Record each workspace the way a create does: its row, then its first
- *  conversation carrying the opening message. */
+/** Record each workspace as a create does: its row, then its first
+ *  conversation with the opening message. */
 async function seed(...workspaces: Seeded[]): Promise<void> {
   const real = await vi.importActual<typeof storeModule>('#db/workspace-store')
   for (const { projectSlug, workspaceId, prompt, title, stopped } of workspaces) {
@@ -133,8 +128,7 @@ describe('reconcileGeneratedTitles', () => {
     dataDir = await createTempDataDir()
     homeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-home-'))
     vi.spyOn(os, 'homedir').mockReturnValue(homeDir)
-    // Pin the release matrix so asset-name assertions don't depend on the
-    // machine running the suite.
+    // Pin the platform so asset names do not depend on the test machine.
     stubPlatform('linux', 'arm64')
 
     calls = []
@@ -147,12 +141,12 @@ describe('reconcileGeneratedTitles', () => {
       if (file === 'sh') {
         if (args[1].includes('libgomp1')) {
           if (!aptAvailable) return Promise.reject(new Error('sh: apt-get: not found'))
-          // The repair worked: the library now sits beside the bundled .so s.
+          // The repair puts the library beside the bundled .so files.
           openMpPresent = true
         }
         return Promise.resolve({ stdout: '', stderr: '' })
       }
-      // The loader kills the process before main, whatever it was asked to do.
+      // The loader fails every binary before main.
       if (!openMpPresent) {
         return Promise.reject(new Error(`Command failed: ${file} ${args.join(' ')}\n${file}: `
           + 'error while loading shared libraries: libgomp.so.1: cannot open shared '
@@ -178,20 +172,20 @@ describe('reconcileGeneratedTitles', () => {
     await reconcileGeneratedTitles()
     await flush()
 
-    // The pinned llama.cpp release for this platform, extracted via a tmp
-    // dir + rename so a torn download never half-populates the target.
+    // Extracted via a tmp dir and rename, so a torn download never
+    // half-populates the target.
     const [release, model] = downloads()
     expect(release).toContain(
       `releases/download/${LLAMA_CPP_TAG}/llama-${LLAMA_CPP_TAG}-bin-ubuntu-arm64.tar.gz`)
     expect(release).toContain('.tmp')
     expect(release).toContain('mv ')
-    // The model pin: Qwen2.5-0.5B-Instruct at IQ4_XS, fetched into <dataDir>/models.
+    // Qwen2.5-0.5B-Instruct at IQ4_XS, fetched into server-local/models.
     const target = path.join(dataDir, 'server-local', 'models', MODEL_FILE)
     expect(model).toContain('huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF')
     expect(model).toContain(`-o '${target}.tmp'`)
     expect(model).toContain(`mv '${target}.tmp' '${target}'`)
 
-    // One greedy, one-shot completion through the model's own chat template.
+    // One greedy completion using the model's chat template.
     const bin = path.join(homeDir, '.cache', 'yaac', 'llama-cpp', `llama-${LLAMA_CPP_TAG}`, 'llama-completion')
     const [call] = inferences()
     expect(call.file).toBe(bin)
@@ -261,7 +255,7 @@ describe('reconcileGeneratedTitles', () => {
   it('keeps the prompt fallback for unusable or hallucinated output', async () => {
     await seedCache()
     // Quotes-only output normalizes to nothing; "adolescent symphony" shares
-    // no content word with its prompt and would be worse than the fallback.
+    // no content word with its prompt.
     reply = (input) => Promise.resolve(input.includes('parser') ? ' "..." ' : 'adolescent symphony')
     await seed(
       session({ workspaceId: 'empty', prompt: 'the parser has a bug with nested arrays, please fix it today' }),
@@ -279,7 +273,7 @@ describe('reconcileGeneratedTitles', () => {
     reply = (input) => Promise.resolve(input.includes('github')
       // "action" matches "actions" by substring containment.
       ? 'github action workflow set up'
-      // No content word (4+ chars) to judge by — kept as-is.
+      // No content word (4+ chars) to check, so it is kept.
       : 'Fix it now')
     await seed(
       session({ workspaceId: 'gha', prompt: 'set up a github actions workflow that runs lint and unit tests on every pull request' }),
@@ -343,8 +337,8 @@ describe('reconcileGeneratedTitles', () => {
     await flush()
     expect(inferences()).toHaveLength(1)
 
-    // Still untitled on a later tick (the user cleared the generated title,
-    // or generation failed) — no second attempt.
+    // Still untitled on a later tick (title cleared, or generation failed):
+    // no second attempt.
     await reconcileGeneratedTitles()
     await flush()
     expect(inferences()).toHaveLength(1)
@@ -367,8 +361,7 @@ describe('reconcileGeneratedTitles', () => {
     expect(mockSetTitle).toHaveBeenCalledWith('p', 's1', TITLE, { ifUntitled: true })
   })
 
-  // A draft is titled from its prompt, straight into its own row, and gets
-  // one fresh attempt per prompt it is saved with — unless the user titled it.
+  // A draft gets one attempt per saved prompt, unless the user titled it.
   it('titles a draft workspace, and again once its prompt is edited', async () => {
     await seedCache()
     const draft = await insertDraftWorkspace('p', {
@@ -393,12 +386,10 @@ describe('reconcileGeneratedTitles', () => {
     expect(inferences()).toHaveLength(2)
     expect(payloadOf(inferences()[1])).toContain(edited)
     expect(await titleOf()).toBe('Document widget registry')
-    // Workspace titles go through their own writer; a draft never touches it.
+    // Drafts are titled in their own row, not through the workspace writer.
     expect(mockSetTitle).not.toHaveBeenCalled()
   })
 
-  // A queued entry is titled the same way, and re-titled when an edit
-  // changes its prompt — unless the user titled it.
   it('titles a queued workspace, and again once its prompt is edited', async () => {
     await seedCache()
     const settings = {
@@ -446,15 +437,15 @@ describe('reconcileGeneratedTitles', () => {
     await reconcileGeneratedTitles()
     await flush()
 
-    // Fetched rootlessly from the distro mirror and dropped beside the
-    // archive's own shared libs, where the loader path already points.
+    // Fetched rootlessly from the distro mirror into the archive's lib dir,
+    // which is already on the loader path.
     const [repair] = openMpFetches()
     expect(repair).toContain('apt-get download libgomp1')
     expect(repair).toContain('dpkg-deb -x')
     expect(repair).toContain(`cp x/usr/lib/*/libgomp.so.1* '${path.dirname(bin)}/'`)
     expect(mockLog).toHaveBeenCalledWith(expect.stringContaining('[titles] vendored libgomp.so.1'))
 
-    // Re-checked after the repair, then used for real: the session is titled.
+    // Re-checked after the repair, then used to title the session.
     expect(smokeChecks()).toHaveLength(2)
     expect(mockSetTitle).toHaveBeenCalledWith('p', 's1', TITLE, { ifUntitled: true })
   })
@@ -467,8 +458,8 @@ describe('reconcileGeneratedTitles', () => {
     await reconcileGeneratedTitles()
     await flush()
 
-    // The whole point of the smoke check: this is one loud setup failure
-    // naming the fix, not a silent per-session inference failure forever.
+    // The smoke check yields one setup error naming the fix, instead of an
+    // inference failure per session.
     expect(mockLog).toHaveBeenCalledTimes(1)
     expect(mockLog).toHaveBeenCalledWith(expect.stringContaining('[titles] model setup failed'))
     expect(mockLog).toHaveBeenCalledWith(expect.stringContaining('sudo apt install libgomp1'))
@@ -485,13 +476,12 @@ describe('reconcileGeneratedTitles', () => {
     expect(mockLog).toHaveBeenCalledTimes(1)
     expect(mockLog).toHaveBeenCalledWith(expect.stringContaining('[titles] model setup failed'))
     expect(mockSetTitle).not.toHaveBeenCalled()
-    // The second session fast-fails on the backoff mark: one attempt total.
+    // The second session fast-fails during the backoff.
     expect(mockExec).toHaveBeenCalledTimes(1)
   })
 
   it('retries the setup after the backoff window elapses', async () => {
-    // Only the clock is faked: the flow awaits real filesystem probes, which
-    // faked timers would never let settle.
+    // Fake only Date; faked timers would stall the real filesystem probes.
     vi.useFakeTimers({ toFake: ['Date'] })
     mockExec.mockRejectedValue(new Error('offline'))
     await seed(session())

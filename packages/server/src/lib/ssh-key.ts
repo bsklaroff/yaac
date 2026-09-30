@@ -1,22 +1,16 @@
 import crypto from 'node:crypto'
 
 /**
- * The SSH keys yaac generates, and the three shapes one has to take.
+ * SSH keys yaac generates, and their three encodings.
  *
- * Only ed25519. The key is yaac's own — nobody brings one — so there is no
- * type to choose, every git host accepts it, and one algorithm keeps both
- * the container encoder below and the in-process agent that signs with it
- * trivial: no parameters, no hash choice, no signature flags.
+ * Only ed25519: the keys are yaac's own, every git host accepts it, and a
+ * single algorithm keeps the encoder and the in-process agent simple.
  *
- * The stored form is the 32-byte SEED, because everything else derives from
- * it: the public half, the `KeyObject` the server signs with, and the
- * OpenSSH private-key container an `ssh-add -` wants. Storing the seed
- * means nothing ever has to parse that container back.
+ * The 32-byte seed is what is stored; the public key, the signing
+ * `KeyObject`, and the OpenSSH private-key container all derive from it.
  *
- * The container is hand-encoded because OpenSSH refuses a PKCS#8 Ed25519 key
- * (`Load key: invalid format`, OpenSSH 9.6), which is the only form Node
- * exports natively. `openssh-key-v1` with cipher `none` is about twenty
- * lines, and this is the one place it is written.
+ * The OpenSSH container is hand-encoded because OpenSSH rejects the PKCS#8
+ * Ed25519 form Node exports (`Load key: invalid format`, OpenSSH 9.6).
  */
 
 const KEY_TYPE = 'ssh-ed25519'
@@ -25,7 +19,7 @@ const SEED_BYTES = 32
 const PKCS8_ED25519_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex')
 
 export interface GeneratedSshKey {
-  /** The private half, whole: 32 bytes an ed25519 key is entirely derived from. */
+  /** The private key: the 32-byte seed everything else derives from. */
   seed: Buffer
   /** The public half as one OpenSSH line: `ssh-ed25519 <base64 blob> <comment>`. */
   publicKey: string
@@ -65,16 +59,15 @@ export function publicKeyLine(seed: Buffer, comment: string): string {
   return `${KEY_TYPE} ${sshPublicKeyBlob(seed).toString('base64')} ${comment}`
 }
 
-/** A public line with its comment replaced. The comment is not part of the
- *  key: a host that has the key registered matches the blob alone, so this
- *  changes nothing about what authenticates. */
+/** A public line with its comment replaced. Hosts match on the key blob,
+ *  so this does not affect authentication. */
 export function withKeyComment(line: string, comment: string): string {
   const [type, blob] = line.split(' ')
   return `${type} ${blob} ${comment}`
 }
 
-/** The wire blob back out of a public line — so an identity can be listed
- *  and matched from the stored public half, with nothing opened. */
+/** The wire blob parsed from a public line, so an identity can be listed
+ *  and matched without the private key. */
 export function sshPublicKeyBlobFromLine(line: string): Buffer {
   return Buffer.from(line.split(' ')[1] ?? '', 'base64')
 }
@@ -89,8 +82,9 @@ export function sshSign(seed: Buffer, data: Buffer): Buffer {
 }
 
 /**
- * The private key as OpenSSH's own container, unencrypted — the form
- * `ssh-add -` and `ssh-keygen` read. Handed to a process, never to a file.
+ * The private key in OpenSSH's unencrypted container format, as read by
+ * `ssh-add -` and `ssh-keygen`. Passed to a process, never written to a
+ * file.
  */
 export function encodeOpenSshPrivateKey(seed: Buffer, comment: string): string {
   const pub = publicPoint(seed)

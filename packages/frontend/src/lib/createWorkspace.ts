@@ -9,10 +9,9 @@ export interface CreateWorkspaceResult {
 }
 
 /**
- * POST a workspace operation and consume its NDJSON progress stream
- * (/workspace/create and /workspace/restart both stream
- * progress → result → error). Calls `onProgress` per step; resolves with
- * the final result object or throws the server's error message.
+ * POST a workspace create or restart and read its NDJSON progress stream.
+ * Calls `onProgress` per step, then resolves with the result or throws the
+ * server's error message.
  */
 async function streamWorkspaceOp(
   path: string,
@@ -26,17 +25,17 @@ async function streamWorkspaceOp(
     body: JSON.stringify(body),
   })
   if (!res.ok) {
-    // A refusal before the stream (unknown workspace, an id already in use)
-    // carries the same `{error: {message}}` the stream's error event does.
+    // A refusal before the stream starts has the same `{error: {message}}`
+    // shape as the stream's error event.
     const body = await res.json().catch(() => null) as { error?: { message?: string } } | null
     throw new Error(body?.error?.message ?? `request failed (HTTP ${res.status})`)
   }
   return await consumeNdjsonStream<unknown>(res, onProgress)
 }
 
-/** What a create names beyond its project and tool. Each field left out is
- *  resolved server-side — from what this project last used, else a fallback
- *  — and only the fields sent become the project's next defaults. */
+/** Optional create settings. The server fills an omitted field from what
+ *  this project last used, else a fallback. Only fields sent become the
+ *  project's next defaults. */
 export interface CreateWorkspaceOptions {
   branch?: string
   model?: string
@@ -82,8 +81,7 @@ export async function restartWorkspace(
   return await streamWorkspaceOp('/api/workspace/restart', { workspaceId }, onProgress) as { workspaceId: string }
 }
 
-/** Dismiss a provisioning row (drops the server registry entry; used for a
- *  failed create/restart). Idempotent server-side. */
+/** Dismiss a failed create/restart's provisioning row. Idempotent. */
 export async function dismissProvisioning(workspaceId: string): Promise<void> {
   await api.workspace.provisioning[':id'].dismiss.$post({ param: { id: workspaceId } })
 }
@@ -92,7 +90,7 @@ export async function stopWorkspace(workspaceId: string): Promise<void> {
   await api.workspace.stop.$post({ json: { workspaceId } })
 }
 
-/** Set a workspace's display title (blank clears it back to the prompt). */
+/** Set a workspace's display title; blank clears it. */
 export async function renameWorkspace(workspaceId: string, title: string): Promise<void> {
   await api.workspace[':id'].title.$post({ param: { id: workspaceId }, json: { title } })
 }

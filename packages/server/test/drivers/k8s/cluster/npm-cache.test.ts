@@ -1,6 +1,6 @@
 /**
- * The npm cache's barrel surface: standing Verdaccio up, and the answer a
- * workspace create reads to decide whether its pnpm installs through it.
+ * The npm cache's barrel functions: deploying Verdaccio, and the URL a
+ * workspace create reads to decide whether pnpm installs through it.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
@@ -19,13 +19,12 @@ vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
   kubectlGetJson: mockKubectlGetJson,
 }))
 
-// The node-CIDR probe the ingress wall is rendered from — a live cluster read.
+// The node-CIDR probe behind the network policies reads the live cluster.
 vi.mock('#drivers/k8s/cluster/cluster-cidrs', () => ({
   nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
   clusterPodCidrs: vi.fn().mockResolvedValue(['10.244.0.0/16']),
 }))
 
-// The registry client: whether the mirror is there, and how it is named.
 const mockRegistryHasTag = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/container/registry', async (importOriginal) => ({
   ...(await importOriginal<typeof registryModule>()),
@@ -63,8 +62,7 @@ describe('ensureNpmCache', () => {
     expect(config.match(/publish: \$nobody/g)).toHaveLength(4)
     expect(config).toContain('url: https://registry.npmjs.org/')
 
-    // Never two writers: one replica, and the old pod gone before the new
-    // one mounts the claim.
+    // One writer at a time: one replica, recreated rather than rolled.
     const deploy = appliedNamed('Deployment', 'yaac-npm-cache')
     expect(deploy?.metadata.namespace).toBe('test-ns')
     expect(deploy?.spec).toMatchObject({
@@ -81,14 +79,14 @@ describe('ensureNpmCache', () => {
         },
       },
     })
-    // The cluster's default class, whatever it is.
+    // No storageClassName: binds through the cluster's default class.
     expect(appliedNamed('PersistentVolumeClaim', 'yaac-npm-cache-storage-ddh16')?.spec).toEqual({
       accessModes: ['ReadWriteOnce'],
       resources: { requests: { storage: '20Gi' } },
     })
 
-    // Only workspace pods the server labelled for the cache — a project with
-    // `npmCache: false` gets no label — on both sides of the dial.
+    // Only workspace pods labelled for the cache (a project with
+    // `npmCache: false` gets no label), on both ends of the connection.
     const admitted = {
       matchLabels: { 'yaac.npm-cache': 'true' },
       matchExpressions: [{ key: 'yaac.workspace-id', operator: 'Exists' }],
@@ -109,7 +107,7 @@ describe('ensureNpmCache', () => {
         ports: [{ protocol: 'TCP', port: 4873 }],
       }],
     })
-    // Out to npmjs, never to the cluster's own 443 listeners.
+    // Egress to npmjs, but never to in-cluster 443 listeners.
     expect(appliedNamed('NetworkPolicy', 'yaac-npm-cache-egress')?.spec).toMatchObject({
       policyTypes: ['Egress'],
       egress: [
@@ -121,8 +119,8 @@ describe('ensureNpmCache', () => {
       ],
     })
 
-    // The Service goes on only after the rollout, and last: a first install
-    // whose cache never came up has none at all.
+    // The Service is applied last, after the rollout, so a cache that
+    // never came up has no Service.
     const kinds = applied().map((m) => m.kind)
     expect(kinds.at(-1)).toBe('Service')
     const rollout = mockKubectlWithRetry.mock.calls.findIndex(([args]) =>
@@ -130,8 +128,7 @@ describe('ensureNpmCache', () => {
     expect(rollout).toBeGreaterThanOrEqual(0)
     expect(mockKubectlWithRetry.mock.invocationCallOrder[rollout])
       .toBeLessThan(mockKubectlApply.mock.invocationCallOrder.at(-1)!)
-    // An older install's name for the workspace-egress policy goes, now that
-    // the current one is applied.
+    // Deletes the workspace-egress policy under its old name.
     expect(mockKubectlWithRetry).toHaveBeenCalledWith([
       'delete', 'networkpolicy', 'yaac-npm-cache-worktree-egress', '-n', 'test-ns', '--ignore-not-found',
     ])
@@ -153,9 +150,9 @@ describe('ensureNpmCache', () => {
 })
 
 describe('servingNpmCacheUrl', () => {
-  // pnpm has no fallback registry: a workspace pointed at a cache that is
-  // down fails every install, so only a ready pod earns the URL — asked
-  // afresh each time, never remembered.
+  // pnpm has no fallback registry, so a workspace pointed at a down cache
+  // fails every install. The URL is given only while a pod is ready, and
+  // is checked on every call.
   it('names the Service only while a cache pod is ready behind it', async () => {
     const slices = (ready?: boolean): unknown => ({
       items: ready === undefined ? [] : [{ endpoints: [{ conditions: { ready } }] }],

@@ -4,8 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { setDataDir, claudeDir, codexDir, opencodeConfigDir, piDir, repoDir } from '@yaac/shared/project-paths'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
-// State hooks for the two caches/overrides discovery reads — reset so a case
-// sees only what it opts into. Neither is under test here.
+// State hooks, reset so each case sees only the tiers it opts into.
 import { setClaudeBundledSkills } from '#domain/skills/claude-bundled'
 import { setBuiltinSkillsDir } from '#domain/skills/builtin'
 import { git } from '@yaac/test-utils/git'
@@ -13,11 +12,10 @@ import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 
 const slug = 'proj'
 
-/** Commit `files` (relPath → contents) onto `branch` of a fresh repo at
- *  `repoDir(s)` and publish the `origin/<branch>` remote-tracking ref discovery
- *  reads from — without any network remote. Files already in the working tree
- *  but not passed here stay uncommitted, so a test can prove ref reads ignore
- *  the working copy. */
+/** Commit `files` (relPath → contents) onto `branch` of a repo at
+ *  `repoDir(s)` and set the `origin/<branch>` ref discovery reads, with no
+ *  network remote. Other working-tree files stay uncommitted, so a test can
+ *  prove ref reads ignore the working copy. */
 async function commitRepoBranch(s: string, branch: string, files: Record<string, string>): Promise<void> {
   const repo = repoDir(s)
   await fs.mkdir(repo, { recursive: true })
@@ -69,10 +67,9 @@ async function seedCodexPlugins(s: string, entries: Record<string, { enabled?: b
 }
 
 /**
- * Every `SKILL.md` shape discovery has to survive, keyed by skill dir name.
- * These drive the frontmatter reader across its whole surface — fence variants,
- * unparseable and non-mapping YAML, and each value type a scalar/boolean/list
- * field has to coerce — and are asserted as the summaries a caller gets back.
+ * Every `SKILL.md` shape discovery must handle, keyed by skill dir name:
+ * fence variants, unparseable and non-mapping YAML, and each value type a
+ * scalar, boolean or list field must coerce.
  */
 const SHAPES: Record<string, string> = {
   'no-frontmatter': '# Just markdown\nno fence here\n',
@@ -96,11 +93,9 @@ let tmp: string
 beforeEach(async () => {
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-skills-test-'))
   setDataDir(tmp)
-  // The bundled-skills cache is populated by a startup fetch; keep it empty so
-  // per-project assertions don't see it unless a test opts in.
+  // Empty the bundled-skills cache and hide the builtin tier unless a test
+  // opts in.
   setClaudeBundledSkills([])
-  // yaac's shipped builtin-skills tier reads a real packaged dir; point it at a
-  // missing dir so per-project assertions don't see it unless a test opts in.
   setBuiltinSkillsDir(path.join(tmp, 'no-builtins'))
 
   const claude = claudeDir(slug)
@@ -177,8 +172,8 @@ describe('getProjectSkills', () => {
   })
 
   it('reads a symlinked skill dir only where no sandbox writes the home', async () => {
-    // Under containerless the links are yaac's and the user's own, and are
-    // followed while they stay in the project.
+    // Under containerless, symlinks are followed while they stay inside the
+    // project.
     await writeSkill(path.join(claudeDir(slug), '..', 'shared-skills', 'linked'),
       '---\nname: linked\ndescription: symlinked in\n---\nb')
     await fs.symlink(
@@ -192,8 +187,8 @@ describe('getProjectSkills', () => {
   })
 
   it('reads no link a sandbox could have planted in a tool home', async () => {
-    // A pod mounts the home read-write: a link named SKILL.md would hand the
-    // skills API any file the server can read.
+    // A pod can write the home, so a symlinked SKILL.md could expose any
+    // file the server can read.
     const secret = path.join(tmp, 'secret.md')
     await fs.writeFile(secret, '---\nname: leaked\ndescription: server file\n---\nb')
     await fs.mkdir(path.join(claudeDir(slug), 'skills', 'planted'), { recursive: true })
@@ -356,8 +351,8 @@ describe('getProjectSkills', () => {
 
   it('sorts the yaac builtin tier above the agent bundled tier within system', async () => {
     await seedBuiltin()
-    // A bundled skill whose name sorts before the yaac one: rank, not name,
-    // must still place yaac first so the viewer heads them as two groups.
+    // A bundled skill whose name sorts before the yaac one: tier rank, not
+    // name, keeps yaac first so the viewer shows two groups.
     setClaudeBundledSkills([{ name: 'aardvark-review', description: 'x' }])
     const { skills } = await getProjectSkills('claude', slug)
     const system = skills.filter((s) => s.source === 'system')
@@ -368,18 +363,15 @@ describe('getProjectSkills', () => {
   })
 
   it('lists a builtin linked into a personal root once, as system rather than personal', async () => {
-    // What the containerless driver leaves on disk: the shared skills roots
-    // ARE where yaac's builtins physically land, since there is no mount to
-    // layer them with. Listing each one again under `personal` would offer it
-    // twice, the second time under a tier the user never put it in.
+    // Under containerless, yaac's builtins are linked into the shared skill
+    // roots. They must not be listed again as `personal`.
     await seedBuiltin()
     const builtin = path.join(tmp, 'builtin-skills', 'yaac-welcome')
     for (const root of [path.join(claudeDir(slug), 'skills'), path.join(piDir(slug), 'agent', 'skills')]) {
       await fs.mkdir(root, { recursive: true })
       await fs.symlink(builtin, path.join(root, 'yaac-welcome'), 'dir')
     }
-    // A link of the user's own in the same root stays personal — the filter
-    // is "ours", not "a symlink".
+    // The user's own symlink in the same root stays personal.
     const theirs = path.join(claudeDir(slug), '..', 'shared-skills', 'theirs')
     await writeSkill(theirs, '---\nname: theirs\ndescription: t\n---\nb')
     await fs.symlink(theirs, path.join(claudeDir(slug), 'skills', 'theirs'), 'dir')
@@ -446,7 +438,7 @@ describe('getProjectSkills', () => {
   })
 
   it('reads opencode singular + plural native dirs and the claude-compat dir, deduping by id', async () => {
-    // Global native, singular `skill/` — the tier the old grandparent rule missed.
+    // Global native, singular `skill/` dir.
     await writeSkill(path.join(opencodeConfigDir(slug), 'skill', 'greet'),
       '---\nname: greet\ndescription: oc global singular\n---\nb')
     // Project native `.opencode/skills/deploy` — same name as the beforeEach
@@ -462,8 +454,8 @@ describe('getProjectSkills', () => {
   })
 
   it('reads pi personal skills from piDir/agent/skills plus project skills from the repo', async () => {
-    // pi's whole ~/.pi home is mounted per-project, so its global skills tier
-    // (~/.pi/agent/skills) is host-visible.
+    // pi's ~/.pi home is per-project, so its global skills tier is visible
+    // on the host.
     await writeSkill(path.join(piDir(slug), 'agent', 'skills', 'globby'),
       '---\nname: globby\ndescription: pi personal skill\n---\nb')
     await writeSkill(path.join(repoDir(slug), '.pi', 'skills', 'ship'),
@@ -479,8 +471,7 @@ describe('getProjectSkills', () => {
     ])
   })
 
-  // A fresh slug for the git cases so beforeEach's working-tree writes for
-  // `proj` don't interfere.
+  // A separate slug so beforeEach's working-tree writes don't interfere.
   it('reads project skills from origin/<default>, ignoring uncommitted working-tree files', async () => {
     await commitRepoBranch('gitproj', 'main', {
       '.claude/skills/committed/SKILL.md': '---\nname: committed\ndescription: on main\n---\nb',

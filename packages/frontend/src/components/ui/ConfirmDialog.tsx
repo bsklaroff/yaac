@@ -4,21 +4,13 @@ import { AlertDialog } from '@base-ui/react/alert-dialog'
 import { useOpenerFocus } from '#lib/useOpenerFocus'
 
 /**
- * Reusable destructive-confirm dialog (Base UI AlertDialog + design
- * tokens), ported from code-design. Controlled via `open`/`onOpenChange`;
- * the caller owns closing so it can keep the dialog up during an async
- * action and close on success. Pass `busy` to disable the buttons.
+ * Destructive-action confirm dialog. The caller controls `open` so it can
+ * keep the dialog up during an async action; `busy` disables the buttons.
  *
- * The confirm button takes initial focus, so a bare Enter confirms —
- * keyboard flows like Alt+D Enter (delete workspace) complete without the
- * mouse. Esc still cancels, and Tab reaches Cancel.
- *
- * Pass `confirmText` to require typing that exact text before confirm
- * enables (GitHub-style guard for high-blast-radius deletes). The input
- * takes initial focus instead, and Enter confirms once it matches.
- *
- * Pass `requireClick` where a stray Enter must never confirm: Cancel takes
- * initial focus, and the confirm button ignores key activation.
+ * The confirm button takes initial focus, so Enter confirms (e.g. Alt+D,
+ * Enter). `confirmText` instead requires typing that exact text first, and
+ * focuses the input. `requireClick` focuses Cancel and ignores key
+ * activation of confirm, for cases where a stray Enter must never confirm.
  */
 export function ConfirmDialog({
   open,
@@ -52,8 +44,7 @@ export function ConfirmDialog({
   const finalFocus = useOpenerFocus(open)
   const [typed, setTyped] = useState('')
   useEffect(() => { if (open) setTyped('') }, [open])
-  // An empty confirmText can never match, so a caller whose data hasn't
-  // hydrated yet fails closed instead of silently skipping the guard.
+  // An empty confirmText never matches, so unloaded data fails closed.
   const unmatched = confirmText !== undefined && (confirmText === '' || typed !== confirmText)
   return (
     <AlertDialog.Root open={open} onOpenChange={(next) => { if (!busy) onOpenChange(next) }}>

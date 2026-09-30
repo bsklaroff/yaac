@@ -49,8 +49,8 @@ describe('findRepoRoot', () => {
   const here = path.dirname(new URL(import.meta.url).pathname)
 
   it('walks up past per-package package.json files to the workspace marker', async () => {
-    // Every packages/* dir has a package.json; only the repo
-    // root has pnpm-workspace.yaml — the walk must not stop early.
+    // Every packages/* dir has a package.json; only the repo root has
+    // pnpm-workspace.yaml, so the walk must not stop early.
     const root = findRepoRoot(here)
     expect(root).toBe(path.resolve(here, '..', '..', '..'))
     const stat = await fs.stat(path.join(root, 'pnpm-workspace.yaml'))
@@ -122,9 +122,8 @@ describe('paths', () => {
 
   it('puts the secret key in the server-local tier, not beside the credentials', () => {
     setDataDir('/tmp/yaac-test')
-    // Deliberately NOT under .credentials: that directory's contents are
-    // handed to a runtime wholesale, and a key beside the ciphertext it
-    // opens is no key.
+    // Not under .credentials: that dir's contents are handed to a runtime
+    // whole, and the key must not sit beside the ciphertext.
     expect(secretKeyPath()).toBe('/tmp/yaac-test/server-local/secret.key')
   })
 
@@ -135,9 +134,8 @@ describe('paths', () => {
     await ensureDataDir()
     expect((await fs.stat(path.join(tmpDir, 'global', 'projects'))).isDirectory()).toBe(true)
     expect((await fs.stat(path.join(tmpDir, 'server-local'))).isDirectory()).toBe(true)
-    // Not the node-local root: under k8s that is the node's own, created
-    // by each pod's init container; under containerless the driver makes
-    // what it links.
+    // Not the node-local root: each pod's init container creates it under
+    // k8s, and the containerless driver creates what it links.
     await expect(fs.stat(path.join(tmpDir, 'node-local'))).rejects.toThrow()
     await fs.rm(tmpDir, { recursive: true, force: true })
   })
@@ -202,9 +200,8 @@ describe('storage tiers', () => {
   })
 
   it('keys the socket tmp dir on the install identity, not on a tier root', () => {
-    // A running containerless workspace's tmux socket lives under this dir,
-    // and the recovery scan finds it by name: a root that the pod re-roots
-    // (or that an upgrade moved) would rename it under every live workspace.
+    // Live containerless workspaces' tmux sockets live under this dir and
+    // are found by name, so moving it would lose every one.
     setDataDir('/tmp/yaac-test')
     const before = installTmpDir()
     vi.stubEnv('YAAC_SERVER_LOCAL_ROOT', '/yaac/server-local')
@@ -213,9 +210,8 @@ describe('storage tiers', () => {
   })
 
   it('puts the client-local root beside the data dir, never inside it', () => {
-    // Beside, because the k8s server is a pod that mounts the tiers:
-    // anything under them is reachable by something that is not a client,
-    // and an install's clients still have to stay isolated per data dir.
+    // Beside the tiers, not under them: the k8s server pod mounts the
+    // tiers, and client state must stay out of its reach.
     setDataDir('/tmp/yaac-test')
     expect(clientLocalRoot()).toBe('/tmp/yaac-test-client')
     expect(clientLocalPath('remote.json')).toBe('/tmp/yaac-test-client/remote.json')
@@ -226,16 +222,16 @@ describe('storage tiers', () => {
   it('joins per tier', () => {
     setDataDir('/tmp/yaac-test')
     expect(globalPath('run', 'proxy-data')).toBe('/tmp/yaac-test/global/run/proxy-data')
-    // The credential files are the server's alone: nothing mounts them, a
-    // runtime is handed their contents instead.
+    // Nothing mounts the credential files; a runtime is handed their
+    // contents.
     expect(credentialsDir()).toBe('/tmp/yaac-test/server-local/.credentials')
     expect(globalProjectPath('my-repo', 'repo')).toBe('/tmp/yaac-test/global/projects/my-repo/repo')
     expect(nodeLocalProjectPath(PROJECT_ID, 'x')).toBe(`/tmp/yaac-test/node-local/projects/${PROJECT_ID}/x`)
     expect(serverLocalPath('db')).toBe('/tmp/yaac-test/server-local/db')
   })
 
-  // Frozen, because a re-rooting would show up here first: these are what a
-  // workspace pod mounts and what the layout migration moves.
+  // Pinned: workspace pods mount these paths and the layout migration
+  // moves them.
   it('puts the node-local caches and working copies under the node-local root, by project id', () => {
     setDataDir('/tmp/yaac-test')
     const node = '/tmp/yaac-test/node-local'
@@ -257,8 +253,7 @@ describe('calicoManifestCachePath', () => {
   })
 
   it('keys the cached manifest by version, in the client-local root', () => {
-    // Only `yaac cluster install` ever reads it — standing a CNI up is
-    // substrate administration, which no server runs.
+    // Only `yaac cluster install` reads it; no server sets up a CNI.
     setDataDir('/tmp/yaac-test')
     expect(calicoManifestCachePath('3.32.1')).toBe('/tmp/yaac-test-client/cache/calico-3.32.1.yaml')
     expect(calicoManifestCachePath('3.33.0')).toBe('/tmp/yaac-test-client/cache/calico-3.33.0.yaml')

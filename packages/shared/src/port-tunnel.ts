@@ -3,28 +3,14 @@ import { WebSocket } from 'ws'
 
 /**
  * The client half of a workspace port forward: a listener on the user's
- * machine, and one WebSocket to the server per connection it accepts.
+ * machine that opens one WebSocket to the server's `/forward/attach` per
+ * accepted connection (docs/port-forward-tunnel.md). The server cannot
+ * bind the port itself, since it may be a pod or on another machine.
  *
- * The listener lives here rather than in the server because the server has
- * nowhere to put it. Under `k8s` it is a pod, so a port it bound would be
- * on the pod's loopback; under `containerless` the workspace binds the
- * port itself, on the server's machine, which is not the user's when the
- * server is remote. What the server does hold is the mapping
- * (`forwardedPorts` on the workspace list) and the near end of each
- * connection (`/forward/attach`) — so a client that binds what the mapping
- * says makes the webapp's `127.0.0.1:<port>` links true for as long as it
- * runs.
- *
- * WS + `net` only, which is what lets this sit in `@yaac/shared`: the
- * desktop app is a resident forwarder and `@yaac/shared` is the only
- * package it may import.
- *
- * One WebSocket per accepted TCP connection — the kubectl shape. Nothing
- * is multiplexed, so nothing has to be framed: every binary message is
- * bytes for that one connection, in order, and either end closing ends the
- * pair. A chatty client pays one WS handshake per connection, which is the
- * trade this takes on purpose (multiplexing is a follow-up, wanted only if
- * that cost ever becomes visible).
+ * Lives in `@yaac/shared` so the desktop app, which may import nothing
+ * else, can run forwards. Connections are not multiplexed: each binary
+ * message carries bytes for its one connection, and either end closing
+ * ends the pair.
  */
 
 /** Where the forwards go. */
@@ -42,32 +28,22 @@ export interface ForwardSpec {
 }
 
 export interface ForwardHandle {
-  /** The port actually bound, which is `spec.hostPort` — restated so a
-   *  caller that asked for 0 has an answer. */
+  /** The port actually bound (useful when `spec.hostPort` was 0). */
   readonly hostPort: number
   close(): void
 }
 
-/** What a running forward reports. Everything here is best-effort colour
- *  for a CLI or a tray: nothing about the forward depends on it. */
+/** Optional progress callbacks for a running forward. */
 export interface ForwardEvents {
   onConnection?: () => void
-  /** One connection failed — the workspace is gone, nothing is listening
-   *  on the container port, or the server refused. Never fatal to the
-   *  forward itself: the next connection tries again. */
+  /** One connection failed (workspace gone, nothing listening, or the
+   *  server refused). The forward keeps running. */
   onConnectionError?: (message: string) => void
 }
 
 /**
- * The `/forward/attach` URL one connection opens.
- *
- * Exported because the scheme rule is the whole of what it decides and the
- * only way to observe it is to look: the WS scheme has to follow the
- * origin's, or a forward against an `https://` server makes its upgrade in
- * the clear against a TLS listener. Asserting that on a live connection
- * would mean asserting on a connection ERROR, whose text is the ambient
- * network's to write — which is how a unit test starts failing inside a
- * sandbox whose proxy answers for every name.
+ * The `/forward/attach` URL one connection opens. The WS scheme follows the
+ * origin's (`https:` → `wss:`). Exported so tests can check that directly.
  */
 export function tunnelUrl(target: TunnelTarget, spec: ForwardSpec): string {
   const url = new URL('/api/forward/attach', target.baseUrl)
@@ -78,11 +54,8 @@ export function tunnelUrl(target: TunnelTarget, spec: ForwardSpec): string {
 }
 
 /**
- * Splice one accepted TCP connection to one tunnel WebSocket.
- *
- * The socket is paused until the WebSocket opens, so the client's first
- * bytes — which for HTTP is the entire request — wait for the tunnel
- * instead of being written into a socket nothing is reading yet.
+ * Connect one accepted TCP connection to one tunnel WebSocket. The socket
+ * stays paused until the WebSocket opens so early bytes are not lost.
  */
 function bridge(
   socket: net.Socket,
@@ -100,8 +73,7 @@ function bridge(
       events.onConnectionError?.(message)
     }
     socket.destroy()
-    // 1000 while CONNECTING throws in `ws`; terminate is unconditional and
-    // this connection is over either way.
+    // `ws.close()` throws while CONNECTING; terminate always works.
     ws.terminate()
   }
 
@@ -114,8 +86,7 @@ function bridge(
   ws.on('message', (data: Buffer | ArrayBuffer | Buffer[]) => {
     socket.write(Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data as ArrayBuffer))
   })
-  // A close code the server chose is the only diagnosis a client gets — the
-  // dial failed inside the cluster, where this process cannot look.
+  // Codes >= 4000 are the server's explanation of a failed dial.
   ws.on('close', (code: number, reason: Buffer) => {
     if (code >= 4000) fail(reason.toString('utf8') || `tunnel closed (${code})`)
     else socket.end()
@@ -127,11 +98,7 @@ function bridge(
 
 /**
  * Bind `spec.hostPort` and forward every connection to the workspace's
- * `spec.containerPort`.
- *
- * Rejects when the port cannot be bound — the one failure a forward cannot
- * work around, and the one the server could never have reported, since the
- * machine that binds is this one.
+ * `spec.containerPort`. Rejects if the port cannot be bound.
  */
 export function startForward(
   target: TunnelTarget,

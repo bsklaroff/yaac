@@ -11,25 +11,15 @@ import type { WorkspaceMount } from '#drivers/contract'
 const CONTAINER_KNOWN_HOSTS = '/home/yaac/.ssh/yaac/known_hosts'
 
 /**
- * How a workspace talks git over SSH without ever holding a private key.
- *
- * Three things have to be true at once, and they are assembled together
- * because each is useless without the others: identity comes from the
- * proxy's ssh-agent (forwarded, never a key on disk), host verification
- * comes from a project-scoped known_hosts the server wrote, and the
- * connection itself is tunnelled through the egress proxy so the allowlist
- * still applies to it.
- *
- * The tunnel is a CONNECT to a sentinel address that netd redirects into
- * the proxy — the same path HTTP(S) takes. CONNECT is what carries the real
- * host:port, so the allowlist sees a hostname; a raw port-22 redirect would
- * lose it. The proxy stamps the source pod IP, so identity is uniform and
- * nothing workspace-specific rides in the env.
- *
- * The agent rendezvous is a TCP hop to the proxy rather than a shared host
- * directory: the in-workspace init re-exposes it as the UNIX socket
- * SSH_AUTH_SOCK names, so a workspace scheduled away from the proxy still
- * gets an agent (a hostPath socket only meets on one node).
+ * The mounts and env that let a workspace use git over SSH without holding
+ * a private key:
+ * - identity comes from the proxy's ssh-agent, reached over TCP and
+ *   re-exposed in the pod as the UNIX socket SSH_AUTH_SOCK names (a TCP hop
+ *   works when the workspace runs on a different node from the proxy);
+ * - host keys are checked against a project-scoped known_hosts the server
+ *   wrote;
+ * - the connection is an HTTP CONNECT to a sentinel address that netd
+ *   redirects into the proxy, so the allowlist sees the real hostname.
  */
 export function workspaceSshTransport(
   knownHostsFile: string,
@@ -46,7 +36,6 @@ export function workspaceSshTransport(
   ])
 
   return {
-    // GLOBAL: written under the project dir by the server, read in-pod.
     mounts: [{
       source: { kind: 'hostPath', path: knownHostsFile, type: 'File' },
       mountPath: CONTAINER_KNOWN_HOSTS,

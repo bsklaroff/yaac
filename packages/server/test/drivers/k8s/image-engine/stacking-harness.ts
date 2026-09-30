@@ -1,17 +1,15 @@
 /**
- * Shared harness for the two `*-stacking` test files. They drive the real
- * image feature — chain resolution, tag hashing, engine routing — against a
- * real temp data dir, faking only the process boundary: podman (through
- * `node:child_process`), the local registry, and the builder pod. Host builds
- * and untrusted-layer pod builds both record one `build <tag> [args]` row in
- * `operations`, so a stacking assertion reads a single uniform log.
+ * Shared harness for the two `*-stacking` test files. They run the real image
+ * code (chain resolution, tag hashing, engine routing) against a temp data
+ * dir, faking only podman (via `node:child_process`), the local registry and
+ * the builder pod. Host builds and builder-pod builds both record a
+ * `build <tag> [args]` row in `operations`.
  */
 import { beforeEach, afterEach, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-// Type-only: the values come from the dynamic imports in `load`, which must
-// run after vi.resetModules() to pick up the mocks below.
+// Type-only: `load` imports the values after vi.resetModules().
 import type * as imageBuilder from '#drivers/k8s/image-engine/image-builder'
 import type * as buildCoordinator from '#drivers/k8s/images/build-coordinator'
 
@@ -22,7 +20,7 @@ type ImagesModules = typeof imageBuilder & typeof buildCoordinator
 
 /** A podman build the fake is holding open, for tests that drive its clock. */
 export interface HeldBuild {
-  /** Write a line of build output — the idle timeout's only "still alive" signal. */
+  /** Write a line of build output, which resets the idle timeout. */
   log(line: string): void
   /** Signals the runner has sent this child's process group, in order. */
   readonly signals: string[]
@@ -34,16 +32,14 @@ export interface StackingHarness {
   /** Ordered `build <tag> [k=v,…]` rows in build order. */
   readonly operations: string[]
   /**
-   * Declare which tags the local registry holds. The yaac-shipped layers
-   * are built by `yaac cluster install`, so a chain realization that is
-   * expected to succeed has to say they are already there — and one that
-   * does not is exercising the refusal.
+   * Declare which tags the local registry holds. `yaac cluster install`
+   * builds the yaac-shipped layers, so a build expected to succeed must
+   * stage them.
    */
   stageRegistry(tags: readonly string[]): void
   /**
-   * Stop the podman fake from exiting on its own, so a test owns when (and
-   * whether) a build produces output. Held builds land in `heldBuilds`.
-   * Call before `load`.
+   * Keep the podman fake from exiting on its own, so the test controls its
+   * output. Held builds land in `heldBuilds`. Call before `load`.
    */
   holdBuilds(): void
   readonly heldBuilds: HeldBuild[]
@@ -51,13 +47,13 @@ export interface StackingHarness {
   load(): Promise<ImagesModules>
 }
 
-/**
- * Register the per-test data dir and process-boundary fakes, and return the
- * handle the test drives. Call once inside a `describe`.
- */
-/** Fictional pids: the process.kill spy below never lets one reach the OS. */
+/** Fake pids; the process.kill spy keeps them from reaching the OS. */
 const FAKE_PID_BASE = 990_001
 
+/**
+ * Register the per-test data dir and process fakes, and return the handle the
+ * test drives. Call once inside a `describe`.
+ */
 export function setupStackingHarness(): StackingHarness {
   const operations: string[] = []
   const heldBuilds: HeldBuild[] = []
@@ -84,13 +80,10 @@ export function setupStackingHarness(): StackingHarness {
   })
 
   async function load(): Promise<ImagesModules> {
-    // Reset the module cache so runtime.ts re-evaluates `promisify(execFile)`
-    // against the mocked child_process below. Without this, execFileAsync keeps
-    // the real execFile captured on first load and imageExists hits real podman
-    // — which can return true for yaac-base:<hash> images that exist on the
-    // dev machine, causing layers to be silently skipped. The reset also
-    // wipes the paths.ts data-dir singleton, so we re-apply setDataDir on the
-    // freshly-imported module below.
+    // Reset modules so `promisify(execFile)` binds to the mock below;
+    // otherwise imageExists could hit real podman and skip layers that
+    // exist on the dev machine. The reset also clears the data-dir setting,
+    // so it is re-applied below.
     vi.resetModules()
     vi.doMock('node:child_process', () => ({
       execFile: vi.fn((...allArgs: unknown[]) => {
@@ -116,10 +109,8 @@ export function setupStackingHarness(): StackingHarness {
         }
         const suffix = buildArgPairs.length ? ` [${buildArgPairs.join(',')}]` : ''
         operations.push(`build ${imageName}${suffix}`)
-        // Real streams: the idle timeout watches them for output, so a
-        // stubbed `on` would make every build look permanently silent.
-        // `exitCode`/`signalCode` are what `killGroup` checks before
-        // signalling, and the pid is what it signals (negated: the group).
+        // Real streams, because the idle timeout watches them. `killGroup`
+        // checks exitCode/signalCode and signals -pid (the group).
         const child = Object.assign(new EventEmitter(), {
           stdout: new PassThrough(),
           stderr: new PassThrough(),
@@ -135,9 +126,8 @@ export function setupStackingHarness(): StackingHarness {
         const signals: string[] = []
         killedGroups.set(-child.pid, (signal) => {
           signals.push(signal)
-          // The process dies, but `close` never comes: a grandchild
-          // inherited the stdio pipes and holds them open. A killed run must
-          // settle on the process being gone, not on the pipes draining.
+          // Emits `exit` but never `close`, as when a grandchild holds the
+          // pipes open. The runner must settle on exit alone.
           child.exitCode = null
           child.signalCode = signal
           child.emit('exit', null, signal)
@@ -150,10 +140,8 @@ export function setupStackingHarness(): StackingHarness {
       }),
     }))
 
-    // Untrusted layers route to the builder-pod engine (trust-split is
-    // always on). Mock it to record the same `build <tag> [args]` rows the
-    // spawn fake records for host builds; registry mocked so the
-    // untrusted-layer exists-check (registryHasTag) never touches the network.
+    // Untrusted layers build in a builder pod; the fake records the same
+    // rows as host builds. The registry fake answers from `stageRegistry`.
     vi.doMock('#drivers/k8s/container/registry', () => ({
       registryHasTag: vi.fn((tag: string) => Promise.resolve(state.registryTags.has(tag))),
       registryRef: (tag: string) => `localhost:5001/${tag}`,
@@ -174,9 +162,7 @@ export function setupStackingHarness(): StackingHarness {
       ),
     }))
 
-    // Dynamic imports are required: vi.resetModules() above invalidates the
-    // module cache, and we need these fresh imports to pick up the doMock
-    // above — static imports would keep the stale, pre-reset bindings.
+    // Dynamic imports, so the fresh modules pick up the doMocks above.
     // eslint-disable-next-line no-restricted-syntax
     const paths = await import('@yaac/shared/project-paths')
     paths.setDataDir(state.dataDir)
@@ -196,8 +182,6 @@ export function setupStackingHarness(): StackingHarness {
     },
     holdBuilds() {
       state.hold = true
-      // Held children are killed by pid — spied, so a fictional pid can
-      // never reach a real process group.
       vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal: string) => {
         const die = killedGroups.get(pid)
         if (!die) throw new Error(`ESRCH: unexpected process.kill(${pid})`)

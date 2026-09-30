@@ -19,24 +19,19 @@ import type { LiveAgent } from '#runtime/agents'
 import type { AgentMode } from '@yaac/shared/types'
 
 /**
- * Reconcile the agent-session model from what the pods report.
+ * Record agent conversations from what running workspaces report.
  *
- * One source, for both modes: the status watcher's live agent set
- * (`status-store.ts`), in which each agent names the conversation it is
- * running. Under `acp` the id comes back from `session/new`; under `tui` the
- * tool's own reporter puts it on its tmux pane (`PANE_SESSION_FORMAT`) — on
- * every start, `/clear`, `/new` or resume, in an agent window or a shell the
- * user opened — and tmux pushes it. So every conversation a live agent names
- * is recorded, and those are exactly the active ones.
+ * The source, for both modes, is the status watcher's live agent set
+ * (`#runtime/status`), where each agent names its conversation. Under `acp`
+ * the id comes from `session/new`; under `tui` the tool's reporter sets it on
+ * its tmux pane (`PANE_SESSION_FORMAT`) on every start, `/clear`, `/new` or
+ * resume. The conversations live agents name are exactly the active ones. A
+ * new pod's tmux starts with no pane options, so an old pod's conversation
+ * cannot look live.
  *
- * A pane option dies with its pane and a new pod's tmux starts with none, so
- * nothing here can mistake a previous pod's conversation for a live one.
- *
- * Runs on the reconciler tick, like prompt capture, so the record exists for
- * `workspace list` and restart even when no client is watching; a new
- * conversation is a change to the live set, which dirties the tick. Only
- * running workspaces are visited: a stopped workspace's active set is frozen,
- * and it is exactly what its restart reads back.
+ * Runs on the reconciler tick so `workspace list` and restart see the record
+ * even with no client watching. Stopped workspaces are skipped: their active
+ * set is frozen, and it is what restart resumes.
  */
 export async function reconcileAgentSessions(snapshot?: RuntimeSnapshot): Promise<void> {
   let pods
@@ -51,10 +46,8 @@ export async function reconcileAgentSessions(snapshot?: RuntimeSnapshot): Promis
 
   await Promise.all(running.map(async (pod) => {
     if (!pod.workspaceId || !pod.projectSlug) return
-    // A prewarmed spare is not a workspace until claimed, and its warm-time
-    // agent is not one of the claimant's conversations. Recording it would
-    // leave permanently-active links that a later restart resumes instead of
-    // the real conversation — and outlive the reaped spare.
+    // A spare's warm-time agent is not the claimant's conversation; recording
+    // it would make a later restart resume the wrong one.
     if (pod.prewarmed) return
     try {
       await reconcileWorkspaceAgentSessions(pod.projectSlug, pod.workspaceId, pod.mode, pod.jobName)
@@ -70,13 +63,11 @@ async function reconcileWorkspaceAgentSessions(
   mode: AgentMode,
   jobName: string,
 ): Promise<void> {
-  // No live set yet (a pod whose connection hasn't attached): leave the rows
-  // alone rather than blanking them — a transient stream gap must never look
-  // like "every agent exited".
+  // No live set yet (stream not attached): leave the rows alone so a gap
+  // does not look like every agent exited.
   const reported = liveAgents(projectSlug, workspaceId)
   if (reported === undefined) return
-  // Each path as the workspace reported it, turned into where the file really
-  // is — the workspace's own history, or the shared home — or dropped.
+  // Map each reported transcript path to where the file really is, or drop it.
   const observed = await Promise.all(reported.map(async (a): Promise<LiveAgent> => {
     const { transcriptPath, ...rest } = a
     const located = a.agentSessionId === undefined
@@ -90,10 +81,9 @@ async function reconcileWorkspaceAgentSessions(
     await followReportedModes(projectSlug, workspaceId, mode, row, await withRolloutModes(row, observed, links))
   }
 
-  // An agent that has not named its conversation yet — an ACP handshake still
-  // in flight, a codex or opencode pane before its first turn — is skipped:
-  // recording it under its handle would mint a phantom the real one could
-  // never displace.
+  // Skip agents that have not named their conversation yet (ACP handshake in
+  // flight, codex/opencode before the first turn); recording them by handle
+  // would create a phantom row the real one could never replace.
   const live = await Promise.all(observed.flatMap((a) => {
     const agentSessionId = a.agentSessionId
     if (agentSessionId === undefined) return []
@@ -112,17 +102,13 @@ async function reconcileWorkspaceAgentSessions(
 }
 
 /**
- * One live conversation as it is reported, with its opening message while the
- * row still lacks one. What differs by mode is where that message is read:
- * a `tui` conversation's tool writes a transcript (opencode's is probed out
- * of the pod instead), but under `acp` three of the four leave nothing yaac
- * can find — codex names its rollouts by a thread id we never see, opencode
- * keeps its history in a container-side database, and pi's log is named for
- * an id its adapter minted — so acpd's record of the conversation is read,
- * which also outlives the pod and gives a stopped workspace its last activity.
+ * One live conversation, plus its first message if the row lacks one. Under
+ * `tui` the message comes from the tool's transcript. Under `acp` most tools
+ * leave no transcript yaac can find, so acpd's record is read instead; it
+ * also outlives the pod and gives a stopped workspace its last activity.
  *
- * The model rides the live set, as the catalog's id for it: an ACP adapter
- * may answer in a vocabulary of its own.
+ * The model is mapped to its catalog id, since an ACP adapter may report its
+ * own naming.
  */
 async function describe(
   projectSlug: string,
@@ -157,9 +143,9 @@ async function describe(
 }
 
 /**
- * What each live agent last reported, per workspace, for the pod life it was
- * reported in — handles restart at `%0` (or the tool's name) in a new pod, so
- * a report is only ever compared with its own life's.
+ * Each live agent's last reported mode, per workspace, keyed to the pod life.
+ * Handles (`%0`, or the tool's name) repeat in a new pod, so reports are
+ * only compared within one life.
  */
 const reportedModes = new Map<string, { life: number; byHandle: Map<string, string> }>()
 
@@ -169,15 +155,13 @@ export function _resetReportedModesForTests(): void {
 }
 
 /**
- * Record the posture moves the live agents report — a Shift+Tab, an agent
- * entering plan mode, a plan-exit answer taking effect.
+ * Record permission-mode changes the live agents report (Shift+Tab, entering
+ * plan mode, answering a plan exit).
  *
- * Only a CHANGE in what an agent reports is recorded, never a mere difference
- * from the row: the row also follows the workspace's other agents, and a report
- * that has not moved is not news about any of them. A first report is a
- * change, since a pane or conversation says nothing until it has something to
- * say — which is also what carries a move made while no server was watching
- * onto the row once one is.
+ * Only a change in an agent's report is recorded, not a mere difference from
+ * the row, because the row also follows the workspace's other agents. An
+ * agent's first report counts as a change, which also picks up moves made
+ * while no server was watching.
  */
 async function followReportedModes(
   projectSlug: string,
@@ -203,17 +187,14 @@ async function followReportedModes(
 }
 
 /**
- * A codex pane's report, with the posture its rollout records: codex's title
- * cannot carry one (neither the `permissions` nor the `approval-mode` item
- * renders there in 0.156.1), so the rollout its pane names is read instead
- * (`getCodexPermissionMode`) — or, for a resumed conversation whose pane
- * names none until its next turn, the one its row recorded.
+ * Adds codex's permission mode, read from its rollout file
+ * (`getCodexPermissionMode`), since codex's pane title cannot show it. A
+ * resumed conversation's pane names no rollout until its next turn, so the
+ * row's recorded path is used then.
  *
- * Only an entry written during the current pod life counts. A restart resumes
- * the same rollout, whose newest entry is the OLD process's until codex writes
- * its first turn, and reporting that would drag the row off the posture the
- * restart just relaunched in; an entry written since is this process's own,
- * even before the first prompt (a Shift+Tab).
+ * Only entries written during the current pod life count. After a restart the
+ * rollout's newest entry belongs to the old process until codex writes again,
+ * and reporting it would undo the mode the restart launched with.
  */
 async function withRolloutModes(
   row: WorkspaceRow,

@@ -1,34 +1,18 @@
 /**
- * The child-process runner for yaac's long, chatty subprocesses: `podman
- * build` / `podman push` on the host engine, and `kubectl exec` into a
- * builder pod. One place owns the two things they all need — their output
- * streamed to the server log while it happens, and a way to be stopped that
- * survives the process not cooperating.
+ * Runner for long, chatty subprocesses (`podman build`/`push`, `kubectl
+ * exec` into a builder pod): streams output to the log and stops a child
+ * that will not cooperate. Two budgets:
  *
- * Two budgets, because neither alone is enough:
+ * - **idle** (`idleTimeoutMs`, optional): reset by any output or accepted
+ *   input. The main bound for builds, since a cold build can legitimately
+ *   run far longer than a warm one but podman prints steadily.
+ * - **total** (`timeoutMs`): catches a process that is stuck but still
+ *   printing.
  *
- * - **idle** (`idleTimeoutMs`, optional) — restarted by every byte the child
- *   writes, and every byte we feed its stdin. This is the primary signal for
- *   a build: a cold chain compiling a toolchain legitimately runs many times
- *   longer than a warm rebuild, so a total cap kills exactly the builds that
- *   most needed to finish, mid-progress, after the expensive part. Silence
- *   does not have that problem — podman emits a line per step, per pulled
- *   layer and per progress tick.
- * - **total** (`timeoutMs`, required) — the backstop for what idle cannot
- *   see: a process that is wedged but chatty (a RUN step retrying in a loop,
- *   a download stuck at 3% still ticking) never goes silent, and would
- *   otherwise run forever holding whatever lock it holds.
- *
- * Either expiry signals the child's whole process group — it is spawned into
- * its own, so the grandchildren a build spawns cannot outlive it —
- * escalating SIGTERM -> SIGKILL.
- *
- * Every run settles on the process's death, not on its pipes: a grandchild
- * that inherited the stdio can hold `close` open long after the process is
- * gone, and neither a kill's verdict nor an exit code may wait on that.
- * Callers that serialize on "is podman done?" need the process. A run that
- * ends on its own does give `close` a few seconds to land first, since that
- * is the difference between a complete output tail and a truncated one.
+ * Expiry signals the child's whole process group (SIGTERM, then SIGKILL).
+ * A run settles when the process dies, not when its pipes close, since a
+ * grandchild can hold them open; a normal exit waits briefly for the output
+ * tail.
  */
 import { spawn, type ChildProcess } from 'node:child_process'
 import { pipeToServerLog, serverLog } from '#log'
@@ -41,20 +25,12 @@ function humanMs(ms: number): string {
 /** Grace between the SIGTERM and the SIGKILL a wedged child cannot ignore. */
 const KILL_GRACE_MS = 5_000
 
-/**
- * Bound on the whole kill sequence. Reached only by a process that survived
- * SIGKILL (uninterruptible IO), where waiting on would strand the caller for
- * as long as the kernel does.
- */
+/** Bound on the kill sequence, for a process that survives SIGKILL
+ *  (uninterruptible IO). */
 const KILL_DEADLINE_MS = 30_000
 
-/**
- * How long a finished run waits for its pipes to drain before reporting the
- * verdict it already has. Normally `close` lands within a tick of `exit` and
- * this never fires; it only bounds the case where a grandchild inherited the
- * pipes and holds them open — which must not postpone, or invert, the
- * process's own exit code.
- */
+/** How long a finished run waits for its pipes to drain (a grandchild may
+ *  hold them open) before reporting its exit code. */
 const PIPE_DRAIN_MS = 2_000
 
 export interface StreamingProcOptions {
@@ -83,11 +59,9 @@ export interface StreamingProcOptions {
 }
 
 /**
- * Run a command, streaming its stdout/stderr lines to the server log and to
- * `onLog` (e.g. the build-tracking registry). Uses spawn rather than the
- * buffered exec helpers because the output is unbounded and must stream.
- * Resolves on exit code 0; rejects on any other exit, on a spawn error, and
- * on either timeout.
+ * Run a command, streaming its output lines to the server log and `onLog`.
+ * Resolves on exit 0; rejects on any other exit, a spawn error, or a
+ * timeout.
  */
 export async function runStreamingProcess(
   file: string,
@@ -95,9 +69,8 @@ export async function runStreamingProcess(
   opts: StreamingProcOptions,
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    // Own process group: a build's grandchildren (buildah, the RUN step's
-    // container) must die with it, or they keep holding the image-store lock
-    // the kill was meant to release.
+    // Own process group, so a kill also reaches grandchildren holding the
+    // image-store lock.
     const child = spawn(file, args, {
       stdio: [opts.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       detached: true,
@@ -138,9 +111,8 @@ export async function runStreamingProcess(
       if (expiry) return
       expiry = why
       serverLog(`${opts.logPrefix}${why} — killing ${file}`)
-      // Both follow-ups are armed before the first signal: a child that dies
-      // on SIGTERM settles synchronously from within `killGroup`, and a
-      // timer armed after that would never be cleared.
+      // Arm both timers first: a child dying on SIGTERM settles inside
+      // `killGroup`, and a later timer would never be cleared.
       arm(KILL_GRACE_MS, () => killGroup(child, 'SIGKILL'))
       arm(KILL_DEADLINE_MS, () => finish(new Error(
         `${opts.label} ${why} and survived SIGKILL — it may still be running`
@@ -155,18 +127,14 @@ export async function runStreamingProcess(
       : arm(idleMs, () => onExpired(`produced no output for ${humanMs(idleMs)}`))
     arm(opts.timeoutMs, () => onExpired(`still running after ${humanMs(opts.timeoutMs)}`))
 
-    // Progress is any byte out — or, while we are still feeding input, any
-    // byte accepted: `tar -x` prints nothing on success, so the bytes going
-    // in are all the liveness that step has. (`refresh()` re-arms an
-    // already-fired timer, so a killed child's trailing output must not
-    // reach it.)
+    // Accepted input counts as progress (`tar -x` prints nothing). Skip once
+    // killed, since `refresh()` would re-arm the fired timer.
     const bump = (): void => { if (!expiry) idleTimer?.refresh() }
     child.stdout?.on('data', bump)
     child.stderr?.on('data', bump)
 
     if (opts.input !== undefined && child.stdin) {
-      // The remote side can exit before consuming all input (a failed
-      // extract) — swallow the EPIPE; the exit code carries the verdict.
+      // EPIPE if the child exits early; the exit code decides.
       child.stdin.on('error', () => {})
       opts.input.on('data', bump)
       opts.input.pipe(child.stdin)
@@ -179,15 +147,11 @@ export async function runStreamingProcess(
       return new Error(`${opts.label} exited with code ${code}${quotedTail()}`)
     }
 
-    // Both handlers are wired because either can be the last word: `close`
-    // normally lands a tick after `exit`, but a grandchild that inherited
-    // the stdio pipes can hold it back indefinitely. Nothing about a process
-    // that is already gone may wait on that.
+    // Either event may come last; a grandchild can delay `close`
+    // indefinitely.
     child.on('exit', (code, signal) => {
       opts.onExit?.()
-      // A killed run is over the moment the process is: whatever still holds
-      // the pipes open is no longer this run's problem, and its trailing
-      // output keeps landing in the server log regardless.
+      // A killed run ends when the process does.
       if (expiry) finish(new Error(`${opts.label} ${expiry}${quotedTail()}`))
       else arm(PIPE_DRAIN_MS, () => finish(verdict(code, signal)))
     })
@@ -202,17 +166,12 @@ export async function runStreamingProcess(
   })
 }
 
-/**
- * Signal the child's whole process group, falling back to the child alone if
- * the group is already gone. Best-effort: every caller is on a path that is
- * already failing.
- */
+/** Signal the child's process group, else the child alone. Best-effort. */
 function killGroup(child: ChildProcess, signal: NodeJS.Signals): void {
   const pid = child.pid
   // A pid of 0 would signal this server's own process group.
   if (pid === undefined || pid <= 0) return
-  // Already reaped: unlike `child.kill`, a raw `process.kill` has no guard
-  // against the pid having been handed to something else since.
+  // Reaped: the pid may have been reused, and `process.kill` would not know.
   if (child.exitCode !== null || child.signalCode !== null) return
   try {
     process.kill(-pid, signal)

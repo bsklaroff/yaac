@@ -1,8 +1,8 @@
 import type { WorkspaceGroupSummary } from '@yaac/shared/types'
 
-/** The groups the sidebar lists: pinned ones, and those some `occupant`
- *  (a live, provisioning or held workspace, as the sidebar counts them) is
- *  filed under. */
+/** The groups the sidebar lists: pinned ones, plus any holding an `occupant`
+ *  (a live or provisioning workspace, or a stopped one that queued
+ *  workspaces are waiting on). */
 export function shownGroups(
   groups: WorkspaceGroupSummary[],
   occupants: { groupId?: string }[],

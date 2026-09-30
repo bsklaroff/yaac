@@ -99,10 +99,8 @@ describe('changeMatchesQuery', () => {
 })
 
 /**
- * The other source of a diff: an ACP edit tool call, which hands over the two
- * versions of a fragment rather than a unified diff. What matters is that
- * context survives as context — an agent's edit block is mostly unchanged
- * lines, and rendering them as a delete plus an add would bury the change.
+ * Diffs from an ACP edit tool call's before/after fragments. Unchanged lines
+ * must render as context, not as a delete plus an add.
  */
 describe('diffTextPair', () => {
   const kinds = (oldText: string | undefined, newText: string): string =>
@@ -148,29 +146,25 @@ describe('diffTextPair', () => {
   })
 
   it('ignores the trailing newline that ends a fragment', () => {
-    // "a\n" is one line, not a line and an empty one — otherwise every block
-    // would show a phantom last line.
+    // "a\n" is one line, not a line and an empty one.
     expect(diffTextPair(undefined, 'a\n').map((l) => l.text)).toEqual(['a'])
     expect(kinds('a\n', 'a')).toBe('c')
   })
 
   it('treats an empty side as no lines, not one blank one', () => {
-    // `oldText: ''` is an empty file being filled in, which is not the same
-    // thing as a file whose first line was deleted.
+    // `oldText: ''` is an empty file being filled, not a deleted blank line.
     expect(diffTextPair('', 'a\n')).toEqual([{ kind: 'add', text: 'a', oldNo: null, newNo: 1 }])
     expect(diffStats(diffTextPair('', 'a\nb\n'))).toEqual({ additions: 2, deletions: 0 })
     expect(diffTextPair('', '')).toEqual([])
   })
 
   it('matches repeated lines by content, not by position', () => {
-    // The interning the matcher runs on has to preserve equality exactly: two
-    // identical lines far apart are the same line as far as the LCS goes.
+    // Interning keeps identical lines equal, even far apart.
     expect(kinds('x\nsame\ny\nsame', 'x\nsame\nY\nsame')).toBe('ccdac')
   })
 
   it('falls back to a whole-side rewrite when the pair is too large to match', () => {
-    // Past the matching table's ceiling the result is still complete and still
-    // renderable — every old line, then every new one.
+    // Above the size cap, all old lines then all new lines.
     const big = (n: number, tag: string): string =>
       Array.from({ length: n }, (_, i) => `${tag}${i}`).join('\n')
     const lines = diffTextPair(big(1200, 'a'), big(1200, 'b'))

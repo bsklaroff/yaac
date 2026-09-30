@@ -20,10 +20,9 @@ import {
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 import type { PermissionMode } from '@yaac/shared/types'
 
-// The rule a failed create's rollback consults before removing a checkout.
-// Both exclusions are here because getting either backwards destroys work
-// that exists in no other copy — a resumed workspace's diff, or a spare's
-// checkout pulled out from under the sweep that is about to collect it.
+// Whether a failed create's rollback removes the checkout. Getting either
+// exclusion wrong destroys the only copy of work: a resumed workspace's diff,
+// or a spare's checkout that its own sweep will collect.
 describe('failedCreateCollectsCheckout', () => {
   it('collects a fresh create’s own checkout', () => {
     expect(failedCreateCollectsCheckout({})).toBe(true)
@@ -40,38 +39,34 @@ describe('failedCreateCollectsCheckout', () => {
 })
 
 /**
- * What a create launches in, absent the project memory rung — the answer
- * every caller reaching createWorkspace directly gets, and where the refusals
- * live. Sync and substrate-free: the driver is a parameter, which is what
- * lets the spawn policy default a posture without a driver registered.
+ * The permission mode a create launches in, ignoring project memory, and
+ * where invalid modes are refused. The driver kind is a parameter, so the
+ * spawn policy can use this without a registered driver.
  */
 describe('launchPermissionMode', () => {
   const launch = (args: Partial<Parameters<typeof launchPermissionMode>[0]> = {}) =>
     launchPermissionMode({ tool: 'claude', driver: 'k8s', ...args })
 
   it('falls back to the driver default when nothing was asked for', () => {
-    // Sandboxed: the container is the containment, so prompting inside it
-    // protects nothing. Containerless acts as the user on the user's own
-    // machine, so edits land freely but shells and out-of-tree writes ask.
+    // In a container, prompting protects nothing. Containerless runs as the
+    // user on their machine, so shells and out-of-tree writes ask.
     expect(launch()).toBe('bypass')
     expect(launch({ driver: 'containerless' })).toBe('accept-edits')
-    // pi has no permission system anywhere, so bypass is the only truthful
-    // answer even where the default would otherwise be accept-edits.
+    // pi has no permission system, so it is always bypass.
     expect(launch({ driver: 'containerless', tool: 'pi' })).toBe('bypass')
   })
 
   it('refuses a posture the tool does not have, naming the ones it does', () => {
     expect(() => launch({ tool: 'pi', requested: 'plan' }))
       .toThrow(/pi has no "plan" permission mode; it supports: bypass/)
-    // opencode has no reviewer-model posture, but has the other four.
+    // opencode lacks `auto` but has the other modes.
     expect(() => launch({ tool: 'opencode', requested: 'auto' })).toThrow(/no "auto"/)
     expect(launch({ tool: 'opencode', requested: 'plan' })).toBe('plan')
   })
 
-  // A restart re-states the row's posture rather than a person's. Refusing
-  // one written by a different build would strand a checkout — but the driver
-  // default would hand an old codex `plan` row `bypass` in a container, so it
-  // launches in the nearest posture the tool has, else its strictest.
+  // A restart reuses the row's mode. Refusing one from another build would
+  // strand a checkout, and the driver default could be looser (bypass), so it
+  // launches in the nearest mode the tool has, else its strictest.
   it('treats a resumed posture as a preference, never looser than the tool can help', () => {
     expect(launch({ resume: true, requested: 'manual' })).toBe('manual')
     for (const driver of ['k8s', 'containerless'] as const) {
@@ -79,12 +74,11 @@ describe('launchPermissionMode', () => {
       expect(launch({ resume: true, driver, tool: 'codex', requested: 'manual' })).toBe('read-only')
     }
     expect(launch({ resume: true, tool: 'claude', requested: 'read-only' })).toBe('plan')
-    // Nothing that strict under the adapter: its strictest, not the default.
+    // Nothing that strict under the ACP adapter: its strictest mode.
     expect(launch({ resume: true, tool: 'codex', requested: 'read-only', agentMode: 'acp' })).toBe('accept-edits')
     // pi has nothing but bypass.
     expect(launch({ resume: true, tool: 'pi', requested: 'plan' })).toBe('bypass')
-    // A row from a newer build, holding a posture this one does not rank,
-    // compares with nothing: the strictest, never bypass.
+    // A mode this build does not know gets the strictest, never bypass.
     const unranked = 'dontAsk' as PermissionMode
     expect(launch({ resume: true, tool: 'codex', requested: unranked })).toBe('read-only')
     expect(launch({ resume: true, tool: 'claude', requested: unranked, agentMode: 'acp' })).toBe('plan')
@@ -92,11 +86,10 @@ describe('launchPermissionMode', () => {
 })
 
 /**
- * What a person's create runs with: the request, else what this project last
- * used for the agent, else the fallback. The db is real (an empty temp data
- * dir), because the middle rung IS the recorded row and a mocked read would
- * assert the mock rather than the precedence. No credentials are stored, so
- * the model fallback is the tool's own.
+ * A user's create settings: the request, else what the project last used
+ * for that agent, else the fallback. The DB is real so the recorded row is
+ * tested. No credentials are stored, so the model falls back to the tool's
+ * default.
  */
 describe('resolveCreate', () => {
   let tmpDir: string
@@ -115,7 +108,7 @@ describe('resolveCreate', () => {
     expect(await resolveCreate('p', {})).toEqual({
       tool: 'claude', model: FALLBACK_MODELS.claude, permissionMode: 'bypass', mode: 'tui',
     })
-    // The posture fallback is the driver's: containerless acts as the user.
+    // The permission-mode fallback comes from the driver.
     installFakeWorkspaceDriver({ kind: 'containerless' })
     expect((await resolveCreate('p', { tool: 'codex' }))).toMatchObject({
       model: FALLBACK_MODELS.codex, permissionMode: 'accept-edits',
@@ -126,21 +119,19 @@ describe('resolveCreate', () => {
     await recordProjectCreate('p', 'claude', { model: 'claude-sonnet-5' })
     await recordProjectCreate('p', 'codex', { model: 'gpt-5.5', permissionMode: 'plan', mode: 'acp' })
 
-    // The mode is not taken from memory for the route's callers — the CLI
-    // can only show a terminal — so codex opens in `tui`. It has no `plan`
-    // there either, so the remembered one becomes its nearest posture no
-    // looser — `read-only` — never a default that restrains less.
+    // The agent mode is not remembered for the route (the CLI can only show
+    // a terminal), so codex opens in `tui`, which lacks `plan`; the nearest
+    // stricter mode, `read-only`, is used.
     expect(await resolveCreate('p', {})).toEqual({
       tool: 'codex', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'tui',
     })
-    // The pool warms what the webapp would send, remembered mode included —
-    // and codex's chat adapter has nothing that strict, so the remembered
-    // posture lands on the adapter's strictest rather than being refused, and
-    // never on the container default of bypass.
+    // The spare pool warms what the webapp would send, including the
+    // remembered agent mode. codex's ACP adapter has nothing as strict as
+    // `plan`, so its strictest mode is used, not bypass.
     expect(await resolveCreate('p', {}, { modeFromMemory: true })).toEqual({
       tool: 'codex', model: 'gpt-5.5', permissionMode: 'accept-edits', mode: 'acp',
     })
-    // Another agent brings its own memory.
+    // Each agent has its own remembered settings.
     expect(await resolveCreate('p', { tool: 'claude' })).toMatchObject({ model: 'claude-sonnet-5' })
   })
 
@@ -148,8 +139,8 @@ describe('resolveCreate', () => {
     await recordProjectCreate('p', 'claude', { model: 'claude-sonnet-5', permissionMode: 'plan' })
     expect(await resolveCreate('p', { tool: 'claude', model: 'claude-opus-5', permissionMode: 'manual' }))
       .toMatchObject({ model: 'claude-opus-5', permissionMode: 'manual' })
-    // Remembering is the route's job, since only there is the choice known to
-    // be a person's rather than a restart's or the spawn policy's.
+    // The route records choices, since only there are they known to be a
+    // user's.
     expect((await getProjectRow('p'))?.createDefaults.claude)
       .toEqual({ model: 'claude-sonnet-5', permissionMode: 'plan' })
   })
@@ -162,17 +153,13 @@ describe('resolveCreate', () => {
 })
 
 /**
- * The git identity a create commits under, and where it comes from.
+ * The git identity a create commits under. The create then fails at the next
+ * check (no git credential), and which error comes back shows whether an
+ * identity was found.
  *
- * Only the identity gate is exercised: the create is allowed to fail at the
- * next gate (no credential is configured for the project's remote), and
- * which of the two errors comes back is what says whether an identity was
- * found.
- *
- * The setting is the whole chain: no fallback to the SERVER HOST's `git
- * config --global`, which only someone with a shell there could change, and
- * which under `k8s` answers nothing at all, since the server is a pod whose
- * `$HOME` is an ephemeral image layer.
+ * The server setting is the only source. There is no fallback to the server
+ * host's `git config --global`: only someone with a shell there could change
+ * it, and under k8s the server pod's `$HOME` is ephemeral.
  */
 describe('createWorkspace git identity', () => {
   let tmpDir: string
@@ -181,8 +168,8 @@ describe('createWorkspace git identity', () => {
     tmpDir = await createTempDataDir()
     installFakeWorkspaceDriver()
     await fs.mkdir(projectDir('demo'), { recursive: true })
-    // A real repo and a row naming its remote, so the create reaches the
-    // credential gate instead of dying on an unknown project.
+    // A real repo and project row, so the create reaches the credential
+    // check.
     await createTestRepo(repoDir('demo'))
     await recordProject({ slug: 'demo', remoteUrl: 'https://github.com/o/r.git', addedAt: '2026-01-01T00:00:00.000Z' })
   })
@@ -193,7 +180,7 @@ describe('createWorkspace git identity', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  /** The failure that means "an identity was found and the create moved on". */
+  /** The error that means an identity was found and the create moved on. */
   const PAST_THE_GATE = /has no git credential/
   const NO_IDENTITY = /No git identity is set on this server/
 
@@ -204,10 +191,8 @@ describe('createWorkspace git identity', () => {
   })
 
   it('gets a yaac-mama spawn past the gate on the same setting', async () => {
-    // The option shape `decideSpawn` sends for a spawned sibling: a prompt, a
-    // minted id, and nothing about who is committing. Asserted on its own
-    // because an in-session orchestrator that cannot spawn a worker is the
-    // failure this rung exists to prevent.
+    // The options `decideSpawn` sends: a prompt and a minted id, with no
+    // committer identity.
     await setGitIdentity({ name: 'Ada', email: 'ada@example.com' })
 
     await expect(createWorkspace('demo', {
@@ -218,9 +203,8 @@ describe('createWorkspace git identity', () => {
   })
 
   it('refuses when the server has none, naming where to set one', async () => {
-    // Nothing is read off a host to fill this in, so the remedy has to be
-    // something a client can actually do — including a client with no shell
-    // on the server at all.
+    // The remedy must be something a client with no shell on the server can
+    // do.
     await expect(createWorkspace('demo', {})).rejects.toThrow(NO_IDENTITY)
     await expect(createWorkspace('demo', {})).rejects.toThrow(/Settings/)
   })
@@ -245,8 +229,8 @@ describe('createWorkspace base branch', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  /** The row as the first provisioning leg sees it — the create is then
-   *  stopped there, since nothing after it bears on what was recorded. */
+  /** The workspace row when provisioning starts; the create is stopped
+   *  there. */
   async function rowAtProvisioning(
     workspaceId: string,
     options: Parameters<typeof createWorkspace>[1],
@@ -263,9 +247,9 @@ describe('createWorkspace base branch', () => {
   }
 
   it('records the branch it forks from with the row, before anything is provisioned', async () => {
-    // A workspace queued after this one defaults to it, and may be queued
-    // while this one is still provisioning — so it cannot wait on the
-    // checkout. The requested branch, else the clone's default.
+    // A workspace queued after this one defaults to this branch and may be
+    // queued mid-provisioning, so it is recorded up front: the requested
+    // branch, else the clone's default.
     expect((await rowAtProvisioning('wt-1', { branch: 'release' }))?.baseBranch).toBe('release')
     const fallback = (await rowAtProvisioning('wt-2', {}))?.baseBranch
     expect(fallback).toMatch(/^(main|master)$/)

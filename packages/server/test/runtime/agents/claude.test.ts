@@ -6,16 +6,13 @@ import os from 'node:os'
 import { classifyClaudeTitle, getFirstUserMessage } from '#runtime/agents/claude'
 import type { SandboxFile } from '#runtime/agents/sandbox-fs'
 
-/** A path as the readers take it: a file under the dir it sits in. */
+/** A file as the readers take it: its dir plus its name. */
 const at = (file: string): SandboxFile => ({ slug: 'demo', dir: path.dirname(file), rel: path.basename(file) })
 
-// Title fixtures below reproduce states observed against a live Claude
-// Code session inside a session pod: a running turn animates a spinner
-// prefix; every user-blocked state (idle prompt, permission dialog, plan
-// approval, AskUserQuestion) flips the prefix to ✳. Which glyphs the
-// spinner animates is release-dependent — 2.1.226 animated the Braille
-// ⠂⠐, 2.1.228 changed it to the circle phases ◐◑ — so both sets are
-// fixtures here and a release on either must read as running.
+// Titles observed from live Claude Code: a running turn shows a spinner
+// prefix, and every state waiting on the user shows ✳. The spinner glyphs
+// vary by release (Braille in 2.1.226, circle phases ◐◑ from 2.1.228), so
+// both must read as running.
 describe('classifyClaudeTitle', () => {
   it('returns running for a Braille-spinner title (turn in flight)', () => {
     expect(classifyClaudeTitle('⠐ Create temporary marker file')).toBe('running')
@@ -23,24 +20,19 @@ describe('classifyClaudeTitle', () => {
   })
 
   it('returns running across the whole Braille block', () => {
-    // The animation cycles through arbitrary Braille patterns — accept
-    // the full U+2800–U+28FF range, including the endpoints.
+    // Accept the whole U+2800–U+28FF range.
     expect(classifyClaudeTitle('⠀ edge of block')).toBe('running')
     expect(classifyClaudeTitle('⣿ edge of block')).toBe('running')
   })
 
   it('returns running for a circle-phase spinner title (turn in flight)', () => {
-    // Observed live on 2.1.229: the title cycles ◐/◑ for the whole turn
-    // and never shows a Braille frame. Classifying these as waiting is
-    // what pinned a busy agent to "waiting" for its entire run.
+    // Observed on 2.1.229: ◐/◑ for the whole turn, never Braille.
     expect(classifyClaudeTitle('◐ Review PR #115: retire legacy-compat paths')).toBe('running')
     expect(classifyClaudeTitle('◑ Review PR #115: retire legacy-compat paths')).toBe('running')
   })
 
   it('returns running across the whole circle-phase range', () => {
-    // The shipped array is two frames (◐◑) but the four phases are one
-    // contiguous run (U+25D0–U+25D3) and a release has already changed
-    // frame count within a set — accept all four, endpoints included.
+    // Accept all four phases (U+25D0–U+25D3), not just the two in use.
     expect(classifyClaudeTitle('◒ edge of range')).toBe('running')
     expect(classifyClaudeTitle('◓ edge of range')).toBe('running')
   })
@@ -59,17 +51,13 @@ describe('classifyClaudeTitle', () => {
   })
 
   it('returns waiting while a permission dialog is up', () => {
-    // Observed live: the instant the Bash permission dialog appears the
-    // title flips from "⠂ Create temporary marker file" to ✳. Same for
-    // trust/onboarding dialogs. This is the case the JSONL transcript
-    // cannot detect (the blocking tool_use isn't persisted until
-    // answered), so it must classify as waiting here.
+    // The transcript cannot show this: the blocked tool_use is not written
+    // until answered.
     expect(classifyClaudeTitle('✳ Create temporary marker file')).toBe('waiting')
   })
 
   it('returns waiting for the tmux default title (claude has not set one)', () => {
-    // Until a program emits an OSC title, #{pane_title} is the pod
-    // hostname — a session still booting reads as waiting.
+    // Until claude sets a title, #{pane_title} is the hostname.
     expect(classifyClaudeTitle('yaac-yaac-ee9cb586-74d3-4a1f-9d1f-482839b26d70-5tfxq')).toBe('waiting')
   })
 
@@ -78,10 +66,7 @@ describe('classifyClaudeTitle', () => {
   })
 
   it('does not match the geometric glyphs bordering the circle phases', () => {
-    // U+25D0–U+25D3 is bounded deliberately: Claude Code uses ● (U+25CF)
-    // and ○ (U+25CB) just below it as transcript bullets, and ◆/◇
-    // (U+25C6/U+25C7) elsewhere. Widening the range to the block would
-    // make a title starting with any of them read as a live turn.
+    // Claude Code uses nearby glyphs (●, ○, ◆, ◇) elsewhere.
     expect(classifyClaudeTitle('● Ran a command')).toBe('waiting')
     expect(classifyClaudeTitle('○ Pending step')).toBe('waiting')
     expect(classifyClaudeTitle('◆ Marker')).toBe('waiting')
@@ -89,8 +74,6 @@ describe('classifyClaudeTitle', () => {
   })
 
   it('only matches the spinner at the first character', () => {
-    // A task summary that itself contains a spinner glyph must not
-    // false-positive when the leading ✳ marks the session as idle.
     expect(classifyClaudeTitle('✳ Fix ⠋ spinner rendering')).toBe('waiting')
     expect(classifyClaudeTitle('✳ Fix ◐ spinner rendering')).toBe('waiting')
     expect(classifyClaudeTitle(' ⠋ leading space')).toBe('waiting')
@@ -168,9 +151,8 @@ describe('getFirstUserMessage', () => {
   })
 
   it('skips a session started with a slash command and returns the first real message', async () => {
-    // Reproduces the on-disk sequence a `/model` invocation writes before
-    // the first real turn: an isMeta caveat, the command invocation, and
-    // its stdout — all synthetic type:'user' entries.
+    // What `/model` writes before the first real turn: three synthetic
+    // type:'user' entries (an isMeta caveat, the command, its stdout).
     await writeEntry({
       type: 'user',
       isMeta: true,

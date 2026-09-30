@@ -5,23 +5,13 @@ import { ServerError } from '@yaac/shared/errors'
 import type { PortMapping } from '@yaac/shared/types'
 
 /**
- * Forward a port a workspace is listening on but nothing reaches yet — the
- * webapp's click-to-forward action, and `allowWorkspaceHost`'s twin in every
- * respect: `persist` writes the port into the project's yaac-config.json so
- * future workspaces inherit it, and persisting implies the fan-out to the
- * project's other running workspaces for the same reason.
+ * Forward a port a workspace is listening on but that is not yet forwarded
+ * (the webapp's click-to-forward). Like `allowWorkspaceHost`, `persist`
+ * writes it to yaac-config.json and also forwards it in the project's other
+ * running workspaces.
  *
- * The eligibility check comes FIRST, ahead of the config write, and that
- * ordering is the substance rather than a detail. WHICH ports are eligible is
- * the runtime's answer — only a listener it currently reports as unforwarded
- * may be named, which is what keeps this from being a "forward any port"
- * verb — but a request that is going to be refused must be refused before
- * anything durable happens. Otherwise a click racing the surfaced list
- * writes a port into the project config, inherited by every future workspace,
- * and then fails with an error saying nothing happened.
- *
- * `forwardPort` re-checks, and it is the authority: the read below is a
- * question asked a moment earlier, not a reservation.
+ * Eligibility is checked before the config write, so a refused request
+ * leaves nothing persisted. `forwardPort` checks again authoritatively.
  */
 export async function forwardWorkspacePort(
   idOrName: string,
@@ -45,15 +35,9 @@ export async function forwardWorkspacePort(
 }
 
 /**
- * Stop offering a port a workspace is listening on — the webapp's "hide this
- * one" beside the forward action, and bounded by the same rule: only a
- * currently-surfaced listener may be named, so the hidden set cannot be
- * grown arbitrarily.
- *
- * Purely in-memory, and the refusal is the same CONFLICT the forward raises
- * for an ineligible port, worded the same way — the two actions sit on one
- * row in the webapp, and a caller that races the surfaced list should not be
- * able to tell which of them it lost.
+ * Hide a suggested port (the webapp's dismiss action). Only a currently
+ * unforwarded listener is accepted, with the same CONFLICT as
+ * `forwardWorkspacePort`. In memory only.
  */
 export async function dismissWorkspacePort(
   idOrName: string,

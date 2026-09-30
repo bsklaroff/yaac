@@ -2,16 +2,15 @@ import { listWorkspaceJobs, listWorkspacePods, type JobInfo, type PodInfo } from
 import { getActiveClusterCache } from './cluster-cache'
 
 /**
- * One reconcile pass's shared view of the cluster. Each getter answers
- * from the active ClusterCache when its informer is healthy — the normal
- * case, costing nothing — and falls back to a one-shot kubectl list when
- * the cache is absent (unit tests, direct lib use) or degraded (watch
- * down). The fallback is the destructive-step safety story: the stale
- * reaper never acts on a cache known to be stale.
+ * One reconcile pass's shared view of the cluster. Each getter reads the
+ * active ClusterCache when its informer is healthy, and otherwise falls
+ * back to a one-shot list (no cache in unit tests, or the watch is down).
+ * The fallback keeps destructive steps like the stale reaper from acting on
+ * a cache known to be stale.
  *
- * Getters memoize per snapshot so every step in a pass sees one
- * point-in-time view; a failed fallback listing stays failed for the
- * whole pass (steps treat that as "skip"), and the next pass retries.
+ * Getters memoize, so every step in a pass sees the same point-in-time
+ * view. A failed fallback listing stays failed for the pass (steps skip)
+ * and is retried on the next one.
  */
 export interface TickSnapshot {
   /**

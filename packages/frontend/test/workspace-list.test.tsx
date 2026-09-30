@@ -160,11 +160,10 @@ async function pickAction(item: string, menu = 'Workspace actions', index = 0): 
 }
 
 /**
- * The list body the desktop sidebar and the mobile workspaces screen share.
- * Its ordering and group-visibility rules are covered as pure functions in
- * sidebar.test.ts; what matters here is that the rendered body agrees with
- * them and that its row and group actions work without a hover, which is the
- * only kind of interaction a phone has.
+ * The list body shared by the desktop sidebar and the mobile workspaces
+ * screen. Ordering and group-visibility rules are unit-tested in
+ * sidebar.test.ts; these tests check the rendered body agrees with them and
+ * that row and group actions work without hover (as on a phone).
  */
 describe('WorkspaceList', () => {
   it('renders one flat list, with each group as its own section below it', () => {
@@ -174,7 +173,7 @@ describe('WorkspaceList', () => {
       entry({ workspaceId: 'c', title: 'Dying one', stopping: true }),
     ], { groups: [group()] })
 
-    // No status headers survive — a row's own markers say what state it is in.
+    // No status headers; each row's own markers show its state.
     expect(screen.queryByText('Waiting')).toBeNull()
     expect(screen.queryByText('Running')).toBeNull()
     expect(screen.getByText('Loose one')).toBeTruthy()
@@ -185,10 +184,9 @@ describe('WorkspaceList', () => {
   })
 
   it('names each row\'s tool and the model it is answering as', () => {
-    // The model comes off the live conversation, so a row says what it is
-    // running rather than what it was launched with. A workspace whose agent
-    // has not replied yet — and every opencode one, which leaves no
-    // transcript to read — keeps the bare tool name.
+    // The model comes from the live conversation, not the launch settings. A
+    // workspace whose agent has not replied yet, and every opencode one (no
+    // readable transcript), shows just the tool name.
     renderList([
       entry({
         workspaceId: 'a',
@@ -288,8 +286,8 @@ describe('WorkspaceList', () => {
     fireEvent.click(caret)
     expect(screen.getByText('Stopped one')).toBeTruthy()
 
-    // A restart makes it live again: it must not snap back to how it was left
-    // while it last had a live member, hiding the row the user just asked for.
+    // A restart makes it live again. It must not revert to its old collapsed
+    // state and hide the row the user just asked for.
     rerender([], { ...opts, provisioning: [provisioning({ workspaceId: 'gone', groupId: 'g1' })] })
     expect(screen.getByRole('button', { name: /Release.*\(1\/1\)/ }).getAttribute('aria-expanded')).toBe('true')
     expect(screen.getByText('Restarting workspace')).toBeTruthy()
@@ -323,7 +321,7 @@ describe('WorkspaceList', () => {
     rerender(live, { groups: [group()] })
     expect(screen.queryByText('Stopped s')).toBeNull()
 
-    // Shown, they stay shown as another member stops — and an unread death
+    // Once shown, they stay shown as another member stops. An unread death
     // shows on the header, since hidden rows would hide it.
     await pickAction('Show stopped workspaces', 'Group actions')
     // The stopped list is refetched when the live set changes.
@@ -342,10 +340,9 @@ describe('WorkspaceList', () => {
   })
 
   it('opens a stopped member\'s conversation, without selecting a workspace', async () => {
-    // A ghost row has no pane to open — but it does have a conversation, and
-    // the stopped overlay is where that is readable. Selection must stay put:
-    // there is nothing to show in the pane until it is restarted, and on a
-    // phone selecting would navigate away from the list entirely.
+    // A ghost row has no pane, but its conversation is readable in the
+    // stopped overlay. Selection must not change: the pane has nothing to show
+    // until a restart, and on a phone selecting would leave the list.
     stoppedRows.push({
       workspaceId: 'gone',
       projectSlug: 'proj',
@@ -368,9 +365,8 @@ describe('WorkspaceList', () => {
     expect(useUiStore.getState().selectedWorkspaceId).not.toBe('gone')
   })
 
-  // A workspace being restarted is out of the snapshot until its container is
-  // back, so this placeholder is the only thing holding its place — it has to
-  // hold it where the workspace lives, not at the top of the list.
+  // A restarting workspace is missing from the snapshot until it is back, so
+  // its placeholder row must sit in its group, not at the top of the list.
   it('draws a restarting workspace inside its group', () => {
     renderList([entry({ workspaceId: 'b', title: 'Filed one', groupId: 'g1' })], {
       groups: [group()],
@@ -383,16 +379,16 @@ describe('WorkspaceList', () => {
 
     const section = screen.getByRole('group', { name: 'Release' })
     for (const row of screen.getAllByText('Restarting workspace')) expect(section.contains(row)).toBe(true)
-    // The ungrouped one stays where every provisioning row used to go.
+    // The ungrouped provisioning row stays outside the group.
     expect(section.contains(screen.getByText('New workspace'))).toBe(false)
-    // Counted in the section's active count alongside the live row — a failed
-    // one is on screen but has nothing running behind it.
+    // Counted as active alongside the live row; a failed one is shown but has
+    // nothing running.
     expect(screen.getByText('(2/3)')).toBeTruthy()
   })
 
   it('keeps a group on screen while its last workspace restarts', () => {
-    // Nothing live is left in it — an unpinned group would vanish, taking the
-    // restarting row with it.
+    // Nothing live is left in it, so an unpinned group would otherwise vanish
+    // and take the restarting row with it.
     renderList([], { groups: [group()], provisioning: [provisioning({ groupId: 'g1' })] })
     expect(screen.getByRole('group', { name: 'Release' })).toBeTruthy()
     expect(screen.getByText('Restarting workspace')).toBeTruthy()
@@ -643,9 +639,9 @@ describe('WorkspaceList', () => {
     })
 
     it('offers only the groups the sidebar is showing', async () => {
-      // A hidden group is one whose workspaces have all stopped; moving a live
-      // workspace into it would make it reappear somewhere unannounced, and a
-      // drag has no way to aim at it either.
+      // A hidden group's workspaces have all stopped. Moving a live workspace
+      // into it would make it reappear unexpectedly, and a drag can't target
+      // it.
       renderList([entry({ workspaceId: 'a', title: 'Fix parser' })], {
         groups: [group({ pinned: true }), group({ groupId: 'g2', name: 'Hidden' })],
       })
@@ -655,7 +651,7 @@ describe('WorkspaceList', () => {
       expect(screen.queryByRole('button', { name: 'Hidden' })).toBeNull()
     })
 
-    // The keyboard/touch path to what dragging does with a mouse.
+    // The keyboard/touch equivalent of dragging with a mouse.
     it('moves the row into an existing group, and back out of one', async () => {
       renderList([entry({ workspaceId: 'a', title: 'Fix parser' })], {
         groups: [group({ pinned: true })],
@@ -756,8 +752,8 @@ describe('WorkspaceList', () => {
       fireEvent.pointerCancel(window, { clientX: 10, clientY: 150 })
       expect(setWorkspaceGroup).not.toHaveBeenCalled()
 
-      // The listeners came down with it, so a later unrelated pointerup can't
-      // replay the move against wherever the pointer has since wandered.
+      // The listeners were removed, so a later unrelated pointerup can't
+      // replay the move.
       fireEvent.pointerUp(window, { clientX: 10, clientY: 150 })
       expect(setWorkspaceGroup).not.toHaveBeenCalled()
     })

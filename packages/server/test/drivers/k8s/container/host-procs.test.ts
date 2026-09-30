@@ -1,9 +1,6 @@
-// The three barrel entry points of host-procs.ts. Everything is exercised
-// through them against a real temp data dir, so the state file that carries
-// pids across a restart is asserted as bytes on disk rather than mocked —
-// that file is the whole mechanism. The fakes start at the process boundary:
-// `spawn` (the podman child), `execFile` (the `ps` identity probe) and
-// `process.kill`.
+// host-procs.ts's barrel functions, run against a real temp data dir so the
+// pid state file is asserted on disk. Fakes stop at the process boundary:
+// `spawn` (podman), `execFile` (the `ps` identity check) and `process.kill`.
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -25,8 +22,8 @@ const spawned: Array<{ file: string; args: string[]; child: FakeChild }> = []
 let nextPid = 4001
 
 vi.mock('node:child_process', () => ({
-  // The barrel pulls in runtime.ts, which reaches kubectl.ts; both promisify
-  // a child_process binding at module eval. Only the two below are called.
+  // Other barrel modules promisify `exec` at load time; only execFile and
+  // spawn are called.
   exec: vi.fn(),
   execFile: (
     file: string,
@@ -66,15 +63,12 @@ import { _clearTrackedPodmanProcsForTests } from '#drivers/k8s/container/host-pr
 
 let dataDir: string
 
-/**
- * CLIENT-LOCAL, beside the data dir: these pids are the user's machine's,
- * and under k8s the server is a pod with no podman to track.
- */
+/** Client-local: these are host pids, and the in-cluster server has no podman. */
 function statePath(): string {
   return clientLocalPath('host-podman.json')
 }
 
-/** Records an install persists so its successor can reap what it left behind. */
+/** The records a run leaves for the next one to reap. */
 function readState(): Array<{ pid: number; tag: string; verb: string }> {
   return JSON.parse(fs.readFileSync(statePath(), 'utf8')) as Array<{
     pid: number
@@ -116,8 +110,8 @@ describe('runTrackedPodman', () => {
     expect(spawned).toHaveLength(1)
     expect(spawned[0].file).toBe('podman')
     expect(spawned[0].args).toEqual(['build', '-t', 'yaac-tools:abc', '.'])
-    // Written synchronously at spawn: a SIGKILL landing on the very next
-    // tick must still leave a reapable record behind.
+    // Written synchronously at spawn, so a SIGKILL on the next tick still
+    // leaves a record to reap.
     expect(readState()).toEqual([
       { pid: spawned[0].child.pid, tag: 'yaac-tools:abc', verb: 'build' },
     ])
@@ -140,8 +134,8 @@ describe('runTrackedPodman', () => {
     })
     expect(readState().map((r) => r.tag)).toEqual(['a:1', 'b:2'])
     expect(readState().map((r) => r.verb)).toEqual(['build', 'push'])
-    // The runner wraps `onLog` (it keeps a tail for failure messages), so
-    // the thread-through is asserted by driving a line through the wrapper.
+    // The runner wraps `onLog` to keep a tail for error messages, so drive
+    // a line through the wrapper.
     const piped = vi.mocked(pipeToServerLog).mock.calls.filter((c) => c[1] === '[build a:1] ').at(-1)
     piped?.[2]?.('STEP 1/3: FROM yaac-base:x')
     expect(onLog).toHaveBeenCalledWith('STEP 1/3: FROM yaac-base:x')
@@ -181,8 +175,8 @@ describe('reapOrphanedPodmanProcs', () => {
       stderr: '',
     })
     const kill = vi.spyOn(process, 'kill').mockImplementation(((pid: number, sig: unknown) => {
-      // Dead as soon as it is signalled: the liveness probe after SIGTERM
-      // throws, which is how terminate() decides not to escalate.
+      // Dies on SIGTERM, so the signal-0 liveness check throws and there is
+      // no SIGKILL.
       if (sig === 0) throw new Error('ESRCH')
       return true
     }) as typeof process.kill)
@@ -196,9 +190,8 @@ describe('reapOrphanedPodmanProcs', () => {
   })
 
   it('skips records whose pid could signal a process group', async () => {
-    // `process.kill(0, …)` hits our own process group and `process.kill(-n,
-    // …)` hits all of group n, so a crashed writer's garbage must be
-    // rejected before `ps` ever sees it.
+    // `process.kill(0)` signals our own process group and `process.kill(-n)`
+    // all of group n, so these must be rejected before `ps` runs.
     writeState([
       { pid: 0, tag: 'a:1', verb: 'build' },
       { pid: -4242, tag: 'b:2', verb: 'build' },
@@ -239,9 +232,8 @@ describe('reapOrphanedPodmanProcs', () => {
     const kill = vi.spyOn(process, 'kill').mockImplementation((() => true) as typeof process.kill)
 
     const done = reapOrphanedPodmanProcs()
-    // A wedged orphan holds the sweep for the full grace period. Its record
-    // must still be on disk for that whole time: a server that dies mid-kill
-    // has to leave the survivors for the next boot to find.
+    // The record stays on disk through the grace period, so a server that
+    // dies mid-kill leaves it for the next boot.
     await vi.advanceTimersByTimeAsync(2000)
     expect(readState().map((r) => r.pid)).toEqual([9001])
 
@@ -257,8 +249,7 @@ describe('reapOrphanedPodmanProcs', () => {
   it('does not SIGKILL a pid that stopped being ours during the grace period', async () => {
     vi.useFakeTimers()
     writeState([{ pid: 9001, tag: 'yaac-tools:abc', verb: 'build' }])
-    // Ours at the identity check, something else by the time SIGTERM has
-    // gone unanswered — the pid was recycled inside the grace window.
+    // The pid is reused by another process during the grace period.
     execFileMock
       .mockResolvedValueOnce({ stdout: 'podman build -t yaac-tools:abc .\n', stderr: '' })
       .mockResolvedValue({ stdout: 'psql -h localhost\n', stderr: '' })
@@ -276,14 +267,14 @@ describe('reapOrphanedPodmanProcs', () => {
     const kill = vi.spyOn(process, 'kill').mockImplementation((() => true) as typeof process.kill)
     await reapOrphanedPodmanProcs()
     expect(execFileMock).not.toHaveBeenCalled()
-    // Nothing was there, so nothing is written — no empty file per boot.
+    // No file is created when there was none.
     expect(stateExists()).toBe(false)
 
     fs.writeFileSync(statePath(), '[{"pid":90')
     await reapOrphanedPodmanProcs()
     expect(execFileMock).not.toHaveBeenCalled()
     expect(kill).not.toHaveBeenCalled()
-    // Rewritten, so a garbage file isn't re-read on every boot from now on.
+    // Rewritten, so the garbage is not re-read on every boot.
     expect(readState()).toEqual([])
   })
 })

@@ -24,19 +24,15 @@ import { checkoutAheadBehind, listCheckoutFiles } from './checkout-git'
 import { resolveWorkspaceContainer, resolveWorkspaceRecord } from './resolve'
 
 /**
- * The webapp file editor's view of a workspace's checkout (docs/file-editor.md):
- * read, write, create, rename and delete, done with plain `fs` against
- * `workspaceDir` — the server's own mount of the checkout under k8s, the host
- * checkout itself under containerless — so a stopped workspace's files open
- * and save like a running one's, and no driver is involved. The listing and
- * the ahead/behind count are the exceptions: they need the checkout's git,
- * which runs inside the workspace, so they answer only while it runs.
+ * The webapp file editor's access to a workspace checkout
+ * (docs/file-editor.md). Reads and writes use plain `fs` on the server's view
+ * of the checkout, so they work for stopped workspaces too. The listing and
+ * ahead/behind count need the checkout's git, which runs inside the
+ * workspace, so they require it to be running.
  *
- * Every path here is a SECURITY BOUNDARY under k8s: the checkout is the
- * sandboxed agent's to shape, and the server pod can see `server-local/`.
- * So every access goes through the checkout's confined root
- * (`#lib/confined-fs`), which follows a symlink only as far as where it
- * finally lands inside the checkout, checked on the descriptor it opened.
+ * The checkout is agent-controlled, so every access goes through a confined
+ * root (`#lib/confined-fs`) that follows symlinks only while they stay
+ * inside the checkout.
  */
 
 /** The listing's cap on `paths`. */
@@ -53,9 +49,8 @@ interface Checkout {
   workspaceId: string
   projectSlug: string
   dir: string
-  /** The checkout, confined: links are followed only while they stay in
-   *  it, and its `.git` counts as outside (nothing in the listing points
-   *  there, and a write into it is how a hook or config gets planted). */
+  /** The confined checkout. Its `.git` counts as outside, so the editor
+   *  cannot plant a hook or config there. */
   root: ConfinedRoot
 }
 
@@ -70,9 +65,8 @@ async function openCheckout(idOrName: string): Promise<Checkout> {
 }
 
 /**
- * The running workspace a git read has to happen in. A workspace that exists
- * but is not running is `CONFLICT` — "start it" — whether or not its
- * substrate still has a unit for it; only an unknown one is `NOT_FOUND`.
+ * The running workspace to run a git read in. `CONFLICT` if it exists but is
+ * not running, `NOT_FOUND` if unknown.
  */
 async function runningWorkspace(idOrName: string): Promise<{ jobName: string; projectSlug: string; workspaceId: string }> {
   const { jobName } = await resolveWorkspaceRecord(idOrName)
@@ -80,8 +74,7 @@ async function runningWorkspace(idOrName: string): Promise<{ jobName: string; pr
   return resolveWorkspaceContainer(idOrName, { requireRunning: true })
 }
 
-/** The lexical half of confinement (`ConfinedRoot.normalize`), as a
- *  caller's error. */
+/** `ConfinedRoot.normalize`, with a caller-facing error. */
 function checkPath(co: Checkout, rel: string): string {
   try {
     return co.root.normalize(rel)
@@ -132,16 +125,14 @@ function hash(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex')
 }
 
-/** A file too large to edit is never hashed; its version is its size and
- *  mtime, which is all a poll needs to notice it changed. */
+/** A file too large to edit is not hashed; its version is size and mtime. */
 function largeVersion(st: Stats): string {
   return `${st.size}:${st.mtimeMs}`
 }
 
 /**
- * A file's bytes, or null when there are more than the editable size. Read
- * into a fixed buffer rather than by the size `fstat` reported, which a file
- * growing under the read would make a promise the read does not keep.
+ * A file's bytes, or null if over the editable size. Reads into a fixed
+ * buffer, since the file may grow after `fstat`.
  */
 async function readEditable(fh: FileHandle): Promise<Buffer | null> {
   const buf = Buffer.alloc(MAX_TEXT_FILE_BYTES + 1)
@@ -175,10 +166,9 @@ async function linkTarget(co: Checkout, abs: string): Promise<SymlinkTarget> {
 }
 
 /**
- * Every folder the explorer should show that holds no listed file: git
- * keeps no record of a folder, only of the untracked ones it collapses, so
- * each of those is walked — through pinned descriptors, never following a
- * link, skipping ignored folders — for the folders inside it.
+ * Folders with no listed file, which git does not report. Walks each
+ * untracked folder git collapsed (not following links, skipping ignored
+ * folders) to find the folders inside it.
  */
 async function findEmptyDirs(
   co: Checkout,
@@ -217,8 +207,7 @@ async function findEmptyDirs(
   try {
     for (const top of untrackedDirs) {
       if (ignoredDirs.has(top) || top.split('/')[0] === '.git') continue
-      // Pinned segment by segment: a root that is no longer a real folder
-      // all the way down is simply skipped.
+      // Skip a root that is no longer a real folder all the way down.
       let dir: PinnedDir | null = root
       const opened: PinnedDir[] = []
       for (const segment of top.split('/')) {
@@ -247,8 +236,7 @@ export async function listWorkspaceFiles(idOrName: string): Promise<WorkspaceFil
   const { jobName } = await runningWorkspace(idOrName)
   const co = await openCheckout(idOrName)
   const listing = await listCheckoutFiles(jobName)
-  // One cap for every list the answer carries, so no checkout — however
-  // many ignored or untracked files it holds — makes it unbounded.
+  // One cap for every list, so no checkout makes the answer unbounded.
   const truncated = listing.paths.length > MAX_LISTED_PATHS || listing.ignored.length > MAX_LISTED_PATHS
   const paths = listing.paths.slice(0, MAX_LISTED_PATHS)
   const ignored = listing.ignored.slice(0, MAX_LISTED_PATHS)
@@ -455,11 +443,9 @@ export async function createWorkspaceFolder(idOrName: string, relPath: string): 
 }
 
 /**
- * Move a file, folder or symlink (the link itself — `rename` never follows
- * its last segment), making the destination's missing parents. A conflict
- * if the destination exists: the check and the rename are two calls, so
- * only something inside the workspace, within microseconds, could slip in
- * between.
+ * Move a file, folder or symlink (the link itself), creating missing parent
+ * folders. A conflict if the destination exists (checked just before the
+ * rename, so a narrow race remains).
  */
 export async function renameWorkspaceEntry(
   idOrName: string,

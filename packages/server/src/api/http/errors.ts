@@ -2,10 +2,9 @@ import { HTTPException } from 'hono/http-exception'
 import { ServerError, type ServerErrorBody } from '@yaac/shared/errors'
 
 /**
- * Convert any thrown value into the wire `ServerErrorBody` + HTTP status the
- * server responds with. The error taxonomy itself (`ServerError`, `ErrorCode`)
- * lives in `@yaac/shared/errors` so the CLI and frontend can classify responses
- * without pulling in hono.
+ * Convert any thrown value into the wire `ServerErrorBody` and HTTP status.
+ * The error types live in `@yaac/shared/errors` so the CLI and frontend can
+ * use them without hono.
  */
 export function toErrorBody(err: unknown): { status: number; body: ServerErrorBody } {
   if (err instanceof ServerError) {
@@ -21,8 +20,8 @@ export function toErrorBody(err: unknown): { status: number; body: ServerErrorBo
     }
   }
   const message = err instanceof Error ? err.message : String(err)
-  // Best-effort classification for build-engine / cluster connection
-  // failures so the CLI can render a clear "runtime unavailable" message.
+  // Best-effort detection of build-engine or cluster connection failures, so
+  // the CLI can say "runtime unavailable".
   if (/podman|kubectl|kubernetes|connection refused.*6443/i.test(message)) {
     return {
       status: 503,

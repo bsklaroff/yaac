@@ -1,16 +1,10 @@
 /**
- * The push half of the nested-session image cache, exercised through its
- * one barrel entry: `salvageJobImages`.
+ * The push side of the nested-container image cache, tested through
+ * `salvageJobImages`. The survey script, report parser, push planner and
+ * retire script are checked as they are wired together.
  *
- * The survey script, its sudo wrapper, the report parser, the push planner
- * and the retire script are all things the salvage hands to a session pod
- * on the way through one teardown. Driving the barrel entry rather than
- * each generator means the pieces are checked as they are actually wired —
- * a parser that silently stops feeding the planner, or a script that stops
- * being reachable, fails here instead of staying green in isolation.
- *
- * The registry-ranking fragment this module also exports is covered where
- * its consumer runs it, in store-writer.test.ts.
+ * The registry-ranking fragment this module also exports is covered in
+ * store-writer.test.ts, where its consumer runs it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { execFile } from 'node:child_process'
@@ -33,9 +27,7 @@ vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
 vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 
 import { salvageJobImages } from '#drivers/k8s/images'
-// The registry the cache rides is the project's own — resolved for real
-// here (not stubbed), so a change to its host shape shows up as a broken
-// push destination rather than a passing test against a stale constant.
+// The project registry host is resolved for real, not stubbed.
 import { projectRegistryHost } from '#drivers/k8s/cluster'
 import {
   CACHE_TAG_PREFIX,
@@ -67,16 +59,10 @@ async function salvageReporting(stdout: string): Promise<boolean> {
   return salvageJobImages(PARAMS)
 }
 
-/**
- * Three content-hash generations of one repo, named so LEXICAL order is the
- * REVERSE of build order — a ranking that sorted tags instead of reading
- * their build times would pick the opposite two and fail.
- */
-/** The sudo-wrapped commands handed to the session container, in order. */
+/** The sudo-wrapped commands run in the workspace container, in order. */
 const commands = (): string[] => mockContainerExec.mock.calls.map((c) => c[1] as string)
 const surveyCommand = (): string => commands()[0]
-/** The push exec with one layer of `sh -c` quoting peeled off, so the
- *  `'id' 'dest'` argv pairs read as written. */
+/** The push command with one layer of `sh -c` quoting removed. */
 const pushCommand = (): string => commands()[1].replace(/'\\''/g, "'")
 
 beforeEach(() => {
@@ -91,53 +77,43 @@ describe('salvageJobImages', () => {
     expect(cmd).toContain('command -v sudo >/dev/null 2>&1 || exit 0')
     expect(cmd).toContain('sudo -n true 2>/dev/null || exit 0')
     expect(cmd).toContain('exec sudo -n -H sh -c ')
-    // The engine marker, NOT `command -v podman`: a pod can ship the binary
-    // and run no engine — every pod from an image built before podman left
-    // the base does. The gate has to precede the sudo, because an
-    // unconfigured rootless podman run as root resolves its runtime dir
-    // RELATIVE and plants a root-owned directory in the exec's cwd, which is
-    // the user's checkout (/workspace).
+    // Checks the engine marker, not `command -v podman`: a pod can have the
+    // binary but no engine. The check must come before sudo, since an
+    // unconfigured podman run as root creates a root-owned directory in the
+    // cwd, which is the user's checkout.
     expect(cmd).toContain('[ "${YAAC_NESTED_ENGINE:-}" = 1 ] || exit 0')
     expect(cmd.indexOf('YAAC_NESTED_ENGINE')).toBeLessThan(cmd.indexOf('sudo'))
     expect(cmd).not.toContain('command -v podman')
-    // The survey only reads metadata — no push exec when nothing is new.
+    // No push exec when nothing is new.
     expect(mockContainerExec).toHaveBeenCalledOnce()
   })
 
   it('never pushes back what the node image store already provided', async () => {
-    // The engine's view inside a warm workspace: the store's base chain
-    // read-only, one image the workspace rebuilt on top of it (so its id
-    // has a writable row too), and a fresh unnamed layer between them.
+    // A warm workspace: the store's base chain is read-only, with one
+    // image the workspace built on top of it.
     await expect(salvageReporting(
       `ro sha256:${HEX2}\n`
       + `ro sha256:${HEX3}\n`
       + CHAIN,
     )).resolves.toBe(true)
     const push = pushCommand()
-    // The leaf is the workspace's own work and travels under its name.
+    // The workspace's own image is pushed under its name.
     expect(push).toContain(`'${HEX}' '${REG}/myapp:v1'`)
-    // Its ancestors came out of the store, which is nothing but a
-    // materialization of THIS registry — re-pushing them would recompress
-    // the project's whole working set inside the sandbox for bytes that
-    // are already there, so the chain walk stops at the first one.
+    // Its ancestors came from the store, which is a copy of this registry,
+    // so the chain walk stops at the first one.
     expect(push).not.toContain(HEX2)
     expect(push).not.toContain(CACHE_TAG_PREFIX)
-    // And no retire runs for that name. The retire leg's whole licence is
-    // "the chain was pushed as a contiguous 1..depth, so depth+1 is
-    // unreachable" — false the moment the walk stops early, when the chain
-    // continues in the registry ABOVE the stop. Retiring there would delete
-    // the shared, rarely-changing prefix that a cold node's cache is mostly
-    // made of, permanently: salvage skips read-only images, so nothing
-    // would ever push them back.
+    // No retire either. Retiring assumes the whole chain 1..depth was just
+    // pushed; after an early stop the chain continues in the registry, and
+    // retiring would permanently delete the shared prefix.
     expect(commands()).toHaveLength(2)
   })
 
   it('reports which images exist only in the read-only store', async () => {
     await expect(salvageReporting('')).resolves.toBe(true)
     const cmd = surveyCommand()
-    // One row per NAME, so an id the workspace ALSO holds writably (it
-    // rebuilt or re-tagged a store image) must not be counted read-only —
-    // that name is new and does travel.
+    // An id the workspace also holds writably (it re-tagged a store image)
+    // is not read-only, since that name is new.
     expect(cmd).toContain('{{.ID}} {{.ReadOnly}}')
     expect(cmd).toContain('if ($2 == "false") w[$1] = 1')
     expect(cmd).toContain('if (!(i in w)) print "ro " i')
@@ -147,20 +123,15 @@ describe('salvageJobImages', () => {
   it('pushes named images under their own name, ancestors as bounded cache tags', async () => {
     await expect(salvageReporting(CHAIN)).resolves.toBe(true)
     const push = pushCommand()
-    // gzip, and a nice'd push. The FORMAT is load-bearing: zstd has no
-    // docker-schema2 layer media type, so a zstd push silently rewrites a
-    // schema2 image as OCI — and buildah only matches a cache candidate
-    // whose manifest type equals the format the build emits, which for the
-    // session's Docker CLI against podman's compat API is schema2. gzip
-    // exists in both schemas and leaves either in place. Level 1 because
-    // the compression runs inside the session sandbox, where total CPU is
-    // the budget and background work must lose to the agent.
+    // gzip, because zstd would silently convert a docker-schema2 image to
+    // OCI, and buildah only uses cache entries matching the build's format
+    // (schema2 via the Docker CLI). Level 1 and nice, because it runs in the
+    // workspace sandbox and must not compete with the agent for CPU.
     expect(push).toContain('nice -n 19 podman push --tls-verify=false '
       + '--compression-format gzip --compression-level 1 "$1" "$2"')
-    // argv is `id dest` pairs: the named image first (its blobs land in the
-    // repo the chain entries then reuse), then the ancestor chain under
-    // tags derived from the named tag — so a rebuilt myapp:v1 overwrites
-    // them instead of growing a generation per session.
+    // `id dest` pairs: the named image first, then its ancestors under tags
+    // derived from its tag, so a rebuild overwrites them rather than adding
+    // more.
     const pairs = push.match(/'[0-9a-f]{64}' '[^']+'/g) ?? []
     expect(pairs).toEqual([
       `'${HEX}' '${REG}/myapp:v1'`,
@@ -170,33 +141,25 @@ describe('salvageJobImages', () => {
   })
 
   it('canonicalizes podman local names, so one image is never two repos', async () => {
-    // The engine reports every non-registry-qualified name under podman's
-    // `localhost/` prefix, while everything the server pushes into this
-    // same registry uses the bare tag. Pushing the prefix verbatim put
-    // each shared image in the catalog twice — and the copies share no
-    // LAYER blobs, since the salvage compresses at level 1 where the host
-    // wrote gzip's default level.
+    // podman reports unqualified names with a `localhost/` prefix, while
+    // the server pushes bare tags. Keeping the prefix would put each image
+    // in the registry twice, with no shared layer blobs.
     await expect(salvageReporting(
       `img sha256:${HEX}||localhost/myapp:v1,docker.io/library/alpine:3.20,\n`,
     )).resolves.toBe(true)
     const push = pushCommand()
     expect(push).not.toContain('localhost/')
-    // A registry-qualified ref keeps its host: that IS the name a session
-    // pulls it by, and the prime side has to restore it intact.
+    // A registry-qualified ref keeps its host, since that is the name the
+    // workspace uses.
     expect(push).toContain(`'${HEX}' '${REG}/docker.io/library/alpine:3.20'`)
     expect(push).toContain(`'${HEX}' '${REG}/myapp:v1'`)
   })
 
   it('leaves a port-qualified host alone and drops what stays prefixed', async () => {
-    // The prefix match is anchored on the SLASH. `localhost:5000/…` is a
-    // real registry — this install's own local one — and a predicate that
-    // matched the bare word would slice its host into a `000/foo`
-    // destination while every other test here stayed green.
-    // `localhost/localhost/foo` is what podman reports for an image tagged
-    // that way (it does not collapse the repeat); its canonical form still
-    // carries the prefix, and stripping twice would rename someone's
-    // image, so it is dropped like any other ref with no name to push it
-    // under.
+    // The prefix match includes the slash, so `localhost:5000/…` (a real
+    // registry) is not mangled. `localhost/localhost/foo` still has the
+    // prefix after one strip, and stripping twice would rename the image,
+    // so it is dropped.
     await expect(salvageReporting(
       `img sha256:${HEX}||localhost:5000/foo:v1,\n`
       + `img sha256:${HEX2}||localhost/localhost/foo:v1,\n`
@@ -207,12 +170,9 @@ describe('salvageJobImages', () => {
   })
 
   it('skips what the pod already put in the registry — a prime never bounces back', async () => {
-    // The ledger the prime side writes: its own pulls, plus this pod's
-    // earlier pushes. Only the untouched ancestor is left to push. The
-    // prime restores the bare name and podman re-adds `localhost/`, so
-    // this only lands on the ledger entry because the survey's ref
-    // canonicalizes back to the destination the pull recorded — without
-    // that the prime/salvage cycle mints the duplicate repo by itself.
+    // The ledger lists what was pulled into the pod or already pushed, so
+    // only the remaining ancestor is pushed. This relies on the survey's
+    // `localhost/` names mapping back to the recorded destinations.
     const have = `have ${HEX} ${REG}/myapp:v1\n`
       + `have ${HEX2} ${REG}/myapp:${CACHE_TAG_PREFIX}v1-1\n`
     await expect(salvageReporting(have + CHAIN)).resolves.toBe(true)
@@ -221,8 +181,7 @@ describe('salvageJobImages', () => {
   })
 
   it('re-salvages a rebuilt tag — the ledger keys on the id, not the name', async () => {
-    // Same destination, new image id: the exact case a dest-only ledger
-    // would skip forever, losing every rebuild after the first.
+    // Same destination, new image id, so it is pushed.
     const have = `have ${HEX} ${REG}/myapp:v1\n`
     const rebuilt = `img sha256:${HEX3}||localhost/myapp:v1,\n`
     await expect(salvageReporting(have + rebuilt)).resolves.toBe(true)
@@ -230,9 +189,8 @@ describe('salvageJobImages', () => {
   })
 
   it('retires stale slots even when there is nothing left to push', async () => {
-    // A crash between the push and retire legs would otherwise strand the
-    // tail forever: every later salvage finds the ledger complete and would
-    // no-op before reaching retire.
+    // Otherwise a crash between push and retire would leave stale tags
+    // forever, since later salvages find nothing to push.
     const have = `have ${HEX} ${REG}/myapp:v1\n`
       + `have ${HEX2} ${REG}/myapp:${CACHE_TAG_PREFIX}v1-1\n`
       + `have ${HEX3} ${REG}/myapp:${CACHE_TAG_PREFIX}v1-2\n`
@@ -245,9 +203,7 @@ describe('salvageJobImages', () => {
     const have = `have ${HEX} ${REG}/myapp:v1\n`
       + `have ${HEX2} ${REG}/myapp:${CACHE_TAG_PREFIX}v1-1\n`
       + `have ${HEX3} ${REG}/myapp:${CACHE_TAG_PREFIX}v1-2\n`
-    // The registry refuses DELETE for the whole of a blob collect's
-    // read-only window, and a salvage runs detached in the pass that
-    // starts one.
+    // The registry refuses DELETE while a GC holds it read-only.
     mockContainerExec.mockImplementation((_job: string, cmd: string) =>
       Promise.resolve(cmd.includes('image inspect')
         ? { stdout: have + CHAIN, stderr: '' }
@@ -255,7 +211,7 @@ describe('salvageJobImages', () => {
     await salvageJobImages(PARAMS)
     mockContainerExec.mockClear()
     await salvageJobImages(PARAMS)
-    // Second cycle tries again instead of treating the shape as retired.
+    // The second cycle tries again.
     expect(mockContainerExec).toHaveBeenCalledTimes(2)
   })
 
@@ -265,21 +221,19 @@ describe('salvageJobImages', () => {
       + `have ${HEX3} ${REG}/myapp:${CACHE_TAG_PREFIX}v1-2\n`
     await salvageReporting(have + CHAIN)
     mockContainerExec.mockClear()
-    // Second cycle, same shape: back to the one-exec no-op the 10-minute
-    // reconciler depends on.
+    // Same chain shape: back to a single exec.
     await salvageReporting(have + CHAIN)
     expect(mockContainerExec).toHaveBeenCalledOnce()
   })
 
   it('retires chain slots a shorter rebuild no longer fills', async () => {
     await expect(salvageReporting(CHAIN)).resolves.toBe(true)
-    // Third leg, after the push: repo/tag/depth argv, deleting upward from
-    // depth+1 until a slot is already empty.
+    // After the push: delete tags upward from depth+1 until one is missing.
     const retire = commands()[2].replace(/'\\''/g, "'")
     expect(retire).toContain(`'myapp' 'v1' '2'`)
     expect(retire).toContain('-X DELETE "http://$REG/v2/$repo/manifests/$dg"')
     expect(retire).toContain('[ -n "$dg" ] || break')
-    // Failures are counted, not swallowed — see the memo test below.
+    // Failures are counted so the retire is retried (see above).
     expect(retire).toContain('echo "retired $n failed $f"')
   })
 
@@ -288,8 +242,8 @@ describe('salvageJobImages', () => {
       'img not-an-id|| localhost/bad:v1,\n'
       + `img sha256:${HEX}||$(rm~-rf~/):v1,${REG}/localhost/pulled:v1,\n`,
     )).resolves.toBe(true)
-    // Nothing survived: the bad id is dropped whole, the shell-metachar ref
-    // fails the ref shape, and the registry-hosted ref is already there.
+    // The bad id, the shell-metachar ref and the registry-hosted ref are
+    // all dropped.
     expect(mockContainerExec).toHaveBeenCalledOnce()
   })
 

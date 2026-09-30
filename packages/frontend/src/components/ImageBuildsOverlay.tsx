@@ -8,15 +8,14 @@ import { useIsMobile } from '#lib/viewport'
 import type { ImageBuildEntry } from '@yaac/shared/types'
 import { relativeAge } from '#lib/time'
 
-/** `yaac-base:abc123def456…` → `yaac-base:abc123` — enough to tell tags apart. */
+/** `yaac-base:abc123def456…` → `yaac-base:abc123`. */
 function shortTag(tag: string): string {
   const idx = tag.lastIndexOf(':')
   if (idx < 0) return tag
   return `${tag.slice(0, idx)}:${tag.slice(idx + 1, idx + 7)}`
 }
 
-/** Human label for a row: the chain layer, a registry push, or the shared
- *  proxy sidecar image (which isn't part of any project chain). */
+/** Row label: the layer name, "push", or the shared proxy sidecar. */
 function buildLabel(b: ImageBuildEntry): string {
   if (b.action === 'push') return 'push'
   if (b.layer === 'proxy') return 'proxy sidecar'
@@ -30,11 +29,10 @@ function StatusIcon({ status }: { status: ImageBuildEntry['status'] }): JSX.Elem
 }
 
 /**
- * Fullscreen overlay listing every tracked image build/push with a live,
- * auto-scrolling podman log tail for the selected one. Metadata (status,
- * step N/M) arrives through the snapshot; the log is polled from
- * `/image/builds/:id/log` every 1.5s while the selected build runs, plus
- * one fetch when it settles so the tail is complete.
+ * Fullscreen overlay listing image builds and pushes, with an auto-scrolling
+ * log for the selected one. Status comes from the snapshot; the log is
+ * polled every 1.5s while the build runs, then fetched once more when it
+ * finishes.
  */
 export function ImageBuildsOverlay({
   open,
@@ -48,17 +46,15 @@ export function ImageBuildsOverlay({
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const isMobile = useIsMobile()
 
-  // Follow the user's pick while it exists; otherwise the newest running
-  // entry (builds arrive newest-first), falling back to the newest overall.
-  // That stand-in is desktop-only: a phone shows the list or the log, never
-  // both, so there the log — and its 1.5s poll — waits for an actual tap.
+  // The user's pick, else (desktop only) the newest running build, else the
+  // newest. On mobile the list and log are separate screens, so nothing is
+  // selected (or polled) until a tap.
   const picked = builds.find((b) => b.id === selectedId)
   const selected = picked
     ?? (isMobile ? undefined : builds.find((b) => b.status === 'running') ?? builds[0])
 
-  // This overlay stays mounted while closed, so a pick outlives a close.
-  // Clear it so a phone reopens on the list rather than behind the back
-  // chevron on whichever log it last showed.
+  // The overlay stays mounted while closed; clear the pick so mobile
+  // reopens on the list.
   useEffect(() => { if (!open) setSelectedId(null) }, [open])
 
   const [log, setLog] = useState('')
@@ -125,8 +121,7 @@ export function ImageBuildsOverlay({
                         onClick={() => setSelectedId(b.id)}
                         className={clsx(
                           'flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left transition',
-                          // The action buttons never hide on touch, so the row
-                          // text insets clear of them there.
+                          // Leave room for the always-visible action buttons.
                           b.status !== 'running' && 'max-md:pr-16',
                           'max-md:py-2.5',
                           selected?.id === b.id ? 'bg-surface-2' : 'hover:bg-surface-2/50',

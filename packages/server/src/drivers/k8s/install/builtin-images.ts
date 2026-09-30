@@ -39,29 +39,21 @@ import {
 } from './gvisor-installer'
 
 /**
- * Every image yaac itself ships, produced on the machine running the yaac
- * CLI — the image half of `yaac cluster install`.
+ * Builds and pushes every image yaac ships, as part of `yaac cluster
+ * install` on the CLI's machine.
  *
- * Two kinds. The yaac-built ones (the base/tools/nestable workspace chain,
- * the egress proxy, netd) are `podman build` over build contexts the npm
- * artifact carries, tagged by content hash so an unchanged source tree
- * costs one registry HEAD. The rest are digest-pinned upstreams
- * (registry:2, Envoy, podman-stable, the gVisor installer's curl) mirrored
- * into the registry so nodes pull them with no upstream egress — and so an
- * offline install still works once they are in the host store.
- *
- * This is the only module that *produces* any of them. Each image's
- * identity — its pin or its content-hash tag — stays beside the lookup the
- * server does in `#drivers/k8s/cluster`, because both halves need the same
- * name for the same bytes; what lives here is the production, which only
- * install performs (docs/trust-split-builds.md).
+ * yaac-built images (the base/tools/nestable workspace chain, the egress
+ * proxy, netd) are `podman build`s tagged by content hash, so an unchanged
+ * source costs one registry HEAD. Digest-pinned upstream images are
+ * mirrored into the registry so nodes need no upstream egress. Image names
+ * and tags are defined in `#drivers/k8s/cluster`, which the server also
+ * reads (docs/trust-split-builds.md).
  */
 
 /**
- * Compression for the trusted-layer pushes that feed builder-pod parent
- * pulls: zstd cuts a pod's empty-graphroot parent pull from 65.6s to 40.4s
- * (measured). Node containerd zstd pulls are validated live — workspace pods
- * pull product manifests referencing these blobs.
+ * Compression for trusted-layer pushes. Builder pods pull these as parents,
+ * and zstd cut that pull from 65.6s to 40.4s in measurement. Node
+ * containerd pulls zstd blobs fine.
  */
 export const TRUSTED_PARENT_COMPRESSION = 'zstd' as const
 
@@ -70,10 +62,8 @@ export interface BuiltinImageDeps {
 }
 
 /**
- * Build-or-skip one yaac-shipped build context and push it, tracking the
- * build in the shared registry so it surfaces in the webapp's build list
- * like every other one. Shared infrastructure, so it registers with no
- * owning project.
+ * Build one yaac-shipped image if the registry lacks it, and push it. The
+ * build is registered (with no project) so it shows in the build list.
  */
 async function buildShippedImage(
   localTag: string,
@@ -98,17 +88,15 @@ async function buildShippedImage(
   return pushImageToRegistry(localTag)
 }
 
-/** podman's GOARCH name for this host — the node shares it (kind's node is a
- *  container here), so it is also the arch every mirrored image must be. */
+/** podman's GOARCH name for this host, which mirrored images must match. */
 export function hostImageArch(arch: string = process.arch): string {
   return arch === 'x64' ? 'amd64' : arch
 }
 
 /**
- * Throw when a mirrored upstream image is built for the wrong architecture,
- * naming the likely cause (a pin that points at a child manifest rather than
- * the index). An empty/unknown `actual` is accepted — the check must never be
- * the reason a mirror fails.
+ * Throw when a mirrored upstream image has the wrong architecture, usually
+ * because the pin names one platform's manifest rather than the multi-arch
+ * index. An empty `actual` passes.
  */
 export function assertMirrorArch(
   image: string,
@@ -124,13 +112,9 @@ export function assertMirrorArch(
 
 
 /**
- * Mirror one digest-pinned upstream into the local registry: pull it, check
- * the architecture, retag it under the mirror name, push.
- *
- * The arch re-check is what a bad re-pin fails on. A pin naming one
- * platform's CHILD manifest rather than the multi-arch index mirrors those
- * bytes onto every host, and a mismatched node then crashloops on `exec
- * format error` — which surfaces only as the workload never going ready.
+ * Mirror one digest-pinned upstream into the local registry: pull, check
+ * the architecture, retag, push. A wrong-arch image would otherwise only
+ * show up as a pod crashlooping on `exec format error`.
  */
 async function mirrorPinnedImage(upstream: string, mirrorTag: string): Promise<string> {
   if (await registryHasTag(mirrorTag)) return registryRef(mirrorTag)
@@ -146,13 +130,9 @@ async function mirrorPinnedImage(upstream: string, mirrorTag: string): Promise<s
 }
 
 /**
- * Mirror every digest-pinned upstream yaac runs: the per-project
- * registries' `registry:2`, netd's Envoy sidecar, the sandboxed builder
- * pods' podman, the gVisor installer's curl, and the npm cache's Verdaccio.
- *
- * Exported because the e2e global setup needs exactly this set and nothing
- * else of an install — its own images are test-prefixed builds, but these
- * are the same digests either way.
+ * Mirror every digest-pinned upstream yaac runs: `registry:2`, Envoy, the
+ * builder pods' podman, the gVisor installer's curl, and Verdaccio. The
+ * e2e global setup also calls this.
  */
 export async function mirrorPinnedUpstreams(): Promise<void> {
   await mirrorPinnedImage(REGISTRY_UPSTREAM_IMAGE, REGISTRY_MIRROR_TAG)
@@ -163,20 +143,13 @@ export async function mirrorPinnedUpstreams(): Promise<void> {
 }
 
 /**
- * Build/mirror and push every built-in image, then sweep the host store.
- *
- * Every step is build-or-skip against the registry, so a re-run after an
- * upgrade that changed nothing costs a handful of HEADs. The workspace
- * chain leads because it is the long pole — base is a full apt/Node build
- * on a cold store, and the layers above it are serial by construction
- * (each is the next one's FROM).
+ * Build or mirror and push every built-in image, then GC the host image
+ * store. Each step is skipped when the registry already has the tag. The
+ * workspace chain goes first because it takes longest.
  */
 export async function buildBuiltinImages(deps: BuiltinImageDeps): Promise<void> {
-  // Before anything decides a tag is missing: an install killed mid-build
-  // leaves a `podman build` that commits its tag later, and starting a
-  // second build of the same tag beside it is how two engines end up
-  // fighting over the image-store lock. Best-effort — a failed reap costs
-  // at most that duplicate.
+  // A killed earlier install can leave a `podman build` running; a second
+  // build of the same tag would fight it for the image-store lock.
   await reapOrphanedPodmanProcs().catch((err: unknown) => {
     deps.log(`note: could not reap a previous install's podman processes: ${String(err)}`)
   })
@@ -186,8 +159,6 @@ export async function buildBuiltinImages(deps: BuiltinImageDeps): Promise<void> 
 
   deps.log('Ensuring the workspace image chain (base → tools → nestable)...')
   for (const layer of [base, tools, nestable]) {
-    // The registry, not the host store, is what a create resolves — so a
-    // tag already there is done, however this host's store looks.
     if (await registryHasTag(layer.tag)) {
       deps.log(`  ${layer.tag} — already in the registry`)
       continue
@@ -205,10 +176,8 @@ export async function buildBuiltinImages(deps: BuiltinImageDeps): Promise<void> 
   deps.log('Ensuring the pinned upstream mirrors...')
   await mirrorPinnedUpstreams()
 
-  // The host store is this machine's build cache and nothing else — every
-  // consumer resolves through the registry — so retiring old generations
-  // here is pure reclaim. Fails soft: a full disk is a real problem, but
-  // not one that should abort an otherwise complete install.
+  // The host store is only a build cache; everything pulls from the
+  // registry. A failed GC does not fail the install.
   try {
     const { retired, pruned } = await gcHostImages()
     if (retired.length > 0 || pruned > 0) {

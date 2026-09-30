@@ -76,8 +76,8 @@ try {
 
   await dialog.getByLabel('Group').selectOption({ label: '+ New group' })
   const nameBox = dialog.getByLabel('New group name')
-  // Waits rather than reads at once, so a loaded machine's slow render is
-  // not a lost name — typing into nothing would then let Esc close the dialog.
+  // Wait for the box: typing before it renders would lose the name, and Esc
+  // would then close the dialog.
   const focused = await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === 'New group name',
     null, { timeout: 2000 }).then(() => true, () => false)
   check(focused && await nameBox.isVisible(), '"+ New group" focuses a name box')

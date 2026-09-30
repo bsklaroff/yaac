@@ -1,16 +1,9 @@
 /*
- * Verifies the expand button on the settings file editors (FileEditor):
- * Settings → Project Config / User Dockerfile each show a small expand
- * button in the top-right of the CodeMirror frame; clicking it opens a
- * near-fullscreen overlay (nested dialog, inset ~16px from the viewport)
- * where the editor fills the available height and the Save button stays
- * below it. Edits made in the overlay must survive collapsing (Escape),
- * which must close only the overlay — the settings dialog stays open.
- *
- * Drives the running yaac server's webapp in real Chromium: opens settings,
- * expands the project yaac-config.json editor, checks overlay geometry,
- * types into the expanded CodeMirror to see Save enable, escapes back, then
- * repeats the expand check on the User Dockerfile section. Nothing is saved.
+ * Verifies the expand button on the settings file editors (FileEditor) for
+ * Project Config and User Dockerfile. Expanding opens a near-fullscreen
+ * overlay (inset ~16px) where the editor fills the height with Save below.
+ * Escape closes only the overlay, keeping the settings dialog and any edits.
+ * Nothing is saved.
  *
  * Run: node test-playwright-scripts/config-editor-expand-test.js
  * (set SCREENSHOT_DIR to also capture inline/expanded screenshots there)
@@ -62,7 +55,7 @@ function overlay(page) {
 async function expectExpandedOverlay(page, viewport, label) {
   const pop = overlay(page)
   await pop.waitFor({ state: 'visible' })
-  // Let the open transition (scale-95 → 1, 150ms) settle before measuring.
+  // Let the 150ms open transition settle before measuring.
   await page.waitForTimeout(400)
   const box = await pop.boundingBox()
   // inset-4 → 16px margins all around (within a couple px of rendering slack).

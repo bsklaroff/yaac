@@ -52,9 +52,7 @@ describe('loadConfig', () => {
   })
 
   it('refuses to start with no pod CIDR', () => {
-    // With nothing to RETURN on, the chain would DNAT pod-to-pod 443/80
-    // into the proxy. Refusing costs egress; guessing corrupts in-cluster
-    // traffic.
+    // Without pod CIDRs, pod-to-pod 443/80 would be redirected.
     delete process.env.CLUSTER_POD_CIDRS
     expect(() => loadConfig()).toThrow(/CLUSTER_POD_CIDRS is required/)
     process.env.CLUSTER_POD_CIDRS = ' , '
@@ -86,18 +84,13 @@ describe('loadConfig', () => {
   })
 
   it('takes the workload veth prefix from the env, defaulting to Calico\'s', () => {
-    // Correct only where Calico does the IPAM; policy-only Calico over the
-    // AWS VPC CNI gives `eni*`, which is why the server can override it.
+    // Other CNIs name veths differently (e.g. `eni` on the AWS VPC CNI).
     expect(loadConfig().vethPrefix).toBe('cali')
     process.env.NETD_VETH_PREFIX = 'eni'
     expect(loadConfig().vethPrefix).toBe('eni')
   })
 
   it('falls back to cali rather than honoring a prefix that would match everything', () => {
-    // An empty prefix matches EVERY device in the routing table, which is
-    // exactly the "redirect something that is not a workload" failure the
-    // prefix exists to prevent — so a misconfiguration costs the cluster its
-    // redirect (fail-closed) instead of widening it.
     for (const bad of ['', '   ', 'cali *', 'a/b']) {
       process.env.NETD_VETH_PREFIX = bad
       expect(loadConfig().vethPrefix).toBe('cali')
@@ -177,8 +170,7 @@ function harness(overrides: Partial<ReconcileDeps> = {}): Harness {
 
 describe('reconcileOnce', () => {
   it('writes Envoy, waits for it, and only THEN programs netfilter', async () => {
-    // A rule naming a port Envoy has not bound black-holes the flows it
-    // captures, so this order is the whole point of the gate.
+    // A rule pointing at an unbound port would drop the flows it captures.
     const h = harness()
     await reconcileOnce(h.deps, h.memo)
     expect(h.calls).toEqual(['writeCds', 'writeLds', 'confirm', 'applyChain', 'ensureJump'])
@@ -196,8 +188,7 @@ describe('reconcileOnce', () => {
   })
 
   it('writes nothing on an unchanged pass, but still re-asserts the jump', async () => {
-    // A jump deleted out from under netd is invisible in the rendering,
-    // so nothing else would ever notice it was gone.
+    // A deleted jump doesn't show up in the rendering.
     const h = harness()
     await reconcileOnce(h.deps, h.memo)
     h.calls.length = 0
@@ -207,8 +198,7 @@ describe('reconcileOnce', () => {
   })
 
   it('re-applies the chain on a resync pass even when nothing changed', async () => {
-    // The memo describes what netd WROTE, not what the kernel kept — only
-    // a pass that discards it can heal an external flush.
+    // The memo records what netd wrote, not what the kernel holds.
     const h = harness()
     await reconcileOnce(h.deps, h.memo)
     h.calls.length = 0

@@ -10,18 +10,12 @@ import {
 } from '@yaac/test-utils/cli'
 
 /**
- * The server-selection commands, against one shared server.
+ * The server-selection commands, against one shared server. `yaac remote
+ * set` points at the server's loopback origin, which takes the same code
+ * path as a remote one (docs/server-selection.md). Tailnet identity is
+ * covered by the api tier and unit tests instead.
  *
- * This needs no second machine: `yaac remote set` points at the spawned
- * server's own loopback origin, and the code path is identical to one
- * across the network — every server is an origin, so there is no separate
- * "local" path to miss. What a device across the tailnet adds is only who
- * it is, which the api tier's identity-flow covers against a real server,
- * and `remote set`'s refusal of an unidentified device is a unit case —
- * this tier cannot address a test server by a tailnet name.
- *
- * Every test shares one data dir, so state-sensitive ones reset first
- * (see `resetSelection`).
+ * Tests share one data dir, so each resets first (`resetSelection`).
  */
 describe('yaac remote (real CLI + shared server)', () => {
   let testEnv: YaacTestEnv
@@ -45,11 +39,7 @@ describe('yaac remote (real CLI + shared server)', () => {
     return path.join(`${testEnv.dataDir}-client`, 'server.json')
   }
 
-  /**
-   * Put the machine back to "pointed at the running server". Not
-   * `remote unset`, which would point it at nothing: `yaac server start`
-   * re-registers the server it finds running.
-   */
+  /** Point the client back at the running server (`server start` re-registers it). */
   async function resetSelection(): Promise<void> {
     const res = await runYaac(testEnv.env, 'server', 'start')
     expect(res.exitCode, res.stderr).toBe(0)
@@ -71,9 +61,7 @@ describe('yaac remote (real CLI + shared server)', () => {
     })
 
     it('`yaac server start` registers the server it finds already running', async () => {
-      // The fixture spawned `yaac server run`, which registers nothing —
-      // exactly like an operator running one in the foreground. `start` is
-      // what points this machine at it, on the already-running path too.
+      // The fixture spawned `yaac server run`, which registers nothing.
       await resetSelection()
       await fs.rm(configPath(), { force: true })
       const orphaned = await runYaac(testEnv.env, 'project', 'list')
@@ -103,7 +91,6 @@ describe('yaac remote (real CLI + shared server)', () => {
       expect(unset.exitCode).toBe(0)
       const after = await runYaac(testEnv.env, 'remote', 'status')
       expect(after.stdout).toMatch(/No server configured/)
-      // And with none configured, nothing reaches a server at all.
       const stranded = await runYaac(testEnv.env, 'project', 'list')
       expect(stranded.exitCode).toBe(1)
       expect(stranded.stderr).toMatch(/No yaac server selected/)
@@ -118,7 +105,7 @@ describe('yaac remote (real CLI + shared server)', () => {
       expect(off.exitCode).toBe(0)
       expect(off.stdout).toMatch(/No server selected/)
       expect((await runYaac(testEnv.env, 'remote', 'status')).stdout).toMatch(/selected\s+no/)
-      // Deselected means unreachable — there is no local fallback to find.
+      // No local fallback when deselected.
       expect((await runYaac(testEnv.env, 'project', 'list')).exitCode).toBe(1)
 
       const on = await runYaac(testEnv.env, 'remote', 'on')
@@ -134,15 +121,13 @@ describe('yaac remote (real CLI + shared server)', () => {
       const res = await runYaac(testEnv.env, 'remote', 'set', 'http://127.0.0.1:1')
       expect(res.exitCode).toBe(1)
       expect(res.stderr).toMatch(/cannot reach http:\/\/127\.0\.0\.1:1/)
-      // Persists nothing: the selection is still the server that was there.
       const status = await runYaac(testEnv.env, 'remote', 'status')
       expect(status.stdout).toContain(origin())
       expect(status.stdout).not.toContain('127.0.0.1:1\n')
     })
 
     it('the install driver survives `remote unset`, so a k8s install stays refused', async () => {
-      // `driver` shares server.json with the selection. Forgetting the
-      // servers must not forget which command stands this one up.
+      // `driver` lives in server.json beside the selection.
       await resetSelection()
       expect((await runYaac(testEnv.env, 'remote', 'unset')).exitCode).toBe(0)
       const raw = JSON.parse(await fs.readFile(configPath(), 'utf8')) as { driver?: string }

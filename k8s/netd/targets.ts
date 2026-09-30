@@ -1,21 +1,11 @@
 /**
- * Egress-target selection: which yaac proxy a given pod's redirected
- * traffic is steered to.
- *
- * Exactly ONE target is chosen per pod, evaluated on every reconcile, so
- * there is no precedence to reason about — the selection IS the decision,
- * and it lives in ordinary code that unit tests can pin. A workspace pod in
- * an install namespace (`yaac.workspace-id`) is steered to that install's
- * proxy; nothing else is redirected at all.
- *
- * Pure: a snapshot of pods in, a target per pod out. The watches and the
- * iptables/Envoy writers live elsewhere.
+ * Egress-target selection: which yaac proxy each pod's redirected traffic
+ * goes to. A workspace pod (labelled `yaac.workspace-id`) in this install's
+ * namespace goes to this install's proxy; nothing else is redirected.
+ * Pure: pods in, one target per pod out.
  */
 
-/**
- * Must match the server's constants (netd cannot import from src/). This is
- * LABEL_WORKSPACE_ID: the key every workspace pod carries.
- */
+/** Must match the server's LABEL_WORKSPACE_ID (netd can't import src/). */
 export const LABEL_WORKSPACE_ID = 'yaac.workspace-id'
 /** Deployment/Service name of every yaac proxy. */
 export const PROXY_APP_NAME = 'yaac-proxy'
@@ -37,13 +27,9 @@ export interface NetdService {
 }
 
 /**
- * One redirect destination: a proxy's address plus the three transparent
- * ports. `key` names it stably across reconciles (it is what the Envoy
- * cluster names hash), and is namespace-scoped so two installs — the real
- * one and an ephemeral e2e `yaac-test-<run-id>` — never collide.
- *
- * `ip` is the proxy Service's ClusterIP, read from netd's own install
- * namespace, which no tenant can write.
+ * One redirect destination. `key` is stable across reconciles, names the
+ * Envoy clusters, and includes the install namespace so installs never
+ * collide. `ip` is the proxy Service's ClusterIP from netd's own namespace.
  */
 export interface EgressTarget {
   key: string
@@ -65,37 +51,28 @@ export interface SelectTargetsInput {
   outerProxyClusterIp: string | null
 }
 
-/** Every install-namespace workspace pod's destination. */
+/** The target for this install's workspace pods. */
 function outerTarget(input: SelectTargetsInput): EgressTarget | null {
   if (!input.outerProxyClusterIp) return null
   return { key: `outer/${input.installNamespace}`, ip: input.outerProxyClusterIp }
 }
 
 /**
- * Resolve every redirectable pod to exactly one egress target.
- *
- * Pods with no target (no workspace label; or a proxy pod, which must never
- * be redirected to itself) are simply absent from the result — netd
- * programs no rules for them, and their egress is whatever their
- * NetworkPolicy allows. That is why a missing target can only ever mean
- * LESS reachability, never more.
+ * Resolve every redirectable pod to one egress target. Other pods
+ * (another install's, the proxy itself, anything without the workspace
+ * label) are left out and get no rules, so a missing target only ever
+ * reduces reachability. Sorted so rendered output is stable between passes.
  */
 export function selectTargets(input: SelectTargetsInput): PodTarget[] {
   const outer = outerTarget(input)
   const out: PodTarget[] = []
   for (const pod of input.pods) {
     if (!pod.podIp) continue
-    // Only this install's own workspace pods: a sibling install's pods are
-    // its netd's business, not ours.
     if (pod.namespace !== input.installNamespace) continue
-    // The proxy must never be redirected — it is the thing egress is
-    // redirected TO, and a self-redirect would be an infinite loop.
     if (pod.labels.app === PROXY_APP_NAME) continue
     if (!pod.labels[LABEL_WORKSPACE_ID]) continue
     if (outer) out.push({ pod, target: outer })
   }
-  // Stable order so the rendered rules and Envoy config are byte-stable
-  // between passes (the memo that suppresses no-op writes depends on it).
   return out.sort((a, b) => {
     const an = `${a.pod.namespace}/${a.pod.name}`
     const bn = `${b.pod.namespace}/${b.pod.name}`

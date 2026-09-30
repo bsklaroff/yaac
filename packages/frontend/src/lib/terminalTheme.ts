@@ -1,12 +1,10 @@
 import type { ITheme } from '@xterm/xterm'
 
 /**
- * xterm palettes per app theme. Background/foreground mirror --color-bg /
- * --color-text in index.css for each theme, so the terminal is
- * seamless with its wrapper (also bg-bg) — a dark terminal on the dark shell,
- * a light one on the light shell. The dark palette keeps xterm's default ANSI
- * colors (they read well on dark); the light one supplies a light-tuned ANSI
- * set (the defaults' bright colors wash out on a light background).
+ * xterm palettes per app theme. Background and foreground match
+ * --color-bg / --color-text in index.css so the terminal blends with its
+ * wrapper. The dark palette keeps xterm's default ANSI colors; the light one
+ * supplies its own, since the defaults wash out on a light background.
  */
 const DARK: ITheme = {
   background: '#0b0b0d',

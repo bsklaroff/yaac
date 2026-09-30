@@ -7,28 +7,19 @@ import {
 import { salvageJobImages } from '#drivers/k8s/images'
 
 /**
- * Mid-workspace image salvage: run the (idempotent, self-gating) salvage
- * for each live workspace every SALVAGE_INTERVAL_MS, so a nested workspace's
- * built/pulled images land in the project's registry WHILE the
- * workspace is alive. Teardown then only ships the delta since the last
- * run — the multi-GB first salvage of a project's base chain happens in
- * the background instead of blocking termination.
+ * Periodic image salvage: every SALVAGE_INTERVAL_MS, push each live nested
+ * workspace's built/pulled images to the project's registry. Teardown then
+ * only ships the delta, and the large first salvage happens in the
+ * background instead of blocking termination.
  *
- * Only nested workspaces are visited: a workspace with no in-pod engine has
- * no images of its own, and the survey it would be sent is one this side
- * already knows the answer to. The in-pod gate still stands behind this
- * (image-promoter.ts) — it is what makes the teardown salvage safe on the
- * same pods — but a probe that can only ever report nothing should not be
- * a standing per-workspace exec every interval.
- *
- * Cost when there is nothing to do: one exec per NESTED workspace per
- * interval (the in-pod survey reports no-op when every image is already in
- * the registry).
+ * Only nested workspaces are visited, since others have no in-pod engine
+ * and no images. The in-pod gate (image-promoter.ts) still applies. With
+ * nothing new, the cost is one exec per nested workspace per interval.
  */
 export const SALVAGE_INTERVAL_MS = 10 * 60_000
 
-/** Last salvage attempt per workspace id — module state, pruned against
- *  the live pod set each tick so it can't leak. */
+/** Last salvage attempt per workspace id, pruned against live pods each
+ *  pass. */
 const lastAttemptMs = new Map<string, number>()
 
 /** Test-only: reset the per-workspace throttle state. */
@@ -37,10 +28,10 @@ export function _resetSalvageReconcileForTests(): void {
 }
 
 /**
- * One reconcile pass: pick the workspaces whose interval elapsed and
- * kick their salvages (detached — a multi-minute first salvage must not
- * wedge the loop; salvageJobImages coalesces per workspace, so a
- * teardown arriving mid-run shares the same promise instead of racing).
+ * One reconcile pass: start salvage for workspaces whose interval elapsed.
+ * Runs detached so a long first salvage cannot stall the loop;
+ * salvageJobImages coalesces per workspace, so a teardown mid-run shares
+ * the same promise.
  */
 export async function reconcileImageSalvage(
   isTerminating: (workspaceId: string) => boolean,

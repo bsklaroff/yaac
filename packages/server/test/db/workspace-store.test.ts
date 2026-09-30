@@ -73,9 +73,9 @@ describe('session store', () => {
     })
   })
 
-  // Against the real table, the calls prewarm makes: warming inserts the
-  // row, and the claim must hand that same row over — a second insert on
-  // the id is refused now, which silently sent every claim to a cold create.
+  // The calls prewarm makes, against the real table: warming inserts the
+  // row, and the claim must reuse it, since a second insert on the id is
+  // refused (which would send every claim to a cold create).
   describe('claimSpareWorkspace', () => {
     const warmT = new Date('2026-01-01T00:00:00Z')
     const claimT = new Date('2026-01-01T00:05:00Z')
@@ -193,9 +193,8 @@ describe('session store', () => {
       expect(rows.get('sid-2')?.title).toBe('generated')
     })
 
-    // The rename is a snapshot input, so the writer pushes it — which is
-    // what lets both the route and the title generator above it stay
-    // ignorant of the push channel entirely.
+    // The rename is a snapshot input, so the writer pushes it; the route and
+    // title generator need not know about the push channel.
     it('pushes a fresh snapshot on every write', async () => {
       await create('sid-1')
       const before = pushes
@@ -236,10 +235,8 @@ describe('session store', () => {
 
   describe('listLiveWorkspaceRows', () => {
     it('excludes stopped workspaces and reports whether each ever ran', async () => {
-      // `ran` now comes from a captured founding ask OR any linked agent
-      // A link alone proves nothing — session create records one before the
-      // agent launches. Evidence is a captured opening message or a
-      // transcript; without either the create was interrupted.
+      // A link alone proves nothing: create records one before the agent
+      // launches. `ran` needs a captured opening message or a transcript.
       await create('never-ran')
       await recordAgentSessions('proj', 'never-ran', [
         { tool: 'claude', agentSessionId: 'never-ran' },

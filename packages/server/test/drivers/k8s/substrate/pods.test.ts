@@ -25,7 +25,7 @@ import {
   workspaceIdLabels,
   type PodInfo,
 } from '#drivers/k8s/substrate'
-// Internal, for fixtures only: the kubelet's own job-name label.
+// Internal, for fixtures only.
 import { JOB_NAME_LABEL } from '#drivers/k8s/substrate/pods'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/substrate/kubectl'
 
@@ -202,9 +202,8 @@ describe('listWorkspacePods', () => {
     const pods = await listWorkspacePods()
     expect(pods[0].running).toBe(false)
     expect(pods[0].phase).toBe('Pending')
-    // A pending (not deleting) pod is not terminating.
     expect(pods[0].terminating).toBe(false)
-    // Running phase but terminating → not running, and flagged terminating.
+    // Running but deleting: not running, and terminating.
     expect(pods[1].phase).toBe('Running')
     expect(pods[1].running).toBe(false)
     expect(pods[1].terminating).toBe(true)
@@ -310,15 +309,14 @@ describe('findWorkspacePod', () => {
     expect(findWorkspacePod([pod()], 'abcd1234')).toBeDefined()
   })
 
-  // Prefix expansion is domain's, over rows; unit names are this driver's
-  // own and no client sends one.
+  // Prefix matching happens in domain, and clients never send unit names.
   it('matches no prefix, job name or pod name', () => {
     for (const input of ['abcd', '', 'yaac-demo-abcd1234', 'yaac-demo-abcd1234-x7k2p', 'yaac-']) {
       expect(findWorkspacePod([pod()], input), input).toBeUndefined()
     }
   })
 
-  // An unclaimed spare is not a workspace; only a teardown asks for one.
+  // Unclaimed spares are returned only for teardown.
   it('skips a spare unless asked for spares', () => {
     const spare = pod({ labels: { [LABEL_PREWARMED]: 'true' } })
     expect(findWorkspacePod([spare], 'abcd1234')).toBeUndefined()
@@ -358,8 +356,7 @@ describe('listWorkspaceJobs', () => {
     }])
   })
 
-  // The orphan-Job sweep keys on this, and a Job with no workspace id is one
-  // it must not act on.
+  // The orphan-Job sweep must not act on a Job with no workspace id.
   it('throws when a job carries no workspace-id label', async () => {
     mockGetJson.mockResolvedValue({
       items: [{
@@ -448,7 +445,7 @@ describe('runPodToCompletion', () => {
     await expect(runPodToCompletion(MANIFEST, { timeoutMs: 5_000 }))
       .resolves.toEqual({ phase: 'Succeeded', logs: 'hello\n' })
 
-    // Stray delete BEFORE the apply, cleanup delete after the logs.
+    // Stray delete before the apply, cleanup delete after the logs.
     const retryCalls = mockRetry.mock.calls.map((c) => c[0])
     expect(retryCalls[0]).toEqual(
       ['delete', 'pod', 'yaac-oneshot', '-n', 'test-ns', '--ignore-not-found'])
@@ -472,16 +469,13 @@ describe('runPodToCompletion', () => {
   })
 
   it('fails fast with phase Deleted when the pod vanishes after apply', async () => {
-    // NotFound (null) after a successful apply: something deleted the pod
-    // out from under the poller — it can never complete, so no polling
-    // until the deadline.
+    // The pod was deleted after apply, so polling stops at once.
     mockGetJson.mockResolvedValue(null)
     const start = Date.now()
     await expect(runPodToCompletion(MANIFEST, { timeoutMs: 60_000 }))
       .resolves.toEqual({ phase: 'Deleted', logs: '' })
     expect(Date.now() - start).toBeLessThan(5_000)
     expect(mockGetJson).toHaveBeenCalledTimes(1)
-    // The cleanup delete still runs.
     expect(mockRetry.mock.calls.map((c) => c[0]).at(-1)).toEqual(
       ['delete', 'pod', 'yaac-oneshot', '-n', 'test-ns', '--ignore-not-found'])
   })
@@ -490,7 +484,6 @@ describe('runPodToCompletion', () => {
     mockGetJson.mockResolvedValue({ status: { phase: 'Pending' } })
     const { phase } = await runPodToCompletion(MANIFEST, { timeoutMs: 5, pollMs: 1 })
     expect(phase).toBe('Pending')
-    // The pod is still cleaned up.
     expect(mockRetry.mock.calls.map((c) => c[0]).at(-1)).toEqual(
       ['delete', 'pod', 'yaac-oneshot', '-n', 'test-ns', '--ignore-not-found'])
   })
@@ -506,7 +499,6 @@ describe('runPodToCompletion', () => {
     expect(apply).toHaveBeenCalledWith(MANIFEST)
     expect(kubectl).toHaveBeenCalledWith(
       ['delete', 'pod', 'yaac-oneshot', '-n', 'test-ns', '--ignore-not-found'])
-    // The module-level defaults stay untouched.
     expect(mockApply).not.toHaveBeenCalled()
     expect(mockRetry).not.toHaveBeenCalled()
   })
@@ -525,7 +517,7 @@ describe('runPodToCompletion', () => {
     mockApply.mockRejectedValue(new Error('admission denied'))
     await expect(runPodToCompletion(MANIFEST, { timeoutMs: 5_000 }))
       .rejects.toThrow('admission denied')
-    // Delete-stray + cleanup delete around the failed apply.
+    // Stray delete and cleanup delete around the failed apply.
     expect(mockRetry.mock.calls.filter((c) => c[0][0] === 'delete')).toHaveLength(2)
   })
 })

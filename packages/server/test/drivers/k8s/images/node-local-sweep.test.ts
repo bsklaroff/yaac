@@ -1,7 +1,6 @@
 /**
- * The node-local orphan sweep, through its one barrel entry. The POD is
- * what the server hands the cluster; the SCRIPT is what decides what goes,
- * so it is run for real against a tree laid out the way a node's is.
+ * The node-local orphan sweep. The pod manifest is asserted, and the script
+ * that decides what to delete is run for real against a node-like tree.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { execFile } from 'node:child_process'
@@ -77,9 +76,8 @@ beforeEach(() => {
 
 describe('reapNodeLocal', () => {
   it('runs one root pod per node over the install\'s node tree, with the live set as argv', async () => {
-    // A pod started under the slug naming still mounts `projects/demo`,
-    // which is what keeps that tree until the pod stops; a volume outside
-    // the node-local tree names nothing.
+    // A pod mounting the slug-named `projects/demo` keeps that tree alive;
+    // a volume outside the node-local tree is ignored.
     stageNodes(['n1', 'n2'], [
       '/var/lib/yaac/node/ddh16/projects/demo/.cached-packages',
       `/var/lib/yaac/node/ddh16/shared-images/${LIVE}/gen-1`,
@@ -117,8 +115,7 @@ describe('reapNodeLocal', () => {
   it('first deletes the sweep pods a previous server life left behind, by this install\'s labels', async () => {
     stageNodes(['n1'])
     await reapNodeLocal(NOTHING)
-    // runPodToCompletion deletes each finished pod by name; the stray
-    // delete is the one by label, and it comes before any pod is applied.
+    // The label delete sweeps leftover pods before any pod is applied.
     const strays = mockWithRetry.mock.calls
       .map(([args], i) => ({ args, order: mockWithRetry.mock.invocationCallOrder[i] }))
       .filter(({ args }) => args[0] === 'delete' && args.includes('-l'))
@@ -171,7 +168,7 @@ describe('reapNodeLocal', () => {
       return stdout
     }
 
-    /** Stamp a directory stale AFTER its contents are seeded (seeding bumps it). */
+    /** Mark a directory stale; call after seeding, which bumps its mtime. */
     const stale = (rel: string): Promise<void> => fs.utimes(path.join(root, rel), STALE, STALE)
 
     it('keeps live and mounted project trees, removes the rest whole, and honours the cutoff', async () => {
@@ -216,8 +213,8 @@ describe('reapNodeLocal', () => {
     })
 
     it('never walks through a symlink a pod planted, at any level', async () => {
-      // A pod can turn any pod-writable directory of the tree into a link;
-      // the sweep runs as root, so following one is an rm -rf of its target.
+      // A pod can replace a writable directory with a symlink, and the
+      // sweep runs as root, so following it would delete the target.
       const victim = await seed('victim/precious')
       await fs.mkdir(path.join(root, 'projects'), { recursive: true })
       await fs.symlink(path.join(root, 'victim'), path.join(root, 'projects/evil'))
@@ -230,8 +227,7 @@ describe('reapNodeLocal', () => {
       await fs.symlink(path.join(root, 'victim'), path.join(root, 'shared-images/evil'))
 
       const future = Math.floor(Date.now() / 1000) + 60
-      // `evil` is not a live project either: a link in the tree is skipped
-      // whole, never followed and never taken for a tree to remove.
+      // `evil` is not live either, but a symlink is skipped entirely.
       const out = await run(['demo', 'other'], [], future)
 
       await expect(fs.access(victim)).resolves.toBeUndefined()

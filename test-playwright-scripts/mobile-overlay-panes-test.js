@@ -1,34 +1,24 @@
 /*
  * Verifies the full-screen overlays (Skills, Stopped workspaces) on a phone.
+ * On desktop they show a list beside a detail pane; below the breakpoint
+ * MasterDetail shows one at a time, with a back chevron from the detail.
  *
- * All of them are desktop master/detail: a 20rem list beside a detail pane.
- * At 390px that leaves the detail a few dozen pixels, so below the breakpoint
- * MasterDetail turns the two panes into one screen deep — the list owns the
- * width until a row is tapped, then the detail takes over with a back chevron.
- * Only real layout can prove that; jsdom has none.
+ * Checks at 390x844:
+ *  1. The sidebar's "Stopped workspaces" entry is a finger-sized row, about
+ *     as tall as a workspace row.
+ *  2. In each overlay the list is full width and the detail hidden until a
+ *     row is tapped; then they swap, and back swaps them again. Both stay
+ *     mounted, so the list keeps its scroll offset.
+ *  3. Nothing in an overlay overflows horizontally, and every header control
+ *     is at least 32px.
+ *  4. Settings keeps its add-git-credential row inside the viewport.
+ *  5. At desktop width the overlays still show both panes.
  *
- * Structural checks against the real rendered DOM at 390x844 (iPhone-ish):
- *  1. The sidebar's "Stopped workspaces" entry is a finger-sized row, about as
- *     tall as a workspace row above it (it is the same kind of list item on
- *     touch, not the thin desktop group header).
- *  2. In each overlay: the list is full-bleed and the detail pane is hidden
- *     until a row is tapped; then they swap, and the back chevron swaps them
- *     back. Both panes stay mounted throughout, and the list comes back at the
- *     scroll offset it was left at — that offset surviving `display: none` is
- *     an engine behavior, and it is the point of keeping them mounted.
- *  3. Nothing in an overlay overflows the viewport horizontally, and every
- *     header control (Close, agent picker, branch picker) is a >=32px target.
- *  4. Settings — the other full-screen dialog reachable from a phone — keeps
- *     its add-git-credential row (two inputs + a button) inside the viewport.
+ * Stopped workspaces are stubbed (`/workspace/list-stopped`); skills come
+ * from the real project.
  *
- * Stopped workspaces are stubbed over the network (`/workspace/list-stopped`):
- * this is a layout check, and standing up a real workspace just to delete it
- * costs an image build and a k8s Job. Skills come from the real project.
- *
- * Drives the Vite dev server (`pnpm frontend:dev`, port 1420), which serves
- * live source and proxies /auth,/project,/events,... to the running yaac
- * server, so no rebuild is needed between edits. Loopback needs no
- * credential.
+ * Uses the Vite dev server (`pnpm frontend:dev`, port 1420), which proxies
+ * API calls to the running yaac server, so no rebuild is needed.
  *
  * Run: node test-playwright-scripts/mobile-overlay-panes-test.js
  * (set SCREENSHOT_DIR to capture each overlay; defaults to /tmp/yaac-shots).
@@ -91,8 +81,7 @@ const STOPPED = [
     seen: true,
     agentSessions: [],
   },
-  // Filler: the list has to overflow for the scroll-survival check below to
-  // mean anything.
+  // Enough rows for the list to scroll.
   ...Array.from({ length: 24 }, (_, i) => ({
     workspaceId: `stub-fill-${i}`,
     projectSlug: 'yaac',
@@ -105,8 +94,10 @@ const STOPPED = [
   })),
 ]
 
-/** The two MasterDetail panes of the open dialog: which is displayed, and how
- *  wide. Exactly one may be displayed on a phone, and it must be full-bleed. */
+/**
+ * The open dialog's two MasterDetail panes: which is displayed, and how
+ * wide. On a phone exactly one is displayed, at full width.
+ */
 function panesReport() {
   return () => {
     const popup = document.querySelector('[role="dialog"]')
@@ -132,8 +123,7 @@ function panesReport() {
   }
 }
 
-/** Every interactive control in the open dialog that is smaller than 32px in
- *  either axis — the touch-target floor for a header affordance. */
+/** Interactive controls in the open dialog smaller than 32px in either axis. */
 function smallTargets() {
   return () => {
     const popup = document.querySelector('[role="dialog"]')
@@ -156,8 +146,7 @@ try {
   const page = await ctx.newPage()
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
 
-  // Stub the deleted-workspace list so the entry point and its overlay have
-  // rows to lay out in an environment with no workspaces.
+  // Stub the stopped-workspace list so there are rows to lay out.
   await page.route('**/workspace/list-stopped*', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(STOPPED) }))
   await page.route('**/workspace/*/death-seen*', (route) =>
@@ -227,11 +216,9 @@ try {
       && report.panes[0].display !== 'none',
     JSON.stringify(report.panes?.map((p) => `${p.display} ${p.w}`)))
 
-  // Keeping both panes mounted is only worth anything if the browser really
-  // restores the list's scroll offset across a display:none round trip — an
-  // engine behavior, so assert it rather than assume it. The row is clicked in
-  // page context on purpose: Playwright's tap would scroll it into view first
-  // and move the very offset under test.
+  // Check the browser keeps the list's scroll offset across display:none.
+  // Click in page context, since Playwright's tap would scroll the row into
+  // view and move the offset.
   const scroll = await page.evaluate(() => {
     const list = document.querySelector('[role="dialog"] ul')
     list.scrollTop = 220
@@ -296,8 +283,7 @@ try {
   // ---- 4. settings: the add-credential row fits the width ----
   await page.keyboard.press('Escape')
   await page.waitForTimeout(500)
-  // Settings lives on the projects screen; the workspaces screen we are on is a
-  // separate (inert) layer, so walk back before reaching for it.
+  // Settings is on the projects screen, so go back first.
   await workspacesLayer.getByLabel('Back to projects').tap()
   await page.waitForTimeout(1000)
   await projectsLayer.getByText('Settings', { exact: true }).tap()

@@ -1,19 +1,16 @@
 /*
- * Verifies the frontend styling/features ported from the electron-planning
- * branch onto main:
- *  1. Lifted dark elevated surfaces — --color-surface resolves to #1b1b21
- *     (not the old near-black #141417), so cards/popups read against the base.
- *  2. The wider project rail: the rail column is 64px (w-16) with 40px chips.
- *     (Custom WindowControls only render in Electron; a browser build shows
- *     the rail without them.)
- *  3. The session header's "Changes" button opens the review-diff pane
- *     (SessionChanges accordion) as a workspace leaf; with a clean workspace
- *     it shows the "No changes yet" empty state, with edits it lists files.
+ * Verifies some desktop-oriented frontend styling:
+ *  1. Dark elevated surfaces: --color-surface resolves to #1b1b21, so cards
+ *     and popups stand out from the base.
+ *  2. The project rail is 64px (w-16) wide with 40px chips. (WindowControls
+ *     render only in Electron.)
+ *  3. The workspace header's "Changes" button opens the review-diff pane:
+ *     "No changes yet" for a clean checkout, a file list otherwise.
  *
  * Run: node test-playwright-scripts/electron-port-styling-test.js
  * (set SCREENSHOT_DIR to capture the workspace and changes-pane states)
  * Needs a running server serving the built SPA (`yaac server start` with
- * dist/frontend present) and at least one running session for step 3;
+ * dist/frontend present) and at least one running workspace for step 3;
  * reads port from $YAAC_DATA_DIR/.server.lock (or ~/.yaac).
  * (playwright is resolved from the global npm root; browsers live under
  * /opt/playwright-browsers)
@@ -47,8 +44,7 @@ const fail = (msg) => { throw new Error(`FAIL: ${msg}`) }
 
 async function main() {
   const browser = await chromium.launch()
-  // The theme default is 'system'; force dark so the lifted dark palette is
-  // what's under test (headless Chromium otherwise reports light).
+  // Force dark: headless Chromium reports light for the 'system' default.
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' })
   try {
     await page.goto(`${origin}/`)
@@ -62,8 +58,7 @@ async function main() {
     if (surface !== '#1b1b21') fail(`--color-surface is ${surface}, want #1b1b21 (lifted)`)
     console.log('OK surface lift: --color-surface =', surface)
 
-    // 2. Rail width + chip size. The rail is the first column: locate the
-    //    settings gear (always present) and measure its container.
+    // 2. Rail width and chip size, measured via the settings gear's column.
     const rail = page.locator('div.w-16.shrink-0.flex-col').first()
     const railBox = await rail.boundingBox()
     if (!railBox || Math.round(railBox.width) !== 64) {
@@ -76,20 +71,18 @@ async function main() {
     console.log('OK chip size:', chipBox.width, 'x', chipBox.height)
     await shot(page, '01-workspace.png')
 
-    // 3. Changes pane (needs a running session; auto-selected once the
-    //    snapshot lists it).
+    // 3. Changes pane (needs a running workspace, auto-selected).
     const changesBtn = page.locator('button[title="Review changes"]')
     await changesBtn.waitFor({ timeout: 15000 }).catch(() => {})
     if (await changesBtn.count() === 0) {
       console.log('SKIP changes pane: no running session selected')
     } else {
       await changesBtn.click()
-      // The pane is a workspace leaf: either the empty state or the file list.
+      // Either the empty state or the file list.
       await page.waitForSelector(
         'text=/No changes yet|file(s)? *$|diff truncated/',
         { timeout: 15000 },
       ).catch(async () => {
-        // Fall back to the accordion header row (files listed).
         const rows = await page.locator('[aria-expanded]').count()
         if (rows === 0) fail('changes pane rendered neither empty state nor file rows')
       })

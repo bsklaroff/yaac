@@ -13,33 +13,16 @@ import { recordedTranscript } from './agent-session-paths'
 import type { AcpEvent } from '@yaac/shared/acp'
 
 /**
- * One conversation's history, as the events a chat pane renders.
+ * One conversation's history as chat-pane events, for running or stopped
+ * workspaces (it only reads files). The source depends on the mode:
  *
- * This is what makes a stopped workspace readable: the pod is gone, but the
- * conversation is not, and until now the only thing a stopped workspace could
- * show of itself was its founding ask. Nothing here requires a running
- * workspace — it is a resolve and a file read — so the same route answers for
- * a live workspace, which is what a "read this conversation" view of a
- * *running* tui session would want too.
+ *  - `acp`: acpd's record, on a host path teardown keeps.
+ *  - `tui` claude: claude's transcript, translated (`claudeTranscriptAsAcp`).
+ *  - anything else: refused. opencode keeps history inside the container;
+ *    codex and pi formats are not translated.
  *
- * Which file to read is the decision this mediator exists to make, and it
- * turns on the conversation's mode rather than on the driver:
- *
- *  - `acp` — acpd recorded the conversation as it relayed it, on a host path
- *    outside anything teardown prunes. Replaying that record is what a live
- *    pane does on every attach, so a stopped one costs the same read.
- *  - `tui` claude — no record exists, so claude's own transcript is replayed
- *    through the ACP adapter's translation (see `claude-acp-replay`).
- *  - anything else — refused. opencode keeps its history in a sqlite database
- *    inside the container and leaves nothing on the host, so there is no file
- *    to read once the workspace is gone; codex and pi leave transcripts in
- *    formats nothing here translates yet.
- *
- * A conversation whose file is missing answers with an empty history rather
- * than an error: an agent that never spoke has nothing to show, which is not
- * a failure. So does one whose file is not a plain file under its tool's
- * home — both are written from inside the sandbox, which can put a link or a
- * FIFO there, and neither is read through.
+ * A missing file, or one that is not a plain file (the sandbox can plant a
+ * link), gives an empty history.
  */
 export async function getAgentSessionTranscript(
   projectSlug: string,
@@ -64,11 +47,7 @@ export async function getAgentSessionTranscript(
     )
   }
 
-  // The recorded path first, then the conventional one. The second attempt is
-  // not redundant: the registry only stamps a transcript path for a *running*
-  // pod, so a workspace whose pod died before that tick has a link with no
-  // path, and deriving it from the layout is the only way its conversation is
-  // ever read. `stoppedPrompt` falls back for the same reason.
+  // Fall back to the conventional path, as `stoppedPrompt` does.
   const file = recordedTranscript(session)
     ?? await sessionTranscriptPath(projectSlug, workspaceId, session.tool, agentSessionId)
   const raw = await readTranscript(file)
@@ -76,19 +55,10 @@ export async function getAgentSessionTranscript(
 }
 
 /**
- * The largest conversation this will answer with.
- *
- * Reading one is a whole-file read, a projection into events, and a single
- * JSON response, so the peak cost is a few multiples of the file — fine for
- * the conversations people actually read, and a way to stall the server for
- * one that has grown to hundreds of megabytes of tool output. The ceiling is
- * far above any conversation a person would scroll and far below the point
- * where reading it hurts.
- *
- * Refusing beats truncating: a conversation silently missing its first half
- * looks exactly like a conversation that started there. The cap is applied by
- * the read itself, so a file that grows between a size check and the read
- * cannot get past it.
+ * Largest transcript served. Reading costs a few times the file size, so a
+ * huge one could stall the server. Larger files are refused rather than
+ * truncated, which would look like a complete conversation. The read itself
+ * enforces the cap.
  */
 const MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024
 

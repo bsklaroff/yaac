@@ -73,8 +73,7 @@ describe('server config store', () => {
   })
 
   it('reads a file that still carries tokens, and the next write drops them', async () => {
-    // What every install wrote before identity replaced tokens: nothing
-    // needs converting, the field is simply no longer read.
+    // An older install's field, ignored.
     await fs.mkdir(clientLocalRoot(), { recursive: true })
     await fs.writeFile(serverConfigPath(), JSON.stringify({
       url: 'https://a.ts.net', token: 'ta', enabled: true,
@@ -87,8 +86,8 @@ describe('server config store', () => {
   })
 
   it('keeps the install driver when the servers are forgotten', async () => {
-    // `driver` shares this file, and losing it would stop a k8s install
-    // refusing a host `yaac server start` — two writers on one data dir.
+    // Losing `driver` would let a host `yaac server start` run against a
+    // k8s install's data dir.
     await writeServerConfig({
       url: 'https://a.ts.net', enabled: true, saved: [], driver: 'k8s',
     })
@@ -182,8 +181,8 @@ describe('recordInstall', () => {
     await recordInstall({ clusterUid: 'uid-2', byo: undefined })
     expect(await readServerConfig()).toMatchObject({ url: 'https://yaac.tail.ts.net', installId: 'i-1', clusterUid: 'uid-2' })
     expect((await readServerConfig())?.byo).toBeUndefined()
-    // `yaac remote set` and a forget rewrite the selection, never the
-    // install's own record.
+    // `yaac remote set` and forget change the selection, never the
+    // install's record.
     await writeServerConfig(withServerSelected(await readServerConfig(), 'https://other.ts.net'))
     await clearServerConfig()
     expect(await readServerConfig()).toMatchObject({ url: '', driver: 'k8s', installId: 'i-1', clusterUid: 'uid-2', kubeContext: 'prod' })
@@ -243,8 +242,8 @@ describe('probeServer', () => {
   })
 
   it('names a refused identity, in the server\'s words', async () => {
-    // A tagged device reaching a server through tailscale serve: the fix is
-    // on the tailnet, and the server's message is what says so.
+    // A tagged device through tailscale serve: the fix is on the tailnet,
+    // and the server's message says so.
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(jsonResponse({ ok: true, buildId: 'b' }))
       .mockResolvedValueOnce(jsonResponse({

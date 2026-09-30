@@ -2,35 +2,23 @@ import { scanJsonlForward } from './jsonl'
 import type { SandboxFile } from './sandbox-fs'
 
 /**
- * Status classification + first-message lookup for pi (earendil) sessions.
+ * Status classification and first-message lookup for pi.
  *
- * Unlike opencode, pi writes plain JSONL session logs (one
- * `<timestamp>_<sessionId>.jsonl` per session) into the workspace's history,
- * which the host reads directly — no HTTP probe and no DB meta cache. A
- * session's logs are matched by the id pi embeds in the filename (from our
- * `--session-id`; see `transcripts.ts`). The files persist across container
- * teardown, so the live and deleted-session lookups are the same read.
+ * pi writes plain JSONL logs (`<timestamp>_<sessionId>.jsonl`) into the
+ * workspace's history, read directly from the host and matched by the id
+ * from our `--session-id` (see `transcripts.ts`). They persist after the
+ * workspace stops, so live and stopped lookups are the same read.
  *
- * Status is read from the rendered tmux pane (window `yaac:pi.0`). The busy/idle
- * classification runs *inside tmux*: the session's status watcher
- * (`#runtime/status`) subscribes to a format built from
- * `PI_BUSY_MARKERS`, so only the resolved word crosses the control-mode stream
- * — the rendered pane never does, the same path opencode uses.
+ * Status is classified inside tmux, as for opencode, from `PI_BUSY_MARKERS`.
  */
 
 /**
- * Busy markers for a pi pane, as tmux ERE patterns (see `busyStatusFormat` in
- * status-watcher.ts). Any match in the visible pane means `running`; none means
- * `waiting` (a still-booting pane, or one sitting at the prompt).
+ * Busy markers for a pi pane, as tmux EREs (see `busyStatusFormat` in
+ * agent-tools.ts). A match means `running`, none means `waiting`.
  *
- * pi does not document a busy/idle terminal-title signal, so we read the
- * rendered pane: while a turn is in flight pi shows an interrupt hint
- * ("esc to interrupt" / "esc to cancel") and/or a "working"/"thinking" status.
- *
- * tmux-ERE constraints (matched case-insensitively via `#{C/ri:}`): use `(...)`
- * not `(?:...)`, no `{n,}` intervals. NOTE: the exact markers are validated
- * against a live pi session — refine these patterns if pi's footer wording
- * differs.
+ * pi has no documented busy title, so these match what it renders during a
+ * turn: an interrupt hint ("esc to interrupt" / "esc to cancel") and/or a
+ * "working"/"thinking" status. Refine them if pi's footer wording changes.
  */
 export const PI_BUSY_MARKERS: readonly string[] = [
   'esc\\s+(to\\s+)?(interrupt|cancel|stop)',
@@ -65,8 +53,8 @@ function getUserMessageText(entry: PiMessageEntry): string | undefined {
   return undefined
 }
 
-/** One pi log's first user message. Path-based, for a conversation the link
- *  tree already resolved to a file. */
+/** One pi log's first user message, for a conversation already resolved
+ *  to a file. */
 export async function getPiFirstUserMessage(file: SandboxFile): Promise<string | undefined> {
   return scanJsonlForward(file, (entry) => getUserMessageText(entry as PiMessageEntry))
 }

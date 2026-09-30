@@ -5,8 +5,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ServerSnapshot, WorkspaceListEntry } from '@yaac/shared/types'
 import type * as FilesModule from '#lib/files'
 
-// The panes a workspace mounts, reduced to what these cases look at: no
-// xterm, no PTY, and a listing for the explorer.
+// Stub the workspace panes: no xterm, no PTY, and a file listing for the
+// explorer.
 vi.mock('#components/WorkspaceTerminal', () => ({ WorkspaceTerminal: () => <div data-testid="terminal" /> }))
 vi.mock('#lib/terminalsApi', () => ({
   getWorkspaceTerminals: vi.fn(() => Promise.resolve([])),

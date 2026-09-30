@@ -5,52 +5,27 @@ import { killPids, runHost, runHostWithInput, spawnSshAgent } from './host'
 import type { WorkspaceGitCredential } from '#drivers/contract'
 
 /**
- * How a workspace's own git authenticates, on a substrate where the
- * credential it is handed is the real one.
+ * Git auth for a containerless workspace, which must hold the real
+ * credential: there is no proxy to inject it, the checkout's `origin` URL
+ * has no token, and the private HOME hides the user's own git and ssh config
+ * (docs/containerless-driver.md).
  *
- * Nothing here is an optimization: a workspace handed no credential cannot
- * fetch or push at all. The checkout's `origin` is deliberately tokenless —
- * the clone strips it and every server-side call re-injects per invocation —
- * and the private HOME this driver gives a workspace hides the user's own
- * `~/.gitconfig` and `~/.ssh` from it. Under a pod neither matters, because
- * the egress proxy injects the credential in flight; there is no proxy here,
- * so the workspace has to hold it (docs/containerless-driver.md).
+ * HTTPS uses git's credential store in the workspace HOME (the default
+ * `$HOME/.git-credentials`), not a token in the remote URL, and is removed
+ * with the workspace's state dir.
  *
- * HTTPS goes through git's own credential store rather than a token in a
- * remote URL, which would sit in the checkout's config — the agent's to read
- * and to push anywhere it likes — rather than in the workspace's home.
- * The store's default file IS `$HOME/.git-credentials`, so the helper takes
- * no argument — no path has to survive gitconfig parsing and then a shell —
- * and the file is reaped with the workspace, since that HOME sits inside the
- * state dir teardown removes.
+ * SSH gets a per-workspace ssh-agent. The private key is piped to `ssh-add`
+ * and never written to disk; only the public key is, to pin the identity.
+ * Host keys are checked against the project's known_hosts, as in a pod.
  *
- * SSH gets an ssh-agent of its own, one per workspace, holding the key —
- * where a pod gets the proxy's forwarded agent. The key is never written
- * into the workspace: `ssh-add` reads it from this process's stdin, the
- * agent holds it in memory, and what lands in the workspace's home is the
- * PUBLIC half, which `-i` names to pin ssh to that identity under
- * `IdentitiesOnly`. That is what keeps a stopped workspace from leaving a
- * usable private key behind on the host — the agent dies with the workspace,
- * and a state dir that outlives one (a host that rebooted before anybody
- * pressed stop) holds nothing worth having. Host verification still comes
- * from the project-scoped known_hosts the server wrote, so an unknown host
- * key fails here exactly as it does in a pod.
- *
- * Tor is deliberately not routed, unlike the server's own git commands: a
- * containerless workspace has no egress path at all, so its agent's API
- * calls and package installs already go direct, and routing this one hop
- * would suggest a confinement that does not exist.
+ * Unlike the server's own git, this is not routed through Tor: nothing else
+ * the workspace does is.
  */
 
-/** The file `git credential-store` reads and writes by default, relative to
- *  the HOME the workspace runs with. */
+/** `git credential-store`'s default file, relative to HOME. */
 const CREDENTIALS_FILE = '.git-credentials'
 
-/**
- * The username half of an HTTPS credential. Any value works for a PAT, and
- * this is the one the server's own URL injection and the k8s proxy's header
- * both use — so what a workspace sends is what a pod would have sent.
- */
+/** Username for a PAT; the same one the server and the k8s proxy use. */
 const HTTPS_USERNAME = 'x-access-token'
 
 export interface WorkspaceGitAuth {
@@ -58,54 +33,40 @@ export interface WorkspaceGitAuth {
   gitconfig: string[]
   /** Environment the tmux server holds, so every pane inherits it. */
   env: Record<string, string>
-  /** The ssh-agent started for this workspace, when one was — recorded in
-   *  the marker so teardown ends it rather than leaking a process holding a
-   *  private key. */
+  /** The workspace's ssh-agent, recorded so teardown can kill it. */
   agentPid?: number
 }
 
 /**
- * Put the credential where the workspace's git will find it, and report what
- * the launch still has to say in the config and the environment.
- *
- * Safe to re-run: a relaunch after a failed attempt, and a restart after a
- * token was rotated, both land on the current answer.
+ * Put the credential where the workspace's git finds it, and return the
+ * gitconfig and env the launch must add. Idempotent.
  */
 export async function realizeGitAuth(params: {
   home: string
   credential: WorkspaceGitCredential | undefined
   knownHostsFile: string | undefined
-  /** Where this workspace's ssh-agent binds, when it needs one. */
+  /** Where the ssh-agent binds, if one is needed. */
   agentSock: string
-  /** The agent a previous life of this workspace left running, if any — a
-   *  relaunch has to end it, or it goes on holding a key with its socket
-   *  unlinked out from under it. */
+  /** A previous launch's ssh-agent, to kill. */
   priorAgentPid?: number
 }): Promise<WorkspaceGitAuth> {
   const { home, credential, knownHostsFile } = params
   const store = path.join(home, CREDENTIALS_FILE)
 
-  // Cleared before anything is written, which covers three cases with one
-  // line: a project whose remote moved to SSH, a token rotated since the last
-  // launch, and the file's mode — `writeFile` applies one only when it
-  // creates, so re-creating is what keeps a secret at 0600.
+  // Always recreate: the remote may have moved to SSH, the token may have
+  // rotated, and `writeFile` sets the 0600 mode only on create.
   await fs.rm(store, { force: true })
 
   if (credential === undefined) return { gitconfig: [], env: {} }
 
   if (credential.kind === 'https') {
     await fs.writeFile(store, `${credentialStoreLine(credential)}\n`, { mode: 0o600 })
-    // The empty value first is git's own way of resetting the helper list:
-    // git consults every configured helper in order and takes the first
-    // answer, so a host with a system-wide helper (a keychain, a manager)
-    // would otherwise answer for this project with whatever the USER has
-    // stored for that host, which is not the credential yaac resolved.
+    // The empty value clears inherited helpers (e.g. a system keychain) so
+    // only this credential is used.
     return { gitconfig: ['[credential]', '\thelper =', '\thelper = store'], env: {} }
   }
 
-  // Both halves of an SSH remote are decided together by the caller, so one
-  // without the other is a wiring bug rather than a degraded workspace — and
-  // the degraded workspace would be one that skips host verification.
+  // A wiring bug; continuing would skip host key verification.
   if (knownHostsFile === undefined) {
     throw new Error(
       'containerless: an SSH git credential arrived without a known_hosts file',
@@ -123,11 +84,8 @@ export async function realizeGitAuth(params: {
       SSH_AUTH_SOCK: agent.sock,
       GIT_SSH_COMMAND: formatSshCommand([
         'ssh', '-F', '/dev/null',
-        // The PUBLIC key: with `IdentitiesOnly`, ssh reads it to pick which
-        // of the agent's identities to offer, and never needs the private
-        // half on disk. Naming no identity at all would let ssh try every
-        // key the agent holds — including other projects' — against a host
-        // that may lock the account out after a few failures.
+        // With `IdentitiesOnly`, the public key selects which agent
+        // identity ssh offers.
         '-i', agent.publicKeyFile,
         '-o', `UserKnownHostsFile=${knownHostsFile}`,
         '-o', 'StrictHostKeyChecking=yes',
@@ -139,16 +97,8 @@ export async function realizeGitAuth(params: {
 }
 
 /**
- * Start this workspace's ssh-agent and load the key into it.
- *
- * Detached and in its own process group, like the tmux server beside it: the
- * agent has to outlive the create that started it, and must not die with the
- * server. Its pid goes in the workspace marker so teardown can end it and a
- * recovery scan can tell a live one from a stale socket.
- *
- * `ssh-add -` reads the key from stdin, so the private half exists only in
- * two process memories — this one and the agent's — and in neither
- * filesystem.
+ * Start the workspace's ssh-agent (detached, so it outlives the server, like
+ * tmux) and load the key into it from stdin.
  */
 async function startWorkspaceSshAgent(params: {
   home: string
@@ -157,12 +107,11 @@ async function startWorkspaceSshAgent(params: {
   priorAgentPid?: number
 }): Promise<{ sock: string; pid: number; publicKeyFile: string }> {
   const { home, agentSock, privateKey } = params
-  // The previous life's agent, before its socket goes: unlinking alone would
-  // leave it running and unreachable, still holding the key — the one thing
-  // this whole arrangement exists to prevent.
+  // Kill the old agent first; unlinking its socket alone would orphan it
+  // with the key still loaded.
   if (params.priorAgentPid !== undefined) killPids([params.priorAgentPid], 'SIGTERM')
   await fs.mkdir(path.dirname(agentSock), { recursive: true })
-  // A socket left by a previous life: ssh-agent refuses to bind over one.
+  // ssh-agent will not bind over an existing socket.
   await fs.rm(agentSock, { force: true })
 
   const pid = await spawnSshAgent(agentSock)
@@ -176,20 +125,14 @@ async function startWorkspaceSshAgent(params: {
     await fs.writeFile(publicKeyFile, stdout.trimEnd() + '\n', { mode: 0o644 })
     return { sock: agentSock, pid, publicKeyFile }
   } catch (err) {
-    // A half-started agent holding nothing is worse than none: ssh would
-    // find a socket, offer no identity, and fail against the remote instead
-    // of here where the cause is legible.
+    // Do not leave an agent with no key; fail here where the cause is clear.
     killPids([pid], 'SIGTERM')
     await fs.rm(agentSock, { force: true }).catch(() => { /* already gone */ })
     throw err
   }
 }
 
-/**
- * One line of the credential store. Both halves are percent-encoded because
- * git url-decodes them on the way back in, and a token is opaque bytes that
- * may hold a reserved character.
- */
+/** One credential-store line, percent-encoded since git decodes it. */
 function credentialStoreLine(credential: { host: string; token: string }): string {
   const user = encodeURIComponent(HTTPS_USERNAME)
   return `https://${user}:${encodeURIComponent(credential.token)}@${credential.host}`

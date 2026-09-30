@@ -1,33 +1,18 @@
 /**
- * `pnpm watch` — dev loop for working on yaac itself (including inside
- * a yaac-in-yaac workspace). package.json runs this under `tsx watch`,
- * which reruns it whenever a build input changes; each run does
- * `pnpm build:watch` then `yaac server start`, falling back to `yaac
- * server restart` when start refuses (live server on an older
- * buildId), so the running server always matches the CLI's buildId.
- * `build:watch` mirrors `pnpm build` but skips the ~20s vite/rollup
- * frontend build when its inputs are unchanged (see
- * scripts/build-frontend-if-changed.ts), so a server- or CLI-only save
- * rebuilds in a few seconds without a rollup memory spike. The build is
- * deterministic (buildId is a content hash of the code in dist/ —
- * dockerfiles/ and k8s/ are runtime-read data the server picks up
- * without a restart, so saves there rebuild dist but leave the server
- * running), so the initial run after `yaac server start` in
- * initCommands leaves the server untouched instead of bouncing it. A
- * failed build skips the
- * (re)start and the watcher waits for the next change. Ctrl-C stops
- * the watcher but leaves the server running.
+ * `pnpm watch`: the dev loop for working on yaac itself. package.json runs
+ * this under `tsx watch`, which reruns it when a build input changes. Each
+ * run does `pnpm build:watch`, then `yaac server start`, falling back to
+ * `yaac server restart` when start refuses because the live server has an
+ * older buildId. The buildId is a content hash of dist/'s code, so an
+ * unchanged build leaves the server running. `build:watch` skips the
+ * frontend build when its inputs are unchanged
+ * (scripts/build-frontend-if-changed.ts). A failed build skips the restart
+ * and waits for the next change. Ctrl-C stops the watcher but not the
+ * server.
  *
- * Each `pnpm build:watch` re-opts into pnpm's verify-deps-before-run
- * auto-install (pnpm disables it for nested script runs), so a
- * node_modules that drifted from package.json — e.g. after a git pull
- * — heals on the next rerun; pnpm-lock.yaml is watched so a manual
- * `pnpm install` retriggers a rerun too.
- *
- * tsx kills only this wrapper on rerun, so the build is spawned in its
- * own process group and the signal handler forwards the kill to the
- * whole group — a save landing mid-build can't leave an orphaned
- * tsup/vite racing the next build into dist/.
+ * tsx kills only this wrapper on rerun, so the build runs in its own
+ * process group and the signal handler kills the whole group. Otherwise a
+ * save mid-build could leave an orphaned tsup/vite writing into dist/.
  */
 import { spawn, type ChildProcess } from 'node:child_process'
 import path from 'node:path'
@@ -54,13 +39,10 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
 
 function run(cmd: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    // detached: own process group, so the signal handler above can kill
-    // the full tree (pnpm -> sh -> tsup/vite) with one group signal.
-    // pnpm exports verify_deps_before_run=false to script children (its
-    // guard against install->script->install recursion), which would stop
-    // the nested `pnpm build` from auto-installing after package.json
-    // changes; restore `install` so a stale node_modules self-heals. No
-    // recursion risk: we define no install lifecycle scripts that run pnpm.
+    // pnpm sets verify_deps_before_run=false for script children, which
+    // would stop the nested build from auto-installing after package.json
+    // changes. Restoring `install` lets a stale node_modules heal itself;
+    // no install lifecycle script here runs pnpm, so it cannot recurse.
     const child = spawn(cmd, args, {
       cwd: repoRoot,
       stdio: 'inherit',
@@ -86,7 +68,7 @@ try {
   try {
     await run(process.execPath, [cli, 'server', 'start'])
   } catch {
-    // start throws when a live server is on an older buildId — bounce it.
+    // start refuses when the live server is on an older buildId.
     await run(process.execPath, [cli, 'server', 'restart'])
   }
   console.error('[watch] build ok, server in sync — watching for changes')

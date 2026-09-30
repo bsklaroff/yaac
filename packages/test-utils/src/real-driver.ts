@@ -2,14 +2,12 @@ import { setWorkspaceDriver } from '@yaac/server/drivers/driver'
 import { createK8sDriver } from '@yaac/server/drivers/k8s'
 
 /**
- * Register the REAL k8s runtime, for tests that mean to exercise a mediator
- * and the driver together with only the process boundary (kubectl, the
- * stream relay) mocked out.
+ * Register the real k8s driver, for tests that exercise a mediator and the
+ * driver together with only the process boundary mocked.
  *
- * Deliberately its own module: importing it pulls in the whole k8s driver
- * and, with it, `@kubernetes/client-node` — seconds of import time per test
- * file. Tests that only need a mediator want `fake-runtime` instead, which
- * costs nothing.
+ * Its own module because importing it pulls in the k8s driver and
+ * `@kubernetes/client-node`, which take seconds. Tests that only need a
+ * mediator should use `#fake-driver`.
  */
 export function installRealWorkspaceDriver(): void {
   setWorkspaceDriver(createK8sDriver())

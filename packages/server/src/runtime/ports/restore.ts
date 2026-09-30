@@ -25,23 +25,15 @@ async function setWorkspaceStatusRight(
 }
 
 /**
- * Rebuild port forwarders for every live workspace.
+ * Rebuild port forwarders for every live workspace. The forwarder registry
+ * is in-memory, so after a server restart running workspaces would still
+ * advertise ports in their tmux `status-right`. Run once at attach.
  *
- * The forwarder registry is in-memory, so a server restart loses it while
- * the workspaces keep running with a tmux `status-right` still advertising
- * ports that are no longer forwarded. Without this pass the bars lie. Run
- * once as the server attaches, before it serves anything.
+ * Skips (never retries) workspaces that are not running, already have
+ * forwarders, or whose tmux is gone (the reaper's job).
  *
- * Every step is skipped rather than retried: a workspace that isn't running,
- * one that already has forwarders (nothing was lost), and one whose tmux is
- * gone (the reaper's business, not this pass's).
- *
- * Driver-neutral: deciding which ports a workspace should carry is the same
- * over any substrate, and what each is offered at is the driver's answer
- * (`declareForwards`). WHICH ports come from the project's config, so the
- * caller supplies the reader — a plain parameter rather than a `PassContext`
- * accessor, because this runs once as the server attaches and there is no
- * pass to take one from.
+ * The caller supplies the project-config reader, since this runs once at
+ * attach with no `PassContext` to use.
  */
 export async function restoreAllWorkspaceForwarders(
   projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
@@ -77,13 +69,9 @@ export async function restoreAllWorkspaceForwarders(
 }
 
 /**
- * Re-declare the workspace's forwards with the driver and refresh the status
- * bar to match.
- *
- * The declaration is the whole of it: no host port is bound here, because
- * the listener is a client's on the pod substrate and the workspace's own
- * under containerless. What the driver answers is what the bar states and
- * what any client forwarder will bind.
+ * Re-declare the workspace's forwards with the driver and refresh its
+ * status bar. No host port is bound here: the listener is a client's under
+ * k8s and the workspace's own under containerless.
  */
 async function provisionForwarders(
   projectSlug: string,
@@ -93,8 +81,7 @@ async function provisionForwarders(
 ): Promise<void> {
   const declared = workspaceDriver().declareForwards(workspaceId, portForward ?? [])
 
-  // Always refresh status-right — even with no port forwards, the workspace's
-  // existing string may carry stale port info from before the restart that
-  // has to be cleared.
+  // Always refresh, to clear stale port info even when there are no
+  // forwards.
   await setWorkspaceStatusRight(jobName, projectSlug, workspaceId, declared)
 }

@@ -9,9 +9,8 @@ vi.mock('#db/workspace-store', () => ({
   listWorkspaceRows: vi.fn().mockResolvedValue([]),
 }))
 
-// A restart is three substrate calls bracketing two row reads, and the
-// ORDER is what this file pins: resolve, tear the old runtime down, create
-// against the same id, and only then clear the stop record.
+// This file pins the restart order: resolve, tear down the old runtime,
+// create under the same id, and only then clear the stop record.
 vi.mock('#domain/workspaces/cleanup', async (importOriginal) => ({
   ...(await importOriginal<typeof cleanupModule>()),
   teardownForRestart: vi.fn(),
@@ -67,7 +66,7 @@ function row(workspaceId: string, over: Partial<WorkspaceRow> = {}): WorkspaceRo
   }
 }
 
-/** The recorded rows prefix expansion runs over. */
+/** Record workspace rows for prefix expansion. */
 function rows(...ids: string[]): void {
   vi.mocked(listWorkspaceRows).mockResolvedValue(ids.map((id) => row(id)))
 }
@@ -81,9 +80,9 @@ const CREATED: WorkspaceCreateResult = {
 }
 
 /**
- * Snapshot the provisioning registry at the moment the teardown runs — the
- * instant that matters, since that is when the reaper's window opens and a
- * successful restart has retired its row by the time it returns.
+ * Snapshot the provisioning registry when the teardown runs. That is when
+ * the reaper could strike, and a successful restart removes its row before
+ * returning.
  */
 function duringTeardown(): () => ReturnType<typeof listProvisioning> {
   let seen: ReturnType<typeof listProvisioning> = []
@@ -115,8 +114,7 @@ describe('restartWorkspace', () => {
     expect(mockCreate).toHaveBeenCalledWith('proj', expect.objectContaining({
       resume: true, workspaceId: 'sid-1', tool: 'claude',
     }))
-    // The resurrected session must not show a stale death from its previous
-    // life — the record (stoppedAt + death cause) is dropped on success.
+    // On success the stop record (stoppedAt and cause) is cleared.
     expect(mockClearDeleted).toHaveBeenCalledWith('proj', 'sid-1')
   })
 
@@ -126,11 +124,9 @@ describe('restartWorkspace', () => {
     expect(mockClearDeleted).not.toHaveBeenCalled()
   })
 
-  // The reaper interlock. `inFlightWorkspaceIds` is the only thing exempting
-  // a restart from the stale reaper's sweeps, and the reaper's teardown
-  // `rm -rf`s the session dirs the create is about to mount — so being in
-  // the registry by the time the teardown opens that window is the whole
-  // property, not merely being in it eventually.
+  // `inFlightWorkspaceIds` is all that keeps the stale reaper from deleting
+  // the dirs the create is about to mount, so the restart must be registered
+  // before the teardown starts.
   it('is registered as in-flight before the teardown opens the window', async () => {
     const inFlightAtTeardown: string[][] = []
     mockTeardown.mockImplementation(() => {
@@ -141,22 +137,19 @@ describe('restartWorkspace', () => {
     await restartWorkspace('sid-1')
 
     expect(inFlightAtTeardown).toEqual([['sid-1']])
-    // Retired on success — `buildSnapshot` hides a workspace that still has a
-    // row, so a surviving entry renders a permanent "Starting…" placeholder
-    // instead of the workspace that just came up.
+    // Removed on success. `buildSnapshot` hides a workspace that still has a
+    // row, so a leftover would show "Starting…" forever.
     expect(listProvisioning()).toEqual([])
   })
 
-  // The registry is keyed on the RESOLVED id, so a restart addressed by
-  // prefix — the ordinary CLI case — must retire that entry, not one named
-  // by what was typed.
+  // The registry is keyed on the resolved id, so a restart by prefix (the
+  // usual CLI case) must remove that entry.
   it('retires the row for a restart addressed by id prefix', async () => {
     await restartWorkspace('sid')
     expect(listProvisioning()).toEqual([])
   })
 
-  // Same keying again: progress lands on the row of the resolved id, so a
-  // prefix restart's row does not sit at "Starting…" for its whole run.
+  // Progress also goes to the resolved id's row.
   it('mirrors progress onto the row it registered, and to the caller', async () => {
     const seen: string[] = []
     let rowAtCreate = ''
@@ -179,14 +172,13 @@ describe('restartWorkspace', () => {
     expect(listProvisioning()).toEqual([expect.objectContaining({
       workspaceId: 'sid-1', error: 'image pull failed',
     })])
-    // A failed restart stops shielding: its rollback already tore down what
-    // it left, so it has nothing for the reaper to spare.
+    // A failed restart's rollback already tore everything down, so it no
+    // longer shields anything from the reaper.
     expect(inFlightWorkspaceIds()).toEqual([])
   })
 
-  // A caller that registered nothing ahead of this is tracked all the same:
-  // the reaper interlock is the restart's own. Read mid-flight, since a
-  // successful restart retires the row on its way out.
+  // The restart registers itself if the caller did not. Read mid-flight,
+  // since success removes the row.
   it('registers a restart nothing pre-registered, naming the resolved project', async () => {
     const rows = duringTeardown()
 
@@ -197,11 +189,9 @@ describe('restartWorkspace', () => {
     })])
   })
 
-  // The restarting row is all that stands in for the workspace while its
-  // container is recreated — the snapshot hides the workspace itself — so it
-  // has to say which sidebar group it belongs to, or the sidebar draws it at
-  // the top of the list instead of in the section the user filed it under.
-  // Only the row knows that; the pod that answered the resolve does not.
+  // The snapshot hides the workspace while it restarts, so the row must
+  // carry its sidebar group or it is drawn outside its section. Only the
+  // workspace row records the group.
   it('files the row in the group the workspace row records', async () => {
     vi.mocked(findWorkspaceRow).mockResolvedValue(row('sid-1', { groupId: 'grp-1' }))
     const rows = duringTeardown()
@@ -211,10 +201,9 @@ describe('restartWorkspace', () => {
     expect(rows()).toEqual([expect.objectContaining({ workspaceId: 'sid-1', groupId: 'grp-1' })])
   })
 
-  // The route registers up front, and the sidebar sorts oldest-first. Re-registering would take a fresh
-  // insertion order and jump the row to the bottom of a list the user is
-  // already watching — which is what `ensure` avoids. Its MESSAGE is fair
-  // game: progress legitimately overwrites that.
+  // The route registers up front and the sidebar sorts oldest first.
+  // Re-registering would move the row to the bottom, which `ensure` avoids.
+  // Progress may still overwrite the message.
   it('leaves a pre-registered row in its original sidebar position', async () => {
     registerProvisioning({
       workspaceId: 'sid-1', projectSlug: 'proj', tool: 'claude', kind: 'restart',
@@ -230,9 +219,8 @@ describe('restartWorkspace', () => {
   })
 
   it('leaves the record alone when the session cannot be resolved', async () => {
-    // resolveRestartTarget falls back to the recorded row; with no pods and
-    // no row this throws NOT_FOUND — covered here only to pin that the
-    // record is untouched when resolution fails.
+    // With no pod and no row, resolution throws NOT_FOUND; the stop record
+    // must be left alone.
     mockFind.mockResolvedValue(undefined)
     await expect(restartWorkspace('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
     expect(mockClearDeleted).not.toHaveBeenCalled()
@@ -246,8 +234,7 @@ describe('resolveRestartTarget', () => {
     vi.mocked(findWorkspaceRow).mockReset().mockResolvedValue(undefined)
   })
 
-  // The runtime is asked by exact id only: a prefix is expanded over rows
-  // first, and one naming several workspaces never reaches it.
+  // Prefixes are expanded over rows first; the runtime sees only exact ids.
   it('expands a unique prefix before asking the runtime, and refuses an ambiguous one', async () => {
     rows('sid-1', 'other-1')
     mockFind.mockResolvedValue(handle('sid-1'))

@@ -21,44 +21,39 @@ import { serverLog } from '#log'
 import type { AgentMode, PermissionMode } from '@yaac/shared/types'
 
 /**
- * Per-workspace status watchers: one live driver connection per running workspace
- * pod, held open through the proxy relay into the pod's streamd. Together with
- * the pod watcher this replaces every timer-driven status probe.
+ * Per-workspace status watchers: one live agent-driver connection per
+ * running workspace, which (with the substrate watch) replaces timer-driven
+ * status probes.
  *
- * The watcher deliberately knows nothing about *how* a connection observes an
- * agent. It picks a driver from the pod's mode (`#runtime/agents`), feeds the
- * observations into the status store, and owns the one thing both modes need
- * identically: what to do when a connection dies. That split is why adding
- * ACP mode did not add a second respawn loop, a second backoff curve, or a
- * second streamd self-heal — the parts most likely to drift if duplicated.
+ * The watcher does not know how a connection observes an agent. It picks a
+ * driver from the workspace's mode (`#runtime/agents`), feeds observations
+ * into the status store, and owns what both modes share: respawn, backoff
+ * and the stream self-heal.
  *
- * A connection that drops flips the store's health bit and nothing else:
- * status stays sticky, and nothing here ever feeds the stale reaper.
+ * A dropped connection only flips the store's health bit: status stays
+ * sticky, and nothing here feeds the stale reaper.
  */
 
 export interface WatchedWorkspace extends DrivenWorkspace {
-  /** Which driver observes this workspace, from the pod's `yaac.mode` label. */
+  /** Which driver observes this workspace (its recorded mode). */
   mode: AgentMode
 }
 
 export interface StatusWatcherDeps {
   /**
-   * The conversations yaac has already recorded for a workspace. Injected from
-   * `main` rather than read here: the ACP driver needs it to re-address a live
-   * agent, but the lookup is a database read, and `#runtime/status` importing
-   * `#domain/workspaces` would invert the one-directional dependency the two
-   * features are built on (teardown calls in here to evict; never the reverse).
+   * The workspace's recorded conversations, injected from `main`: the ACP
+   * driver needs them, but reading the DB here would make `#runtime/status`
+   * depend on `#domain/workspaces`.
    */
   recordedSessions?: (session: WatchedWorkspace) => Promise<Array<{ handle: string; agentSessionId: string }>>
   /**
-   * A workspace's permission posture, for the same reason and by the same route
-   * as `recordedSessions`: the ACP driver tells its adapter which posture to
-   * run in, and the answer is a row this layer may not read for itself.
+   * The workspace's permission posture, injected like `recordedSessions`;
+   * the ACP driver tells its adapter which posture to use.
    */
   permissionMode?: (session: WatchedWorkspace) => Promise<PermissionMode | undefined>
   /**
-   * Injected for tests — the stream-daemon self-heal (see scheduleRespawn).
-   * Default: the driver's own `reviveStatusStream`.
+   * Test hook for the stream self-heal (see scheduleRespawn). Default: the
+   * driver's `reviveStatusStream`.
    */
   reviveStreamd?: (jobName: string) => Promise<void>
   /** Heartbeat cadence over the open connection. Default 20s. */
@@ -68,7 +63,7 @@ export interface StatusWatcherDeps {
   /** First respawn delay after a connection death; doubles to the max. */
   respawnDelayMs?: number
   maxRespawnDelayMs?: number
-  /** Injected for tests — replaces the driver's real relay dial. */
+  /** Test hook replacing the driver's real dial. */
   dial?: AgentConnectDeps['dial']
   log?: (msg: string) => void
 }
@@ -77,8 +72,8 @@ export class WorkspaceStatusWatcher {
   private connection: { close(): void } | null = null
   private registeredSend: ControlStreamSend | null = null
   private stopped = false
-  /** Bumped whenever a connection is torn down, so a late observation from a
-   *  dead one can never write to the store. */
+  /** Bumped on each teardown so late observations from a dead connection
+   *  are ignored. */
   private generation = 0
   private backoffMs: number
   private respawnTimer: NodeJS.Timeout | null = null
@@ -160,9 +155,9 @@ export class WorkspaceStatusWatcher {
   }
 
   /**
-   * Publish (or retract) the driver's read-only command channel, so unrelated
-   * read-only tmux queries — the webapp's terminal listing — ride the open
-   * connection instead of dialing their own. Only the TUI driver offers one.
+   * Publish (or retract) the driver's read-only command channel so other
+   * read-only tmux queries (the terminal listing) reuse the connection. Only
+   * the TUI driver offers one.
    */
   private setCommandChannel(send: ControlStreamSend | null): void {
     if (this.registeredSend) {
@@ -194,12 +189,11 @@ export class WorkspaceStatusWatcher {
 
   private scheduleRespawn(): void {
     if (this.stopped || this.respawnTimer) return
-    // streamd self-heal: repeated connection deaths mean the daemon itself may
-    // be down (crashed, or a pod predating it) — no relay stream can fix that,
-    // so re-exec it via the one kubectl exec kept for this purpose. Every 3rd
-    // consecutive failure, so a proxy outage (streamd fine) doesn't hammer the
-    // apiserver with boots. Best-effort: if the pod is really dead the reaper
-    // owns it.
+    // Self-heal: repeated deaths may mean the in-workspace stream daemon is
+    // down, which no new connection can fix, so ask the driver to revive it
+    // (`reviveStatusStream`). Only every 3rd consecutive failure, so a proxy
+    // outage does not trigger a storm of revives. Best-effort; a really dead
+    // workspace is the reaper's.
     if (this.consecutiveFailures > 0 && this.consecutiveFailures % 3 === 0) {
       this.log(`[server] status-watcher ${this.session.workspaceId}: re-execing streamd (self-heal)`)
       void this.reviveStreamd(this.session.jobName).catch((err: unknown) => {
@@ -216,10 +210,9 @@ export class WorkspaceStatusWatcher {
 
 /**
  * Keeps one `WorkspaceStatusWatcher` per running, non-prewarmed workspace.
- * `sync` is driven by informer pod deltas: a pod that appears (or a claimed
- * spare that loses its prewarm label) gets a watcher; a pod that disappears
- * has its watcher stopped and its store entry evicted, so a restart reusing
- * the workspace id never sees stale status.
+ * `sync` is driven by the driver's workspace set: a new workspace (or a
+ * newly claimed spare) gets a watcher; a vanished one has its watcher
+ * stopped and its store entry evicted.
  */
 export class StatusWatcherManager {
   private readonly watchers = new Map<string, WorkspaceStatusWatcher>()

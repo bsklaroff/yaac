@@ -1,20 +1,11 @@
 /**
- * The page the window shows when it has no server: the failure, and the
- * picker to fix it.
+ * The page the window shows when no server is reachable: the failure, plus a
+ * server picker. It lives in the shell because the SPA is served by the
+ * server, so without one there is no SPA.
  *
- * Shell-owned rather than part of the SPA, because the SPA is served BY a
- * server — with none reachable there is no app to render a settings pane,
- * and an error dialog over a blank window leaves the user with nothing to
- * click. So this is the whole window until a connection succeeds.
- *
- * Built as an HTML string loaded from a `data:` URL, exactly like the boot
- * splash (`#messages`): no renderer bundle, no build step, nothing to keep
- * in sync with the frontend. The preload runs for this page like any
- * other, so the buttons drive the same `window.yaacServer` bridge the
- * SPA's Server settings section uses, and the same main-process handlers
- * re-validate every payload.
- *
- * Pure — main.ts feeds the result to loadURL.
+ * Like the boot splash (messages.ts), it is an HTML string loaded from a
+ * `data:` URL. The preload still runs, so its buttons use the same
+ * `window.yaacServer` bridge as the SPA's Server settings.
  */
 import type { DesktopServerTargets } from '@yaac/shared/types'
 import type { LaunchError } from '#messages'
@@ -63,8 +54,7 @@ export function connectPageHtml(state: ConnectPageState): string {
         color: light-dark(#222, #ddd);
         font-size: 13px;
       }
-      /* The native title bar is hidden and the SPA's own controls are not
-         here, so the window needs a drag strip and a way to close. */
+      /* The native title bar is hidden, so provide a drag strip and close. */
       .titlebar {
         height: 38px; -webkit-app-region: drag;
         display: flex; align-items: center; justify-content: flex-end;
@@ -149,8 +139,7 @@ export function connectPageHtml(state: ConnectPageState): string {
         function busy(on) {
           buttons.forEach(function (b) { if (b.id !== 'close') b.disabled = on })
         }
-        // A successful connect tears this page down (the shell relands the
-        // window on the server), so "Connecting…" is the last thing it shows.
+        // On success the shell replaces this page, so only failures update it.
         function handle(promise) {
           busy(true)
           setStatus('Connecting…', 'busy')
@@ -166,9 +155,7 @@ export function connectPageHtml(state: ConnectPageState): string {
         document.getElementById('close').addEventListener('click', function () {
           if (window.yaacWindow) window.yaacWindow.close()
         })
-        // The way out of the empty picker: the page cannot see that a
-        // server was started from a terminal after it loaded, so this asks
-        // the shell to resolve again.
+        // Picks up a server started from a terminal after this page loaded.
         document.getElementById('retry').addEventListener('click', function () {
           if (bridge && bridge.retry) handle(bridge.retry())
         })
@@ -197,10 +184,7 @@ export function connectPageHtml(state: ConnectPageState): string {
 </html>`
 }
 
-/**
- * The page as a `data:` URL. Same delivery as the boot splash: the shell
- * ships no renderer assets, so there is no file to load from.
- */
+/** The page as a `data:` URL; the shell ships no renderer assets. */
 export function connectPageUrl(state: ConnectPageState): string {
   return `data:text/html;charset=utf-8,${encodeURIComponent(connectPageHtml(state))}`
 }

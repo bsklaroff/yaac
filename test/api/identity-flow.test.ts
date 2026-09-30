@@ -12,16 +12,14 @@ import {
 import { asTailnet } from '@yaac/test-utils/api'
 
 /**
- * Who the server takes a caller to be, over real sockets
- * (docs/remote-hosting.md): loopback is local, a request `tailscale serve`
- * stamped with a user is that tailnet user, and the two ways a request can
- * arrive with no identity — through serve with no user, or at a tailnet name
- * without serve — are refused with a message saying which. The same four on
- * a WebSocket upgrade, which is where the long-lived sockets are admitted.
+ * How the server identifies a caller, over real sockets
+ * (docs/remote-hosting.md). Loopback is local; a request `tailscale serve`
+ * stamped with a user is that tailnet user; a request through serve with no
+ * user, or at a tailnet name without serve, is refused with a message
+ * saying which. The same four cases are checked on a WebSocket upgrade.
  *
- * ONE server for the file, admitting a tailnet name: nothing here mutates
- * state, and the name is what lets a request reach the identity gate
- * rather than stop at the Host guard.
+ * One server serves the file. It admits a tailnet name, so requests reach
+ * the identity gate instead of stopping at the Host guard.
  */
 const TAILNET_HOST = 'srv.tailnet.ts.net'
 
@@ -93,8 +91,7 @@ describe('identity flow (real server)', () => {
   })
 
   it('admits an extra Host only via YAAC_ALLOWED_HOSTS', async () => {
-    // The Host guard runs first: a name the server was not told about is
-    // refused before identity is asked for, stamped or not.
+    // The Host guard runs before the identity check.
     expect((await whoami(asTailnet('alice@example.com', 'other.ts.net'))).status).toBe(403)
   })
 

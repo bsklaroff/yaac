@@ -1,34 +1,19 @@
 /**
- * Prewarmed-workspace pool: claim logic + the pure planner + the in-memory
- * state shared between the claim path (the create route) and the reconcile
- * loop (`packages/server/src/prewarm-reconcile.ts`).
+ * The prewarmed-workspace pool: claim logic, the pure planner, and the
+ * in-memory state shared with the reconcile step (`./prewarm-reconcile`).
  *
- * A prewarmed spare is a fully-provisioned workspace whose agent is booted
- * and waiting, reported by the runtime as `prewarmed` and hidden from
- * user-facing views. The reconciler keeps one spare per active project; a
- * `workspace create` "claims" one and attaches, skipping all provisioning. A
- * spare's identity is baked at warm time and can't be re-keyed, so a claim
- * returns the spare's own id; the CLI and webapp adopt it.
+ * A spare is a fully provisioned workspace with its agent booted, hidden from
+ * user-facing views. `workspace create` claims one instead of provisioning,
+ * and gets the spare's own id (it cannot be changed).
  *
- * A spare is warmed as its project's untouched create — the agent it was last
- * created with, launched with the model, posture and agent mode it last used
- * — so the usual claim hands that agent over as-is. Spares are otherwise
- * tool-agnostic: warm-time provisioning seeds every tool's config and env
- * placeholders, so a claim that asks for something else just retools the
- * spare (agent respawn) instead of falling back to a cold create. Only the
- * agent mode is fixed at warm time. Every claim re-registers the spare's
- * egress from the project's current config, so an allowlist or secret edited
- * since warming applies to it as it would to a cold create.
+ * Spares are warmed with the project's default create settings, but any
+ * spare in the right agent mode can serve a claim: a different tool, model or
+ * permission mode is fixed by respawning the agent (`retoolSpare`), and a
+ * different or moved base branch by `rebranchSpare`. Only the agent mode is
+ * fixed at warm time. Each claim re-registers egress from the current config.
  *
- * Spares are branch-agnostic the same way: one warmed on a different
- * reference branch is re-branched at claim time (`rebranchSpare` — workspace
- * reset + upstream rewrite + window respawns), so any spare serves any
- * branch and a changed project default never invalidates the pool. A spare
- * that keeps its branch goes through the same prep when that branch has moved
- * on origin since it was warmed, so its age never shows as a stale base.
- *
- * The server is a single process (lock-file enforced), so module-level state
- * is sufficient mutual exclusion — no kubernetes optimistic concurrency.
+ * The server is a single process, so module-level state is enough mutual
+ * exclusion.
  */
 import { workspaceDriver } from '#drivers/driver'
 import { cleanupWorkspace, deleteWorkspaceState } from './cleanup'
@@ -61,20 +46,15 @@ import { testEnv } from '@yaac/shared/env'
 import type { RuntimeHandle } from '#drivers/contract'
 
 /**
- * Runtime handles of spares currently being claimed. A claim reserves its
- * target here (synchronously, before any await) so a concurrent claim can't
- * grab the same spare and the reconciler never reaps one out from under a
- * claim.
+ * Job names of spares being claimed. Reserved synchronously so concurrent
+ * claims cannot take the same spare and the reconciler does not reap it.
  */
 export const claiming = new Set<string>()
 
 /**
- * In-flight prewarm spawns, keyed by the spare's workspace id → projectSlug.
- * `createWorkspace` only launches near the very end, so a spawn is invisible
- * to the runtime's own listing for seconds; counting it here stops
- * successive ticks from stampeding duplicate spares. Keyed by id because a
- * spawn's pod, once listed, is still its create's until the create settles:
- * a reap then would kill the pod under a create that retries it.
+ * In-flight spawns, workspace id → projectSlug. A spawn is not listed by the
+ * runtime for seconds, so this stops ticks from spawning duplicates. Its pod
+ * is also never reaped while the create is still running.
  */
 export const inFlight = new Map<string, string>()
 
@@ -112,29 +92,18 @@ export interface PrewarmState {
 }
 
 /**
- * Pure planner: given the current workspaces and the desired pool size,
- * decide which spares to spawn and which to reap. No side effects (mirrors
- * `classifyWorkspaces`) so the policy is unit-testable without a runtime.
- * What a spawned spare runs is decided at spawn time, not here.
+ * Pure planner: which spares to spawn and reap, given the workspaces and the
+ * pool size.
  *
- * - "claimed" = running, non-prewarmed workspaces (the real user workspaces).
- * - "spares" = prewarmed workspaces (any state, so a still-starting spare
- *   counts), minus any currently being claimed or still being spawned —
- *   neither is ever reaped. An in-flight spawn counts toward the pool
- *   whether or not its pod is listed yet.
- * - A project with ≥1 claimed workspace wants `poolSize` spares: spawn to fill
- *   and reap genuine excess. A spare warmed with a different agent, model or
- *   posture than the project now uses is still claimable — its agent is
- *   respawned at claim time — so it counts toward the pool and is never
- *   reaped for that.
- * - A spare in `stale` is reaped and does not count: it was warmed in the
- *   other agent mode than the project's creates now ask for, and a claim
- *   cannot convert it (see `tryClaimPrewarmed`), so left in place it would
- *   fill the pool with a spare nothing takes.
- * - A project with 0 claimed workspaces drains all its spares — unless one of
- *   its workspaces is provisioning. A restart takes its pod down before the
- *   new one runs, and the project is not idle for that gap: draining there
- *   would tear the spare down only to warm another once the restart is up.
+ * - Spares being claimed or spawned are never reaped; in-flight spawns count
+ *   toward the pool even before their pod is listed.
+ * - A project with a running user workspace gets `poolSize` spares: spawn to
+ *   fill, reap the oldest excess. A different tool, model or permission mode
+ *   does not make a spare stale (a claim can retool it).
+ * - Spares in `stale` (wrong agent mode, which a claim cannot convert) are
+ *   reaped and do not count.
+ * - A project with no running user workspace loses all its spares, unless a
+ *   workspace is provisioning (e.g. mid-restart).
  */
 export function computePrewarmPlan(
   pods: RuntimeHandle[],
@@ -177,7 +146,7 @@ export function computePrewarmPlan(
       if (!state.provisioning.has(project)) spares.forEach(reap)
       continue
     }
-    // Reap genuine excess (oldest first) — e.g. after the pool size is lowered.
+    // Reap excess, oldest first (e.g. after the pool size is lowered).
     if (spares.length > poolSize) {
       spares.sort((a, b) => a.createdAtMs - b.createdAtMs)
       spares.slice(0, spares.length - poolSize).forEach(reap)
@@ -190,16 +159,8 @@ export function computePrewarmPlan(
 }
 
 /**
- * Resolve the branch a claim must re-branch its spare onto, or null when the
- * spare's baked workspace already matches. Pure — the IO (upstream lookup,
- * default-branch probe) lives in the caller.
- *
- * Both sides fall back to the repo's default branch: a create with no
- * explicit branch wants the *current* default (the spare may have been
- * warmed before origin's default changed), and a spare with no recorded
- * upstream (the write is guaranteed before tmux exists, so this is
- * effectively unreachable for a claimable spare) is treated as warmed from
- * the default.
+ * The branch a claim must re-branch its spare onto, or null if it already
+ * matches. Both sides default to the repo's current default branch.
  */
 export function resolveRebranchTarget(params: {
   requestedBranch: string | undefined
@@ -211,23 +172,20 @@ export function resolveRebranchTarget(params: {
   return desired === spareBranch ? null : desired
 }
 
-/** Fetch the project's origin into its repo. Same e2e fixture escape hatch
- *  as the cold path (pre-populated bare repos, no reachable remote). */
+/** Fetch the project's origin (skipped in e2e, like the cold path). */
 async function fetchSpareOrigin(projectSlug: string): Promise<void> {
   if (testEnv.e2eSkipFetch) return
   await fetchProjectOrigin(projectSlug)
 }
 
-/** How long a claim that keeps its spare's branch waits on its fetch before
- *  handing the spare over on the base it was warmed at instead. */
+/** How long a claim keeping its spare's branch waits for the fetch before
+ *  handing the spare over on its warmed base. */
 const REFRESH_FETCH_WAIT_MS = 5_000
 
 /**
- * The tip a claim that keeps its spare's `branch` should bring the spare up
- * to, or null to hand it over as warmed: when `fetched` did not land within
- * the wait, or the spare's branch is already there. Never throws — a refresh
- * is worth a claim only while it is cheap, and none of this is worth falling
- * back to a cold create over.
+ * The commit to move a spare keeping its `branch` up to, or null to hand it
+ * over as warmed (fetch too slow, or already current). Never throws: a
+ * refresh is only worth it while cheap.
  */
 async function refreshTarget(
   fetched: Promise<void>,
@@ -257,34 +215,26 @@ async function refreshTarget(
 }
 
 /**
- * Try to claim a ready prewarmed spare for `(projectSlug, setup, branch)`.
- * Returns the claimed workspace's result (its own id) or `undefined` to fall
- * through to a full cold create. Never throws on infra failures — those
- * degrade to a cold create. The one exception is a VALIDATION error for a
- * requested branch that doesn't exist on origin: it propagates (before any
- * mutation, so the spare is released untouched) because a cold create is
- * doomed to the same user error.
+ * Try to claim a running spare for this create. Returns the claimed
+ * workspace (with the spare's id), or `undefined` to fall back to a cold
+ * create. Infra failures degrade to a cold create; only a VALIDATION error
+ * for a nonexistent requested branch propagates (before any change), since a
+ * cold create would fail the same way.
  *
- * Any running spare in the setup's agent mode is claimable, one whose agent
- * already matches the setup first: one warmed on a different reference
- * branch — or on one origin has moved since — is re-branched first
- * (`rebranchSpare`), one booted with a different
- * tool, model or posture is retooled (`retoolSpare`). `claimSpare` is the commit point: a crash after it leaves
- * a normal workspace (no orphaned state); a crash before it leaves the spare
- * reusable — except once re-branch/retool mutations have started, when a
- * failed spare is tainted (workspace, registration, and window names may
- * disagree with what it declares) and is reaped instead of released.
+ * Spares in the setup's agent mode qualify, preferring one whose agent
+ * already matches. A spare is re-branched (`rebranchSpare`) or retooled
+ * (`retoolSpare`) as needed. `claimSpare` is the commit point: a failure
+ * before it releases the spare, unless it was already modified, in which
+ * case it is reaped.
  */
 export async function tryClaimPrewarmed(
   projectSlug: string,
-  /** The create's own provisioning row, which the claimed spare lists
-   *  under until the create resolves. */
+  /** The create's provisioning entry, which the spare is listed under until
+   *  the create resolves. */
   requestId: string,
-  /** The fully resolved create: which agent, launched how. */
   setup: CreateSetup,
   emit: (message: string) => void,
-  /** What the create asked for beyond the agent: the reference branch, the
-   *  opening message, the title, and the sidebar group to file it under. */
+  /** The base branch, first prompt, title and group. */
   request: { branch?: string; prompt?: string; title?: string; groupId?: string } = {},
 ): Promise<WorkspaceCreateResult | undefined> {
   const { tool } = setup
@@ -295,16 +245,13 @@ export async function tryClaimPrewarmed(
   /** The chosen spare's row as warming left it, for a rollback to restore. */
   let warmed: WorkspaceRow | undefined
   let mutated = false
-  // Whether this claim inserted a workspace row that a failure must undo. A
-  // spare's id is freshly minted and never reused, so the row can only be
-  // this claim's.
+  // Whether this claim wrote the workspace row a failure must undo.
   let recordedRow = false
   try {
     const workspaces = await runtime.list(projectSlug)
     const spares = workspaces.filter((p) => p.prewarmed && p.running)
-    // What each spare's agent was launched with lives on its row (the tool is
-    // also on the handle). Read before any reservation, since a reservation
-    // must not span an await it does not need.
+    // Each spare's launch settings are on its row. Read before reserving, so
+    // a reservation never spans an unneeded await.
     const launched = new Map(await Promise.all(spares.map(async (p) =>
       [p.jobName, await getWorkspaceRow(projectSlug, p.workspaceId).catch(() => undefined)] as const)))
     const matches = (p: RuntimeHandle): boolean => {
@@ -313,21 +260,17 @@ export async function tryClaimPrewarmed(
         && row.permissionMode === setup.permissionMode
     }
     const candidates = spares
-      // A spare in the other mode cannot be converted: an `acp` pod carries a
-      // mount for acpd's records that a `tui` one lacks, and the pod spec is
-      // fixed at warm time. (A row older than the column names no mode, and
-      // is passed over the same way until the pool replaces it.)
+      // The mode cannot be converted: an `acp` pod has a mount a `tui` one
+      // lacks, and the pod spec is fixed.
       .filter((p) => launched.get(p.jobName)?.mode === setup.mode)
-      // Prefer a spare whose booted agent already matches (skips the
-      // respawn), newest first within each group.
+      // Prefer a matching agent (no respawn), then newest.
       .sort((a, b) =>
         Number(matches(b)) - Number(matches(a))
         || b.createdAtMs - a.createdAtMs)
 
     for (const c of candidates) {
       if (claiming.has(c.jobName)) continue
-      // Reserve synchronously (no await between the check and the add) so a
-      // concurrent claim can't pick the same spare.
+      // No await between the check and the add.
       claiming.add(c.jobName)
       reserved = c.jobName
       if (await isTmuxSessionAlive(c)) {
@@ -341,26 +284,16 @@ export async function tryClaimPrewarmed(
     if (!chosen) return undefined
     warmed = launched.get(chosen.jobName)
     const asWarmed = matches(chosen)
-    // Every claim brings its spare to the tip of its base branch, so the
-    // fetch starts now, under the transport gate and row writes below, and
-    // is awaited where the checkout is prepped. Its failure is observed
-    // there; the catch only keeps a claim that gives up first from leaving
-    // it unhandled.
+    // Start the fetch now so it overlaps the steps below; awaited at the
+    // branch prep.
     const fetched = fetchSpareOrigin(projectSlug)
     fetched.catch(() => { /* observed below */ })
 
-    // Every in-pod command below this line — re-branch, retool, the git
-    // identity re-apply — rides the spare's agent transport, so gate on it
-    // once here, before the first mutation. The liveness check above is
-    // nearly always proof enough (it is itself an exec), but its verdict is
-    // cached for seconds and can be short-circuited by transport health, so
-    // it is not a guarantee. This is: it repairs a transport that died
-    // since, and on failure aborts while the spare is still untouched, so
-    // the claim degrades to a cold create instead of burning the spare.
+    // The commands below need the agent transport. The liveness check above
+    // may be cached, so gate here, before any change: on failure the spare
+    // is untouched and the claim falls back to a cold create.
     await runtime.awaitAgentTransport(chosen.jobName, { timeoutMs: 10_000 })
 
-    // Branch prep: the spare's warmed branch is the one its row recorded
-    // when it was warmed.
     const repo = repoDir(projectSlug)
     const spareUpstreamBranch = warmed?.baseBranch ?? null
     const defaultBranch = await getDefaultBranch(repo)
@@ -370,40 +303,24 @@ export async function tryClaimPrewarmed(
       defaultBranch,
     })
 
-    // Claim the spare's row before the spare is touched: from the moment the
-    // claim mutates it, the spare is a workspace, and a workspace still flagged
-    // `spare` is invisible to every path that reads recorded state — and
-    // worse, reapable. A write failure here aborts the claim before any
-    // mutation, so the spare stays a spare and the caller falls back to a
-    // cold create.
-    //
-    // This write is CHECKED, unlike every other one: the startup sweep
-    // deletes a checkout on the strength of the flag, so a flip that failed
-    // silently would leave the workspace the user is about to be handed
-    // looking reapable, and their work would go with it the next time the
-    // server started. `claimSpareWorkspace` throws rather than shrugging,
-    // which is what makes the catch below a fallback rather than a loss.
+    // Clear the row's `spare` flag before changing the spare: a workspace
+    // still flagged `spare` is hidden and reapable, and the startup sweep
+    // would delete the user's checkout. `claimSpareWorkspace` throws on
+    // failure, aborting before any change. It also records the launch
+    // settings, so a restart relaunches the same way.
     const claimedId = chosen.workspaceId
     recordedRow = true
-    // Hidden under the create's row before the flip below lists it, so the
-    // sidebar never shows the spare beside the row still creating it.
+    // List the spare under the create's provisioning entry, so the sidebar
+    // does not show both.
     claimProvisioning(requestId, claimedId)
-    // The claim also records what the workspace runs once it is done — the
-    // spare's own launch when it matched, the respawn's otherwise — so a
-    // restart relaunches it that way. One UPDATE of the row warming
-    // inserted: the id was claimed then, and is handed over now.
     await claimSpareWorkspace(projectSlug, claimedId, {
       permissionMode: setup.permissionMode,
       mode: setup.mode,
       ...(setup.model !== undefined ? { model: setup.model } : {}),
     })
-    // The spare's agent is already running, pinned to its own id — report it
-    // as the workspace's first conversation, since that is where the
-    // workspace's tool and founding ask are read from. The ask is recorded as
-    // a cold create records it, rather than left to be read back once the
-    // agent has it: opencode would only give back a title summarizing it.
-    // Not under acp: that conversation has no id until its handshake mints
-    // one, which is when the registry writes it.
+    // Record the running agent (id = workspace id) as the first
+    // conversation, with the prompt, as a cold create does. Under acp the id
+    // comes from the handshake and the registry records it.
     if (setup.mode === 'tui') {
       await applyWorkspaceEvent({
         type: 'sessions-launched',
@@ -418,26 +335,21 @@ export async function tryClaimPrewarmed(
       })
     }
 
-    // Branch prep happens here, before the hand-over, because only a spare
-    // nobody has prompted yet can have its checkout reset and its agent
-    // restarted for free.
+    // Branch prep must happen before the hand-over, while nobody has
+    // prompted the agent.
     let prep: { branch: string; sha: string } | null = null
     if (rebranchTo !== null) {
-      // A re-branch waits out the fetch however long it takes: the target
-      // ref must exist and be current.
+      // A re-branch needs the fetch, however long it takes.
       await fetched
       if (!(await remoteBranchExists(repo, rebranchTo))) {
-        // Pre-mutation user error: propagate instead of burning the spare
-        // on a cold create that hits the identical VALIDATION failure.
         throw new ServerError('VALIDATION', `branch "${rebranchTo}" not found on origin.`)
       }
       prep = { branch: rebranchTo, sha: await resolveRemoteRef(repo, rebranchTo) }
       emit(`Switching prewarmed session to branch ${rebranchTo}...`)
     } else {
-      // The spare's own branch, as far as origin has moved it since warming.
+      // Keep the branch, but move up to where origin now has it. HEAD is
+      // read inside the workspace; the server never runs git on its clone.
       const warmedBranch = spareUpstreamBranch ?? defaultBranch
-      // What the spare's checkout stands at is read from inside it: its
-      // branch is in its own clone, which the server's git never reads.
       const job = chosen.jobName
       const head = async (): Promise<string> => (await runtime.exec(
         job, `git -C ${runtime.workspacePaths(job).workspaceDir} rev-parse HEAD`,
@@ -448,17 +360,9 @@ export async function tryClaimPrewarmed(
         emit(`Updating prewarmed session to the latest ${warmedBranch}...`)
       }
     }
-    // Re-register, whatever else the claim changes: the registration the
-    // spare was warmed with holds the allowlist, proxied-secret rules and
-    // remote of that moment, and a project edited since must reach a claimed
-    // spare exactly as it would a cold create — a revoked host must not be
-    // reachable (the proxy drops the tunnels it no longer admits), nor a
-    // newly allowed one stay blocked.
-    // Under the claimed tool, since the proxy gates credential injection on
-    // it; a retool below respawns the agent to match. The config is read
-    // again rather than reused from above: the fetch awaited since can take
-    // seconds, and a persisted allow-host click in that window widens this
-    // spare's registration, which a stale config would then overwrite.
+    // Re-register from the current config (allowlist, secrets, remote), under
+    // the claimed tool, so project edits since warming apply. The config is
+    // read fresh here so an allow-host during the fetch is not overwritten.
     const registration = {
       workspaceId: claimedId,
       projectSlug,
@@ -470,16 +374,13 @@ export async function tryClaimPrewarmed(
           .map(([name, { rule }]) => [name, rule]),
       ),
     }
-    // Under its own tool, a spare left with either registration is still
-    // consistent and can go back to the pool; under another, its registration
-    // stops matching its agent, and a failure from here taints it.
+    // Registering another tool makes the spare inconsistent if we fail.
     if (chosen.tool !== tool) mutated = true
     await runtime.registerWorkspace(registration)
 
     if (prep !== null) {
       mutated = true
-      // The agent read the old checkout at startup, so it is restarted as
-      // it was — unless a retool follows, whose respawn supersedes this one.
+      // Restart the agent on the new checkout, unless a retool follows.
       await rebranchSpare(chosen, prep.branch, prep.sha, asWarmed ? setup : null)
     }
 
@@ -489,34 +390,16 @@ export async function tryClaimPrewarmed(
       await retoolSpare(chosen, setup)
     }
 
-    // Commit: the spare stops being one and starts declaring the claimed
-    // tool. From here on it is spent either way — a failure past this point
-    // must reap it, not release it back to a pool it no longer belongs to.
-    // A lost race throws (the spare was already claimed, or is gone), which
-    // takes the same fallback-to-cold-create path as any other failure.
-    //
-    // An acp spare's adapter is told its model at the handshake this commit
-    // lets happen, and what it is told was parked in memory when the spare
-    // was warmed — which a server restart since has lost. Parked again here,
-    // before the watcher can attach, so a spare handed over as warmed still
-    // runs the model its row says.
+    // Commit point: after this, a failure reaps the spare. A lost race
+    // throws and falls back to a cold create. An acp adapter gets its model
+    // at the handshake after this; re-park it, since a server restart may
+    // have lost the warm-time value.
     if (setup.mode === 'acp') parkAcpLaunchModel(tool, claimedId, setup.model)
     await runtime.claimSpare(claimedId, tool)
     mutated = true
 
-    // Re-apply git identity so the server's current setting wins over
-    // whatever the spare was warmed with, because a spare's identity is baked
-    // at WARM time and nothing re-warms the pool: after a user changes their
-    // git identity, the spares already sitting in the pool still hold the old
-    // one. Without this, the next claim per project would commit under the
-    // stale name, durably.
-    //
-    // One exec, and non-fatal. This runs PAST the commit point, against a
-    // workspace that is already whole, over a transport whose readiness gate
-    // may be minutes old by now (a re-branch fetches and resets in between).
-    // A hiccup here would otherwise reap a perfectly good claimed workspace
-    // over a step that is a correction, not a prerequisite — the spare's
-    // warmed-in identity stands and the claim is still good.
+    // Re-apply the current git identity, which may have changed since the
+    // spare was warmed. Non-fatal: the workspace is already usable.
     const claimIdentity = await getGitIdentity()
     if (claimIdentity) {
       await runtime.exec(
@@ -531,8 +414,6 @@ export async function tryClaimPrewarmed(
       })
     }
 
-    // A claim that moved the spare to another branch reports the branch it
-    // ended on, not the one it was warmed from.
     if (rebranchTo !== null) {
       await applyWorkspaceEvent({
         type: 'base-branch-resolved',
@@ -542,11 +423,7 @@ export async function tryClaimPrewarmed(
       })
     }
 
-    // Filed before the create's row stops hiding it, and — like the identity
-    // above — a correction, not a prerequisite. The one way it fails that a
-    // retry would not repeat is the group having been deleted since the route
-    // resolved it, and a cold create would fail on that too, after this claim
-    // had burned a good spare. So the workspace lands ungrouped instead.
+    // Non-fatal (e.g. the group was deleted meanwhile): land ungrouped.
     if (request.groupId !== undefined) {
       await setWorkspaceGroup(projectSlug, claimedId, request.groupId).catch((err: unknown) => {
         console.warn(
@@ -555,16 +432,10 @@ export async function tryClaimPrewarmed(
         )
       })
     }
-    // Before the prompt is handed over, so the title sweep never sees it
-    // untitled.
+    // Before the prompt, so the title sweep never sees it untitled.
     if (request.title !== undefined) await setWorkspaceTitle(projectSlug, claimedId, request.title)
 
     emit('Using prewarmed session...')
-    // An acp spare's adapter has been waiting with no client: the watcher the
-    // claim just unhid it to attaches now, and the handshake mints the
-    // conversation. Handed over exactly as a fresh create's agent is — held
-    // for its row, so the workspace opens on its chat pane rather than acpd's
-    // log, then given the prompt its agent booted without.
     await handOverAgent({
       projectSlug,
       workspaceId: claimedId,
@@ -576,43 +447,15 @@ export async function tryClaimPrewarmed(
     })
     return { workspaceId: chosen.workspaceId, jobName: chosen.jobName, tool, mode: setup.mode, forwardedPorts: [] }
   } catch (err) {
-    // A pre-mutation VALIDATION error (unknown branch) is the user's to
-    // see — a cold create would fail identically, so don't degrade to one.
-    // Decided here but rethrown at the BOTTOM: the row has already been
-    // claimed by this point, and propagating before undoing that would
-    // leave a spare the runtime still reports as pooled but whose row says
-    // it is somebody's workspace — reapable as neither, and eventually a
-    // phantom `never-started` stop pointing at a deleted checkout.
+    // A VALIDATION error before any change propagates, but only after the
+    // row is restored below.
     const propagate = !mutated && err instanceof ServerError && err.code === 'VALIDATION'
-    // Any other failure (runtime unreachable, claim race lost) → cold
-    // create. A spare that failed mid-retool/re-branch is tainted — reap it
-    // so a later claim can't pick up its inconsistent state; the reconciler
-    // warms a fresh one. Keep the reservation (jobNames are never reused,
-    // so the leaked entry is inert) so a concurrent claim can't grab the
-    // dying spare before the teardown lands.
-    //
-    // Everything the spare left goes, in the reap path's order
-    // (prewarm-reconcile.ts): runtime, then checkout, then row. The checkout has
-    // to be removed here at all because the claim cleared the `spare` flag
-    // before it mutated anything, putting these bytes beyond the startup
-    // sweep that collects a dead spare's checkout on the strength of it.
-    //
-    // Each step gates the next on having actually happened, because each one
-    // destroys the evidence the one before it relied on. `cleanupWorkspace`
-    // resolves false when the runtime could not be confirmed gone — and one
-    // still shutting down is still writing to /workspace, so the checkout
-    // stays. `deleteWorkspaceState` resolves false
-    // when an rm failed, and then the row stays: the row is the last name
-    // these bytes have, so erasing it over a failed rm is exactly how a
-    // retryable leftover becomes a permanent one. Whatever is left in either
-    // case keeps its row and reaches the user as an ordinary stopped
-    // workspace, via the stale reaper.
-    //
-    // The row erase is the same one any failed create does: the claim never
-    // completed, so the row describes a workspace that never existed, and a
-    // claim is always a fresh workspace, never a resume. Unawaited as a whole,
-    // so the caller degrades to a cold create immediately — the row can
-    // therefore linger, marked terminating, for as long as the teardown runs.
+    // A spare that was already changed is inconsistent, so reap it (the
+    // reservation is kept so no concurrent claim takes it). As in
+    // prewarm-reconcile.ts: runtime, then checkout (the cleared `spare` flag
+    // hides it from the startup sweep), then row, each only if the previous
+    // step succeeded; what is left surfaces via the stale reaper. Not
+    // awaited, so the caller falls back to a cold create at once.
     if (chosen && mutated) {
       const { jobName, projectSlug: slug, workspaceId: workspaceId } = chosen
       void cleanupWorkspace({ jobName, projectSlug: slug, workspaceId })
@@ -623,13 +466,11 @@ export async function tryClaimPrewarmed(
         .catch(() => { /* best-effort; the stale-session reaper retries */ })
       reserved = undefined
     } else if (warmed && recordedRow) {
-      // An untouched spare is still a perfectly good spare — putting its row
-      // back returns it to the pool rather than stranding a spare whose row no
-      // longer says it is reapable.
+      // An untouched spare goes back to the pool.
       try {
         await restoreSpareWorkspace(warmed)
       } catch {
-        // Best-effort; the row has nothing running behind it either way.
+        // Best-effort.
       }
     }
     // The cold create that follows lists under the create's own id.

@@ -1,18 +1,13 @@
 /**
- * Pure helpers for the proxy's transparent egress listeners.
- *
- * Zero dependencies and no boot-time side effects, so unit tests import
- * this module directly — proxy.ts itself reads required env and starts
- * listeners at module load, which makes it untestable by import. proxy.ts
- * pulls these in via a relative import; the Dockerfile copies both files.
+ * Pure helpers for the proxy's transparent egress listeners. Kept out of
+ * proxy.ts, which starts listeners on import, so tests can import them.
  */
 
 /**
  * Result of peeking at a buffered TLS stream for a ClientHello SNI.
  *  - found:     a complete ClientHello with a server_name extension
- *  - need-more: the bytes so far are a valid prefix — keep buffering
- *  - none:      definitely not parseable as a ClientHello-with-SNI
- *               (not TLS, malformed, or a complete hello without SNI) —
+ *  - need-more: the bytes so far are a valid prefix; keep buffering
+ *  - none:      not TLS, malformed, or a complete hello without SNI;
  *               callers must fail closed
  */
 export type SniPeekResult =
@@ -25,17 +20,14 @@ const MAX_TLS_RECORD = 1 << 14
 
 /**
  * Incrementally parse the start of a TLS stream for the ClientHello's SNI
- * hostname. Handles a ClientHello fragmented across multiple handshake
- * records (legal, if rare). Never throws; every malformed shape maps to
- * `none` so the transparent listener fails closed.
+ * hostname, including a ClientHello split across several handshake records.
+ * Never throws; malformed input returns `none`.
  */
 export function peekClientHelloSni(buf: Buffer): SniPeekResult {
   if (buf.length === 0) return { kind: 'need-more' }
   if (buf[0] !== 0x16) return { kind: 'none' } // not a TLS handshake record
 
-  // Stitch handshake-record payloads together: a ClientHello may span
-  // records, and every record before it completes must itself be a
-  // handshake record.
+  // Join the payloads of consecutive handshake records.
   const fragments: Buffer[] = []
   let offset = 0
   while (offset < buf.length) {
@@ -54,8 +46,7 @@ export function peekClientHelloSni(buf: Buffer): SniPeekResult {
   if (hs.length < 4 + helloLen) return { kind: 'need-more' }
   const hello = hs.subarray(4, 4 + helloLen)
 
-  // From here the ClientHello is complete: any bounds overflow is
-  // malformation, not missing bytes.
+  // The ClientHello is complete, so any overrun below means malformed.
   let p = 2 + 32 // legacy_version + random
   if (hello.length < p + 1) return { kind: 'none' }
   p += 1 + hello[p] // legacy_session_id
@@ -97,20 +88,16 @@ export function peekClientHelloSni(buf: Buffer): SniPeekResult {
   return { kind: 'none' }
 }
 
-/**
- * SNI hostname from a complete buffered ClientHello, or null. Thin
- * convenience over `peekClientHelloSni` for callers that have the whole
- * hello in hand (the listener loop uses the peek form to keep buffering).
- */
+/** SNI hostname from a complete buffered ClientHello, or null. */
 export function parseSniFromClientHello(buf: Buffer): string | null {
   const res = peekClientHelloSni(buf)
   return res.kind === 'found' ? res.serverName : null
 }
 
 /**
- * Normalize a socket remoteAddress for use as an `ipToWorkspace` key:
- * unwrap IPv4-mapped IPv6 (`::ffff:10.0.0.1` → `10.0.0.1`) and map
- * absent/empty addresses to null so callers fail closed.
+ * Normalize a socket remoteAddress for use as a pod-IP lookup key: unwrap
+ * IPv4-mapped IPv6 (`::ffff:10.0.0.1` → `10.0.0.1`) and map an empty address
+ * to null so callers fail closed.
  */
 export function normalizeRemoteAddr(addr: string | null | undefined): string | null {
   if (!addr) return null
@@ -134,12 +121,10 @@ function inCidr(ip: number, base: number, maskBits: number): boolean {
 }
 
 /**
- * True for upstreams Tor cannot (loopback/private/link-local IPs) or
- * should not (in-cluster service names) be asked to dial. Used to guard
- * the USE_TOR paths: the transparent listeners widened what can reach
- * the tunnel/forward code, so internal destinations now go direct
- * instead of erroring inside Tor. Reaching such a host still requires it
- * to be on the workspace's allowlist — this changes routing, not policy.
+ * True for upstreams Tor cannot dial (loopback, private, link-local IPs) or
+ * should not (in-cluster service names). Under USE_TOR these are dialed
+ * directly. This changes routing only; the host must still be on the
+ * workspace's allowlist.
  */
 export function isInternalUpstream(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/\.$/, '')
@@ -172,10 +157,9 @@ export function isInternalUpstream(hostname: string): boolean {
 }
 
 /**
- * Split an HTTP/1.1 Host header into hostname + port. Origin-form
- * requests on the transparent HTTP listener carry the original
- * destination only here, so a malformed value must map to null (fail
- * closed) rather than a guess.
+ * Split an HTTP/1.1 Host header into hostname and port. On the transparent
+ * HTTP listener this header is the only record of the destination, so a
+ * malformed value returns null rather than a guess.
  */
 export function splitHostHeader(
   host: string,

@@ -1,10 +1,7 @@
 /*
- * End-to-end check of the frontend's typed Hono API client
- * (packages/frontend/src/lib/api.ts + the lib/*Api modules) against the real
- * running stack.
- *
- * Drives the running yaac server's webapp in real Chromium and exercises the
- * request paths through the actual compiled client:
+ * Verifies the frontend's typed Hono API client
+ * (packages/frontend/src/lib/api.ts and the lib/*Api modules) against a
+ * running server, through the webapp in real Chromium:
  *   - initial load         → GET /whoami, GET /auth/list, /shortcuts/get
  *   - open Settings        → its batch of GETs
  *   - New workspace → Create→ POST /workspace/create (NDJSON stream)
@@ -67,7 +64,6 @@ async function main() {
   const lock = readServerLock()
   const base = `http://127.0.0.1:${lock.port}`
 
-  // Loopback is local: the app needs no credential to load.
   const appUrl = `${base}/?project=${project}`
 
   const browser = await chromium.launch()
@@ -76,7 +72,7 @@ async function main() {
   const pageErrors = []
   page.on('pageerror', (err) => { pageErrors.push(err.message); console.log(`  [page error] ${err.message}`) })
 
-  // Ground truth: every same-origin API response (method, path, status).
+  // Every same-origin API response (method, path, status).
   const api = []
   page.on('response', (res) => {
     let p
@@ -126,7 +122,7 @@ async function main() {
     // ---- rename (POST /workspace/:id/title) ------------------------------
     let renamed = false
     try {
-      // The workspace header's rename, not the sidebar row's hover twin.
+      // The workspace header's rename, not the sidebar row's.
       await page.locator('[aria-label="Rename workspace"]:not(aside *)').click()
       const field = page.getByLabel('Workspace title')
       await field.fill(`rpc-e2e-${Date.now()}`)

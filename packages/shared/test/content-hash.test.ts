@@ -55,8 +55,7 @@ describe('content-hash', () => {
     })
 
     it('disambiguates rel/hash boundaries via the NUL delimiter', () => {
-      // Without a delimiter these two sets would concatenate to the same
-      // byte stream ("abc"); the NUL separators keep them distinct.
+      // Both concatenate to "abc"; the NUL separators keep them distinct.
       const a = combineHashes([{ rel: 'a', hash: 'bc' }])
       const b = combineHashes([{ rel: 'ab', hash: 'c' }])
       expect(a).not.toBe(b)

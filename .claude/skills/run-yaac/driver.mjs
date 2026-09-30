@@ -9,9 +9,9 @@
  *
  * It talks to whatever server this install's clients are registered with: it
  * reads the selected origin from `server.json` (`<data dir>-client/`, either
- * substrate) and loads it. There is no credential: a loopback origin is this
- * machine's owner, and a tailnet one identifies the device by its tailnet
- * user. Set YAAC_DATA_DIR to drive a different install.
+ * substrate) and loads it. No credential is needed: the server trusts loopback
+ * callers and identifies tailnet callers by their tailnet user. Set
+ * YAAC_DATA_DIR to drive a different install.
  *
  * Playwright is resolved from the global npm root (with a bare require
  * fallback); Chromium binaries live under /opt/playwright-browsers.
@@ -43,8 +43,7 @@ import path from 'node:path'
 
 const require = createRequire(import.meta.url)
 
-// Chromium binaries live under /opt/playwright-browsers in this image; the base
-// env normally sets this, but default it so the driver works from any shell.
+// The base env normally sets this; default it so any shell works.
 if (!process.env.PLAYWRIGHT_BROWSERS_PATH && fs.existsSync('/opt/playwright-browsers')) {
   process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/playwright-browsers'
 }

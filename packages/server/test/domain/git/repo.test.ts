@@ -25,7 +25,6 @@ beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-git-test-'))
   sourceRepo = path.join(tmpDir, 'source')
 
-  // Create a source repo with a commit
   await fs.mkdir(sourceRepo, { recursive: true })
   await git(sourceRepo, ['init'])
   await git(sourceRepo, ['config', 'user.email', 'test@test.com'])
@@ -51,16 +50,15 @@ async function subjectAt(repo: string, ref: string): Promise<string> {
 }
 
 /**
- * A clone whose `.git` holds what a workspace pod can write there, each piece
- * naming a command that leaves a file in `markers` when it runs: a filter
- * driver every path selects, hooks in both the default dir and a
- * `core.hooksPath`, and an fsmonitor; plus an `origin` and a URL rewrite
- * that both lead to a decoy repository holding a `decoy-only` branch.
+ * A clone whose `.git` holds what a workspace pod could plant there, each
+ * piece running a command that leaves a file in `markers`: a filter driver
+ * matching every path, hooks in the default dir and in `core.hooksPath`,
+ * and an fsmonitor. An `origin` and a URL rewrite both point at a decoy repo
+ * with a `decoy-only` branch.
  *
- * Last, the config includes a file git cannot parse, so ANY git process
- * that opens the real config dies — the direct probe of the runner's
- * invariant, including for git's own child processes. It also means plain
- * git cannot read the clone afterwards; assertions go through the verbs.
+ * The config also includes an unparseable file, so any git process
+ * (including git's own children) that opens the real config dies. Plain git
+ * therefore cannot read the clone; assertions go through the verbs.
  */
 interface Hostile {
   clone: string
@@ -76,8 +74,7 @@ async function hostileClone(): Promise<Hostile> {
   const markers = path.join(tmpDir, 'markers')
   await fs.mkdir(markers)
   const evil = path.join(tmpDir, 'evil.sh')
-  // Touches a marker; as a filter, it also passes stdin through so the
-  // content still "works".
+  // Touches a marker; as a filter it also passes stdin through.
   await fs.writeFile(evil, `#!/bin/sh\ntouch "${markers}/$1"\ncase "$1" in filter-*) cat ;; esac\n`)
   await fs.chmod(evil, 0o755)
 
@@ -120,8 +117,8 @@ async function hostileClone(): Promise<Hostile> {
   }
 }
 
-/** Nothing the hostile clone planted ran, its config is the file it was,
- *  and no throwaway git dir outlived its call. */
+/** Assert nothing planted ran, the config is unchanged, and no throwaway
+ *  git dir was left behind. */
 async function expectUntouched(h: Hostile): Promise<void> {
   expect(await fs.readdir(h.markers)).toEqual([])
   expect(await fs.readFile(h.configPath, 'utf8')).toBe(h.configBefore)
@@ -136,8 +133,8 @@ describe('cloneRepo', () => {
 
     const cloned = await fs.readFile(path.join(dest, 'hello.txt'), 'utf8')
     expect(cloned).toBe('hello world\n')
-    // Git run in the main clone without the server's pins must not prune
-    // what the checkouts borrow either.
+    // Even git run without the server's pins must not prune objects the
+    // checkouts borrow.
     expect((await git(dest, ['config', 'gc.pruneExpire'])).trim()).toBe('never')
   })
 })
@@ -149,14 +146,11 @@ describe('getDefaultBranch', () => {
   })
 
   it('gets default branch from origin/HEAD when available', async () => {
-    // Clone the source so we have an "origin" remote
     const cloneDir = path.join(tmpDir, 'clone-default')
     await cloneRepo(sourceRepo, cloneDir, null)
 
-    // Checkout a different branch so HEAD != default
     await git(cloneDir, ['checkout', '-q', '-b', 'feature-branch'])
 
-    // getDefaultBranch should still return the remote default, not 'feature-branch'
     const branch = await getDefaultBranch(cloneDir)
     expect(['main', 'master']).toContain(branch)
   })
@@ -168,13 +162,13 @@ describe('getDefaultBranch', () => {
   })
 
   it('refuses a clone whose config or HEAD it cannot read safely', async () => {
-    // Every verb reads the repository the same way; this one stands in.
+    // Every verb reads the repo the same way; this one stands in for all.
     const cloneDir = path.join(tmpDir, 'clone-refused')
     await cloneRepo(sourceRepo, cloneDir, null)
     const gitDir = path.join(cloneDir, '.git')
     const config = await fs.readFile(path.join(gitDir, 'config'), 'utf8')
 
-    // A symlinked config is refused, not followed to what it names.
+    // A symlinked config is refused, not followed.
     const elsewhere = path.join(tmpDir, 'elsewhere.gitconfig')
     await fs.writeFile(elsewhere, config)
     await fs.rm(path.join(gitDir, 'config'))
@@ -182,7 +176,7 @@ describe('getDefaultBranch', () => {
     await expect(getDefaultBranch(cloneDir)).rejects.toThrow()
     await fs.rm(path.join(gitDir, 'config'))
 
-    // A format, or a ref storage, the throwaway git dir cannot stand in for.
+    // A repo format or ref storage the throwaway git dir cannot mimic.
     for (const extra of ['[core]\n\trepositoryformatversion = 2\n', '[extensions]\n\trefstorage = reftable\n']) {
       await fs.writeFile(path.join(gitDir, 'config'), config + extra)
       await expect(getDefaultBranch(cloneDir)).rejects.toThrow(/unsupported/)
@@ -209,9 +203,8 @@ describe('createCheckout', () => {
     await cloneRepo(sourceRepo, main, null)
     const base = await getDefaultBranch(main)
 
-    // /workspace is a bind of the workspace dir, so the pod's module mount
-    // points are directories ON it before the checkout runs, and the pod may
-    // already hold the dir itself.
+    // /workspace is a bind of the workspace dir, so mount points may already
+    // exist in it, and the pod may hold the dir, before the checkout runs.
     const wtPath = path.join(tmpDir, 'workspace')
     await fs.mkdir(path.join(wtPath, 'frontends', 'node_modules'), { recursive: true })
     const inode = (await fs.stat(wtPath)).ino
@@ -223,11 +216,11 @@ describe('createCheckout', () => {
     expect(await fs.readFile(path.join(wtPath, 'frontends', 'app.txt'), 'utf8')).toBe('app\n')
     expect(await fs.readdir(path.join(wtPath, 'frontends', 'node_modules'))).toEqual([])
     expect((await git(wtPath, ['status', '--porcelain'])).trim()).toBe('')
-    // Borrowed, not copied: one alternates line, the main clone's objects.
+    // Objects are borrowed through one alternates line, not copied.
     expect(await fs.readFile(path.join(wtPath, '.git', 'objects', 'info', 'alternates'), 'utf8'))
       .toBe(`${path.join(main, '.git', 'objects')}\n`)
     expect(await git(wtPath, ['count-objects', '-v'])).toMatch(/^count: 0$[\s\S]*^in-pack: 0$/m)
-    // Its own refs: main's origin/* and tags, and its branch with an upstream.
+    // Its own refs: main's origin/* and tags, and its branch with upstream.
     const refs = (repo: string): Promise<string> =>
       git(repo, ['for-each-ref', '--format=%(objectname) %(refname)', 'refs/remotes/origin', 'refs/tags'])
     expect(await refs(wtPath)).toBe(await refs(main))
@@ -235,13 +228,12 @@ describe('createCheckout', () => {
     expect((await git(wtPath, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim()).toBe('agent/wt')
     expect((await git(wtPath, ['rev-parse', '--abbrev-ref', '@{u}'])).trim()).toBe(`origin/${base}`)
     expect((await git(wtPath, ['config', 'remote.origin.url'])).trim()).toBe(sourceRepo)
-    // Nothing of it is in the main clone.
+    // None of it is in the main clone.
     expect(await git(main, ['branch', '--list', 'agent/*'])).toBe('')
     await expect(fs.access(path.join(main, '.git', 'worktrees'))).rejects.toThrow()
     expect(await fs.readdir(tmpDir)).not.toContain('.staging-workspace')
 
-    // A commit in the clone lands in the clone, and a sibling sees none of
-    // its git state.
+    // A sibling checkout sees none of this clone's git state.
     await git(wtPath, ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '--allow-empty', '-m', 'mine'])
     await git(wtPath, ['config', 'core.hooksPath', '/nowhere'])
     const sibling = path.join(tmpDir, 'sibling')
@@ -257,8 +249,8 @@ describe('createCheckout', () => {
       branch: 'agent/hostile', baseBranch: await getDefaultBranch(h.clone), remoteUrl: sourceRepo,
     })
     expect(await fs.readFile(path.join(wtPath, 'hello.txt'), 'utf8')).toBe('hello world\n')
-    // The clone's config is the server's: plain git reads it, and none of
-    // the main clone's hooks, filters or rewrites came along.
+    // The server writes the checkout's config; none of the main clone's
+    // hooks, filters or rewrites carry over.
     expect((await git(wtPath, ['config', '--list', '--local'])).split('\n').filter(Boolean).map((l) => l.split('=')[0]).sort())
       .toEqual([
         'branch.agent/hostile.merge', 'branch.agent/hostile.remote', 'core.bare', 'core.filemode', 'core.logallrefupdates',
@@ -276,8 +268,8 @@ describe('createCheckout', () => {
     await expect(fs.access(path.join(wtPath, '.git'))).rejects.toThrow()
     expect(await fs.readdir(tmpDir)).not.toContain('.staging-workspace')
 
-    // An earlier attempt got tracked files down but no `.git`: every one is
-    // untracked to a new index, which an unforced checkout would refuse.
+    // A failed attempt left tracked files but no `.git`. They are untracked
+    // to a new index, which an unforced checkout would refuse.
     await fs.mkdir(wtPath, { recursive: true })
     await fs.writeFile(path.join(wtPath, 'hello.txt'), 'half-written\n')
     await createCheckout(main, wtPath, { branch: 'agent/r', baseBranch: await getDefaultBranch(main), remoteUrl: sourceRepo })
@@ -305,21 +297,17 @@ describe('fetchOrigin', () => {
 
     await fetchOrigin(cloneDir, sourceRepo, null)
 
-    // origin/<default> has the new commit even though the local branch hasn't moved
     const defaultBranch = await getDefaultBranch(cloneDir)
     expect(await subjectAt(cloneDir, `origin/${defaultBranch}`)).toBe('second commit')
-    // The deleted branch is gone, while the symbolic origin/HEAD that
-    // getDefaultBranch reads survives the prune.
+    // The symbolic origin/HEAD that getDefaultBranch reads survives the prune.
     expect(await remoteBranchExists(cloneDir, 'merged-and-gone')).toBe(false)
     expect((await git(cloneDir, ['symbolic-ref', 'refs/remotes/origin/HEAD'])).trim())
       .toBe(`refs/remotes/origin/${defaultBranch}`)
   })
 
   it('fetches from the URL it is given, whatever the clone says its origin is', async () => {
-    // The clone's origin and a URL rewrite both lead to the decoy; the
-    // fetch still lands the source's new commit and none of the decoy's
-    // branches, and the reference-transaction hook the ref update would
-    // fire never runs.
+    // The clone's origin and a URL rewrite both point at the decoy, yet the
+    // fetch lands only the source's commit, and no planted hook runs.
     const h = await hostileClone()
     await commitToSource('new-file.txt', 'second commit')
 
@@ -333,9 +321,8 @@ describe('fetchOrigin', () => {
   })
 
   it('concurrent fetches on one repo all succeed', async () => {
-    // Fetches are serialized per repo: unserialized, two fetches moving the
-    // same remote-tracking ref race git's per-ref locks and one dies with
-    // "cannot lock ref 'refs/remotes/origin/<branch>'".
+    // Fetches are serialized per repo; otherwise two fetches race on git's
+    // ref locks and one fails with "cannot lock ref".
     const cloneDir = path.join(tmpDir, 'clone')
     await cloneRepo(sourceRepo, cloneDir, null)
     await commitToSource('new-file.txt', 'second commit')
@@ -353,8 +340,8 @@ describe('fetchOrigin', () => {
 
     const first = fetchOrigin(cloneDir, sourceRepo, null)
     expect(fetchOrigin(cloneDir, sourceRepo, null)).toBe(first)
-    // Once it has started, a caller needs a fetch of its own — one queued
-    // behind it, joined by everyone else who asks before it starts.
+    // Once the first has started, a new caller gets a queued fetch, which
+    // later callers join until it starts.
     await new Promise((r) => setTimeout(r, 0))
     await commitToSource('late.txt', 'late commit')
     const second = fetchOrigin(cloneDir, sourceRepo, null)
@@ -370,9 +357,8 @@ describe('fetchOrigin', () => {
     const cloneDir = path.join(tmpDir, 'clone-token')
     await cloneRepo(sourceRepo, cloneDir, null)
 
-    // No server answers here, so the fetch fails to connect — but not with
-    // "does not appear to be a git repository", which would mean the
-    // refspec was passed as the remote instead of the URL.
+    // The fetch fails to connect, but not with "does not appear to be a git
+    // repository", which would mean the refspec was passed as the remote.
     try {
       await fetchOrigin(cloneDir, 'https://localhost/test/repo', { kind: 'https', token: 'fake-token' })
     } catch (err) {
@@ -412,9 +398,8 @@ describe('listRemoteBranches', () => {
   it('returns names newest-committed first, without HEAD', async () => {
     const defaultBranch = await getDefaultBranch(sourceRepo)
     await git(sourceRepo, ['checkout', '-q', '-b', 'develop'])
-    // A later commit so develop sorts ahead of the default branch. The
-    // committer date needs to actually differ — git timestamps are
-    // second-granular, so pin them explicitly instead of sleeping.
+    // A later commit so develop sorts first. Git timestamps are whole
+    // seconds, so the dates are pinned rather than slept for.
     await fs.writeFile(path.join(sourceRepo, 'dev.txt'), 'dev\n')
     await git(sourceRepo, ['add', '.'])
     await git(sourceRepo, ['commit', '-m', 'develop commit'], {
@@ -438,9 +423,9 @@ describe('listRemoteBranches', () => {
 
 describe('maintainRepo', () => {
   it('packs the main clone and never deletes an object a clone borrows', async () => {
-    // A clone of `feature`, which is then force-pushed upstream and fetched
-    // into the main clone, whose reflogs are expired: the clone's commit is
-    // now unreachable from anything the main clone can see.
+    // Check out `feature`, then force-push it upstream, fetch into the main
+    // clone and expire its reflogs, so the checkout's commit is unreachable
+    // from the main clone.
     const base = await getDefaultBranch(sourceRepo)
     await git(sourceRepo, ['checkout', '-q', '-b', 'feature'])
     await commitToSource('feat.txt', 'feature one')
@@ -465,8 +450,8 @@ describe('maintainRepo', () => {
       for (const k of Object.keys(unpackLimit)) delete process.env[k]
     }
     await git(main, ['reflog', 'expire', '--expire=now', '--expire-unreachable=now', '--all'])
-    // Aged past git's default two-week prune expiry, so only the pins keep
-    // the clone's commit: a seconds-old unreachable object survives any gc.
+    // Age objects past git's two-week prune expiry, so only the pins keep
+    // the commit (a fresh unreachable object survives any gc).
     const aged = new Date('2025-01-01T00:00:00Z')
     const age = async (dir: string): Promise<void> => {
       for (const e of await fs.readdir(dir, { withFileTypes: true })) {
@@ -498,8 +483,8 @@ describe('lastFetchedAtMs', () => {
     const before = Date.now()
     await fetchOrigin(main, sourceRepo, null)
     expect(await lastFetchedAtMs(main, base, gitDir)).toBeGreaterThanOrEqual(before)
-    // A fetch the agent ran itself leaves the checkout's FETCH_HEAD. Whole
-    // seconds, so the filesystem stores it exactly.
+    // A fetch the agent ran leaves FETCH_HEAD in the checkout. Whole
+    // seconds, so the filesystem stores the time exactly.
     const agentFetch = new Date(Math.ceil(Date.now() / 1000) * 1000 + 60_000)
     await fs.writeFile(path.join(gitDir, 'FETCH_HEAD'), '')
     await fs.utimes(path.join(gitDir, 'FETCH_HEAD'), agentFetch, agentFetch)
@@ -522,8 +507,8 @@ describe('listTreeSubdirs', () => {
 
 describe('readBlobAt', () => {
   it('reads the committed bytes, null when there is no such blob', async () => {
-    // The hostile clone's filter would rewrite what a converting read
-    // returned; `readBlobAt` hands back exactly what was committed.
+    // The planted filter would alter a converting read; `readBlobAt` returns
+    // the committed bytes.
     const h = await hostileClone()
     expect(await readBlobAt(h.clone, 'HEAD', 'hello.txt')).toBe('hello world\n')
     expect(await readBlobAt(h.clone, 'HEAD', 'missing.txt')).toBeNull()

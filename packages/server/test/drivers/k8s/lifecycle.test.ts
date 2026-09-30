@@ -1,17 +1,11 @@
 /**
- * The k8s driver's attach and detach — `startK8sDriver`, `stopK8sDriver`,
+ * The k8s driver's attach and detach: `startK8sDriver`, `stopK8sDriver`,
  * `releaseK8sDriver`.
  *
- * What these own is ORDER, and it is the whole reason the driver calls back
- * rather than letting the caller sequence the attach itself: recovery has to
- * run against a usable substrate that nothing is watching yet, and the
- * reconcile loop must not start against one that has not been attached at
- * all. Neither is visible in a type, and the code this covers is what the
- * driver split moved most of.
- *
- * Mocked at the folder barrels — the informer cache, the proxy stream, the
- * bootstrap and the host reapers — so the sequencing runs for real and the
- * assertions land on what the caller is told, in what order.
+ * These tests are about order: recovery must run against a working cluster
+ * that nothing is watching yet, and the reconcile loop must not start before
+ * the attach completes. The informer cache, proxy stream, bootstrap and host
+ * reapers are mocked at their barrels so the sequencing runs for real.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { DriverSinks, RuntimeHandle } from '#drivers/contract'
@@ -93,11 +87,9 @@ describe('startK8sDriver', () => {
   it('recovers against a usable substrate before anything watches it', async () => {
     await startK8sDriver(sinks())
 
-    // The ordering IS the contract: recovery rebuilds what the last server
-    // left running, so it has to see a bootstrapped cluster (after) and must
-    // not race the first deltas (before). `attached` closes the sequence, so
-    // a caller starting the reconcile loop from it never runs against a
-    // substrate that is not up.
+    // Recovery rebuilds what the last server left running, so it needs the
+    // cluster bootstrapped first and must finish before deltas start.
+    // `attached` comes last, so the reconcile loop never starts early.
     expect(order.indexOf('bootstrap')).toBeLessThan(order.indexOf('recover'))
     expect(order.indexOf('recover')).toBeLessThan(order.indexOf('cache.start'))
     expect(order.indexOf('cache.start')).toBeLessThan(order.indexOf('attached'))
@@ -119,11 +111,9 @@ describe('startK8sDriver', () => {
   it('re-renders the node half of the server wall from the live node list', async () => {
     await startK8sDriver(sinks())
 
-    // Install applies this policy too, but the node set is the one input
-    // that changes under a running install: a server pod rescheduled onto
-    // a node added since the last install has to admit that node's kubelet
-    // itself, or it never goes Ready. Part of the bootstrap, so it lands
-    // before recovery.
+    // Install applies this policy too, but nodes can be added later: a server
+    // pod moved to a new node must admit that node's kubelet or never go
+    // Ready. It is part of the bootstrap, so before recovery.
     expect(vi.mocked(kubectlApply)).toHaveBeenCalledWith({
       kind: 'NetworkPolicy', cidrs: ['10.89.0.2/32', '10.89.0.3/32'],
     })
@@ -133,9 +123,9 @@ describe('startK8sDriver', () => {
   it('applies the proxy\'s egress policy on every start, not only on a proxy bootstrap', async () => {
     await startK8sDriver(sinks())
 
-    // The bootstrap is skipped for a proxy that is already current — every
-    // install whose proxy predates the policy — and without it a `*`
-    // allowlist reaches the kind fronting's node port as the server's owner.
+    // The proxy bootstrap is skipped when the proxy is current, so this
+    // policy is applied here too; without it a `*` allowlist could reach the
+    // kind fronting's node port as the server's owner.
     expect(vi.mocked(kubectlApply)).toHaveBeenCalledWith({
       kind: 'NetworkPolicy', proxyEgress: ['10.89.0.2/32', '10.89.0.3/32'],
     })
@@ -145,8 +135,8 @@ describe('startK8sDriver', () => {
     await startK8sDriver(sinks())
     onDeltaHandlers.forEach((fn) => fn('workspace-pods'))
 
-    // The machinery above has no word for a pod, so the boundary mapper runs
-    // here rather than at the receiver.
+    // The layers above know nothing of pods, so pods are mapped to
+    // workspaces here.
     expect(reported.workspaces).toEqual([[{ workspaceId: 'w1' }]])
     expect(reported.triggers).toContain('workspaces')
   })
@@ -157,11 +147,11 @@ describe('startK8sDriver', () => {
     onWorkspaceListChanged(() => { notified += 1 })
     await startK8sDriver(sinks())
 
-    // A blocked host is a badge, never reconcile work.
+    // A blocked host only updates the UI; it is not reconcile work.
     onDeltaHandlers.forEach((fn) => fn('proxy-state'))
     expect(notified).toBe(1)
     expect(reported.triggers).not.toContain('proxy-state')
-    // A rotation the proxy captured is what `credential-adopt` waits for.
+    // `credential-adopt` waits on captured credential rotations.
     onDeltaHandlers.forEach((fn) => fn('proxy-refreshed'))
     expect(reported.triggers).toContain('proxy-refreshed')
     expect(notified).toBe(1)
@@ -173,9 +163,8 @@ describe('startK8sDriver', () => {
 
     await startK8sDriver(sinks())
 
-    // A server with no usable cluster still serves project and auth requests
-    // and says so when a create asks for one — so a failed bootstrap must not
-    // take the attach down with it.
+    // A server without a working cluster still serves projects and auth, so a
+    // failed bootstrap must not fail the attach.
     expect(order).toContain('attached')
   })
 })
@@ -199,9 +188,9 @@ describe('releaseK8sDriver', () => {
     await startK8sDriver(sinks())
     order.length = 0
     stopK8sDriver()
-    // The forwarders and the control tunnel survive the reconcile drain that
-    // runs between the two: a reap tick in that drain still tears its
-    // workspace's forwards down.
+    // Forwarders and the control tunnel survive until release, since a reap
+    // during the reconcile drain between stop and release still tears down
+    // its workspace's forwards.
     expect(order).not.toContain('forwarders.released')
 
     releaseK8sDriver()

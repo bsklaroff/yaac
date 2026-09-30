@@ -1,9 +1,8 @@
 /**
- * The main registry's GC, through its one barrel entry. The registry pod is
- * faked by a temp directory laid out the way registry:2 stores it: every
- * `kubectl exec` into it runs for real against that tree (with the storage
- * root rewritten), except the collect itself, which is only recorded. So
- * the assertions land on which tags survive, not on what a script says.
+ * The main registry's GC. The registry pod is faked by a temp directory laid
+ * out like registry:2's storage. Each `kubectl exec` into it runs for real
+ * against that tree, except `garbage-collect`, which is only recorded, so
+ * the tests assert which tags survive.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { execFile } from 'node:child_process'
@@ -32,9 +31,7 @@ const mockServerLog = vi.hoisted(() => vi.fn())
 vi.mock('#log', () => ({ serverLog: mockServerLog, pipeToServerLog: vi.fn() }))
 
 import { reconcileMainRegistryGc } from '#drivers/k8s/images'
-// Setup values and state-reset/settle hooks, not units under test: the pass
-// is throttled and detached, and the live chain is spoken in the tags the
-// server itself resolves.
+// Setup values and test hooks, not units under test.
 import {
   MAIN_REGISTRY_GC_INTERVAL_MS,
   _mainRegistryGcSettledForTests,
@@ -159,7 +156,7 @@ function stage(f: Fixture = {}): void {
       return { stdout, stderr: '' }
     }
     if (args[0] === 'rollout' && args[1] === 'restart') await f.restart?.()
-    // The node's crictl, as the prune pod's log reports it.
+    // The prune pod's log, as the node's crictl prints it.
     if (args[0] === 'logs') {
       const pod = prunePods().find((p) => p.metadata.name === args[1])
       return { stdout: (pod ? prunedRefs(pod) : []).map((r) => `removed ${r}\n`).join(''), stderr: '' }
@@ -182,15 +179,15 @@ beforeEach(async () => {
   mockGetJson.mockReset()
   mockKubectl.mockReset()
   mockServerLog.mockReset()
-  // The registry answers from the fake tree, so "retired" means gone from it.
+  // The registry answers from the fake tree.
   vi.mocked(registryTagState).mockReset().mockImplementation(async (repoTag: string) => {
     const [repo, tag] = repoTag.split(':')
     return fs.access(path.join(reposDir(), repo, '_manifests/tags', tag))
       .then(() => 'present' as const, () => 'absent' as const)
   })
   _resetMainRegistryGcForTests()
-  // The shared test setup isolates YAAC_K8S_NAMESPACE; the reconcile is
-  // gated to the default install, so opt in unless a test says otherwise.
+  // The GC runs only on the default install; the test setup isolates the
+  // namespace, so opt back in.
   vi.stubEnv('YAAC_K8S_NAMESPACE', 'yaac')
 })
 
@@ -212,19 +209,17 @@ describe('reconcileMainRegistryGc', () => {
       // The project's current chain, older than two newer builds elsewhere.
       [wantedBase, 50], [`yaac-base:${hex('b')}`, 60],
       [`yaac-base:${hex('c')}`, 5], [`yaac-base:${hex('d')}`, 4], [wantedTools, 50],
-      // A stopped server: its Deployment is scaled to zero, so only the
-      // template still names the image `yaac server start` will need.
+      // A stopped server: only its scaled-to-zero Deployment template names
+      // the image `yaac server start` will need.
       [`yaac-server:${hex('e')}`, 90], [`yaac-server:${hex('f')}`, 3], [`yaac-server:${hex('0')}`, 2],
-      // The e2e suite's images: a run resolves them by tag from its global
-      // setup through its last file, with long stretches where no pod or
-      // namespace marks it, so they are the suite's to retire.
+      // The e2e suite's images, which the suite retires itself.
       [`yaac-test-base:${hex('a')}`, 30], [`yaac-test-base:${hex('9')}`, 20], [`yaac-test-base:${hex('8')}`, 10],
-      // Never candidates: mirrors carry no content-hash tag, and a repo
-      // yaac did not build is not yaac's to retire.
+      // Never retired: mirrors have no content-hash tag, and non-yaac repos
+      // are left alone.
       ['yaac-registry2:0123456789ab', 300], ['envoyproxy/envoy:1.34-45d37d848802', 300],
       ['podman-stable:v5.5', 300],
       [`myapp:${hex('7')}`, 300],
-      // Step cache: retired once no build has written it for the cache TTL.
+      // Step cache entries expire after the cache TTL.
       [`${CACHE}:${'a'.repeat(64)}`, 30], [`${CACHE}:${'b'.repeat(64)}`, 1],
     ] as const) await pushTag(tag, age)
     stage({ pods: [ref(`${USER}:${hex('2')}`)], scaledToZero: [ref(`yaac-server:${hex('e')}`)] })
@@ -243,12 +238,10 @@ describe('reconcileMainRegistryGc', () => {
       `${USER}:${hex('2')}`, `${USER}:${hex('4')}`, `${USER}:${hex('5')}`,
       wantedBase, wantedTools,
     ].sort())
-    // Untagging alone frees no disk: the registry only drops blobs when the
-    // collect runs, and only the restart clears the in-memory blob
-    // descriptors that would otherwise make a re-push of a collected digest
-    // write a link with no blob behind it. The collect is bounded inside
-    // the container too — killing the exec client would leave it deleting
-    // blobs under the restart.
+    // Untagging frees no disk until garbage-collect runs, and the restart
+    // clears cached blob descriptors that would break a re-push. The collect
+    // has an in-container timeout, since killing the exec client would not
+    // stop it.
     expect(execs.find((a) => a.includes('garbage-collect'))?.[0]).toBe('timeout')
     expect(restarted()).toBe(true)
     expect(logged('retired 4 stale tag(s) and collected their blobs')).toBe(true)
@@ -259,16 +252,15 @@ describe('reconcileMainRegistryGc', () => {
     const stillRunning = 'c1d2e3f4-a5b6-4c7d-8e9f-a0b1c2d3e4f5'
     const justAdded = 'd2e3f4a5-b6c7-4d8e-9f0a-b1c2d3e4f5a6'
     for (const tag of [
-      // The live project's own repos.
       `yaac-proj-${DEMO.id}:${hex('1')}`, `${USER}:${hex('1')}`, `${CACHE}:${'a'.repeat(64)}`,
-      // A removed project's repos, whatever removal did or did not manage.
+      // A removed project's repos.
       `yaac-proj-${gone}:${hex('1')}`, `yaac-user-${gone}:${hex('1')}`,
       `yaac-buildcache-${gone}:${'a'.repeat(64)}`,
-      // Named before projects had ids: no live id is `demo`.
+      // Named by slug, from before projects had ids.
       `yaac-user-demo:${hex('1')}`, `yaac-buildcache-demo:${'a'.repeat(64)}`,
-      // Removed, but a pod has not stopped pulling its image yet.
+      // Removed, but a pod still uses its image.
       `yaac-proj-${stillRunning}:${hex('1')}`,
-      // The e2e suite's, and yaac's own chain: never this sweep's.
+      // The e2e suite's and yaac's own chain are never swept here.
       `yaac-test-user-${gone}:${hex('1')}`, `yaac-test-proj-${gone}:${hex('1')}`,
       `yaac-tools:${hex('1')}`,
       // A project added after the pass read the live set, pushing now.
@@ -287,8 +279,7 @@ describe('reconcileMainRegistryGc', () => {
       `yaac-tools:${hex('1')}`,
       `yaac-proj-${justAdded}:${hex('1')}`,
     ].sort())
-    // Untagged whole repos free nothing until the collect reclaims their
-    // blobs, so the pass goes on to collect exactly as for retired tags.
+    // Removed repos also need a collect to free their blobs.
     expect(collected()).toBe(true)
     expect(logged('retired 5 stale tag(s) and collected their blobs')).toBe(true)
   })
@@ -298,15 +289,15 @@ describe('reconcileMainRegistryGc', () => {
       [`yaac-tools:${hex('a')}`, 30], [`yaac-tools:${hex('9')}`, 20], [`yaac-tools:${hex('8')}`, 10],
       [`${CACHE}:${'a'.repeat(64)}`, 30],
     ] as const) await pushTag(tag, age)
-    // A Dockerfile.user mid-edit, not yet layered: every project's chain
-    // fails to resolve at once, and with it every project's protection.
+    // A Dockerfile.user mid-edit makes every project's chain fail to
+    // resolve, so no generation is known to be live.
     await fs.mkdir(userBuildDir(), { recursive: true })
     await fs.writeFile(path.join(userBuildDir(), USER_DOCKERFILE), 'FROM ubuntu\n')
     stage()
 
     await runPass()
 
-    // The step cache does not depend on the chains, so it is still swept.
+    // The step cache does not depend on chains, so it is still swept.
     expect(await survivors()).toEqual([
       `yaac-tools:${hex('8')}`, `yaac-tools:${hex('9')}`, `yaac-tools:${hex('a')}`,
     ])
@@ -323,15 +314,15 @@ describe('reconcileMainRegistryGc', () => {
       pods: [ref(`${USER}:${hex('1')}`), ref(`yaac-server:${hex('c')}`)],
       nodes: [
         { name: 'n1', images: [
-          // Retired this pass, plus its digest name — one image, one removal.
+          // Retired this pass; its digest name is the same image.
           [ref(`${USER}:${hex('3')}`), `${registryHost()}/${USER}@sha256:${'3'.repeat(64)}`],
           [ref(gone)],
-          // Retired from the registry but still running: kept.
+          // Still used by a pod: kept.
           [ref(`${USER}:${hex('1')}`)],
           [ref(`yaac-server:${hex('c')}`)],
-          // Still in the registry, so warm for the next create.
+          // Still in the registry: kept warm for the next create.
           [ref(`${USER}:${hex('5')}`)],
-          // Not a yaac generation: a mirror, and the node's own images.
+          // Not yaac generations: a mirror and the node's own image.
           [ref('podman-stable:v5.5')],
           ['docker.io/kindest/local-path-helper:v20241212'],
         ] },
@@ -344,12 +335,12 @@ describe('reconcileMainRegistryGc', () => {
     const pods = prunePods()
     expect(pods.map((p) => p.spec.nodeName)).toEqual(['n1'])
     expect(prunedRefs(pods[0])).toEqual([ref(`${USER}:${hex('3')}`), ref(gone)])
-    // The node's own crictl, reached through PID 1's mount namespace, with
-    // a timeout a multi-GB delete fits in (crictl's default is 2s).
+    // The node's crictl via PID 1's mount namespace, with a timeout long
+    // enough for a multi-GB delete (crictl's default is 2s).
     expect(pods[0].spec.containers[0].command[2]).toContain('nsenter -t 1 -m -- crictl -t 10m rmi')
     expect(pods[0].spec.hostPID).toBe(true)
-    // Node root runs a digest ref, never a registry tag: every tag in the
-    // main registry is writable by a builder pod.
+    // A privileged pod runs a digest-pinned image, never a registry tag,
+    // since builder pods can write registry tags.
     expect(pods[0].spec.containers[0].image).toBe(REGISTRY_UPSTREAM_IMAGE)
     expect(pods[0].spec.containers[0].image).toMatch(/@sha256:[0-9a-f]{64}$/)
     expect(pods[0].spec.containers[0].securityContext).toEqual({ privileged: true, runAsUser: 0 })
@@ -359,8 +350,7 @@ describe('reconcileMainRegistryGc', () => {
 
   it('keeps a node\'s image unless the registry answers that it is gone', async () => {
     stage({ nodes: [{ name: 'n1', images: [[ref(`yaac-old:${hex('6')}`)], [ref(`yaac-slow:${hex('7')}`)]] }] })
-    // A registry that is restarting, slow, or unroutable says nothing about
-    // retirement; only its 404 does.
+    // Only a 404 means retired; a slow or unreachable registry does not.
     vi.mocked(registryTagState).mockImplementation((repoTag: string) =>
       Promise.resolve(repoTag.startsWith('yaac-old:') ? 'absent' : 'unknown'))
 
@@ -377,9 +367,8 @@ describe('reconcileMainRegistryGc', () => {
 
     await runPass()
 
-    // A collect that threw may have deleted blobs already, so this is the
-    // case the restart matters most for — and nothing else would retry it,
-    // since the tags it retired are gone and a later sweep finds none.
+    // A failed collect may have deleted blobs, so the restart is still
+    // needed, and a later sweep would not find anything to redo.
     expect(restarted()).toBe(true)
     expect(logged('collect timed out')).toBe(true)
     expect(logged('collected their blobs')).toBe(false)
@@ -393,15 +382,13 @@ describe('reconcileMainRegistryGc', () => {
 
     await runPass()
 
-    // Marker cleared only after a restart succeeds, so the registry cannot
-    // be left serving stale descriptors with nothing scheduled to fix it.
+    // The marker is cleared only after a successful restart.
     const marker = path.join(storage, '.yaac-collect-started')
     await expect(fs.access(marker)).resolves.toBeUndefined()
     expect(logged('could not be restarted')).toBe(true)
 
-    // The marker outlives the process that wrote it, so a server killed
-    // mid-collect still gets its restart on the next pass — even one that
-    // then stands down for a live push.
+    // The marker is on disk, so the next pass restarts the registry even if
+    // it then skips GC for an in-flight push.
     await startUpload()
     mockKubectl.mockClear()
     stage()
@@ -430,13 +417,12 @@ describe('reconcileMainRegistryGc', () => {
     await pushTag(`yaac-tools:${hex('a')}`, 30)
     await pushTag(`yaac-tools:${hex('9')}`, 20)
     await pushTag(`yaac-tools:${hex('8')}`, 10)
-    // A push starts while the retention pass runs.
     stage({ beforeExec: (argv) => argv[2]?.includes('retired-generations') ? startUpload() : undefined })
 
     await runPass()
 
-    // Standing down here is free: the tags are untagged either way, and
-    // nothing was deleted, so no restart is owed.
+    // The tags are already untagged and no blobs were deleted, so no
+    // restart is needed.
     expect(await survivors()).not.toContain(`yaac-tools:${hex('a')}`)
     expect(collected()).toBe(false)
     expect(restarted()).toBe(false)
@@ -448,7 +434,6 @@ describe('reconcileMainRegistryGc', () => {
 
     await runPass()
 
-    // A pass that found no work must never bounce the registry.
     expect(collected()).toBe(false)
     expect(restarted()).toBe(false)
     expect(mockServerLog).not.toHaveBeenCalled()
@@ -477,9 +462,8 @@ describe('reconcileMainRegistryGc', () => {
     const reachedCollect = new Promise<void>((resolve) => { collectStarted = resolve })
     stage({ collect: () => { collectStarted(); return collecting } })
 
-    // Reconcile passes are serialized, so this must return while the
-    // collect is still running — and a tick arriving meanwhile must not
-    // start a second pass.
+    // Reconcile steps run in sequence, so this returns while the collect
+    // runs, and a tick meanwhile does not start a second pass.
     await reconcileMainRegistryGc([DEMO], () => Promise.resolve({}))
     await reachedCollect
     const before = execs.length

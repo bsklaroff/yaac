@@ -59,11 +59,11 @@ describe('listAuth', () => {
       expect.objectContaining({ tool: 'opencode', kind: 'api-key', opencodeProvider: 'neuralwatt' }),
       expect.objectContaining({ tool: 'pi', kind: 'api-key', piProvider: 'openrouter' }),
     ])
-    // A provider belongs to the tool that has one; it never bleeds across.
+    // Each provider field appears only on its own tool's entry.
     expect(result.toolAuth[2]).toMatchObject({ piProvider: undefined })
     expect(result.toolAuth[3]).toMatchObject({ opencodeProvider: undefined })
-    // The create form's model list is the credential's: a provider-qualified
-    // id for the tools whose credential names a provider.
+    // Models come from the credential; tools whose credential names a
+    // provider get provider-qualified ids.
     expect(result.toolAuth[1].defaultModel).toBe('gpt-6-sol')
     expect(result.toolAuth[3].models.every((m) => m.id.startsWith('openrouter/'))).toBe(true)
     expect(result.toolAuth[3].defaultModel).toMatch(/^openrouter\//)

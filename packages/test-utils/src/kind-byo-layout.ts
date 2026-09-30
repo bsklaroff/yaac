@@ -2,9 +2,8 @@ import os from 'node:os'
 import path from 'node:path'
 
 /**
- * Where kind-byo keeps its install (`pnpm kind-byo`, kind-byo.ts), with no
- * imports beyond node's own: vitest.config.ts reads it to point the
- * `e2e-byo` project at kind-byo, and a config module must stay cheap.
+ * Where kind-byo keeps its install (`pnpm kind-byo`, kind-byo.ts). Imports
+ * only node builtins because vitest.config.ts reads it.
  */
 export interface KindByoLayout {
   /** The install's data dir: the ganesha export, and where both classes land. */
@@ -15,8 +14,7 @@ export interface KindByoLayout {
   kubeconfig: string
   /**
    * Let's Encrypt's staging roots, which kind-byo's tailnet certificates
-   * chain to (see kind-byo.ts `ensureOperator`) — what its clients trust
-   * through `NODE_EXTRA_CA_CERTS`.
+   * chain to; clients trust them via `NODE_EXTRA_CA_CERTS`.
    */
   stagingCa: string
 }
@@ -34,9 +32,7 @@ export function kindByoLayout(): KindByoLayout {
 
 /**
  * Which cluster the k8s tiers run against: the ordinary kind rig, or
- * kind-byo (`YAAC_TEST_BACKEND=byo`, set by the `e2e-byo` project). The
- * harness differs in storage alone, plus the kind-only cases `kindOnly`
- * skips.
+ * kind-byo (`YAAC_TEST_BACKEND=byo`, set by the `e2e-byo` project).
  */
 export function testBackend(): 'kind' | 'byo' {
   return process.env.YAAC_TEST_BACKEND === 'byo' ? 'byo' : 'kind'

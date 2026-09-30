@@ -1,25 +1,16 @@
 /**
- * Process-local registry of the forwards each workspace is offered at,
- * keyed by workspaceId. The server declares them when a workspace starts
- * (see `createWorkspace`) and must drop them when the workspace is deleted
- * or reaped; this module is the handoff point.
+ * In-memory registry of the host ports each workspace's forwards are
+ * offered at, keyed by workspaceId. Declared when a workspace starts,
+ * dropped when it is deleted or reaped.
  *
- * A DECLARATION, not a listener. Nothing here binds a host port: the
- * server runs as a pod, so a port it bound would be on the pod's loopback
- * and reachable from nowhere the user is. The listener lives in a client
- * — `yaac forward`, or the desktop app as the resident forwarder — which
- * reads these mappings off the snapshot, binds them itself, and tunnels
- * each accepted connection back over `/forward/attach`.
+ * Nothing here binds a port. The server runs as a pod, so a port it bound
+ * would be unreachable from the user's machine; a client (`yaac forward`
+ * or the desktop app) binds each mapping and tunnels connections back
+ * (docs/port-forward-tunnel.md). This module also allocates host ports, so
+ * two workspaces asking for 3000 get different answers.
  *
- * That makes this module the ALLOCATOR too. Binding used to disambiguate
- * two workspaces of one project both asking for 3000 — whoever bound
- * first won and the second walked up. With nothing bound, the walk has to
- * read a ledger instead, which is what `allocated` is.
- *
- * A workspace's entry accumulates declarations: the create/restore batch
- * plus any reactive single-port appends (addWorkspaceForwarder), merged so
- * neither can drop the other. The server-restart restore pass guards with
- * hasWorkspaceForwarders before provisioning, so it never double-declares.
+ * A workspace's entry merges the create/restore batch with any single-port
+ * additions (`addWorkspaceForwarder`).
  */
 
 import { k8sWorkspacePaths, podExec } from '#drivers/k8s/substrate'
@@ -28,8 +19,8 @@ import { ServerError } from '@yaac/shared/errors'
 import { buildStatusRight, setStatusRightCmd } from '#lib/status-right'
 import type { PortForwardConfig, PortMapping } from '@yaac/shared/types'
 
-/** Ceiling on live forwards per workspace — bounds a hostile flood of
- *  forward-port actions (and keeps well under streamd's stream cap). */
+/** Cap on forwards per workspace, so a flood of forward-port actions can't
+ *  exhaust host ports or streamd's stream limit. */
 export const MAX_FORWARDS_PER_SESSION = 32
 
 /** Highest host port the walk will climb to before giving up. */
@@ -37,9 +28,8 @@ const MAX_HOST_PORT = 65535
 
 const forwarders = new Map<string, PortMapping[]>()
 
-/** Every host port already promised, across every workspace. Derived
- *  state, recomputed rather than kept in step: the map IS the record, and
- *  a second copy of it is a second thing to get wrong. */
+/** Every host port already promised, across every workspace. Recomputed
+ *  from `forwarders` on each call rather than kept as a second copy. */
 function allocated(): Set<number> {
   const taken = new Set<number>()
   for (const ports of forwarders.values()) {
@@ -49,13 +39,10 @@ function allocated(): Set<number> {
 }
 
 /**
- * The first host port at or above `startPort` nothing else was promised.
- *
- * Only this server's own promises are consulted — what any other process
- * on the user's machine holds is unknowable from inside a pod, and would
- * be the wrong question anyway: the machine that binds is the client's,
- * which may not even be this one. A collision there surfaces where it can
- * be seen, as the client's listener failing to bind.
+ * The first host port at or above `startPort` not yet promised. Only this
+ * server's own promises are checked: the port is bound on the client's
+ * machine, which the server cannot see, so a clash there shows up as the
+ * client failing to bind.
  */
 function allocateHostPort(startPort: number): number {
   const taken = allocated()
@@ -68,10 +55,10 @@ function allocateHostPort(startPort: number): number {
   )
 }
 
-/** Record mappings against a workspace, merging with whatever it already
- *  holds — create's batch can race a reactive append from the forward-port
- *  route (the pod is Running, and its dev servers detectable, well before
- *  create returns), and dropping either side would lose a live offer. */
+/** Record mappings against a workspace, appending to what it already
+ *  holds: create's batch can race a forward-port request, since the pod's
+ *  dev servers are detectable before create returns. Announces the change,
+ *  since `forwardedPorts` reads this registry. */
 function record(workspaceId: string, ports: ReadonlyArray<PortMapping>): void {
   const entry = forwarders.get(workspaceId)
   if (entry) {
@@ -79,20 +66,15 @@ function record(workspaceId: string, ports: ReadonlyArray<PortMapping>): void {
   } else {
     forwarders.set(workspaceId, ports.map(({ containerPort, hostPort }) => ({ containerPort, hostPort })))
   }
-  // This registry is what `forwardedPorts` reads, so it announces its own
-  // changes. The startup restore fires this before any client connects,
-  // where publishing is a no-op.
   notifyWorkspaceListChanged()
 }
 
 /**
- * Declare the forwards a workspace's config asks for, answering the host
- * port each is offered at (see `WorkspaceDriver.declareForwards`).
- *
- * Runs before the workspace launches, because the answer is stamped into
- * the workspace's own tmux status bar — which is also why it allocates
- * rather than merely echoing the config: two workspaces of one project
- * both asking for 3000 must not both be told 3000.
+ * Declare the forwards a workspace's config asks for and return the host
+ * port each is offered at (see `WorkspaceDriver.declareForwards`). Runs
+ * before launch, because the ports are shown in the workspace's tmux
+ * status bar. Each entry is recorded before the next is allocated, so two
+ * entries in one config never share a host port.
  */
 export function declareWorkspaceForwards(
   workspaceId: string,
@@ -101,8 +83,6 @@ export function declareWorkspaceForwards(
   if (forwards.length === 0) return []
   const mappings: PortMapping[] = []
   for (const { containerPort, hostPortStart } of forwards) {
-    // Inside the loop, so two entries of ONE config cannot be handed the
-    // same number: each is recorded before the next is allocated.
     const hostPort = allocateHostPort(hostPortStart)
     const mapping = { containerPort, hostPort }
     mappings.push(mapping)
@@ -112,10 +92,9 @@ export function declareWorkspaceForwards(
 }
 
 /**
- * Host↔container mappings a workspace is offered at, empty when none are
- * declared. Feeds the `forwardedPorts` field of workspace-list entries (and
- * thus the webapp snapshot and every client forwarder) — the registry is
- * the server's only record of which host ports a workspace was promised.
+ * The host-to-container port mappings a workspace is offered at, or empty.
+ * Feeds `forwardedPorts` on workspace-list entries, which the webapp and
+ * every client forwarder read.
  */
 export function getWorkspacePorts(workspaceId: string): PortMapping[] {
   return forwarders.get(workspaceId) ?? []
@@ -123,29 +102,18 @@ export function getWorkspacePorts(workspaceId: string): PortMapping[] {
 
 export function stopWorkspaceForwarders(workspaceId: string): void {
   if (!forwarders.delete(workspaceId)) return
-  // Covers stopAllWorkspaceForwarders too, which runs this per workspace.
   notifyWorkspaceListChanged()
 }
 
-export function hasWorkspaceForwarders(workspaceId: string): boolean {
-  return forwarders.has(workspaceId)
-}
-
-/**
- * Forget every declaration. Called from the server's shutdown handler, and
- * by the api tests between cases — the map outlives any one workspace, so
- * the host ports it has promised stay promised until something says
- * otherwise.
- */
+/** Forget every declaration. Called on server shutdown and by the api
+ *  tests between cases. */
 export function stopAllWorkspaceForwarders(): void {
   for (const workspaceId of [...forwarders.keys()]) {
     stopWorkspaceForwarders(workspaceId)
   }
 }
 
-/** Restate the workspace's bar from the forwards it now holds. The restore
- *  path has its own, over the contract; this one rides the driver's exec
- *  because it is already inside the driver. */
+/** Rewrite the workspace's tmux status-right from its current forwards. */
 async function refreshStatusRight(
   jobName: string,
   projectSlug: string,
@@ -161,12 +129,11 @@ async function refreshStatusRight(
 }
 
 /**
- * Offer ONE additional container port on a running workspace — the reactive
- * path behind the webapp's "forward this port" action, appended to
- * whatever the workspace already holds (creating its registry entry when it
- * has none). Allocates a host port starting at the container port itself
- * and refreshes tmux status-right so the bar matches the live set.
- * Idempotent per container port.
+ * Offer one more container port on a running workspace (the webapp's
+ * "forward this port" action). Allocates a host port starting at the
+ * container port and refreshes the tmux status bar; a failed refresh is
+ * ignored. Idempotent per container port. Allocation and record happen in
+ * one synchronous step, so concurrent requests can't get the same port.
  */
 export async function addWorkspaceForwarder(
   projectSlug: string,
@@ -183,14 +150,9 @@ export async function addWorkspaceForwarder(
     )
   }
 
-  // Allocation and record are one synchronous step, so a concurrent
-  // request for the same port cannot slip between them and be handed the
-  // same host port — the race the bound-socket version had to unwind
-  // afterwards simply cannot start.
   const mapping = { containerPort, hostPort: allocateHostPort(containerPort) }
   record(workspaceId, [mapping])
 
-  // Cosmetic — a failed status-right refresh must not undo a live offer.
   await refreshStatusRight(jobName, projectSlug, workspaceId)
     .catch(() => { /* cosmetic */ })
 

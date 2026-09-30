@@ -1,10 +1,7 @@
 /**
- * The builder-pod entry point that is not reached through a chain build:
- * the leaked-pod reaper (a reconcile step).
- *
- * Everything else in this module — pod manifests, in-pod scripts, build
- * argv, context tar — is exercised through `ensureImage` in
- * build-coordinator.test.ts, where it is actually wired up.
+ * builder-pod's barrel function: the leaked-pod reaper (a reconcile step).
+ * The rest of the module is covered through `ensureImage` in
+ * build-coordinator.test.ts.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
@@ -31,8 +28,7 @@ vi.mock('#drivers/k8s/cluster/cluster-cidrs', () => ({
   resetClusterCidrCache: vi.fn(),
 }))
 
-// The guard's own VAP probe, faked so the builder path under test is not
-// gated on an apiserver.
+// Faked so the builder path does not depend on an apiserver.
 const mockVapAvailable = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/cluster/proxy-apply', async (importOriginal) => ({
   ...(await importOriginal<typeof proxyApplyModule>()),
@@ -55,8 +51,7 @@ vi.mock('#drivers/k8s/container/registry', async (importOriginal) => ({
 }))
 
 import { reconcileBuilderPodGc } from '#drivers/k8s/images'
-// Reap policy constant and the sweep-throttle reset: setup values, not
-// units under test.
+// Setup values and state reset, not units under test.
 import {
   BUILDER_REAP_AGE_MS,
   _resetBuilderReapForTests,
@@ -110,9 +105,8 @@ describe('reconcileBuilderPodGc', () => {
   })
 
   it('reaps a young pod that predates this server process', async () => {
-    // A restart orphans the in-flight build's pod. Waiting for the age gate
-    // parks its 8 GiB reservation on the node, and the next build cannot
-    // schedule until the dead pod's active deadline fires.
+    // A restart orphans the running build's pod. Waiting for the age limit
+    // would hold its 8 GiB reservation and block the next build.
     mockKubectlGetJson.mockResolvedValue({
       items: [
         podItem('yaac-builder-orph-0001', 'Running', 700_000),

@@ -10,26 +10,21 @@ import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
  * Queued workspaces: create requests saved to run when their parent stops
  * naturally (docs/queued-workspaces.md).
  *
- * Pure intent, like groups — nothing observes an entry, so every write here
- * notifies the snapshot hub itself. The writes below are the only way into
- * the table, and each keeps exactly one parent column set: an entry waits on
- * a workspace or on another entry, never both and never neither.
+ * Nothing observes an entry, so every write here notifies the snapshot hub
+ * itself. Every write keeps exactly one parent column set: an entry waits on
+ * a workspace or on another entry.
  *
- * An entry whose `launchWorkspaceId` is set is mid-launch, and that column is
- * the claim: every edit is guarded on it being null, so nothing can change
- * or remove an entry out from under the create that is running it.
+ * A set `launchWorkspaceId` means the entry is mid-launch. Every edit
+ * requires it to be null, so nothing changes an entry under a running create.
  *
- * A launch that succeeds leaves its entry in the table as a record, with
- * `launchedWorkspaceId` naming what it became. It keeps its claim, so the
- * edit guard shuts it out; the writes that reach it through another entry
- * (re-pointing or splicing that entry's children) filter it, as every read
- * here does — to everything above the store it is gone.
+ * A successful launch leaves the entry as a record, with
+ * `launchedWorkspaceId` naming the workspace. It keeps its claim, so edits
+ * skip it, and every read here filters it out.
  */
 
-/** What an entry waits on — exactly one of the two. */
+/** What an entry waits on: a workspace or another entry. */
 export type QueuedParent = { parentWorkspaceId: string } | { parentQueuedId: string }
 
-/** An entry as the domain consumes it. */
 export interface QueuedWorkspaceRow {
   id: string
   projectSlug: string
@@ -50,8 +45,8 @@ export interface QueuedWorkspaceRow {
   launchError?: string
 }
 
-/** The stored settings of an entry — what an insert takes and an update
- *  replaces. An absent title or group is stored as none. */
+/** An entry's settings: what an insert takes and an update replaces. An
+ *  absent title or group is stored as null. */
 export interface QueuedWorkspaceSettings {
   prompt: string
   tool: AgentTool
@@ -87,25 +82,24 @@ function toRow(r: Row): QueuedWorkspaceRow {
   }
 }
 
-/** Both parent columns, one set and the other cleared. */
+/** Both parent columns: one set, the other null. */
 function parentColumns(parent: QueuedParent): { parentWorkspaceId: string | null; parentQueuedId: string | null } {
   return 'parentWorkspaceId' in parent
     ? { parentWorkspaceId: parent.parentWorkspaceId, parentQueuedId: null }
     : { parentWorkspaceId: null, parentQueuedId: parent.parentQueuedId }
 }
 
-/** Every settings column, an absent title or group as null. */
 function settingsColumns(s: QueuedWorkspaceSettings): Omit<typeof queuedWorkspaces.$inferInsert, 'projectSlug'> {
   return { ...s, title: s.title ?? null, groupId: s.groupId ?? null }
 }
 
-/** Not mid-launch — the guard on every edit. */
+/** Not mid-launch: the guard on every edit. */
 const notLaunching = isNull(queuedWorkspaces.launchWorkspaceId)
 
-/** Not launched yet — the filter on every read. */
+/** Not launched yet: the filter on every read. */
 const pending = isNull(queuedWorkspaces.launchedWorkspaceId)
 
-/** `generatedTitle` is one made for the draft the entry came from. */
+/** `generatedTitle` is the one generated for the draft the entry came from. */
 export async function insertQueuedWorkspace(
   projectSlug: string,
   parent: QueuedParent,
@@ -126,17 +120,15 @@ export async function insertQueuedWorkspace(
 }
 
 /**
- * Replace an entry's settings — all of them — and, when given, its parent.
- * A changed prompt drops the generated title, which described the old one.
- * Answers the updated entry, or undefined when there is none to update — it
- * is gone, or mid-launch.
+ * Replace all of an entry's settings and, if given, its parent. A changed
+ * prompt clears the generated title. Returns undefined if the entry is gone
+ * or mid-launch.
  *
- * A new parent that is the entry itself or sits below it would close a cycle
- * that never runs, and is refused (VALIDATION). The walk goes up from the new
- * parent, stepping from a workspace that is some entry's launch to that entry
- * — a launching entry hides its ancestry otherwise, and a failed launch would
- * close the cycle the walk missed. It runs in the same transaction as the
- * write, so two edits moving A under B and B under A cannot both pass.
+ * A new parent that is the entry itself or one of its descendants would form
+ * a cycle and is refused (VALIDATION). The check walks up from the new
+ * parent, stepping from a workspace to the entry launching it (otherwise a
+ * failed launch could close a cycle the walk missed). It runs in the same
+ * transaction as the write, so two concurrent edits can't create a cycle.
  */
 export async function updateQueuedWorkspace(
   id: string,
@@ -188,9 +180,8 @@ function closesCycle(id: string, parent: QueuedParent, entries: QueuedWorkspaceR
 }
 
 /**
- * Delete an entry, splicing its children up to its own parent in the same
- * transaction so none is left waiting on an entry that no longer exists.
- * Answers whether there was one to delete (absent, or mid-launch: false).
+ * Delete an entry, moving its children up to its own parent in the same
+ * transaction. Returns false if the entry is absent or mid-launch.
  */
 export async function deleteQueuedWorkspace(id: string): Promise<boolean> {
   const db = await getDb()
@@ -209,14 +200,14 @@ export async function deleteQueuedWorkspace(id: string): Promise<boolean> {
 }
 
 export async function getQueuedWorkspaceRow(id: string): Promise<QueuedWorkspaceRow | undefined> {
-  // Entry ids are uuids; anything else names no entry.
   if (!isUuid(id)) return undefined
   const db = await getDb()
   const rows = await db.select().from(queuedWorkspaces).where(and(eq(queuedWorkspaces.id, id), pending))
   return rows[0] ? toRow(rows[0]) : undefined
 }
 
-/** Every entry of a project (or of all), oldest first — launching ones too. */
+/** Every entry of a project (or of all), oldest first, including launching
+ *  ones. */
 export async function listQueuedWorkspaceRows(projectSlug?: string): Promise<QueuedWorkspaceRow[]> {
   const db = await getDb()
   const rows = await db.select().from(queuedWorkspaces)
@@ -226,10 +217,8 @@ export async function listQueuedWorkspaceRows(projectSlug?: string): Promise<Que
 }
 
 /**
- * Record a generated title — only while the entry is untitled, by the user
- * or the model, still holds the prompt it was generated from, and is not
- * mid-launch, so an edit that lands while the model runs is not labelled
- * with a summary of what it replaced.
+ * Record a generated title, only if the entry has no title yet, still holds
+ * the prompt the title was generated from, and is not mid-launch.
  */
 export async function setQueuedWorkspaceTitle(id: string, prompt: string, title: string): Promise<void> {
   const db = await getDb()
@@ -247,9 +236,9 @@ export async function setQueuedWorkspaceTitle(id: string, prompt: string, title:
 }
 
 /**
- * Release every entry waiting directly on a workspace — its natural stop.
- * Clears a previous launch's error, since this is the next attempt. An entry
- * already mid-launch is left alone. Answers what was released.
+ * Release every entry waiting directly on a workspace, on its natural stop.
+ * Clears any previous launch error; skips entries mid-launch. Returns the
+ * released entries.
  */
 export async function releaseQueuedChildren(
   projectSlug: string,
@@ -268,7 +257,7 @@ export async function releaseQueuedChildren(
   return rows.map(toRow)
 }
 
-/** Release one entry, whatever its parent is doing — Run now. */
+/** Release one entry regardless of its parent ("Run now"). */
 export async function releaseQueuedWorkspace(id: string): Promise<QueuedWorkspaceRow | undefined> {
   const db = await getDb()
   const rows = await db.update(queuedWorkspaces)
@@ -280,11 +269,10 @@ export async function releaseQueuedWorkspace(id: string): Promise<QueuedWorkspac
 }
 
 /**
- * Claim an entry's launch under the workspace id it will create — a
- * compare-and-set, so of two launchers racing for one entry exactly one
- * wins. The winner's children are re-pointed at that workspace in the same
- * transaction: from here on they are ordinary children of a workspace, and
- * its natural stop releases them.
+ * Claim an entry's launch under the workspace id it will create. A
+ * compare-and-set, so only one of two racing launchers wins. The entry's
+ * children are re-pointed at that workspace in the same transaction, so its
+ * natural stop releases them.
  */
 export async function claimQueuedLaunch(id: string, workspaceId: string): Promise<boolean> {
   const db = await getDb()
@@ -303,18 +291,16 @@ export async function claimQueuedLaunch(id: string, workspaceId: string): Promis
   return claimed
 }
 
-/** Claimed by exactly this launch, and not resolved yet — the guard on
- *  resolving one, so a caller holding a stale view of the claim (a
- *  reconcile pass racing a Run now) changes nothing. */
+/** Claimed by exactly this launch and not yet resolved. Guards resolution,
+ *  so a caller with a stale view (a reconcile pass racing a "Run now")
+ *  changes nothing. */
 const claimedBy = (id: string, workspaceId: string) =>
   and(eq(queuedWorkspaces.id, id), eq(queuedWorkspaces.launchWorkspaceId, workspaceId), pending)
 
 /**
- * The launch under `workspaceId` succeeded: the entry is a workspace now, and
- * stays behind only as the record of what that workspace was queued as. Any
- * child still pointing at the entry — none should, since the claim re-pointed
- * them — follows it to that workspace, so no path leaves one waiting on an
- * entry that is gone.
+ * The launch under `workspaceId` succeeded. The entry stays only as a record.
+ * Any child still pointing at it (none should, since the claim re-pointed
+ * them) is moved to the workspace.
  */
 export async function finishQueuedLaunch(id: string, workspaceId: string): Promise<void> {
   const db = await getDb()
@@ -332,12 +318,11 @@ export async function finishQueuedLaunch(id: string, workspaceId: string): Promi
 }
 
 /**
- * The launch under `workspaceId` failed: the entry goes back in the queue,
- * unreleased and carrying why, and every child of that workspace that has not
- * been released comes back under it — including one queued under it while
- * the launch was in flight. A child the workspace's own stop already released
- * keeps its pointer: a release is never taken back. A no-op unless the entry
- * is still claimed by that launch.
+ * The launch under `workspaceId` failed. The entry returns to the queue,
+ * unreleased and with the error, and the workspace's unreleased children
+ * (including any queued during the launch) move back under it. Already
+ * released children stay put. A no-op unless the entry is still claimed by
+ * this launch.
  */
 export async function failQueuedLaunch(id: string, workspaceId: string, error: string): Promise<void> {
   const db = await getDb()
@@ -359,7 +344,7 @@ export async function failQueuedLaunch(id: string, workspaceId: string, error: s
   notifyWorkspaceListChanged()
 }
 
-/** Forget a project's entries, launched ones too — the project going away. */
+/** Delete all of a project's entries, launched ones too, on project removal. */
 export async function deleteProjectQueuedWorkspaces(projectSlug: string): Promise<void> {
   const db = await getDb()
   await db.delete(queuedWorkspaces).where(eq(queuedWorkspaces.projectSlug, projectSlug))

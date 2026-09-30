@@ -1,11 +1,10 @@
 /**
- * Pane layout for a workspace's terminals. In full-window (tiles) mode the
- * workspace is a flat, left-to-right list of equal-width columns; each column
- * is a "window group" holding one or more tabbed panes (identified by their
- * /pty/attach target — unique per workspace). There is no vertical stacking:
- * panes sit side by side as columns, and multiple panes in one slot are tabs.
+ * The pane layout of a workspace. The layout (the `PaneLayout` type) is a
+ * left-to-right list of equal-width columns; each column is a "window group"
+ * of tabbed panes, identified by a target string unique within the
+ * workspace. There is no vertical stacking.
  *
- * All operations are pure — callers store the returned workspace.
+ * All operations are pure; callers store the returned layout.
  */
 
 export interface Rect {
@@ -46,8 +45,7 @@ export function singleColumn(target: string): PaneLayout {
   return [group([target], target)]
 }
 
-/** Structural validation for workspaces from untrusted storage (localStorage).
- *  An empty array (an explicitly emptied workspace) is valid. */
+/** Validate a layout read from localStorage. An empty array is valid. */
 export function isPaneLayout(v: unknown): v is PaneLayout {
   if (!Array.isArray(v)) return false
   return v.every((g) => {
@@ -59,7 +57,7 @@ export function isPaneLayout(v: unknown): v is PaneLayout {
   })
 }
 
-/** All pane targets in the workspace, left-to-right, top tab first. */
+/** All pane targets, column by column, left to right. */
 export function paneTargets(ws: PaneLayout | null): string[] {
   if (!ws) return []
   return ws.flatMap((g) => g.tabs)
@@ -72,8 +70,8 @@ export function groupIndexOf(ws: PaneLayout | null, target: string): number {
 }
 
 /**
- * Append `target` as a new single-tab column. A workspace already containing
- * the target (in any column) is returned unchanged; a null base starts fresh.
+ * Append `target` as a new single-tab column. Unchanged if the target is
+ * already present; a null layout starts fresh.
  */
 export function addColumn(ws: PaneLayout | null, target: string): PaneLayout {
   const base = ws ?? []
@@ -82,9 +80,8 @@ export function addColumn(ws: PaneLayout | null, target: string): PaneLayout {
 }
 
 /**
- * Add `target` as a new (active) tab of the column at `groupIdx`. A workspace
- * already containing the target anywhere, or an out-of-range index, is
- * returned unchanged.
+ * Add `target` as the active tab of the column at `groupIdx`. Unchanged if
+ * the target is already present or the index is out of range.
  */
 export function addTab(ws: PaneLayout, groupIdx: number, target: string): PaneLayout {
   if (groupIdx < 0 || groupIdx >= ws.length) return ws
@@ -93,10 +90,9 @@ export function addTab(ws: PaneLayout, groupIdx: number, target: string): PaneLa
 }
 
 /**
- * Remove `target` from whatever column holds it. A column emptied by the
- * removal drops out; if the removed tab was that column's active one, the tab
- * at the same position (clamped) becomes active. Returns the (possibly empty)
- * workspace.
+ * Remove `target` from its column. An emptied column is dropped; if the
+ * removed tab was active, the tab now at its position (clamped) becomes
+ * active. The result may be empty.
  */
 export function removeTarget(ws: PaneLayout | null, target: string): PaneLayout {
   if (!ws) return []
@@ -126,8 +122,8 @@ export function moveTargetToGroup(ws: PaneLayout, src: string, destGroupIdx: num
   if (gi === -1) return ws
   if (destGroupIdx < 0 || destGroupIdx >= ws.length) return ws
   if (gi === destGroupIdx) return ws
-  // Identify the destination by a stable member — removeTarget may drop src's
-  // old column and shift indices, but never touches the destination column.
+  // Find the destination again by its first tab: removing src may drop its
+  // old column and shift indices.
   const destFirst = ws[destGroupIdx].tabs[0]
   const removed = removeTarget(ws, src)
   const destIdx = groupIndexOf(removed, destFirst)
@@ -146,18 +142,16 @@ export function moveTargetToColumn(ws: PaneLayout, src: string, insertIdx: numbe
   const alone = ws[gi].tabs.length === 1
   if (alone && (insertIdx === gi || insertIdx === gi + 1)) return ws
   const removed = removeTarget(ws, src)
-  // Removing src collapses its old column only when it was alone; that shifts
-  // every later index (including the insertion point) one to the left.
+  // If src was alone, removing it drops its column and shifts later indices.
   const shift = alone && gi < insertIdx ? 1 : 0
   const at = Math.max(0, Math.min(removed.length, insertIdx - shift))
   return [...removed.slice(0, at), group([src], src), ...removed.slice(at)]
 }
 
 /**
- * Move the whole column holding `target` one slot left (`dir` -1) or right
- * (`dir` 1) among the columns, wrapping around at both ends. This is the
- * tiles-mode "move window" primitive. Returns the same reference when there's
- * nothing to move (fewer than two columns, or an unknown target).
+ * Move the column holding `target` one slot left (`dir` -1) or right
+ * (`dir` 1), wrapping at both ends. Used by tiles mode's "move window".
+ * Returns the same reference when there's nothing to move.
  */
 export function moveColumn(ws: PaneLayout, target: string, dir: 1 | -1): PaneLayout {
   const gi = groupIndexOf(ws, target)
@@ -169,13 +163,10 @@ export function moveColumn(ws: PaneLayout, target: string, dir: 1 | -1): PaneLay
 }
 
 /**
- * Move `target` one slot left (`dir` -1) or right (`dir` 1) within the flat
- * left-to-right pane strip, wrapping around at both ends — the tabs-mode "move
- * tab" primitive, where the workspace renders as one strip regardless of its
- * columns. The reordered strip is refilled back into the existing columns
- * preserving each column's size, so the column count stays stable (only which
- * panes land in which column shifts). Returns the same reference when there's
- * nothing to move (fewer than two panes, or an unknown target).
+ * Move `target` one slot left (`dir` -1) or right (`dir` 1) in the flat pane
+ * strip, wrapping at both ends. Used by tabs mode's "move tab", which shows
+ * all panes as one strip. The reordered panes are poured back into columns
+ * of the same sizes. Returns the same reference when there's nothing to move.
  */
 export function moveTabInStrip(ws: PaneLayout, target: string, dir: 1 | -1): PaneLayout {
   const flat = paneTargets(ws)
@@ -193,9 +184,9 @@ export function moveTabInStrip(ws: PaneLayout, target: string, dir: 1 | -1): Pan
 }
 
 /**
- * Rewrite every target that is `from` or sits under it (`from/…`) to the
- * same place under `to` — what a renamed file or folder does to the panes
- * showing it. Returns the same reference when no target moves.
+ * Rewrite every target equal to `from` or under it (`from/…`) to the same
+ * place under `to`, for a renamed file or folder. Returns the same reference
+ * when nothing changes.
  */
 export function renameTargets(ws: PaneLayout, from: string, to: string): PaneLayout {
   const rename = (t: string): string => (
@@ -215,12 +206,11 @@ export function withActive(ws: PaneLayout | null, target: string): PaneLayout {
 }
 
 /**
- * The pane keyboard focus should land in when a workspace becomes selected or a
- * shortcut switches terminals. `activeTab` is the workspace's last-active
- * terminal as stored (possibly stale — validated here). Tabs mode shows one
- * pane at a time, so the visible tab wins; tiles mode shows every column, so
- * prefer the last-active pane, then the agent (the one you talk to), then the
- * first pane. Null when the workspace has no panes.
+ * The pane to focus when a workspace is selected or a shortcut switches
+ * panes. `activeTab` is the stored last-active pane and may be stale. Tabs
+ * mode uses the active tab, else the first pane; tiles mode prefers the
+ * active pane, then the agent, then the first pane. Null when there are no
+ * panes.
  */
 export function focusPaneTarget(
   targets: string[],
@@ -246,9 +236,8 @@ export function computeColumns(ws: PaneLayout | null, rect: Rect, gap: number): 
 }
 
 /**
- * Which drop zone a horizontal position falls in over a laid-out column list:
- * the central band of a column tabs the pane into it; the outer thirds (and
- * the gaps/edges between columns) insert it as a new column at that index.
+ * The drop zone at a horizontal position. The middle half of a column adds
+ * the pane as a tab; the outer quarters and the gaps insert a new column.
  */
 export function dropTargetAt(cols: ColumnRect[], px: number): DropTarget {
   for (let i = 0; i < cols.length; i++) {

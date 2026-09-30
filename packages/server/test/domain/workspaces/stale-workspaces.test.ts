@@ -10,9 +10,8 @@ vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => {
   return { ...actual }
 })
 
-// probeTmuxLiveness / probeAgentPaneState are the injected oracles;
-// cleanupWorkspaceDetached is the destructive action we assert (does/doesn't
-// fire).
+// The liveness probes are stubbed inputs; cleanupWorkspaceDetached is the
+// destructive action the tests assert on.
 vi.mock('#runtime/status/liveness', () => ({
   probeTmuxLiveness: vi.fn(),
   probeAgentPaneState: vi.fn(),
@@ -23,20 +22,15 @@ vi.mock('#domain/workspaces/cleanup', () => ({
 
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
-// The reaper reads the desired set from db at the top of its pass and
-// reports a death as an event rather than writing the row — both stubbed,
-// so these tests never open a DB.
+// The reaper reads the desired set from the DB and reports deaths as
+// events. Both are stubbed, so no DB is opened.
 vi.mock('#db', () => ({
   applyWorkspaceEvent: vi.fn(),
   desiredWorkspaces: vi.fn(),
-  // A death is not a natural stop: the workspaces queued after one wait
-  // under it rather than starting (docs/queued-workspaces.md).
+  // After a death, queued children wait instead of starting
+  // (docs/queued-workspaces.md).
   releaseQueuedChildren: vi.fn(),
 }))
-
-// The reaper reads session rows to tell a yaac-issued delete (whose
-// in-memory terminating mark was lost) from a real out-of-band delete —
-// stub it so these tests never open a DB.
 
 import { probeTmuxLiveness, probeAgentPaneState } from '#runtime/status/liveness'
 import { cleanupWorkspaceDetached } from '#domain/workspaces/cleanup'
@@ -50,23 +44,19 @@ import {
   _clearMissingPodTimersForTests,
 } from '#domain/workspaces/stale-workspaces'
 
-/** What the registered runtime reports for the pass. Stray units are the
- *  view's own answer to "units with no workspace", so a case sets them
- *  directly rather than restating the pod-vs-unit cross-reference. */
+/** The workspaces the runtime reports for a pass. Stray units are set
+ *  directly through `mockStrays`. */
 const mockWorkspaces = vi.fn<() => Promise<RuntimeHandle[]>>()
 const mockStrays = vi.fn<() => Promise<StrayUnit[]>>()
 const mockProbe = vi.mocked(probeTmuxLiveness)
 const mockPaneProbe = vi.mocked(probeAgentPaneState)
 const mockCleanup = vi.mocked(cleanupWorkspaceDetached)
-// The reaper reads what should exist from db and reports a death as
-// an event rather than writing the row — both stubbed above, so what a
-// pass decided is asserted directly.
 const appliedEvents: WorkspaceEvent[] = []
 const stopsReported = (): Array<[string, string, unknown]> => appliedEvents
   .filter((e) => e.type === 'workspace-stopped')
   .map((e) => [e.projectSlug, e.workspaceId, e.cause])
-/** What the reaper's db read answers, plus which creates are in
- *  flight (registered in the real provisioning registry). */
+/** What the reaper's DB read returns, plus which creates are in flight
+ *  (registered in the real provisioning registry). */
 interface DesiredSetup {
   live: Array<{ projectSlug: string; workspaceId: string; ran: boolean }>
   stopped: string[]
@@ -83,7 +73,6 @@ const setDesired = (d: Partial<DesiredSetup>): void => {
     live: lastDesired.live, stopped: lastDesired.stopped,
   })
 }
-/** The next pass, with the same set republished. */
 const mockLog = vi.mocked(serverLog)
 
 // createdAtMs=1 (epoch) is always older than any grace window.
@@ -102,7 +91,7 @@ function pod(workspaceId: string, running = true): RuntimeHandle {
   })
 }
 
-/** A unit the runtime still holds with no workspace behind it. */
+/** A runtime unit with no workspace behind it. */
 function stray(workspaceId: string, createdAtMs = 1): StrayUnit {
   return { workspaceId, unitName: `yaac-proj-${workspaceId}`, projectSlug: 'proj', createdAtMs }
 }
@@ -148,13 +137,12 @@ describe('reconcileStaleWorkspaces', () => {
     const log = loggedLines()
     expect(log).toContain('reaping session=zombie-1')
     expect(log).toContain('tmux gone')
-    // Its queued workspaces stay queued, the parent held, until the user acts.
+    // Its queued workspaces stay queued until the user acts.
     expect(releaseQueuedChildren).not.toHaveBeenCalled()
   })
 
-  // The cause is derived at the runtime boundary (see the view's handle
-  // mapper); what the reaper owes is carrying it through to the teardown
-  // and the audit line, which is what this asserts.
+  // The driver derives the cause; the reaper must pass it to the teardown
+  // and the audit log.
   it('reaps a stopped workspace with its derived death cause, and audits it', async () => {
     mockWorkspaces.mockResolvedValue([{
       ...pod('oomed-1', false),
@@ -173,9 +161,8 @@ describe('reconcileStaleWorkspaces', () => {
   })
 
   it('keeps a not-yet-Running pod past grace while its create is still provisioning', async () => {
-    // A pod still pulling its image or mounting its hostPaths carries no
-    // terminal state, so the classifier reads it as `pod-stopped`. Reaping
-    // it deletes the session dir the starting pod is mounting.
+    // A pod still pulling its image or mounting hostPaths reads as
+    // `pod-stopped`. Reaping it would delete the dir it is mounting.
     mockWorkspaces.mockResolvedValue([pod('starting-1', false)])
     setDesired({ provisioning: ['starting-1'] })
 
@@ -185,11 +172,9 @@ describe('reconcileStaleWorkspaces', () => {
   })
 
   it('reaps a not-yet-Running pod once its create has failed', async () => {
-    // A failed row lingers until dismissed, so it must not shield the
-    // session the create already rolled back.
+    // A failed row lingers until dismissed, so it must not shield a session
+    // the create already rolled back.
     mockWorkspaces.mockResolvedValue([pod('failed-1', false)])
-    // A failed create is not reported as in flight (see inFlightWorkspaceIds),
-    // so nothing shields 'failed-1'.
     setDesired({ provisioning: [] })
 
     await reconcileStaleWorkspaces()
@@ -232,9 +217,8 @@ describe('reconcileStaleWorkspaces', () => {
   })
 
   it('reaps an out-of-band terminating pod past grace that we did not mark', async () => {
-    // deletionTimestamp set (terminating), never entered our registry, and no
-    // deleted-store row — a genuine external delete stuck past grace. Re-issue
-    // the idempotent teardown and stamp the out-of-band cause.
+    // Terminating, not marked by us, and no stop row: an external delete
+    // stuck past grace. Re-issue the teardown with the out-of-band cause.
     mockWorkspaces.mockResolvedValue([{ ...pod('term-1'), terminating: true }])
 
     await reconcileStaleWorkspaces()
@@ -250,8 +234,8 @@ describe('reconcileStaleWorkspaces', () => {
   })
 
   it('keeps a terminating pod past grace while its create is still provisioning', async () => {
-    // create's own retry loop deletes the Job between attempts; the pod it
-    // is about to recreate must not be torn down underneath it.
+    // The create's retry loop deletes the Job between attempts; the pod must
+    // not be torn down under it.
     mockWorkspaces.mockResolvedValue([{ ...pod('retrying-1'), terminating: true }])
     setDesired({ provisioning: ['retrying-1'] })
 
@@ -260,13 +244,9 @@ describe('reconcileStaleWorkspaces', () => {
     expect(mockCleanup).not.toHaveBeenCalled()
   })
 
-  // Every sweep here needs the set — the cause split would restamp a plain
-  // user delete as "removed outside yaac" without it, and the exemption set
-  // would be empty — so a pass with no publish reaps nothing at all rather
-  // than reaping on the half of the set it can still read.
-  // Reaping on a guess destroys uncommitted work, so a desired set that
-  // cannot be read stands every sweep down — say nothing, reap nothing, and
-  // the next pass retries with a fresh read.
+  // Every sweep needs the desired set; without it a user delete would be
+  // labelled out-of-band and nothing would be exempt. Reaping on a guess
+  // destroys uncommitted work, so the pass does nothing and the next retries.
   it('stands down entirely when the desired set cannot be read', async () => {
     mockWorkspaces.mockResolvedValue([{ ...pod('term-unknown'), terminating: true }])
     vi.mocked(desiredWorkspaces).mockRejectedValue(new Error('db is gone'))
@@ -278,11 +258,9 @@ describe('reconcileStaleWorkspaces', () => {
   })
 
   it('does NOT mislabel a yaac-deleted terminating pod whose mark was lost', async () => {
-    // Same pod state as the out-of-band case (terminating, no in-memory mark:
-    // dropped by a restart or the TTL), but the row's recorded stoppedAt
-    // proves yaac issued this delete. Resume teardown WITHOUT restamping so
-    // the real cause (a plain user delete) survives — no "removed outside
-    // yaac".
+    // Same pod state as the out-of-band case (the in-memory mark was lost to
+    // a restart or TTL), but the row's stoppedAt proves yaac issued the
+    // delete. Resume teardown without restamping the cause.
     mockWorkspaces.mockResolvedValue([{ ...pod('term-ours'), terminating: true }])
     setDesired({ stopped: ['proj/term-ours'] })
 
@@ -295,7 +273,7 @@ describe('reconcileStaleWorkspaces', () => {
         preserveDeletedRecord: true,
       }),
     )
-    // Crucially, no out-of-band cause is forwarded.
+    // No out-of-band cause is passed.
     expect(mockCleanup).toHaveBeenCalledTimes(1)
     expect(mockCleanup.mock.calls[0][0]).not.toHaveProperty('cause')
     const log = loggedLines()
@@ -382,13 +360,10 @@ describe('reconcileStaleWorkspaces', () => {
     expect(mockCleanup).not.toHaveBeenCalled()
   })
 
-  // The two failures stand different amounts down, and the difference is
-  // the point: a workspace read that fails leaves the reaper unable to
-  // judge ANY absence, but a stray-unit read that fails only blinds the
-  // orphan sweep — the workspaces it did read are still conclusive about
-  // themselves. Collapsing this into the read above (or into one
-  // Promise.all) would silently turn a partial stand-down into a total
-  // one, and nothing else in the suite would notice.
+  // A failed workspace read stops every sweep, but a failed stray-unit read
+  // only stops the orphan sweep: the workspaces that were read are still
+  // conclusive. Merging the two reads (e.g. one Promise.all) would silently
+  // make this a total stand-down.
   it('stands only the orphan sweep down when the stray-unit read fails', async () => {
     mockWorkspaces.mockResolvedValue([pod('zombie-1')])
     mockStrays.mockRejectedValue(new Error('informer down'))
@@ -410,8 +385,8 @@ describe('reconcileStaleWorkspaces', () => {
 
     await reconcileStaleWorkspaces({ resync: true, workspaces, strayUnits })
 
-    // Taking a second view mid-pass is what the shared snapshot exists to
-    // prevent: absence would then be judged against a different instant.
+    // A second view mid-pass would judge absence against a different
+    // instant.
     expect(mockWorkspaces).not.toHaveBeenCalled()
     expect(mockStrays).not.toHaveBeenCalled()
     expect(workspaces).toHaveBeenCalledTimes(1)
@@ -462,8 +437,8 @@ describe('reconcileStaleWorkspaces', () => {
     })
 
     it('calls a session that ran orphaned, not never-started', async () => {
-      // A captured prompt or transcript path proves the agent got going, so
-      // its Job went away out-of-band rather than never arriving.
+      // A captured prompt or transcript proves the agent started, so its Job
+      // was deleted out-of-band.
       mockWorkspaces.mockResolvedValue([])
       setDesired({ live: [row('had-history', true)] })
 
@@ -476,9 +451,9 @@ describe('reconcileStaleWorkspaces', () => {
     })
 
     it('a single empty-but-successful pod listing condemns nothing', async () => {
-      // The dangerous case: an informer cache before its initial sync
-      // returns [] without throwing. Every long-lived session looks podless
-      // for one tick, and nothing un-marks a death but a restart.
+      // An informer cache before its initial sync returns [] without
+      // throwing, so every session looks podless for one tick. A recorded
+      // death cannot be undone.
       setDesired({ live: [row('old-1', true), row('old-2', true)] })
       mockWorkspaces.mockResolvedValue([pod('old-1'), pod('old-2')])
       mockProbe.mockResolvedValue('alive' as TmuxLiveness)
@@ -487,7 +462,7 @@ describe('reconcileStaleWorkspaces', () => {
       mockWorkspaces.mockResolvedValue([]) // the bad listing
       await reconcileStaleWorkspaces()
 
-      // …and the pods are back on the next tick, well before the window.
+      // The pods are back on the next tick, well within the window.
       mockWorkspaces.mockResolvedValue([pod('old-1'), pod('old-2')])
       vi.setSystemTime(Date.now() + 31 * 60_000)
       await reconcileStaleWorkspaces()
@@ -505,8 +480,7 @@ describe('reconcileStaleWorkspaces', () => {
       expect(stopsReported()).toEqual([])
     })
 
-    // A reaper whose read failed must reap nothing: an empty set would
-    // condemn every running workspace at once, and nothing un-marks a death.
+    // Treating an unread set as empty would condemn every running workspace.
     it('stands down entirely until the server has published a set', async () => {
       mockWorkspaces.mockResolvedValue([])
 

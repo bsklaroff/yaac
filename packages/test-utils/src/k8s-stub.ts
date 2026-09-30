@@ -1,25 +1,14 @@
 /**
  * Stand-in for `@kubernetes/client-node` in unit runs.
  *
- * The real package is 967 ESM files behind one barrel and costs ~2.8s to
- * evaluate. `#drivers/k8s/substrate` reaches it through three modules (the API
- * handles, the informer registry, the readiness watch), and its barrel
- * re-exports those, so *every* test file that imports any server feature
- * pays that 2.8s before its first assertion — roughly half of the
- * `unit:server` files, and by far the largest single cost in the unit run.
+ * The real package takes ~2.8s to import, and roughly half the
+ * `unit:server` files reach it through the `#drivers/k8s/substrate` barrel.
+ * Unit tests mock the process boundary and never call the client, so they
+ * only need the names to exist.
  *
- * Unit tests never drive the client: they are hermetic and mock the process
- * boundary (kubectl, spawn, podman), so the library is imported and then
- * never meaningfully called. This gives them the identities their subjects
- * import without the graph behind them.
- *
- * Everything that would actually talk to an apiserver throws instead of
- * returning an empty result. A unit test reaching one of these has found a
- * path that wants a real cluster, and a loud failure names it; a silent
- * `undefined` would turn into a confusing assertion failure somewhere else.
- * A file that genuinely needs the real client overrides this with its own
- * `vi.mock('@kubernetes/client-node', importOriginal)` — cluster-cache and
- * pod-wait do exactly that, and pay the 2.8s deliberately.
+ * Anything that would talk to an apiserver throws, so a unit test that
+ * wants a real cluster fails loudly. A file that needs the real client
+ * overrides this with `vi.mock('@kubernetes/client-node', importOriginal)`.
  */
 
 function unavailable(what: string): never {
@@ -47,9 +36,8 @@ class WatchStub {
 }
 
 /**
- * The module shape `vi.mock` installs. Types are erased at runtime, so only
- * the values `#drivers/k8s/substrate` imports need to exist here: the two API
- * classes, KubeConfig, Watch, and makeInformer.
+ * The module shape `vi.mock` installs: only the runtime values
+ * `#drivers/k8s/substrate` imports.
  */
 export function k8sClientStub(): Record<string, unknown> {
   return {

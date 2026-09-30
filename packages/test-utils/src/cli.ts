@@ -17,31 +17,21 @@ export { TEST_CLI_DIR, TEST_CLI_ENTRY }
 const ENTRY = TEST_CLI_ENTRY
 
 /**
- * Cross-worker mutex so only one `yaac server run` is live at a time
- * across all vitest workers. Multiple servers hammering the shared
- * cluster API server concurrently starves it, so server-backed suites
- * serialize on this lock.
+ * Cross-worker mutex so only one test server runs at a time; concurrent
+ * servers starve the shared cluster API server. Scoped to the test scratch
+ * base (one per test rig and cluster), not the host, so separate rigs don't
+ * wait on each other.
  *
- * Scoped to the ambient data dir (the test scratch base), which is one per
- * test rig — and so one per cluster — rather than to the host: rigs share
- * no API server, and a host-wide lock made every rig's server-backed files
- * wait on every other rig's, and on any workspace's containerless tiers.
- * Nothing else a server-backed file binds may be host-wide for the same
- * reason, which is why every host port the suites bind is drawn by
- * `freeLocalPort` rather than fixed.
- *
- * Lock file holds the owner's PID so a crashed holder doesn't wedge
- * the suite forever. fs.open(wx) is atomic across processes.
+ * The lock file holds the owner's pid, so a crashed holder's lock can be
+ * taken over. fs.open(wx) is atomic across processes.
  */
 function serverLockFile(): string {
   return path.join(testTmpBase(), 'server-mutex.lock')
 }
 
-// Process-reentrant: if this worker already owns the file lock, a
-// nested acquire just bumps a refcount. The file lock is only released
-// when the refcount drops back to zero. Prevents a file-level mutex
-// (e.g. server.test.ts's beforeAll) from deadlocking against per-test
-// spawnYaacServer acquires in the same worker.
+// Reentrant within a process: a nested acquire bumps a refcount, and the
+// file lock is released when it drops to zero, so a file-level hold can't
+// deadlock against a per-test acquire in the same worker.
 let localDepth = 0
 let pendingFileUnlink: Promise<void> | null = null
 
@@ -110,16 +100,13 @@ export interface YaacTestEnv {
 }
 
 /**
- * Per-test isolation. We use `YAAC_DATA_DIR` (server) + `setDataDir()`
- * (test process) to redirect the yaac data dir, rather than
- * overriding HOME — overriding HOME breaks podman, which reads its
- * config from `$HOME/.config/containers/`. `GIT_CONFIG_GLOBAL`
- * redirects git's global config for the same reason, so nothing a test
- * spawns (the auth server's identity seed) reads the real `~/.gitconfig`.
+ * An isolated test environment. The data dir is redirected with
+ * `YAAC_DATA_DIR` and `setDataDir()` rather than by overriding HOME, which
+ * would break podman's config lookup. `GIT_CONFIG_GLOBAL` keeps spawned
+ * processes off the real `~/.gitconfig`.
  *
- * Test-only server hooks are preset here so container-backed tests
- * land on pre-built images and a worker-isolated kubernetes namespace;
- * tests that do not touch containers just ignore them.
+ * Also presets the test-only server settings: prebuilt images and the
+ * file's k8s namespace.
  */
 export async function createYaacTestEnv(): Promise<YaacTestEnv> {
   const scratchDir = await e2eMkdtemp('yaac-e2ecli-')
@@ -127,28 +114,20 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
   const gitConfigPath = path.join(scratchDir, 'gitconfig')
   await fs.writeFile(gitConfigPath, '')
   setDataDir(dataDir)
-  // The tier folders, through the same helper a server start uses.
   await ensureDataDir()
-  // Mirror the namespace into the test process so src helpers used by
-  // assertions (listWorkspacePods, containerExec, ...) hit the same
-  // namespace as the server subprocess.
+  // So helpers used by assertions hit the server's namespace.
   process.env.YAAC_K8S_NAMESPACE = TEST_NAMESPACE
 
-  // The default port a `server start`/`restart` server lands on (and, under
-  // k8s, the port this file's forward publishes its server at). Drawn free
-  // rather than fixed: clear of 8787, of another worker's env, and of the
-  // same env in another test rig on this host.
+  // The port `server start`/`restart` binds (under k8s, the forward's
+  // port). Drawn free so workers and rigs never collide.
   const serverPort = await freeLocalPort()
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     YAAC_DATA_DIR: dataDir,
-    // Spelled out rather than left to the spread. A spawned server is a fresh
-    // process that loads none of the suite's setup files, so this flag is the
-    // only thing standing between it and a real refresh grant — and a grant
-    // from behind a workspace's proxy rotates the hosting install's live
-    // credential whatever token the request carried (see vitest-setup). Too
-    // load-bearing to depend on an ambient var being present.
+    // Set explicitly: a spawned server loads no setup files, and a refresh
+    // grant could rotate the hosting install's credential (see
+    // vitest-setup).
     YAAC_E2E_NO_TOKEN_REFRESH: '1',
     GIT_CONFIG_GLOBAL: gitConfigPath,
     YAAC_SERVER_PORT: String(serverPort),
@@ -158,23 +137,19 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
     YAAC_NETD_IMAGE: 'yaac-test-netd',
     YAAC_K8S_NAMESPACE: TEST_NAMESPACE,
     YAAC_REQUIRE_PREBUILT_IMAGES: '1',
-    // Prewarming is on by default in production, but a background pool that
-    // spawns spares under every e2e suite would burn
-    // cluster resources and perturb assertions. Off by default; the dedicated
-    // prewarm suite re-enables it with `{ ...env, YAAC_PREWARM_POOL_SIZE: '1' }`.
+    // A spare pool would waste cluster resources and disturb assertions.
+    // The prewarm suite turns it back on.
     YAAC_PREWARM_POOL_SIZE: '0',
-    // Same reasoning for the background image-prewarm sweep — e2e images are
-    // prebuilt by the global setup and workers must never race a podman build.
+    // Images are prebuilt by the global setup; workers must never build.
     YAAC_IMAGE_PREWARM: '0',
-    // Auto-titling would pull the llama.cpp binary + a ~114MB model under
-    // every e2e server (and retitle workspaces mid-assertion); the feature is
-    // unit-tested with a stubbed runner instead.
+    // Auto-titling would download a model and retitle workspaces
+    // mid-assertion; it is unit-tested instead.
     YAAC_AUTO_TITLES: '0',
   }
 
   const cleanup = async (): Promise<void> => {
-    // Reap any auth server a test (or `auth update`) spawned
-    // against this data dir — it reconnects forever and would leak.
+    // Reap any auth server spawned against this data dir; it would
+    // reconnect forever.
     try {
       const raw = await fs.readFile(path.join(dataDir, '.auth-daemon.lock'), 'utf8')
       const lock = JSON.parse(raw) as { pid?: number }
@@ -182,16 +157,9 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
     } catch {
       // no auth server ran, or it's already gone
     }
-    // removeScratchTree retries the teardown RACE — `force` swallows a
-    // missing path but not ENOTEMPTY, and the scratch dir is still live when
-    // this runs. A workspace's checkout is hostPath-mounted into its pod as
-    // /workspace, so a container that has not finished terminating can create
-    // a file in a directory the walk just emptied; the detached teardown
-    // script (cleanupWorkspaceDetached) outlives the server it was spawned from
-    // and is deleting under the same tree. Both settle in well under a second.
-    //
-    // What it does NOT retry is a root-owned leftover, which no amount of
-    // waiting fixes — those come back as paths for us to report.
+    // A terminating pod or the detached teardown script may still be
+    // writing here; removeScratchTree retries that and returns root-owned
+    // leftovers.
     const stuck = await removeScratchTree(scratchDir)
     if (stuck.length > 0) {
       console.warn(
@@ -214,17 +182,12 @@ export interface SpawnedServer {
  * needs from one: a lock naming a loopback origin it can dial, and a way to
  * stop it.
  *
- * Which KIND of server that is follows the driver, exactly as it does in
- * production (docs/server-in-cluster.md). A containerless install's server
- * is a host process, so this spawns one. A k8s install's server is a
- * Deployment of the cluster it manages — there is no host-process form of
- * it to spawn — so this applies one into the file's test namespace and
- * forwards a local port to it (`#deployed-server`). Neither shape leaks
- * past the return value.
+ * The kind of server follows the driver, as in production
+ * (docs/server-in-cluster.md): under containerless a host process, under
+ * k8s a Deployment in the file's test namespace reached through a local
+ * port-forward (`#deployed-server`).
  *
- * Acquires the cross-worker server mutex either way, so only one test
- * server exists across all parallel vitest workers at a time; `stop()`
- * releases it once the server is really gone.
+ * Holds the cross-worker server mutex until `stop()` has finished.
  */
 export async function spawnYaacServer(env: NodeJS.ProcessEnv): Promise<SpawnedServer> {
   const releaseMutex = await acquireServerMutex()
@@ -258,28 +221,19 @@ export async function spawnYaacServer(env: NodeJS.ProcessEnv): Promise<SpawnedSe
 }
 
 /**
- * Spawn a real `yaac server run` subprocess under the given env. Polls
- * for the lock file (60s budget) so the caller can read `.lock.port`
- * without races. The server leads its own process group; `stop()`
- * SIGTERMs that group, falling back to a group SIGKILL after 15s so the
- * server's forked children are reaped rather than orphaned.
+ * Spawn a `yaac server run` subprocess and wait (up to 60s) until it is
+ * ready. The server leads its own process group, so `stop()` can signal it
+ * and every child it forked: SIGTERM, then SIGKILL after 15s. Orphaned
+ * children would otherwise pile up across e2e files until fork() fails.
  */
 async function spawnHostServer(env: NodeJS.ProcessEnv): Promise<SpawnedServer> {
   const child = spawn(process.execPath, [ENTRY, 'server', 'run', '--port', '0'], {
     env,
     stdio: ['ignore', 'ignore', 'pipe'],
-    // Make the server its own process-group leader (setsid) so `stop()`
-    // can signal the whole group. The server forks long-lived children
-    // that inherit this pgid; a group kill reaps them even on the SIGKILL
-    // path, instead of leaving them orphaned to accumulate across the
-    // serialized e2e files until the cgroup pid ceiling is hit and
-    // `fork()` starts returning EAGAIN.
     detached: true,
   })
 
-  // Forward server stderr to the test worker's stderr when the debug
-  // flag is set — invaluable when a server subprocess dies before the
-  // CLI can observe a coherent error.
+  // Useful when the server dies before the CLI can report a clear error.
   if (process.env.YAAC_TEST_DEBUG_SERVER === '1') {
     child.stderr?.on('data', (chunk: Buffer) => {
       process.stderr.write(`[server] ${chunk.toString()}`)
@@ -288,26 +242,17 @@ async function spawnHostServer(env: NodeJS.ProcessEnv): Promise<SpawnedServer> {
 
   let lock: ServerLock
   try {
-    // A cold `server run` needs ~12s to report ready on an idle machine (tsx
-    // transpiles the dependency tree, then PGlite opens and runs first-boot
-    // migrations against the fresh per-test data dir). 60s keeps a healthy
-    // server inside the budget under the memory/CPU pressure of a full
-    // parallel run, where 30s left too little headroom and timed out.
+    // A cold start takes ~12s when idle; 60s leaves room under the load of
+    // a full parallel run.
     lock = await waitForLock(60_000)
   } catch (err) {
-    // Reap the spawned server before rethrowing. Without this, a readiness
-    // timeout leaves the child (and its process group) running: it never
-    // wrote a usable lock, no `stop()` is returned to the caller, and the
-    // orphaned servers pile up across the serialized suites until the box
-    // runs out of memory.
+    // No `stop()` reaches the caller, so reap the server here.
     killGroup(child, 'SIGKILL')
     throw err
   }
 
-  // `yaac server run` registers nothing (it may be a foreground server the
-  // operator drove directly), so this fixture does what `yaac server start`
-  // would have: points this worker's clients at the server it just spawned.
-  // Without it every CLI call in the file resolves no server at all.
+  // `yaac server run` doesn't register itself, so do what `yaac server
+  // start` would: point this worker's clients at the new server.
   try {
     await registerServer(`http://127.0.0.1:${lock.port}`, 'containerless')
   } catch (err) {
@@ -317,21 +262,12 @@ async function spawnHostServer(env: NodeJS.ProcessEnv): Promise<SpawnedServer> {
 
   const stop = async (): Promise<void> => {
     if (child.exitCode !== null) return
-    // SIGTERM the whole group: the server runs its shutdown handler
-    // (which calls `removeLock()`, so lock-cleanup assertions stay
-    // green), and its forked children get the signal directly rather
-    // than waiting on the server to tear them down.
+    // SIGTERM lets the server's shutdown handler remove its lock.
     killGroup(child, 'SIGTERM')
     await new Promise<void>((resolve) => {
-      // Give the server up to 15s to finish its current background-loop
-      // tick (workspace reconcile, blocked-host persist) before we
-      // force-kill. SIGKILL bypasses the shutdown handler's
-      // `removeLock()` call, so a too-short timeout leaves stale lock
-      // files and flakes tests that assert on lock cleanup.
+      // 15s for the current background tick to finish; SIGKILL skips
+      // the lock removal that some tests assert on.
       const t = setTimeout(() => {
-        // SIGKILL the group, not just the server: a force-killed server
-        // never reaps its children, so without this they orphan and
-        // leak across the serialized e2e files.
         killGroup(child, 'SIGKILL')
         resolve()
       }, 15000)
@@ -346,18 +282,14 @@ async function spawnHostServer(env: NodeJS.ProcessEnv): Promise<SpawnedServer> {
 }
 
 /**
- * Signal a server's entire process group (negative PID). The server is
- * spawned `detached`, so it leads its own group and a group-directed
- * signal reaches every child it forked. Falls back to signalling just the
- * server if the group is already gone (ESRCH) or the PID is unknown.
+ * Signal a server's whole process group, falling back to the server alone
+ * if the group is gone.
  */
 function killGroup(child: ChildProcess, signal: NodeJS.Signals): void {
   if (child.pid === undefined) return
   try {
     process.kill(-child.pid, signal)
   } catch {
-    // Group already exited (ESRCH) or can't be addressed — try the lone
-    // child as a best effort; ignore if it's gone too.
     try {
       child.kill(signal)
     } catch {
@@ -370,12 +302,8 @@ async function waitForLock(timeoutMs: number): Promise<ServerLock> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const lock = await readLock()
-    // Wait for genuine readiness (`/health` reports ready), not just the
-    // lock file: the port binds and the lock is written before the server
-    // opens its DB, so a caller that proceeds on the bare lock races that
-    // startup step. Mirrors the
-    // real `yaac server start`, which waits on `isLockReady` for the same
-    // reason.
+    // Wait for `/health` to report ready, as `yaac server start` does: the
+    // lock is written before the server opens its DB.
     if (lock && await isLockReady(lock)) return lock
     await new Promise((r) => setTimeout(r, 100))
   }
@@ -390,48 +318,31 @@ export interface RunYaacResult {
 
 export interface RunYaacOptions {
   /**
-   * Data to write to stdin. Pipes stdin instead of /dev/null.
+   * Data to write to stdin (otherwise /dev/null), then close it.
    *
-   * As a single string, the whole payload is written and stdin is
-   * closed immediately. That works for commands that use a single
-   * readline interface, but fails for `auth update` / `auth clear` /
-   * `workspace stream` which open a fresh readline per prompt: once the
-   * stream ends, the first readline's flowing-mode reader eats all
-   * remaining bytes before the next interface can see them.
-   *
-   * Pass an array of chunks to insert a delay between prompts — the
-   * helper writes each chunk, waits `chunkDelayMs`, then writes the
-   * next. That gives each close()→createInterface() cycle time to hand
-   * off the stream. Stdin is closed after the final chunk.
+   * A single string suits commands with one readline interface. Commands
+   * that open a readline per prompt (`auth update`, `auth clear`) would
+   * lose later answers to the first reader, so pass an array: each chunk is
+   * written `chunkDelayMs` after the last. Prefer `stdinOnPrompt`.
    */
   stdin?: string | string[]
   /**
-   * Delay between chunks when `stdin` is an array. Default 1500 ms.
-   * Needs to be long enough that the CLI has closed one readline
-   * interface and opened the next before the chunk arrives, including
-   * server-RPC round-trips and parallel-test-worker jitter.
-   *
-   * Prefer `stdinOnPrompt` for multi-prompt flows — a fixed delay races
-   * the readline handoff under CPU load (observed flaking whenever tsc
-   * or another suite ran concurrently).
+   * Delay between chunks when `stdin` is an array. Default 1500 ms. Races
+   * under CPU load; prefer `stdinOnPrompt`.
    */
   chunkDelayMs?: number
   /**
-   * Prompt-driven stdin: write each `send` only once its `when` pattern
-   * appears in stdout past the previous match. Deterministic replacement
-   * for the timer-based array mode: `rl.question` prints the prompt from
-   * the SAME readline interface that consumes the answer, so seeing the
-   * prompt guarantees a listener is attached — no handoff race at any
-   * load. Stdin is closed after the final send.
+   * Write each `send` once its `when` pattern appears in stdout after the
+   * previous match. The prompt is printed by the readline that will read
+   * the answer, so there is no race. Stdin closes after the last send.
    */
   stdinOnPrompt?: Array<{ when: RegExp; send: string }>
 }
 
 /**
- * Spawn a `yaac <args>` CLI subprocess with the given env, capture
- * stdout/stderr, and resolve once it exits. The caller is responsible
- * for starting a server first (via `spawnYaacServer`) unless the
- * command under test is itself a server-lifecycle command.
+ * Run `yaac <args>` with the given env and resolve with its output once it
+ * exits. Start a server first (`spawnYaacServer`) unless the command
+ * manages the server itself.
  */
 export async function runYaac(
   env: NodeJS.ProcessEnv,
@@ -463,9 +374,6 @@ export async function runYaac(
   }
   let stdout = ''
   let stderr = ''
-  // Prompt-driven stdin (see RunYaacOptions.stdinOnPrompt): scan stdout
-  // forward, one step at a time, writing each answer only after its prompt
-  // has been printed by the readline that will consume it.
   let promptIdx = 0
   let promptScanFrom = 0
   const feedPrompts = (): void => {

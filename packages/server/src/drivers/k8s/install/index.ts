@@ -1,25 +1,16 @@
-// The public interface of the install feature: everything `yaac cluster
-// install`, `check` and `delete` do, and nothing the server does.
+// Public interface of cluster administration: what `yaac cluster install`,
+// `check` and `delete` do (create the kind cluster and its CNI, build the
+// images yaac ships, apply the in-cluster layers). It runs on the CLI's
+// machine, never in the server. Lint rules enforce this: nothing under
+// `src/` may import `#drivers/k8s/install`, and the CLI's commands may
+// import only this barrel from the driver.
 //
-// This folder is the one part of the k8s driver the SERVER never enters.
-// It administers the substrate — creates the kind cluster and its CNI,
-// re-applies the node state a restart drops, produces every image yaac
-// ships, and converges the in-cluster layers — all of which happens on the
-// machine running the yaac CLI, before (and independently of) any server.
-// The lint zones say so directly: nothing under `src/` may import
-// `#drivers/k8s/install`, and `packages/cli/src/commands` may import this
-// door and nothing else of the driver.
-//
-// That is also why the arrow points the way it does. This folder reads
-// `#drivers/k8s/cluster` — for each shipped image's identity, and for the
-// in-cluster layers both sides ensure — plus the driver's own bottom
-// (`#drivers/k8s/substrate`, `#drivers/k8s/container`,
-// `#drivers/k8s/image-engine`). Nothing reads back: a cluster module that
-// imported this one would put the server back on a path that needs a
-// container engine, which is the whole property this split protects
+// This folder may import `#drivers/k8s/cluster`, `substrate`, `container`
+// and `image-engine`, but none of them may import it, which keeps the
+// server free of a container-engine dependency
 // (docs/trust-split-builds.md).
 //
-// Adding a name here widens the interface and obliges a unit test in
+// Each name exported here needs a unit test in
 // packages/server/test/drivers/k8s/install/.
 
 export {

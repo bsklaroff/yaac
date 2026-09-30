@@ -1,8 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
 
-// Mocked at the process boundary: kubectl is the only way this feature
-// reaches the cluster, so everything below it runs for real.
+// Mock kubectl, the only way this reaches the cluster.
 const mockKubectl = vi.hoisted(() => vi.fn())
 const mockGetJson = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
@@ -11,14 +10,13 @@ vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
   kubectlGetJson: mockGetJson,
 }))
 
-// Port forwards are live host sockets — the registry is the boundary.
+// Mock the forwarder registry, which holds live sockets.
 const mockStopForwarders = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/forwarders/port-forwarders', () => ({
   stopWorkspaceForwarders: mockStopForwarders,
 }))
 
-// The salvage runs a survey exec plus node-side pods; the node image store
-// removal runs cleanup pods. Both are whole subprocess trees of their own.
+// Mock salvage and image-store removal, which run their own pods.
 const mockSalvage = vi.hoisted(() => vi.fn())
 const mockRemoveStore = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/images/image-promoter', () => ({ salvageJobImages: mockSalvage }))
@@ -95,8 +93,7 @@ describe('deregisterWorkspace', () => {
     await deregisterWorkspace('s1')
 
     expect(mockStopForwarders).toHaveBeenCalledWith('s1')
-    // The registration is a ConfigMap the proxy watches: deleting it is the
-    // whole of the deregistration, proxy or no proxy.
+    // Deleting the ConfigMap the proxy watches is the whole deregistration.
     expect(mockKubectl).toHaveBeenCalledWith(
       ['delete', 'configmap', 'yaac-proxy-reg-s1', '-n', 'yaac', '--ignore-not-found'],
     )
@@ -104,7 +101,6 @@ describe('deregisterWorkspace', () => {
       .toBeLessThan(mockKubectl.mock.invocationCallOrder[0])
   })
 
-  // A workspace that is going away must never be held up by the datapath.
   it('survives a cluster that fails the removal', async () => {
     mockKubectl.mockRejectedValue(new Error('apiserver down'))
     await expect(deregisterWorkspace('s1')).resolves.toBeUndefined()
@@ -120,15 +116,14 @@ describe('salvageWorkspaceImages', () => {
     })
   })
 
-  // A pod from before project ids has no id-named registry to push into.
+  // No project id means no registry to push to.
   it('skips a pod that carries no project id', async () => {
     mockGetJson.mockResolvedValue(podList({}))
     await salvageWorkspaceImages(TARGET)
     expect(mockSalvage).not.toHaveBeenCalled()
   })
 
-  // Losing a salvage costs a rebuild; stranding a teardown costs a leaked
-  // workspace, so the failure is swallowed here rather than upward.
+  // A failed salvage only costs a rebuild, so it must not block teardown.
   it('never throws when the salvage fails', async () => {
     mockSalvage.mockRejectedValue(new Error('registry down'))
     await expect(salvageWorkspaceImages(TARGET)).resolves.toBeUndefined()
@@ -139,8 +134,7 @@ describe('destroyWorkspace', () => {
   it('stops routing, salvages, then deletes the unit — in that order', async () => {
     await expect(destroyWorkspace(TARGET)).resolves.toBe(true)
 
-    // The salvage execs into the pod the delete destroys, and routing must
-    // stop before either.
+    // Salvage execs into the pod, so it must precede the delete.
     expect(mockStopForwarders.mock.invocationCallOrder[0])
       .toBeLessThan(mockSalvage.mock.invocationCallOrder[0])
     expect(jobDelete()).toBeDefined()
@@ -148,11 +142,8 @@ describe('destroyWorkspace', () => {
       .toBeLessThan(mockKubectl.mock.invocationCallOrder[deleteCallIndex('job')])
   })
 
-  // Callers chain a checkout removal off the verdict, so "the unit is gone"
-  // has to mean "the pod is gone". Only a FOREGROUND cascade gives that:
-  // under kubectl's default background propagation `--wait` returns once the
-  // Job object is deleted, while the pod runs on through its grace period
-  // still writing to /workspace.
+  // Callers delete the checkout next, so the pod must be gone. Only a
+  // foreground cascade waits for the pod, not just the Job object.
   it('deletes the Job with a waited foreground cascade and a deadline', async () => {
     await destroyWorkspace(TARGET)
 
@@ -174,13 +165,11 @@ describe('destroyWorkspace', () => {
   })
 })
 
-  // `unitOnly` is the failed-launch and kept-checkout shape: the workspace
-  // is coming back, either on the next attempt or on a restart, so the two
-  // things a relaunch reuses have to survive it.
+  // `unitOnly` is for a failed launch or a restart: the workspace comes back,
+  // so what a relaunch reuses must survive.
   describe('unitOnly', () => {
     it('takes the unit down and leaves the egress registration standing', async () => {
-      // The registration is made ONCE for a whole create; dropping it
-      // between attempts would leave the next one reaching nothing.
+      // Registered once per create, so retries need it to stay.
       await expect(
         destroyWorkspace(TARGET, { salvageImages: false, unitOnly: true }),
       ).resolves.toBe(true)
@@ -191,8 +180,6 @@ describe('destroyWorkspace', () => {
     })
 
     it('still reports a unit it could not confirm gone', async () => {
-      // The verdict is what gates removing the checkout, so it means the
-      // same thing whichever shape the teardown took.
       mockKubectl.mockRejectedValue(new Error('timed out'))
 
       await expect(
@@ -210,8 +197,7 @@ describe('detachedTeardownCommand', () => {
     expect(cmd).toMatch(/--timeout=\d+s/)
   })
 
-  // The whole script is re-issued to resume an interrupted teardown (the
-  // reaper does exactly that), so every line has to tolerate having run.
+  // The reaper re-runs the whole script to resume a teardown.
   it('every command is idempotent and cannot fail the script', () => {
     for (const line of detachedTeardownCommand(TARGET).split('; ')) {
       expect(line).toContain('--ignore-not-found')
@@ -228,8 +214,7 @@ describe('detachedTeardownCommand', () => {
 describe('destroyProjectSubstrate', () => {
   it('removes the project registry, its egress secrets and the node-local trees', async () => {
     await destroyProjectSubstrate(PROJECT)
-    // What is named by the id goes by the id; the egress secrets are still
-    // keyed by slug.
+    // Most objects are keyed by id; egress secrets by slug.
     expect(mockRemoveRegistry).toHaveBeenCalledWith(PROJECT.id)
     expect(mockRemoveSecrets).toHaveBeenCalledWith('proj')
     expect(mockRemoveStore).toHaveBeenCalledWith(PROJECT.id)
@@ -241,8 +226,7 @@ describe('destroyProjectSubstrate', () => {
     expect(mockRemoveStore).toHaveBeenCalledWith(PROJECT.id)
   })
 
-  // They fail for unrelated reasons and neither is recoverable by the
-  // other, so one unreachable piece must not strand the rest.
+  // One failing piece must not block the others.
   it('still removes the image stores when the registry teardown fails', async () => {
     mockRemoveRegistry.mockRejectedValue(new Error('cluster offline'))
     await expect(destroyProjectSubstrate(PROJECT)).resolves.toBeUndefined()

@@ -23,8 +23,7 @@ vi.mock('#drivers/k8s/container/runtime', () => ({
 }))
 
 import { ensureGvisorRuntime } from '#drivers/k8s/install'
-// Setup values: the object names and the image pin the assertions compare
-// against.
+// Setup values, not units under test.
 import {
   GVISOR_INSTALLER_APP_NAME,
   GVISOR_INSTALLER_MIRROR_TAG,
@@ -120,20 +119,16 @@ describe('ensureGvisorRuntime', () => {
     expect(ds.metadata.namespace).toBe('test-ns')
     const pod = ds.spec.template.spec
 
-    // Privileged + hostPID: it writes node binaries and containerd's config,
-    // and restarts containerd from PID 1's mount namespace. There is no
-    // unprivileged spelling of "install a container runtime".
+    // Privileged + hostPID: it installs node binaries, edits containerd's
+    // config and restarts containerd from PID 1's mount namespace.
     expect(pod.containers[0].securityContext).toEqual({ privileged: true, runAsUser: 0 })
     expect(pod.hostPID).toBe(true)
-    // Node network + node DNS: it must work on a node whose CNI/CoreDNS are
-    // not up yet, and reach the release bucket directly.
+    // Host network and DNS, so it works before CNI/CoreDNS are up.
     expect(pod.hostNetwork).toBe(true)
     expect(pod.dnsPolicy).toBe('Default')
-    // Trusted infra, and necessarily so — it is what makes the sentry tier
-    // exist, so it cannot itself run on it.
+    // runc: it installs gVisor, so it cannot run on it.
     expect(pod.runtimeClassName).toBeUndefined()
-    // Node infrastructure, like netd: runs everywhere, is not what gets
-    // evicted when a node fills.
+    // Node infrastructure: runs on every node and is not evicted first.
     expect(pod.tolerations).toEqual([{ operator: 'Exists' }])
     expect(pod.priorityClassName).toBe('system-node-critical')
     // One node's containerd restart at a time.
@@ -141,24 +136,23 @@ describe('ensureGvisorRuntime', () => {
       type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 1 },
     })
 
-    // The install program runs from the mirrored upstream image, with the
-    // node's identity for the label patch.
+    // Runs from the mirrored upstream image, with the node name for the
+    // label patch.
     expect(pod.containers[0].image).toBe(`localhost:5001/${GVISOR_INSTALLER_MIRROR_TAG}`)
     expect(pod.containers[0].command[0]).toBe('sh')
     expect(pod.containers[0].command[2]).toContain('nsenter -t 1 -m -- systemctl restart containerd')
-    // The same pass is the node-tuning mechanism (docs/cluster-setup.md).
+    // The same pass also tunes the node (docs/cluster-setup.md).
     expect(pod.containers[0].command[2]).toContain('nsenter -t 1 -m -- systemctl daemon-reexec')
     expect(pod.containers[0].env).toEqual([
       { name: 'NODE_NAME', valueFrom: { fieldRef: { fieldPath: 'spec.nodeName' } } },
     ])
-    // Ready means "this node's runtime is live", which is what the rollout
-    // gate below is actually waiting on.
+    // Ready means this node's runtime is live, which the rollout waits for.
     expect(pod.containers[0].readinessProbe.exec.command)
       .toEqual(['test', '-f', GVISOR_INSTALLER_READY_FILE])
     expect(pod.volumes.filter((v) => v.hostPath).map((v) => v.hostPath!.path))
       .toEqual(['/usr/local/bin', '/etc/containerd', '/var/lib/yaac/gvisor', '/etc/systemd/system.conf.d'])
 
-    // RBAC: label a node, and nothing else.
+    // RBAC: only labelling nodes.
     const role = ofKind('ClusterRole')[0] as unknown as {
       metadata: { name: string; labels: Record<string, string> }
       rules: Array<{ apiGroups: string[]; resources: string[]; verbs: string[] }>
@@ -166,8 +160,8 @@ describe('ensureGvisorRuntime', () => {
     expect(role.rules).toEqual([
       { apiGroups: [''], resources: ['nodes'], verbs: ['get', 'patch'] },
     ])
-    // Cluster-scoped names carry the install namespace, so the real install
-    // and an e2e run's coexist; the label is how a sweep tells them apart.
+    // Cluster-scoped names include the namespace so the real install and
+    // e2e runs can coexist.
     expect(role.metadata.name).toBe(`${GVISOR_INSTALLER_APP_NAME}-test-ns`)
     expect(role.metadata.labels['yaac.install-namespace']).toBe('test-ns')
     const binding = ofKind('ClusterRoleBinding')[0] as unknown as {
@@ -179,9 +173,8 @@ describe('ensureGvisorRuntime', () => {
       { kind: 'ServiceAccount', name: GVISOR_INSTALLER_APP_NAME, namespace: 'test-ns' },
     ])
 
-    // The RuntimeClasses land only after the rollout, because they select on
-    // the label the DaemonSet stamps: applied first, every sandboxed pod
-    // would sit Pending until the installer caught up.
+    // RuntimeClasses select on the label the DaemonSet adds, so they are
+    // applied after the rollout; otherwise gVisor pods would sit Pending.
     expect(mockRetry).toHaveBeenCalledWith(
       ['rollout', 'status', `daemonset/${GVISOR_INSTALLER_APP_NAME}`, '-n', 'test-ns', '--timeout=300s'],
       expect.objectContaining({ maxAttempts: 2 }),
@@ -193,12 +186,9 @@ describe('ensureGvisorRuntime', () => {
       .toBe(true)
     expect(classApplies.find((c) => c.kind === 'DaemonSet')!.order).toBeLessThan(rolloutOrder)
 
-    // The rollout restarted the node's containerd, which kills every
-    // port-forward into it. The registry forward is dropped AFTER the
-    // rollout has finished (the restart has happened by then, and the
-    // installer's exec probe has proven the runtime is back) so the next
-    // lookup — netd's, on a first install — re-forwards instead of reading
-    // a dead transport as a missing image.
+    // Restarting containerd kills port-forwards. The registry forward is
+    // dropped after the rollout so the next lookup reconnects instead of
+    // reading a dead connection as a missing image.
     expect(mockInvalidate).toHaveBeenCalledTimes(1)
     expect(mockInvalidate.mock.invocationCallOrder[0]).toBeGreaterThan(rolloutOrder)
 
@@ -220,14 +210,11 @@ describe('ensureGvisorRuntime', () => {
     const spec = (): Record<string, unknown> =>
       ((ofKind('DaemonSet')[0].spec as { template: { spec: Record<string, unknown> } })
         .template.spec)
-    // No selector at all rather than an empty one: an empty map is the same
-    // thing to the scheduler, but a field that is not there cannot be
-    // mistaken for a pool that was configured and then emptied.
+    // No selector field, rather than an empty one.
     expect(spec()).not.toHaveProperty('nodeSelector')
 
-    // The blast-radius knob: a cluster with a sessions-only pool installs
-    // (and restarts containerd) there only. The RuntimeClasses' SELECTOR
-    // needs no change — it follows the label the installer stamps.
+    // With a workspace node pool, only that pool gets gVisor (and a
+    // containerd restart). The RuntimeClass selector follows the label.
     vi.clearAllMocks()
     mockHasTag.mockResolvedValue(true)
     await ensureGvisorRuntime({ nodeSelector: { 'yaac.node-pool': 'sessions' } })
@@ -244,12 +231,9 @@ describe('ensureGvisorRuntime', () => {
       tolerations,
     })
 
-    // The RuntimeClasses are where a pool toleration has to land: admission
-    // merges scheduling.tolerations into every pod naming the class, which
-    // is how session pods, builder pods, synced pods and cluster check's
-    // pinned probes all reach a tainted pool without any of them knowing it
-    // exists. Cluster check reads the same field back to decide which nodes
-    // can take a session.
+    // The pool toleration goes on the RuntimeClasses: admission adds it to
+    // every pod using the class, so gVisor pods reach a tainted pool without
+    // knowing about it. Cluster check reads it back too.
     const classes = ofKind('RuntimeClass') as unknown as Array<{
       scheduling: { nodeSelector: Record<string, string>; tolerations?: unknown }
     }>
@@ -259,8 +243,7 @@ describe('ensureGvisorRuntime', () => {
       expect(c.scheduling.nodeSelector).toEqual({ [GVISOR_NODE_LABEL]: 'true' })
     }
 
-    // The DaemonSet is untouched by it — it already tolerates everything,
-    // the way node infrastructure must, so a pool taint costs it nothing.
+    // The DaemonSet already tolerates everything.
     const pod = (ofKind('DaemonSet')[0].spec as {
       template: { spec: { tolerations: unknown; nodeSelector: Record<string, string> } }
     }).template.spec
@@ -269,10 +252,8 @@ describe('ensureGvisorRuntime', () => {
   })
 
   it('takes the installer image from the registry, never the host engine', async () => {
-    // The image is a digest-pinned upstream (a child manifest would mirror
-    // one platform's bytes onto every node), mirrored by `yaac cluster
-    // install`. Everything here only looks it up: applying the DaemonSet
-    // must not need a container engine.
+    // `yaac cluster install` mirrors the digest-pinned upstream image; this
+    // only looks it up, so applying the DaemonSet needs no container engine.
     await ensureGvisorRuntime()
     expect(GVISOR_INSTALLER_UPSTREAM_IMAGE).toMatch(/^docker\.io\/curlimages\/curl@sha256:[0-9a-f]{64}$/)
     expect(mockExec).not.toHaveBeenCalled()

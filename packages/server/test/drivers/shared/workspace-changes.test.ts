@@ -14,16 +14,14 @@ import {
 } from '#drivers/shared/workspace-changes'
 import { CHANGES_BASE_UNRESOLVED } from '#drivers/contract'
 
-// The container spelling of a workspace's paths — what the k8s driver passes
-// and every assertion below is written against. A host-process driver passes
-// its own, which is the point of the parameter.
+// The in-pod paths the k8s driver passes; a host driver passes its own.
 const LOC: ChangesLocation = {
   workspaceDir: '/workspace',
   indexFile: '/tmp/yaac-changes.idx',
   baseUnresolvedCode: CHANGES_BASE_UNRESOLVED,
 }
 
-/** The script as a driver builds it, with the location already applied. */
+/** The script as a driver builds it, with `LOC` applied. */
 const buildChangesScript = (base?: string, defaultBase?: string): string =>
   buildScript(LOC, base, defaultBase)
 
@@ -115,13 +113,11 @@ describe('parseChangesOutput', () => {
     const out = parseChangesOutput(raw, 20)
     expect(out.truncated).toBe(true)
     expect(Buffer.byteLength(out.diff)).toBe(20)
-    // The file list is still complete.
     expect(out.files).toHaveLength(2)
   })
 
-  // The cap is BYTES on both sides — the pod cuts with `head -c`. Measuring
-  // UTF-16 code units here would call a multi-byte diff that the pod had
-  // already cut "not truncated", handing the client a silently severed diff.
+  // The pod cuts with `head -c`, so the cap must be in bytes here too, or a
+  // cut multi-byte diff would not be flagged as truncated.
   it('measures the diff cap in bytes, not UTF-16 code units', () => {
     // 300 CJK chars = 300 code units but 900 bytes.
     const wide = [
@@ -130,11 +126,9 @@ describe('parseChangesOutput', () => {
     const out = parseChangesOutput(wide, 500)
     expect(out.truncated).toBe(true)          // 900 bytes > 500, though 300 units < 500
     expect(Buffer.byteLength(out.diff)).toBeLessThanOrEqual(500)
-    // Cut on a code point boundary: no replacement char, and 500 is a real
-    // ceiling (a blind byte slice would decode to 501 bytes here).
+    // Cut on a code point boundary, never over the cap.
     expect(out.diff).toBe('交'.repeat(166))
     expect(out.diff).not.toContain('�')
-    // Well under the cap in bytes stays untouched.
     const small = parseChangesOutput(wide, 5000)
     expect(small.truncated).toBe(false)
     expect(small.diff).toBe('交'.repeat(300))
@@ -165,23 +159,20 @@ describe('parseChangesOutput', () => {
     expect(out.diff).toBe('')
   })
 
-  // A run that dies partway used to reach the UI as a perfectly ordinary empty
-  // changeset — the "No changes" lie. The completion marker is what separates
-  // the two, so its absence must be an error, however well-formed the rest is.
+  // Without the completion marker the run died partway; reporting an empty
+  // changeset would wrongly say "No changes".
   it('rejects output with no completion marker rather than reporting no changes', () => {
     const partial = 'BASE deadbeef\nFORK 1\n@@NUMSTAT@@\n@@NAMESTATUS@@\n'
     expect(() => parseChangesOutput(partial)).toThrow(/completion marker/)
     expect(() => parseChangesOutput('')).toThrow(/completion marker/)
-    // Even a full-looking file list is refused when the marker never arrived.
     const truncatedRun = [
       'BASE abc123def', 'FORK 1', '@@NUMSTAT@@', '10\t2\tsrc/app.ts', '@@NAMESTATUS@@', 'M\tsrc/app.ts',
     ].join('\n')
     expect(() => parseChangesOutput(truncatedRun)).toThrow(/completion marker/)
   })
 
-  // FORK 0 means the fork point was unresolvable and the diff ran against HEAD,
-  // so committed work is missing. The flag is what lets the UI say "nothing
-  // uncommitted" instead of "no changes".
+  // FORK 0: the fork point was unresolved and the diff ran against HEAD, so
+  // committed work is missing. The UI then says "nothing uncommitted".
   it('reports an unresolved fork point so an empty result is not read as no changes', () => {
     const fellBack = [
       'BASE headsha', 'FORK 0', '@@NUMSTAT@@', '@@NAMESTATUS@@', '@@OK@@', '@@DIFF@@',
@@ -191,9 +182,8 @@ describe('parseChangesOutput', () => {
     expect(out.files).toEqual([])
   })
 
-  // The markers are literal strings, and a diff that touches this very module
-  // contains them. Each section is bounded by the FIRST occurrence of its
-  // marker, all of which precede the diff body, so the body cannot re-split it.
+  // A diff of this module contains the markers. Sections split on each
+  // marker's first occurrence, which precedes the diff body.
   it('is not confused by markers appearing inside the diff body', () => {
     const selfReferential = [
       'BASE abc123def',
@@ -228,9 +218,8 @@ describe('buildChangesScript', () => {
     expect(s.endsWith("yaac-changes '' ''")).toBe(true)
   })
 
-  // A session forked from a branch that was never pushed has no origin/<b> at
-  // all; without a local-ref attempt it falls through to HEAD and every
-  // committed change silently disappears from the pane.
+  // An unpushed branch has no origin/<b>; falling through to HEAD would
+  // hide every committed change.
   it('falls back to the local ref when the branch has no origin/ counterpart', () => {
     const s = buildChangesScript()
     expect(s).toContain('git merge-base "origin/$1" HEAD 2>/dev/null || git merge-base "$1" HEAD')
@@ -241,14 +230,11 @@ describe('buildChangesScript', () => {
     const s = buildChangesScript()
     expect(s).toContain('export GIT_INDEX_FILE=/tmp/yaac-changes.idx')
     expect(s).not.toContain('$$')            // no per-run tempfile: that discards git's stat cache
-    // A wedged index — including a lock orphaned by a killed run — must not
-    // fail every future poll.
+    // A stale index or orphaned lock must not fail every later poll.
     expect(s).toContain('rm -f /tmp/yaac-changes.idx /tmp/yaac-changes.idx.lock; git add -A || exit 5')
   })
 
-  // Every command feeding the file list is status-checked, and the completion
-  // marker is printed only after they all pass — so a failed run surfaces as an
-  // error instead of an empty changeset.
+  // The completion marker prints only after every file-list command passed.
   it('checks each file-list command and marks completion', () => {
     const s = buildChangesScript()
     expect(s).toContain('--numstat "$base" || exit 6')
@@ -305,14 +291,9 @@ describe('buildChangesScript', () => {
     expect(buildChangesScript('  dev  ', '  main  ').endsWith("yaac-changes 'dev' 'main'")).toBe(true)
   })
 
-  // ── The script, actually executed ────────────────────────────────────────
-  //
-  // Everything above asserts on the script as a STRING, which cannot catch a
-  // shell-semantics bug: `||` / `{ }` precedence, quoting, whether a fallback
-  // really fires. The body is plain `sh` + git and touches no cluster, so run
-  // it for real against scratch repos — one `sh -c` pass over the exact string
-  // buildChangesScript emits, exactly as streamd invokes it. Only the two
-  // pod-absolute paths are redirected; the shell body is untouched.
+  // The tests below run the exact script with `sh -c` against scratch repos,
+  // as streamd does, to catch shell bugs that string assertions miss. Only
+  // the two in-pod paths are redirected.
 
   const tmpDirs: string[] = []
   afterEach(() => {
@@ -327,9 +308,8 @@ describe('buildChangesScript', () => {
     execFileSync('git', args, { cwd: repo, encoding: 'utf8', env: { ...process.env, ...GIT_ENV } })
 
   /**
-   * A repo on `main` with one commit, plus a scratch index path. The index
-   * lives OUTSIDE the workspace, as it does in the pod (`/tmp`) — inside,
-   * `git add -A` would stage the index itself.
+   * A repo on `main` with one commit, plus an index path outside it (as in
+   * the pod), so `git add -A` does not stage the index itself.
    */
   function scratchRepo(): { repo: string; idx: string } {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-changes-'))
@@ -362,9 +342,7 @@ describe('buildChangesScript', () => {
     }
   }
 
-  // THE root cause. A fork branch with no `origin/` counterpart used to fall
-  // all the way through to HEAD, which hides every commit — the pane then said
-  // "No changes" about a session that had plenty.
+  // Falling through to HEAD would hide every commit.
   it('resolves a fork branch that exists only locally, keeping committed work visible', () => {
     const { repo, idx } = scratchRepo()
     git(repo, 'checkout', '-q', '-b', 'agent/x')
@@ -373,7 +351,7 @@ describe('buildChangesScript', () => {
     git(repo, 'commit', '-qm', 'work')
     fs.writeFileSync(path.join(repo, 'untracked.txt'), 'working\n')
 
-    // `main` exists locally; `origin/main` does not exist at all.
+    // `main` exists locally; `origin/main` does not.
     const { stdout, code } = runPodScript(repo, idx, undefined, 'main')
     expect(code).toBe(0)
     const out = parseChangesOutput(stdout)
@@ -382,7 +360,7 @@ describe('buildChangesScript', () => {
     expect(out.diff).toContain('+committed')
     expect(out.diff).toContain('+working')
 
-    // The agent's own index and HEAD are untouched by our snapshot.
+    // The agent's own index and HEAD are untouched.
     expect(git(repo, 'status', '--porcelain')).toBe('?? untracked.txt\n')
   })
 
@@ -393,19 +371,17 @@ describe('buildChangesScript', () => {
     git(repo, 'commit', '-qm', 'work')
     fs.writeFileSync(path.join(repo, 'dirty.txt'), 'dirty\n')
 
-    // No remote, no upstream, and no local branch by that name either.
+    // No remote, upstream or local branch of that name.
     const { stdout, code } = runPodScript(repo, idx, undefined, 'nowhere')
     expect(code).toBe(0)
     const out = parseChangesOutput(stdout)
     expect(out.baseResolved).toBe(false)
-    // Committed work is genuinely absent — which is why the UI must not call
-    // this "no changes".
+    // Committed work is absent, hence `baseResolved: false`.
     expect(out.files.map((f) => f.path)).toEqual(['dirty.txt'])
   })
 
-  // Never silently diffs against the wrong base — and the code is the exact
-  // one the contract publishes, because that is what the mediator reads to
-  // answer a caller-named ref that resolves nowhere as a bad request.
+  // Never diffs against the wrong base; the exit code is the contract's, so
+  // callers can answer 400.
   it('hard-fails on an explicit base that resolves nowhere', () => {
     const { repo, idx } = scratchRepo()
     const { code } = runPodScript(repo, idx, 'no-such-branch', 'main')
@@ -420,13 +396,12 @@ describe('buildChangesScript', () => {
       .files.map((f) => f.path)).toEqual(['a.txt'])
     expect(fs.existsSync(idx)).toBe(true) // the index persists for the next poll
 
-    // A second run over the reused index sees a later edit AND a deletion.
+    // A second run over the reused index sees an edit and a deletion.
     fs.rmSync(path.join(repo, 'a.txt'))
     fs.writeFileSync(path.join(repo, 'b.txt'), 'b\n')
     expect(parseChangesOutput(runPodScript(repo, idx, undefined, 'main').stdout)
       .files.map((f) => f.path)).toEqual(['b.txt'])
 
-    // An orphaned lock would otherwise fail every future poll.
     fs.writeFileSync(`${idx}.lock`, '')
     const recovered = runPodScript(repo, idx, undefined, 'main')
     expect(recovered.code).toBe(0)

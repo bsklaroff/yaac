@@ -9,70 +9,40 @@ import { isLoopbackOrigin } from '#server-api'
 import type { DriverKind } from '#types'
 
 /**
- * A live set of port forwards, reconciled against a desired list.
- *
- * The resident forwarder's core, and shared by both of them: `yaac
- * forward` polls the workspace list while the desktop app watches
- * `/events`, but what each does with the answer is identical — bind what
- * the server now offers, let go of what it no longer does. Keeping that
- * here is what stops the tray and the CLI drifting into two different
- * ideas of what a forward is.
- *
- * Reconciling by IDENTITY rather than by count is the substance: a session
- * that gains a port must not cost the others their open connections, so an
- * unchanged spec is never restarted.
+ * A live set of port forwards, reconciled against a desired list. Shared by
+ * `yaac forward` (which polls the workspace list) and the desktop app
+ * (which watches `/events`). Unchanged specs are never restarted, so
+ * adding a port does not drop other forwards' open connections.
  */
 
 /**
- * Whether a client reaching the server at `baseUrl` should bind what that
- * server offers.
- *
- * Under `k8s`, always: the server is a pod and binds nothing anywhere, so
- * a forward is dialable only while some client holds its listener. Under
- * `containerless` the workspace's own processes bind the host ports, so
- * what the server offers is the identity mapping over listeners that
- * ALREADY exist on its machine. A client on that same machine must not
- * bind them: every bind loses to the dev server holding the port, or —
- * worse — wins against one that has not booted yet and takes the port
- * out from under it. From any other machine those ports are exactly as
- * unreachable as a pod's, and the tunnel is the same answer.
- *
- * The origin is the one "is this the server's machine?" question a client
- * has (`isLoopbackOrigin`): a host server and an in-cluster one are both
- * registered at a loopback origin, and a remote one never is. The blind
- * spot is an `ssh -L` tunnel to a remote containerless server, which
- * passes as local and stays unforwarded.
+ * Whether a client reaching the server at `baseUrl` should bind the ports
+ * it offers. Always under `k8s`. Under `containerless` the workspace binds
+ * the ports itself on the server's machine, so a client on that machine
+ * (a loopback origin) must not bind them too. An `ssh -L` tunnel to a
+ * remote containerless server looks local and so gets no forwards.
  */
 export function serverNeedsForwarder(driver: DriverKind, baseUrl: string): boolean {
   return driver !== 'containerless' || !isLoopbackOrigin(baseUrl)
 }
 
-/** A forward's identity: which workspace's port, offered where. Two specs
- *  differing in any of these are different forwards. */
+/** A forward's identity: workspace, container port and host port. */
 function specKey(spec: ForwardSpec): string {
   return `${spec.session} ${spec.containerPort} ${spec.hostPort}`
 }
 
 export interface ForwardSetEvents extends ForwardEvents {
-  /** A forward came up or went away — a tray item, or a CLI line. */
   onChange?: (spec: ForwardSpec, state: 'up' | 'down') => void
   /**
-   * A forward could not bind its host port.
-   *
-   * The one failure the server could never have reported: what else on
-   * this machine holds a port is unknowable from inside a pod, and the
-   * machine that binds may not even be the one the server runs on.
-   * Reported rather than raised — the rest of the set still comes up, and
-   * the next reconcile retries this one.
+   * A forward could not bind its host port. The rest of the set still comes
+   * up, and the next reconcile retries this one.
    */
   onBindError?: (spec: ForwardSpec, message: string) => void
 }
 
 export interface ForwardSet {
-  /** Make the live set match `specs`: start what is new, drop what is
-   *  gone, leave the rest untouched. */
+  /** Start new specs and stop missing ones, leaving the rest untouched. */
   reconcile(specs: ForwardSpec[]): Promise<void>
-  /** What is bound right now. */
   live(): ForwardSpec[]
   close(): void
 }
@@ -100,8 +70,7 @@ export function createForwardSet(
         if (live.has(key)) continue
         try {
           const handle = await startForward(target, spec, forwardOpts)
-          // Re-check after the await: a close() that raced the bind would
-          // otherwise leave this holding a port nothing will release.
+          // close() may have run while binding.
           if (closed) {
             handle.close()
             return

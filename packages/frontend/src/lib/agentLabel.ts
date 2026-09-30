@@ -2,35 +2,27 @@ import { TOOL_LABEL } from '#lib/icons'
 import type { AgentSessionEntry, AgentTool } from '@yaac/shared/types'
 
 /**
- * How a workspace's agent is named wherever it is named: the tool, and the
- * model it is answering as when the server knows one ("Claude · Opus 5").
+ * The display name of a workspace's agent: the tool, plus the model when
+ * known ("Claude · Opus 5").
  *
- * The model arrives verbatim in the tool's own spelling, which is the right
- * thing to store and the wrong thing to show — `claude-opus-5` beside a tool
- * name reads as a config value, not as a fact about the conversation. The
- * server sends the catalog's name for it alongside (`modelName`), which is
- * what is shown; the shortening here is only for ids the catalog does not
- * name, and deliberately conservative: an id it does not recognize is shown
- * as-is rather than mangled, since a wrong short name is worse than a long
- * right one.
+ * The server sends the catalog's display name (`modelName`) when it has one.
+ * Otherwise the raw model id is shortened here, conservatively: an id that
+ * isn't recognized is shown as-is, since a wrong short name is worse than a
+ * long correct one.
  */
 
 /**
- * Anthropic's id grammar: `claude-<family>-<major>[-<minor>][-<date>]`, plus
- * the `[1m]` context suffix the long-context variants carry.
- *
- * The minor is bounded to two digits and must be followed by an id boundary,
- * or the optional group swallows the 8-digit date of a major-only dated id
- * (`claude-sonnet-4-20250514`) and renders it as a version — recognizing an id
- * and then mangling it, which is worse than not recognizing it at all.
+ * Anthropic's id format: `claude-<family>-<major>[-<minor>][-<date>]`, plus
+ * an optional `[1m]` long-context suffix. The minor is at most two digits
+ * and must end at a boundary, so the date in `claude-sonnet-4-20250514` is
+ * not read as a version.
  */
 const CLAUDE_ID = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2})(?=$|-|\[))?/
 
 /**
- * A model id as a person would say it. `claude-opus-5` → `Opus 5`,
- * `claude-opus-4-8` → `Opus 4.8`; a `provider/model` id keeps only the model
- * half (`anthropic/claude-opus-4-8` → `Opus 4.8`, `openai/gpt-5.6` →
- * `gpt-5.6`), since the provider is already implied by the tool beside it.
+ * A model id as a person would say it: `claude-opus-4-8` → `Opus 4.8`. A
+ * `provider/model` id drops the provider (`openai/gpt-5.6` → `gpt-5.6`),
+ * which the tool name beside it already implies.
  */
 export function formatModel(model: string): string {
   const bare = model.slice(model.lastIndexOf('/') + 1)
@@ -47,8 +39,7 @@ export function modelLabel(named: { model?: string; modelName?: string }): strin
   return named.modelName ?? (named.model !== undefined ? formatModel(named.model) : undefined)
 }
 
-/** "Claude · Opus 5", or the bare tool name when no model is known — a
- *  conversation launched without one that has not answered yet. */
+/** "Claude · Opus 5", or just the tool name when no model is known yet. */
 export function agentLabel(
   tool: AgentTool,
   named: { model?: string; modelName?: string } | undefined,
@@ -58,16 +49,11 @@ export function agentLabel(
 }
 
 /**
- * The model a whole workspace is running, for the one line a row has to say it
- * on. A live conversation is the honest answer, so those are preferred over
- * history; among several, the earliest is the workspace's primary agent
- * (ordinal 0 is the window a restart brings up first).
- *
- * A workspace whose live conversations have not reported a model yet still
- * shows one from its history rather than nothing: the transcript it came from
- * is the same one the live agent is appending to. On a stopped workspace the
- * same rule names the model its primary conversation last answered as — not
- * necessarily what a restart resumes with, which is up to each tool.
+ * The agent session whose model names the workspace in its sidebar row.
+ * Prefers active sessions, then the lowest ordinal (the primary agent). If
+ * no active session has reported a model, falls back to history. On a
+ * stopped workspace this is the model last used, which a restart may not
+ * resume with.
  */
 export function workspaceModel(
   workspace: { agentSessions: AgentSessionEntry[] },

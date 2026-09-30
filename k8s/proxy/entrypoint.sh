@@ -12,17 +12,12 @@ if [ "$USE_TOR" = "1" ]; then
   done
 fi
 
-# Run ssh-agent on a socket under the pod's emptyDir HOME; the proxy talks
-# to it directly via SSH_AUTH_SOCK. Nothing outside this pod opens it: session
-# pods reach the agent over the proxy's SSH_AGENT_PORT listener, which splices
-# to this socket after authenticating the source pod (see proxy.ts).
+# Run ssh-agent on a socket in the pod's emptyDir HOME. Only the proxy opens
+# it; workspace pods reach it through the proxy's SSH_AGENT_PORT listener
+# (see ssh-agent-relay.ts).
 #
-# Force-remove the socket first: HOME is an emptyDir, whose lifetime is the
-# POD's, not the container's, so a container restart (crash, OOM) reruns this
-# script against the previous agent's leftover socket file. `ssh-agent -a`
-# would then fail to bind (EADDRINUSE) and, under `set -e`, crash-loop the
-# proxy — taking agent forwarding down for every session until the pod is
-# deleted by hand.
+# HOME outlives a container restart, so remove any leftover socket first.
+# Otherwise `ssh-agent -a` fails with EADDRINUSE and the proxy crash-loops.
 rm -f "$HOME/agent.sock"
 eval "$(ssh-agent -a "$HOME/agent.sock")"
 export SSH_AUTH_SOCK="$HOME/agent.sock"

@@ -1,46 +1,22 @@
 /**
- * The install's npm registry cache: one Verdaccio every workspace pod of the
- * install installs through (docs/workspace-storage.md "Package installs").
+ * The install's npm cache: one Verdaccio that workspace pods install through
+ * (docs/workspace-storage.md, "Package installs"). Each workspace has its own
+ * pnpm store, so installs are usually cold; this fetches each package from
+ * npmjs once per cluster and keeps working when npmjs is slow or down.
  *
- * Each workspace keeps its own pnpm store, on its own pod-local volume, so a
- * cold store is the normal case and every install is a full fetch. This is
- * where those fetches land instead of the internet: a package comes from
- * npmjs once per cluster, and installs keep working while npmjs is slow,
- * rate-limiting, or down.
+ * Deployed like the main registry: one replica, `Recreate`, an RWO claim,
+ * so there is never more than one writer to Verdaccio's plain-file storage.
  *
- * Built the way the main registry is (main-registry.ts), and for the same
- * reasons: a Recreate Deployment of one replica over an RWO claim that names
- * no storage class. Verdaccio's storage is plain files, safe for one process
- * and not for several, so "never two writers" is the invariant — Recreate
- * takes the old pod away before the new one mounts the claim, and RWO holds
- * the claim to one node. The cache belongs to the claim rather than to a
- * node: a pod rescheduled elsewhere reattaches it warm, and a lost claim
- * costs a cold cache and nothing else.
+ * Workspaces cannot publish (the cache is shared across projects), and pnpm
+ * verifies every tarball against the lockfile. It is only the default
+ * registry: a project's own `.npmrc` wins, and those requests go through the
+ * egress proxy. The cache sends no credentials upstream.
  *
- * Read-only to workspaces: `publish` and `unpublish` are `$nobody` for every
- * package, because every project's workspaces share this one cache and a
- * workspace that could publish could poison what the others install. What
- * they pull is still bounded by their lockfiles — pnpm checks every tarball
- * against the lockfile's integrity hash, whoever served it.
+ * It fetches directly, not through the proxy, an accepted exception
+ * (docs/workspace-egress.md). Only pods labelled `LABEL_NPM_CACHE` at launch
+ * (npmCache on, npmjs allowed, no proxied npmjs secret) can reach it.
  *
- * The public registry is the only uplink, and the cache is only ever the
- * DEFAULT: a workspace gets it at user-config precedence, below its
- * project's own `.npmrc`, so a project naming a registry of its own — for
- * everything or for a scope — keeps it, and those requests go out through
- * the egress proxy with their credentials. The cache sends none upstream,
- * so it only ever holds what npmjs serves anonymously.
- *
- * It fetches directly, not through the egress proxy, so what it serves is
- * outside the per-workspace allowlist — an accepted exception, bounded to
- * npm content coming IN (docs/workspace-egress.md). Which workspaces may use
- * it at all is per project: only a pod the server labelled
- * `LABEL_NPM_CACHE` at launch (launch.ts) can dial it — the project's
- * `npmCache` setting is on, its allowlist admits npmjs, and it has no
- * proxied npmjs secret — and only such a pod is pointed at it.
- *
- * Nothing prunes the cache: it keeps every tarball it ever fetched, and any
- * workspace can grow it by asking for public packages. Accepted for now —
- * on kind the claim is node disk with no quota (docs/workspace-storage.md).
+ * Nothing prunes the cache yet.
  */
 import crypto from 'node:crypto'
 import {
@@ -60,11 +36,7 @@ import { registryHasTag, registryRef } from '#drivers/k8s/container'
 import { clusterPodCidrs, nodeIpBlocks } from './cluster-cidrs'
 import { ensureNamespace } from './proxy-apply'
 
-/**
- * Digest-pinned upstream, mirrored into the main registry like Envoy
- * (netd.ts): the pin is the multi-arch INDEX digest, and the mirror tag
- * carries it so a re-pin re-mirrors.
- */
+/** Digest-pinned (multi-arch index) and mirrored like Envoy (netd.ts). */
 const VERDACCIO_VERSION = '6.10.4'
 const VERDACCIO_PIN = 'sha256:43c4067288b050422265407ea2fe747e511fcd0c407a85ec90ab9a326d9400cd'
 export const VERDACCIO_UPSTREAM_IMAGE = `docker.io/verdaccio/verdaccio@${VERDACCIO_PIN}`
@@ -85,28 +57,18 @@ function npmCachePvcName(): string {
   return `${NPM_CACHE_APP_NAME}-storage-${dataDirHash()}`
 }
 
-/**
- * Requested capacity — a request, as for the main registry: kind's
- * local-path provisioner ignores it. Running out fails installs, so it is
- * sized for many projects' dependency trees, every version they have
- * locked.
- */
+/** Requested size (ignored by kind's local-path provisioner). Running out
+ *  fails installs. */
 const NPM_CACHE_STORAGE_SIZE = '20Gi'
 
-/**
- * The registry URL a workspace's pnpm is pointed at: the Service by its
- * `.svc.cluster.local` name, which the proxy's split-horizon DNS forwards
- * to CoreDNS. Trailing slash, as npm config spells a registry.
- */
+/** The registry URL for workspaces: the Service's `.svc.cluster.local`
+ *  name (resolved via the proxy's DNS), with npm's trailing slash. */
 function npmCacheRegistryUrl(): string {
   return `http://${NPM_CACHE_APP_NAME}.${k8sNamespace()}.svc.cluster.local:${NPM_CACHE_PORT}/`
 }
 
-/**
- * Verdaccio's config. Storage and the htpasswd file live on the claim;
- * `max_users: -1` turns registration off, so nothing can authenticate and
- * `$nobody` is really nobody. The web UI is off — nothing browses this.
- */
+/** Verdaccio's config. `max_users: -1` disables registration, so nobody
+ *  can authenticate. No web UI. */
 function buildNpmCacheConfigYaml(): string {
   const pkg = [
     '    access: $all',
@@ -135,8 +97,7 @@ function buildNpmCacheConfigYaml(): string {
     'middlewares:',
     '  audit:',
     '    enabled: true',
-    // `http` logs every request with its status, which is what shows an
-    // install came through here.
+    // Logs each request, showing installs came through here.
     'log:',
     '  type: stdout',
     '  format: pretty',
@@ -146,26 +107,13 @@ function buildNpmCacheConfigYaml(): string {
 }
 
 /**
- * Every object of the cache: the workload in apply order (config and claim
- * before the Deployment that mounts them, then its three policies), and apart
- * from it the Service, which goes on last — see `ensureNpmCache`.
- *
- * The policies are the wall around a pod workspaces can reach:
- *  - The WORKSPACE side: egress to the cache port for workspace pods carrying
- *    `LABEL_NPM_CACHE`, which the install-wide workspace egress policy does
- *    not grant — it cannot tell one project from another, and a label can.
- *  - INGRESS admits the same labelled workspace pods of this namespace on
- *    the cache port, and the node addresses for the kubelet's readiness
- *    probe. Nothing else in the install has a reason to dial it.
- *  - EGRESS admits 443 off-cluster (the uplink) and DNS. Off-cluster
- *    because the cache parses every workspace's requests: compromised, it
- *    must not reach the cluster's own 443 listeners, so the pod and node
- *    addresses are carved out (a Service address is DNAT'd to a pod one
- *    before policy applies). The namespace's world-deny selects this pod
- *    like any other non-proxy pod; NetworkPolicy unions allow rules, so
- *    this is the whole of what it may reach. netd never redirects it — it
- *    is not a workspace pod — so its fetches go straight out, not through
- *    the egress proxy.
+ * The cache's objects, in apply order; the Service is separate and applied
+ * last (see `ensureNpmCache`). Its policies:
+ *  - Workspace egress to the cache port, for pods with `LABEL_NPM_CACHE`.
+ *  - Ingress from those pods and from the node (kubelet probe).
+ *  - Egress to 443 off-cluster (the uplink) and DNS. Pod and node addresses
+ *    are excluded, so a compromised cache cannot reach in-cluster services.
+ *    netd does not redirect it (not a workspace pod).
  */
 function buildNpmCacheManifests(
   imageRef: string,
@@ -215,20 +163,13 @@ function buildNpmCacheManifests(
           spec: {
             automountServiceAccountToken: false,
             enableServiceLinks: false,
-            // Infra tier, and trusted infra on runc like the registries:
-            // every workspace's install goes through it.
+            // Trusted infra on runc, like the registries.
             priorityClassName: PRIORITY_CLASS_INFRA,
-            // A block-storage claim arrives root-owned; fsGroup hands it to
-            // the image's group. (kind's local-path volume is 0777 anyway.)
+            // Make a root-owned block volume writable by the image's group.
             securityContext: { fsGroup: VERDACCIO_GID },
-            // The uplink's name has two dots, under the default `ndots:5`,
-            // so every fetch would first try it against each search domain
-            // — and the list ends with the node's own, which CoreDNS
-            // forwards to a host resolver that can hang (a VPN owning the
-            // host's DNS). `ndots:1` tries a dotted name as-is first; the
-            // cache resolves no short cluster names. (A trailing dot in
-            // the uplink URL would do the same, but ends up in its TLS
-            // Host/SNI.)
+            // With the default `ndots:5`, the uplink name would first be
+            // tried against each search domain, and the node's can hang on a
+            // host resolver (e.g. a VPN). The cache needs no short names.
             dnsConfig: { options: [{ name: 'ndots', value: '1' }] },
             containers: [{
               name: 'verdaccio',
@@ -314,12 +255,9 @@ function buildNpmCacheManifests(
 const ROLLOUT_TIMEOUT_MS = 180_000
 
 /**
- * Idempotently stand the cache up in the install namespace and wait for it
- * to serve. `yaac cluster install` runs it; the image is lookup-only, since
- * the same install's image step is what mirrors it.
- *
- * The Service goes on only once the Deployment has rolled out, so a first
- * install whose cache never came up has none at all.
+ * Create or update the cache and wait for it to serve (run by `yaac cluster
+ * install`). The Service is applied only after rollout, so a cache that
+ * never came up has no Service.
  */
 export async function ensureNpmCache(): Promise<void> {
   if (!await registryHasTag(VERDACCIO_MIRROR_TAG)) {
@@ -352,14 +290,9 @@ export async function ensureNpmCache(): Promise<void> {
 }
 
 /**
- * The registry URL a workspace should install through, or null when the
- * cache is not serving right now: absent (an install converged before it
- * existed), or with no ready pod behind its Service (a rollout, a crash, a
- * claim that cannot attach). Read per create and never cached, because the
- * two mistakes are not symmetric: pnpm has no fallback registry, so a
- * workspace pointed at a cache that is down fails every install, while one
- * left on npmjs only goes slower. A workspace already pointed here when the
- * cache goes down does fail its installs until it is back.
+ * The cache URL, or null if it is not serving now (absent, or no ready pod).
+ * Checked per create, never cached: pnpm has no fallback, so pointing at a
+ * down cache fails every install, while npmjs is merely slower.
  */
 export async function servingNpmCacheUrl(): Promise<string | null> {
   const slices = await kubectlGetJson<{

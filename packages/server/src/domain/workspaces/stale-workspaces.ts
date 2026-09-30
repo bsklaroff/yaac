@@ -14,17 +14,14 @@ import { testEnv } from '@yaac/shared/env'
 import type { StaleWorkspaceInfo } from '@yaac/shared/types'
 
 /**
- * How long a recorded workspace must be CONTINUOUSLY observed with no pod
- * before the reaper records it as dead. Must clear the slowest legitimate
- * create — a cold image build and pod start — since the row is
- * written before any of that starts. In-process creates are exempt via the
- * provisioning registry, so this only bounds the crash case.
+ * How long a live row must be continuously seen with no pod before it is
+ * recorded as dead. In-process creates are exempt, so this covers a create
+ * interrupted by a crash; it must exceed the slowest cold create.
  */
 const PODLESS_ROW_GRACE_MS = 30 * 60_000
 
-/** `<projectSlug>/<workspaceId>` → epoch ms the row was first seen with no
- *  pod. Cleared the moment a pod shows up, so only a sustained absence ever
- *  reaches the grace. */
+/** `<projectSlug>/<workspaceId>` → when the row was first seen with no pod.
+ *  Cleared as soon as a pod appears. */
 const missingSince = new Map<string, number>()
 
 /** Test helper: forget which rows are being watched for a missing pod. */
@@ -33,19 +30,15 @@ export function _clearMissingPodTimersForTests(): void {
 }
 
 /**
- * Tear down stale workspace Jobs (pod stopped, or running with a dead
- * tmux session) across every project. Swallows individual failures so
- * one broken workspace can't block the rest; designed to be called from
- * the server reconciler.
+ * Reconcile step that tears down stale workspaces in every project: stopped
+ * pods, dead tmux, agents that never started, stray units, and stuck
+ * terminations. Also records long-podless rows as dead. Individual failures
+ * are swallowed.
  */
 export async function reconcileStaleWorkspaces(snapshot?: RuntimeSnapshot): Promise<void> {
   const view = snapshot ?? workspaceDriver().snapshot()
-  // What the server records as existing, read at the top of THIS pass —
-  // so absence is only ever judged against a set from the same pass, by
-  // construction. A failed read stands every sweep down (reap nothing, say
-  // nothing): an exemption set that is even one pass stale can miss a
-  // create started since, and reaping on a guess destroys uncommitted work
-  // that exists in no other copy. The next pass retries.
+  // Read fresh each pass. If it fails, reap nothing: a stale set could miss
+  // a new create and destroy uncommitted work.
   const desired = await desiredWorkspaces().catch(() => undefined)
   if (desired === undefined) return
 
@@ -60,26 +53,15 @@ export async function reconcileStaleWorkspaces(snapshot?: RuntimeSnapshot): Prom
   const { running, stale: staleAll, indeterminate, terminating } =
     await classifyWorkspaces(pods, nowMs, probeTmuxLiveness, graceMs)
 
-  // Workspaces the server is still creating, read from the provisioning
-  // registry (which excludes failed creates: their rollback tore down what
-  // they left, so they shield nothing). A create owns its pod's whole
-  // lifecycle, so every sweep below exempts one regardless of age: the
-  // grace window alone bounds nothing on a host where the image pull or
-  // the hostPath mounts outlast it, and reaping mid-create deletes the
-  // staged workspace dir out from under the starting pod — after which its
-  // Job can never mount and create fails on every retry.
+  // Workspaces still being created are exempt from every sweep, whatever
+  // their age: reaping mid-create would delete dirs the pod is about to
+  // mount. (A pod not yet Running reads as stopped to the classifier.)
   const provisioningIds = new Set(inFlightWorkspaceIds())
 
-  // A pod that has not reached Running yet — pulling its image, mounting its
-  // hostPaths — reads as stopped to the classifier, which derives
-  // `pod-stopped` from the terminal state it does not have.
   const stale = staleAll.filter((s) => !s.workspaceId || !provisioningIds.has(s.workspaceId))
 
-  // Surface the near-miss: a running pod we deliberately did NOT reap
-  // because its tmux probe was inconclusive (transient kubectl-exec
-  // failure) — historically the main false-positive source. Without this
-  // line the avoided reap is invisible, so a flapping probe looks like
-  // nothing happened.
+  // Log pods kept because the tmux probe was inconclusive, so a flapping
+  // probe is visible.
   for (const p of indeterminate) {
     serverLog(
       `[server] stale-reaper: keeping session=${p.workspaceId} job=${p.jobName}`
@@ -87,16 +69,9 @@ export async function reconcileStaleWorkspaces(snapshot?: RuntimeSnapshot): Prom
     )
   }
 
-  // Half-provisioned zombie sweep: a create killed between opening tmux
-  // (the `sleep infinity` placeholder window) and respawning the agent —
-  // e.g. a server restart mid-create — leaves a pod whose tmux is alive
-  // but whose agent will never start. The liveness probe above calls that
-  // healthy forever, so additionally require the agent pane to have left
-  // the placeholder once the grace window has passed. Only a conclusive
-  // `placeholder` verdict reaps; `unknown` keeps the workspace. A create
-  // this process is still running is exempt regardless of age — its pane
-  // is legitimately the placeholder for as long as provisioning takes,
-  // and the grace only bounds the crashed-create case.
+  // A create interrupted after tmux started but before the agent replaced
+  // the placeholder window leaves a pod tmux reports as healthy forever.
+  // Past the grace window, reap only on a conclusive `placeholder` verdict.
   const placeholderStale: StaleWorkspaceInfo[] = []
   await Promise.all(running.map(async (p) => {
     if (!p.projectSlug || !p.workspaceId) return
@@ -109,13 +84,8 @@ export async function reconcileStaleWorkspaces(snapshot?: RuntimeSnapshot): Prom
     })
   }))
 
-  // Stray-unit sweep: a runtime unit whose workspace was evicted or deleted
-  // out-of-band is invisible to the workspace classifier, so ask the pass
-  // view for the units it is still holding with no workspace behind them —
-  // computed off the same instant, so "no workspace" is never a comparison
-  // across two views. A create in flight is exempt here too: between the
-  // unit being applied and the workspace being admitted, a slow create looks
-  // exactly like an orphan.
+  // Units with no workspace (evicted or deleted out-of-band), from the same
+  // snapshot.
   const orphanTargets: Array<{ jobName: string; projectSlug: string; workspaceId: string }> = []
   try {
     for (const u of await view.strayUnits()) {
@@ -126,38 +96,25 @@ export async function reconcileStaleWorkspaces(snapshot?: RuntimeSnapshot): Prom
       })
     }
   } catch {
-    // Unit list unavailable — the workspace-based sweep below still runs.
+    // Unavailable; the other sweeps still run.
   }
 
-  // Stuck-terminating sweep: a pod carrying a deletionTimestamp that this
-  // process isn't currently marking, stuck past the grace window — an external
-  // `kubectl delete pod`, or a yaac delete whose in-memory mark was lost
-  // (server restart, TTL). Re-issuing the idempotent Job delete resumes the
-  // teardown either way; the cause split below (ours vs out-of-band) is
-  // decided from the workspace row's recorded deletion, not the mark. Deletes
-  // we're still marking stay skipped here.
+  // Pods terminating past the grace window with no in-memory mark: an
+  // external delete, or ours with the mark lost (server restart, TTL).
+  // Re-issuing the idempotent teardown resumes either.
   const stuckTerminating: Array<{ jobName: string; projectSlug: string; workspaceId: string }> = []
   for (const p of terminating) {
     if (!p.terminating || !p.projectSlug || !p.workspaceId) continue
     if (isWorkspaceTerminating(p.workspaceId)) continue
-    // create's retry loop deletes the half-started Job itself before the next
-    // attempt, which leaves exactly this shape: a terminating pod nothing is
-    // marking. Tearing it down here runs the full teardown — workspace dir
-    // included — against a create that is about to retry into it.
+    // Create's retry loop leaves exactly this shape between attempts.
     if (provisioningIds.has(p.workspaceId)) continue
     const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
     if (ageMs < graceMs) continue
     stuckTerminating.push({ jobName: p.jobName, projectSlug: p.projectSlug, workspaceId: p.workspaceId })
   }
 
-  // A stuck-terminating pod that yaac itself deleted (its in-memory mark was
-  // lost to a server restart or the TTL while teardown dragged) looks, by pod
-  // state alone, exactly like a real out-of-band `kubectl delete`. The durable
-  // tell is the `deletedAt` yaac stamps when it issues a delete: a workspace
-  // carrying one was ours, so resume its (idempotent) teardown but
-  // preserve the recorded cause — restamping it "removed outside yaac" would
-  // clobber a plain user delete (or an earlier reaped death). Only a
-  // record-less terminating pod is genuinely out-of-band.
+  // A row with a recorded stop means yaac issued the delete: resume it but
+  // keep the recorded cause. Only pods with no such record are out-of-band.
   const ourStuck: typeof stuckTerminating = []
   const externalStuck: typeof stuckTerminating = []
   if (stuckTerminating.length > 0) {
@@ -168,20 +125,9 @@ export async function reconcileStaleWorkspaces(snapshot?: RuntimeSnapshot): Prom
     }
   }
 
-  // Rows with no pod: the row is written before the Job, so a create killed
-  // in between (server crash, kill -9) leaves a workspace recorded as live
-  // with nothing backing it — invisible to the pod-driven list and absent
-  // from the deleted listing, but permanently on the capture step's work
-  // list.
-  //
-  // The window is measured from when the pod was first OBSERVED missing,
-  // never from the row's age. A pod listing that succeeds while empty or
-  // partial (an informer cache before its initial sync, say) would
-  // otherwise condemn every workspace older than the grace in a single tick,
-  // while their pods are running — and nothing un-marks a death but a
-  // restart. Requiring the same row to look podless across the whole window
-  // makes one bad listing cost nothing. The map is in-memory, so a server
-  // restart re-arms every timer, which errs toward not recording.
+  // Live rows with no pod (a create killed before launch) are recorded as
+  // stopped. Timed from when the pod was first seen missing, not the row's
+  // age, so one empty or partial listing cannot condemn every workspace.
   const livePodIds = new Set(pods.map((p) => p.workspaceId))
   {
     const seen = new Set<string>()
@@ -199,9 +145,7 @@ export async function reconcileStaleWorkspaces(snapshot?: RuntimeSnapshot): Prom
       }
       if (nowMs - since < PODLESS_ROW_GRACE_MS) continue
       missingSince.delete(rowKey)
-      // A row with a captured prompt or a linked agent session had an
-      // agent running, so its Job went away out-of-band; one with neither
-      // never got that far.
+      // `ran`: an agent ran, so the unit went away out-of-band.
       const cause = row.ran
         ? { reason: 'orphaned' as const, detail: 'Job and pod deleted out-of-band' }
         : { reason: 'never-started' as const, detail: 'session create did not complete' }
@@ -216,8 +160,7 @@ export async function reconcileStaleWorkspaces(snapshot?: RuntimeSnapshot): Prom
         cause,
       }).catch(() => { /* best-effort; the next tick retries */ })
     }
-    // Forget timers for rows that are no longer live (deleted, restarted,
-    // or their project removed), so the map tracks only what it watches.
+    // Forget timers for rows no longer live.
     for (const rowKey of missingSince.keys()) {
       if (!seen.has(rowKey)) missingSince.delete(rowKey)
     }
@@ -245,10 +188,7 @@ export async function reconcileStaleWorkspaces(snapshot?: RuntimeSnapshot): Prom
   ]
   if (targets.length === 0) return
 
-  // Audit each reap with its reason before the (detached, silent)
-  // teardown runs, so a workspace disappearing is always explained. The
-  // derived cause rides along (cleanupWorkspaceDetached echoes it too) so
-  // the log alone answers "why did this workspace die".
+  // Log each reap's reason; the detached teardown is silent.
   for (const s of stale) {
     const reason = s.zombie
       ? 'tmux gone, pod still running'

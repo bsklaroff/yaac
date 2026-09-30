@@ -3,13 +3,12 @@ import { api } from '#commands/api'
 import type { ToolLoginView } from '@yaac/shared/types'
 
 /**
- * Drive a relayed browser sign-in from the terminal. The flow itself is
- * executed by the auth server on this machine (which opens the browser
- * and captures the credentials); this driver starts it via the main
- * server's routes, streams the vendor CLI's output (the sign-in URL when
- * no browser window opened), forwards a pasted authorize code, and waits
- * for the terminal state — the same relay the webapp's sign-in card
- * drives, with readline in place of the card.
+ * Drive a relayed browser sign-in from the terminal. The auth daemon on this
+ * machine runs the vendor CLI's login (opening the browser and capturing the
+ * credentials); this starts it through the server's routes, prints the CLI's
+ * output (including the sign-in URL if no browser opened), forwards a pasted
+ * authorize code, and polls until it finishes. The web app's sign-in card
+ * uses the same routes.
  */
 
 const POLL_MS = 700
@@ -26,10 +25,10 @@ export async function runRelayedToolLogin(tool: 'claude' | 'codex'): Promise<Rel
   let pasted: string | null = null
   void rl.question('Paste the authorize code here if the page shows one (Enter to skip): ')
     .then((answer) => { pasted = answer.trim() })
-    .catch(() => { /* closed while waiting — flow ended */ })
+    .catch(() => { /* rl closed when the flow ended */ })
 
-  // Print output line-by-line as it accretes. presentableOutput mostly
-  // appends; if a dedupe pass shrinks it, resync silently.
+  // Print only new lines. The output usually grows by appending; if the
+  // server's dedupe shrinks it, resync without reprinting.
   let seenLines = 0
   const printNew = (output?: string): void => {
     if (!output) return

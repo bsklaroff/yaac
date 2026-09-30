@@ -54,9 +54,8 @@ import { IS_MAC } from '#lib/platform'
 const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
 
 /**
- * Provider picker options for the api-key-only tools. Each key selects which
- * backend the pasted key authenticates against (env var + proxy host); the
- * first entry is the default. Tools not listed here have no provider.
+ * Provider choices for the API-key-only tools: which backend the pasted key
+ * is for. The first entry is the default. Unlisted tools have no provider.
  */
 interface ProviderOption { id: string; label: string }
 const PROVIDER_OPTIONS: Partial<Record<AgentTool, ProviderOption[]>> = {
@@ -85,24 +84,20 @@ const SECTIONS: { key: SettingsSection; label: string; Icon: typeof GeneralIcon 
 ]
 
 /**
- * The nav entries for this environment: what this build and this server can
- * actually offer, so a section is never shown that would be a no-op.
+ * The nav sections this environment can use. The server section needs the
+ * desktop shell (it switches servers); the user Dockerfile needs a server
+ * that builds images.
  */
 function visibleSections(buildsImages: boolean): typeof SECTIONS {
   return SECTIONS.filter((s) =>
-    // 'server' switches which server the shell attaches to — only the
-    // desktop shell can.
     (s.key !== 'server' || serverBridge())
-    // The user Dockerfile layers the workspace image; a server that builds
-    // none has nothing to layer.
     && (s.key !== 'userDockerfile' || buildsImages))
 }
 
 /**
- * Rail gear → settings. Notion-style modal: a left nav of sections over a
- * scrollable content pane (General: theme and sound; Credentials: tool sign-in +
- * git credentials). Open state lives in the store so other surfaces (the
- * new-workspace menu's "Sign in") can open it onto a specific section.
+ * The settings button and its modal: a left nav of sections beside a
+ * scrollable content pane. Open state lives in the store so other surfaces
+ * (e.g. the new-workspace menu's "Sign in") can open it on a given section.
  */
 export function SettingsButton(
   /** 'rail' is the desktop rail's 40px chip; 'row' is the mobile project
@@ -121,8 +116,7 @@ export function SettingsButton(
   const queryClient = useQueryClient()
   const buildsImages = useSnapshot()?.driver !== 'containerless'
 
-  // On open, re-pull the credentials list — it may have changed server-side
-  // (e.g. via the CLI) since the last look.
+  // Refetch credentials on open; the CLI may have changed them.
   useEffect(() => {
     if (!open) return
     void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
@@ -143,14 +137,13 @@ export function SettingsButton(
         {variant === 'row' && <span>Settings</span>}
       </button>
 
-      {/* Below md the two-column dialog goes full-screen and stacks: the
-          left nav becomes a scrolling row of chips above the content. */}
+      {/* On small screens the dialog goes full-screen and the nav becomes
+          a scrolling row of chips above the content. */}
       <Modal
         open={open}
         onOpenChange={(next) => { if (next) openSettings(); else closeSettings() }}
         className="flex h-[480px] w-[720px] max-md:flex-col"
       >
-        {/* Left nav */}
         <div className="flex w-44 shrink-0 flex-col gap-0.5 border-r border-hairline-soft bg-bg/50 p-2
           max-md:w-full max-md:flex-row max-md:overflow-x-auto max-md:border-b max-md:border-r-0">
           <Dialog.Title className="px-2 pb-2 pt-1 text-xs font-semibold text-text-dim max-md:hidden">
@@ -174,7 +167,6 @@ export function SettingsButton(
           ))}
         </div>
 
-        {/* Content */}
         <div className="relative min-w-0 flex-1 overflow-y-auto p-6 max-md:p-4 max-md:pt-10">
           <Dialog.Close className="absolute right-3 top-3 flex h-6 w-6 items-center justify-center rounded
             text-text-faint transition hover:bg-surface-2 hover:text-text max-md:h-9 max-md:w-9"
@@ -297,12 +289,10 @@ function UserDockerfilePane(): JSX.Element {
 }
 
 /**
- * Per-tool sign-in plus git credentials. Each tool row shows its stored
- * credential (masked) with a sign-out, or a sign-in expander: claude/codex can
- * import the native login already on the server's machine or take a pasted API
- * key; opencode takes a provider pick + API key. New-workspace creation is
- * blocked per tool until a credential lands here, and per project until it
- * has a git credential (GitCredentials).
+ * Per-tool sign-in plus git credentials. claude and codex sign in through the
+ * vendor's browser login or a pasted API key; opencode and pi take a provider
+ * and an API key. Creating a workspace needs a credential for its tool, and a
+ * git credential for its project.
  */
 function CredentialsPane(): JSX.Element {
   const auth = useAuthList()
@@ -341,14 +331,13 @@ function apiKeyLabel(tool: AgentTool, provider: string | undefined): string {
   return label ? `${label} API key` : 'API key'
 }
 
-/** Max provider rows rendered at once; the rest surface by narrowing the search. */
+/** Max provider rows rendered at once; search to reach the rest. */
 const PROVIDER_VISIBLE_LIMIT = 50
 
 /**
- * Searchable provider picker for the api-key-only tools. opencode exposes 150+
- * providers (models.dev) and pi a few dozen, so this filters an inline,
- * scrollable list by a search box rather than showing a radio row. The stored
- * value is the provider id.
+ * Searchable provider picker for the API-key-only tools. opencode has 150+
+ * providers, so a filtered list replaces a radio row. The value is the
+ * provider id.
  */
 function ProviderCombobox({ options, value, onChange }: {
   options: ProviderOption[]
@@ -418,8 +407,7 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
   const providerOptions = PROVIDER_OPTIONS[tool]
   const [provider, setProvider] = useState<string>(defaultProvider(tool) ?? 'openrouter')
 
-  // Opened via a "Sign in" affordance elsewhere (new-workspace menu) — land
-  // with this tool's form already open.
+  // Opened from a "Sign in" link elsewhere: start with this tool's form open.
   useEffect(() => {
     if (autoExpand && !summary) setExpanded(true)
   }, [autoExpand, summary])
@@ -520,10 +508,9 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
 }
 
 /**
- * The primary sign-in path: the server runs the vendor's own browser login
- * (`claude auth login` / `codex login`) in a subprocess. The CLI opens the
- * browser on this machine and completes via its localhost callback, so the
- * UI only shows "finish in your browser" and polls for the outcome.
+ * Browser sign-in: the server runs the vendor's login command
+ * (`claude auth login` / `codex login`), which opens a browser and completes
+ * through its localhost callback. The UI polls for the outcome.
  */
 function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): JSX.Element {
   const [login, setLogin] = useState<ToolLoginView | null>(null)
@@ -534,8 +521,8 @@ function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): J
   const label = tool === 'claude' ? 'Sign in with Claude' : 'Sign in with ChatGPT'
   const toolName = tool === 'claude' ? 'Claude Code' : 'Codex'
 
-  // Poll while the flow runs. A vanished workspace (server restart, expiry)
-  // resets to the start button.
+  // Poll while the login runs. A login the server no longer knows (restart,
+  // expiry) resets to the start button.
   useEffect(() => {
     if (login?.status !== 'running') return
     const t = setInterval(() => {
@@ -544,8 +531,7 @@ function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): J
     return () => clearInterval(t)
   }, [login])
 
-  // One-shot: `onDone` comes in as a fresh closure each parent render, and
-  // re-running this effect must not re-announce the same success.
+  // `onDone` is a new closure each render; fire it only once per success.
   const doneRef = useRef(false)
   const succeeded = login?.status === 'success'
   useEffect(() => {
@@ -554,7 +540,6 @@ function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): J
     onDone()
   }, [succeeded, onDone])
 
-  // Same polling for a running install.
   useEffect(() => {
     if (install?.status !== 'running') return
     const t = setInterval(() => {
@@ -697,8 +682,8 @@ function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): J
       setInputError(null)
       formElement.reset()
     } catch (err) {
-      // A rejected paste (server whitelists the code alphabet) shouldn't kill
-      // the flow — surface it inline and let the user paste again.
+      // The server rejects codes with unexpected characters; keep the flow
+      // open so the user can paste again.
       setInputError(err instanceof Error ? err.message : 'failed to send input')
     }
   }
@@ -739,8 +724,8 @@ function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): J
 const URL_RE = /https:\/\/[^\s"'<>]+/g
 
 /**
- * The login CLI's output, tailing live, with URLs clickable — the manual path
- * when the server couldn't open a browser on this machine.
+ * The login command's live output with clickable URLs, for when the server
+ * could not open a browser itself.
  */
 function CliOutput({ text }: { text: string }): JSX.Element {
   const boxRef = useRef<HTMLPreElement>(null)
@@ -780,11 +765,10 @@ function CliOutput({ text }: { text: string }): JSX.Element {
 }
 
 /**
- * View + rebind every keyboard shortcut. Click a row to record; the next
- * keypress (with a modifier, not already bound) becomes its chord and persists.
- * While recording, the workspace keydown listeners bail (via the store's
- * `recordingShortcut` flag) so the captured chord doesn't also fire the command
- * it's being bound to.
+ * View and rebind keyboard shortcuts. Click a row to record; the next unbound
+ * chord with a modifier becomes its binding. While recording, the store's
+ * `recordingShortcut` flag stops other keydown listeners from also running
+ * the command.
  */
 function ShortcutsPane(): JSX.Element {
   const bindings = useUiStore((s) => s.bindings)
@@ -798,9 +782,8 @@ function ShortcutsPane(): JSX.Element {
     const setRecording = useUiStore.getState().setRecordingShortcut
     setRecording(true)
     const onKeyDown = (e: KeyboardEvent): void => {
-      // Swallow the chord so it neither fires an app shortcut nor most in-page
-      // browser ones. Truly reserved chords (Ctrl+W…) are grabbed by the
-      // browser first and never arrive here — they self-exclude.
+      // Keep the chord from triggering browser shortcuts. Reserved ones
+      // (Ctrl+W, …) never reach the page, so they cannot be recorded.
       e.preventDefault()
       e.stopPropagation()
       if (e.code === 'Escape') { setRecordingId(null); setError(null); return }
@@ -846,8 +829,8 @@ function ShortcutsPane(): JSX.Element {
 
   return (
     <section>
-      {/* Title only — the dialog's ✕ sits at the top-right, so nothing else
-          may live there. "Reset all" is a footer below the list. */}
+      {/* Title only: the dialog's close button owns the top-right corner,
+          so "Reset all" goes in a footer. */}
       <h2 className="text-sm font-semibold">Shortcuts</h2>
       <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
         Click a shortcut, then press a new key combination (hold Alt, Ctrl, or Cmd).
@@ -916,13 +899,10 @@ function Field({ label, hint, children }: { label: string; hint?: ReactNode; chi
 }
 
 /**
- * The git identity this server's workspaces commit under.
- *
- * A server setting rather than something read off its host: under `k8s` the
- * server is a pod with no git config to read, and on a remote install the
- * host's belongs to whoever runs it, not to whoever is here. The yaac CLI
- * and the auth server seed it from your own machine's git config the first
- * time either talks to this server, so this is usually already filled in.
+ * The git identity this server's workspaces commit under. It is a server
+ * setting because the server's host may have no git config (a k8s pod) or
+ * someone else's (a remote install). The CLI and auth daemon seed it from
+ * your machine's git config on first contact, so it is usually already set.
  */
 function GitIdentityField(): JSX.Element {
   const [identity, setIdentity] = useState<{ name: string; email: string } | null | undefined>()

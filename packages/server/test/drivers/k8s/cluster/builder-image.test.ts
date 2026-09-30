@@ -1,8 +1,7 @@
 /**
- * The sandboxed builder pods' own image, as everything but the install
- * sees it: a lookup in the local registry, and an actionable refusal when
- * it is not there. The mirroring half is install-time and is covered
- * through `buildBuiltinImages`.
+ * The builder pods' image outside of install: a lookup in the local
+ * registry, and an actionable error when it is missing. Mirroring it happens
+ * at install time and is covered through `buildBuiltinImages`.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type * as registryModule from '#drivers/k8s/container/registry'
@@ -26,7 +25,6 @@ vi.mock('#drivers/k8s/container/registry', async (importOriginal) => ({
 }))
 
 import { ensureBuilderImage } from '#drivers/k8s/cluster'
-// The upstream pin and its local tag: setup values, not units under test.
 import { BUILDER_LOCAL_TAG, BUILDER_UPSTREAM_IMAGE } from '#drivers/k8s/cluster/builder-image'
 
 beforeEach(() => {
@@ -39,8 +37,7 @@ describe('ensureBuilderImage', () => {
   it('answers with the registry ref when the tag is mirrored', async () => {
     mockRegistryHasTag.mockResolvedValue(true)
     await expect(ensureBuilderImage()).resolves.toBe(`localhost:5001/${BUILDER_LOCAL_TAG}`)
-    // A lookup and nothing else: no engine is touched, which is the whole
-    // point — the server that calls this may not have one.
+    // No container engine is touched; the calling server may not have one.
     expect(mockExecFileAsync).not.toHaveBeenCalled()
   })
 

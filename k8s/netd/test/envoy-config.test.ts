@@ -61,8 +61,6 @@ describe('groupChains', () => {
   })
 
   it('is byte-stable regardless of selection order', () => {
-    // The no-op-write memo and the version stamp the listener gate waits
-    // on both depend on this.
     const a = groupChains([pod('a', '10.244.0.9', 'outer/yaac'), pod('b', '10.244.0.10', 'outer/yaac-test-r1')])
     const b = groupChains([pod('b', '10.244.0.10', 'outer/yaac-test-r1'), pod('a', '10.244.0.9', 'outer/yaac')])
     expect(JSON.stringify(a)).toBe(JSON.stringify(b))
@@ -88,10 +86,7 @@ describe('renderLds', () => {
   })
 
   it('routes to a target by SOURCE pod IP, not by listener port', () => {
-    // This is what lets every target share one trio, so a target coming or
-    // going never moves a port out from under a live flow.
-    // Two install namespaces on one node — the renderers are generic over
-    // targets, and this is the shape selection actually produces.
+    // Lets every target share one trio, so ports never move.
     const chains: FilterChainSpec[] = [
       { targetKey: 'outer/yaac-test-r1', podIps: ['10.244.0.20'] },
       { targetKey: 'outer/yaac', podIps: ['10.244.0.9', '10.244.0.10'] },
@@ -113,15 +108,12 @@ describe('renderLds', () => {
   })
 
   it('disables reuse_port so a cross-install collision fails loudly', () => {
-    // Envoy defaults it to true; two hostNetwork Envoys as the same uid
-    // would then BOTH bind the trio and the kernel would split
-    // connections between them — silent cross-install misrouting.
+    // Envoy's default (true) would let two installs' Envoys share a trio.
     for (const r of resources(renderLds(LDS))) expect(r.enable_reuse_port).toBe(false)
   })
 
   it('installs the original_dst listener filter on every listener', () => {
-    // Load-bearing: the rule DNATs to this listener, so the pre-DNAT
-    // destination only survives via SO_ORIGINAL_DST.
+    // Recovers the pre-DNAT destination via SO_ORIGINAL_DST.
     for (const r of resources(renderLds(LDS))) {
       const filters = r.listener_filters as Array<{ name: string }>
       expect(filters[0].name).toBe('envoy.filters.listener.original_dst')
@@ -129,8 +121,7 @@ describe('renderLds', () => {
   })
 
   it('renders no listener at all when no pod is programmed', () => {
-    // A listener with empty filter_chains is invalid config, and there is
-    // nothing to serve anyway.
+    // A listener with no filter chains is invalid config.
     expect(resources(renderLds({ ...LDS, chains: [] }))).toEqual([])
     expect(resources(renderLds({ ...LDS, chains: [{ targetKey: 'outer/yaac', podIps: [] }] })))
       .toEqual([])
@@ -172,8 +163,7 @@ describe('renderCds', () => {
   })
 
   it('wraps every upstream in PROXY-protocol v2', () => {
-    // This is what carries pod identity to the proxy; without it the
-    // proxy cannot attribute a connection to a workspace at all.
+    // Carries the source pod IP, which the proxy maps to a workspace.
     for (const r of resources(renderCds(CDS))) {
       const ts = r.transport_socket as { name: string; typed_config: { config: { version: string } } }
       expect(ts.name).toBe('envoy.transport_sockets.upstream_proxy_protocol')
@@ -210,10 +200,7 @@ describe('renderBootstrap', () => {
     }
     expect(dyn.lds_config.path_config_source.path).toBe('/e/lds.yaml')
     expect(dyn.cds_config.path_config_source.path).toBe('/e/cds.yaml')
-    // A unix socket, not a port: these Envoys are hostNetwork and several
-    // installs share a node, so any fixed loopback port collides and the
-    // second Envoy dies before serving anything. netd shares the volume,
-    // so it is also how the listener gate reads Envoy's state.
+    // A fixed TCP port would collide between installs on one node.
     const admin = b.admin as { address: { pipe?: { path: string }; socket_address?: unknown } }
     expect(admin.address.pipe).toEqual({ path: '/e/admin.sock' })
     expect(admin.address.socket_address).toBeUndefined()

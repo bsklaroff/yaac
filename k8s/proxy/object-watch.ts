@@ -1,21 +1,13 @@
 /**
- * The proxy's live view of the objects it is told through, and its writes
- * to the ones it reports through (see objects.ts for the shapes).
+ * The proxy's live view of its input objects, and its writes to its output
+ * objects (shapes in objects.ts; design in docs/workspace-egress.md).
  *
- * Three informers on the proxy's own in-cluster client feed `ProxyObjects`:
- * the credentials Secret, the per-project secrets Secrets and the
- * per-workspace registration ConfigMaps, each selected by its
- * `yaac.proxy-input` label. A replaced pod restores itself from the
- * informers' initial lists, so nothing here persists anything — the pod is
- * stateless by construction (docs/workspace-egress.md).
- *
- * Fail-closed is preserved: until every initial list has landed, `ready()`
- * is false and the readiness probe keeps the pod out of its Service, so no
- * workspace is ever served from an empty registration map.
- *
- * `ProxyObjects` is pure (maps and handlers over decoded objects) and
- * unit-tested with a fake informer; the wiring to the real client-node
- * informers is `startObjectWatch`, covered by e2e.
+ * Three informers, selected by the `yaac.proxy-input` label, feed
+ * `ProxyObjects`: the credentials Secret, the per-project secrets Secrets and
+ * the per-workspace registration ConfigMaps. The pod keeps no state of its
+ * own; a replacement rebuilds everything from the initial lists. Until all
+ * three lists have landed, `ready()` is false and the readiness probe keeps
+ * the pod out of its Service.
  */
 
 import { makeInformer, PatchStrategy, setHeaderOptions, type KubernetesObject } from '@kubernetes/client-node'
@@ -41,8 +33,7 @@ import {
 } from './objects'
 
 export interface ProxyObjectsDeps {
-  /** Replace the ssh-agent's identities — the credentials handler's side
-   *  effect, injected so the maps can be tested without an agent. */
+  /** Replace the ssh-agent's identities (injected for tests). */
   loadSshKeys: (identities: AgentIdentity[]) => Promise<void>
   /** A workspace's registration changed (or went, on `null`): the listener
    *  prunes its blocked-host record against the new allowlist. */
@@ -67,25 +58,21 @@ export class ProxyObjects {
   private creds: ProxyCredentials = EMPTY_CREDENTIALS
   /** `<projectSlug>/<NAME>` -> value, across every project's Secret. */
   private readonly secrets = new Map<string, string>()
-  /** Which refs each secrets object contributed, so a delete or an update
-   *  of one project's object forgets exactly that project's refs. */
+  /** The refs each secrets object contributed, so an update or delete
+   *  forgets exactly those. */
   private readonly refsByObject = new Map<string, string[]>()
   private readonly registrations = new Map<string, ProxyRegistration>()
   /** Object name -> workspace id, so a DELETE (which may arrive without
    *  data) still evicts the right registration. */
   private readonly workspaceByObject = new Map<string, string>()
   /**
-   * OAuth bundles captured from a workspace's refresh and not yet echoed back
-   * in the credentials Secret. Served in preference to the pushed bundle
-   * while they are newer — a codex rotation is single-use, so serving the
-   * pushed (spent) token in the window between capture and adoption would
-   * sign the workspace out. Dropped the moment the pushed bundle catches up.
+   * OAuth bundles captured from a workspace's refresh that the credentials
+   * Secret does not reflect yet. Served while newer than the pushed bundle,
+   * because a codex refresh token is single-use and the pushed one is spent.
    */
   private captured: RefreshedBundles = {}
-  /** The identities the agent was last loaded with, so a token-only
-   *  rotation, the adopt echo, or a key reassigned between projects on
-   *  hosts it already serves does not empty and refill the agent under an
-   *  in-flight ssh operation. */
+  /** The identities last loaded into the agent, so unrelated credential
+   *  changes don't reload it under an in-flight ssh operation. */
   private loadedSsh: string | null = null
   private readonly seeded = new Set<string>()
   private readonly loadSshKeys: ProxyObjectsDeps['loadSshKeys']
@@ -104,8 +91,8 @@ export class ProxyObjects {
     return this.creds
   }
 
-  /** The Claude OAuth bundle to swap in: a captured rotation while it is
-   *  newer than what the server pushed, the pushed bundle otherwise. */
+  /** The Claude OAuth bundle to inject: a newer captured one, else the
+   *  pushed one. */
   claudeOAuthBundle(): ClaudeOAuthBundle | null {
     const pushed = this.creds.claude?.kind === 'oauth' ? this.creds.claude.bundle : null
     if (this.captured.claude && (!pushed || claudeIsNewer(this.captured.claude, pushed))) {
@@ -146,15 +133,9 @@ export class ProxyObjects {
   }
 
   /**
-   * The credentials Secret changed (or went, on `gone`): replace the whole
-   * set — it is one install-wide thing — and reload the agent when what it
-   * holds (the keys and their host constraints) moved.
-   *
-   * By name as well as by label, on every verb: the label is what the
-   * informer selects on, but only one object is the credentials Secret,
-   * and the writer's invariant is worth holding on the reader too — a
-   * stray labelled object must neither fill the set nor, on its deletion,
-   * blank it.
+   * The credentials Secret changed (or was deleted, if `gone`): replace the
+   * whole set, and reload the ssh-agent if its identities changed. Objects
+   * with the label but the wrong name are ignored.
    */
   applyCredentials(secret: RawObject, gone = false): Promise<void> {
     if (secret.metadata?.name !== CREDENTIALS_SECRET_NAME) {
@@ -162,8 +143,7 @@ export class ProxyObjects {
       return Promise.resolve()
     }
     this.creds = gone ? EMPTY_CREDENTIALS : decodeCredentials(secret)
-    // The pushed bundle caught up with (or passed) a captured rotation: the
-    // capture has been adopted and is no longer the newer of the two.
+    // Drop captured bundles the pushed ones have caught up with.
     const claude = this.creds.claude?.kind === 'oauth' ? this.creds.claude.bundle : null
     if (this.captured.claude && (!claude || !claudeIsNewer(this.captured.claude, claude))) {
       delete this.captured.claude
@@ -180,8 +160,7 @@ export class ProxyObjects {
     if (ssh === this.loadedSsh) return Promise.resolve()
     this.loadedSsh = ssh
     return this.loadSshKeys(identities).catch((err: unknown) => {
-      // Next time the set changes it is loaded again; until then the agent
-      // holds whatever the failed reload left.
+      // Retried on the next change.
       this.loadedSsh = null
       this.log(`[proxy] ssh-agent reload failed: ${String(err)}`)
     })
@@ -244,18 +223,15 @@ function selector(input: 'credentials' | 'secrets' | 'registration'): string {
 }
 
 /**
- * Feed `objects` from three informers for the proxy's lifetime. Each
- * informer's own (re)list diffs against its store and emits `delete` for
- * anything that vanished while it was disconnected, so the maps cannot
- * accumulate ghosts.
+ * Feed `objects` from three informers for the proxy's lifetime. Each relist
+ * emits `delete` for objects that vanished meanwhile.
  */
 export function startObjectWatch(objects: ProxyObjects, client: Client = inClusterClient()): void {
   const ns = client.namespace
   const secretsPath = `/api/v1/namespaces/${ns}/secrets`
   const configMapsPath = `/api/v1/namespaces/${ns}/configmaps`
 
-  // client-node applies labelSelector to the WATCH only, so each list must
-  // carry it too or the seed would pull in every object in the namespace.
+  // client-node applies the selector to the watch only; lists need it too.
   const credentials = makeInformer(
     client.kubeConfig, secretsPath,
     () => client.core.listNamespacedSecret({ namespace: ns, labelSelector: selector('credentials') }),
@@ -290,11 +266,10 @@ export function startObjectWatch(objects: ProxyObjects, client: Client = inClust
 }
 
 /**
- * Cache-miss fallback for a registration: a Job created microseconds after
- * its ConfigMap can have its first packet beat the watch event, and a watch
- * mid-restart misses a create for up to its backoff. One list by label
- * before failing closed; a miss is remembered briefly so an unregistered
- * pod's every connection does not become an API call.
+ * Cache-miss fallback for a registration, for a pod whose first packet beats
+ * the ConfigMap's watch event (or arrives while the watch restarts). Lists
+ * once by label before failing closed; misses are cached briefly so an
+ * unregistered pod doesn't cost an API call per connection.
  */
 const registrationMisses = new Map<string, number>()
 const REGISTRATION_MISS_TTL_MS = 5_000
@@ -342,8 +317,8 @@ export async function writeState(data: Record<string, string>, client: Client = 
   )
 }
 
-/** One read of an output object at boot — the CA to keep serving, the
- *  records and captured rotations the last pod left. Absent reads as empty. */
+/** Read an output object at boot, to pick up the CA, records and captured
+ *  bundles the previous pod left. */
 export async function readOutputObject(
   kind: 'secret' | 'configmap',
   name: string,

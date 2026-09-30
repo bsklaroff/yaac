@@ -10,67 +10,50 @@ import {
 import type { DriverReconcileSteps } from '#drivers/contract'
 
 /**
- * The k8s runtime's own upkeep, as steps a pass can schedule.
+ * The k8s driver's housekeeping steps for the reconcile pass: leaked
+ * builder pods, image builds, image stores and registry GC. The order
+ * within each group is set here; where the two groups run relative to the
+ * domain's own steps is set by `defaultReconcileSteps`.
  *
- * These moved off the mediators' step list because every one of them is
- * substrate housekeeping — leaked builder pods, registry blobs, image
- * stores — and the reasons they are ordered the way they
- * are are substrate reasons. What the mediators still own is where the two
- * GROUPS sit relative to their own steps, which is the only ordering they
- * have a stake in (see `defaultReconcileSteps`).
- *
- * Nothing here reads a row or a config file: which projects exist and what
- * each one's config says are questions the layers above own, so the pass
- * hands the answers down (`ctx.projects()`, `ctx.projectConfig`).
+ * Steps read no rows or config files. The pass supplies the project list
+ * and each project's config (`ctx.projects()`, `ctx.projectConfig`).
  */
 export function k8sReconcileSteps(): DriverReconcileSteps {
   return {
     prePool: [
-      // Leaked trust-split builder pods (server restarted mid-build) — the
-      // label sweep backstop. Throttled internally. Ahead of image-prewarm on
-      // purpose: a leaked builder's memory reservation is what stops the next
-      // build from scheduling, so it has to go before builds are launched.
+      // Builder pods leaked by a server restart mid-build. Runs before
+      // image-prewarm because a leaked pod's memory reservation can stop
+      // the next build from scheduling.
       { name: 'builder-pod-gc', triggers: [], run: () => reconcileBuilderPodGc() },
-      // Keep every project's image chain built and pushed (detached tasks).
-      // Before the prewarm pool: a spare's create then joins the
-      // already-running builds. Throttled internally.
+      // Keep every project's image chain built and pushed. Runs before the
+      // prewarm pool so a spare's create joins the builds already running.
       { name: 'image-prewarm', triggers: [], run: async (ctx) => {
         reconcileImagePrewarm(await ctx.projects(), ctx.projectConfig)
       } },
     ],
     maintenance: [
-      // Mid-workspace image salvage (nested engines → project registry).
-      // Throttled internally per workspace; salvages run detached.
+      // Push images built by nested engines to the project registry.
       { name: 'image-salvage', triggers: [], run: (ctx) => reconcileImageSalvage(ctx.terminating) },
-      // Rebuild each project's node-local image store from its registry —
-      // the read-only lower a fresh nested workspace mounts. Between the two
-      // neighbours on purpose: after the salvage, so a just-pushed
-      // generation is the one a build picks up, and before the registry
-      // collect, which holds that registry read-only for minutes. Fires
-      // detached per project and is throttled internally.
+      // Rebuild each project's node-local image store (the read-only lower
+      // layer a nested workspace mounts) from its registry. Runs after the
+      // salvage so it picks up just-pushed images, and before registry-gc,
+      // which holds the registry read-only for minutes.
       { name: 'image-store', triggers: [], run: async (ctx) => {
         reconcileNodeImageStores(await ctx.projects())
       } },
-      // Blob reclaim in one project registry per pass. It cannot wait for a
-      // project to go idle — an active one never does — so it takes a
-      // read-only maintenance window instead, and detaches. Throttled
-      // internally; after the salvage, so a just-pushed generation is the
-      // one that survives the collect.
+      // Reclaim blobs in one project registry per pass, during a read-only
+      // window (an active project is never idle). Runs after the salvage
+      // so just-pushed images survive the collect.
       { name: 'registry-gc', triggers: [], run: async (ctx) =>
         reconcileProjectRegistryGc(new Set((await ctx.projects()).map((p) => p.id))) },
-      // Whole registries no live project owns — a removal that failed, or
-      // one named before projects had ids. Throttled internally.
+      // Delete registries that no live project owns.
       { name: 'orphan-registry-gc', triggers: [], run: async (ctx) =>
         gcOrphanProjectRegistries(new Set((await ctx.projects()).map((p) => p.id))) },
-      // Egress registrations whose workspace is gone — the leavings of a
-      // teardown that never ran. Throttled internally; reads the pass's
-      // own workspace set.
+      // Egress registrations left behind by a teardown that never ran.
       { name: 'registration-gc', triggers: [], run: (ctx) => reconcileRegistrationGc(ctx) },
-      // The main registry's counterpart: retire step-cache tags no build has
-      // used in a cache-ttl and image generations nothing live names, collect
-      // their blobs, then drop the nodes' unpacked copies of what the
-      // registry no longer holds. Throttled internally and detached; the
-      // collect stands down while anything is pushing.
+      // Main registry GC: retire unused step-cache tags and image
+      // generations, collect their blobs, then drop the nodes' copies of
+      // what the registry no longer holds. Skips while anything is pushing.
       { name: 'main-registry-gc', triggers: [], run: async (ctx) =>
         reconcileMainRegistryGc(await ctx.projects(), ctx.projectConfig) },
     ],

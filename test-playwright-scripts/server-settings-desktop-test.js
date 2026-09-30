@@ -1,14 +1,14 @@
 /*
- * Verifies the desktop-only "Server" settings section (ServerSettings.tsx):
- * (1) with no `window.yaacServer` bridge (plain browser) the Server entry is
- * absent from the settings nav; (2) with a bridge injected pre-load (standing
- * in for the Electron preload) the section appears, lists every configured
- * server as an origin with the current one marked Connected — there is no
- * "local server" row, since a server on this machine is registered like any
- * other (docs/server-selection.md) — Connect routes the right selection
- * through `switchTo` and shows "Reconnecting…", a failing switch renders its
- * error inline, and the add form passes the url to `addRemote`. Drives the
- * running yaac server's webapp in real Chromium.
+ * Verifies the desktop-only "Server" settings section (ServerSettings.tsx)
+ * in Chromium against the running server's webapp:
+ *  1. With no `window.yaacServer` bridge (plain browser), the settings nav
+ *     has no Server entry.
+ *  2. With a bridge stub injected before load (standing in for the Electron
+ *     preload), the section lists every saved server by origin and marks the
+ *     current one Connected. There is no "local server" row; a server on
+ *     this machine is registered like any other (docs/server-selection.md).
+ *     Connect calls `switchTo` and shows "Reconnecting…", a failing switch
+ *     shows its error inline, and the add form calls `addRemote`.
  *
  * Run: node test-playwright-scripts/server-settings-desktop-test.js
  * Needs a running server (`yaac server start` / `pnpm watch`).
@@ -64,7 +64,7 @@ async function main() {
     if (!ok) failures.push(label)
   }
 
-  // --- 1. Plain browser: no bridge → no Server nav entry.
+  // 1. Plain browser: no bridge, no Server nav entry.
   {
     const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
     page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
@@ -75,7 +75,7 @@ async function main() {
     await page.close()
   }
 
-  // --- 2. Bridge injected pre-load (what the Electron preload does).
+  // 2. Bridge injected before load, as the Electron preload does.
   const context = await browser.newContext({ viewport: { width: 1400, height: 900 } })
   await context.addInitScript(() => {
     window.__bridgeCalls = []
@@ -109,17 +109,15 @@ async function main() {
   check((await alphaRow.textContent()).includes('Connected'), 'current server marked Connected')
   check(!(await page.getByText('Local server').count()), 'no "Local server" row')
   check(await page.getByText('https://beta.ts.net').isVisible(), 'other saved server listed')
-  // A server on this machine is a row like any other, named by its origin.
   check(await page.getByText('http://127.0.0.1:8787').isVisible(), 'loopback server listed as an origin')
   await page.screenshot({ path: path.join(SHOTS, 'server-settings-desktop.png') })
 
-  // A failing switch renders inline, no reconnect.
+  // A failing switch shows its error inline and does not reconnect.
   await page.locator('div', { hasText: 'http://127.0.0.1:8787' }).last().locator('button').click()
   await page.getByText('cannot reach http://127.0.0.1:8787 (scripted failure)').waitFor()
   check(true, 'failed switch shows inline error')
   await page.screenshot({ path: path.join(SHOTS, 'server-settings-switch-error.png') })
 
-  // A successful switch to the other saved remote → Reconnecting…
   await page.locator('div', { hasText: 'https://beta.ts.net' }).last().locator('button').click()
   await page.getByText('Reconnecting…').waitFor()
   check(true, 'successful switch shows Reconnecting…')
@@ -131,7 +129,8 @@ async function main() {
     `switchTo received the clicked selections (got ${JSON.stringify(calls)})`,
   )
 
-  // Add-remote form (fresh page — the last switch left this one "Reconnecting…").
+  // Add-remote form, on a fresh page: the last switch left this one
+  // showing "Reconnecting…".
   const page2 = await context.newPage()
   await openApp(page2, lock)
   await page2.locator('button', { hasText: 'Server' }).first().click()

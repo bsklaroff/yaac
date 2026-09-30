@@ -1,13 +1,9 @@
 /**
- * The database's open/close pair — `openDb`, `closeDb`.
- *
- * Nothing in the handle is mocked here: a real PGlite instance is opened
- * in a temp data dir and the checked-in migrations run against it, so the
- * private data-dir path builder, the single-flighted open and the dangling
- * -handle close are covered by the dir switches these tests drive rather
- * than by tests of their own. `getDb` is the internal accessor the row
- * functions use; it appears below only to look at what a call opened.
- * `preferences` is the sample table.
+ * `openDb` and `closeDb`, against a real PGlite in a temp data dir with the
+ * checked-in migrations, so the data-dir path builder, single-flight open
+ * and dangling-handle close are covered by the dir switches below. `getDb`
+ * is used only to inspect what a call opened; `preferences` is the sample
+ * table.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
@@ -20,12 +16,10 @@ import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/
 import { openDb, getDb, closeDb } from '#db/client'
 import { preferences } from '#db/schema'
 
-// The rest of the unit suite borrows one shared in-memory PGlite (the unit
-// setup file sets YAAC_TEST_SHARED_DB) because booting one per test dominates
-// its runtime. This file is the exception: the on-disk instance-per-dir
-// handle is the behavior under test — the 0700 dir, the distinct handle after
-// a dir switch, the checkpoint that survives a reopen — none of which the
-// shared handle has. Opt out so these assertions describe the real thing.
+// Other unit tests share one in-memory PGlite (YAAC_TEST_SHARED_DB) for
+// speed. This file opts out because the on-disk per-dir handle is what it
+// tests (0700 dir, distinct handle after a dir switch, checkpoint surviving
+// a reopen).
 vi.stubEnv('YAAC_TEST_SHARED_DB', '')
 
 const dirs: string[] = []
@@ -45,9 +39,8 @@ describe('openDb', () => {
   it('creates <dataDir>/db at 0700, migrates, and answers queries', async () => {
     await freshDataDir()
     await openDb()
-    // Before any getDb() — the handle opens lazily, so asserting the dir
-    // only after one would hold for a no-op openDb too. What this pins is
-    // that the call itself opened and migrated.
+    // Checked before any getDb(): the handle opens lazily, so this pins that
+    // openDb itself opened and migrated.
     const stat = await fs.stat(path.join(getDataDir(), 'server-local', 'db'))
     expect(stat.isDirectory()).toBe(true)
     expect(stat.mode & 0o777).toBe(0o700)
@@ -63,11 +56,9 @@ describe('openDb', () => {
     expect(await getDb()).toBe(await getDb())
   })
 
-  // The migrations that move data rather than only reshaping it. Nothing else
-  // can catch one going wrong — every other test starts from a database
-  // migrated from empty. `seedBefore` migrates a fresh in-memory database up
-  // to (not including) the migration named `name`, runs `seed` there, then
-  // migrates the rest.
+  // Data-moving migrations, which nothing else catches since every other
+  // test starts from an empty migrated database. `seedBefore` migrates up to
+  // (not including) `name`, runs `seed`, then migrates the rest.
   const migrations = path.resolve(fileURLToPath(import.meta.url), '../../../drizzle')
   async function seedBefore(
     name: string,

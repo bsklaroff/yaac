@@ -3,14 +3,10 @@ import { AddIcon } from '#lib/icons'
 import { useUiStore } from '#lib/store'
 
 /**
- * "+ New workspace" for the active project: opens the create dialog
- * (`CreateWorkspaceDialog`, mounted once in App) with the prompt focused, the
- * same as Alt+N. `cta` is the labeled variant for empty states — the same
- * dialog behind a bigger target.
- *
- * The button gives up focus before opening, so the dialog records no opener
- * (`useOpenerFocus`) and closing it leaves focus alone rather than parking a
- * focus ring on the +.
+ * Opens `CreateWorkspaceDialog` with the prompt focused. `cta` is a larger,
+ * labeled variant for empty states. The button blurs itself first so the
+ * dialog records no opener (`useOpenerFocus`) and closing it doesn't leave a
+ * focus ring on the button.
  */
 export function NewWorkspaceButton(
   { projectSlug, variant = 'icon' }: { projectSlug: string; variant?: 'icon' | 'cta' },

@@ -1,11 +1,7 @@
 /**
- * The declaration registry: which ports a workspace is offered at, and the
- * allocator that decides the host half.
- *
- * Nothing binds, so nothing has to be mocked to keep it from binding — the
- * only process boundary in reach is the status-bar exec, and that is
- * stubbed. What a caller can read back out of the registry is the honest
- * assertion throughout.
+ * The forward registry: which host ports a workspace's ports are offered at,
+ * and the allocator that picks them. Nothing binds a socket; only the
+ * status-bar exec is stubbed.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
@@ -19,7 +15,6 @@ import {
   addWorkspaceForwarder,
   declareWorkspaceForwards,
   getWorkspacePorts,
-  hasWorkspaceForwarders,
   stopAllWorkspaceForwarders,
   stopWorkspaceForwarders,
 } from '#drivers/k8s/forwarders/port-forwarders'
@@ -27,8 +22,7 @@ import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#not
 
 const mockExec = vi.mocked(podExec)
 
-// The registry is process-local and outlives a case, so a host port one
-// test promised would be walked past by the next.
+// The registry is module state, so clear it between cases.
 afterEach(() => {
   stopAllWorkspaceForwarders()
   _resetWorkspaceListChangedForTests()
@@ -45,16 +39,13 @@ describe('declareWorkspaceForwards', () => {
       { containerPort: 3000, hostPort: 3000 },
       { containerPort: 5432, hostPort: 15432 },
     ])
-    // Read back out of the registry: this is what the workspace listing
-    // reports, and what a client forwarder binds.
+    // What the workspace listing reports and a client forwarder binds.
     expect(getWorkspacePorts('sess-1')).toEqual(declared)
   })
 
   it('walks past a host port another workspace was already promised', () => {
-    // Binding used to disambiguate two workspaces of one project both
-    // asking for 3000 — whoever bound first won. With nothing bound, the
-    // ledger has to do it, or both are told 3000 and only one can ever be
-    // reached.
+    // Nothing binds, so the registry must keep two workspaces from both
+    // being given host port 3000.
     declareWorkspaceForwards('sess-1', [{ containerPort: 3000, hostPortStart: 3000 }])
     declareWorkspaceForwards('sess-2', [{ containerPort: 3000, hostPortStart: 3000 }])
     declareWorkspaceForwards('sess-3', [{ containerPort: 3000, hostPortStart: 3000 }])
@@ -73,16 +64,13 @@ describe('declareWorkspaceForwards', () => {
   })
 
   it('registers nothing for a workspace that declares no forwards', () => {
-    // An empty entry would still read to the listing as "this workspace
-    // holds forwards", which is what the restore pass gates on.
     expect(declareWorkspaceForwards('sess-1', [])).toEqual([])
-    expect(hasWorkspaceForwarders('sess-1')).toBe(false)
+    expect(getWorkspacePorts('sess-1')).toEqual([])
   })
 
   it('merges with what the workspace already holds rather than replacing it', () => {
-    // The create batch can land after a reactive addWorkspaceForwarder made
-    // the entry (a forward-port during the create window); dropping either
-    // side would lose a live offer.
+    // A forward-port during create can add an entry before the create's
+    // batch lands; both must be kept.
     declareWorkspaceForwards('sess-1', [{ containerPort: 3000, hostPortStart: 19000 }])
     declareWorkspaceForwards('sess-1', [{ containerPort: 8080, hostPortStart: 19999 }])
 
@@ -92,9 +80,8 @@ describe('declareWorkspaceForwards', () => {
     ])
   })
 
-  // This registry is what the snapshot's `forwardedPorts` reads, so both
-  // ends of a forward's life announce themselves here rather than at the
-  // route that happened to ask for it.
+  // The snapshot's `forwardedPorts` reads this registry, so changes are
+  // announced here rather than by the route that caused them.
   it('pushes a fresh snapshot when the offered set changes', () => {
     let pushes = 0
     onWorkspaceListChanged(() => { pushes += 1 })
@@ -105,7 +92,7 @@ describe('declareWorkspaceForwards', () => {
     expect(pushes).toBe(2)
     stopWorkspaceForwarders('sess-1')
     expect(pushes).toBe(3)
-    // Nothing left to drop: no entry, no change, no push.
+    // Nothing left to drop, so no push.
     stopWorkspaceForwarders('sess-1')
     expect(pushes).toBe(3)
   })
@@ -123,9 +110,7 @@ describe('stopWorkspaceForwarders', () => {
     stopWorkspaceForwarders('sess-1')
 
     expect(getWorkspacePorts('sess-1')).toEqual([])
-    expect(hasWorkspaceForwarders('sess-1')).toBe(false)
-    // The number is free again — a create whose launch failed must not cost
-    // the next one its port.
+    // The port is free again after a failed launch.
     expect(declareWorkspaceForwards('sess-2', [{ containerPort: 3000, hostPortStart: 3000 }]))
       .toEqual([{ containerPort: 3000, hostPort: 3000 }])
   })
@@ -142,8 +127,8 @@ describe('stopAllWorkspaceForwarders', () => {
 
     stopAllWorkspaceForwarders()
 
-    expect(hasWorkspaceForwarders('sess-1')).toBe(false)
-    expect(hasWorkspaceForwarders('sess-2')).toBe(false)
+    expect(getWorkspacePorts('sess-1')).toEqual([])
+    expect(getWorkspacePorts('sess-2')).toEqual([])
   })
 })
 
@@ -191,8 +176,8 @@ describe('addWorkspaceForwarder', () => {
   })
 
   it('concurrent requests for the same port converge on one offer', async () => {
-    // Allocation and record are one synchronous step, so the race the
-    // bound-socket version had to unwind afterwards cannot start.
+    // Allocating and recording is one synchronous step, so concurrent
+    // declares cannot race.
     const [a, b] = await Promise.all([
       addWorkspaceForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8090),
       addWorkspaceForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8090),

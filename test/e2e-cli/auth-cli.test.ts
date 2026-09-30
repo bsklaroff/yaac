@@ -11,28 +11,18 @@ import {
 } from '@yaac/test-utils/cli'
 
 /**
- * Merged auth/tool CLI suite (formerly auth.test.ts, auth-fake.test.ts,
- * auth-clear.test.ts, auth-update.test.ts, tool.test.ts) sharing ONE test
- * env and ONE server for the whole file instead of a per-test server —
- * spawning a server (and waiting on the cross-worker server mutex) per
- * test dominated wall-clock for these fast, cluster-free commands.
+ * The auth and tool CLI commands, sharing one test env and one server for
+ * the whole file.
  *
- * Vitest runs tests within a file sequentially in declaration order, and
- * this file leans on that: the "clean data dir" describe MUST stay first
- * (its tests assert pristine-state output), and every test whose
- * assertions depend on the exact credential set (list rendering, clear
- * menu indexes, whole-file equality) resets `.credentials` to exactly
- * the state it seeds rather than inheriting residue from earlier tests.
- * Tool-credential files (claude.json/codex.json/opencode.json) are
- * written wholesale by the server (fs.writeFile of the full JSON in
- * packages/shared/src/tool-auth.ts), so tests that only parse the file their
- * own command just wrote don't need a reset.
+ * Tests run in declaration order. The "clean data dir" describe must stay
+ * first, and every test that depends on the exact credential set resets
+ * `.credentials` to the state it seeds. The server writes each tool
+ * credential file whole, so a test that only reads the file its own command
+ * just wrote needs no reset.
  *
- * The YAAC_E2E_*_LOGIN / YAAC_E2E_OPENCODE_PROVIDER hooks are read by
- * the CLI process (runToolLogin in packages/shared/src/tool-auth-interactive.ts,
- * called from packages/cli/src/commands/auth-update.ts — "interactive tool-login must
- * happen CLI-side"), never by the server, so they are passed per-runYaac
- * call and the shared server needs no special env.
+ * The YAAC_E2E_*_LOGIN / YAAC_E2E_OPENCODE_PROVIDER hooks are read by the
+ * CLI process (runToolLogin in packages/shared/src/tool-auth-interactive.ts),
+ * not the server, so they are passed per runYaac call.
  */
 describe('yaac auth (real CLI + shared server)', () => {
   let testEnv: YaacTestEnv
@@ -53,11 +43,8 @@ describe('yaac auth (real CLI + shared server)', () => {
   }
 
   /**
-   * Reset the shared data dir's `.credentials` to empty. Because every
-   * test shares one data dir, state-sensitive tests call this first so
-   * leftovers from earlier tests (a stray
-   * claude.json/codex.json/opencode.json) can't change list output or
-   * shift `auth clear` menu indexes.
+   * Empty the shared `.credentials` dir, so earlier tests' files can't
+   * change list output or shift `auth clear` menu indexes.
    */
   async function resetCreds(): Promise<string> {
     const credsDir = path.join(testEnv.dataDir, 'server-local', '.credentials')
@@ -77,8 +64,7 @@ describe('yaac auth (real CLI + shared server)', () => {
     }
   }
 
-  // Pristine-state assertions — these MUST run before anything writes a
-  // credential file.
+  // Must run before anything writes a credential file.
   describe('clean data dir', () => {
     it('auth list on a clean data dir reports no credentials configured', async () => {
       const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'list')
@@ -129,9 +115,8 @@ describe('yaac auth (real CLI + shared server)', () => {
 
   describe('auth fake', () => {
     it('refuses to replace a real credential, and seeds once it is cleared', async () => {
-      // `auth list` above left a real claude api-key behind. A fake must
-      // never take its place: sentinels would fan out to every project and
-      // authenticate nothing.
+      // `auth list` above left a real claude api-key behind, which a fake
+      // must never replace.
       const credsDir = await resetCreds()
       await fs.writeFile(path.join(credsDir, 'claude.json'), JSON.stringify({
         kind: 'api-key', savedAt: '2026-01-15T00:00:00.000Z', apiKey: 'sk-ant-api03-real',
@@ -147,8 +132,7 @@ describe('yaac auth (real CLI + shared server)', () => {
     })
 
     it('auth fake claude-oauth seeds an OAuth bundle in the data dir', async () => {
-      // Over the fake the previous case seeded: a re-seed is allowed, and
-      // the server writes claude.json wholesale.
+      // Re-seeding over the previous case's fake is allowed.
       const { exitCode, stderr } = await runYaac(testEnv.env, 'auth', 'fake', 'claude-oauth')
       expect(exitCode, stderr).toBe(0)
 
@@ -204,7 +188,6 @@ describe('yaac auth (real CLI + shared server)', () => {
         testEnv.env, 'auth', 'fake', 'claude-oauth', 'opencode-openrouter',
       )
       expect(exitCode, stderr).toBe(0)
-      // One confirmation line per seeded kind.
       expect(stdout).toContain('Claude OAuth')
       expect(stdout).toContain('OpenCode OpenRouter')
 
@@ -234,8 +217,7 @@ describe('yaac auth (real CLI + shared server)', () => {
   })
 
   describe('auth clear', () => {
-    // Menu-index-sensitive: seedToolCreds resets .credentials so the menu
-    // lists exactly claude then codex.
+    // Menu indexes assume seedToolCreds: exactly claude, then codex.
     it('removes a specific tool credential by menu index', async () => {
       await seedToolCreds()
 
@@ -269,8 +251,7 @@ describe('yaac auth (real CLI + shared server)', () => {
 
   describe('auth update', () => {
     it('prints "Cancelled." when the user picks an invalid menu option', async () => {
-      // The update menu is static (git/claude/codex/opencode/pi) regardless
-      // of what credentials exist, so no reset is needed.
+      // The update menu is the same whatever credentials exist.
       const { stdout, exitCode } = await runYaac(
         testEnv.env, 'auth', 'update', { stdin: 'x\n' },
       )
@@ -318,8 +299,8 @@ describe('yaac auth (real CLI + shared server)', () => {
     })
 
     it('generates an SSH key on the server under the default name and prints only its public half', async () => {
-      // No key is read off this machine, and none lands on the server's
-      // disk: the whole data dir is searched for one.
+      // No key is read off this machine, and none lands anywhere in the
+      // server's data dir.
       const { exitCode, stdout } = await runYaac(
         testEnv.env, 'auth', 'update',
         {
@@ -343,8 +324,6 @@ describe('yaac auth (real CLI + shared server)', () => {
     })
 
     it('persists a Claude OAuth bundle end-to-end via the test-only login hook', async () => {
-      // claude.json is written wholesale, so the fake bundle seeded by the
-      // auth fake test above is fully replaced — no reset needed.
       const bundle = {
         accessToken: 'sk-ant-oat01-fake-access',
         refreshToken: 'sk-ant-ort01-fake-refresh',
@@ -366,9 +345,8 @@ describe('yaac auth (real CLI + shared server)', () => {
     })
 
     it('persists an OpenCode (OpenRouter) api key via the test-only login hook', async () => {
-      // YAAC_E2E_OPENCODE_LOGIN holds a raw api key string — opencode is
-      // api-key-only and skips any native CLI spawn. With no provider override
-      // the credential defaults to openrouter.
+      // opencode is api-key-only, so the hook holds a raw key. With no
+      // provider override the credential defaults to openrouter.
       const env = { ...testEnv.env, YAAC_E2E_OPENCODE_LOGIN: 'sk-or-v1-test-key' }
       const { stdout, exitCode } = await runYaac(env, 'auth', 'update', { stdin: '4\n' })
       expect(exitCode).toBe(0)
@@ -386,8 +364,6 @@ describe('yaac auth (real CLI + shared server)', () => {
     })
 
     it('persists an OpenCode NeuralWatt api key when the provider hook is set', async () => {
-      // opencode.json is also written wholesale, replacing the openrouter
-      // credential the previous test saved.
       const env = {
         ...testEnv.env,
         YAAC_E2E_OPENCODE_LOGIN: 'nw-test-key',
@@ -406,9 +382,8 @@ describe('yaac auth (real CLI + shared server)', () => {
     })
 
     it('persists a Pi (OpenRouter) api key via the test-only login hook', async () => {
-      // YAAC_E2E_PI_LOGIN holds a raw api key string — pi is api-key-only and
-      // skips any native CLI spawn. With no provider override the credential
-      // defaults to openrouter. Menu choice 5 selects Pi.
+      // pi is api-key-only, so the hook holds a raw key. With no provider
+      // override the credential defaults to openrouter. Menu choice 5 is pi.
       const env = { ...testEnv.env, YAAC_E2E_PI_LOGIN: 'sk-or-v1-pi-test-key' }
       const { stdout, exitCode } = await runYaac(env, 'auth', 'update', { stdin: '5\n' })
       expect(exitCode).toBe(0)

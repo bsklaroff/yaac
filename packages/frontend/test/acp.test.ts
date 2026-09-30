@@ -4,10 +4,8 @@ import { groupEvents } from '#components/AcpTranscript'
 import type { AcpEvent } from '@yaac/shared/acp'
 
 /**
- * The two pure steps between the wire and the rendered pane: de-duplicating a
- * reconnect's replay, and folding a chunked stream into readable messages.
- * Both are where a chat pane silently doubles or loses content, and neither
- * needs a DOM to be wrong.
+ * De-duplicating a reconnect's replay, and grouping streamed chunks into
+ * messages.
  */
 
 const agent = (seq: number, text: string): AcpEvent =>
@@ -36,9 +34,7 @@ describe('mergeEvents', () => {
   })
 
   it('de-duplicates a reconnect replay instead of doubling the conversation', () => {
-    // Attaching replays the whole log, so a pane that already holds part of it
-    // must merge rather than append — the failure mode is every message
-    // appearing twice after a dropped connection.
+    // A reattach replays the whole log, which must merge, not duplicate.
     const held = [user(0, 'hi'), agent(1, 'hello')]
     const replayed = [user(0, 'hi'), agent(1, 'hello'), agent(2, 'more')]
     const merged = mergeEvents(held, replayed)
@@ -65,8 +61,7 @@ describe('mergeEvents', () => {
 
 describe('groupEvents', () => {
   it('coalesces consecutive chunks of one kind into a single message', () => {
-    // The agent streams token by token; each chunk is its own event, and
-    // rendering one bubble per chunk is the thing this prevents.
+    // Streamed chunks form one message, not one bubble each.
     const groups = groupEvents([agent(0, 'Hello, '), agent(1, 'world'), agent(2, '!')])
     expect(groups).toEqual([{ kind: 'agent', seq: 0, text: 'Hello, world!', images: [] }])
   })
@@ -86,8 +81,7 @@ describe('groupEvents', () => {
       agent(2, ' and reading'),
       tool(3, 't1', 'completed'),
     ])
-    // Two updates to one call are one row — and it stays where it started, so
-    // the transcript does not reshuffle as the call finishes.
+    // Two updates to one call are one row, which stays in its first position.
     expect(groups.map((g) => g.kind)).toEqual(['agent', 'tool', 'agent'])
     expect(groups[1]).toMatchObject({ seq: 1, call: { toolCallId: 't1', status: 'completed' } })
   })
@@ -104,8 +98,7 @@ describe('groupEvents', () => {
   })
 
   it('hides a normal turn end and surfaces an abnormal one', () => {
-    // A divider under every single reply is noise; a refusal or a token cap is
-    // the user's business.
+    // Only unusual stop reasons (a refusal, a token cap) get a divider.
     expect(groupEvents([agent(0, 'done'), { type: 'turn-end', seq: 1, stopReason: 'end_turn' }]))
       .toEqual([{ kind: 'agent', seq: 0, text: 'done', images: [] }])
     const capped = groupEvents([{ type: 'turn-end', seq: 0, stopReason: 'max_tokens' }])
@@ -120,8 +113,7 @@ describe('groupEvents', () => {
   })
 
   it('drops a turn start, which drives the indicator rather than the transcript', () => {
-    // It carries no content, and the turn beginning is already visible as the
-    // reply that follows it.
+    // A turn start renders nothing.
     expect(groupEvents([{ type: 'turn-start', seq: 0 }, agent(1, 'hi')]))
       .toEqual([{ kind: 'agent', seq: 1, text: 'hi', images: [] }])
   })
@@ -148,14 +140,12 @@ describe('groupEvents', () => {
     const groups = groupEvents([agent(0, 'let me clean up'), ask(1)])
     expect(groups.map((g) => g.kind)).toEqual(['agent', 'permission'])
     expect(groups[1]).toMatchObject({ requestId: '5' })
-    // Undecided is what the pane renders as a live question, so it is the
-    // absence of this that the card turns on.
+    // An undecided ask renders as a live question.
     expect(groups[1].kind === 'permission' && groups[1].decided).toBeUndefined()
   })
 
   it('settles the ask in place rather than appending its answer under it', () => {
-    // One question, one row: a resolved ask that appended would leave a dead
-    // set of buttons above the line saying which one was pressed.
+    // The resolution updates the ask's row rather than adding another.
     const groups = groupEvents([ask(0), resolved(1, 'allow')])
     expect(groups.map((g) => g.kind)).toEqual(['permission'])
     expect(groups[0]).toMatchObject({
@@ -172,8 +162,7 @@ describe('groupEvents', () => {
   })
 
   it('drops an answer whose question is not in this stream', () => {
-    // The record carries both lines, so a lone answer means it was truncated
-    // ahead of the ask — there is no card to retire and nothing to say.
+    // A resolution without its ask (a truncated record) renders nothing.
     expect(groupEvents([resolved(0, 'allow')])).toEqual([])
   })
 })

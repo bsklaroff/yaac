@@ -2,23 +2,14 @@
  * Write `dist/package.json` — the runtime manifest for the bundled server.
  *
  * `dist/cli.js` leaves npm deps external (see check-cli-externals.ts), so
- * anything that runs the bundle away from this repo has to install them.
- * The desktop app gets that from `pnpm pack` + `npm install`; the server
- * IMAGE cannot, because its build context is `dist/` on whatever machine
- * `yaac cluster install` runs on — which, after an `npm i -g @bsklaroff/yaac`,
- * has no pnpm, no workspace, and no catalog to resolve.
+ * whatever runs the bundle must install them. The server image builds from
+ * `dist/` on the machine running `yaac cluster install`, which after an
+ * `npm i -g @bsklaroff/yaac` has no pnpm workspace to resolve `catalog:`
+ * pins. This writes the root dependencies with each `catalog:` pin replaced
+ * by its version from pnpm-workspace.yaml.
  *
- * So the resolution happens here, once, at build time: the root manifest's
- * dependencies with every `catalog:` pin replaced by the concrete version
- * from pnpm-workspace.yaml. The result ships inside `dist/` (the npm
- * tarball's only directory), so the image build finds an installable
- * manifest whether it is building from this repo or from an npm install.
- *
- * Only what a runtime install needs survives: no devDependencies (they name
- * workspace-only `@yaac/*` packages npm would try to resolve even under
- * `--omit=dev`), no lifecycle scripts, no `bin`/`files`/`publishConfig`
- * (this manifest describes a directory to install INTO, not a package to
- * publish).
+ * Only runtime dependencies are kept. devDependencies name workspace-only
+ * `@yaac/*` packages that npm would try to resolve even with `--omit=dev`.
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'

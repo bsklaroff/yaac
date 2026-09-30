@@ -1,24 +1,18 @@
 /**
- * A JSON-RPC 2.0 peer over a newline-delimited byte stream — the transport
- * half of the ACP client. Knows nothing about ACP itself: it correlates ids,
- * dispatches incoming calls, and surfaces the things a *reconnecting* peer has
- * to reason about (orphan responses, control lines from acpd).
+ * A JSON-RPC 2.0 peer over a newline-delimited stream: the transport half of
+ * the ACP client. It correlates ids, dispatches incoming calls, and reports
+ * what a reconnecting peer must handle (orphan responses). A "peer" because
+ * ACP is bidirectional: the agent also sends requests (permission asks).
  *
- * "Peer", not "client", because ACP is bidirectional: the agent calls back for
- * permission decisions and file access, so both directions carry requests.
- *
- * One asymmetry to know about when adding a handler. Closing rejects this
- * peer's *outgoing* requests, but an incoming one whose handler has not
- * resolved yet is not settled here — nothing can be, since only the handler
- * holds the promise. A handler that parks its answer (as the permission one
- * does, waiting on a human) therefore owns settling it on teardown, and
- * `AcpConversation` is where that is done for the one handler that parks.
+ * Closing rejects outgoing requests but cannot settle an incoming request
+ * whose handler has not resolved; a handler that parks its answer (the
+ * permission ask in `AcpConversation`) must settle it on teardown.
  */
 
 import crypto from 'node:crypto'
 import { serverLog } from '#log'
 
-/** The duplex this peer speaks over — satisfied by a streamd `ctrl` stream. */
+/** The duplex this peer speaks over (a streamd `ctrl` stream). */
 export interface JsonRpcTransport {
   write(data: string): void
   onData(cb: (chunk: string) => void): void
@@ -32,7 +26,7 @@ export interface JsonRpcError {
   data?: unknown
 }
 
-/** JSON-RPC's own reserved codes, plus the one yaac raises itself. */
+/** Reserved JSON-RPC error codes yaac raises. */
 export const JSONRPC_METHOD_NOT_FOUND = -32601
 export const JSONRPC_INTERNAL_ERROR = -32603
 
@@ -49,37 +43,27 @@ interface Pending {
 }
 
 /**
- * Cap on a single unterminated line, in UTF-16 code units rather than bytes
- * (it guards a JS string, so that is what it can measure — multibyte-heavy
- * content reaches it later than the number suggests). A backstop against a
- * peer that never sends a newline, not a protocol limit: an agent streaming a
- * large file into a tool result is legitimate.
+ * Cap on one unterminated line, in UTF-16 code units (what a JS string can
+ * measure). A backstop against a peer that never sends a newline; large
+ * lines (a big file in a tool result) are legitimate.
  */
 const MAX_LINE_UNITS = 32 * 1024 * 1024
 
 export interface JsonRpcPeerHandlers {
   /**
-   * Incoming request from the far side. Resolve with the result, or throw a
-   * `JsonRpcCallError` to answer with a protocol error.
-   *
-   * The id comes along because one handler holds its answer open across
-   * connections: a permission ask is settled by a human, who may take longer
-   * than the relay stays up, and the reply is then sent by whichever
-   * connection is attached when they finally answer (`respondTo`). Everything
-   * else answers on the spot and can ignore it.
+   * An incoming request. Resolve with the result, or throw a
+   * `JsonRpcCallError` to reply with a protocol error. The id is passed for
+   * permission asks, which a human may answer after the connection has been
+   * replaced (see `respondTo`).
    */
   onRequest?: (method: string, params: unknown, id: string | number) => Promise<unknown>
   onNotification?: (method: string, params: unknown) => void
   /**
-   * A response arrived for an id this peer never sent. Only possible after a
-   * reconnect: acpd hands the agent's output to whichever client is attached
-   * when it is produced, so the reply to a request the *previous* connection
-   * made is delivered to us if that turn finishes after we take over. The ACP
-   * client reads it as "the turn that was running has ended".
-   *
-   * Nothing is held for an absent client, so a reply produced while nobody was
-   * attached never arrives here at all — it exists only in the record, which is
-   * where the client recovers a reattached conversation's status from instead.
+   * A response for an id this peer never sent, possible only after a
+   * reconnect: acpd forwards the agent's output to whichever client is
+   * attached, so a reply to the previous connection's request reaches us.
+   * The ACP client reads it as "the running turn ended". Replies produced
+   * while nobody was attached exist only in the record.
    */
   onOrphanResponse?: (id: string | number, result: unknown, error?: JsonRpcError) => void
   onClose?: (reason: string) => void
@@ -88,12 +72,9 @@ export interface JsonRpcPeerHandlers {
 export class JsonRpcPeer {
   private nextId = 1
   /**
-   * Namespaces this connection's request ids. A reply to the PREVIOUS
-   * connection's request N can arrive here — acpd relays the agent's output to
-   * whoever is attached when it is produced — and a bare counter restarting at
-   * 1 would let it resolve this connection's unrelated request N (a live turn
-   * reported as ended, say). With a per-connection prefix an orphan is always
-   * recognisable as one.
+   * Per-connection prefix for request ids. A reply to the previous
+   * connection's request N can arrive here, and a plain counter would match
+   * it to this connection's unrelated request N.
    */
   private readonly idPrefix = crypto.randomUUID().slice(0, 8)
   private readonly pending = new Map<string, Pending>()
@@ -108,10 +89,8 @@ export class JsonRpcPeer {
     transport.onClose((reason) => this.onClosed(reason))
   }
 
-  /** Parse whatever whole lines have arrived. Deliberately tolerant: a line
-   *  that isn't JSON is logged and skipped rather than killing the stream —
-   *  an adapter that prints a stray banner to stdout must not take the
-   *  conversation down with it. */
+  /** Parse complete lines. A non-JSON line (e.g. a stray banner on the
+   *  adapter's stdout) is logged and skipped. */
   private feed(chunk: string): void {
     this.buffer += chunk
     if (this.buffer.length > MAX_LINE_UNITS) {
@@ -139,8 +118,8 @@ export class JsonRpcPeer {
       return
     }
 
-    // Validated rather than cast: a malformed id must not be echoed back
-    // verbatim in a reply, nor reach the orphan path as something unmatchable.
+    // Validate the id so a malformed one is never echoed back or treated as
+    // an orphan.
     const id = typeof msg.id === 'string' || typeof msg.id === 'number' ? msg.id : undefined
     if (typeof msg.method === 'string') {
       if (id === undefined) {
@@ -155,12 +134,9 @@ export class JsonRpcPeer {
     const entry = typeof id === 'string' ? this.pending.get(id) : undefined
     const error = msg.error as JsonRpcError | undefined
     if (!entry) {
-      // Unmatched. Whose it is decides what it means, and the prefix says: an
-      // id carrying OUR namespace is a request this connection already
-      // resolved — a duplicate, to drop. Only a foreign id is a genuine
-      // cross-connection orphan, which the caller reads as "the turn that was
-      // running before the reconnect has ended". Conflating them lets a
-      // duplicate (or a mangled id) end a turn that is still streaming.
+      // An id with our prefix was already resolved: a duplicate, dropped.
+      // Only a foreign id is a real orphan ("the previous turn ended");
+      // treating duplicates as orphans could end a turn still streaming.
       if (typeof id === 'string' && id.startsWith(`${this.idPrefix}-`)) {
         serverLog(`[server] acp: duplicate reply for ${id} discarded`)
         return
@@ -205,18 +181,11 @@ export class JsonRpcPeer {
   }
 
   /**
-   * Answer a request this peer never served — one the PREVIOUS connection
-   * received and left open.
-   *
-   * The mirror image of `onOrphanResponse`, and possible for the same reason:
-   * ids on the far side are the agent's, not namespaced to a connection of
-   * ours, and acpd pipes whatever is written to the same agent stdin either
-   * way. So a permission ask delivered before a relay drop can still be
-   * settled afterwards, which is the difference between a blocked agent that
-   * resumes and one that has to be restarted.
-   *
-   * Best-effort by nature: this peer cannot know the agent still cares about
-   * that id, and JSON-RPC lets it ignore a reply it does not recognize.
+   * Answer a request the previous connection received and left open (the
+   * reverse of `onOrphanResponse`). The agent's ids are not namespaced per
+   * connection and acpd writes to the same stdin, so a permission ask can
+   * still be answered after a relay drop instead of restarting the agent.
+   * Best-effort: the agent may ignore an unrecognized reply.
    */
   respondTo(id: string | number, result: unknown): void {
     this.reply(id, result)

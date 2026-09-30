@@ -1,24 +1,15 @@
 /**
- * The Agent Client Protocol, as much of it as yaac speaks — and the
- * translation from its `session/update` notifications into the closed
- * `AcpEvent` union the webapp renders (`@yaac/shared/acp`).
+ * The part of the Agent Client Protocol yaac speaks, and the translation of
+ * `session/update` notifications into the `AcpEvent` union the webapp
+ * renders (`@yaac/shared/acp`).
  *
- * This module is the ONLY place in the server that knows ACP's own shapes.
- * That containment is the point: ACP is a live spec with optional
- * capabilities and per-adapter extensions, so an update to it lands here and
- * nowhere else — not in the driver, not in the route, and above all not in
- * React. Everything is parsed defensively: an unrecognized update variant is
- * dropped rather than throwing, because a newer adapter emitting a richer
- * stream must degrade to "yaac renders less", never to a dead conversation.
+ * This is the only server module that knows ACP's shapes, so spec changes
+ * land here. Parsing is defensive: unknown update variants are dropped, so a
+ * newer adapter degrades to rendering less rather than breaking.
  *
- * yaac is an unusual ACP client in one way worth stating, because it explains
- * the capabilities declared below. In an editor the agent is remote from the
- * workspace, so the client serves `fs/*` and `terminal/*` on the agent's
- * behalf. Here the agent runs *inside the session container*, on the real
- * /workspace, with its own tools — so yaac declines those capabilities and the
- * agent simply uses its own. That removes a whole class of proxying, and the
- * container boundary (gVisor, the egress proxy, the NetworkPolicy) stays the
- * one thing constraining what the agent may touch.
+ * Unlike an editor, yaac runs the agent inside the workspace on the real
+ * checkout with its own tools, so it declines the `fs/*` and `terminal/*`
+ * capabilities rather than proxying them.
  */
 
 import type {
@@ -36,8 +27,7 @@ import type {
 /** The ACP revision this client negotiates. */
 export const ACP_PROTOCOL_VERSION = 1
 
-/** Method names, verbatim from the spec. Referenced rather than inlined so a
- *  rename is a compile error at every call site. */
+/** Method names from the spec, as constants so a rename breaks the build. */
 export const ACP = {
   initialize: 'initialize',
   authenticate: 'authenticate',
@@ -74,11 +64,9 @@ export interface AcpSessionModes {
 }
 
 /**
- * The model a session is running, in the two shapes adapters report it: a
- * `models` block naming the current id, and/or a `configOptions` entry whose
- * `id` is `model`. Every adapter yaac drives answers with at least one — most
- * with the config option, which is also what a `session/set_config_option`
- * changes — so both are read and neither is required.
+ * The model a session is running, in either shape adapters report: a
+ * `models` block, and/or a `configOptions` entry with `id: 'model'` (the one
+ * `session/set_config_option` changes). Both are read; neither is required.
  */
 export interface AcpSessionModels {
   currentModelId?: string
@@ -98,8 +86,7 @@ export interface AcpNewSessionResult {
   configOptions?: AcpConfigOption[]
 }
 
-/** `session/load`'s reply: the same session facts, minus an id we already
- *  hold. */
+/** `session/load`'s reply: the same session facts, without the id. */
 export interface AcpLoadSessionResult {
   modes?: AcpSessionModes
   models?: AcpSessionModels
@@ -111,10 +98,9 @@ export interface AcpPromptResult {
 }
 
 /**
- * What yaac tells the agent it can do. `fs` and `terminal` are false by
- * design (see the module header). `readTextFile`/`writeTextFile` are named
- * explicitly rather than omitted so an adapter reading the object cannot
- * default them to true.
+ * The capabilities yaac declares. `fs` and `terminal` are off (see the
+ * module comment); `readTextFile`/`writeTextFile` are set explicitly so an
+ * adapter cannot default them to true.
  */
 export function clientCapabilities(): Record<string, unknown> {
   return {
@@ -139,8 +125,8 @@ export function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
 
-/** A stop reason yaac doesn't know is reported as `end_turn`: the turn IS
- *  over either way, and inventing a reason would be worse than a plain one. */
+/** Unknown stop reasons are reported as `end_turn`; the turn is over
+ *  either way. */
 export function toStopReason(value: unknown): AcpStopReason {
   const s = asString(value)
   return s !== undefined && (STOP_REASONS as readonly string[]).includes(s)
@@ -149,9 +135,8 @@ export function toStopReason(value: unknown): AcpStopReason {
 }
 
 /**
- * One ACP content block, or undefined for the variants a container-resident
- * agent never sends us (`audio`, `resource`, `resource_link` — it reads its
- * own files rather than asking us to resolve a URI).
+ * One ACP content block, or undefined for variants an in-workspace agent
+ * never sends (`audio`, `resource`, `resource_link`).
  */
 function toContent(value: unknown): AcpContent | undefined {
   const block = asRecord(value)
@@ -170,24 +155,18 @@ function toContent(value: unknown): AcpContent | undefined {
   return undefined
 }
 
-/** A chunk update's payload is one block; a tool call's or a prompt's is a
- *  list. */
+/** A chunk update carries one block; a tool call or prompt carries a list. */
 export function toContentList(value: unknown): AcpContent[] {
   const list = Array.isArray(value) ? value : [value]
   return list.map(toContent).filter((c): c is AcpContent => c !== undefined)
 }
 
 /**
- * A tool call's content entries, which are *wrapped* blocks: `content`
- * carries a block, `diff` carries a before/after pair, `terminal` names a
- * terminal we never created.
+ * A tool call's content entries: `content` wraps a block, `diff` a
+ * before/after pair, `terminal` names a terminal yaac never created.
  *
- * A diff passes through as a diff. It is the one entry a pane can render
- * better than prose, and flattening it here would be irreversible — the texts
- * read as a diff only because a renderer lines them up, and no amount of
- * markers in a string gets that back. `oldText: null` is how an agent says
- * "new file", so it is dropped to absent rather than becoming the string
- * "null".
+ * Diffs pass through as diffs so a pane can render them properly. An
+ * `oldText: null` (a new file) becomes absent, not the string "null".
  */
 function toToolContent(value: unknown): AcpToolContent[] {
   if (!Array.isArray(value)) return []
@@ -209,8 +188,7 @@ function toToolContent(value: unknown): AcpToolContent[] {
         newText: asString(entry.newText) ?? '',
       })
     }
-    // `terminal` entries reference a terminal yaac declined to provide; there
-    // is nothing to show.
+    // yaac declines terminals, so there is nothing to show.
   }
   return out
 }
@@ -244,9 +222,9 @@ function toPlanEntries(value: unknown): AcpPlanEntry[] {
 }
 
 /**
- * A partial tool call, as `tool_call` (full) or `tool_call_update` (a patch
- * naming only what changed). The caller merges patches against what it has
- * already sent, which is why status/title are optional here.
+ * A partial tool call: `tool_call` is complete, `tool_call_update` names
+ * only what changed. The caller merges patches, so status and title are
+ * optional.
  */
 export interface AcpToolCallPatch {
   toolCallId: string
@@ -288,8 +266,7 @@ export function mergeToolCall(
     title: patch.title ?? previous?.title ?? patch.toolCallId,
     kind: patch.kind ?? previous?.kind ?? 'other',
     status: patch.status ?? previous?.status ?? 'pending',
-    // Content is cumulative: an update that carries none is reporting a
-    // status change, not clearing what the call has already produced.
+    // Content is cumulative; an update without it is a status change.
     ...(patch.content !== undefined && patch.content.length > 0
       ? { content: patch.content }
       : previous?.content !== undefined ? { content: previous.content } : {}),
@@ -300,26 +277,16 @@ export function mergeToolCall(
 }
 
 /**
- * A conversation's projection state — everything needed to turn the raw
- * `session/update` stream into complete events, in one owner.
- *
- * Only tool calls need state: ACP sends them as incremental patches, so
- * emitting a *complete* `AcpToolCall` means merging against what came before.
- * Both consumers of the stream need that — the live path and the replay of a
- * record — and giving them a shared class rather than each keeping its own map
- * is what stops the two drifting into different answers about the same
- * conversation.
- *
- * One instance per stream being projected: a live conversation holds one, and
- * each replay of a record makes its own.
+ * State for projecting one `session/update` stream into complete events.
+ * Tool calls arrive as incremental patches and must be merged. The live
+ * path and record replay share this class so they cannot disagree; each
+ * stream gets its own instance.
  */
 export class AcpProjection {
   private readonly toolCalls = new Map<string, AcpToolCall>()
   /**
-   * Permission asks seen without an answer yet. Needed because a reply line is
-   * anonymous — a bare `{id, result}` — so the only way to know one settles a
-   * permission ask, rather than answering `initialize`, is to have seen the
-   * request go past.
+   * Permission asks not yet answered. A reply line is just `{id, result}`,
+   * so only a seen request identifies it as settling a permission ask.
    */
   private readonly openPermissions = new Set<string>()
 
@@ -343,16 +310,15 @@ export class AcpProjection {
     return {
       type: 'permission-resolved',
       requestId,
-      // A reply that parses as neither outcome still settles the ask — the
-      // pane's pending card must retire either way, and "we could not read the
-      // answer" is closer to cancelled than to any particular option.
+      // An unparseable reply still settles the ask so the pane's card
+      // retires; "unreadable" is closest to cancelled.
       outcome: decided?.outcome ?? 'cancelled',
       ...(decided?.optionId !== undefined ? { optionId: decided.optionId } : {}),
     }
   }
 
-  /** The asks still unanswered. A conversation with one is blocked on a human,
-   *  which is what makes it `waiting` rather than `running`. */
+  /** Unanswered asks. A conversation with one is blocked on a human, so it
+   *  is `waiting`, not `running`. */
   get pendingPermissions(): string[] {
     return [...this.openPermissions]
   }
@@ -370,13 +336,9 @@ export class AcpProjection {
 }
 
 /**
- * The translation itself: one `session/update` notification's params into an
- * event, or undefined when there is nothing for a pane to render (an
- * unrecognized variant, or a mode change yaac does not surface).
- *
- * Tool calls come back as a *patch* rather than an event, because merging
- * needs state the caller holds (`AcpProjection`); everything else is
- * self-contained.
+ * Translate one `session/update` into an event, or undefined when there is
+ * nothing to render (an unknown variant, or a mode change). Tool calls come
+ * back as patches, since merging needs the caller's `AcpProjection` state.
  */
 export type TranslatedUpdate =
   | { kind: 'event'; event: AcpEventInit }
@@ -389,11 +351,8 @@ export function translateSessionUpdate(params: unknown): TranslatedUpdate | unde
   const variant = asString(update.sessionUpdate)
 
   switch (variant) {
-    // A chunk whose blocks are all unrepresentable here (audio, a resource
-    // link) translates to nothing renderable, so it is dropped rather than
-    // emitted as an empty message — a pane should show less, not a blank
-    // bubble. Tool calls and plans are not filtered this way: an empty one
-    // still carries its own meaning.
+    // Drop chunks with no renderable blocks rather than show an empty
+    // bubble. Tool calls and plans are kept even when empty.
     case 'user_message_chunk':
       return chunk('user', update.content)
     case 'agent_message_chunk':
@@ -419,10 +378,8 @@ export function translateSessionUpdate(params: unknown): TranslatedUpdate | unde
       return patch === undefined ? undefined : { kind: 'tool', patch }
     }
     default:
-      // A mode change is session state, not something a pane renders — the
-      // conversation reads it off its socket (`sessionModeId`). Anything a
-      // newer adapter adds is dropped the same way: an unknown variant is not
-      // an error.
+      // Mode changes are session state (read via `sessionModeId`), not
+      // rendered. Unknown variants from newer adapters are dropped too.
       return undefined
   }
 }
@@ -440,22 +397,14 @@ function chunk(
 }
 
 /**
- * The permission decision yaac returns for `session/request_permission` when
- * the conversation's posture is `bypass`.
+ * The answer to `session/request_permission` under the `bypass` posture:
+ * always allow, choosing an option that allows without asking again.
+ * Bypass relies on the workspace's isolation rather than prompts.
  *
- * A bypassed session is constrained by its sandbox rather than by a prompt —
- * the agent is in a gVisor container behind an egress allowlist, on a
- * throwaway git checkout — so the answer is always "allow", and the option to
- * pick is whichever the agent offered that allows *without* also asking again
- * next time.
- *
- * Every other posture forwards the ask to the pane instead
- * (`AcpConversation.onRequest`). This stays the bypass answer rather than
- * becoming dead code: the adapter is told its posture over `session/set_mode`,
- * but it can still ask under bypass — a `permissions.ask` rule the user
- * configured is honored even with permissions skipped — and an adapter that
- * never advertised `bypassPermissions` is running in its default mode with
- * this as the only thing making it a bypass.
+ * Other postures forward the ask to the pane (`AcpConversation.onRequest`).
+ * Adapters can still ask under bypass (a user `permissions.ask` rule is
+ * honored even then, and an adapter without `bypassPermissions` runs in its
+ * default mode), so this is still needed.
  */
 export function chooseAllowOption(params: unknown): string | undefined {
   const options = parsePermissionRequest(params).options
@@ -469,14 +418,10 @@ const PERMISSION_OPTION_KINDS: readonly NonNullable<AcpPermissionOption['kind']>
 ]
 
 /**
- * A `session/request_permission` payload as the pane's question: what is being
- * asked about, and the answers on offer.
- *
- * The tool call rides in as the same shape a `tool_call` update carries, so it
- * goes through the same translation and a pane renders the ask with the row it
- * is about to become. An option with no `optionId` is dropped — it names no
- * answer that could be sent back — and an unknown `kind` is dropped to absent
- * rather than passed through, leaving a pane to style by name alone.
+ * A `session/request_permission` payload as the pane's question: the tool
+ * call it concerns and the options offered. The tool call goes through the
+ * same translation as a `tool_call` update. Options without an `optionId`
+ * are dropped, and an unknown `kind` becomes absent.
  */
 export function parsePermissionRequest(params: unknown): {
   toolCall?: AcpToolCall
@@ -505,18 +450,16 @@ export function parsePermissionRequest(params: unknown): {
   }
 }
 
-/** The result yaac replies with. One shape, one place, because a `selected`
- *  carrying no option id is malformed and an agent offering none must get a
- *  `cancelled` rather than a half-built answer. */
+/** The permission reply. An agent offering no option id gets `cancelled`
+ *  rather than a malformed `selected`. */
 export function permissionReply(optionId: string | undefined): unknown {
   return optionId === undefined
     ? { outcome: { outcome: 'cancelled' } }
     : { outcome: { outcome: 'selected', optionId } }
 }
 
-/** The decision a recorded reply carries, or undefined when the line is not
- *  one — which is how the record's projection tells a permission answer from
- *  every other response going past. */
+/** The decision a recorded reply carries, or undefined if the line is not
+ *  a permission answer. */
 export function parsePermissionOutcome(result: unknown): {
   outcome: 'selected' | 'cancelled'
   optionId?: string
@@ -530,20 +473,14 @@ export function parsePermissionOutcome(result: unknown): {
 }
 
 /**
- * Whether the session can be put in this mode.
+ * Whether the session offers this mode. `session/set_mode` throws for an
+ * unadvertised mode, and two of claude's are conditional: `auto` needs a
+ * model with a classifier, and `bypassPermissions` is withheld when the
+ * adapter runs as root outside a sandbox.
  *
- * Asked before setting one because `session/set_mode` throws for a mode the
- * session does not advertise, and two of claude's modes are conditional on
- * things yaac cannot see: `auto` appears only when the model supports a
- * classifier, and `bypassPermissions` only when the adapter is not running as
- * root outside a sandbox.
- *
- * Both shapes an adapter announces its modes in are read — a `modes` block,
- * and a `configOptions` entry whose `id` is `mode` — because they disagree and
- * the difference is not a version detail we can wait out: opencode v2 sends
- * only the second, and reading one shape would leave a `plan` create running
- * in `build` with a pane error where the restraint should be. Nothing
- * announced at all is still not permission to guess.
+ * Both announcement shapes are read (a `modes` block, a `configOptions`
+ * entry with `id: 'mode'`); opencode v2 sends only the second. If neither is
+ * present the mode is treated as not offered.
  */
 export function acpModeOffered(
   session: { modes?: AcpSessionModes; configOptions?: AcpConfigOption[] } | undefined,
@@ -555,18 +492,14 @@ export function acpModeOffered(
 }
 
 /**
- * The model a session says it is running, from any message that carries the
- * session's state: the `session/new` and `session/load` replies, a
- * `session/set_config_option` reply, and a `config_option_update`.
+ * The model a session reports, from any message carrying session state
+ * (`session/new` and `session/load` replies, `session/set_config_option`
+ * replies, `config_option_update`). Reads `models.currentModelId` and the
+ * `model` config option.
  *
- * Both shapes are read because adapters differ over which they use — a
- * `models.currentModelId` block, a `configOptions` entry whose `id` is
- * `model`, or both.
- *
- * The id comes with the name the adapter's own list gives it, when it gives
- * one: claude's adapter answers with its picker's alias where it has one
- * (`opus[1m]`), which only its name for it (`Opus 5.5`) ties back to a model
- * anyone else names.
+ * Returns the adapter's display name too, when given: claude's adapter
+ * reports a picker alias (`opus[1m]`) that only its name (`Opus 5.5`) ties
+ * to a recognizable model.
  */
 export function sessionModel(state: unknown): { id: string; name?: string } | undefined {
   const r = asRecord(state)
@@ -590,14 +523,10 @@ function named(id: string, name: string | undefined): { id: string; name?: strin
 }
 
 /**
- * The session mode an update says the session is in now, or undefined when it
- * says nothing about one.
- *
- * Two variants carry it, because adapters disagree about which to send:
- * claude's adapter sends `current_mode_update` when the agent moves itself (an
- * ExitPlanMode answer, EnterPlanMode), while codex-acp reports every change as
- * a `config_option_update` naming its `mode` option — the same two shapes
- * `acpModeOffered` reads a handshake reply in.
+ * The mode an update says the session is now in, if any. claude's adapter
+ * sends `current_mode_update` when the agent moves itself (e.g. exiting plan
+ * mode); codex-acp reports every change as a `config_option_update` for its
+ * `mode` option.
  */
 export function sessionModeId(update: Record<string, unknown>): string | undefined {
   if (update.sessionUpdate === 'current_mode_update') return asString(update.currentModeId)

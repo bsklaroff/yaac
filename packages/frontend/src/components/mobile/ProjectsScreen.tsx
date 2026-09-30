@@ -8,14 +8,8 @@ import { projectColor, projectInitial } from '#lib/projectIdentity'
 import type { ProjectSummary } from '@yaac/shared/types'
 
 /**
- * The root mobile screen: which project do you want to work in.
- *
- * Not the desktop rail scaled up. The rail's 40px chips are a *dense*
- * representation — they work because they sit beside the thing they scope, and
- * hovering one gives you its name. As the only content on a phone screen they
- * would be a column of unlabelled letters, so this is a plain list of named
- * rows carrying the same identity color, with the rail's footer affordances
- * (add project, settings) as rows of their own.
+ * The root mobile screen: a list of named project rows (the desktop rail's
+ * letter chips need hover to show names), plus add-project and settings rows.
  */
 export function ProjectsScreen({
   projects,
@@ -61,8 +55,7 @@ export function ProjectsScreen({
             >
               <span
                 className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-[15px] font-semibold"
-                // Same quiet identity treatment as the rail chip: a dark tint
-                // of the project hue, a light pastel of it for the initial.
+                // Same colors as the rail chip.
                 style={{
                   background: `color-mix(in oklab, ${color} 22%, var(--color-surface-2))`,
                   color: `color-mix(in oklab, ${color} 42%, var(--color-text))`,
@@ -80,8 +73,7 @@ export function ProjectsScreen({
                   {waiting}
                 </span>
               )}
-              {/* The active project keeps a quiet marker so returning to this
-                  screen shows where you came from. */}
+              {/* Marks the active project. */}
               {p.slug === activeProjectSlug && waiting === 0 && (
                 <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-text-faint" aria-hidden />
               )}

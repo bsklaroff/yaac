@@ -7,24 +7,18 @@ import type {
 } from '@yaac/shared/types'
 
 /**
- * The endpoint behind Claude Code's own /usage screen. Subscription-only:
- * it authenticates with the OAuth access token as a Bearer (plus the OAuth
- * beta header) and knows nothing about api keys.
+ * The endpoint behind Claude Code's /usage screen. Subscription-only: it
+ * takes the OAuth access token as a Bearer (plus the OAuth beta header).
  */
 export const CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
 
-/** Account/organization profile for the OAuth token — carries the org's
- *  rate-limit tier (e.g. 'default_claude_max_20x'), which is the only
- *  place the Max 20x vs 10x distinction shows up (the credential bundle's
- *  subscriptionType is just 'max'). */
+/** Account profile for the OAuth token. Its org rate-limit tier (e.g.
+ *  'default_claude_max_20x') is the only place Max 20x vs 10x shows up; the
+ *  bundle's subscriptionType is just 'max'. */
 export const CLAUDE_PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile'
 
-/**
- * The slice of the upstream payload we consume. The endpoint returns far
- * more (spend, extra-usage credits, per-surface buckets); the `limits`
- * array is the general shape — one row per plan limit — so everything else
- * is ignored rather than modeled.
- */
+/** The part of the usage payload we read: the `limits` array, one row per
+ *  plan limit. Everything else is ignored. */
 const upstreamUsageSchema = z.object({
   limits: z.array(z.object({
     kind: z.string(),
@@ -65,10 +59,9 @@ function oauthHeaders(bundle: ClaudeOAuthBundle): Record<string, string> {
 }
 
 /**
- * One plain query of the profile endpoint for the org's rate-limit tier.
- * Never throws; null covers every failure (and a missing field) so the
- * caller can retry on its own cadence and degrade to the bare
- * subscriptionType label meanwhile.
+ * Query the profile endpoint for the org's rate-limit tier. Never throws;
+ * null covers every failure and a missing field, so the caller can retry
+ * later and show the bare subscriptionType meanwhile.
  */
 export async function queryClaudeRateLimitTier(
   bundle: ClaudeOAuthBundle,
@@ -87,15 +80,12 @@ export async function queryClaudeRateLimitTier(
 }
 
 /**
- * One plain query of the usage endpoint with the given OAuth bundle.
- * Never throws — HTTP failures and network errors come back as
- * `{ available: false }`. Refresh cadence, caching, and bridging upstream
- * throttles all live with the caller (server/plan-usage.ts): the endpoint
- * rate-limits hard (observed: a burst of ~8 requests earned a 429 with
- * retry-after ≈4min), so nothing should call this in a loop.
+ * Query the Claude usage endpoint. Never throws; HTTP and network failures
+ * return `{ available: false }`. Cadence, caching and throttling live in
+ * ./plan-usage.ts: the endpoint rate-limits hard (a burst of ~8 requests got
+ * a 429 with retry-after ≈4min), so never call this in a loop.
  *
- * A 401 means the access token is expired or revoked; the caller refreshes
- * the bundle (lib/auth/claude-oauth.ts) and retries before surfacing it.
+ * On a 401 the caller refreshes the bundle (./claude-oauth.ts) and retries.
  */
 export async function queryClaudePlanUsage(
   bundle: ClaudeOAuthBundle,
@@ -118,9 +108,8 @@ export async function queryClaudePlanUsage(
     return {
       available: true,
       subscriptionType: bundle.subscriptionType ?? null,
-      // Filled in by the server's per-credential profile fetch
-      // (server/plan-usage.ts) — not queried here, so a 5-minutely usage
-      // refresh doesn't double the load on the rate-limited OAuth API.
+      // Filled in by the per-credential profile fetch in ./plan-usage.ts,
+      // so each usage refresh doesn't also hit the rate-limited profile API.
       rateLimitTier: null,
       limits: parsePlanUsageLimits(await res.json()),
     }
@@ -136,11 +125,9 @@ export async function queryClaudePlanUsage(
 // ── Codex (ChatGPT) subscription usage ─────────────────────────────────
 
 /**
- * The endpoint behind Codex CLI's own `/status` rate-limit readout, in
- * ChatGPT auth mode: `chatgpt.com/backend-api/wham/usage`. Codex polls it on
- * a 60s cadence; like Claude's, it authenticates with the OAuth access token
- * as a Bearer plus the `ChatGPT-Account-Id` header, and knows nothing about
- * api keys. Not reachable for api-key ("OPENAI_API_KEY") Codex auth.
+ * The endpoint behind Codex CLI's `/status` rate-limit readout in ChatGPT
+ * auth mode. Takes the OAuth access token as a Bearer plus the
+ * `ChatGPT-Account-Id` header; unavailable with api-key auth.
  */
 export const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
 
@@ -153,11 +140,8 @@ const codexWindowSchema = z.object({
   reset_at: z.number().nullish(),
 })
 
-/**
- * The slice of wham/usage we consume. The payload flattens
- * RateLimitStatusPayload (`plan_type`, `rate_limit`, …) with reset-credit
- * fields; we read only the plan type and the two rate-limit windows.
- */
+/** The part of wham/usage we read: the plan type and the two rate-limit
+ *  windows. */
 const codexUsageSchema = z.object({
   plan_type: z.string().nullish(),
   rate_limit: z.object({
@@ -185,10 +169,9 @@ function codexLimit(kind: 'codex_primary' | 'codex_secondary', w: CodexWindow): 
 }
 
 /**
- * Normalize a wham/usage payload to the wire shape. Returns the ChatGPT plan
- * type and the primary/secondary windows (each present only when the upstream
- * reports it). Throws when the body doesn't carry a recognizable
- * `rate_limit` object.
+ * Normalize a wham/usage payload to the wire shape: the ChatGPT plan type
+ * and whichever of the primary/secondary windows are present. Throws on an
+ * unrecognized body.
  */
 export function parseCodexPlanUsage(
   body: unknown,
@@ -202,8 +185,8 @@ export function parseCodexPlanUsage(
   return { subscriptionType: parsed.data.plan_type ?? null, limits }
 }
 
-/** Decode a JWT payload without verifying it — we only read display claims
- *  (never trust these for auth). Returns null for anything unparseable. */
+/** Decode a JWT payload without verifying it (display claims only, never
+ *  auth). Null if unparseable. */
 function decodeJwtPayload(jwt: string): Record<string, unknown> | null {
   const parts = jwt.split('.')
   if (parts.length < 2) return null
@@ -216,9 +199,8 @@ function decodeJwtPayload(jwt: string): Record<string, unknown> | null {
   }
 }
 
-/** The ChatGPT account id for the `ChatGPT-Account-Id` header: the bundle's
- *  stored id, else the `chatgpt_account_id` claim carried in the access
- *  token JWT (under the `https://api.openai.com/auth` namespace). */
+/** The `ChatGPT-Account-Id` header value: the bundle's stored id, else the
+ *  access token's `chatgpt_account_id` claim. */
 function codexAccountId(bundle: CodexOAuthBundle): string | null {
   if (bundle.accountId) return bundle.accountId
   const claims = decodeJwtPayload(bundle.accessToken)
@@ -233,8 +215,7 @@ function codexAccountId(bundle: CodexOAuthBundle): string | null {
 function codexHeaders(bundle: CodexOAuthBundle): Record<string, string> {
   const headers: Record<string, string> = {
     'Authorization': `Bearer ${bundle.accessToken}`,
-    // Codex identifies itself with a `codex_cli_rs`-flavored UA; a plain
-    // client UA is enough for the read-only usage endpoint.
+    // A plain UA is enough for this read-only endpoint.
     'User-Agent': 'codex-cli',
   }
   const accountId = codexAccountId(bundle)
@@ -243,12 +224,9 @@ function codexHeaders(bundle: CodexOAuthBundle): Record<string, string> {
 }
 
 /**
- * One plain query of the Codex usage endpoint with the given OAuth bundle.
- * Never throws — HTTP failures and network errors come back as
- * `{ available: false }`, mirroring queryClaudePlanUsage. Refresh cadence,
- * caching, and 401-driven token refresh live with the caller
- * (server/plan-usage.ts). A 401/403 means the access token is expired or
- * revoked; the caller refreshes the bundle and retries before surfacing it.
+ * Query the Codex usage endpoint. Never throws; like queryClaudePlanUsage,
+ * failures return `{ available: false }`. Cadence, caching and refresh on
+ * 401/403 live in ./plan-usage.ts.
  */
 export async function queryCodexPlanUsage(
   bundle: CodexOAuthBundle,
@@ -272,8 +250,7 @@ export async function queryCodexPlanUsage(
     return {
       available: true,
       subscriptionType,
-      // Codex has no separate rate-limit-tier multiplier; the plan type in
-      // subscriptionType is the whole story.
+      // Codex has no separate tier; the plan type says it all.
       rateLimitTier: null,
       limits,
     }

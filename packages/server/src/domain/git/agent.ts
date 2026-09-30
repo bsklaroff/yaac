@@ -7,25 +7,20 @@ import { sshPublicKeyBlobFromLine, sshSign, sshString, sshUint32 } from '#lib/ss
 import { serverLog } from '#log'
 
 /**
- * The ssh-agent the server's OWN git signs through.
+ * The ssh-agent the server's own git signs through. `ssh` needs a private
+ * key as a file or an agent, and generated keys must never be written to a
+ * file (docs/git-credentials.md), so the server acts as its own agent: a
+ * UNIX socket that answers "list identities" and "sign" and refuses
+ * everything else. Identities come from the public-key column; a key's seed
+ * is decrypted only inside the sign handler. (Ed25519 has no signature
+ * flags, which keeps this small.)
  *
- * `ssh` takes a private key as a path or an agent, and a path is the one
- * thing a generated key must never have (docs/git-credentials.md). So the server
- * is its own agent: a UNIX socket that answers the two requests an ssh
- * client makes of one — which identities exist, and sign this — and
- * refuses everything else. Identities are answered from the public column;
- * the seed is opened inside the sign handler, for the one key the request
- * named. Ed25519 has no signature flags, which is what keeps the whole
- * protocol subset this short.
+ * Rows are read per request, so a just-generated or removed key takes effect
+ * immediately.
  *
- * Rows are read per request rather than cached, so a key generated or
- * removed a moment ago is what the next fetch signs with, with no resync
- * step to forget.
- *
- * The socket is reachable by any process of this uid, which is the same
- * boundary the database file and the secret key already sit behind. It
- * lives under the install-keyed temp dir the containerless driver uses for
- * its tmux sockets, for the same `sun_path` reason.
+ * Any process of this uid can reach the socket, the same boundary as the
+ * database and secret key. It lives under the install's temp dir (like the
+ * containerless tmux sockets) to keep the path short enough for `sun_path`.
  */
 
 /** Client→agent request types (PROTOCOL.agent). */
@@ -36,23 +31,20 @@ const SSH_AGENT_FAILURE = 5
 const SSH_AGENT_IDENTITIES_ANSWER = 12
 const SSH_AGENT_SIGN_RESPONSE = 14
 
-/** OpenSSH's own AGENT_MAX_LEN: a frame claiming more is not the agent
- *  protocol, so the connection is dropped rather than buffered. */
+/** OpenSSH's AGENT_MAX_LEN. A larger frame drops the connection. */
 const AGENT_MAX_MESSAGE_BYTES = 256 * 1024
 
 const FAILURE = frame(Buffer.from([SSH_AGENT_FAILURE]))
 
 let server: net.Server | undefined
 
-/** Where the agent listens — what `gitEnvForCredential` names as `IdentityAgent`. */
+/** The agent socket, which `gitEnvForCredential` sets as `IdentityAgent`. */
 export function gitSshAgentSock(): string {
   return path.join(installTmpDir(), 'git-agent.sock')
 }
 
-/**
- * Start listening. Idempotent; a socket file a previous life left behind is
- * removed first, since `listen` refuses to bind over one.
- */
+/** Start listening. Idempotent; removes a stale socket file first, since
+ *  `listen` can't bind over one. */
 export async function startGitSshAgent(): Promise<void> {
   if (server) return
   const sock = gitSshAgentSock()
@@ -89,12 +81,11 @@ export async function stopGitSshAgent(): Promise<void> {
   await fs.rm(gitSshAgentSock(), { force: true }).catch(() => { /* already gone */ })
 }
 
-/** One reply for one request. Anything but the two admitted types — add,
- *  remove, lock, extension — is a FAILURE. */
+/** Reply to one request. Anything but list-identities and sign (add,
+ *  remove, lock, extension) gets FAILURE. */
 async function answer(message: Buffer): Promise<Buffer> {
   const type = message[0]
   if (type === SSH_AGENTC_REQUEST_IDENTITIES) {
-    // From the public column: nothing is opened to say which keys exist.
     const keys = await listSshKeys()
     return frame(Buffer.concat([
       Buffer.from([SSH_AGENT_IDENTITIES_ANSWER]),
@@ -136,8 +127,8 @@ function readString(buf: Buffer, offset: number): Buffer {
   return buf.subarray(offset + 4, end)
 }
 
-/** Reassemble whole frames from a byte stream; `fail` on one that cannot
- *  be the agent protocol. */
+/** Reassemble whole frames from a byte stream; call `fail` on an invalid
+ *  frame length. */
 function frameReader(
   onMessage: (message: Buffer) => void,
   fail: () => void,

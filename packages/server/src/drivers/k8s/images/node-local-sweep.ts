@@ -1,30 +1,17 @@
 /**
- * The node-local orphan sweep: one root pod per node, walking this
- * install's node-local tree and removing what no live project or workspace
- * owns.
+ * Node-local orphan sweep: one root pod per node removes what no live
+ * project or workspace owns from this install's node-local directory
+ * (package caches, opencode working copies and nested image stores; see
+ * docs/server-in-cluster.md). That data lives on whichever node the
+ * workspace ran on, so the sweep runs there.
  *
- * The NODE-LOCAL tier holds, per project id, package-manager caches, each
- * opencode workspace's working copy and the nested image store
- * (docs/server-in-cluster.md "Storage is two claims"). None of it is on the
- * server's own filesystem on a multi-node cluster — it is on whichever node
- * the workspace ran on — so nothing about it is read or written from the
- * server; the sweep runs where the bytes are, on the node-write-pod shape
- * the image store's writer uses (store-writer.ts).
+ * - A `projects/<x>` or `shared-images/<x>` is removed when `x` is not a
+ *   live project id and no live pod mounts it.
+ * - Inside a live project, an opencode working copy is removed when its
+ *   workspace is not live (the global checkpoint is newer).
  *
- * Two keep-lists, both handed in by the caller from its own records:
- *  - **project ids.** A `projects/<x>` or `shared-images/<x>` whose `x` no
- *    live project holds goes whole. That covers every removal whose own
- *    cleanup pod failed or never reached the node, and every tree named
- *    before projects had ids — except a tree a live pod still mounts, read
- *    off this install's pod specs, which is what spares a pod created
- *    under the old naming until it stops.
- *  - **workspace ids.** Inside a live project, an opencode working copy
- *    whose workspace is not live goes: a stopped workspace's copy is either
- *    already deleted by its own `preStop` checkpoint or a stale copy the
- *    global checkpoint outranks on the next start.
- * Either way, what was written since the cutoff stays: a create staging
- * into a directory its pod has not appeared with yet (the same slack
- * `inUseBySweep` gives the global half).
+ * Anything modified since the cutoff is kept, since a create may be
+ * staging into it before its pod appears.
  */
 import crypto from 'node:crypto'
 import path from 'node:path'
@@ -45,8 +32,7 @@ import type { NodeLocalLiveSet } from '#drivers/contract'
 /** Where the sweep pod mounts the install's node-local tree. */
 export const SWEEP_POD_PATH = '/node'
 
-/** `app` label of every sweep pod; with the hash label below, what the
- *  next run's stray delete selects. */
+/** `app` label of every sweep pod, used to delete strays. */
 export const NODE_LOCAL_SWEEP_APP_LABEL = 'yaac-node-local-sweep'
 
 /** Ties sweep pods to this install without making them visible to the
@@ -58,18 +44,13 @@ export function sweepPodSelector(): string {
   return `app=${NODE_LOCAL_SWEEP_APP_LABEL},${LABEL_SWEEP_DATA_DIR_HASH}=${dataDirHash()}`
 }
 
-/** How often the sweep runs per server life: leftovers accrue slowly, and
- *  every run is a pod per node. */
+/** Min interval between sweeps; each one runs a pod per node. */
 export const NODE_LOCAL_SWEEP_INTERVAL_MS = 60 * 60_000
 
 /** Deadline for one node's sweep: a walk over one tree and some `rm -rf`s. */
 export const NODE_LOCAL_SWEEP_TIMEOUT_MS = 5 * 60_000
 
-/**
- * How far before the sweep's start a write still counts as "in use". Node
- * disk is local (second-granularity timestamps at worst), so this is the
- * same slack the global half uses.
- */
+/** How far before the sweep's start a write still counts as in use. */
 export const NODE_LOCAL_SWEEP_SLACK_MS = 10_000
 
 function sweepLabels(): Record<string, string> {
@@ -78,16 +59,13 @@ function sweepLabels(): Record<string, string> {
 
 /**
  * The in-pod script. Argv is `<cutoff epoch seconds> <kept names>
- * <live workspace ids>`, both lists comma-separated. It removes each
- * `/node/{projects,shared-images}/<x>` whose `x` is not a kept name, then
- * each `/node/projects/<x>/opencode-data/<id>` whose `id` is not a live
- * workspace — in both cases only when its mtime is older than the cutoff
- * (`find -newermt` is the in-pod form of the slack).
+ * <live workspace ids>` (lists comma-separated). Removes each unkept
+ * `/node/{projects,shared-images}/<x>` and each
+ * `/node/projects/<x>/opencode-data/<id>` of a non-live workspace, when
+ * older than the cutoff.
  *
- * Never through a symlink. The tree is mounted read-write into workspace
- * pods, so a pod can replace a directory (or an entry under it) with a link
- * to anywhere on the node; a walk that followed it would `rm -rf` the
- * target as root. Every level is tested with `-L` and a link is skipped.
+ * Symlinks are always skipped: workspace pods can write this tree, so a
+ * link could point anywhere on the node and this runs as root.
  */
 export function buildNodeLocalSweepScript(): string {
   return [
@@ -113,7 +91,6 @@ export function buildNodeLocalSweepScript(): string {
     '    [ -e "$entry" ] && [ ! -L "$entry" ] || continue',
     '    id=$(basename "$entry")',
     '    case "$LIVE" in *",$id,"*) continue;; esac',
-    // A directory touched since the cutoff is a create staging into it.
     '    fresh "$entry" && continue',
     '    rm -rf "$entry" && removed=$((removed+1)) && echo "removed $(basename "$projdir")/opencode-data/$id"',
     '  done',
@@ -123,10 +100,9 @@ export function buildNodeLocalSweepScript(): string {
 }
 
 /**
- * The sweep pod for one node: root, runc, pinned by `nodeName`, blanket
- * toleration (a pool taint must not keep the sweep off the very node it
- * exists to clean), infra priority, the install's node root mounted rw.
- * The builder image mirror, because busybox lacks `find -newermt`.
+ * The sweep pod for one node: root, runc, pinned by `nodeName`, tolerating
+ * every taint, with the install's node directory mounted read-write. Uses
+ * the builder image because busybox lacks `find -newermt`.
  */
 export function buildNodeLocalSweepPodManifest(params: {
   nodeName: string
@@ -177,10 +153,9 @@ interface RawPodList {
 }
 
 /**
- * The `<x>` of every `projects/<x>` and `shared-images/<x>` a pod of this
- * install mounts, read off the pod specs the server wrote. Rejects rather
- * than resolving empty: an unreadable list must not read as "nothing is
- * mounted".
+ * The `<x>` of every `projects/<x>` and `shared-images/<x>` a workspace pod
+ * of this install mounts. Throws if pods cannot be listed, rather than
+ * returning an empty set.
  */
 async function mountedProjectNames(): Promise<Set<string>> {
   const pods = await kubectlGetJson<RawPodList>([
@@ -213,10 +188,8 @@ interface RawNodeList {
 }
 
 /**
- * See `WorkspaceDriver.reapNodeLocal`. Runs one pod per node, throttled to
- * once per {@link NODE_LOCAL_SWEEP_INTERVAL_MS} per server life; every
- * failure is logged and swallowed, since an orphan costs disk and nothing
- * else.
+ * See `WorkspaceDriver.reapNodeLocal`. Runs one pod per node, at most once
+ * per {@link NODE_LOCAL_SWEEP_INTERVAL_MS}. Failures are only logged.
  */
 export async function reapNodeLocal(
   live: NodeLocalLiveSet,
@@ -228,8 +201,7 @@ export async function reapNodeLocal(
   sweeping = true
   lastSweepMs = now
   try {
-    // A pod a previous server life left mid-run (crash, restart) is this
-    // install's stray; nothing else deletes on these labels.
+    // Delete sweep pods a previous server left behind.
     await kubectlWithRetry([
       'delete', 'pods', '-n', k8sNamespace(), '-l', sweepPodSelector(),
       '--ignore-not-found', '--wait=false',

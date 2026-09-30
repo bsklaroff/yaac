@@ -6,7 +6,7 @@ type ExecCallback = (err: unknown, res?: ExecResult) => void
 
 /** The cluster's Secret store, as `kubectl get` / `kubectl create` see it. */
 let secretPem: string | null = null
-/** A key another client creates in the window between our read and create. */
+/** A key another client creates between our read and our create. */
 let racedPem: string | null = null
 const kubectlCalls: string[][] = []
 
@@ -20,7 +20,7 @@ function secretJson(pem: string): string {
   return JSON.stringify({ data: { 'key.pem': Buffer.from(pem).toString('base64') } })
 }
 
-// The process boundary: every read and write of the key is a kubectl child.
+// Every read and write of the key is a kubectl child process.
 vi.mock('node:child_process', () => ({
   exec: vi.fn(),
   execFile: (file: string, args: string[], opts: unknown, cb?: ExecCallback) => {
@@ -110,8 +110,8 @@ describe('registryAuthFile', () => {
     expect(verify(passwordOf(admin), await registryGrantPublicKey())?.scope).toBe('*')
     expect(grant?.expiry).toBeGreaterThanOrEqual(before + 600)
     expect(grant?.expiry).toBeLessThanOrEqual(Math.floor(Date.now() / 1000) + 600)
-    // Read from a namespace of its own — never the install namespace,
-    // whose Secrets the egress proxy's Role reads — once for both calls.
+    // Read once, from its own namespace: the egress proxy can read the
+    // install namespace's Secrets.
     expect(kubectlCalls).toEqual([
       ['get', 'secret', 'yaac-registry-grant-key', '-n', 'yaac-registry-keys', '-o', 'json'],
     ])
@@ -128,8 +128,8 @@ describe('registryAuthFile', () => {
     const created = crypto.createPublicKey(secretPem!).export({ type: 'spki', format: 'der' })
     expect(verify(passwordOf(authFile), created)?.scope).toBe('yaac-user-p1')
 
-    // Two first callers must converge on ONE key: the loser of the create
-    // signs with the winner's.
+    // Racing first callers converge on one key: the loser adopts the
+    // winner's.
     secretPem = null
     racedPem = newPem()
     _resetRegistryGrantKeyForTests()

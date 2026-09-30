@@ -1,9 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-// The one process boundary this half of the folder has: every podman call
-// goes through the promisified execFile. Mocking node:child_process (rather
-// than execFileAsync, which is itself part of the interface) keeps the
-// promisify wrapper in the test's path. Hoisted before the module import.
+// Every podman call goes through the promisified execFile. The mock sits at
+// node:child_process, not execFileAsync, since execFileAsync is under test.
 type ExecResult = { stdout: string; stderr: string }
 type ExecCallback = (err: unknown, res?: ExecResult) => void
 const execFileMock = vi.fn<(file: string, args: readonly string[]) => Promise<ExecResult>>()
@@ -14,15 +12,13 @@ vi.mock('node:child_process', () => ({
     opts: unknown,
     cb?: ExecCallback,
   ) => {
-    // When promisify wraps this, it invokes with a callback as the last arg.
     const actualCb = (typeof opts === 'function' ? opts : cb) as ExecCallback
     void execFileMock(file, args).then(
       (res) => actualCb(null, res),
       (err: unknown) => actualCb(err),
     )
   },
-  // Unused here, but the container barrel pulls in modules that promisify
-  // it at import time.
+  // Unused, but other barrel modules promisify it at load time.
   exec: (_cmd: string, _opts: unknown, cb?: ExecCallback) => { cb?.(null, { stdout: '', stderr: '' }) },
   spawn: vi.fn(() => ({ unref: () => {}, on: () => {} })),
 }))
@@ -36,10 +32,7 @@ import {
 const realPlatform = process.platform
 const realHost = process.env.CONTAINER_HOST
 
-/**
- * The rootful lever is chosen by platform, so the platform is an argument
- * here rather than a property of the box the suite happens to run on.
- */
+/** The rootful setup depends on platform, so tests set it explicitly. */
 function setPlatform(platform: NodeJS.Platform): void {
   Object.defineProperty(process, 'platform', { value: platform, configurable: true })
 }

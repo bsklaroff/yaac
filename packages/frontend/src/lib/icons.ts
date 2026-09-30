@@ -1,13 +1,8 @@
 /**
- * Centralized icon set. Everything imports icons from here under semantic
- * names, so the underlying library is referenced in exactly one place.
- * Backed by lucide-react (free, open-source). Icons take a `size` prop and
- * inherit `currentColor`, so text-* utilities color them.
- *
- * (A Central Icons variant — round-filled, with real brand glyphs — is kept
- * on the `claude/central-icons-ref` branch for reference; it depends on a
- * gated paid package, so it can't be the default. Agent tools are now shown
- * by name rather than a glyph, since lucide has no brand marks.)
+ * The app's icons under semantic names, so lucide-react is referenced in one
+ * place. Icons take a `size` prop and use `currentColor`, so text-*
+ * utilities color them. Agent tools are shown by name, since lucide has no
+ * brand marks.
  */
 import type { AgentTool } from '@yaac/shared/types'
 
@@ -91,7 +86,7 @@ export {
   PencilLine as DraftIcon,
 } from 'lucide-react'
 
-/** Display name per agent tool (proper brand casing, incl. OpenCode). */
+/** Display name per agent tool. */
 export const TOOL_LABEL: Record<AgentTool, string> = {
   claude: 'Claude',
   codex: 'Codex',

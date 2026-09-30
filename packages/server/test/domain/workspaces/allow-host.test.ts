@@ -51,8 +51,8 @@ describe('allowWorkspaceHost', () => {
 
     await allowWorkspaceHost('sid-1', 'h.com', { persist: true })
 
-    // The config write comes first: a failure there must leave nothing
-    // widened anywhere, rather than a live widen with no record of it.
+    // The config write comes first, so a failure there leaves the live
+    // allowlist unchanged too.
     expect(order).toEqual(['config', 'runtime'])
     expect(mockPersist).toHaveBeenCalledExactlyOnceWith('proj', 'h.com')
     expect(mockAllowHost).toHaveBeenCalledExactlyOnceWith(

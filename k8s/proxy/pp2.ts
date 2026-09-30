@@ -1,15 +1,11 @@
 /**
  * PROXY protocol v2 parsing for the proxy's transparent listeners. netd's
- * node-local Envoy prepends a PP2 header to every redirected
- * connection carrying the real source pod IP (AF_INET); the proxy parses it
- * here, then resolves that IP to a workspace (see pod-watch.ts) before the
- * existing SNI / Host handling. Zero deps and no side effects, so it is
- * unit-testable by import — mirrors transparent.ts.
+ * Envoy prepends a PP2 header carrying the source pod IP to every redirected
+ * connection; the proxy maps that IP to a workspace (see pod-watch.ts).
  *
- * Wire format: haproxy PROXY protocol spec §2.2 (binary). We accept the
- * AF_INET + STREAM shape Envoy produces; AF_UNSPEC (no addresses, TLVs only)
- * parses too. Everything malformed maps to `invalid` so the listener fails
- * closed.
+ * Wire format: haproxy PROXY protocol spec §2.2. Accepts the AF_INET shape
+ * Envoy sends, and AF_UNSPEC (TLVs only). Anything malformed is `invalid`,
+ * so the listener fails closed.
  */
 
 /** 12-byte v2 signature. */
@@ -37,12 +33,10 @@ export type Pp2ParseResult =
 /**
  * Incrementally parse a PP2 header from the start of a buffered stream.
  * Returns `need-more` while the buffer is a valid prefix of a header,
- * `invalid` the moment it cannot be one (so a plain TLS ClientHello or
- * any non-relay client fails closed), `ok` with the consumed length once
- * the whole header is present. Never throws.
+ * `invalid` as soon as it cannot be one (e.g. a bare TLS ClientHello), and
+ * `ok` once the whole header is present. Never throws.
  */
 export function parsePp2Header(buf: Buffer): Pp2ParseResult {
-  // Signature: as soon as a byte diverges it is not PP2.
   const sigLen = Math.min(buf.length, PP2_SIGNATURE.length)
   if (!buf.subarray(0, sigLen).equals(PP2_SIGNATURE.subarray(0, sigLen))) {
     return { kind: 'invalid' }

@@ -24,12 +24,10 @@
  *     pressed Enter does not confirm, a click does — and the project is back
  *     among those without git authentication.
  *
- * Mutates the install it runs against — stages UNASSIGNED_URL as a project
- * with no credential if absent, stores three credentials, assigns, replaces
- * and deletes one, and may add ADD_URL — so point it at a scratch server on this machine. The API
- * never adds a project without a credential through `project add`, so the
- * script stages it the way the e2e fixtures do: a clone in the data dir,
- * recorded through `POST /project/register`, which assigns no credential.
+ * Changes the install it runs against, so use a scratch server: it stages
+ * UNASSIGNED_URL as a project with no credential (a clone in the data dir
+ * recorded via `POST /project/register`, as the e2e fixtures do), stores
+ * three credentials, assigns, replaces and deletes one, and may add ADD_URL.
  *
  *   export YAAC_DATA_DIR=/tmp/yaac-pw-$$ YAAC_SERVER_PORT=8893
  *   yaac server start          # after `pnpm build`, so dist/ is current
@@ -119,8 +117,10 @@ if ((await projects()).some((p) => p.slug === slugOf(ADD_URL))) {
   throw new Error(`${slugOf(ADD_URL)} is already a project — pick another ADD_URL`)
 }
 
-/** Poll `fn(arg)` in the page until truthy. (page.waitForFunction with an
- *  argument evaluates a string, which the app's CSP refuses.) */
+/**
+ * Poll `fn(arg)` in the page until truthy (page.waitForFunction with an
+ * argument evaluates a string, which the app's CSP refuses).
+ */
 async function until(page, fn, arg, timeout) {
   for (const end = Date.now() + timeout; Date.now() < end; await new Promise((r) => setTimeout(r, 200))) {
     if (await page.evaluate(fn, arg)) return true

@@ -15,12 +15,11 @@ interface UsageSection {
   limits: PlanUsageLimit[]
 }
 
-/** Only Claude and Codex expose a subscription usage endpoint; the popover
- *  renders their sections in this fixed order. */
+/** Tools with a subscription usage endpoint, in popover order. */
 const USAGE_TOOLS: AgentTool[] = ['claude', 'codex']
 
-/** Turn a Codex window length into a human label ('5h limit', 'Weekly
- *  limit', …) — Codex reports the window duration rather than a named kind. */
+/** Label a Codex limit ('5h limit', 'Weekly limit', …) from its window
+ *  length, since Codex reports a duration rather than a named kind. */
 function codexWindowLabel(windowMinutes: number | null | undefined): string {
   if (windowMinutes == null) return 'Usage'
   if (windowMinutes < 60) return `${windowMinutes}m limit`
@@ -39,16 +38,15 @@ export function limitLabel(limit: PlanUsageLimit, tool: AgentTool): string {
   return limit.kind.replace(/_/g, ' ')
 }
 
-/** Stable identity for a limit row — what a pin persists across refreshes
- *  (percent and reset time churn; tool + kind + scoped model don't). Keyed
- *  by tool so a pin is unambiguous across the combined readout. */
+/** Stable key for a limit row (tool + kind + scoped model), which a pin
+ *  keeps across refreshes. */
 export function metricKey(tool: AgentTool, limit: PlanUsageLimit): string {
   const base = limit.modelName ? `${limit.kind}:${limit.modelName}` : limit.kind
   return `${tool}:${base}`
 }
 
-/** Compact tag telling the pill's pinned metric apart: a window by its span,
- *  a scoped Claude limit by its model, plain weekly as 'wk'. */
+/** Short tag naming the pill's pinned metric: a window by its span, a
+ *  scoped Claude limit by its model, plain weekly as 'wk'. */
 export function pillTag(limit: PlanUsageLimit, tool: AgentTool): string {
   if (tool === 'codex') {
     return limit.windowMinutes != null && limit.windowMinutes < 1440
@@ -60,10 +58,8 @@ export function pillTag(limit: PlanUsageLimit, tool: AgentTool): string {
 }
 
 /**
- * Popover section-header plan name: the section's subscriptionType, plus the
- * usage multiplier when the rate-limit tier carries one — 'max' +
- * 'default_claude_max_20x' → 'Max (20x)'. Codex passes its plan_type (e.g.
- * 'plus') with a null tier, giving the bare 'Plus'.
+ * Plan name for a popover section header, with the tier's multiplier if any:
+ * 'max' + 'default_claude_max_20x' → 'Max (20x)'; Codex 'plus' → 'Plus'.
  */
 export function planLabel(
   subscriptionType: string | null,
@@ -115,8 +111,7 @@ const TONE_TRIGGER: Record<ReturnType<typeof usageTone>, string> = {
   high: 'bg-[#d65858]/15 text-[#d65858] hover:bg-[#d65858]/25',
 }
 
-/** Collect the queryable-and-non-empty usage sections from the snapshot, in
- *  tool order. */
+/** The snapshot's non-empty usage sections, in tool order. */
 function usageSections(
   byTool: Partial<Record<AgentTool, PlanUsageResult | null>>,
 ): UsageSection[] {
@@ -136,13 +131,11 @@ function usageSections(
 }
 
 /**
- * Sidebar-header pill showing plan-limit utilization for the signed-in
- * subscriptions (Claude and/or Codex) — the tightest limit across all of
- * them by default, or the metric the user pinned (click a popover row to
- * pin it; the pill then carries a compact tag naming it). The popover breaks
- * the readout down per tool. Reads the server-pushed snapshot — the server
- * owns querying upstream (server/plan-usage.ts). Hidden entirely when no
- * tool's usage is queryable (api-key auth, not signed in, endpoint trouble).
+ * Sidebar-header pill showing plan-limit usage for signed-in Claude/Codex
+ * subscriptions: the tightest limit, or the one the user pinned by clicking
+ * a popover row. The popover breaks usage down per tool. Data comes from the
+ * snapshot; the server queries upstream (domain/auth/usage.ts). Hidden when
+ * no tool's usage is available.
  */
 export function UsageBadge(): JSX.Element | null {
   const snapshot = useSnapshot()
@@ -155,20 +148,17 @@ export function UsageBadge(): JSX.Element | null {
   })
   if (sections.length === 0) return null
 
-  // Flatten every tool's limits so the pill can pick the tightest across the
-  // whole readout (or honor the pin).
   const all = sections.flatMap((s) => s.limits.map((limit) => ({ tool: s.tool, limit })))
-  // A pin for a limit upstream no longer reports falls back to the default
-  // readout (kept, not cleared — the limit may come back).
+  // A pin whose limit is no longer reported falls back to the default but
+  // is kept, since the limit may return.
   const pinned = all.find((e) => metricKey(e.tool, e.limit) === pinnedKey) ?? null
   const top = pinned ?? all.reduce((a, b) => (b.limit.percent > a.limit.percent ? b : a))
 
   return (
     <Popover.Root
       onOpenChange={(open) => {
-        // Someone's looking — nudge a background refresh (the server ignores
-        // it within a minute of the last one); updated numbers arrive on the
-        // pushed snapshot.
+        // Ask for a refresh on open; the server rate-limits it to once a
+        // minute and pushes new numbers in the snapshot.
         if (open) void requestUsageRefresh().catch(() => { /* best-effort */ })
       }}
     >
@@ -253,8 +243,6 @@ function LimitRow({
           <span className="truncate text-text-dim">{label}</span>
           <PinIcon
             size={10}
-            // Filled when pinned, so the marker reads at 10px; unpinned rows
-            // only hint the affordance on hover.
             fill={pinned ? 'currentColor' : 'none'}
             className={clsx(
               'shrink-0',

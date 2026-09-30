@@ -1,18 +1,12 @@
 /**
- * The shell's server picker: list the servers this machine has configured,
- * switch between them, and add a new one. All three operate on the shared
- * `~/.yaac-client/server.json` — switching here is the same machine-wide
- * move as `yaac remote set/on`, so the CLI follows.
+ * The shell's server picker: list, switch between, and add servers. All
+ * three edit the shared `~/.yaac-client/server.json`, so a switch here also
+ * moves the CLI, like `yaac remote set/on`. A server on this machine is
+ * registered there by `yaac server start` like any other, so every row is
+ * an origin.
  *
- * There is no local case. A server on this machine is registered in that
- * file by `yaac server start` (or `yaac cluster install`) exactly as one
- * elsewhere is by `yaac remote set`, so the picker's rows are origins all
- * the way down.
- *
- * The renderer is web content from the server origin, so it is only ever
- * shown origins, and its IPC payloads are re-validated here
- * (`parseServerSelection`). Deps are injected so every branch unit-tests
- * without fs or network.
+ * The renderer is web content from the server, so its IPC payloads are
+ * re-validated here (`parseServerSelection`).
  */
 import type { ServerConfig } from '@yaac/shared/server-config'
 import type { DesktopServerOutcome, DesktopServerSelection, DesktopServerTargets } from '@yaac/shared/types'
@@ -46,14 +40,10 @@ export async function getServerTargets(deps: ServerSwitchDeps): Promise<DesktopS
 }
 
 /**
- * Point the machine at `sel`. The server is re-probed before the config is
- * written, so a dead server, or one that will not identify this device,
- * surfaces as an inline error and the shell stays where it is.
- *
- * The already-selected server is probed and re-selected like any other,
- * rather than short-circuited: from the disconnected page, Connect on the
- * selected-but-unreachable row IS the retry, and answering "no change" to
- * it would leave the window sitting on the failure forever.
+ * Point the machine at `sel`. The server is probed before the config is
+ * written, so a dead server, or one that won't identify this device, returns
+ * an error and nothing changes. The already-selected server is probed too:
+ * on the disconnected page, Connect on that row is the retry.
  */
 export async function applyServerSwitch(
   sel: DesktopServerSelection,

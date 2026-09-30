@@ -1,9 +1,7 @@
 /**
- * The link-quality store — what the terminal sockets' ping/pong measures.
- *
- * The parsing half matters most: `parsePongRtt` reads every text frame a PTY
- * socket delivers, which includes frames that are not measurements at all, so
- * the tests drive it with the real shapes that channel carries.
+ * The link-quality store. `parsePongRtt` sees every text frame on a PTY
+ * socket, so it is tested with the real frame shapes, including ones that
+ * aren't measurements.
  */
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
@@ -21,25 +19,22 @@ beforeEach(() => { resetLinkQuality() })
 describe('parsePongRtt', () => {
   it('reads the round trip out of a stamped pong', () => {
     expect(parsePongRtt('{"type":"pong","t":100}', 350)).toBe(250)
-    // A round trip too fast to measure is still a measurement, not a miss.
+    // A zero round trip is still a measurement.
     expect(parsePongRtt('{"type":"pong","t":100}', 100)).toBe(0)
   })
 
   it('ignores every other frame the socket delivers', () => {
     for (const frame of [
-      // The CLI's keepalive pong carries no stamp, and the server echoes it
-      // stamp-less; it is a liveness signal, not a measurement.
+      // The CLI's keepalive pong has no timestamp.
       '{"type":"pong"}',
       // The route's own error frame, sent when a workspace can't be resolved.
       '{"type":"error","message":"session not found or not running"}',
       // Junk and non-objects must not throw out of an onmessage handler.
       'not json', '', '42', 'null', '[]',
-      // A pong whose stamp is unusable: not ours to interpret.
+      // A pong with an unusable timestamp.
       '{"type":"pong","t":"soon"}',
       '{"type":"pong","t":null}',
-      // A stamp in the future means the clock moved under us (or the frame
-      // is not from this page's socket) — a negative "round trip" would
-      // poison the average.
+      // A timestamp in the future would give a negative round trip.
       '{"type":"pong","t":500}',
     ]) expect(parsePongRtt(frame, 400), frame).toBeNull()
   })
@@ -47,9 +42,8 @@ describe('parsePongRtt', () => {
 
 describe('nextSmoothed', () => {
   it('takes the first sample whole, then eases toward later ones', () => {
-    // Seeding from the first sample rather than from zero is the point: an
-    // average that started at zero would report a fast link for several
-    // probes, which is exactly the window someone is asking why it's slow.
+    // The first sample is the estimate; starting from zero would report a
+    // fast link for several pings.
     expect(nextSmoothed(null, 200)).toBe(200)
     // A later sample moves the estimate by its weight, not all the way.
     expect(nextSmoothed(200, 400)).toBeCloseTo(200 + 200 * RTT_SMOOTHING)
@@ -76,8 +70,7 @@ describe('recordRtt', () => {
     expect(linkQuality().smoothedMs).toBeCloseTo(nextSmoothed(120, 220))
     expect(seen).toHaveLength(2)
 
-    // The snapshot object is replaced, never mutated, so a
-    // useSyncExternalStore consumer sees a change by identity.
+    // A new object on each change, for useSyncExternalStore.
     const before = linkQuality()
     recordRtt(130)
     expect(linkQuality()).not.toBe(before)

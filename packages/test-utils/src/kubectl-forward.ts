@@ -5,25 +5,13 @@ import os from 'node:os'
 import path from 'node:path'
 
 /**
- * A `kubectl port-forward` the TEST HARNESS holds, on a local port it picks
- * itself.
+ * A `kubectl port-forward` held by the test harness, so host-side tests can
+ * reach in-cluster things (the server Deployment, the proxy's ClusterIP
+ * API). Production code reaches them by Service DNS instead.
  *
- * The suites drive cluster-side things from the host: a server that is a
- * Deployment, a proxy whose control API answers only on a ClusterIP.
- * Production has neither problem — the server IS in the cluster, and reaches
- * both by Service DNS — so this reachability belongs to the harness and
- * nowhere in `src/`. That is the whole reason it exists here.
- *
- * Two properties the callers depend on:
- *
- *  - **The port outlives the child.** A rollout, a scale to zero, a
- *    `ProxyClient.stop()` — each kills the forward attached to the pod that
- *    went away, while the origin the tests (and `server.json`) hold is
- *    already written. So the port is chosen once and the child is respawned
- *    onto it until the caller stops it.
- *  - **It survives a target that does not exist yet.** A forward can be
- *    started before its Deployment is applied; the retries land it once
- *    something is there to attach to.
+ * The local port is chosen once and kubectl is respawned onto it whenever
+ * the pod goes away (rollout, scale to zero), so the origin stays valid. It
+ * can also be started before its target exists.
  */
 export interface KubectlForward {
   /** Local port, fixed for the life of this forward. */
@@ -33,19 +21,15 @@ export interface KubectlForward {
   stop: () => Promise<void>
 }
 
-/** Local port range the harness draws every host port it binds from —
- *  forwards, each test env's `YAAC_SERVER_PORT`, the forward ports a suite
- *  configures. Clear of the real server's default (8787) and below the
- *  kernel's ephemeral range, so an outgoing connection never lands on a
- *  port in the gap between a pick and its bind. */
+/** Range for every host port the harness binds. Clear of the server's
+ *  default (8787) and below the kernel's ephemeral range, so an outgoing
+ *  connection can't take a picked port before it is bound. */
 const FORWARD_PORT_MIN = 21000
 const FORWARD_PORT_MAX = 21999
 
 /** Where {@link freeLocalPort} records its picks: one file per port, holding
- *  the drawing process's pid. HOST-wide on purpose — a pick is only proven
- *  free, not held, and it can sit unbound for minutes (a suite's forward
- *  ports wait out a whole workspace create), so every process that draws
- *  from the range, in any worker and any test rig, has to see it. */
+ *  the pid. Host-wide, because a pick can stay unbound for minutes and every
+ *  worker and test rig must see it. */
 const PORT_CLAIM_DIR = path.join(os.tmpdir(), 'yaac-test-ports')
 
 /** How long a caller may wait for a specific port to come free. */
@@ -55,11 +39,9 @@ const live = new Set<ChildProcess>()
 let exitHookInstalled = false
 
 /**
- * Kill every forward this worker holds when it ends. `exit` alone leaks:
- * vitest terminates its fork workers with a signal, and an orphaned
- * `kubectl port-forward` has no timeout — it squats its port until
- * something dials it and the write to its dead stdout finally kills it, so
- * the dial that finds the orphan is also the one that fails.
+ * Kill every forward this worker holds when it ends. `exit` alone is not
+ * enough: vitest stops workers with a signal, and an orphaned forward holds
+ * its port indefinitely.
  */
 function installExitHook(): void {
   if (exitHookInstalled) return
@@ -87,8 +69,8 @@ export interface KubectlForwardSpec {
   localPort?: number
 }
 
-/** Start (and keep) a forward. Resolves as soon as the port is claimed —
- *  readiness is the caller's to probe on the thing behind it. */
+/** Start (and keep) a forward. Resolves once the port is claimed; the
+ *  caller probes readiness. */
 export async function startKubectlForward(spec: KubectlForwardSpec): Promise<KubectlForward> {
   installExitHook()
   const port = spec.localPort === undefined
@@ -108,9 +90,7 @@ export async function startKubectlForward(spec: KubectlForwardSpec): Promise<Kub
     c.once('exit', () => {
       live.delete(c)
       if (stopped || child !== c) return
-      // The pod went away (a rollout, a scale to zero, a redeploy), or is
-      // not there yet. Retry: the same origin has to answer once something
-      // is behind it, and nothing outside knows the forward ever broke.
+      // The pod went away or isn't there yet; retry on the same port.
       setTimeout(spawnOnce, 500)
     })
   }
@@ -134,9 +114,8 @@ export async function startKubectlForward(spec: KubectlForwardSpec): Promise<Kub
 }
 
 /**
- * Wait for a named port to be free, and say so plainly when it never is —
- * a leaked forward from an interrupted run is the usual cause, and "the
- * server never answered" is a terrible way to learn that.
+ * Wait for a named port to be free, failing with a clear message if it
+ * never is (usually a leaked forward from an interrupted run).
  */
 async function waitForPortFree(port: number): Promise<number> {
   const deadline = Date.now() + PORT_FREE_TIMEOUT_MS
@@ -154,15 +133,9 @@ async function waitForPortFree(port: number): Promise<number> {
 }
 
 /**
- * An arbitrary free loopback port. Bound and released to prove it is free —
- * the race with another process claiming it in between is the one every
- * ephemeral-port helper runs, and losing it surfaces as the bind failing,
- * which the caller's readiness probe reports.
- *
- * Random rather than a fixed per-worker block because a fixed number is
- * the same number in every test rig on the host: two rigs' runs would
- * bind it at once. Claimed (see {@link claimPort}) so that no other draw,
- * in this process or another, answers it while it waits to be bound.
+ * A random free loopback port, bound and released to prove it is free, then
+ * claimed (see {@link claimPort}) so no other draw returns it. Random rather
+ * than a per-worker block, which would collide across test rigs.
  */
 export async function freeLocalPort(): Promise<number> {
   for (let attempt = 0; attempt < 50; attempt++) {
@@ -174,10 +147,8 @@ export async function freeLocalPort(): Promise<number> {
 }
 
 /**
- * Claim a port for this process, host-wide, until the process exits. A claim
- * whose process is gone is stale and taken over; this process's own claim
- * counts as taken, so no two draws here share a number either. The same
- * pid-file pattern as the server mutex in cli.ts.
+ * Claim a port host-wide until this process exits. A claim whose process is
+ * gone is taken over; this process's own claims count as taken.
  */
 async function claimPort(port: number): Promise<boolean> {
   await fs.mkdir(PORT_CLAIM_DIR, { recursive: true })
@@ -190,7 +161,7 @@ async function claimPort(port: number): Promise<boolean> {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
     }
     const holder = Number.parseInt(await fs.readFile(file, 'utf8').catch(() => ''), 10)
-    // No pid yet is a claim still being written: taken.
+    // No pid yet: a claim still being written.
     if (Number.isNaN(holder) || holder === process.pid || pidAlive(holder)) return false
     await fs.unlink(file).catch(() => { /* another process took it over first */ })
   }

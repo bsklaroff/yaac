@@ -6,13 +6,10 @@ import { useUiStore } from '#lib/store'
 import type { GitAuthFailure } from '@yaac/shared/types'
 
 /**
- * Loud project-wide indicator that the upstream rejected the git credential
- * the proxy injected (expired or revoked token) — git fetch/push is failing
- * in every one of the project's workspaces. Clicking opens a popover naming
- * the host and the fix: assigning the project a new credential, which the
- * popover's button opens settings onto. Renders its own <button>, so inside clickable rows
- * mount it as an overlaid sibling (like BlockedHostsBadge), never nested in
- * the row button.
+ * Project-wide warning that the git host rejected the project's credential
+ * (likely expired or revoked), so git fetch/push fails in every workspace.
+ * The popover lists the hosts and links to credential settings. Renders its
+ * own <button>, so inside a clickable row mount it as an overlaid sibling.
  */
 export function GitAuthFailureBadge({
   projectSlug,

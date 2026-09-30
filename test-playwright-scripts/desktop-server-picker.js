@@ -1,32 +1,23 @@
 /*
- * Drives the real Electron shell end to end through the whole server-selection
- * story — the part no unit test can reach, because it is the main process, the
- * preload bridge, and the window all cooperating.
+ * Verifies the Electron shell's server picker end to end: the main process,
+ * the preload bridge and the window together (docs/server-selection.md).
+ * Every server is an origin in `server.json`, and the shell starts none.
  *
- * Every server the shell can reach is an origin in `server.json`; there is no "local server" case and the shell starts nothing.
- * So the two things worth driving for real are (a) that a shell with no
- * reachable server shows the picker and can be talked back onto one, and (b)
- * that the picker's buttons actually reach the main process over the preload
- * bridge. Six steps:
+ *  1. No `server.json`: the window is the picker, titled "No yaac server
+ *     selected", with no rows and no "Local server".
+ *  1b. Registering a server from a terminal, then "Try again", lands the
+ *     window (the only way out of an empty picker besides relaunching).
+ *  2. Adding an origin nothing answers at shows an inline failure and
+ *     writes nothing.
+ *  3. Adding the real server's origin loads the SPA.
+ *  4. With the server stopped, a relaunch shows the picker with a row for
+ *     the unreachable origin.
+ *  5. With the server started, Connect on that row lands (Connect on the
+ *     selected row is the retry).
+ *  6. Settings → Server in the SPA lists that origin and no local row.
  *
- *  1. No `server.json` → the window is the picker, titled "No yaac server
- *     selected", with no rows and no "Local server" anywhere.
- *  1b. Register a server from a terminal, then hit "Try again" → the window
- *     lands. This is the exit from a zero-row picker: there are no rows to
- *     Connect to, so without it the only way out is Quit and relaunch.
- *  2. Add an origin nothing answers at → the failure appears inline and the
- *     window stays on the picker (nothing was written).
- *  3. Add the real server's origin → the shell relands on it and the SPA
- *     loads with no further interaction.
- *  4. Stop the server, relaunch → the picker again, this time naming the
- *     origin it could not reach, with a row for it.
- *  5. Start the server, click Connect on that row → lands. (Connect on the
- *     already-selected row is the retry; a no-op there would strand the
- *     window on the failure forever.)
- *  6. Settings → Server in the landed SPA lists that origin and no local row.
- *
- * Runs against its own throwaway data dir and its own server, so it never
- * touches your install.
+ * Uses its own throwaway data dir and server, so it never touches your
+ * install.
  *
  * Prerequisites (this needs a real Electron, which needs a real desktop):
  *   - `pnpm build` at the repo root, then `pnpm --filter @yaac/desktop build`
@@ -102,9 +93,8 @@ function check(label, ok, detail) {
 }
 
 /**
- * The workspace's own Electron binary. Playwright looks for one in the
- * CWD's node_modules, which is not where pnpm puts it — and a globally
- * installed playwright has no chance of finding it at all.
+ * The repo's Electron binary, which Playwright cannot find on its own under
+ * pnpm's layout.
  */
 function electronPath() {
   const pkg = path.join(DESKTOP, 'node_modules', 'electron')
@@ -122,8 +112,7 @@ async function launch(electron) {
   })
   const win = await app.firstWindow()
   win.on('pageerror', (err) => console.error(`    [page error] ${err.message}`))
-  // The boot flow swaps the window through a splash, then to the picker or
-  // the SPA; settle on whichever it lands on.
+  // The window goes through a splash to the picker or the SPA.
   await win.waitForLoadState('domcontentloaded')
   return { app, win }
 }
@@ -143,13 +132,8 @@ async function waitForApp(win, origin) {
 }
 
 /**
- * Quit the shell.
- *
- * `electronApp.close()` waits for the app to exit, and this app is a TRAY
- * app that deliberately does not: closing its window hides it, and the
- * process lives on so the badge and the port forwards keep working. So the
- * graceful close is given a moment and then the process is killed — the
- * same thing a user's Quit does, minus the menu.
+ * Quit the shell. It is a tray app that keeps running when its window
+ * closes, so after a short graceful close the process is killed.
  */
 async function closeApp(app) {
   await Promise.race([
@@ -205,8 +189,7 @@ async function main() {
   check('says nothing is configured', bodyText.includes('No servers configured yet.'))
   await shot(win, '1-nothing-selected')
 
-  // 1b. The zero-row exit: a server registered from a terminal while this
-  // page sits there is invisible to it until the flow re-runs.
+  // 1b. A server registered from a terminal shows up only after "Try again".
   console.log('\n1b. `yaac server start` in a terminal, then Try again → lands')
   yaac('server', 'start')
   await win.click('#retry')

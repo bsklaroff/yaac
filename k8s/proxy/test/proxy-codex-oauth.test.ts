@@ -1,11 +1,8 @@
 import { describe, it, expect } from 'vitest'
 
 /**
- * Tests for Codex-OAuth-specific proxy helpers. These mirror the logic in
- * k8s/proxy/proxy.ts — the proxy listens at import time, so it can't be
- * imported directly. The duplication is acceptable because the functions
- * are small, pure, and fully specified by the tests. (The credential
- * decoders are importable and tested in objects.test.ts.)
+ * Tests for Codex-OAuth-specific proxy helpers, mirrored from
+ * k8s/proxy/proxy.ts (which listens on import, so it can't be imported).
  */
 
 const PLACEHOLDER_REFRESH_TOKEN = 'yaac-ph-refresh'
@@ -137,18 +134,16 @@ describe('proxy bodyHasPlaceholderRefreshToken', () => {
   })
 
   it('falls back to form-encoded parsing when JSON parse fails', () => {
-    // Content-Type says JSON but the body is form-encoded — parser should
-    // fall through and still find the placeholder.
+    // Content-Type says JSON but the body is form-encoded.
     const body = Buffer.from(`refresh_token=${PLACEHOLDER_REFRESH_TOKEN}`)
     expect(bodyHasPlaceholderRefreshToken(body, 'application/json')).toBe(true)
   })
 })
 
 describe('codex refresh-response fresh bundle shape', () => {
-  // This mirrors the construction inside handleCodexTokenResponse. If upstream
-  // returns new tokens, we build a fresh bundle that keeps account_id (refresh
-  // responses don't echo it), updates id_token from the upstream body, and
-  // derives expiresAt from the new access_token's JWT `exp`.
+  // Mirrors handleCodexTokenResponse: the new bundle keeps account_id
+  // (refresh responses omit it) and takes expiresAt from the new access
+  // token's JWT `exp`.
   function buildFresh(
     existing: CodexOAuthBundle,
     upstream: { access_token: string; refresh_token?: string; id_token?: string },

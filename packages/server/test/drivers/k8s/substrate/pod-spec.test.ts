@@ -13,8 +13,7 @@ import {
   processIdentity,
   sentryTmpfsAnnotations,
 } from '#drivers/k8s/substrate'
-// Internals, for fixtures and bounds only: the in-container cert and
-// ssh-agent dirs, the sentry tmpfs caps, and the params the builder takes.
+// Internals, for fixtures and bounds only.
 import {
   CA_MOUNT_DIR,
   MODULES_REQUEST_BYTES,
@@ -47,7 +46,7 @@ function params(overrides: Partial<PodJobParams> = {}): PodJobParams {
     cpuLimitMillis: 8000,
     ephemeralStorageRequestBytes: 2 * 1024 ** 3,
     ephemeralStorageLimitBytes: 16 * 1024 ** 3,
-    // The pinned proxy Service VIP — an IP, never a DNS name.
+    // The proxy Service's ClusterIP, never a DNS name.
     proxyHost: '10.96.0.179',
     ...overrides,
   }
@@ -147,25 +146,22 @@ describe('buildPodJobManifest', () => {
 
   it('hardens the pod: default seccomp profile, and runs as the host identity', () => {
     const spec = build().spec.template.spec
-    // The image bakes a fixed uid and the pod overrides it with this host's,
-    // which is the only uid that can write the checkout the server just
-    // created. Group 0 is what makes the image's files writable at that uid
-    // (docs/arbitrary-uid-images.md).
+    // Runs as the install's uid so it can write the server-created checkout;
+    // group 0 makes the image's files writable (docs/arbitrary-uid-images.md).
     expect(spec.securityContext).toEqual({
       seccompProfile: { type: 'RuntimeDefault' },
       runAsUser: process.getuid?.(),
       runAsGroup: process.getgid?.(),
       supplementalGroups: [0],
     })
-    // No fsGroup: the only emptyDir that matters here is the nested
-    // engine's graphroot, which is root's.
+    // No fsGroup: the nested engine's graphroot is root-owned.
     expect(spec.securityContext).not.toHaveProperty('fsGroup')
   })
 
   it('host pod: stamps the gvisor RuntimeClass and no user namespace', () => {
     const spec = build().spec.template.spec
     expect(spec.runtimeClassName).toBe('gvisor')
-    // The sentry is the containment — no hostUsers key at all.
+    // gVisor provides the isolation, so no hostUsers key.
     expect(spec.hostUsers).toBeUndefined()
   })
 
@@ -182,17 +178,15 @@ describe('buildPodJobManifest', () => {
     expect(c.image).toBe('localhost:5000/yaac-tools:abc')
     expect(c.imagePullPolicy).toBe('IfNotPresent')
     expect(c.workingDir).toBe('/workspace')
-    // Every dimension the scheduler bin-packs on is requested — a pod with
-    // no cpu request is free capacity as far as the scheduler is concerned.
+    // Every resource is requested, so the scheduler counts the pod.
     expect(c.resources.requests).toEqual({
       cpu: '250m',
       memory: String(1 * 1024 ** 3),
       'ephemeral-storage': String(2 * 1024 ** 3),
     })
-    // Every dimension is capped. The cpu ceiling sits far above the request
-    // on purpose: interactive work never reaches it, so the CFS quota only
-    // binds on a parallel burst — and under gVisor it is also what keeps a
-    // sandbox's systrap stub count off the host's core count.
+    // Every resource is capped. The cpu limit is far above the request so it
+    // only binds on parallel bursts; under gVisor it also bounds the sandbox's
+    // systrap stubs.
     expect(c.resources.limits).toEqual({
       cpu: '8000m',
       memory: String(8 * 1024 ** 3),
@@ -203,14 +197,12 @@ describe('buildPodJobManifest', () => {
   })
 
   it('puts session pods on the low-priority tier', () => {
-    // Infra (proxy, registries, builders) outranks this, so a full node
-    // sheds a session rather than the network every session depends on.
+    // Infra outranks workspaces, so a full node evicts a workspace first.
     expect(build().spec.template.spec.priorityClassName).toBe('yaac-workspace')
   })
 
   it('parses env entries, preserving equals signs inside values', () => {
-    // NAME=VALUE splits at the FIRST `=` (proxy URLs carry more), a bare
-    // name is an empty value, and so is a trailing `=`.
+    // Split at the first `=`; a bare name or trailing `=` is an empty value.
     const c = build({ env: ['YAAC_SESSION_ID=abcd', 'X=a=b', 'BARE', 'EMPTY='] })
       .spec.template.spec.containers[0]
     expect(c.env).toEqual([
@@ -233,8 +225,6 @@ describe('buildPodJobManifest', () => {
       ],
     })
     const { volumes, containers } = m.spec.template.spec
-    // `hp-<i>` naming is load-bearing, not cosmetic: it is what makes the
-    // local backend's manifest identical to the pre-seam one.
     expect(volumes[0]).toEqual({ name: 'hp-0', hostPath: { path: '/host/dir', type: 'Directory' } })
     expect(volumes[1]).toEqual({ name: 'hp-1', hostPath: { path: '/host/file.json', type: 'File' } })
     expect(volumes[2]).toEqual({ name: 'hp-2', hostPath: { path: '/host/any', type: '' } })
@@ -246,9 +236,8 @@ describe('buildPodJobManifest', () => {
   })
 
   it('renders every mount source, leaving the container-side paths identical', () => {
-    // The source is the only thing that varies, so the same in-pod layout
-    // can be served from node disk, the global claim, or pod-local scratch
-    // — which is what `resolveMountSource` decides per tier.
+    // Only the source varies (node disk, the global claim, or pod-local
+    // scratch, chosen per tier by `resolveMountSource`).
     const m = build({
       mounts: [
         { source: { kind: 'hostPath', path: '/host/dir' }, mountPath: '/workspace' },
@@ -262,13 +251,10 @@ describe('buildPodJobManifest', () => {
       ],
     })
     const { volumes, containers } = m.spec.template.spec
-    // Volume names carry the source kind AND the mount's position, so one
-    // list can mix sources without a collision — and a hostPath entry keeps
-    // the name it had when every entry was one.
+    // Names carry the source kind and position, so sources never collide.
     expect(volumes.slice(0, 5)).toEqual([
       { name: 'hp-0', hostPath: { path: '/host/dir', type: 'Directory' } },
-      // One claim, many mounts: the subtree is addressed by the mount's
-      // subPath, so the claim appears once per mount and unchanged.
+      // Each mount of a claim has its own volume and subPath.
       { name: 'pv-1', persistentVolumeClaim: { claimName: 'yaac-shared' } },
       { name: 'pv-2', persistentVolumeClaim: { claimName: 'yaac-shared' } },
       { name: 'ed-3', emptyDir: {} },
@@ -277,7 +263,7 @@ describe('buildPodJobManifest', () => {
     expect(containers[0].volumeMounts.slice(0, 5)).toEqual([
       { name: 'hp-0', mountPath: '/workspace' },
       { name: 'pv-1', mountPath: '/home/yaac/.claude', subPath: 'projects/demo/claude' },
-      // No subPath key at all when the whole claim is mounted.
+      // No subPath when the whole claim is mounted.
       { name: 'pv-2', mountPath: '/mnt/whole-claim' },
       { name: 'ed-3', mountPath: '/tmp/yaac-tmux' },
       { name: 'ed-4', mountPath: '/mnt/scratch' },
@@ -337,11 +323,9 @@ describe('buildPodJobManifest', () => {
     const [init] = spec.initContainers ?? []
     expect(init).toBeDefined()
     expect(init.name).toBe('node-dirs')
-    // The pod's own image under the pod's RuntimeClass: no extra image, no
-    // extra pull.
+    // Reuses the pod's own image, so nothing extra is pulled.
     expect(init.image).toBe('localhost:5000/yaac-tools:abc')
     expect(init.securityContext).toEqual({ runAsUser: 0, runAsGroup: 0 })
-    // The node root is mounted at /node, and each dir is named relative to it.
     expect(init.volumeMounts).toEqual([{ name: 'node-root', mountPath: '/node' }])
     expect(spec.volumes.find((v) => v.name === 'node-root')).toEqual({
       name: 'node-root', hostPath: { path: '/var/lib/yaac/node/ddh', type: 'DirectoryOrCreate' },
@@ -351,11 +335,8 @@ describe('buildPodJobManifest', () => {
       '/node/projects/demo/.cached-packages',
       '/node/projects/demo/opencode-data/abcd',
     ])
-    // Chowned to the identity the workspace container runs as — hostPath
-    // ignores fsGroup, and DirectoryOrCreate leaves them root-owned. The
-    // chown is unconditional: kubelet has already created the leaf by the
-    // time the init container runs, so a chown gated on the mkdir would
-    // never reach the one directory the workspace writes to.
+    // Chowned to the workspace's uid, since hostPath ignores fsGroup. Always
+    // chowned: kubelet has already created the leaf before the init runs.
     const { runAsUser, runAsGroup } = installSecurityContext()
     expect(init.command?.[2]).toContain('[ -d "$p" ] || mkdir "$p"')
     expect(init.command?.[2]).toContain(`\n    chown ${String(runAsUser)}:${String(runAsGroup)} "$p"`)
@@ -364,7 +345,7 @@ describe('buildPodJobManifest', () => {
   it('runs the node-dirs script for real: a leaf kubelet already created is chowned, parents are made', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-node-dirs-'))
     try {
-      // kubelet's DirectoryOrCreate: the leaf exists before the script runs.
+      // As with DirectoryOrCreate, the leaf already exists.
       await fs.mkdir(path.join(root, 'projects/demo/opencode-data/abcd'), { recursive: true })
       const m = build({
         nodeLocalRoot: '/var/lib/yaac/node/ddh',
@@ -424,9 +405,8 @@ describe('buildPodJobManifest', () => {
 
   it('injects no per-pod egress sidecars — egress is redirected at the cluster level', () => {
     const spec = build().spec.template.spec
-    // No redirect-init / relay; a non-nested pod has no init containers at all.
     expect(spec.initContainers).toBeUndefined()
-    // The session container itself must carry no added capability.
+    // No added capabilities.
     expect(spec.containers[0]).not.toHaveProperty('securityContext')
   })
 
@@ -462,9 +442,7 @@ describe('buildPodJobManifest', () => {
   })
 
   it('always mounts a pod-local emptyDir for the forwarded ssh-agent socket', () => {
-    // The socket is written in-pod by the agent forwarder and read by the
-    // session's own ssh client — never shared with another pod, which is
-    // what lets the proxy sit on a different node.
+    // Used only within the pod, so the proxy can be on another node.
     const m = build()
     const { volumes, containers } = m.spec.template.spec
     expect(volumes).toContainEqual({ name: 'ssh-agent', emptyDir: {} })
@@ -473,7 +451,6 @@ describe('buildPodJobManifest', () => {
       mountPath: SSH_AGENT_MOUNT,
     })
     expect(SSH_AGENT_SOCKET_PATH.startsWith(`${SSH_AGENT_MOUNT}/`)).toBe(true)
-    // Nothing hostPath-shaped: a hostPath socket only meets on one node.
     expect(volumes.filter((v) => v.name === 'ssh-agent')
       .every((v) => !('hostPath' in v))).toBe(true)
   })
@@ -487,8 +464,7 @@ describe('buildPodJobManifest', () => {
       expect(JSON.stringify(withUndefined)).toBe(JSON.stringify(withoutField))
 
       const spec = build().spec.template.spec
-      // The host identity is unconditional; what `nested` adds is the
-      // graphroot volume, the annotations and the engine's caps.
+      // `nested` adds only the graphroot volume, annotations and capabilities.
       expect(spec.securityContext).toEqual({
         seccompProfile: { type: 'RuntimeDefault' },
         runAsUser: process.getuid?.(),
@@ -497,7 +473,6 @@ describe('buildPodJobManifest', () => {
       })
       expect(spec.initContainers).toBeUndefined()
       expect(spec.volumes.some((v) => v.name === 'podman-graphroot')).toBe(false)
-      // No graphroot-tmpfs annotations on a non-nested pod.
       expect(build().spec.template.metadata.annotations).toBeUndefined()
       expect(spec.containers[0].resources).toEqual({
         requests: {
@@ -520,8 +495,7 @@ describe('buildPodJobManifest', () => {
     })
 
     it('allows a graphroot cap at or above the pod memory limit (disk-backed)', () => {
-      // The graphroot is disk-backed page cache, not pod memory — its size is
-      // deliberately decoupled from memoryLimitBytes.
+      // The graphroot is disk-backed, so it is not bounded by pod memory.
       expect(() => buildPodJobManifest({
         ...params(), nested, memoryLimitBytes: NESTED_GRAPHROOT_TMPFS_BYTES,
       })).not.toThrow()
@@ -529,8 +503,8 @@ describe('buildPodJobManifest', () => {
 
     it('adds the rootful engine caps and no fsGroup on the session container', () => {
       const spec = build({ nested }).spec.template.spec
-      // seccompProfile stays RuntimeDefault (runsc installs its own host
-      // seccomp regardless); no fsGroup — the rootful graphroot is root-owned.
+      // seccomp stays RuntimeDefault (runsc adds its own); no fsGroup, as
+      // the graphroot is root-owned.
       expect(spec.securityContext).toEqual({
         seccompProfile: { type: 'RuntimeDefault' },
         runAsUser: process.getuid?.(),
@@ -550,14 +524,11 @@ describe('buildPodJobManifest', () => {
     it('backs the graphroot with a disk emptyDir + gVisor disk-tmpfs annotations', () => {
       const m = build({ nested })
       const spec = m.spec.template.spec
-      // The cap itself is a tuning knob; what this pins is the relationship
-      // between the three places it lands — the sentry's `size=`, the
-      // emptyDir sizeLimit above it, and the slack between them.
+      // Pins how the cap relates across the sentry's `size=`, the emptyDir
+      // sizeLimit, and the slack between them.
       const cap = NESTED_GRAPHROOT_TMPFS_BYTES
-      // Disk medium (no `medium: Memory`): runsc pages the sentry tmpfs
-      // against a filestore file inside this emptyDir on the node's disk.
-      // sizeLimit carries slack above the sentry's size= cap so kubelet
-      // eviction can't race the sentry's ENOSPC.
+      // Disk-backed emptyDir holding runsc's filestore. sizeLimit has slack
+      // above `size=` so the sentry hits ENOSPC before kubelet evicts.
       expect(spec.volumes).toContainEqual({
         name: 'podman-graphroot',
         emptyDir: { sizeLimit: String(cap + 1024 ** 3) },
@@ -566,10 +537,8 @@ describe('buildPodJobManifest', () => {
         name: 'podman-graphroot',
         mountPath: NESTED_GRAPHROOT_PATH,
       })
-      // The runsc mount annotations make it a sentry tmpfs (file caps for
-      // setcap builds); keyed on the volume name. `type: bind` (not tmpfs) is
-      // what selects the DISK-backed variant — see
-      // NESTED_GRAPHROOT_ANNOTATIONS.
+      // runsc annotations make it a disk-backed sentry tmpfs (see
+      // NESTED_GRAPHROOT_ANNOTATIONS).
       expect(m.spec.template.metadata.annotations).toEqual({
         'dev.gvisor.spec.mount.podman-graphroot.type': 'bind',
         'dev.gvisor.spec.mount.podman-graphroot.share': 'container',
@@ -580,12 +549,8 @@ describe('buildPodJobManifest', () => {
     it('mounts nothing for the image cache — it rides the project registry', () => {
       const plain = build().spec.template.spec
       const spec = build({ nested }).spec.template.spec
-      // The cross-session cache is a push/pull against the project's
-      // in-cluster registry, so nesting adds exactly ONE volume (the
-      // graphroot) and nothing that ties the pod to a node. Asserted as a
-      // delta against the non-nested spec rather than an exact list, which
-      // any unrelated volume would break. No chown init either — the
-      // rootful engine owns its graphroot.
+      // Image caching goes through the project registry, so nesting adds
+      // only the graphroot volume and nothing tied to a node.
       expect(spec.volumes.map((v) => v.name))
         .toEqual([...plain.volumes.map((v) => v.name), 'podman-graphroot'])
       expect(JSON.stringify(spec)).not.toContain('shared-images')
@@ -594,11 +559,9 @@ describe('buildPodJobManifest', () => {
 
     it('adds the graphroot volume to the ephemeral-storage limit, nothing else', () => {
       const resources = build({ nested }).spec.template.spec.containers[0].resources
-      // kubelet charges emptyDir volumes to the pod's ephemeral-storage
-      // limit, so the nested limit has to clear the graphroot's own
-      // sizeLimit — otherwise the first real `docker build` evicts the
-      // session, which a backoffLimit-0 Job never comes back from. Requests
-      // stay put: the graphroot is a ceiling, not a steady state.
+      // emptyDirs count against ephemeral storage, so the limit must exceed
+      // the graphroot's sizeLimit or a build would evict the workspace.
+      // Requests are unchanged.
       expect(resources).toEqual({
         requests: {
           cpu: '250m',
@@ -606,8 +569,6 @@ describe('buildPodJobManifest', () => {
           'ephemeral-storage': String(2 * 1024 ** 3),
         },
         limits: {
-          // The nested graphroot moves the disk ceiling only — a nested
-          // session gets the same cpu ceiling as any other.
           cpu: '8000m',
           memory: String(8 * 1024 ** 3),
           'ephemeral-storage': String(16 * 1024 ** 3 + NESTED_GRAPHROOT_SIZELIMIT_BYTES),
@@ -623,8 +584,8 @@ describe('buildPodJobManifest', () => {
   describe('moduleDirs', () => {
     const moduleDirs = ['/workspace/node_modules', '/workspace/packages/web/node_modules']
 
-    // One whole volume per dir: the tmpfs hint keys on a volume's own
-    // kubelet path, so a subPath of a shared one would stay gofer-backed.
+    // One volume per dir: the tmpfs annotation applies per volume, not to
+    // a subPath.
     it('backs each dir with its own sentry-tmpfs emptyDir, alongside the graphroot', () => {
       const m = build({ moduleDirs, nested: true })
       const spec = m.spec.template.spec
@@ -645,7 +606,6 @@ describe('buildPodJobManifest', () => {
         ...sentryTmpfsAnnotations('pnpm-modules-0', MODULES_TMPFS_BYTES),
         ...sentryTmpfsAnnotations('pnpm-modules-1', MODULES_TMPFS_BYTES),
       })
-      // Pod-local: nothing for an init container to make on the node.
       expect(spec.initContainers).toBeUndefined()
     })
 
@@ -680,10 +640,7 @@ describe('installSecurityContext', () => {
   })
 
   it('stamps the identity it is handed, and joins group 0 for the image', () => {
-    // The uid is an install decision (the host's on kind, a constant on
-    // byo), handed in by whoever renders the manifest. Group 0 is the image
-    // half: yaac images bake no uid and leave what the process writes
-    // group-writable by 0, so one image runs at any uid
+    // The uid is chosen per install. Group 0 lets one image run at any uid
     // (docs/arbitrary-uid-images.md).
     expect(installSecurityContext({ uid: 1000, gid: 1000 })).toEqual({
       runAsUser: 1000,

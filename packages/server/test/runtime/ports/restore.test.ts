@@ -1,11 +1,6 @@
 /**
- * The forwarder restore — `restoreAllWorkspaceForwarders`.
- *
- * Mocked at the contract boundary only: the driver answers which workspaces
- * exist, which already have forwarders, and what each declared forward is
- * offered at. The candidate gating and the status-bar refresh run for real,
- * which is what makes this cover the internals it drives
- * (`provisionForwarders`, the bar's format) without testing them directly.
+ * `restoreAllWorkspaceForwarders`. Only the driver is mocked; candidate
+ * selection and the status-bar refresh run for real.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type { PortMapping, YaacConfig } from '@yaac/shared/types'
@@ -18,14 +13,12 @@ import { handleFixture, installFakeWorkspaceDriver } from '@yaac/test-utils/fake
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
 
 const mockTmuxAlive = vi.mocked(isTmuxSessionAlive)
-/** The reader the caller supplies — main, once, as the server attaches. */
 const projectConfig = vi.fn<(slug: string) => Promise<YaacConfig | undefined>>()
 
 const list = vi.fn<WorkspaceDriver['list']>()
 const forwardedPorts = vi.fn<WorkspaceDriver['forwardedPorts']>()
 const exec = vi.fn<WorkspaceDriver['exec']>()
-/** Every declaration the restore made, in order, with the workspace it was
- *  made for — nothing is bound, so this IS the observable effect. */
+/** Every forward declared, in order, with its workspace. */
 let declared: Array<{ workspaceId: string; mapping: PortMapping }> = []
 
 function workspace(overrides: Partial<RuntimeHandle> = {}): RuntimeHandle {
@@ -37,7 +30,7 @@ function workspace(overrides: Partial<RuntimeHandle> = {}): RuntimeHandle {
   })
 }
 
-/** What the status bar was set to, per job — the one exec this path issues. */
+/** What the status bar was set to, per job. */
 const statusRightFor = (jobName: string): string | undefined =>
   exec.mock.calls.find((c) => c[0] === jobName)?.[1]
 
@@ -54,8 +47,7 @@ beforeEach(() => {
     list,
     forwardedPorts,
     exec,
-    // A real allocator, so two workspaces asking for 3000 get different
-    // answers — which is what the bar assertions below turn on.
+    // A real allocator, so two workspaces asking for 3000 get different ports.
     declareForwards: (workspaceId, forwards) => forwards.map(({ containerPort, hostPortStart }) => {
       const taken = new Set(declared.map((d) => d.mapping.hostPort))
       let hostPort = hostPortStart
@@ -79,19 +71,16 @@ describe('restoreAllWorkspaceForwarders', () => {
     expect(declared).toHaveLength(2)
     for (const { mapping } of declared) {
       expect(mapping.containerPort).toBe(3000)
-      // Offered from the configured start, walking up when it is taken —
-      // which is exactly what the second workspace hits.
       expect(mapping.hostPort).toBeGreaterThanOrEqual(3000)
     }
-    // Each workspace's bar advertises its OWN mapping, not the other's.
+    // Each workspace's bar shows its own mapping.
     for (const { workspaceId, mapping } of declared) {
       expect(statusRightFor(`yaac-proj-${workspaceId}`)).toContain(`:${mapping.hostPort}->3000`)
     }
   })
 
   it('clears a stale bar for a workspace with no forwards configured', async () => {
-    // The workspace is still advertising what the previous server forwarded,
-    // so the refresh has to run even when there is nothing to reserve.
+    // The bar may still show the previous server's forwards.
     projectConfig.mockResolvedValue({})
     list.mockResolvedValue([workspace()])
 
@@ -142,8 +131,7 @@ describe('restoreAllWorkspaceForwarders', () => {
 
     await expect(restoreAllWorkspaceForwarders(projectConfig)).resolves.toBeUndefined()
     expect(exec).toHaveBeenCalledTimes(2)
-    // Both declared — the failure is the bar refresh, which is the last
-    // step and cosmetic; only one workspace's bar is left stale.
+    // Only the (cosmetic) bar refresh failed; both forwards are declared.
     expect(declared).toHaveLength(2)
   })
 })

@@ -5,23 +5,14 @@ import type { DriverKind } from '@yaac/shared/types'
 /**
  * Every route the server registers, and what each driver answers for it.
  *
- * ONE table, two columns — which is the point. A driver is chosen once at
- * startup and the layers above are meant to be substrate-blind, so the
- * interesting question about any route is not "does it work" but "does it
- * answer the same thing on both substrates, and if not, why not". Written as
- * two separate test files that would drift, that question is unaskable; here
- * a route's two answers sit on one line and a difference has to be typed out
- * deliberately.
+ * One table with a column per driver, so each route states both answers on
+ * one line and any difference must be written out with a `why`.
+ * `assertMatrixCoversEveryRoute` fails on any registered route the table
+ * does not name.
  *
- * `assertMatrixCoversEveryRoute` closes it: it reads the routes Hono actually
- * registered and fails on any this table does not name. A new route therefore
- * cannot land without stating its answer under BOTH drivers — which is the
- * durable version of "remember to update the other file".
- *
- * What this asserts is deliberately narrow: the STATUS CLASS a caller sees,
- * against a server with no projects and no workspaces. It is a reachability
- * and driver-parity check, not a substitute for the behavioral suites
- * (`write-routes.test.ts` and the e2e tiers) — those drive real state.
+ * It checks only the status a caller gets from a server with no projects
+ * or workspaces. Behavior is covered by `write-routes.test.ts` and the e2e
+ * tiers.
  */
 
 /** What a route answers. A number is exact; an array is "one of these". */
@@ -31,32 +22,25 @@ export interface RouteCase {
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   /** Exactly as Hono registered it, params and all. */
   path: string
-  /** Concrete path to request — params filled with values that resolve to
-   *  nothing, since the matrix runs against an empty server. */
+  /** Concrete path to request, with params that resolve to nothing. */
   request?: string
   body?: unknown
-  /** Why the two drivers differ, required whenever they do — a difference
-   *  with no reason is the thing this table exists to catch. */
+  /** Why the two drivers differ; required whenever they do. */
   why?: string
   k8s: Expected
   containerless: Expected
 }
 
-/** 404: no such project/workspace/build on an empty server — the route was
- *  reached and resolved its subject, which is what this table checks. */
+/** 404: the route was reached and found no such project/workspace/build. */
 const MISSING = 404
 /** 501 NOT_SUPPORTED: this server's substrate has no such feature. */
 const UNSUPPORTED = 501
-/** Both, when reaching the feature guard vs the id resolve is ordering
- *  detail the table should not pin. */
+/** Either, where the table should not pin which check runs first. */
 const OK_OR_MISSING = [200, 404]
 
 /**
- * The table. Grouped as the routes are, and every line states both columns.
- *
- * Most routes are IDENTICAL under both drivers, and that is the useful
- * signal: what a workspace runs on changes almost nothing a client can see.
- * The differences are exactly the features a host has no answer for.
+ * The table, grouped as the routes are. Most routes answer identically
+ * under both drivers; the differences are features a host install lacks.
  */
 export const ROUTE_MATRIX: RouteCase[] = [
   // ── health and identity ───────────────────────────────────────────────
@@ -83,11 +67,8 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'GET', path: '/api/project/:slug/skills/body', request: '/api/project/nope/skills/body?path=x', k8s: [200, 400, 404], containerless: [200, 400, 404] },
 
   // ── images: the project's build inputs ────────────────────────────────
-  // A containerless server builds no image, so a Dockerfile is an editable
-  // layer over something that is never built and a build file is context for
-  // a COPY that never runs. Refused rather than served empty: the webapp
-  // hides these outright, so a client reaching them is asking for a feature
-  // this install does not have.
+  // A containerless server builds no images, so these refuse rather than
+  // answer empty.
   { method: 'GET', path: '/api/project/:slug/dockerfile', request: '/api/project/nope/dockerfile', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'PUT', path: '/api/project/:slug/dockerfile', request: '/api/project/nope/dockerfile', body: { content: '' }, why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'GET', path: '/api/project/:slug/build-files', request: '/api/project/nope/build-files', why: 'builds no images', k8s: OK_OR_MISSING, containerless: UNSUPPORTED },
@@ -95,9 +76,7 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'PUT', path: '/api/project/:slug/build-files/file', request: '/api/project/nope/build-files/file', body: { path: 'a', content: '' }, why: 'builds no images', k8s: [200, 400, 404], containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/project/:slug/build-files/rename', request: '/api/project/nope/build-files/rename', body: { from: 'a', to: 'b' }, why: 'builds no images', k8s: [200, 400, 404], containerless: UNSUPPORTED },
   { method: 'DELETE', path: '/api/project/:slug/build-files/file', request: '/api/project/nope/build-files/file?path=a', why: 'builds no images', k8s: [200, 204, 400, 404], containerless: UNSUPPORTED },
-  // The git identity workspaces commit under. Not image-gated: every
-  // substrate makes commits, and this is the setting that replaced reading
-  // one off whichever host the server happened to be installed from.
+  // The git identity workspaces commit under; every substrate needs it.
   { method: 'GET', path: '/api/config/git-identity', k8s: 200, containerless: 200 },
   { method: 'PUT', path: '/api/config/git-identity', body: { name: 'A', email: 'a@b.co' }, k8s: 200, containerless: 200 },
   { method: 'GET', path: '/api/config/user-dockerfile', why: 'builds no images', k8s: 200, containerless: UNSUPPORTED },
@@ -109,10 +88,8 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'DELETE', path: '/api/config/user-build-files/file', request: '/api/config/user-build-files/file?path=a', why: 'builds no images', k8s: [200, 204, 400, 404], containerless: UNSUPPORTED },
 
   // ── images: the build feed ────────────────────────────────────────────
-  // The DRIVER still answers `[]` here — the snapshot composes the feed
-  // unconditionally and must keep rendering. The ROUTE refuses, because `[]`
-  // would tell a client "no builds are running" rather than "this server
-  // never builds".
+  // The driver answers `[]` so the snapshot keeps rendering, but the route
+  // refuses: `[]` would mean "no builds running", not "never builds".
   { method: 'GET', path: '/api/image/builds', why: 'builds no images', k8s: 200, containerless: UNSUPPORTED },
   { method: 'GET', path: '/api/image/builds/:id/log', request: '/api/image/builds/x/log', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'DELETE', path: '/api/image/builds/:id', request: '/api/image/builds/x', why: 'builds no images', k8s: 204, containerless: UNSUPPORTED },
@@ -122,17 +99,14 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'GET', path: '/api/workspace/list', k8s: [200, 503], containerless: 200 },
   { method: 'GET', path: '/api/workspace/list-stopped', k8s: 200, containerless: 200 },
   { method: 'POST', path: '/api/workspace/create', body: { project: '' }, k8s: 400, containerless: 400 },
-  // Resolves the workspace before it streams, so an unknown one is a plain
-  // 404; past that, progress and any failure travel in the NDJSON stream.
+  // An unknown workspace is a plain 404; later failures travel in the
+  // NDJSON stream.
   { method: 'POST', path: '/api/workspace/restart', body: { workspaceId: 'nope' }, k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/stop', body: { workspaceId: 'nope' }, k8s: [404, 503], containerless: MISSING },
   { method: 'POST', path: '/api/workspace/mark-death-seen', body: { projectSlug: 'nope', workspaceId: 'nope' }, k8s: [200, 204, 404], containerless: [200, 204, 404] },
   { method: 'POST', path: '/api/workspace/mark-all-deaths-seen', body: { projectSlug: 'nope' }, k8s: [200, 204], containerless: [200, 204] },
-  // The in-workspace command channel. Only the runtime whose workspaces can
-  // dial the server has it: a pod speaks to the egress proxy instead, and
-  // holds no token to present here. 401 rather than a refusal on
-  // containerless because the matrix asks with no workspace bearer, which is
-  // exactly what an unknown caller looks like.
+  // The in-workspace command channel. Containerless answers 401 because the
+  // matrix sends no workspace bearer token.
   { method: 'POST', path: '/api/workspace/mama', body: { command: 'list' },
     why: 'a pod reaches yaac-mama through the egress proxy, not the server',
     k8s: UNSUPPORTED, containerless: 401 },
@@ -140,12 +114,10 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/worktree/mama', body: { command: 'list' },
     why: 'a pod reaches yaac-mama through the egress proxy, not the server',
     k8s: UNSUPPORTED, containerless: 401 },
-  // Queued workspaces are rows and a create request: substrate-neutral.
   { method: 'POST', path: '/api/workspace/queue/create', body: { project: 'nope', parent: 'nope', prompt: 'p' }, k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/queue/update', body: { id: 'nope', prompt: 'p' }, k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/queue/discard', body: { id: 'nope' }, k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/queue/run', body: { id: 'nope' }, k8s: MISSING, containerless: MISSING },
-  // Drafts are rows alone: substrate-neutral.
   { method: 'POST', path: '/api/workspace/draft/save', body: { project: 'nope', prompt: 'p', tool: 'claude', mode: 'tui', permissionMode: 'manual' }, k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/draft/discard', body: { id: 'nope' }, k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/group/list', k8s: 200, containerless: 200 },
@@ -159,40 +131,33 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/workspace/:id/title', request: '/api/workspace/nope/title', body: { title: 't' }, k8s: [200, 204, 404], containerless: [200, 204, 404] },
   { method: 'GET', path: '/api/workspace/:id', request: '/api/workspace/nope', k8s: [404, 503], containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/agent-sessions', request: '/api/workspace/nope/agent-sessions', k8s: MISSING, containerless: MISSING },
-  // Reads recorded state and files on the host, so it answers the same under
-  // both substrates — the 501 it can raise is about the *tool* whose
-  // conversation is asked for (opencode keeps its history in the container),
-  // never about which driver is installed.
+  // Reads recorded state and host files, so both drivers agree. Its 501 is
+  // for a tool (opencode) whose history lives in the container.
   { method: 'GET', path: '/api/workspace/:id/agent-sessions/:sessionId/transcript', request: '/api/workspace/nope/agent-sessions/s1/transcript', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/changes', request: '/api/workspace/nope/changes', k8s: [404, 503], containerless: MISSING },
-  // Both are the checkout's own git, run inside the running workspace: a
-  // stopped workspace is 409 on either substrate, an unknown one 404.
+  // Run git inside the running workspace: 409 when stopped, 404 when
+  // unknown.
   { method: 'GET', path: '/api/workspace/:id/git-status', request: '/api/workspace/nope/git-status', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/files', request: '/api/workspace/nope/files', k8s: MISSING, containerless: MISSING },
-  // The rest of the file editor reads the checkout on the server's own disk,
-  // resolved from the record — so it needs no workspace and answers alike on
-  // both substrates.
+  // The rest of the file editor reads the checkout on the server's disk, so
+  // it needs no running workspace.
   { method: 'GET', path: '/api/workspace/:id/dir', request: '/api/workspace/nope/dir?path=a', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/file', request: '/api/workspace/nope/file?path=a', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/workspace/:id/file', request: '/api/workspace/nope/file', body: { path: 'a', content: '', baseVersion: null }, k8s: MISSING, containerless: MISSING },
   { method: 'DELETE', path: '/api/workspace/:id/file', request: '/api/workspace/nope/file?path=a', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/folder', request: '/api/workspace/nope/folder', body: { path: 'a' }, k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/rename', request: '/api/workspace/nope/rename', body: { from: 'a', to: 'b' }, k8s: MISSING, containerless: MISSING },
-  // Recorded state too, and resolved from the record for the same reason: the
-  // founding ask outlives the workspace, so neither substrate needs one to
-  // answer — which is why no 503 sits beside the 404 here.
+  // Recorded state, so no running workspace (and no 503) is involved.
   { method: 'GET', path: '/api/workspace/:id/prompt', request: '/api/workspace/nope/prompt', k8s: [200, 404], containerless: [200, 404] },
-  // An image pasted into a terminal pane, for its agent to read: only a
-  // running workspace has one to hand it to.
+  // An image pasted into a terminal pane; needs a running workspace.
   { method: 'POST', path: '/api/workspace/:id/attachments', request: '/api/workspace/nope/attachments', k8s: [404, 503], containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/terminals', request: '/api/workspace/nope/terminals', k8s: [404, 409, 503], containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/terminals', request: '/api/workspace/nope/terminals', k8s: [404, 409, 503], containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/terminals/close', request: '/api/workspace/nope/terminals/close', body: { target: 'window:@1' }, k8s: [404, 409, 503], containerless: MISSING },
 
   // ── workspaces: egress and the port relay ──────────────────────────────
-  // Guarded before the id resolve: what this server can do is not a property
-  // of the workspace being asked about, so the answer must not depend on one
-  // existing.
+  // The feature guard runs before the id lookup, so the refusal doesn't
+  // depend on the workspace existing.
   { method: 'GET', path: '/api/workspace/:id/blocked-hosts', request: '/api/workspace/nope/blocked-hosts', why: 'mediates no egress', k8s: [404, 503], containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/workspace/:id/allow-host', request: '/api/workspace/nope/allow-host', body: { host: 'example.com' }, why: 'mediates no egress', k8s: [404, 503], containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/workspace/:id/forward-port', request: '/api/workspace/nope/forward-port', body: { containerPort: 3000 }, why: 'relays no ports', k8s: [404, 503], containerless: UNSUPPORTED },
@@ -225,11 +190,8 @@ export const ROUTE_MATRIX: RouteCase[] = [
 ]
 
 /**
- * Fail on any route the server registers that this table does not name.
- *
- * The enforcement the table needs to stay true: without it a new route
- * simply goes untested under both drivers, silently, which is the failure
- * mode a hand-maintained list always eventually has.
+ * Fail on any route the server registers that this table does not name,
+ * or any row naming a route that no longer exists.
  */
 export function assertMatrixCoversEveryRoute(): void {
   const app = buildApp({ buildId: 'matrix' })

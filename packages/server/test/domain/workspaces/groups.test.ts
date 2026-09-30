@@ -27,14 +27,13 @@ describe('workspace groups (domain)', () => {
 
       const groups = await listWorkspaceGroups('proj')
 
-      // Hidden-ness is the client's to decide, so an unpinned group with no
-      // live member travels too.
+      // The client decides what to hide, so empty unpinned groups are listed.
       expect(groups.map((g) => g.groupId).sort())
         .toEqual([founded.groupId, empty.groupId].sort())
       expect(groups.find((g) => g.groupId === founded.groupId)).toMatchObject({
         projectSlug: 'proj', name: 'release train', pinned: false,
       })
-      // 'YYYY-MM-DD HH:MM:SS' UTC — the groups' display order.
+      // UTC 'YYYY-MM-DD HH:MM:SS'; groups display in this order.
       expect(groups[0].createdAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
 
       expect((await listWorkspaceGroups()).map((g) => g.projectSlug).sort())
@@ -50,17 +49,15 @@ describe('workspace groups (domain)', () => {
         .toEqual({ groupId: group.groupId, name: 'Release Train' })
       expect(await resolveGroup('proj', 'Release Train'))
         .toEqual({ groupId: group.groupId, name: 'Release Train' })
-      // Same normalization the name was stored under, plus case folding —
-      // what a person retypes is rarely byte-identical. The STORED name comes
-      // back either way, so a caller handed an id can name what it picked.
+      // Names match after whitespace normalization and case folding. The
+      // stored name is returned either way.
       expect(await resolveGroup('proj', '  release   train '))
         .toEqual({ groupId: group.groupId, name: 'Release Train' })
     })
 
     it('refuses an unknown name rather than inventing one', async () => {
       await createWorkspaceGroup('proj', 'release', null)
-      // Scoped to the project: another project's group is as unknown as one
-      // that never existed.
+      // Another project's group does not count.
       await createWorkspaceGroup('other', 'staging', null)
 
       await expect(resolveGroup('proj', 'staging')).rejects.toThrow(ServerError)
@@ -68,13 +65,12 @@ describe('workspace groups (domain)', () => {
     })
 
     it('refuses an ambiguous name instead of guessing which was meant', async () => {
-      // Names are not unique — nothing stops two groups sharing one, and
-      // filing a workspace into the wrong one is silent.
+      // Names are not unique, and filing into the wrong group is silent.
       const first = await createWorkspaceGroup('proj', 'release', null)
       const second = await createWorkspaceGroup('proj', 'release', null)
 
       await expect(resolveGroup('proj', 'release')).rejects.toThrow(/names 2 groups/)
-      // The escape hatch the error names: an id is never ambiguous.
+      // An id, which the error suggests, is never ambiguous.
       expect((await resolveGroup('proj', second.groupId)).groupId).toBe(second.groupId)
       expect((await resolveGroup('proj', first.groupId)).groupId).toBe(first.groupId)
     })
@@ -86,24 +82,21 @@ describe('workspace groups (domain)', () => {
       expect(rows).toHaveLength(1)
       expect(rows[0]).toMatchObject({ groupId: fresh.groupId, name: 'fresh', pinned: true })
 
-      // Idempotent: naming it again resolves to the group that now exists
-      // rather than making a second one with the same name.
+      // Naming it again resolves to the existing group.
       expect(await resolveGroup('proj', 'fresh', { create: true })).toEqual(fresh)
       expect(await listWorkspaceGroupRows('proj')).toHaveLength(1)
 
-      // Including when it is typed with the whitespace the store collapses:
-      // the created row already holds the normalized name, so resolving has
-      // to normalize before comparing or this makes a duplicate.
+      // Also with extra whitespace: the lookup must normalize before
+      // comparing, or this would create a duplicate.
       const spaced = await resolveGroup('proj', ' fresh  ', { create: true })
       expect(spaced).toEqual(fresh)
       expect(await listWorkspaceGroupRows('proj')).toHaveLength(1)
 
-      // A name that only exists in typed form is stored normalized, and the
-      // resolver answers with what it stored.
+      // A new name is stored normalized.
       const spacedNew = await resolveGroup('proj', 'release  train', { create: true })
       expect(spacedNew.name).toBe('release train')
 
-      // A blank name would create a group nothing could ever name again.
+      // A blank name would create a group nothing could name.
       await expect(resolveGroup('proj', '   ', { create: true })).rejects.toThrow(ServerError)
       expect(await listWorkspaceGroupRows('proj')).toHaveLength(2)
     })

@@ -1,13 +1,10 @@
 /**
- * `ensureImage` over real chains: which layers it realizes, and where each
- * one comes from.
+ * `ensureImage` over real chains: which layers it builds, and where.
  *
- * The split it enforces is the whole point. The yaac-shipped layers
- * (base/tools/nestable) are built by `yaac cluster install` on the CLI
- * machine and only ever LOOKED UP here — so a chain is realizable exactly
- * when the registry already holds them, and the rest of it builds in
- * sandboxed pods. Chain composition itself (tags, build args, order) is
- * `resolveImageChain`'s, and is asserted in image-builder-stacking.test.ts.
+ * `yaac cluster install` builds the yaac-shipped layers (base/tools/
+ * nestable); here they are only looked up in the registry. The remaining
+ * layers build in sandboxed pods. Chain composition (tags, build args,
+ * order) is asserted in image-builder-stacking.test.ts.
  */
 import { describe, it, expect } from 'vitest'
 import fs from 'node:fs/promises'
@@ -46,8 +43,8 @@ describe('ensureImage', () => {
     await stagePrebuilt(resolveImageChain)
     const result = await ensureImage(PROJECT)
 
-    // base and tools cost a registry HEAD each; only the user layer — which
-    // runs a Dockerfile the user wrote — is realized, and in a builder pod.
+    // base and tools are only looked up; the user layer builds in a
+    // builder pod.
     expect(h.operations).toEqual([
       expect.stringMatching(
         new RegExp(`^build yaac-user-${PROJECT.id}:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE}\\]$`),
@@ -68,10 +65,8 @@ describe('ensureImage', () => {
   })
 
   it('refuses, naming the command that produces it, when a shipped layer is missing', async () => {
-    // Nothing staged: this is a machine whose install never ran, or ran
-    // before the Dockerfiles changed. Building it here would put a
-    // container engine back on the server's critical path, so the only
-    // useful answer is which command produces the tag.
+    // Nothing staged, as when install never ran or predates a Dockerfile
+    // change. The server cannot build these, so the error names the command.
     await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
 
     const { ensureImage } = await h.load()
@@ -92,8 +87,8 @@ describe('ensureImage', () => {
     await stagePrebuilt(resolveImageChain, true)
     await ensureImage(PROJECT, undefined, false, true)
 
-    // The project layer's parent is the nestable tag, not tools — that is
-    // what carries the in-pod engine into the image the session runs.
+    // The project layer builds on nestable, not tools, so the workspace
+    // image carries the in-pod container engine.
     expect(h.operations).toEqual([
       expect.stringMatching(
         new RegExp(`^build yaac-proj-${PROJECT.id}:${HASH_RE} \\[BASE_IMAGE=yaac-nestable:${HASH_RE}\\]$`),
@@ -102,9 +97,8 @@ describe('ensureImage', () => {
   })
 
   it('realizes a standalone Dockerfile.yaac with no prebuilt layer at all', async () => {
-    // A standalone project Dockerfile replaces the yaac-shipped chain, so
-    // there is nothing for the install to have produced — and it is still
-    // untrusted, so it still builds in a pod.
+    // A standalone project Dockerfile replaces the yaac-shipped chain, and
+    // is untrusted, so it builds in a pod.
     const buildDir = path.join(h.dataDir, 'global', 'projects', 'myproject', 'config', 'build')
     await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
     await fs.mkdir(buildDir, { recursive: true })

@@ -10,9 +10,9 @@ import {
 import { asTailnet } from '@yaac/test-utils/api'
 
 /**
- * The identity gate over the paths that decide the public/identified split
- * — the SPA shell and its assets, the health probe, and an ordinary API
- * route — with a `/api/whoami` that reports what the gate decided.
+ * The identity gate over the paths that split public from identified (SPA
+ * shell and assets, health probe, an ordinary API route), with a
+ * `/api/whoami` reporting the gate's decision.
  */
 function appWithIdentity(): Hono<IdentityEnv> {
   const app = new Hono<IdentityEnv>()
@@ -114,9 +114,9 @@ describe('identify', () => {
   })
 
   it('decodes a value split across several encoded words, and drops control characters', async () => {
-    // Past one word's length the encoder splits the value into several,
-    // space-separated; and whatever the encoding, the decoded text goes into
-    // every log line, so a CR/LF or ESC in it must not survive.
+    // Long values are split into several space-separated encoded words, and
+    // the decoded text goes into log lines, so CR/LF or ESC must not
+    // survive.
     const res = await appWithIdentity().request('/api/whoami', {
       headers: {
         host: 'srv.tailnet.ts.net',
@@ -193,9 +193,9 @@ describe('originHeaderCheck', () => {
   })
 
   it('allows exactly the origin the request was sent to', async () => {
-    // The SPA's own requests: same scheme, host and port — at loopback, and
-    // at a tailnet name behind serve, where Host is preserved, serve says
-    // the scheme, and the port is the default one either side may leave out.
+    // The SPA's own requests: same scheme, host and port, both at loopback
+    // and at a tailnet name behind serve (Host preserved, scheme from serve,
+    // default port optional).
     const app = appWithOriginCheck()
     const same: Array<Record<string, string>> = [
       { host: '127.0.0.1:8787', origin: 'http://127.0.0.1:8787' },

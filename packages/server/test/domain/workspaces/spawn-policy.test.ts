@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type * as createModule from '#domain/workspaces/create'
 
-// The spawn runs the real create path — resolving its setup, its provisioning
-// row, the spare question — down to the create itself, which is the boundary:
-// past it lies the substrate.
+// Only createWorkspace is stubbed; setup resolution, the provisioning row and
+// the spare decision run for real.
 vi.mock('#domain/workspaces/create', async (importOriginal) => ({
   ...(await importOriginal<typeof createModule>()),
   createWorkspace: vi.fn(),
@@ -41,7 +40,7 @@ function makeRequest(over: Partial<SpawnRequest> = {}): SpawnRequest {
   }
 }
 
-/** Stub the create whose only job is to record what it was asked for. */
+/** Stub createWorkspace so it only records its arguments. */
 function stubCreate(impl?: CreateFn): ReturnType<typeof vi.mocked<typeof createWorkspace>> {
   const create = vi.mocked(createWorkspace)
   create.mockReset().mockImplementation(impl ?? ((_slug, opts) => Promise.resolve({
@@ -88,19 +87,16 @@ describe('decideSpawn', () => {
     expect(decision).toEqual({ ok: true, workspaceId: 'minted-id' })
     const [opts] = await createdWith(create)
     expect(create.mock.calls[0][0]).toBe('proj')
-    // Nothing identity-shaped: a spawn has no interactive caller to resolve
-    // one, which is the reason the identity a workspace commits under is the
-    // server's own setting.
     expect(opts).toMatchObject({
       workspaceId: 'minted-id',
-      tool: 'codex', // the caller's own tool, absent an explicit request
+      tool: 'codex', // the caller's tool, absent an explicit request
       initialPrompt: 'write the report',
       mode: 'tui',
-      permissionMode: 'bypass', // the caller's own posture, likewise
+      permissionMode: 'bypass', // the caller's permission mode, likewise
       model: FALLBACK_MODELS.codex,
     })
-    // A claimed spare would list under its own id, and the id the caller was
-    // handed — `id=$(yaac-mama create …)` — would name nothing.
+    // A claimed spare keeps its own id, so the id handed back to
+    // `id=$(yaac-mama create …)` would name nothing.
     expect(listSpares).not.toHaveBeenCalled()
   })
 
@@ -114,7 +110,7 @@ describe('decideSpawn', () => {
       } as WorkspaceCreateResult)
     })
     expect((await decideSpawn(makeRequest(), { mintIdFn: () => 'minted-id' })).ok).toBe(true)
-    // There before the answer goes back, so the id resolves at once.
+    // Registered before the answer returns, so the id resolves at once.
     expect(listProvisioning().map((p) => p.workspaceId)).toEqual(['minted-id'])
     await vi.waitFor(() => { expect(rowDuringCreate).toBeDefined() })
     expect(rowDuringCreate).toMatchObject({
@@ -138,9 +134,8 @@ describe('decideSpawn', () => {
     await settle()
   })
 
-  // The caller's tool is only reported when the substrate labelled it with one
-  // yaac knows, so an unlabelled caller falls through to the agent its project
-  // was last created with, and then to claude.
+  // The caller's tool is reported only when it is one yaac knows. Otherwise
+  // the project's last-used agent is used, then claude.
   it('falls back to the project\'s last agent, then claude, for an unknown caller tool', async () => {
     const withDefault = stubCreate()
     const lastToolFn = vi.fn(() => Promise.resolve<'pi'>('pi'))
@@ -173,7 +168,7 @@ describe('decideSpawn', () => {
   })
 
   it('threads a provider/model override for a non-claude tool', async () => {
-    // No explicit tool: resolves to the caller's own tool (codex).
+    // No explicit tool, so the caller's tool (codex) is used.
     const create = stubCreate()
     expect((await decideSpawn(makeRequest({ model: 'openai/gpt-5.2' }))).ok).toBe(true)
     expect((await createdWith(create))[0]).toMatchObject({ tool: 'codex', model: 'openai/gpt-5.2' })
@@ -195,13 +190,12 @@ describe('decideSpawn', () => {
       return decision.ok ? (await createdWith(create))[0].permissionMode : decision
     }
     expect(await posture({ callerPermissionMode: 'auto' })).toBe('auto')
-    // The headline case: a `plan` caller's sibling is `plan`, not the
-    // driver's default (`bypass` in a container).
+    // A `plan` caller's sibling is `plan`, not the driver's default.
     expect(await posture({ callerPermissionMode: 'plan', tool: 'claude' })).toBe('plan')
-    // opencode has no `auto`; the next one down is what it inherits.
+    // opencode has no `auto`, so it inherits the next mode down.
     expect(await posture({ callerPermissionMode: 'auto', tool: 'opencode' })).toBe('accept-edits')
-    // Stepping down never goes UP: codex's adapter has nothing at or below
-    // `manual`, and pi has nothing below `bypass`, so both are refused.
+    // Never steps up: codex's ACP adapter has nothing at or below `manual`,
+    // and pi has nothing below `bypass`, so both are refused.
     expect(await posture({ callerPermissionMode: 'manual', uiMode: 'acp' })).toEqual({
       ok: false,
       error: "codex has no permission mode under acp at or below this workspace's own ('manual')",
@@ -218,21 +212,21 @@ describe('decideSpawn', () => {
     expect((await at('accept-edits', 'manual')).ok).toBe(true)
     expect((await at('manual', 'plan')).ok).toBe(true)
     await settle()
-    // Sorted: the three detached creates reach the create in any order.
+    // Sorted, since the detached creates run in any order.
     expect((await createdWith(create, 3)).map((o) => o.permissionMode).sort())
       .toEqual(['accept-edits', 'manual', 'plan'])
     create.mockClear()
 
-    // bypass > auto > accept-edits > manual > plan = read-only: anything left
-    // of the caller's own is refused, never clamped.
+    // Anything more permissive than the caller's mode is refused, never
+    // clamped.
     expect(await at('accept-edits', 'auto')).toEqual({
       ok: false,
       error: "permission mode 'auto' is more permissive than this workspace's own ('accept-edits'); "
         + 'a workspace it starts may be granted at most that '
         + '(bypass > auto > accept-edits > manual > plan = read-only)',
     })
-    // plan and read-only share the strictest place, so each tool's strictest
-    // posture is grantable under the other's — named or inherited.
+    // plan and read-only rank equal, so either may be granted under the
+    // other, whether named or inherited.
     expect(await decideSpawn(makeRequest({ callerPermissionMode: 'plan', permissionMode: 'read-only' })))
       .toMatchObject({ ok: true })
     expect(await at('read-only', 'plan')).toMatchObject({ ok: true })
@@ -244,15 +238,15 @@ describe('decideSpawn', () => {
     for (const [caller, asked] of [['plan', 'bypass'], ['plan', 'manual'], ['manual', 'accept-edits'], ['auto', 'bypass']] as const) {
       expect((await at(caller, asked)).ok, `${caller} → ${asked}`).toBe(false)
     }
-    // Within the ceiling but not a posture the tool has under that UI.
+    // Allowed by rank, but the tool lacks that mode under that UI.
     expect(await decideSpawn(makeRequest({ permissionMode: 'plan', uiMode: 'acp' }))).toEqual({
       ok: false, error: "codex has no 'plan' permission mode under acp",
     })
     expect(await decideSpawn(makeRequest({ permissionMode: 'manual' }))).toEqual({
       ok: false, error: "codex has no 'manual' permission mode",
     })
-    // A caller row holding a posture this build does not rank (written by
-    // another build) cannot be compared, so it grants nothing — named or not.
+    // A caller mode this build does not know (written by another build)
+    // cannot be ranked, so nothing is granted.
     const unknown = 'dontAsk' as SpawnRequest['callerPermissionMode']
     for (const asked of ['bypass', 'plan', undefined] as const) {
       expect(await decideSpawn(makeRequest({
@@ -273,7 +267,7 @@ describe('decideSpawn', () => {
   })
 
   it('caps concurrent in-flight creates per caller and releases on settle', async () => {
-    // A dedicated caller id so leakage between tests is impossible.
+    // A dedicated caller id keeps the in-flight count isolated.
     const callerWorkspaceId = 'guarded-caller'
     let release!: () => void
     const gate = new Promise<void>((r) => { release = r })
@@ -300,7 +294,7 @@ describe('decideSpawn', () => {
   it('releases the guard and stays ok when the detached create rejects', async () => {
     const callerWorkspaceId = 'failing-caller'
     stubCreate(() => Promise.reject(new Error('provision failed')))
-    // ok:true — the fire is already acked; the failure is a lost fire.
+    // The spawn was already acknowledged, so the failure does not change ok.
     expect((await decideSpawn(makeRequest({ callerWorkspaceId }))).ok).toBe(true)
     await settle()
     for (let i = 0; i < SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE; i++) {

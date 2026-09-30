@@ -5,20 +5,18 @@ import type { AgentKind, AgentOp, AgentTool2 } from '@yaac/shared/auth-agent-pro
 import type { ToolInstallView, ToolLoginView } from '@yaac/shared/types'
 
 /**
- * Relay hub between the webapp/CLI sign-in routes and the auth server on
- * the user's machine. The vendor login/install flows run over there (the
- * browser and the vendors' localhost OAuth callbacks live on the user's
- * machine, not necessarily the server host); this hub only forwards ops
- * down one outbound WebSocket and caches the views the agent pushes back,
- * so the existing polled routes keep their shapes.
+ * Relay between the sign-in routes and the auth server on the user's
+ * machine, where vendor login/install flows run (the browser and vendors'
+ * localhost OAuth callbacks are there, not necessarily on the server host).
+ * The hub forwards ops over one WebSocket and caches the views the auth
+ * server pushes back, which the polled routes serve.
  *
- * Deliberately minimal protocol — no request/response correlation:
+ * Protocol, with no request/response correlation:
  *  - down (server → agent):  {op:'start'|'input'|'cancel', id, ...}
  *  - up   (agent → server):  {op:'view', kind, view} on every change
- * Flow ids are minted here so a start can return a synthetic 'running'
- * view synchronously; the agent creates its session under the same id.
- * Credentials never transit this hub — on success the agent PUTs the
- * bundle to /auth/:tool itself.
+ * Flow ids are minted here so a start can return a 'running' view
+ * immediately. Credentials never pass through the hub: on success the auth
+ * server PUTs the bundle to /auth/:tool itself.
  */
 
 interface AgentViewMsg {
@@ -44,8 +42,8 @@ function parseAgentViewMsg(raw: string): AgentViewMsg | null {
   return m as AgentViewMsg
 }
 
-/** Same whitelist the agent enforces before writing to the login PTY;
- *  checked here too so bad paste input fails fast with a message. */
+/** The allowlist the auth server applies before writing to the login PTY,
+ *  checked here too so bad input fails fast with a message. */
 const LOGIN_INPUT_RE = /^[A-Za-z0-9_#-]{1,512}$/
 
 /** How long a finished flow stays pollable (mirrors the agent's linger). */
@@ -137,8 +135,8 @@ function createAuthAgentHub(): {
       if (socket !== sock) return // an old, already-replaced connection
       socket = null
       serverLog('[server] auth agent disconnected')
-      // In-flight flows died with the agent (it kills its subprocesses on
-      // disconnect); reflect that so pollers stop waiting.
+      // The auth server kills its flows on disconnect; mark them failed so
+      // pollers stop waiting.
       for (const entry of flows.values()) {
         if (entry.view.status === 'running') {
           entry.view.status = 'error'
@@ -152,8 +150,7 @@ function createAuthAgentHub(): {
       const msg = parseAgentViewMsg(raw)
       if (!msg) return
       const entry = flows.get(msg.view.id)
-      // Only ids this hub minted are accepted — the agent can't create
-      // server-side state on its own.
+      // Accept only ids minted here, so the auth server can't create state.
       if (!entry || entry.kind !== msg.kind) return
       entry.view = msg.view
       armLinger(entry)
@@ -197,5 +194,5 @@ function createAuthAgentHub(): {
   }
 }
 
-/** The server's one hub — routes and the WS upgrade share it. */
+/** The server's single hub, shared by the routes and the WS upgrade. */
 export const authAgentHub = createAuthAgentHub()

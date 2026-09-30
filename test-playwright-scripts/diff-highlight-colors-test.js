@@ -1,17 +1,13 @@
 /*
- * Verifies the Changes diff viewer's syntax-highlight CSS in real Chromium.
+ * Verifies the Changes diff viewer's syntax-highlight colors in real
+ * Chromium. Unit tests check the `tok-*` classes, but jsdom cannot resolve
+ * CSS custom properties. This loads the built stylesheet
+ * (packages/frontend/dist/assets/index-*.css) over a `.diff-hl` fragment
+ * shaped like DiffView's output, and checks the computed color of a few
+ * tokens in the dark and light palettes.
  *
- * The tokenizer (packages/frontend/src/lib/highlight.ts) is unit-tested and the
- * SessionChanges component test asserts the right `tok-*` classes land on the
- * right tokens — but jsdom can't resolve CSS custom properties, so neither
- * proves the colors actually paint. This does: it loads the *built* stylesheet
- * (packages/frontend/dist/assets/index-*.css) over a representative `.diff-hl`
- * diff fragment (the exact DOM DiffView emits), then reads getComputedStyle for
- * a few token spans under both the dark and light palettes and asserts each is
- * the expected GitHub-prettylights color. Fails loudly on mismatch.
- *
- * Self-contained — no running server needed. Build the frontend first so the
- * stylesheet exists: `pnpm --filter @yaac/frontend build`.
+ * Needs no running server. Build the frontend first:
+ * `pnpm --filter @yaac/frontend build`.
  *
  * Run: node test-playwright-scripts/diff-highlight-colors-test.js
  * (set SCREENSHOT_DIR to also drop dark/light PNGs there.)
@@ -43,9 +39,8 @@ function builtCss() {
   return fs.readFileSync(path.join(dir, file), 'utf8')
 }
 
-// A representative diff fragment in the exact shape DiffView renders: a
-// `.diff-hl` container with add/context rows whose text is split into tok-*
-// spans. Token ids match @lezer/highlight's classHighlighter output.
+// A diff fragment shaped like DiffView's output. Token classes match
+// @lezer/highlight's classHighlighter.
 const FRAGMENT = `
 <div class="diff-hl" style="font-family: monospace; font-size: 13px; padding: 12px;">
   <div style="display:flex"><span style="width:40px;color:#6a6a74">1</span><span style="width:12px;color:#3fb950">+</span><span>

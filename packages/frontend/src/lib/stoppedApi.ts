@@ -3,12 +3,10 @@ import { ServerError } from '@yaac/shared/errors'
 import type { StoppedWorkspaceEntry } from '@yaac/shared/types'
 
 /**
- * Deleted workspaces for a project — workspaces whose containers are gone but
- * whose transcripts remain on disk, so they can be restarted (resumed).
- * Mirrors `yaac workspace list -s`.
+ * A project's stopped workspaces: those no longer running whose transcripts
+ * remain, so they can be resumed. Mirrors `yaac workspace list -s`.
  *
- * An older server may not serve this route; a 404 degrades to "none" rather
- * than surfacing an error for a non-essential list (skew resilience).
+ * An older server may lack this route, so a 404 returns an empty list.
  */
 export async function getStoppedWorkspaces(
   projectSlug: string,
@@ -25,25 +23,22 @@ export async function getStoppedWorkspaces(
 }
 
 /**
- * Mark an abnormal death as seen — the user viewed its detail in the deleted
- * overlay, so the notification dot / row highlight should clear. Persisted on
- * the server (workspace row) so the acknowledgement is durable and
- * shared across clients. Best-effort: a failed write just re-shows the dot,
- * which the next view clears again, so callers fire-and-forget.
+ * Mark an abnormal death as seen, after the user viewed it in the stopped
+ * overlay, to clear its notification dot. Stored on the server so every
+ * client sees it. Best-effort: a failed write only re-shows the dot, so
+ * errors are swallowed and callers need not await.
  */
 export async function markDeathSeen(projectSlug: string, workspaceId: string): Promise<void> {
   try {
     await api.workspace['mark-death-seen'].$post({ json: { projectSlug, workspaceId } })
   } catch {
-    // Best-effort: a lost write just re-shows the dot, which the next view
-    // clears again. Swallow so fire-and-forget callers need no .catch.
+    // Best-effort; see above.
   }
 }
 
 /**
- * Mark every abnormal death in the project seen at once — the overlay's
- * "Mark all as read". Same durability and best-effort semantics as
- * `markDeathSeen`; a lost write just re-shows the dot.
+ * Mark every abnormal death in the project as seen (the overlay's "Mark all
+ * as read"). Best-effort, like `markDeathSeen`.
  */
 export async function markAllDeathsSeen(projectSlug: string): Promise<void> {
   try {

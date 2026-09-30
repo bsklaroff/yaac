@@ -1,33 +1,22 @@
 /*
- * Verifies the ACP chat pane at phone width, in real Chromium (390x844,
- * touch): the things jsdom cannot answer because it has no layout.
+ * Verifies the ACP chat pane at phone width (390x844, touch) in real
+ * Chromium, for layout that jsdom cannot check:
  *
- *  1. Nothing in the conversation is wider than the pane. A long unbroken
- *     token — a sha, a URL, a base64 blob — is exactly what an agent emits,
- *     and with nothing to break it the message list becomes a horizontal
- *     scroller and the pane's content runs off the right of the screen.
- *  2. The input is at least 16px. Mobile Safari zooms the page when a smaller
- *     control takes focus and never zooms back out, which presents as (1) and
- *     (3) at once even when the layout is perfect.
- *  3. The page itself never scrolls. Every scroll in the app belongs to a pane
- *     inside it; if the chat pane can push the document past the viewport, the
- *     whole shell drags around under a swipe.
- *  4. The input box grows with the message. Typing several lines must show all
- *     of them (up to the max-height, after which the box scrolls internally),
- *     rather than leaving the writer looking at one line of five.
+ *  1. Nothing in the conversation is wider than the pane, even a long
+ *     unbroken token (a sha, URL or base64 blob).
+ *  2. The input font is at least 16px, so mobile Safari does not zoom the
+ *     page on focus.
+ *  3. The page itself never scrolls; only panes inside it do.
+ *  4. The input box grows with a multi-line message, up to its max-height.
  *
- * Drives the app the server itself serves (`dist/`), reading the port
- * from $YAAC_DATA_DIR/.server.lock — so run `pnpm build` +
- * `yaac server restart` first, or you are looking at the frontend as it was.
- * Deliberately NOT the Vite dev server: React.StrictMode double-mounts every
- * effect in development, so the chat pane opens two ACP sockets, the second
- * displaces the first, and a prompt sent from the box is never delivered.
- * The geometry is identical either way, but this script sends a message.
+ * Uses the app the server serves from `dist/` (port from
+ * $YAAC_DATA_DIR/.server.lock), so run `pnpm build` and `yaac server
+ * restart` first. Not the Vite dev server: React.StrictMode opens two ACP
+ * sockets there and the sent prompt is never delivered.
  *
- * Needs a running `yaac server` with a live ACP-mode workspace of the selected
- * project — `yaac workspace create <project> --tool claude --mode acp` — and
- * spends one small prompt turn on the agent (the message carries the
- * unbreakable token, which is the point).
+ * Needs a running `yaac server` with a live ACP workspace in the selected
+ * project (`yaac workspace create <project> --tool claude --mode acp`), and
+ * sends it one small prompt.
  *
  * Run: node test-playwright-scripts/acp-chat-mobile-layout-test.js
  * (set SCREENSHOT_DIR to capture the pane; defaults to /tmp/yaac-shots,
@@ -68,10 +57,8 @@ function readServerLock() {
 }
 
 /**
- * Poll an in-page predicate until it holds. Not `page.waitForFunction`: the
- * served app sends a script-src CSP with no `unsafe-eval`, and that API
- * compiles its predicate with `new Function` inside the page. `page.evaluate`
- * goes through the debugger instead, which the CSP does not govern.
+ * Poll an in-page predicate until it holds. Not `page.waitForFunction`,
+ * which needs `unsafe-eval` and the app's CSP forbids it.
  */
 async function until(page, fn, arg, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs
@@ -92,27 +79,20 @@ function check(name, cond, detail = '') {
 const SHOTS = process.env.SCREENSHOT_DIR ?? '/tmp/yaac-shots'
 const PHONE = { width: 390, height: 844 }
 /**
- * A token with no break opportunity in it at all — the shape of a commit sha,
- * a base64 blob or a k8s object name. Deliberately not a long *path*: line
- * breaking allows a break after a solidus, so a path wraps on its own and
- * proves nothing about the wrapping rule.
+ * A token with no line-break opportunity, like a sha or base64 blob. Not a
+ * path, since browsers may break after a slash.
  */
 const LONG_TOKEN = `9f3c7ae${'0123456789abcdef'.repeat(6)}b21d`
 
-/** Every element in the conversation that sticks out past the pane's right
- *  edge, plus the message list's own horizontal scroll. Reported as the
- *  offending elements rather than a bare boolean — which node overflows is the
- *  whole diagnosis.
- *
- *  Content inside a nested horizontal scroller (a fenced code block, a diff
- *  hunk, a wide table) is exempt: it is clipped by that scroller and scrolls
- *  within it, which is the design. Only what the *message list* has to carry
- *  can widen the pane. */
+/**
+ * Every element in the conversation that sticks out past the pane's right
+ * edge, plus the message list's horizontal scroll. Content inside its own
+ * horizontal scroller (a code block, diff hunk or table) is exempt.
+ */
 function overflowReport() {
   return () => {
-    // The pane from the inside out: its input box is the one textarea with a
-    // placeholder (every attached terminal has a hidden one of its own), and
-    // the pane is the column that holds it.
+    // The pane's input is the only textarea with a placeholder (terminals
+    // have hidden ones); the pane is the column holding it.
     const box = document.querySelector('textarea[placeholder]')
     const pane = box?.closest('.flex-col')
     if (!pane) return { error: 'no chat pane' }
@@ -146,8 +126,7 @@ function overflowReport() {
   }
 }
 
-/** Whether the document itself can scroll — it must not; every scroll in the
- *  app belongs to a pane. */
+/** Whether the document itself can scroll (it must not). */
 function pageScrollReport() {
   return () => {
     const el = document.scrollingElement ?? document.documentElement
@@ -176,8 +155,8 @@ try {
   await page.goto(`${APP_URL}/`)
   await page.waitForTimeout(4000)
 
-  // Walk in: project -> workspace -> pane. The mobile shell's screens are
-  // stacked layers, so each query is scoped to the layer that owns it.
+  // Project, then workspace, then pane. The mobile screens are stacked
+  // layers, so each query is scoped to its layer.
   const shell = page.locator('#root > div > div > div')
   const projectsLayer = shell.locator('> div').nth(0)
   const projectRows = projectsLayer.locator('button:has(> span.truncate)')
@@ -202,8 +181,7 @@ try {
   await box.tap()
   await box.fill(`look at ${LONG_TOKEN} and tell me nothing`)
   await page.getByRole('button', { name: 'Send' }).tap()
-  // The bubble appears when the server echoes the message back, which is the
-  // only evidence the agent has it — the box holds the text until then.
+  // The bubble appears once the server echoes the message back.
   await until(page, (t) => {
     const pane = document.querySelector('textarea[placeholder]')?.closest('.flex-col')
     return pane?.firstElementChild.textContent.includes(t) ?? false
@@ -220,9 +198,6 @@ try {
     overflow.scrollOverflow === 0, `overflow=${overflow.scrollOverflow}px`)
 
   // ---- 2. the input is big enough that iOS won't zoom the page ----
-  // A control under 16px makes mobile Safari scale the whole page on focus and
-  // never scale it back: the pane runs off to the right and the shell pans
-  // under a finger. It reads as a layout bug; it is a font size.
   check('the input is at least 16px at phone width, so a focus cannot zoom the page',
     overflow.inputFontPx >= 16, `${overflow.inputFontPx}px`)
 
@@ -235,8 +210,7 @@ try {
   check('the document is no wider than the viewport',
     scroll.scrollWidth <= scroll.clientWidth,
     `${scroll.scrollWidth} vs ${scroll.clientWidth}`)
-  // Nothing may move the document, with the caret in the box or otherwise —
-  // every scroll in the app belongs to a pane inside it.
+  // Nothing may scroll the document, with the caret in the box or not.
   await box.tap()
   const afterPush = await page.evaluate(() => {
     window.scrollBy(0, 400)

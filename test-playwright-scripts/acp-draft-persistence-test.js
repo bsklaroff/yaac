@@ -1,22 +1,17 @@
 /*
  * Verifies that a half-typed ACP message survives leaving the chat pane, in
  * real Chromium against a live ACP workspace:
- *   - typing a draft, switching to another pane (which UNMOUNTS the chat pane —
- *     asserted, since that unmount is the whole reason the draft needs a home
- *     outside component state), and coming back restores the text;
- *   - a full page reload restores it too (the store persists it to
- *     localStorage);
- *   - a message the agent actually received does NOT come back as a draft —
- *     the pane settles a restored in-flight message against the replayed
- *     history on attach;
- *   - but retyping those same words without sending them keeps them, since
- *     nothing was in flight (the trap plain history-matching falls into).
+ *   - a draft survives switching to another pane (which unmounts the chat
+ *     pane, as asserted) and back;
+ *   - it survives a page reload (persisted to localStorage);
+ *   - a message the agent received does not come back as a draft;
+ *   - but the same words retyped and not sent do stay, since nothing was in
+ *     flight.
  *
- * Needs a running `yaac server` with a live ACP-mode workspace of the selected
- * project — `yaac workspace create <project> --tool claude --mode acp` — and
- * spends one small prompt turn on the agent. Reads the port from
- * $YAAC_DATA_DIR/.server.lock (falling back to ~/.yaac) exactly like
- * .claude/skills/run-yaac/driver.mjs.
+ * Needs a running `yaac server` with a live ACP workspace in the selected
+ * project (`yaac workspace create <project> --tool claude --mode acp`), and
+ * sends it one small prompt. Reads the port from $YAAC_DATA_DIR/.server.lock
+ * (default ~/.yaac), like .claude/skills/run-yaac/driver.mjs.
  *
  * Run: node test-playwright-scripts/acp-draft-persistence-test.js
  * (set SCREENSHOT_DIR to also drop PNGs of the restored states.)
@@ -55,10 +50,10 @@ function readServerLock() {
   throw new Error('no .server.lock found — is the server running?')
 }
 
-// Either placeholder — the box says "Reconnecting…" until the socket attaches.
+// Either placeholder: the box says "Reconnecting…" until the socket attaches.
 const CHAT = 'textarea[placeholder="Message the agent…"], textarea[placeholder="Reconnecting…"]'
-// The chat pane's tab in the strip. Scoped to a tab wrapper so it can't match
-// the header's own "Changes" chip, which carries the same label.
+// The chat pane's tab, scoped to a tab wrapper so it cannot match the
+// header's chip with the same label.
 const AGENT_TAB = '.group\\/tab button:text-is("Agent")'
 const DRAFT = 'a message I was halfway through typing'
 
@@ -83,16 +78,14 @@ async function main() {
   }
 
   await page.goto(`http://127.0.0.1:${lock.port}/`)
-  // Wait for the workspace's row (the pushed /events snapshot) to arrive.
+  // Wait for the workspace to arrive in the /events snapshot.
   await page.waitForTimeout(4000)
 
   const chat = page.locator(CHAT)
   await chat.waitFor({ state: 'visible', timeout: 20_000 })
   check(true, 'the ACP workspace opens on its chat pane')
 
-  // Tabs view: one pane at a time, so switching panes tears the other down —
-  // the same unmount a column close or a workspace switch causes, reached with
-  // a single keystroke.
+  // Tabs view shows one pane at a time, so switching unmounts the other.
   await page.keyboard.press('Alt+Comma')
   await page.waitForTimeout(500)
 
@@ -101,8 +94,7 @@ async function main() {
   check(await chat.inputValue() === DRAFT, 'the draft is in the box')
   await shot('acp-draft-typed')
 
-  // Alt+G opens the Changes pane; in tabs view it becomes the visible tab and
-  // the chat pane is unmounted outright.
+  // Alt+G opens the Changes pane, unmounting the chat pane.
   await page.keyboard.press('Alt+g')
   await page.waitForTimeout(1500)
   check(await page.locator(CHAT).count() === 0, 'leaving the pane unmounts the chat pane')
@@ -116,10 +108,8 @@ async function main() {
   )
   await shot('acp-draft-restored')
 
-  // A reload is the harder case: nothing of the pane survives it, so this is
-  // the persisted copy coming back. Which tab is *visible* after a reload is a
-  // separate question — the active tab is in-memory state, so the workspace
-  // comes back showing its first pane — hence the click back to the chat.
+  // After a reload the draft comes from localStorage. The active tab is not
+  // persisted, so click back to the chat.
   await page.reload()
   await page.waitForTimeout(5000)
   await page.locator(AGENT_TAB).first().click()
@@ -130,13 +120,10 @@ async function main() {
     `box holds ${JSON.stringify(await page.locator(CHAT).inputValue().catch(() => null))}`,
   )
 
-  // A message the agent actually received must not come back as a draft when
-  // the pane is mounted again — the box is cleared by the server's echo, and
-  // the restored-draft reconcile keeps it clear.
+  // A received message must not come back as a draft.
   await page.locator(CHAT).fill('reply with just the word pong')
   await page.keyboard.press('Enter')
-  // Polled from here rather than with waitForFunction: the app's CSP has no
-  // 'unsafe-eval', and that is how Playwright injects a page-side predicate.
+  // Polled here: waitForFunction needs 'unsafe-eval', which the CSP forbids.
   let cleared = false
   for (let i = 0; i < 60 && !cleared; i++) {
     cleared = await page.locator(CHAT).inputValue() === ''
@@ -156,10 +143,8 @@ async function main() {
   )
   await shot('acp-draft-after-send')
 
-  // Typing the SAME words again, without sending: short replies repeat ("ok",
-  // "yes", "retry"), and the conversation's history says the last thing the
-  // user said was exactly this — but nothing is in flight, so that says
-  // nothing about the text now in the box.
+  // The same words retyped and not sent must stay: short replies repeat,
+  // and matching history alone would wrongly clear them.
   await page.locator(CHAT).fill('reply with just the word pong')
   await page.waitForTimeout(300)
   await page.keyboard.press('Alt+g')

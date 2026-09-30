@@ -41,12 +41,9 @@ describe('seedClaudeJson', () => {
   })
 
   it('trusts the roots it is handed, not the pod layout', async () => {
-    // A containerless workspace has no mount namespace, so the agent opens
-    // the real checkout and a `/workspace` entry matches nothing it will
-    // ever cd into — the file looks seeded and the trust dialog opens
-    // anyway. Naming the roots at the call site is what makes that a
-    // decision each driver states rather than a constant that is right for
-    // one of them.
+    // A containerless agent runs in the real checkout, where a `/workspace`
+    // entry would match nothing and the trust dialog would still open. Each
+    // driver therefore passes its own roots.
     const wt = path.join(dir, 'projects', 'demo', 'workspaces', 'abc')
     const repo = path.join(dir, 'projects', 'demo', 'repo')
     await seedClaudeJson(home, [wt, repo])
@@ -57,9 +54,8 @@ describe('seedClaudeJson', () => {
   })
 
   it('accumulates workspace roots across creates instead of replacing them', async () => {
-    // Every containerless workspace of a project is its own path, and they
-    // share one claude.json — so the second create must not cost the first
-    // its trust.
+    // A project's containerless workspaces have separate paths but share
+    // one claude.json, so a second create must keep the first one trusted.
     const first = path.join(dir, 'workspaces', 'one')
     const second = path.join(dir, 'workspaces', 'two')
     await seedClaudeJson(home, [first])
@@ -131,8 +127,8 @@ describe('seedClaudeSettings', () => {
   })
 
   it('replaces a link planted in its place, leaving what it named untouched', async () => {
-    // A pod can put any link below its tool home; following one would make
-    // every create rewrite (or, for non-JSON, clobber) the file it names.
+    // A pod can plant a symlink in its tool home; following it would let
+    // every create rewrite or clobber the file it points at.
     const target = path.join(dir, 'elsewhere.db')
     await fs.writeFile(target, 'not json, and not yours')
     const settings = path.join(dir, 'settings.json')

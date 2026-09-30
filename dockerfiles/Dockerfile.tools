@@ -1,17 +1,14 @@
 ARG BASE_IMAGE
 
-# bubblewrap, patched to run under gVisor — codex's sandbox (every codex
+# bubblewrap patched to run under gVisor, for codex's sandbox (every codex
 # posture but bypass, docs/permission-modes.md). gVisor gives a new network
-# namespace an `lo` already holding 127.0.0.1, where Linux gives an empty
-# one, so bwrap's own RTM_NEWADDR fails EEXIST and `--unshare-net` aborts
-# ("loopback: Failed RTM_NEWADDR") before the command runs. The patch takes
-# EEXIST as done, and has every failed netlink read set errno, so only a
-# real EEXIST reply gets through rather than one left over from earlier.
-# codex prefers a bwrap on PATH to its bundled copy, so this one is what it
-# runs. Delete the stage once a pinned gVisor (GVISOR_VERSION) creates `lo`
-# empty (google/gvisor#13532) or bubblewrap tolerates it
-# (containers/bubblewrap#745) and codex bundles that release — the tripwire
-# in test/e2e/codex-sandbox.test.ts fails when either has happened.
+# namespace an `lo` that already has 127.0.0.1, so bwrap's RTM_NEWADDR fails
+# with EEXIST and `--unshare-net` aborts. The patch treats EEXIST as success,
+# and makes every failed netlink read set errno so a stale EEXIST cannot leak
+# through. codex prefers a bwrap on PATH to its bundled copy. Delete this
+# stage once gVisor (google/gvisor#13532) or bubblewrap
+# (containers/bubblewrap#745) is fixed and codex bundles the fix; the check
+# in test/e2e/codex-sandbox.test.ts fails when that happens.
 FROM docker.io/ubuntu:24.04 AS bwrap
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl gcc libc6-dev libcap-dev meson ninja-build patch pkg-config xz-utils
@@ -64,22 +61,16 @@ RUN meson setup _build --buildtype=release -Dselinux=disabled -Dman=disabled -Dt
 FROM ${BASE_IMAGE}
 COPY --from=bwrap /bubblewrap-0.13.0/_build/bwrap /usr/bin/bwrap
 
-# Neovim — split out of Dockerfile.default so bumping the pinned release
-# re-runs only this layer, not the slow apt/Node base build. Needs root to
-# write under /usr/local; the base image ends as USER yaac, so switch back
-# afterward.
+# Neovim lives here rather than in Dockerfile.default so a version bump does
+# not rebuild the slow base image.
 USER root
 RUN ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x86_64; fi && \
     curl -fsSL "https://github.com/neovim/neovim/releases/download/v0.12.4/nvim-linux-${ARCH}.tar.gz" | \
     tar -xz -C /usr/local --strip-components=1 && \
     ln -sf /usr/local/bin/nvim /usr/local/bin/vi && \
     ln -sf /usr/local/bin/nvim /usr/local/bin/vim
-# fd (sharkdp/fd) for pi's file-search tool. pi otherwise auto-downloads the
-# latest sharkdp/fd release into ~/.pi/agent/bin the first time the tool runs
-# when no `fd`/`fdfind` is on PATH; pre-staging the same release binary on PATH
-# lets pi find it and skips that runtime fetch (which would hit GitHub through
-# the egress proxy). pi's other tool binary, ripgrep (`rg`), ships in the base
-# image. Keep in step with sharkdp/fd's latest release.
+# fd for pi's file-search tool. Without it on PATH, pi downloads the latest
+# fd release from GitHub on first use. Keep in step with fd's latest release.
 RUN ARCH="$(dpkg --print-architecture)" && \
     case "$ARCH" in amd64) ARCH=x86_64 ;; arm64) ARCH=aarch64 ;; esac && \
     FD_VERSION=10.4.2 && \
@@ -89,91 +80,56 @@ RUN ARCH="$(dpkg --print-architecture)" && \
 USER yaac
 ENV EDITOR=nvim
 
-# Agent CLIs and MCP servers. Split out of Dockerfile.default so picking up a
-# new upstream version re-runs only this layer, not the slow apt/Node base
-# build. Editing this file re-tags the layer (toolsContentHash), which is what
-# makes the prewarm sweep build it at all — but the tag is only half of it.
-# Builds have no --no-cache path, deliberately (see builderBuildArgs), and the
-# registry step cache is keyed on step TEXT: a step whose text did not change
-# is replayed from cache and reinstalls exactly what it installed last time.
-# So a step upgrades by bumping its pin.
+# Agent CLIs and MCP servers, kept out of Dockerfile.default so upgrades do
+# not rebuild the base. Editing this file changes the tag
+# (toolsContentHash), but the build step cache is keyed on step text (there
+# is no --no-cache; see builderBuildArgs), so a step upgrades only when its
+# pin changes.
 #
-# Every agent CLI is pinned, to the version in `AGENT_CLIS`
-# (packages/shared/src/types.ts), which a unit test ties to this file. yaac
-# writes each tool's permission postures as launch flags and reads them back
-# from what the tool reports (docs/permission-modes.md), and a release that
-# drops a flag value does not fail the build: it kills the agent window at
-# launch, or quietly runs it in another posture. Re-verify both against the
-# new binary before moving a pin.
+# Each agent CLI is pinned to its `AGENT_CLIS` version
+# (packages/shared/src/types.ts); a unit test checks they match. A release
+# that drops a permission-posture flag does not fail the build: it kills the
+# agent at launch or runs it in another posture (docs/permission-modes.md).
+# Re-verify postures against the new binary before moving a pin.
 RUN umask 002 && npm install -g chrome-devtools-mcp@0.24.0
-# Bump with codex-acp below: that adapter drives this CLI's app-server. Its
-# sandbox must keep choosing /usr/bin/bwrap over its bundled one (the bwrap
-# stage above); test/e2e/codex-sandbox.test.ts is what says it still does.
+# Bump with codex-acp below, which drives this CLI's app-server. Its sandbox
+# must keep using /usr/bin/bwrap (test/e2e/codex-sandbox.test.ts checks).
 RUN umask 002 && npm install -g @openai/codex@0.156.1
-# opencode 2 (`@opencode/cli`), pinned: yaac's launch command is written
-# against its flags and config (buildAgentCmd), and the session env sets
-# OPENCODE_DISABLE_AUTOUPDATE=1 (packages/server/src/domain/workspaces/create.ts)
-# so a launched pod can't upgrade itself off the pin. Not the 1.x line
-# (`opencode-ai`): from 1.0.143 on its TUI never renders under gVisor — the
-# native renderer blocks on a terminal-capability handshake (pixel-resolution
-# query) that our headless workspace tmux never answers, so the agent pane
-# stays blank (anomalyco/opencode#29802) — and v2's client is what draws
-# again. Check the pane still draws whenever this pin moves.
+# opencode 2 (`@opencode/cli`). The workspace env sets
+# OPENCODE_DISABLE_AUTOUPDATE=1 (domain/workspaces/create.ts) so it stays on
+# the pin. The 1.x line (`opencode-ai`) from 1.0.143 on never renders in our
+# tmux: it waits for a terminal query tmux never answers
+# (anomalyco/opencode#29802). Check the pane still draws when bumping.
 RUN umask 002 && npm install -g @opencode/cli@2.0.12
-# pi. Its ACP adapter (pi-acp, below) is a bridge onto `pi --mode rpc`, pi's
-# own JSON protocol, and tracks its event shapes rather than a stable API; a pi
-# release that moved them would break `--mode acp` workspaces with nothing to
-# catch it. Bump the two together, and re-run the acp e2e tier after.
+# pi. pi-acp (below) depends on pi's unstable `--mode rpc` event shapes, so
+# bump the two together and re-run the acp e2e tier.
 RUN umask 002 && npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.84.4
-# Claude Code, through its installer, which takes the version to install.
-# The installer picks its own modes (~/.claude/sessions lands 0700), and the
-# agent rewrites that whole tree every session — so normalize what it wrote
-# to group-writable in this same step, where it costs no copy-up. `find`
-# rather than a path list so a changed installer layout is caught: a path
-# that stops existing fails the build instead of silently going unwritable.
+# Claude Code via its installer. The installer creates some dirs without
+# group write (~/.claude/sessions is 0700), so fix modes in the same layer.
+# If one of these paths stops existing, `find` fails the build.
 RUN umask 002 && curl -fsSL https://claude.ai/install.sh | bash -s 2.1.282 && \
     find /home/yaac/.claude* /home/yaac/.local/share/claude \
       ! -perm -g+w -exec chmod g=u {} +
-# The ACP adapters — the agent side of yaac's `acp` mode. Each speaks JSON-RPC
-# over stdio (Agent Client Protocol) instead of rendering a TUI, so the server
-# drives it directly and the webapp renders structured messages in a chat pane
-# rather than attaching a PTY. Launched under acpd (see /opt/yaac/acpd in the
-# base image), never on their own.
-#
-# All pinned, and pinned harder than the CLIs above: yaac reads each adapter's
-# advertised session modes as the tool's permission postures (see
-# packages/server/src/runtime/agents/acp-adapters.ts), and an adapter that
-# stops advertising one does not fail — it silently runs in its default. A unit
-# test ties each pin here to the version that table was verified against, so a
-# bump is a test failure until the modes have been re-checked.
-#
-# opencode has no line here: `opencode acp` is a subcommand of the CLI
-# installed above, so its adapter is pinned by that pin.
+# ACP adapters for yaac's `acp` mode (docs/agent-modes.md), launched under
+# acpd. yaac maps each adapter's advertised session modes to permission
+# postures (packages/server/src/runtime/agents/acp-adapters.ts); an adapter
+# that drops one silently runs in its default. A unit test ties each pin here
+# to the version that table was verified against. opencode's adapter is
+# `opencode acp`, part of the CLI above.
 RUN umask 002 && npm install -g @agentclientprotocol/claude-agent-acp@0.81.2
-# Drives `codex app-server` as a child — resolved as `CODEX_PATH ?? "codex"`,
-# i.e. the CLI installed above, so the two move together: each codex-acp
-# release names the codex it speaks to (its `@openai/codex` dependency range).
-# --ignore-scripts because the package has no lifecycle script worth running
-# and a future one would be fetching a platform binary this image already has.
-# It does NOT avoid the second codex copy its dependency brings: that arrives
-# as an optionalDependency, which the flag does not skip. Harmless — nothing
-# execs it.
+# Runs the codex CLI above (`codex app-server`), so bump the two together
+# within codex-acp's `@openai/codex` dependency range. --ignore-scripts skips
+# fetching a platform binary the image already has; the unused second codex
+# copy from its optionalDependency still installs.
 RUN umask 002 && npm install -g --ignore-scripts @agentclientprotocol/codex-acp@1.13.1
-# Drives `pi --mode rpc` as a child, so it needs the pi CLI above — and the
-# pinned one specifically (see that step).
+# Runs the pinned pi CLI above (`pi --mode rpc`).
 RUN umask 002 && npm install -g --ignore-scripts pi-acp@0.0.33
 
-# codex's system layers. Its agent-session discovery hook is not here: yaac
-# launches codex with it as a `-c` setting, with hook trust bypassed,
-# the same on both substrates (packages/server/src/runtime/agents/codex.ts,
-# `codexLaunchConfig`). In requirements.toml: `[features] hooks` pins the
-# (default-on) hook engine that runs it, and `apps = false` disables the
-# codex_apps MCP server whose handshake fails and warns on startup
-# (openai/codex#16550). The system config.toml layer sets
-# check_for_update_on_startup = false so a fresh pod skips codex's startup
-# update probe (against api.github.com) and drops straight to the agent input
-# instead of stalling on a version check — which matters for yaac-mama's
-# unattended sessions.
+# codex system config. The session discovery hook is passed at launch
+# (`codexLaunchConfig` in packages/server/src/runtime/agents/codex.ts).
+# requirements.toml keeps the hook engine on and disables the codex_apps MCP
+# server, whose handshake fails (openai/codex#16550). config.toml skips the
+# startup update check so unattended sessions do not stall on it.
 USER root
 RUN mkdir -p /etc/codex \
   && printf 'check_for_update_on_startup = false\n' > /etc/codex/config.toml \

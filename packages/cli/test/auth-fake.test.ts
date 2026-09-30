@@ -4,9 +4,8 @@ import { getApiClient } from '@yaac/shared/server-api'
 import { ServerError } from '@yaac/shared/errors'
 import type * as serverApiModule from '@yaac/shared/server-api'
 
-// authFake builds its client via the shared factory (it bypasses the
-// authUpdate-injecting singleton), so mock the factory itself. It's now
-// synchronous, hence mockReturnValue.
+// authFake calls `getApiClient()` directly rather than the `api` singleton,
+// so mock the factory.
 vi.mock('@yaac/shared/server-api', async (importOriginal) => {
   const actual = await importOriginal<typeof serverApiModule>()
   return {
@@ -52,8 +51,6 @@ describe('authFake', () => {
   })
 
   it('throws when the server returns an error response', async () => {
-    // The throwing API client rejects on a non-2xx; the command lets it
-    // propagate (no per-call ok check).
     const post = vi.fn().mockRejectedValue(new ServerError('INTERNAL', 'server error'))
     mockClient(post)
     await expect(authFake(['pi-openrouter'])).rejects.toThrow('server error')

@@ -9,9 +9,9 @@ export interface Rect {
 }
 
 /**
- * Whether the window would be at least partly visible on one of the displays,
- * so a saved position from a since-disconnected monitor doesn't strand the
- * window off-screen — the caller falls back to default (centered) bounds.
+ * Whether the window would be at least partly visible on one of the displays.
+ * A position saved on a disconnected monitor fails this, and the caller uses
+ * default bounds.
  */
 export function boundsVisibleOn(bounds: Rect, displays: Rect[]): boolean {
   return displays.some((d) =>

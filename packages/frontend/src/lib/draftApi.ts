@@ -2,9 +2,9 @@ import { api } from './api'
 import type { DraftWorkspaceEntry, DraftWorkspaceSettings } from '@yaac/shared/types'
 
 /**
- * Draft workspaces (docs/draft-workspaces.md): create-dialog contents kept for
- * later. Not optimistic — drafts ride the snapshot, so the server's push is
- * what re-renders the sidebar.
+ * Draft workspaces (docs/draft-workspaces.md): create-dialog contents saved
+ * for later. Not optimistic: drafts arrive in the snapshot, so the server's
+ * push re-renders the sidebar.
  */
 
 /** Save a new draft, or replace draft `id`'s fields. */

@@ -2,10 +2,9 @@
  * Verifies the file explorer header's styled tooltips in real Chromium
  * (docs/file-editor.md): hovering the show/hide ignored toggle, New file,
  * New folder and Collapse all each pops a tooltip naming it, and none of
- * them also carries a native `title` that would double up. The go-to-file
- * field has neither: its placeholder already says what it is, shortcut
- * included. SCREENSHOT_DIR
- * gets explorer-tooltip.png.
+ * them also carries a native `title`. The go-to-file field has neither,
+ * since its placeholder says what it is. SCREENSHOT_DIR gets
+ * explorer-tooltip.png.
  *
  * Needs a running containerless `yaac server` with one live workspace. Run
  * `pnpm build && yaac server restart` first, or you are looking at the

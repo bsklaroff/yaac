@@ -33,9 +33,8 @@ describe('editFile', () => {
     await fs.rm(tmpDir, { recursive: true, force: true })
   })
 
-  // Stand-in editor: a tiny shell script that writes a marker into
-  // whatever file path it's invoked with. Stored on disk so the
-  // whitespace-split in resolveEditor doesn't mangle the script body.
+  // A fake editor script on disk; a path survives resolveEditor's
+  // whitespace split where an inline script body would not.
   async function writeFakeEditor(name: string, body: string): Promise<string> {
     const editorPath = path.join(tmpDir, name)
     await fs.writeFile(editorPath, `#!/bin/sh\n${body}\n`, { mode: 0o755 })
@@ -63,8 +62,7 @@ describe('editFile', () => {
   })
 
   it('passes extra editor args before the file path', async () => {
-    // Verifies the `code -w <file>` style: stand-in editor expects a
-    // first arg of "--write" and writes the marker on the second arg.
+    // Like `EDITOR="code -w"`.
     const editor = await writeFakeEditor(
       'flagged-editor',
       'test "$1" = "--write" && printf %s flagged > "$2"',

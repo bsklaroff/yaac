@@ -8,29 +8,21 @@ import { PACKAGE_ROOT, serverLocalPath } from '@yaac/shared/paths'
 import { forgetSecretConfig } from './secret-key'
 
 /**
- * The server's on-disk PGlite database (embedded Postgres, WAL-backed).
+ * The server's on-disk PGlite database (embedded Postgres). `getDb` stays off
+ * the barrel so other layers can't build their own queries; they get only
+ * `openDb`/`closeDb` and the row functions.
  *
- * Rows are db's alone, and a layer that could reach `getDb` could build its
- * own queries against the tables, so the handle itself stays off the barrel:
- * what the rest of the server gets from this module is the void-returning
- * `openDb`/`closeDb` pair, and otherwise only the row functions.
- *
- * Server-only invariant: PGlite is single-process, so this handle must only
- * ever be opened by the server process — the proxy pod, auth-daemon, and CLI
- * share the data dir but never touch `<dataDir>/db`. That is why `dbDir()`
- * stays private here instead of living in shared paths, and why `@yaac/server`
- * is un-importable from those packages (eslint zones + pnpm strict
- * node_modules). `.server.lock` is the single-writer guard: runServer opens
- * the DB only after `acquireLock` succeeds.
+ * PGlite is single-process, so only the server process may open it. The
+ * proxy, auth-daemon and CLI share the data dir but never touch
+ * `<dataDir>/db`, which is why `dbDir()` is private here. The server lock is
+ * the single-writer guard: the server opens the DB only after `acquireLock`
+ * succeeds.
  */
 
 export type Db = PgliteDatabase & { $client: PGlite }
 
-/** Where the checked-in migration SQL lives. Unlike DOCKERFILES_DIR (same
- *  relative suffix in both modes because dockerfiles/ sits at the repo root),
- *  the dev-mode source here is under packages/server while the build copies
- *  it to dist/drizzle — the one place this second-level bundled/dev
- *  conditional is needed. */
+/** The checked-in migration SQL: under packages/server in dev; the build
+ *  copies it to dist/drizzle. */
 const MIGRATIONS_DIR = env.bundled
   ? path.join(PACKAGE_ROOT, 'drizzle')
   : path.join(PACKAGE_ROOT, 'packages', 'server', 'drizzle')
@@ -38,12 +30,10 @@ const MIGRATIONS_DIR = env.bundled
 let cached: { dir: string; promise: Promise<Db> } | null = null
 
 /**
- * Shared-instance mode (unit tests only — see `testEnv.sharedTestDb`). One
- * in-memory PGlite serves every data dir the process visits; switching dirs
- * truncates instead of opening a second instance, which is what a fresh dir
- * gives a test anyway. Kept behind the flag because the on-disk handle is the
- * real contract — its own tests (test/db/client.test.ts) opt out and
- * exercise the instance-per-dir path.
+ * Shared-instance mode, for unit tests only (`testEnv.sharedTestDb`). One
+ * in-memory PGlite serves every data dir; switching dirs truncates the
+ * tables instead of opening a new instance. test/db/client.test.ts opts out
+ * to test the real on-disk path.
  */
 let sharedDb: Promise<Db> | null = null
 let sharedDir: string | null = null
@@ -55,14 +45,11 @@ async function openSharedDb(): Promise<Db> {
 }
 
 /**
- * Empty every table the migrations created, so the next data dir starts as
- * clean as a freshly-migrated one. Read out of the catalog rather than the
- * schema module: this must cover whatever the checked-in migrations actually
- * built, including tables a later migration adds and this file never names.
- * `RESTART IDENTITY` so sequence-backed ids don't leak a previous test's
- * count; `CASCADE` because TRUNCATE refuses a table another one references.
- * drizzle's own bookkeeping lives in the `drizzle` schema, so filtering to
- * `public` leaves the applied-migration list intact.
+ * Empty every table in the `public` schema, so the next data dir starts as
+ * clean as a freshly migrated one. Tables come from the catalog, so ones
+ * added by later migrations are covered. `RESTART IDENTITY` resets
+ * sequences; `CASCADE` is needed for referenced tables. drizzle's migration
+ * bookkeeping lives in the `drizzle` schema and is kept.
  */
 async function wipeSharedDb(db: Db): Promise<void> {
   const { rows } = await db.$client.query<{ tablename: string }>(
@@ -76,9 +63,8 @@ async function wipeSharedDb(db: Db): Promise<void> {
 function getSharedDb(dir: string): Promise<Db> {
   if (cached?.dir === dir) return cached.promise
   const promise = (sharedDb ??= openSharedDb()).then(async (db) => {
-    // Only a *change* of dir wipes: closeDb() drops the cache without
-    // closing anything, and reopening the same dir after it must still see
-    // the data, exactly as the on-disk handle's checkpoint does.
+    // Wipe only on a change of dir: after closeDb(), reopening the same dir
+    // must still see its data, as with the on-disk handle.
     if (sharedDir !== dir) {
       await wipeSharedDb(db)
       sharedDir = dir
@@ -89,21 +75,17 @@ function getSharedDb(dir: string): Promise<Db> {
   return promise
 }
 
-/**
- * SERVER-LOCAL, hard requirement: pglite is an embedded single-writer
- * store and must never live on a network filesystem.
- */
+/** Always server-local: PGlite must never live on a network filesystem. */
 function dbDir(): string {
   return serverLocalPath('db')
 }
 
 async function openHandle(dir: string, prev: Promise<Db> | null): Promise<Db> {
-  // A dangling previous handle (setDataDir moved the data dir mid-process,
-  // which only unit tests do) would leak a postgres instance — close it.
+  // Close a previous handle left by a mid-process data dir change (tests
+  // only), or it would leak a postgres instance.
   if (prev) await prev.then((db) => db.$client.close()).catch(() => undefined)
-  // 0700, not the default: the sealed secrets stored inside are only as
-  // private as the directory. chmod after mkdir so a pre-existing dir (or a
-  // umask) can't leave it wider.
+  // 0700 to protect the encrypted secrets inside. chmod after mkdir so an
+  // existing dir or the umask can't leave it wider.
   await fs.mkdir(dir, { recursive: true })
   await fs.chmod(dir, 0o700)
   const db = drizzle({ connection: { dataDir: dir } })
@@ -112,20 +94,18 @@ async function openHandle(dir: string, prev: Promise<Db> | null): Promise<Db> {
 }
 
 /**
- * Open the database, running any pending migrations. The composition root
- * calls this once the single-writer lock is held; every db read and write
- * after it shares the connection it opened. Void-returning on purpose — the
- * handle is this module's, and callers get rows through the row functions.
+ * Open the database and run pending migrations. Called by the composition
+ * root once the server lock is held. Returns nothing, since the handle stays
+ * private to this folder.
  */
 export async function openDb(): Promise<void> {
   await getDb()
 }
 
 /**
- * Lazy singleton handle, keyed by the current data dir. Internal: only the
- * row functions in this folder may name it. Single-flighted:
- * concurrent callers during open share one promise; a failed open clears
- * the cache so the next caller retries instead of inheriting the rejection.
+ * Lazy handle for the current data dir, used only by the row functions in
+ * this folder. Concurrent callers share one open; a failed open clears the
+ * cache so the next caller retries.
  */
 export function getDb(): Promise<Db> {
   const dir = dbDir()
@@ -145,19 +125,16 @@ export function getDb(): Promise<Db> {
 export async function closeDb(): Promise<void> {
   const prev = cached
   cached = null
-  // The encryption key is resolved per data dir like the handle is, so the
-  // two caches are dropped together — otherwise a test that moves to a new
-  // data dir would seal its rows under the previous dir's generated key.
+  // The encryption key is cached per data dir too, so drop both together.
   forgetSecretConfig()
-  // Shared-instance mode: the handle outlives every data dir that borrows
-  // it, so closing it here would strand the next test with a dead postgres.
-  // Dropping the cache is the whole job — the next dir wipes on arrival.
+  // The shared test instance must stay open for the next test; dropping the
+  // cache is enough.
   if (testEnv.sharedTestDb) return
   if (!prev) return
   try {
     const db = await prev.promise
     await db.$client.close()
   } catch {
-    // Open failed — nothing live to close.
+    // Open failed, so there is nothing to close.
   }
 }

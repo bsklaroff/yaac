@@ -107,9 +107,8 @@ try {
   await prompt.waitFor({ state: 'detached' })
   check('Esc closes the dialog', true)
 
-  // (5) Typing the instant the dialog shows loses nothing: Alt+N, type is
-  // the flow it advertises, and the dialog's own focus handling takes a few
-  // frames to land on the prompt.
+  // (5) Keys typed right after Alt+N are kept, though focus takes a few
+  // frames to reach the prompt.
   let lost = 0
   for (let i = 0; i < 20; i++) {
     await page.keyboard.press('Alt+KeyN')

@@ -24,64 +24,46 @@ import { env, testEnv } from '@yaac/shared/env'
 import { clusterPodCidrs } from './cluster-cidrs'
 
 /**
- * `yaac-netd` — the per-node DaemonSet that steers workspace egress into the
- * proxy. Two containers in the host network namespace:
+ * `yaac-netd`: the per-node DaemonSet that redirects workspace egress into
+ * the proxy. Two host-network containers:
  *
- *  - **netd** watches pods/Services, resolves each pod to the veth its
- *    frames arrive on, and programs one nat DNAT chain aiming that pod's
- *    443/80/ssh-sentinel egress at a node-local Envoy listener. It also
- *    renders Envoy's listener/cluster documents.
- *  - **envoy** is stock upstream Envoy, entirely driven by those files. It
- *    recovers each connection's pre-DNAT destination and forwards to the
- *    target proxy's transparent port behind a PROXY-protocol-v2 preamble
- *    carrying the real source pod IP.
+ *  - **netd** maps each pod to its veth and programs a nat DNAT chain
+ *    sending its 443/80/ssh-sentinel egress to a node-local Envoy listener,
+ *    and writes Envoy's config files.
+ *  - **envoy** (stock) recovers each connection's original destination and
+ *    forwards it to the proxy with a PROXY-protocol-v2 header carrying the
+ *    source pod IP.
  *
- * netd owns the redirect ONLY. Every allow/deny is a plain Kubernetes
- * NetworkPolicy enforced by Calico's Felix, so netd can never be the
- * reason something is permitted — and a netd that is down, late, or wrong
- * costs workspaces their egress rather than opening it (their NetworkPolicy
- * admits the node's listener ports and nothing world-ward).
+ * netd only redirects; all allow/deny is NetworkPolicy. So a broken netd
+ * cuts workspace egress off rather than opening it.
  */
 
 /**
- * Envoy, digest-pinned and mirrored into the local registry like
- * `registry:2` — the node then pulls it with no
- * upstream egress, which also keeps `cluster install` working on a flaky or
- * offline network.
- *
- * The pin is the multi-arch INDEX digest, never one platform's child
- * manifest: a child digest mirrors that platform's bytes onto every host,
- * and a mismatched node then crashloops the sidecar on `exec format error`
- * — a failure that surfaces only as netd never going ready, since netd's
- * readiness is Envoy's config ack. `ensureEnvoyImage` re-checks the
- * mirrored architecture so a bad re-pin fails at mirror time instead.
+ * Envoy, digest-pinned and mirrored into the local registry so nodes pull
+ * it without upstream access. The pin must be the multi-arch index digest:
+ * a single-platform digest crashloops on other architectures, which shows
+ * only as netd never going ready. `ensureEnvoyImage` checks the mirrored
+ * architecture.
  */
 const ENVOY_VERSION = 'v1.34.0'
 const ENVOY_PIN = 'sha256:45d37d848802f98a5647cb7522b4c1c42e0e0e775913d8e253ef3a5856bef986'
 export const ENVOY_UPSTREAM_IMAGE = `docker.io/envoyproxy/envoy@${ENVOY_PIN}`
-/**
- * The mirror tag carries the pin, so re-pinning re-mirrors: `ensureEnvoyImage`
- * short-circuits on a tag the registry already holds, and a version-only tag
- * would pin an existing install to the old bytes forever.
- */
+/** The mirror tag includes the pin, so re-pinning re-mirrors
+ *  (`ensureEnvoyImage` skips tags already present). */
 export const ENVOY_MIRROR_TAG =
   `envoyproxy/envoy:${ENVOY_VERSION}-${ENVOY_PIN.slice('sha256:'.length, 'sha256:'.length + 12)}`
 
 /**
- * Interface-name prefix Calico gives every workload veth — the default
- * when nothing is configured. Deliberately duplicated from
- * `k8s/netd/routes.ts` (`DEFAULT_VETH_PREFIX`) rather than shared: netd is
- * its own package built into a container image and the server cannot
- * import it, which is the same reason netd re-declares the transparent
- * port numbers as env defaults.
+ * Calico's workload veth prefix, the default. Duplicated from
+ * `k8s/netd/routes.ts`, which is a separate package the server cannot
+ * import.
  */
 export const DEFAULT_VETH_PREFIX = 'cali'
 
 /**
- * The veth prefix netd is told to match on: the operator's configured
- * value, else Calico's. `--byo` verifies the result against the
- * node's real routing table, which is what turns a wrong value into a
- * refusal instead of a cluster whose workspaces silently have no egress.
+ * The veth prefix netd matches: the configured value, else Calico's. `--byo`
+ * checks it against a node's routing table, since a wrong value silently
+ * cuts workspace egress.
  */
 export function cniVethPrefix(): string {
   return env.cniVethPrefix ?? DEFAULT_VETH_PREFIX
@@ -92,11 +74,8 @@ export async function resolveNetdImageTag(image = 'yaac-netd'): Promise<string> 
   return `${image}:${await contextHash(NETD_DIR)}`
 }
 
-/**
- * The netd image's in-cluster ref, from the registry. Lookup-only: netd is
- * a yaac-shipped image, so `yaac cluster install` is what puts it there
- * (see missingPrebuiltImage).
- */
+/** The netd image's in-cluster ref. Lookup-only; `yaac cluster install`
+ *  builds it. */
 export async function ensureNetdImage(): Promise<string> {
   const localTag = await resolveNetdImageTag(testEnv.netdImage)
   if (await registryHasTag(localTag)) return registryRef(localTag)
@@ -118,13 +97,9 @@ export function buildNetdServiceAccountManifest(): Record<string, unknown> {
 }
 
 /**
- * Cluster-scoped read-only access to PODS, and nothing else — netd must see
- * every workspace pod, because a pod's veth is what it programs. Everything
- * else it reads (the proxy Service) lives in its own namespace and comes
- * from the Role below.
- *
- * Read-only: netd never writes to the API, so a compromised netd cannot
- * mutate cluster state (its privilege is on the node's netfilter).
+ * Cluster-wide read-only access to pods only: netd must see every workspace
+ * pod. It never writes to the API, so a compromised netd cannot change
+ * cluster state.
  */
 export function buildNetdClusterRoleManifest(): Record<string, unknown> {
   return {
@@ -136,12 +111,9 @@ export function buildNetdClusterRoleManifest(): Record<string, unknown> {
 }
 
 /**
- * Namespaced read of the object that steers the selection: the proxy
- * Service, whose ClusterIP is the redirect target.
- *
- * `list`/`watch` cannot be narrowed to one name (RBAC `resourceNames` does
- * not apply to them), so this is every Service in the install namespace.
- * That namespace holds only yaac's own objects. Read-only.
+ * Read-only access to Services in the install namespace, for the proxy
+ * Service's ClusterIP (the redirect target). `list`/`watch` cannot be
+ * limited by name, but that namespace holds only yaac's objects.
  */
 export function buildNetdRoleManifest(): Record<string, unknown> {
   return {
@@ -176,22 +148,14 @@ export function buildNetdClusterRoleBindingManifest(): Record<string, unknown> {
   }
 }
 
-/**
- * ClusterRole/Binding names are global, so they carry the install
- * namespace: the real `yaac` install and any ephemeral e2e
- * `yaac-test-<run-id>` install coexist on one cluster, each with its own
- * netd bound to its own SA.
- */
+/** Cluster-scoped names include the install namespace, so the real install
+ *  and e2e installs can coexist. */
 export function netdClusterScopedName(): string {
   return `${NETD_APP_NAME}-${k8sNamespace()}`
 }
 
-/**
- * Labels on netd's cluster-scoped RBAC. The install namespace is stamped
- * because these objects do NOT cascade when their namespace is deleted —
- * the e2e sweep finds an interrupted run's leftovers by it, and must be
- * able to do so without matching the real install's.
- */
+/** Labels on netd's cluster-scoped RBAC, naming the install namespace so
+ *  the e2e sweep can find leftovers (they do not cascade with it). */
 export function netdClusterScopedLabels(): Record<string, string> {
   return { app: NETD_APP_NAME, [LABEL_INSTALL_NAMESPACE]: k8sNamespace() }
 }
@@ -201,38 +165,23 @@ export interface NetdDaemonSetOptions {
   envoyImage: string
   /** Cluster pod CIDRs — excluded from the redirect so pod-to-pod stays direct. */
   podCidrs: string[]
-  /**
-   * Interface-name prefix this cluster's CNI gives every workload veth.
-   * `cali` wherever Calico does the IPAM; an adopted CNI may differ (see
-   * cni-adopt.ts), and `--byo` verifies the value against a node's
-   * real routing table before any workspace depends on it.
-   */
+  /** The CNI's workload veth prefix (`cali` for Calico). */
   vethPrefix: string
 }
 
 /**
- * The DaemonSet. Notable choices, all security-relevant:
+ * The DaemonSet:
  *
- * - `hostNetwork` + `NET_ADMIN`/`NET_RAW`, NOT `privileged`. netd needs to
- *   write the node's nat table and read its routes; it does not need a
- *   privileged container, and asking for one would hand it far more than
- *   the redirect requires.
- * - The Envoy container gets NO capabilities at all. It only binds
- *   node-local ports above 1024 and dials the proxy — the listeners are
- *   plain (the redirect is DNAT, not TPROXY, so no transparent binding is
- *   involved), so an Envoy compromise yields no node privilege.
- * - Envoy waits for netd to write the bootstrap rather than racing it:
- *   its file-based xDS sources must resolve at boot, and a crash-looping
- *   Envoy would look exactly like a broken redirect.
- * - The proxy-side port numbers, the ssh sentinel and the listener range
- *   come from proxy-constants.ts via env, so they have one definition
- *   shared with the proxy and the policy builders. The range especially:
- *   the workspace NetworkPolicy admits exactly those ports, so a netd
- *   binding outside them would be unreachable by the pods it serves.
- * - Only netd carries a readiness probe. Its marker is written after the
- *   pass that confirmed Envoy is serving the current listener config on
- *   the admin socket, so netd's readiness already covers Envoy's — a
- *   separate Envoy probe would report a process, not a datapath.
+ * - netd gets `hostNetwork` with `NET_ADMIN`/`NET_RAW`, not `privileged`.
+ * - Envoy gets no capabilities: it binds ports above 1024 and uses DNAT,
+ *   not TPROXY, so a compromise yields no node privilege.
+ * - Envoy waits for netd's bootstrap file, since its file-based config must
+ *   exist at startup.
+ * - Port numbers, the ssh sentinel and the listener range come from
+ *   proxy-constants.ts, shared with the proxy and the network policies
+ *   (which admit exactly that range).
+ * - Only netd has a readiness probe; it goes ready only once Envoy is
+ *   serving the current config.
  */
 export function buildNetdDaemonSetManifest(opts: NetdDaemonSetOptions): Record<string, unknown> {
   const envoyDir = '/etc/yaac-envoy'
@@ -254,10 +203,8 @@ export function buildNetdDaemonSetManifest(opts: NetdDaemonSetOptions): Record<s
           serviceAccountName: NETD_SA_NAME,
           automountServiceAccountToken: true,
           enableServiceLinks: false,
-          // Trusted yaac infra: runc, like the proxy (see gvisor.ts).
-          // Must also run on a control-plane-only cluster, hence the
-          // blanket toleration — a node with no netd has no workspace
-          // egress at all.
+          // Trusted infra, so runc. Tolerates everything: a node without
+          // netd has no workspace egress.
           tolerations: [{ operator: 'Exists' }],
           priorityClassName: 'system-node-critical',
           containers: [
@@ -286,19 +233,14 @@ export function buildNetdDaemonSetManifest(opts: NetdDaemonSetOptions): Record<s
                   name: 'NODE_NAME',
                   valueFrom: { fieldRef: { fieldPath: 'spec.nodeName' } },
                 },
-                // The DNAT target: this node, where the Envoy container
-                // below binds its listeners.
+                // The DNAT target: this node's Envoy.
                 {
                   name: 'NODE_IP',
                   valueFrom: { fieldRef: { fieldPath: 'status.hostIP' } },
                 },
               ],
-              // Ready means "the redirect is programmed", not merely "the
-              // process started": netd writes this marker only after a
-              // reconcile reaches the dataplane and removes it on failure.
-              // Without that distinction a netd failing every pass still
-              // reports Ready and the cluster-check datapath gate passes on
-              // a cluster with no working workspace egress.
+              // netd writes this marker only after a successful reconcile,
+              // so Ready means the redirect is programmed.
               readinessProbe: {
                 exec: { command: ['test', '-f', `${envoyDir}/.ready`] },
                 periodSeconds: 5,
@@ -317,10 +259,8 @@ export function buildNetdDaemonSetManifest(opts: NetdDaemonSetOptions): Record<s
               command: ['sh', '-c',
                 `while [ ! -f ${envoyDir}/bootstrap.yaml ]; do sleep 0.2; done; `
                 + `exec envoy -c ${envoyDir}/bootstrap.yaml --log-level warn `
-                // Several installs (the real one plus an e2e run's) put a
-                // hostNetwork Envoy on the same node, and they would all
-                // claim base-id 0's shared-memory domain socket. Let each
-                // pick a free one instead.
+                // Several installs may run Envoy on one node; avoid
+                // clashing on base-id 0.
                 + '--use-dynamic-base-id',
               ],
               volumeMounts: [{ name: 'envoy-config', mountPath: envoyDir }],
@@ -333,12 +273,8 @@ export function buildNetdDaemonSetManifest(opts: NetdDaemonSetOptions): Record<s
   }
 }
 
-/**
- * Stand up (or converge) netd.
- *
- * Called from `ensureProxyResources`, so the redirect layer exists before any
- * workspace pod can be scheduled.
- */
+/** Create or update netd. Called from `ensureProxyResources`, before any
+ *  workspace pod is scheduled. */
 export async function ensureNetd(): Promise<void> {
   const [netdImage, envoyImage, podCidrs] = await Promise.all([
     ensureNetdImage(),

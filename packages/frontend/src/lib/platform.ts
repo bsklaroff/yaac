@@ -3,7 +3,6 @@ export function isElectron(): boolean {
   return typeof navigator !== 'undefined' && navigator.userAgent.includes('Electron')
 }
 
-/** True on Apple platforms: where saving is Cmd-S rather than Ctrl-S, and
- *  chords are drawn with the ⌘ ⌥ glyphs. iPadOS reports as "Macintosh" in
- *  modern Safari, which is what it should be treated as. */
+/** True on Apple platforms, where shortcuts use Cmd and are drawn with ⌘ ⌥.
+ *  iPadOS Safari reports "Macintosh", which is the right treatment. */
 export const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent)

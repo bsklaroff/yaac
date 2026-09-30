@@ -7,15 +7,10 @@ import {
 export type ClearAuthTarget = 'all' | 'claude' | 'codex' | 'opencode' | 'pi'
 
 /**
- * Remove the stored tool credentials identified by `target`. `all` wipes
- * every tool bundle; individual tool values only touch that tool's bundle
- * + its per-project placeholders. Git credentials are not tool sign-ins:
- * each is deleted on its own, once no project uses it
+ * Remove the stored tool credentials for `target` (`all` or one tool),
+ * including claude's and codex's per-project placeholder files. opencode and
+ * pi have no placeholder files. Git credentials are deleted separately
  * (`DELETE /auth/git/credentials/:id`).
- *
- * opencode and pi have no per-project placeholder files to clean up
- * (api-key auth flows through env var + proxy MITM, not a placeholder
- * bundle on disk inside the container).
  */
 export async function clearAuth(target: ClearAuthTarget): Promise<void> {
   if (target === 'all') {
@@ -37,7 +32,6 @@ export async function clearAuth(target: ClearAuthTarget): Promise<void> {
     await cleanupProjectCodexPlaceholders()
     return
   }
-  // Whatever is left is opencode or pi — the union has no other member, and
-  // neither leaves a placeholder behind, so the bundle is the whole clear.
+  // opencode or pi: no placeholders to clean.
   await removeToolAuth(target)
 }

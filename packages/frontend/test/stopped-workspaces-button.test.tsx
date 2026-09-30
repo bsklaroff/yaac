@@ -83,7 +83,7 @@ async function open(): Promise<void> {
 describe('StoppedWorkspacesButton', () => {
   it('fetches on mount so the sidebar entry point can hide when empty', async () => {
     renderButton()
-    // No user interaction — the list is needed up-front to decide visibility.
+    // Fetched without user interaction: the list decides visibility.
     await waitFor(() => expect(getStoppedWorkspaces).toHaveBeenCalledWith('proj', 100))
   })
 
@@ -101,11 +101,11 @@ describe('StoppedWorkspacesButton', () => {
 
   it('lists deleted workspaces and shows the selected one in the detail pane', async () => {
     await open()
-    // First row auto-selected → its prompt (detail-only) is visible.
+    // The first row is auto-selected, so its prompt (detail-only) is visible.
     await waitFor(() => expect(screen.getByText('fix the parser bug')).toBeTruthy())
     // The title appears in both the list row and the detail header.
     expect(screen.getAllByText('Fix parser').length).toBeGreaterThan(0)
-    // Switch selection → the first row's prompt leaves the detail pane.
+    // Switching selection removes the first row's prompt from the detail pane.
     fireEvent.click(screen.getAllByText('Add tests')[0])
     await waitFor(() => expect(screen.queryByText('fix the parser bug')).toBeNull())
   })
@@ -132,8 +132,8 @@ describe('StoppedWorkspacesButton', () => {
     ])
     await open()
     fireEvent.click(await screen.findByText('Tune cache'))
-    // The same label a live row carries; a workspace that never reported a
-    // model keeps the bare tool name.
+    // Same label as a live row; a workspace that never reported a model shows
+    // just the tool name.
     await waitFor(() => expect(screen.getAllByText('OpenCode · Opus 4.8')).toHaveLength(2))
     expect(screen.getByText('Codex')).toBeTruthy()
     fireEvent.change(screen.getByPlaceholderText('Search…'), { target: { value: 'opus' } })
@@ -158,8 +158,8 @@ describe('StoppedWorkspacesButton', () => {
     expect(screen.getByText('Died')).toBeTruthy()
     expect(screen.getByText('Cause')).toBeTruthy()
     expect(screen.getByText(/out of memory \(hit the workspace memory limit\) — exit code 137/)).toBeTruthy()
-    // The restart dialog names the workspace by its title alone — the cause
-    // is already on screen behind it.
+    // The restart dialog names the workspace by title only; the cause is
+    // already on screen behind it.
     fireEvent.click(screen.getByRole('button', { name: /Restart/ }))
     const dialog = await screen.findByRole('alertdialog')
     expect(within(dialog).getByText('OOMed run')).toBeTruthy()
@@ -171,7 +171,7 @@ describe('StoppedWorkspacesButton', () => {
       entry({ workspaceId: 's3', title: 'OOMed run', deathReason: 'oom' }),
     ])
     renderButton()
-    // Dot shows without opening the overlay (title doubles as tooltip + hook).
+    // The dot shows without opening the overlay (its title is the tooltip).
     expect(await screen.findByTitle('1 workspace died unexpectedly')).toBeTruthy()
   })
 
@@ -186,23 +186,23 @@ describe('StoppedWorkspacesButton', () => {
       entry({ workspaceId: 's3', title: 'OOMed run', deathReason: 'oom' }),
     ])
     await open()
-    // The sole row stands in for the detail pane, but a stand-in is not a read:
-    // the acknowledgement is durable and cross-client, so it waits for a click.
+    // The only row fills the detail pane automatically, but that is not a
+    // read: the acknowledgement is durable and cross-client, so it waits for a
+    // click.
     await waitFor(() => expect(screen.getByText('Cause')).toBeTruthy())
     expect(markDeathSeen).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getAllByText('OOMed run')[0])
-    // Persisted via the server, and the cached list is optimistically patched so
-    // the dot clears without waiting for a refetch.
+    // Persisted via the server; the cached list is patched optimistically so
+    // the dot clears without a refetch.
     await waitFor(() => expect(markDeathSeen).toHaveBeenCalledWith('proj', 's3'))
     await waitFor(() => expect(screen.queryByTitle(/died unexpectedly/)).toBeNull())
   })
 
   it('does not acknowledge deaths the search box walks the stand-in through', async () => {
-    // Each keystroke re-filters the list, so the top row — the desktop detail
-    // pane's stand-in — changes under the user. Acknowledging it would mean
-    // hunting for one dead workspace marks every death whose title shares a
-    // prefix with the query.
+    // Each keystroke re-filters the list, changing the top row that fills the
+    // desktop detail pane. Acknowledging it would mark every death whose title
+    // matches a prefix of the query.
     vi.mocked(getStoppedWorkspaces).mockResolvedValue([
       entry({ workspaceId: 's3', title: 'Oomed parser', deathReason: 'oom' }),
       entry({ workspaceId: 's4', title: 'Oomed indexer', deathReason: 'oom' }),
@@ -266,7 +266,6 @@ describe('StoppedWorkspacesButton', () => {
   it('restarts a workspace and closes the overlay', async () => {
     await open()
     await waitFor(() => expect(screen.getByText('fix the parser bug')).toBeTruthy())
-    // Detail's Restart → confirm dialog → confirm.
     fireEvent.click(screen.getByRole('button', { name: /Restart/ }))
     const dialog = await screen.findByRole('alertdialog')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Restart' }))
@@ -280,8 +279,8 @@ describe('StoppedWorkspacesButton', () => {
   })
 
   it('hides live and provisioning entries, and never blinks out while refetching', async () => {
-    // Each change to the live set is a fresh fetch. Until it lands the last
-    // list stands, or the entry point and every ghost row blink out.
+    // Each change to the live set is a fresh fetch. The last list is kept
+    // until it lands, or the entry point and every ghost row would blink out.
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const mount = (live: string[], provisioning: string[] = []): JSX.Element => (
       <QueryClientProvider client={client}><Harness live={live} provisioning={provisioning} /></QueryClientProvider>

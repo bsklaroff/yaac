@@ -6,18 +6,17 @@ import { MAX_TEXT_FILE_BYTES, isBinaryContent } from '#lib/text-file'
 import { ServerError } from '@yaac/shared/errors'
 
 /**
- * User-managed support files inside a build dir (`projectBuildDir` /
- * `userBuildDir`) — the files a Dockerfile can COPY. Everything here
- * operates on paths relative to one build dir root and goes through
- * `resolveBuildFilePath`, the single traversal guard. Only regular files are
- * ever created, so no symlink can smuggle an out-of-tree read into the
- * context hash or the builder-pod tar (whose collector skips symlinks too).
+ * User-managed support files in a build dir (`projectBuildDir` /
+ * `userBuildDir`), which a Dockerfile can COPY. All paths are relative to
+ * the build dir and pass through `resolveBuildFilePath`, the one traversal
+ * guard. Only regular files are created, so no symlink can pull an
+ * out-of-tree file into the context hash or the builder-pod tar.
  */
 
-/** Per-file upload cap — a sanity bound well under the whole-context cap. */
+/** Per-file upload cap, well under the whole-context cap. */
 export const MAX_UPLOAD_FILE_BYTES = 50 * 1024 * 1024
 
-/** The Dockerfiles are managed by their dedicated, validated editors. */
+/** Dockerfiles are edited only through their own validated editors. */
 const RESERVED_NAMES = new Set<string>([PROJECT_DOCKERFILE, USER_DOCKERFILE])
 
 export interface BuildFileEntry {
@@ -28,11 +27,10 @@ export interface BuildFileEntry {
 }
 
 /**
- * Validate a context-relative path and resolve it under `root`. The only
- * path derivation in this module: rejects absolute paths, `..` traversal,
- * backslashes/NULs, and the root-level Dockerfile names (those stay behind
- * their validated editors, so e.g. the layered check on Dockerfile.user
- * can't be sidestepped here). Returns the absolute path.
+ * Validate a context-relative path and return its absolute path under
+ * `root`. Rejects absolute paths, `..` traversal, backslashes, NULs, and the
+ * root Dockerfile names (so e.g. Dockerfile.user's layered check can't be
+ * bypassed here).
  */
 export function resolveBuildFilePath(root: string, rel: string): string {
   if (rel.trim() !== rel || rel.length === 0) {
@@ -68,8 +66,8 @@ async function isBinaryFile(abs: string): Promise<boolean> {
 
 /**
  * List every support file in the build dir (recursive, sorted), hiding the
- * root Dockerfile. Uses the same collector as `contextHash` and the
- * builder-pod streamer, so the listing is exactly what the build will see.
+ * root Dockerfiles. Uses the same collector as `contextHash` and the
+ * builder-pod streamer, so it matches what the build sees.
  */
 export async function listBuildFiles(root: string): Promise<BuildFileEntry[]> {
   let files: string[]
@@ -117,10 +115,9 @@ export async function readBuildFile(root: string, rel: string): Promise<BuildFil
 }
 
 /**
- * Write (or create) one regular file, creating parent folders as needed.
- * Enforces the per-file cap and the whole-context cap (mirroring
- * `BUILDER_CONTEXT_MAX_BYTES`, so a folder that a build would reject can't
- * be assembled in the first place).
+ * Write one regular file, creating parent folders as needed. Enforces the
+ * per-file cap and `BUILDER_CONTEXT_MAX_BYTES`, so a folder a build would
+ * reject can't be assembled.
  */
 export async function writeBuildFile(root: string, rel: string, data: Buffer): Promise<BuildFileEntry> {
   const abs = resolveBuildFilePath(root, rel)
@@ -145,8 +142,7 @@ export async function writeBuildFile(root: string, rel: string, data: Buffer): P
     await fs.writeFile(abs, data)
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code
-    // A path segment crossing an existing file (ENOTDIR/EEXIST) or a write
-    // onto an existing folder (EISDIR) is a caller mistake, not a crash.
+    // A path through an existing file, or onto a folder, is a caller error.
     if (code === 'ENOTDIR' || code === 'EEXIST' || code === 'EISDIR') {
       throw new ServerError('VALIDATION', `path conflicts with an existing entry: ${rel}`)
     }
@@ -156,12 +152,9 @@ export async function writeBuildFile(root: string, rel: string, data: Buffer): P
 }
 
 /**
- * Rename (move) one file or folder within the build dir. Both paths go
- * through `resolveBuildFilePath`, so neither can escape the root or touch a
- * root Dockerfile (those stay behind their validated editor). Refuses to
- * clobber an existing destination — a rename must never silently overwrite —
- * and creates the destination's parent folders as needed. Total bytes are
- * unchanged, so no context-cap check is required.
+ * Move one file or folder within the build dir, creating parent folders as
+ * needed. Never overwrites an existing destination. Size is unchanged, so no
+ * context-cap check.
  */
 export async function renameBuildFile(root: string, from: string, to: string): Promise<BuildFileEntry> {
   const src = resolveBuildFilePath(root, from)
@@ -178,7 +171,7 @@ export async function renameBuildFile(root: string, from: string, to: string): P
       throw new ServerError('VALIDATION', `path already exists: ${to}`)
     } catch (err) {
       if (err instanceof ServerError) throw err
-      // ENOENT — the destination is free, so fall through to the rename.
+      // ENOENT: the destination is free.
     }
   }
   try {
@@ -186,8 +179,8 @@ export async function renameBuildFile(root: string, from: string, to: string): P
     await fs.rename(src, dst)
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code
-    // A path segment crossing an existing file, or a move onto a non-empty
-    // dir, is a caller mistake, not a crash.
+    // A path through an existing file, or onto a non-empty dir, is a caller
+    // error.
     if (code === 'ENOTDIR' || code === 'EEXIST' || code === 'EISDIR') {
       throw new ServerError('VALIDATION', `path conflicts with an existing entry: ${to}`)
     }

@@ -1,22 +1,18 @@
 /**
- * Typed Hono API client for the server HTTP API, built on the shared
- * `createApiClient` (@yaac/shared/api-core) so the browser SPA and the CLI
- * share one error contract. Route methods infer their request bodies, params,
- * and response shapes from the server's `AppType`.
+ * Typed Hono client for the server HTTP API, built on the shared
+ * `createApiClient` so the SPA and the CLI handle errors the same way. Route
+ * types come from the server's `AppType`.
  *
- * Same-origin (dev: the Vite proxy; prod: the server serves the SPA). There
- * is no credential to carry: the server identifies the caller from the
- * request itself (loopback, or tailscale serve's identity headers). A non-2xx response rejects with a shared `ServerError` (thrown by the
- * client's fetch), so call sites never check `res.ok`; a successful call
- * resolves directly to its parsed body (no `.then((r) => r.json())`).
+ * Requests are same-origin (the Vite proxy in dev; the server serves the SPA
+ * in prod) and carry no credential: the server identifies the caller from
+ * the request (loopback, or tailscale serve's identity headers). A non-2xx
+ * response rejects with a `ServerError`; a successful call resolves to its
+ * parsed body.
  */
 import { createApiClient, createRawApiClient, type FetchLike } from '@yaac/shared/api-core'
 
-/**
- * Fetch used by the API client. hono hands us a relative path (the client's
- * origin is empty), so requests resolve against the page origin; we only add
- * the JSON Accept header the server expects.
- */
+/** Resolves hono's relative paths against the page origin and adds the JSON
+ *  Accept header the server expects. */
 const sameOriginFetch: FetchLike = (input, init) => {
   const headers = new Headers(init?.headers)
   headers.set('Accept', 'application/json')
@@ -25,7 +21,6 @@ const sameOriginFetch: FetchLike = (input, init) => {
 
 export const api = createApiClient('', sameOriginFetch)
 
-/** The same routes without the throwing/unwrapping wrappers, for the one call
- *  whose error body carries more than a code: a file save refused against a
- *  newer version (see `saveWorkspaceFile`). */
+/** The same routes without the throw-on-error wrapper, for the one call whose
+ *  error body carries more than a code (`saveWorkspaceFile`'s conflict). */
 export const rawApi = createRawApiClient('', sameOriginFetch)

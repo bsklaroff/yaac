@@ -9,12 +9,9 @@ import { listProjects } from '#domain/projects'
 import { recordProject } from '#db'
 import type { ProjectMeta } from '@yaac/shared/types'
 
-// Which projects exist is the server's own record; how many workspaces each
-// is running comes off the substrate, and what that count excludes (spares,
-// unlabelled pods) is asserted in locate.test.ts.
-// Which projects exist is the server's own record; how many workspaces each
-// is running comes off the runtime, and what that count excludes (spares,
-// unlabelled workspaces) is asserted in locate.test.ts.
+// Projects come from the DB; per-project workspace counts come from the
+// driver, stubbed here. What a count excludes (spares, unlabelled pods) is
+// asserted in test/drivers/k8s/workspaces/locate.test.ts.
 const counts = vi.fn()
 
 async function writeProject(slug: string, meta: ProjectMeta): Promise<void> {
@@ -68,8 +65,6 @@ describe('listProjects', () => {
     expect(joined).toEqual({ foo: 2, bar: 1 })
   })
 
-  // Which projects exist is a row, so a substrate with nothing to say
-  // costs the listing a count, not the project.
   it('still lists a project the substrate said nothing about', async () => {
     await writeProject('foo', { slug: 'foo', remoteUrl: 'https://example/foo', addedAt: '2026-01-01T00:00:00.000Z' })
     counts.mockResolvedValue({})

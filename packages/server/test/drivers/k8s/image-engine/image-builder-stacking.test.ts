@@ -23,9 +23,8 @@ describe('resolveImageChain', () => {
   })
 
   it('composes each step\'s tag and build args from the one above it', async () => {
-    // The chain is a hash chain: every layer's tag folds in its parent's,
-    // and the parent tag it will be built FROM is its BASE_IMAGE. Getting
-    // either wrong silently produces an image built on the wrong parent.
+    // Each layer's tag includes its parent's, and its BASE_IMAGE is the
+    // parent tag. Getting either wrong silently builds on the wrong parent.
     const buildDir = path.join(h.dataDir, 'global', 'projects', 'myproject', 'config', 'build')
     await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
     await fs.mkdir(buildDir, { recursive: true })
@@ -47,15 +46,15 @@ describe('resolveImageChain', () => {
       return `${l.tag}${args ? ` [${args}]` : ''}`
     })
     expect(described).toEqual([
-      // No build args at all on the root layer: nothing about the building
-      // host reaches an image (docs/arbitrary-uid-images.md).
+      // No build args on the root layer: nothing about the building host
+      // reaches an image (docs/arbitrary-uid-images.md).
       expect.stringMatching(new RegExp(`^yaac-base:${HASH_RE}$`)),
       expect.stringMatching(new RegExp(`^yaac-tools:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\]$`)),
       expect.stringMatching(
         new RegExp(`^yaac-nestable:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE}\\]$`),
       ),
-      // The project's own layers live in repos named by its id, never beside
-      // the trusted chain.
+      // Project layers use repos named by project id, apart from the
+      // trusted chain.
       expect.stringMatching(
         new RegExp(`^yaac-proj-${PROJECT.id}:${HASH_RE} \\[BASE_IMAGE=yaac-nestable:${HASH_RE}\\]$`),
       ),
@@ -67,8 +66,8 @@ describe('resolveImageChain', () => {
   })
 
   it('skips the shipped layers entirely for a standalone Dockerfile.yaac', async () => {
-    // It replaces the canonical base and owns its own toolchain, so neither
-    // tools nor nestable applies — even with nestedContainers on.
+    // It replaces the base and brings its own toolchain, so neither tools
+    // nor nestable applies, even with nestedContainers on.
     const buildDir = path.join(h.dataDir, 'global', 'projects', 'myproject', 'config', 'build')
     await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
     await fs.mkdir(buildDir, { recursive: true })
@@ -80,8 +79,8 @@ describe('resolveImageChain', () => {
     const { resolveImageChain } = await h.load()
     const { layers } = await resolveImageChain(PROJECT, 'yaac', true)
     expect(layers.map((l) => l.name)).toEqual(['project'])
-    // A standalone Dockerfile.yaac owns its own user setup, so it is handed
-    // no build arg — not even a uid.
+    // A standalone Dockerfile.yaac sets up its own user, so it gets no
+    // build args, not even a uid.
     expect(layers[0].buildArgs).toBeUndefined()
   })
 
@@ -151,8 +150,8 @@ describe('buildImage', () => {
     expect(h.operations).toEqual(['build img:tag [K=v]'])
   })
 
-  // The build budget is idle, not total: a long build that keeps logging must
-  // survive well past it, and only silence may end one.
+  // The timeout is on idle time: a long build that keeps logging survives,
+  // and only silence ends it.
   it('lets a build run past its idle budget as long as it keeps logging', async () => {
     h.holdBuilds()
     const { buildImage } = await h.load()
@@ -175,16 +174,15 @@ describe('buildImage', () => {
       'STEP 1/4: RUN make', 'STEP 2/4: RUN make', 'STEP 3/4: RUN make', 'STEP 4/4: RUN make',
     ])
 
-    // Silence ends it — and the failure surfaces on the signal, without
-    // waiting for a child that may never close (see the harness's `kill`).
+    // Silence ends it, and the failure is reported on the signal without
+    // waiting for `close` (see the harness's process.kill spy).
     await vi.advanceTimersByTimeAsync(10 * 60_000)
     await expect(build).rejects.toThrow('podman build produced no output for 600s')
     expect(h.heldBuilds[0].signals).toEqual(['SIGTERM'])
   })
 
-  // The case idle cannot see: a build wedged in a retry loop keeps printing,
-  // resets the clock forever, and holds the image-store lock against every
-  // build behind it. The total backstop is the only thing that ends it.
+  // A build stuck in a retry loop keeps printing, so it never goes idle and
+  // holds the image-store lock indefinitely. The total timeout ends it.
   it('stops a build that is wedged but chatty at the total backstop', async () => {
     h.holdBuilds()
     const { buildImage } = await h.load()

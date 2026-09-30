@@ -10,33 +10,21 @@ import {
 import type { WorkspacePaths } from '#drivers/contract'
 
 /**
- * Every path this driver derives, and the naming that lets it derive them
- * from a handle alone.
- *
- * The pod driver can answer one fixed set of paths for every workspace
- * because each pod has its own mount namespace. Host processes share one
- * filesystem, so every path here is per-workspace — most of all the tmux
- * socket, which is the difference between "each workspace has a tmux server"
- * and "every workspace fights over one".
+ * The paths this driver uses, all derivable from a job name. Unlike pods,
+ * host processes share one filesystem, so every path (the tmux socket above
+ * all) is per workspace.
  */
 
 /**
- * The runtime's own name for a workspace, and the whole of what the layers
- * above hold onto.
- *
- * Shaped so identity can be read back out of it: the trailing 36 characters
- * are the workspace id (a UUID), so the slug — which may itself contain
- * dashes — is whatever sits between the prefix and that tail. The k8s
- * driver names its Jobs on the same principle, and for the same reason:
- * `workspacePaths` and a detached teardown both have to work from the name
- * alone, with no registry left to consult.
+ * A workspace's job name. The project and workspace can be read back from it
+ * (the last 36 chars are the UUID), so `workspacePaths` and a detached
+ * teardown work from the name alone.
  */
 export function containerlessJobName(projectSlug: string, workspaceId: string): string {
   return `cl-${projectSlug}-${workspaceId}`
 }
 
-/** The identity `containerlessJobName` encoded. Throws on anything else —
- *  a handle this driver did not mint is a wiring bug, not a lookup miss. */
+/** Decode `containerlessJobName`. Throws on anything else (a wiring bug). */
 export function refFromJobName(jobName: string): { projectSlug: string; workspaceId: string } {
   const body = jobName.startsWith('cl-') ? jobName.slice(3) : ''
   // 36 for the UUID, 1 for the dash before it, and at least 1 slug character.
@@ -48,17 +36,9 @@ export function refFromJobName(jobName: string): { projectSlug: string; workspac
 }
 
 /**
- * The socket-path budget: `sockaddr_un.sun_path` is 104 bytes on macOS and
- * 108 on Linux, and a path over it fails to bind rather than truncating
- * usefully.
- *
- * macOS is the binding constraint and the reason every component below is
- * hashed rather than spelled out: a per-user `TMPDIR` there is
- * `/var/folders/XX/<~30 chars>/T` — about 48 bytes before yaac writes
- * anything. A full workspace UUID (36) plus a directory plus `.sock` would
- * clear the limit on its own, so the id is carried as a 12-hex-char digest
- * (48 bits — no realistic number of workspaces collides) and the install key
- * as 8. Worst case lands near 80 bytes, with room to spare.
+ * Max UNIX socket path length (`sun_path`: 104 bytes on macOS, 108 on
+ * Linux). macOS's `TMPDIR` alone is about 48 bytes, so socket names use a
+ * 12-hex-char hash of the workspace id instead of the full UUID.
  */
 const SUN_PATH_MAX = 104
 
@@ -68,35 +48,22 @@ function shortId(workspaceId: string): string {
 }
 
 /**
- * The directory holding every workspace's tmux socket: the install-keyed
- * temp dir (see SUN_PATH_MAX for why not the data dir). After a reboot
- * every tmux server it named is gone too, which is exactly what the
- * recovery scan should conclude; what IS durable — the marker that says
- * this workspace exists — lives under the data dir.
+ * The dir holding every workspace's tmux socket: the install's temp dir
+ * (short enough for SUN_PATH_MAX). Markers, which must survive a reboot,
+ * live under the data dir instead.
  */
 export function tmuxSockDir(): string {
   return installTmpDir()
 }
 
 /**
- * Characters that would not survive being interpolated into the command
- * text the layers above author.
- *
- * Those strings are built with the quoting their own nesting needs — a tmux
- * prefix sits both at the top level of an `exec` and inside a single-quoted
- * script body, so it cannot carry quotes of its own — which works because
- * under the pod driver every path in them is a compile-time constant. Here
- * they are derived from `os.tmpdir()` and the data dir, so the same
- * guarantee has to be checked rather than assumed. Refusing at launch, with
- * the offending path named, beats a workspace whose `cd` silently ran
- * somewhere else.
+ * Characters that are unsafe in the unquoted paths the layers above embed in
+ * shell commands. Pod paths are constants; these come from the temp and data
+ * dirs, so they are checked.
  */
 const SHELL_UNSAFE = /[^A-Za-z0-9_@%+=:,./-]/
 
-/**
- * Fail a launch whose paths would not survive the command text, with the
- * reason and the fix.
- */
+/** Fail a launch whose paths contain `SHELL_UNSAFE` characters. */
 export function assertShellSafePaths(paths: WorkspacePaths): void {
   const offender = ([
     ['tmux socket', paths.tmuxSock],
@@ -113,16 +80,10 @@ export function assertShellSafePaths(paths: WorkspacePaths): void {
   )
 }
 
-/**
- * Fail a launch whose sockets would not bind, with the reason.
- *
- * A `TMPDIR` long enough to blow the budget is rare but not impossible, and
- * the failure it produces otherwise is an opaque bind error from tmux with
- * nothing pointing at the cause.
- */
+/** Fail a launch whose socket paths exceed SUN_PATH_MAX (otherwise tmux
+ *  fails with an opaque bind error). */
 export function assertSocketPathsFit(paths: WorkspacePaths): void {
-  // The acpd socket is the longest thing written under the dir: one window
-  // name (`claude-2`) plus the extension.
+  // The longest acpd socket name.
   const longest = path.join(paths.acpSockDir, 'opencode-2.sock')
   const over = [paths.tmuxSock, longest].filter((p) => Buffer.byteLength(p) > SUN_PATH_MAX)
   if (over.length === 0) return
@@ -132,82 +93,47 @@ export function assertSocketPathsFit(paths: WorkspacePaths): void {
   )
 }
 
-/** Where this driver keeps its own per-workspace state, under the state dir
- *  the workspace already owns — so a workspace's teardown carries it away. */
+/** This driver's per-workspace state, under the workspace state dir so
+ *  teardown removes it. */
 export function containerlessStateDir(projectSlug: string, workspaceId: string): string {
   return path.join(workspaceStateDir(projectSlug, workspaceId), 'containerless')
 }
 
-/**
- * The durable record that this driver launched a workspace.
- *
- * The substrate's analogue of a Job object: what a restart re-reads to
- * learn which workspaces it left running, since a tmux server outlives the
- * server that started it and there is nothing else on the host to enumerate.
- */
+/** The marker recording that this driver launched a workspace (the
+ *  equivalent of a Job object), read on server start. */
 export function markerPath(projectSlug: string, workspaceId: string): string {
   return path.join(containerlessStateDir(projectSlug, workspaceId), 'workspace.json')
 }
 
-/**
- * The `$HOME` a workspace's processes run with.
- *
- * A private home per workspace, its entries symlinked to the per-project
- * tool homes the caller staged (`~/.yaac/projects/<slug>/claude`, …). That
- * is how a `hostPath` mount at `/home/yaac/.claude` is realized without a
- * container: the contract's own note that "a host-process driver reads a
- * hostPath as a bind or a symlink".
- */
+/** The workspace's private `$HOME`; mounts under `/home/yaac` become
+ *  symlinks in it. */
 export function workspaceHome(projectSlug: string, workspaceId: string): string {
   return path.join(containerlessStateDir(projectSlug, workspaceId), 'home')
 }
 
-/**
- * Where this driver's things are for one workspace — the contract's
- * `workspacePaths`, and the answer every command the layers above author is
- * written against.
- */
+/** See `WorkspaceDriver.workspacePaths`. */
 export function containerlessWorkspacePaths(jobName: string): WorkspacePaths {
   const { projectSlug, workspaceId } = refFromJobName(jobName)
   const state = containerlessStateDir(projectSlug, workspaceId)
   return {
     tmuxSock: path.join(tmuxSockDir(), `${shortId(workspaceId)}.sock`),
-    // The checkout is a real host path that already exists: the create put
-    // it there.
     workspaceDir: workspaceDir(projectSlug, workspaceId),
     scratchDir: path.join(state, 'scratch'),
-    // Beside the socket rather than under the state dir, for the sun_path
-    // reason above: an acpd socket is addressed the same way tmux's is.
+    // Socket paths go in the temp dir, for SUN_PATH_MAX.
     acpSockDir: path.join(tmuxSockDir(), shortId(workspaceId)),
-    // Same reason again: an ssh-agent socket is a UNIX socket path, and a
-    // state-dir one would blow the same sun_path limit.
     sshAgentSock: path.join(tmuxSockDir(), `${shortId(workspaceId)}-ssh.sock`),
-    // The one path here that is NOT this driver's own: the conversation record
-    // is read by the layers above (the chat pane's tail, the registry's
-    // first-prompt scan, the stopped workspace's transcript) at the shared
-    // project location, so a driver-private one would be written where nobody
-    // looks. It is also the only per-workspace thing that must outlive the
-    // state dir above — that is pruned on stop, and a stopped workspace's
-    // conversation stays readable.
+    // The shared project location the layers above read, which also
+    // survives stop.
     acpLogDir: acpLogDir(projectSlug, workspaceId),
-    // The server's own copy rather than the link the mount realizes in the
-    // private HOME: the same directory, by the name that needs no HOME.
     attachmentsDir: workspaceAttachmentsDir(projectSlug, workspaceId),
     acpdEntry: acpdEntry(),
   }
 }
 
 /**
- * acpd's entry module on the host.
- *
- * The pod driver runs the copy baked into the workspace image at
- * `/opt/yaac/acpd`; there is no image here, so it runs the one that ships
- * with yaac itself. Both come from the same `dockerfiles/acpd` source — the
- * image COPYs it in, and the CLI build copies it into `dist/` — so the two
- * drivers supervise ACP agents with the same supervisor.
- *
- * `PACKAGE_ROOT` is the repo root in dev and `dist/` in a built install, and
- * `dockerfiles/acpd` is where the build puts it in both.
+ * acpd's entry module as shipped with yaac (the image bakes the same
+ * `dockerfiles/acpd` source in at `/opt/yaac/acpd`). `PACKAGE_ROOT` is the
+ * repo root in dev and `dist/` when built.
  */
 export function acpdEntry(): string {
   return path.join(PACKAGE_ROOT, 'dockerfiles', 'acpd', 'main.js')

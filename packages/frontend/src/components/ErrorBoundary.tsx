@@ -11,11 +11,9 @@ interface State {
 }
 
 /**
- * Catches render-time exceptions in its subtree and shows a readable fallback
- * instead of a blank screen. Without it, a single unguarded access — e.g. a
- * server/frontend version skew that drops a field the UI indexes into —
- * unmounts the whole React tree, leaving only the window background (a
- * confusing black rectangle with no way to recover but a manual reload).
+ * Catches render errors in its subtree and shows a fallback with a Reload
+ * button instead of a blank window. A common cause is a server/frontend
+ * version mismatch that drops a field the UI reads.
  */
 export class ErrorBoundary extends Component<Props, State> {
   constructor(props: Props) {

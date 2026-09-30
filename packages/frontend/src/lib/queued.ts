@@ -1,9 +1,9 @@
 import type { QueuedWorkspaceEntry } from '@yaac/shared/types'
 
 /**
- * Pure helpers over the snapshot's queued workspaces (docs/queued-workspaces.md).
- * An entry waits on exactly one parent — a workspace or another entry — so the
- * entries form a forest hanging off workspace ids.
+ * Helpers over the snapshot's queued workspaces (docs/queued-workspaces.md).
+ * Each entry waits on one parent (a workspace or another entry), so the
+ * entries form trees rooted at workspace ids.
  */
 
 /** The id an entry waits on, whichever kind it is. */
@@ -11,8 +11,7 @@ export function queuedParentId(entry: QueuedWorkspaceEntry): string {
   return entry.parentWorkspaceId ?? entry.parentQueuedId ?? ''
 }
 
-/** Entries by the id they wait on, each list in snapshot order (oldest
- *  first, which is the order they will be shown in). */
+/** Entries grouped by the id they wait on, each list oldest first. */
 export function queuedChildren(entries: QueuedWorkspaceEntry[]): Map<string, QueuedWorkspaceEntry[]> {
   const byParent = new Map<string, QueuedWorkspaceEntry[]>()
   for (const e of entries) {
@@ -22,8 +21,8 @@ export function queuedChildren(entries: QueuedWorkspaceEntry[]): Map<string, Que
   return byParent
 }
 
-/** `id`'s entries below it, at any depth — what re-parenting it under would
- *  make a cycle of. */
+/** Every entry below `id` at any depth. Re-parenting `id` under one of these
+ *  would create a cycle. */
 export function queuedDescendants(entries: QueuedWorkspaceEntry[], id: string): Set<string> {
   const children = queuedChildren(entries)
   const out = new Set<string>()
@@ -38,8 +37,8 @@ export function queuedDescendants(entries: QueuedWorkspaceEntry[], id: string): 
   return out
 }
 
-/** Every entry in tree order: each chain top, then its chain beneath it —
- *  the order the sidebar draws them. */
+/** Every entry in the order the sidebar draws them: each chain's top entry,
+ *  then its descendants. */
 export function queuedInTreeOrder(entries: QueuedWorkspaceEntry[]): QueuedWorkspaceEntry[] {
   const ids = new Set(entries.map((e) => e.id))
   const children = queuedChildren(entries)

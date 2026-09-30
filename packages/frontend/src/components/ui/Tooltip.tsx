@@ -12,8 +12,8 @@ export function Tip({ title, hint, keys }: { title: string; hint?: string; keys?
   )
 }
 
-/** A styled hover tooltip — quicker and more legible than `title`. Siblings
- *  under one `Tooltip.Provider` open instantly once one of them is showing. */
+/** A styled hover tooltip, faster and more legible than `title`. Siblings
+ *  under one `Tooltip.Provider` open instantly once one is showing. */
 export function WithTip({ tip, children }: { tip: ReactNode; children: ReactElement }): JSX.Element {
   return (
     <Tooltip.Root>

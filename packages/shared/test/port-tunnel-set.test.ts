@@ -1,9 +1,7 @@
 /**
- * The reconciler both resident forwarders share — `createForwardSet`.
- *
- * `startForward` is stubbed here (it has its own suite, over real
- * sockets): what this file is about is which forwards are started, which
- * are left alone, and which are let go when the desired set moves.
+ * `createForwardSet`, the reconciler both resident forwarders share.
+ * `startForward` is stubbed (port-tunnel.test.ts covers it); these tests
+ * check which forwards start, stay, and close as the desired set changes.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
@@ -34,8 +32,7 @@ beforeEach(() => {
 
 describe('createForwardSet', () => {
   it('starts what is new and leaves an unchanged forward alone', async () => {
-    // The substance of reconciling by identity: a session that gains a
-    // port must not cost the others their open connections.
+    // A workspace gaining a port must not close the others' connections.
     const set = createForwardSet(TARGET)
     await set.reconcile([spec('a', 3000)])
     await set.reconcile([spec('a', 3000), spec('b', 5173)])
@@ -55,8 +52,8 @@ describe('createForwardSet', () => {
   })
 
   it('treats a moved host port as a different forward', async () => {
-    // The listener is what changed, so the old one has to go — leaving it
-    // bound would serve the previous mapping forever.
+    // The old listener must close, or it would keep serving the previous
+    // mapping.
     const set = createForwardSet(TARGET)
     await set.reconcile([spec('a', 3000, 3000)])
     await set.reconcile([spec('a', 3000, 3001)])
@@ -66,8 +63,7 @@ describe('createForwardSet', () => {
   })
 
   it('reports a forward that cannot bind and brings the rest up anyway', async () => {
-    // Something else on this machine holds the port — unknowable to the
-    // server, and no reason for the other forwards to fail.
+    // Another process holds the port; the other forwards must still start.
     startForward.mockImplementationOnce(() => Promise.reject(new Error('EADDRINUSE')))
     const failures: Array<[number, string]> = []
     const set = createForwardSet(TARGET, {
@@ -104,8 +100,7 @@ describe('createForwardSet', () => {
   })
 
   it('closes everything, and stays closed', async () => {
-    // The tray quitting must not leave a listener behind, and a reconcile
-    // racing the quit must not put one back.
+    // Quitting leaves no listener, even with a reconcile racing the quit.
     const set = createForwardSet(TARGET)
     await set.reconcile([spec('a', 3000)])
 
@@ -120,15 +115,14 @@ describe('createForwardSet', () => {
 
 describe('serverNeedsForwarder', () => {
   it('always binds against a k8s server, wherever it is', () => {
-    // A pod binds nothing anywhere, so a forward is dialable only while a
-    // client holds its listener — a local origin says nothing about that.
+    // A forward works only while a client holds its listener, even for a
+    // local origin.
     expect(serverNeedsForwarder('k8s', 'http://127.0.0.1:8787')).toBe(true)
     expect(serverNeedsForwarder('k8s', 'https://srv.ts.net')).toBe(true)
   })
 
   it('never binds against a containerless server on this machine', () => {
-    // The dev servers already hold these ports here; a bind either loses to
-    // one or takes the port from one that has not booted yet.
+    // Dev servers already hold these ports on this machine.
     for (const origin of ['http://127.0.0.1:8787', 'http://localhost:8787', 'http://[::1]:8787']) {
       expect(serverNeedsForwarder('containerless', origin)).toBe(false)
     }

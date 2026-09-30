@@ -1,39 +1,20 @@
 /**
- * Reading Envoy's own view of its listeners, over the admin unix socket.
+ * Checks, via Envoy's admin unix socket, that Envoy has applied the config
+ * netd wrote and bound its listeners, before netd points DNAT rules at
+ * them. Writing the file is not enough: Envoy may fail to bind, e.g. when
+ * another install's Envoy holds the same ports.
  *
- * This is the gate between "netd wrote a config file" and "packets may be
- * pointed at it". A successful atomic rename is not an acknowledgement:
- * Envoy still has to parse the document and BIND the sockets, and a bind
- * can fail — most plausibly because a coexisting install's Envoy already
- * holds the trio. Without this check netd would install DNAT rules aiming
- * at a port its Envoy never got, and (worse) report Ready while doing it.
+ * From one `/config_dump`:
+ *  - `ListenersConfigDump.version_info` is the LDS version Envoy last
+ *    applied; matching netd's version means Envoy accepted the file.
+ *  - `dynamic_listeners[].active_state.listener.address` gives the ports
+ *    actually bound.
+ *  - `error_state` reports a rejected update, so a bind collision fails
+ *    fast with a clear message instead of timing out.
  *
- * Two signals from one `/config_dump`, and it matters which does what:
- *
- *  - `ListenersConfigDump.version_info` — the version of the LDS document
- *    Envoy last APPLIED. This is the acknowledgement: it tracks the file,
- *    so seeing our own version here proves Envoy read and accepted exactly
- *    what netd wrote.
- *  - `dynamic_listeners[].active_state.listener.address` — the ports
- *    actually bound, which is what a DNAT rule needs to be true.
- *
- * A per-listener `active_state.version_info` is deliberately NOT the
- * acknowledgement, and this is the subtle part: Envoy updates filter
- * chains IN PLACE, and an in-place update does not restamp the listener's
- * version — it keeps the version the listener was created at, forever.
- * Gating on it therefore passes exactly once (when the listeners are
- * first created) and then times out on every subsequent pod change, which
- * presents as netd going NotReady while the datapath keeps working.
- * Verified against Envoy 1.34: adding a source prefix to a filter chain
- * moved `ListenersConfigDump.version_info` and left every listener's
- * `active_state.version_info` untouched.
- *
- * `error_state` is still read per listener: a rejected update reports the
- * version it failed at, which turns a bind collision into a specific log
- * line instead of a timeout.
- *
- * Parsing is pure and separately tested; the socket call and the retry
- * loop take their I/O as parameters.
+ * The per-listener `active_state.version_info` is not used: Envoy updates
+ * filter chains in place without restamping it, so it keeps the version
+ * the listener was created at (checked against Envoy 1.34).
  */
 
 import http from 'node:http'
@@ -69,9 +50,8 @@ interface RawListenersDump {
 }
 
 /**
- * Parse a `/config_dump` body. Anything unrecognized is dropped rather
- * than guessed at: the gate's job is to WITHHOLD readiness on doubt, so a
- * dump it cannot read must look like "not ready yet".
+ * Parse a `/config_dump` body. Anything unrecognized is dropped, so an
+ * unreadable dump reads as "not ready yet".
  */
 export function parseListenerView(body: string): EnvoyListenerView {
   const empty: EnvoyListenerView = { appliedVersion: null, listeners: [] }
@@ -118,16 +98,10 @@ export interface GateStatus {
 }
 
 /**
- * Compare what Envoy reports against what netd wrote.
- *
- * Ready needs both halves: Envoy applied THIS document version, and every
- * expected listener is bound on a trio port. The version alone would pass
- * while a listener sits unbound; the ports alone would pass on a stale
- * config that still happens to hold the sockets.
- *
- * A listener carrying an `error_state` at this version can never become
- * ready, and that distinction is what lets the caller fail fast on a bind
- * collision instead of burning the whole timeout.
+ * Compare what Envoy reports against what netd wrote. Ready requires both
+ * that Envoy applied this exact version and that every expected listener
+ * is bound on a trio port. Listeners with an `error_state` at this version
+ * are reported as rejected so the caller can fail fast.
  */
 export function listenerGateStatus(
   view: EnvoyListenerView,
@@ -177,11 +151,9 @@ export interface WaitForListenersDeps {
 }
 
 /**
- * Block until Envoy is serving `expected`, or explain why it never will.
- *
- * Throws rather than returning a status: every caller treats a
- * non-acknowledged listener as a failed reconcile (no DNAT rules, no
- * readiness marker), so a thrown error keeps that decision in one place.
+ * Wait until Envoy is serving `expected`. Throws ListenerRejectedError or
+ * ListenerTimeoutError otherwise; callers treat either as a failed
+ * reconcile.
  */
 export async function waitForListeners(deps: WaitForListenersDeps): Promise<void> {
   if (deps.expected.names.length === 0) return
@@ -223,8 +195,7 @@ export function adminGet(socketPath: string, urlPath: string, timeoutMs = 5_000)
 }
 
 /**
- * The whole dump, not `?resource=dynamic_listeners`: the filtered form
- * returns the listener entries WITHOUT the enclosing ListenersConfigDump,
- * which is where the applied LDS version lives.
+ * The unfiltered dump: `?resource=dynamic_listeners` omits the enclosing
+ * ListenersConfigDump, which holds the applied LDS version.
  */
 export const CONFIG_DUMP_PATH = '/config_dump'

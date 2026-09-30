@@ -34,40 +34,18 @@ import {
 import type { WorkspaceDriver } from '#drivers/contract'
 
 /**
- * The containerless driver's one door: `createContainerlessDriver`
- * (docs/layered-server.md).
+ * The containerless driver (docs/containerless-driver.md): one tmux server
+ * per workspace on the host, in its checkout. No image, cluster, egress
+ * proxy or sandbox; agents run as the user running yaac.
  *
- * One tmux server per workspace, on the host, in the checkout the server
- * already made. No image, no cluster, no egress proxy, and no sandbox — the
- * agent runs as the user running yaac, with that user's access to the
- * machine. Choosing this driver IS the consent for that; what it changes
- * per workspace is the default permission mode, which the create path decides
- * from the driver kind.
- *
- * Most of the contract it answers by DOING less rather than by pretending:
- * the verbs below that resolve to empty, `null` or a no-op are the ones the
- * contract specifies that answer for, and every caller above already reads
- * them as "this runtime does not do that" rather than as a failure. What is
- * left — launch, exec, the two streams, teardown, observation — is the whole
- * of the substrate.
- *
- * Like the k8s barrel, this file is the assembly and carries no logic of its
- * own beyond saying which module answers what, which is what keeps it
- * untested by design.
- *
- * One sealed folder rather than the k8s driver's nine, because it is a
- * tenth the size: the modules beside this one are internal, import each
- * other by relative path, and are reachable from outside only through the
- * driver this file returns. What they are TESTED against is that driver's
- * verbs — a module's test file covers the contract verbs that module
- * implements (`launch` in launch.ts, `exec`/`changes` in exec.ts,
- * `destroy` in teardown.ts, the observation verbs in registry.ts), mocked
- * at `host.ts`, which is this driver's entire process boundary.
+ * Verbs for features it lacks answer empty, `null` or a no-op, as the
+ * contract specifies. This file only assembles the driver from the sealed
+ * folder's modules, so it has no tests of its own; each module's tests
+ * cover the verbs it implements, mocking only `host.ts`.
  */
 
-/** A verb that only means something with a container to put things in.
- *  Reached only if a caller skipped the create-time capability check, so it
- *  names that rather than pretending to have tried. */
+/** For container-only verbs; reached only if a caller skipped the driver
+ *  kind check. */
 function unsupported(what: string): never {
   throw new ServerError(
     'VALIDATION',
@@ -91,55 +69,35 @@ export function createContainerlessDriver(): WorkspaceDriver {
     countForProject: (projectSlug) => Promise.resolve(countForProject(projectSlug)),
     changes: (jobName, base, defaultBase) => getWorkspaceChanges(jobName, base, defaultBase),
     snapshot: (resync) => createRuntimeSnapshot(resync),
-    // No upkeep of its own: there are no images to collect, no registries to
-    // sweep and no datapath to heal.
     reconcileSteps: () => ({ prePool: [], maintenance: [] }),
 
-    // Nothing mediates this runtime's egress, so it has nothing to report
-    // about it and nothing to widen. A workspace here reaches whatever the
-    // user running the server can reach.
+    // No egress mediation.
     blockedHosts: () => Promise.resolve([]),
     gitAuthFailures: () => Promise.resolve([]),
     allGitAuthFailures: () => Promise.resolve({}),
     allowHost: () => Promise.resolve(),
-    // No proxy to hand them to: a workspace here holds the real credential
-    // itself, and is handed its secrets' values in its own environment at
-    // launch, so a change reaches it the next time it is created rather
-    // than through a live update. And nothing captures a rotation on its
-    // way out — the credential sweep harvests it from the tool home.
+    // Credentials and secrets go into the workspace at launch. Token
+    // refreshes are harvested from the tool home instead.
     syncCredentials: () => Promise.resolve(),
     syncProjectSecrets: () => Promise.resolve(),
     refreshedCredentials: () => ({}),
 
-    // A workspace binds host ports itself, so what it is listening on is
-    // already reachable on this machine and the mapping is the identity.
-    // Nothing is left to forward, which is why nothing is ever unforwarded.
+    // Workspaces bind host ports directly, so every port maps to itself and
+    // nothing is unforwarded.
     forwardedPorts: (workspaceId) => Promise.resolve(workspacePorts(workspaceId)),
     unforwardedPorts: () => Promise.resolve([]),
     forwardPort: () => unsupported('forwarding a port'),
     dismissPort: () => false,
-    // A config's `portForward` names the port its dev server binds, and
-    // that IS the host port here, so declaring one is stating a fact rather
-    // than allocating anything — which is also why nothing may be bound in
-    // its name: the reservation the pod driver used to make would take the
-    // very port the workspace is about to want.
     declareForwards: (_workspaceId, forwards) =>
       forwards.map(({ containerPort }) => ({ containerPort, hostPort: containerPort })),
-    // The near end of a forward whose listener is on ANOTHER machine: a
-    // client on this one dials the port directly, and the two clients know
-    // not to bind against a server they share a loopback with.
+    // For a client on another machine; local clients dial directly.
     dialPort: (workspaceId, port) => dialWorkspacePort(workspaceId, port),
 
-    // No images: the whole build feed degrades to "nothing to show"
-    // rather than to an error.
+    // No images.
     listImageBuilds: () => [],
     imageBuildLog: () => undefined,
     dismissImageBuild: () => false,
     retryImageBuild: () => false,
-    // Every agent here is a host process, so what a workspace can run is
-    // whatever this machine has installed. Without this check the create
-    // reports success and the workspace is gone seconds later: the tool (or
-    // acpd's adapter) execs nothing, exits 127, and tmux closes the window.
     assertCanLaunch: (opts) => assertHostCanLaunch(opts),
     ensureRuntimeReachable: () => Promise.resolve(),
     prepareImage: () => unsupported('building a workspace image'),
@@ -154,30 +112,21 @@ export function createContainerlessDriver(): WorkspaceDriver {
     prepareSubstrate: () => prepareSubstrate(),
     launch: async (spec) => {
       const handle = await launchWorkspace(spec)
-      // Watch it, and say it exists — the moment there is something to watch,
-      // rather than waiting for the next sweep to notice it. Both halves
-      // matter here: no informer reports a workspace on this substrate, so
-      // this is the only thing that tells the layers above one was born.
+      // No informer exists here, so announce and watch the new workspace.
       watchNewWorkspace(handle.workspaceId, handle.jobName)
       return handle
     },
     awaitReady: () => awaitReady(),
 
-    // Spares buy the wait a cold workspace pays — an image pull and a pod
-    // boot — and this runtime pays neither, so the pool is never filled and
-    // a claim can only be a caller that ignored the driver kind.
+    // No spare pool here (creates are already fast); only a caller that
+    // ignored the driver kind reaches this.
     claimSpare: (workspaceId, tool) => claimWorkspaceTool(workspaceId, tool)
       ? Promise.resolve()
       : Promise.reject(new Error(`no prewarmed spare ${workspaceId} to claim`)),
 
-    // There is no egress path to register a workspace with. Deregistering
-    // is not a no-op though: it is the IN-PROCESS half of a detached
-    // teardown, and this runtime's authoritative listing is in this process
-    // — the registry. The pod driver can leave this alone because its
-    // listing is the apiserver's and the detached script's delete is what
-    // removes the Job; here a script cannot reach the registry, so a
-    // workspace it never forgot is handed to the stale reaper again on
-    // every pass, reaped again, and re-marked terminating forever.
+    // Nothing to register. Deregister must drop the workspace from the
+    // in-process registry, which the detached teardown script cannot reach;
+    // otherwise the stale reaper would reap it on every pass.
     registerWorkspace: () => Promise.resolve(),
     deregisterWorkspace: (workspaceId) => {
       forgetWorkspace(workspaceId)
@@ -188,15 +137,10 @@ export function createContainerlessDriver(): WorkspaceDriver {
     destroy: (target, opts) => destroyWorkspace(target, opts),
     detachedTeardownCommand: (target) => detachedTeardownCommand(target),
     destroyProjectSubstrate: (project) => destroyProjectSubstrate(project),
-    // Nothing per-workspace lands in this host's node-local tree: the pnpm
-    // store is the project's, and the module dirs live in the checkout.
     reapNodeLocal: (live) => reapNodeLocal(live),
 
-    // Empty forever, and NOT because the feature is missing: this pair is
-    // the pull transport, which exists so a sandboxed pod — unable to dial
-    // the host — can still be answered. A host process has no such problem,
-    // so its `yaac-mama` posts straight to the server's own `/workspace/mama`
-    // and never touches a queue (docs/containerless-driver.md).
+    // yaac-mama posts directly to `/workspace/mama` here; the queue is for
+    // pods.
     pendingMamaRequests: () => Promise.resolve([]),
     resolveMamaRequests: () => Promise.resolve(),
   }

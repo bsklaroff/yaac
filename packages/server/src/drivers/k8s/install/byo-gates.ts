@@ -1,13 +1,9 @@
 /**
- * The node gates a bring-your-own cluster is held to, as pure assessments
- * of the node list: `yaac cluster install --byo` refuses on any of them
- * before it applies or builds anything, and `yaac cluster check` repeats
- * them on every run, so a pool that later gains a foreign node is reported
- * instead of failing to pull without explanation
- * (docs/cluster-setup.md "Bring your own cluster").
- *
- * Both halves read the same `kubectl get nodes -o json`; neither decides
- * anything here but what the nodes say.
+ * Node requirements for a bring-your-own cluster, checked against
+ * `kubectl get nodes -o json`. `yaac cluster install --byo` refuses before
+ * doing anything if one fails, and `yaac cluster check` repeats them so a
+ * node added later is reported (docs/cluster-setup.md "Bring your own
+ * cluster").
  */
 
 export interface PlatformNode {
@@ -28,11 +24,8 @@ export function hostNodeArchitecture(arch: string = process.arch): string {
 }
 
 /**
- * Every image yaac ships is built here, by podman, for THIS machine's
- * architecture — so the pool must be one architecture, and that one. A
- * mixed pool and a foreign one are both refusals, naming both sides: there
- * is no cross-build and no emulation (docs/cluster-setup.md "Bring your
- * own cluster").
+ * yaac builds its images with podman for this machine's architecture, with
+ * no cross-build, so every node must share that architecture.
  */
 export function nodeArchitectureProblems(nodes: PlatformNode[], hostArch: string): string[] {
   const byArch = new Map<string, string[]>()
@@ -58,19 +51,15 @@ export function nodeArchitectureProblems(nodes: PlatformNode[], hostArch: string
 }
 
 /**
- * Node OS images whose root filesystem is read-only or declaratively
- * managed, so the gVisor installer cannot drop a runtime into containerd's
- * config — they fail silently otherwise, a node labelled for sandboxes
- * that has no sandbox runtime.
+ * Node OS images with a read-only or declaratively managed root
+ * filesystem, where the gVisor installer cannot edit containerd's config.
  */
 const IMMUTABLE_OS = /bottlerocket|container-optimized os|talos|flatcar/i
 
 /**
- * What the gVisor installer needs from a node, as a flavor table with one
- * row: stock containerd, whose config lives at `/etc/containerd/config.toml`,
- * restarted through the node's systemd, reading registry hosts from
- * `certs.d` (the installer ensures `config_path` itself). Every other
- * shape is refused by name rather than half-installed.
+ * Nodes the gVisor installer cannot handle. It supports only stock
+ * containerd with its config at `/etc/containerd/config.toml`, restarted
+ * via the node's systemd. Anything else is refused by name.
  */
 export function nodeOsProblems(nodes: PlatformNode[]): string[] {
   const problems: string[] = []

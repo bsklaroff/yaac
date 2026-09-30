@@ -2,15 +2,13 @@
  * Fail the build when dist/cli.js imports an external package that is not
  * declared in the root package.json `dependencies`.
  *
- * tsup bundles the @yaac/* workspace packages but leaves npm deps external,
- * so the published CLI resolves them from the root manifest — while dev and
- * tests resolve each workspace package's own manifest. Nothing else ties the
- * two together: `pnpm --filter @yaac/<pkg> add -E` updates only the package
- * manifest, and a dep missing from the root would be silently inlined by
- * esbuild on the next build (bloat, broken natives) or ship a drifted
- * version. This check makes the contract explicit, reading the esbuild
- * metafile tsup emits (tsup.config.ts sets `metafile: true`) and removing it
- * afterwards so it neither ships in the npm tarball nor churns the buildId.
+ * tsup bundles the @yaac/* packages but leaves npm deps external, so the
+ * published CLI resolves them from the root manifest, while dev and tests
+ * use each package's own manifest. `pnpm --filter @yaac/<pkg> add -E`
+ * updates only the package manifest, so without this check a dep could be
+ * missing from the root. Reads the esbuild metafile tsup emits
+ * (`metafile: true` in tsup.config.ts), then deletes it so it neither ships
+ * nor changes the buildId.
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'

@@ -6,21 +6,15 @@ import { serverLog } from '#log'
 import { MAX_SURFACED_PORTS, isForwardablePort } from '#lib/port-policy'
 
 /**
- * Detected in-pod listeners, per workspace: streamd's `ports` stream pushes
- * the pod's localhost-reachable LISTEN set (one JSON line on connect, on
- * every change, and as a periodic keepalive), and this module holds the
- * result in memory — the source of the snapshot's `unforwardedPorts`.
- * There is no server-side poll: the per-workspace watcher just keeps one
- * relay stream open, mirroring (in miniature) the status watcher's
- * lifecycle — informer-driven sync, respawn with backoff, and a silence
- * deadline standing in for its heartbeat.
+ * Detected in-pod listeners, per workspace, held in memory as the source of
+ * the snapshot's `unforwardedPorts`. streamd's `ports` stream pushes the
+ * pod's LISTEN set as a JSON line on connect, on each change, and as a
+ * keepalive. Each workspace keeps one stream open, respawned with backoff
+ * and torn down after a silence timeout (docs/auto-forward-ports.md).
  *
- * The detected set is agent-controlled state (the agent can bind any
- * port, and can even replace streamd wholesale — it holds the pod's own
- * stream token), so everything read from the stream is re-validated and
- * bounded here, and the surfaced set is filtered fail-closed: yaac's
- * in-pod infra range is hidden, sensitive well-known ports are never
- * offered one-click, and the count is capped.
+ * The agent controls this data (it can bind any port, or even replace
+ * streamd), so every line is validated and bounded, and the surfaced set
+ * hides yaac's infra ports and sensitive well-known ports and is capped.
  */
 
 /** Cap on ports stored per workspace from a single push. */
@@ -29,10 +23,9 @@ const MAX_DETECTED_PORTS = 100
 /** Line-buffer cap for the ports stream (each line is a small JSON set). */
 const LINE_MAX_BYTES = 64 * 1024
 
-/** Retry cadence for a pod whose streamd predates the `ports` kind — the
- *  refusal is permanent for that pod's lifetime, so hammering the 60s
- *  backoff cap just fills the log. Kept finite (not a stop) so a streamd
- *  self-heal onto a newer image is eventually picked up. */
+/** Retry interval for a pod whose streamd predates the `ports` kind. The
+ *  refusal won't change soon, so retrying at the normal backoff only fills
+ *  the log; still retry in case streamd is updated. */
 const UNSUPPORTED_KIND_RETRY_MS = 10 * 60_000
 
 const detected = new Map<string, number[]>()
@@ -72,13 +65,10 @@ export function isDetectedPort(workspaceId: string, port: number): boolean {
 }
 
 /**
- * Hide a detected port for this workspace (in-memory — resets with the
- * server, and clears when the workspace goes away). Unlike allow-host,
- * "never forward this" is a legitimate lasting choice, so the badge
- * needs a way to stop offering. Only currently-surfaced ports can be
- * dismissed (returns false otherwise) — anything else would let an
- * arbitrary-port dismissal grow the set for workspaces the sync cleanup
- * never tracked.
+ * Stop offering a detected port for this workspace. In memory only: it
+ * resets with the server and clears when the workspace goes away. Only a
+ * currently surfaced port can be dismissed (returns false otherwise), so
+ * the set can't grow for workspaces the sync cleanup doesn't track.
  */
 export function dismissWorkspacePort(workspaceId: string, port: number): boolean {
   if (!getUnforwardedPorts(workspaceId).includes(port)) return false
@@ -88,13 +78,11 @@ export function dismissWorkspacePort(workspaceId: string, port: number): boolean
     dismissed.set(workspaceId, set)
   }
   set.add(port)
-  // Self-clears the popover row: the dismissal only exists here, so this is
-  // the only place that can announce it.
   notifyWorkspaceListChanged()
   return true
 }
 
-/** Validate + normalize one pushed ports payload (agent-influenced). */
+/** Validate and normalize one pushed ports payload. */
 function normalizePorts(value: unknown): number[] | null {
   if (!value || typeof value !== 'object' || !Array.isArray((value as { ports?: unknown }).ports)) {
     return null
@@ -168,8 +156,6 @@ class WorkspacePortsWatcher {
     } catch (err) {
       if (this.stopped || generation !== this.generation) return
       this.log(`[server] port-detector ${this.workspaceId.slice(0, 8)}: dial failed: ${String(err)}`)
-      // A streamd predating the `ports` kind refuses the handshake with
-      // "unknown kind" — permanent for this pod, so retry only rarely.
       if (String(err).includes('unknown kind')) this.backoffMs = UNSUPPORTED_KIND_RETRY_MS
       this.scheduleRespawn()
       return
@@ -220,8 +206,8 @@ class WorkspacePortsWatcher {
     )
   }
 
-  /** Idempotent per stream generation. Detection stays sticky across a
-   *  stream gap — a proxy restart must not flap the badge. */
+  /** Idempotent per stream generation. Keeps the detected set across a
+   *  reconnect so the badge doesn't flicker. */
   private onStreamDown(generation: number, reason: string): void {
     if (generation !== this.generation || this.stopped) return
     this.generation++
@@ -249,9 +235,8 @@ class WorkspacePortsWatcher {
 
 /**
  * Keeps one ports stream per running, non-prewarmed workspace pod, synced
- * from informer pod deltas exactly like the StatusWatcherManager it sits
- * next to. `onChange` fires when any workspace's detected set actually
- * changes, so the events hub can push a fresh snapshot.
+ * from informer pod updates like `StatusWatcherManager`. `onChange` fires
+ * when any workspace's detected set changes.
  */
 export class PortDetectorManager {
   private readonly watchers = new Map<string, WorkspacePortsWatcher>()

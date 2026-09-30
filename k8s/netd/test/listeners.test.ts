@@ -66,10 +66,8 @@ describe('createTrioAllocator', () => {
   })
 
   it('reuses a persisted slot WITHOUT re-probing it', async () => {
-    // Load-bearing: netd's container can restart while its Envoy keeps
-    // running and keeps holding the ports. A re-probing netd would see its
-    // own listeners as "taken", move to another trio, and strand every
-    // established flow at the old one.
+    // After a netd restart its Envoy still holds the ports; re-probing
+    // would see them as taken and move to another trio.
     const persisted = 5
     const held = trioPorts(trioForSlot(persisted, RANGE))
     const { alloc } = allocator(memoryStore(persisted), held)
@@ -102,8 +100,6 @@ describe('createTrioAllocator', () => {
     const { alloc, taken } = allocator(store)
     expect(await alloc.resolve()).toEqual(trioForSlot(order[0], RANGE))
 
-    // Envoy reported the trio unusable; the slot another install won is
-    // now visibly occupied, so the retry must land elsewhere.
     await alloc.reset()
     expect(store.slot).toBeNull()
     for (const port of trioPorts(trioForSlot(order[0], RANGE))) taken.add(port)
@@ -111,8 +107,6 @@ describe('createTrioAllocator', () => {
   })
 
   it('throws rather than sharing a trio when every slot is held', async () => {
-    // Sharing would deliver this install's egress into another install's
-    // Envoy; refusing costs egress, which is the fail-closed direction.
     const all = slotPreference(NS, RANGE).flatMap((s) => trioPorts(trioForSlot(s, RANGE)))
     const { alloc } = allocator(memoryStore(), all)
     await expect(alloc.resolve()).rejects.toThrow(/no free listener trio/)
@@ -148,8 +142,7 @@ describe('fileTrioStore', () => {
 
 describe('probeTrioFree', () => {
   it('reports a free trio as free', async () => {
-    // Ports well above the reserved range so a real netd on this host
-    // cannot make the test flaky.
+    // Above the reserved range, so a real netd can't interfere.
     expect(await probeTrioFree({ https: 29431, http: 29432, tunnel: 29433 })).toBe(true)
   })
 

@@ -6,10 +6,8 @@ import type * as clientNode from '@kubernetes/client-node'
 import type { KubernetesListObject, V1Pod } from '@kubernetes/client-node'
 
 /**
- * Boundary for the no-deps path: the typed client and the watch stream are
- * what talk to the apiserver. Faking them (over a real KubeConfig loaded
- * from a temp kubeconfig) runs the client singletons and the real
- * list/watch wiring the session-create caller gets.
+ * For the default-deps path, fake the typed client and watch stream (over
+ * a real temp kubeconfig) so the real list/watch wiring runs.
  */
 type WatchCb = (type: string, obj: unknown) => void
 const listNamespacedPodMock = vi.fn<
@@ -29,7 +27,7 @@ vi.mock('@kubernetes/client-node', async (importOriginal) => {
 })
 
 import { waitForJobPodReady } from '#drivers/k8s/substrate'
-// Internals: the list/watch seam the wait drives, and the client reset hook.
+// Internals, for setup only.
 import type { PodReadyDeps } from '#drivers/k8s/substrate/pod-wait'
 import { _resetK8sClientForTests } from '#drivers/k8s/substrate/client'
 
@@ -60,8 +58,8 @@ const CREATING = pod({
   containerStatuses: [{ ready: false, state: { waiting: { reason: 'ContainerCreating' } } } as never],
 })
 
-/** Deps whose watch immediately delivers `events` then stays open. Each
- *  event is `[type, pod]`; a bare pod means an ADDED/MODIFIED-style event. */
+/** Deps whose watch delivers `events` then stays open. A bare pod is a
+ *  MODIFIED event. */
 type FakeEvent = V1Pod | [string, V1Pod]
 
 function fakeDeps(listPods: PodReadyDeps['listPods'], events: FakeEvent[][]): {
@@ -118,8 +116,7 @@ describe('waitForJobPodReady', () => {
       namespace: 'test-ns',
       labelSelector: 'batch.kubernetes.io/job-name=job-a',
     })
-    // The watch resumes from the list's resourceVersion, on the same
-    // selector, and is aborted once the pod is ready.
+    // Watches from the list's resourceVersion and aborts once ready.
     expect(watchMock).toHaveBeenCalledWith(
       '/api/v1/namespaces/test-ns/pods',
       { labelSelector: 'batch.kubernetes.io/job-name=job-a', resourceVersion: '77' },
@@ -135,7 +132,6 @@ describe('waitForJobPodReady', () => {
       .mockResolvedValue({ metadata: {}, items: [READY] } as unknown as KubernetesListObject<V1Pod>)
     await expect(waitForJobPodReady('job-a', 5_000)).resolves.toBeUndefined()
     expect(listNamespacedPodMock).toHaveBeenCalledTimes(2)
-    // No resourceVersion in the list → the watch starts from now.
     expect(watchMock).not.toHaveBeenCalled()
   })
 
@@ -157,8 +153,7 @@ describe('waitForJobPodReady', () => {
   })
 
   it('rejects on a terminal phase, carrying the container termination detail', async () => {
-    // A failed postStart hook (the session setup script) lands here with the
-    // kubelet's hook-failure message on the container's terminated state.
+    // e.g. a failed postStart hook, reported on the terminated state.
     const failed = pod({
       phase: 'Failed',
       containerStatuses: [{
@@ -206,7 +201,6 @@ describe('waitForJobPodReady', () => {
   })
 
   it('gates on the FIRST container status (the session container)', async () => {
-    // A second, ready container must not be mistaken for the session one.
     const sidecarReady = pod({
       phase: 'Running',
       containerStatuses: [{ ready: false } as never, { ready: true } as never],
@@ -220,15 +214,12 @@ describe('waitForJobPodReady', () => {
   })
 
   it('never trusts a DELETED event as ready — it re-lists instead', async () => {
-    // DELETED delivers the pod's last-known object, which can still read
-    // ready for a pod that no longer exists.
+    // A DELETED event carries the pod's last state, which may read ready.
     const listPods = vi.fn<PodReadyDeps['listPods']>()
       .mockResolvedValueOnce({ resourceVersion: '1', pods: [CREATING] })
       .mockResolvedValueOnce({ resourceVersion: '2', pods: [READY] })
     const { deps } = fakeDeps(listPods, [[['DELETED', READY]], []])
     await expect(waitForJobPodReady('job-a', 5_000, deps)).resolves.toBeUndefined()
-    // The DELETED event ended the first episode; readiness came from the
-    // second list, not the deleted pod's stale object.
     expect(listPods).toHaveBeenCalledTimes(2)
   })
 
@@ -238,7 +229,7 @@ describe('waitForJobPodReady', () => {
       .mockResolvedValueOnce({ resourceVersion: '2', pods: [READY] })
     const deps: PodReadyDeps = {
       listPods,
-      // Watch dies immediately (410-style) — the loop must re-list.
+      // The watch ends at once (as on a 410), forcing a re-list.
       watchPods: (_rv, _onEvent, onDone) => {
         onDone(new Error('410 gone'))
         return Promise.resolve({ abort: () => {} })
@@ -253,7 +244,7 @@ describe('waitForJobPodReady', () => {
       () => Promise.resolve({ resourceVersion: '1', pods: [CREATING] }),
       [[], [], []],
     )
-    // Short episode budget: the deadline expires between episodes.
+    // The deadline expires between watch attempts.
     await expect(waitForJobPodReady('job-a', 50, deps))
       .rejects.toThrow(/not ready after 50ms \(ContainerCreating\)/)
   })

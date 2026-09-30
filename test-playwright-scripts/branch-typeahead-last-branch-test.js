@@ -103,12 +103,10 @@ try {
   const open = async () => {
     await page.keyboard.press('Alt+KeyN')
     await prompt.waitFor({ state: 'visible' })
-    // A locator wait, not waitForFunction: the app's CSP refuses the eval
-    // that polling a function needs.
+    // Not waitForFunction, which the app's CSP blocks.
     await create.and(page.locator('button:enabled')).waitFor({ timeout: 15_000 })
   }
-  // The dialog's own close button, not Escape: after a reload a live
-  // workspace's terminal can hold focus, and Escape then goes to it.
+  // The close button, not Escape: after a reload a terminal may have focus.
   const close = async () => {
     await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click()
     await prompt.waitFor({ state: 'detached' })

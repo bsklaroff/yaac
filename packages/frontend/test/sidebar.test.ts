@@ -104,8 +104,8 @@ describe('sidebarLayout', () => {
   })
 
   it('keeps a stopping workspace in place rather than bucketing it', () => {
-    // Both the server-marked kind and (via sidebarRowIds) a mid-flight
-    // optimistic delete: the row greys out where it sits.
+    // Covers both the server-marked kind and an in-flight optimistic delete
+    // (via sidebarRowIds): the row greys out in place.
     expect(shape([
       entry('a', 1),
       entry('b', 2, { stopping: true }),
@@ -158,8 +158,8 @@ describe('sidebarLayout', () => {
       [stopped('gone', 1, 'g'), stopped('elsewhere', 1), stopped('other-group', 1, 'nope')],
     )).toEqual({ default: [], g: ['live', 'gone'] })
 
-    // Ungrouped stopped workspaces are never drawn — they live in the stopped
-    // overlay — and neither are a hidden group's.
+    // Ungrouped stopped workspaces are never drawn (they live in the stopped
+    // overlay), and neither are a hidden group's.
     expect(shape([], [g], [stopped('gone', 1, 'g')])).toEqual({ default: [] })
     expect(shape([], [{ ...g, pinned: true }], [stopped('gone', 1, 'g')]))
       .toEqual({ default: [], g: ['gone'] })
@@ -167,9 +167,9 @@ describe('sidebarLayout', () => {
 
   it('files a provisioning row into its group, above the live rows', () => {
     const g = group('g', 10)
-    // Restarting a stopped member: the ghost row is already gone (the caller
-    // de-dupes it against the provisioning ids) and the restarting row takes
-    // its place inside the section — not at the top of the sidebar.
+    // Restarting a stopped member: the caller already dropped the ghost row
+    // (de-duped against provisioning ids), and the restarting row takes its
+    // place inside the section rather than at the top of the sidebar.
     expect(shape(
       [entry('live', 2, { groupId: 'g' })],
       [g],
@@ -179,8 +179,8 @@ describe('sidebarLayout', () => {
   })
 
   it('shows an unpinned group whose only row is provisioning', () => {
-    // The last live member is mid-restart, so the section has nothing else to
-    // stand on — and it must not blink out from under the row.
+    // The last live member is mid-restart. The section has no other rows but
+    // must not disappear from under this one.
     const g = group('g', 10)
     expect(shape([], [g], [], [prov('coming-back', 9, { groupId: 'g' })]))
       .toEqual({ top: [], default: [], g: ['coming-back'] })
@@ -192,14 +192,14 @@ describe('sidebarLayout', () => {
   })
 
   it('falls back to the default list for a group that no longer exists', () => {
-    // What a snapshot arriving mid-delete looks like.
+    // A snapshot that arrives mid-delete.
     expect(shape([entry('orphan', 1, { groupId: 'gone' })], [])).toEqual({ default: ['orphan'] })
     expect(sidebarLayout([], [], [stopped('a', 1, 'gone')]).groups).toEqual([])
   })
 })
 
-/** A queued workspace waiting on `parent` — a workspace, or with `chained`
- *  another entry. */
+/** A queued workspace waiting on `parent`: a workspace, or another queued
+ *  entry when `chained` is set. */
 const queued = (
   id: string,
   parent: string,
@@ -248,9 +248,9 @@ describe('sidebarLayout with queued workspaces', () => {
       [queued('q1', 'loose'), queued('q2', 'grouped')],
       [held('loose'), held('grouped', 'g')])
     expect(layout.defaultHeld.map((d) => d.workspaceId)).toEqual(['loose'])
-    // Shown for its held member alone, which is drawn once — from the
-    // stopped listing, whose row carries more — and kept out of the ghosts,
-    // which stay hidden with what is queued under them still waiting.
+    // The group shows for its held member alone. That member is drawn once,
+    // from the stopped listing (whose row has more detail), and not among the
+    // ghosts, which stay hidden while entries queued under them wait.
     expect(layout.groups.map((s) => s.held.map((d) => d.workspaceId))).toEqual([['grouped']])
     expect(layout.groups[0]?.held[0]?.createdAt).toBe('2026-01-01 00:00:03')
     expect(layout.groups.map((s) => s.ghosts.map((d) => d.workspaceId))).toEqual([['gone']])
@@ -297,8 +297,8 @@ describe('sidebarRowIds', () => {
       [group('g', 10)],
       [],
     )
-    // A grouped provisioning row cycles with its section, not with the rows at
-    // the top — the same place it is drawn.
+    // A grouped provisioning row cycles with its section, where it is drawn,
+    // not with the rows at the top.
     expect(rows).toEqual(['prov-1', 'loose-new', 'loose-old', 'prov-grouped', 'grouped'])
   })
 

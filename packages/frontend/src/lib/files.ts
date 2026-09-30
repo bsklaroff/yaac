@@ -1,8 +1,7 @@
 /**
- * The file editor's client half (docs/file-editor.md): the layout targets of
- * the explorer and the editor panes, the API calls behind them, and the pure
- * helpers that turn the server's flat listing into a tree, a quick-open
- * result list and tab labels.
+ * Client side of the file editor (docs/file-editor.md): layout targets for
+ * the explorer and editor panes, their API calls, and helpers that turn the
+ * server's flat listing into a tree, quick-open results and tab labels.
  */
 import { ServerError } from '@yaac/shared/errors'
 import type {
@@ -39,7 +38,7 @@ export function fileTargetPath(target: string): string {
   return target.slice(FILE_PREFIX.length)
 }
 
-/** What names one open file across the app: its dirty mark and its saver. */
+/** Key for one open file, used for its dirty mark and its saver. */
 export function fileKey(workspaceId: string, path: string): string {
   return `${workspaceId}|${path}`
 }
@@ -54,8 +53,8 @@ export function listWorkspaceDir(workspaceId: string, path: string): Promise<Wor
   return api.workspace[':id'].dir.$get({ param: { id: workspaceId }, query: { path } })
 }
 
-/** `known`: the version the caller holds, which the server answers without
- *  content while it is still current. */
+/** `known` is the version the caller holds; if it is still current the
+ *  server omits the content. */
 export function readWorkspaceFile(workspaceId: string, path: string, known?: string): Promise<WorkspaceFile> {
   return api.workspace[':id'].file.$get({
     param: { id: workspaceId },
@@ -63,8 +62,8 @@ export function readWorkspaceFile(workspaceId: string, path: string, known?: str
   })
 }
 
-/** A save refused because the file is no longer the version it was made
- *  against. `version` is what the file is now; null when it is gone. */
+/** A save refused because the file changed since the version it was based
+ *  on. `version` is the current version, or null if the file is gone. */
 export class FileConflict extends Error {
   constructor(readonly version: string | null) {
     super(version === null ? 'the file no longer exists' : 'the file changed on disk')
@@ -108,14 +107,13 @@ export async function deleteWorkspaceEntry(workspaceId: string, path: string): P
 // ── Savers ─────────────────────────────────────────────────────────────
 
 /**
- * What the rest of the app can ask of an editor pane's saver: a close or a
- * rename must first land its unsaved text, and a delete must stop a pending
- * autosave. `flush` answers whether the buffer is clean once it settles —
- * false for a paused conflict or a failing save.
+ * An editor pane's saver. A close or rename first saves unsaved text, and a
+ * delete cancels a pending autosave. `flush` resolves to whether the buffer
+ * is clean afterwards (false on a conflict or a failed save).
  *
- * A saver is registered while its pane is mounted, and outlives the pane
- * when it still holds unsaved text nobody chose to throw away (see
- * `WorkspaceFile`); only `discardFileSavers` drops one on purpose.
+ * A saver is registered while its pane is mounted and stays registered
+ * after unmount while it holds unsaved text (see `WorkspaceFile`). Only
+ * `discardFileSavers` removes one.
  */
 export interface FileSaver {
   flush(): Promise<boolean>
@@ -133,14 +131,14 @@ export function registerFileSaver(key: string, saver: FileSaver): void {
   savers.set(key, saver)
 }
 
-/** Flush every open pane among `keys`; true when all of them landed. */
+/** Flush the savers for `keys`; true when all of them saved. */
 export async function flushFileSavers(keys: string[]): Promise<boolean> {
   const results = await Promise.all(keys.map((k) => savers.get(k)?.flush() ?? Promise.resolve(true)))
   return results.every(Boolean)
 }
 
-/** Drop these savers and anything they hold unsaved — their panes are being
- *  closed on purpose, or their files deleted. */
+/** Drop these savers and their unsaved text, when their panes are closed
+ *  without saving or their files are deleted. */
 export function discardFileSavers(keys: string[]): void {
   for (const k of keys) {
     savers.get(k)?.cancel()
@@ -160,7 +158,7 @@ export interface TreeNode {
   /** A file's own status, or the strongest among a folder's files. */
   status?: FileStatus
   ignored?: boolean
-  /** A wholly ignored folder, listed as one entry: its children come from
+  /** An ignored folder listed as one entry; its children are fetched from
    *  the folder route when it is expanded. */
   lazy?: boolean
   symlink?: SymlinkTarget
@@ -168,14 +166,14 @@ export interface TreeNode {
 
 export interface FileTree {
   root: TreeNode
-  /** Every node by path — how a folder link finds what it points to. */
+  /** Every node by path, used to resolve folder symlinks. */
   index: Map<string, TreeNode>
 }
 
 /**
- * Turn the flat listing into a tree: files, empty folders, and — with
- * `showIgnored` — the ignored entries, flagged. Folder statuses are rolled
- * up from their files, strongest first.
+ * Turn the flat listing into a tree of files, empty folders and, with
+ * `showIgnored`, flagged ignored entries. A folder takes the strongest
+ * status among its files.
  */
 export function buildTree(files: WorkspaceFiles, showIgnored = false): FileTree {
   const root: TreeNode = { name: '', path: '', dir: true, children: [] }
@@ -185,8 +183,7 @@ export function buildTree(files: WorkspaceFiles, showIgnored = false): FileTree 
     if (found) return found
     const slash = path.lastIndexOf('/')
     const parent = folder(slash === -1 ? '' : path.slice(0, slash))
-    // An ignored folder that turns out to hold listed entries is walked
-    // like any other.
+    // An ignored folder that holds listed entries is not lazy.
     parent.lazy = false
     const node: TreeNode = { name: path.slice(slash + 1), path, dir: true, children: [] }
     parent.children.push(node)
@@ -238,7 +235,7 @@ export function buildTree(files: WorkspaceFiles, showIgnored = false): FileTree 
   return { root, index }
 }
 
-/** How many files the tree holds under a folder — what a delete confirms. */
+/** How many files are under a node, for the delete confirmation. */
 export function countFiles(node: TreeNode): number {
   if (!node.dir || node.symlink) return 1
   return node.children.reduce((n, c) => n + countFiles(c), 0)
@@ -309,10 +306,10 @@ export function fileTabLabels(paths: string[]): Record<string, string> {
 }
 
 /**
- * Where a newly opened file goes — VS Code's "open in the active editor
- * group". Already open: unchanged. Otherwise a tab of the column holding
- * the active file pane, then of any column holding one; failing both, a new
- * column right of the explorer, and failing that one at the end.
+ * Place a newly opened file, like VS Code's "open in the active editor
+ * group". An open file stays put. Otherwise it becomes a tab in the column
+ * with the active file pane, else any column with a file pane, else a new
+ * column right of the explorer, else a new column at the end.
  */
 export function placeFile(ws: PaneLayout, target: string, activeTarget?: string): PaneLayout {
   if (paneTargets(ws).includes(target)) return ws

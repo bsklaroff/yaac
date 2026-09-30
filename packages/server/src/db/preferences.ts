@@ -3,8 +3,8 @@ import { getDb } from './client'
 import { preferences, shortcutOverrides } from './schema'
 
 /** A persisted keyboard-shortcut chord: a physical key `code` plus the four
- *  modifier states. Mirrors the frontend `Chord` shape (the server must not
- *  import frontend code). */
+ *  modifier states. Mirrors the frontend `Chord`, which the server can't
+ *  import. */
 export interface SerializedChord {
   code: string
   alt: boolean
@@ -13,8 +13,7 @@ export interface SerializedChord {
   shift: boolean
 }
 
-/** Structural guard for a stored chord — the shape crossing the wire from
- *  the webapp, which is not the server's to trust. */
+/** Structural guard for a chord sent by the webapp, which is untrusted. */
 export function isSerializedChord(value: unknown): value is SerializedChord {
   if (typeof value !== 'object' || value === null) return false
   const c = value as Record<string, unknown>
@@ -61,20 +60,14 @@ export async function clearShortcutOverrides(): Promise<void> {
 }
 
 /**
- * The git identity this server's workspaces commit under, or null when
- * either half is unset.
+ * The git identity workspaces commit under, or null when either half is
+ * unset.
  *
- * A server setting rather than something read off a host, because the host
- * is not where the user is: under `k8s` the server is a pod whose `$HOME` is
- * an image layer with no git config in it, and under `containerless` the
- * host's config belongs to whoever runs the server, not to whoever is
- * driving it from another machine. The auth server seeds this from its own
- * machine's shell (`seedGitIdentityFromShell`), and the webapp and
- * `yaac config git-identity` edit it, so every way of reaching a server can
- * answer the question.
- *
- * Two rows rather than one JSON blob, to match every other preference here;
- * the pair is only ever read together, and half of one is no identity at all.
+ * Stored as a server setting rather than read from the host: under `k8s` the
+ * server pod has no git config, and under `containerless` the host's config
+ * belongs to whoever runs the server, not necessarily the user. The auth
+ * server seeds it from the user's shell (`seedGitIdentityFromShell`); the
+ * webapp and `yaac config git-identity` edit it.
  */
 export async function getGitIdentity(): Promise<{ name: string; email: string } | null> {
   const db = await getDb()

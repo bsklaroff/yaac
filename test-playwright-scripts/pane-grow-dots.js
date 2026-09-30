@@ -1,13 +1,8 @@
 #!/usr/bin/env node
 /*
- * pane-grow-dots.js
- *
- * Verifies that growing a TUI pane never flashes tmux overflow dots on the
- * right-hand side, and that the tmux window always ends at the xterm grid.
- * The view's window follows its client under `window-size latest` (pty-bridge
- * attachArgs), inside tmux's own resize handling; a window resized by a
- * separate exec instead lags the grown client, which tmux draws around the
- * old window with a column of dots on every row until the exec lands.
+ * Verifies that growing a TUI pane never flashes tmux's overflow dots on the
+ * right, and that the tmux window always matches the xterm grid. The window
+ * follows its client via `window-size latest` (attachArgs in pty-bridge).
  *
  * Opens the workspace titled TITLE, then grows and shrinks the viewport,
  * sampling the visible xterm for trailing-dot rows for 1.2s after each step

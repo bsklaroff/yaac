@@ -1,18 +1,16 @@
-// The public interface of git: the server's only process boundary onto
-// git. Five parts — `transport.ts` turns a resolved credential into a
-// runnable git invocation, `agent.ts` is the ssh-agent that invocation signs
-// through, `repo.ts` runs the operations against a project's main clone and
-// creates the checkouts that borrow from it, `adopt.ts` converts the linked
-// checkouts an older install made, and `run.ts` is how every one of them
-// starts git without letting it read a pod-writable config
-// (docs/server-git.md) — public only for the startup sweep of its scratch.
+// Public interface of the sealed git folder (`#domain/git`), the server's
+// only process boundary onto git (docs/server-git.md):
+//  - `transport.ts` turns a resolved credential into a git invocation;
+//  - `agent.ts` is the ssh-agent that invocation signs through;
+//  - `repo.ts` operates on a project's main clone and creates the checkouts
+//    that borrow from it;
+//  - `adopt.ts` converts legacy linked checkouts;
+//  - `run.ts` starts git without reading pod-writable config (exported only
+//    for the startup scratch sweep).
 //
-// A domain module rather than a lower layer for two reasons: nothing under
-// `src/runtime` runs git (a driver mounts a checkout, it does not make one),
-// and `#lib` takes no third-party dependency. Everything outside this
-// directory imports `#domain/git`; the SEALED_FOLDERS lint rule stops src
-// from reaching past this file. Adding a name here widens the interface and
-// obliges a unit test in packages/server/test/domain/git/.
+// It lives in domain because nothing under `src/runtime` runs git (drivers
+// mount checkouts, they don't make them). Adding a name here widens the
+// interface and requires a unit test in packages/server/test/domain/git/.
 
 export {
   fetchKnownHostsEntry,

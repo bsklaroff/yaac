@@ -3,7 +3,6 @@ import { buildRebranchPrep } from '#domain/workspaces/spare-pool'
 import { initWindowCommand } from '#runtime/agents/agent-command'
 import { workspacePathsFixture } from '@yaac/test-utils/fake-driver'
 
-// The container paths these commands are written against.
 const PATHS = workspacePathsFixture()
 const TMUX = `tmux -S ${PATHS.tmuxSock}`
 
@@ -19,8 +18,8 @@ describe('buildRebranchPrep', () => {
   })
 
   it('excludes every workspace mount point from the clean', () => {
-    // Mount points are live directories in the pod — cleaning one fails
-    // with EBUSY (and would empty its backing dir), so each is excluded.
+    // Cleaning a mount point fails with EBUSY and would empty its backing
+    // dir, so each is excluded.
     const prep = buildRebranchPrep({
       branch: 'dev',
       sha: 'abc123',
@@ -38,7 +37,7 @@ describe('buildRebranchPrep', () => {
     expect(prep.resetExec).toContain(" -e 'packages/web/node_modules'")
     expect(prep.resetExec).toContain(" -e '.pip-cache'")
     expect(prep.resetExec).toContain(" -e 'data'")
-    // Mounts outside /workspace are unreachable by the clean — not excluded.
+    // Mounts outside /workspace are out of the clean's reach.
     expect(prep.resetExec).not.toContain('.cache/x')
   })
 
@@ -70,9 +69,8 @@ describe('buildRebranchPrep', () => {
   })
 
   it('leaves an init command carrying double quotes intact (one shell pass)', () => {
-    // The kill+create pair is joined with `;` rather than wrapped in a
-    // second `sh -c "…"`: a wrapper would put the user's command inside
-    // double quotes, where its own `"` would end the string early.
+    // A second `sh -c "…"` wrapper would let the command's own `"` end
+    // the string early, so the kill and create are joined with `;`.
     const prep = buildRebranchPrep({
       branch: 'dev',
       sha: 'abc123',
@@ -91,13 +89,11 @@ describe('buildRebranchPrep', () => {
     expect(prep.windowExecs).toHaveLength(1)
     expect(prep.windowExecs[0]).toContain('respawn-window -k -t yaac:claude')
     expect(prep.windowExecs[0]).toContain('--session-id s1')
-    // Restarted as the spare was warmed — its model and posture included.
+    // Restarted with the model and permission mode the spare was warmed with.
     expect(prep.windowExecs[0]).toContain('--model claude-opus-5-5')
     expect(prep.windowExecs[0]).toContain('--permission-mode plan')
   })
 
-  // A chat spare's agent window runs acpd, so its respawn is acpd's command,
-  // built by the acp driver — never the TUI's.
   it('respawns a chat spare as acpd on the tool\'s adapter', () => {
     const prep = buildRebranchPrep({
       branch: 'dev', sha: 'abc123', config: {}, workspaceId: 's1', paths: PATHS,

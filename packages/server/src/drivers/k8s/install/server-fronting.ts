@@ -1,22 +1,12 @@
 /**
- * What sits in front of the server's Service, per backend.
+ * How the server's Service is reached from outside the cluster (its
+ * "fronting"): a host port on kind, or a Tailscale Ingress
+ * (docs/server-in-cluster.md "Reachability"). Each fronting supplies its
+ * manifests, ingress peers, published origin and timeouts.
  *
- * The server Deployment is one manifest on every backend; what differs is
- * how its Service is reached from outside the cluster, and every such
- * difference is rendered here as a manifest set rather than branched on in
- * the driver (docs/server-in-cluster.md "Reachability"). A
- * fronting answers the questions install asks in order: what to apply for
- * the origin to answer (and what the other fronting left behind), which
- * peers its ingress policy must admit, what origin it published, what the
- * Deployment's environment must say about that origin, and how long that
- * origin may take to answer.
- *
- * The LIVE cluster is the record of which fronting an install chose: a
- * `tailscale`-class Ingress named for the server is the tailnet fronting,
- * and `frontingOfIngress` reads it back so that `yaac server
- * start|restart` can wait on the right origin with no new state on disk.
- *
- * Install-only, like the rest of this folder.
+ * The fronting is not stored on disk: `frontingOfIngress` reads it back
+ * from the live cluster so `yaac server start|restart` can wait on the
+ * right origin.
  */
 import {
   LABEL_DATA_DIR_HASH,
@@ -48,27 +38,22 @@ export type FrontingObject = [kind: string, name: string]
 export interface ServerFronting {
   kind: 'kind' | 'tailnet'
   /**
-   * Everything that has to exist for the origin to answer, the server's
-   * Service first. Applied in order before the origin is resolved; every
-   * Deployment among them is rolled out before the origin is probed.
+   * Objects the origin needs, the server's Service first. Applied in order
+   * and rolled out before the origin is resolved and probed.
    */
   manifests(): Record<string, unknown>[]
   /**
-   * The OTHER fronting's objects, deleted on apply so a re-install that
-   * switches fronting leaves nothing of the old one behind — above all no
-   * Ingress that would make `frontingOfIngress` answer the wrong way.
+   * The other fronting's objects, deleted on apply so switching fronting
+   * leaves nothing behind (especially an Ingress `frontingOfIngress` would
+   * misread).
    */
   retired(): FrontingObject[]
   /**
    * NetworkPolicy `from` peers that deliver fronted traffic to the server
-   * pod. The node addresses are NOT listed here: they are admitted
-   * unconditionally by the node half of the wall (policy-manifests.ts).
+   * pod. Node addresses are admitted separately (cluster/policy-manifests.ts).
    */
   ingressPeers(): Record<string, unknown>[]
-  /**
-   * The origin clients dial, once the fronting has published one. Reads the
-   * fronting's own object when the origin is not known up front.
-   */
+  /** The origin clients dial, waiting for the fronting to publish it. */
   resolveOrigin(): Promise<string>
   /** What the Deployment's env must state for that origin. */
   remoteHosting(origin: string): RemoteHosting
@@ -97,23 +82,14 @@ function serverServiceManifest(): Record<string, unknown> {
 }
 
 /**
- * The kind fronting: a ClusterIP Service, and a hostNetwork Envoy on the
- * control-plane node that forwards the port the kind `extraPortMapping`
- * targets into it.
+ * The kind fronting: a hostNetwork Envoy on the control-plane node forwards
+ * the kind `extraPortMapping` port to the server's ClusterIP Service.
  *
- * A forwarder rather than a NodePort, because of what the server pod's
- * ingress policy SEES. Calico evaluates policy in the filter hook, before
- * kube-proxy's POSTROUTING masquerade, so a NodePort connection presents
- * its original source — which for a kind port mapping is the host's
- * address as the node container sees it: the podman bridge gateway on
- * Linux, gvproxy's address inside the VM on macOS. Neither is a node
- * address. A forwarder in the node's own network namespace dials the
- * ClusterIP itself, so what reaches the pod is sourced from that node —
- * its InternalIP, or its Calico tunnel address when the pod is on a
- * worker — which is exactly the set the node half of the wall admits, and
- * exactly the flow the proxy's ingress policy already admits for netd's
- * Envoy. Nothing about the host side is guessed, on any platform, and the
- * API stops being published on every address the nodes have.
+ * Not a NodePort: Calico applies policy before kube-proxy's masquerade, so
+ * a NodePort connection would arrive from the host's address (the podman
+ * gateway or gvproxy), which the server's ingress policy cannot predict.
+ * The forwarder's connections come from the node itself, which the policy
+ * already admits.
  */
 export function kindFronting(): ServerFronting {
   return {
@@ -142,17 +118,11 @@ const KIND_RECREATE_ADVICE = 'Recreate it: `yaac cluster delete`, then `yaac clu
   + 'nothing under the data dir is touched.'
 
 /**
- * The host port the kind cluster publishes the server on. kind fixes it
- * when the cluster is CREATED, so an unset `YAAC_SERVER_PORT` in this
- * shell says nothing about it: a cluster created under another value holds
- * that one, and it is read off the control-plane node's own mapping. An
- * explicit `YAAC_SERVER_PORT` still names it outright, which is how the
- * e2e harness publishes each file's server on a forward of its own.
- *
- * There is no fallback port. Whatever answers a guessed one is not this
- * cluster, and install would register it. A node without the mapping is
- * refused with the recreate advice at once, and any other podman failure
- * with podman's own words.
+ * The host port kind publishes the server on. `YAAC_SERVER_PORT` wins when
+ * set (the e2e harness uses it); otherwise it is read from the
+ * control-plane node's port mapping, which kind fixes at cluster creation.
+ * There is no fallback: a node without the mapping is refused with advice
+ * to recreate the cluster.
  */
 async function kindPublishedPort(): Promise<number> {
   if (env.serverPort !== undefined) return env.serverPort
@@ -201,24 +171,15 @@ interface RawIngress {
 const TAILNET_PUBLISH_TIMEOUT_MS = 120_000
 
 /**
- * The tailnet fronting: the server's ClusterIP Service behind the
- * Tailscale Kubernetes operator's `tailscale`-class Ingress, which gives
- * the server a tailnet-only MagicDNS name with a TLS certificate and
- * nothing else — no public LoadBalancer, no NodePort, no DNS to manage.
+ * The tailnet fronting: the Tailscale operator's `tailscale`-class Ingress
+ * gives the server a tailnet-only MagicDNS name with TLS.
  *
- * An Ingress rather than the operator's L4 LoadBalancer Service, for two
- * reasons. An `http://` origin is not a secure context, and the webapp
- * quietly loses clipboard writes and the pickers there. And the Ingress
- * proxy IS `tailscale serve`: it terminates TLS, strips client-supplied
- * identity and forwarding headers and stamps its own, where an L4
- * exposure hands the pod whatever a tailnet device chose to send
- * (docs/remote-hosting.md).
- *
- * The operator runs a proxy pod per Ingress in its own namespace, labelled
- * with the Ingress it fronts, and dials the Service from that pod — which
- * is why the ingress peer is a pod selector rather than an address, and
- * why the Ingress carries the server's name. The origin is the `https://`
- * name the operator publishes into the Ingress status.
+ * An Ingress rather than an L4 LoadBalancer because the webapp needs an
+ * `https://` origin (a secure context), and because the Ingress proxy
+ * terminates TLS and replaces client-supplied identity headers
+ * (docs/remote-hosting.md). The operator's proxy pod, in its own
+ * namespace, is the ingress peer. The origin is the hostname the operator
+ * publishes in the Ingress status.
  */
 export function tailnetFronting(opts: { hostname: string }): ServerFronting {
   return {
@@ -272,11 +233,9 @@ export function tailnetFronting(opts: { hostname: string }): ServerFronting {
         await new Promise((r) => setTimeout(r, 1000))
       }
     },
-    // The published name is what admits the tailnet — and, being no
-    // loopback name, what puts every request through the identity rule.
+    // A non-loopback host, so every request goes through the identity check.
     remoteHosting: (origin) => ({ allowedHosts: [new URL(origin).hostname] }),
-    // The first HTTPS request to a new name is what makes the operator's
-    // proxy fetch its certificate, which takes a while.
+    // The first HTTPS request to a new name triggers a slow certificate fetch.
     publishTimeoutMs: 180_000,
     unreachableDiagnosis: (origin) =>
       `The operator published ${origin}, but this machine cannot reach it over HTTPS.\n`
@@ -288,11 +247,8 @@ export function tailnetFronting(opts: { hostname: string }): ServerFronting {
 }
 
 /**
- * Which fronting an install's live Ingress records. A `tailscale`-class
- * Ingress named for the server is the tailnet fronting, published under
- * the device name its TLS host asks for; anything else — no Ingress at
- * all, which is what every kind install and the e2e harness have — is the
- * kind fronting, by the general rule rather than by a special case.
+ * The fronting an install uses, from its live server Ingress: tailnet for
+ * a `tailscale`-class Ingress, otherwise kind.
  */
 export function frontingOfIngress(ingress: Record<string, unknown> | null): ServerFronting {
   const raw = ingress as RawIngress | null
@@ -302,7 +258,7 @@ export function frontingOfIngress(ingress: Record<string, unknown> | null): Serv
   return kindFronting()
 }
 
-/** Every pod of the forwarder carries the install identity, like the server's. */
+/** Forwarder pod labels, including the install identity. */
 function frontPodLabels(): Record<string, string> {
   return { app: SERVER_FRONT_APP_NAME, [LABEL_DATA_DIR_HASH]: dataDirHash() }
 }
@@ -310,20 +266,13 @@ function frontPodLabels(): Record<string, string> {
 const FRONT_CONFIG_DIR = '/etc/yaac-server-front'
 
 /**
- * Envoy's static bootstrap for the forwarder: one TCP-proxy listener on the
- * mapped port, one cluster at the server Service's DNS name. `STRICT_DNS`
- * on the name rather than a `STATIC` ClusterIP, so the ConfigMap never has
- * to be re-rendered when the Service is recreated; the pod's
- * `ClusterFirstWithHostNet` DNS policy is what lets a host-networked
- * process resolve a cluster name.
+ * Envoy config for the forwarder: a TCP proxy from the mapped port to the
+ * server Service's DNS name (resolved via `STRICT_DNS`, so a recreated
+ * Service needs no config change).
  *
- * The trailing dot makes the name absolute. It has four dots, under the
- * pod's `ndots:5`, so it would otherwise be tried against every search
- * domain first — and a hostNetwork pod's list ends with the NODE's (the
- * podman network's, a tailnet's), which CoreDNS forwards upstream. Where
- * that upstream hangs (a VPN owning the host's DNS), resolution never
- * reaches the bare name and the server's origin never answers. Absolute,
- * it is one query CoreDNS answers itself.
+ * The name ends in a dot so it is not tried against the node's search
+ * domains first; those are forwarded upstream, and a hanging upstream DNS
+ * (e.g. a VPN) would stop the name from ever resolving.
  */
 export function buildServerFrontConfigMapManifest(): Record<string, unknown> {
   const upstream = `${SERVER_APP_NAME}.${k8sNamespace()}.svc.cluster.local.`
@@ -365,16 +314,10 @@ export function buildServerFrontConfigMapManifest(): Record<string, unknown> {
 }
 
 /**
- * The forwarder Deployment.
- *
- * `hostNetwork` on the control-plane node, because that is the node the
- * kind port mapping delivers to, and `Recreate` because two pods of it
- * would contend for one node port. Trusted yaac infra: plain runc, infra
- * priority, every capability dropped, a non-root uid — it binds one port
- * above 1024 and dials one ClusterIP. `--use-dynamic-base-id` for the
- * reason netd's Envoy states it: several hostNetwork Envoys share a node.
- * Readiness is the listener itself; the kubelet dials it at the node
- * address, which is what a client's connection does too.
+ * The forwarder Deployment: `hostNetwork` on the control-plane node (where
+ * the kind port mapping lands), `Recreate` since two pods cannot share the
+ * port, non-root with no capabilities. `--use-dynamic-base-id` lets several
+ * hostNetwork Envoys share a node.
  */
 export function buildServerFrontDeploymentManifest(envoyImage: string): Record<string, unknown> {
   return {

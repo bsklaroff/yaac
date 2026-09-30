@@ -5,36 +5,30 @@ import { MAX_MODEL_LENGTH, MAX_PROMPT_LENGTH, SELF_NAMING_TOOLS } from '@yaac/sh
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 
 /**
- * The conversation side of the model: `agent_sessions` (one row per
- * tool-native conversation, project-scoped because the tool homes yaac
- * mounts are) and `workspace_agent_sessions` (which conversations belong to
- * which workspace, and which of them were live).
+ * Conversation rows: `agent_sessions` (one row per tool-native conversation,
+ * project-scoped like the tool homes) and `workspace_agent_sessions` (which
+ * conversations belong to which workspace, and which were live).
  *
- * Everything here is discovered rather than authored — the registry
- * reconciler feeds it from what the discovery sweep found — so every write is an
- * upsert and none of them are fatal: a missed tick is re-reconciled on the
- * next one. The one write that carries real weight is `setActiveAgentSessions`,
- * because the set it leaves behind is frozen at teardown and read back by
- * restart.
+ * Everything here is discovered by the registry reconciler, so writes are
+ * upserts and failures are non-fatal: the next tick retries. The exception
+ * in importance is `setActiveAgentSessions`, whose last set survives
+ * teardown and is what a restart brings back.
  */
 
-/** One conversation, as the display paths consume it. */
 export interface AgentSessionRow {
   projectSlug: string
   tool: AgentTool
   agentSessionId: string
-  /** Which protocol drives it — see the `mode` column. */
+  /** Which protocol drives it (see the `mode` column). */
   mode: AgentMode
   createdAt: Date
-  /** Project-relative, exactly as the column holds it. A reader that wants
-   *  bytes on disk resolves it against the recording tool's home, which takes
-   *  the store's layout knowledge and so happens a layer up
-   *  (`recordedTranscript` in `#domain/workspaces`). */
+  /** Project-relative, as stored. `#domain/workspaces` resolves it to a
+   *  file against the recording tool's home. */
   transcriptPath?: string
   firstPrompt?: string
   lastActiveAt?: Date
-  /** The model it is running — see the `model` column. Absent until the
-   *  launch or the agent has named one. */
+  /** The model it is running (see the `model` column). Absent until the
+   *  launch or the agent names one. */
   model?: string
 }
 
@@ -52,48 +46,41 @@ export interface AgentSessionLinkRow extends AgentSessionRow {
 export interface DiscoveredAgentSession {
   tool: AgentTool
   agentSessionId: string
-  /** Defaults to 'tui'. Only ever set on INSERT: a conversation cannot change
-   *  protocol mid-life, and a later sighting that guessed wrong must not
-   *  rewrite what the create path recorded. */
+  /** Defaults to 'tui'. Set only on insert: a conversation can't change
+   *  protocol, and a later wrong guess must not overwrite what the create
+   *  recorded. */
   mode?: AgentMode
-  /** Project-relative, as discovery reports it and the column stores it —
-   *  the one form that survives the data dir moving and means the same thing
-   *  on both sides of the link (see `toProjectRelative`). */
+  /** Project-relative, so it survives the data dir moving (see
+   *  `toProjectRelative`). */
   transcriptPath?: string
   firstPrompt?: string
   lastActiveMs?: number
-  /** The model the agent last reported. Absent means "not reported", never
-   *  "none" — it leaves a recorded value alone. */
+  /** The model the agent last reported. Absent means "not reported" and
+   *  leaves a recorded value alone. */
   model?: string
-  /** First observation time, used as the conversation's birth when it is
-   *  new to the DB (the link record's birthtime). */
+  /** First observation time, used as the conversation's creation time when
+   *  it is new to the DB. */
   firstSeenMs?: number
-  /** The pane it is live on right now, when it is live on one. */
+  /** The pane it is live on right now, if any. */
   paneId?: string
 }
 
 /**
  * Upsert the conversations discovered in a workspace and link them to it.
  *
- * Ordering is by first appearance, so ordinal 0 is the workspace's original
- * agent — the one whose window keeps the `yaac:<tool>` name and which a
- * restart brings up first. Existing links keep the ordinal they were given:
- * renumbering them on every tick would reshuffle a restart's window order
- * whenever an old conversation was resumed.
+ * Ordinals follow first appearance, so ordinal 0 is the original agent (its
+ * window keeps the `yaac:<tool>` name and a restart brings it up first).
+ * Existing links keep their ordinal, so resuming an old conversation doesn't
+ * reshuffle a restart's window order.
  *
- * The one exception is the workspace-id pin: the conversation a create records
- * under the workspace id, before any agent has named one. For codex and
- * opencode that id is a stand-in (`SELF_NAMING_TOOLS`), so the first
- * conversation of the pin's tool to be named takes over its link — ordinal 0,
- * and what the create recorded on it (the `--prompt` ask, the launch's model,
- * its birth) — and the pin is gone. Otherwise the workspace's founding ask
- * would sit on a row no agent ever runs. claude and pi run under the pin
- * itself, so the first conversation they name IS the pin, and a later
- * `/clear` is one of its own.
+ * Exception: the pin, the conversation a create records under the workspace
+ * id before any agent names one. For `SELF_NAMING_TOOLS` (codex, opencode)
+ * that id is a placeholder, so the first named conversation of that tool
+ * takes over the pin's link, ordinal and recorded data (prompt, launch
+ * model, creation time), and the pin is deleted. claude and pi run under the
+ * pin id itself.
  *
- * Does NOT touch `active` — that is `setActiveAgentSessions`, which is the
- * only writer allowed to, precisely because its result must survive teardown
- * untouched.
+ * Does not touch `active`; only `setActiveAgentSessions` writes it.
  */
 export async function recordAgentSessions(
   projectSlug: string,
@@ -102,7 +89,7 @@ export async function recordAgentSessions(
 ): Promise<void> {
   if (discovered.length === 0) return
   try {
-    // One transaction, so a pin is never gone without its successor in place.
+    // One transaction, so a pin is never deleted without its replacement.
     await (await getDb()).transaction(async (db) => {
       const now = new Date()
       const existing = await db.select({
@@ -116,19 +103,17 @@ export async function recordAgentSessions(
       for (const reported of discovered) {
         const linkId = `${reported.tool}/${reported.agentSessionId}`
         const pinId = `${reported.tool}/${workspaceId}`
-        // Only the tool's first conversation: a pin beside a sibling of its
-        // tool predates the takeover (docs/legacy-compat-shims.md), and a
-        // later conversation must not take the first one's place.
+        // Only the tool's first conversation takes over. A pin beside another
+        // conversation of its tool is legacy (docs/legacy-compat-shims.md).
         const pinOrdinal = SELF_NAMING_TOOLS.includes(reported.tool) && !ordinalOf.has(linkId)
           && !existing.some((e) => e.tool === reported.tool && e.agentSessionId !== workspaceId)
           ? ordinalOf.get(pinId)
           : undefined
         let d = reported
         if (pinOrdinal !== undefined) {
-          // What the create recorded on the pin rides into its place: its birth
-          // and launch model unless the agent reported its own, and its ask
-          // regardless — a `--prompt` is the opening message by definition,
-          // where opencode's is only a title summarizing it.
+          // Carry over the pin's creation time and launch model (unless the
+          // agent reported its own), and always its prompt: a `--prompt` is
+          // the real opening message, while opencode's is only a title.
           const [pin] = await db.delete(agentSessions).where(and(
             eq(agentSessions.projectSlug, projectSlug),
             eq(agentSessions.tool, reported.tool),
@@ -149,30 +134,22 @@ export async function recordAgentSessions(
           ordinalOf.set(linkId, pinOrdinal)
         }
         const seenAt = d.firstSeenMs !== undefined ? new Date(d.firstSeenMs) : now
-        // Stored exactly as reported — the sweep already speaks the column's
-        // form (project-relative, see `toProjectRelative`). Absent is not the
-        // same as empty: a conversation whose path the sweep could not express
-        // must not overwrite a good stored value, so the fill branch below
-        // omits the column entirely rather than clearing it.
+        // Already project-relative. Absent means unknown, so the fill below
+        // omits the column rather than clearing a good stored value.
         const stored = d.transcriptPath ?? null
-        // Only ever fill in — a resumed conversation is rediscovered from a
-        // second workspace and must not lose what the first one learned. Built
-        // first because an empty `set` is an error, not a no-op: a conversation
-        // discovered with nothing but its id (the common first sighting) has to
-        // take the DO NOTHING branch.
+        // Only fill in, so a conversation rediscovered from a second workspace
+        // keeps what the first learned. Built first because drizzle rejects
+        // an empty `set`; an id-only sighting takes the DO NOTHING branch.
         const fill = {
           ...(stored !== null ? { transcriptPath: stored } : {}),
           ...(d.lastActiveMs !== undefined ? { lastActiveAt: new Date(d.lastActiveMs) } : {}),
-          // Overwritten, not coalesced: `/model` mid-conversation is exactly
-          // what this column is here to follow. An absent value still leaves
-          // the stored one alone — nothing reported must not read as "the
-          // model went away".
+          // Overwritten, not coalesced, to follow `/model`. An absent value
+          // leaves the stored one alone.
           ...(d.model !== undefined ? { model: d.model.slice(0, MAX_MODEL_LENGTH) } : {}),
           ...(d.firstPrompt !== undefined
             ? {
-              // A conversation's opening message never changes, and re-reading a
-              // transcript that has since been compacted would replace it with
-              // whatever the log now starts with.
+              // Keep the first value: a compacted transcript would otherwise
+              // replace the opening message.
               firstPrompt: sql`coalesce(${agentSessions.firstPrompt}, ${d.firstPrompt.slice(0, MAX_PROMPT_LENGTH)})`,
             }
             : {}),
@@ -229,13 +206,11 @@ const linkKey = (projectSlug: string, workspaceId: string) => and(
 )
 
 /**
- * Set which of a workspace's conversations are live, from the pane set
- * observed on this tick. Everything linked but not named goes inactive.
+ * Set which of a workspace's conversations are live, from the panes observed
+ * this tick; every other linked conversation goes inactive.
  *
- * Call this ONLY while the pod is observed running. Teardown must leave the
- * last-written set alone: "what was active when the workspace stopped" is
- * exactly what a restart brings back, and zeroing it on the way out would
- * restart every workspace empty.
+ * Call only while the runtime is observed running. Teardown must leave the
+ * last set alone, since it is what a restart brings back.
  */
 export async function setActiveAgentSessions(
   projectSlug: string,
@@ -258,9 +233,7 @@ export async function setActiveAgentSessions(
       const paneId = live.find(
         (l) => l.tool === row.tool && l.agentSessionId === row.agentSessionId,
       )?.paneId
-      // Nothing observable changed — skip the write. This runs on every
-      // reconciler tick for every conversation of every running workspace, and
-      // a steady state is the overwhelmingly common case.
+      // Skip unchanged rows; this runs every tick for every conversation.
       if (row.active === isLive && (!isLive || row.paneId === (paneId ?? null))) continue
       await db.update(workspaceAgentSessions).set({
         active: isLive,
@@ -337,10 +310,9 @@ function toLinkRow(r: LinkedSelect): AgentSessionLinkRow {
 }
 
 /**
- * The link → conversation join. A function, not a module-scope const:
- * evaluating a table reference while this module is first loading can find
- * the db barrel's table exports still uninitialized, and deferring it to call
- * time removes the load-order dependency outright.
+ * The link-to-conversation join. A function rather than a module-scope const
+ * so the table references are read at call time, avoiding any dependence on
+ * module load order.
  */
 const linkJoin = () => and(
   eq(workspaceAgentSessions.projectSlug, agentSessions.projectSlug),
@@ -380,14 +352,12 @@ export async function listActiveAgentSessions(
 }
 
 /**
- * The recorded conversations of a workspace that sit on a live handle —
- * what an ACP driver attaching to a running pod needs to re-address agents
- * it did not start (and to `session/load` after a restart). A link with no
- * pane id names nothing it could attach to, so it is filtered here.
+ * A workspace's active conversations that have a handle (pane id). An ACP
+ * driver attaching to a running workspace uses these to re-address agents it
+ * did not start, and to `session/load` after a restart.
  *
- * Swallows a read failure: a watcher starting against an unreadable
- * database must attach with no history rather than fail the whole
- * workspace's status stream.
+ * A read failure returns an empty list, so the watcher attaches without
+ * history rather than failing the workspace's status stream.
  */
 export async function recordedConversationHandles(
   projectSlug: string,
@@ -400,14 +370,9 @@ export async function recordedConversationHandles(
 }
 
 /**
- * The conversations of the named workspaces, grouped by workspace id — one
- * query per project per list build, so a snapshot never pays per row.
- *
- * Scoped to the workspaces the caller will actually render rather than the
- * whole project: conversations are never pruned, so a long-lived project
- * accumulates them without bound, and an unfiltered read would haul every
- * one (4000-char prompts included) into memory on every ~5s list poll only
- * to discard all but the running few.
+ * The conversations of the named workspaces, grouped by workspace id, in one
+ * query. Scoped to those workspaces because conversations are never pruned,
+ * and reading a whole project's history on every list build would be costly.
  */
 export async function getProjectAgentSessions(
   projectSlug: string,
@@ -441,8 +406,7 @@ export async function getAgentSessionsFor(
   const rows = await db.select(selectLinked())
     .from(workspaceAgentSessions)
     .innerJoin(agentSessions, linkJoin())
-    // Narrowed by both columns in SQL so the read scales with the ids asked
-    // about, not the projects' whole history; `wanted` is the exact pair filter.
+    // Narrowed by both columns in SQL; `wanted` below is the exact pair filter.
     .where(and(
       inArray(workspaceAgentSessions.projectSlug, [...new Set(workspaceIds.map((w) => w.projectSlug))]),
       inArray(workspaceAgentSessions.workspaceId, [...new Set(workspaceIds.map((w) => w.workspaceId))]),
@@ -461,17 +425,9 @@ export async function getAgentSessionsFor(
 
 
 /**
- * Persist a conversation's captured first message, transcript path and model.
- *
- * `transcriptPath` is project-relative, as in `recordAgentSessions` and as
- * the column holds it — a caller holding an absolute one converts before it
- * gets here, which is what keeps "absolute appears nowhere" true for rows
- * captured on demand. A stray absolute would surface only as a listing with
- * no prompt and no last-activity, so the read side logs one rather than
- * resolving it.
- *
- * As in `recordAgentSessions`: an unexpressible path is simply absent, and
- * leaves the column alone rather than clearing what an earlier pass recorded.
+ * Persist a conversation's captured first message and transcript path.
+ * `transcriptPath` must be project-relative; callers convert absolute paths
+ * first. An absent field leaves the stored value alone.
  */
 export async function setAgentSessionCapture(
   projectSlug: string,
@@ -500,7 +456,7 @@ export async function setAgentSessionCapture(
   }
 }
 
-/** Forget a project's conversations (the project itself is going away). */
+/** Delete a project's conversations, on project removal. */
 export async function deleteProjectAgentSessions(projectSlug: string): Promise<void> {
   const db = await getDb()
   await db.delete(workspaceAgentSessions)
@@ -509,15 +465,9 @@ export async function deleteProjectAgentSessions(projectSlug: string): Promise<v
 }
 
 /**
- * Drop one workspace's links, and with them every conversation it was the last
- * workspace holding. The create rollback's cleanup: a create that never came up
- * wrote both a link and the conversation behind it (with the ask the user
- * typed), and nothing else prunes either — unlinked rows are inert but
- * accumulate until the project is removed.
- *
- * Conversations are shared many-to-many, so one another workspace still links
- * survives: resuming a conversation into a second workspace must not make the
- * first workspace's rollback take it away from the second.
+ * Delete one workspace's links, plus any conversation no other workspace
+ * links. Used by create rollback, since nothing else prunes these rows. A
+ * conversation resumed into another workspace is kept.
  */
 export async function deleteWorkspaceAgentSessions(
   projectSlug: string,
@@ -535,8 +485,7 @@ export async function deleteWorkspaceAgentSessions(
   await db.delete(workspaceAgentSessions).where(linkKey(projectSlug, workspaceId))
   if (dropped.length === 0) return
 
-  // Asked after the delete, so a conversation this workspace held twice (one
-  // per pane) does not count itself as the other holder.
+  // Queried after the delete so this workspace's own links don't count.
   const survivors = new Set((await db.select(linkedColumns)
     .from(workspaceAgentSessions).where(and(
       eq(workspaceAgentSessions.projectSlug, projectSlug),
@@ -552,11 +501,10 @@ export async function deleteWorkspaceAgentSessions(
 }
 
 /**
- * A workspace's first conversation — the one whose tool the workspace runs and
- * whose opening message labels it. Create records it moments after the
- * workspace row itself, so a row can be read in between (and a create that
- * died in that gap leaves one for good); that reads as unknown here rather
- * than being guessed at, and each caller decides what to do without one.
+ * A workspace's first conversation, whose tool the workspace runs and whose
+ * opening message labels it. Create records it just after the workspace row,
+ * so it can be missing (briefly, or for good if the create died); callers
+ * handle undefined.
  */
 export async function firstAgentSession(
   projectSlug: string,
@@ -566,10 +514,8 @@ export async function firstAgentSession(
   return first
 }
 
-/**
- * The first conversation of each named workspace, keyed `<slug>/<id>` — the
- * batched form for listings, which would otherwise pay a query per row.
- */
+/** The first conversation of each named workspace, keyed `<slug>/<id>`, in
+ *  one query for listings. */
 export async function firstAgentSessionsFor(
   workspaces: Array<{ projectSlug: string; workspaceId: string }>,
 ): Promise<Map<string, AgentSessionLinkRow>> {

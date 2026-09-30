@@ -3,27 +3,20 @@ import { NODE_SYSTEMD_CONF_DIR, nodeTuningScript } from './node-tuning'
 import type { PodToleration } from './taints'
 
 /**
- * gVisor (runsc) is the runtime for every pod that hosts UNTRUSTED code:
- * workspace pods (agents run arbitrary commands; in-container root via the
- * image's passwordless sudo is a feature).
- * The sentry is the containment layer for in-container root, which drops
- * the idmapped-mount prerequisite that ruled shared filesystems (NFS) out
- * and takes host-kernel 0-days off the table for those workloads.
+ * gVisor (runsc) is the runtime for pods that run untrusted code, i.e.
+ * workspace pods, where agents run arbitrary commands and have root via
+ * passwordless sudo. The gVisor sentry contains that root and shields the
+ * host kernel.
  *
- * Trusted yaac infrastructure — the proxy, project registries, node-write
- * pods, and the installer below — runs on runc,
- * like kube-system. It only runs yaac-shipped code, so the sentry buys no
- * containment there, and its cost is real: each sandbox is a systrap sentry
- * + gofer (hundreds of threads, heavy sys-time), and a fleet of them
- * starved an 8-core node to load ~40 with multi-second kubectl execs and
- * pods stuck terminating for minutes.
+ * Trusted infrastructure (the proxy, project registries, node-write pods,
+ * the installer) runs on runc. It only runs yaac's own code, and gVisor is
+ * costly: each sandbox adds hundreds of threads, and many of them can
+ * overload a node.
  *
- * This module owns the runtime's *vocabulary*: the pinned release, the node
- * paths and containerd wiring the install produces, the shell program that
- * produces them, and the RuntimeClass objects the manifest builders
- * reference. The install itself is a privileged DaemonSet
- * (features/cluster/gvisor-installer.ts) that runs this program on every
- * node it lands on — nothing here execs a node.
+ * This module defines the pinned release, the node paths and containerd
+ * config the install produces, the install shell script, and the
+ * RuntimeClass objects. A privileged DaemonSet
+ * (drivers/k8s/install/gvisor-installer.ts) runs the script on every node.
  */
 
 /** Pinned gVisor release installed on every node (runsc + shim together). */
@@ -34,29 +27,20 @@ export const GVISOR_RELEASE_BASE =
   `https://storage.googleapis.com/gvisor/releases/release/${GVISOR_VERSION}`
 
 /**
- * RuntimeClass names stamped by the manifest builders. Every UNTRUSTED pod
- * yaac creates on a real cluster carries one explicitly (cluster check
- * sweeps for strays); infra pods stamp none (runc via the cluster default):
- *  - `gvisor`: the default sandboxed tier — runsc with systrap; no user
- *    namespace.
- *  - `gvisor-nested`: runsc with raw-socket allowances for the in-sandbox
- *    container engine that nested workspaces run.
+ * RuntimeClass names. Every untrusted pod sets one; infra pods set none and
+ * get runc.
+ *  - `gvisor`: the default sandbox (runsc with systrap).
+ *  - `gvisor-nested`: also allows raw sockets, for the container engine
+ *    that nested workspaces run.
  */
 export const RUNTIME_CLASS_GVISOR = 'gvisor'
 export const RUNTIME_CLASS_GVISOR_NESTED = 'gvisor-nested'
 
 /**
- * Node label the installer stamps once the runtime is live on that node,
- * and the ONLY thing the RuntimeClasses schedule on. Two labels, because
- * they answer different questions: the boolean is the scheduling gate (a
- * node either can run sandboxed pods or must not be sent any), and the
- * version is what a coverage probe or a rollout reads to see which nodes
- * are still on the old runsc.
- *
- * Keyed on the runtime, NOT on a node pool: the installer decides where it
- * runs (its own `nodeSelector`), and pods follow wherever it succeeded.
- * Restricting sandboxed workloads to a workspaces-only pool is then a change
- * to the installer's selector alone, with nothing here to touch.
+ * Node labels the installer sets once the runtime works on a node. The
+ * RuntimeClasses schedule only on `GVISOR_NODE_LABEL`; the version label
+ * shows which nodes still run an older runsc. To confine sandboxed pods to
+ * a node pool, change the installer's own `nodeSelector`.
  */
 export const GVISOR_NODE_LABEL = 'yaac.gvisor'
 export const GVISOR_NODE_VERSION_LABEL = 'yaac.gvisor-version'
@@ -70,17 +54,9 @@ export function gvisorNodeLabels(): Record<string, string> {
 }
 
 /**
- * THE runtime-class policy for SESSION-TIER pods (pods that run untrusted
- * agent workloads, and the check probes that emulate them), as a spreadable
- * pod-spec fragment — the single encoding of which sandbox tier such a pod
- * runs on, used by the workspace manifest builder and by the checks that
- * compare against what it would stamp:
- *  - `nested`: the pod hosts the in-sandbox container engine — the
- *    gvisor-nested tier (raw/packet sockets).
- *  - otherwise: the default gvisor tier.
- * Either way there is no user namespace: the sentry is the containment.
- * Trusted infra pods (proxy, registries, node-write) don't call this —
- * they stamp nothing and run on runc (see the module doc).
+ * Pod-spec fragment choosing the RuntimeClass for a pod that runs untrusted
+ * code (workspace pods and the check probes that mimic them): `gvisor`, or
+ * `gvisor-nested` when the pod runs a container engine.
  */
 export function runtimeClassSpec(
   opts: { nested?: boolean } = {},
@@ -98,10 +74,8 @@ export const RUNSC_NESTED_HANDLER = 'runsc-nested'
 export const INSTALLER_HOST_PREFIX = '/host'
 export const NODE_BIN_DIR = '/usr/local/bin'
 export const NODE_CONTAINERD_DIR = '/etc/containerd'
-/** Node-local cache of the verified release + the installed-version marker.
- *  Node-local (not the server's ~/.cache) because the server has no
- *  filesystem in common with a node it cannot exec into; a node that keeps
- *  its disk across a restart therefore re-runs the install for free. */
+/** Node-local cache of the verified release and the installed-version
+ *  marker, so a restarted installer need not download again. */
 export const NODE_GVISOR_CACHE_DIR = '/var/lib/yaac/gvisor'
 
 /** Node paths the runsc configs land at. */
@@ -109,8 +83,8 @@ export const NODE_RUNSC_CONFIG_PATH = `${NODE_CONTAINERD_DIR}/runsc.toml`
 export const NODE_RUNSC_NESTED_CONFIG_PATH = `${NODE_CONTAINERD_DIR}/runsc-nested.toml`
 export const NODE_CONTAINERD_CONFIG_PATH = `${NODE_CONTAINERD_DIR}/config.toml`
 
-/** Readiness marker (in a pod-local emptyDir): written after a pass that got
- *  the runtime live on this node, removed when the installer exits. */
+/** Readiness marker in a pod-local emptyDir: written after a successful
+ *  pass, removed when the installer exits. */
 export const GVISOR_INSTALLER_STATE_DIR = '/run/yaac-gvisor'
 export const GVISOR_INSTALLER_READY_FILE = `${GVISOR_INSTALLER_STATE_DIR}/.ready`
 
@@ -118,35 +92,26 @@ export const GVISOR_INSTALLER_READY_FILE = `${GVISOR_INSTALLER_STATE_DIR}/.ready
 export const GVISOR_CONTAINERD_MARKER = '# yaac-gvisor-runtimes'
 
 /**
- * Where containerd reads per-registry `hosts.toml` files — the directory
- * both registries' hosts writers mount, and so the one `config_path` a node
- * must name for any yaac image to pull.
+ * Where containerd reads per-registry `hosts.toml` files. yaac's registries
+ * write theirs here, so a node's `config_path` must include it.
  */
 export const NODE_CONTAINERD_CERTS_DIR = `${NODE_CONTAINERD_DIR}/certs.d`
 /** Marker on the registry block the installer appends when a node has none. */
 export const REGISTRY_CONFIG_MARKER = '# yaac-registry-config-path'
 
-/** How long the installer waits between converge passes. Long: a steady
- *  state is a handful of stats, and the pass exists to heal a node someone
- *  wiped under us, not to poll for work. */
+/** Seconds between installer passes. A pass only repairs a node that
+ *  changed underneath it, so this is long. */
 export const GVISOR_INSTALLER_INTERVAL_S = 600
 
-/** How old the node's install lock must be before a waiter breaks it. Above
- *  the worst honest pass (a ~60 MB download plus a containerd restart), so
- *  only a pod that died holding the lock is ever broken. */
+/** Age at which a waiter breaks the node's install lock. Longer than any
+ *  real pass (a ~60 MB download plus a containerd restart). */
 export const GVISOR_INSTALL_LOCK_TIMEOUT_S = 900
 
 /**
- * The node filesystem the install script needs, as pod volumes + mounts —
- * kept here with the paths themselves so the script and the pod that runs
- * it can never disagree about where the node is.
- *
- * Four narrow directories rather than the node root: the installer is a
- * privileged pod (it enters PID 1's mount namespace to restart containerd),
- * so this is not a containment boundary — it is an audit one. What yaac
- * writes on a node is exactly the runtime binaries, the two handler flag
- * files plus the containerd config beside them, its own cache, and one
- * systemd drop-in (node-tuning.ts).
+ * The node directories the install script writes, as pod volumes and
+ * mounts. The installer is privileged anyway, so mounting only these four
+ * directories is for auditability, not containment: they show exactly what
+ * yaac writes on a node.
  */
 export function gvisorInstallerHostMounts(): {
   volumes: Array<Record<string, unknown>>
@@ -164,12 +129,7 @@ export function gvisorInstallerHostMounts(): {
         name,
         hostPath: { path: dir, type: 'DirectoryOrCreate' },
       })),
-      // The readiness marker: pod-local, so it dies with the pod rather than
-      // outliving it as a claim about the node. Within one pod it is only as
-      // good as the EXIT trap that clears it — a container killed outright
-      // (OOM, SIGKILL) runs no trap, so its replacement can be Ready for the
-      // length of its first converge pass. Harmless: that pass is what would
-      // have re-established the claim anyway.
+      // The readiness marker, pod-local so it dies with the pod.
       { name: 'state', emptyDir: {} },
     ],
     volumeMounts: [
@@ -183,29 +143,17 @@ export function gvisorInstallerHostMounts(): {
 }
 
 /**
- * Shim config (`ConfigPath` in the containerd runtime entry) for one
- * handler. `[runsc_config]` values are flag-name → string pairs runsc is
- * invoked with:
- *  - platform systrap: no /dev/kvm dependency — the known-working platform
- *    for kind nodes (privileged containers).
- *  - host-uds all: unix sockets created on gofer-backed (hostPath) mounts
- *    become real host sockets, so they rendezvous across sandboxes — the
- *    tmux socket lives on a hostPath dir and is opened by host-side probes.
- *    (ssh-agent forwarding no longer needs this: the agent is reached over
- *    the proxy's ssh-agent port and re-exposed on a pod-local socket.)
- *  - allow-suid: honor the setuid bit inside the sandbox (gVisor drops it by
- *    default, google/gvisor#5299). The image's passwordless `sudo` is a
- *    feature; this is a euid transition INSIDE the sentry only — the
- *    sandbox's host process stays unprivileged.
- *  - overlay2 root:self: back the container ROOTFS's writable layer with a
- *    sentry-internal overlay paged against a filestore in the rootfs dir,
- *    so rootfs writes (/tmp, in-workspace apt installs, …) never round-trip
- *    the gofer. Rootfs-only on purpose: `all:` would wrap hostPath volumes
- *    too, making workspace-dir and shared-image-store writes ephemeral.
- *    Rootfs writes were already ephemeral (containerd discards the
- *    snapshot), so this changes performance, not semantics.
- *  - nested additionally allows raw/packet sockets, which the in-sandbox
- *    container engine drives — scoped to this handler.
+ * runsc flags for one handler (the file named by `ConfigPath`):
+ *  - platform systrap: needs no /dev/kvm, and works on kind nodes.
+ *  - host-uds all: unix sockets on hostPath mounts become real host
+ *    sockets, reachable from outside the sandbox.
+ *  - allow-suid: honor setuid inside the sandbox so `sudo` works (gVisor
+ *    drops it by default, google/gvisor#5299). The host process stays
+ *    unprivileged.
+ *  - overlay2 root:self: keep rootfs writes in a sentry-internal overlay
+ *    for speed. Root only: `all:` would make hostPath volume writes
+ *    ephemeral too.
+ *  - nested only: raw/packet sockets for the in-sandbox container engine.
  */
 export function runscShimConfigToml(handler: 'gvisor' | 'gvisor-nested'): string {
   const lines = [
@@ -225,13 +173,9 @@ export function runscShimConfigToml(handler: 'gvisor' | 'gvisor-nested'): string
 }
 
 /**
- * The CRI plugin key hosting `containerd.runtimes.*` in a node's containerd
- * config: config version 3 (containerd 2.x native) renamed the version-2
- * `io.containerd.grpc.v1.cri` plugin to `io.containerd.cri.v1.runtime`.
- * kind nodes still ship version-2 configs (containerd migrates internally)
- * and managed node images vary, so the installer picks by which key the
- * node's own config declares rather than assuming — both blocks are
- * rendered into its script and the node chooses at run time.
+ * The CRI plugin key for `containerd.runtimes.*`. containerd config
+ * version 3 renamed version 2's key. kind and managed node images vary, so
+ * the script contains both blocks and picks by what the node's config uses.
  */
 export const CRI_PLUGIN_KEY_V2 = 'io.containerd.grpc.v1.cri'
 export const CRI_PLUGIN_KEY_V3 = 'io.containerd.cri.v1.runtime'
@@ -239,11 +183,8 @@ export const CRI_PLUGIN_KEY_V3 = 'io.containerd.cri.v1.runtime'
 export const CRI_IMAGES_KEY_V3 = 'io.containerd.cri.v1.images'
 
 /**
- * The registry block that points containerd at `certs.d`, for a node whose
- * config has no registry table at all (a stock node; kind's own image). A
- * node that sets `config_path` already keeps it, and one that configures
- * registries the deprecated way (`mirrors`, `configs`) is refused rather
- * than given a `config_path` containerd rejects beside them.
+ * Registry block pointing containerd at `certs.d`, appended to a node
+ * config that has no registry table.
  */
 export function registryConfigPathToml(pluginKey: string): string {
   return [
@@ -254,12 +195,9 @@ export function registryConfigPathToml(pluginKey: string): string {
 }
 
 /**
- * The containerd config.toml block registering both runsc handlers,
- * appended once (marker-guarded) to the node config. TOML tables are
- * order-independent, so appending at the end is a legal merge. The
- * `dev.gvisor.*` pod-annotation passthrough lets manifests set per-mount
- * runsc options (e.g. the nested graphroot tmpfs) without another
- * containerd edit.
+ * containerd config block registering both runsc handlers, appended once
+ * (guarded by a marker). Passing through `dev.gvisor.*` pod annotations lets
+ * manifests set per-mount runsc options, such as the nested graphroot tmpfs.
  */
 export function gvisorContainerdRuntimesToml(pluginKey: string): string {
   const rt = (handler: string): string =>
@@ -280,28 +218,17 @@ export function gvisorContainerdRuntimesToml(pluginKey: string): string {
 }
 
 /**
- * The RuntimeClasses every yaac manifest builder stamps. Cluster scoped and
- * install-independent (coexisting installs — the real one plus per-run e2e
- * namespaces — share them), so they carry no install labels and no teardown
- * deletes them.
+ * The RuntimeClasses. They are cluster-scoped and shared by every install on
+ * the cluster, so they carry no install labels and teardown never deletes
+ * them.
  *
- * `scheduling.nodeSelector` is the reason the installer labels nodes: the
- * RuntimeClass admission controller merges it into every pod that names the
- * class, so a sandboxed pod can only land where the shim actually exists.
- * Without it a workspace pod scheduled onto an un-installed node fails at
- * container create with a bare "failed to get sandbox runtime" — and on a
- * pool being recycled, intermittently. With it, such a pod sits Pending
- * with an unsatisfied-node-selector event, which says what is wrong.
- *
- * `scheduling.tolerations` rides the same merge, and is how a dedicated
- * workspace pool works at all. The pool is tainted so nothing else drifts
- * onto it; declaring that taint's toleration HERE — once — reaches every
- * pod that names the class: workspace pods, builder pods,
- * tenant pods, and cluster check's pinned probes (which bypass the
- * scheduler, but are still admitted by kubelet, and a `NoExecute` pool taint
- * would evict them). Nothing per-pod has to know the pool exists. Empty by
- * default — an untainted cluster (every local one) needs none, and cluster
- * check reads this same field to decide which nodes a workspace can use.
+ * Kubernetes merges `scheduling` into every pod that names the class. The
+ * `nodeSelector` keeps sandboxed pods on nodes where the installer
+ * succeeded; otherwise they would fail with "failed to get sandbox runtime"
+ * instead of staying Pending with a clear event. `tolerations` lets every
+ * such pod (workspaces, builders, check probes) run on a tainted,
+ * dedicated workspace pool without each pod knowing about it. Cluster check
+ * reads the same field to find usable nodes.
  */
 export function buildRuntimeClassManifests(
   opts: { tolerations?: PodToleration[] } = {},
@@ -317,60 +244,34 @@ export function buildRuntimeClassManifests(
     handler,
     scheduling: {
       nodeSelector: { [GVISOR_NODE_LABEL]: 'true' },
-      // Omitted rather than empty: an absent field cannot be mistaken for a
-      // pool toleration that was configured and then emptied.
       ...(tolerations.length > 0 ? { tolerations } : {}),
     },
   }))
 }
 
 /**
- * The install itself, as a POSIX shell program the installer DaemonSet runs
- * on every node it lands on. It is the ONE install mechanism — a kind node
- * is just a mutable-OS node with the same containerd config — so nothing
- * about it is backend-specific. It is also the one NODE TUNING mechanism:
- * every pass first applies the sysctls and the TasksMax drop-in
- * (node-tuning.ts), which is what puts them back on a node that restarted.
+ * The POSIX shell script the installer DaemonSet runs on every node, for
+ * kind and real nodes alike. Each pass first applies node tuning
+ * (node-tuning.ts), then installs gVisor. It re-runs on pod start and on a
+ * timer, so every step is idempotent:
+ *  - runsc and its shim are installed only when `runsc --version` is not
+ *    the pinned release, and downloaded only when the node cache lacks a
+ *    checksum-verified copy;
+ *  - flag files and containerd blocks are compared before writing;
+ *  - containerd must read registry hosts from `certs.d`. A config that
+ *    already includes it is kept; one with no registry table gets the
+ *    block; one pointing elsewhere or using the deprecated `mirrors` fails
+ *    the pass, since the node could not pull yaac images;
+ *  - containerd restarts only when something changed or the per-version
+ *    marker is missing. The marker is written after the restart, so an
+ *    interrupted pass restarts again. Drift in the live containerd is
+ *    caught by cluster check's sentry probe, not here.
  *
- * Idempotent by construction, because it re-runs on every pod start, on
- * every new node, and on a timer:
- *  - the binaries are installed only when the live `runsc --version` is not
- *    the pinned release, and fetched only when the node-local cache does not
- *    already hold a checksum-verified copy (so a pod restart, or a second
- *    install sharing the node, costs nothing);
- *  - both flag files and the containerd blocks are compared before writing;
- *  - the node's containerd must read registry hosts from `certs.d`, which is
- *    where both registries' hosts writers put them: a config that already
- *    says so (alone, or as one entry of a `:`-separated list) is left alone, one with no registry table gets the block
- *    (marker-guarded, under the key its config version speaks), and one
- *    that points elsewhere or still uses the deprecated `mirrors` fails the
- *    pass with the reason — containerd would refuse `config_path` beside
- *    `mirrors`, and a node that can pull no yaac image must not read Ready;
- *  - containerd is restarted only when something changed, or when the
- *    per-version marker is absent — which is exactly the interrupted-restart
- *    state a previous pass can leave behind (files on disk, handlers not in
- *    the running containerd). The marker is written only AFTER the restart
- *    returns, so that state can never be mistaken for a converged one. What
- *    the marker does NOT do is ask the live CRI what it registered, which
- *    the retired `podman exec` install could (`crictl info`): a node whose
- *    containerd was reconfigured out from under yaac is caught by cluster
- *    check's sentry probe rather than healed here, since crictl is not a
- *    binary a stock node is required to have.
- *
- * The release is fetched from the node rather than pushed from the server:
- * the whole point of the DaemonSet is to reach nodes the server cannot exec
- * into. Pinning survives the move — same GVISOR_VERSION, same published
- * sha512, verified both on download and on every cache hit, before the
- * binary is ever put on PATH.
- *
- * Each pass runs under a node-local lock, because two installs CAN share a
- * node (the real one plus an e2e run's) and the steps are only individually
- * idempotent: unsynchronized, both could pass the containerd marker check
- * before either appends, leaving duplicate TOML tables that stop containerd
- * from restarting at all. The lock does not make installs pinning DIFFERENT
- * GVISOR_VERSIONs safe — each would see the other's binaries as wrong and
- * restart containerd every pass, forever — so coexisting installs on one
- * node must share the pin.
+ * Releases are checksum-verified on download and on every cache hit.
+ * Passes take a node-local lock because two installs can share a node (e.g.
+ * an e2e run), and interleaved passes could append duplicate TOML tables
+ * that stop containerd from starting. Installs sharing a node must pin the
+ * same GVISOR_VERSION, or each would restart containerd on every pass.
  */
 export function gvisorInstallScript(): string {
   const host = (p: string): string => `${INSTALLER_HOST_PREFIX}${p}`
@@ -391,13 +292,8 @@ export function gvisorInstallScript(): string {
     'sa=/var/run/secrets/kubernetes.io/serviceaccount',
     'held=0',
     '',
-    // Readiness means "this node's runtime is live", so it must not outlive
-    // the process that asserted it: a failed pass exits (kubelet restarts
-    // the container with backoff) and takes the marker — and the lock, if
-    // this pass is the one holding it — with it. Releasing unconditionally
-    // would let a pod that dies WAITING for the lock free the holder's. A
-    // SIGKILLed shell runs no trap at all, which is what the stale-lock
-    // break below and the re-verified cache exist to survive.
+    // On exit, clear the readiness marker, and release the lock only if
+    // this pass holds it (a waiter must not free the holder's lock).
     `trap 'rm -f "$ready"; if [ "$held" = 1 ]; then rm -rf "$lock"; fi' EXIT`,
     '',
     'case "$(uname -m)" in',
@@ -527,19 +423,14 @@ export function gvisorInstallScript(): string {
     '    exit 1',
     '  fi',
     `  if ! grep -qF ${q(GVISOR_CONTAINERD_MARKER)} "$cfg"; then`,
-    // Config version 3 renamed the CRI plugin key, so the block is written
-    // under whichever key this node's own config speaks. Both blocks ship;
-    // the node picks. Guessing is not an option in either direction — a
-    // block under the wrong key is silently ignored, which would leave the
-    // node labelled, restarted and converged with no runsc handler at all.
+    // Write the block under the key this node's config uses. containerd
+    // silently ignores a block under the wrong key, so never guess.
     `    if grep -qF ${q(CRI_PLUGIN_KEY_V3)} "$cfg"; then`,
     '      key=v3',
     `    elif grep -qF ${q(CRI_PLUGIN_KEY_V2)} "$cfg"; then`,
     '      key=v2',
-    // A config that names neither plugin (a minimal one that only declares
-    // its version) still says which dialect it is in.
-    // Anchored past the digit so a future two-digit config version cannot
-    // read as one of these.
+    // Fall back to the declared config version (anchored so e.g. 30 does
+    // not match 3).
     `    elif grep -qE '^[[:space:]]*version[[:space:]]*=[[:space:]]*3([^0-9].*)?$' "$cfg"; then`,
     '      key=v3',
     `    elif grep -qE '^[[:space:]]*version[[:space:]]*=[[:space:]]*2([^0-9].*)?$' "$cfg"; then`,
@@ -558,12 +449,10 @@ export function gvisorInstallScript(): string {
     '    changed=1',
     '  fi',
     '',
-    // Registry hosts: containerd reads the hosts.toml files the registries'
-    // writers put in certs.d only when config_path names it.
     `  certs=${q(NODE_CONTAINERD_CERTS_DIR)}`,
     `  if grep -qE '^[[:space:]]*config_path[[:space:]]*=' "$cfg"; then`,
-    // A `:`-separated list naming certs.d anywhere counts (EKS AL2023 ships
-    // `certs.d:/etc/docker/certs.d`), in either TOML string quote.
+    // A `:`-separated list containing certs.d counts (EKS AL2023 ships
+    // `certs.d:/etc/docker/certs.d`).
     `    if ! grep -qE ${q(`^[[:space:]]*config_path[[:space:]]*=[[:space:]]*["']([^"']*:)?${NODE_CONTAINERD_CERTS_DIR.replace(/\./g, '\\.')}/?(:[^"']*)?["']`)} "$cfg"; then`,
     '      echo "yaac-gvisor: $cfg sets a registry config_path other than $certs, where'
     + ' the yaac registries write their hosts.toml — this node could pull none of'
@@ -587,10 +476,8 @@ export function gvisorInstallScript(): string {
     '',
     '  if [ "$changed" = 1 ] || [ ! -f "$state/installed-$version" ]; then',
     '    echo "yaac-gvisor: restarting containerd to pick up the runsc handlers and registry config"',
-    // nsenter into PID 1's mount namespace runs the NODE's systemctl against
-    // the node's systemd, which is the only way a pod can restart the
-    // service that runs it. Restarting containerd does not stop running
-    // containers — their shims outlive it and re-attach.
+    // Use the node's systemctl via PID 1's mount namespace. Running
+    // containers survive a containerd restart.
     '    nsenter -t 1 -m -- systemctl restart containerd',
     '    mkdir -p "$state"',
     '    : > "$state/installed-$version"',
@@ -599,11 +486,9 @@ export function gvisorInstallScript(): string {
     '  label_node',
     '}',
     '',
-    // Tuning first: it is cheap, it needs the same privilege as the restart
-    // below, and a node that cannot be tuned should fail before it downloads
-    // a release. Under the lock too — two installs sharing a node write the
-    // same file, but a daemon-reexec racing a containerd restart is not
-    // worth having.
+    // Tuning first, so a node that cannot be tuned fails before
+    // downloading. Both run under the lock so a systemd reexec never races
+    // a containerd restart.
     'while :; do',
     '  take_lock',
     '  tune_pass',

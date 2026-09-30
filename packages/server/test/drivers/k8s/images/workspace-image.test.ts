@@ -1,8 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-// The build engine is the process boundary: podman builds and a registry
-// push. What this module owns is which of them run, in which order, and
-// what the caller is told while they do.
+// The build coordinator is faked. This module decides which steps run, in
+// what order, and what progress the caller sees.
 const mockEnsureImage = vi.hoisted(() => vi.fn())
 const mockPushImageShared = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/images/build-coordinator', () => ({
@@ -22,8 +21,7 @@ beforeEach(() => {
 
 describe('prepareWorkspaceImage', () => {
   it('answers with the PUSHED ref, not the local one the build produced', async () => {
-    // The cluster pulls through the registry, so the local tag would name
-    // an image the node cannot resolve.
+    // Nodes pull from the registry and cannot resolve a local tag.
     const ref = await prepareWorkspaceImage({ project: DEMO, nestedContainers: false })
 
     expect(ref).toBe('localhost:5000/yaac-demo:abc123')
@@ -44,8 +42,6 @@ describe('prepareWorkspaceImage', () => {
   })
 
   it('narrates the build to the caller, layer by layer', async () => {
-    // A build is the longest step a create has, and the layer messages come
-    // from deep inside it — the caller owns the narration either way.
     mockEnsureImage.mockImplementation((
       _project: unknown, _prefix: unknown, _prebuilt: unknown, _nested: unknown,
       opts: { onLayerStart: (i: number, total: number, layer: string) => void },

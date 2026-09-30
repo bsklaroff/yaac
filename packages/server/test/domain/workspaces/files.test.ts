@@ -22,16 +22,15 @@ import {
 import { git } from '@yaac/test-utils/git'
 
 /**
- * Real checkouts made by `createCheckout` from a main clone on this disk.
- * Only the substrate is faked: the driver answers `find` with a running
- * handle for the workspace asked for (a stopped one for `stopped`), and runs
- * what it is asked to run inside a workspace as a host shell in that
- * workspace's checkout — which, for a host workspace, is what it is.
+ * Real checkouts made by `createCheckout` from a local main clone. Only the
+ * driver is faked: `find` returns a running handle (a stopped one for
+ * `stopped`), and commands run in a host shell in the checkout, as they do
+ * for a containerless workspace.
  */
 
 const SLUG = 'demo'
 let tmp: string
-/** A folder beside the data dir: what an escaping link reaches for. */
+/** A folder outside the data dir, the target of escaping symlinks. */
 let outside: string
 
 async function makeCheckout(id: string): Promise<string> {
@@ -40,7 +39,6 @@ async function makeCheckout(id: string): Promise<string> {
   return dir
 }
 
-/** git inside a checkout. */
 function wtGit(id: string): (args: string[]) => Promise<string> {
   return (args) => git(workspaceDir(SLUG, id), args)
 }
@@ -75,12 +73,12 @@ beforeAll(async () => {
   await write(repo, 'src/lib/util.ts', 'export {}\n')
   await git(repo, ['add', '.'])
   await git(repo, ['commit', '-m', 'initial'])
-  // A main clone's shape: the remote's branches under origin/.
+  // Like a real main clone, with the remote's branches under origin/.
   await git(repo, ['update-ref', 'refs/remotes/origin/main', 'main'])
   await git(repo, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
 })
 
-// The fake is reset after every test, so it is installed before each.
+// The test setup resets the fake driver after every test.
 beforeEach(() => {
   installFakeWorkspaceDriver({
     find: (id) => Promise.resolve(handleFixture({
@@ -158,8 +156,7 @@ describe('listWorkspaceFiles', () => {
     await makeCheckout('status')
     const inWt = wtGit('status')
     const wt = workspaceDir(SLUG, 'status')
-    // A conflict first, while the tree is clean: the same file changed on
-    // both sides of a merge.
+    // Create a merge conflict first, while the tree is clean.
     await git(repoDir(SLUG), ['commit', '--allow-empty', '-m', 'noop'])
     await write(repoDir(SLUG), 'conflict.txt', 'theirs\n')
     await git(repoDir(SLUG), ['add', 'conflict.txt'])
@@ -167,7 +164,7 @@ describe('listWorkspaceFiles', () => {
     await write(wt, 'conflict.txt', 'ours\n')
     await inWt(['add', 'conflict.txt'])
     await inWt(['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-m', 'ours'])
-    // Borrowed through the alternate: the clone sees main's objects.
+    // The checkout sees main's objects through its alternate.
     const theirs = (await git(repoDir(SLUG), ['rev-parse', 'main'])).trim()
     await inWt(['-c', 'user.email=t@t', '-c', 'user.name=T', 'merge', theirs]).catch(() => { /* conflicts, as intended */ })
 
@@ -209,16 +206,15 @@ describe('listWorkspaceFiles', () => {
     const files = await listWorkspaceFiles('big')
     expect(files.paths).toHaveLength(50_000)
     expect(files.truncated).toBe(true)
-    // Every file here is untracked; the status map shares the cap.
+    // All files are untracked, so the status map hits the same cap.
     expect(Object.keys(files.status)).toHaveLength(50_000)
   }, 120_000)
 })
 
 describe('getWorkspaceGitStatus', () => {
-  // One commit on the checkout's branch, and one on main after the fork that
-  // the origin refresh brings into the checkout.
+  // One commit on the checkout's branch, and one on main after the fork,
+  // fetched into the checkout.
   beforeAll(async () => {
-    // Forked from main as the tests above left it.
     await git(repoDir(SLUG), ['update-ref', 'refs/remotes/origin/main', 'main'])
     await makeCheckout('gs')
     const run = wtGit('gs')
@@ -235,20 +231,19 @@ describe('getWorkspaceGitStatus', () => {
       base: 'main', comparison: { ref: 'origin/main', ahead: 1, behind: 1 },
     })
     expect(fork.comparison?.fetchedAt).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/)
-    // A branch never pushed is counted locally, and has no fetch to report.
+    // An unpushed branch is compared locally, with no fetch time.
     await expect(getWorkspaceGitStatus('gs', 'agent/gs')).resolves.toEqual({
       base: 'agent/gs', comparison: { ref: 'agent/gs', ahead: 0, behind: 0 },
     })
     await expect(getWorkspaceGitStatus('gs', 'gone')).resolves.toEqual({ base: 'gone', comparison: null })
-    // Not a branch name: a range would otherwise count something else.
+    // A range is not a branch name and is refused.
     await expect(getWorkspaceGitStatus('gs', 'main..HEAD')).resolves.toEqual({ base: 'main..HEAD', comparison: null })
   })
 
   it('answers only while the workspace runs, as the listing does', async () => {
     expect((await refusal(getWorkspaceGitStatus('stopped', 'main'))).code).toBe('CONFLICT')
     expect((await refusal(listWorkspaceFiles('stopped'))).code).toBe('CONFLICT')
-    // Stopped with nothing left on the substrate — a host workspace, say —
-    // is still a workspace to start, not one that does not exist.
+    // A stopped workspace with nothing left on the substrate still exists.
     installFakeWorkspaceDriver({ find: () => Promise.resolve(undefined) })
     expect((await refusal(getWorkspaceGitStatus('gs'))).code).toBe('CONFLICT')
     expect((await refusal(getWorkspaceGitStatus('nope'))).code).toBe('NOT_FOUND')

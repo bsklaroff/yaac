@@ -33,23 +33,17 @@ import type { AgentSessionEntry, AgentTool, ServerSnapshot } from '@yaac/shared/
 const execFileAsync = promisify(execFile)
 
 /**
- * End-to-end coverage for the containerless driver: the real CLI against a
- * real server that runs workspaces as tmux sessions on this host.
+ * The containerless driver end to end: the real CLI against a real server
+ * that runs workspaces as tmux sessions on this host
+ * (docs/containerless-driver.md). No cluster, images or proxy, so the file
+ * is fast and runs in parallel with others.
  *
- * No cluster, no images, no proxy — which is the point. Everything the
- * cluster tier needs a namespace, a registry and a pod for, this one gets
- * from tmux and a checkout, so the whole file costs a few seconds and can
- * run beside other workers.
+ * One test env, server and workspace are shared by the read-only cases;
+ * tests that destroy their subject run last.
  *
- * One test env, one server, and one workspace carry the file: creating a
- * workspace is still the slowest thing here, and every read-only case can
- * share the same one. The tests that destroy their subject run LAST.
- *
- * The host needs `tmux` and `git`; agent CLIs it does not, because the suite
- * stages fake ones where yaac installs the pinned ones. That is deliberate rather than a shortcut: what
- * is under test is the launch, the exec transport, the port scan and the
- * recovery, none of which care what the agent process is — and a real agent
- * would need credentials and a network.
+ * The host needs `tmux` and `git`. Agent CLIs are faked, staged where yaac
+ * installs the pinned ones: the launch, exec, port scan and recovery under
+ * test do not depend on the agent, and a real one would need credentials.
  */
 
 let testEnv: YaacTestEnv
@@ -62,8 +56,7 @@ const SLUG = 'cl-demo'
 /** The project's git credential: an HTTPS token, assigned in beforeAll. */
 const GIT_TOKEN = 'ghp_containerless_test'
 
-/** Whether this host can run the suite at all — the same two binaries
- *  `yaac host check` calls required. */
+/** Whether this host has the binaries `yaac host check` requires. */
 async function hostReady(): Promise<boolean> {
   for (const bin of ['tmux', 'git']) {
     try {
@@ -78,31 +71,25 @@ async function hostReady(): Promise<boolean> {
 const CAN_RUN = await hostReady()
 
 /**
- * Whether this host can run the acp cases. The adapter itself is faked like
- * every other agent here, but `socat` cannot be: it is what the chat
- * transport spawns to reach acpd's socket, so a host without it has no way
- * to attach a conversation at all.
+ * Whether this host can run the acp cases. The adapter is faked, but the
+ * chat transport needs a real `socat` to reach acpd's socket.
  */
 const CAN_RUN_ACP = CAN_RUN
   && await execFileAsync('sh', ['-c', 'command -v socat']).then(() => true, () => false)
 
-/** Whether the port sweep can see anything here: it is an `lsof` walk, and
- *  without the binary a workspace runs fine and reports no ports. */
+/** Whether port detection works here: it uses `lsof`, and reports nothing without it. */
 const CAN_RUN_PORTS = CAN_RUN
   && await execFileAsync('sh', ['-c', 'command -v lsof']).then(() => true, () => false)
 
 /**
- * The stand-in codex: codex-cli 0.156.1 as yaac sees it. The first turn — the
- * prompt pasted in — reports the conversation through the SessionStart hook,
- * naming its rollout, and then reports the throwaway session codex generates
- * the title in, on the same pane with no rollout. A resume reports nothing
- * until its next turn. Each launch's arguments are logged under the project's
- * codex home, per workspace, which is what the restart case reads. Launched
- * with `--model sick` it cannot run at all.
+ * A fake codex that mimics what yaac sees from codex-cli. On the first
+ * prompt it reports the conversation (with its rollout path) through the
+ * SessionStart hook, then the throwaway title session (no rollout). A resume
+ * reports nothing. Each launch's arguments are logged per workspace for the
+ * restart case. With `--model sick` it fails to start.
  *
- * It calls the hook script itself rather than reading it out of the
- * hooks.json yaac writes into its home; that a real codex runs those is
- * verified against the pinned binary (see `ensureAgentReporters`).
+ * It calls the hook script directly; that real codex runs it is checked
+ * against the pinned binary (see `ensureAgentReporters`).
  */
 const FAKE_CODEX = [
   '#!/bin/sh',
@@ -126,27 +113,16 @@ const managedBin = (binary: string): string =>
   path.join(agentPackagePrefix(AGENT_PACKAGES[binary]), 'bin', binary)
 
 /**
- * A stand-in agent, staged where yaac installs the pinned one — so the
- * create's preflight finds it installed and fetches nothing, and the launch
- * runs it off the PATH it gives every workspace. It holds its tmux window
- * open the way a real TUI does. Without one the respawned window would exit instantly, tmux
- * would close it, and with no windows left the session — and the workspace —
- * would end before any assertion ran.
+ * Stage fake agents where yaac installs the pinned ones, so create installs
+ * nothing. Each holds its tmux window open like a real TUI; otherwise the
+ * window, and with it the workspace, would end at once. `codex` is
+ * `FAKE_CODEX`.
  *
- * `codex` does more (`FAKE_CODEX`), and launched with `--model sick` it is
- * the agent that is installed but cannot run (a broken or half-installed
- * binary), which is exactly the launch failure a PATH check cannot predict.
- *
- * The adapters are stood in for too, one per binary `--mode acp` can run
- * (`fakeAcpAdapter`). They are separate programs from the CLIs of the same
- * name, which is why the preflight asks for them by name — except opencode,
- * whose adapter IS its CLI under an `acp` subcommand, so its stand-in has to
- * be both: an adapter when called that way and a TUI that holds its window
- * otherwise.
+ * ACP adapters are faked too (`fakeAcpAdapter`), one per adapter binary.
+ * opencode's adapter is its CLI's `acp` subcommand, so its fake is both.
  */
 async function installFakeAgents(): Promise<void> {
-  // `dir` is the binary whose install the file goes in, for a helper that
-  // rides beside it.
+  // `dir`: the binary whose install dir the file goes in.
   const write = async (name: string, body: string, dir = name): Promise<string> => {
     const file = path.join(path.dirname(managedBin(dir)), name)
     await fs.mkdir(path.dirname(file), { recursive: true })
@@ -164,8 +140,7 @@ async function installFakeAgents(): Promise<void> {
     if (binary === tool) continue
     await write(binary, fakeAcpAdapter(tool))
   }
-  // opencode wears both hats. `exec`ing the adapter keeps acpd's child the
-  // process that speaks the protocol, so a wrapper cannot swallow its stdio.
+  // `exec` so the adapter itself owns acpd's stdio.
   await write('opencode-acp-impl', fakeAcpAdapter('opencode'), 'opencode')
   await write(
     'opencode',
@@ -176,46 +151,28 @@ async function installFakeAgents(): Promise<void> {
 }
 
 /**
- * A stand-in ACP adapter: line-delimited JSON-RPC on stdio that answers the
- * handshake and nothing else. The same bargain as the fake TUI agents — what
- * is under test is acpd, the socket dial and the handshake, none of which
- * care which model is behind them, and a real adapter would want credentials
- * and a network.
- *
- * It reports its own `cwd` in the session, because that is the one thing an
- * adapter knows and nothing else can prove: acpd has to spawn it in the
- * workspace's checkout, and a wrong directory fails the spawn as if the
- * binary were missing.
- *
- * Per tool, because what yaac says to an adapter differs per adapter: the
- * session id it mints names the tool (so a record proves WHICH adapter ran),
- * and the modes it advertises are the ones that tool's profile maps a posture
- * onto — an adapter offering something else is how a posture silently stops
- * being enforced, and the real ones are checked against these at their pins.
+ * The modes each fake ACP adapter advertises: the ones yaac maps postures
+ * onto. The real adapters are checked against these at their pinned
+ * versions (workspace-create-suite).
  */
 const ACP_MODES: Record<AgentTool, { current: string; available: string[] }> = {
   claude: { current: 'default', available: ['default', 'acceptEdits', 'plan', 'bypassPermissions'] },
-  // `agent` is codex-acp's real default, not the codex CLI's `read-only`
-  // preset — stated here because a stand-in that got it wrong would make a
-  // posture look like it was applied when the real adapter would have been
-  // in it already (and `applyPermissionMode` would skip the call).
+  // codex-acp's real default. Getting it wrong would change whether
+  // `applyPermissionMode` sends a switch at all.
   codex: { current: 'agent', available: ['read-only', 'agent', 'agent-full-access'] },
   opencode: { current: 'build', available: ['build', 'plan'] },
-  // pi advertises thinking levels, not postures — nothing yaac ever sets.
+  // pi advertises thinking levels, which yaac never sets.
   pi: { current: 'medium', available: ['off', 'medium', 'high'] },
 }
 
 /**
- * How this tool's adapter announces its modes, in its own dialect — because a
- * stand-in that spoke a dialect its adapter does not is a stand-in for nothing.
- * opencode v2 answers with `configOptions` alone (a `mode` select over its
- * agent ids) and no `modes` block at all, which is the shape the gate in
- * `acpModeOffered` exists to read; the other three send `modes`.
+ * The `session/new` mode fields, in each adapter's own format. opencode v2
+ * sends only `configOptions` (a `mode` select), which `acpModeOffered`
+ * handles; the others send `modes`.
  */
 function sessionModesReply(tool: AgentTool): Record<string, unknown> {
   const { current, available } = ACP_MODES[tool]
-  // claude's adapter names its model in its picker's values, which only its
-  // own list ties to a model anyone else names.
+  // claude's adapter uses its own model values in the picker.
   const model = tool === 'claude'
     ? { id: 'model', currentValue: 'opus[1m]', options: [{ value: 'opus[1m]', name: 'Opus 5.5' }] }
     : { id: 'model', currentValue: 'e2e-model' }
@@ -233,16 +190,20 @@ function sessionModesReply(tool: AgentTool): Record<string, unknown> {
   }
 }
 
-/** A file beside the stand-in adapters that makes each exit at once — an
- *  adapter that dies before its handshake. */
+/** A marker file that makes the fake adapters exit before the handshake. */
 const ACP_ADAPTER_DIES = 'acp-adapter-dies'
 
-/** A prompt the stand-in adapters answer by moving themselves into plan mode,
- *  announced the way claude's adapter announces EnterPlanMode — or, spelled
- *  `enter <id> mode`, into any mode, unasked, as anything able to reach the
- *  adapter could have it do. */
+/**
+ * A prompt that makes the fake adapters switch themselves into plan mode
+ * (as claude's EnterPlanMode does), or into any mode as `enter <id> mode`.
+ */
 const ENTER_PLAN_MODE = 'enter plan mode'
 
+/**
+ * A fake ACP adapter: line-delimited JSON-RPC on stdio that answers the
+ * handshake and little else. Its session id names the tool, and it reports
+ * its `cwd` to show acpd spawned it in the checkout.
+ */
 const fakeAcpAdapter = (tool: AgentTool): string => `#!/usr/bin/env node
 if (require('fs').existsSync(require('path').join(__dirname, '${ACP_ADAPTER_DIES}'))) process.exit(1)
 let buf = ''
@@ -283,11 +244,10 @@ process.stdin.on('data', (chunk) => {
 process.stdin.resume()
 `
 
-/** The spawned server's own origin — it binds a per-worker port. */
+/** The spawned server's origin (a per-worker port). */
 const origin = (): string => `http://127.0.0.1:${String(server.lock.port)}`
 
-/** The tmux socket the driver derives for a workspace — the same derivation
- *  the server used, so this is an independent check that it landed there. */
+/** The tmux socket the driver uses for a workspace. */
 function sockFor(id: string): string {
   return containerlessWorkspacePaths(containerlessJobName(SLUG, id)).tmuxSock
 }
@@ -308,11 +268,7 @@ async function listWorkspaces(): Promise<ListedWorkspace[]> {
   return body.workspaces
 }
 
-/**
- * `yaac forward` as a long-lived child, plus a wait for the line it prints
- * when its listener comes up — the containerless twin of the k8s suite's
- * fixture.
- */
+/** Run `yaac forward` as a long-lived child, with a wait for its listener. */
 function startForwardCli(...args: string[]): {
   ready: (timeoutMs?: number) => Promise<void>
   output: () => string
@@ -344,14 +300,15 @@ function startForwardCli(...args: string[]): {
   }
 }
 
-/** Create a workspace and answer with its id. The CLI prints none for a tui
- *  workspace (it would have attached to it), so it is read back from the
- *  server's own listing. */
+/**
+ * Create a claude workspace and return its id, read from the server's
+ * listing since the CLI prints none for a tui workspace.
+ */
 async function createWorkspace(...extra: string[]): Promise<string> {
   return createWorkspaceWith('claude', ...extra)
 }
 
-/** The same, for a case that cares which tool runs. */
+/** `createWorkspace` for a given tool. */
 async function createWorkspaceWith(tool: string, ...extra: string[]): Promise<string> {
   const before = new Set((await listWorkspaces()).map((w) => w.workspaceId))
   const { stdout, stderr, exitCode } = await runYaac(
@@ -377,8 +334,7 @@ async function tmux(id: string, ...args: string[]): Promise<string> {
   return stdout
 }
 
-/** One variable as the workspace's own tmux server holds it — the environment
- *  every pane inherits, and so what anything running in the workspace sees. */
+/** A variable from the workspace tmux server's environment, which every pane inherits. */
 async function workspaceEnvVar(id: string, name: string): Promise<string> {
   const line = (await tmux(id, 'show-environment', '-g', name)).trim()
   return line.startsWith(`${name}=`) ? line.slice(name.length + 1) : ''
@@ -390,16 +346,12 @@ beforeAll(async () => {
   await installFakeAgents()
   serverEnv = {
     ...testEnv.env,
-    // The CLI's create attaches an interactive PTY on success, which hangs
-    // without a TTY. Every e2e suite that drives a create sets this.
+    // Create would otherwise attach a PTY and hang without a TTY.
     YAAC_E2E_NO_ATTACH: '1',
-    // The project's "remote" is a local clone; there is nothing to fetch
-    // from, and the host-side fetch would try to reach it as a real remote.
+    // The project's remote is fake; skip the fetch.
     YAAC_E2E_SKIP_FETCH: '1',
-    // Poison, for the tool-home case below: this is the server user's own
-    // environment as far as the driver is concerned, and it must not be what
-    // an agent resolves its config and credentials from. Set on the ONE
-    // server this file spawns, so the assertion costs no fixture.
+    // Bogus tool homes in the server's own environment, which agents must
+    // not inherit (checked by the tool-home case below).
     CLAUDE_CONFIG_DIR: '/nowhere/claude',
     CODEX_HOME: '/nowhere/codex',
     PI_CODING_AGENT_DIR: '/nowhere/pi',
@@ -414,24 +366,20 @@ beforeAll(async () => {
   }
   server = await spawnYaacServer(serverEnv)
 
-  // A tool credential has to exist before a create resolves one; the fake
-  // is what the auth suites use.
+  // Create needs a tool credential.
   await runYaac(serverEnv, 'auth', 'fake', 'claude-oauth')
 
   repoPath = await createTestRepo(path.join(testEnv.scratchDir, SLUG))
-  // The row's remote is what a create parses and resolves a credential for,
-  // and a local path is refused as a remote. A plausible GitHub URL instead
-  // — nothing ever dials it (YAAC_E2E_SKIP_FETCH) — with the git credential
-  // a create resolves assigned to it.
+  // A local path is refused as a remote, so use a GitHub URL that is never
+  // fetched, with a git credential assigned.
   await addTestProject(server, repoPath, { remoteUrl: `https://github.com/test/${SLUG}.git` })
   await assignTestGitCredential(server, SLUG, GIT_TOKEN)
 })
 
 afterAll(async () => {
   if (!CAN_RUN) return
-  // Optional-chained because this also runs when the beforeAll above failed
-  // before it got a server: an unguarded call would bury that failure's
-  // cause under a TypeError from the teardown.
+  // Optional chaining keeps a beforeAll failure from being hidden by a
+  // TypeError here.
   await server?.stop()
   await testEnv?.cleanup()
 })
@@ -440,8 +388,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   it('reports the containerless driver on /health, before any credential', async () => {
     const res = await fetch(`${origin()}/api/health`)
     const body = await res.json() as { driver: string }
-    // The CLI reads this to decide whether `yaac cluster …` means anything
-    // against this server, so it has to answer unauthenticated.
+    // The CLI reads this to decide whether `yaac cluster` applies, so it
+    // needs no credential.
     expect(body.driver).toBe('containerless')
   })
 
@@ -449,7 +397,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const { stdout, exitCode } = await runYaac(serverEnv, 'host', 'check')
     expect(exitCode).toBe(0)
     expect(stdout).toContain('tmux')
-    // The single most important line in the output.
+    // The warning that workspaces are not isolated.
     expect(stdout).toContain('isolation')
   })
 
@@ -461,13 +409,12 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   })
 
   it('yaac config git-identity shows and sets the identity a create commits under', async () => {
-    // A fresh server has none, and a create would refuse — which is why
-    // this runs before the first one.
+    // Create refuses without an identity, so this runs before the first one.
     const unset = await runYaac(serverEnv, 'config', 'git-identity')
     expect(unset.exitCode).toBe(0)
     expect(unset.stdout).toContain('No git identity is set')
 
-    // Half an identity is no identity: refused before anything is sent.
+    // Both parts are required.
     const half = await runYaac(serverEnv, 'config', 'git-identity', '--name', 'Test')
     expect(half.exitCode).toBe(1)
     expect(half.stderr).toContain('--name and --email')
@@ -483,15 +430,12 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
 
   it('creates a workspace as a tmux session on this host', async () => {
     workspaceId = await createWorkspace()
-    // The session really is a tmux server on this host, at the path the
-    // driver derives — not a pod, and not the developer's own tmux.
+    // A tmux server of its own on this host.
     const windows = await tmux(workspaceId, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')
     expect(windows).toContain('claude')
 
-    // Every create names a model — here the pinned fallback, nothing being
-    // remembered for the project yet — so the conversation is named from its
-    // launch. The fake agent never answers, so this is the launch's value,
-    // not anything a transcript reported.
+    // Every create picks a model (the fallback here, nothing remembered
+    // yet); the fake agent reports nothing, so this comes from the launch.
     const res = await fetch(`${origin()}/api/workspace/list`)
     const { workspaces } = await res.json() as {
       workspaces: Array<{ workspaceId: string; agentSessions: AgentSessionEntry[] }>
@@ -504,11 +448,11 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const dir = path.join(
       testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', workspaceId,
     )
-    // No path translation: the checkout the server made IS the workspace.
+    // The server's checkout is the workspace itself.
     await expect(fs.stat(path.join(dir, 'README.md'))).resolves.toBeDefined()
     const { stdout } = await execFileAsync('git', ['-C', dir, 'rev-parse', '--abbrev-ref', 'HEAD'])
     expect(stdout.trim()).toBe(`agent/${workspaceId}`)
-    // A clone of its own, borrowing every object from the main clone.
+    // Its own clone, borrowing objects from the main clone.
     expect((await fs.stat(path.join(dir, '.git'))).isDirectory()).toBe(true)
     expect(await fs.readFile(path.join(dir, '.git', 'objects', 'info', 'alternates'), 'utf8'))
       .toBe(`${path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'repo', '.git', 'objects')}\n`)
@@ -531,7 +475,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     )
     const put = (body: object): Promise<Response> => api('/file', { method: 'PUT', body: JSON.stringify(body) })
 
-    // A create is a save with no base; it makes the folders on the way.
+    // A save with no base creates the file and its folders.
     const created = await put({ path: 'notes/todo.md', content: 'one\n', baseVersion: null })
     expect(created.status).toBe(200)
     const { version } = await created.json() as { version: string }
@@ -550,8 +494,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const read = await (await api('/file?path=notes/todo.md')).json() as { version: string; content: string }
     expect(read).toMatchObject({ version, content: 'one\n' })
 
-    // Something else writes it; a save against the version read is refused
-    // with the version it has now, and nothing is overwritten.
+    // After an outside write, a save against the old version is refused
+    // with the current version.
     await fs.writeFile(path.join(checkout, 'notes', 'todo.md'), 'theirs\n')
     const stale = await put({ path: 'notes/todo.md', content: 'mine\n', baseVersion: version })
     expect(stale.status).toBe(409)
@@ -559,9 +503,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(await fs.readFile(path.join(checkout, 'notes', 'todo.md'), 'utf8')).toBe('theirs\n')
     expect((await put({ path: 'notes/todo.md', content: 'mine\n', baseVersion: current })).status).toBe(200)
     expect(await fs.readFile(path.join(checkout, 'notes', 'todo.md'), 'utf8')).toBe('mine\n')
-    // A body far past the editable size is refused before it is buffered.
-    // Sent on a connection of its own: the server answers without reading
-    // the rest and drops the socket, which a pooled fetch would reuse.
+    // An oversized body is refused before it is buffered. Its own
+    // connection, since the server drops it mid-upload.
     const huge = await new Promise<number>((resolve, reject) => {
       const req = http.request(`${origin()}/api/workspace/${workspaceId}/file`, {
         method: 'PUT',
@@ -576,26 +519,18 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     })
     expect(huge).toBe(413)
 
-    // The ignored folder expands through the folder route.
     const dir = await (await api('/dir?path=node_modules')).json() as { entries: Array<{ name: string; dir: boolean }> }
     expect(dir.entries).toEqual([{ name: 'pkg', dir: true }])
   })
 
   it('gives the workspace\'s own git the project\'s credential', async () => {
-    // The link nothing below this tier covers: the credential the create
-    // resolved, through the spec, into config that real `git` reads. Without
-    // it every fetch and push from the workspace fails to authenticate — the
-    // checkout's `origin` is deliberately tokenless, and the private HOME
-    // hides the user's own git config from the workspace.
+    // The checkout's `origin` has no token and the private HOME hides the
+    // user's git config, so real git must get the credential from the
+    // config the create wrote.
     const home = workspaceHome(SLUG, workspaceId)
     const dir = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', workspaceId)
-    // Taken from the workspace's own tmux server rather than assembled here:
-    // this is the environment its panes inherit, so it is what the agent's
-    // git really runs with. A hand-built one would inherit the developer
-    // host's GIT_CONFIG_GLOBAL, which makes git ignore the workspace's config
-    // entirely — the very thing the launch pins against, and a spurious
-    // failure over a feature that works. Reading it back also proves the pin
-    // reached the workspace.
+    // Read from the workspace's tmux environment, which also shows the
+    // launch set it. The host's own GIT_CONFIG_GLOBAL would otherwise leak in.
     const gitConfigGlobal = await workspaceEnvVar(workspaceId, 'GIT_CONFIG_GLOBAL')
     expect(gitConfigGlobal).toBe(path.join(home, '.gitconfig'))
     const filled = await new Promise<string>((resolve, reject) => {
@@ -603,10 +538,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
         'git', ['credential', 'fill'],
         {
           cwd: dir,
-          // Both halves matter: the pin decides which config is read, and
-          // HOME is where the store's default file sits. The prompt is
-          // disarmed so a regression fails here rather than blocking on a
-          // terminal that will never answer.
+          // GIT_CONFIG_GLOBAL picks the config; HOME locates the credential
+          // store. No prompt, so a failure fails instead of hanging.
           env: {
             ...process.env,
             HOME: home,
@@ -621,8 +554,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       child.stdin?.end('protocol=https\nhost=github.com\n\n')
     })
     expect(filled).toContain('username=x-access-token')
-    // The REAL stored token, not a sentinel: there is no proxy here to swap
-    // one for the other (docs/containerless-driver.md).
+    // The real token: there is no proxy to swap in a placeholder
+    // (docs/containerless-driver.md).
     expect(filled).toContain(`password=${GIT_TOKEN}`)
   })
 
@@ -635,14 +568,11 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(windows).toContain('shell')
   })
 
-  // The terminal socket takes an exact id only, so what a person types is
-  // resolved first — here a short prefix, as `workspace list` prints ids.
+  // The CLI resolves a prefix to the exact id the terminal socket needs.
   it('attaches and opens a shell by a unique id prefix', async () => {
     const prefix = workspaceId.slice(0, 8)
-    // Keys are typed only once the far end is drawing: bytes that arrive
-    // before a terminal program puts the tty in raw mode can be flushed.
-    // The first Enter answers zsh's new-user menu, which a fresh private
-    // HOME triggers; at an ordinary prompt it only prints another one.
+    // Type only once the far end draws, or early bytes can be flushed. The
+    // first Enter answers zsh's new-user menu (a fresh HOME shows it).
     const shell = await runYaac(serverEnv, 'workspace', 'shell', prefix, {
       stdinOnPrompt: [
         { when: /Type one of the keys|[%$#] /, send: '\n' },
@@ -652,8 +582,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(shell.exitCode, shell.stderr).toBe(0)
     expect(shell.stdout).toContain('prefix-42')
 
-    // `C-b d` detaches, which ends the attach cleanly — sent once tmux has
-    // started drawing, so it is tmux that reads it.
+    // `C-b d` detaches, sent once tmux is drawing.
     const attach = await runYaac(serverEnv, 'workspace', 'attach', prefix, {
       stdinOnPrompt: [{ when: /\x1b\[/, send: '\x02d' }],
     })
@@ -662,11 +591,9 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   }, 60_000)
 
   it.skipIf(!CAN_RUN_PORTS)('tunnels a connection onto a port the workspace is listening on', async () => {
-    // A dev server inside the workspace — a descendant of its tmux server,
-    // which is the tree the port sweep walks — bound to loopback only, the
-    // way dev servers are. It is reachable from this host directly; what is
-    // under test is the OTHER way to reach it, the one a client on another
-    // machine has: `/api/forward/attach` into the driver's dial.
+    // A loopback dev server under the workspace's tmux server (the process
+    // tree the port sweep walks), reached through `/api/forward/attach` as a
+    // remote client would.
     const devPort = await freeLocalPort()
     const script = path.join(testEnv.scratchDir, 'dev-server.cjs')
     await fs.writeFile(script, `
@@ -675,17 +602,15 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     `)
     await tmux(workspaceId, 'new-window', '-d', '-t', 'yaac', '-n', 'dev',
       `'${process.execPath}' '${script}'`)
-    // The sweep is a poll; the port shows up on its next tick.
+    // Detection is a poll.
     await vi.waitFor(async () => {
       const me = (await listWorkspaces()).find((w) => w.workspaceId === workspaceId)
       expect(me?.forwardedPorts).toEqual([{ containerPort: devPort, hostPort: devPort }])
     }, { timeout: 20_000, interval: 500 })
 
-    // `--bind` is what lets this run against a server on the same machine:
-    // without it the CLI refuses (see the case at the end of the file),
-    // since binding the identity port here would fight the dev server for
-    // it; an explicit bind is taken as knowing what you bind. A different
-    // host port so that this one really does not.
+    // Against a local server the CLI refuses without `--bind` (see the last
+    // case in the file), since the same host port would clash with the dev
+    // server. Use a different host port.
     const hostPort = await freeLocalPort()
     const forwarder = startForwardCli(
       workspaceId, '--bind', '127.0.0.1', '--port', `${String(devPort)}:${String(hostPort)}`,
@@ -698,9 +623,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       await forwarder.stop()
       await tmux(workspaceId, 'kill-window', '-t', 'yaac:dev')
     }
-    // A port the workspace is NOT listening on is refused at the dial, not
-    // relayed to whatever else on this host holds it: the tunnel closes
-    // with the dial-failed code and the client's connection dies.
+    // A port the workspace is not listening on is refused, not relayed to
+    // whatever else on this host holds it.
     const stray = startForwardCli(
       workspaceId, '--bind', '127.0.0.1', '--port', `${String(server.lock.port)}:${String(hostPort)}`,
     )
@@ -714,13 +638,10 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   }, 60_000)
 
   it('records a conversation started by hand in a new terminal, through the registered hook', async () => {
-    // The whole chain, because every link of it is substrate-specific and
-    // each fails silently on its own: the command registered in the shared
-    // settings.json, the script staged onto the workspace's PATH, the pane
-    // option it sets on the workspace's own tmux server, and the watcher's
-    // subscription on a pane that is no agent window. Registering a command
-    // naming an in-image path is what made claude print a SessionStart hook
-    // error on every start here.
+    // Each link fails silently: the command registered in settings.json,
+    // the script on the workspace's PATH, the pane option it sets, and the
+    // watcher on a pane that is not an agent window. The command must not
+    // name an in-image path.
     const project = path.join(testEnv.dataDir, 'global', 'projects', SLUG)
     const commandsIn = async (file: string, event: string): Promise<string[]> => {
       const { hooks } = JSON.parse(await fs.readFile(file, 'utf8')) as
@@ -730,8 +651,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const command = (await commandsIn(path.join(project, 'claude', 'settings.json'), 'SessionStart'))
       .find((c) => c.includes('yaac-agent-links'))
     expect(command).toBe('yaac-agent-links "$HOME/.claude" claude')
-    // codex reads the same script from its own home, so a codex started by
-    // hand is recorded too.
+    // codex runs the same script from its own home.
     expect(await commandsIn(path.join(project, 'codex', 'hooks.json'), 'SessionStart'))
       .toEqual(['yaac-agent-links "$CODEX_HOME" codex'])
 
@@ -740,17 +660,16 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     await expect(fs.access(path.join(binDir, 'yaac-agent-links'), fs.constants.X_OK))
       .resolves.toBeUndefined()
 
-    // A new terminal, as the webapp's New Shell opens one, and a transcript
-    // under the tool home the workspace reaches through its link.
+    // A new terminal (as the webapp's New Shell) and a transcript in the
+    // tool home.
     const pane = (await tmux(workspaceId, 'new-window', '-d', '-n', 'shell-e2e', '-t', 'yaac', '-P', '-F', '#{pane_id}')).trim()
     await fs.mkdir(path.join(project, 'claude', 'projects', '-e2e'), { recursive: true })
     await fs.writeFile(path.join(project, 'claude', 'projects', '-e2e', 'e2e-conv.jsonl'), `${JSON.stringify({
       type: 'user', message: { role: 'user', content: 'asked from a shell' },
     })}\n`)
 
-    // Run the REGISTERED command, unedited, through `sh -c` with the
-    // workspace's own PATH and HOME and that pane's tmux environment — which
-    // is exactly how a claude started there runs it.
+    // Run the registered command as claude in that pane would: `sh -c` with
+    // the workspace's PATH, HOME and the pane's tmux variables.
     await new Promise<void>((resolve, reject) => {
       const child = execFile(
         'sh', ['-c', command ?? ''],
@@ -777,7 +696,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       expect(await conv()).toMatchObject({ tool: 'claude', active: true, prompt: 'asked from a shell' })
     }, { timeout: 30_000, interval: 250 })
 
-    // The terminal closes: the conversation stays recorded, no longer live.
+    // Closing the terminal keeps the record but marks it inactive.
     await tmux(workspaceId, 'kill-pane', '-t', pane)
     await vi.waitFor(async () => {
       expect(await conv()).toMatchObject({ active: false })
@@ -785,21 +704,14 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   })
 
   /**
-   * What a process *inside* the workspace sees: the environment of a live
-   * pane, read straight out of `/proc`.
-   *
-   * Two probes are wrong here and both are worth naming. `show-environment`
-   * reports the session environment tmux maintains for FUTURE panes, not the
-   * one the server process was started with — which is what panes actually
-   * inherit, and what the driver set at launch. And running `printenv` in a
-   * new window mutates the fixture every later test shares; it is also what
-   * left a tmux server alive through the stop case below.
+   * The environment of a live pane, read from `/proc`. `show-environment`
+   * shows what future panes get rather than what the launch set, and
+   * running `printenv` in a new window would change the shared fixture.
    */
   async function workspaceEnv(id: string): Promise<Record<string, string>> {
     const pid = (await tmux(id, 'display-message', '-p', '-t', 'yaac', '#{pane_pid}')).trim()
     const raw = await fs.readFile(`/proc/${pid}/environ`, 'utf8')
     const env: Record<string, string> = {}
-    // NUL-delimited, and a value may itself contain '='.
     for (const entry of raw.split('\0')) {
       const eq = entry.indexOf('=')
       if (eq > 0) env[entry.slice(0, eq)] = entry.slice(eq + 1)
@@ -813,11 +725,9 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     (mamaEnv ??= await workspaceEnv(workspaceId))
 
   /**
-   * `yaac-mama` as the workspace would run it, over the transport that only
-   * exists here: no proxy to queue the request, so it posts straight to the
-   * server with the bearer its launch put in its environment. Handed exactly
-   * the two variables the workspace itself was given, so nothing the test
-   * knows can stand in for them.
+   * Run `yaac-mama` as the workspace would. With no proxy, it posts directly
+   * to the server using the URL and bearer token from the workspace's
+   * environment.
    */
   async function runMama(...args: string[]): Promise<{ code: number; out: string }> {
     const creds = await mamaCreds()
@@ -835,9 +745,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const creds = await mamaCreds()
     expect(creds.YAAC_MAMA_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
     expect(creds.YAAC_MAMA_TOKEN).toBeTruthy()
-    // Handed to the workspace, never written down: the marker a restarted
-    // server rebuilds the environment from carries the create's other
-    // entries but none of its credentials.
+    // The token is never written to the marker a restarted server rebuilds
+    // the environment from.
     const marker = await fs.readFile(path.join(
       testEnv.dataDir, 'global', 'projects', SLUG, 'sessions', workspaceId,
       'containerless', 'workspace.json',
@@ -847,50 +756,34 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   })
 
   it('resolves its tool homes from the project, not the server user', async () => {
-    // The unit tests assert the env object the driver COMPUTES. This is the
-    // only place the whole chain is real — server process → launch → tmux
-    // server → the pane an agent runs in — and a leak anywhere along it (a
-    // later client attach re-exporting a name, a re-exec against the
-    // server's own environment) is invisible to a computed-object
-    // assertion. `serverEnv` poisons every one of these in `beforeAll`.
+    // Unit tests check the env the driver computes; this checks what a pane
+    // actually gets, with bogus values in the server's env (`beforeAll`).
     const env = await workspaceEnv(workspaceId)
 
-    // No home override may be inherited: the ones with nothing to replace
-    // them are gone outright, so the tool falls back through the private
-    // HOME's staged links rather than to /nowhere.
-    // Nor may the marks of a claude session that started the server.
+    // Overrides with no replacement are removed, so tools fall back to the
+    // private HOME. So are the variables of a claude session that started
+    // the server.
     for (const key of [
       'OPENCODE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME',
       'CLAUDECODE', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ID', 'GIT_EDITOR',
     ]) {
       expect(env[key], `${key} reached the workspace`).toBeUndefined()
     }
-    // And the ones a create names are the project's own directories, not
-    // the server user's and not a per-workspace path (see create.ts: claude
-    // keys its macOS Keychain item on this exact string).
+    // Replaced ones point at the project's directories, not per-workspace
+    // paths (claude keys its macOS Keychain item on this string).
     const projectDir = path.join(testEnv.dataDir, 'global', 'projects', SLUG)
     expect(env.CLAUDE_CONFIG_DIR).toBe(path.join(projectDir, 'claude'))
     expect(env.CODEX_HOME).toBe(path.join(projectDir, 'codex'))
     expect(env.PI_CODING_AGENT_DIR).toBe(path.join(projectDir, 'pi', 'agent'))
-    // The per-workspace ones name the workspace's history the same way — the
-    // directory itself, never the private HOME's link to it, which would name
-    // the same files only for as long as the link is what resolves them.
+    // Per-workspace ones name the history directory itself, not a link.
     expect(env.PI_CODING_AGENT_SESSION_DIR)
       .toBe(path.join(projectDir, 'history', workspaceId, 'pi'))
     expect(env.CODEX_SQLITE_HOME)
       .toBe(path.join(projectDir, 'history', workspaceId, 'codex-sqlite'))
-    // pnpm installs into the project's one store, beside the checkouts on
-    // the same filesystem — never a store of the private HOME's own, which
-    // would be a full copy of every dependency per workspace. Asked of pnpm
-    // itself, with the pane's environment: the variable being set proves
-    // nothing if it is not the name this host's pnpm reads, and that
-    // failure is silent everywhere but the disk.
-    // NODE-LOCAL — the host's `node-local/` folder, which on this driver is
-    // just a sibling of `global/`: the checkout and the tool homes are
-    // global, the store is not, and that is the whole of the tier split
-    // here (docs/containerless-driver.md "Storage"). Keyed by the project's
-    // id rather than its slug (docs/workspace-storage.md "The node-local
-    // tree"), which only the server knows — so it is read back off the path.
+    // pnpm uses one store per project, not one per private HOME. It lives
+    // in `node-local/`, keyed by project id
+    // (docs/containerless-driver.md, "Storage"). pnpm itself is asked, since
+    // a misnamed variable would fail silently.
     const projectsRoot = path.join(testEnv.dataDir, 'node-local', 'projects')
     const store = env.pnpm_config_store_dir ?? ''
     const projectId = path.relative(projectsRoot, store).split(path.sep)[0]
@@ -898,9 +791,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const nodeLocalProject = path.join(projectsRoot, projectId)
     expect(store).toBe(path.join(nodeLocalProject, '.cached-packages', 'pnpm-store'))
     expect(env.npm_config_store_dir).toBe(store)
-    // The driver made the store's directory as it linked it; nothing else
-    // of this project's is node-local on a host (opencode's data is the
-    // global checkpoint itself, opened directly).
+    // Nothing else is node-local here; opencode opens its global data
+    // directly.
     expect((await fs.readdir(nodeLocalProject)).sort()).toEqual(['.cached-packages'])
     expect(await fs.realpath(path.join(env.HOME ?? '', '.local', 'share', 'opencode')))
       .toBe(await fs.realpath(path.join(projectDir, 'opencode-data', workspaceId)))
@@ -909,20 +801,15 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     })
     expect(storePath.trim().split('\n').pop()?.startsWith(store), storePath).toBe(true)
 
-    // Naming the config dir moves claude's global config with it: it reads
-    // `<$CLAUDE_CONFIG_DIR>/.claude.json` and never probes the home-relative
-    // one. So the seed has to land INSIDE the dir named above — put it in the
-    // sibling `claude.json` a pod mounts and every first launch reopens the
-    // onboarding wizard and the trust dialog, with nothing to show for it.
+    // claude reads `$CLAUDE_CONFIG_DIR/.claude.json`, so the onboarding seed
+    // must be there or every launch shows the wizard and trust dialog.
     const seeded = JSON.parse(await fs.readFile(
       path.join(env.CLAUDE_CONFIG_DIR ?? '', '.claude.json'), 'utf8',
     )) as { hasCompletedOnboarding?: boolean; projects?: Record<string, unknown> }
     expect(seeded.hasCompletedOnboarding).toBe(true)
-    // And trusted for the directory the agent actually opens here.
     expect(seeded.projects?.[path.join(projectDir, 'workspaces', workspaceId)])
       .toEqual({ hasTrustDialogAccepted: true })
-    // The fallback the cleared names rely on is still in place, and is the
-    // workspace's own home rather than the user running the server.
+    // HOME is the workspace's own.
     expect(env.HOME).toContain(workspaceId)
     expect(env.HOME).not.toBe(process.env.HOME)
   })
@@ -931,8 +818,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const { code, out } = await runMama('list')
     expect(code).toBe(0)
     expect(out).toMatch(/WORKSPACE\s+TOOL\s+STATUS\s+GROUP\s+PROMPT/)
-    // Attributed by the token alone: the request never names a workspace, and
-    // the row it marks is the caller's.
+    // The token alone identifies the caller.
     expect(out).toContain(`${workspaceId.slice(0, 8)} (you)`)
   })
 
@@ -943,8 +829,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const moved = await runMama('group', 'move', workspaceId.slice(0, 8), 'nightly')
     expect(moved.code).toBe(0)
 
-    // Read back through the ordinary API: what the command channel wrote is
-    // the same state the sidebar renders.
+    // Visible through the ordinary API.
     const res = await fetch(`${origin()}/api/workspace/group/list?project=${SLUG}`)
     const { groups } = await res.json() as { groups: Array<{ groupId: string; name: string }> }
     expect(groups.map((g) => g.name)).toContain('nightly')
@@ -954,13 +839,11 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   })
 
   it('renames itself, which the server records against the caller\u2019s own id', async () => {
-    // No workspace named: the token alone says who is asking, so an agent can
-    // label itself without knowing its own id.
+    // No id needed: the token identifies the caller.
     const renamed = await runMama('rename', 'wiring up the mama channel')
     expect(renamed.code).toBe(0)
     expect(renamed.out).toContain('wiring up the mama channel')
 
-    // Read back through the ordinary API — one title, one piece of state.
     const res = await fetch(`${origin()}/api/workspace/list?project=${SLUG}`)
     const body = await res.json() as { workspaces: Array<{ workspaceId: string; title?: string }> }
     const mine = body.workspaces.find((w) => w.workspaceId === workspaceId)
@@ -968,8 +851,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   })
 
   it('spawns a sibling with the create form\u2019s options, never above its own posture', async () => {
-    // This file's subject took the containerless default, which is the
-    // ceiling: a sibling may be granted that or less, never more.
+    // The caller has the containerless default, which caps its siblings.
     const above = await runMama('create', '--permission-mode', 'bypass', 'x')
     expect(above.code).toBe(1)
     expect(above.out).toContain("more permissive than this workspace's own ('accept-edits')")
@@ -981,9 +863,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(made.code).toBe(0)
     const sibling = made.out.trim()
     try {
-      // The id answers before the workspace is up, so the launch is waited
-      // for — and read off what the window execs, which is where a posture
-      // lost on the way would show.
+      // The id comes back before launch; wait for the launch command.
       await vi.waitFor(async () => {
         const cmd = await tmux(sibling, 'display', '-p', '-t', 'yaac:claude', '#{pane_start_command}')
         expect(cmd).toContain('--permission-mode plan')
@@ -994,10 +874,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   }, 120_000)
 
   it('attributes a request to the token\u2019s OWN workspace, not the one asking', async () => {
-    // The security property the whole design rests on: a request never names
-    // a workspace, so the token is the only thing that says who is calling.
-    // Proving it needs a second workspace — one token, run with no workspace
-    // argument, must retitle ITS workspace and leave the other alone.
+    // Requests never name the caller, so the token alone must decide it:
+    // another workspace's token retitles that workspace, not this one.
     const otherId = await createWorkspace()
     try {
       const theirs = await workspaceEnv(otherId)
@@ -1019,8 +897,6 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       }
       const byId = new Map(body.workspaces.map((w) => [w.workspaceId, w.title]))
       expect(byId.get(otherId)).toBe('named by its own token')
-      // The caller of every other case in this file is untouched: holding a
-      // token gets you that workspace and no other.
       expect(byId.get(workspaceId)).not.toBe('named by its own token')
     } finally {
       await runYaac(serverEnv, 'workspace', 'stop', otherId)
@@ -1032,16 +908,13 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(denied.code).toBe(2)
     expect(denied.out).toContain('unknown command')
 
-    // An empty workspace argument is a usage error, not a self-stop: it never
-    // leaves the script, so this is safe to run against the live subject.
-    // `stop "$id"` with $id unset is a caller that meant to name a sibling,
-    // and falling through to the default would stop THIS workspace instead.
+    // An empty argument (e.g. `stop "$id"` with $id unset) is a usage error,
+    // not a self-stop.
     const empty = await runMama('stop', '')
     expect(empty.code).toBe(2)
     expect(empty.out).toContain('omit the workspace to stop yourself')
 
-    // Straight at the route, past the script: the server refuses the same
-    // command, and refuses a caller it cannot identify.
+    // The server itself refuses the command and an unknown token.
     const post = async (token: string, command: string): Promise<number> => {
       const res = await fetch(`${origin()}/api/workspace/mama`, {
         method: 'POST',
@@ -1056,10 +929,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   })
 
   it('stops a workspace it names, and stops ITSELF when it names none', async () => {
-    // Its own subject, because both halves destroy one — and the second half
-    // destroys the very workspace it is running in, which is the whole point:
-    // under this driver the tmux server hosting the command IS the unit the
-    // stop takes down.
+    // Its own subject: the self-stop takes down the tmux server the command
+    // runs in.
     const doomed = await createWorkspace()
     const theirs = await workspaceEnv(doomed)
     const asDoomed = async (...args: string[]): Promise<{ code: number; out: string }> => {
@@ -1073,15 +944,12 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       return { code: Number(m[1]), out: stdout.slice(0, m.index) }
     }
 
-    // A workspace it cannot see is refused rather than half-resolved.
     const missing = await asDoomed('stop', 'no-such-workspace')
     expect(missing.code).toBe(1)
     expect(missing.out).toContain('no workspace')
 
-    // No workspace named: the token says who is asking, and the answer is the
-    // caller. Its reply may not survive its own teardown, so what is
-    // asserted is the tmux server going away — the contract the skill
-    // states, rather than the line it hopes to print.
+    // With no workspace named it stops itself. The reply may not survive,
+    // so assert that the tmux server goes away.
     await asDoomed('stop').catch(() => undefined)
     let gone = false
     for (let i = 0; i < 60 && !gone; i++) {
@@ -1089,18 +957,16 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       if (!gone) await new Promise((r) => setTimeout(r, 1_000))
     }
     expect(gone).toBe(true)
-    // A stop, not a delete: the checkout it was working in is still there.
+    // A stop keeps the checkout.
     await expect(fs.stat(
       path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', doomed),
     )).resolves.toBeDefined()
   }, 180_000)
 
   it('offers yaac\'s builtin skills where the agent\'s own HOME looks for them', async () => {
-    // The delivery a pod does with a read-only mount over each tool home. No
-    // mount namespace here, so the skills are linked into the project's
-    // shared roots — and what proves it is reading them the way the agent
-    // does: through the workspace HOME the launch built, whose `.claude` is
-    // itself a link into that shared dir.
+    // A pod mounts the skills; here they are symlinked into the project's
+    // shared tool roots. Read them the way the agent does, through the
+    // workspace HOME.
     const entries = await fs.readdir(builtinSkillsDir(), { withFileTypes: true })
     const names: string[] = []
     for (const e of entries) {
@@ -1116,11 +982,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       const viaHome = path.join(home, '.claude', 'skills', name, 'SKILL.md')
       expect(await fs.readFile(viaHome, 'utf8')).toContain('---')
     }
-    // Linked, not copied, in every tool's root: an upgrade of the install
-    // moves every workspace of the project at once, whichever tool it runs,
-    // with nothing staged that could go stale. The target is the SERVER's
-    // own install — this suite drives a built CLI, whose package root is not
-    // the one this test process resolves — so the shape is what is asserted.
+    // Linked, not copied, so an upgrade reaches every workspace. The target
+    // is the built server's install, so only its shape is checked.
     for (const root of sharedSkillRoots(SLUG)) {
       const target = await fs.readlink(path.join(root, names[0]))
       expect(target.endsWith(path.join('builtin-skills', names[0]))).toBe(true)
@@ -1129,8 +992,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   })
 
   it('signs in with a real bundle, then lets a running workspace\'s refresh win', async () => {
-    // The credential loop with no proxy in it. Three things have to hold, and
-    // they are asserted in the order they happen to one install.
+    // The credential cycle with no proxy, in the order it happens.
     const hostCreds = path.join(testEnv.dataDir, 'server-local', '.credentials', 'claude.json')
     const projectCreds = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'claude', '.credentials.json')
     const readBundle = async (p: string): Promise<Record<string, unknown>> => {
@@ -1138,10 +1000,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       return parsed.claudeAiOauth
     }
 
-    // 1. A sign-in reaches the project home as the REAL bundle. Under a
-    //    mediated runtime this file would hold `yaac-ph-access`; there is
-    //    nothing here to swap a sentinel back, so a sentinel would simply be
-    //    what the agent authenticated with.
+    // 1. A sign-in reaches the project home as the real bundle, not a
+    //    placeholder (there is no proxy to swap it).
     const signedIn = {
       accessToken: 'sk-ant-oat01-signed-in',
       refreshToken: 'sk-ant-ort01-signed-in',
@@ -1156,9 +1016,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(authExit).toBe(0)
     expect(await readBundle(projectCreds)).toEqual(signedIn)
 
-    // 2. The agent in the workspace refreshes its own token, because it holds
-    //    a real one. The rotated pair lands in the project home and nowhere
-    //    else — the host store still has the spent one.
+    // 2. The agent refreshes its own token in the project home; the host
+    //    store still has the old one.
     const refreshed = {
       ...signedIn,
       accessToken: 'sk-ant-oat01-refreshed',
@@ -1167,17 +1026,15 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }
     await fs.writeFile(projectCreds, JSON.stringify({ claudeAiOauth: refreshed }, null, 2))
 
-    // 3. A sibling create in the same project must not stamp the stale host
-    //    copy back over it: that would spend a rotation the running workspace
-    //    is still using and log its agent out.
+    // 3. Another create must not overwrite it with the stale host copy,
+    //    which would log the running agent out.
     const second = await createWorkspace()
     try {
       expect(await readBundle(projectCreds)).toMatchObject({
         accessToken: 'sk-ant-oat01-refreshed',
         refreshToken: 'sk-ant-ort01-refreshed',
       })
-      // …and the host store converged on it, so the next reader of it — the
-      // usage poller, the next server, the next project — is not stale.
+      // The host store picks up the refreshed token.
       expect(await readBundle(hostCreds)).toMatchObject({
         accessToken: 'sk-ant-oat01-refreshed',
         refreshToken: 'sk-ant-ort01-refreshed',
@@ -1188,13 +1045,10 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   }, 120_000)
 
   it('creates a workspace without running what was planted in the main clone or a sibling', async () => {
-    // Until a project's last linked checkout from an older install is
-    // converted, a pod can still write its main clone. Here that crosses no
-    // boundary, but the server's checkout is the same code the k8s server
-    // runs (docs/server-git.md), so this is where it is cheap to prove end to
-    // end: a filter driver every path selects and hooks in a pinned hooks
-    // dir, each of which would leave a marker, and the checkout still lands
-    // as committed. The same planted in a sibling's clone stays its own.
+    // The server's checkout code is shared with the k8s server
+    // (docs/server-git.md), where the main clone may be writable by a pod.
+    // Plant a filter driver and hooks (each leaves a marker) in the main
+    // clone and a sibling; the new checkout must run none of them.
     const gitDir = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'repo', '.git')
     const markers = path.join(testEnv.scratchDir, 'planted-markers')
     const hooks = path.join(testEnv.scratchDir, 'planted-hooks')
@@ -1229,10 +1083,9 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       const checkout = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', id)
       expect(await fs.readFile(path.join(checkout, 'README.md'), 'utf8')).toBe('# Test repo\n')
       expect(await fs.readdir(markers)).toEqual([])
-      // The new clone's config is the server's, with nothing planted in it.
       await expect(execFileAsync('git', ['-C', checkout, 'config', 'core.hooksPath'])).rejects.toThrow()
     } finally {
-      // Planted state would reach every later case's git in this project.
+      // Remove the planted config before later cases.
       await fs.writeFile(configPath, configBefore)
       await fs.writeFile(path.join(sibling, 'config'), siblingConfigBefore)
       await fs.rm(attributesPath, { force: true })
@@ -1240,9 +1093,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }
   }, 120_000)
 
-  // The webapp's create dialog: a title of the user's own, and a group, both
-  // on the row before its founding prompt is — so the title sweep never
-  // replaces it.
+  // The webapp's create dialog: the title and group are recorded before
+  // the prompt, so the auto-title sweep never replaces the title.
   it('creates a workspace titled and filed as the create dialog asks', async () => {
     const res = await fetch(`${origin()}/api/workspace/create`, {
       method: 'POST',
@@ -1266,14 +1118,10 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   }, 120_000)
 
   /**
-   * The permission mode a TUI agent reports, end to end: the hook claude runs
-   * with the next prompt, the pane option it sets, the server's subscription,
-   * and the row it lands on — read here through the two things the row is
-   * for, the `yaac-mama create` ceiling and (in the restart case below) what
-   * a restart relaunches in.
-   *
-   * After the mama cases, deliberately: this moves the shared subject's
-   * posture, which is the ceiling those cases read.
+   * The permission mode a TUI agent reports: claude's prompt hook sets a
+   * pane option, which the server records. Checked through the
+   * `yaac-mama create` ceiling here and the restart below. Runs after the
+   * mama cases, since it changes the shared workspace's posture.
    */
   it('follows a mode the agent reports, down and back up past the one it was created in', async () => {
     const settings = JSON.parse(await fs.readFile(
@@ -1284,9 +1132,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       .find((c) => c?.includes('yaac-agent-report'))
     expect(command).toBeDefined()
 
-    // claude runs with $TMUX hidden, so the launch hands the server on as
-    // $YAAC_TMUX — read off the running agent, since a launch that forgot it
-    // fails nothing but this.
+    // claude runs with $TMUX hidden, so the launch passes it as $YAAC_TMUX.
+    // Read it from the running agent's environment.
     const pane = (await tmux(workspaceId, 'display-message', '-p', '-t', 'yaac:claude', '#{pane_id}')).trim()
     const pid = (await tmux(workspaceId, 'display-message', '-p', '-t', 'yaac:claude', '#{pane_pid}')).trim()
     const agentEnv = async (p: string): Promise<string | undefined> => {
@@ -1308,7 +1155,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       testEnv.dataDir, 'global', 'projects', SLUG, 'sessions', workspaceId, 'containerless', 'home',
     )
     const binDir = path.join(home, '.local', 'bin')
-    // Runs the REGISTERED command through `sh -c`, as claude does.
+    // Run the registered command through `sh -c`, as claude does.
     const prompt = (permissionMode: string): Promise<string> => new Promise((resolve, reject) => {
       const child = execFile('sh', ['-c', command ?? ''], {
         env: {
@@ -1326,8 +1173,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     })
     const ceiling = async (): Promise<string> => (await runMama('create', '--permission-mode', 'bypass', 'x')).out
 
-    // A Shift+Tab into plan mode, reported with the next prompt. The hook
-    // prints nothing: UserPromptSubmit hands its stdout to the model.
+    // Switch to plan, reported with the next prompt. The hook must print
+    // nothing: UserPromptSubmit output goes to the model.
     expect(await prompt('plan')).toBe('')
     expect((await tmux(workspaceId, 'show-options', '-p', '-t', pane, '-v', '@yaac-permission-mode')).trim())
       .toBe('plan')
@@ -1335,8 +1182,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       expect(await ceiling()).toContain("more permissive than this workspace's own ('plan')")
     }, { timeout: 30_000, interval: 500 })
 
-    // A move up is recorded as readily, past the accept-edits it was created
-    // in — and left there for the restart case, which relaunches in it.
+    // A move above the created posture is recorded too, and left for the
+    // restart case.
     await prompt('auto')
     await vi.waitFor(async () => {
       expect(await ceiling()).toContain("more permissive than this workspace's own ('auto')")
@@ -1345,20 +1192,14 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
 
   // Destroys its subject — keep last.
   it('stops the workspace by taking its tmux server down', async () => {
-    // What an init command's `pnpm install` leaves in the checkout: on this
-    // substrate the ephemeral paths live there, and the stop below is what
-    // makes them ephemeral (asserted once the checkout is confirmed kept).
+    // Here ephemeral paths live in the checkout, and stop removes them
+    // (checked in the next case).
     const checkout = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', workspaceId)
     await fs.mkdir(path.join(checkout, 'node_modules', 'left-pad'), { recursive: true })
     const { exitCode } = await runYaac(serverEnv, 'workspace', 'stop', workspaceId)
     expect(exitCode).toBe(0)
-    // The tmux server is the unit: when it is gone the workspace is gone,
-    // and nothing is left holding the checkout.
-    // Polled rather than asserted outright: the runtime teardown is
-    // deliberately detached so the caller returns immediately, which means
-    // `stop` answers once the teardown is under way and the kill can land
-    // just after. What is under test is that it lands, not that it wins a
-    // race with the CLI's own exit.
+    // Polled: teardown is detached, so the kill can land after `stop`
+    // returns.
     await vi.waitFor(
       async () => { await expect(tmux(workspaceId, 'has-session', '-t', 'yaac')).rejects.toThrow() },
       { timeout: 20_000, interval: 250 },
@@ -1370,19 +1211,15 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', workspaceId,
     )
     await expect(fs.stat(dir)).resolves.toBeDefined()
-    // Minus its ephemeral paths — a stopped workspace's node_modules is
-    // otherwise a full copy of every dependency, kept for as long as the
-    // checkout is, once the private HOME's store it hardlinked into is gone.
-    // Polled: the teardown that removes it is detached.
+    // Without its ephemeral paths, which would otherwise be a full copy of
+    // every dependency. Polled, since teardown is detached.
     await vi.waitFor(
       async () => { await expect(fs.stat(path.join(dir, 'node_modules'))).rejects.toThrow() },
       { timeout: 20_000, interval: 250 },
     )
 
-    // A detached teardown cannot reach this driver's registry, and a
-    // workspace it never forgot is handed to the stale reaper on every
-    // pass — the row reappearing as "stopping…" every other minute, for
-    // as long as the server runs.
+    // A workspace the driver failed to forget would reappear as
+    // "stopping…" on each stale-reaper pass.
     for (let i = 0; i < 5; i++) {
       await new Promise((r) => setTimeout(r, 1_000))
       expect((await listWorkspaces()).map((w) => w.workspaceId)).not.toContain(workspaceId)
@@ -1393,20 +1230,14 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const res = await fetch(`${origin()}/api/workspace/${workspaceId}/file?path=notes/todo.md`)
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ path: 'notes/todo.md', content: 'mine\n' })
-    // The listing is the checkout's own git, run inside the workspace.
+    // Listing runs git inside the workspace, so it needs it running.
     expect((await fetch(`${origin()}/api/workspace/${workspaceId}/files`)).status).toBe(409)
   })
 
-  // And it really restarts — the assertion above used to stop at "the
-  // checkout is still there", which is exactly where the defect hid: the
-  // driver's own node_modules symlink tripped the ephemeral-modules guard,
-  // so every stopped workspace was permanently unrestartable.
-  //
-  // Restarted from the shape an older install's k8s launch left in the data
-  // dir: a `git worktree add` linked checkout whose `.git` and admin
-  // `gitdir` name pod paths that exist nowhere on this host. The launch
-  // converts it to a clone of its own, keeping its index, and brings its
-  // `origin/*` up to the main clone's.
+  // Restarted from the layout an older k8s install leaves: a
+  // `git worktree add` checkout whose `.git` and admin `gitdir` name pod
+  // paths. The launch converts it to its own clone, keeping its index, and
+  // updates its `origin/*` from the main clone.
   it('restarts the stopped workspace back onto a live tmux server', async () => {
     const repoGit = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'repo', '.git')
     const checkout = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', workspaceId)
@@ -1417,14 +1248,12 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     await fs.rm(path.join(checkout, '.git'), { recursive: true })
     await fs.writeFile(path.join(checkout, '.git'), `gitdir: /repo/.git/worktrees/${workspaceId}\n`)
     await fs.writeFile(path.join(admin, 'gitdir'), '/workspace/.git\n')
-    // Origin moved on since the checkout was made.
     const upstream = (await execFileAsync('git', [
       '--git-dir', repoGit, 'commit-tree', '-p', base, '-m', 'upstream', `${base}^{tree}`,
     ], { env: { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t' } })).stdout.trim()
     await execFileAsync('git', ['--git-dir', repoGit, 'update-ref', base, upstream])
-    // And the history a pod leaves: every conversation in the workspace's own
-    // `history/`, which a pod reaches through mounts and this host must reach
-    // through links (docs/workspace-storage.md "Agent history").
+    // History a pod leaves in the workspace's `history/`, which this host
+    // reaches through links (docs/workspace-storage.md, "Agent history").
     const project = path.join(testEnv.dataDir, 'global', 'projects', SLUG)
     const history = path.join(project, 'history', workspaceId)
     const rollout = path.join('2026', '09', '29', 'rollout-2026-09-29T08-32-40-pod-thread.jsonl')
@@ -1443,8 +1272,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(exitCode, `${stdout}\n${stderr}`).toBe(0)
     const windows = await tmux(workspaceId, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')
     expect(windows).toContain('claude')
-    // In the posture the agent last reported, not the one it was created in:
-    // the mode-reporting case above left it in auto.
+    // Relaunched in the last reported posture (auto, from the case above).
     await vi.waitFor(async () => {
       expect(await tmux(workspaceId, 'display', '-p', '-t', 'yaac:claude', '#{pane_start_command}'))
         .toContain('--permission-mode auto')
@@ -1454,19 +1282,16 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(await fs.readFile(path.join(checkout, '.git', 'objects', 'info', 'alternates'), 'utf8'))
       .toBe(`${path.join(repoGit, 'objects')}\n`)
     await expect(fs.access(admin)).rejects.toThrow()
-    // Host git in the checkout is exactly what the agent runs.
     await expect(execFileAsync('git', ['-C', checkout, 'status', '--porcelain']))
       .resolves.toBeDefined()
     expect((await execFileAsync('git', ['-C', checkout, 'rev-parse', base])).stdout.trim())
       .toBe(upstream)
-    // And the explorer lists it, from inside the running workspace.
     const files = await (await fetch(`${origin()}/api/workspace/${workspaceId}/files`)).json() as { paths: string[] }
     expect(files.paths).toEqual(expect.arrayContaining(['README.md', 'notes/todo.md']))
 
-    // The pod's conversations resume here: claude files this checkout's under
-    // a folder of the shared home now linked to the history (claude 2.1.282
-    // writes and resumes through such a link), and each file-history dir and
-    // rollout is linked where its tool looks it up.
+    // The pod's conversations resume here: claude's project folder for this
+    // checkout links to the history, and each file-history dir and rollout
+    // is linked where its tool looks.
     const projects = path.join(project, 'claude', 'projects')
     const linked: string[] = []
     for (const name of await fs.readdir(projects)) {
@@ -1479,10 +1304,9 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect((await fs.lstat(path.join(project, 'codex', 'sessions', rollout))).isSymbolicLink()).toBe(true)
     await runYaac(serverEnv, 'workspace', 'stop', workspaceId)
   }, 180_000)
-  // A codex conversation is known by its hook alone, so this is the path
-  // where one goes missing: its title session firing the same hook on the
-  // same pane, a resume firing none until the next turn, and a workspace
-  // never prompted having no conversation at all.
+  // codex conversations are known only through its hook: the title
+  // session fires the same hook, a resume fires none until the next turn,
+  // and an unprompted workspace has no conversation.
   it('keeps resuming a codex conversation across restarts, and starts one never prompted anew', async () => {
     const launches = async (id: string): Promise<string[]> => (await fs.readFile(
       path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'codex', `launches-${id}`), 'utf8',
@@ -1495,18 +1319,16 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }
 
     const prompted = await createWorkspaceWith('codex', '--prompt', 'hello')
-    // The first turn names the conversation on its pane, and that push is
-    // what records it — then restarted straight away.
+    // The first turn reports the conversation.
     let thread = ''
     await vi.waitFor(async () => {
       thread = (await codexSessions(prompted)).find((s) => s.agentSessionId.startsWith('thread-'))?.agentSessionId ?? ''
       expect(thread).not.toBe('')
     }, { timeout: 30_000, interval: 250 })
 
-    // Twice with no turn between. codex's resume reports nothing itself, so
-    // the launch has to name the conversation on its new pane — live, which
-    // is what gives it a status — for the second restart to bring it back.
-    // Its title session, reported after it on the same pane, must not be.
+    // Restart twice with no turn between. A resume reports nothing, so the
+    // launch must record the conversation itself for the second restart to
+    // find it. The title session must not take its place.
     for (const n of [2, 3]) {
       await restart(prompted)
       await vi.waitFor(async () => {
@@ -1518,8 +1340,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       }, { timeout: 30_000, interval: 250 })
     }
 
-    // codex mints its own ids, so a workspace never prompted has nothing to
-    // resume; `resume <workspace id>` would find nothing and kill the window.
+    // An unprompted workspace has nothing to resume, and a bad
+    // `resume` would kill the window.
     const unprompted = await createWorkspaceWith('codex')
     await restart(unprompted)
     await vi.waitFor(async () => {
@@ -1534,45 +1356,31 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
 })
 
 /**
- * `--mode acp` on a host: acpd supervising an adapter that is a host process
- * like any other, reached over a UNIX socket instead of a PTY.
- *
- * The tui cases above cannot stand in for it. Everything acp adds is
- * host-shaped — which directory the adapter is spawned in, whether there is a
- * `socat` to dial its socket with, whether the handshake ever lands — and
- * getting any of it wrong produces the failure this whole tier exists to
- * catch: a create that reports success and a workspace that is gone seconds
- * later, or a pane that stays empty forever.
- *
- * The refusals that guard the same ground (a tool with no adapter, an adapter
- * or socat missing from PATH) are unit tested against a mocked PATH instead:
- * the server's own PATH is fixed when it spawns, so a suite that needs the
- * adapter present cannot also ask what happens when it is absent.
+ * `--mode acp` on a host: acpd supervises the adapter as a host process,
+ * reached over a UNIX socket. What can go wrong is host-specific (the
+ * adapter's cwd, `socat`, the handshake), and shows up as a workspace that
+ * dies right after create or a pane that stays empty. Missing adapters or
+ * socat are unit-tested, since the server's PATH is fixed at spawn.
  */
 describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
   /**
-   * One case per tool, because what differs between them is exactly what this
-   * tier can check on a host: which binary acpd execs, what the launch command
-   * carries to it, and which posture reaches it over the protocol. The rest of
-   * the path — the socket, the record, the row — is shared, and is asserted
-   * for each so a tool that breaks it is named.
+   * One case per tool: the binary acpd runs, the launch command, and the
+   * posture sent over the protocol differ. The shared path (socket, record,
+   * row) is checked for each.
    */
   const CASES: Array<{
     tool: AgentTool
     posture: string
-    /** The mode id the adapter should be told, or undefined where the posture
-     *  is carried some other way (opencode's environment, pi's nothing). */
+    /** The mode id the adapter should be sent, if the posture is sent as one. */
     modeId?: string
     /** Fragments the tmux window's command must carry. */
     launch: string[]
-    /** The model the row should end up showing: what the handshake reported,
-     *  unless something changed it afterwards. */
+    /** The model the row should show: the handshake's, unless changed after. */
     model: string | undefined
   }> = [
     {
-      // The adapter reads no flags, so the create's model rides its
-      // environment; what it reports back is its picker's alias, which the
-      // row records as the catalog id the alias's name belongs to.
+      // The adapter takes no flags, so the model goes in its environment.
+      // It reports a picker alias, recorded as the matching catalog id.
       tool: 'claude',
       posture: 'accept-edits',
       modeId: 'acceptEdits',
@@ -1580,11 +1388,9 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
       model: 'claude-opus-5-5',
     },
     {
-      // `accept-edits` rather than `auto`: codex-acp is already in `agent`, so
-      // an `auto` create is in the mode it asked for the moment `session/new`
-      // answers, and no `session/set_mode` is sent at all. `read-only` differs
-      // from that default, so this exercises the round trip — and is the cell
-      // where failing to switch leaves the conversation looser than asked.
+      // Not `auto`, which is codex-acp's default and sends no switch.
+      // `read-only` exercises the switch, where failing would leave the
+      // conversation looser than asked.
       tool: 'codex',
       posture: 'accept-edits',
       modeId: 'read-only',
@@ -1592,26 +1398,19 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
       model: 'e2e-model',
     },
     {
-      // `plan` rather than `accept-edits`, because it is the one opencode
-      // posture that travels as a MODE — and the fake answers in v2's dialect
-      // (a `mode` config option, no `modes` block), so this drives the gate
-      // that reads it. Everything else about the posture rides the config
-      // document its TUI is launched with.
+      // `plan` is the only opencode posture sent as a mode (in v2's
+      // `mode` config option); the rest travel in the launch config.
       tool: 'opencode',
       posture: 'plan',
       modeId: 'plan',
       launch: ['OPENCODE_CONFIG_CONTENT=', '-- opencode acp'],
-      // Every create names a model, and opencode's adapter is told it after
-      // the handshake (`session/set_config_option`) — so, like pi below,
-      // the row ends on the launch's model rather than the handshake's.
+      // The model is sent after the handshake, so the row shows the
+      // create's model, not the handshake's.
       model: defaultModelFor('opencode', undefined),
     },
     {
-      // pi takes no model at launch, so the provider default reaches it as the
-      // `model` config option after the handshake — and the row shows THAT,
-      // because the record's later answer is the true one. This is the whole
-      // round trip: without it a pi workspace runs whatever pi's shared
-      // settings name, against a provider whose key the proxy never swapped.
+      // pi takes no model at launch; the provider default is sent as the
+      // `model` config option after the handshake, and the row shows it.
       tool: 'pi',
       posture: 'bypass',
       launch: ['-- pi-acp'],
@@ -1623,15 +1422,9 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     async ({ tool, posture, modeId, launch, model }) => {
       const id = await createWorkspaceWith(tool, '--mode', 'acp', '--permission-mode', posture)
 
-      // The server knows about the conversation, which is the half the record
-      // alone cannot show. Nothing on this substrate reports a workspace into
-      // existence — no informer, no pod event — so a create that fails to
-      // announce itself leaves the workspace running and unobserved: the
-      // handshake never happens, and this list stays empty for the life of
-      // the server. Straight after the create, unpolled: it holds until the
-      // conversation is a row, which is what lets a webapp swap the
-      // provisioning placeholder for the chat pane rather than a terminal on
-      // acpd's log.
+      // No pod events exist here, so the create itself must register the
+      // conversation. Checked right after create without polling: create
+      // waits for the row, so the webapp can show the chat pane at once.
       const res = await fetch(`${origin()}/api/workspace/list`)
       const { workspaces } = await res.json() as {
         workspaces: Array<{ workspaceId: string; agentSessions: AgentSessionEntry[] }>
@@ -1639,13 +1432,11 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
       const row = workspaces.find((w) => w.workspaceId === id)
       expect(row?.agentSessions.map((s) => s.agentSessionId)).toContain(`e2e-acp-${tool}`)
       expect(row?.agentSessions[0]?.mode).toBe('acp')
-      // Read from the record, which is the only source that answers for
-      // every tool: three of the four leave no transcript this host can find.
+      // From the record; most tools leave no transcript to read.
       expect(row?.agentSessions[0]?.model).toBe(model)
 
-      // The record opens under the WORKSPACE id and is renamed once
-      // `session/new` answers, so its final name is itself the assertion that
-      // the handshake completed and the server adopted the session it minted.
+      // The record is renamed to the session id once `session/new` answers,
+      // so its name shows the handshake completed.
       const record = path.join(
         testEnv.dataDir, 'global', 'projects', SLUG, 'acp', id, `e2e-acp-${tool}.jsonl`,
       )
@@ -1653,7 +1444,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
         expect(await fs.readFile(record, 'utf8')).toContain('initialize')
       }, { timeout: 30_000, interval: 250 })
 
-      // acpd tees both directions, so the adapter's own answers are in here.
+      // acpd records both directions.
       const relayed = (await fs.readFile(record, 'utf8')).trim().split('\n')
         .flatMap((line) => {
           try {
@@ -1667,34 +1458,24 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
           }
         })
 
-      // The adapter's OWN working directory, reported by the adapter — not the
-      // one the client asked for, which would be true whatever acpd did with
-      // it. acpd spawns it there, and a directory that does not exist on this
-      // host fails that spawn exactly as a missing binary would, which is how
-      // a container path in code both runtimes share took the workspace down.
+      // The adapter's own cwd must be the checkout; a nonexistent directory
+      // (e.g. a container path) fails the spawn like a missing binary.
       const created = relayed.find((m) => m.result?.sessionId === `e2e-acp-${tool}`)
-      // Against the resolved path: `process.cwd()` reports the symlink-free
-      // one, so a data dir reached through a symlink would fail a comparison
-      // with the path this test composed rather than with the directory it
-      // names.
+      // `process.cwd()` resolves symlinks, so compare resolved paths.
       expect(created?.result?.cwd).toBe(
         await fs.realpath(path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', id)),
       )
 
-      // The posture, over the protocol rather than on the command line — and
-      // only where the adapter has a mode for it. Sending one it never
-      // advertised is how a create that asked for a restraint runs without it.
+      // The posture is sent over the protocol, only where the adapter
+      // advertises a matching mode.
       const setMode = relayed.find((m) => m.method === 'session/set_mode')
       expect(setMode?.params?.modeId).toBe(modeId)
 
-      // What the window actually execs, which is where a per-adapter launch
-      // goes wrong invisibly: a posture in the wrong variable is accepted by
-      // every adapter here and simply never applied.
+      // Check the launch command; a wrong variable would be silently ignored.
       const startCmd = await tmux(id, 'display', '-p', '-t', `yaac:${tool}`, '#{pane_start_command}')
       for (const fragment of launch) expect(startCmd).toContain(fragment)
 
-      // And the window is still there: an adapter that dies takes acpd, the
-      // window and the tmux server down with it.
+      // A dead adapter would take the window down with it.
       const windows = await tmux(id, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')
       expect(windows).toContain(tool)
 
@@ -1702,10 +1483,8 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     }, 180_000)
 
   it('records a mode the agent moves itself to, and restarts the conversation in it', async () => {
-    // The posture on the row is what the agent runs under NOW. Created in
-    // `accept-edits`, the conversation moves itself into plan mode mid-turn —
-    // as EnterPlanMode does — and a restart has to bring it back in plan mode,
-    // not in the posture it happened to be created with.
+    // The agent moves itself into plan mode mid-turn (as EnterPlanMode
+    // does); a restart must relaunch in plan, not the created posture.
     const id = await createWorkspaceWith(
       'claude', '--mode', 'acp', '--permission-mode', 'accept-edits', '--prompt', ENTER_PLAN_MODE,
     )
@@ -1724,8 +1503,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     const setModes = async (): Promise<Array<string | undefined>> =>
       (await relayed()).filter((m) => m.method === 'session/set_mode').map((m) => m.params?.modeId)
 
-    // The turn is over once its reply is on the record, and the mode update
-    // came down the same socket ahead of it.
+    // The turn is done once its reply is recorded.
     await vi.waitFor(async () => {
       const lines = await relayed()
       const prompt = lines.find((m) => m.method === 'session/prompt')
@@ -1736,8 +1514,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
 
     expect((await runYaac(serverEnv, 'workspace', 'stop', id)).exitCode).toBe(0)
     expect((await runYaac(serverEnv, 'workspace', 'restart', id)).exitCode).toBe(0)
-    // acpd starts the new life's record afresh, so the only set_mode left is
-    // the restart's — the row's posture as the agent last reported it.
+    // acpd starts a new record, so the only set_mode is the restart's.
     await vi.waitFor(async () => {
       expect(await setModes()).toEqual(['plan'])
     }, { timeout: 30_000, interval: 250 })
@@ -1745,9 +1522,8 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     await runYaac(serverEnv, 'workspace', 'stop', id)
   }, 180_000)
 
-  // A move up is followed like a move down — here a stand-in moving itself to
-  // bypassPermissions, as a "yes, and bypass permissions" plan-exit answer
-  // does — so a restart relaunches in it rather than in the create's plan.
+  // A move up (as a "yes, and bypass permissions" plan exit does) is
+  // followed too.
   it('records a mode the agent moves itself up to, and restarts the conversation in it', async () => {
     const id = await createWorkspaceWith(
       'claude', '--mode', 'acp', '--permission-mode', 'plan', '--prompt', 'enter bypassPermissions mode',
@@ -1787,9 +1563,8 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     const id = await createWorkspaceWith('claude', '--mode', 'acp', '--permission-mode', 'accept-edits')
     const png = Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n', 'latin1'), Buffer.from('e2e pixels')])
 
-    // A terminal paste: uploaded, and answered with the path to type in its
-    // place — here the host's own copy, and linked into the agent's HOME
-    // where a pod mounts it.
+    // A terminal paste returns a host path, also linked into the agent's
+    // HOME where a pod would mount it.
     const res = await fetch(`${origin()}/api/workspace/${id}/attachments`, {
       method: 'POST',
       headers: { 'Content-Type': 'image/png' },
@@ -1803,9 +1578,8 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     )
     expect(await fs.readFile(path.join(home, '.yaac-attachments', path.basename(pasted)))).toEqual(png)
 
-    // A chat message: the image rides the prompt inline, reaches the agent
-    // (acpd records what it relays), and comes back in the history a pane
-    // attaching later is greeted with.
+    // A chat message carries the image inline to the agent, and it shows in
+    // the history a later attach receives.
     const attach = async (): Promise<{ ws: WebSocket; hello: { events: Array<{ type: string; content?: unknown[] }> } }> => {
       const ws = new WebSocket(
         `ws://127.0.0.1:${String(server.lock.port)}/api/acp/attach?id=${id}&session=e2e-acp-claude`,
@@ -1841,9 +1615,8 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
   }, 180_000)
 
   it('lets a create go once its adapter has died, rather than holding for a handshake', async () => {
-    // The hold's give-up branch. An adapter that exits takes acpd and its
-    // window with it, so the create must notice that and return, not sit out
-    // the whole conversation budget behind "Connecting to…".
+    // A dead adapter takes acpd and its window down; create must notice and
+    // return rather than wait out the handshake timeout.
     const marker = path.join(path.dirname(managedBin('claude-agent-acp')), ACP_ADAPTER_DIES)
     await fs.writeFile(marker, '')
     try {
@@ -1859,11 +1632,8 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
   }, 120_000)
 
   it('refuses a posture the adapter has no mode for, before provisioning anything', async () => {
-    // codex has a read-only sandbox; codex-acp does not — it collapses codex's
-    // approval × sandbox grid into three, the one it calls `read-only` being
-    // codex's default preset. Refusing is the point: quietly launching the
-    // nearest neighbour would hand back a workspace with a weaker restraint
-    // than the one that was asked for.
+    // codex-acp has no mode matching yaac's `read-only`; launching a looser
+    // one instead would be unsafe.
     const before = (await listWorkspaces()).length
     const { exitCode, stderr, stdout } = await runYaac(
       serverEnv, 'workspace', 'create', SLUG,
@@ -1872,34 +1642,26 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     expect(exitCode).not.toBe(0)
     expect(`${stdout}${stderr}`).toMatch(/read-only.*permission mode under acp/)
     expect((await listWorkspaces()).length).toBe(before)
-    // The same posture through the same tool's TUI is fine, which is what
-    // makes this the adapter's limit rather than codex's.
+    // The codex TUI supports it; the limit is the adapter's.
     expect(toolSupportsPermissionMode('codex', 'read-only', 'tui')).toBe(true)
   }, 60_000)
 })
 
-// Runs last in the file: it replaces the shared server, and the workspace it
-// creates is the one it then recovers.
+// Replaces the shared server, so it runs after the cases above.
 describe.skipIf(!CAN_RUN)('containerless recovery across a server restart', () => {
   it('re-adopts a workspace whose tmux server outlived the server that made it', async () => {
     const id = await createWorkspace()
 
-    // A real restart: the old server process goes away entirely and a new
-    // one comes up on the same data dir. Driven from the fixture rather
-    // than through `yaac server restart` so `server` keeps naming the
-    // process this file is talking to (and the one afterAll stops).
+    // A real restart on the same data dir, via the fixture so `server`
+    // stays the process afterAll stops.
     await server.stop()
     server = await spawnYaacServer(serverEnv)
 
-    // The whole premise of the design: restarting yaac must not stop
-    // anyone's agent.
+    // Restarting the server must not stop any agent.
     await expect(tmux(id, 'has-session', '-t', 'yaac')).resolves.toBeDefined()
 
-    // And the new server has to KNOW about it — recovered from the markers
-    // on disk, since nothing else on a host records that a workspace exists.
-    // Polled because the recovery scan runs as the driver attaches, which is
-    // after the server is answering: a client that connects in that window
-    // sees the workspaces appear rather than being made to wait for them.
+    // The new server recovers it from the markers on disk. Polled, since
+    // recovery runs after the server starts answering.
     await vi.waitFor(
       async () => expect((await listWorkspaces()).map((w) => w.workspaceId)).toContain(id),
       { timeout: 20_000, interval: 250 },
@@ -1909,26 +1671,11 @@ describe.skipIf(!CAN_RUN)('containerless recovery across a server restart', () =
   }, 180_000)
 })
 
-/**
- * `yaac workspace create --group`, which no other tier drives: the k8s suite
- * reaches the same server code through `yaac-mama create --group`, but the
- * FLAG's own path — parse, into the create body, resolved before anything is
- * provisioned — is only exercised here. Containerless because a real create
- * costs a second here and a pod elsewhere.
- */
 describe.skipIf(!CAN_RUN)('yaac forward against a containerless server on this machine', () => {
   it('refuses, because the workspace already binds the host port itself', async () => {
-    // The ports ARE this host's here, so what the server offers is the
-    // identity mapping over listeners that already exist. A forwarder
-    // would fail every bind against the dev server holding the port, once
-    // per poll, forever — or take the port from one still booting
-    // (docs/port-forward-tunnel.md). The tunnel itself is real, and the
-    // case above drives it; what is refused is binding on the machine the
-    // dev servers bind on.
-    // No session named: whether this install can be forwarded from here is
-    // a fact about the server and this origin, so the refusal must not
-    // depend on one — and this file's workspace has been stopped by the
-    // cases above.
+    // Workspace ports are already this host's ports, so a forwarder here
+    // would fight the dev servers for them (docs/port-forward-tunnel.md).
+    // The refusal depends only on the server, so no workspace is named.
     const { exitCode, stderr } = await runYaac(serverEnv, 'forward')
     expect(exitCode).toBe(1)
     expect(stderr).toMatch(/containerless driver/)
@@ -1936,6 +1683,10 @@ describe.skipIf(!CAN_RUN)('yaac forward against a containerless server on this m
   })
 })
 
+/**
+ * The `--group` flag of `yaac workspace create`. The k8s suite covers the
+ * same server code through `yaac-mama create --group`.
+ */
 describe.skipIf(!CAN_RUN)('yaac workspace create --group', () => {
   it('creates the named group and files the new workspace into it', async () => {
     const before = new Set((await listWorkspaces()).map((w) => w.workspaceId))
@@ -1948,16 +1699,13 @@ describe.skipIf(!CAN_RUN)('yaac workspace create --group', () => {
     const fresh = (await listWorkspaces()).find((w) => !before.has(w.workspaceId))
     expect(fresh).toBeDefined()
 
-    // The group was created by name — the caller was naming one, not picking
-    // it from a list they could see.
+    // The group is created by name.
     const res = await fetch(`${origin()}/api/workspace/group/list?project=${SLUG}`)
     const { groups } = await res.json() as { groups: Array<{ groupId: string; name: string }> }
     const made = groups.find((g) => g.name === 'friday batch')
     expect(made).toBeDefined()
 
-    // And the workspace is IN it, which is the half a create could silently
-    // skip: the filing happens as the row is written, not when provisioning
-    // finishes.
+    // And the workspace is filed in it.
     const listed = await runYaac(serverEnv, 'workspace', 'list', SLUG)
     expect(listed.stdout).toMatch(new RegExp(`${fresh!.workspaceId.slice(0, 8)}[^\\n]*friday batch`))
 
@@ -1965,34 +1713,25 @@ describe.skipIf(!CAN_RUN)('yaac workspace create --group', () => {
   }, 180_000)
 })
 
-/**
- * An agent that is installed but cannot run — the launch failure no PATH
- * check predicts, and the one that used to be completely silent.
- *
- * Last in the file: its subject is a workspace that dies on purpose.
- */
+/** An agent that is installed but exits as soon as it launches. */
 describe.skipIf(!CAN_RUN)('an agent that dies the moment it launches', () => {
   it('reports it as a failed provisioning row instead of a workspace that vanishes', async () => {
     const watch = collectSnapshots(server.lock.port)
     await watch.opened
     try {
-      // The fake codex, told `sick`, exits 127, so tmux closes the window the
-      // instant it is respawned — and `respawn-window` still reports success, which is
-      // the whole defect: before this the create said it worked and the
-      // workspace was gone seconds later with nothing said.
+      // The fake codex exits 127 with `--model sick`, so tmux closes the
+      // window, though `respawn-window` reports success.
       const { exitCode } = await runYaac(
         serverEnv, 'workspace', 'create', SLUG, '--tool', 'codex', '--model', 'sick',
       )
-      // The create itself does NOT fail, and that is deliberate: the probe
-      // is not awaited, so its settle delay never lands on a create's wall
-      // clock. The verdict arrives just behind it.
+      // Create succeeds: the launch check runs afterwards, so it never
+      // slows a create down.
       expect(exitCode).toBe(0)
 
       await vi.waitFor(() => {
         const row = watch.latest()?.provisioning.find((p) => p.tool === 'codex' && p.error)
         expect(row?.error).toMatch(/exited right after launch/)
-        // Containerless, so the row also names what to check — the failure
-        // is nearly always a tool this host cannot actually run.
+        // Containerless rows also name the package to check.
         expect(row?.error).toContain(`@openai/codex@${AGENT_PACKAGES.codex.version}`)
       }, { timeout: 30_000, interval: 250 })
     } finally {
@@ -2002,11 +1741,8 @@ describe.skipIf(!CAN_RUN)('an agent that dies the moment it launches', () => {
 })
 
 /**
- * Queued workspaces (docs/queued-workspaces.md): what an agent or the user
- * queues after a workspace starts when that workspace is STOPPED, and waits
- * under it when it dies instead.
- *
- * Last in the file: both cases destroy the parents they create.
+ * Queued workspaces (docs/queued-workspaces.md): a queued workspace starts
+ * when its parent is stopped, and stays queued if the parent dies instead.
  */
 describe.skipIf(!CAN_RUN)('queued workspaces', () => {
   /** `yaac-mama` as the workspace `id` runs it, with its own credentials. */
@@ -2032,18 +1768,15 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
     }
     let childWorkspace: string | undefined
     try {
-      // Named, not left to the project's remembered default: earlier cases in
-      // this file create with other postures, and this one's is the ceiling
-      // asserted below. Asking above it queues nothing.
+      // An explicit posture, since earlier cases change the remembered one
+      // and it is the ceiling checked below.
       const parent = await createWorkspace('--permission-mode', 'accept-edits')
       await expect(mamaAs(parent, 'queue', '--parent-workspace', parent, '--tool', 'codex', '--permission-mode', 'bypass', 'x'))
         .rejects.toThrow(/more permissive than this workspace's own \('accept-edits'\)/)
       // The parent is never implied.
       await expect(mamaAs(parent, 'queue', 'x')).rejects.toThrow(/usage: yaac-mama queue --parent-workspace/)
-      // The fake codex reports its conversation only once a prompt has been
-      // pasted into it, which is what proves the prompt arrived; it logs its
-      // launch arguments, which is where the model and posture show. Every
-      // one of them comes from the edit, not from what was queued.
+      // The fake codex reports a conversation only once it gets a prompt,
+      // and logs its launch arguments. All of these come from the edit.
       const child = await mamaAs(parent, 'queue', '--parent-workspace', parent, 'draft')
       await expect(mamaAs(parent, 'edit-queued', child.slice(0, 8), ''))
         .rejects.toThrow(/usage: yaac-mama edit-queued/)
@@ -2051,8 +1784,8 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
         parent, 'edit-queued', '--tool', 'codex', '--model', 'gpt-5.5', '--permission-mode', 'read-only',
         '--title', 'Say hello', child.slice(0, 8), 'hello',
       )).toContain(`Updated queued workspace ${child.slice(0, 8)}: codex gpt-5.5, read-only — hello`)
-      // Queued under the parent, then moved under the child with no new
-      // prompt: were the move lost, the parent's stop would launch it too.
+      // Moved from the parent to the child; if the move were lost, the
+      // parent's stop would launch it too.
       const grandchild = await mamaAs(parent, 'queue', '--parent-workspace', parent, 'after that')
       expect(await mamaAs(
         parent, 'edit-queued', '--parent-workspace', child.slice(0, 8), '--ui-mode', 'acp',
@@ -2081,8 +1814,7 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
       expect(launches).toContain('--sandbox read-only')
       expect(launches).toContain('--model gpt-5.5')
 
-      // The grandchild did not start: it waits on the workspace the child
-      // became, for that one's own stop.
+      // The grandchild waits for the child's own stop.
       const entry = latest().queuedWorkspaces.find((q) => q.id === grandchild)
       const group = latest().workspaceGroups.find((g) => g.projectSlug === SLUG && g.name === 'e2e follow-ups')
       expect(entry).toMatchObject({
@@ -2119,9 +1851,9 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
       expect(res.status).toBe(200)
       const { id } = await res.json() as { id: string }
 
-      // Out of band: the agent's tmux going away is a death, not a stop.
+      // Killing tmux directly is a death, not a stop.
       await tmux(parent, 'kill-server').catch(() => undefined)
-      // The reaper notices on its resync, so this can take a minute or more.
+      // The reaper can take a minute or more to notice.
       await vi.waitFor(() => {
         expect(latest().heldWorkspaces.map((h) => h.workspaceId)).toContain(parent)
       }, { timeout: 180_000, interval: 500 })

@@ -1,35 +1,20 @@
-// The public interface of the agents feature. Everything outside this
-// directory imports `#runtime/agents`; the SEALED_FOLDERS lint rule stops
-// src from reaching past this file. Modules in here import each other by
-// relative path, which is why they are unaffected by that rule.
+// Barrel for `#runtime/agents`: what yaac knows about each coding agent
+// (how it is launched in tmux, how the server talks to it, where it writes
+// its transcript, how busy/idle is read, how it announces conversations).
+// It knows nothing of workspace lifecycle, the DB or the status store, so
+// the volatile per-tool and per-protocol details stay contained here.
 //
-// This feature owns *what yaac knows about a coding agent*: how each tool
-// is launched inside tmux, how the server talks to it, where it writes its
-// transcript, how its busy/idle state is read, and how it announces the
-// conversations it starts. Nothing here knows a session exists — no pod
-// lifecycle, no database, no status store. That is the whole point of the
-// seal: the per-tool grammars (claude's spinner titles, opencode's
-// busy markers, codex's rollout filenames) and the per-protocol wire
-// details (ACP's `session/update` variants) are the most volatile
-// knowledge in the server, and they change without any caller changing.
+// Two dispatch tables, which callers should reach for first:
 //
-// There are two dispatch tables, on two axes, and a caller should reach
-// for one of them before anything else:
+//  - `agent-tools.ts`, keyed by `AgentTool` (which agent).
+//  - `drivers.ts`, keyed by `AgentMode` (which protocol); its `AgentDriver`
+//    launches and observes a conversation for `tui` and `acp` alike.
 //
-//  - `agent-tools.ts` takes an `AgentTool` — which agent is running.
-//  - `drivers.ts` takes an `AgentMode` — which protocol drives it. The
-//    `AgentDriver` it returns is how a conversation is launched and
-//    observed, so `tui` (tmux control mode) and `acp` (JSON-RPC under
-//    acpd) stay interchangeable to every caller.
-//
-// A name only belongs below when the answer genuinely cannot be given
-// tool- or mode-agnostically.
-//
-// Adding a name here widens the interface and obliges a unit test in
-// packages/server/test/features/agents/. Modules not re-exported are
-// internal: `jsonl.ts` is exercised through the transcript readers, the
-// per-tool classifiers through `classifyAgentObservation`, `control-mode.ts`
-// and the `acp-*` protocol modules through their drivers.
+// Export something below only when it cannot be tool- or mode-agnostic.
+// Each export needs a unit test in packages/server/test/runtime/agents/.
+// Internal modules are covered through the exports: `jsonl.ts` via the
+// transcript readers, per-tool classifiers via `classifyAgentObservation`,
+// `control-mode.ts` and the `acp-*` modules via their drivers.
 
 export {
   agentDriver,
@@ -42,9 +27,7 @@ export { attachAcp } from './acp-bridge'
 export { parkAcpLaunchModel } from './acp-driver'
 export { acpConversation } from './acp-registry'
 export { acpRecord, readAcpFirstPrompt, replayAcpLog } from './acp-log'
-// A tui claude conversation as the events an acp one produces, so a stopped
-// workspace's history reads the same either way. The translation is the ACP
-// adapter's own, run as a library — see the module header.
+// A tui claude conversation rendered as acp events (see the module header).
 export { claudeTranscriptAsAcp } from './claude-acp-replay'
 export type { AcpConversation } from './acp-client'
 export {
@@ -65,10 +48,8 @@ export {
   AgentLaunchDeadError,
   type InitWindow,
 } from './agent-command'
-// Where each tool keeps its transcript on disk, and the project-relative
-// form the path travels and is stored in. The per-tool readers in here are
-// the primary consumers; these are what a mediator needs to record a
-// path, resolve one back, or stat it for last activity.
+// Where each tool keeps its transcript, and the project-relative form it is
+// stored in.
 export {
   CLAUDE_POD_CWD,
   CLAUDE_POD_REPO,
@@ -80,9 +61,8 @@ export {
   toProjectRelative,
   transcriptLastActiveMs,
 } from './transcripts'
-// codex is the one tool whose posture is read off its disk rather than pushed
-// on its pane, so a caller following it has to know it is codex anyway. Its
-// rollouts' names and lineage are what a workspace's history is gathered by.
+// codex's posture is read from its rollout rather than pushed on its pane;
+// rollout names and lineage also group a workspace's history.
 export { codexRolloutParent, codexRolloutThreadId, getCodexPermissionMode } from './codex'
 export { ensureAgentReporters } from './agent-reporters'
 // How the server reads and writes the project dirs an agent can write too.

@@ -61,9 +61,9 @@ describe('consumeNdjsonStream', () => {
   })
 
   it('carries the server\'s error code, not just its message', async () => {
-    // These streams answer 200 and put the failure in the body, so this is
-    // the only place a code can survive to a caller that branches on it —
-    // the webapp offers to install a MISSING_TOOL and retry.
+    // These streams answer 200 with the failure in the body, so the code
+    // must survive here for callers that branch on it (the webapp offers to
+    // install a MISSING_TOOL and retry).
     const res = ndjsonResponse([
       { type: 'error', error: { code: 'MISSING_TOOL', message: '"codex" is not on this host\'s PATH' } },
     ])

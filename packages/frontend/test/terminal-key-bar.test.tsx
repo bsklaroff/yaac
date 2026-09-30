@@ -31,8 +31,8 @@ describe('TerminalKeyBar', () => {
     render(<TerminalKeyBar workspaceId="s1" target="agent" />)
     const event = new PointerEvent('pointerdown', { bubbles: true, cancelable: true })
     screen.getByLabelText('Escape').dispatchEvent(event)
-    // The default action — moving focus out of xterm's hidden textarea, which
-    // dismisses the keyboard — is what must not happen.
+    // The default action would move focus out of xterm's hidden textarea and
+    // dismiss the on-screen keyboard.
     expect(event.defaultPrevented).toBe(true)
     off()
   })

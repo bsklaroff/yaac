@@ -10,10 +10,8 @@ import type { ProxyState } from '#drivers/k8s/substrate/proxy-objects'
 import type { RefreshedToolCredentials } from '@yaac/shared/types'
 
 /**
- * Synchronous reads of the `ClusterCache`'s view of the proxy's two output
- * objects. The cache is the boundary — what the informer put in it is what
- * these answer — so a stub stands in for it; the mapping from raw objects
- * is the cache's own, tested with it.
+ * Synchronous reads of the proxy's output objects from the `ClusterCache`.
+ * The cache is stubbed; its mapping from raw objects is tested with it.
  */
 
 function cacheOf(state: ProxyState, refreshed: RefreshedToolCredentials = {}): ClusterCache {

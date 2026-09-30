@@ -19,19 +19,12 @@ export async function fileHash(filePath: string): Promise<string> {
 }
 
 /**
- * Content hash for a root (FROM-scratch) workspace image layer: everything
- * that goes into building it. Shared by the server's layer resolution and
- * the test global setup so both derive identical tags.
- *
- * Content ONLY — no uid. The images are uid-agnostic
- * (docs/arbitrary-uid-images.md), so one tag serves every host and the same
- * bytes can be built once and shipped.
+ * Content hash of the base image layer: its Dockerfile plus the in-pod
+ * daemons it COPYs (dockerfiles/streamd/ and dockerfiles/acpd/). Shared
+ * with the test global setup so both derive identical tags. No uid goes
+ * in, since the images work under any uid (docs/arbitrary-uid-images.md).
  */
 export async function baseImageHash(dockerfilePath: string): Promise<string> {
-  // The base build also COPYs the in-pod daemons — dockerfiles/streamd/ (the
-  // stream daemon) and dockerfiles/acpd/ (the ACP agent supervisor) — so
-  // their sources are part of the layer's content hash: editing either
-  // retags the image just like a Dockerfile edit.
   const streamdHash = await contextHash(path.join(DOCKERFILES_DIR, 'streamd'))
   const acpdHash = await contextHash(path.join(DOCKERFILES_DIR, 'acpd'))
   return stringHash(
@@ -39,18 +32,15 @@ export async function baseImageHash(dockerfilePath: string): Promise<string> {
   )
 }
 
-/**
- * Content hash of the tools layer's one build input. Shared by the server's
- * layer resolution and the test global setup so both derive identical tags.
- */
+/** Content hash of the tools layer's Dockerfile. Shared with the test
+ *  global setup so both derive identical tags. */
 export function toolsContentHash(): Promise<string> {
   return fileHash(path.join(DOCKERFILES_DIR, 'Dockerfile.tools'))
 }
 
 /**
- * Content hash of a build context, honoring the context's .containerignore
- * (the same file `podman build` consults) so dev-only files — tests,
- * node_modules — never churn image tags.
+ * Content hash of a build context, skipping what its .containerignore
+ * excludes (as `podman build` does) so dev-only files don't change tags.
  */
 export async function contextHash(dir: string): Promise<string> {
   let ignore = new Set<string>()
@@ -68,37 +58,27 @@ export async function contextHash(dir: string): Promise<string> {
   return hasher.digest('hex').slice(0, 16)
 }
 
-// We shell out to `podman build` instead of calling dockerode's buildImage
-// (which would hit podman's Docker-compat /build endpoint) for two reasons:
-//   1. The compat endpoint writes Docker v2 manifests while `podman build`
-//      writes OCI manifests. Layer digests differ across formats, so a
-//      dockerode build cannot reuse cache from a CLI build and vice versa.
-//   2. The compat endpoint defaults to layers=false, discarding intermediate
-//      layers — so even back-to-back dockerode builds rebuild from scratch.
-// Staying on the CLI keeps one shared OCI cache chain across all builders.
 export interface BuildOptions {
   onLog?: (line: string) => void
 }
 
 /**
- * Host build budgets, the pair the in-pod build gets from its idle budgets
- * plus BUILDER_ACTIVE_DEADLINE_SECONDS.
- *
- * Idle is the primary signal: `podman build` goes quiet only between the
- * progress ticks of one RUN step, so ten minutes without a byte means the
- * engine is wedged, however long the build has legitimately been running
- * (see streaming-proc.ts). It cannot be the only signal, because it never
- * fires on a build that is wedged but chatty — a RUN step retrying in a
- * loop, a download stuck at 3% still emitting ticks. That build holds the
- * image-store lock, which blocks and idle-kills every host build behind it,
- * so it gets a total backstop too. An hour, chosen the way the pod deadline
- * is — far above any honest build, far below never — and shorter than the
- * pod's, because the host layers are yaac-shipped Dockerfiles over pinned
- * upstreams rather than whatever a project's own Dockerfile does.
+ * Host build timeouts. Ten minutes with no output means the build is stuck.
+ * The one-hour total catches a stuck build that keeps printing (a retry
+ * loop), which would otherwise hold the image-store lock and block every
+ * host build behind it. Shorter than the builder pod's deadline because
+ * host builds are only yaac's own Dockerfiles.
  */
 const HOST_BUILD_IDLE_TIMEOUT_MS = 600_000
 const HOST_BUILD_TOTAL_TIMEOUT_MS = 3600_000
 
+/**
+ * Run `podman build` via the CLI rather than podman's Docker-compat API:
+ * the compat endpoint writes Docker v2 manifests and discards intermediate
+ * layers, so it could not share the CLI's OCI layer cache. Tracked (see
+ * `runTrackedPodman`) so a build orphaned by a server exit is not
+ * duplicated by the next server.
+ */
 export async function buildImage(
   imageName: string,
   dockerfile: string,
@@ -117,9 +97,6 @@ export async function buildImage(
   }
   args.push(context)
 
-  // Tracked, not a bare spawn: an orphaned build survives the server, and
-  // its tag lands in the store only at the end — so the next server would
-  // see the tag missing and start a duplicate build alongside it.
   await runTrackedPodman(args, {
     tag: imageName,
     logPrefix: `[build ${imageName}] `,
@@ -129,10 +106,8 @@ export async function buildImage(
   })
 }
 
-/**
- * Build an image if a tagged version does not already exist.
- * Used by test global setup to pre-build images with content-hash tags.
- */
+/** Build an image unless its tag already exists. Used by the CLI install
+ *  and the test global setup. */
 export async function ensureImageByTag(tag: string, dockerfile: string, context: string, buildArgs?: Record<string, string>): Promise<void> {
   if (await imageExists(tag)) return
   serverLog(`[build] starting ${tag}`)
@@ -155,7 +130,7 @@ export interface ImageLayer {
   dockerfile: string
   context: string
   buildArgs?: Record<string, string>
-  /** Hash of this layer's content, used for composing downstream hashes */
+  /** Hash of this layer's content, folded into downstream layers' hashes. */
   contentHash: string
 }
 
@@ -167,15 +142,10 @@ export interface TrustedLayers {
 }
 
 /**
- * The three layers yaac itself ships: the Ubuntu+Node base, the agent CLIs
- * on top of it, and the optional in-pod container engine.
- *
- * Split out of `resolveImageChain` because these are the layers NO server
- * builds: they are yaac's own, pinned by the install's Dockerfiles, and
- * `yaac cluster install` builds and pushes all three on the CLI machine
- * (docs/trust-split-builds.md). Both that install and the chain resolution
- * derive their tags from here, so the tag the install pushes is by
- * construction the tag a workspace create looks up.
+ * The three layers yaac ships: the Ubuntu+Node base, the agent CLIs, and
+ * the optional in-pod container engine. `yaac cluster install` builds these
+ * (docs/trust-split-builds.md), never the server. Both the install and
+ * `resolveImageChain` take their tags from here, so they always agree.
  */
 export async function resolveTrustedLayers(prefix = 'yaac'): Promise<TrustedLayers> {
   const baseDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
@@ -188,8 +158,7 @@ export async function resolveTrustedLayers(prefix = 'yaac'): Promise<TrustedLaye
     contentHash: baseHash,
   }
 
-  // Split out from the base so editing the agent toolchain re-runs only this
-  // layer and its downstream, not the slow apt/Node build under it.
+  // Separate from base so a toolchain edit skips the slow apt/Node build.
   const toolsHash = stringHash(`${baseHash}:${await toolsContentHash()}`)
   const tools: ImageLayer = {
     tag: `${prefix}-tools:${toolsHash}`,
@@ -217,18 +186,19 @@ export async function resolveTrustedLayers(prefix = 'yaac'): Promise<TrustedLaye
 }
 
 /**
- * Resolves the full image layer chain for a project without building anything.
- * Returns the ordered list of layers.
+ * Resolve a project's ordered image layer chain without building anything.
  *
- * `nestedContainers` inserts the nestable layer (in-pod rootless podman +
- * docker CLI) between tools and any layered Dockerfile.yaac. Skipped for a
- * standalone Dockerfile.yaac, which owns its own toolchain.
+ * The chain is base, tools, optionally nestable (for `nestedContainers`),
+ * then the project's Dockerfile.yaac and the user's Dockerfile.user if
+ * present. A standalone (non-layered) Dockerfile.yaac replaces base, tools
+ * and nestable, and owns its own uid setup (docs/arbitrary-uid-images.md).
+ * Each layer's build dir is its whole context, so support files count
+ * toward its hash.
  *
- * The project's own layers live in repos named by its id
- * (`<prefix>-proj-<id>`, `<prefix>-user-<id>`), never beside the trusted
- * chain or another project's: a repo is the unit a registry grant can
- * scope, and a project re-added under a freed slug must not resolve the
- * old one's tags.
+ * Project and user layers live in repos named by project id
+ * (`<prefix>-proj-<id>`, `<prefix>-user-<id>`): a repo is what a registry
+ * grant can scope, and a project re-added under a reused slug must not
+ * pick up the old project's tags.
  */
 export async function resolveImageChain(
   project: ProjectRef,
@@ -237,12 +207,6 @@ export async function resolveImageChain(
 ): Promise<{ layers: ImageLayer[]; finalTag: string }> {
   const layers: ImageLayer[] = []
 
-  // Layer 1: <prefix>-base
-  // Read Dockerfile.yaac from the per-machine build dir, or fall back to
-  // Dockerfile.default. The build dir is the layer's whole build context:
-  // support files next to the Dockerfile ship to the build and are part
-  // of the layer's content hash, so editing one re-tags the image just
-  // like a Dockerfile edit.
   const projectBuild = projectBuildDir(project.slug)
   const localDockerfile = path.join(projectBuild, PROJECT_DOCKERFILE)
   let yaacDockerfile: string | null = null
@@ -255,14 +219,7 @@ export async function resolveImageChain(
 
   const yaacIsLayered = yaacContent ? isLayered(yaacContent) : false
 
-  // We're on the canonical base unless Dockerfile.yaac replaces it standalone.
-  // Tools (the agent CLI layer) sit on top of the canonical base only, and
-  // nestable on top of tools — a standalone Dockerfile.yaac skips all three
-  // (it owns its own toolchain).
   const useDefaultBase = !yaacDockerfile || yaacIsLayered
-  // Resolved only when the chain actually stands on it — a standalone
-  // Dockerfile.yaac should not pay for hashing three Dockerfiles it will
-  // never name.
   const trusted = useDefaultBase ? await resolveTrustedLayers(prefix) : null
 
   let toolsTag: string | null = null
@@ -281,15 +238,8 @@ export async function resolveImageChain(
     nestableHash = trusted.nestable.contentHash
   }
 
-  // Resolve the base layer tag (may be tools/nestable, layered yaac, or
-  // standalone yaac). A standalone Dockerfile.yaac is a root layer like
-  // Dockerfile.default — it owns its user setup, and owns the arbitrary-uid
-  // contract with it (docs/arbitrary-uid-images.md) — so it takes no build
-  // arg from us. Layered variants inherit the whole thing from the parent.
   const parentTag = nestableTag ?? toolsTag
   const parentHash = nestableHash ?? toolsHash
-  // The context hash covers the Dockerfile itself plus every support file
-  // in the build dir.
   const projectContextHash = yaacDockerfile ? await contextHash(projectBuild) : null
   const baseHash = yaacIsLayered
     ? stringHash(`${parentHash!}:${projectContextHash!}`)
@@ -314,9 +264,6 @@ export async function resolveImageChain(
   let effectiveTag = baseTag
   const effectiveHash = baseHash
 
-  // Layer 2 (optional): <prefix>-user-<id> (from ~/.yaac/build/
-  // Dockerfile.user). Same containment rule as the project layer: the
-  // build dir is the whole context, hashed as a unit.
   const userBuild = userBuildDir()
   const userDockerfile = path.join(userBuild, USER_DOCKERFILE)
   if (await fileExists(userDockerfile)) {

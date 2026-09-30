@@ -1,9 +1,9 @@
-// Verifies the desktop workspace sidebar's resize handle with a real mouse:
-// the handle sits in the gutter on the sidebar's right edge, a press-move-
-// release drag widens/narrows the card live, the width clamps at both bounds,
-// a double-click restores the default, and the width survives a reload
-// (localStorage 'yaac.sidebarwidth.v1'). Also checks the pane keeps the space
-// the sidebar gives up, since the pane is what the sidebar resizes against.
+// Verifies the desktop sidebar's resize handle with a real mouse: the handle
+// sits in the gutter on the sidebar's right edge, dragging resizes the
+// sidebar live, the width clamps at both bounds, double-click restores the
+// default, and the width survives a reload (localStorage
+// 'yaac.sidebarwidth.v1'). Also checks the pane takes the space the sidebar
+// gives up.
 //
 // Run: node test-playwright-scripts/sidebar-resize-drag.js
 // Needs: a running yaac server serving a current build (pnpm build +
@@ -40,6 +40,7 @@ function readServerLock() {
 }
 
 const SHOT_DIR = '/tmp/yaac-shots'
+// Copied from packages/frontend/src/lib/store.ts; keep in sync by hand.
 const DEFAULT_WIDTH = 256
 const MIN_WIDTH = 180
 const MAX_WIDTH = 640
@@ -67,8 +68,7 @@ async function main() {
     (el) => el.nextElementSibling.getBoundingClientRect().left,
   )
 
-  // A real press-move-release across the handle. Moves in steps so the
-  // pointermove stream looks like a hand-drag, not a teleport.
+  // Moves in steps so the pointermove stream looks like a real drag.
   const dragBy = async (dx) => {
     const box = await handle.boundingBox()
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
@@ -85,7 +85,6 @@ async function main() {
   check('starts at the default width', await sidebarWidth() === DEFAULT_WIDTH, `${await sidebarWidth()}px`)
   await shot('sidebar-resize-1-default')
 
-  // The handle is a full-height strip in the gutter, past the card's edge.
   const geom = await handle.evaluate((el) => {
     const h = el.getBoundingClientRect(), a = el.closest('aside').getBoundingClientRect()
     return { hx: h.x, hw: h.width, hh: h.height, aRight: a.right, aHeight: a.height }
@@ -103,7 +102,7 @@ async function main() {
   check('the pane gives up the same space', (await paneLeft()) - paneBefore >= 118)
   await shot('sidebar-resize-2-wide')
 
-  // Stays clear of the floor — the clamp gets its own check below.
+  // Stays above the minimum; the clamp is checked next.
   await dragBy(-100)
   const narrow = await sidebarWidth()
   check('drag left narrows it', Math.abs(narrow - (wide - 100)) <= 2, `${narrow}px`)
@@ -117,7 +116,6 @@ async function main() {
   check('clamps at the ceiling', await sidebarWidth() === MAX_WIDTH, `${await sidebarWidth()}px`)
   await shot('sidebar-resize-5-max')
 
-  // Persisted: the reloaded app comes back at the dragged width.
   await dragBy(-260)
   const dragged = await sidebarWidth()
   await page.reload()
@@ -129,7 +127,6 @@ async function main() {
   await page.waitForTimeout(120)
   check('double-click restores the default', await sidebarWidth() === DEFAULT_WIDTH, `${await sidebarWidth()}px`)
 
-  // A drag must not leave the document stuck in the resizing state.
   check('no resize class left on <body>', !(await page.evaluate(
     () => document.body.classList.contains('col-resizing'),
   )))

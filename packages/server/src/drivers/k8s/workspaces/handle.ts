@@ -4,12 +4,9 @@ import type { RuntimeHandle } from '#drivers/contract'
 import type { WorkspaceDeathCause } from '@yaac/shared/types'
 
 /**
- * Where a pod becomes contract vocabulary — the k8s runtime's one boundary
- * mapper (docs/layered-server.md).
- *
- * Above `drivers/k8s`, a workspace is a `RuntimeHandle` and nothing else;
- * this is the only place that knows one is really a pod carrying label
- * strings, a phase and kubelet's terminal state.
+ * Map a pod to the contract's `RuntimeHandle`. Code above `drivers/k8s`
+ * sees only handles; this is the one place that reads pod labels, phase and
+ * terminal state (docs/layered-server.md).
  */
 export function runtimeHandleFromPod(pod: PodInfo): RuntimeHandle {
   return {
@@ -32,14 +29,9 @@ export function runtimeHandleFromPod(pod: PodInfo): RuntimeHandle {
 }
 
 /**
- * Why a stopped pod died, from its captured terminal state.
- *
- * Derived here, with the rest of the mapping, because the raw evidence is
- * shaped like Kubernetes — an OOMKilled container reason, an Evicted pod
- * reason, a container exit code — and the reaper above wants the verdict,
- * not the vocabulary. Only the pod-stopped family is derived; the
- * classifications a pod cannot express (tmux gone, placeholder pane, orphan
- * unit) are supplied by the sites that detect them.
+ * Why a stopped pod died, from its terminal state (OOMKilled, Evicted, exit
+ * code). Only pod-level causes are derived here; others (tmux gone,
+ * placeholder pane, orphan unit) come from the code that detects them.
  */
 function deriveDeathCause(pod: PodInfo): WorkspaceDeathCause {
   const t = pod.terminal
@@ -53,8 +45,8 @@ function deriveDeathCause(pod: PodInfo): WorkspaceDeathCause {
     return { reason: 'evicted', ...(t.podMessage ? { detail: t.podMessage } : {}) }
   }
   if (t?.exitCode !== undefined && t.exitCode !== 0) {
-    // kubelet's generic terminated reason for a nonzero exit is 'Error' —
-    // it adds nothing over the exit code; any other reason is kept.
+    // kubelet's generic reason for a nonzero exit is 'Error', which adds
+    // nothing over the code.
     const parts = [`exit code ${t.exitCode}`]
     if (t.containerReason && t.containerReason !== 'Error') parts.push(t.containerReason)
     return { reason: 'crashed', detail: parts.join(', ') }

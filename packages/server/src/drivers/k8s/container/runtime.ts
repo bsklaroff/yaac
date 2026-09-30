@@ -2,41 +2,31 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
 /**
- * The host container engine, which on this side of the seam is the image
- * BUILD engine only: `yaac cluster install` runs `podman build`/`podman
- * push` through here, and the server never does — it resolves every image
- * from the in-cluster registry (docs/trust-split-builds.md). Workspaces run
- * as Jobs, so nothing here addresses a workload.
+ * The host container engine, used only by `yaac cluster install` to build
+ * and push images; the server resolves images from the in-cluster registry
+ * (docs/trust-split-builds.md).
  */
 export const execFileAsync = promisify(execFile)
 
 /**
- * The rootful podman system socket. On a Linux host it is managed by
- * systemd's `podman.socket`; inside a nested workspace pod the SAME path is
- * served by the sudo-started in-pod engine (`podman system service` —
- * podman's rootful default), opened to the yaac user at workspace setup.
+ * The rootful podman socket: systemd's `podman.socket` on a Linux host, or
+ * the in-pod engine in a nested workspace (same path).
  */
 export const ROOTFUL_PODMAN_SOCKET = '/run/podman/podman.sock'
 
 /**
- * Whether yaac drives the *rootful* podman engine. True everywhere but
- * macOS (where the rootful podman machine fills the role): on a Linux
- * host, kind's node runs as a container on this engine, and only a
- * rootful engine delegates the full cgroup2 root + BPF filesystem the
- * calico-node DaemonSet needs to program the node's netfilter — under rootless
- * podman that DaemonSet never goes Ready and `yaac cluster install` hangs.
+ * Whether yaac uses rootful podman (everywhere but macOS, where the podman
+ * machine serves). kind's node runs on this engine, and calico-node needs
+ * the cgroup2 and BPF access only a rootful engine delegates.
  */
 export function usesRootfulPodman(): boolean {
   return process.platform !== 'darwin'
 }
 
 /**
- * Point the podman CLI — and kind's podman provider, which inherits our env —
- * at the rootful system socket via `CONTAINER_HOST`, so both the image build
- * engine and the kind node land on the same rootful podman. Idempotent and
- * safe to call from every entrypoint; honours a `CONTAINER_HOST` the user set
- * themselves — including the workspace image's baked ENV (same socket path).
- * No-op on macOS (podman machine).
+ * Set `CONTAINER_HOST` to the rootful socket, so podman and kind (which
+ * inherits our env) use the same engine. Keeps a user-set value. Idempotent;
+ * no-op on macOS.
  */
 export function ensureRootfulPodmanHost(): void {
   if (!usesRootfulPodman()) return
@@ -44,9 +34,7 @@ export function ensureRootfulPodmanHost(): void {
   if (!process.env.CONTAINER_HOST) process.env.CONTAINER_HOST = `unix://${ROOTFUL_PODMAN_SOCKET}`
 }
 
-/**
- * Check whether a container image exists in the local podman store.
- */
+/** Whether an image exists in the local podman store. */
 export async function imageExists(name: string): Promise<boolean> {
   try {
     await execFileAsync('podman', ['image', 'inspect', name])

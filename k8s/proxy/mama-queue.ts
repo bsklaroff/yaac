@@ -1,46 +1,36 @@
 /**
- * In-memory queue bridging in-workspace `yaac-mama` commands to the host
- * server. A workspace pod POSTs to the magic host (`http://yaac.internal/cmd`)
- * on its transparent HTTP egress path; the proxy holds that request open here
- * while the server drains the queue over the control API (`GET /cmd/pending`,
- * claim-on-drain) and posts back `POST /cmd/results`, which completes the
- * held responses. Nothing is persisted: a command is ephemeral, and replaying
- * stale ones after a proxy restart would be worse than dropping them (the
- * in-workspace curl fails loudly and the agent can retry).
+ * In-memory queue that carries in-workspace `yaac-mama` commands to the yaac
+ * server. A workspace pod POSTs to `http://yaac.internal/cmd` over its
+ * transparent HTTP egress path, and the proxy holds that request open. The
+ * server drains the queue through the control API (`GET /cmd/pending`) and
+ * answers with `POST /cmd/results`, which completes the held responses.
+ * Nothing is persisted; after a proxy restart the caller's curl fails and
+ * the agent can retry.
  *
- * The queue does not know what any command MEANS. It carries an opaque
- * envelope — a command name, an option map and one free-text body — and the
- * server decides what may run (`runMamaCommand`, which holds the allowlist).
- * That is what keeps this a queue rather than a second implementation of the
- * yaac CLI: adding a command touches the server and the shell script, never
- * this file.
+ * The queue carries an opaque envelope (command name, options, free-text
+ * body). The server decides what may run (`runMamaCommand`), so adding a
+ * command never touches this file.
  *
- * Wire shapes are mirrored in packages/server/src/drivers/k8s/egress/proxy-client.ts
- * (PendingMamaRequest / MamaResultWire) — the proxy bundles independently and
- * cannot import server code; keep them in sync.
+ * The wire shapes mirror PendingMamaRequest / MamaResultWire in
+ * packages/shared/src/types.ts; the proxy cannot import them, so keep them in
+ * sync.
  */
 
 import crypto from 'node:crypto'
 
 /**
- * Magic hostname the in-workspace `yaac-mama` script POSTs to. Every external
- * name already resolves to the DNS sinkhole and rides the transparent HTTP
- * listener, so this needs no DNS or redirect change — the proxy routes on the
- * Host header alone. Keep in sync with workspace-bin/yaac-mama.
+ * Hostname the in-workspace `yaac-mama` script POSTs to. It reaches the
+ * transparent HTTP listener like any external name, and the proxy routes on
+ * the Host header. Keep in sync with workspace-bin/yaac-mama.
  */
 export const MAMA_MAGIC_HOST = 'yaac.internal'
 export const MAMA_PATH = '/cmd'
 /**
  * How long a held request waits for the server before failing with a 504.
- *
- * Sized against the server's worst case for noticing it should drain, which
- * is a silently dead event stream: its read-idle deadline (45s) plus a
- * reconnect backoff (up to 5s) before the reattach re-fires the drain. The
- * normal path is a `mama` event, i.e. immediate, so this budget is only
- * ever spent in that degraded lane — and at 60s it left almost none.
- *
- * `workspace-bin/yaac-mama`'s `--max-time` must stay ABOVE this, so the
- * caller sees this self-describing 504 rather than an opaque curl timeout.
+ * Normally the server drains at once on a `mama` event; the worst case is a
+ * silently dead event stream (45s read-idle deadline plus up to 5s reconnect
+ * backoff). `workspace-bin/yaac-mama`'s `--max-time` must stay above this so
+ * the caller sees the 504 rather than a curl timeout.
  */
 export const MAMA_TTL_MS = 120_000
 /** Cap on the buffered request body (a prompt, or a group name). */
@@ -51,27 +41,20 @@ export const MAMA_MAX_PENDING_PER_WORKSPACE = 8
 export const MAMA_MAX_PENDING_TOTAL = 32
 
 /**
- * Option names a request may carry, and the shape each value must have.
- *
- * A shape check, NOT an allowlist of what the command may do — the server
- * re-validates every one of these against what the command actually accepts.
- * It exists so the proxy can refuse obvious junk without holding a request
- * open for it, and so no unbounded caller-controlled string reaches the
- * server's own parsing.
+ * Option names a request may carry, and the shape each value must have. The
+ * server re-validates each against what the command accepts; this only
+ * rejects junk early and bounds what reaches the server.
  */
 const ARG_SHAPES: Record<string, RegExp> = {
   tool: /^[a-z0-9-]{1,32}$/,
   'permission-mode': /^[a-z-]{1,32}$/,
   'ui-mode': /^[a-z-]{1,32}$/,
-  // A git branch name: git itself refuses whitespace in one.
+  // git refuses whitespace in a branch name.
   branch: /^\S{1,255}$/,
   // Mirrors the server's MODEL_RE.
   model: /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$/,
-  // A group NAME, which is free-form user text (and may be `--`, meaning no
-  // group). Bounded, and newline-free so it cannot smuggle a second line
-  // into anything that renders it.
+  // Free-form text (`--` means no group); single-line so it renders safely.
   group: /^[^\n\r]{1,200}$/,
-  // A workspace title: free-form like a group name, and bounded the same way.
   title: /^[^\n\r]{1,200}$/,
   // A workspace or queued workspace id, or its short prefix.
   workspace: /^[A-Za-z0-9-]{1,64}$/,
@@ -79,9 +62,8 @@ const ARG_SHAPES: Record<string, RegExp> = {
   queued: /^[A-Za-z0-9-]{1,64}$/,
 }
 
-/** Command names the proxy will queue. Deliberately a SHAPE, not a list: the
- *  server holds the real allowlist, and a proxy that had to be upgraded to
- *  carry a new command would make every command change a two-part rollout. */
+/** Shape of a command name. The server holds the real allowlist, so a new
+ *  command needs no proxy upgrade. */
 const COMMAND_RE = /^[a-z][a-z-]{0,31}$/
 
 export interface MamaRequest {
@@ -106,19 +88,15 @@ export interface MamaResult {
 export type MamaCompleter = (status: number, body: string) => void
 
 /**
- * The option names an older install's `yaac-mama` sends — still the one
- * staged in a workspace it launched — mapped to the current ones
- * (docs/legacy-compat-shims.md).
+ * Option names sent by the `yaac-mama` an older install staged in its
+ * workspaces, mapped to the current ones (docs/legacy-compat-shims.md).
  */
 const LEGACY_ARGS = new Map([['worktree', 'workspace'], ['parent-worktree', 'parent-workspace']])
 
 /**
- * Read the `{command, args, body}` envelope off a request body.
- *
- * Structure only — `null` for anything that is not that shape, and the value
- * checks are `validateMamaRequest`'s. Non-string arg values are dropped
- * rather than rejected: they cannot be what any command meant, and the
- * server re-validates whatever survives.
+ * Read the `{command, args, body}` envelope off a request body, or null if it
+ * is not that shape. Values are checked by `validateMamaRequest`; non-string
+ * arg values are dropped.
  */
 export function parseMamaEnvelope(
   raw: string,
@@ -132,9 +110,7 @@ export function parseMamaEnvelope(
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
   const env = parsed as Record<string, unknown>
   if (typeof env.command !== 'string') return null
-  // Null-prototype, because every name in here is caller-chosen: nothing that
-  // reads this map should be able to reach an inherited member by asking for
-  // an ordinary-looking key.
+  // Null prototype: the keys are caller-chosen.
   const args = Object.create(null) as Record<string, string>
   if (typeof env.args === 'object' && env.args !== null && !Array.isArray(env.args)) {
     for (const [name, value] of Object.entries(env.args as Record<string, unknown>)) {
@@ -160,12 +136,8 @@ export function validateMamaRequest(
     return { ok: false, status: 400, error: `argument exceeds ${MAMA_MAX_BODY_CHARS} characters` }
   }
   for (const [name, value] of Object.entries(args)) {
-    // hasOwn, not a truthiness index: the map is a plain object, so a name
-    // from its prototype chain ("constructor", "toString", …) indexes to a
-    // truthy inherited member, passes the guard, and then throws on `.test`
-    // — inside a request handler, in a process with no uncaughtException
-    // handler. That is one crafted request from inside any sandbox taking
-    // egress down for every workspace on the node.
+    // hasOwn: a name like "constructor" would otherwise reach an inherited
+    // member and throw on `.test`, crashing the proxy for the whole node.
     if (!Object.hasOwn(ARG_SHAPES, name)) {
       return { ok: false, status: 400, error: `unknown option '--${name}'` }
     }
@@ -259,14 +231,10 @@ export class MamaQueue {
   }
 
   /**
-   * 504 anything (pending or claimed) the server hasn't answered within TTL.
-   *
-   * The two say different things, and the difference matters to whoever is
-   * deciding whether to retry. A PENDING request was never handed over, so
-   * nothing ran. A CLAIMED one was — the server took it and then failed to
-   * answer (it died, or the result post failed), so the command may well
-   * have run. `create` is not idempotent (each mints a fresh id), so
-   * retrying that one blindly is how you get a duplicate workspace.
+   * 504 anything the server hasn't answered within the TTL. The message
+   * differs because it guides retries: a pending request never ran, but a
+   * claimed one may have, and retrying a non-idempotent `create` would make
+   * a duplicate workspace.
    */
   expire(now: number = Date.now()): void {
     for (const [map, timedOut] of [

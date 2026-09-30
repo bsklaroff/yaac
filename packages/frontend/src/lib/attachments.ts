@@ -4,31 +4,29 @@ import type { AcpImage } from '@yaac/shared/acp'
 import { api } from '#lib/api'
 
 /**
- * Images a user hands an agent (docs/agent-modes.md, "Images"): what a paste
- * or a drop carries, shrunk to what a model reads, and delivered the way the
- * pane's mode takes it — uploaded for a path under `tui`, inline under `acp`.
+ * Images a user pastes or drops for an agent (docs/agent-modes.md,
+ * "Images"): shrunk to what a model reads, then uploaded for a file path
+ * under `tui` or sent inline under `acp`.
  */
 
-/** The long edge the model APIs resize an image down to anyway; sending more
- *  is bytes nobody reads, and under `acp` bytes the record keeps for good. */
+/** The long edge model APIs resize images down to anyway. Larger images
+ *  waste bytes, which under `acp` stay in the record for good. */
 const MAX_EDGE = 1568
 
-/** Past this, a PNG is re-encoded lossily if that is smaller: a chat image
- *  is replayed from the record on every attach, so its size is paid again
- *  and again. */
+/** Above this size a PNG is re-encoded lossily if that is smaller, since a
+ *  chat image is re-sent on every attach. */
 const COMPACT_BYTES = 1024 * 1024
 
 const SENT_AS_IS = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
 
-/** Plain text that is only a URL — what Firefox's Copy Image puts beside the
- *  image itself, and not text anyone meant to paste. */
+/** Text that is only a URL, which Firefox's Copy Image puts beside the
+ *  image. */
 const LONE_URL = /^(?:https?|file|data):\S+$/
 
 /**
- * The images a paste or drop carries — none when it also carries plain text.
- * Word, Excel and friends put a picture of the copied selection on the
- * clipboard beside its text, and the text is what was meant. Text that is only
- * a URL does not count (see `LONE_URL`).
+ * The images a paste or drop carries, or none if it also carries text:
+ * Office apps put a picture of the selection beside its text, and the text
+ * is what was meant. Text that is only a URL doesn't count (`LONE_URL`).
  */
 export function imageFiles(data: DataTransfer | null): File[] {
   if (!data) return []
@@ -38,14 +36,11 @@ export function imageFiles(data: DataTransfer | null): File[] {
 }
 
 /**
- * The images on the system clipboard, read directly. For the Shift paste
- * chords, which browsers run as paste-as-plain-text: that paste's event
- * carries no image at all, so reading the clipboard is the only way to one.
- * None when the clipboard holds any text, which the chord's own paste is
- * already delivering, or when the page may not read it (a first read asks
- * for permission; an insecure origin has no clipboard API). Stricter than
- * `imageFiles` on purpose: a lone URL is text this paste cannot take back, so
- * attaching the image too would hand the agent both.
+ * The images on the system clipboard, read directly. Used for the Shift
+ * paste shortcuts, which browsers run as plain-text pastes whose event
+ * carries no image. Returns none when the clipboard holds any text (that
+ * paste already delivers it, even a lone URL) or when the page can't read
+ * the clipboard (permission denied, or an insecure origin).
  */
 export async function clipboardImages(): Promise<File[]> {
   try {
@@ -63,9 +58,9 @@ export async function clipboardImages(): Promise<File[]> {
 }
 
 /**
- * An image no larger than the model will read: sent as it is when it already
- * fits and is small, else redrawn at `MAX_EDGE` as a PNG — or as WebP, then
- * JPEG, when the PNG is over `COMPACT_BYTES` and that is smaller.
+ * Shrink an image to what the model reads. Small images that fit are sent
+ * as-is; others are redrawn to fit `MAX_EDGE` as PNG, or as WebP / JPEG when
+ * the PNG exceeds `COMPACT_BYTES` and the lossy version is smaller.
  */
 export async function prepareImage(file: Blob): Promise<Blob> {
   const bitmap = await createImageBitmap(file)
@@ -79,8 +74,7 @@ export async function prepareImage(file: Blob): Promise<Blob> {
   canvas.getContext('2d')?.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
   bitmap.close()
   let blob = await canvas.convertToBlob({ type: 'image/png' })
-  // A browser that cannot encode one of these hands back a PNG instead, which
-  // is never smaller, so it is simply not taken.
+  // A browser that can't encode a type returns PNG, which is never smaller.
   for (const type of ['image/webp', 'image/jpeg']) {
     if (blob.size <= COMPACT_BYTES) break
     const lossy = await canvas.convertToBlob({ type, quality: 0.9 })
@@ -90,8 +84,8 @@ export async function prepareImage(file: Blob): Promise<Blob> {
   return blob
 }
 
-/** Upload an image to a running workspace; answers the path its agent reads it
- *  at, to paste in the image's place. */
+/** Upload an image to a running workspace and return the path its agent
+ *  reads it from, to paste in the image's place. */
 export async function uploadAttachment(workspaceId: string, image: Blob): Promise<string> {
   const { path } = await api.workspace[':id'].attachments.$post(
     { param: { id: workspaceId } },
@@ -111,8 +105,8 @@ export async function toAcpImage(image: Blob): Promise<AcpImage> {
   return { type: 'image', mimeType: image.type, data: url.slice(url.indexOf(',') + 1) }
 }
 
-/** An image block as something an `<img>` can show — built once per image,
- *  since it is megabytes of string and a transcript re-renders per event. */
+/** An image block as a data URL for `<img>`. Memoized because it can be
+ *  megabytes and the transcript re-renders on every event. */
 export function useImageSrc(image: AcpImage): string {
   return useMemo(() => `data:${image.mimeType};base64,${image.data}`, [image])
 }

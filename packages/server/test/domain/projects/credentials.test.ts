@@ -24,9 +24,9 @@ import { closeDb, recordProject } from '#db'
 import { forgetSecretConfig } from '#db/secret-key'
 import { secretKeyPath } from '@yaac/shared/project-paths'
 
-// The process boundary a host-key fetch crosses: `ssh` is driven against the
-// host and writes the key it negotiated into the known_hosts file it was
-// named. Stood in for here by writing HOST_KEY there, so no network is used.
+// A host-key fetch runs `ssh`, which writes the negotiated key into the
+// known_hosts file it is given. The mock writes HOST_KEY there instead, so no
+// network is used.
 const HOST_KEY = 'git.example.com ssh-ed25519 AAAAHOST'
 const sshRuns: string[][] = []
 vi.mock('node:child_process', async (importOriginal) => {
@@ -144,13 +144,12 @@ describe('resolveProjectCredential', () => {
     expect(await resolveProjectCredential('bare')).toBeNull()
     expect(await resolveProjectCredential('nope')).toBeNull()
 
-    // A remote that changes under a key loses the host key it was assigned
-    // with, and with it the credential, until the key is assigned again.
+    // Changing the remote drops the host key, and so the credential, until
+    // the key is assigned again.
     await project('svc', 'git@other.example.com:acme/svc.git')
     expect(await resolveProjectCredential('svc')).toBeNull()
 
-    // A secret that no longer opens resolves to nothing rather than to
-    // something the remote would refuse.
+    // A secret that no longer decrypts resolves to null.
     await fs.writeFile(secretKeyPath(), 'a-completely-different-key\n', { mode: 0o600 })
     forgetSecretConfig()
     expect(await resolveProjectCredential('web')).toBeNull()
@@ -199,7 +198,7 @@ describe('replaceCredential', () => {
     const replaced = await replaceCredential(key.id, {})
     expect(replaced.publicKey).toMatch(PUBLIC_KEY_RE)
     expect(replaced.publicKey).not.toBe(key.publicKey)
-    // Same host, so the host key it trusted carries over with no fetch.
+    // Same host, so the trusted host key carries over without a fetch.
     expect(await resolveProjectCredential('svc')).toEqual({
       kind: 'ssh', id: replaced.id, publicKey: replaced.publicKey, knownHostsEntry: HOST_KEY,
     })

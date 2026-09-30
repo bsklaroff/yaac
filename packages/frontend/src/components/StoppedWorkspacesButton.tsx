@@ -21,16 +21,12 @@ import { relativeAge } from '#lib/time'
 const label = (d: StoppedWorkspaceEntry): string => d.title || d.prompt || 'New workspace'
 
 /**
- * Sidebar entry point to the deleted-workspaces view plus the full-screen modal
- * it opens. Rendered as a labeled button below the Waiting/Running groups.
- * Deleted workspaces (containers gone, transcripts kept) are project-scoped, so
- * this lives in the sidebar; open state lives in the store so the overlay is a
- * sibling of the workspace, not nested in a row.
+ * Sidebar button for the project's stopped workspaces, and the full-screen
+ * modal it opens. Open state lives in the store so rows elsewhere can open it.
  *
- * The overlay is a search-filtered master/detail list ordered newest-stopped
- * first (last active, for one with no recorded stop); picking a row shows its
- * history metadata and a Restart action that recreates the container and
- * resumes the tool from where it left off.
+ * The modal is a searchable master/detail list, newest-stopped first. A row's
+ * detail shows its metadata, its conversation, and a Restart action that
+ * recreates the workspace and resumes the tool.
  */
 export function StoppedWorkspacesButton({
   projectSlug,
@@ -53,52 +49,38 @@ export function StoppedWorkspacesButton({
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<StoppedWorkspaceEntry | null>(null)
 
-  // Unseen abnormal deaths across the whole list (search-independent) drive the
-  // sidebar notification dot.
+  // Unseen abnormal deaths in the whole list drive the notification dot.
   const unseenDeaths = stopped.filter(isUnseenDeath).length
 
   const q = queryText.trim().toLowerCase()
   const rows = q
     ? stopped.filter((d) => `${label(d)} ${agentLabel(d.tool, workspaceModel(d))}`.toLowerCase().includes(q))
     : stopped
-  // `picked` is a row the user clicked; `selected` is what the detail pane
-  // shows. Desktop shows both panes, so the top row stands in there until the
-  // user picks one. A phone shows the list *or* the detail, so there the detail
-  // exists only once a row is actually tapped. Every consequence of opening a
-  // detail keys on `picked` (see the acknowledgement effect below).
+  // `picked` is the row the user clicked; `selected` is what the detail pane
+  // shows. On desktop the top row stands in until the user picks one; on a
+  // phone the detail waits for a tap.
   const picked = rows.find((d) => d.workspaceId === selectedId) ?? null
   const selected = picked ?? (isMobile ? null : rows[0] ?? null)
 
-  // Reopening the overlay on a phone should land on the list, not on whatever
-  // was last read — unless it was opened from one workspace's own row, which
-  // is a request to read that one.
+  // Reopening on a phone lands on the list, unless opened for one workspace.
   useEffect(() => {
     if (!open) setSelectedId(null)
     else if (focus !== null) setSelectedId(focus)
   }, [open, focus])
 
-  // Clicking a death's row marks it seen server-side (durable, shared across
-  // clients) and optimistically flips `seen` in the cached list so the dot /
-  // highlight clear instantly. The `!picked.seen` guard stops the cache patch
-  // from re-triggering this effect (and re-POSTing).
+  // Clicking a death's row marks it seen on the server (shared across
+  // clients) and patches the cached list so the dot clears at once. The
+  // `!picked.seen` guard stops the patch from re-running this effect.
   //
-  // Keyed on `picked`, never on `selected`: the desktop stand-in row is a
-  // display convenience, and a durable cross-client write must not ride on it.
-  // Three ways it otherwise fires for a row nobody read — merely opening the
-  // overlay acknowledges the top death; each keystroke in the search box
-  // re-filters `rows`, so hunting for one dead workspace walks the top match
-  // through several others and acknowledges each; and `useIsMobile` is live, so
-  // rotating a phone into landscape past the breakpoint materializes a
-  // stand-in and acknowledges it. "Mark all as read" is the bulk path.
+  // Keyed on `picked`, not `selected`: the desktop stand-in row changes on
+  // open, on each search keystroke and on rotation, and must not mark rows
+  // seen that nobody read.
   useEffect(() => {
     if (!open || !picked?.deathReason || picked.seen) return
     void markDeathSeen(projectSlug, picked.workspaceId)
     patchStopped(queryClient, projectSlug, (e) => (e.workspaceId === picked.workspaceId ? { ...e, seen: true } : e))
   }, [open, picked, projectSlug, queryClient])
 
-  // Dismiss every death at once. Same server-persisted acknowledgement the
-  // per-row view makes, with the same optimistic cache patch so the dot and
-  // row highlights clear without waiting for a refetch.
   const onMarkAllRead = (): void => {
     void markAllDeathsSeen(projectSlug)
     patchStopped(queryClient, projectSlug, (e) => (e.deathReason ? { ...e, seen: true } : e))
@@ -107,8 +89,7 @@ export function StoppedWorkspacesButton({
   const onConfirmRestart = (entry: StoppedWorkspaceEntry): void => {
     setConfirm(null)
     removeOptimisticStopped(entry.workspaceId)
-    // Its provisioning row takes it off the list. Close the overlay so
-    // useProvisionWorkspace's auto-open shows progress in the main pane.
+    // Close so the main pane can show the restart's progress.
     closeOverlay()
     provision(projectSlug, entry.tool, 'restart', entry.workspaceId,
       (sid, onProgress) => restartWorkspace(sid, onProgress),
@@ -117,9 +98,8 @@ export function StoppedWorkspacesButton({
 
   return (
     <Dialog.Root open={open} onOpenChange={(next) => { if (next) openOverlay(); else closeOverlay() }}>
-      {/* Entry point hidden until the project actually has stopped workspaces.
-          The overlay below stays mounted regardless so an open dialog keeps
-          its exit animation if the list empties out. */}
+      {/* The button needs stopped workspaces; the dialog stays mounted so it
+          keeps its exit animation if the list empties. */}
       {stopped.length > 0 && (
         <button
           onClick={() => openOverlay()}
@@ -132,12 +112,8 @@ export function StoppedWorkspacesButton({
           <DeleteIcon size={13} className="shrink-0 max-md:hidden" />
           <DeleteIcon size={15} className="hidden shrink-0 max-md:block" />
           <span>Stopped workspaces</span>
-          {/* The count reads as the same kind of row as a workspace group's
-              header on desktop; on touch it is the row's second affordance,
-              which is why the entry is a full tap-sized card there. */}
           <span className="text-text-faint/70">{stopped.length}</span>
-          {/* Decorative unread dot (aria-hidden so it stays out of the button's
-              accessible name); the title is a hover tooltip. */}
+          {/* Unread dot: aria-hidden so it stays out of the button's name. */}
           {unseenDeaths > 0 && (
             <span
               aria-hidden="true"
@@ -161,7 +137,6 @@ export function StoppedWorkspacesButton({
               Stopped workspaces
             </Dialog.Title>
             <div className="flex items-center gap-2">
-              {/* Only offered when there is something unread to clear. */}
               {unseenDeaths > 0 && (
                 <button
                   type="button"
@@ -245,9 +220,8 @@ export function StoppedWorkspacesButton({
                   max-md:border-0 max-md:bg-transparent max-md:p-0">
                   {selected && (
                     <>
-                      {/* Title and metadata are shrink-0 so a long prompt (the
-                          one flex-1 band) can't squeeze them into clipped
-                          lines on a short phone screen. */}
+                      {/* shrink-0 so a long transcript cannot clip these on a short
+                          phone screen. */}
                       <h3 className="shrink-0 text-sm font-semibold text-text max-md:text-[0.9375rem]">
                         {label(selected)}
                       </h3>
@@ -266,10 +240,8 @@ export function StoppedWorkspacesButton({
                           </>
                         )}
                       </dl>
-                      {/* The conversation itself, where the founding ask alone
-                          used to be. Keyed by workspace so switching rows
-                          starts the pane over rather than carrying the last
-                          one's chosen conversation into it. */}
+                      {/* Keyed by workspace so switching rows resets the chosen
+                          conversation. */}
                       <StoppedTranscript
                         key={selected.workspaceId}
                         workspaceId={selected.workspaceId}

@@ -15,7 +15,7 @@ import {
 
 const LISTENERS_TYPE = 'type.googleapis.com/envoy.admin.v3.ListenersConfigDump'
 
-/** A `/config_dump` body, with the noise Envoy really includes around it. */
+/** A `/config_dump` body, including the unrelated sections Envoy emits. */
 function dump(version: string | null, listeners: Array<Record<string, unknown>>): string {
   return JSON.stringify({
     configs: [
@@ -34,9 +34,8 @@ function bound(name: string, port: number): Record<string, unknown> {
   return {
     name,
     active_state: {
-      // Envoy stamps the version the listener was CREATED at here and
-      // never restamps it on an in-place filter chain update, which is
-      // why the gate must not read it.
+      // The version the listener was created at; in-place updates don't
+      // change it, so the gate ignores it.
       version_info: 'creation-version',
       listener: { address: { socket_address: { address: '0.0.0.0', port_value: port } } },
     },
@@ -83,9 +82,8 @@ describe('listenerGateStatus', () => {
   })
 
   it('ignores the per-listener version, which never moves on a filter chain update', () => {
-    // Verified against Envoy 1.34: adding a source prefix to a filter
-    // chain moves the LDS version and leaves this one at creation. Gating
-    // on it would pass once and then time out on every pod change.
+    // Observed on Envoy 1.34: a filter chain change moves only the LDS
+    // version.
     const view = parseListenerView(dump('v2', [bound(NAME, 15100)]))
     expect(view.listeners[0]).not.toHaveProperty('activeVersion')
     expect(listenerGateStatus(view, EXPECTED).ready).toBe(true)
@@ -182,8 +180,8 @@ describe('waitForListeners', () => {
   })
 
   it('treats an unreachable admin socket as "not up yet", not as a crash', async () => {
-    // Envoy waits for netd to write the bootstrap, so the first passes
-    // legitimately find no socket at all.
+    // Envoy starts after netd writes the bootstrap, so early polls find
+    // no socket.
     const promise = waitForListeners({
       expected: EXPECTED,
       dump: () => Promise.reject(new Error('ENOENT')),
@@ -224,9 +222,7 @@ describe('adminGet', () => {
   })
 
   it('accumulates a chunked body rather than returning the first chunk', async () => {
-    // A real /config_dump is far past one chunk, and a truncated body
-    // parses as "no listeners" — which would gate the DNAT open on a
-    // half-read response.
+    // A real /config_dump spans many chunks.
     const server = await serve((_req, res) => {
       res.write('{"configs":')
       res.end('[]}')
@@ -239,8 +235,7 @@ describe('adminGet', () => {
   })
 
   it('rejects when the socket does not exist', async () => {
-    // The expected state before Envoy has started; waitForListeners turns
-    // this into "not up yet" rather than a crash.
+    // Normal before Envoy starts; waitForListeners treats it as not ready.
     await expect(adminGet(path.join(os.tmpdir(), 'netd-absent.sock'), CONFIG_DUMP_PATH))
       .rejects.toThrow()
   })

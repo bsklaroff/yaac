@@ -23,9 +23,9 @@ describe('useProvisionWorkspace', () => {
     expect(useUiStore.getState().activeProjectSlug).toBe('proj')
   })
 
-  // A restart is started from the ghost row inside a group, and the row that
-  // replaces it has to be filed there from the first frame — the server's own
-  // entry says the same thing, so the swap between them moves nothing.
+  // A restart starts from a ghost row inside a group. The optimistic row must
+  // be in that group from the first frame so it doesn't jump when the server's
+  // row replaces it.
   it('files the optimistic row in the group it was given', () => {
     const { result } = renderHook(() => useProvisionWorkspace())
 
@@ -58,21 +58,21 @@ describe('useProvisionWorkspace', () => {
     const { result } = renderHook(() => useProvisionWorkspace())
 
     act(() => {
-      // op resolves with a DIFFERENT id than requested — a claimed spare.
+      // The op resolves with a different id than requested (a claimed spare).
       result.current('proj', 'claude', 'create', 'requested-id', () => Promise.resolve({ workspaceId: 'spare-id' }))
     })
 
-    // In flight until the request settles, then let go — after the claim is
-    // recorded, so the selection always knows where to follow.
+    // In flight until the request settles. It is released only after the
+    // claim is recorded, so the selection always knows where to follow.
     expect(useUiStore.getState().inFlightProvisions).toEqual(['requested-id'])
     await waitFor(() => {
       expect(useUiStore.getState().inFlightProvisions).toEqual([])
     })
     expect(useUiStore.getState().claims['requested-id']).toBe('spare-id')
-    // The requested id's row is dropped and no row stands in for the spare:
-    // the selection stays on the requested id until the spare lists, and App
-    // hands it over then (resolveVacantSelection) — a row for the spare
-    // would sit beside the server's row for the same create.
+    // The requested id's row is dropped and no row stands in for the spare,
+    // which would duplicate the server's row. The selection stays on the
+    // requested id until the spare is listed; App then hands it over
+    // (resolveVacantSelection).
     expect(useUiStore.getState().optimisticProvisioning).toEqual([])
     expect(useUiStore.getState().selectedWorkspaceId).toBe('requested-id')
   })

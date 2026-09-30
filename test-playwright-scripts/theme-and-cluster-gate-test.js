@@ -1,25 +1,22 @@
 /*
- * Verifies the light/dark theming and the first-run cluster gate ported from
- * the electron-planning branch:
- *  1. Landing on the loopback origin renders the workspace dark by default
- *     (html[data-theme=system], dark --color-base background), with the
- *     sidebar as a floating card and its compact empty state.
- *  2. Settings → Theme → Light flips html[data-theme] to 'light' live, the
- *     shell recolors (near-white base), and yaac.theme.v1 persists it; a
- *     plain reload comes back already light (no-flash inline script).
- *  3. The sidebar's Hide toggle collapses it and the session bar grows the
- *     Show-sidebar reopen affordance (only visible while collapsed).
- *  4. When GET /cluster/check reports not-ok (true in a nested yaac session,
+ * Verifies light/dark theming and the first-run cluster gate:
+ *  1. The loopback origin renders dark by default (html[data-theme=system],
+ *     dark --color-base background), with the sidebar as a floating card.
+ *  2. Settings -> Theme -> Light sets html[data-theme] to 'light' live,
+ *     recolors the shell, and persists yaac.theme.v1; a reload comes back
+ *     light with no flash (inline pre-paint script).
+ *  3. The sidebar's Hide toggle collapses it, and a Show-sidebar button
+ *     appears only while collapsed.
+ *  4. When GET /cluster/check reports not-ok (as in a nested yaac session,
  *     where the probe pod can't run), the ClusterSetup gate replaces the
- *     workspace. The Set up button is NOT clicked (it would recreate the
- *     cluster).
+ *     workspace. The Set up button is not clicked, since it would recreate
+ *     the cluster.
  *
  * Run: node test-playwright-scripts/theme-and-cluster-gate-test.js
  * (set SCREENSHOT_DIR to capture dark/light/gate states)
  * Needs a running server serving the built SPA (`yaac server start` with
- * dist/frontend present); reads port from $YAAC_DATA_DIR/.server.lock
- * (or ~/.yaac). (playwright is resolved from the global npm root; browsers
- * live under /opt/playwright-browsers)
+ * dist/frontend present); reads the port from $YAAC_DATA_DIR/.server.lock
+ * (or ~/.yaac).
  */
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -54,7 +51,7 @@ const browser = await chromium.launch({
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 860 } })
 
-  // 1. Land on the app, default (system) theme on a dark-preferring browser.
+  // 1. Default (system) theme on a dark-preferring browser.
   await page.emulateMedia({ colorScheme: 'dark' })
   await page.goto(`${origin}/`)
   await page.getByText('No project selected').waitFor({ timeout: 15000 })
@@ -82,13 +79,12 @@ try {
   if (lightBg !== 'rgb(252, 252, 251)') fail(`light --color-base body bg, got ${lightBg}`) // #fcfcfb
   await shot(page, '2-light-workspace.png')
 
-  // A plain reload lands already-light (pre-paint inline script).
   await page.goto(origin)
   await page.getByText('No project selected').waitFor({ timeout: 15000 })
   const theme2 = await page.evaluate(() => document.documentElement.dataset.theme)
   if (theme2 !== 'light') fail(`expected light to survive a reload, got ${theme2}`)
 
-  // 3. Sidebar hide/show round-trip.
+  // 3. Sidebar hide/show.
   await page.getByTitle('Hide sidebar').click()
   if (await page.locator('aside').count() !== 0) fail('sidebar still present after Hide')
   await page.getByTitle('Show sidebar').waitFor({ timeout: 5000 })
@@ -99,7 +95,7 @@ try {
     fail('Show-sidebar affordance should render only while collapsed')
   }
 
-  // 4. The cluster gate flips in once the (slow, probe-driven) check lands.
+  // 4. The gate appears once the slow, probe-driven check returns.
   await page.getByText('Set up yaac').waitFor({ timeout: 120000 })
   await page.getByRole('button', { name: 'Set up' }).waitFor()
   await shot(page, '4-cluster-gate.png')

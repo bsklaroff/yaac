@@ -42,7 +42,7 @@ describe('layout persistence', () => {
       bad2: [{ tabs: [], active: 'x' }],
       // not an array of groups
       bad3: 42,
-      // old binary-tree shape is no longer valid
+      // a binary-tree shape
       bad4: { type: 'leaf', target: 'agent' },
     }))
     expect(loadPersistedLayouts()).toEqual({ ok: [{ tabs: ['agent'], active: 'agent' }] })

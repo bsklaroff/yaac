@@ -3,14 +3,10 @@ import path from 'node:path'
 import { serverLogPath } from '@yaac/shared/paths'
 
 /**
- * Log a message from the server. Writes to stderr (visible when running
- * in the foreground via `yaac server run`) and appends a timestamped line
- * to `~/.yaac/server.log` (durable across detached runs, readable with
- * `yaac server logs`).
- *
- * Synchronous append keeps lines from interleaving between concurrent
- * callers without needing a write queue. A failure to open/append never
- * propagates — losing a log line is preferable to crashing the server.
+ * Log a server message to stderr (seen with `yaac server run`) and append
+ * a timestamped line to `serverLogPath()` (read with `yaac server logs`).
+ * The append is synchronous so concurrent lines never interleave. Failures
+ * are swallowed; losing a log line beats crashing the server.
  */
 export function serverLog(message: string): void {
   console.error(message)
@@ -19,19 +15,16 @@ export function serverLog(message: string): void {
     mkdirSync(path.dirname(p), { recursive: true })
     appendFileSync(p, `${new Date().toISOString()} ${message}\n`)
   } catch {
-    // swallow — stderr already got the message
+    // stderr already has the message.
   }
 }
 
 /**
- * Forward a child process's stdout/stderr stream to `serverLog`, one
- * line at a time with `prefix` prepended. Used so noisy subprocess
- * output (e.g. `podman build`) lands in `~/.yaac/server.log` instead of
- * being dropped when the server runs detached with `stdio: 'ignore'`.
- *
- * Pass `onLine` to also fan each line out to a caller — used where the
- * output has a live audience as well as the log (the image-build registry
- * the webapp tails, a command's captured stderr).
+ * Forward a child process's output stream to `serverLog` line by line, with
+ * `prefix`, so subprocess output (e.g. `podman build`) is kept when the
+ * server runs detached. `onLine` also receives each line, for callers with
+ * a live audience (the image-build registry the webapp tails, captured
+ * stderr).
  */
 export function pipeToServerLog(
   stream: NodeJS.ReadableStream | null,

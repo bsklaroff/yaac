@@ -6,9 +6,9 @@ import type {
 
 /**
  * The server-picker bridge the Electron preload exposes on `window`. Only
- * the desktop shell can re-point the machine's server selection, so the
- * Server settings section renders solely when this bridge exists — in a
- * plain browser the tab is already attached to whichever origin served it.
+ * the desktop shell can change which server the machine uses, so the Server
+ * settings section renders only when this bridge exists. A browser tab is
+ * tied to the origin that served it.
  */
 export interface YaacServerBridge {
   targets(): Promise<DesktopServerTargets>

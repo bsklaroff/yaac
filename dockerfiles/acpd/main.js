@@ -1,10 +1,9 @@
 /**
  * acpd entrypoint: `node /opt/yaac/acpd/main.js --sock <path> -- <agent argv…>`.
  *
- * Started inside a tmux window by session-create's agent launch command (see
- * `acpDriver.launchCmd` in
- * packages/server/src/runtime/agents/acp-driver.ts), so tmux supervises it
- * exactly as it supervises a TUI agent. Nothing else launches it.
+ * Started inside a tmux window by `acpDriver.launchCmd`
+ * (packages/server/src/runtime/agents/acp-driver.ts), so tmux supervises it
+ * like a TUI agent.
  */
 
 import { createAcpd } from './acpd.js'
@@ -21,10 +20,8 @@ if (sep < 0) usage('missing `--` separator before the agent argv')
 
 let sockPath
 let logPath
-// The agent's working directory — the workspace checkout, which is a
-// different path under every runtime. Optional because the window tmux
-// spawned this in is already the right one; passing it makes the launch
-// command say so rather than depending on what it inherited.
+// The agent's working directory (the workspace checkout, which differs per
+// driver). Optional: the tmux window already starts there.
 let cwd
 for (let i = 0; i < sep; i++) {
   if (args[i] === '--sock') sockPath = args[++i]

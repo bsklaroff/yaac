@@ -1,13 +1,7 @@
 /**
- * The session-terminal entry points — `listWorkspaceTerminals`,
- * `createShellWindow`, `killWindowTerminal`.
- *
- * Nothing under features/terminals is mocked here: the window-listing parse,
- * the agent-window convention and the scratch-shell naming all run for real,
- * and the fakes start at the contract boundary — the driver's `exec` for the
- * one-shot command and the control-stream registry for the watcher's
- * persistent read-only channel. The internals are covered by the listings these tests
- * feed back rather than by tests of their own.
+ * `listWorkspaceTerminals`, `createShellWindow`, `killWindowTerminal`.
+ * Nothing in runtime/terminals is mocked; the fakes are the driver's `exec`
+ * and the control-stream registry.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
@@ -63,8 +57,7 @@ describe('listWorkspaceTerminals', () => {
     expect(sent[0]).toContain(LIST_FORMAT)
     expect(exec).not.toHaveBeenCalled()
 
-    // The watcher's stream just died mid-respawn: this call takes the
-    // one-shot relay exec instead of failing.
+    // A dead control stream falls back to exec.
     registerWorkspaceControlStream('yaac-demo', () => Promise.reject(new Error('stream died')))
     exec.mockReturnValueOnce(out('0|@0|claude\n1|@1|init\n'))
     expect(await listWorkspaceTerminals('yaac-demo')).toEqual([
@@ -85,7 +78,7 @@ describe('createShellWindow', () => {
     expect(await create('0|@0|claude\n1|@1|shell\n')).toBe('shell-2')
     expect(await create('0|@0|claude\n1|@1|shell\n2|@2|shell-2\n')).toBe('shell-3')
     expect(await create('0|@0|claude\n1|@1|shell\n2|@2|shell-3\n')).toBe('shell-2')
-    // Windows that aren't scratch shells never reserve a name.
+    // Only scratch-shell windows reserve a name.
     expect(await create('0|@0|claude\n1|@1|init\n2|@2|dev-server\n3|@3|shellfish\n')).toBe('shell')
   })
 
@@ -112,7 +105,7 @@ describe('createShellWindow', () => {
     })
     exec.mockReturnValueOnce(out('@7\n'))
     expect(await createShellWindow('yaac-demo')).toEqual({ target: 'window:@7', name: 'shell-2' })
-    // The listing rode the stream; the new-window mutation went via exec.
+    // The listing used the stream; creating the window used exec.
     expect(sent).toHaveLength(1)
     expect(exec).toHaveBeenCalledOnce()
     expect(exec.mock.calls[0][1]).toContain('new-window')
@@ -141,7 +134,7 @@ describe('killWindowTerminal', () => {
 
     exec.mockRejectedValueOnce(new Error('probe failed'))
     await expect(killWindowTerminal('yaac-demo', 'window:@1')).rejects.toThrow('refusing to kill blind')
-    // only listings ran across all the refusals — never a kill
+    // No refusal ever ran a kill.
     expect(exec.mock.calls.filter(([, cmd]) => cmd.includes('kill-window'))).toHaveLength(0)
   })
 })

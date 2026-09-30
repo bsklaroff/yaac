@@ -5,21 +5,16 @@ import { hasWorkspaceDriver, workspaceDriver } from '#drivers/driver'
 import { openRoot, type ConfinedRoot, type LinkPolicy } from '#lib/confined-fs'
 
 /**
- * How the server touches a project dir an agent writes too: a tool home
+ * How the server opens a project dir that agents can also write: a tool home
  * (`claude/`, `codex/`, `pi/`, `opencode-config/`) or a workspace's
  * conversation records (`acp/<workspaceId>/`).
  *
- * Under a sandboxing runtime every pod of the project mounts these
- * read-write, so anything below a mount root may be a link or a FIFO the pod
- * planted: they are opened `no-links`, rooted at the dir itself — a mount
- * root, which the pod cannot replace. Under containerless there is no
- * boundary to defend, and links there are yaac's own (a workspace's history
- * and builtin skills are linked in), so they are opened `inside`, rooted at
- * the project dir.
- *
- * The one driver-kind branch confinement takes, and it decides only whether
- * confinement applies. No driver registered reads as sandboxed, the
- * conservative answer.
+ * Under a sandboxing driver every pod of the project mounts these
+ * read-write, so any link or FIFO below may be planted: they are opened
+ * `no-links`, rooted at the mount root itself. Under containerless there is
+ * nothing to defend and yaac itself links things in (history, builtin
+ * skills), so they are opened `inside`, rooted at the project dir. With no
+ * driver registered, the sandboxed answer is used.
  */
 export function sandboxLinkPolicy(): LinkPolicy {
   return hasWorkspaceDriver() && workspaceDriver().kind === 'containerless' ? 'inside' : 'no-links'

@@ -1,88 +1,53 @@
 /**
- * ssh-agent forwarding: the transport that lets a workspace pod use the
- * proxy's in-memory agent without a shared filesystem.
+ * ssh-agent forwarding over TCP, so a workspace pod can use the proxy's
+ * in-memory agent (keys loaded by agent-keys.ts, never written to disk). A
+ * forwarder in the workspace pod exposes this listener as its SSH_AUTH_SOCK,
+ * so `git push` gets signatures, never keys. TCP rather than a shared UNIX
+ * socket works across nodes. See docs/git-credentials.md.
  *
- * The agent runs in THIS pod, holding keys loaded from the credentials
- * Secret (agent-keys.ts) — key bytes are never written to the proxy's disk
- * and never leave it at all. A workspace pod runs a small local forwarder that exposes
- * this listener as the UNIX socket its SSH_AUTH_SOCK names, so an in-pod
- * `git push` gets signatures, never a key.
+ * Access is checked in layers:
+ *  1. NetworkPolicy admits this port from workspace pods only.
+ *  2. The source pod IP must map to a workspace via pod-watch. This port
+ *     gets no PP2 header, so the source IP is the whole identity; it is
+ *     trustworthy because Calico drops packets whose source address is not
+ *     the sending pod's own.
+ *  3. That workspace's registered remote must be an SSH one.
+ *  4. Both directions are parsed so a connection sees only its project's
+ *     keys: identity lists are filtered, and sign requests for other keys
+ *     are refused. The key set is looked up per message, so reassignments
+ *     apply to open connections.
  *
- * TCP rather than a hostPath UNIX socket shared with the workspace pod: a
- * UNIX socket only rendezvous between pods on the SAME node, which was the
- * last hard single-node assumption in the workspace datapath. Everything else
- * a workspace pod needs from the proxy is already a network hop.
- *
- * Fail-closed, in independent layers:
- *  1. NetworkPolicy admits this port from workspace pods only (the proxy
- *     ingress policy), so nothing else in the cluster can even connect.
- *  2. The source pod IP must resolve to a workspace through the proxy's
- *     pod-watch — the same identity the transparent listeners trust, and one
- *     a sandboxed workload cannot forge (Calico policies the workload
- *     endpoint's source address).
- *  3. That workspace's registered remote must be an SSH one — exactly the
- *     condition under which the server provisions SSH_AUTH_SOCK in the pod.
- *     It is read from the registration the proxy already holds, so nothing
- *     new rides the wire.
- *  4. A connection only ever sees the keys assigned to its workspace's
- *     project. The agent holds every project's keys, so both directions are
- *     parsed: an identities answer is rewritten to list only that project's
- *     keys, and a sign request naming any other key is answered with
- *     SSH_AGENT_FAILURE here and never reaches the agent. The set is looked
- *     up per message rather than per connection, so a reassignment applies
- *     to an open connection's next request.
- *
- * Even past all four, a connection is a signing oracle for its project's
- * destinations only: every identity is added with one `ssh-add -h <host>`
- * per host among the projects it is assigned to (agent-keys.ts), so the
- * agent refuses to sign for any other host.
- *
- * And it is an oracle for *only* that: the client→agent direction admits
- * three messages — list identities, sign, and the one extension that makes
- * the destination constraint enforceable, `session-bind@openssh.com`, by
- * which an ssh client tells the agent which host it is talking to before it
- * asks for a signature. An agent will not sign with a constrained key on a
- * session that was never bound, so refusing the bind would leave every key
- * here permanently unsignable from a workspace; forwarding it narrows the
- * oracle rather than widening it. Everything else (add, remove, lock, any
- * other extension) is answered with the agent's own SSH_AGENT_FAILURE and
- * never reaches the agent, so one workspace cannot lock or empty an agent
- * every other workspace shares.
+ * Each key is added with `ssh-add -h <host>` per allowed host, so the agent
+ * signs only for those hosts. Clients may send only list, sign, and the
+ * `session-bind@openssh.com` extension (required before the agent will sign
+ * with a host-constrained key). Everything else (add, remove, lock, other
+ * extensions) is refused, so one workspace can't lock or empty the shared
+ * agent.
  */
 
 import net from 'node:net'
 
-/**
- * Client→agent message types the relay admits (PROTOCOL.agent): ask which
- * identities exist, ask for a signature, and — for one extension only —
- * bind the session to its destination. That is the whole of what an ssh
- * client needs from a forwarded agent holding constrained keys.
- */
+/** Client→agent message types the relay admits (PROTOCOL.agent). */
 const SSH_AGENTC_REQUEST_IDENTITIES = 11
 const SSH_AGENTC_SIGN_REQUEST = 13
 const SSH_AGENTC_EXTENSION = 27
 /** The agent's reply to REQUEST_IDENTITIES: `uint32 nkeys`, then per key
- *  `string key_blob, string comment`. The one reply the relay rewrites. */
+ *  `string key_blob, string comment`. The only reply the relay rewrites. */
 const SSH_AGENT_IDENTITIES_ANSWER = 12
-/** The extension name an ssh client sends first on every connection to
- *  the agent: `string "session-bind@openssh.com"`, then the host key, the
- *  session id and the server's signature. Only this extension passes. */
+/** The only extension allowed through. An ssh client sends it first on each
+ *  connection, followed by the host key, session id and server signature. */
 const SESSION_BIND = Buffer.from('session-bind@openssh.com')
 /** The refusal an agent itself returns for a request it won't serve. */
 const SSH_AGENT_FAILURE = 5
 const FAILURE_MESSAGE = Buffer.from([0, 0, 0, 1, SSH_AGENT_FAILURE])
 
-/**
- * OpenSSH's own AGENT_MAX_LEN. A frame claiming more than this is not the
- * agent protocol, so the connection is dropped rather than buffered.
- */
+/** OpenSSH's AGENT_MAX_LEN. A larger frame drops the connection. */
 const AGENT_MAX_MESSAGE_BYTES = 256 * 1024
 /** In-flight connections the listener will hold; beyond it, new dials are
  *  dropped so one workspace cannot exhaust the proxy's fds. */
 const DEFAULT_MAX_CONNECTIONS = 64
-/** Idle time after which a connection is reaped (both directions). An agent
- *  exchange is a sub-second request/response; anything quiet for this long
- *  is abandoned. */
+/** Idle time after which a connection is closed. Agent exchanges take
+ *  well under a second. */
 const DEFAULT_IDLE_TIMEOUT_MS = 120_000
 
 export type AgentGateVerdict =
@@ -90,9 +55,8 @@ export type AgentGateVerdict =
   | { ok: false; reason: string }
 
 /**
- * Decide whether a connection from `workspace` may talk to the agent, given
- * the repo URL that workspace is registered with. Pure, so the policy is
- * testable without a socket; the listener below is the only caller.
+ * Whether a connection from `workspace` may talk to the agent, given the
+ * repo URL it is registered with.
  */
 export function sshAgentGate(
   workspaceId: string | undefined,
@@ -106,9 +70,8 @@ export function sshAgentGate(
 }
 
 /**
- * True for the remote forms git treats as SSH: an explicit `ssh://` URL or
- * the scp-like `[user@]host:path`. Kept here so this module has no
- * dependency on proxy.ts, and because the gate only needs the scheme.
+ * True for the remote forms git treats as SSH: an `ssh://` URL or the
+ * scp-like `[user@]host:path`.
  */
 export function isSshRemote(remoteUrl: string | undefined): boolean {
   if (!remoteUrl) return false
@@ -124,8 +87,7 @@ export interface SshAgentServerDeps {
   resolveWorkspace: (ip: string) => Promise<string | undefined>
   /** The repo URL a workspace is registered with, if any. */
   repoUrlFor: (workspaceId: string) => string | undefined
-  /** The keys (base64 key blobs) a workspace may list and sign with — its
-   *  project's. Asked per message, so an assignment change is live. */
+  /** The key blobs a workspace's project may list and sign with. */
   allowedKeysFor: (workspaceId: string) => Set<string>
   log?: (message: string) => void
   /** Overridable for tests; defaults above. */
@@ -169,17 +131,12 @@ function readString(message: Buffer, offset: number): { value: Buffer; next: num
 }
 
 /**
- * Feed client bytes through the agent-protocol framing, handing whole
- * admitted messages to `forward` and answering everything else with
- * SSH_AGENT_FAILURE via `refuse`: a message type outside the allowlist, or
- * a sign request whose key blob (the `string` right after the type byte)
- * `allowKey` rejects. Returns the chunk consumer.
+ * Returns a consumer for client bytes. Whole admitted messages go to
+ * `forward`; a disallowed type, or a sign request for a key `allowKey`
+ * rejects, gets SSH_AGENT_FAILURE via `refuse`.
  *
- * Pipelining note: a refusal is answered immediately while an admitted
- * message is still in flight to the agent, so a client that pipelined both
- * could see the replies out of order. Real clients (ssh, ssh-add) keep one
- * request outstanding, and a client that pipelines a refused op is
- * misbehaving by construction.
+ * A refusal is sent immediately, so a client that pipelines requests could
+ * see replies out of order. Real clients keep one request outstanding.
  */
 export function createAgentRequestFilter(handlers: {
   allowKey: (blob: Buffer) => boolean
@@ -202,17 +159,15 @@ export function createAgentRequestFilter(handlers: {
   }, handlers.fail)
 }
 
-/** Whether a whole extension frame names `session-bind@openssh.com` — the
- *  `string` right after the type byte. */
+/** Whether a whole extension frame names `session-bind@openssh.com`. */
 function isSessionBind(message: Buffer): boolean {
   return readString(message, 5)?.value.equals(SESSION_BIND) ?? false
 }
 
 /**
- * Feed agent bytes through the same framing, handing each whole reply to
- * `deliver` — an identities answer rewritten to list only the keys
- * `allowKey` admits, everything else unchanged. An identities answer that
- * does not parse fails the stream rather than passing through unfiltered.
+ * Returns a consumer for agent bytes. Each whole reply goes to `deliver`,
+ * with identity lists filtered to the keys `allowKey` admits. An identity
+ * list that doesn't parse fails the stream instead of passing unfiltered.
  */
 export function createAgentReplyFilter(handlers: {
   allowKey: (blob: Buffer) => boolean
@@ -253,10 +208,9 @@ function filterIdentitiesAnswer(message: Buffer, allowKey: (blob: Buffer) => boo
 }
 
 /**
- * The listener. One accepted connection = one agent-socket connection,
- * filtered both ways; refusals destroy the socket without writing a byte, which an ssh client
- * reports as "error connecting to agent" and falls through to its other
- * identity sources.
+ * The listener: each accepted connection gets its own agent-socket
+ * connection, filtered both ways. A refused connection is closed without a
+ * reply, so the ssh client falls back to its other identity sources.
  */
 export function createSshAgentServer(deps: SshAgentServerDeps): net.Server {
   const log = deps.log ?? ((m: string): void => { console.log(m) })
@@ -264,10 +218,8 @@ export function createSshAgentServer(deps: SshAgentServerDeps): net.Server {
   const idleTimeoutMs = deps.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
   let live = 0
   return net.createServer({ allowHalfOpen: true }, (socket) => {
-    // No 'data' listener before the filter is attached: the socket stays
-    // paused, so the request bytes an ssh client pipelines straight behind
-    // its connect are buffered by the stream rather than discarded while the
-    // gate resolves.
+    // No 'data' listener yet, so bytes sent while the gate resolves stay
+    // buffered.
     const peer = (socket.remoteAddress ?? '').replace(/^::ffff:/, '')
     if (live >= maxConnections) {
       log(`[proxy] ssh-agent: refusing ${peer || '(unknown)'} — ${live} connections in flight`)
@@ -301,9 +253,7 @@ export function createSshAgentServer(deps: SshAgentServerDeps): net.Server {
         log(`[proxy] ssh-agent: dropping workspace ${workspace}... — ${reason}`)
         socket.destroy()
       }
-      // Both directions are FILTERED, not piped (see the module doc).
-      // Backpressure rides the sockets: a full write pauses the other side
-      // until it drains.
+      // Filtered, not piped; a full write pauses the other side until drain.
       const feedRequest = createAgentRequestFilter({
         allowKey,
         forward: (message) => {
@@ -328,9 +278,7 @@ export function createSshAgentServer(deps: SshAgentServerDeps): net.Server {
         connected = true
         socket.on('data', feedRequest)
         agent.on('data', feedReply)
-        // Carry each side's half-close to the other, as `pipe` would: a
-        // finished exchange must not hold an agent fd open until the idle
-        // reaper gets to it.
+        // Propagate half-close, as `pipe` would, so agent fds free promptly.
         socket.on('end', () => agent.end())
         agent.on('end', () => socket.end())
       })

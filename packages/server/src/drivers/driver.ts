@@ -1,18 +1,12 @@
 import type { WorkspaceDriver } from './contract'
 
 /**
- * The registered `WorkspaceDriver`, and the only door to it from above the
- * runtime layer (docs/layered-server.md).
+ * Holds the process's `WorkspaceDriver` (docs/layered-server.md). The
+ * composition root registers it once; everything above calls
+ * `workspaceDriver()` and never names a substrate.
  *
- * Registered once by the composition root, which is the one place that
- * knows WHICH runtime this process runs. Everything above calls
- * `workspaceDriver()` and names no substrate.
- *
- * The indirection is what makes the layering pay: this module imports only
- * `./contract`, which is types, so a mediator that reaches the runtime
- * through here pulls no cluster code — and no `@kubernetes/client-node` —
- * into its module graph. A direct import of the k8s driver would typecheck
- * identically and cost every domain unit test the client's load time.
+ * This module imports only types, so callers do not load cluster code or
+ * `@kubernetes/client-node`, which keeps domain unit tests fast.
  */
 
 let registered: WorkspaceDriver | null = null
@@ -23,10 +17,8 @@ export function setWorkspaceDriver(runtime: WorkspaceDriver | null): void {
 }
 
 /**
- * The registered runtime. Throws rather than returning null: every caller
- * is downstream of a server that registers one at startup, so an absent
- * runtime is a wiring bug, and a test that reaches the substrate without
- * installing a fake should say so loudly instead of taking a null branch.
+ * The registered driver. Throws if none is registered: that is a wiring bug,
+ * or a test that forgot to install a fake.
  */
 export function workspaceDriver(): WorkspaceDriver {
   if (!registered) {
@@ -38,7 +30,7 @@ export function workspaceDriver(): WorkspaceDriver {
   return registered
 }
 
-/** Whether one is installed — for shutdown paths that must not construct one. */
+/** Whether a driver is registered, for shutdown paths. */
 export function hasWorkspaceDriver(): boolean {
   return registered !== null
 }

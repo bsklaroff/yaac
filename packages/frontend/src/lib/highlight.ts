@@ -1,21 +1,19 @@
 /**
- * The one language table: a path or a markdown fence picks a language, and
- * `editorLanguage` hands it to both the editors (CodeMirror) and the diff
- * view, which tokenizes a single line of source into styled segments using
- * CodeMirror/Lezer's standalone highlighting primitives. Pure (no DOM), so
- * it's unit-tested directly; the diff renderer wraps each segment in a span.
+ * Syntax highlighting languages. A file path or markdown fence picks a
+ * language; `editorLanguage` gives it to the CodeMirror editors, and
+ * `highlightLine` uses it to split one line of source into styled segments
+ * for the diff view.
  *
- * `classHighlighter` emits `tok-*` class names (e.g. `tok-keyword`); the colors
- * live in index.css scoped under `.diff-hl`. Highlighting is per line, so a
- * construct spanning multiple lines (a block comment, a template literal) is
- * only recognized on the line the parser can see — the accepted tradeoff for
- * highlighting a unified diff, which is itself made of partial-file fragments.
+ * Segments carry `tok-*` class names whose colors are in index.css.
+ * Highlighting is per line, so a multi-line construct (a block comment, a
+ * template literal) is only partly recognized. That is acceptable for diffs,
+ * which are partial fragments anyway.
  */
 
 import { StreamLanguage, type Language, type StreamParser } from '@codemirror/language'
 import { classHighlighter, highlightTree } from '@lezer/highlight'
 
-// Proper Lezer grammars — highest fidelity, one dependency each.
+// Full Lezer grammars, one dependency each.
 import { javascriptLanguage, jsxLanguage, typescriptLanguage, tsxLanguage } from '@codemirror/lang-javascript'
 import { jsonLanguage } from '@codemirror/lang-json'
 import { cssLanguage } from '@codemirror/lang-css'
@@ -24,8 +22,8 @@ import { markdownLanguage } from '@codemirror/lang-markdown'
 import { yamlLanguage } from '@codemirror/lang-yaml'
 import { pythonLanguage } from '@codemirror/lang-python'
 
-// The long tail rides on the already-installed legacy stream modes (lower
-// fidelity, but no extra dependencies).
+// Other languages use the legacy stream modes: less accurate, but no extra
+// dependencies.
 import { shell } from '@codemirror/legacy-modes/mode/shell'
 import { dockerFile } from '@codemirror/legacy-modes/mode/dockerfile'
 import { go } from '@codemirror/legacy-modes/mode/go'
@@ -51,8 +49,7 @@ export interface HighlightSegment {
   className: string
 }
 
-/** Don't tokenize pathological lines (minified bundles) — highlight would be
- *  noise and the parse cost isn't worth it. Render them as plain text. */
+/** Longer lines (e.g. minified bundles) are rendered as plain text. */
 const MAX_HIGHLIGHT_LEN = 5000
 
 function stream<S>(mode: StreamParser<S>): Language {
@@ -96,8 +93,7 @@ function buildLanguage(language: HighlightLanguage): Language {
 // Languages are stateless and reusable; build each at most once.
 const languages = new Map<HighlightLanguage, Language>()
 
-/** The CodeMirror language for a highlight language — what an editor loads
- *  and what the diff view parses with. */
+/** The CodeMirror language used by both the editors and the diff view. */
 export function editorLanguage(language: HighlightLanguage): Language {
   let built = languages.get(language)
   if (!built) {
@@ -108,13 +104,9 @@ export function editorLanguage(language: HighlightLanguage): Language {
 }
 
 /**
- * A lookup table with no prototype behind it.
- *
- * Every key that reaches one of these comes from outside — a path in a diff,
- * a fence an agent wrote — and on an ordinary object literal `constructor`,
- * `__proto__` and `toString` all answer with something that is not a language.
- * Putting that in the data structure rather than in a guard at each call site
- * means the next table someone adds here is born safe.
+ * A lookup table with no prototype. Keys come from untrusted input (diff
+ * paths, agent-written fences), and on a plain object `constructor` or
+ * `__proto__` would return something that isn't a language.
  */
 type LangTable = Record<string, HighlightLanguage>
 function langTable(entries: LangTable): LangTable {
@@ -159,16 +151,14 @@ const FILENAME_TO_LANG: LangTable = langTable({
   '.zshrc': 'shell', '.zprofile': 'shell',
 })
 
-/** Read a table, answering null for anything it does not define. The `hasOwn`
- *  is belt to `langTable`'s braces: it also keeps the return type honest. */
+/** Read a table, returning null for keys it doesn't define. */
 function lookup(table: LangTable, key: string): HighlightLanguage | null {
   return Object.hasOwn(table, key) ? table[key] : null
 }
 
 /**
- * Pick a highlight language from a file path, or null when unrecognized (the
- * caller then renders plain text). Keys on the basename so directories with
- * dots don't confuse extension detection.
+ * Pick a highlight language from a file path's basename, or null when
+ * unrecognized (the caller renders plain text).
  */
 export function languageForPath(path: string): HighlightLanguage | null {
   const base = path.slice(path.lastIndexOf('/') + 1).toLowerCase()
@@ -182,8 +172,8 @@ export function languageForPath(path: string): HighlightLanguage | null {
 }
 
 /**
- * Names a markdown fence uses that aren't file extensions (```python, ```bash).
- * Extensions themselves need no entry — they fall through to `EXT_TO_LANG`.
+ * Fence names that aren't file extensions (```python, ```bash). Extensions
+ * fall through to `EXT_TO_LANG`.
  */
 const FENCE_TO_LANG: LangTable = langTable({
   javascript: 'js', typescript: 'ts', node: 'js',
@@ -203,9 +193,7 @@ const FENCE_TO_LANG: LangTable = langTable({
 
 /**
  * Pick a highlight language from a markdown fence's info string (the `ts` in
- * ```ts), or null when it names nothing we tokenize — including the fences
- * that are deliberately not code (```text) and the bare fence, which says
- * nothing at all.
+ * ```ts), or null for a bare fence or an unknown name such as ```text.
  */
 export function languageForFence(info: string): HighlightLanguage | null {
   const name = info.trim().toLowerCase().split(/[\s,{]/)[0]
@@ -214,9 +202,8 @@ export function languageForFence(info: string): HighlightLanguage | null {
 }
 
 /**
- * Tokenize one line of source into styled segments. Segments always concatenate
- * back to the exact input, so the renderer never drops or reorders a character.
- * An empty line yields no segments.
+ * Tokenize one line of source into styled segments that concatenate back to
+ * the exact input. An empty line yields no segments.
  */
 export function highlightLine(text: string, language: HighlightLanguage): HighlightSegment[] {
   if (text === '') return []

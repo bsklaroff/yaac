@@ -7,21 +7,12 @@ import { PROXY_DIR } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 
 /**
- * The egress proxy's own image: a yaac-shipped build context (k8s/proxy),
- * content-hash tagged like every other one, so an unchanged source tree
- * costs a registry HEAD.
- *
- * It lives beside the cluster's other install-time images rather than in
- * the egress folder with its client, because WHO builds it is the point:
- * `yaac cluster install` does, on the CLI machine, while the proxy client
- * only ever looks the tag up (see missingPrebuiltImage).
+ * The egress proxy's image (build context `k8s/proxy`, content-hash tagged).
+ * `yaac cluster install` builds it; the server only looks the tag up.
  */
 
-/**
- * The image tag, without starting or building anything — the content of
- * the proxy build context, so it doubles as the fingerprint the deployed
- * Deployment is compared against.
- */
+/** The proxy image tag, from the build context's hash. Also compared
+ *  against the deployed Deployment. */
 export async function resolveProxyImageTag(image = testEnv.proxyImage): Promise<string> {
   return `${image}:${await contextHash(PROXY_DIR)}`
 }

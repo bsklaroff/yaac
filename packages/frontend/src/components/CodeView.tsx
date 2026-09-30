@@ -4,16 +4,9 @@ import { highlightLine, type HighlightLanguage } from '#lib/highlight'
 import type { CodeLine } from '#lib/code'
 
 /**
- * Source lines, syntax-highlighted — the plain-code counterpart to `DiffView`.
- *
- * The two are the same rendering with different gutters, and both are used in
- * the chat pane: an edit tool call is a diff, a read tool call is the file. The
- * `diff-hl` class is what scopes the `tok-*` colors (index.css), so code in a
- * message, a read, and the changes pane are all the same colors.
- *
- * Highlighting is per line for the reason it is in the diff view: the tokenizer
- * sees one line at a time, so a construct spanning several (a block comment)
- * is only recognized where the parser can see it.
+ * Syntax-highlighted source lines; the plain-code counterpart to `DiffView`.
+ * The `diff-hl` class scopes the `tok-*` colors (index.css). Highlighting is
+ * per line, so constructs spanning lines (block comments) are not recognized.
  */
 export function CodeView({
   lines,
@@ -28,8 +21,7 @@ export function CodeView({
     () => (language ? lines.map((line) => highlightLine(line.text, language)) : null),
     [lines, language],
   )
-  // One block's lines are numbered or none are, so the gutter is a property of
-  // the block rather than something that appears and disappears down it.
+  // Show the gutter for the whole block if any line is numbered.
   const numbered = lines.some((line) => line.no !== undefined)
   return (
     <div className={clsx('diff-hl min-w-full font-mono text-[11px] leading-[1.5] text-text', className)}>

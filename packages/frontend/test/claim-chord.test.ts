@@ -4,9 +4,8 @@ import { claimChord } from '#lib/shortcuts'
 
 /**
  * macOS dead-key chords: the accent Chrome composes for Option+N arrives
- * after the keydown the command claimed, in whatever field the command
- * focused. jsdom has no input method, so the composition is played by hand:
- * the events Chrome dispatches, with the text it inserts in between.
+ * after the claimed keydown, in the field the command focused. jsdom has no
+ * input method, so the test replays Chrome's composition events by hand.
  */
 describe('claimChord', () => {
   let from: HTMLTextAreaElement
@@ -22,15 +21,13 @@ describe('claimChord', () => {
     for (const type of ['compositionstart', 'compositionupdate', 'compositionend', 'input', 'change']) {
       field.addEventListener(type, () => seen.push(type))
     }
-    // As Chrome does when a field is blurred with a value it didn't have on
-    // focus — React takes it as an onChange.
+    // Chrome fires change on blur if the value changed; React sees onChange.
     field.addEventListener('blur', () => field.dispatchEvent(new Event('change', { bubbles: true })))
     from.focus()
   })
   afterEach(() => vi.useRealTimers())
 
-  /** A keydown on the focused element, claimed as a command's chord that
-   *  moves focus to `field` (as Alt+N does to the prompt). */
+  /** A claimed chord keydown whose command focuses `field`. */
   const chord = (key: string): KeyboardEvent => {
     const e = new KeyboardEvent('keydown', { key, code: 'KeyN', altKey: true, bubbles: true, cancelable: true })
     const claim = (): void => { claimChord(e); field.focus() }
@@ -60,8 +57,7 @@ describe('claimChord', () => {
     expect(document.activeElement).toBe(field)
     expect(seen).toEqual([])
 
-    // Only that one composition: an accent typed in the field afterwards is
-    // the user's, and so is one after any chord that wasn't a dead key.
+    // Later compositions, and those after a non-dead-key chord, are kept.
     field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Dead', bubbles: true }))
     compose('´')
     vi.runAllTimers()
@@ -74,8 +70,8 @@ describe('claimChord', () => {
   })
 
   it('stops waiting at the next key event when no accent follows the chord', () => {
-    // Nothing editable had focus, so Chrome sent no composition; the chord's
-    // release ends the wait, and dictation afterwards (no keydown) lands.
+    // With nothing editable focused Chrome sends no composition; the keyup
+    // ends the wait, so later dictation is kept.
     from.blur()
     chord('Dead')
     field.dispatchEvent(new KeyboardEvent('keyup', { key: 'Dead', code: 'KeyN', bubbles: true }))
@@ -83,7 +79,7 @@ describe('claimChord', () => {
     vi.runAllTimers()
     expect(field.value).toBe('é')
 
-    // So does a keydown: an accent typed after it is the user's.
+    // A keydown ends it too.
     chord('Dead')
     field.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true }))
     compose('é')

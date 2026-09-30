@@ -6,14 +6,14 @@ export async function getAuthList(): Promise<AuthListResult> {
   return api.auth.list.$get()
 }
 
-/** Store a pasted HTTPS token under a name; answers the new credential's id. */
+/** Store a pasted HTTPS token under a name; returns the new credential id. */
 export async function addHttpsCredential(name: string, token: string): Promise<string> {
   const { id } = await api.auth.git.credentials.$post({ json: { name, token } })
   return id
 }
 
-/** Generate an SSH key under a name; answers its public half, for the user
- *  to register with their git host before a project uses it. */
+/** Generate an SSH key under a name. Returns the public key for the user to
+ *  register with their git host. */
 export async function generateSshKey(name: string): Promise<{ id: string; publicKey: string }> {
   return api.auth.git['ssh-keys'].$post({ json: { name } })
 }
@@ -22,9 +22,9 @@ export async function renameGitCredential(id: string, name: string): Promise<voi
   await api.auth.git.credentials[':id'].$patch({ param: { id }, json: { name } })
 }
 
-/** A new secret under the same name and projects — the pasted `token`, or
- *  (SSH, no token) a newly generated key whose public half is answered. The
- *  credential's id changes. */
+/** Replace a credential's secret, keeping its name and projects: with the
+ *  pasted `token`, or (SSH, no token) a newly generated key whose public key
+ *  is returned. The credential's id changes. */
 export async function replaceGitCredential(
   id: string,
   token?: string,
@@ -32,7 +32,7 @@ export async function replaceGitCredential(
   return api.auth.git.credentials[':id'].replace.$post({ param: { id }, json: token === undefined ? {} : { token } })
 }
 
-/** The projects using it are left with none. */
+/** Delete a git credential; projects using it are left with none. */
 export async function deleteGitCredential(id: string): Promise<void> {
   await api.auth.git.credentials[':id'].$delete({ param: { id } })
 }
@@ -49,13 +49,13 @@ export async function setToolApiKey(
   })
 }
 
-/** Sign out — drop the tool's stored credential. */
+/** Sign out: drop the tool's stored credential. */
 export async function clearToolAuth(tool: AgentTool): Promise<void> {
   await api.auth.clear.$post({ json: { service: tool } })
 }
 
-/** Kick off a server-run vendor-CLI browser sign-in (claude/codex). The route
- *  only serves those two tools; runtime param validation guards the cast. */
+/** Start a browser sign-in through the tool's CLI on the server
+ *  (claude/codex only; the route validates the param). */
 export async function startToolLogin(tool: AgentTool): Promise<ToolLoginView> {
   return api.auth[':tool'].login.start.$post({ param: { tool: tool as 'claude' | 'codex' } })
 }
@@ -75,8 +75,8 @@ export async function cancelToolLogin(id: string): Promise<void> {
   await api.auth.login[':id'].cancel.$post({ param: { id } })
 }
 
-/** Kick off a server-run install of the tool's CLI (offered on cliMissing).
- *  Claude/codex only, same as login. */
+/** Install the tool's CLI on the server, offered when it is missing
+ *  (claude/codex only). */
 export async function startToolInstall(tool: AgentTool): Promise<ToolInstallView> {
   return api.auth[':tool'].install.start.$post({ param: { tool: tool as 'claude' | 'codex' } })
 }
@@ -97,7 +97,7 @@ export async function getShortcutOverrides(): Promise<Record<string, Chord>> {
   return overrides
 }
 
-/** Persist a single command's rebind. */
+/** Save one command's rebind. */
 export async function setShortcutOverride(id: ShortcutId, chord: Chord): Promise<void> {
   await api.shortcuts.set.$post({ json: { id, chord } })
 }
@@ -107,14 +107,14 @@ export async function resetShortcuts(): Promise<void> {
   await api.shortcuts.reset.$post()
 }
 
-/** Read the global user Dockerfile (~/.yaac/server-local/build/Dockerfile.user); '' when unset. */
+/** Read the global user Dockerfile; '' when unset. */
 export async function getUserDockerfile(): Promise<string> {
   const { content } = await api.config['user-dockerfile'].$get()
   return content
 }
 
-/** Write (or clear, when empty) the global user Dockerfile. Validated
- *  server-side: a non-empty file must layer on `${BASE_IMAGE}`. */
+/** Write the global user Dockerfile (empty clears it). The server requires
+ *  a non-empty file to build `FROM ${BASE_IMAGE}`. */
 export async function saveUserDockerfile(content: string): Promise<void> {
   await api.config['user-dockerfile'].$put({ json: { content } })
 }
@@ -125,7 +125,8 @@ export async function getGitIdentity(): Promise<{ name: string; email: string } 
   return identity
 }
 
-/** Set it. Both halves are required; the server validates the email's shape. */
+/** Set the git identity. Both fields are required; the server validates the
+ *  email. */
 export async function setGitIdentity(
   identity: { name: string; email: string },
 ): Promise<{ name: string; email: string }> {

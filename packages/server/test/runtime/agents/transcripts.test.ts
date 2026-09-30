@@ -24,13 +24,12 @@ import {
 const slug = 'demo'
 const wt = 'wt-a'
 
-/** Host path of a claude transcript — the layout the module owns, spelled
- *  out here so the test would catch a change to it. */
+/** Host path of a claude transcript, written out so a layout change fails. */
 function claudeLog(workspaceId: string): string {
   return path.join(claudeDir(slug), 'projects', '-workspace', `${workspaceId}.jsonl`)
 }
 
-/** The same log as the readers name it: under its tool's home. */
+/** The same log, relative to the tool's home. */
 function claudeFile(workspaceId: string) {
   return { slug, dir: claudeDir(slug), rel: `projects/-workspace/${workspaceId}.jsonl` }
 }
@@ -72,8 +71,7 @@ describe('transcripts', () => {
     })
 
     it('cuts a long one at 200 and appends claude\'s own hash of the whole path', () => {
-      // Pinned from claude 2.1.282: run in this cwd, it filed its transcript
-      // under exactly this folder.
+      // Observed from claude 2.1.282 run in this cwd.
       const cwd = `/tmp/claude-1000/-workspace/26a9c9fd-de5b-4db5-a741-c3522285d032/scratchpad/cc/${'a'.repeat(120)}/with.dots_and space/${'b'.repeat(100)}`
       expect(claudeProjectDirName(cwd)).toBe(
         `-tmp-claude-1000--workspace-26a9c9fd-de5b-4db5-a741-c3522285d032-scratchpad-cc-${'a'.repeat(120)}--yck5ws`,
@@ -95,7 +93,7 @@ describe('transcripts', () => {
       await write(path.join(agentHistoryDir(slug, 'wt-b', 'claude'), '-workspace', 'theirs.jsonl'))
       expect(await sessionTranscriptPath(slug, wt, 'claude', 'conv'))
         .toEqual({ slug, dir: agentHistoryDir(slug, wt, 'claude'), rel: '-workspace/conv.jsonl' })
-      // A sibling's history is not searched, whatever it holds.
+      // Other workspaces' history is never searched.
       expect(await sessionTranscriptPath(slug, wt, 'claude', 'theirs')).toBeUndefined()
     })
 
@@ -103,7 +101,7 @@ describe('transcripts', () => {
       await write(path.join(claudeDir(slug), 'projects', '-home-x', 'other.jsonl'))
       expect(await sessionTranscriptPath(slug, 'other', 'claude'))
         .toEqual({ slug, dir: claudeDir(slug), rel: 'projects/-home-x/other.jsonl' })
-      // A link planted where a conversation would be names nothing.
+      // A symlink in place of a conversation is ignored.
       const elsewhere = await write(path.join(tmpDir, 'elsewhere.jsonl'))
       await fs.mkdir(path.dirname(claudeLog('linked')), { recursive: true })
       await fs.symlink(elsewhere, claudeLog('linked'))
@@ -111,9 +109,8 @@ describe('transcripts', () => {
     })
 
     it('has none for codex, whose rollout name follows from no id', async () => {
-      // Nothing derives a codex rollout filename from a conversation id, so
-      // only a recorded path finds one — even for a file sitting in codex's
-      // own home named after the id.
+      // A codex rollout's filename cannot be derived from its id, so only a
+      // recorded path finds it.
       await write(path.join(codexDir(slug), 'sessions', 'sid.jsonl'))
       expect(await sessionTranscriptPath(slug, 'sid', 'codex')).toBeUndefined()
     })
@@ -139,7 +136,7 @@ describe('transcripts', () => {
     const reported = 'claude/projects/-workspace/conv.jsonl'
 
     it('maps a reported path into the workspace\'s history first, then the shared home', async () => {
-      // Nothing written yet: left out for the next pass to fill.
+      // Not written yet; a later pass will find it.
       expect(await locateTranscript(slug, wt, 'claude', 'conv', reported)).toBeUndefined()
       await write(path.join(projectDir(slug), reported))
       expect(await locateTranscript(slug, wt, 'claude', 'conv', reported)).toBe(reported)
@@ -152,7 +149,7 @@ describe('transcripts', () => {
     })
 
     it('names the file a host link leads to, and refuses one leading to a sibling', async () => {
-      // A host workspace reaches its history through a folder link.
+      // On a host, history is reached through a directory symlink.
       const history = path.join(agentHistoryDir(slug, wt, 'claude'), '-workspace')
       await write(path.join(history, 'host.jsonl'))
       await fs.mkdir(path.join(claudeDir(slug), 'projects'), { recursive: true })
@@ -194,7 +191,6 @@ describe('transcripts', () => {
 
   describe('toProjectRelative', () => {
     it('strips the project directory, whatever tool wrote the path', () => {
-      // One rule for every tool: the tool home is just the first segment.
       expect(toProjectRelative(claudeFile('sid')))
         .toBe(path.join('claude', 'projects', '-workspace', 'sid.jsonl'))
       expect(toProjectRelative({ slug, dir: codexDir(slug), rel: 'sessions/2026/rollout-x.jsonl' }))
@@ -203,7 +199,6 @@ describe('transcripts', () => {
 
     it('refuses a path with no project-relative form', () => {
       expect(toProjectRelative({ slug, dir: '/tmp', rel: 'elsewhere.jsonl' })).toBeNull()
-      // Another project's tree is just as much an escape.
       expect(toProjectRelative({ slug, dir: claudeDir('other'), rel: 't.jsonl' })).toBeNull()
     })
   })
@@ -225,8 +220,8 @@ describe('transcripts', () => {
     })
 
     it('refuses what is not under those: another tool\'s, a sibling\'s, the project\'s own files, a way out', () => {
-      // A pane names its transcript, and anything in the workspace can set
-      // the pane: a path to known_hosts or the clone's git config is not one.
+      // The workspace controls this value, so it must not reach arbitrary
+      // project files.
       expect(resolveProjectPath(slug, wt, 'claude', 'codex/sessions/r.jsonl')).toBeUndefined()
       expect(resolveProjectPath(slug, wt, 'claude', `history/${wt}/codex/r.jsonl`)).toBeUndefined()
       expect(resolveProjectPath(slug, wt, 'claude', 'history/wt-b/claude/-workspace/t.jsonl')).toBeUndefined()
@@ -234,7 +229,7 @@ describe('transcripts', () => {
       expect(resolveProjectPath(slug, wt, 'claude', 'repo/.git/config')).toBeUndefined()
       expect(resolveProjectPath(slug, wt, 'claude', 'claude/../../../etc/passwd')).toBeUndefined()
       expect(resolveProjectPath(slug, wt, 'opencode', 'opencode-config/x.jsonl')).toBeUndefined()
-      // The column holds project-relative values only.
+      // Only project-relative values are accepted.
       expect(resolveProjectPath(slug, wt, 'claude', '/old/home/t.jsonl')).toBeUndefined()
     })
   })

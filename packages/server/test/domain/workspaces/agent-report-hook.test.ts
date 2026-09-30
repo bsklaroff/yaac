@@ -6,17 +6,14 @@ import { execFile } from 'node:child_process'
 import { parsePaneSession } from '#runtime/agents/agent-tools'
 
 /**
- * The in-pane half of agent reporting, run as shipped: `workspace-bin/
+ * The in-pane half of agent reporting, run as shipped. `workspace-bin/
  * yaac-agent-links` and `yaac-agent-report` turn a hook payload (or
- * arguments) into the pane options the status watcher subscribes to — the
- * conversation, the model and the permission mode. They always exit 0 and
- * print nothing, so a payload one misreads fails silently — the conversation
- * is never recorded, the model never moves — which is why the real scripts
- * are run here rather than trusted.
+ * arguments) into the pane options the status watcher reads: conversation,
+ * model and permission mode. They always exit 0 silently, so a misread
+ * payload fails silently too; hence the real scripts are run here.
  *
- * `tmux` is the process boundary: a stub on PATH records the argv it was
- * given and keeps the pane options it is told to, so no tmux server is
- * needed.
+ * A `tmux` stub on PATH records its argv and stores pane options, so no tmux
+ * server is needed.
  */
 
 function script(name = 'yaac-agent-report'): string {
@@ -67,9 +64,8 @@ describe('the agent reporters', () => {
           ...env,
         },
       }, (err, out) => (err ? reject(err instanceof Error ? err : new Error('reporter failed')) : resolve(out)))
-      // A reporter that bails before reading its payload (no tool, no pane)
-      // closes the pipe; under load that lands before the write, and an
-      // unheard EPIPE would fail the run.
+      // A reporter that exits before reading stdin closes the pipe, and an
+      // unhandled EPIPE would fail the run.
       child.stdin?.on('error', () => {})
       child.stdin?.end(stdin)
     })
@@ -94,8 +90,7 @@ describe('the agent reporters', () => {
   it("reads SessionStart's model, and leaves the option alone when it names none", async () => {
     const env = { TMUX: '/tmp/yaac.sock,1,0', TMUX_PANE: '%0' }
     await run(JSON.stringify({ session_id: 's', source: 'startup', model: 'claude-sonnet-5' }), env)
-    // A `/clear` reports no model: the model did not change, and the pane —
-    // now the new conversation's — keeps it.
+    // A `/clear` reports no model, so the pane keeps the current one.
     const { tmux } = await run(JSON.stringify({ session_id: 't', source: 'clear' }), env)
     expect(tmux).toEqual(['-S /tmp/yaac.sock set-option -p -t %0 @yaac-model claude-sonnet-5'])
   })
@@ -105,8 +100,8 @@ describe('the agent reporters', () => {
     expect(tmux).toEqual(['-S /tmp/yaac.sock set-option -p -t %1 @yaac-model anthropic/claude-opus-4-8'])
   })
 
-  // claude has no event for a mode change; the prompt and the turn's end
-  // carry the mode it is in, which is when a change takes hold.
+  // claude has no mode-change event; the prompt and turn-end payloads carry
+  // the current mode.
   it("sets the pane's mode from a prompt's payload, and only from the real field", async () => {
     const { stdout, tmux } = await run(
       JSON.stringify({
@@ -148,7 +143,7 @@ describe('the agent reporters', () => {
     /** A pane option as the stub tmux holds it. */
     const option = (name: string, target = '%3'): Promise<string> =>
       fs.readFile(path.join(tmpDir, 'options', `${target}${name}`), 'utf8').catch(() => '')
-    /** What the server reads back out of the pane. */
+    /** The session the server parses from the pane. */
     const named = async (target?: string) => parsePaneSession(await option('@yaac-session', target))
     const claudeHome = (): string => path.join(tmpDir, 'home', '.claude')
 
@@ -162,15 +157,15 @@ describe('the agent reporters', () => {
       expect(await named()).toEqual({
         tool: 'claude', agentSessionId: 'conv-a', transcriptPath: 'claude/projects/-workspace/conv-a.jsonl',
       })
-      // One outside the home has no project-relative form: the conversation
-      // is still named, with no path.
+      // A transcript outside the home has no relative form, so only the
+      // conversation id is recorded.
       await hook(claudeHome(), 'claude', { session_id: 'conv-b', transcript_path: '/somewhere/else.jsonl' })
       expect(await named()).toEqual({ tool: 'claude', agentSessionId: 'conv-b' })
     })
 
     it('names no conversation whose id could climb out of a path it is joined into', () => {
-      // The id becomes `acp/<wt>/<id>.jsonl` and `--resume <id>`: a pane is
-      // anything in the workspace's to set, so the shape is the server's check.
+      // The id ends up in `acp/<wt>/<id>.jsonl` and `--resume <id>`, and the
+      // workspace can set any pane option, so the server validates it.
       for (const id of ['../../etc/passwd', 'a/b', '-flag', 'x'.repeat(129), 'a.b']) {
         expect(parsePaneSession(`claude|${id}|claude/t.jsonl`)).toBeUndefined()
       }
@@ -211,15 +206,14 @@ describe('the agent reporters', () => {
       await hook(claudeHome(), 'claude', { session_id: 'next', transcript_path: `${claudeHome()}/n.jsonl` })
       expect((await named())?.agentSessionId).toBe('next')
       expect(await option('@yaac-session-under')).toBe('')
-      // The agent quits, leaving the pane — a shell, say — holding nothing.
+      // The agent quits, and the pane no longer names a conversation.
       await hook(claudeHome(), 'claude', { session_id: 'next', hook_event_name: 'SessionEnd' })
       expect(await option('@yaac-session')).toBe('')
     })
 
     it("drops codex's title session, whose start and end would take the pane", async () => {
-      // codex 0.156.1 fires SessionStart and SessionEnd for the throwaway
-      // session it titles a conversation in too, with no rollout — on the
-      // same pane.
+      // codex 0.156.1 also fires SessionStart and SessionEnd on the same pane
+      // for the throwaway session it uses to title a conversation.
       const home = path.join(tmpDir, 'home', '.codex')
       const rollout = `${home}/sessions/2026/09/25/rollout-thread-1.jsonl`
       await hook(home, 'codex', { session_id: 'thread-1', transcript_path: rollout })
@@ -239,8 +233,8 @@ describe('the agent reporters', () => {
       await links('', [home, 'pi', 'pi-1', `${home}/agent/sessions/2026_pi-1.jsonl`], env)
       expect(await named('%2'))
         .toEqual({ tool: 'pi', agentSessionId: 'pi-1', transcriptPath: 'pi/agent/sessions/2026_pi-1.jsonl' })
-      // A resume launch names the conversation the tool is about to report
-      // again: that is no nesting.
+      // A resume launch names the conversation the tool will report again,
+      // which is not nesting.
       await links('', ['', 'pi', 'pi-1'], env)
       await links('', ['', 'pi', 'pi-1', '--end'], env)
       expect(await option('@yaac-session', '%2')).toBe('')

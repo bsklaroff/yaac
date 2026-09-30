@@ -76,12 +76,11 @@ describe('baseImageHash', () => {
       const onMac = await baseImageHash(dockerfile)
 
       expect(onLinux).toMatch(/^[0-9a-f]{16}$/)
-      // The point of the whole arbitrary-uid pattern: a macOS host at 501
-      // and a Linux host at 1000 resolve the SAME tag, so one image set can
-      // be shared, cached and shipped prebuilt.
+      // A macOS host (uid 501) and a Linux host (uid 1000) get the same
+      // tag, so one image set can be shared and shipped prebuilt.
       expect(onMac).toBe(onLinux)
-      // The COPY'd streamd/acpd sources are in there, so the tag is never
-      // just the Dockerfile's own hash.
+      // The hash covers the COPY'd streamd/acpd sources, not just the
+      // Dockerfile.
       expect(onLinux).not.toBe(await fileHash(dockerfile))
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true })
@@ -97,15 +96,15 @@ describe('resolveTrustedLayers', () => {
   it('names the three yaac-shipped layers, each built FROM the one above it', async () => {
     const { base, tools, nestable } = await resolveTrustedLayers('yaac')
 
-    // The chain `yaac cluster install` builds, in the only order it can be
-    // built in: each layer's parent tag is the previous layer's.
+    // The chain `yaac cluster install` builds, in order: each layer's
+    // parent is the previous layer.
     expect(base.name).toBe('base')
     expect(tools.name).toBe('tools')
     expect(nestable.name).toBe('nestable')
     expect(tools.buildArgs?.BASE_IMAGE).toBe(base.tag)
     expect(nestable.buildArgs?.BASE_IMAGE).toBe(tools.tag)
-    // Every one is a real, shipped build context — this is what makes the
-    // install's `podman build` and the server's registry lookup agree.
+    // Real shipped build contexts, so the install's build and the server's
+    // registry lookup agree on tags.
     expect(base.dockerfile).toBe(path.join(DOCKERFILES_DIR, 'Dockerfile.default'))
     expect(tools.dockerfile).toBe(path.join(DOCKERFILES_DIR, 'Dockerfile.tools'))
     expect(nestable.dockerfile).toBe(path.join(DOCKERFILES_DIR, 'Dockerfile.nestable'))
@@ -114,16 +113,15 @@ describe('resolveTrustedLayers', () => {
       expect(layer.tag).toMatch(/^yaac-(base|tools|nestable):[0-9a-f]{16}$/)
       expect(layer.tag.endsWith(layer.contentHash)).toBe(true)
     }
-    // The parent tag is the ONLY build arg in the chain. Nothing about the
-    // building host reaches an image (docs/arbitrary-uid-images.md).
+    // The parent tag is the only build arg; nothing about the building host
+    // reaches an image (docs/arbitrary-uid-images.md).
     expect(base.buildArgs).toBeUndefined()
     expect(nestable.buildArgs).toEqual({ BASE_IMAGE: tools.tag })
   })
 
   it('resolves the same chain whatever uid the builder runs as', async () => {
-    // The payoff, and the regression this guards: while the uid was a build
-    // input, a macOS host and a Linux host built different images under
-    // different tags and could not share a registry at all.
+    // The uid is not a build input, so macOS and Linux hosts can share a
+    // registry.
     vi.spyOn(process, 'getuid').mockReturnValue(1000)
     const onLinux = await resolveTrustedLayers('yaac')
     vi.spyOn(process, 'getuid').mockReturnValue(501)
@@ -141,7 +139,7 @@ describe('resolveTrustedLayers', () => {
     expect(test.base.tag.startsWith('yaac-test-base:')).toBe(true)
     expect(test.tools.tag.startsWith('yaac-test-tools:')).toBe(true)
     expect(test.nestable.tag.startsWith('yaac-test-nestable:')).toBe(true)
-    // Same content, so the hashes match — only the repository differs.
+    // Same content hash; only the repository differs.
     expect(test.base.contentHash).toBe(yaac.base.contentHash)
     expect(test.tools.buildArgs?.BASE_IMAGE).toBe(test.base.tag)
   })
@@ -269,8 +267,8 @@ describe('contextHash', () => {
       await fs.mkdir(path.join(tmpDir, 'a'))
       const hash1 = await contextHash(tmpDir)
 
-      // Every listed form — trailing-slash dir, plain dir, nested file — is
-      // excluded; the comment and blank line are not patterns.
+      // Trailing-slash dir, plain dir and nested file are all excluded; the
+      // comment and blank line are not patterns.
       await fs.mkdir(path.join(tmpDir, 'node_modules'))
       await fs.writeFile(path.join(tmpDir, 'node_modules', 'pkg.txt'), 'noise')
       await fs.mkdir(path.join(tmpDir, 'test'))
@@ -301,8 +299,8 @@ describe('contextHash', () => {
   it("the proxy context's .containerignore keeps unit tests out of the image hash", async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-ctx-'))
     try {
-      // The real shipped exclusions, applied to a stand-in context: adding
-      // node_modules and co-located tests must not churn the image tag.
+      // The real shipped .containerignore: node_modules and co-located
+      // tests must not change the tag.
       await fs.cp(path.join(DOCKERFILES_DIR, '..', 'k8s', 'proxy', '.containerignore'),
         path.join(tmpDir, '.containerignore'))
       await fs.writeFile(path.join(tmpDir, 'index.ts'), 'export {}')

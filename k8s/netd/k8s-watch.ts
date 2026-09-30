@@ -1,34 +1,19 @@
 /**
- * Cluster-wide pod + Service watches feeding netd's reconcile.
+ * Pod and Service watches that feed netd's reconcile.
  *
- * `@kubernetes/client-node`'s informer owns the list→watch cycle,
- * resourceVersion bookkeeping, and relist-on-410 — and it keeps the object
- * store itself, so netd holds no cache of its own and simply maps the store
- * on read. A node sees tens to low hundreds of objects, so that mapping is
- * noise next to a reconcile, and it removes every upsert/evict path netd
- * would otherwise have to get right.
+ * Built on `@kubernetes/client-node` informers, which handle list/watch,
+ * relist on 410, and keep the object store; netd maps that store on each
+ * read instead of keeping its own cache. The in-cluster config re-reads
+ * the rotated ServiceAccount token, so a long-lived netd keeps its
+ * credentials.
  *
- * It also fixes credential lifetime for free: the in-cluster config
- * registers a `tokenFile` auth provider that re-reads the projected
- * ServiceAccount token, which kubelet rotates. Reading that token once at
- * startup — as a hand-rolled client naturally does — eventually 401s a
- * long-lived daemon, and the failure is quiet: reconcile keeps succeeding
- * off the last-known store, so the readiness marker stays while new pods
- * stop being programmed.
+ * An informer stops after any non-410 error (including a failed initial
+ * list), so this module restarts it with backoff.
  *
- * What the informer does NOT own, verified against 1.4.0 and mirrored from
- * the server's InformerCache: on any non-410 error — a failed initial list
- * included — it emits `error` and STOPS. Restart-with-backoff is ours.
- *
- * netd watches pods in ALL namespaces, unlike the proxy, since a pod's
- * veth is what it programs. Services it reads only in its OWN namespace —
- * the proxy's ClusterIP lives there — so its cluster-scoped RBAC is pods
- * alone.
- *
- * There is no periodic resync, so a delete event lost while the watch was
- * down survives until the next restart re-lists. That gap is fail-closed:
- * a ghost pod renders no rules, since renderRedirectRules needs a live veth
- * from the node's route table and a departed pod no longer has one.
+ * Pods are watched in all namespaces; Services only in netd's own
+ * namespace, where the proxy's ClusterIP lives. A delete missed while the
+ * watch was down leaves a stale pod in the store, but it renders no rules
+ * because it no longer has a veth in the node's route table.
  */
 
 import {
@@ -52,11 +37,8 @@ interface RawService {
 }
 
 /**
- * Map one API Pod object to netd's shape; null when unusable.
- *
- * This is netd's validation boundary — the informer hands over whatever the
- * apiserver sent, and anything missing an identity or an IP is dropped
- * rather than guessed at, because a half-built pod must produce no rules.
+ * Map one API Pod object to netd's shape; null when it lacks a name,
+ * namespace or IP, so a half-built pod produces no rules.
  */
 export function mapPod(raw: unknown): NetdPod | null {
   const pod = raw as RawPod
@@ -77,7 +59,7 @@ export function mapService(raw: unknown): NetdService | null {
   return { name, namespace, clusterIp, labels: svc.metadata?.labels ?? {} }
 }
 
-/** The informer surface this module drives — lets tests inject a fake. */
+/** The informer methods this module uses, so tests can inject a fake. */
 export type InformerLike =
   Pick<Informer<KubernetesObject>, 'on' | 'start' | 'stop'>
   & Pick<ObjectCache<KubernetesObject>, 'list'>
@@ -92,7 +74,7 @@ export function clusterInformerFactory(kubeConfig: KubeConfig): MakeInformerFn {
   return (path, listFn) => makeInformer(kubeConfig, path, listFn)
 }
 
-/** In-cluster config: SA token (re-read on a timer), CA, and API host. */
+/** In-cluster config: ServiceAccount token (re-read), CA, and API host. */
 export function loadInClusterConfig(): KubeConfig {
   const kubeConfig = new KubeConfig()
   kubeConfig.loadFromCluster()
@@ -123,8 +105,8 @@ export interface ResourceWatch<T> {
 
 /**
  * Watch one resource kind forever, restarting the informer with backoff
- * when it stops. `list()` reads through to the informer's store, so there
- * is no second copy of cluster state to keep in sync.
+ * when it stops. The backoff resets if the informer ran for a minute or
+ * more before failing. `list()` reads the informer's store directly.
  */
 export function startResourceWatch<T>(deps: ResourceWatchDeps<T>): ResourceWatch<T> {
   const baseDelayMs = deps.restartDelayMs ?? 1_000
@@ -136,8 +118,6 @@ export function startResourceWatch<T>(deps: ResourceWatchDeps<T>): ResourceWatch
 
   const onError = (err: unknown): void => {
     if (stopped) return
-    // An informer the apiserver dropped after a long, healthy life is
-    // routine — restart near-immediately. Only rapid failures back off.
     if (Date.now() - startedAtMs >= 60_000) backoffMs = baseDelayMs
     deps.log(`[netd] watch ${deps.path}: ${String(err)} — restart in ${backoffMs}ms`)
     if (restartTimer) return
@@ -156,8 +136,8 @@ export function startResourceWatch<T>(deps: ResourceWatchDeps<T>): ResourceWatch
 
   function begin(): void {
     startedAtMs = Date.now()
-    // start() only rejects before the list/watch cycle begins (bad config,
-    // unreachable apiserver); mid-cycle failures arrive as `error`.
+    // start() rejects only before the cycle begins; later failures arrive
+    // as `error`.
     informer.start().catch((err: unknown) => { onError(err) })
   }
 
@@ -178,11 +158,10 @@ export function startResourceWatch<T>(deps: ResourceWatchDeps<T>): ResourceWatch
   }
 }
 
-/** All-namespace pods — host mode's veth-bearing population. */
+/** Pods in all namespaces. */
 export const PODS_PATH = '/api/v1/pods'
 
-/** Namespaced watch path. The informer's path is its resync identity, so
- *  it must cover exactly the same scope as the list function beside it. */
+/** Namespaced Services watch path; must match the list function's scope. */
 export function namespacedServicesPath(namespace: string): string {
   return `/api/v1/namespaces/${namespace}/services`
 }

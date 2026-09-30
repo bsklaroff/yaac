@@ -8,16 +8,13 @@ import { resolveServerTarget, type ServerTarget } from '#server-api'
 export const AUTH_DAEMON_BOOT_TIMEOUT_MS = 30_000
 
 /**
- * Client-side lifecycle of the auth server — the login broker that runs
- * on the user's machine, connects outbound to the (possibly remote) main
- * server, and executes claude/codex sign-in flows locally where the
- * browser and the vendors' localhost OAuth callbacks live.
+ * Client-side lifecycle of the auth server: the login broker that runs on
+ * the user's machine, connects out to the (possibly remote) main server,
+ * and runs claude/codex sign-in flows where the browser and the vendors'
+ * localhost OAuth callbacks are.
  *
- * Lives in shared (not src/auth-daemon) because commands may only import
- * from shared: `yaac auth update` calls ensureAuthDaemon().
- * The desktop shell is the second caller class: it can't use the CLI
- * self-invocation or the default target resolution (an Electron process
- * has neither a yaac argv[1] nor a build id), so both are overridable.
+ * In `@yaac/shared` because the desktop shell starts it too. The shell is
+ * not the yaac CLI, so the launch command and target are overridable.
  */
 
 export interface AuthDaemonLock {
@@ -27,11 +24,7 @@ export interface AuthDaemonLock {
   startedAt: number
 }
 
-/**
- * CLIENT-LOCAL: the daemon runs on the user's machine, never in a pod —
- * it needs the browser and the vendors' localhost OAuth callbacks, which
- * exist nowhere else. Its `pid` is only meaningful there too.
- */
+/** CLIENT-LOCAL: the daemon always runs on the user's machine. */
 export function authDaemonLockPath(): string {
   return clientLocalPath('.auth-daemon.lock')
 }
@@ -81,9 +74,8 @@ export interface AuthDaemonInvocation {
 }
 
 /**
- * Relaunch ourselves as `yaac auth server run`, detached. Mirrors the
- * main server's self-invocation: production reuses node + the bundled
- * entry; dev respawns via tsx so the loader is set up in the child.
+ * The command that relaunches this CLI as `yaac auth server run`: node plus
+ * the bundled entry, or via tsx when running from source.
  */
 function resolveAuthDaemonInvocation(): AuthDaemonInvocation {
   const entry = process.argv[1] ?? ''
@@ -93,17 +85,14 @@ function resolveAuthDaemonInvocation(): AuthDaemonInvocation {
       const tsxCli = createRequire(import.meta.url).resolve('tsx/cli')
       return { bin: process.execPath, args: [tsxCli, entry, ...cmd] }
     } catch {
-      // tsx not installed (production build) — fall through
+      // tsx not installed
     }
   }
   return { bin: process.execPath, args: [entry, ...cmd] }
 }
 
 export interface SpawnAuthDaemonOptions {
-  /**
-   * Defaults to relaunching this process (CLI self-invocation) — callers
-   * whose process is not the yaac CLI (the desktop shell) must override.
-   */
+  /** Defaults to relaunching this CLI; the desktop shell must override it. */
   invocation?: AuthDaemonInvocation
   /** Daemon env (e.g. a login-shell-hydrated PATH); defaults to process.env. */
   env?: NodeJS.ProcessEnv
@@ -139,10 +128,8 @@ async function agentConnected(baseUrl: string): Promise<boolean> {
 
 export interface EnsureAuthDaemonSpawnedOptions extends SpawnAuthDaemonOptions {
   /**
-   * Pre-resolved target; defaults to resolveServerTarget(). Callers that
-   * have already resolved one (the desktop shell, mid-boot) pass it so the
-   * daemon is pointed at the same server the window is landing on, rather
-   * than at whatever `server.json` says a moment later.
+   * Defaults to resolveServerTarget(). The desktop shell passes the server
+   * its window is loading so both use the same one.
    */
   target?: ServerTarget
   killImpl?: (pid: number, signal: NodeJS.Signals) => void
@@ -156,11 +143,9 @@ export interface EnsureAuthDaemonOptions extends EnsureAuthDaemonSpawnedOptions 
 }
 
 /**
- * Make sure an auth server process for the currently resolved main
- * server exists on this machine, restarting one pointed at a different
- * server (the remote setting changed since it started). Does not wait
- * for the agent to connect — the desktop app uses this fire-and-mostly-
- * forget variant so opening the webapp never blocks on the broker.
+ * Ensure an auth server process for the current main server is running,
+ * restarting one pointed at a different server. Does not wait for it to
+ * connect, so the desktop app never blocks on it.
  */
 export async function ensureAuthDaemonSpawned(
   opts: EnsureAuthDaemonSpawnedOptions = {},
@@ -170,7 +155,6 @@ export async function ensureAuthDaemonSpawned(
   const lock = await readAuthDaemonLock()
   const live = lock !== null && isPidLive(lock.pid)
   if (live && lock.baseUrl !== target.baseUrl) {
-    // Pointed at the wrong server — restart against the current target.
     try {
       (opts.killImpl ?? process.kill)(lock.pid, 'SIGTERM')
     } catch { /* already gone */ }
@@ -192,10 +176,7 @@ export async function ensureAuthDaemon(
 ): Promise<void> {
   const target = await ensureAuthDaemonSpawned(opts)
 
-  // Match `auth server start`'s cold-boot budget. Starting from source can
-  // spend more than 8s loading the tsx dependency tree on a busy machine;
-  // the daemon is healthy once it finishes, so timing out earlier only
-  // forces the caller into an unnecessary fallback flow.
+  // Generous because starting from source under tsx can be slow.
   const connectTimeoutMs = opts.connectTimeoutMs ?? AUTH_DAEMON_BOOT_TIMEOUT_MS
   const pollIntervalMs = opts.pollIntervalMs ?? 250
   const deadline = Date.now() + connectTimeoutMs

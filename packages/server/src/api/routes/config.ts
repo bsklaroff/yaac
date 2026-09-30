@@ -9,22 +9,18 @@ import { getGitIdentity, setGitIdentity } from '#db'
 import { ServerError } from '@yaac/shared/errors'
 
 /**
- * Global (non-project-scoped) editable config: the git identity this
- * server's workspaces commit under, the user Dockerfile
- * (`~/.yaac/build/Dockerfile.user`), which layers on top of every project
- * image, and the support files sharing its build dir (its whole build
- * context).
+ * Global (not project-scoped) editable config: the git identity workspaces
+ * commit under, the user Dockerfile (`~/.yaac/build/Dockerfile.user`) layered
+ * on every project image, and the other files in its build context.
  */
 export const configApp = new Hono()
-  // The git identity. Not gated on a driver feature: every substrate makes
-  // commits, and this is the setting that replaced reading one off the
-  // server's host — which a client on another machine cannot write.
+  // Not gated on a driver feature: every substrate makes commits. Stored in
+  // the server so a client on another machine can set it.
   .get('/git-identity', async (c) => c.json({ identity: await getGitIdentity() }))
   .put(
     '/git-identity',
-    // Capped and free of control characters: the pair lands in a
-    // workspace's `.gitconfig` and in env vars, and a newline in a display
-    // name has no business in either.
+    // Capped and free of control characters, since both values land in a
+    // workspace's `.gitconfig` and in env vars.
     zv('json', z.object({
       name: z.string().min(1).max(256).regex(/^[^\x00-\x1f\x7f]*$/),
       email: z.string().min(1).max(256).regex(/^[^\x00-\x1f\x7f]*$/),
@@ -42,8 +38,7 @@ export const configApp = new Hono()
       return c.json({ identity })
     },
   )
-  // Both refuse on a runtime that builds no images — the file would be
-  // an editable layer over an image that is never built.
+  // Both refuse on a runtime that builds no images.
   .get('/user-dockerfile', async (c) => {
     requireDriverFeature('images')
     return c.json({ content: await readUserDockerfile() })

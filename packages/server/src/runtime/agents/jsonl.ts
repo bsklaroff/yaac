@@ -3,17 +3,15 @@ import { openSandboxFile, type SandboxFile } from './sandbox-fs'
 
 const CHUNK_SIZE = 64 * 1024
 
-/** How far into a transcript a scan looks. What it looks for (an opening
- *  message) sits near the top; this only bounds what a file the agent grew
- *  without limit can cost. */
+/** How far into a transcript a scan reads. The target (an opening message)
+ *  is near the top; this bounds the cost of an agent-grown file. */
 const MAX_SCAN_BYTES = 64 * 1024 * 1024
 
 /**
- * Scans a JSONL file from the start and returns the first mapped value that
- * is not undefined. Reads incrementally so large metadata preambles do not
- * hide later entries, and finds line ends in the bytes as they arrive, so
- * every byte is looked at once however long a line runs — a line with no
- * end costs its length, not its square.
+ * Scan a JSONL file from the start and return the first mapped value that
+ * is not undefined. Reads incrementally and finds line ends as bytes
+ * arrive, so each byte is examined once and an endless line costs linear
+ * time.
  */
 export async function scanJsonlForward<T>(
   file: SandboxFile,
@@ -33,7 +31,7 @@ export async function scanJsonlForward<T>(
     handle = await openSandboxFile(file)
     if (handle === null) return undefined
     const size = Math.min((await handle.stat()).size, MAX_SCAN_BYTES)
-    // The line the scan is in the middle of, as the chunks that hold it.
+    // Chunks of the line currently being read.
     let partial: Buffer[] = []
     let offset = 0
     while (offset < size) {

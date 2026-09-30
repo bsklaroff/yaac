@@ -7,17 +7,16 @@ import { projectSlugFor } from '@yaac/shared/project-slug'
 
 export type GitCredentialKind = 'https' | 'ssh'
 
-/** The server's SCP-style remote (`[user@]host:path`), per `parseGitRemote`. */
+/** SCP-style remote (`[user@]host:path`), matching the server's `parseGitRemote`. */
 const SCP_RE = /^(?:[\w._-]+@)?([\w.-]+):(?!\/)(.+)$/
 
-/** What a remote authenticates with: an SCP-style `git@host:path` remote an
- *  SSH key, anything else (an `https://` URL) a token. */
+/** SCP-style remotes use an SSH key; anything else uses an HTTPS token. */
 export function remoteKind(remoteUrl: string): GitCredentialKind {
   return SCP_RE.test(remoteUrl) ? 'ssh' : 'https'
 }
 
-/** The project slug the server derives from a remote (`projectSlugFor`
- *  over its path, `.git` dropped), or '' while it does not parse. */
+/** The project slug the server would derive from a remote, or '' if the
+ *  remote doesn't parse. */
 export function remoteSlug(remoteUrl: string): string {
   let repoPath = SCP_RE.exec(remoteUrl)?.[2]
   if (repoPath === undefined) {
@@ -30,8 +29,8 @@ export function remoteSlug(remoteUrl: string): string {
   return projectSlugFor(repoPath.replace(/\/$/, '').replace(/\.git$/, ''))
 }
 
-/** `<project>-token` / `<project>-key` (`git-…` with no project), suffixed
- *  `-2`, `-3`… past the names taken. */
+/** `<project>-token` or `<project>-key` (`git-…` without a project), with
+ *  `-2`, `-3`… appended until the name is free. */
 export function defaultCredentialName(kind: GitCredentialKind, project: string, taken: readonly string[]): string {
   const base = `${project || 'git'}-${kind === 'ssh' ? 'key' : 'token'}`
   let name = base
@@ -45,18 +44,14 @@ export const INPUT = 'min-w-0 flex-1 rounded-md border border-border bg-bg px-2.
   + 'outline-none focus:border-border-strong'
 
 /**
- * Choose the git credential a project authenticates with: one of the stored
- * credentials of the kind its remote takes, or a new one. A new HTTPS token
- * is a name and the pasted token, stored when the action runs; a new SSH key
- * is generated on the spot, so its public half can be registered with the
- * git host before the action — the first git operation — needs it. The name
- * starts on a unique default.
+ * Pick a project's git credential: an existing one of the right kind, or a
+ * new one. A new HTTPS token is stored on submit. A new SSH key is generated
+ * immediately so the user can register its public key with the git host
+ * before the first git operation needs it.
  *
- * A credential created here stays created whatever the action does after,
- * and the picker then offers it as an existing one: a retry reuses it rather
- * than minting another. `offerExisting={false}` is the bare "new credential"
- * form (Settings → Add), whose action just finishes; `exclude` keeps a
- * project's current credential off the offer when it is changing it.
+ * A credential created here is kept even if `onSubmit` fails, and is then
+ * offered as existing so a retry reuses it. `offerExisting={false}` shows only
+ * the new-credential form; `exclude` hides the project's current credential.
  */
 export function GitCredentialPicker({
   kind,
@@ -85,8 +80,8 @@ export function GitCredentialPicker({
   const all = auth?.gitCredentials ?? []
   const existing = offerExisting ? all.filter((c) => c.kind === kind && c.id !== exclude) : []
 
-  // null = untouched. A pick of a credential that is not (or no longer) on
-  // offer — the remote's kind changed under it — falls back like untouched.
+  // null = untouched. A pick no longer on offer (e.g. the remote's kind
+  // changed) is treated as untouched.
   const [pick, setPick] = useState<string | null>(null)
   const [name, setName] = useState<string | null>(null) // null = the default
   const [token, setToken] = useState('')
@@ -97,7 +92,7 @@ export function GitCredentialPicker({
   const choice = pick === NEW || existing.some((c) => c.id === pick) ? pick as string
     : existing.length > 0 || (offerExisting && !auth) ? '' : NEW
   const shownName = name ?? defaultCredentialName(kind, project, all.map((c) => c.name))
-  // A generated key serves an SSH remote only; the URL may have changed since.
+  // Ignore a generated key if the remote is no longer SSH.
   const key = kind === 'ssh' ? generated : null
   const ready = !disabled && busy === null && (choice === NEW
     ? (kind === 'ssh' ? key !== null : shownName.trim() !== '' && token.trim() !== '')
@@ -132,8 +127,8 @@ export function GitCredentialPicker({
           id = key.id
         } else {
           id = await addHttpsCredential(shownName.trim(), token.trim())
-          // Stored now, whatever the action does: from here on it is an
-          // existing credential, so a retry does not store it twice.
+          // Switch to it as an existing credential so a retry doesn't
+          // store it twice.
           await refresh()
           setPick(id)
           setToken('')
@@ -217,11 +212,10 @@ export function GitCredentialPicker({
   )
 }
 
-/** An SSH public key with a Copy button — the whole of what there is to
- *  show of a key. `wrap` shows it in full rather than one truncated line. */
+/** An SSH public key with a Copy button. `wrap` shows it in full rather
+ *  than as one truncated line with a View toggle. */
 export function PublicKey({ publicKey, wrap = false }: { publicKey: string; wrap?: boolean }): JSX.Element {
   const [copied, setCopied] = useState(false)
-  // A truncated key can be expanded in place, to read or select by hand.
   const [shown, setShown] = useState(false)
   const copy = (): void => {
     void navigator.clipboard?.writeText(publicKey)

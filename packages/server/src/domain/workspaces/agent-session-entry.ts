@@ -4,19 +4,14 @@ import type { AgentSessionLinkRow } from '#db'
 import type { AgentSessionEntry } from '@yaac/shared/types'
 
 /**
- * One linked conversation as the wire shows it. The single mapper for every
- * surface that serializes a link — the list, the stopped listing, and the
- * agent-sessions route — so `lastActiveAt` can't drift into a second format
- * (tsc cannot catch that: both are `string`).
+ * One linked conversation in wire form. Every surface that serializes a link
+ * (the list, the stopped listing, the agent-sessions route) uses this, so
+ * `lastActiveAt` keeps one format; tsc cannot catch a drift since both are
+ * `string`.
  *
- * A mediator rather than a db function, because the entry it builds is
- * a join: the row half is recorded, and `live` is what a runtime observed
- * just now. The db layer speaks rows, and deciding how the two halves combine is
- * this layer's job (docs/layered-server.md) — the same reason the join paths
- * that call this one live here.
- *
- * The model goes out with its catalog name beside it, so every surface that
- * names an agent says "Opus 5.5" the way the create form did.
+ * It lives in domain, not `#db`, because it joins the stored row with `live`,
+ * what the runtime observed just now (docs/layered-server.md). The model goes
+ * out with its catalog display name (e.g. "Opus 5.5").
  */
 export function toAgentSessionEntry(
   l: AgentSessionLinkRow,

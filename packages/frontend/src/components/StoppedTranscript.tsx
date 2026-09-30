@@ -10,22 +10,13 @@ import {
 import type { AgentSessionEntry, AgentTool } from '@yaac/shared/types'
 
 /**
- * What a stopped workspace actually said, in the pane that used to show only
- * the question that started it.
+ * A stopped workspace's conversations, rendered with the same `AcpTranscript`
+ * as the live chat pane. They survive the container: an `acp` one as acpd's
+ * record, a `tui` claude one as claude's own transcript.
  *
- * A stopped workspace's conversation outlives its container — an `acp` one as
- * the record acpd wrote, a `tui` claude one as the transcript claude wrote —
- * so there is no reason for the view of a stopped workspace to be poorer than
- * the view of a running one. It renders through the same `AcpTranscript` the
- * live chat pane does, because it is the same conversation.
- *
- * A workspace can hold several: `/clear` starts a new conversation in the same
- * workspace, and a workspace can be launched with more than one agent. They are
- * offered as tabs in restore order, which is the order the sidebar's own
- * history list uses.
- *
- * Fetched rather than pushed, and cached forever: a stopped conversation is
- * finished, so there is nothing to poll for.
+ * A workspace can have several (`/clear`, or more than one agent); they show
+ * as tabs in restore order. Fetched once and cached forever, since a stopped
+ * conversation cannot change.
  */
 export function StoppedTranscript({
   workspaceId,
@@ -37,8 +28,7 @@ export function StoppedTranscript({
   sessions: AgentSessionEntry[]
   /** The workspace's tool, for the note shown when nothing is readable. */
   tool: AgentTool
-  /** The founding ask — what this pane showed before, and still shows when
-   *  there is no transcript to show instead. */
+  /** The starting prompt, shown when there is no readable transcript. */
   prompt?: string
 }): JSX.Element | null {
   const viewable = useMemo(
@@ -46,9 +36,8 @@ export function StoppedTranscript({
     [sessions],
   )
   const [picked, setPicked] = useState<string | null>(null)
-  // The one the user chose, else the conversation the workspace was last in,
-  // else its first — never a stale pick from a workspace that is no longer
-  // selected, which is why this is derived rather than seeded into state.
+  // The user's pick, else the last conversation, else the first. Derived
+  // rather than stored so a pick from another workspace never sticks.
   const selected = viewable.find((s) => s.agentSessionId === picked)
     ?? viewable.find((s) => s.active)
     ?? viewable[0]
@@ -65,22 +54,15 @@ export function StoppedTranscript({
     [data],
   )
 
-  // Nothing readable, which now means one thing: a `tui` conversation of a
-  // tool whose own history the server cannot read once the pod is gone —
-  // opencode's is a sqlite database inside the container, and codex names its
-  // rollouts by a thread id yaac never sees. Every `acp` conversation is
-  // readable whatever ran it, because acpd's record is yaac's own. The
-  // founding ask is still worth showing — it is what this pane showed before
-  // there were transcripts at all.
+  // Nothing readable: a `tui` conversation of a tool whose history the server
+  // cannot read after the pod is gone (opencode keeps it in an in-container
+  // sqlite db; codex names rollouts by a thread id yaac never sees). Show the
+  // starting prompt instead.
   if (selected === undefined || data === TRANSCRIPT_UNAVAILABLE) {
     if (!prompt) return null
-    // Only say *why* when this tool is the reason — the workspace's
-    // conversations are known and not one of them is readable. Two other ways
-    // to land here must not claim that: a row listing no conversations yet is
-    // the optimistic entry of a workspace stopped a moment ago, and a viewable
-    // conversation that came back unavailable is a server too old to serve the
-    // route. Blaming the tool would be wrong in both, and permanent-sounding
-    // in two cases that resolve on their own.
+    // Blame the tool only when conversations are known and none is readable.
+    // An empty list is a just-stopped workspace, and an unavailable viewable
+    // one is an older server; both resolve on their own.
     const explain = sessions.length > 0 && viewable.length === 0
     return (
       <div className="mt-4 flex min-h-0 flex-1 flex-col gap-1.5">
@@ -100,7 +82,6 @@ export function StoppedTranscript({
 
   return (
     <div className="mt-4 flex min-h-0 flex-1 flex-col">
-      {/* Only when there is a choice to make: one conversation needs no tab. */}
       {viewable.length > 1 && (
         <div className="mb-2 flex shrink-0 flex-wrap gap-1">
           {viewable.map((s, i) => (
@@ -123,8 +104,7 @@ export function StoppedTranscript({
       )}
       <div className="min-h-0 flex-1 overflow-y-auto rounded bg-bg/80 p-2.5">
         {isPending && <p className="text-xs text-text-faint">Loading the conversation…</p>}
-        {/* The server's own words when it has any — a conversation refused for
-            its size says so, which a generic failure would hide. */}
+        {/* Prefer the server's message, e.g. a conversation too large to send. */}
         {isError && (
           <p className="text-xs text-text-faint">
             {error instanceof ServerError

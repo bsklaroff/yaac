@@ -1,27 +1,23 @@
 /*
- * Verifies the git-auth-failure badge now renders on the sidebar header's
- * second (chit) row — alongside the plan-usage and image-build chits —
- * rather than on the top project-name strip.
+ * Verifies the git-auth-failure badge renders on the sidebar header's chit
+ * row (with the plan-usage and image-build chits), not on the project-name
+ * strip above it.
  *
- * Rather than stand up a real failing session pod + mock upstream (see
- * git-auth-badge-test.js for that end-to-end path), this rewrites the
- * server-pushed `/events` snapshot in-flight with Playwright's WebSocket
- * routing: every `{type:'snapshot'}` frame gets a fake gitAuthFailures entry
- * for the active project injected before it reaches the app. That is enough
- * to exercise the *layout* — where the badge lands in the DOM — which is all
- * this change touched.
+ * Instead of a real failing session pod (git-auth-badge-test.js covers that
+ * end to end), this rewrites each `/events` snapshot frame in flight with
+ * Playwright's WebSocket routing, adding a fake gitAuthFailures entry. That
+ * is enough to check where the badge lands in the layout.
  *
  * Checks:
  *  1. The badge (aria-label "Git authentication failed") is inside the chit
- *     row (the sibling div after the `.titlebar-drag` strip), not the strip.
- *  2. The badge renders strictly below the name strip.
+ *     row, the div after the `.titlebar-drag` strip.
+ *  2. The badge renders below the name strip.
  *
  * Drives the Vite dev server (`pnpm --filter @yaac/frontend dev`, port 1420)
  * against the running yaac server.
  *
  * Run: node test-playwright-scripts/sidebar-git-auth-badge-row-test.js
- * (set SCREENSHOT_DIR to capture the sidebar). (playwright is resolved from
- * the global npm root; browsers live under /opt/playwright-browsers)
+ * (set SCREENSHOT_DIR to capture the sidebar).
  */
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -48,7 +44,7 @@ function check(name, cond, detail = '') {
 
 const APP_URL = process.env.APP_URL ?? 'http://localhost:1420'
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR
-// A fixed (not Date.now()) epoch so the injected frame is deterministic.
+// Fixed so the injected frame is deterministic.
 const FAKE_AT_MS = 1_784_000_000_000
 
 const { chromium } = requirePlaywright()
@@ -58,9 +54,8 @@ try {
   const page = await ctx.newPage()
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
 
-  // Inject a fake git-auth failure into every snapshot frame, keyed under
-  // every project slug the frame already knows about (plus the seeded
-  // "yaac"), so it lands on whichever project is active.
+  // Key the fake failure under every slug in the frame (plus "yaac") so it
+  // lands on whichever project is active.
   await page.routeWebSocket(/\/events$/, (route) => {
     const server = route.connectToServer()
     server.onMessage((message) => {

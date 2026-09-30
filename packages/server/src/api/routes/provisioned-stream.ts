@@ -4,17 +4,15 @@ import { runProvisioned } from '#domain/workspaces'
 import { toErrorBody } from '#http'
 
 /**
- * Writer side of the NDJSON provisioning streams shared by the workspace
- * create/restart routes: `{type:'progress'}` events followed by exactly one
- * terminal `{type:'result'}` or `{type:'error'}` (errors thrown inside a hono
- * stream callback are swallowed, so `run` failures are caught and emitted).
+ * Writes the NDJSON provisioning stream for the workspace create/restart
+ * routes: `{type:'progress'}` events, then exactly one `{type:'result'}` or
+ * `{type:'error'}`. Hono swallows errors thrown inside a stream callback, so
+ * `run` failures are caught and emitted.
  *
- * The provisioning-registry row lifecycle (webapp, snapshot-driven) is
- * `runProvisioned`'s job — this layer only mirrors the same progress and
- * outcome onto the NDJSON stream (CLI), keeping both in sync. Registering the
- * `workspaceId` row is the caller's job (restart registers up front only when
- * the webapp supplied the row's project) — all registry calls are no-ops while
- * no row exists.
+ * `runProvisioned` updates the provisioning-registry row the webapp sees;
+ * this mirrors the same progress onto the stream for the CLI. The caller
+ * registers the row (restart does so only when the webapp supplied its
+ * project); registry calls are no-ops while no row exists.
  */
 export function streamProvisioned(
   c: Context,

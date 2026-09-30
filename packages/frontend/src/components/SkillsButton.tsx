@@ -21,10 +21,8 @@ const SOURCE_LABEL: Record<SkillSource, string> = {
 }
 
 /**
- * List grouping is finer than `source` alone: the `system` tier holds both
- * yaac's own shipped built-ins (`sourceLabel` `yaac`) and the agent binary's
- * bundled built-ins, and we head them as two separate sections — "yaac
- * built-in" above the agent's own "<Agent> built-in".
+ * List sections. Finer than `source`: `system` skills split into yaac's own
+ * (`sourceLabel` `yaac`) and the agent binary's bundled ones.
  */
 type SkillGroup = 'personal' | 'plugin' | 'project' | 'yaac' | 'tool'
 
@@ -74,9 +72,8 @@ function SkillDetailPane(
   return (
     <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-hairline-soft bg-bg/50 p-4
       max-md:border-0 max-md:bg-transparent max-md:p-0">
-      {/* Every band above the body is shrink-0: the body box below is the only
-          one that may give up height, and without this a long SKILL.md
-          squeezes the title into a clipped line on a short phone screen. */}
+      {/* Only the body may shrink; otherwise a long SKILL.md clips the title
+          on a short phone screen. */}
       <div className="flex shrink-0 items-baseline gap-2">
         <h3 className="text-sm font-semibold text-text max-md:text-[0.9375rem]">/{skill.name}</h3>
       </div>
@@ -103,16 +100,13 @@ function SkillDetailPane(
 }
 
 /**
- * Sidebar-header entry point to the project's skill viewer plus the full-screen
- * modal it opens. Skills (personal + plugin + project `SKILL.md` files the
- * agent can invoke) are a property of the project, not a workspace, so this lives
- * in the sidebar header and its open state lives in the store.
+ * Sidebar-header button for the project's skill viewer, and the full-screen
+ * modal it opens. Skills belong to the project, not a workspace, so open state
+ * lives in the store.
  *
- * The overlay is a search-filtered master/detail list grouped by source;
- * picking a row fetches and shows its full `SKILL.md`. The built-in (`system`)
- * tier is split into two sections: yaac's own shipped skills ("yaac built-in")
- * above the agent's binary-bundled skills ("<Agent> built-in") — the latter are
- * list-only (name + description from the agent's docs), with a placeholder body.
+ * The modal is a searchable master/detail list grouped by source; picking a
+ * row shows its full `SKILL.md`. Agent-bundled built-ins are list-only (name
+ * and description), with a placeholder body.
  */
 export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Element {
   const open = useUiStore((s) => s.skillsOverlayOpen)
@@ -134,8 +128,7 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
     queryFn: () => getProjectBranches(projectSlug),
     enabled: open && projectSlug !== '',
   })
-  // Freshen the branch list from the remote in the background so a just-pushed
-  // branch appears, mirroring the changes/new-workspace pickers.
+  // Refresh the branch list from the remote so a just-pushed branch appears.
   useEffect(() => {
     if (!open || projectSlug === '') return
     let cancelled = false
@@ -153,8 +146,7 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
     queryFn: () => getProjectSkills(projectSlug, tool, effectiveBranch),
     enabled: open,
     staleTime: 5_000,
-    // Keep the previous tool's list visible while the next one loads, so
-    // switching agents doesn't flash the pane to empty and back.
+    // Avoid flashing an empty list while switching agents.
     placeholderData: keepPreviousData,
   })
 
@@ -171,9 +163,8 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
   const rows = q
     ? all.filter((s) => `${s.name} ${s.description} ${s.sourceLabel ?? ''}`.toLowerCase().includes(q))
     : all
-  // Desktop keeps both panes on screen, so the top row stands in until the
-  // user picks one; a phone shows one pane at a time, so there the detail (and
-  // the SKILL.md fetch behind it) waits for an actual tap.
+  // Desktop shows the top row until the user picks one. A phone shows one
+  // pane at a time, so it waits for a tap before fetching a SKILL.md.
   const picked = rows.find((s) => s.id === selectedId) ?? null
   const selected = picked ?? (isMobile ? null : rows[0] ?? null)
 
@@ -200,9 +191,8 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
           bg-surface p-4 text-text shadow-[0_16px_48px_var(--shadow-color)] outline-none transition duration-150
           data-[starting-style]:scale-95 data-[starting-style]:opacity-0 data-[ending-style]:scale-95
           data-[ending-style]:opacity-0">
-          {/* Four controls don't fit a phone's width in one strip, so below md
-              the header wraps: title + Close on the first line, the branch and
-              agent pickers on a full-width second line. */}
+          {/* On a phone the header wraps: title and Close, then the branch and
+              agent pickers on a second line. */}
           <div className="flex flex-wrap items-center justify-between gap-2 md:flex-nowrap md:justify-start md:gap-3">
             <Dialog.Title className="shrink-0 text-xs font-semibold text-text-dim max-md:text-sm">
               Skills{all.length > 0 && (
@@ -211,10 +201,8 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
             </Dialog.Title>
             <div className="flex items-center gap-2 md:ml-auto
               max-md:order-last max-md:w-full max-md:justify-between max-md:overflow-x-auto">
-              {/* Branch picker — project (repo) skills are read from origin/<branch>,
-                  the same branch the changes pane diffs against. First in the row so
-                  its variable-width label only shifts the group's left edge, leaving
-                  the agent selector and Close pinned right (see below). */}
+              {/* Project skills are read from origin/<branch>. First in the row so
+                  its variable-width label cannot shift the buttons to its right. */}
               <Popover.Root
                 open={pickerOpen}
                 onOpenChange={(o) => { setPickerOpen(o); if (!o) setPickerQuery('') }}
@@ -252,10 +240,8 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
                   </Popover.Positioner>
                 </Popover.Portal>
               </Popover.Root>
-              {/* Per-agent selector — each tool loads skills from its own dirs.
-                  Right-anchored beside Close so the variable-width title count
-                  (which shrinks to nothing while a tool loads or when empty) can
-                  never shift these buttons out from under the pointer. */}
+              {/* Agent selector: each tool reads skills from its own dirs. Anchored
+                  right so the changing title count cannot move it. */}
               <div className="flex shrink-0 items-center gap-0.5 rounded-md bg-bg p-0.5">
                 {AGENT_TOOLS.map((t) => (
                   <button
@@ -297,7 +283,6 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
               backLabel="Back to skills"
               master={
                 <>
-                  {/* Search + grouped list */}
                   <input
                     value={queryText}
                     onChange={(e) => setQueryText(e.target.value)}

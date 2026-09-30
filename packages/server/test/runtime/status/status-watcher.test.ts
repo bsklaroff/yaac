@@ -74,7 +74,7 @@ function makeWatcher(tool: WatchedWorkspace['tool'], deps: {
       children.push(child)
       return child
     },
-    // Injected so no test ever reaches the real kubectl-exec streamd boot.
+    // Injected so no test starts a real streamd.
     reviveStreamd: (jobName) => {
       revives.push(jobName)
       return Promise.resolve()
@@ -89,10 +89,8 @@ function makeWatcher(tool: WatchedWorkspace['tool'], deps: {
 }
 
 /**
- * Drive a watcher through banner + pane enumeration + the session-, status-
- * and model-format subscribes.
- * The watcher lists the yaac session's panes and subscribes each agent window
- * it finds, so the reply here is a `list-panes` table, not a single pane id.
+ * Drive a watcher through the banner, the `list-panes` reply, and the
+ * session, status and model subscriptions for each agent window.
  */
 async function connectWatcher(
   child: FakeAttachChild,
@@ -116,9 +114,7 @@ let watchers: WorkspaceStatusWatcher[] = []
 beforeEach(() => {
   _resetWorkspaceStatusStoreForTests()
   _clearControlStreamRegistryForTests()
-  // The dial and the streamd revive are injected below, but the attach argv
-  // is written against the workspace's own tmux socket — which is the
-  // driver's answer, so a fake has to be installed to supply it.
+  // Supplies the workspace's tmux socket path for the attach command.
   installFakeWorkspaceDriver()
 })
 
@@ -136,10 +132,9 @@ describe('WorkspaceStatusWatcher (title tools)', () => {
     await connectWatcher(child)
     const sent = child.writes.join('')
     expect(sent).toContain("list-panes -s -F '#{pane_id}\t#{window_name}\t#{m/r:^\"?sleep infinity\"?$,#{pane_start_command}}\t#{=1024;s/[^ -~]//:@yaac-session}' -t yaac")
-    // The subscription name carries the pane id: same-name subscriptions
-    // replace each other, so a shared name silences every pane but the last.
+    // Includes the pane id, since same-name subscriptions replace each other.
     expect(sent).toContain("refresh-client -B 'status-7:%7:#{pane_title}'")
-    // No classification yet — absent entry reads as waiting.
+    // No status yet reads as waiting.
     expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
   })
 
@@ -148,21 +143,19 @@ describe('WorkspaceStatusWatcher (title tools)', () => {
     watchers.push(watcher)
     watcher.start()
     const child = children[0]
-    // Not registered while still attaching (registration happens only
-    // after the pane-id and subscribe replies prove the stream).
+    // Registered only after the stream answers.
     expect(workspaceControlStreamSend('yaac-demo-s1')).toBeUndefined()
     await connectWatcher(child)
     const send = workspaceControlStreamSend('yaac-demo-s1')
     expect(send).toBeDefined()
 
-    // A command through the channel rides the same control-mode stream.
     const reply = send!('list-windows -t yaac')
     await vi.waitFor(() => expect(child.commandCount).toBe(5))
     expect(child.writes.join('')).toContain('list-windows -t yaac')
     child.feedReply('0|@0|claude')
     await expect(reply).resolves.toBe('0|@0|claude')
 
-    // Stream death unregisters the channel (until the respawn re-proves one).
+    // Stream death unregisters the channel.
     child.emitExit()
     expect(workspaceControlStreamSend('yaac-demo-s1')).toBeUndefined()
   })
@@ -219,9 +212,7 @@ describe('WorkspaceStatusWatcher (title tools)', () => {
   })
 
   it('tears down and respawns when the heartbeat gets no reply', async () => {
-    // commandTimeoutMs must outlast the test's own waitFor polling
-    // during init (replies are fed ~50ms apart) while still expiring
-    // the unanswered heartbeat quickly.
+    // Long enough for init replies (~50ms apart), short for the heartbeat.
     const { watcher, children } = makeWatcher('claude', {
       heartbeatIntervalMs: 10,
       commandTimeoutMs: 250,
@@ -231,9 +222,7 @@ describe('WorkspaceStatusWatcher (title tools)', () => {
     watcher.start()
     const child = children[0]
     await connectWatcher(child)
-    // Heartbeat fires but we never feed a reply → timeout → respawn.
-    // Later generations keep timing out during init (nothing answers
-    // them either), so the child count only grows from here.
+    // The unanswered heartbeat times out and the watcher respawns.
     await vi.waitFor(() => expect(children.length).toBeGreaterThanOrEqual(2))
     expect(child.killed).toBe(true)
     expect(isWorkspaceStreamHealthy('demo', 's1')).toBe(false)
@@ -270,13 +259,12 @@ describe('WorkspaceStatusWatcher (title tools)', () => {
     const { watcher, children, revives } = makeWatcher('claude', { respawnDelayMs: 1 })
     watchers.push(watcher)
     watcher.start()
-    // Three consecutive failed streams (each child dies before connecting).
     for (let i = 1; i <= 3; i++) {
       await vi.waitFor(() => expect(children.length).toBe(i))
       children[i - 1].emitExit()
     }
     await vi.waitFor(() => expect(revives).toEqual(['yaac-demo-s1']))
-    // A successful connect resets the counter — no further revive fires.
+    // A successful connect resets the counter.
     await vi.waitFor(() => expect(children.length).toBe(4))
     await connectWatcher(children[3])
     expect(revives).toHaveLength(1)
@@ -305,8 +293,7 @@ describe('WorkspaceStatusWatcher (pane tools)', () => {
     await connectWatcher(child, '%2', 'opencode')
     const sent = child.writes.join('')
     expect(sent).toContain("list-panes -s -F '#{pane_id}\t#{window_name}\t#{m/r:^\"?sleep infinity\"?$,#{pane_start_command}}\t#{=1024;s/[^ -~]//:@yaac-session}' -t yaac")
-    // The subscription carries a content-search format that resolves the
-    // verdict inside tmux; the pane is never captured.
+    // tmux itself searches the pane content; nothing is captured.
     expect(sent).toContain("refresh-client -B 'status-2:%2:#{?#{||:#{C/ri:")
     expect(sent).not.toContain('capture-pane')
   })
@@ -318,7 +305,7 @@ describe('WorkspaceStatusWatcher (pane tools)', () => {
     const child = children[0]
     await connectWatcher(child, '%2', 'pi')
 
-    // opencode/pi push an already-resolved word, not pane content.
+    // opencode/pi report the status word directly.
     child.feed('%subscription-changed status-2 $0 @0 0 %2 : running\n')
     expect(readWorkspaceStatus('demo', 's1')).toBe('running')
     child.feed('%subscription-changed status-2 $0 @0 0 %2 : waiting\n')

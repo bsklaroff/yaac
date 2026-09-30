@@ -21,9 +21,8 @@ import { AGENT_PACKAGES, agentPackagePrefix } from '@yaac/shared/tool-install'
 const byName = (results: Awaited<ReturnType<typeof runHostCheck>>, name: string) =>
   results.find((r) => r.name === name)
 
-/** Cleared before each case below, since the row under test reports on
- *  whatever ambient environment a test run happens to have. Imported rather
- *  than restated so the reset cannot drift from the list under test. */
+/** Cleared before each case, since the check reads the ambient
+ *  environment. Imported so the reset matches the list under test. */
 import { TOOL_HOME_VARS } from '#drivers/containerless/tool-homes'
 
 let dataDir: string
@@ -45,7 +44,7 @@ afterEach(() => {
 const managedBin = (binary: string): string =>
   path.join(agentPackagePrefix(AGENT_PACKAGES[binary]), 'bin', binary)
 
-/** Binaries yaac installed on an earlier create. */
+/** Mark binaries as installed by an earlier create. */
 function preinstalled(...binaries: string[]): void {
   for (const binary of binaries) {
     fs.mkdirSync(path.dirname(managedBin(binary)), { recursive: true })
@@ -54,9 +53,9 @@ function preinstalled(...binaries: string[]): void {
 }
 
 /**
- * npm, as `runHost` meets it: `npm install --global --prefix <dir> … <spec>`
- * lands every binary of the package named by `spec` in `<dir>/bin`. The
- * specs it was asked for are returned, in order.
+ * Fake `npm install --global --prefix <dir> … <spec>` through `runHost`: puts
+ * the package's binaries in `<dir>/bin`. Returns the requested specs in
+ * order.
  */
 function fakeNpm(): string[] {
   const specs: string[] = []
@@ -92,8 +91,7 @@ describe('runHostCheck', () => {
     const results = await runHostCheck()
     const tmux = byName(results, 'tmux')
     expect(tmux?.status).toBe('fail')
-    // A check that says what is wrong without saying what to do is a worse
-    // error message than the spawn failure it replaced.
+    // Every failure must say how to fix it.
     expect(tmux?.fix).toMatch(/install tmux/i)
   })
 
@@ -101,7 +99,7 @@ describe('runHostCheck', () => {
     mockOnPath.mockImplementation((bin: string) =>
       Promise.resolve(bin !== 'lsof' && bin !== 'socat'))
     const results = await runHostCheck()
-    // Workspaces run fine without either: you lose port links and ACP mode.
+    // Workspaces run without either, minus port links and ACP mode.
     expect(byName(results, 'lsof')?.status).toBe('warn')
     expect(byName(results, 'socat')?.status).toBe('warn')
     expect(results.some((r) => r.status === 'fail')).toBe(false)
@@ -116,21 +114,20 @@ describe('runHostCheck', () => {
   })
 
   it('fails on a missing node, which installs and runs the agents', async () => {
-    // The case this exists for: a yaac whose server runs a bundled
-    // interpreter whose dir never lands on PATH. Every create then refuses.
+    // A server running a bundled node that is not on PATH: every create
+    // would be refused.
     mockOnPath.mockImplementation((bin: string) => Promise.resolve(bin !== 'node'))
     const node = byName(await runHostCheck(), 'node')
     expect(node?.status).toBe('fail')
-    // The node a distro's apt installs is too old for the pinned agents and
-    // comes without npm, so "install node" alone would not fix the host.
+    // A distro's node is often too old and lacks npm, so "install node" is
+    // not enough.
     expect(node?.fix).toMatch(/node 22 or newer, with npm/)
   })
 
   it('warns about curl, which only the in-session helper needs', async () => {
     mockOnPath.mockImplementation((bin: string) => Promise.resolve(bin !== 'curl'))
     const results = await runHostCheck()
-    // yaac-mama posts to the server with it; a workspace with no curl still
-    // runs its agent, so this can never be what fails a host.
+    // yaac-mama uses curl, but agents run without it, so it only warns.
     expect(byName(results, 'curl')?.status).toBe('warn')
     expect(byName(results, 'curl')?.fix).toMatch(/yaac-mama/)
     expect(results.some((r) => r.status === 'fail')).toBe(false)
@@ -152,9 +149,7 @@ describe('runHostCheck', () => {
   })
 
   it('reports a host whose own environment re-points a tool home', async () => {
-    // Workspaces drop these, which is right and invisible: nothing inside a
-    // workspace looks different, so a user whose shell has said for years
-    // that opencode lives elsewhere would never learn yaac disagrees.
+    // Workspaces drop these variables silently, so the check tells the user.
     const saved = { ...process.env }
     for (const key of TOOL_HOME_VARS) delete process.env[key]
     process.env.XDG_CONFIG_HOME = '/home/someone/.config'
@@ -168,8 +163,7 @@ describe('runHostCheck', () => {
     expect(row?.status).toBe('warn')
     expect(row?.detail).toContain('XDG_CONFIG_HOME')
     expect(row?.detail).toContain('CODEX_HOME')
-    // Named individually, because "some of your variables" sends a reader
-    // hunting through a shell profile for which ones.
+    // Each set variable is named individually.
     expect(row?.detail).not.toContain('XDG_CACHE_HOME')
     expect(row?.fix).toMatch(/private HOME/)
   })
@@ -177,8 +171,7 @@ describe('runHostCheck', () => {
   it('passes the tool-home row on a host that sets none of them', async () => {
     const saved = { ...process.env }
     for (const key of TOOL_HOME_VARS) delete process.env[key]
-    // Empty is not set: every tool here reads an empty value as absent, so
-    // warning about one would report something that changes nothing.
+    // Empty counts as unset, as every tool here treats it.
     process.env.XDG_DATA_HOME = ''
     let row
     try {
@@ -190,8 +183,7 @@ describe('runHostCheck', () => {
   })
 
   it('says plainly that nothing here is sandboxed', async () => {
-    // The single most important thing a reader of this output has to know,
-    // and it is not derivable from any of the checks above.
+    // The lack of isolation is the most important thing to report.
     const isolation = byName(await runHostCheck(), 'isolation')
     expect(isolation?.status).toBe('warn')
     expect(isolation?.detail).toMatch(/agents run as this user/)
@@ -199,28 +191,25 @@ describe('runHostCheck', () => {
 })
 
 /**
- * The create's preflight. Everything here is the same failure — a launch
- * command that execs nothing, exits 127, and takes the workspace with it
- * seconds after a create that already reported success — caught before
- * anything is provisioned instead of after.
+ * The create's preflight. It catches, before anything is provisioned, a
+ * launch command that would exec nothing and exit 127 seconds after the
+ * create reported success.
  */
 describe('assertHostCanLaunch', () => {
-  /** The inverse of what the host has, for the system tools it supplies. */
+  /** Make the host lack these system binaries. */
   const missing = (...bins: string[]) =>
     mockOnPath.mockImplementation((bin: string) => Promise.resolve(!bins.includes(bin)))
 
   it('refuses any launch on a host with no tmux, before a thing is provisioned', async () => {
-    // Otherwise this surfaces from inside launchWorkspace as a bare spawn
-    // ENOENT — after the workspace home, its mounts and its state dir exist,
-    // under a create that already reported progress.
+    // Otherwise it surfaces as a bare spawn ENOENT inside launchWorkspace,
+    // after the workspace's dirs already exist.
     missing('tmux')
     const err = await assertHostCanLaunch({ tool: 'codex', mode: 'tui' })
       .catch((e: unknown) => e) as ServerError
     expect(err.code).toBe('MISSING_TOOL')
     expect(err.message).toMatch(/"tmux" is not on this host's PATH/)
     expect(err.message).toContain('brew install tmux')
-    // And nothing to fall back to: this substrate IS tmux over a checkout,
-    // so an invented alternative would only mislead.
+    // No alternative is offered; this driver requires tmux.
     expect(err.message).not.toMatch(/, or /)
     expect(mockRunHost).not.toHaveBeenCalled()
   })
@@ -235,30 +224,28 @@ describe('assertHostCanLaunch', () => {
   })
 
   it('reports the most fundamental gap first, so a host is fixed bottom-up', async () => {
-    // A bare machine is missing all of these; being told about socat while
-    // there is no tmux to run anything in helps nobody.
+    // On a bare machine, tmux is reported first.
     missing('tmux', 'git', 'socat')
     await expect(assertHostCanLaunch({ tool: 'claude', mode: 'acp' }))
       .rejects.toThrow(/"tmux" is not on this host's PATH/)
   })
 
   it('installs the pinned tool on first use, and never the host\'s own', async () => {
-    // Every binary resolves on this host's PATH, codex included: a codex the
-    // user installed is at whatever version they last updated it to, which
-    // is how a launch meets an update screen or a dropped policy.
+    // Every binary is on PATH, codex included, but the user's codex may be
+    // any version, so yaac installs its pinned one.
     const specs = fakeNpm()
     const progress: string[] = []
     await assertHostCanLaunch({ tool: 'codex', mode: 'tui', onProgress: (m) => progress.push(m) })
     expect(specs).toEqual([specOf('codex')])
     expect(fs.statSync(managedBin('codex')).mode & 0o111).not.toBe(0)
-    // A first create waits on a download, and says so.
+    // A first create reports the download.
     expect(progress.join('\n')).toContain(specOf('codex'))
-    // Into its own prefix, and from there on the prefix is the answer.
+    // Installed via a staging prefix; later creates reuse the install.
     const npm = mockRunHost.mock.calls.find(([argv]) => (argv as string[])[0] === 'npm')?.[0] as string[]
     expect(npm[npm.indexOf('--prefix') + 1]).toMatch(/\.partial-/)
     await assertHostCanLaunch({ tool: 'codex', mode: 'tui' })
     expect(specs).toHaveLength(1)
-    // Nothing of the staging dir is left beside the install.
+    // No staging dir is left behind.
     expect(fs.readdirSync(path.dirname(agentPackagePrefix(AGENT_PACKAGES.codex))))
       .toEqual([path.basename(agentPackagePrefix(AGENT_PACKAGES.codex))])
   })
@@ -274,14 +261,13 @@ describe('assertHostCanLaunch', () => {
     }
     const npm = mockRunHost.mock.calls.filter(([argv]) => (argv as string[])[0] === 'npm')
     const [pi, claude] = npm.map(([argv]) => argv as string[])
-    // npm only warns about a node older than a package's `engines`, and the
-    // install it then finishes would read as installed for good.
+    // Without this, npm only warns about an old node and the install would
+    // count as done.
     expect(pi).toContain('--engine-strict')
-    // Lifecycle scripts only where one puts the binary in place.
+    // Lifecycle scripts run only where one installs the binary.
     expect(pi).toContain('--ignore-scripts')
     expect(claude).not.toContain('--ignore-scripts')
-    // The server's own wiring stays with the server, as it does for a
-    // workspace.
+    // The server's own env vars are not passed through.
     for (const [, opts] of npm) {
       const env = (opts as { env: NodeJS.ProcessEnv }).env
       expect(env.PATH).toBe(process.env.PATH)
@@ -290,9 +276,8 @@ describe('assertHostCanLaunch', () => {
   })
 
   it('clears staging an abandoned install left, and only that', async () => {
-    // A server stopped mid-install leaves npm to finish into a staging dir
-    // nothing will rename. One younger than the install timeout may be an
-    // install still running, here or in a second server on this data dir.
+    // A server stopped mid-install leaves a staging dir nothing will rename.
+    // One younger than the install timeout may still be in use.
     const dir = path.dirname(agentPackagePrefix(AGENT_PACKAGES.codex))
     const stale = path.join(dir, 'claude-code@1.0.0.partial-dead')
     const live = path.join(dir, 'pi-acp@1.0.0.partial-busy')
@@ -312,24 +297,22 @@ describe('assertHostCanLaunch', () => {
     await assertHostCanLaunch({ tool: 'claude', mode: 'acp' })
     expect(specs).toEqual([specOf('claude-agent-acp')])
 
-    // codex-acp spawns `codex app-server`, so a host with the adapter and no
-    // CLI fails at the first prompt rather than at the launch — later, and
-    // with nothing to point at.
+    // codex-acp spawns `codex app-server`, so without the CLI it would fail
+    // at the first prompt instead of at launch.
     specs.length = 0
     await assertHostCanLaunch({ tool: 'codex', mode: 'acp' })
     expect(specs).toEqual([specOf('codex-acp'), specOf('codex')])
 
-    // opencode IS its own adapter, so it is one install under one name.
+    // opencode is its own adapter, so it is one install.
     specs.length = 0
     await assertHostCanLaunch({ tool: 'opencode', mode: 'acp' })
     expect(specs).toEqual([specOf('opencode')])
   })
 
   it('asks for socat under acp, whose absence hangs a pane instead of failing', async () => {
-    // The adapter alone gets a workspace that launches and never attaches:
-    // the chat transport dials acpd's socket by spawning socat on this host,
-    // so without it there is no handshake, no conversation and no pane —
-    // which reads as a wedged agent rather than a missing tool.
+    // The chat transport reaches acpd's socket by spawning socat. Without
+    // it the workspace launches but never attaches, which looks like a
+    // wedged agent.
     missing('socat')
     const err = await assertHostCanLaunch({ tool: 'claude', mode: 'acp' })
       .catch((e: unknown) => e) as ServerError
@@ -337,15 +320,13 @@ describe('assertHostCanLaunch', () => {
     expect(err.message).toMatch(/"socat" is not on this host's PATH/)
     expect(err.message).toContain('apt install socat')
     expect(err.message).toContain('--mode tui')
-    // Refused before the adapter's download, not after.
+    // Refused before downloading the adapter.
     expect(mockRunHost).not.toHaveBeenCalled()
   })
 
   it('asks for node whatever the mode, because the agents install and run under it', async () => {
-    // npm installs every agent under it, codex and pi are node scripts, and
-    // `node <acpdEntry>` is what an acp window runs. A server started by a
-    // bundled node that never landed on PATH (the desktop app stages one)
-    // launches a window that execs nothing and closes.
+    // npm, the codex and pi scripts, and acpd all need node on PATH. A
+    // server using a bundled node (as the desktop app does) may lack it.
     missing('node')
     for (const mode of ['tui', 'acp'] as const) {
       const err = await assertHostCanLaunch({ tool: 'codex', mode })
@@ -374,10 +355,8 @@ describe('assertHostCanLaunch', () => {
   })
 
   it('reports the installer\'s own words when the install fails, and leaves nothing behind', async () => {
-    // Shaped like a real npm failure on a node older than the package's
-    // `engines`: the machine-readable code is printed near the TOP, and the
-    // sentence a person needs is at the bottom, with more than a window's
-    // worth of noise in between.
+    // Like a real EBADENGINE failure: the error code near the top, the
+    // useful sentence at the bottom, and lots of noise between.
     const npmError = [
       'npm error code EBADENGINE',
       'npm error engine Unsupported engine',
@@ -394,9 +373,9 @@ describe('assertHostCanLaunch', () => {
     expect(err.code).toBe('MISSING_TOOL')
     expect(err.message).toContain(`installing ${specOf('codex')} failed`)
     expect(err.message).toContain('Required: {"node":">=22.0.0"}')
-    // Lifted, not duplicated — the tail drops the code line it hoisted.
+    // The code line is moved to the top, not duplicated.
     expect(err.message.match(/npm error code EBADENGINE/g)).toHaveLength(1)
-    // A half-written install must not pass for one on the next create.
+    // A half-written install is removed.
     expect(fs.readdirSync(path.dirname(agentPackagePrefix(AGENT_PACKAGES.codex)))).toEqual([])
   })
 
@@ -408,8 +387,7 @@ describe('assertHostCanLaunch', () => {
   })
 
   it('runs one install for concurrent creates wanting the same tool', async () => {
-    // Two npm runs into one prefix race each other's writes, and the second
-    // has nothing to add.
+    // Concurrent npm runs into one prefix would race, so they are shared.
     const specs = fakeNpm()
     await Promise.all([
       assertHostCanLaunch({ tool: 'codex', mode: 'tui' }),

@@ -1,14 +1,10 @@
 /**
- * Is a workspace's agent still there? Two in-pod probes and their caches.
+ * Is a workspace's agent still there? Two in-workspace probes, run through
+ * the driver's exec, and their caches.
  *
- * Both run the tmux client *inside* the container over the stream relay: the
- * server socket is hostPath-mounted, but the listening kernel state isn't
- * host-connectable, so a host-side connect() is not a portable signal.
- *
- * Neither probe may conclude "dead" from a transport failure. A destructive
- * caller (the stale reaper) acts on the verdict, and a cluster blip that read
- * as death would reap a healthy workspace — Job and all — with no
- * recovery. That is why both return a tri-state with an explicit `unknown`.
+ * Neither probe may conclude "dead" from a transport failure: the stale
+ * reaper acts on the verdict, and a cluster blip read as death would
+ * destroy a healthy workspace. So both return a tri-state with `unknown`.
  */
 import { WorkspaceExecError, type RuntimeHandle } from '#drivers/contract'
 import { workspaceDriver } from '#drivers/driver'
@@ -16,50 +12,36 @@ import { tmuxCmd } from '#runtime/agents'
 import { isWorkspaceStreamHealthy } from './status-store'
 
 /**
- * What a probe addresses: the workspace's identity — which keys the cache
- * and the stream-health short-circuit — plus the driver's own name for it,
- * which is what the exec addresses.
- *
- * Taken as a whole rather than derived from the identity: constructing a
- * unit name is encoding the driver's naming scheme, which the contract
- * reserves to the driver. Every caller already holds a `RuntimeHandle`.
+ * What a probe addresses: the workspace's identity (keying the cache and
+ * the stream-health shortcut) plus the driver's unit name for the exec.
+ * Taken whole because building a unit name would encode the driver's
+ * naming scheme; callers already hold a `RuntimeHandle`.
  */
 export type ProbeTarget = Pick<RuntimeHandle, 'projectSlug' | 'workspaceId' | 'jobName'>
 
 /**
  * Outcome of a tmux liveness probe.
- * - `alive`:   the "yaac" tmux session is present (exec exited 0).
- * - `dead`:    tmux ran inside the pod and reported no session/server —
- *              a conclusive "the agent is gone" signal.
- * - `unknown`: the probe couldn't reach a verdict (exec timed out, or
- *              failed with a transport/API error). The workspace may well
- *              be alive; destructive callers (the stale-workspace reaper)
- *              MUST NOT treat this as dead, or a transient VM/cluster blip
- *              reaps a healthy workspace (Job and all, no recovery).
+ * - `alive`:   the "yaac" tmux session exists (exec exited 0).
+ * - `dead`:    tmux ran in the workspace and reported no session/server.
+ * - `unknown`: no verdict (timeout, transport or API error). The reaper
+ *              must not treat this as dead.
  */
 export type TmuxLiveness = 'alive' | 'dead' | 'unknown'
 
 /**
- * Cache for exec-probed tmux-liveness results, keyed by
- * `${slug}/${workspaceId}`. Each entry holds either a settled
- * (value, expiresAt) row or an in-flight Promise so concurrent
- * callers coalesce onto the same probe.
+ * Cache of exec-probed tmux liveness, keyed by `${slug}/${workspaceId}`.
+ * Entries are a settled (value, expiresAt) or an in-flight Promise, so
+ * concurrent callers share one probe.
  *
- * This is the FALLBACK path: workspaces with a healthy status-watcher
- * stream short-circuit to `alive` in `probeTmuxLiveness` and never
- * reach the exec probe, so in steady state only watcher-less pods pay
- * it — prewarmed spares (no watchers by design) and workspaces whose
- * stream is down or still attaching. The TTL bounds those pods' exec
- * rate against the 5s background tick (reap latency for a conclusive
- * `dead` grows by at most the TTL, well inside the reaper's grace).
+ * Only a fallback: a healthy status-watcher stream short-circuits to
+ * `alive`, so only watcher-less workspaces (spares, streams down or still
+ * attaching) reach the exec. The TTL bounds their exec rate against the 5s
+ * background tick, delaying a `dead` reap by at most the TTL.
  */
 const TMUX_ALIVE_TTL_MS = 15_000
-/** How long the reaper is willing to wait on a probe. A driver may floor
- *  it (the k8s one does, at MIN_EXEC_TIMEOUT_MS): its dial deadline derives
- *  from this, and one probe's impatience is not a verdict on the transport
- *  every workspace shares — so the real ceiling is that floor, and an
- *  `unknown` verdict (which never reaps) is all that is at stake in the
- *  difference. */
+/** How long the reaper waits on a probe. A driver may raise it (k8s floors
+ *  it at MIN_EXEC_TIMEOUT_MS, since its dial deadline derives from it);
+ *  only an `unknown`, which never reaps, depends on the difference. */
 const TMUX_PROBE_TIMEOUT_MS = 2_000
 
 type TmuxAliveEntry =
@@ -73,27 +55,18 @@ function tmuxAliveKey(slug: string, workspaceId: string): string {
 }
 
 /**
- * Test-only: drop every cached entry. Production callers never need to
- * invalidate because the TTL is short and `cleanupWorkspace` already
- * removes the cache entry — but tests that mock different probe
- * behavior across cases need to start each case from a clean slate.
+ * Test-only: drop every cached entry. Production never needs this: the TTL
+ * is short and `cleanupWorkspace` removes a workspace's entry.
  */
 export function _clearTmuxAliveCacheForTests(): void {
   tmuxAliveCache.clear()
 }
 
 /**
- * Classify a failed in-pod `tmux has-session` probe into `dead`
- * (conclusively no workspace) vs `unknown` (inconclusive — don't reap).
- *
- * A `WorkspaceExecError` means the probe REACHED the workspace: tmux ran
- * inside it and exited nonzero — the workspace/server is absent. That is the
- * only conclusive "dead" signal. Everything else — a transport failure
- * (proxy down, stream daemon dead, workspace gone mid-race), a timeout, a
- * malformed result — proves nothing about the workspace and must be kept,
- * not reaped.
- *
- * Exported for unit testing the dead/unknown split.
+ * Classify a failed `tmux has-session` probe as `dead` or `unknown`. Only a
+ * `WorkspaceExecError` (tmux ran in the workspace and exited nonzero) is a
+ * conclusive `dead`. Transport failures, timeouts and malformed results
+ * prove nothing and must not reap. Exported for tests.
  */
 export function classifyTmuxProbeError(err: unknown): 'dead' | 'unknown' {
   return err instanceof WorkspaceExecError ? 'dead' : 'unknown'
@@ -101,14 +74,8 @@ export function classifyTmuxProbeError(err: unknown): 'dead' | 'unknown' {
 
 /**
  * Probe tmux liveness by running `tmux has-session` inside the workspace
- * pod via its streamd (relay exec). We can't connect to the
- * hostPath-mounted UNIX socket from the host: the socket file is visible
- * on the host but the listening kernel state isn't host-connectable, so
- * running the client inside the container is the only portable signal.
- *
- * Exit 0 → `alive`. A failure is split into `dead`/`unknown` by
- * `classifyTmuxProbeError` so a transient transport failure never
- * masquerades as a dead workspace.
+ * via the driver's exec. Exit 0 is `alive`; failures are split by
+ * `classifyTmuxProbeError` so a transport blip never looks like death.
  */
 async function probeTmuxLivenessUncached(target: ProbeTarget): Promise<TmuxLiveness> {
   const driver = workspaceDriver()
@@ -125,20 +92,14 @@ async function probeTmuxLivenessUncached(target: ProbeTarget): Promise<TmuxLiven
 }
 
 /**
- * Tri-state tmux liveness for the given workspace. A healthy
- * status-watcher stream answers `alive` with no exec at all — the
- * watcher's control-mode client is attached to the in-pod tmux server
- * and heartbeats it, which is conclusive proof of life (tmux dying
- * closes the stream immediately, and a wedged stream fails its
- * heartbeat within ~30s, flipping the health bit). Everything else
- * falls back to the exec probe, cached for `TMUX_ALIVE_TTL_MS` with
- * in-flight coalescing so the underlying `kubectl exec` runs at most
- * once per workspace per TTL window.
+ * Tri-state tmux liveness. A healthy status-watcher stream answers `alive`
+ * without an exec: its control-mode client is attached to tmux and
+ * heartbeats it (tmux dying closes the stream; a wedged stream fails its
+ * heartbeat within ~30s). Otherwise the exec probe runs, cached for
+ * `TMUX_ALIVE_TTL_MS` with in-flight sharing.
  *
- * Use this (not `isTmuxSessionAlive`) anywhere a not-alive verdict drives
- * a destructive action: an `unknown` result must be kept, not reaped.
- * The short-circuit only ever strengthens that guarantee — stream health
- * can produce `alive`, never `dead`.
+ * Use this, not `isTmuxSessionAlive`, wherever not-alive triggers a
+ * destructive action. Stream health can only produce `alive`, never `dead`.
  */
 export async function probeTmuxLiveness(target: ProbeTarget): Promise<TmuxLiveness> {
   const { projectSlug, workspaceId } = target
@@ -163,10 +124,9 @@ export async function probeTmuxLiveness(target: ProbeTarget): Promise<TmuxLivene
 }
 
 /**
- * Boolean tmux liveness for display / non-destructive callers: true only
- * when the probe is conclusively `alive`. Both `dead` and `unknown` map
- * to false (skip / no-op), which is safe here — only the reaper needs to
- * tell them apart, and it uses `probeTmuxLiveness` directly.
+ * Boolean tmux liveness for display and non-destructive callers: true only
+ * when conclusively `alive`. Only the reaper needs to tell `dead` from
+ * `unknown`, and it uses `probeTmuxLiveness`.
  */
 export async function isTmuxSessionAlive(target: ProbeTarget): Promise<boolean> {
   return (await probeTmuxLiveness(target)) === 'alive'
@@ -174,30 +134,24 @@ export async function isTmuxSessionAlive(target: ProbeTarget): Promise<boolean> 
 
 /**
  * Outcome of an agent-pane probe.
- * - `placeholder`: the first window's pane still runs the `sleep infinity`
- *                  keepalive that workspace create opens tmux with — setup
- *                  died between `new-session` and the agent
- *                  `respawn-window` (e.g. the server was restarted
- *                  mid-create), and no agent will ever start.
- * - `started`:     the pane runs something else — the agent respawn
- *                  happened. Terminal state: `respawn-window -k` killed
- *                  the placeholder, so a workspace can never go back.
- * - `unknown`:     the probe couldn't reach a verdict. Destructive
- *                  callers MUST NOT treat this as `placeholder`.
+ * - `placeholder`: the first pane still runs create's `sleep infinity`
+ *                  keepalive; setup died before `respawn-window` (e.g. a
+ *                  server restart mid-create), so no agent will start.
+ * - `started`:     the agent was respawned. Final: `respawn-window -k`
+ *                  killed the placeholder.
+ * - `unknown`:     no verdict; must not be treated as `placeholder`.
  */
 export type AgentPaneState = 'placeholder' | 'started' | 'unknown'
 
-/** Workspaces whose agent pane was conclusively seen running (probe memo —
- *  `started` is terminal, so one positive verdict silences re-probing). */
+/** Workspaces whose agent was seen started; `started` is final, so they are
+ *  not probed again. */
 const agentStartedCache = new Set<string>()
 
 /**
- * Probe whether the agent window still runs the workspace-create
- * placeholder. Targets `yaac:^` (the lowest-index window — the one
- * `new-session` opened) rather than the tool-named window so a retooled
- * spare's rename can't dodge the check. `pane_current_command` for the
- * placeholder is `sleep` (verified against the exact `new-session`
- * invocation workspace create uses).
+ * Probe whether the first window still runs create's placeholder. Targets
+ * `yaac:^` (the lowest-index window, opened by `new-session`) rather than
+ * the tool-named window, so a retooled spare's rename cannot hide it. The
+ * placeholder's `pane_current_command` is `sleep`.
  */
 export async function probeAgentPaneState(target: ProbeTarget): Promise<AgentPaneState> {
   const key = tmuxAliveKey(target.projectSlug, target.workspaceId)
@@ -214,7 +168,7 @@ export async function probeAgentPaneState(target: ProbeTarget): Promise<AgentPan
     agentStartedCache.add(key)
     return 'started'
   } catch {
-    // Includes a dead tmux/session — the liveness probe owns that verdict.
+    // Includes a dead tmux; the liveness probe decides that.
     return 'unknown'
   }
 }
@@ -225,9 +179,8 @@ export function _clearAgentStartedCacheForTests(): void {
 }
 
 /**
- * Drop a workspace's cached probe verdicts. Called from workspace teardown so a
- * later caller can't read a stale value — in the worst case one belonging to
- * a brand-new workspace that reused the id.
+ * Drop a workspace's cached probe verdicts. Called on teardown so a new
+ * workspace reusing the id cannot read a stale value.
  */
 export function forgetLiveness(slug: string, workspaceId: string): void {
   const key = tmuxAliveKey(slug, workspaceId)

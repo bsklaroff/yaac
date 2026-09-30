@@ -57,8 +57,8 @@ const MODE_HELP: Record<AgentMode, string> = {
 const SELECT = 'min-w-0 flex-1 rounded-md border border-border bg-surface-2 h-[26px] px-1 text-xs text-text '
   + 'outline-none hover:bg-surface-3'
 
-/** What a Start choice fills the untouched fields with — a parent's own
- *  settings. Absent for "Now", which takes the project's create memory. */
+/** A parent's settings, used to fill untouched fields when Start names it.
+ *  Absent for "Now", which uses the project's remembered defaults. */
 interface Seed {
   tool?: AgentTool
   model?: string
@@ -75,9 +75,9 @@ interface StartOption {
   seed?: Seed
 }
 
-/** A live workspace's settings, off its first conversation (the one that
- *  names the workspace's tool) and its row. The model is that conversation's
- *  current one, so a `/model` switch is what a child inherits. */
+/** A live workspace's settings, from its first agent session and its row.
+ *  The model is that session's current one, so a `/model` switch carries
+ *  over to a child. */
 function workspaceSeed(w: WorkspaceListEntry): Seed {
   const first = [...w.agentSessions].sort((a, b) => a.ordinal - b.ordinal)[0]
   return {
@@ -112,8 +112,8 @@ const DRAFT_FIELDS = [
 ] as const satisfies
   readonly (keyof DraftWorkspaceSettings)[]
 
-/** A close that would lose a typed prompt, held while the user decides
- *  whether to keep it as a draft. */
+/** A typed prompt that closing would lose, held while the user decides
+ *  whether to save it as a draft. */
 interface PendingDraft {
   projectSlug: string
   /** The draft the dialog was reopened on, which a save replaces. */
@@ -121,9 +121,8 @@ interface PendingDraft {
   settings: DraftWorkspaceSettings
 }
 
-/** Keep `pending` as a draft. One that has gone since the dialog opened
- *  (created from or discarded elsewhere) is saved anew, so the text always
- *  has somewhere to go. */
+/** Save `pending` as a draft. If the draft it was opened from has since
+ *  been deleted, save a new one instead. */
 async function keepDraft(pending: PendingDraft): Promise<void> {
   try {
     await saveDraftWorkspace(pending.projectSlug, pending.settings, pending.id)
@@ -134,46 +133,33 @@ async function keepDraft(pending: PendingDraft): Promise<void> {
 }
 
 /**
- * The create dialog — one centered modal for creating a workspace now,
- * queueing one to start after another stops, and editing a queued one
- * (docs/queued-workspaces.md). Mounted once, in App; opened through the UI
- * store (`openCreateWorkspace`) by the + button, Alt+N, the sidebar's row
- * menus and the stop dialog.
+ * Modal for creating a workspace now, queueing one to start after another
+ * stops, or editing a queued one (docs/queued-workspaces.md). Mounted once in
+ * App and opened through the UI store (`openCreateWorkspace`).
  *
- * Every field opens on what an untouched submit would run. For "Now" that is
- * the project's create memory (`useCreateDefaults`); for a parent it is that
- * parent's own settings, with the branch being the one it forked from —
- * fetched fresh from origin when the queued workspace starts. Changing Start
- * re-seeds only the fields not touched here — the Group too, which follows
- * the parent's — and changing the agent reloads the rest from its own
- * memory, as the create form always has. A title set on the heading (its
- * pencil, like every other rename) is the workspace's (and a draft's) from the
- * start, so neither is auto-titled. The Group offers the groups the sidebar
- * shows and those queued workspaces will launch into, plus "+ New group",
- * which swaps the dropdown for a name box — the create or queue brings that
- * group into being (a draft keeps the group picked before it).
+ * Fields start on what an untouched submit would use: the project's
+ * remembered defaults (`useCreateDefaults`) for "Now", or the parent's
+ * settings for a queued start. Changing Start re-seeds only untouched fields;
+ * changing the agent reloads its own defaults. A title set here means the
+ * workspace is not auto-titled.
  *
- * Enter anywhere but on a button submits, and Shift+Enter in the prompt is a
- * newline, like the chat composer — so Alt+N, type, Enter is a create with
- * an opening prompt.
- *
- * Dismissing a create (×, Escape, a click outside) with a prompt typed asks
- * whether to save it as a draft (docs/draft-workspaces.md); a draft reopens
- * here, and creating or queueing from it discards it.
+ * Enter submits (except on a button); Shift+Enter in the prompt is a newline.
+ * Dismissing with a typed prompt offers to save a draft
+ * (docs/draft-workspaces.md).
  */
 export function CreateWorkspaceDialog(): JSX.Element {
   const opts = useUiStore((s) => s.createWorkspaceDialog)
   const close = useUiStore((s) => s.closeCreateWorkspace)
   const promptRef = useRef<HTMLTextAreaElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
-  // The form outlives the close so it can animate out, and remounts on each
-  // open so every open starts from its own seed.
+  // The form stays mounted through the close animation and remounts (new
+  // key) on each open so it starts fresh.
   const last = useRef<{ opts: CreateWorkspaceDialogOpts; key: number } | null>(null)
   if (opts !== null && opts !== last.current?.opts) {
     last.current = { opts, key: (last.current?.key ?? 0) + 1 }
   }
   const [busy, setBusy] = useState(false)
-  // What a dismissal right now would lose, kept current by the form.
+  // What closing now would lose; kept current by the form.
   const draftRef = useRef<PendingDraft | null>(null)
   const [asking, setAsking] = useState<PendingDraft | null>(null)
   const shown = last.current
@@ -201,8 +187,8 @@ export function CreateWorkspaceDialog(): JSX.Element {
           draftRef={draftRef}
         />
       )}
-      {/* Inside the modal's tree, so it nests over it: Escape here returns
-          to the form rather than dismissing both. */}
+      {/* Nested in the modal so Escape returns to the form instead of
+          closing both. */}
       <SaveDraftDialog
         pending={asking}
         onCancel={() => setAsking(null)}
@@ -239,13 +225,11 @@ function CreateWorkspaceForm({
 
   const entries = (snapshot?.queuedWorkspaces ?? []).filter((e) => e.projectSlug === projectSlug)
   const editing = opts.editId !== undefined ? entries.find((e) => e.id === opts.editId) : undefined
-  // Read once: the form's fields start from the entry (or draft) as it was
-  // when the dialog opened, not from whatever a later snapshot says.
+  // Captured once, so later snapshots don't overwrite the form's fields.
   const [initial] = useState(editing)
   const [draft] = useState(() => (snapshot?.draftWorkspaces ?? []).find((d) => d.id === opts.draftId))
   const from = initial ?? draft
-  // A draft's Start is where it would have waited when it was saved; a
-  // parent that has gone since leaves it starting now.
+  // A draft's saved Start, or "Now" if that parent no longer exists.
   const [draftStart] = useState(() => {
     const id = draft?.startAfter
     const known = id !== undefined && [
@@ -261,10 +245,8 @@ function CreateWorkspaceForm({
   const [title, setTitle] = useState(from?.title ?? '')
   const [start, setStart] = useState(initial !== undefined ? queuedParentId(initial)
     : draft !== undefined ? draftStart : opts.parent ?? '')
-  // undefined = untouched: the field shows (and a submit uses) the seeded
-  // group; null is the default list. An entry's group is its own, but a
-  // draft's that is just what its Start would seed was never picked, so it
-  // keeps following Start.
+  // undefined = untouched (use the seeded group); null = no group. A draft
+  // whose group equals what its Start would seed counts as untouched.
   const [groupPick, setGroupPick] = useState<string | null | undefined>(() => {
     if (initial !== undefined) return initial.groupId ?? null
     if (draft === undefined) return undefined
@@ -276,23 +258,20 @@ function CreateWorkspaceForm({
     ].find((c) => c.id === draftStart)?.groupId
     return draft.groupId === seeded ? undefined : draft.groupId ?? null
   })
-  // null = picking from the dropdown; a string is the "+ New group" box.
+  // null = dropdown shown; a string = the "+ New group" name box.
   const [newGroup, setNewGroup] = useState<string | null>(null)
   const newGroupRef = useRef<HTMLInputElement>(null)
-  // Focused from here rather than by `autoFocus`, which can lose to the
-  // dialog's own focus handling.
+  // Not `autoFocus`, which can lose to the dialog's own focus handling.
   const naming = newGroup !== null
   useEffect(() => { if (naming) newGroupRef.current?.focus() }, [naming])
-  // undefined = untouched: the field shows (and a submit uses) the seeded
-  // branch. An edit or a draft starts with its own.
+  // undefined = untouched (use the seeded branch).
   const [branchPick, setBranchPick] = useState<string | undefined>(from?.branch)
-  // null = not editing: the branch field shows the chosen branch.
+  // null = not typing; the field shows the chosen branch.
   const [branchQuery, setBranchQuery] = useState<string | null>(null)
-  // What was picked in THIS dialog; anything unpicked shows the seed. An
-  // edit or a draft starts with every field picked — they are its own.
+  // Picks made in this dialog; unpicked fields show the seed. An edit or
+  // draft starts with every field picked.
   const [toolPick, setToolPick] = useState<AgentTool | undefined>(from?.tool)
-  // Picks belong to the agent they were made for: a Start change that moves
-  // the agent to another parent's leaves them behind.
+  // Picks apply only to the agent they were made for.
   const [picked, setPicked] = useState<{ tool?: AgentTool; picks: ToolCreateDefaults }>(from !== undefined
     ? {
       tool: from.tool,
@@ -303,15 +282,13 @@ function CreateWorkspaceForm({
       },
     }
     : { picks: {} })
-  // null = not editing: the model field shows the chosen model's name.
+  // null = not typing; the field shows the chosen model's name.
   const [modelQuery, setModelQuery] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // Start's choices: now, then after any live workspace (newest first), then
-  // after any queued workspace in sidebar order. An edit also offers where
-  // the entry already is — a held (stopped) parent is not otherwise
-  // offered — and never the entry itself or anything under it, which would
-  // be a chain that can never start.
+  // Start options: now, each live workspace (newest first), then each queued
+  // entry in sidebar order. An edit excludes the entry and its descendants
+  // (a cycle could never start) and always offers its current parent.
   const live = (snapshot?.workspaces ?? [])
     .filter((w) => w.projectSlug === projectSlug && !w.stopping)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
@@ -347,13 +324,11 @@ function CreateWorkspaceForm({
   const groups = (snapshot?.workspaceGroups ?? [])
     .filter((g) => g.projectSlug === projectSlug)
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-  // A group deleted since it was seeded or picked is the default list.
+  // A group deleted since it was chosen falls back to none.
   const wantedGroup = groupPick !== undefined ? groupPick : seed?.groupId ?? null
   const groupId = groups.some((g) => g.groupId === wantedGroup) ? wantedGroup : null
-  // Offered: the groups the sidebar shows, those a queued workspace will
-  // launch into (a group made by queueing holds nothing else yet, and the
-  // sidebar nests entries under their parent, not their group), and
-  // whichever one is chosen.
+  // Offer the sidebar's groups, groups queued workspaces will launch into
+  // (the sidebar doesn't show those yet), and the current choice.
   const offeredGroups = shownGroups(groups, [
     ...(snapshot?.workspaces ?? []),
     ...(snapshot?.provisioning ?? []),
@@ -370,7 +345,7 @@ function CreateWorkspaceForm({
   const picks = picked.tool === tool ? picked.picks : {}
   const setPicks = (update: (p: ToolCreateDefaults) => ToolCreateDefaults): void =>
     setPicked({ tool, picks: update(picks) })
-  // A seed's tool-dependent fields only carry over to the tool they belong to.
+  // A seed's model/mode/posture apply only if it is for the same tool.
   const fromSeed = seed !== undefined && seed.tool === tool ? seed : undefined
   const model = picks.model ?? fromSeed?.model ?? base.model
   const mode = picks.mode ?? fromSeed?.mode ?? base.mode
@@ -381,7 +356,6 @@ function CreateWorkspaceForm({
   const permissionMode = picks.permissionMode ?? seededPosture ?? base.permissionMode
   const modelName = base.models.find((m) => m.id === model)?.name
   const signedIn = defaults.configured.has(tool)
-  // Only once the snapshot has said so — before it lands nothing creates anyway.
   const needsGitAuth = defaults.ready && !defaults.hasGitCredential
 
   const { data: branchData, isError: branchesFailed } = useQuery({
@@ -389,9 +363,8 @@ function CreateWorkspaceForm({
     queryFn: () => getProjectBranches(projectSlug),
   })
 
-  // On open: re-pull credentials (may have changed CLI-side) and refresh the
-  // branch list from the remote in the background — the instant local list
-  // renders first, a just-pushed branch appears when the fetch lands.
+  // On open, refetch credentials (they may have changed via the CLI) and
+  // refresh branches from the remote; the cached list shows meanwhile.
   useEffect(() => {
     void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
     getProjectBranches(projectSlug, { refresh: true })
@@ -399,15 +372,13 @@ function CreateWorkspaceForm({
       .catch(() => { /* stale-but-instant list stays */ })
   }, [projectSlug, queryClient])
 
-  // Focused the moment the form is in the DOM, not when the dialog's own
-  // focus handling gets to it a few frames later: Alt+N then typing straight
-  // away is the flow this dialog exists for, and keys pressed in between
-  // would land on nothing.
+  // Focus as soon as the form mounts, before the dialog's own focus
+  // handling, so keys typed right after the shortcut aren't lost.
   useLayoutEffect(() => {
     if (opts.focus === 'prompt') promptRef.current?.focus()
   }, [opts.focus, promptRef])
 
-  // The prompt grows with what is typed, up to a cap past which it scrolls.
+  // Auto-grow the prompt up to 240px, then scroll.
   useEffect(() => {
     const el = promptRef.current
     if (!el) return
@@ -415,11 +386,10 @@ function CreateWorkspaceForm({
     el.style.height = `${Math.min(el.scrollHeight, 240)}px`
   }, [prompt, promptRef])
 
-  // The branch an untouched submit uses: the parent's own for a queued one,
-  // else the one this project was last created from — while origin still has
-  // it — else origin's default. Until the list says whether origin has it,
-  // the remembered branch is shown but cannot be sent; a list that fails to
-  // load drops it, leaving the server to take origin's default.
+  // Untouched branch: the parent's, else the project's last-used branch if
+  // origin still has it, else origin's default. The last-used branch can't
+  // be submitted until the branch list confirms it; if the list fails, it is
+  // dropped and the server picks origin's default.
   const defaultBranch = branchData?.defaultBranch
   const lastBranch = defaults.lastBranch !== undefined && !branchesFailed
     && (branchData === undefined || branchData.branches.includes(defaults.lastBranch))
@@ -429,9 +399,8 @@ function CreateWorkspaceForm({
   const branchUnverified = branchData === undefined && lastBranch !== undefined
     && branchPick === undefined && seed?.branch === undefined
 
-  // What a dismissal would lose: a typed prompt on a create — never an edit
-  // of a queued entry, which has its own Save — unless it is the reopened
-  // draft exactly as saved.
+  // Closing loses a typed prompt on a create (not an edit of a queued
+  // entry), unless it matches the reopened draft exactly.
   const text = prompt.trim()
   const current: DraftWorkspaceSettings = {
     prompt: text,
@@ -450,7 +419,7 @@ function CreateWorkspaceForm({
     ? { projectSlug, settings: current, ...(draft !== undefined ? { id: draft.id } : {}) }
     : null
   useEffect(() => { draftRef.current = pending })
-  // A reload or a closed tab would lose it too, with nobody asked.
+  // Also warn before a reload or tab close.
   useEffect(() => {
     if (!unsaved) return
     const hold = (e: BeforeUnloadEvent): void => { e.preventDefault() }
@@ -458,11 +427,9 @@ function CreateWorkspaceForm({
     return () => window.removeEventListener('beforeunload', hold)
   }, [unsaved])
 
-  // Why the submit cannot run right now, or null when it can. Mid-edit model
-  // or branch text blocks it: it is a search, not a pick, and submitting the
-  // previous one instead would not be what the field shows. A queued workspace
-  // stores every setting concrete, so it needs a model and a branch too — and
-  // a prompt, since nobody is watching it start.
+  // Why submit is disabled, or null. Half-typed model/branch text is a
+  // search, not a pick, so it blocks. A queued entry stores concrete
+  // settings, so it also needs a model, a branch and a prompt.
   const storesEntry = queued || initial !== undefined
   const blocked = !defaults.ready ? 'Loading…'
     : modelQuery !== null ? 'Pick a model from the list'
@@ -477,9 +444,8 @@ function CreateWorkspaceForm({
 
   const submit = (): void => {
     if (busy) return
-    // Missing credentials send the user to Settings instead. They asked to
-    // create, so a typed prompt is kept as a draft on the way rather than
-    // asked about.
+    // Missing credentials open Settings instead, saving any typed prompt as
+    // a draft without asking.
     const handOff = (open: () => void): void => {
       if (pending === null) {
         onClose()
@@ -501,8 +467,7 @@ function CreateWorkspaceForm({
       return
     }
     if (blocked !== null) return
-    // The server deletes a draft this was made from once the create or queue
-    // has succeeded, so a failed one keeps it.
+    // The server deletes the source draft only once the create succeeds.
     if (!storesEntry) {
       onClose()
       createWorkspace(projectSlug, tool, {
@@ -529,7 +494,7 @@ function CreateWorkspaceForm({
     }
     setBusy(true)
     setError(null)
-    // Open the sidebar set the entry lands in, as the server placed it.
+    // Expand the sidebar section the entry lands in.
     const reveal = (e: QueuedWorkspaceEntry): void =>
       useUiStore.getState().setRevealQueued({ id: e.id, parent: queuedParentId(e) })
     const moved = initial !== undefined && queued && start !== queuedParentId(initial)
@@ -545,10 +510,8 @@ function CreateWorkspaceForm({
       .finally(() => setBusy(false))
   }
 
-  // Enter anywhere in the dialog submits — except on a button, which has its
-  // own Enter (a suggestion row, the submit itself), and Shift+Enter
-  // in the prompt, which is a newline. A highlighted suggestion takes Enter
-  // before it gets here (see Typeahead).
+  // Enter submits, except on a button or Shift+Enter in the prompt. A
+  // highlighted typeahead suggestion consumes Enter first.
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
     if (e.key !== 'Enter' || e.nativeEvent.isComposing || e.target instanceof HTMLButtonElement) return
     if (e.shiftKey && e.target instanceof HTMLTextAreaElement) return
@@ -566,8 +529,7 @@ function CreateWorkspaceForm({
     : initial !== undefined ? 'Save'
     : queued ? 'Queue' : 'Create'
 
-  // The entry started or was discarded since the dialog opened: there is
-  // nothing left to edit.
+  // The queued entry started or was discarded since the dialog opened.
   if (opts.editId !== undefined && initial === undefined) {
     return (
       <div ref={rootRef} tabIndex={-1} className="p-5 outline-none">
@@ -727,7 +689,7 @@ function CreateWorkspaceForm({
             aria-label="Agent"
             value={tool}
             onChange={(e) => {
-              // Another agent brings its own memory for the other three.
+              // A different agent brings its own remembered defaults.
               setToolPick(e.target.value as AgentTool)
               setPicked({ picks: {} })
               setModelQuery(null)
@@ -776,9 +738,8 @@ function CreateWorkspaceForm({
                 onChange={(e) => setPicks((p) => ({ ...p, permissionMode: e.target.value as PermissionMode }))}
                 className={SELECT}
               >
-                {/* The terminal UI's postures are a superset of the chat
-                    adapter's, so the list is per agent and a posture the
-                    chosen UI lacks is shown but not pickable. */}
+                {/* List the terminal UI's modes (a superset of chat's);
+                    ones the chosen UI lacks are disabled. */}
                 {supportedPermissionModes(tool, 'tui').map((m) => {
                   const offered = toolSupportsPermissionMode(tool, m, mode)
                   return (
@@ -801,9 +762,8 @@ function CreateWorkspaceForm({
                 className={SELECT}
               >
                 {(['tui', 'acp'] as const).map((m) => {
-                  // An adapter can offer fewer postures than its CLI
-                  // (codex-acp has no plan mode), so the chat UI is only
-                  // pickable under a posture it has.
+                  // An ACP adapter may lack a mode its CLI has (codex-acp
+                  // has no plan mode).
                   const offered = toolSupportsPermissionMode(tool, permissionMode, m)
                   return (
                     <option key={m} value={m} disabled={!offered}>
@@ -840,8 +800,8 @@ function CreateWorkspaceForm({
   )
 }
 
-/** One field of the form: a fixed label column, then the control (which
- *  carries its own aria-label). */
+/** A form row: fixed-width label, then the control (which has its own
+ *  aria-label). */
 function Row({ label, title, children }: { label: string; title?: string; children: ReactNode }): JSX.Element {
   return (
     <div className="mx-1 mb-1 flex items-start gap-2 px-1 py-0.5 text-xs text-text-dim" title={title}>
@@ -852,9 +812,9 @@ function Row({ label, title, children }: { label: string; title?: string; childr
 }
 
 /**
- * Asked when a create with a prompt typed is dismissed: keep it as a draft in
- * the sidebar, or let it go. Escape (or Keep editing) goes back to the form.
- * Save takes initial focus, so Escape-then-Enter keeps what was typed.
+ * Asks whether to save a dismissed create's prompt as a draft. Escape or
+ * "Keep editing" returns to the form. Save has initial focus, so
+ * Escape then Enter keeps the text.
  */
 function SaveDraftDialog({
   pending,

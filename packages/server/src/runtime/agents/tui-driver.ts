@@ -1,36 +1,23 @@
 /**
- * The `tui` driver: a coding agent rendering its own terminal UI inside tmux,
- * observed through one persistent tmux control-mode client per session pod.
+ * The `tui` driver: an agent rendering its own terminal UI in tmux, observed
+ * through one persistent tmux control-mode client per workspace.
  *
- * This is yaac's original (and still default) way of running an agent, moved
- * behind `AgentDriver` unchanged. The interesting part is that no tool's
- * status is read from raw pane output — every tool is classified through a
- * `refresh-client -B` subscription on a per-tool format, so tmux pushes the
- * resolved value at its first ~1s format check and again on every change.
- * That matters because an idle pane emits no output, ever: without the
- * subscription there would be no signal at all for the state that most needs
- * one. The format differs by where each tool publishes its state:
+ * Status is never read from raw pane output. Each pane gets a
+ * `refresh-client -B` subscription on a per-tool format, which tmux pushes
+ * at its first ~1s check and on every change (an idle pane emits no output,
+ * so this is the only signal for idleness):
  *
- *  - claude / codex put busy/idle in the pane's OSC title, so the format is
- *    `#{pane_title}` and the pushed value is classified in the server
- *    (`classifyAgentObservation`).
- *  - opencode / pi render it into the pane, so `agentStatusFormat` builds a
- *    content search over the visible grid (`#{C/ri:}`) that resolves *inside
- *    tmux* and pushes an already-resolved `running`/`waiting`.
+ *  - claude / codex put busy/idle in the OSC title; the format is
+ *    `#{pane_title}`, classified server-side (`classifyAgentObservation`).
+ *  - opencode / pi draw it in the pane; `agentStatusFormat` searches the
+ *    visible grid (`#{C/ri:}`) inside tmux and pushes `running`/`waiting`.
  *
- * Because of that, every connection attaches `no-output`: agent TUI redraws
- * never cross the stream, only the short status value does.
+ * So connections attach `no-output` and only short values cross the stream.
  *
- * Each pane gets a second subscription the same way, on what its tool reports
- * about itself (`agentReportFormat`): its model — a pane option the tool's own
- * reporter sets, or for codex a cut of its title — and its permission mode,
- * another pane option. A `/model` or a Shift+Tab therefore arrives as a push
- * too, and rides out on the live set.
- *
- * And every pane — a scratch shell as much as an agent window — gets a third,
- * on the conversation its tool says it holds (`PANE_SESSION_FORMAT`), so a
- * `/clear` or an agent started by hand in a shell is a push as well. The live
- * set carries each pane's conversation id, exactly as the acp driver's does.
+ * Agent panes also get a report subscription (`agentReportFormat`: model
+ * and permission mode), and every pane, scratch shells included, gets a
+ * session subscription (`PANE_SESSION_FORMAT`), so `/model`, Shift+Tab,
+ * `/clear` and agents started by hand all arrive as pushes.
  *
  * A conversation's handle here is its tmux pane id (`%3`).
  */
@@ -63,46 +50,36 @@ import type {
 } from './drivers'
 import type { AgentTool } from '@yaac/shared/types'
 
-/** Subscription names are per pane, never shared — see `subscriptionName`. */
+/** Subscription names are per pane; see `subscriptionName`. */
 const SUBSCRIPTION_PREFIX = 'status-'
-/** The second subscription each agent pane gets: what its tool reports
- *  about itself (`agentReportFormat`). */
+/** Per agent pane: what its tool reports (`agentReportFormat`). */
 const REPORT_SUBSCRIPTION_PREFIX = 'report-'
-/** The one subscription EVERY pane gets: the conversation it holds. */
+/** Per pane, for every pane: the conversation it holds. */
 const SESSION_SUBSCRIPTION_PREFIX = 'session-'
-/** The one a placeholder pane gets, until an agent is respawned into it. */
+/** For a placeholder pane, until an agent is respawned into it. */
 const BOOT_SUBSCRIPTION_PREFIX = 'boot-'
 
 /**
- * `1` while a pane still runs the `sleep infinity` keepalive a session opens
- * on, in the window its agent is later respawned into (tmux quotes the start
- * command in some versions). Published as an agent, it would name no
- * conversation, and so mark every one the launch recorded inactive.
+ * `1` while a pane still runs the session's `sleep infinity` keepalive
+ * (some tmux versions quote the start command). Published as an agent, it
+ * would name no conversation and mark every recorded one inactive.
  */
 const PLACEHOLDER_FORMAT = '#{m/r:^"?sleep infinity"?$,#{pane_start_command}}'
 
 /**
- * The tmux subscription name for one agent pane.
- *
- * It MUST be unique per pane: `refresh-client -B <name>:<pane>:<format>` keys
- * subscriptions by name, so subscribing a second pane under a name the client
- * already holds *replaces* the first rather than adding to it, and that pane
- * silently stops reporting. With one agent per workspace the bug is invisible;
- * with two, only the last-subscribed pane ever pushes a status — a waiting
- * primary agent reads as running and never raises attention.
- *
- * The pane id's `%` is dropped so the name stays alphanumeric.
+ * The subscription name for one pane. Must be unique per pane:
+ * `refresh-client -B` keys subscriptions by name, so reusing a name
+ * replaces the earlier pane's subscription and that pane silently stops
+ * reporting. `%` is dropped to keep the name alphanumeric.
  */
 function subscriptionName(prefix: string, paneId: string): string {
   return `${prefix}${paneId.replace('%', '')}`
 }
 
 /**
- * tmux attach-client flags for a status connection. `read-only` (it must never
- * inject input), `ignore-size` (kept out of window-size negotiation, so it
- * can't reshape the grid the content search reads), and `no-output` (no tool's
- * status comes from raw pane output, so agent TUI redraws never cross the
- * stream — only the subscription's short status value does).
+ * attach-client flags for a status connection: `read-only` (never inject
+ * input), `ignore-size` (never reshape the grid the content search reads),
+ * `no-output` (status comes only from subscriptions).
  */
 export function attachClientFlags(): string {
   return 'read-only,ignore-size,no-output'
@@ -128,19 +105,18 @@ function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<
 class TuiConnection implements AgentConnection {
   private child: StreamChild | null = null
   private client: ControlModeClient | null = null
-  /** Panes we hold a status subscription on, each with the tool its window
-   *  runs — a workspace's panes need not share one, and the pushed value is
-   *  classified against that tool's grammar. */
+  /** Panes with a status subscription, each with its window's tool (panes
+   *  in one workspace can run different tools). */
   private readonly subscribed = new Map<string, AgentTool>()
   /** Each pane's model, as its model subscription last resolved it. */
   private readonly models = new Map<string, string>()
-  /** Each pane's latest pushed model value, so a resolution that finishes
-   *  after a newer push (codex's is a file read) is dropped, not published. */
+  /** Each pane's latest pushed model value, so a slow resolution (codex's
+   *  is a file read) finishing after a newer push is dropped. */
   private readonly modelPushes = new Map<string, string>()
   /** Each pane's reported permission mode, as its tool last put it. */
   private readonly modes = new Map<string, string>()
-  /** Every pane we hold a session subscription on, with the conversation it
-   *  last named — agent windows and scratch shells alike. */
+  /** Every pane with a session subscription (agent windows and scratch
+   *  shells), with the conversation it last named. */
   private readonly sessions = new Map<string, PaneSession | undefined>()
   private heartbeatTimer: NodeJS.Timeout | null = null
   private heartbeatInFlight = false
@@ -175,11 +151,9 @@ class TuiConnection implements AgentConnection {
       (n) => this.onNotification(n),
     )
     this.client = client
-    // Same hazard as the ACP transport: TCP read boundaries can split a
-    // multi-byte character, and control mode carries plenty of them — claude's
-    // Braille spinner in a pane title, a content search's matched text. Decoded
-    // per chunk, a split glyph would arrive as replacement characters and could
-    // flip a status classification on the tool whose grammar reads that title.
+    // As in the ACP transport: chunks can split multi-byte characters (e.g.
+    // claude's Braille spinner), which would corrupt titles and flip a
+    // status classification.
     const decoder = new StringDecoder('utf8')
     child.stdout?.on('data', (chunk) => {
       if (!this.done) client.feed(typeof chunk === 'string' ? chunk : decoder.write(chunk))
@@ -198,47 +172,37 @@ class TuiConnection implements AgentConnection {
   }
 
   /**
-   * Post-attach setup, all over the stream: enumerate the agent panes and
-   * subscribe to each one's status format. tmux pushes the current value at
-   * its next ~1s format check, so the first classification arrives without any
-   * change; until then the attach itself already proves tmux is up.
+   * Post-attach setup over the stream: list agent panes and subscribe each.
+   * tmux pushes the current value at its next ~1s check; until then the
+   * attach itself proves tmux is up.
    */
   private async init(client: ControlModeClient): Promise<void> {
     await this.syncPanes()
     if (this.done) return
     this.sink({ kind: 'up' })
-    // The stream is proven end to end — publish it as the session's command
-    // channel so read-only tmux queries (the webapp terminals listing) ride
-    // this connection instead of spawning their own exec.
+    // Publish the stream as the workspace's read-only command channel so
+    // queries like the terminal listing reuse it.
     this.sink({ kind: 'command-channel', send: (cmd) => withTimeout(client.send(cmd), this.commandTimeoutMs, `tmux ${cmd.split(' ')[0]}`) })
     this.heartbeatTimer = setInterval(() => void this.heartbeat(), this.heartbeatIntervalMs)
   }
 
   /**
-   * Enumerate the panes and subscribe each one's formats. An agent pane is one
-   * whose window is an agent window — `<tool>` for the workspace's original
-   * agent, `<tool>-2`, `<tool>-3`, … for the extra conversations a restart
-   * brings back or a user opens — and only those get a status and a report
-   * subscription: an init window or a scratch shell has no agent status, and
-   * what a hand-run agent reports about its posture is not the workspace's.
-   * Every pane gets the session one, which is how a conversation started by
-   * hand in a shell is recorded too.
+   * List panes and subscribe their formats. Agent panes (windows named
+   * `<tool>`, `<tool>-2`, …) get status and report subscriptions; init
+   * windows and scratch shells do not. Every pane gets the session
+   * subscription, which records conversations started by hand in a shell.
    *
-   * The listing itself carries each pane's session value, and every listing
-   * refreshes them. A subscription's first push lands up to a second after
-   * it is made, and a live set published before it would name no
-   * conversation at all — which the registry would record as every agent
-   * having exited, on every attach and reconnect.
+   * The listing includes each pane's current session value, since a
+   * subscription's first push may lag up to a second and a live set
+   * published before it would look like every agent exited.
    *
-   * Re-run on every heartbeat and on window add/close, so a conversation
-   * opened (or closed) mid-session is picked up without a reconnect. Already
-   * subscribed panes are skipped, since re-subscribing the same pane under the
-   * same name would just duplicate pushes. A respawn announces nothing, so a
-   * placeholder pane is watched until the agent replaces it, and re-run then.
+   * Re-run on each heartbeat and window add/close. Already-subscribed panes
+   * are skipped. A respawn announces nothing, so a placeholder pane is
+   * watched until the agent replaces it.
    */
   private async syncPanes(): Promise<void> {
-    // Tab-separated: a window name or a transcript path can hold a space,
-    // and the session format strips every tab.
+    // Tab-separated: names and paths can contain spaces, and the session
+    // format strips tabs.
     const listed = await this.send(
       `list-panes -s -F '#{pane_id}\t#{window_name}\t${PLACEHOLDER_FORMAT}\t${PANE_SESSION_FORMAT}' -t yaac`)
     if (this.done) return
@@ -247,8 +211,7 @@ class TuiConnection implements AgentConnection {
       .map((line) => line.split('\t'))
       .flatMap(([paneId, windowName, placeholder, session]) => {
         if (paneId === undefined || !paneId.startsWith('%')) return []
-        // Classify each pane against ITS tool's grammar, not the workspace's: a
-        // pi pane read with claude's title format is permanently misclassified.
+        // Classify with the pane's own tool, not the workspace's.
         const tool = placeholder === '1' ? undefined : agentWindowTool(windowName ?? '')
         return [{ paneId, placeholder: placeholder === '1', tool, session: parsePaneSession(session ?? '') }]
       })
@@ -259,15 +222,13 @@ class TuiConnection implements AgentConnection {
     }
 
     if (!panes.some((p) => p.tool !== undefined)) {
-      // Nothing to classify yet (the agent window is still being created).
-      // Deliberately not published as an empty live set: that would read as
-      // "every agent exited" and deactivate the workspace's conversations.
+      // No agent window yet. Never publish an empty set, which would read
+      // as "every agent exited".
       return
     }
 
-    // Only panes not yet watched are read from the listing — a watched one's
-    // pushes are never older than it — and all at once, before any await: a
-    // push that lands while a subscription below is in flight must stand.
+    // Read only unwatched panes from the listing (a watched pane's pushes
+    // are newer), all before any await so a push arriving meanwhile wins.
     const unwatched = new Set(panes.filter((p) => !this.sessions.has(p.paneId)).map((p) => p.paneId))
     for (const { paneId, session } of panes) if (unwatched.has(paneId)) this.sessions.set(paneId, session)
     for (const { paneId, tool } of panes) {
@@ -276,11 +237,9 @@ class TuiConnection implements AgentConnection {
         if (this.done) return
       }
       if (tool === undefined || this.subscribed.has(paneId)) continue
-      // Single-quote the -B argument: tmux processes C escapes (`\b`, `\t`, …)
-      // inside double quotes, which would corrupt an ERE word boundary in the
-      // status format; single quotes carry the format string literally. Safe
-      // because the format literal never contains a `'` (a pane title's runtime
-      // value is expanded later, per-client — it's not on this command line).
+      // Single-quote the -B argument: tmux processes C escapes inside double
+      // quotes, which would corrupt an ERE `\b`. The format never contains
+      // `'`.
       await this.send(`refresh-client -B '${subscriptionName(SUBSCRIPTION_PREFIX, paneId)}:${paneId}:${agentStatusFormat(tool)}'`)
       if (this.done) return
       await this.send(`refresh-client -B '${subscriptionName(REPORT_SUBSCRIPTION_PREFIX, paneId)}:${paneId}:${agentReportFormat(tool)}'`)
@@ -300,10 +259,9 @@ class TuiConnection implements AgentConnection {
   }
 
   /**
-   * The live set: every agent pane, and every other pane that names a
-   * conversation, each with what it last reported. Held back until an agent
-   * pane has been seen, for the reason `syncPanes` never publishes an empty
-   * set.
+   * The live set: every agent pane, plus any other pane naming a
+   * conversation, with its latest reports. Not published until an agent pane
+   * has been seen (see `syncPanes`).
    */
   private publishAgents(): void {
     if (this.subscribed.size === 0) return
@@ -311,8 +269,8 @@ class TuiConnection implements AgentConnection {
     for (const [handle, session] of this.sessions) {
       const tool = this.subscribed.get(handle) ?? session?.tool
       if (tool === undefined) continue
-      // Only its own tool's conversation: a respawned pane keeps its options,
-      // so a spare retooled at claim still names its warm-time agent's.
+      // Only its own tool's conversation: a respawned pane keeps its
+      // options, so a retooled spare still names its warm-time agent's.
       const own = session?.tool === tool ? session : undefined
       const model = this.models.get(handle)
       const reportedMode = this.modes.get(handle)
@@ -336,10 +294,10 @@ class TuiConnection implements AgentConnection {
   }
 
   /**
-   * A pane's reported permission mode moved. Carried as the tool said it, to
-   * be read as a posture where the workspace's row is (`LiveAgent.reportedMode`)
-   * — opencode's agent means one thing under one launch and another under the
-   * next. Empty leaves the last one standing, as for the model.
+   * A pane's reported permission mode changed. Kept in the tool's terms and
+   * mapped to a posture later (`LiveAgent.reportedMode`), since opencode's
+   * agent means different things under different launches. Empty keeps the
+   * previous value.
    */
   private onMode(paneId: string, mode: string): void {
     if (mode === '' || this.done || !this.subscribed.has(paneId)) return
@@ -349,11 +307,9 @@ class TuiConnection implements AgentConnection {
   }
 
   /**
-   * A pane's model format moved. Published as a change to the live set, which
-   * is what the agent-session registry joins against — so a `/model` reaches
-   * the conversation's row on its own reconcile pass, pushed by tmux rather
-   * than polled out of a transcript. An empty value (nothing reported yet)
-   * leaves the last one standing.
+   * A pane's model changed. Published as a live-set change, which the
+   * agent-session registry joins against on its reconcile pass. Empty keeps
+   * the previous value.
    */
   private async onModel(paneId: string, tool: AgentTool, value: string): Promise<void> {
     this.modelPushes.set(paneId, value)
@@ -368,18 +324,17 @@ class TuiConnection implements AgentConnection {
   private onNotification(n: ControlModeNotification): void {
     if (this.done) return
     if (n.kind === 'exit') {
-      // The server is detaching us (tmux kill-server, detach-client) — the
-      // child exits right after; let that path run teardown once.
+      // tmux is detaching us; the child exit that follows runs teardown.
       return
     }
     if (n.kind === 'windows-changed') {
-      // A conversation was opened or closed; re-enumerate off the hot path.
+      // A window opened or closed; re-list off the hot path.
       void this.resync()
       return
     }
     if (n.kind === 'subscription') {
       if (n.name.startsWith(BOOT_SUBSCRIPTION_PREFIX)) {
-        // The agent was respawned into the placeholder: enumerate it as one.
+        // An agent replaced the placeholder; list it as one.
         if (n.value === '0') void this.resync()
         return
       }
@@ -402,33 +357,31 @@ class TuiConnection implements AgentConnection {
         status: classifyAgentObservation(tool, n.value),
       })
     }
-    // %output — never subscribed to (every connection attaches no-output).
+    // %output: never received, since connections attach no-output.
   }
 
-  /** Re-enumerate on the open stream, swallowing failures: a wedged stream is
-   *  the heartbeat's business, not this path's. */
+  /** Re-list panes, ignoring failures; the heartbeat detects a wedged
+   *  stream. */
   private async resync(): Promise<void> {
     if (this.done || !this.client) return
     try {
       await this.syncPanes()
     } catch {
-      // the heartbeat owns wedge detection
+      // The heartbeat handles wedges.
     }
   }
 
   /**
-   * Wedge detector: a cheap command whose reply proves the whole path
-   * (relay → pod → tmux server) end to end. Rides the open stream — no extra
-   * exec — and tears the stream down on a missed deadline.
+   * Wedge detector: a cheap command over the open stream whose reply proves
+   * the path to the tmux server; a missed deadline tears the stream down.
    */
   private async heartbeat(): Promise<void> {
     if (this.done || this.heartbeatInFlight) return
     this.heartbeatInFlight = true
     try {
       await this.send('display-message -p ok')
-      // Doubles as the pane-set refresh: window notifications cover the common
-      // case, but a pane that came and went between them (or one added while
-      // the stream was down) is caught here.
+      // Also refreshes the pane set, catching panes that came and went
+      // between window notifications or while the stream was down.
       await this.resync()
     } catch (err) {
       this.down(`heartbeat failed: ${String(err)}`)
@@ -486,8 +439,7 @@ export const tuiDriver: AgentDriver = {
   },
 
   async deliverPrompt(session: DrivenWorkspace, handle: string, text: string): Promise<void> {
-    // The handle is a pane id, which is exactly what tmux's paste target
-    // wants — no window-name indirection needed.
+    // The handle is a pane id, a valid paste target.
     const driver = workspaceDriver()
     const cmd = buildPromptPasteBgCmd(handle, text, driver.workspacePaths(session.jobName))
     await driver.exec(session.jobName, cmd, { maxAttempts: 1, timeout: 15_000 })

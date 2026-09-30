@@ -1,5 +1,4 @@
 /// <reference types="vite/client" />
 
-// @fontsource packages ship CSS only (no type declarations) for these
-// side-effect imports.
+// @fontsource packages ship CSS without type declarations.
 declare module '@fontsource-variable/inter'

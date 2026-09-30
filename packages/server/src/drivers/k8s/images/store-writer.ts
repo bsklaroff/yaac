@@ -1,92 +1,20 @@
 /**
- * The node-local image store: a per-(node, project) READ-ONLY
- * containers/storage lower, materialized from the project registry by a
- * node-side pod and mounted into every nested workspace at
- * `/var/lib/shared-images` (the `additionalimagestores` entry in
- * Dockerfile.nestable).
+ * The node-local image store: a read-only containers/storage directory per
+ * (node, project), written from the project registry by a node-side pod and
+ * mounted into every nested workspace at `/var/lib/shared-images`. It is
+ * only a cache of the registry. docs/nested-containers.md "The node-local
+ * image store" explains the writer pod's shape (hostNetwork, no
+ * CAP_SYS_ADMIN) and why opaque directories are rewritten.
  *
- * It is a CACHE of the registry, never a second source of truth. The
- * registry is still what a salvage pushes to and what survives a node
- * dying; this only removes the per-workspace cost of getting those layers
- * back — a fresh workspace sees them with no warm-up pull and no
- * graphroot spend, and concurrent workspaces on one node share one copy of
- * the layer data. A cold node mounts nothing and simply behaves as it did
- * before there was a store.
+ * Generations are write-once: `<store>/gen-<stamp>/`, completed by writing
+ * {@link DONE_MARKER} last. A new pod mounts the newest complete generation
+ * by path, so its store never changes, and GC reads the in-use set from
+ * pod specs.
  *
- * Generations are WRITE-ONCE. `ensureNodeImageStore` writes
- * `<store>/gen-<stamp>/` and writes {@link DONE_MARKER} last; nothing ever
- * mutates a published generation. Workspace create pins the newest complete
- * generation *path* into the pod at create time
- * ({@link nodeImageStoreMount}), so a running workspace's store never
- * changes underneath it and the GC below can tell "in use" from "stale" by
- * looking at live pods' mounts.
- *
- * ── Why the writer pod looks the way it does ────────────────────────────
- *
- * It BUILDS NOTHING, which is why it is not one of the trust-split builder
- * pods next door and does not carry their `yaac.role=builder` identity: it
- * pulls what the registry already holds and rearranges it on a node path.
- * It borrows only their pinned `quay.io/podman/stable` mirror
- * (`ensureBuilderImage`), for the podman that pulls and the python3 the
- * post-passes need. Otherwise its shape is the registry's `hosts.toml`
- * writers': runc, plain root, pinned to a node with `nodeName`, the store
- * parent hostPath-mounted rw. Three of its properties are load-bearing
- * rather than incidental:
- *
- *  - **hostNetwork.** The writer pulls from the project registry, whose
- *    ingress policy already admits the node's own address range (node
- *    containerd pulls through it). In the host netns the pod IS the node,
- *    so it needs no NetworkPolicy of its own on either side — and it must
- *    then name the registry by ClusterIP, since the node is not a
- *    cluster-DNS client.
- *  - **No CAP_SYS_ADMIN.** `podman pull --root` needs none (a pull untars
- *    into the layer's diff dir; nothing is mounted). Withholding it is what
- *    makes containers/storage treat itself as rootless
- *    (`unshare.IsRootless()` is true for a uid-0 process without
- *    CAP_SYS_ADMIN), so opaque directories are recorded as
- *    `user.overlay.opaque` — an xattr the post-pass below can read back.
- *    With the capability they would be `trusted.overlay.*`, which needs
- *    CAP_SYS_ADMIN to read too.
- *  - **CAP_MKNOD** (in the default set) — the post-pass writes whiteout
- *    character devices, and a pull writes them for deleted files.
- *
- * ── Why opaque directories are rewritten ─────────────────────────────────
- *
- * A layer that REPLACES a directory records that as an overlay xattr on
- * the diff dir rather than as a file. Measured on the dev cluster, neither
- * spelling survives the trip into a workspace:
- *
- *  - `trusted.overlay.opaque` is invisible through gVisor's gofer
- *    filesystem — every read of the `trusted.` namespace answers
- *    EOPNOTSUPP, so the sentry cannot see the marker at all;
- *  - `user.overlay.opaque` IS readable through the gofer, but the workspace
- *    engine mounts overlay without `userxattr` (it holds CAP_SYS_ADMIN
- *    in-sandbox, so containers/storage takes the rootful path), and so
- *    reads the `trusted.` name.
- *
- * Either way the marker is not honored and the replaced directory's old
- * entries RESURRECT in the merged view — a silently wrong image, not a
- * slow one. {@link buildStoreWriterScript}'s post-pass therefore rewrites every
- * opaque marker into the explicit per-entry whiteouts it stands for,
- * computed against the layer's own (fixed, write-once) parent chain. Those
- * are 0:0 character devices — plain metadata, which the gofer passes
- * through, verified alongside `security.capability` file caps.
- *
- * The marker is left in place: it costs nothing, and it keeps a generation
- * correct for a consumer that DOES honor it.
- *
- * ── One node today ───────────────────────────────────────────────────────
- *
- * The WRITE side is already per node: the ensure runs one pinned pod per
- * node, each materializing the run's ONE generation name under that
- * node's own tree (`nodeLocalHostPath`). The READ side is not —
- * `listStoreGenerations` and `nodeImageStoreMount` enumerate the SERVER's
- * own node-local mount, which is the server's node's tree, so a pod that
- * lands on a node whose writer has not finished that generation yet
- * mounts an empty directory there (`DirectoryOrCreate`) and runs its
- * engine cold. Making this fully multi-node is the same shape the rest of
- * the node-local tier assumes: ask the node, not the server, which
- * generations it has, and choose the mount after the pod is scheduled.
+ * Limitation: every node gets the same generation name, but the server
+ * picks the mount from its own node's directory. A pod on a node whose
+ * writer has not finished that generation mounts an empty directory and
+ * runs its engine cold.
  */
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
@@ -111,48 +39,36 @@ import { CACHE_TAG_PREFIX, rankedRegistryTagsScript } from './image-promoter'
 import { serverLog } from '#log'
 import type { ProjectRef } from '#drivers/contract'
 
-/** In-pod mount point of a nested workspace's read-only additional store —
- *  the path Dockerfile.nestable's `additionalimagestores` names. Baked as
- *  an empty directory in that image, so a workspace with no generation to
- *  mount still starts (containers/storage skips an empty store). */
+/** In-pod mount point of the store (Dockerfile.nestable's
+ *  `additionalimagestores`). The image ships it empty, so a workspace with
+ *  nothing mounted still works. */
 export const SHARED_IMAGES_MOUNT = '/var/lib/shared-images'
 
-/** Where the writer pod mounts the project's generation parent — handed
- *  to the script as argv rather than baked into it, so the mount point
- *  stays the pod spec's business. */
+/** Where the writer pod mounts the project's store directory. */
 export const STORE_POD_PATH = '/store'
 
-/** Written last in a generation directory; its presence is what makes the
- *  generation publishable. A crashed or half-pulled build leaves the dir
- *  without one, so it is never mounted and the next GC drops it. */
+/** Written last in a generation directory to mark it complete. A crashed
+ *  build leaves none, so it is never mounted and the next run drops it. */
 export const DONE_MARKER = '.yaac-store-done'
 
-/** `app` label shared by every store-writer pod, and the marker the stray
- *  sweep and the removal selector key on. */
+/** `app` label of every store-writer and cleanup pod. */
 export const IMAGE_STORE_APP_LABEL = 'yaac-image-store'
 
-/** GC scope: ties writer pods to this install without making them visible
- *  to the workspace reaper (which filters on `yaac.workspace-id`). */
+/** Ties writer pods to this install without the workspace-id label the
+ *  workspace reaper selects on. */
 export const LABEL_STORE_DATA_DIR_HASH = 'yaac.store-data-dir-hash'
 
-/** How often one project's store is refreshed. A generation only gains
- *  content when a salvage has pushed something, and every refresh costs a
- *  pod plus a pull of whatever is new — so this is the floor, and the
- *  salvage-side trigger is what makes a fresh push visible sooner. */
+/** How often one project's store is refreshed. A salvage that pushed
+ *  something forces an earlier refresh. */
 export const STORE_REFRESH_INTERVAL_MS = 30 * 60_000
 
-/** Deadline for one writer run: a cold store pulls a project's whole
- *  working set out of the registry and untars it onto node disk. */
+/** Deadline for one writer run (a cold store pulls everything). */
 export const STORE_REFRESH_TIMEOUT_MS = 30 * 60_000
 
 /**
- * How long a FAILED refresh waits instead of the full interval. Failures here
- * are usually transient and self-clearing — the commonest is racing the
- * registry's own maintenance rollout, which lasts seconds — and making
- * those wait out the whole interval would leave a project's store a
- * generation behind for half an hour over a few seconds of unavailability.
- * Still a backoff, so a registry that is down for good costs one pod run
- * every few minutes rather than one per reconcile pass.
+ * Retry delay after a failed refresh. Failures are usually brief (e.g.
+ * racing the registry's maintenance rollout), so waiting the full interval
+ * would leave the store stale for no reason.
  */
 export const STORE_REFRESH_RETRY_MS = 5 * 60_000
 
@@ -172,9 +88,8 @@ function storeSelector(projectId: string): string {
   return Object.entries(storeLabels(projectId)).map(([k, v]) => `${k}=${v}`).join(',')
 }
 
-/** Generation directory names, shaped so lexical order IS creation order
- *  (fixed-width epoch millis) and two builds a millisecond apart cannot
- *  collide on a name. */
+/** Generation directory name. Lexical order is creation order, and the
+ *  random suffix prevents collisions. */
 export function generationName(nowMs = Date.now(), rand = crypto.randomBytes(4).toString('hex')): string {
   return `gen-${String(nowMs).padStart(14, '0')}-${rand}`
 }
@@ -182,14 +97,10 @@ export function generationName(nowMs = Date.now(), rand = crypto.randomBytes(4).
 const GENERATION_DIR = /^gen-\d{14}-[0-9a-f]{8}$/
 
 /**
- * Complete generations of one project's store on THIS node, newest first.
- * "Complete" means the DONE marker exists — the server can stat it even
- * though the store's contents are root-owned, because the writer leaves
- * the generation directory itself world-readable.
- *
- * Returns `[]` for a cold node, an install that cannot host a store, and
- * any error reading the parent: all three mean "mount nothing", which is
- * the pre-store behavior.
+ * Complete generations of one project's store on the server's node, newest
+ * first. The writer leaves each generation directory world-readable so the
+ * server can check the DONE marker. Returns `[]` on any read error, which
+ * means "mount nothing".
  */
 export async function listStoreGenerations(projectId: string): Promise<string[]> {
   const parent = imageStoreDir(projectId)
@@ -205,22 +116,15 @@ export async function listStoreGenerations(projectId: string): Promise<string[]>
 
 /**
  * The read-only store mount for a new nested workspace pod, or undefined
- * when this node has no complete generation yet.
- *
- * Pinned to a generation PATH rather than a stable symlink on purpose: the
- * mount a pod is created with is the store it keeps for its whole life, so
- * a generation published mid-workspace can never change the layers an
- * engine has already loaded, and the GC can read the live set off pod
- * specs. A workspace picks up a newer generation the next time it is
- * created.
+ * when there is no complete generation yet. Mounts a generation path, not
+ * a symlink, so the pod's store never changes during its life.
  */
 export async function nodeImageStoreMount(projectId: string): Promise<PodMount | undefined> {
   const [newest] = await listStoreGenerations(projectId)
   if (!newest) return undefined
   return {
-    // `DirectoryOrCreate`: on a node whose own writer has not produced
-    // this generation yet, the pod gets an empty directory and runs its
-    // engine cold (see the module doc) rather than sitting in FailedMount.
+    // A node lacking this generation gets an empty directory (see the
+    // module doc) instead of a FailedMount.
     source: { kind: 'hostPath', path: path.join(imageStoreDir(projectId), newest), type: 'DirectoryOrCreate' },
     mountPath: SHARED_IMAGES_MOUNT,
     readOnly: true,
@@ -228,49 +132,24 @@ export async function nodeImageStoreMount(projectId: string): Promise<PodMount |
 }
 
 /**
- * The in-pod script. Runs in the writer pod against
- * `/store` (the project's generation parent), and is the whole of what a
- * generation is:
+ * The writer pod's script. Argv is `<store root> <generation to keep>…`,
+ * the keep list being the generations live pods mount.
  *
- *  1. **seed by hardlink** — `cp -al` the previous complete generation, so
- *     a generation costs disk proportional to what CHANGED. A pull only
- *     adds layer directories and rewrites the metadata files via
- *     temp+rename, which breaks the link safely; it never mutates a layer
- *     diff in place, so the previous generation stays byte-identical for
- *     the workspaces still mounting it. podman's OWN state
- *     (`db.sql`, `libpod/`, …) is dropped from the copy: its database
- *     records the absolute graphroot it was created under and refuses to
- *     open under a different one.
- *  2. **pull the working set** — ranked by `rankedRegistryTagsScript`, so
- *     what lands here is the project's live set rather than an archive:
- *     everything the catalog holds, minus all but the newest
- *     CACHED_GENERATIONS_KEPT content-hash generations per yaac-built repo
- *     and the chain slots belonging to the generations dropped. Named tags
- *     get their bare name restored; `yaac-cache-` slots stay dangling, the
- *     way a local `--layers` build leaves its intermediates.
- *  3. **rewrite opaque directories** into explicit whiteouts (see the
- *     module doc), skipping layers a previous generation already did — the
- *     marker file is hardlinked in by step 1.
- *  4. **assert complete metadata** — every layer must carry a recorded
- *     diff size, or `podman images` would recompute it by decompressing
- *     each layer's tar-split, which over the gofer is the classic
- *     "images takes minutes" failure. A pull always records them; this is
- *     the guard that keeps a future shortcut from silently removing them.
- *  5. **publish** by writing the DONE marker last, then drop every
- *     generation the server did not ask to keep.
- *
- * Argv is `<store root> <generation to keep>…`: the mount point the pod
- * spec chose, then the generations still referenced by a live pod — which
- * only the server knows, because it wrote those mounts.
+ *  1. Seed from the previous complete generation with `cp -al`, so disk
+ *     cost is only what changed (pulls never edit a layer in place).
+ *     podman's own database is dropped: it records its graphroot path.
+ *  2. Pull the working set chosen by `rankedRegistryTagsScript`, restoring
+ *     bare names for named tags.
+ *  3. Rewrite opaque directories into explicit whiteouts.
+ *  4. Assert every layer has a recorded diff size.
+ *  5. Write the DONE marker, then drop generations not kept.
  */
 export function buildStoreWriterScript(registryEndpoint: string, genName: string): string {
   return [
     'set -eu',
     'STORE="$1"; shift',
     `GEN="$STORE/${genName}"`,
-    // Lowest priority: this shares a node with interactive workspaces, and
-    // untarring a project's whole working set is exactly the kind of
-    // background work that must lose the CPU to them.
+    // Lowest CPU priority: interactive workspaces share this node.
     'command -v renice >/dev/null 2>&1 && renice -n 19 $$ >/dev/null 2>&1 || true',
     'rm -rf "$GEN"',
     // Newest complete predecessor to seed from.
@@ -285,8 +164,6 @@ export function buildStoreWriterScript(registryEndpoint: string, genName: string
     'else',
     '  mkdir -p "$GEN"',
     'fi',
-    // World-readable so the SERVER (an unprivileged uid) can stat the DONE
-    // marker and enumerate generations without reading their contents.
     'cat > /tmp/yaac-store.conf <<CONF',
     '[storage]',
     'driver = "overlay"',
@@ -301,20 +178,15 @@ export function buildStoreWriterScript(registryEndpoint: string, genName: string
     '  for tag in $(ranked_tags "$repo"); do',
     '    ref="$REG/$repo:$tag"',
     '    podman pull -q --tls-verify=false "$ref" >/dev/null 2>&1 || continue',
-    // The bare name is what a workspace's `FROM` and `docker run` name the
-    // image by; the registry-qualified one is dropped so the store reads
-    // like a local build's store.
+    // Keep only the bare name, which is what workspaces refer to.
     `    case "$tag" in ${CACHE_TAG_PREFIX}*) ;; *) podman tag "$ref" "$repo:$tag" >/dev/null 2>&1 || true;; esac`,
     '    podman untag "$ref" "$ref" >/dev/null 2>&1 || true',
     '    n=$((n+1))',
     '  done',
     'done',
     'echo "store-pulled $n"',
-    // A store with nothing in it yet (an empty registry, a project whose
-    // first salvage has not landed) still has to be a WELL-FORMED store,
-    // because the layout is what the post-passes and the consuming engine
-    // walk. podman creates these on first use; creating them here means
-    // "no images" and "no store" are the same shape.
+    // An empty store must still have the layout the post-passes and the
+    // workspace engine expect.
     'mkdir -p "$GEN/overlay" "$GEN/overlay-images" "$GEN/overlay-layers"',
     `python3 - "$GEN" <<'PY'`,
     OPAQUE_REWRITE_PY,
@@ -322,40 +194,18 @@ export function buildStoreWriterScript(registryEndpoint: string, genName: string
     `python3 - "$GEN" <<'PY'`,
     DIFF_SIZE_CHECK_PY,
     'PY',
-    // World-readable so the SERVER (an unprivileged uid) can enumerate
-    // generations and stat their markers without reading their contents.
-    // After the pulls, because the engine owns the graphroot's mode until
-    // then.
+    // World-readable so the server (unprivileged) can list generations and
+    // check their markers. Set after the pulls, which reset the mode.
     'chmod 0755 "$GEN"',
-    // The marker CERTIFIES the layer data, so it must not reach disk ahead
-    // of it. Nothing above forces the pulls out of page cache, and under
-    // delayed allocation a node crash just after publish can leave the
-    // marker durable while `overlay/*/diff` files come back truncated —
-    // producing a generation that looks complete and serves corrupt bytes
-    // as image content. One flush at the end of an already IO-heavy build
-    // buys the ordering; the second flush pushes the marker itself out, so
-    // the same reordering cannot bite from the other side either.
+    // Flush the layer data before writing the marker, so a node crash
+    // cannot leave a complete-looking generation with truncated files.
     'sync',
     `date -u +%FT%TZ > "$GEN/${DONE_MARKER}"`,
     `chmod 0644 "$GEN/${DONE_MARKER}"`,
     'sync',
-    // What survives: this build's own generation, the ones the server saw a
-    // live pod mounting, and the predecessor this build seeded from.
-    //
-    // That last one closes a real race. The server reads the newest
-    // complete generation to pin into a new pod, THEN fires this build —
-    // so a pod can be created after the keep list was computed and be
-    // holding a generation the GC would otherwise drop out from under its
-    // running engine. Keeping the predecessor buys exactly one build cycle,
-    // by which time that pod is in the live set the next run reads.
-    //
-    // A directory without a DONE marker is a crashed build's leftovers and
-    // goes with the rest — which makes THIS sweep the only reclaimer of
-    // them. A project whose builds stop for good (its registry deleted, the
-    // project kept) therefore keeps its partial and superseded generations
-    // until the project itself is removed; there is no orphan-store sweep.
-    // Bounded by how many builds ran before they stopped, so it is a leak
-    // measured in generations, not one that grows.
+    // Keep this generation, those live pods mount, and the predecessor: a
+    // pod created after the keep list was read may be mounting it.
+    // Incomplete generations are dropped too.
     'kept=0; dropped=0',
     `for g in $(ls -1 "$STORE" 2>/dev/null | grep -E '^gen-[0-9]{14}-[0-9a-f]{8}$'); do`,
     "  keep=''",
@@ -368,51 +218,23 @@ export function buildStoreWriterScript(registryEndpoint: string, genName: string
 }
 
 /**
- * The opaque-marker rewrite (see the module doc for WHY). For each layer
- * not already processed, every directory carrying an overlay opaque xattr
- * gains a 0:0 character-device whiteout for each name the layers BELOW it
- * would otherwise contribute — which is exactly what the marker means.
+ * Python pass that replaces overlay opaque-directory markers with explicit
+ * whiteouts (see docs/nested-containers.md). In each opaque directory it
+ * creates a 0:0 character device for every name the lower layers (from
+ * containers/storage's `lower` file) would contribute, stopping at a lower
+ * that is itself opaque.
  *
- * RECURSIVELY, which is the whole subtlety. Opacity hides the lower
- * directory *and everything under it*: a lower `app/src/old.js` is
- * invisible even though `src` exists on both sides. Whiting out only the
- * first level would therefore leave every name the two trees SHARE as a
- * live merge point — and sharing is the common case, since a replaced
- * directory is usually replaced with the same layout (`rm -rf app && COPY`,
- * a node_modules reinstall). So each shared name that is a directory on
- * both sides is descended into and whited out at its own level, and so on
- * down. A non-directory in the upper needs no descent: it covers the lower
- * entry whole.
+ * It recurses: opacity also hides everything under a lower directory, so
+ * names that are directories on both sides are descended into and
+ * whited out at each level. Extra whiteouts are harmless.
  *
- * The lower chain comes from containers/storage's own `lower` file
- * (nearest first, `l/<link>` symlinks into a sibling layer's diff), so the
- * names are computed against the same layers the consuming overlay mount
- * will stack. The accumulation stops at a lower that is itself opaque at
- * that path — nothing below it is visible either way.
+ * Any read error other than "no xattrs here" exits nonzero, so no DONE
+ * marker is written; a silently missing whiteout would otherwise be copied
+ * into every later generation.
  *
- * A whiteout for a name that turns out not to be visible below is harmless
- * (overlay hides whiteout entries from readdir regardless), which is why
- * the walk can union across lowers without modelling what a nearer lower
- * already hid. A name the layer itself provides is never whitened.
- *
- * FAIL-CLOSED. Every read this pass depends on is load-bearing: a `lower`
- * file that exists but cannot be parsed, a link that will not resolve, an
- * xattr listing that errors for any reason but "this filesystem has none"
- * — each would silently shrink the whiteout set, and the marker below
- * would then hardlink that hole into every future generation. They exit
- * nonzero instead, so no DONE marker is written and the last good
- * generation stays mounted, matching how the diff-size assertion behaves.
- *
- * The per-layer marker makes this incremental: `cp -al` hardlinks it into
- * the next generation, so a layer is walked once in the life of a store.
- * The marker is VERSIONED — a change to what this pass emits must bump it,
- * or seeded layers would pin the old pass's output forever. Reprocessing a
- * seeded layer is safe against the hardlinks: `cp -al` recreates directory
- * inodes, so a whiteout added here lands in this generation alone.
- *
- * Each whiteout is printed as it is made. That is the pass's only window
- * from outside — the set it computes is the whole product, and a store
- * where it is wrong looks perfectly healthy.
+ * A per-layer marker, hardlinked forward by `cp -al`, means each layer is
+ * processed once. Bump its version when the output changes. Each whiteout
+ * is printed, since a wrong result looks healthy.
  */
 const OPAQUE_REWRITE_PY = [
   'import errno, os, stat, sys',
@@ -504,12 +326,10 @@ const OPAQUE_REWRITE_PY = [
 ].join('\n')
 
 /**
- * The metadata post-check (M2). Every layer in `layers.json` must carry a
- * recorded uncompressed size; without one `podman images` reconstructs it
- * from the layer's tar-split, and a store is read over the gofer where
- * that is ruinous. Failing the build here is right: an incomplete
- * generation never gets a DONE marker, so workspaces keep mounting the last
- * good one.
+ * Python check that every layer in `layers.json` records its uncompressed
+ * size. Without it `podman images` decompresses each layer through the
+ * gofer, which takes minutes. Failing leaves no DONE marker, so the last
+ * good generation stays mounted.
  */
 const DIFF_SIZE_CHECK_PY = [
   'import json, os, sys',
@@ -525,15 +345,10 @@ const DIFF_SIZE_CHECK_PY = [
 ].join('\n')
 
 /**
- * The writer pod. Trusted infra like the registry's node-write pods (no
- * runtimeClassName, so it runs on runc), pinned to one node, with the
- * blanket toleration those pods carry for the same reason: `nodeName`
- * bypasses the scheduler but not kubelet admission or the taint manager,
- * so a NoExecute pool taint would otherwise deny the pod the very node it
- * exists to write.
- *
- * See the module doc for why it is hostNetwork'd and why it deliberately
- * asks for no capabilities beyond the container default.
+ * The writer pod: runc, root, pinned to one node, tolerating every taint
+ * (`nodeName` skips the scheduler but not taint eviction).
+ * docs/nested-containers.md explains hostNetwork and the default
+ * capabilities.
  */
 export function buildStoreWriterPodManifest(params: {
   projectId: string
@@ -556,16 +371,13 @@ export function buildStoreWriterPodManifest(params: {
     },
     spec: {
       nodeName,
-      // The node's own address range is what the project registry's
-      // ingress policy admits, and the node is not a cluster-DNS client —
-      // hence the ClusterIP endpoint above.
+      // The registry admits node addresses; the node has no cluster DNS,
+      // hence the ClusterIP endpoint.
       hostNetwork: true,
       restartPolicy: 'Never',
       tolerations: [{ operator: 'Exists' }],
       automountServiceAccountToken: false,
       enableServiceLinks: false,
-      // Infra tier: a workspace pod filling this node must not keep the
-      // cache those workspaces read from being built.
       priorityClassName: PRIORITY_CLASS_INFRA,
       containers: [{
         name: 'write',
@@ -580,8 +392,6 @@ export function buildStoreWriterPodManifest(params: {
       }],
       volumes: [{
         name: 'store',
-        // The NODE path: the store's server-side path is under the
-        // node-local root, and this pod writes the node's own tree.
         hostPath: { path: nodeLocalHostPath(imageStoreDir(projectId)), type: 'DirectoryOrCreate' },
       }],
     },
@@ -592,13 +402,9 @@ export function buildStoreWriterPodManifest(params: {
 const NODE_POD_PATH = '/node'
 
 /**
- * One-shot pod dropping a project's whole NODE-LOCAL tree from a node: its
- * image store and its `projects/<id>` (the pnpm store, the opencode
- * working copies). The store's contents are root-owned, so the server
- * cannot remove them itself — the same reason the store lives outside the
- * project tree (see {@link imageStoreDir}) — and the rest lives on a node
- * the server's filesystem does not reach. Mounts the install's node root,
- * so both directories can go in one pass.
+ * One-shot pod removing a project's node-local data from a node: its image
+ * store and `projects/<id>`. The server cannot do it: the store is
+ * root-owned, and other nodes' disks are out of its reach.
  */
 export function buildNodeLocalProjectCleanupPodManifest(params: {
   projectId: string
@@ -658,18 +464,9 @@ interface RawPodList {
 }
 
 /**
- * Generation names a live workspace pod of this project still has mounted.
- * The server wrote those mounts, so reading them back off the pod specs is
- * the authoritative "in use" set — a generation is safe to drop exactly
- * when nothing is pointing at it.
- *
- * Matched by the trailing `shared-images/<id>/<gen>` rather than by the
- * node path outright, so the match does not depend on where the install's
- * node-local root sits.
- *
- * A failure to list is treated as "everything is in use": the cost of
- * keeping a stale generation is disk, the cost of dropping a live one is a
- * workspace whose engine loses its store mid-run.
+ * Generation names mounted by this project's live pods, read from their
+ * specs by the `shared-images/<id>/<gen>` path suffix. Null when pods
+ * cannot be listed; the caller then keeps everything.
  */
 async function generationsInUse(projectId: string): Promise<string[] | null> {
   const suffix = `/shared-images/${projectId}/`
@@ -690,16 +487,13 @@ async function generationsInUse(projectId: string): Promise<string[] | null> {
   return [...names]
 }
 
-/** Per-project queue: an ensure is a pod run, and two of them racing would
- *  interleave their GC passes over one directory. */
+/** Per-project lock, so two runs never GC the same directory at once. */
 const storeEnsureMutex = createKeyedMutex()
 
-/** Last successful (or attempted) refresh per project id — module state,
- *  so a server restart makes the next pass eligible again. */
+/** Last refresh attempt per project id (reset by a server restart). */
 const lastRefreshMs = new Map<string, number>()
 
-/** Projects with a refresh in flight, marked synchronously so a reconcile
- *  tick and a salvage cannot both fire one. */
+/** Projects with a refresh in flight. */
 const refreshing = new Set<string>()
 
 /** Test hook: forget the per-project throttle and in-flight marks. */
@@ -709,22 +503,16 @@ export function _resetImageStoreForTests(): void {
 }
 
 export interface EnsureStoreOptions {
-  /** Ignore the per-project throttle (an explicit "there is new content"
-   *  signal, e.g. a salvage that actually pushed). */
+  /** Ignore the throttle, e.g. after a salvage pushed something. */
   force?: boolean
   nowMs?: number
 }
 
 /**
- * Write a fresh generation of this project's node image store on every node, then
- * drop the generations nothing is using. Best-effort: any failure is
- * logged and swallowed — a store is a cache, and its absence costs a
- * rebuild, never correctness.
- *
- * Returns true when a generation was published, false when it was skipped
- * (throttled, already in flight, unavailable on this install) or the build
- * failed — a failure shortens the next attempt to
- * {@link STORE_REFRESH_RETRY_MS} rather than waiting out the full interval.
+ * Write a new store generation for the project on every node and drop
+ * unused ones. Best-effort: failures are logged. Returns true when a
+ * generation was published. A failure retries after
+ * {@link STORE_REFRESH_RETRY_MS}.
  */
 export async function ensureNodeImageStore(
   project: ProjectRef,
@@ -750,9 +538,8 @@ export async function ensureNodeImageStore(
   }
 }
 
-/** Runs one writer pod per node. Returns false when nothing was
- *  published — no registry to read from, or every node's pod failed —
- *  which is what shortens the throttle to {@link STORE_REFRESH_RETRY_MS}. */
+/** Run one writer pod per node. False when nothing was published (no
+ *  project registry, or every node failed). */
 async function writeOneStore(project: ProjectRef): Promise<boolean> {
   const { slug, id } = project
   const clusterIp = await projectRegistryClusterIp(id)
@@ -760,19 +547,16 @@ async function writeOneStore(project: ProjectRef): Promise<boolean> {
   const imageRef = await ensureBuilderImage()
   const runId = crypto.randomBytes(4).toString('hex')
   const keep = await generationsInUse(id)
-  // Null means the live set is unknown; keep every complete generation
-  // rather than risk unmounting one from under a running workspace.
+  // Unknown live set: keep every complete generation.
   const keepNames = keep ?? await listStoreGenerations(id)
 
-  // Strays from a run whose server died mid-poll: the per-run name suffix
-  // means no later namesake delete collects them.
+  // Delete pods left by a server that died mid-run.
   await kubectlWithRetry([
     'delete', 'pod', '-l', storeSelector(id), '-n', k8sNamespace(), '--ignore-not-found',
   ]).catch(() => { /* best effort */ })
 
-  // ONE name per run, on every node: the mount a new pod gets is chosen
-  // from the server's own node's generations, and the pod may land on any
-  // node, so a name has to mean the same generation everywhere.
+  // Same name on every node, since the server picks the mount from its
+  // own node's generations.
   const genName = generationName()
   let published = 0
   for (const [nodeIndex, nodeName] of (await listNodeNames()).entries()) {
@@ -802,10 +586,8 @@ async function writeOneStore(project: ProjectRef): Promise<boolean> {
 }
 
 /**
- * Reconcile step: keep every project's node store fresh. Fires detached
- * per project — a refresh is a pod run of minutes, and the pass must not
- * stall behind it — and each is throttled by
- * {@link STORE_REFRESH_INTERVAL_MS}.
+ * Reconcile step: refresh each project's store in the background,
+ * throttled by {@link STORE_REFRESH_INTERVAL_MS}.
  */
 export function reconcileNodeImageStores(projects: ProjectRef[]): void {
   for (const project of projects) {
@@ -814,10 +596,8 @@ export function reconcileNodeImageStores(projects: ProjectRef[]): void {
 }
 
 /**
- * Drop a project's node-local tree — its image store and its
- * `projects/<id>` — from every node, at project removal. Best-effort per
- * node: what a failure leaves, the node-local sweep reaps, since no live
- * project holds the id.
+ * Remove a project's node-local data from every node when the project is
+ * removed. Best-effort; the node-local sweep reaps anything left.
  */
 export async function removeNodeLocalProject(projectId: string): Promise<void> {
   const imageRef = await ensureBuilderImage().catch(() => null)

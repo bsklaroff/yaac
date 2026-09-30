@@ -1,85 +1,27 @@
 /**
- * GC of the main registry (`#drivers/k8s/cluster` main-registry.ts), the
- * install's one image bus. Two kinds of tag accumulate in it forever
- * unless something retires them, and each pass retires both:
+ * GC of the main registry: retires aged-out step-cache tags, old
+ * content-hash generations and orphaned project repos, collects the
+ * unreferenced blobs, restarts the registry, then prunes the nodes' copies
+ * (node-image-gc.ts). docs/image-gc.md "The main registry" describes each
+ * step.
  *
- * - **Step-cache entries** (docs/trust-split-builds.md). Every builder-pod
- *   build pushes one cache image per Dockerfile step into
- *   `yaac-buildcache-<id>`, tagged by cache key, and an edited Dockerfile
- *   mints fresh keys. Retired once no build has written them for
- *   BUILD_CACHE_TTL: `--cache-ttl` already makes those reads misses, so
- *   retirement costs no cache hit. The age signal is the tag link's mtime
- *   rather than the image's created timestamp, because a cache HIT
- *   re-pushes the entry and refreshes the link: retention is last-used,
- *   not first-built.
- * - **Content-hash generations** of every yaac-built repo (`yaac-base`,
- *   `yaac-tools`, `yaac-proj-<id>`, proxy, netd, the server; not the e2e
- *   suite's `yaac-test-*`). Each source change pushes a new tag and leaves
- *   the old one tagged. Retired by the per-project registries' retention
- *   pass (`buildRegistryRetentionScript`), handed the live set
- *   (`readLiveImages`) as tags it must never touch: every generation a pod
- *   or workload template names in ANY namespace, and every layer of every
- *   project's current chain. Past that, the newest
- *   MAIN_REGISTRY_GENERATIONS_KEPT per repo stay as rollback. Mirrors carry
- *   no content-hash tag and are never candidates.
+ * Untagging is an `rm -rf` in the registry's storage, and blobs are freed
+ * by `registry garbage-collect --delete-untagged`, both via
+ * `mainRegistryExec` (the delete API is disabled). `--delete-untagged` is
+ * global, so everything in this registry must be a plain tagged
+ * single-arch manifest; an untagged push or a manifest list would be
+ * collected out from under its users.
  *
- * And one kind of whole repo: a project's own (`yaac-proj-<id>`,
- * `yaac-user-<id>`, `yaac-buildcache-<id>`) whose id no live project holds —
- * a removed project's, or one named before projects had ids
- * (`orphanProjectRepoSweepScript`). Permanent rather than a removal step,
- * so it also covers every removal that never ran.
+ * The collect runs without a read-only window, so two hazards are handled
+ * here:
  *
- * The same pass then drops the nodes' unpacked copies of whatever the
- * registry no longer holds (node-image-gc.ts), which is where most of the
- * bytes are.
- *
- * Untagging is a `rm -rf` of the tag directory in the registry's own
- * storage, and blobs are reclaimed by the registry binary's
- * `garbage-collect --delete-untagged` — the same storage-layout moves the
- * per-project registries' collect makes (`reconcileProjectRegistryGc`),
- * for the same reason: the delete API answers 405 unless the Deployment is
- * rolled with `REGISTRY_STORAGE_DELETE_ENABLED`. Both run through
- * `mainRegistryExec`, a `kubectl exec` into the registry Deployment's pod.
- *
- * `--delete-untagged` is global, not scoped to the repos swept here, which
- * makes one property of this registry load-bearing: everything in it lives
- * as a plain, tagged, single manifest. Blobs shared with a still-tagged
- * image survive because that manifest is marked, and the digest-pinned
- * mirrors are pushed as single-arch children under a tag of their own.
- * Anything stored untagged (a digest-only push) or as an index (a manifest
- * list, whose children the mark phase does not walk) would be collected
- * out from under its users.
- *
- * What this does NOT take is the sibling collect's read-only maintenance
- * window, which is how that one makes a live collect safe. Nothing stops it
- * any more — the shared registry is a Deployment over a PVC now, so rolling
- * it with the read-only env costs a restart and no images —
- * but adopting it is a behaviour change of its own (every push and delete
- * in the window answers 405) and is left as a follow-up. Until then the two
- * hazards are handled directly here:
- *
- * - A push racing the collect can have its blobs deleted between upload
- *   and manifest PUT, leaving an image that pulls broken forever (the
- *   server-side `registryHasTag` skip means nothing ever re-pushes it).
- *   Three signals hold the collect off: an in-progress upload, any link
- *   file written recently (a just-committed blob, a cross-repo mount, a
- *   just-PUT manifest — none of which leave an upload behind), and this
- *   server's own in-flight builds and pushes. The first two are read off
- *   the filesystem, so they see e2e servers and builder pods too, and both
- *   are re-read immediately before the collect, since the sweep that
- *   precedes it takes time. What remains open is a push that starts inside
- *   the collect: only the maintenance window would close that, so the
- *   collect is kept rare and short instead.
- * - The registry caches blob descriptors in memory. After a collection,
- *   re-pushing a deleted digest writes only the link, not the blob, so the
- *   tag 404s and stays broken (verified). The restart that clears those
- *   descriptors therefore runs in a `finally` — a collect that throws
- *   half-way through deleting is exactly when it is most needed — and a
- *   marker file in the registry's storage records that a collect was
- *   started, so a restart lost to a failing rollout or to the
- *   server dying mid-collect is retried by the next sweep. Nothing else
- *   would retry it: the tags this pass retired are already gone, so a
- *   later sweep finds nothing to retire and would never reach the restart.
+ * - A push racing the collect could lose blobs. The collect is skipped
+ *   while any upload is in progress, a link file was written recently, or
+ *   this server is building or pushing, and those checks are repeated just
+ *   before it runs.
+ * - The registry caches blob descriptors in memory, so after a collect a
+ *   re-pushed digest would 404. The restart that clears them always runs,
+ *   and a marker file in storage makes the next pass redo a lost restart.
  */
 import {
   buildRegistryRetentionScript,
@@ -96,55 +38,41 @@ import { BUILD_CACHE_TTL } from './builder-pod'
 import { forgetVerifiedTags, imageWorkInFlight } from './build-coordinator'
 import { pruneNodeImages, registryGeneration } from './node-image-gc'
 
-/** Min interval between sweeps — hygiene work, like the host image GC. */
+/** Min interval between sweeps. */
 export const MAIN_REGISTRY_GC_INTERVAL_MS = 6 * 60 * 60 * 1000
 
 /**
- * Content-hash generations kept per repo beyond the live set: current plus
- * one rollback, the host engine's policy. Far below the project
- * registries' 8 because the live set here is KNOWN rather than guessed —
- * every generation a workload or a project's chain names is protected
- * outright, so the count only decides how much history is kept warm.
+ * Generations kept per repo beyond the live set. Lower than the project
+ * registries' 8 because here the live set is known and always protected.
  */
 const MAIN_REGISTRY_GENERATIONS_KEPT = 2
 
 /**
- * The e2e suite's repos, which this pass never retires. A run resolves
- * them by tag from its global setup through its last file — long stretches
- * in which no pod names them and no namespace marks the run — and a run on
- * an older checkout uses generations the newest-two rule would not keep.
- * They are the suite's to retire (docs/plans/storage-gc-gaps.md).
+ * The e2e suite's repos, never retired here: a run uses them for its whole
+ * duration, often with no pod naming them. The suite retires them itself.
  */
 const TEST_IMAGE_REPOS = 'yaac-test-*'
 
 /**
- * Retention in whole days, derived from the read-side `--cache-ttl` so the
- * two can't drift: a tag older than the TTL is already a miss. `find
- * -mtime` is the only age filter busybox offers, hence days. Read on call
- * rather than at import — the stacking tests mock this folder's builder-pod
- * module down to the two names they drive.
+ * Step-cache retention in whole days (busybox `find -mtime`), derived from
+ * `--cache-ttl`, past which a tag is already a cache miss. Computed on call
+ * because some tests mock builder-pod.
  */
 export function buildCacheRetainDays(): number {
   return Math.max(1, Math.floor(Number.parseInt(BUILD_CACHE_TTL, 10) / 24))
 }
 
 /**
- * How recent an in-progress upload has to be to hold the sweep off. This
- * is not "when the push started": `-mmin` reads the upload's data file,
- * which every received chunk rewrites, so a slow but live upload keeps
- * counting as busy however long it runs. The bound only exists so uploads
- * abandoned by a crashed pusher (the registry purges them on its own, much
- * longer, schedule) can't wedge the GC forever.
+ * An upload whose data file changed within this many minutes counts as in
+ * progress. Each chunk rewrites the file, so a slow live upload stays
+ * busy; the bound keeps abandoned uploads from blocking GC forever.
  */
 export const REGISTRY_UPLOAD_BUSY_MINUTES = 60
 
 /**
- * How long the registry has to have been quiet — no link file written by
- * any pusher — before a collect may run. Covers the pushes an upload dir
- * cannot see: a blob that has committed but whose manifest has not landed
- * yet, and a delta push whose layers were cross-repo mounted. Short,
- * because that gap is seconds wide and a long window would mean an active
- * install never collects at all.
+ * Minutes with no link file written before a collect may run. Covers
+ * pushes with no upload in progress (a committed blob awaiting its
+ * manifest, a cross-repo mount). Short, so a busy install still collects.
  */
 export const REGISTRY_QUIET_MINUTES = 5
 
@@ -155,10 +83,8 @@ const REGISTRY_BINARY = '/bin/registry'
 const REGISTRY_CONFIG = '/etc/docker/registry/config.yml'
 
 /**
- * "A collect was started and no restart has succeeded since." Kept in the
- * registry's storage, not in this process: the case it exists for is the
- * server dying mid-collect. Outside the `docker/` tree, so the collect
- * itself never sees it.
+ * Marker meaning a collect started and no restart has succeeded since.
+ * Stored in the registry so it survives the server dying mid-collect.
  */
 const COLLECT_MARKER = `${REGISTRY_STORAGE_DIR}/.yaac-collect-started`
 
@@ -168,18 +94,14 @@ const COLLECT_TIMEOUT_MS = 10 * 60_000
 const MARKER_TIMEOUT_MS = 30_000
 
 /**
- * In-container deadline for the collect, just under the exec's. Without it
- * the exec's own timeout would kill the `kubectl exec` client and leave
- * `garbage-collect` deleting blobs inside the pod, unwatched, while the
- * restart runs under it.
+ * In-container deadline for the collect, just under the exec's, so
+ * `garbage-collect` is never left running unwatched during the restart.
  */
 const COLLECT_KILL_SECONDS = Math.floor(COLLECT_TIMEOUT_MS / 1000) - 30
 
 /**
- * The registry-side quiet check, in busybox `find`: an upload still being
- * written, or any link file (blob, manifest revision, tag) touched inside
- * the quiet window. Prints BUSY and nothing else, so the caller can treat
- * "said anything" as "stand down".
+ * Busybox script printing BUSY if an upload is in progress or any link
+ * file was written inside the quiet window.
  */
 export function registryQuietProbeScript(
   busyMinutes = REGISTRY_UPLOAD_BUSY_MINUTES,
@@ -193,8 +115,6 @@ export function registryQuietProbeScript(
     '  echo BUSY',
     '  exit 0',
     'fi',
-    // Deleting a tag directory writes no link, so the sweep's own untags
-    // can never make this fire.
     `if [ -n "$(find "$ROOT" -name link -type f -mmin -${quietMinutes} -print -quit 2>/dev/null)" ]; then`,
     '  echo BUSY',
     'fi',
@@ -202,15 +122,10 @@ export function registryQuietProbeScript(
 }
 
 /**
- * The in-container sweep: untag every `yaac-buildcache-*` entry whose tag
- * link is older than `days` and name it on stdout. A tag directory is
- * `<repo>/_manifests/tags/<key>`, holding `current/link` (the live
- * manifest) and an `index/` of past revisions; removing the directory
- * retires all of it, and the collect then frees whatever manifest and
- * blobs are left unreferenced.
- *
- * Written for the registry image's busybox shell: no `-newermt`, no
- * `-printf`, no arrays.
+ * Busybox script that untags every `yaac-buildcache-*` entry whose tag link
+ * is older than `days` (by removing `<repo>/_manifests/tags/<key>`) and
+ * prints each as `RETIRED <key>`. A cache hit re-pushes the entry and
+ * refreshes the link, so age means time since last use.
  */
 export function buildCacheSweepScript(days = buildCacheRetainDays()): string {
   return [
@@ -228,37 +143,26 @@ export function buildCacheSweepScript(days = buildCacheRetainDays()): string {
   ].join('\n')
 }
 
-/** How old a project repo must be before the orphan sweep may take it —
- *  the registry GC's youth guard, on the repo directory's mtime. */
+/** Minimum repo directory age before the orphan sweep may remove it. */
 export const ORPHAN_REPO_MIN_AGE_MINUTES = 10
 
 /**
- * The in-container sweep of whole project repos: untag every
- * `yaac-{proj,user,buildcache}-<x>` whose `x` is not a live project id,
- * unless a workload still names one of its tags (`keepRepos`) — a pod of a
- * project removed moments ago, or of another install sharing this
- * registry, has not stopped pulling it. Each is named on stdout as the
- * retention pass names its tags.
- *
- * The e2e suite's image repos (`yaac-test-…`) never match, which is how
- * the TEST_IMAGE_REPOS exemption reaches this pass too. Its step-cache
- * repos do (a cache repo carries no prefix), which costs a running suite
- * cache misses at worst: the quiet probe keeps this off a registry that is
- * being pushed to.
+ * Busybox script that removes every `yaac-{proj,user,buildcache}-<x>` repo
+ * whose `x` is not a live project id, unless a workload still uses it
+ * (`keepRepos`). Prints `RETIRED <repo>` for each. `yaac-test-*` repos
+ * never match.
  */
 export function orphanProjectRepoSweepScript(liveIds: string[], keepRepos: string[]): string {
   return [
     'set -eu',
     `ROOT=${REGISTRY_REPOS_DIR}`,
     '[ -d "$ROOT" ] || exit 0',
-    // Ids and repo names are of the image-name charset, so single quotes
-    // are safe.
+    // Ids and repo names cannot contain quotes.
     `LIVE=',${liveIds.join(',')},'`,
     `KEEP='${keepRepos.join('\n')}'`,
     'for dir in "$ROOT"/yaac-proj-* "$ROOT"/yaac-user-* "$ROOT"/yaac-buildcache-*; do',
     '  [ -d "$dir" ] || continue',
-    // Too young to judge: a repo is made by its first push, and a project
-    // added after this pass read the live set may be pushing it now.
+    // Skip young repos: a just-added project may be pushing its first image.
     `  [ -n "$(find "$dir" -maxdepth 0 -mmin +${ORPHAN_REPO_MIN_AGE_MINUTES})" ] || continue`,
     '  repo=${dir##*/}',
     '  case "$LIVE" in *",${repo#yaac-*-},"*) continue;; esac',
@@ -276,17 +180,8 @@ interface MainRegistryGcResult {
   /** True when the blob collect actually ran. */
   collected: boolean
   /**
-   * True unless a collect ran and its restart did not. False means the
-   * registry is serving stale blob descriptors and the marker is waiting
-   * for the next sweep — a pass in that state has not succeeded, whatever
-   * it managed to reclaim.
-   *
-   * It means "the rollout succeeded" AND "the store this pass collected is
-   * the one now being served" — the second half because the blobs are on a
-   * PVC the replacement pod remounts. `Recreate` still deletes the old pod
-   * before scheduling its replacement, so the registry may well come back
-   * on a different node; that is now uneventful rather than a periodic
-   * coin flip over which store the catalog reflects.
+   * False when a collect ran but the restart failed: the registry is
+   * serving stale blob descriptors until the next pass restarts it.
    */
   restored: boolean
 }
@@ -301,10 +196,8 @@ async function registryBusy(): Promise<boolean> {
 }
 
 /**
- * Bounce the registry, then drop the collect marker. The marker is cleared
- * LAST and only on success, so a restart that fails leaves the next sweep
- * to redo it. `restartMainRegistry` rolls the Deployment and drops this
- * process's port-forward, which was bound to the pod that just went away.
+ * Restart the registry, then remove the collect marker. The marker goes
+ * only after success, so a failed restart is retried by the next pass.
  */
 async function restartRegistry(): Promise<void> {
   await restartMainRegistry()
@@ -343,12 +236,10 @@ interface PodSpecImages {
 }
 
 /**
- * Every generation a pod or a workload template names, in any namespace.
- * Templates as well as pods, because a Deployment scaled to zero
- * (`yaac server stop`) names an image no pod does, and scaling it back up
- * must still find it; ReplicaSets too, because `kubectl rollout undo`
- * brings an older one's template back. Fails closed: an unreadable list
- * throws, and the pass stops before retiring anything.
+ * Every generation a pod or workload template names, in any namespace.
+ * Templates count because a Deployment scaled to zero still needs its
+ * image, and ReplicaSets because `kubectl rollout undo` restores them.
+ * Throws if the list cannot be read, stopping the pass.
  */
 async function readInUse(): Promise<Set<string>> {
   const workloads = await kubectlGetJson<RawWorkloadList>([
@@ -367,15 +258,11 @@ async function readInUse(): Promise<Set<string>> {
 }
 
 /**
- * Read the live set. The chains are the prewarm sweep's view of what each
- * project wants warm: a project with no running workspace still has a
- * current image, and retiring it would cost a rebuild on the next create —
- * in a builder pod, for the untrusted layers.
- *
- * A chain that cannot be resolved fails CLOSED for the whole pass, not
- * just that project: the likeliest cause — a non-layered `Dockerfile.user`
- * mid-edit — fails EVERY project's chain at once, and a pass that went on
- * would retire the generations of every chain it could not name.
+ * Read the live set: images in use, plus every project's current chain
+ * (a project with no running workspace still needs its image). If any
+ * chain cannot be resolved, `wanted` is null and no generations are
+ * retired this pass; the usual cause, a broken `Dockerfile.user`, breaks
+ * every chain at once.
  */
 async function readLiveImages(
   projects: ProjectRef[],
@@ -400,18 +287,12 @@ async function readLiveImages(
 }
 
 /**
- * One GC pass over the registry: finish any restart a previous pass owed,
- * untag aged-out step-cache entries and superseded generations and, if the
- * registry is quiet enough to make it safe, collect the unreferenced blobs
- * and restart.
+ * One GC pass over the registry: redo any lost restart, untag, and, if the
+ * registry is still quiet, collect and restart.
  */
 async function gcMainRegistry(live: LiveImages): Promise<MainRegistryGcResult> {
-  // Ahead of the busy probe on purpose, so this can bounce the registry
-  // under a live push: serving stale descriptors is the worse state, and
-  // an interrupted push is harmless — it never lands its manifest, so
-  // `registryHasTag` misses and the pusher retries. The cost is one retry
-  // for whatever was in flight, on a pass that only happens after a
-  // restart was already lost.
+  // Before the busy check: stale descriptors are worse than interrupting
+  // a push, which never lands its manifest and is retried.
   if (await collectMarkerPresent()) {
     serverLog('[main-registry-gc] a previous collect went unfinished, restarting the registry')
     await restartRegistry()
@@ -439,20 +320,12 @@ async function gcMainRegistry(live: LiveImages): Promise<MainRegistryGcResult> {
     .filter((l) => l.startsWith('RETIRED '))
     .map((l) => l.slice('RETIRED '.length))
   if (retired.length === 0) return { retired, busy: false, collected: false, restored: true }
-  // This server remembers which tags it has seen in the registry; a retired
-  // one must be looked up again, or a create that resolves back to it
-  // (a reverted Dockerfile edit) would hand a pod a ref that 404s. That
-  // covers creates that START after the retirement. One that resolved
-  // such a tag between the live-set read and the retention — a revert to
-  // a generation at least three back, landing within those seconds — can
-  // still have it retired under it; its pod fails to pull, and the next
-  // create rebuilds the image.
+  // A create that resolves back to a retired tag (a reverted Dockerfile
+  // edit) must check the registry again rather than trust the cache.
   forgetVerifiedTags()
 
-  // Re-read the push signals: the untag above took time, and the first
-  // read is only as good as the instant it happened. Standing down here
-  // costs nothing — the tags are untagged either way, and the next sweep
-  // collects them.
+  // Re-check, since untagging took time. Skipping is cheap: the next pass
+  // collects these.
   if (imageWorkInFlight() || await registryBusy()) {
     return { retired, busy: true, collected: false, restored: true }
   }
@@ -468,8 +341,7 @@ async function gcMainRegistry(live: LiveImages): Promise<MainRegistryGcResult> {
       COLLECT_TIMEOUT_MS,
     )
   } finally {
-    // Unconditional: a collect that threw part-way through deleting is
-    // precisely the state the restart exists to clear.
+    // Always restart, especially after a collect that failed part-way.
     restored = await restartRegistry().then(() => true).catch((err: unknown) => {
       serverLog(
         '[main-registry-gc] the registry could not be restarted after a collect '
@@ -483,8 +355,7 @@ async function gcMainRegistry(live: LiveImages): Promise<MainRegistryGcResult> {
 
 let lastSweepMs = 0
 
-/** The pass running right now, if any. One at a time: a collect holds the
- *  registry for minutes and ends by restarting it. */
+/** The pass running now, if any; passes never overlap. */
 let inFlightPass: Promise<void> | null = null
 
 /** Test hook: reset the sweep throttle and forget any in-flight pass. */
@@ -499,11 +370,8 @@ export function _mainRegistryGcSettledForTests(): Promise<void> {
 }
 
 /**
- * Gated to the default install like the host image GC — e2e servers share
- * this registry (it lives in the default namespace precisely so they do),
- * and one collecting mid-run could pull a blob out from under another
- * run's push. Never two passes at once: a pass ends by restarting the
- * registry.
+ * Only the default install collects: e2e servers share this registry, and
+ * one collecting mid-run could delete a blob another run is pushing.
  */
 function sweepDue(nowMs: number): boolean {
   if (testEnv.k8sNamespace !== 'yaac') return false
@@ -512,15 +380,9 @@ function sweepDue(nowMs: number): boolean {
 }
 
 /**
- * Reconcile step: the registry pass, then the nodes' copies of what it
- * retired (node-image-gc.ts) — this pass's retirements and any an earlier
- * one left on a node. The node half runs even when the registry stood
- * down, since it only follows what the registry already dropped.
- *
- * DETACHED, for the same reason `reconcileProjectRegistryGc` detaches: a
- * pass that collects is minutes of exec plus a restart, and reconcile
- * passes are serialized, so awaiting it here would stall every later step
- * and every later tick behind it.
+ * Reconcile step: the registry pass, then the node prune (which runs even
+ * when the registry pass stood down). Runs in the background, since a
+ * collect takes minutes and would stall the serialized reconcile loop.
  */
 export function reconcileMainRegistryGc(
   projects: ProjectRef[],
@@ -537,14 +399,11 @@ export function reconcileMainRegistryGc(
     } else if (collected && restored) {
       serverLog(`[main-registry-gc] retired ${retired.length} stale tag(s) and collected their blobs`)
     }
-    // Re-read: the snapshot above predates the retention, a collect of up
-    // to ten minutes, and the restart.
+    // Re-read: the earlier snapshot may be minutes old.
     await pruneNodeImages(await readInUse())
   })()
     .catch((err: unknown) => {
-      // Not always a bug: an install whose cluster is down, or whose
-      // registry Deployment has not been stood up yet, has nothing to exec
-      // into. Log and let the next sweep try again.
+      // E.g. the cluster is down or the registry is not deployed yet.
       serverLog(`[main-registry-gc] sweep failed: ${err instanceof Error ? err.message : String(err)}`)
     })
     .finally(() => { inFlightPass = null })

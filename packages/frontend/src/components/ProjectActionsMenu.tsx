@@ -8,13 +8,11 @@ import { useUiStore } from '#lib/store'
 
 const ITEM = 'flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-xs outline-none'
 
-/**
- * The project name doubles as the actions trigger — clicking it (with a
- * whole-label hover state) opens the menu. Currently: remove (with confirm).
- */
+/** The project name as a menu trigger. The only action is Remove, which
+ *  asks for confirmation. */
 export function ProjectActionsMenu({ slug, remoteUrl }: {
   slug: string
-  /** The project's git remote — removal requires typing it back. */
+  /** The project's git remote, typed back to confirm removal. */
   remoteUrl: string
 }): JSX.Element {
   const setActiveProject = useUiStore((s) => s.setActiveProject)

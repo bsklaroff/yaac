@@ -217,7 +217,7 @@ describe('UsageBadge', () => {
   })
 
   it('shows the tightest limit across all tools on the trigger pill', () => {
-    // Claude tightest is 19, Codex tightest is 42 — the pill shows 42.
+    // Claude's tightest is 19% and Codex's is 42%, so the pill shows 42%.
     stubSnapshot(CLAUDE_USAGE, CODEX_USAGE)
     render(<UsageBadge />)
     expect(pill().textContent).toBe('42%')
@@ -238,19 +238,15 @@ describe('UsageBadge', () => {
     fireEvent.click(pill())
 
     expect(screen.getByText('Plan usage')).toBeTruthy()
-    // Section headers.
     expect(screen.getByText('Claude')).toBeTruthy()
     expect(screen.getByText('Max (20x)')).toBeTruthy()
     expect(screen.getByText('Codex')).toBeTruthy()
     expect(screen.getByText('Plus')).toBeTruthy()
-    // Claude rows.
     expect(screen.getByText('Current session (5h)')).toBeTruthy()
     expect(screen.getByText('Weekly — all models')).toBeTruthy()
     expect(screen.getByText('Weekly — Fable')).toBeTruthy()
-    // Codex rows.
     expect(screen.getByText('5h limit')).toBeTruthy()
     expect(screen.getByText('Weekly limit')).toBeTruthy()
-    // A couple of unique percents.
     expect(screen.getByText('11%')).toBeTruthy()
     expect(screen.getByText('18%')).toBeTruthy()
   })
@@ -273,12 +269,11 @@ describe('UsageBadge', () => {
     expect(pill().textContent).toBe('Fable11%')
     expect(useUiStore.getState().pinnedUsageMetric).toBe('claude:weekly_scoped:Fable')
 
-    // Switch the pin to the Codex 5h window.
     fireEvent.click(screen.getByRole('button', { name: 'Pin Codex 5h limit' }))
     expect(pill().textContent).toBe('5h42%')
     expect(useUiStore.getState().pinnedUsageMetric).toBe('codex:codex_primary')
 
-    // Clicking the pinned row unpins — back to the tightest-limit default.
+    // Clicking the pinned row unpins, restoring the tightest-limit default.
     fireEvent.click(screen.getByRole('button', { name: 'Unpin Codex 5h limit' }))
     expect(pill().textContent).toBe('42%')
     expect(useUiStore.getState().pinnedUsageMetric).toBeNull()
@@ -289,7 +284,7 @@ describe('UsageBadge', () => {
     stubSnapshot(CLAUDE_USAGE, CODEX_USAGE)
     render(<UsageBadge />)
     expect(pill().textContent).toBe('42%')
-    // The pin is kept, not cleared — the limit may come back.
+    // The pin is kept because the limit may come back.
     expect(useUiStore.getState().pinnedUsageMetric).toBe('claude:weekly_scoped:Opus')
   })
 })

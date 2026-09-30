@@ -25,12 +25,9 @@ import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/sub
 export const REGISTRY_GRANT_SECRET = 'yaac-registry-grant-key'
 
 /**
- * The key's namespace, holding nothing else. NOT the registry's (`yaac`):
- * that is also the default install namespace, where the egress proxy's
- * Role reads every Secret — and the proxy, which parses untrusted traffic,
- * must not be one compromise away from registry-admin. Only cluster-wide
- * readers reach this one: the server's ClusterRole and the host's
- * kubeconfig.
+ * A namespace for the key alone. Not `yaac`, where the egress proxy (which
+ * parses untrusted traffic) can read every Secret. Only the server's
+ * ClusterRole and the host's kubeconfig can read it.
  */
 export const REGISTRY_GRANT_NAMESPACE = 'yaac-registry-keys'
 const SECRET_KEY_FIELD = 'key.pem'
@@ -44,13 +41,8 @@ export type RegistryGrantScope = '*' | string[]
 let keyPromise: Promise<crypto.KeyObject> | null = null
 
 /**
- * The cluster's grant key, created on first use. Read through the apiserver
- * wherever the caller runs — the host CLI through its kubeconfig, the
- * in-cluster server through its cluster-wide ServiceAccount — so nothing
- * mounts or copies it.
- *
- * `create`, never `apply`: two first callers racing must converge on ONE
- * key, so the loser of the create reads the winner's back.
+ * The cluster's grant key, created on first use and read via the apiserver.
+ * `create`, not `apply`, so racing first callers converge on one key.
  */
 async function registryGrantKey(): Promise<crypto.KeyObject> {
   keyPromise ??= loadOrCreateKey().catch((err: unknown) => {
@@ -117,10 +109,8 @@ export async function registryGrant(scope: RegistryGrantScope, ttlSeconds: numbe
 }
 
 /**
- * A containers-auth.json (`--authfile`) holding one grant for `host` —
- * never argv, where any local user's `ps` reads it. What a builder pod is
- * handed, and what a host push runs with: podman sends it on every request
- * to the registry, and the gate honors it on writes within `scope` alone.
+ * A containers-auth.json (`--authfile`) holding one grant for `host`, for
+ * builder pods and host pushes. A file, not argv, which `ps` would expose.
  */
 export async function registryAuthFile(
   host: string,

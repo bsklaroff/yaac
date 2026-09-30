@@ -1,13 +1,8 @@
 import type { CheckResult } from '#types'
 
 /**
- * How one `CheckResult` line prints.
- *
- * Here rather than beside either check that produces one: `yaac cluster
- * check` and `yaac host check` answer the same question about different
- * substrates, they are read side by side in the same terminal, and a driver
- * may not import another driver — so the one thing they genuinely share,
- * which is how a result looks, belongs with the type itself.
+ * How one `CheckResult` line prints, shared by `yaac cluster check` and
+ * `yaac host check` so both look the same.
  */
 export function formatCheckResult(r: CheckResult): string {
   const icon = { pass: '✓', fail: '✗', warn: '!', skip: '-' }[r.status]

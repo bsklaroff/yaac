@@ -1,12 +1,10 @@
 /**
- * The cluster's own addresses, as the policies name them: which `/32`s are
- * "the host network namespace", and which CIDRs are "a pod rather than the
- * world".
+ * The cluster addresses network policies use: node `/32`s (the host network
+ * namespace) and pod CIDRs (in-cluster rather than external traffic).
  *
- * Both answers fail in the same silent direction — an empty or narrow set
- * renders a policy that denies the redirect delivery path or sends
- * pod-to-pod traffic into the proxy — so what these cases pin is the
- * refusal and the reporting, not just the happy read.
+ * An empty or narrow set fails silently, either denying the redirect path or
+ * sending pod-to-pod traffic into the proxy, so these tests cover refusals
+ * and reporting as well as the happy path.
  */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
@@ -36,17 +34,15 @@ afterEach(() => {
 
 describe('nodeIpBlocks', () => {
   it('names every node by InternalIP and by overlay tunnel address', async () => {
-    // Calico sources host-originated traffic to a pod on ANOTHER node from
-    // the sending node's tunnel address, not its InternalIP. A policy
-    // naming only InternalIPs therefore drops netd's Envoy on every
-    // cross-node hop — and never reproduces on one node, where Calico
-    // exempts local host-to-pod traffic from workload policy.
+    // Calico sends host traffic to a pod on another node from the tunnel
+    // address, not the InternalIP. Without it, netd's Envoy is dropped on
+    // cross-node hops, which never shows on a single node.
     mockKubectlGetJson.mockResolvedValue({
       items: [
         node('10.89.0.21', { 'projectcalico.org/IPv4IPIPTunnelAddr': '10.244.93.192' }),
         node('10.89.0.20', { 'projectcalico.org/IPv4VXLANTunnelAddr': '10.244.86.128' }),
-        // A node the overlay has not annotated yet still contributes its
-        // InternalIP rather than dropping out of the policy entirely.
+        // A node without a tunnel annotation yet still contributes its
+        // InternalIP.
         node('10.89.0.19'),
       ],
     })
@@ -58,8 +54,7 @@ describe('nodeIpBlocks', () => {
   })
 
   it('throws rather than answering empty when no address resolves', async () => {
-    // An empty ipBlock set renders a policy that silently denies the
-    // redirect delivery path — "all workspaces lost egress", no cause.
+    // An empty ipBlock set would silently cut every workspace's egress.
     mockKubectlGetJson.mockResolvedValue({ items: [] })
     await expect(nodeIpBlocks()).rejects.toThrow(/could not resolve any node InternalIP/)
   })
@@ -70,9 +65,8 @@ describe('nodeIpBlocks', () => {
     await nodeIpBlocks()
     expect(mockKubectlGetJson).toHaveBeenCalledOnce()
 
-    // Node addresses change only when the cluster is rebuilt — and a
-    // process that outlives one would otherwise render every policy for
-    // the dead cluster's addresses, which fail closed.
+    // Addresses change only on a cluster rebuild. A process that outlives
+    // one must reset, or every policy would name the old addresses.
     mockKubectlGetJson.mockResolvedValue({ items: [node('10.89.0.9')] })
     await expect(nodeIpBlocks()).resolves.toEqual(['10.89.0.7/32'])
     resetClusterCidrCache()
@@ -117,9 +111,8 @@ describe('podCidrSources', () => {
   })
 
   it('reports an unusable configured entry rather than dropping it', async () => {
-    // A typo'd entry that vanishes leaves the exclusion set NARROWER than
-    // the operator believes — and the pods in that range get redirected
-    // into the proxy. Reported, never silently discarded.
+    // Silently dropping a typo'd entry would narrow the exclusion set and
+    // redirect those pods into the proxy.
     staged({ pools: { items: [] } })
     vi.stubEnv('YAAC_POD_CIDRS', '172.31.0.0/16, 172.31/16, 10.0.0.0/33')
 
@@ -130,9 +123,8 @@ describe('podCidrSources', () => {
   })
 
   it('separates a source that is absent from one it could not read', async () => {
-    // A cluster without Calico serves no IPPool CRD — that source does not
-    // exist. An RBAC denial scoped to ippools looks identical from the
-    // outside and would silently narrow the set, so it is reported.
+    // Without Calico there is no IPPool CRD, which is fine. An RBAC denial
+    // on ippools would silently narrow the set, so it is reported.
     staged({ pools: { items: [] } })
     expect((await podCidrSources()).unreadable).toEqual([])
 

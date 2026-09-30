@@ -8,14 +8,13 @@ vi.mock('#drivers/k8s/container/runtime', async (importOriginal) => ({
 }))
 
 import { gcHostImages } from '#drivers/k8s/image-engine'
-// Setup value, not a unit under test: the prune carries an age floor, so a
-// test asserting the prune call has to speak the same number the module does.
+// Setup value, not a unit under test: the prune's age floor.
 import { HOST_PRUNE_UNTIL } from '#drivers/k8s/image-engine/image-gc'
 
-// Newest-first, as `podman image ls --sort created` emits. Four yaac-base
-// generations (2 stale at the default budget), one in-budget registry-staged
-// yaac ref, three e2e-suite generations and three non-yaac tags, plus a
-// dangling and a blank row.
+// Newest first, as `podman image ls --sort created` prints. Four yaac-base
+// generations (two over the default budget), one registry-staged yaac ref,
+// three e2e-suite generations, three non-yaac tags, a dangling row and a
+// blank row.
 const LS_OUTPUT = [
   'localhost/yaac-base|localhost/yaac-base:new1',
   'localhost/yaac-base|localhost/yaac-base:new2',
@@ -61,8 +60,8 @@ describe('gcHostImages', () => {
 
     const { retired, pruned } = await gcHostImages()
 
-    // No -f on rmi: a tag in use by a container, or mid-build as a FROM,
-    // must fail its rmi and wait for the next sweep.
+    // No -f: a tag in use by a container or a running build must fail rmi
+    // and wait for the next sweep.
     expect(callsMatching((a) => a[0] === 'rmi')).toEqual([
       ['rmi', 'localhost/yaac-base:old1'],
       ['rmi', 'localhost/yaac-base:old2'],
@@ -77,11 +76,9 @@ describe('gcHostImages', () => {
   it('keeps the newest generations per yaac repo and never touches non-yaac or e2e repos', async () => {
     servingLs()
     await gcHostImages()
-    // yaac-base has 4 generations → the 2 oldest go. The registry-staged
-    // yaac ref is in scope but within budget; ubuntu has 3 tags and is not
-    // a yaac-built repo, and yaac-test-server is over budget but belongs to
-    // the e2e suite, whose global setup may be using it on another rig — so
-    // none of those is a candidate.
+    // The two oldest yaac-base generations go. The registry-staged ref is
+    // within budget, ubuntu is not a yaac repo, and yaac-test-* belongs to
+    // the e2e suite, which may be using it on another rig.
     expect(rmiRefs()).toEqual(['localhost/yaac-base:old1', 'localhost/yaac-base:old2'])
   })
 

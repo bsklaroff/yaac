@@ -18,16 +18,11 @@ import type { AgentTool, SecretProxyRule, YaacConfig } from '@yaac/shared/types'
 import type { PassContext, WorkspaceRegistration } from '#drivers/contract'
 
 /**
- * A workspace's egress registration — what the proxy is told a workspace may
- * reach and what to inject on its behalf — as the ConfigMap that carries it
- * (docs/workspace-egress.md "What the proxy is told, and how").
- *
- * The object is written here, patched here (a live allowlist widening) and
- * deleted here; the proxy's informer applies every change within its watch
- * latency, and nothing reads the object back except the widening, which
- * has to append to it. Secret-free by construction: injection rules carry
- * `secretRef`s, never values, which is what lets a registration live in a
- * plain ConfigMap.
+ * A workspace's egress registration: the ConfigMap telling the proxy what
+ * the workspace may reach and what credentials to inject for it
+ * (docs/workspace-egress.md). Written, widened and deleted here; the proxy
+ * watches it. Injection rules name secrets by `secretRef`, never by value,
+ * so a plain ConfigMap is safe.
  */
 
 export interface Injection {
@@ -35,14 +30,10 @@ export interface Injection {
   name: string
   value?: string
   /**
-   * `<projectSlug>/<NAME>`, naming one of the values in the project's
-   * secrets Secret, instead of a literal `value`. The proxy resolves it at
-   * injection time from the map it holds, which keeps registrations
-   * secret-free and means a rotation applies to live workspaces immediately.
-   *
-   * Scoped by project because the proxy's map is shared: an unscoped name
-   * would let one project's rule have another project's secret injected
-   * into requests to a host of its choosing.
+   * `<projectSlug>/<NAME>`, naming a value in the project's secrets Secret
+   * in place of a literal `value`. The proxy resolves it at injection time,
+   * so rotations apply to live workspaces immediately. The project prefix
+   * stops one project's rule from injecting another project's secret.
    */
   secretRef?: string
   /** Prefix prepended to the resolved secret (e.g. "Bearer "). */
@@ -87,11 +78,8 @@ export function proxySecretRef(projectSlug: string, name: string): string {
 }
 
 /**
- * Build proxy injection rules from a project's proxied secrets. Each entry
- * maps a variable name to the rule describing how the secret is injected
- * (as a header or a body parameter). Only secrets with a value behind them
- * are passed in; the caller is the one that can tell, since it holds the
- * rows.
+ * Build proxy injection rules from a project's proxied secrets, keyed by
+ * variable name. The caller passes only secrets that have a value.
  */
 export function buildRulesFromSecrets(
   projectSlug: string,
@@ -122,11 +110,10 @@ export function buildRulesFromSecrets(
 }
 
 /**
- * Parse the `YAAC_E2E_UPSTREAM_REDIRECTS` env var into a redirect map for the
- * proxy. Test-only — lets e2e tests rewire `api.anthropic.com` etc. to a
- * mock reachable from the proxy pod without adding user-facing config.
- * Expects a JSON object keyed by hostname with values `{host, port, tls?}`.
- * Returns undefined when the env var is unset, empty, or unparseable.
+ * Test-only: parse `YAAC_E2E_UPSTREAM_REDIRECTS`, a JSON object mapping
+ * hostname to `{host, port, tls?}`, so e2e tests can point hosts like
+ * `api.anthropic.com` at a mock. Returns undefined when unset, empty or
+ * unparseable.
  */
 export function parseUpstreamRedirectsEnv(
   raw: string | undefined,
@@ -155,14 +142,9 @@ export function parseUpstreamRedirectsEnv(
 
 /**
  * Assemble a workspace's proxy registration from already-loaded inputs.
- * Pure given (config, remoteUrl, tool, secretRules, env).
- *
- * `secretRules` is the project's proxied secrets — which hosts and headers
- * each name applies to — and only the caller can supply it, since a secret
- * is a row it owns and it is the one that knows which have a value behind
- * them. The values themselves never come through here. `env` is left only
- * for the e2e redirect wiring, which is the driver's own test seam rather
- * than anything about a secret.
+ * `secretRules` says which hosts and headers each proxied secret applies
+ * to; secret values never pass through here. `env` is read only for the
+ * e2e upstream redirects.
  */
 export function buildProxyRegistration(input: {
   config: YaacConfig
@@ -174,13 +156,10 @@ export function buildProxyRegistration(input: {
 }): ProxyRegistration {
   // eslint-disable-next-line no-process-env -- DI seam: tests pass input.env.
   const env = input.env ?? process.env
-  // Copy: resolveAllowedHosts may return the shared DEFAULT_ALLOWED_HOSTS
-  // array itself, which must never be mutated.
+  // Copy: resolveAllowedHosts may return the shared default array.
   const allowedHosts = [...resolveAllowedHosts(input.config)]
-  // Auto-append the registry pull hosts for nested workspaces — unless the
-  // user pinned an exact allowlist with setAllowedUrls, which is a full
-  // override the user owns completely (addAllowedUrls and the default list
-  // still get them).
+  // Nested workspaces need the registry pull hosts, unless the user pinned
+  // an exact allowlist with setAllowedUrls.
   if (input.config.nestedContainers && !input.config.setAllowedUrls) {
     allowedHosts.push(...NESTED_PULL_HOSTS.filter((h) => !allowedHosts.includes(h)))
   }
@@ -205,17 +184,10 @@ export async function applyProxyRegistration(
 }
 
 /**
- * Tell the egress proxy what a workspace may reach — the whole of it, in one
- * call, from decisions the caller already resolved — and answer with the
- * registration written.
- *
- * The seam a mediator registers through: it supplies WHICH config, tool and
- * remote apply (rows and disk answer those); everything about how they
- * become an allowlist and a set of injection rules is assembled here.
- *
- * Idempotent, and re-called rather than patched — a claimed spare registers
- * again from its project's current config and under its claimed tool,
- * because the proxy gates all credential injection on the registered one.
+ * Write a workspace's full registration from the config, tool and remote
+ * the caller resolved, and return it. Idempotent; a claimed prewarmed
+ * workspace calls it again under its new tool, since the proxy gates all
+ * credential injection on the registered tool.
  */
 export async function registerWorkspaceEgress(
   reg: WorkspaceRegistration,
@@ -232,10 +204,8 @@ export async function registerWorkspaceEgress(
 }
 
 /**
- * Drop a workspace's registration. Failures are swallowed: a datapath
- * hiccup must never hold up a teardown, and a registration with no
- * workspace behind it reaches nothing anyway — the sweep below collects
- * it.
+ * Drop a workspace's registration. Failures are logged, not thrown, so they
+ * never block a teardown; `reconcileRegistrationGc` collects leftovers.
  */
 export async function deregisterWorkspaceEgress(workspaceId: string): Promise<void> {
   try {
@@ -293,20 +263,13 @@ async function widen(obj: RegistrationObject, host: string): Promise<boolean> {
 }
 
 /**
- * Widen a running workspace's egress to reach `host`, live (the webapp's
- * click-to-allow action).
- *
- * Live is all this is: the host enters the registration for this one
- * workspace and is gone when the workspace is recreated. Making it stick is
- * the mediator's half — it writes the project config first, then asks for the
- * fan-out, which widens every one of the project's registered workspaces so
- * a persisted host takes effect without waiting for each to be recreated.
- *
- * The two shapes differ in how a miss reads. Widening one named workspace,
- * a missing registration is an error the user should see — they clicked on
- * that badge. Across a fan-out there is no miss: the project's registered
- * set IS the set. The proxy prunes its blocked record for the host as the
- * widened registration lands, which clears the badge.
+ * Let a running workspace reach `host` (the webapp's click-to-allow
+ * action). The change lives only in the registration. Persisting it is the
+ * caller's job: `#domain/workspaces` writes the project config, then asks
+ * for `fanOutToProject`, which widens every registered workspace of the
+ * project. For a single workspace, a missing registration is an error.
+ * The proxy clears its blocked-host record once the widened registration
+ * lands.
  */
 export async function allowWorkspaceHost(
   target: { workspaceId: string; projectSlug: string },
@@ -326,15 +289,13 @@ export async function allowWorkspaceHost(
   } else {
     for (const obj of await listRegistrations(target.projectSlug)) await widen(obj, host)
   }
-  // The proxy's own record update follows within its watch latency; pushing
-  // here keeps the click instant regardless. The hub diffs, so the overlap
-  // costs a rebuild rather than a duplicate push.
+  // Push now rather than wait for the proxy's record update.
   notifyWorkspaceListChanged()
 }
 
-/** How long a registration may stand without a workspace before the sweep
- *  takes it. A registration is written right before its Job, so anything
- *  this old with no workspace behind it is a teardown that never ran. */
+/** How long a registration may exist without a workspace before the
+ *  sweep deletes it. It is written just before its Job, so one this old
+ *  with no workspace is left over from a teardown that never ran. */
 const ORPHAN_REGISTRATION_GRACE_MS = 60 * 60_000
 const REGISTRATION_GC_INTERVAL_MS = 10 * 60_000
 let lastRegistrationGcAt = 0
@@ -345,16 +306,14 @@ export function _resetRegistrationGcForTests(): void {
 }
 
 /**
- * Collect registrations whose workspace is gone — the leavings of a
- * teardown that never ran (a server that died between deleting the Job and
- * the object). A leaked registration reaches nothing, since workspace ids
- * are never reused; the sweep keeps the namespace from accumulating them.
- * Throttled, and reads the pass's own view of the workspace set.
+ * Delete registrations whose workspace is gone, e.g. when the server died
+ * between deleting the Job and the ConfigMap. Workspace ids are never
+ * reused, so a leaked one is harmless; this just keeps the namespace
+ * clean. Throttled, and skipped until the workspace-job cache is healthy
+ * so an unseeded cache isn't read as "no workspaces".
  */
 export async function reconcileRegistrationGc(ctx: PassContext): Promise<void> {
   if (Date.now() - lastRegistrationGcAt < REGISTRATION_GC_INTERVAL_MS) return
-  // Only against a trusted view: an empty cache that is merely unseeded
-  // must not read as "every workspace is gone".
   const cache = getActiveClusterCache()
   if (!cache?.healthy('workspace-jobs')) return
   lastRegistrationGcAt = Date.now()

@@ -28,22 +28,19 @@ function opencodeConfigOf(cmd: string): OpencodeConfig {
   return JSON.parse((json ?? '{}').replace(/\\"/g, '"')) as OpencodeConfig
 }
 
-// The container paths every case below is written against; the driver
-// answers these for a pod, and a containerless workspace gets its own.
+// In-pod paths; a containerless workspace gets its own.
 const PATHS = workspacePathsFixture()
 const TMUX = `tmux -S ${PATHS.tmuxSock}`
 
-// Mocked at the contract boundary. `verifyAgentWindowAlive` branches on
-// WorkspaceExecError to tell "the probe ran and the window is gone" apart
-// from "the workspace was never reached", so the real class is used.
+// Mock the driver's exec. The real WorkspaceExecError class is used because
+// `verifyAgentWindowAlive` branches on it.
 const podExec = vi.fn<WorkspaceDriver['exec']>()
   .mockResolvedValue({ stdout: '', stderr: '' })
 beforeEach(() => { installFakeWorkspaceDriver({ exec: podExec }) })
 
 describe('buildAgentCmd', () => {
   describe('codex tool', () => {
-    // The line without its `-c` settings, which the argv case below pins —
-    // these cases are about the rest of it.
+    // The command without its `-c` settings (pinned by the argv case below).
     const bare = (cmd: string): string => cmd.replace(/ -c "(?:[^"\\]|\\.)*"/g, '')
 
     it('omits prompt arguments', () => {
@@ -57,8 +54,7 @@ describe('buildAgentCmd', () => {
     })
 
     it('runs codex in the workspace, trusts the repository, and opens no startup screen', () => {
-      // What codex receives, after the launch shell has had its turn: the
-      // command is run with `codex` swapped for a printer of its argv.
+      // Run the command with `codex` replaced by an argv printer.
       const cmd = buildAgentCmd({
         tool: 'codex',
         workspaceId: 'sess-1',
@@ -69,19 +65,14 @@ describe('buildAgentCmd', () => {
         env: { ...process.env, CODEX_HOME: '/must/not/expand' },
       }).toString().trimEnd().split('\n')
       expect(argv).toEqual([
-        // Named outright, so a resume never stops to ask whether to run in
-        // the conversation's recorded directory or the pane's.
+        // Explicit, so a resume never asks which directory to use.
         '-C', '/data/wt',
-        // The title items are how a `/model` reaches yaac: codex rewrites its
-        // title's last segment the moment one lands.
+        // yaac learns of a `/model` change from the title's last segment.
         '-c', 'tui.terminal_title=["activity","project-name","model"]',
-        // A host codex behind the latest release would otherwise open an
-        // "Update available" screen.
+        // Otherwise an outdated codex opens an "Update available" screen.
         '-c', 'check_for_update_on_startup=false',
-        // The root codex keys folder trust on, and the bypass that runs every
-        // hook — yaac's own, from its home's hooks.json — untrusted: with the
-        // update check off, codex opens no startup screen, which would swallow
-        // the prompt pasted into it.
+        // Trust the folder and run yaac's hooks without asking, so no startup
+        // screen swallows the pasted prompt.
         '-c', 'projects={"/data/wt"={trust_level="trusted"}}',
         '--dangerously-bypass-hook-trust',
       ])
@@ -99,8 +90,7 @@ describe('buildAgentCmd', () => {
   })
 
   describe('opencode tool', () => {
-    // The posture rides in OPENCODE_CONFIG_CONTENT (asserted below); these
-    // cases are about the launch itself.
+    // The permission posture is in OPENCODE_CONFIG_CONTENT (tested below).
     it('runs the TUI over a private server of its own', () => {
       const cmd = buildAgentCmd({ tool: 'opencode', workspaceId: 'sess-1', permissionMode: 'bypass' })
       expect(cmd).toMatch(/ opencode --standalone$/)
@@ -112,7 +102,7 @@ describe('buildAgentCmd', () => {
     })
 
     it('carries a provider/model override in the config, never as a flag', () => {
-      // The TUI has no --model flag and refuses an unknown one outright.
+      // The TUI has no --model flag and refuses unknown flags.
       const cmd = buildAgentCmd({ tool: 'opencode', workspaceId: 'sess-1', resume: false, model: 'anthropic/claude-opus-4-8', permissionMode: 'bypass' })
       expect(cmd).not.toContain('--model')
       expect(opencodeConfigOf(cmd).model).toBe('anthropic/claude-opus-4-8')
@@ -123,10 +113,8 @@ describe('buildAgentCmd', () => {
     const defaultModel = piProviderInfo(PI_DEFAULT_PROVIDER).defaultModel
     const anthropicModel = piProviderInfo('anthropic').defaultModel
 
-    // pi's command routes stderr through sed so the first line matching its
-    // fresh-run "Warning: No project session found with id ..." warning is
-    // dropped from the pane. On a PTY pi color-wraps the line, so the leading
-    // `(\x1b\[[0-9;]*m)*` absorbs the SGR escapes (see buildAgentCmd).
+    // pi's stderr goes through sed to drop the first "Warning: No project
+    // session found with id ..." line, including any leading color codes.
     const wrapped = (piCmd: string) =>
       `${piCmd} 2> >(sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*Warning: No project session found with id .*creating a new session with that id\\./{//d}" >&2)`
 
@@ -152,25 +140,17 @@ describe('buildAgentCmd', () => {
 
     it('filters the fresh-run warning without single quotes (survives respawn wrapper)', () => {
       const cmd = buildAgentCmd({ tool: 'pi', workspaceId: 'sess-1', permissionMode: 'bypass' })
-      // Must never contain a single quote: it is embedded in tmux
-      // `respawn-window '<cmd>'`, itself passed through the host `sh -c`. The
-      // sed pattern uses `.*` instead of the literal quotes around the id so
-      // the whole command stays single-quote-free.
+      // No single quotes: the command is embedded in `respawn-window '<cmd>'`.
       expect(cmd).not.toContain("'")
-      // Anchored at `^` (after any leading SGR color codes pi adds on a PTY) so
-      // a genuine error is never swallowed, and `0,/re/{//d}` deletes only the
-      // first occurrence.
+      // Anchored at line start, and only the first match is deleted.
       expect(cmd).toContain('2> >(sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*Warning: ')
       expect(cmd).toContain('creating a new session with that id\\./{//d}" >&2)')
     })
   })
 
   describe('claude tool', () => {
-    // `env -u TMUX` is load-bearing, not cosmetic: claude animates the spinner
-    // into its title only when it cannot see `$TMUX`, and that title is the
-    // whole status signal for a claude pane. If this prefix is dropped, every
-    // claude workspace reads `waiting` forever and nothing fails — so it is
-    // asserted on every claude launch shape below, not just once.
+    // claude animates its title (the pane's status signal) only when `$TMUX`
+    // is unset, so every claude launch below must include `env -u TMUX`.
     it('hides $TMUX so the title keeps animating, and omits prompt flags', () => {
       const cmd = buildAgentCmd({ tool: 'claude', workspaceId: 'sess-1', permissionMode: 'bypass' })
       expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --session-id sess-1')
@@ -192,11 +172,8 @@ describe('buildAgentCmd', () => {
     })
   })
 
-  // Every tool spells the posture differently — a flag for claude, an
-  // approval/sandbox pair for codex, config for opencode, nothing at all for
-  // pi — so the mapping is asserted per (tool, posture) rather than trusted
-  // to read correctly. `accept-edits` is codex's own default preset, which is
-  // why its expectation carries no posture flag.
+  // Each tool expresses postures differently, so every (tool, posture) pair
+  // is asserted. `accept-edits` is codex's default, so it adds no flag.
   describe('permission modes', () => {
     const CASES: [AgentTool, PermissionMode, string][] = [
       ['claude', 'bypass', 'claude --permission-mode bypassPermissions'],
@@ -214,19 +191,14 @@ describe('buildAgentCmd', () => {
       expect(buildAgentCmd({ tool, workspaceId: 'sess-1', permissionMode })).toContain(expected)
     })
 
-    // opencode's rules are appended over a base policy whose first rule is
-    // `* allow`, and an action it does not know matches nothing — so a
-    // posture spelled in the wrong action is not a partial posture but no
-    // posture, and it fails open, silently, on the user's real filesystem.
-    // The assertions are exact for that reason. There is deliberately no
-    // posture flag — opencode's TUI has none, and refuses an unknown one
-    // outright, which would leave a dead window.
+    // opencode's base policy starts with `* allow` and ignores unknown
+    // actions, so a misspelled rule silently allows everything. Hence exact
+    // assertions. There is no posture flag; the TUI would refuse one.
     it('spells every opencode posture in rules opencode actually reads', () => {
       const postureOf = (permissionMode: PermissionMode): OpencodeConfig => {
         const cmd = buildAgentCmd({ tool: 'opencode', workspaceId: 's', permissionMode })
-        // Escaped double quotes, never single ones: the whole command is
-        // embedded in `respawn-window '<cmd>'`, and bare braces would hit zsh
-        // brace expansion before opencode ever saw them.
+        // Escaped double quotes only: the command is embedded in
+        // `respawn-window '<cmd>'`, and bare braces would be expanded by zsh.
         expect(cmd).not.toContain("'")
         expect(cmd).not.toContain('--auto')
         expect(cmd).not.toContain('--agent')
@@ -234,14 +206,11 @@ describe('buildAgentCmd', () => {
       }
       const rule = (action: string, effect: string) => ({ action, resource: '*', effect })
 
-      // Bypass states allow-everything rather than inheriting opencode's base
-      // policy, which already asks for out-of-tree access and .env reads: an
-      // unstated bypass is not one.
+      // Bypass explicitly allows everything; the base policy would still ask
+      // for some things.
       expect(postureOf('bypass')).toEqual({ permissions: [rule('*', 'allow')] })
-      // Manual asks before anything that acts, wildcard first so what the
-      // base policy allows without this file naming it (websearch, subagents,
-      // skills, Code Mode, MCP tools) is covered; reads come back to allow,
-      // with the base policy's .env asks restated behind that wildcard.
+      // Manual asks before any action (wildcard first, to cover tools the base
+      // policy allows), then re-allows reads and restates the .env asks.
       const askToAct = [
         rule('*', 'ask'),
         rule('read', 'allow'), rule('glob', 'allow'), rule('grep', 'allow'), rule('question', 'allow'),
@@ -249,19 +218,15 @@ describe('buildAgentCmd', () => {
         { action: 'read', resource: '*.env.*', effect: 'ask' },
       ]
       expect(postureOf('manual')).toEqual({ permissions: askToAct })
-      // Accept-edits is the same with editing let through, as claude's is —
-      // `edit` is what the edit, write and patch tools all assert — while
-      // commands, fetches, subagents, Code Mode and MCP tools still ask.
+      // Accept-edits also allows `edit` (which covers edit, write and patch).
       expect(postureOf('accept-edits')).toEqual({ permissions: [...askToAct, rule('edit', 'allow')] })
-      // Plan selects opencode's own plan agent for its `edit: deny`, and
-      // carries the same rules because that agent says nothing about shell:
-      // on its own it would run commands unprompted.
+      // Plan uses opencode's plan agent, plus the same rules since that agent
+      // would otherwise run commands unprompted.
       expect(postureOf('plan')).toEqual({ default_agent: 'plan', permissions: askToAct })
     })
 
-    // A rule naming an action opencode does not know is accepted with no
-    // diagnostic and matches nothing, so the names are pinned against the
-    // vocabulary read off the pinned binary rather than trusted to read right.
+    // opencode silently ignores unknown actions, so check every name against
+    // the pinned binary's list.
     it('names only actions the pinned opencode binary knows', () => {
       for (const mode of ['bypass', 'accept-edits', 'manual', 'plan'] as const) {
         const cmd = buildAgentCmd({ tool: 'opencode', workspaceId: 's', permissionMode: mode })
@@ -271,41 +236,28 @@ describe('buildAgentCmd', () => {
       }
     })
 
-    // The escaping has to survive the real trip, which string equality above
-    // cannot show: the command is embedded in a single-quoted
-    // `respawn-window '<cmd>'` and then run by a shell, so a quote or brace
-    // that does not survive leaves opencode reading a broken value — and a
-    // config value opencode cannot parse fails OPEN.
+    // Run through a real shell: config opencode cannot parse fails open.
     it('delivers the opencode posture through the shell it is embedded in', () => {
       const cmd = buildAgentCmd({ tool: 'opencode', workspaceId: 's', permissionMode: 'manual' })
       const env = /^(OPENCODE_CONFIG_CONTENT=\S+)/.exec(cmd)?.[1] ?? ''
-      // Exactly how it travels: single-quoted inside the tmux argument, which
-      // a shell then unwraps and runs.
       const out = execFileSync('sh', ['-c', `${env} printenv OPENCODE_CONFIG_CONTENT`], { encoding: 'utf8' })
       expect(JSON.parse(out) as OpencodeConfig).toEqual(opencodeConfigOf(cmd))
     })
 
-    // A posture the tool does not have can still reach here off a workspace
-    // row written by a different build. Refusing would strand the checkout,
-    // so each falls back to the most permissive posture that tool really has
-    // no looser than the row's.
+    // A workspace row may name a posture the tool lacks. Each falls back to
+    // the loosest posture the tool has that is no looser than the row's.
     it('falls back to the nearest posture a tool actually has', () => {
-      // pi has no permission system at all: every posture is bypass in fact,
-      // and its command is the same one `bypass` produces.
+      // pi has no permission system, so every posture is effectively bypass.
       const piManual = buildAgentCmd({ tool: 'pi', workspaceId: 's', permissionMode: 'manual' })
       expect(piManual).toBe(buildAgentCmd({ tool: 'pi', workspaceId: 's', permissionMode: 'bypass' }))
       expect(piManual).toContain('pi --approve')
-      // opencode has no reviewer model, so `auto` lands on accept-edits
-      // rather than on the unrestrained `--auto` flag.
+      // opencode has no reviewer model, so `auto` becomes accept-edits.
       expect(buildAgentCmd({ tool: 'opencode', workspaceId: 's', permissionMode: 'auto' }))
         .toBe(buildAgentCmd({ tool: 'opencode', workspaceId: 's', permissionMode: 'accept-edits' }))
-      // codex's `manual` was the `untrusted` policy the pinned codex no longer
-      // has, and the next stricter posture is its read-only sandbox — never
-      // the unrestrained default a looser fallback would give.
+      // The pinned codex has no `manual`, so it falls back to read-only (plan).
       expect(buildAgentCmd({ tool: 'codex', workspaceId: 's', permissionMode: 'manual' }))
         .toBe(buildAgentCmd({ tool: 'codex', workspaceId: 's', permissionMode: 'plan' }))
-      // A posture this build does not rank compares with nothing: the
-      // tool's strictest, never the first one offered.
+      // An unknown posture gets the tool's strictest.
       expect(buildAgentCmd({ tool: 'claude', workspaceId: 's', permissionMode: 'dontAsk' as PermissionMode }))
         .toContain('--permission-mode plan')
     })
@@ -337,8 +289,7 @@ describe('buildPromptPasteCmd', () => {
     const nasty = "it's $HOME; \"quoted\""
     const cmd = buildPromptPasteCmd('yaac:claude', nasty, PATHS)
     expect(cmd).not.toContain('$HOME')
-    // The one single-quote pair is the outer sh -c wrapper; the script body
-    // must not contain any (the host shell would split the command there).
+    // The only single quotes are the outer `sh -c` wrapper's.
     expect(cmd.startsWith("sh -c '")).toBe(true)
     expect(cmd.endsWith("'")).toBe(true)
     expect(cmd.slice("sh -c '".length, -1)).not.toContain("'")
@@ -352,9 +303,8 @@ describe('buildPromptPasteCmd', () => {
 
   it('gates on the alternate screen, verify-pastes, then submits with a guard resend', () => {
     const cmd = buildPromptPasteCmd('yaac:codex', 'hello', PATHS)
-    // Order matters: alternate_on readiness gate → paste-until-visible loop
-    // (capture-pane grep) → Enter → delayed second Enter for a TUI that
-    // dropped the first one mid-startup-render.
+    // In order: wait for alternate screen, paste until visible, Enter, then
+    // a delayed second Enter in case the TUI dropped the first.
     expect(cmd).toMatch(
       /while .*alternate_on.* sleep 0\.5; done; sleep 1; probe=.*; i=0; while .*capture-pane .* grep -qF -- "\$probe" && break; printf %s \S+ \| base64 -d \| .*load-buffer .*; .*paste-buffer -p .*; i=.*; sleep 2; done; .*send-keys .* Enter; sleep 2; .*send-keys .* Enter'$/,
     )
@@ -385,8 +335,7 @@ describe('buildPromptPasteBgCmd', () => {
 
 describe('buildAgentWindowCheck', () => {
   it('probes for the agent window after a settle delay', () => {
-    // The delay is the whole trick: respawn-window reports success even for
-    // a command that dies instantly, so the probe has to let it die first.
+    // respawn-window succeeds even if the command dies at once, so wait first.
     const cmd = buildAgentWindowCheck(['claude'], PATHS)
     expect(cmd).toContain('sleep 1;')
     expect(cmd).toContain(`names=\\$(${TMUX} list-windows -t =yaac -F '#{window_name}')`)
@@ -394,37 +343,30 @@ describe('buildAgentWindowCheck', () => {
   })
 
   it('checks every window a multi-agent launch asked for, in one probe', () => {
-    // A restart resuming several conversations opens `claude`, `claude-2`,
-    // `codex` — one exit code covers the set, and each missing name is
-    // echoed so the caller's message can say which died.
+    // One exit code for all windows; each missing name is echoed.
     const cmd = buildAgentWindowCheck(['claude', 'claude-2', 'codex'], PATHS)
     for (const w of ['claude', 'claude-2', 'codex']) {
       expect(cmd).toContain(`grep -qxF ${w} || { echo ${w} >&2; rc=1; }`)
     }
-    // One list-windows for all of them, and one sleep.
     expect(cmd.match(/list-windows/g)).toHaveLength(1)
     expect(cmd.match(/sleep 1/g)).toHaveLength(1)
     expect(cmd.endsWith('exit \\$rc"')).toBe(true)
   })
 
   it('fails the probe when tmux itself is gone, rather than reading no windows as no agents', () => {
-    // `names=$(...) || exit 1` — a dead tmux server must not present as
-    // "every window is missing", which reads as an agent problem.
+    // A dead tmux server must not look like missing windows.
     expect(buildAgentWindowCheck(['claude'], PATHS)).toContain("#{window_name}') || exit 1")
   })
 })
 
 describe('verifyAgentWindowAlive', () => {
-  // No `mockClear()` between these: clearing a spy that has already returned
-  // a promise makes vitest report a LATER rejected result as an unhandled
-  // error, failing the test even though the assertion passes. Each case sets
-  // its own implementation instead, which is all these need.
+  // No `mockClear()` here: clearing a spy that returned a promise makes
+  // vitest report a later rejection as unhandled. Each case sets its own
+  // implementation instead.
   it('relay-execs the window probe and passes when it exits 0', async () => {
     podExec.mockImplementation(() => Promise.resolve({ stdout: '', stderr: '' }))
     await expect(verifyAgentWindowAlive('yaac-job-1', ['codex'])).resolves.toBeUndefined()
-    // Read the arguments rather than matching the whole call: a driver
-    // delegation passes its optional opts through, so the recorded call
-    // carries a trailing undefined the caller never wrote.
+    // Compare the first two args; the call also carries an undefined opts.
     expect(podExec.mock.calls.at(-1)?.slice(0, 2))
       .toEqual(['yaac-job-1', buildAgentWindowCheck(['codex'], PATHS)])
   })
@@ -433,8 +375,7 @@ describe('verifyAgentWindowAlive', () => {
     podExec.mockImplementation(
       () => Promise.reject(new WorkspaceExecError('command exited 1', 1, '', 'no server running on /tmp/yaac.sock')),
     )
-    // A dead tmux server exits nonzero too — its stderr is what tells the
-    // two apart, so it has to reach the message.
+    // stderr must reach the message; it distinguishes a dead tmux server.
     await expect(verifyAgentWindowAlive('yaac-job-1', ['codex']))
       .rejects.toThrow(/agent "codex" exited right after launch.*no server running/s)
   })
@@ -448,8 +389,7 @@ describe('verifyAgentWindowAlive', () => {
   })
 
   it('propagates a transport failure instead of blaming the agent', async () => {
-    // The probe never reached the pod, so it says nothing about the window —
-    // calling that a dead agent would send the user hunting the wrong bug.
+    // The probe never reached the pod, so it says nothing about the agent.
     podExec.mockImplementation(
       () => Promise.reject(new Error('stream relay dial: timeout')),
     )
@@ -458,10 +398,8 @@ describe('verifyAgentWindowAlive', () => {
   })
 
   it('types the verdict, so a caller that cannot rethrow still tells the two apart', async () => {
-    // The create fires this probe without awaiting it, so its handler sees
-    // every rejection and has no try/catch to honor the split with. Filing a
-    // transport blip as a dead agent there hides a live workspace behind an
-    // error row, so the distinction has to survive as a type.
+    // Create runs this probe without awaiting it, so its rejection handler
+    // needs the error type to tell a transport blip from a dead agent.
     podExec.mockImplementation(
       () => Promise.reject(new WorkspaceExecError('command exited 1', 1, '', 'codex')),
     )

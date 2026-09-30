@@ -43,11 +43,8 @@ function pod(workspaceId: string, over: Partial<PodInfo> = {}): PodInfo {
     running: true,
     terminating: false,
     createdAtMs: 0,
-    // Salvage only ever visits workspaces running the in-pod engine, so the
-    // default fixture is one. The label is spelled out rather than imported
-    // because it is a wire value a pod already in the cluster carries: a
-    // rename that silently stopped matching live pods is exactly what this
-    // should fail on.
+    // Salvage only visits nested-engine workspaces. The label is written out
+    // rather than imported so that renaming it breaks this test.
     labels: { 'yaac.nested': 'true' },
     ...over,
   }
@@ -70,11 +67,9 @@ describe('reconcileImageSalvage', () => {
       jobName: 'yaac-p-s1', project: { slug: 'p', id: PROJECT_ID }, workspaceId: 's1',
     })
 
-    // Within the interval: no re-run.
     await reconcileImageSalvage(isWorkspaceTerminating, 1_000 + SALVAGE_INTERVAL_MS - 1)
     expect(mockSalvage).toHaveBeenCalledTimes(1)
 
-    // Interval elapsed: runs again.
     await reconcileImageSalvage(isWorkspaceTerminating, 1_000 + SALVAGE_INTERVAL_MS)
     expect(mockSalvage).toHaveBeenCalledTimes(2)
   })
@@ -86,7 +81,7 @@ describe('reconcileImageSalvage', () => {
       pod('s-term', { terminating: true }),
       pod('s-marked'),
       pod('s-stopped', { running: false }),
-      // From before project ids: there is no id-named registry to push to.
+      // No project id, so there is no registry to push to.
       pod('s-legacy', { projectId: undefined }),
     ])
     await reconcileImageSalvage(isWorkspaceTerminating, 1_000)
@@ -94,12 +89,8 @@ describe('reconcileImageSalvage', () => {
   })
 
   it('never probes a workspace that has no in-pod engine', async () => {
-    // A workspace with no engine has no images of its own, so the survey it
-    // would be sent can only report nothing. Skipping it here is not just
-    // the saved exec: the in-pod script runs podman as root from the
-    // container's workingDir — the user's checkout — and podman with no
-    // engine configured writes its runtime state to a RELATIVE path, so
-    // the probe leaves a root-owned directory in the workspace.
+    // Without an engine, podman writes state to a relative path, so the
+    // probe would leave a root-owned directory in the user's checkout.
     mockListPods.mockResolvedValue([pod('s-plain', { labels: {} }), pod('s-nested')])
     await reconcileImageSalvage(isWorkspaceTerminating, 1_000)
     expect(mockSalvage).toHaveBeenCalledOnce()
@@ -109,11 +100,10 @@ describe('reconcileImageSalvage', () => {
   it('prunes throttle state for sessions that went away (no leak, fresh session re-runs)', async () => {
     mockListPods.mockResolvedValue([pod('s1')])
     await reconcileImageSalvage(isWorkspaceTerminating, 1_000)
-    // Session gone → its stamp is pruned...
+    // Workspace gone, so its timestamp is pruned
     mockListPods.mockResolvedValue([])
     await reconcileImageSalvage(isWorkspaceTerminating, 2_000)
-    // ...so a same-id successor salvages immediately, not after the
-    // stale stamp's interval.
+    // and a successor with the same id is salvaged immediately.
     mockListPods.mockResolvedValue([pod('s1')])
     await reconcileImageSalvage(isWorkspaceTerminating, 3_000)
     expect(mockSalvage).toHaveBeenCalledTimes(2)

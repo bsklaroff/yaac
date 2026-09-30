@@ -6,25 +6,17 @@ import { createTestRepo, addTestProject } from '@yaac/test-utils/setup'
 import { makeServerApiClient } from '@yaac/test-utils/api'
 
 /**
- * Merged e2e coverage for `yaac project` (list/add) and `yaac config` — all
- * server-backed CLI commands. One test env + one real server are shared
- * across the whole file (spawning a server acquires
- * the cross-worker server mutex and is by far the slowest step, so per-test
- * servers made these suites pay that cost for every it()).
+ * e2e coverage for `yaac project` (list/add) and `yaac config`, sharing one
+ * test env and server across the file.
  *
- * The shared data dir makes test ORDER load-bearing — vitest runs a file's
- * tests sequentially in declaration order:
- *  - The empty-state `project list` test must run before anything seeds a
- *    project, so it is declared first.
- *  - The `project add` validation tests leave NO project residue:
- *    URL-validation rejects throw before any state is written, and a clone
- *    that fails rolls its project dir back. They all name the `fake-github`
- *    credential beforeAll seeds, since `project add` requires one.
- *  - The CONFLICT tests pre-create bare project dirs (`repo`, `myrepo`)
- *    that persist for the rest of the file, so the seeded `project list`
- *    test is declared before them to keep its expected output exact.
- *  - Every seeded project slug is unique file-wide (repo-alpha/repo-beta,
- *    demo-*) so no test trips over another's clone.
+ * Tests run in declaration order over one data dir, so order matters:
+ *  - The empty-state `project list` test runs first.
+ *  - The `project add` validation tests leave no project behind (rejects
+ *    happen before any write; a failed clone rolls back). They use the
+ *    `fake-github` credential beforeAll seeds.
+ *  - The CONFLICT tests create bare project dirs (`repo`, `myrepo`) that
+ *    persist, so the seeded `project list` test runs before them.
+ *  - Seeded slugs are unique across the file (repo-alpha/repo-beta, demo-*).
  */
 
 let testEnv: YaacTestEnv
@@ -42,8 +34,7 @@ afterAll(async () => {
 })
 
 describe('yaac project (real CLI + real server)', () => {
-  // Must run first: any project seeded into the shared data dir would
-  // break the empty-state assertion.
+  // Must run first (see the file header).
   it('project list prints the empty-state hint when no projects exist', async () => {
     const { stdout, exitCode } = await runYaac(testEnv.env, 'project', 'list')
     expect(exitCode).toBe(0)
@@ -52,9 +43,8 @@ describe('yaac project (real CLI + real server)', () => {
   })
 
   it('project add accepts a non-GitHub HTTPS URL, cloning it with the named credential', async () => {
-    // The host does not exist, so the clone fails — at the clone, which
-    // proves URL validation let the non-github host through — and the
-    // project dir is rolled back.
+    // The host does not exist, so failing at the clone shows URL
+    // validation let the non-github host through.
     const { stdout, stderr, exitCode } = await runYaac(
       testEnv.env, 'project', 'add', 'https://gitlab.example.com/foo/bar', 'fake-github',
     )
@@ -108,8 +98,7 @@ describe('yaac project (real CLI + real server)', () => {
     expect(stderr).toMatch(/Unrecognized|Invalid|HTTPS/i)
   })
 
-  // Declared before the CONFLICT tests below: those pre-create bare
-  // project dirs that would otherwise show up as extra list rows.
+  // Must precede the CONFLICT tests (see the file header).
   it('project list shows each seeded project with slug, remote, and session count', async () => {
     const repoAlpha = path.join(testEnv.scratchDir, 'repo-alpha')
     const repoBeta = path.join(testEnv.scratchDir, 'repo-beta')
@@ -126,14 +115,14 @@ describe('yaac project (real CLI + real server)', () => {
     expect(stdout).toContain('repo-beta')
     expect(stdout).toContain('https://github.com/test-org/repo-alpha.git')
     expect(stdout).toContain('https://github.com/test-org/repo-beta.git')
-    // No containers were started, so both projects should show 0 sessions.
+    // No workspaces started, so 0 sessions each.
     expect(stdout).toMatch(/repo-alpha\s+\S.*\s+0/)
     expect(stdout).toMatch(/repo-beta\s+\S.*\s+0/)
   })
 
   it('project add returns CONFLICT when a project with the same slug exists', async () => {
-    // Pre-create the project dir so the server's `fs.access` check throws
-    // CONFLICT before it reaches token resolution.
+    // An existing project dir makes the server answer CONFLICT before
+    // resolving credentials.
     await fs.mkdir(path.join(testEnv.dataDir, 'global', 'projects', 'repo'), { recursive: true })
 
     const { stderr, exitCode } = await runYaac(
@@ -144,10 +133,9 @@ describe('yaac project (real CLI + real server)', () => {
   })
 
   it('project add lowercases the slug regardless of the URL case', async () => {
-    // The slug is stamped on every pod as a label value (projectSlugFor),
-    // so it is lowercased even when the source URL has caps. The CONFLICT check fires
-    // after slug derivation but before clone / credential resolution, so we
-    // can assert the slug shape via the conflict message.
+    // The slug is used as a pod label value (projectSlugFor), so it is
+    // lowercased. The CONFLICT message shows the derived slug before any
+    // clone happens.
     await fs.mkdir(path.join(testEnv.dataDir, 'global', 'projects', 'myrepo'), { recursive: true })
 
     const github = await runYaac(
@@ -167,10 +155,8 @@ describe('yaac project (real CLI + real server)', () => {
 })
 
 describe('yaac config (real CLI + real server)', () => {
-  // Stand-in editor: a tiny shell script that writes deterministic
-  // content into whichever scratch file the CLI hands it. The CLI edits
-  // a tmp copy and PUTs the result to the server, so assertions read the
-  // server-side file afterwards.
+  // Stub $EDITOR that writes fixed content into the temp file the CLI
+  // hands it. The CLI PUTs the result, so tests read the server-side file.
   async function writeStubEditor(name: string, content: string): Promise<string> {
     const editorPath = path.join(testEnv.scratchDir, `editor-${name}.sh`)
     const contentFile = path.join(testEnv.scratchDir, `editor-${name}.content`)
@@ -179,9 +165,7 @@ describe('yaac config (real CLI + real server)', () => {
     return editorPath
   }
 
-  // Each test seeds its own project under a unique `demo-*` slug: with a
-  // shared data dir, reusing the original `demo` slug would collide on the
-  // second addTestProject (clone into an existing repo dir).
+  // Each test uses a unique `demo-*` slug, since the data dir is shared.
   async function seedProject(slug: string): Promise<void> {
     const repo = path.join(testEnv.scratchDir, slug)
     await createTestRepo(repo)
@@ -253,8 +237,7 @@ describe('yaac config (real CLI + real server)', () => {
   it('config edit opens the editor even when yaac-config.json is malformed', async () => {
     await seedProject('demo-malformed')
 
-    // The raw read hands broken content to the editor verbatim so it can
-    // be repaired; the validated write then stores clean JSON.
+    // Broken content reaches the editor verbatim so it can be repaired.
     const target = path.join(testEnv.dataDir, 'global', 'projects', 'demo-malformed', 'config', 'yaac-config.json')
     await fs.mkdir(path.dirname(target), { recursive: true })
     await fs.writeFile(target, '{ this is not valid json')
@@ -270,8 +253,7 @@ describe('yaac config (real CLI + real server)', () => {
   })
 
   it('accepts the nestedContainers key through the config-write route', async () => {
-    // The server's config-write route runs the same parser session-create
-    // hits at load time; `nestedContainers` must parse cleanly.
+    // The config-write route uses the same parser as workspace create.
     await seedProject('demo-nested')
 
     const client = makeServerApiClient(server)

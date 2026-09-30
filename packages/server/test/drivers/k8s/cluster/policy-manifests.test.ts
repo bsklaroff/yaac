@@ -34,38 +34,28 @@ interface Spec {
   egress?: unknown[]
 }
 
-// Six builders leave this folder. The image feature re-applies the
-// install-wide world-deny after a builder pod exits; two more are what
-// `cluster check`'s egress gate renders to decide what it should be able to
-// prove; and the server's ingress wall is two objects — a node half the
-// server itself re-renders at attach, and a fronting half only install
-// applies — plus the egress shape builder pods share with the proxy.
-// Every other manifest here is internal and asserted where it is
-// applied — the session/proxy set through `ensureProxyResources`.
+// The policy builders the cluster folder exports. The other manifests are
+// internal and asserted where `ensureProxyResources` applies them.
 //
-// What these cases pin is the ipBlock plumbing, because that is the half
-// that fails silently: a policy rendered from the wrong node addresses
-// still applies cleanly and simply denies the traffic it was meant to
-// admit.
+// These cases focus on the ipBlock rules: a policy built from the wrong node
+// addresses still applies cleanly and silently denies the traffic it should
+// allow.
 
 describe('buildEgressWorldDenyNpManifest', () => {
   const np = buildEgressWorldDenyNpManifest()
   const spec = np.spec as Spec
 
   it('default-denies egress with an empty rule list', () => {
-    // Plain NP has no deny verb; an empty egress over a selector is how
-    // NP expresses one.
+    // NetworkPolicy has no deny rule; an empty egress list denies all.
     expect(np.metadata).toMatchObject({ name: EGRESS_WORLD_DENY_NAME })
     expect(spec.egress).toEqual([])
     expect(spec.policyTypes).toEqual(['Egress'])
   })
 
   it('exempts only the proxy, the server, session pods, and builders', () => {
-    // NotIn/DoesNotExist also match pods carrying no such label, so
-    // anything added later stays covered by default. The server is exempt
-    // for the same reason the proxy is — it reaches the world on purpose
-    // (git clones, fetches), and it is the thing doing the mediating
-    // rather than a thing to be mediated.
+    // NotIn/DoesNotExist also match unlabelled pods, so new pods are denied
+    // by default. The server, like the proxy, needs the internet (git
+    // clones, fetches).
     expect(spec.podSelector).toEqual({
       matchExpressions: [
         { key: 'app', operator: 'NotIn', values: [PROXY_APP_NAME, SERVER_APP_NAME] },
@@ -86,18 +76,17 @@ describe('buildWorkspaceEgressNpManifest', () => {
     expect(np.metadata.name).toBe(WORKSPACE_EGRESS_NP_NAME)
     expect(np.metadata.namespace).toBe('test-ns')
     expect(np.spec.policyTypes).toEqual(['Egress'])
-    // Every destination is one of the node blocks: the workspace's only
-    // world-ward path is netd's node-local listener, which is what makes
-    // the egress lockdown fail CLOSED when netd is late or absent.
+    // Every destination is a node address: a workspace reaches the
+    // internet only through netd's node-local listener, so egress fails
+    // closed when netd is missing.
     const cidrs = np.spec.egress.flatMap((r) => (r.to ?? []).map((t) => t.ipBlock?.cidr))
     expect(cidrs).toContain('10.89.0.7/32')
     expect(cidrs).toContain('10.244.93.192/32')
     expect(cidrs.every((c) => c === undefined || c.endsWith('/32'))).toBe(true)
   })
 
-  // Which workspaces may dial the npm cache is per project, so the
-  // install-wide policy grants it to none; the cache's own label-keyed
-  // policy does (npm-cache.test.ts).
+  // npm cache access is per project, granted by the cache's own
+  // label-keyed policy (npm-cache.test.ts).
   it('grants no workspace the npm cache', () => {
     expect(JSON.stringify(buildWorkspaceEgressNpManifest(['10.89.0.7/32']))).not.toContain('yaac-npm-cache')
   })
@@ -105,9 +94,9 @@ describe('buildWorkspaceEgressNpManifest', () => {
 
 describe('buildProxyIngressNpManifest', () => {
   it('locks the proxy to the node CIDRs, so only netd may originate PP2', () => {
-    // The transparent ports carry a PROXY-protocol preamble naming the
-    // source pod. A pod that could dial them directly could claim to be
-    // any workspace, so the ingress is node-only — the forgery guard.
+    // The transparent ports trust a PROXY-protocol header naming the
+    // source pod. A pod that could dial them directly could claim to be any
+    // workspace, so only node addresses are allowed.
     const np = buildProxyIngressNpManifest(['10.89.0.7/32']) as unknown as {
       metadata: { name: string }
       spec: {
@@ -133,10 +122,8 @@ interface IngressSpec {
 
 describe('buildServerIngressNpManifest', () => {
   it('admits exactly the node addresses it is given, and nothing pod-shaped', () => {
-    // An explicit allow: what must never reach the server is a pod, so the
-    // rule names no podSelector in the install namespace and no pod CIDR.
-    // What it does name is every node address — the kubelet probe and, on
-    // kind, the forwarder's dial arrive sourced from one of them.
+    // No pod may reach the server, so the rule names only node addresses:
+    // the kubelet probe and, on kind, the forwarder's dial come from them.
     const np = buildServerIngressNpManifest(['10.89.0.2/32', '10.244.93.192/32']) as unknown as {
       metadata: { name: string }
       spec: IngressSpec
@@ -165,18 +152,17 @@ describe('buildServerFrontIngressNpManifest', () => {
     expect(np.spec.podSelector).toEqual({ matchLabels: { app: SERVER_APP_NAME } })
     expect(np.spec.ingress).toEqual([{ from: [peer], ports: [{ protocol: 'TCP', port: SERVER_POD_PORT }] }])
 
-    // No peers is a policy that admits nothing — applied anyway on kind so
-    // a fronting switched on re-install overwrites the old peer.
+    // No peers admits nothing. It is still applied on kind, so a
+    // re-install that turns fronting off replaces the old peer.
     const none = buildServerFrontIngressNpManifest([]) as unknown as { spec: IngressSpec }
     expect(none.spec.ingress).toEqual([])
   })
 })
 
 describe('egressAllButServerFront', () => {
-  // A builder's RUN step or a proxy upstream that reached the kind
-  // fronting's node port would reach the server as the node — its owner.
-  // So: every destination but node addresses, and node addresses on every
-  // port but that one.
+  // A builder RUN step or proxy upstream reaching the kind fronting's node
+  // port would reach the server as if it were the node. So node addresses
+  // are allowed on every port except that one.
   const rules = egressAllButServerFront(['10.89.0.2/32', '192.168.1.1/32']) as Array<{
     to: Array<{ ipBlock: { cidr: string; except?: string[] } }>
     ports?: Array<{ protocol: string; port: number; endPort: number }>

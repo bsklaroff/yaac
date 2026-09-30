@@ -1,8 +1,7 @@
 /**
- * The egress proxy's image, as everything but the install sees it: a
- * content-hash tag derived from the k8s/proxy build context, looked up in
- * the local registry, and an actionable refusal when it is not there. The
- * build half is install-time and is covered through `buildBuiltinImages`.
+ * Resolving the egress proxy's image: a content-hash tag of the k8s/proxy
+ * build context, looked up in the local registry. Building it happens at
+ * install time and is covered through `buildBuiltinImages`.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type * as registryModule from '#drivers/k8s/container/registry'
@@ -34,12 +33,11 @@ beforeEach(() => {
 describe('resolveProxyImageTag', () => {
   it('tags by the content of the proxy build context, without building anything', async () => {
     await expect(resolveProxyImageTag('yaac-proxy')).resolves.toBe('yaac-proxy:abc123def4567890')
-    // A pure derivation: the deployed proxy's fingerprint is compared
-    // against this, so it must not depend on the registry answering.
+    // The deployed proxy is compared against this tag, so deriving it must
+    // not need the registry.
     expect(mockRegistryHasTag).not.toHaveBeenCalled()
 
-    // Editing k8s/proxy re-tags it — which is what makes a stale deployment
-    // detectable at all.
+    // Editing k8s/proxy changes the tag, so a stale deployment is detectable.
     mockContextHash.mockResolvedValue('0000111122223333')
     await expect(resolveProxyImageTag('yaac-proxy')).resolves.toBe('yaac-proxy:0000111122223333')
   })
@@ -58,8 +56,8 @@ describe('ensureProxyImage', () => {
   })
 
   it('refuses with the command that produces it when the tag is missing', async () => {
-    // Lookup-only: the proxy image is yaac-shipped, so a missing tag is a
-    // missing install rather than a reason for the server to start building.
+    // A missing tag means the install is incomplete; the server never
+    // builds this image.
     mockRegistryHasTag.mockResolvedValue(false)
     await expect(ensureProxyImage('yaac-proxy'))
       .rejects.toThrow(/Proxy image yaac-proxy:abc123def4567890 is missing.*yaac cluster install/s)

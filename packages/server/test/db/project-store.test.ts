@@ -84,10 +84,8 @@ describe('recordProject', () => {
     expect(second).not.toBe(first)
   })
 
-  // The project list is a snapshot input, and this is its only INSERT — so
-  // it is where a new project announces itself. Nothing above it pushes:
-  // before this, a newly added project reached the sidebar only because a
-  // reconcile pass happened to rebuild the snapshot afterwards.
+  // The project list is a snapshot input and this is its only INSERT, so
+  // this is where a new project notifies.
   it('pushes a fresh snapshot', async () => {
     await recordProject({ slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' })
     expect(pushes).toBe(1)

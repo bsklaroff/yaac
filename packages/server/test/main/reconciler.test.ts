@@ -7,9 +7,8 @@ import type * as imagePrewarmModule from '#drivers/k8s/images/image-prewarm'
 import type * as projectRegistryModule from '#drivers/k8s/cluster/project-registry'
 import type * as titleGenerationModule from '#domain/titles/title-generation'
 
-// One reconcile step per module, faked so a pass can be driven without a
-// substrate. Which steps a pass owes is the thing under test, so what each
-// one does is beside the point — that it ran, and in what order, is not.
+// Each reconcile step is faked; these tests check which steps run and in
+// what order, not what they do.
 vi.mock('#domain/workspaces/stale-workspaces', () => ({ reconcileStaleWorkspaces: vi.fn() }))
 vi.mock('#domain/workspaces/mama-reconcile', () => ({ reconcileMamaRequests: vi.fn() }))
 vi.mock('#domain/workspaces/prewarm-reconcile', () => ({ reconcilePrewarmPool: vi.fn() }))
@@ -109,7 +108,7 @@ function start(steps: ReconcileStep[], opts: {
     signal: ctrl.signal,
     steps,
     onDelta: (fn) => { emit = fn },
-    // Immediate debounce keeps the tests deterministic without fake timers.
+    // No debounce delay, so no fake timers are needed.
     sleep: async () => {},
     resyncIntervalMs: opts.resyncIntervalMs ?? 60 * 60_000,
   })
@@ -185,7 +184,7 @@ describe('startReconciler', () => {
       }),
     ])
     await flush()
-    // First (resync) pass re-marked itself → one follow-up delta pass.
+    // The resync pass re-marked itself, so one delta pass follows.
     expect(runs).toEqual([
       { name: 'pods', resync: true },
       { name: 'pods', resync: false },
@@ -194,9 +193,8 @@ describe('startReconciler', () => {
     await h.done
   })
 
-  // The only remaining lane besides the change deltas. It is what makes
-  // losing an edge cost latency rather than correctness, so a step nothing
-  // triggers must still run on it — and keep running, tick after tick.
+  // The resync is the safety net for missed triggers, so it runs every
+  // step on every tick.
   it('the resync timer runs every step, including untriggered ones', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval'] })
     try {
@@ -250,7 +248,6 @@ describe('startReconciler', () => {
     await h.done
     expect(runs).toEqual([{ name: 'first', resync: true }])
 
-    // Deltas after abort never wake it again.
     h.emit('workspace-pods')
     await flush()
     expect(runs).toHaveLength(1)
@@ -264,8 +261,7 @@ describe('startReconciler', () => {
   })
 })
 
-/** Drive one pass over the real step list with the engine's skip rule (the
- *  engine's own filtering is asserted above with injected steps). */
+/** Run one pass over the real step list with the engine's skip rule. */
 async function runPass(
   triggers: ReconcileTrigger[],
   opts: { resync?: boolean } = {},
@@ -288,25 +284,21 @@ async function runPass(
 
 describe('defaultReconcileSteps', () => {
   beforeEach(() => {
-    // The real driver, so its own contributed steps are the ones spliced
-    // in — the modules behind them are mocked at the top of this file.
+    // The real driver contributes its steps; their modules are mocked above.
     installRealWorkspaceDriver()
     for (const fn of ALL_STEP_FNS) vi.mocked(fn).mockReset()
   })
 
-  // The reaper runs first — so counts reflect just-reaped workspaces by the
-  // time the prewarm pool runs — and titles last, after the conversation
-  // sweep, so a just-captured opening message is eligible in the same pass.
+  // Reaping first keeps the prewarm pool's counts current; titles run last so
+  // a just-captured first message gets a title in the same pass.
   it('reaps first, and generates titles last', () => {
     const names = defaultReconcileSteps().map((s) => s.name)
     expect(names[0]).toBe('stale-workspaces')
     expect(names[names.length - 1]).toBe('generated-titles')
   })
 
-  // Titles run after the conversation sweep so a just-captured opening message
-  // is eligible in the same pass — which only holds if they run on the passes
-  // that sweep. An ACP workspace's first message is captured on the pass its
-  // handshake triggers, and nothing else dirties that one.
+  // So titles run in the same pass that captures an ACP workspace's first
+  // message.
   it('generates titles on whatever dirties the conversation sweep', () => {
     const steps = defaultReconcileSteps()
     const titles = steps.find((s) => s.name === 'generated-titles')!
@@ -315,9 +307,7 @@ describe('defaultReconcileSteps', () => {
     expect([...titles.triggers].sort()).toEqual(['live-agents', 'workspaces'])
   })
 
-  /** Assert that `triggers` runs exactly `expected` and nothing else. The
-   *  negative half is over EVERY step, so hanging a new one off a source it
-   *  has no business on fails here rather than shipping. */
+  /** Assert that `triggers` runs exactly `expected` and no other step. */
   async function expectOnly(
     triggers: ReconcileTrigger[],
     expected: ReadonlyArray<(typeof ALL_STEP_FNS)[number]>,
@@ -329,33 +319,24 @@ describe('defaultReconcileSteps', () => {
     }
   }
 
-  // The reaper is the destructive step, and losing a workspace's driver
-  // stream is its edge: in-pod tmux death is not a substrate event, so
-  // nothing else would ever dirty it. Its slower sweeps ride the resync,
-  // which is why this source pulls in the reaper and nothing more.
+  // tmux dying in a pod is no cluster event, so a lost stream is the
+  // reaper's only trigger.
   it('runs only the reaper when a driver stream goes unhealthy', async () => {
     await expectOnly(['status-streams'], [reconcileStaleWorkspaces])
   })
 
-  // The proxy holds the calling pod's HTTP response open until the drain
-  // answers it, so the enqueue is reported rather than waited for.
+  // The proxy holds the pod's HTTP request open until the drain answers.
   it('runs only the spawn drain when the proxy reports a queued spawn', async () => {
     await expectOnly(['mama-requests'], [reconcileMamaRequests])
   })
 
-  // The conversation sweep is the only substrate step that reads the
-  // watcher's live set, and for `acp` that set is where a conversation's id
-  // first appears — out of an in-pod handshake no informer can see. Without
-  // this trigger the row (and the webapp's chat pane) waits for the next
-  // resync.
+  // An `acp` conversation's id appears only in the live set, so without
+  // this trigger its row would wait for the next resync.
   it('runs only the conversation sweep and titles when the live agent set changes', async () => {
     await runPass(['live-agents'])
     expect(reconcileAgentSessions).toHaveBeenCalledTimes(1)
     expect(reconcileGeneratedTitles).toHaveBeenCalledTimes(1)
-    // And nothing else — asserted over every step, not just the destructive
-    // ones, so a future edit that hangs another step off `live-agents` fails
-    // here rather than shipping. A set change says nothing about pods, and
-    // the reaper deletes.
+    // No other step, since a live-set change says nothing about pods.
     for (const fn of ALL_STEP_FNS) {
       if (fn === reconcileAgentSessions || fn === reconcileGeneratedTitles) continue
       expect(fn).not.toHaveBeenCalled()
@@ -367,9 +348,7 @@ describe('defaultReconcileSteps', () => {
     for (const fn of ALL_STEP_FNS) expect(fn).toHaveBeenCalledTimes(1)
   })
 
-  // A leaked builder's memory reservation is what stops the next build
-  // from scheduling, and a spare's create joins builds already running, so
-  // these three are ordered rather than merely present.
+  // GC frees leaked builders' memory before prewarm builds and spares need it.
   it('keeps the GC → prewarm → pool order', async () => {
     const order: string[] = []
     vi.mocked(reconcileBuilderPodGc).mockImplementation(() => {
@@ -387,49 +366,33 @@ describe('defaultReconcileSteps', () => {
     expect(order).toEqual(['gc', 'prewarm', 'pool'])
   })
 
-  // A step that declares a trigger nothing raises compiles fine and fails
-  // nothing — it just never runs on its edge and waits out the 60s resync,
-  // which is latency, not an error. That is the whole exposure of an
-  // open-ended `ReconcileTrigger`, and this is what closes it: the raise
-  // sites in the driver are typed against K8S_TRIGGERS, and every trigger
-  // the assembled list declares has to be a member of it.
+  // A trigger nothing raises would silently wait for the 60s resync. The
+  // driver raises only K8S_TRIGGERS, so every declared trigger must be one.
   it('declares only triggers something can actually raise', () => {
     const raisable = new Set<string>(K8S_TRIGGERS)
     const declared = new Set(defaultReconcileSteps().flatMap((s) => s.triggers))
     expect([...declared].filter((t) => !raisable.has(t))).toEqual([])
-    // What makes the check cover the whole vocabulary rather than the
-    // mediators' quarter of it: the runtime's own groups are spliced in,
-    // which only holds while the REAL runtime is installed. Swap the
-    // beforeEach to the fake — whose `reconcileSteps()` returns empty
-    // groups — and the list below quietly shrinks to the mediator steps
-    // while still passing. So assert a runtime step is in it, and that the
-    // edge only the k8s runtime raises is declared.
+    // Make sure the real driver's steps are included; with the fake driver
+    // the check above would pass on the mediator steps alone.
     expect(defaultReconcileSteps().map((s) => s.name)).toContain('registration-gc')
     expect(declared).toContain('proxy-refreshed')
   })
 
-  // A rotation the proxy captured is adopted on its own edge, and on nothing
-  // else: the step reads a cache, so a spurious run is cheap, but an edge
-  // that also ran the reaper would be a reaper on a credential's schedule.
+  // Its trigger must not also run the reaper.
   it('adopts a captured rotation on its own edge alone', async () => {
     await expectOnly(['proxy-refreshed'], [adoptRefreshedToolCredentials])
   })
 
-  // The image-store rebuild is pinned between its two neighbours: after the
-  // salvage, so a just-pushed generation is the one a build picks up, and
-  // before the registry collect, which holds that registry read-only for
-  // minutes. All three are the runtime's own steps, so this is the one
-  // assertion that the group it hands back preserves an order stated only
-  // in its comments — a resequencing there would otherwise reach nothing
-  // that fails.
+  // After the salvage, so the rebuild picks up just-pushed images, and
+  // before the registry collect, which makes the registry read-only for
+  // minutes.
   it('rebuilds the image store between the salvage and the registry collect', () => {
     const names = defaultReconcileSteps().map((s) => s.name)
     expect(names.filter((n) => ['image-salvage', 'image-store', 'registry-gc'].includes(n)))
       .toEqual(['image-salvage', 'image-store', 'registry-gc'])
   })
 
-  // What a spare is warmed as is resolved per project, at spawn time, by the
-  // pool itself — the pass hands it nothing but its view of the substrate.
+  // The pool resolves each project's spare config itself.
   it('hands the pool the pass view', async () => {
     await runPass([], { resync: true })
     expect(vi.mocked(reconcilePrewarmPool)).toHaveBeenCalledTimes(1)

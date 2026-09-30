@@ -3,11 +3,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-// serverLog writes files — silence it.
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 vi.mock('#notify', () => ({ notifyWorkspaceListChanged: vi.fn() }))
-// The push composes the whole set from three stores (its own test); here
-// only that a persisted rotation is pushed matters.
+// Only whether a persisted rotation is pushed matters here; the push itself
+// is tested in runtime-push.test.ts.
 vi.mock('#domain/auth/runtime-push', () => ({
   pushCredentialsToRuntime: vi.fn().mockResolvedValue(undefined),
   adoptRefreshedToolCredentials: vi.fn(),
@@ -39,14 +38,13 @@ import { installFakeWorkspaceDriver, handleFixture, snapshotFixture } from '@yaa
 import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/shared/types'
 
 /**
- * Every upstream call this feature makes — the two usage endpoints, Claude's
- * profile endpoint, and both OAuth token grants — is a `fetch`, so faking
- * fetch is the one boundary these tests stub. Behind it the whole feature
- * runs for real: the query wrappers, their zod normalization, the two
- * refresh grants and their JWT decoding, and the credentials-file writes.
+ * Every upstream call (the usage endpoints, Claude's profile endpoint, and
+ * both OAuth token grants) is a `fetch`, so only `fetch` is faked. The query
+ * wrappers, zod parsing, refresh grants, JWT decoding and credential writes
+ * all run for real.
  *
- * The endpoint URLs and client ids are imported from the modules that own
- * them so a routing typo can't silently make a test assert nothing.
+ * Endpoint URLs and client ids are imported from their modules, so a typo
+ * cannot make a test silently assert nothing.
  */
 type Reply = () => Promise<Response>
 
@@ -56,10 +54,8 @@ const text = (body: string, init: ResponseInit = {}): Reply =>
   () => Promise.resolve(new Response(body, { status: 200, ...init }))
 const httpStatus = (status: number): Reply =>
   () => Promise.resolve(new Response('', { status }))
-/** A fetch that rejects. `err` is deliberately `unknown` and reaches
- *  Promise.reject unwrapped: fetch can reject with a non-Error (an
- *  AbortSignal reason, say) and the engine has to surface that too, which is
- *  exactly what the lint rule below exists to prevent expressing. */
+/** A fetch that rejects with `err` as is. fetch can reject with a non-Error
+ *  (e.g. an AbortSignal reason), which the lint rule below forbids. */
 // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
 const throws = (err: unknown): Reply => () => Promise.reject(err)
 
@@ -79,8 +75,7 @@ function fakeUpstream(): {
   return {
     install() {
       vi.stubGlobal('fetch', vi.fn<typeof fetch>((input, init) => {
-        // `Request` stringifies to '[object Object]'; the rest (string, URL)
-        // carry their own href.
+        // A `Request` stringifies to '[object Object]', so use its url.
         const url = input instanceof Request ? input.url : String(input)
         seen.push({ url, init: init ?? {} })
         const next = queued.get(url)?.shift() ?? standing.get(url)
@@ -111,14 +106,14 @@ function deferredReply(): { reply: Reply; resolve: (r: Response) => void } {
   return { reply: () => promise, resolve }
 }
 
-/** A JWT whose payload is `claims` — only the payload segment is ever read
- *  (neither module verifies these tokens). */
+/** A JWT with payload `claims`. Only the payload is read; nothing verifies
+ *  the signature. */
 function jwt(claims: unknown): string {
   return `h.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.s`
 }
 
-/** Trimmed copy of a real api/oauth/usage payload; the fields we don't read
- *  are kept where they exercise the ignore-the-rest behavior. */
+/** Trimmed real api/oauth/usage payload. Some unread fields are kept to
+ *  test that they are ignored. */
 const CLAUDE_BODY = {
   five_hour: { utilization: 19.0, resets_at: '2026-07-10T03:49:59.538046+00:00' },
   extra_usage: { is_enabled: false },
@@ -162,8 +157,7 @@ const CLAUDE_LIMITS = [
   },
 ]
 
-/** Unambiguously unexpired (2100-01-01) so a seeded token never trips the
- *  expiry pre-check unless a test overrides it. */
+/** 2100-01-01, so a seeded token is unexpired unless a test says otherwise. */
 const FAR_FUTURE_MS = 4102444800000
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
@@ -217,9 +211,8 @@ async function seedCodexApiKey(): Promise<void> {
   })
 }
 
-/** Fresh data dir + engine state + upstream for each test. Date is faked so
- *  cadence assertions can travel in time while real timers keep flush()
- *  working. */
+/** A fresh data dir, engine state and upstream per test. Only Date is faked,
+ *  so tests can move time while flush() still works. */
 function useAuthFixture(prefix: string): () => string {
   let tmpDir = ''
   beforeEach(async () => {
@@ -230,12 +223,9 @@ function useAuthFixture(prefix: string): () => string {
     upstream.install()
     vi.mocked(notifyWorkspaceListChanged).mockReset()
     vi.useFakeTimers({ toFake: ['Date'] })
-    // The suite forbids refresh grants outright (vitest-setup says why: from
-    // behind a workspace's proxy, any POST to a token endpoint rotates the
-    // hosting install's real credential). This file is where refresh BEHAVIOR
-    // is asserted, so it opts back in — safely, because `upstream.install()`
-    // above has replaced `fetch` with a stub that throws on any URL it has no
-    // reply queued for. Nothing here can leave the process.
+    // The suite blocks refresh grants (see vitest-setup). This file tests
+    // refresh, so it re-enables them; the fake `fetch` throws on any URL
+    // with no queued reply, so nothing leaves the process.
     vi.stubEnv('YAAC_E2E_NO_TOKEN_REFRESH', '')
   })
   afterEach(async () => {
@@ -450,11 +440,11 @@ describe('planUsageForSnapshot', () => {
       refresh_token: 'ref-123',
       client_id: CLAUDE_OAUTH_CLIENT_ID,
     })
-    // The query used the refreshed token…
+    // The query used the refreshed token.
     expect(upstream.requestsTo(CLAUDE_USAGE_URL)[0].headers)
       .toMatchObject({ Authorization: 'Bearer tok-fresh' })
-    // …and the bundle reached the credentials file, so sessions and the next
-    // server start pick it up too.
+    // The bundle was saved to the credentials file for sessions and the next
+    // server start.
     const stored = await storedClaude()
     expect(stored).toEqual({
       accessToken: 'tok-fresh',
@@ -463,19 +453,18 @@ describe('planUsageForSnapshot', () => {
       scopes: ['user:inference', 'user:profile'],
       subscriptionType: 'max',
     })
-    // The expiry is stamped from the grant's own lifetime when it landed.
+    // The expiry comes from the grant's lifetime.
     expect(stored?.expiresAt).toBeGreaterThanOrEqual(before + 28800 * 1000)
     expect(stored?.expiresAt).toBeLessThan(before + 28800 * 1000 + 60_000)
-    // …and the runtime was handed it: the token it holds was just spent.
+    // The runtime receives it, since its copy was just spent.
     expect(pushCredentialsToRuntime).toHaveBeenCalledTimes(1)
   })
 
   it('adopts a live workspace\'s refreshed token instead of rotating it out from under one', async () => {
-    // The containerless case, and the whole reason credential-sync exists.
-    // The agent in a running workspace refreshed its own OAuth token: the live
-    // credential is in the project's tool home and the host store holds the
-    // spent one. Spending it would fail, and refreshing it would rotate the
-    // token the running agent is using — so the cycle must do neither.
+    // Containerless: a running agent refreshed its own token, so the live
+    // credential is in the project's tool home and the host holds a spent
+    // one. Using it would fail, and refreshing would rotate the agent's
+    // token, so the cycle adopts the workspace's instead.
     installFakeWorkspaceDriver({
       kind: 'containerless',
       snapshot: () => snapshotFixture([handleFixture({ running: true, terminating: false })]),
@@ -494,11 +483,11 @@ describe('planUsageForSnapshot', () => {
     await planUsageForSnapshot()
     await vi.waitFor(async () => expect(await planUsageForSnapshot()).toMatchObject({ available: true }))
 
-    // No grant was spent: the harvested token was already good.
+    // No grant was sent: the harvested token was valid.
     expect(upstream.countTo(CLAUDE_TOKEN_URL)).toBe(0)
     expect(upstream.requestsTo(CLAUDE_USAGE_URL).at(-1)?.headers)
       .toMatchObject({ Authorization: 'Bearer tok-from-workspace' })
-    // …and the host store caught up, so the next reader is not stale either.
+    // The host store is updated too.
     expect(await storedClaude()).toMatchObject({
       accessToken: 'tok-from-workspace',
       refreshToken: 'ref-from-workspace',
@@ -506,11 +495,9 @@ describe('planUsageForSnapshot', () => {
   })
 
   it('holds off refreshing entirely while an unmediated workspace is live', async () => {
-    // Same posture, but nothing has been refreshed anywhere: the stored token
-    // is expired and there is no fresher one to adopt. The host STILL must not
-    // refresh, because the rotation would invalidate the copy the running
-    // agent holds — it refreshes on its own schedule, and that is the one that
-    // counts. A missing usage readout is the acceptable cost.
+    // The stored token is expired and there is nothing fresher to adopt.
+    // The host still must not refresh, which would invalidate the running
+    // agent's copy. A missing usage readout is the accepted cost.
     installFakeWorkspaceDriver({
       kind: 'containerless',
       snapshot: () => snapshotFixture([handleFixture({ running: true })]),
@@ -527,12 +514,9 @@ describe('planUsageForSnapshot', () => {
   })
 
   it('never spends a placeholder refresh token, however expired the bundle looks', async () => {
-    // The chained yaac-in-yaac shape: this install's stored credential IS the
-    // sentinel an outer install swaps on the way out, so the real token
-    // belongs to that install. Presenting it would make the outer proxy
-    // substitute the real refresh token and rotate it — while this server
-    // gets sentinels back and stores nothing, leaving the outer holding a
-    // spent token and every workspace on it signed out.
+    // In yaac-in-yaac, this install's credential is the outer install's
+    // placeholder. Presenting it would make the outer proxy rotate the real
+    // token while this server stores nothing, signing out every workspace.
     await seedClaude({
       accessToken: PLACEHOLDER_ACCESS_TOKEN,
       refreshToken: PLACEHOLDER_REFRESH_TOKEN,
@@ -544,7 +528,7 @@ describe('planUsageForSnapshot', () => {
     await planUsageForSnapshot()
     await vi.waitFor(async () => expect(await planUsageForSnapshot()).toMatchObject({ available: true }))
 
-    // No grant left this process, and the stored sentinel is untouched.
+    // No grant was sent, and the stored placeholder is untouched.
     expect(upstream.countTo(CLAUDE_TOKEN_URL)).toBe(0)
     expect(await storedClaude()).toMatchObject({
       accessToken: PLACEHOLDER_ACCESS_TOKEN,
@@ -553,10 +537,9 @@ describe('planUsageForSnapshot', () => {
   })
 
   it('makes every grant a no-op while the suite-wide refresh block is set', async () => {
-    // The blanket guard the whole suite runs under, asserted rather than
-    // assumed: with it set, an expired bundle holding a perfectly real-looking
-    // refresh token still sends nothing. This is what stops a future fixture
-    // from rotating the credential of whatever install hosts the test run.
+    // The suite-wide guard: even an expired bundle with a real-looking
+    // refresh token sends nothing, so no test can rotate the host install's
+    // credential.
     vi.stubEnv('YAAC_E2E_NO_TOKEN_REFRESH', '1')
     await seedClaude({ expiresAt: Date.now() - 1000 })
     upstream.always(CLAUDE_PROFILE_URL, json({}))
@@ -570,16 +553,14 @@ describe('planUsageForSnapshot', () => {
   })
 
   it('keeps a rotation it won even when another writer moved the file mid-flight', async () => {
-    // Losing the compare-and-set must not mean dropping the rotation. The
-    // grant already SPENT the token we started from, so discarding its
-    // replacement because the file moved leaves the install holding something
-    // nothing can refresh — a permanent logout rather than a lost cycle.
+    // The grant already spent the old token, so discarding the replacement
+    // because the file changed would leave an unrefreshable credential, a
+    // permanent logout.
     await seedClaude({ expiresAt: Date.now() - 1000 })
     upstream.always(CLAUDE_PROFILE_URL, json({}))
     upstream.always(CLAUDE_USAGE_URL, json(CLAUDE_BODY))
     upstream.reply(CLAUDE_TOKEN_URL, async () => {
-      // Another writer lands while the grant is in flight, holding an OLDER
-      // credential than the one we are about to receive.
+      // Another writer saves an older credential mid-grant.
       await saveClaudeCredentialsFile({
         kind: 'oauth',
         savedAt: '2026-07-09T00:00:00.000Z',
@@ -602,8 +583,7 @@ describe('planUsageForSnapshot', () => {
   })
 
   it('yields to a writer that stored something genuinely newer', async () => {
-    // The other half of the tie-break: a fresh login (or a session's later
-    // rotation) landing mid-flight outranks ours and is not clobbered.
+    // A newer login or rotation saved mid-grant wins and is kept.
     await seedClaude({ expiresAt: Date.now() - 1000 })
     upstream.always(CLAUDE_PROFILE_URL, json({}))
     upstream.always(CLAUDE_USAGE_URL, json(CLAUDE_BODY))
@@ -748,8 +728,8 @@ describe('planUsageForSnapshot', () => {
     upstream.always(CLAUDE_PROFILE_URL, json({}))
     upstream.always(CLAUDE_USAGE_URL, json(CLAUDE_BODY))
     upstream.reply(CLAUDE_TOKEN_URL, json({ access_token: 'tok-fresh' }))
-    // Read-only credentials dir: the load still works, the atomic write does
-    // not. A lost persist must not wedge the refresh loop.
+    // A read-only credentials dir: reads work, the atomic write fails. That
+    // must not wedge the refresh loop.
     await fs.chmod(credentialsDir(), 0o500)
 
     await planUsageForSnapshot()
@@ -782,8 +762,8 @@ describe('planUsageForSnapshot', () => {
   })
 })
 
-/** Trimmed copy of a real wham/usage payload; the flattened
- *  RateLimitStatusPayload shape is plan_type + the two rate_limit windows. */
+/** Trimmed real wham/usage payload: plan_type plus the two rate_limit
+ *  windows. */
 const CODEX_BODY = {
   plan_type: 'plus',
   rate_limit: {
@@ -925,9 +905,9 @@ describe('codexPlanUsageForSnapshot', () => {
   })
 
   it('never refreshes proactively, only reactively on an unauthorized query', async () => {
-    // Unlike Claude, Codex queries with the stored token even when it looks
-    // expired — its refresh tokens rotate, so a speculative grant would race
-    // a running session's own refresh.
+    // Unlike Claude, Codex queries with the stored token even if it looks
+    // expired; its refresh tokens rotate, so a speculative grant would race a
+    // running session's refresh.
     await seedCodex({ expiresAt: Date.now() - 1000 })
     upstream.reply(CODEX_USAGE_URL, json(CODEX_BODY))
     await codexPlanUsageForSnapshot()
@@ -973,8 +953,8 @@ describe('codexPlanUsageForSnapshot', () => {
 
   it('keeps stored tokens the grant omits and falls back to the 28-day window', async () => {
     upstream.always(CODEX_USAGE_URL, json(CODEX_BODY))
-    // Every access token here lacks a decodable `exp`, so the bundle takes
-    // Codex's own proactive-refresh window instead.
+    // None of these tokens has a usable `exp`, so Codex's proactive-refresh
+    // window is used instead.
     for (const accessToken of [
       'not-a-jwt',                    // no payload segment
       'h.@@not-base64@@.s',           // payload segment is garbage
@@ -1018,18 +998,16 @@ describe('codexPlanUsageForSnapshot', () => {
       await codexPlanUsageForSnapshot()
       await vi.waitFor(async () => expect(await codexPlanUsageForSnapshot())
         .toEqual({ available: false, reason: 'unauthorized' }))
-      // No fresh bundle, so no retry — and the stored one is untouched.
+      // No fresh bundle, so no retry, and the stored one is untouched.
       expect(upstream.countTo(CODEX_USAGE_URL)).toBe(before + 1)
       expect(await storedCodex()).toMatchObject({ accessToken: 'ctok-123' })
     }
   })
 
   it('resolves a codex credential replaced mid-flight by which rotation is newer', async () => {
-    // Codex refresh tokens are single-use, so this tie-break is load-bearing:
-    // the grant below already spent the stored token, and dropping the
-    // replacement because the file moved would leave the install holding
-    // something nothing can refresh. `lastRefresh` is the discriminator, and
-    // ours is stamped now — later than the writer that landed mid-flight.
+    // Codex refresh tokens are single-use, and the grant already spent the
+    // stored one, so dropping the replacement would leave an unrefreshable
+    // credential. `lastRefresh` decides, and ours is later than the writer's.
     await seedCodex()
     upstream.reply(CODEX_USAGE_URL, httpStatus(401), json(CODEX_BODY))
     upstream.reply(CODEX_TOKEN_URL, async () => {
@@ -1050,8 +1028,7 @@ describe('codexPlanUsageForSnapshot', () => {
     await seedCodex()
     upstream.reply(CODEX_USAGE_URL, httpStatus(401), json(CODEX_BODY))
     upstream.reply(CODEX_TOKEN_URL, async () => {
-      // Stamped in the future: a rotation that demonstrably happened after
-      // the one this grant is producing.
+      // Stamped in the future, so it is later than this grant's rotation.
       await seedCodex({
         accessToken: 'ctok-later', refreshToken: 'cref-later',
         lastRefresh: '2099-01-01T00:00:00.000Z',
@@ -1148,12 +1125,10 @@ describe('refreshPlanUsage', () => {
     expect(upstream.countTo(CODEX_USAGE_URL)).toBe(0)
   })
 
-  // The background cycle, which the server ticks on its own clock while a
-  // client is connected. This is the one irreducible poll in the server —
-  // the usage endpoints have no push — and it used to free-ride on a
-  // snapshot being rebuilt after every reconcile pass. It keeps the passive
-  // 5-minute cadence rather than the nudge's one-minute floor, so an idle
-  // dashboard cannot burn a rate-limited endpoint's budget.
+  // The background cycle the server runs while a client is connected (the
+  // usage endpoints have no push). It uses the 5-minute cadence, not the
+  // nudge's one-minute floor, so an idle dashboard cannot exhaust a
+  // rate-limited endpoint.
   it('refreshes both tools on the 5-minute cadence, not the nudge floor', async () => {
     await seedClaude()
     await seedCodex()
@@ -1166,7 +1141,7 @@ describe('refreshPlanUsage', () => {
     expect(upstream.countTo(CLAUDE_USAGE_URL)).toBe(1)
     expect(upstream.countTo(CODEX_USAGE_URL)).toBe(1)
 
-    // Two minutes on — past the nudge floor, inside the cadence.
+    // Two minutes on: past the nudge floor, within the cadence.
     vi.setSystemTime(Date.now() + 2 * 60_000)
     await refreshPlanUsage()
     await flush()
@@ -1180,8 +1155,7 @@ describe('refreshPlanUsage', () => {
     expect(upstream.countTo(CODEX_USAGE_URL)).toBe(2)
   })
 
-  // A landed result notifies on its own, which is what pushes it — the
-  // caller neither builds nor publishes a snapshot.
+  // A new result triggers the notification itself.
   it('pushes the fresh readout without the caller publishing anything', async () => {
     await seedClaude()
     upstream.always(CLAUDE_PROFILE_URL, json({}))

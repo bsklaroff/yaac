@@ -1,19 +1,14 @@
 /**
  * A RFC 4122 v4 UUID string.
  *
- * Prefers the native `crypto.randomUUID()`, but that method is only exposed
- * in a **secure context** (https, or http on localhost) — so on a plain-http
- * non-localhost origin (e.g. a nested yaac reached over a Tailscale-forwarded
- * port) it is `undefined` and calling it throws `crypto.randomUUID is not a
- * function`. `crypto.getRandomValues()` has no such restriction, so fall back
- * to it and format the 16 random bytes ourselves (version nibble → 4, variant
- * nibble → 10xx). The webapp uses these only as client-minted workspace ids, so
- * the fallback's randomness is more than sufficient.
+ * `crypto.randomUUID()` exists only in a secure context (https, or http on
+ * localhost), so a plain-http remote origin (e.g. a nested yaac reached over
+ * a forwarded port) falls back to formatting `crypto.getRandomValues()`
+ * bytes, which is random enough for client-minted workspace ids.
  */
 export function randomUUID(): string {
-  // Typed as optional so the guard is meaningful (the DOM lib types it as
-  // always-present); `.call` keeps `this === crypto`, else engines that
-  // brand-check throw "illegal invocation" on a detached reference.
+  // The DOM lib types randomUUID as always present, hence the cast. `.call`
+  // keeps `this === crypto`; some engines throw "illegal invocation" without.
   const native = (crypto as { randomUUID?: () => string }).randomUUID
   if (typeof native === 'function') return native.call(crypto)
   const bytes = crypto.getRandomValues(new Uint8Array(16))

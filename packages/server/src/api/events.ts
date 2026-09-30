@@ -19,9 +19,8 @@ export interface WsLike {
 }
 
 /**
- * Assemble the full server-state snapshot the webapp hydrates from. Same
- * data the equivalent HTTP reads return, gathered in one shot so a
- * connecting client needs zero follow-up round-trips.
+ * Assemble the full server-state snapshot the webapp hydrates from: the same
+ * data the HTTP reads return, in one message.
  */
 export async function buildSnapshot(): Promise<ServerSnapshot> {
   const [
@@ -37,15 +36,12 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
     listDraftWorkspaces(),
   ])
   const imageBuilds = workspaceDriver().listImageBuilds()
-  // A workspace with a provisioning entry is mid-create/mid-restart (or
-  // failed, awaiting dismissal) — the row, not the workspace, is what clients
-  // should render. The pod lists as running well before setup finishes
-  // (pod Running + tmux up ≠ agent and init windows exist), so surfacing it
-  // would make the webapp swap the placeholder for terminals that can't
-  // attach yet. Suppressing the workspace until the create/restart route drops
-  // the entry (on resolve) swaps row → ready workspace in one snapshot, and
-  // keeps an id from ever appearing in both lists. A spare a create claimed
-  // is hidden under that create's row the same way.
+  // A workspace with a provisioning entry is mid-create or mid-restart (or
+  // failed, awaiting dismissal), so clients render the provisioning row
+  // instead. The workspace lists as running before its agent and init windows
+  // exist; hiding it until the route drops the entry swaps the row for a ready
+  // workspace in one snapshot, and no id appears in both lists. A spare
+  // claimed by a create is hidden the same way.
   const provisioning = listProvisioning()
   const hidden = new Set(provisioning.flatMap((p) => [p.workspaceId, p.claimedId]))
   return {
@@ -53,7 +49,6 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
     workspaces: active.workspaces.filter((w) => !hidden.has(w.workspaceId)),
     workspaceGroups,
     stale: active.stale,
-    // `workspaceCount` is what ProjectSummary still calls it on the wire.
     projects: projects.map(({ workspaceCount, ...p }) => ({ ...p, workspaceCount: workspaceCount })),
     provisioning,
     queuedWorkspaces,
@@ -68,15 +63,10 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
 }
 
 /**
- * Fan-out hub for the `/events` stream. Holds every open connection and
- * pushes snapshots to all of them.
- *
- * The sole consumer of `#notify`, which every store the snapshot reads
- * emits on when it changes (docs/layered-server.md). `publishSnapshot`
- * rebuilds and broadcasts only when the result differs from the last one
- * sent, so a notify for something a client cannot see costs a rebuild and
- * no traffic — and an idle server, having nothing to notify about,
- * rebuilds nothing at all.
+ * Fan-out hub for the `/events` stream: holds every open connection and
+ * pushes snapshots to them. It is the only consumer of `#notify`, which every
+ * store the snapshot reads emits on change (docs/layered-server.md).
+ * Snapshots are broadcast only when they differ from the last one sent.
  */
 export class EventHub {
   private readonly conns = new Set<WsLike>()
@@ -110,18 +100,14 @@ export class EventHub {
   }
 
   /**
-   * Rebuild the snapshot and broadcast it to all connections if it
-   * changed since the last broadcast. No-op when nothing is connected.
+   * Rebuild the snapshot and broadcast it if it changed since the last
+   * broadcast. No-op when nothing is connected.
    *
-   * Builds are serialized, never concurrent. A build is several awaited
-   * substrate reads long, so two in flight can resolve out of order: the
-   * newer one broadcasts, then the older overwrites both the wire and
-   * `lastSerialized` with state that has already been superseded. Nothing
-   * would repair that — the diff now believes clients hold the stale
-   * snapshot — until some later mutation happens to notify. A publish that
-   * arrives mid-build therefore asks the running one to go round again
-   * rather than starting a second, which also means a notification storm
-   * costs one rebuild plus one final catch-up, not one rebuild per notify.
+   * Builds never run concurrently: two in flight could resolve out of order
+   * and leave clients (and `lastSerialized`) on stale state until the next
+   * notify. A publish that arrives mid-build makes the running build loop
+   * once more, so a burst of notifies coalesces instead of costing one
+   * rebuild each.
    */
   async publishSnapshot(): Promise<void> {
     if (this.publishing) {

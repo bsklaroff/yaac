@@ -3,10 +3,8 @@ import { serverLog } from '#log'
 import type { Duplex } from 'node:stream'
 
 /**
- * Minimal socket surface this bridge needs — the same shape the PTY bridge
- * takes, and for the same reason: the real implementation is the `ws`
- * WebSocket behind Hono's WSContext, whose types are not in our resolvable
- * set.
+ * The socket surface this bridge needs (same shape as the PTY bridge's); the
+ * real one is the `ws` WebSocket, whose types are not importable here.
  */
 export interface TunnelSocketLike {
   send(data: Uint8Array): void
@@ -15,26 +13,18 @@ export interface TunnelSocketLike {
   onClose(cb: () => void): void
 }
 
-/** WS close code for "the tunnel could not be opened". Distinct from a
- *  normal close so a client can tell a refused dial from a dev server that
- *  hung up, and retry (or not) accordingly. */
+/** WS close code for "the tunnel could not be opened", so a client can tell
+ *  a refused dial from a server that hung up. */
 export const TUNNEL_DIAL_FAILED = 4001
 
 /**
- * Bridge one WebSocket to one TCP connection inside a workspace.
+ * Bridge one WebSocket to one TCP connection inside a workspace
+ * (docs/port-forward-tunnel.md). The client holds the listener and opens one
+ * WebSocket per accepted connection, so every binary frame is just bytes in
+ * order and either side's close ends the pair.
  *
- * The far end of a forward whose LISTENER is on the client: the client
- * accepted a connection on the user's machine and opened this socket for
- * it, so the whole job here is to splice it to a stream into the workspace
- * and let either side's close end the pair. One WS per TCP connection —
- * the kubectl shape — which is what makes that splice the entire protocol:
- * every binary frame is bytes, in order, and there is nothing to
- * demultiplex.
- *
- * Frames that arrive before the dial lands are buffered rather than
- * dropped: a client that writes immediately (every HTTP request does)
- * would otherwise lose its first bytes to a race with the pod's stream
- * setup, and lose them silently.
+ * Frames arriving before the dial completes are buffered, since clients
+ * usually write immediately (every HTTP request does).
  */
 export function attachPortTunnel(
   workspaceId: string,
@@ -60,10 +50,8 @@ export function attachPortTunnel(
     stream?.destroy()
   })
   sock.onMessage((data, isBinary) => {
-    // Text frames are not part of this protocol — there are no control
-    // messages to send, since the connection's whole state is "open" until
-    // one end closes it. Ignoring rather than erroring keeps a client's
-    // keepalive ping harmless.
+    // No control messages exist; ignore text frames so a client keepalive
+    // is harmless.
     if (!isBinary) return
     const chunk = typeof data === 'string'
       ? Buffer.from(data, 'utf8')
@@ -75,8 +63,8 @@ export function attachPortTunnel(
   workspaceDriver().dialPort(workspaceId, containerPort).then(
     (dialed) => {
       if (closed) {
-        // Listener first: an unhandled 'error' on a destroyed stream is an
-        // uncaught exception, and this branch has attached none yet.
+        // Attach a listener first: an unhandled 'error' on a destroyed stream
+        // would be an uncaught exception.
         dialed.on('error', () => { /* nothing is reading it */ })
         dialed.destroy()
         return
@@ -90,18 +78,14 @@ export function attachPortTunnel(
           shutdown()
         }
       })
-      // Either direction ending ends the connection: a forwarded TCP
-      // connection has no half-close worth modelling over a WebSocket, and
-      // pretending otherwise would leave a client waiting on a socket
-      // nothing will ever write to again.
+      // No half-close over a WebSocket: either side ending closes both.
       dialed.on('error', () => { /* 'close' follows */ })
       dialed.on('close', () => shutdown())
       for (const chunk of pending) dialed.write(chunk)
       pending.length = 0
-      // The stream arrives PAUSED (see `dialPort`) so its first bytes
-      // cannot land before the handler above exists. Resuming is the last
-      // thing, and forgetting it is a tunnel that opens and then carries
-      // nothing in either direction, with no error anywhere.
+      // The stream arrives paused (see `dialPort`) so no bytes are lost
+      // before the handler exists. Without this resume the tunnel carries
+      // nothing, silently.
       dialed.resume()
     },
     (err: unknown) => {

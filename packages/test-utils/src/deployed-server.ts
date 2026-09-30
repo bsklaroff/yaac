@@ -31,46 +31,26 @@ import { TEST_IMAGE_PREFIX } from '#setup'
 const execFileAsync = promisify(execFile)
 
 /**
- * The yaac server the k8s tiers drive: a Deployment in the file's own test
- * namespace, exactly the shape a real install runs (docs/server-in-cluster.md).
+ * The yaac server the k8s tiers use: a Deployment in the file's test
+ * namespace, the same shape a real install runs (docs/server-in-cluster.md).
+ * `spawnYaacServer` returns this for every non-containerless suite, with
+ * the same `{ lock, stop }` as a host server.
  *
- * There is no host-process k8s server to spawn any more, so this is what
- * `spawnYaacServer` resolves to for every suite that is not containerless.
- * It answers the same `{ lock, stop }` the host spawn did, and that is the
- * whole seam: a test file asks for a server, gets a loopback origin, and
- * never learns which side of the cluster boundary it is on.
+ * What the file's namespace needs that an install already has:
  *
- * Three things the host process got for free have to be handed to a pod:
- *
- *  - **A reachable origin.** The lock the pod writes carries the port it
- *    binds INSIDE the pod, which is nothing on this machine. A
- *    `kubectl port-forward` per file supplies one, and — being loopback —
- *    satisfies the server's DNS-rebind Host guard the way the published
- *    loopback origin does in production. The returned lock reports the LOCAL port,
- *    never the pod's.
- *  - **RBAC in this namespace.** Install binds the server's ClusterRole to
- *    a ServiceAccount in the install namespace; an e2e file's namespace is
- *    `yaac-test-<run-id>` and has neither. Both are applied here, under the
- *    namespace-suffixed cluster-scoped name so files never fight over one
- *    binding.
- *  - **Its storage.** Production binds two claims in the install
- *    namespace; a file's namespace has none, so the same claim pair is
- *    rendered here with static PVs into the file's own data dir
- *    (`#storage-claims`). The pod then mounts the three tiers exactly as an
- *    install's does, PLUS one mount an install has no need of: the file's
- *    scratch base (`testTmpBase()`), at its own absolute path, because the
- *    git config, the source repos tests `project add` and the mock-remote
- *    stores are siblings of the data dir rather than inside a tier — the
- *    same host==node contract `yaac cluster check` proves is what makes
- *    every other e2e hostPath work.
+ *  - **A reachable origin.** A `kubectl port-forward` per file. The
+ *    returned lock reports its local port, not the pod's.
+ *  - **RBAC.** A ServiceAccount and a ClusterRoleBinding named per
+ *    namespace, so files don't share one.
+ *  - **Storage.** The install's claim pair, bound to the file's own data
+ *    dir (`#storage-claims`), plus one extra mount of the scratch base
+ *    (`testTmpBase()`) at its own path, since test repos and mock-remote
+ *    stores live beside the data dir rather than in a tier.
  */
 
 /**
- * The image the test Deployment runs: the same content-hash contract as
- * every other yaac-shipped image, over the suite's FROZEN copy of the
- * bundle rather than `dist/` itself. `pnpm watch` rewrites `dist/` on every
- * save, so hashing it would re-tag mid-run and leave workers looking up an
- * image nobody built.
+ * The image the test Deployment runs, content-hash tagged over the suite's
+ * frozen copy of the bundle (see TEST_CLI_DIR) so it can't change mid-run.
  */
 export async function testServerImageTag(): Promise<string> {
   return resolveServerImageTag(TEST_CLI_DIR, TEST_IMAGE_PREFIX)
@@ -83,8 +63,7 @@ export async function buildTestServerImage(): Promise<string> {
 
 export interface DeployedServer {
   /**
-   * The pod's lock with its port rewritten to this file's forward. Never
-   * the port the pod wrote: that one is on another loopback entirely.
+   * The pod's lock with its port replaced by this file's forward port.
    */
   lock: ServerLock
   stop: () => Promise<void>
@@ -98,9 +77,7 @@ export interface DeployTestServerOptions {
 /**
  * Apply the server Deployment for this test file and wait for it to answer.
  *
- * Every object except the Deployment is idempotent and namespace-scoped, so
- * a file that stops and starts its server several times re-applies them for
- * nothing rather than having to track what it already made.
+ * The other objects are re-applied idempotently on every call.
  */
 export async function deployTestServer(opts: DeployTestServerOptions): Promise<DeployedServer> {
   const imageRef = await requirePrebuiltServerImage()
@@ -110,10 +87,8 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
   await kubectlApply(buildServerServiceAccountManifest())
   await kubectlApply(buildServerClusterRoleManifest())
   await kubectlApply(buildServerClusterRoleBindingManifest())
-  // The node half of the wall only: it admits the kubelet's readiness
-  // probe, which is the one thing that has to reach this pod over the
-  // network. The file's own `kubectl port-forward` is a CRI-side dial that
-  // never traverses policy, and nothing fronts a test server.
+  // Only the node-side ingress rule, which admits the kubelet's readiness
+  // probe. `kubectl port-forward` bypasses network policy.
   await kubectlApply(buildServerIngressNpManifest(await nodeIpBlocks()))
   await kubectlApply(testServerDeploymentManifest(imageRef, opts.env))
   try {
@@ -122,12 +97,8 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
       '-n', k8sNamespace(), '--timeout=300s',
     ], { timeout: 310_000, maxAttempts: 2 })
   } catch (err) {
-    // A rollout that never completes is the one failure here with no useful
-    // message of its own — "timed out waiting for the condition" says
-    // nothing about whether the pod was unschedulable, stuck pulling, or
-    // simply slow to report ready. The suite runs unattended and the
-    // namespace is swept when the file ends, so the evidence has to be
-    // collected NOW or it is gone.
+    // A timed-out rollout says nothing about why, and the namespace is
+    // swept when the file ends, so collect the evidence now.
     throw new Error(
       `the test server Deployment never rolled out.\n${await describeServerPods()}`,
       { cause: err },
@@ -147,11 +118,8 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
     throw err
   }
 
-  // Point this file's CLI invocations at the forward, the way `yaac cluster
-  // install` points a real machine's at the published origin: through
-  // `server.json`, which is the only thing `resolveServerTarget` reads —
-  // and has to be, because the lock on this shared data dir was written by
-  // a pod.
+  // Point this file's CLI calls at the forward through `server.json`, as
+  // `yaac cluster install` does for the published origin.
   await registerServer(forward.origin, 'k8s')
 
   return {
@@ -165,10 +133,8 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
 }
 
 /**
- * The image ref, or a failure that names the build. Same contract as every
- * other e2e image (`requirePrebuilt`): a worker must never race a podman
- * build, so a missing or stale tag is a hard error here rather than a
- * silent rebuild inside a test.
+ * The image ref. A missing or stale tag is an error, never a rebuild, as for
+ * every e2e image.
  */
 async function requirePrebuiltServerImage(): Promise<string> {
   const tag = await testServerImageTag()
@@ -184,23 +150,15 @@ async function requirePrebuiltServerImage(): Promise<string> {
 }
 
 /**
- * The production Deployment, with the three things a test file changes: the
- * env it wants the server to have, one extra mount covering the scratch
- * tree its data dir hangs off (the production tier mounts stay), and a
- * request small enough that a node running several files' namespaces at
- * once can fit them all.
- *
- * Derived from `buildServerDeploymentManifest` rather than written out, so
- * the pod these suites exercise cannot drift from the pod an install
- * deploys — a probe, a security context or a priority class that changed
- * there changes here.
+ * The production Deployment (from `buildServerDeploymentManifest`, so it
+ * can't drift) with three changes: the file's env, an extra mount of the
+ * scratch tree, and a smaller resource request.
  */
 function testServerDeploymentManifest(
   imageRef: string,
   env: NodeJS.ProcessEnv,
 ): Record<string, unknown> {
-  // This machine's own identity, as on a kind install; the byo tier refuses
-  // to run on a host whose uid is not its install's.
+  // This machine's uid, as on a kind install.
   const manifest = buildServerDeploymentManifest(imageRef, processIdentity()) as {
     spec: { template: { spec: {
       containers: Array<{
@@ -214,18 +172,13 @@ function testServerDeploymentManifest(
   const podSpec = manifest.spec.template.spec
   const container = podSpec.containers[0]
   container.env = mergeEnv(testPassThrough(env), container.env)
-  // A production server asks for room to run an install; a test server runs
-  // one FILE. The suite keeps several namespaces alive at once — a finished
-  // file's namespace drains in the background while the next one starts —
-  // so a production-sized request per file is what the scheduler runs out
-  // of first, on the same node that also has to fit workspace pods, builder
-  // pods and a proxy per namespace. The limit is left alone: it is not
-  // scheduled against, and PGlite still lives in this process.
+  // Several files' namespaces can be alive at once on one node, so a
+  // production-sized request would exhaust the scheduler. The limit is
+  // unchanged.
   container.resources = {
     ...container.resources,
     requests: { cpu: '100m', memory: '256Mi' },
   }
-  // The one test-only mount, beside the production three.
   const base = testTmpBase()
   container.volumeMounts.push({ name: 'scratch', mountPath: base })
   podSpec.volumes.push({ name: 'scratch', hostPath: { path: base, type: 'DirectoryOrCreate' } })
@@ -233,23 +186,11 @@ function testServerDeploymentManifest(
 }
 
 /**
- * What of a test file's environment the pod is given: the `YAAC_*` knobs the
- * SUITE set, plus the redirected git config.
- *
- * "The suite set" is the whole rule, and it is read as "differs from this
- * worker's own environment" — because `createYaacTestEnv` builds its env by
- * spreading `process.env` and overriding, so the difference IS the set of
- * deliberate choices (the data dir, the namespace, the image prefix, the
- * prewarm sizes, the auth requirement, plus whatever one file adds for
- * itself).
- *
- * Copying every `YAAC_*` instead would hand the pod the environment of
- * whatever shell started vitest — which, when that shell is a yaac workspace,
- * includes `YAAC_WORKSPACE_ID` (the server would then read itself as running
- * INSIDE a session and stop requiring a credential) and the tailnet
- * `YAAC_ALLOWED_HOSTS` of an unrelated install. Copying the whole
- * environment would be worse still: `HOME`, `PATH` and `KUBECONFIG` name
- * nothing inside a container.
+ * The part of a test file's env the pod gets: the `YAAC_*` vars that differ
+ * from this worker's own environment (i.e. those `createYaacTestEnv` or the
+ * file set), plus the redirected git config. Copying every `YAAC_*` var
+ * would leak the outer shell's, such as a yaac workspace's
+ * `YAAC_WORKSPACE_ID`.
  */
 function testPassThrough(env: NodeJS.ProcessEnv): Array<{ name: string; value: string }> {
   const out: Array<{ name: string; value: string }> = []
@@ -270,28 +211,22 @@ function mergeEnv(
 }
 
 /**
- * Delete this file's server and wait for the POD to be gone.
- *
- * The pod, not the Deployment: `kubectl delete deployment --wait` uses
- * background propagation, so it returns while the pod is still running —
- * and a file that stops its server to write into the database itself (the
- * `--stopped` listings seed rows that way) would then race a PGlite the
- * departing server still holds open.
+ * Delete this file's server and wait for the pod to be gone.
+ * `kubectl delete deployment --wait` returns while the pod still runs, and
+ * a file that then writes to the database would race the old server's
+ * PGlite.
  */
 async function deleteDeployment(): Promise<void> {
   await kubectlWithRetry([
     'delete', 'deployment', SERVER_APP_NAME, '-n', k8sNamespace(),
     '--ignore-not-found', '--wait=true', '--timeout=120s',
   ], { timeout: 130_000, maxAttempts: 1 }).catch(() => {
-    // The namespace drop in cluster-setup takes it either way; a slow
-    // delete must not fail the file that was only tidying up.
+    // The namespace delete in cluster-setup is the backstop.
   })
   await kubectlWithRetry([
     'wait', 'pod', '-n', k8sNamespace(), '-l', `app=${SERVER_APP_NAME}`,
     '--for=delete', '--timeout=120s',
   ], { timeout: 130_000, maxAttempts: 1 }).catch(() => {
-    // Same: a wedged pod must not fail a teardown, and the namespace drop
-    // is the backstop.
   })
 }
 
@@ -314,9 +249,8 @@ async function describeServerPods(): Promise<string> {
 }
 
 /**
- * Delete the cluster-scoped RBAC this run's servers were bound through.
- * Namespace deletion does not cascade to it (netd's has the same problem),
- * so the per-file teardown and the global sweep both call it.
+ * Delete the cluster-scoped RBAC for this namespace's server, which
+ * namespace deletion doesn't remove.
  */
 export async function deleteTestServerClusterRbac(namespace: string): Promise<void> {
   await execFileAsync('kubectl', [
@@ -327,20 +261,9 @@ export async function deleteTestServerClusterRbac(namespace: string): Promise<vo
 }
 
 /**
- * This file's forward into its server, bound on the port the file's env
- * names as `YAAC_SERVER_PORT`.
- *
- * Not a detail. `yaac server start|restart` against a Deployment waits for
- * the PUBLISHED origin to answer, and an explicit `YAAC_SERVER_PORT` in the
- * CLI child names that origin outright, ahead of the kind node's own
- * mapping (which is the real install's). Binding the forward there is what
- * makes the forward this test install's published origin, and what lets
- * those verbs be exercised at all rather than being told the cluster never
- * published a server.
- *
- * The port is drawn free per test env (see `createYaacTestEnv`), so neither
- * files racing in parallel workers nor another test rig's run on this host
- * can collide with it.
+ * This file's forward into its server, on the env's `YAAC_SERVER_PORT`.
+ * `yaac server start|restart` waits for the published origin, which that
+ * variable names, so the forward acts as this install's published origin.
  */
 function startForward(env: NodeJS.ProcessEnv): Promise<KubectlForward> {
   const wanted = Number.parseInt(env.YAAC_SERVER_PORT ?? '', 10)
@@ -353,14 +276,9 @@ function startForward(env: NodeJS.ProcessEnv): Promise<KubectlForward> {
 }
 
 /**
- * Wait until the forwarded origin reports a READY server, then read the
- * lock the pod wrote into the shared data dir.
- *
- * Readiness comes from `/health` over the forward rather than from the lock,
- * for the reason `isLockReady` refuses to answer here at all: a lock written
- * on the other side of a container boundary has a pid in another namespace
- * and a port on another loopback. The forward is the one signal that means
- * what it says.
+ * Wait until `/health` over the forward reports ready, then read the lock
+ * the pod wrote. The lock's pid and port are the pod's, so they can't be
+ * checked from here.
  */
 async function waitForServer(port: number, timeoutMs = 120_000): Promise<ServerLock> {
   const deadline = Date.now() + timeoutMs
@@ -389,7 +307,7 @@ async function waitForServer(port: number, timeoutMs = 120_000): Promise<ServerL
   )
 }
 
-/** `YAAC_TEST_DEBUG_SERVER=1` — the pod's stdout, the way the host spawn forwarded stderr. */
+/** With `YAAC_TEST_DEBUG_SERVER=1`, forward the pod's stdout. */
 function streamPodLogs(): ChildProcess {
   const child = spawn('kubectl', [
     'logs', '-f', '--tail', '-1', '-n', k8sNamespace(), `deployment/${SERVER_APP_NAME}`,

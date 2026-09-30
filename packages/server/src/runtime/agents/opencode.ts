@@ -2,28 +2,22 @@ import { workspaceDriver } from '#drivers/driver'
 import type { PermissionMode } from '@yaac/shared/types'
 
 /**
- * Status markers + first-message lookup for opencode sessions.
+ * Status markers and first-message lookup for opencode.
  *
- * Status is read from the rendered tmux pane (window `yaac:opencode.0`),
- * not from opencode's server: its session state stays busy while opencode
- * is paused on a tool-permission prompt or a question-tool prompt — both
- * states where yaac should report `waiting` — and the pane carries an
- * unambiguous marker for each. The busy/idle classification runs *inside
- * tmux*: the session's status watcher (`#runtime/status`) subscribes to a
- * format built from `OPENCODE_BUSY_MARKERS`, so only the resolved word
- * crosses the control-mode stream — the rendered pane never does.
+ * Status is read from the rendered pane, not opencode's server, whose
+ * session state stays busy during a permission or question prompt (which
+ * yaac reports as `waiting`). The classification runs inside tmux: the
+ * status watcher subscribes to a format built from `OPENCODE_BUSY_MARKERS`,
+ * so only the resolved word crosses the control-mode stream.
  *
- * First-message lookup asks opencode itself: `opencode api` over a private
- * server on the same per-workspace data dir (`--standalone`, as the TUI runs
- * — its server is a child on stdio, so there is no port to ask), from the
- * checkout, which is what scopes the lookup to this workspace's project.
- * opencode titles a session off its opening prompt, and that title is what
- * the TUI's own switcher displays — using it here keeps the two views
- * consistent. It runs once per session (the capture step persists the
- * result on the session row), so it needs no cache of its own.
+ * The first message comes from opencode itself: `opencode api` over a
+ * private `--standalone` server on the same per-workspace data dir, run from
+ * the checkout to scope it to this project. It returns the session title
+ * (derived from the opening prompt, as the TUI's switcher shows). It runs
+ * once per session; the result is stored on the session row.
  */
 
-/** A private server has to come up first, which is most of the wait. */
+/** Mostly the time for a private server to start. */
 const PROBE_TIMEOUT_MS = 15_000
 
 /**
@@ -39,18 +33,14 @@ export const OPENCODE_BUSY_MARKERS: readonly string[] = [
 const OPENCODE_SESSION_ID = /^ses_[A-Za-z0-9]+$/
 
 /**
- * First user message for an opencode session — its title, probed once:
- * opencode keeps its history in a per-workspace sqlite DB and leaves no host
- * transcript, and the capture step persists the result on the session row,
- * which is what deleted-session listings and restarts read afterwards.
+ * An opencode session's first message (its title), probed once. opencode
+ * keeps history in a per-workspace sqlite DB, not a host transcript; the
+ * result is stored on the session row for later listings and restarts.
  *
- * Only a session opencode minted has a title to read, and it is fetched by
- * its id. Anything else — the workspace-id pin a create records before the
- * pane names a session — names no session, so it reads as no title rather
- * than borrowing one out of a listing (whose page holds only the 50 most
- * recently updated anyway). The pattern is also the shell-safety gate. An
- * exec failure — `session.get` exits 1 for an id opencode lacks — or a
- * session opencode has not titled yet reads the same way.
+ * Only an id opencode minted is looked up; anything else (such as the
+ * workspace-id placeholder a create records first) yields no title. The id
+ * pattern is also the shell-safety check. An exec failure (`session.get`
+ * exits 1 for an unknown id) or an untitled session also yields none.
  */
 export async function getSessionOpencodeFirstUserMessage(
   jobName: string,
@@ -71,20 +61,15 @@ export async function getSessionOpencodeFirstUserMessage(
 }
 
 /**
- * The posture an opencode agent switch adds up to, read against the posture
- * the workspace runs under now.
+ * The posture an opencode agent switch amounts to, given the workspace's
+ * current posture. A switch changes only the agent; the permission rules
+ * come from the launch config. `plan` and `manual` share the ask-to-act
+ * rules, so switching between the plan and build agents moves between
+ * them; `build` under any other posture is that posture. Other combinations
+ * (plan over looser rules, a project's own agents) map to nothing.
  *
- * opencode's in-TUI switch is between its agents, and an agent is only half a
- * posture: the permission rules ride the launch config, which no switch
- * changes. `plan` launches the plan agent over the same ask-to-act rules
- * `manual` has, so those two are one switch apart in either direction; `build`
- * under any other posture is that posture. The plan agent over a looser
- * posture's rules is no posture yaac has, and neither is an agent of a
- * project's own — both are left unrecorded.
- *
- * `current` stands in for the launch: an opencode workspace's posture only ever
- * moves between `plan` and `manual`, whose rules are the same, so the two
- * always agree on the rules the running process has.
+ * `current` stands in for the launch posture: it only ever moves between
+ * `plan` and `manual`, which share rules.
  */
 export function opencodePermissionMode(agent: string, current: PermissionMode): PermissionMode | undefined {
   const askToAct = current === 'plan' || current === 'manual'

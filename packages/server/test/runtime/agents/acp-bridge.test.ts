@@ -16,13 +16,12 @@ import type { JsonRpcTransport } from '#runtime/agents/acp-jsonrpc'
 import type { AcpServerMessage } from '@yaac/shared/acp'
 
 /**
- * The bridge is thin by design, so these drive a REAL conversation behind it
- * (over a fake transport) rather than a stub: what matters is the handoff —
- * that a pane attaching mid-conversation sees everything, and that detaching
- * leaves the agent alone.
+ * These drive a real conversation over a fake transport, checking that a
+ * pane attaching mid-conversation sees everything and that detaching leaves
+ * the agent running.
  */
 
-/** A transport the test plays the pod's side of. */
+/** A transport where the test plays the pod's side. */
 class FakeTransport implements JsonRpcTransport {
   written: string[] = []
   closed = false
@@ -51,10 +50,8 @@ class FakeSocket {
 }
 
 /**
- * What a pane folding these frames in order would conclude about the turn —
- * the client's own rule (`useAcpStream`), modelled here because the property
- * under test is the ORDER frames leave the bridge in, which only a consumer
- * that folds them can express. A greeting sets the state; boundaries move it.
+ * Whether a pane applying these frames in order (as `useAcpStream` does)
+ * would think a turn is running: `hello` sets it, turn boundaries change it.
  */
 function paneBusy(sent: AcpServerMessage[]): boolean {
   let busy = false
@@ -71,11 +68,7 @@ let transport: FakeTransport
 let conversation: AcpConversation
 let dataDir: string
 
-/**
- * Write the record acpd would have written. History comes from this file now,
- * not from the server, so a bridge test that wants history has to put it on
- * disk — which is the point of the change.
- */
+/** Write the log acpd would have written; history comes only from it. */
 async function record(lines: unknown[]): Promise<void> {
   const dir = acpLogDir('demo', 'wt-1')
   await fs.mkdir(dir, { recursive: true })
@@ -92,12 +85,9 @@ const updateLine = (u: unknown): unknown => ({
 })
 
 /**
- * A conversation already past its handshake, holding a short history.
- *
- * Wired to the record the way the driver wires it, so a reattach recovers what
- * the previous connection was left holding — a running turn, and any ask the
- * agent is still blocked on. Recovery reads the file at construction, so a test
- * that wants either has to record it BEFORE calling this.
+ * A conversation past its handshake, wired to the log as the driver does,
+ * so it recovers a running turn and pending asks. It reads the log when
+ * constructed, so write the log first.
  */
 function liveConversation(): AcpConversation {
   transport = new FakeTransport()
@@ -117,8 +107,7 @@ function liveConversation(): AcpConversation {
   return c
 }
 
-/** Re-attach to the conversation now that the test has written its record —
- *  recovery is a construction-time read, so it has to happen after. */
+/** Recreate the conversation after the test has written its log. */
 function reattach(): void {
   conversation.close()
   conversation = liveConversation()
@@ -139,7 +128,7 @@ afterEach(async () => {
   await fs.rm(dataDir, { recursive: true, force: true })
 })
 
-/** The bridge reads the record before it can greet, so tests wait for hello. */
+/** Wait for `hello`, which follows reading the log. */
 async function waitForHello(sock: FakeSocket): Promise<void> {
   await waitFor(() => sock.sent.some((m) => m.type === 'hello'))
 }
@@ -154,9 +143,7 @@ async function waitFor(cond: () => boolean, ms = 3000): Promise<void> {
 
 describe('attachAcp', () => {
   it('replays the recorded conversation so a pane attaching late sees all of it', async () => {
-    // The record is what acpd wrote while relaying — including turns this
-    // server process never witnessed, which is the property the in-memory log
-    // could not offer.
+    // Includes turns from before this server process started.
     await record([
       { jsonrpc: '2.0', method: '_acpd/life', params: { id: 'life-1' } },
       { jsonrpc: '2.0', method: 'session/prompt', params: { sessionId: 'acp-1', prompt: [{ type: 'text', text: 'do it' }] } },
@@ -171,8 +158,7 @@ describe('attachAcp', () => {
     expect(hello?.type).toBe('hello')
     if (hello?.type !== 'hello') throw new Error('unreachable')
     expect(hello.agentSessionId).toBe('acp-1')
-    // The user's own turn comes from the client's `session/prompt` line: the
-    // agent echoes a user message only when replaying under `session/load`.
+    // The user turn comes from the client's `session/prompt` line.
     expect(hello.events.map((e) => e.type)).toEqual(['user', 'agent'])
     expect(hello.events.map((e) => e.seq)).toEqual([0, 1])
   })
@@ -182,7 +168,7 @@ describe('attachAcp', () => {
     attachAcp('demo', 'wt-1', 'acp-1', sock)
     await waitForHello(sock)
 
-    // A conversation whose agent has not spoken is not an error.
+    // An empty conversation is not an error.
     const hello = sock.sent.find((m) => m.type === 'hello')
     if (hello?.type !== 'hello') throw new Error('unreachable')
     expect(hello.events).toEqual([])
@@ -196,9 +182,7 @@ describe('attachAcp', () => {
     await waitForHello(a)
     await waitForHello(b)
 
-    // Content reaches a pane by ONE path — the record — so a message appears
-    // by being appended to it, not by crossing the socket. Two browser tabs on
-    // one conversation is ordinary, not a special case.
+    // Content reaches panes only through the log, so several tabs just work.
     await record([updateLine({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hi' } })])
 
     for (const sock of [a, b]) {
@@ -227,20 +211,15 @@ describe('attachAcp', () => {
       prompt: [{ type: 'text', text: 'do the thing' }],
     })
 
-    // And the turn comes back to the pane that started it. This is the
-    // ordinary case the working indicator runs on: content is not read as a
-    // boundary, so a `turn-start` that never arrived would leave a live turn
-    // invisible on the very pane that asked for it.
+    // The pane that started the turn also gets `turn-start`, which drives
+    // its working indicator.
     await waitFor(() => sock.sent.some((m) => m.type === 'event' && m.event.type === 'turn-start'))
     expect(paneBusy(sock.sent)).toBe(true)
 
-    // Detaching is free: the conversation (and the agent behind it) is
-    // untouched — that is the whole reason acpd exists.
+    // Detaching leaves the conversation and agent running.
     sock.clientClose()
     const before = sock.sent.length
-    // The conversation carries on without the pane — that is the whole point —
-    // and its output lands in the record, which the detached pane no longer
-    // tails.
+    // Later output goes to the log, which the detached pane no longer reads.
     await record([updateLine({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'still working' } })])
     await new Promise((r) => setTimeout(r, 250))
     expect(sock.sent.length).toBe(before)
@@ -268,9 +247,8 @@ describe('attachAcp', () => {
     attachAcp('demo', 'wt-1', 'acp-1', sock)
     await waitForHello(sock)
 
-    // Declared a JPEG, but the bytes say PNG — and the bytes are what the
-    // agent is told, re-encoded from what was checked rather than passed on
-    // with the junk a lenient decode skipped.
+    // Declared JPEG but actually PNG: the agent gets the sniffed type and the
+    // re-encoded bytes, not the original junk.
     sock.clientSend({ type: 'prompt', text: 'what is this?', images: [{ type: 'image', mimeType: 'image/jpeg', data: `!${png}` }] })
     await waitFor(() => prompts().length === 1)
     expect(prompts()[0].params).toEqual({
@@ -281,13 +259,12 @@ describe('attachAcp', () => {
       ],
     })
 
-    // Not an image: dropped whole, and the pane is told rather than left
-    // waiting for an echo that will never come.
+    // Not an image: rejected, and the pane is told.
     sock.clientSend({ type: 'prompt', text: 'and this?', images: [{ type: 'image', mimeType: 'image/png', data: 'aGVsbG8=' }] })
     await waitFor(() => sock.sent.some((m) => m.type === 'event' && m.event.type === 'error'))
     expect(prompts()).toHaveLength(1)
 
-    // Nor may a message's images together pass the cap, however small each.
+    // All of a message's images together must fit the cap.
     const big = Buffer.alloc(3 * 1024 * 1024)
     Buffer.from('\x89PNG\r\n\x1a\n', 'latin1').copy(big)
     const errors = (): number => sock.sent.filter((m) => m.type === 'event' && m.event.type === 'error').length
@@ -326,11 +303,8 @@ describe('attachAcp', () => {
   })
 
   it('routes a permission answer to the agent, and replays a pending ask on attach', async () => {
-    // The pane's half of an enforced posture. Note what does NOT happen here:
-    // the bridge sends nothing back for the answer, because what a pane renders
-    // is the record — acpd tees yaac's reply into it, and the tail projects
-    // that as `permission-resolved`. One source, so a card cannot retire ahead
-    // of the agent actually being told.
+    // The bridge sends the pane nothing for the answer: acpd records the
+    // reply and the log tail reports it as `permission-resolved`.
     await record([
       { jsonrpc: '2.0', id: 'p-1', method: 'session/prompt', params: { sessionId: 'acp-1', prompt: [{ type: 'text', text: 'clean up' }] } },
       {
@@ -350,8 +324,7 @@ describe('attachAcp', () => {
     attachAcp('demo', 'wt-1', 'acp-1', sock)
     await waitForHello(sock)
 
-    // A pane joining mid-ask is shown the question, not an idle transcript
-    // with a stuck agent underneath it.
+    // A pane joining mid-ask is shown the question.
     const hello = sock.sent.find((m) => m.type === 'hello')!
     expect(hello.events.map((e) => e.type)).toEqual(['user', 'permission-request'])
     expect(hello.events[1]).toMatchObject({
@@ -359,8 +332,7 @@ describe('attachAcp', () => {
       options: [{ optionId: 'allow', name: 'Allow Once', kind: 'allow_once' }],
     })
 
-    // This conversation never served the ask — it is the one recovered from the
-    // record — so the answer goes out addressed as the agent wrote it.
+    // The ask was recovered from the log; the answer uses the agent's own id.
     sock.clientSend({ type: 'permission', requestId: '55', optionId: 'allow' })
     await waitFor(() => transport.written.some((l) => l.includes('"outcome"')))
     const reply = transport.written
@@ -371,20 +343,16 @@ describe('attachAcp', () => {
   })
 
   it('lands a pane idle when the turn it is greeting ends underneath it', async () => {
-    // The no-latch guarantee is an ordering invariant rather than a counter,
-    // and it carries the whole fix: `hello` reads `isBusy` in the tick it is
-    // sent, and every boundary is delivered behind a flush of the same tail
-    // chain. So a turn ending around the greeting either shows up *in* it or
-    // arrives *after* it — a stale `busy: true` can never land on top of the
-    // `turn-end` that contradicts it, whichever side the boundary falls.
+    // `hello` reads `isBusy` when sent, and turn boundaries are sent after a
+    // flush of the same log tail, so a stale `busy: true` never arrives after
+    // the `turn-end` that ends it.
     void conversation.prompt('long job').catch(() => { /* ended below */ })
     await waitFor(() => transport.written.some((l) => l.includes('session/prompt')))
     expect(conversation.isBusy).toBe(true)
 
     const sock = new FakeSocket()
     attachAcp('demo', 'wt-1', 'acp-1', sock)
-    // Answered inside the attach's own tick, so the reply is in flight while
-    // the first tail pass — the one that greets — is still reading the record.
+    // Answer while the first log pass (which sends hello) is still reading.
     const id = transport.written
       .map((l) => JSON.parse(l.trim()) as { id?: string | number; method?: string })
       .find((m) => m.method === 'session/prompt')?.id
@@ -392,27 +360,21 @@ describe('attachAcp', () => {
 
     await waitForHello(sock)
     await waitFor(() => !conversation.isBusy)
-    // Long enough for a late frame to arrive and spoil it, if ordering let one.
+    // Give any late frame time to arrive.
     await new Promise((r) => setTimeout(r, 250))
     expect(paneBusy(sock.sent)).toBe(false)
     sock.clientClose()
   })
 
   it('greets a pane with a posture that never took, which the handshake had nobody to tell', async () => {
-    // `applyPermissionMode` reports during the HANDSHAKE, and the id a pane
-    // attaches by is minted by that same handshake — so at the moment the
-    // report is made there is nobody subscribed to hear it, and a pane opened
-    // afterwards would show a conversation and no warning. The cell that makes
-    // this matter is codex: its adapter's own default (`agent`, a reviewer
-    // model approving most actions) is LOOSER than the `accept-edits` this
-    // create asked for.
+    // The refusal is reported during the handshake, before any pane can
+    // attach, so it must be repeated on hello. It matters for codex, whose
+    // default mode (`agent`) is looser than the `accept-edits` asked for.
     conversation.close()
     transport = new FakeTransport()
     conversation = new AcpConversation({
       transport,
       cwd: '/workspace',
-      // The real profile, so the mode id asked for is the one codex-acp is
-      // actually told.
       profile: acpAdapterFor('codex'),
       permissionMode: () => 'accept-edits',
       onSessionId: () => {},
@@ -421,10 +383,8 @@ describe('attachAcp', () => {
       log: () => {},
     })
     registerAcpConversation('demo', 'wt-1', { handle: 'codex', agentSessionId: 'acp-1' }, conversation)
-    // A probe standing in for the ordering a real pane never gets, used only
-    // to know WHEN the report has been made. Without it the attach below races
-    // the refusal and can be caught by the live subscription instead, which is
-    // the path this test exists to prove is not the only one.
+    // Only used to know when the report has happened, so the attach below
+    // cannot catch it through the live subscription.
     const reportedLive: string[] = []
     const stopProbe = conversation.subscribe((e) => {
       if (e.type === 'error') reportedLive.push(e.message)
@@ -450,17 +410,13 @@ describe('attachAcp', () => {
         },
       },
     })
-    // Advertised, so it is asked for — and refused.
     await waitFor(() => sent('session/set_mode') !== undefined)
     reply(sent('session/set_mode')!.id, { error: { code: -32603, message: 'mode unavailable' } })
 
-    // The report has now been made, to an empty room: no pane existed while
-    // the handshake ran, and the live subscription a pane later installs only
-    // forwards what arrives after it.
+    // Reported while no pane was attached.
     await waitFor(() => reportedLive.length > 0)
     stopProbe()
 
-    // Only NOW does a pane exist, which is the whole point.
     const sock = new FakeSocket()
     attachAcp('demo', 'wt-1', 'acp-1', sock)
     await waitForHello(sock)
@@ -468,10 +424,9 @@ describe('attachAcp', () => {
     const reported = sock.sent
       .flatMap((m) => (m.type === 'event' && m.event.type === 'error' ? [m.event.message] : []))
     expect(reported.join(' ')).toContain('read-only')
-    // Names the mode it is actually in — the one nobody chose.
+    // Names the mode actually in effect.
     expect(reported.join(' ')).toContain('agent')
-    // After the greeting, so it cannot be mistaken for something said earlier
-    // in the conversation.
+    // Sent after hello, so it is not mistaken for old history.
     const helloAt = sock.sent.findIndex((m) => m.type === 'hello')
     const errorAt = sock.sent.findIndex((m) => m.type === 'event' && m.event.type === 'error')
     expect(errorAt).toBeGreaterThan(helloAt)
@@ -482,8 +437,7 @@ describe('attachAcp', () => {
     attachAcp('demo', 'wt-1', 'no-such-conversation', sock)
     await new Promise((r) => setTimeout(r, 20))
 
-    // A booting workspace, or a connection mid-respawn — normal states the
-    // pane retries out of, not faults.
+    // A booting workspace or reconnecting stream; the pane retries.
     expect(sock.sent).toEqual([{ type: 'health', connected: false }])
     expect(sock.closedWith).toBe('no live conversation')
   })
@@ -493,15 +447,12 @@ describe('attachAcp', () => {
     attachAcp('demo', 'wt-1', 'acp-1', sock)
     await waitForHello(sock)
 
-    // What a workspace restart looks like from here: this conversation is
-    // dropped, and a fresh one is registered under the same name once the new
-    // pod's agent is up.
+    // A workspace restart: this conversation closes and a new one is later
+    // registered under the same name.
     conversation.close()
     expect(sock.sent.some((m) => m.type === 'health' && !m.connected)).toBe(true)
-    // Greying out alone would stall the pane for good. It is bound to the
-    // conversation OBJECT, not to the name, and only a closed socket makes it
-    // come back — left open it holds a dead peer, so its Stop reaches nothing
-    // and the replacement's turn boundaries go to subscribers it is not among.
+    // The socket is bound to the old conversation object, so it must close
+    // to make the pane reconnect to the new one.
     expect(sock.closedWith).toBe('conversation closed')
     sock.clientClose()
 
@@ -514,8 +465,7 @@ describe('attachAcp', () => {
     await waitForHello(next)
     next.clientSend({ type: 'prompt', text: 'carry on' })
 
-    // The re-attached pane drives the live conversation, which is the whole
-    // point of making it reconnect.
+    // The reconnected pane drives the new conversation.
     await waitFor(() => transport.written.some((l) => l.includes('session/prompt')))
     expect(abandoned.written.some((l) => l.includes('session/prompt'))).toBe(false)
   })

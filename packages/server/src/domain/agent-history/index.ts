@@ -1,13 +1,11 @@
-// The public interface of the agent-history feature. Everything outside this
-// directory imports `#domain/agent-history`; the SEALED_FOLDERS lint rule
-// stops src from reaching past this file.
+// Public interface of the sealed agent-history folder
+// (`#domain/agent-history`).
 //
-// A workspace's agent history is the conversation state each tool keeps —
-// transcripts, file-history, codex's rollouts and sqlite, pi's logs — held
+// A workspace's agent history is each tool's conversation state
+// (transcripts, file-history, codex's rollouts and sqlite, pi's logs), kept
 // per workspace under `history/<workspaceId>` rather than in the project's
-// shared tool homes (docs/workspace-storage.md). Workspace create converges it
-// into the shape the runtime reaches before every launch, and the paths that
-// erase a workspace take it with them. Where each tool's files are read from
-// is `#runtime/agents`'s; this is where they are put.
+// shared tool homes (docs/workspace-storage.md). Workspace create prepares
+// it before every launch, and erasing a workspace removes it.
+// `#runtime/agents` reads these files; this folder places them.
 
 export { convergeAgentHistory, removeAgentHistory } from './history'

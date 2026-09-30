@@ -26,9 +26,9 @@ describe('reportsForTravel', () => {
 })
 
 describe('patchTouchScroll', () => {
-  // The glide runs on animation frames and measures the finger on the
-  // performance clock; both are faked so a test decides how fast a swipe was.
-  // Node has no animation frames, so they are timers at 60Hz.
+  // The glide runs on animation frames and times the finger with the
+  // performance clock. Both are faked (frames as 60Hz timers, since Node has
+  // none) so a test controls swipe speed.
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
     vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) =>
@@ -46,8 +46,7 @@ describe('patchTouchScroll', () => {
    *  the element it binds to and a swipe driver. Cell height is 17, so a
    *  report is earned every 85px of travel. */
   function fakeTerm(
-    // `unknown` so a test can hand over a reshaped dimensions object, which is
-    // the whole point of the option.
+    // `unknown` so a test can pass a reshaped dimensions object.
     { dimensions = { css: { cell: { height: 17 } } } }: { dimensions?: unknown } = {},
   ): {
     term: Terminal
@@ -159,8 +158,8 @@ describe('patchTouchScroll', () => {
     const f = fakeTerm()
     patchTouchScroll(f.term)
     f.swipe(200, { steps: 4 })
-    // Every move past the slop is preventDefault'd, not just the ones that
-    // earned a report — otherwise the browser gets to synthesize the click
+    // Every move past the slop is preventDefault'd, not just those that earned
+    // a report. Otherwise the browser synthesizes a click that
     // patchClickForwarding would forward to the TUI.
     expect(f.prevented).toBeGreaterThanOrEqual(3)
   })
@@ -207,8 +206,8 @@ describe('patchTouchScroll', () => {
   it('glides on after a flick, in its direction, and comes to a stop', () => {
     const f = fakeTerm()
     patchTouchScroll(f.term)
-    // 200px in 100ms: 2px/ms at release. The drag alone earns 2 reports; the
-    // glide adds about velocity × 500ms more travel — ~1000px, ~12 reports.
+    // 200px in 100ms is 2px/ms at release. The drag earns 2 reports; the glide
+    // adds about velocity × 500ms (~1000px, ~12 reports).
     f.swipe(200, { msPerStep: 10 })
     expect(f.reports).toHaveLength(2)
     vi.advanceTimersByTime(500)
@@ -328,25 +327,23 @@ describe('patchTouchScroll', () => {
 
   it('says so once, and claims nothing, when the cell-height shape has moved', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => { /* quiet */ })
-    // What an xterm upgrade reshaping dimensions leaves behind: the install
-    // guard still passes (_renderService is there), so this is the only place
-    // a dead touch path can announce itself.
+    // An xterm upgrade that reshapes dimensions: the install guard still
+    // passes (_renderService exists), so this warning is the only signal.
     const f = fakeTerm({ dimensions: {} })
     expect(patchTouchScroll(f.term)).not.toBeNull()
     f.swipe(400)
     f.swipe(400)
     expect(f.reports).toHaveLength(0)
-    // Nothing claimed: the gesture is left to the browser, exactly as it was
-    // before this patch existed, so a tap is still a tap.
+    // Nothing is claimed: the browser handles the gesture, so a tap is still
+    // a tap.
     expect(f.prevented).toBe(0)
     expect(warn).toHaveBeenCalledTimes(1)
     warn.mockRestore()
   })
 
-  // Canaries for the pinned dependency (same convention as selection.test.ts):
-  // the patch reaches into private xterm internals, so an upgrade that renames
-  // or mangles them must fail here rather than silently leaving a phone with
-  // no way to scroll a pane.
+  // Canary (as in selection.test.ts): the patch uses private xterm internals,
+  // so an upgrade that renames them must fail here instead of silently
+  // breaking touch scrolling.
   it('still finds the private names in the shipped xterm bundle', () => {
     const require = createRequire(import.meta.url)
     const bundle = readFileSync(require.resolve('@xterm/xterm'), 'utf8')
@@ -357,15 +354,13 @@ describe('patchTouchScroll', () => {
     expect(bundle).toContain('triggerMouseEvent')
     expect(bundle).toContain('areMouseEventsActive')
     expect(bundle).toContain('_renderService')
-    // Not just the service: the shape under it. Its own guard can only prove
-    // _renderService exists, so a reshaped `dimensions` would leave the patch
-    // reporting success with every gesture dead — the one failure here that
-    // isn't loud on its own.
+    // Also check the shape under the service: the patch's guard only proves
+    // _renderService exists, so a reshaped `dimensions` would fail silently.
     expect(bundle).toContain('dimensions.css.cell.height')
   })
 
-  // The gesture is only claimable because the browser was told not to pan;
-  // the rule and the handler are two halves of one mechanism.
+  // The handler can only claim the gesture because CSS tells the browser not
+  // to pan.
   it('the stylesheet still takes touch-action away from the terminal', () => {
     const css = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
     expect(css).toMatch(/\.xterm\s*\{[^}]*touch-action:\s*none/)
