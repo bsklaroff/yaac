@@ -399,7 +399,7 @@ Each worktree runs as a single-pod Kubernetes Job with the following mounts. The
 | Host | Container | Description |
 |------|-----------|-------------|
 | `~/.yaac/global/projects/<project>/worktrees/<worktree-id>` | `/workspace` | Project code (working directory) |
-| `~/.yaac/global/projects/<project>/repo/.git` | `/repo/.git` | Repository metadata |
+| `~/.yaac/global/projects/<project>/repo/.git` | the server's own path to it, read-only | The project's main clone, whose objects the worktree's own clone in `/workspace` borrows |
 | `~/.yaac/global/projects/<project>/claude/` | `/home/yaac/.claude` | Claude Code configuration |
 | `~/.yaac/global/projects/<project>/codex/` | `/home/yaac/.codex` | Codex configuration and transcripts |
 | `~/.yaac/global/projects/<project>/opencode-config/` | `/home/yaac/.config/opencode` | OpenCode configuration (shared per project) |

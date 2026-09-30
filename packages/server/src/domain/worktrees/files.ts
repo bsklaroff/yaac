@@ -13,21 +13,24 @@ import type {
   WorktreeFileSaved,
   WorktreeGitStatus,
 } from '@yaac/shared/types'
-import { listCheckoutFiles, worktreeAheadBehind } from '#domain/git'
+import { lastFetchedAtMs } from '#domain/git'
 import {
   ConfinedPathError, openExactDir, openRoot, type ConfinedRoot, type PinnedDir,
 } from '#lib/confined-fs'
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import { MAX_TEXT_FILE_BYTES, isBinaryContent } from '#lib/text-file'
 import { worktreeForkBranch } from './fork-branch'
-import { resolveWorktreeRecord } from './resolve'
+import { checkoutAheadBehind, listCheckoutFiles } from './checkout-git'
+import { resolveWorktreeContainer, resolveWorktreeRecord } from './resolve'
 
 /**
  * The webapp file editor's view of a worktree's checkout (docs/file-editor.md):
- * list, read, write, create, rename and delete, done with plain `fs` against
+ * read, write, create, rename and delete, done with plain `fs` against
  * `worktreeDir` — the server's own mount of the checkout under k8s, the host
- * checkout itself under containerless — so a stopped worktree browses and
- * edits like a running one, and no driver is involved.
+ * checkout itself under containerless — so a stopped worktree's files open
+ * and save like a running one's, and no driver is involved. The listing and
+ * the ahead/behind count are the exceptions: they need the checkout's git,
+ * which runs inside the workspace, so they answer only while it runs.
  *
  * Every path here is a SECURITY BOUNDARY under k8s: the checkout is the
  * sandboxed agent's to shape, and the server pod can see `server-local/`.
@@ -64,6 +67,17 @@ async function openCheckout(idOrName: string): Promise<Checkout> {
   } catch {
     throw new ServerError('NOT_FOUND', `worktree ${idOrName} has no checkout`)
   }
+}
+
+/**
+ * The running workspace a git read has to happen in. A worktree that exists
+ * but is not running is `CONFLICT` — "start it" — whether or not its
+ * substrate still has a unit for it; only an unknown one is `NOT_FOUND`.
+ */
+async function runningWorkspace(idOrName: string): Promise<{ jobName: string; projectSlug: string; worktreeId: string }> {
+  const { jobName } = await resolveWorktreeRecord(idOrName)
+  if (jobName === undefined) throw new ServerError('CONFLICT', `worktree ${idOrName} is not running`)
+  return resolveWorktreeContainer(idOrName, { requireRunning: true })
 }
 
 /** The lexical half of confinement (`ConfinedRoot.normalize`), as a
@@ -230,8 +244,9 @@ async function findEmptyDirs(
  * folders holding no file, what each symlink leads to, and git status.
  */
 export async function listWorktreeFiles(idOrName: string): Promise<WorktreeFiles> {
+  const { jobName } = await runningWorkspace(idOrName)
   const co = await openCheckout(idOrName)
-  const listing = await listCheckoutFiles(repoDir(co.projectSlug), co.worktreeId, co.dir)
+  const listing = await listCheckoutFiles(jobName)
   // One cap for every list the answer carries, so no checkout — however
   // many ignored or untracked files it holds — makes it unbounded.
   const truncated = listing.paths.length > MAX_LISTED_PATHS || listing.ignored.length > MAX_LISTED_PATHS
@@ -265,12 +280,15 @@ export async function listWorktreeFiles(idOrName: string): Promise<WorktreeFiles
  * the worktree forked from — the same default the Changes diff takes.
  */
 export async function getWorktreeGitStatus(idOrName: string, base?: string): Promise<WorktreeGitStatus> {
-  const co = await openCheckout(idOrName)
-  const branch = base?.trim() || await worktreeForkBranch(co.projectSlug, co.worktreeId)
+  const { jobName, projectSlug, worktreeId } = await runningWorkspace(idOrName)
+  const branch = base?.trim() || await worktreeForkBranch(projectSlug, worktreeId)
   if (!branch) return { base: null, comparison: null }
-  const found = await worktreeAheadBehind(repoDir(co.projectSlug), co.worktreeId, co.dir, branch)
+  const found = await checkoutAheadBehind(jobName, branch)
   if (!found) return { base: branch, comparison: null }
-  const { fetchedAtMs, ...comparison } = found
+  const { remote, ...comparison } = found
+  const fetchedAtMs = remote
+    ? await lastFetchedAtMs(repoDir(projectSlug), branch, path.join(worktreeDir(projectSlug, worktreeId), '.git'))
+    : null
   return {
     base: branch,
     comparison: fetchedAtMs === null ? comparison : { ...comparison, fetchedAt: formatUtcTimestamp(fetchedAtMs) },

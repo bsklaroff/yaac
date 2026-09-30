@@ -69,7 +69,7 @@ filesystem.
 | | k8s | containerless |
 |---|---|---|
 | checkout | `/workspace` | `~/.yaac/global/projects/<slug>/worktrees/<id>` |
-| project git dir | `/repo/.git` | `~/.yaac/global/projects/<slug>/repo/.git` |
+| project main clone | the server's own path, read-only | `~/.yaac/global/projects/<slug>/repo/.git` |
 | tmux socket | `/tmp/yaac-tmux/server` (pod-local) | `$TMPDIR/yaac-cl-<hash>/<id>.sock` |
 | scratch | `/tmp` | the worktree's own state dir |
 | ACP record | `/home/yaac/.yaac-acp` (mounted) | `~/.yaac/global/projects/<slug>/acp/<id>` |
@@ -84,16 +84,15 @@ worktree's conversation stays readable (docs/agent-modes.md).
 
 Because the checkout the agent sees IS the one the server made, the review
 diff is host `git` run in that directory rather than an exec into anything.
-The launch still runs the same gitdir rewrite k8s does (`buildWorktreeLinkExec`
-over this driver's `WorkspacePaths`): on a fresh create it rewrites host
-paths with themselves, but a checkout last started under k8s holds pod
-paths (`/repo/…`, `/workspace/.git`) that it points back at the host.
-The k8s launch does the mirror, so a stopped worktree restarts on either
-substrate. The pointers hold one view at a time, though, so a switch must
-take the outgoing substrate's workspaces down first — a k8s Job or a host
-tmux session left running loses git the moment the other side restarts
-that worktree, and neither server can see the other's workspaces to stop
-them.
+The checkout is a clone of its own whose one path-shaped piece of git state
+is its alternates line, naming the main clone's objects as the server sees
+them (docs/server-git.md). A pod mounts the main clone at that same path, so
+the line is the same in every view, and the launch rewrites it on both
+drivers (`buildCloneLinkExec`), which heals a checkout last launched by a
+server that saw the data dir elsewhere — so a stopped worktree restarts on
+either substrate. A switch must still take the outgoing substrate's
+workspaces down first: two agents in one checkout is not something either
+server can see or stop, since neither sees the other's workspaces.
 
 ## Storage: the same three folders, no volumes
 

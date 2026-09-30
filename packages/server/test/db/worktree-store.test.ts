@@ -89,7 +89,7 @@ describe('session store', () => {
       vi.setSystemTime(claimT)
 
       await claimSpareWorktree('proj', 'spare1', {
-        baseBranch: 'dev', permissionMode: 'plan', mode: 'acp', model: 'claude-opus-5-5',
+        permissionMode: 'plan', mode: 'acp', model: 'claude-opus-5-5',
       })
 
       expect(await getWorktreeRow('proj', 'spare1')).toMatchObject({
@@ -98,7 +98,6 @@ describe('session store', () => {
         createdAt: claimT,
         // …but it is the warmed row: only warming stamps the life.
         lifeStartedAt: warmT,
-        baseBranch: 'dev',
         permissionMode: 'plan',
         mode: 'acp',
         model: 'claude-opus-5-5',
@@ -114,7 +113,7 @@ describe('session store', () => {
       await warmSpare()
       const warmed = (await getWorktreeRow('proj', 'spare1'))!
       await claimSpareWorktree('proj', 'spare1', {
-        baseBranch: 'dev', permissionMode: 'plan', mode: 'acp', model: 'claude-opus-5-5',
+        permissionMode: 'plan', mode: 'acp', model: 'claude-opus-5-5',
       })
       await applyWorktreeEvent({
         type: 'sessions-launched', projectSlug: 'proj', worktreeId: 'spare1',

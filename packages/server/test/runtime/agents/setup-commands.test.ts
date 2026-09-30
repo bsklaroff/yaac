@@ -1,12 +1,16 @@
 import fs from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import {
-  buildUpstreamExec,
+  buildCloneLinkExec,
+  buildOriginRefreshExec,
   buildWindowsExec,
-  buildWorktreeLinkExec,
   validateInitWindows,
 } from '#runtime/agents/setup-commands'
+import { cloneRepo, createCheckout, fetchOrigin } from '#domain/git'
+import { execFileAsync } from '#lib/shell'
+import { git } from '@yaac/test-utils/git'
 import { WORKTREE_INIT_SCRIPT, worktreeBinDir } from '#domain/worktrees/worktree-bin'
 import { PROXY_CA_BUNDLE_PATH } from '#drivers/k8s/egress/proxy-client'
 import { AGENT_TOOLS } from '@yaac/shared/types'
@@ -17,22 +21,78 @@ import { workspacePathsFixture } from '@yaac/test-utils/fake-driver'
 const PATHS = workspacePathsFixture()
 const TMUX = `tmux -S ${PATHS.tmuxSock}`
 
-describe('buildWorktreeLinkExec', () => {
-  it('rewrites the gitdir pair and drops the prune lock in one command', () => {
-    const cmd = buildWorktreeLinkExec('sid-1', PATHS)
-    expect(cmd).toBe(
-      "echo 'gitdir: /repo/.git/worktrees/sid-1' > /workspace/.git"
-      + " && echo '/workspace/.git' > /repo/.git/worktrees/sid-1/gitdir"
-      + " && printf 'yaac worktree sid-1' > /repo/.git/worktrees/sid-1/locked",
-    )
-  })
-})
+/**
+ * A main clone and a checkout cloned from it, on this disk, with the
+ * commands run for real — the checkout's path standing in for /workspace,
+ * which on a host workspace is exactly what it is.
+ */
+describe('clone refresh commands', () => {
+  let tmp: string
+  let source: string
+  let main: string
+  let wt: string
+  const run = (cmd: string): Promise<unknown> => execFileAsync('sh', ['-c', cmd])
+  const commit = async (repo: string, msg: string): Promise<void> => {
+    await git(repo, ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', msg])
+  }
+  const tip = async (repo: string, ref: string): Promise<string> => (await git(repo, ['rev-parse', ref])).trim()
 
-describe('buildUpstreamExec', () => {
-  it('sets the upstream from inside /workspace, shell-escaped', () => {
-    expect(buildUpstreamExec('origin/release/2.x', PATHS)).toBe(
-      "git -C /workspace branch --set-upstream-to 'origin/release/2.x'",
-    )
+  beforeAll(async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-refresh-'))
+    source = path.join(tmp, 'source')
+    await fs.mkdir(source)
+    await git(source, ['init', '-q', '-b', 'main'])
+    await commit(source, 'initial')
+    await git(source, ['checkout', '-q', '-b', 'forced'])
+    await commit(source, 'forced one')
+    await git(source, ['checkout', '-q', 'main'])
+    main = path.join(tmp, 'repo')
+    await cloneRepo(source, main, null)
+    wt = path.join(tmp, 'wt')
+    await createCheckout(main, wt, { branch: 'agent/x', baseBranch: 'main', remoteUrl: source })
+  })
+
+  afterAll(async () => {
+    await fs.rm(tmp, { recursive: true, force: true })
+  })
+
+  describe('buildCloneLinkExec', () => {
+    it('rewrites the alternates line to the main clone as the server sees it', async () => {
+      await fs.writeFile(path.join(wt, '.git', 'objects', 'info', 'alternates'), '/yaac/global/elsewhere/.git/objects\n')
+      await run(buildCloneLinkExec(path.join(main, '.git'), workspacePathsFixture({ workspaceDir: wt })))
+      expect(await fs.readFile(path.join(wt, '.git', 'objects', 'info', 'alternates'), 'utf8'))
+        .toBe(`${path.join(main, '.git', 'objects')}\n`)
+      expect((await git(wt, ['status', '--porcelain'])).trim()).toBe('')
+    })
+  })
+
+  describe('buildOriginRefreshExec', () => {
+    it('fast-forwards origin/* from the main clone and moves nothing back', async () => {
+      const cmd = buildOriginRefreshExec(path.join(main, '.git'), workspacePathsFixture({ workspaceDir: wt }))
+      // Upstream: main moves on, a branch appears, `forced` is rewritten.
+      await commit(source, 'upstream')
+      await git(source, ['branch', 'fresh'])
+      await git(source, ['branch', '-f', 'forced', 'main'])
+      // The agent fetched `ahead` itself, past what the main clone has seen.
+      await git(source, ['branch', 'ahead'])
+      await git(wt, ['fetch', '-q', source, 'refs/heads/ahead:refs/remotes/origin/ahead'])
+      await git(source, ['branch', '-f', 'ahead', 'main~1'])
+      const forcedBefore = await tip(wt, 'origin/forced')
+      await fs.writeFile(path.join(wt, '.git', 'FETCH_HEAD'), 'the agent\'s\n')
+      await fetchOrigin(main, source, null)
+      const objects = await git(wt, ['count-objects', '-v'])
+
+      await run(cmd)
+
+      expect(await tip(wt, 'origin/main')).toBe(await tip(source, 'main'))
+      expect(await tip(wt, 'origin/fresh')).toBe(await tip(source, 'fresh'))
+      // Not a fast-forward: left for the agent's own fetch.
+      expect(await tip(wt, 'origin/forced')).toBe(forcedBefore)
+      expect(await tip(wt, 'origin/ahead')).toBe(await tip(source, 'main'))
+      expect(await fs.readFile(path.join(wt, '.git', 'FETCH_HEAD'), 'utf8')).toBe('the agent\'s\n')
+      // Everything it moved to was already reachable through the alternate.
+      expect(await git(wt, ['count-objects', '-v'])).toBe(objects)
+    })
   })
 })
 

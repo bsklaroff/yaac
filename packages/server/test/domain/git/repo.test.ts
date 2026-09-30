@@ -3,19 +3,17 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import {
-  addWorktree,
   cloneRepo,
+  createCheckout,
   fetchOrigin,
   getDefaultBranch,
-  listCheckoutFiles,
+  lastFetchedAtMs,
   listRemoteBranches,
   listTreeSubdirs,
+  maintainRepo,
   readBlobAt,
   remoteBranchExists,
-  resolveLocalBranch,
   resolveRemoteRef,
-  worktreeAheadBehind,
-  worktreeUpstreamBranch,
 } from '#domain/git'
 import { serverLocalPath } from '@yaac/shared/paths'
 import { git } from '@yaac/test-utils/git'
@@ -132,12 +130,15 @@ async function expectUntouched(h: Hostile): Promise<void> {
 }
 
 describe('cloneRepo', () => {
-  it('clones a repo into a destination', async () => {
+  it('clones a repo into a destination, pinned against pruning', async () => {
     const dest = path.join(tmpDir, 'clone')
     await cloneRepo(sourceRepo, dest, null)
 
     const cloned = await fs.readFile(path.join(dest, 'hello.txt'), 'utf8')
     expect(cloned).toBe('hello world\n')
+    // Git run in the main clone without the server's pins must not prune
+    // what the checkouts borrow either.
+    expect((await git(dest, ['config', 'gc.pruneExpire'])).trim()).toBe('never')
   })
 })
 
@@ -196,233 +197,100 @@ describe('getDefaultBranch', () => {
   })
 })
 
-describe('addWorktree', () => {
-  it('creates a worktree with a new branch', async () => {
-    const wtPath = path.join(tmpDir, 'worktree')
-    await addWorktree(sourceRepo, wtPath, 'agent/test-session')
-
-    // Verify worktree exists and has files
-    const content = await fs.readFile(path.join(wtPath, 'hello.txt'), 'utf8')
-    expect(content).toBe('hello world\n')
-
-    // Verify branch was created
-    const branch = await git(wtPath, ['rev-parse', '--abbrev-ref', 'HEAD'])
-    expect(branch.trim()).toBe('agent/test-session')
-  })
-
-  it('checks out a hostile clone without running anything it planted', async () => {
-    // What the server's own checkout of a pod-written repository must not
-    // do: run its filter driver, its hooks or its fsmonitor. The tree is
-    // the committed bytes — no smudge touched them.
-    const h = await hostileClone()
-    const defaultBranch = await getDefaultBranch(h.clone)
-    const wtPath = path.join(tmpDir, 'wt-hostile')
-    await addWorktree(h.clone, wtPath, 'agent/hostile', `origin/${defaultBranch}`)
-
-    expect(await fs.readFile(path.join(wtPath, 'hello.txt'), 'utf8')).toBe('hello world\n')
-    // The checkout names the REAL admin dir — git itself reached it through
-    // a throwaway git dir whose path it would otherwise have written here.
-    expect(await fs.readFile(path.join(wtPath, '.git'), 'utf8'))
-      .toBe(`gitdir: ${path.join(h.clone, '.git', 'worktrees', 'wt-hostile')}\n`)
-    await expectUntouched(h)
-
-    // The rollback runs git against the same repository: fail AFTER the add
-    // has made the branch and the admin dir, with a `.git` directory in the
-    // way of the checkout's `.git` file.
-    const blocked = path.join(tmpDir, 'wt-bad')
-    await fs.mkdir(path.join(blocked, '.git'), { recursive: true })
-    await fs.writeFile(path.join(blocked, '.git', 'blocker'), 'x')
-    await expect(addWorktree(h.clone, blocked, 'agent/bad', `origin/${defaultBranch}`)).rejects.toThrow()
-    const gitDir = path.join(h.clone, '.git')
-    await expect(fs.access(path.join(gitDir, 'worktrees', 'wt-bad'))).rejects.toThrow()
-    await expect(fs.access(path.join(gitDir, 'refs', 'heads', 'agent', 'bad'))).rejects.toThrow()
-    await expectUntouched(h)
-  })
-
-  it('leaves a sibling worktree alone when its admin gitdir names a pod path', async () => {
-    // Every worktree yaac has started has an admin `gitdir` rewritten to the
-    // CONTAINER's view of itself (`/workspace/.git`, see
-    // buildWorktreeLinkExec) — a path that means something quite different in
-    // whatever namespace the server happens to be running in.
-    //
-    // `git worktree repair` is not scoped to the path it is handed: it walks
-    // every worktree in the repo and, wherever a `gitdir` no longer resolves,
-    // writes a fresh `.git` file at the path that file names. Using it here
-    // would follow those pod paths out of the repo and overwrite whatever
-    // real directory sits at the far end — inside a nested yaac or an e2e run
-    // in a session, that is a live worktree someone is working in.
-    const first = path.join(tmpDir, 'first')
-    await addWorktree(sourceRepo, first, 'agent/first')
-    const adminDir = (await fs.readFile(path.join(first, '.git'), 'utf8'))
-      .replace(/^gitdir:/, '').trim()
-
-    // Stand in for /workspace: a directory that is not this repo's business.
-    const bystander = path.join(tmpDir, 'bystander')
-    await fs.mkdir(bystander, { recursive: true })
-    await fs.writeFile(path.join(adminDir, 'gitdir'), `${bystander}/.git\n`)
-
-    await addWorktree(sourceRepo, path.join(tmpDir, 'second'), 'agent/second')
-
-    expect(await fs.readdir(bystander)).toEqual([])
-    // The second worktree is still fully wired: its own admin entry points
-    // at it, which is the whole of the repair it needs.
-    const second = path.join(tmpDir, 'second')
-    expect((await git(second, ['status', '--porcelain'])).trim()).toBe('')
-    expect((await git(second, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim()).toBe('agent/second')
-  })
-
-  it('checks out into a destination that already holds the pod mount points', async () => {
-    // /workspace is a bind of the worktree dir, so an ephemeral-module
-    // mount at /workspace/frontends/node_modules is a directory ON the host
-    // worktree before the checkout runs — and `git worktree add` refuses any
-    // destination that is not an empty dir, `--force` included. This is the
-    // case the staged checkout exists for.
+describe('createCheckout', () => {
+  it('makes a clone of its own that borrows every object from the main clone', async () => {
+    await git(sourceRepo, ['branch', 'feature'])
+    await git(sourceRepo, ['tag', 'v1'])
     await fs.mkdir(path.join(sourceRepo, 'frontends'), { recursive: true })
     await fs.writeFile(path.join(sourceRepo, 'frontends', 'app.txt'), 'app\n')
     await git(sourceRepo, ['add', '.'])
     await git(sourceRepo, ['commit', '-m', 'frontends'])
+    const main = path.join(tmpDir, 'main')
+    await cloneRepo(sourceRepo, main, null)
+    const base = await getDefaultBranch(main)
 
+    // /workspace is a bind of the worktree dir, so the pod's module mount
+    // points are directories ON it before the checkout runs, and the pod may
+    // already hold the dir itself.
     const wtPath = path.join(tmpDir, 'worktree')
-    await fs.mkdir(path.join(wtPath, 'node_modules'), { recursive: true })
     await fs.mkdir(path.join(wtPath, 'frontends', 'node_modules'), { recursive: true })
+    const inode = (await fs.stat(wtPath)).ino
 
-    await addWorktree(sourceRepo, wtPath, 'agent/mounted')
+    await createCheckout(main, wtPath, { branch: 'agent/wt', baseBranch: base, remoteUrl: sourceRepo })
 
-    expect(await fs.readFile(path.join(wtPath, 'hello.txt'), 'utf8')).toBe('hello world\n')
+    expect((await fs.stat(wtPath)).ino).toBe(inode)
+    expect((await fs.stat(path.join(wtPath, '.git'))).isDirectory()).toBe(true)
     expect(await fs.readFile(path.join(wtPath, 'frontends', 'app.txt'), 'utf8')).toBe('app\n')
-    // The mount points survive — the pod may already be bound to them — and
-    // the checked-out tree is clean.
-    expect(await fs.readdir(path.join(wtPath, 'node_modules'))).toEqual([])
     expect(await fs.readdir(path.join(wtPath, 'frontends', 'node_modules'))).toEqual([])
-    expect((await git(wtPath, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim()).toBe('agent/mounted')
     expect((await git(wtPath, ['status', '--porcelain'])).trim()).toBe('')
-
-    // The admin dir keeps the destination's basename — the in-pod relink
-    // addresses it as /repo/.git/worktrees/<session id> — and points back at
-    // the real worktree, not at the staging dir the checkout was born in.
-    expect(await fs.readdir(path.join(sourceRepo, '.git', 'worktrees'))).toEqual(['worktree'])
-    const gitdir = await fs.readFile(
-      path.join(sourceRepo, '.git', 'worktrees', 'worktree', 'gitdir'), 'utf8')
-    expect(gitdir.trim()).toBe(path.join(await fs.realpath(wtPath), '.git'))
+    // Borrowed, not copied: one alternates line, the main clone's objects.
+    expect(await fs.readFile(path.join(wtPath, '.git', 'objects', 'info', 'alternates'), 'utf8'))
+      .toBe(`${path.join(main, '.git', 'objects')}\n`)
+    expect(await git(wtPath, ['count-objects', '-v'])).toMatch(/^count: 0$[\s\S]*^in-pack: 0$/m)
+    // Its own refs: main's origin/* and tags, and its branch with an upstream.
+    const refs = (repo: string): Promise<string> =>
+      git(repo, ['for-each-ref', '--format=%(objectname) %(refname)', 'refs/remotes/origin', 'refs/tags'])
+    expect(await refs(wtPath)).toBe(await refs(main))
+    expect((await git(wtPath, ['symbolic-ref', 'refs/remotes/origin/HEAD'])).trim()).toBe(`refs/remotes/origin/${base}`)
+    expect((await git(wtPath, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim()).toBe('agent/wt')
+    expect((await git(wtPath, ['rev-parse', '--abbrev-ref', '@{u}'])).trim()).toBe(`origin/${base}`)
+    expect((await git(wtPath, ['config', 'remote.origin.url'])).trim()).toBe(sourceRepo)
+    // Nothing of it is in the main clone.
+    expect(await git(main, ['branch', '--list', 'agent/*'])).toBe('')
+    await expect(fs.access(path.join(main, '.git', 'worktrees'))).rejects.toThrow()
     expect(await fs.readdir(tmpDir)).not.toContain('.staging-worktree')
+
+    // A commit in the clone lands in the clone, and a sibling sees none of
+    // its git state.
+    await git(wtPath, ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '--allow-empty', '-m', 'mine'])
+    await git(wtPath, ['config', 'core.hooksPath', '/nowhere'])
+    const sibling = path.join(tmpDir, 'sibling')
+    await createCheckout(main, sibling, { branch: 'agent/sib', baseBranch: base, remoteUrl: sourceRepo })
+    expect(await git(sibling, ['branch', '--list', 'agent/wt'])).toBe('')
+    await expect(git(sibling, ['config', 'core.hooksPath'])).rejects.toThrow()
   })
 
-  it('rolls a failed add back so the same id can be retried', async () => {
-    // A create that dies here is a never-started session, and restarting
-    // one resumes the SAME id — so the branch and the registration the
-    // staged add creates before the fallible steps must not survive it.
-    // A `.git` that is a non-empty DIRECTORY fails writing the checkout's
-    // `.git` file after the add has already made both.
-    const wtPath = path.join(tmpDir, 'worktree')
-    await fs.mkdir(path.join(wtPath, '.git'), { recursive: true })
-    await fs.writeFile(path.join(wtPath, '.git', 'blocker'), 'x')
-
-    await expect(addWorktree(sourceRepo, wtPath, 'agent/retried')).rejects.toThrow()
-
-    const worktreesDir = path.join(sourceRepo, '.git', 'worktrees')
-    expect(await fs.readdir(worktreesDir).catch(() => [])).toEqual([])
-    expect(await git(sourceRepo, ['branch', '--list', 'agent/retried'])).toBe('')
-    // The blocker is not ours to remove — only a `.git` this call wrote is.
-    expect(await fs.readdir(path.join(wtPath, '.git'))).toEqual(['blocker'])
-    expect(await fs.readdir(tmpDir)).not.toContain('.staging-worktree')
-
-    await fs.rm(path.join(wtPath, '.git'), { recursive: true, force: true })
-    await addWorktree(sourceRepo, wtPath, 'agent/retried')
+  it('checks out from a hostile main clone without running anything it planted', async () => {
+    const h = await hostileClone()
+    const wtPath = path.join(tmpDir, 'wt-hostile')
+    await createCheckout(h.clone, wtPath, {
+      branch: 'agent/hostile', baseBranch: await getDefaultBranch(h.clone), remoteUrl: sourceRepo,
+    })
     expect(await fs.readFile(path.join(wtPath, 'hello.txt'), 'utf8')).toBe('hello world\n')
-    expect(await fs.readdir(worktreesDir)).toEqual(['worktree'])
+    // The clone's config is the server's: plain git reads it, and none of
+    // the main clone's hooks, filters or rewrites came along.
+    expect((await git(wtPath, ['config', '--list', '--local'])).split('\n').filter(Boolean).map((l) => l.split('=')[0]).sort())
+      .toEqual([
+        'branch.agent/hostile.merge', 'branch.agent/hostile.remote', 'core.bare', 'core.filemode', 'core.logallrefupdates',
+        'core.repositoryformatversion', 'remote.origin.fetch', 'remote.origin.url',
+      ])
+    await expectUntouched(h)
   })
 
-  it('checks out over a crashed attempt half-written tree', async () => {
-    // Same never-started restart path, one step further along: the earlier
-    // attempt got tracked files down but no `.git`. An empty index makes
-    // every one of them untracked, and an unforced checkout refuses to
-    // overwrite an untracked file even byte-for-byte.
+  it('leaves nothing behind when it fails, and a retry checks out over a half-written tree', async () => {
+    const main = path.join(tmpDir, 'main')
+    await cloneRepo(sourceRepo, main, null)
     const wtPath = path.join(tmpDir, 'worktree')
-    await fs.mkdir(path.join(wtPath, 'node_modules'), { recursive: true })
+    await expect(createCheckout(main, wtPath, { branch: 'agent/r', baseBranch: 'no-such-branch', remoteUrl: sourceRepo }))
+      .rejects.toThrow()
+    await expect(fs.access(path.join(wtPath, '.git'))).rejects.toThrow()
+    expect(await fs.readdir(tmpDir)).not.toContain('.staging-worktree')
+
+    // An earlier attempt got tracked files down but no `.git`: every one is
+    // untracked to a new index, which an unforced checkout would refuse.
+    await fs.mkdir(wtPath, { recursive: true })
     await fs.writeFile(path.join(wtPath, 'hello.txt'), 'half-written\n')
-
-    await addWorktree(sourceRepo, wtPath, 'agent/crashed')
-
+    await createCheckout(main, wtPath, { branch: 'agent/r', baseBranch: await getDefaultBranch(main), remoteUrl: sourceRepo })
     expect(await fs.readFile(path.join(wtPath, 'hello.txt'), 'utf8')).toBe('hello world\n')
-    expect(await fs.readdir(path.join(wtPath, 'node_modules'))).toEqual([])
-    expect((await git(wtPath, ['status', '--porcelain'])).trim()).toBe('')
   })
 
-  it('creates a worktree from a start point without writing tracking config', async () => {
-    // Clone so we have a remote called "origin"
-    const cloneDir = path.join(tmpDir, 'clone')
-    await cloneRepo(sourceRepo, cloneDir, null)
-
-    const defaultBranch = await getDefaultBranch(cloneDir)
-    const configPath = path.join(cloneDir, '.git', 'config')
-    const configBefore = await fs.readFile(configPath, 'utf8')
-    const wtPath = path.join(tmpDir, 'worktree')
-    await addWorktree(cloneDir, wtPath, 'agent/test-untracked', `origin/${defaultBranch}`)
-
-    // The branch starts at the remote head...
-    const head = await git(wtPath, ['rev-parse', 'HEAD'])
-    const remoteHead = await git(wtPath, ['rev-parse', `origin/${defaultBranch}`])
-    expect(head.trim()).toBe(remoteHead.trim())
-
-    // ...but no tracking entry may be written: host-side rewrites of the
-    // shared .git/config go stale under the virtiofs cache session pods
-    // read through (transient "unknown error occurred while reading the
-    // configuration files" in-pod). The upstream is set from inside the
-    // pod at session setup instead.
-    const configAfter = await fs.readFile(configPath, 'utf8')
-    expect(configAfter).toBe(configBefore)
-    await expect(
-      git(wtPath, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']),
-    ).rejects.toThrow()
-  })
-
-  it('concurrent worktree adds on one repo all succeed', async () => {
-    // With --no-track nothing writes .git/config, so concurrent adds have
-    // no lock to race and need no serialization — they must all land.
-    const cloneDir = path.join(tmpDir, 'clone')
-    await cloneRepo(sourceRepo, cloneDir, null)
-    const defaultBranch = await getDefaultBranch(cloneDir)
-
-    const adds = Array.from({ length: 5 }, (_, i) =>
-      addWorktree(
-        cloneDir,
-        path.join(tmpDir, `wt-${i}`),
-        `agent/concurrent-${i}`,
-        `origin/${defaultBranch}`,
-      ))
-    await expect(Promise.all(adds)).resolves.toBeDefined()
-
-    for (let i = 0; i < 5; i++) {
-      const branch = await git(path.join(tmpDir, `wt-${i}`), ['rev-parse', '--abbrev-ref', 'HEAD'])
-      expect(branch.trim()).toBe(`agent/concurrent-${i}`)
-    }
-  })
-
-  it('a failed worktree add does not affect a concurrent add on the same repo', async () => {
-    const cloneDir = path.join(tmpDir, 'clone')
-    await cloneRepo(sourceRepo, cloneDir, null)
-    const defaultBranch = await getDefaultBranch(cloneDir)
-
-    const bad = addWorktree(cloneDir, path.join(tmpDir, 'wt-bad'), 'agent/dup', 'origin/does-not-exist')
-    const good = addWorktree(cloneDir, path.join(tmpDir, 'wt-good'), 'agent/ok', `origin/${defaultBranch}`)
-
-    await expect(bad).rejects.toThrow()
-    await expect(good).resolves.toBeUndefined()
-  })
-
-  it('creates worktree from startPoint with latest remote content', async () => {
-    const cloneDir = path.join(tmpDir, 'clone')
-    await cloneRepo(sourceRepo, cloneDir, null)
-    await commitToSource('new-file.txt', 'new content')
-    await fetchOrigin(cloneDir, sourceRepo, null)
-
-    // Create worktree from origin/<default> — should include the new commit
-    const defaultBranch = await getDefaultBranch(cloneDir)
-    const wtPath = path.join(tmpDir, 'wt-startpoint')
-    await addWorktree(cloneDir, wtPath, 'agent/from-origin', `origin/${defaultBranch}`)
-
-    const content = await fs.readFile(path.join(wtPath, 'new-file.txt'), 'utf8')
-    expect(content).toBe('new content\n')
+  it('refuses a shallow main clone', async () => {
+    const main = path.join(tmpDir, 'shallow')
+    await commitToSource('second.txt', 'second')
+    await git(tmpDir, ['clone', '-q', '--depth', '1', `file://${sourceRepo}`, main])
+    await expect(createCheckout(main, path.join(tmpDir, 'wt'), {
+      branch: 'agent/s', baseBranch: await getDefaultBranch(main), remoteUrl: sourceRepo,
+    })).rejects.toThrow(/shallow/)
   })
 })
 
@@ -540,15 +408,6 @@ describe('resolveRemoteRef', () => {
   })
 })
 
-describe('resolveLocalBranch', () => {
-  it('names the commit a local branch points at, and rejects a missing one', async () => {
-    const head = (await git(sourceRepo, ['rev-parse', 'HEAD'])).trim()
-    await git(sourceRepo, ['branch', 'agent/w1'])
-    expect(await resolveLocalBranch(sourceRepo, 'agent/w1')).toBe(head)
-    await expect(resolveLocalBranch(sourceRepo, 'no-such-branch')).rejects.toThrow()
-  })
-})
-
 describe('listRemoteBranches', () => {
   it('returns names newest-committed first, without HEAD', async () => {
     const defaultBranch = await getDefaultBranch(sourceRepo)
@@ -577,101 +436,74 @@ describe('listRemoteBranches', () => {
   })
 })
 
-describe('listCheckoutFiles', () => {
-  it('reads a checkout whose .git names a path that does not exist here', async () => {
-    const wtPath = path.join(tmpDir, 'wt-list')
-    await addWorktree(sourceRepo, wtPath, 'agent/wt-list')
-    // What the in-pod setup leaves behind: the container's own view.
-    await fs.writeFile(path.join(wtPath, '.git'), 'gitdir: /repo/.git/worktrees/wt-list\n')
-    await fs.writeFile(path.join(wtPath, '.gitignore'), '*.log\n')
-    await fs.writeFile(path.join(wtPath, 'hello.txt'), 'changed\n')
-    await fs.writeFile(path.join(wtPath, 'debug.log'), 'ignored\n')
-    await fs.mkdir(path.join(wtPath, 'fresh/empty'), { recursive: true })
+describe('maintainRepo', () => {
+  it('packs the main clone and never deletes an object a clone borrows', async () => {
+    // A clone of `feature`, which is then force-pushed upstream and fetched
+    // into the main clone, whose reflogs are expired: the clone's commit is
+    // now unreachable from anything the main clone can see.
+    const base = await getDefaultBranch(sourceRepo)
+    await git(sourceRepo, ['checkout', '-q', '-b', 'feature'])
+    await commitToSource('feat.txt', 'feature one')
+    await git(sourceRepo, ['checkout', '-q', base])
+    const main = path.join(tmpDir, 'main')
+    await cloneRepo(sourceRepo, main, null)
+    const wtPath = path.join(tmpDir, 'wt')
+    await createCheckout(main, wtPath, { branch: 'agent/m', baseBranch: 'feature', remoteUrl: sourceRepo })
+    await git(sourceRepo, ['branch', '-f', 'feature', base])
 
-    const listing = await listCheckoutFiles(sourceRepo, 'wt-list', wtPath)
-    expect(listing.paths.sort()).toEqual(['.gitignore', 'hello.txt'])
-    expect(listing.ignored).toEqual(['debug.log'])
-    expect(listing.untrackedDirs).toEqual(['fresh'])
-    expect(listing.status).toEqual({ '.gitignore': 'untracked', 'hello.txt': 'modified' })
-  })
+    // Enough fetched packs that `gc --auto` has work to do.
+    const packs = async (): Promise<number> =>
+      (await fs.readdir(path.join(main, '.git', 'objects', 'pack'))).filter((f) => f.endsWith('.pack')).length
+    const unpackLimit = { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'transfer.unpackLimit', GIT_CONFIG_VALUE_0: '1' }
+    Object.assign(process.env, unpackLimit)
+    try {
+      for (let i = 0; i < 52; i++) {
+        await commitToSource(`n${i}.txt`, `n${i}`)
+        await fetchOrigin(main, sourceRepo, null)
+      }
+    } finally {
+      for (const k of Object.keys(unpackLimit)) delete process.env[k]
+    }
+    await git(main, ['reflog', 'expire', '--expire=now', '--expire-unreachable=now', '--all'])
+    // Aged past git's default two-week prune expiry, so only the pins keep
+    // the clone's commit: a seconds-old unreachable object survives any gc.
+    const aged = new Date('2025-01-01T00:00:00Z')
+    const age = async (dir: string): Promise<void> => {
+      for (const e of await fs.readdir(dir, { withFileTypes: true })) {
+        const p = path.join(dir, e.name)
+        if (e.isDirectory()) await age(p)
+        await fs.utimes(p, aged, aged)
+      }
+    }
+    await age(path.join(main, '.git', 'objects'))
+    const before = await packs()
 
-  it('lists a hostile clone\'s checkout without running anything it planted', async () => {
-    // A same-size edit with a newer mtime is one `status` has to re-hash,
-    // which is where a clean filter runs; the listing's index reads are
-    // where fsmonitor and `post-index-change` would.
-    const h = await hostileClone()
-    const wtPath = path.join(tmpDir, 'wt-hostile-list')
-    await addWorktree(h.clone, wtPath, 'agent/hostile-list', 'origin/HEAD')
-    const file = path.join(wtPath, 'hello.txt')
-    await fs.writeFile(file, 'HELLO WORLD\n')
-    const later = new Date(Date.now() + 5_000)
-    await fs.utimes(file, later, later)
+    for (let i = 0; i < 3; i++) await maintainRepo(main)
 
-    const listing = await listCheckoutFiles(h.clone, 'wt-hostile-list', wtPath)
-    expect(listing.status).toEqual({ 'hello.txt': 'modified' })
-    await expectUntouched(h)
+    expect(await packs()).toBeLessThan(before)
+    await git(wtPath, ['fsck', '--connectivity-only'])
+    expect(await subjectAt(wtPath, 'agent/m')).toBe('feature one')
   })
 })
 
-describe('worktreeAheadBehind', () => {
-  it('counts HEAD against origin/<base>, else the local branch, following a rename', async () => {
-    const cloneDir = path.join(tmpDir, 'clone-ab')
-    await cloneRepo(sourceRepo, cloneDir, null)
-    const main = await getDefaultBranch(cloneDir)
-    const wtPath = path.join(tmpDir, 'wt-ab')
-    await addWorktree(cloneDir, wtPath, 'agent/ab', `origin/${main}`)
-    await git(cloneDir, ['config', 'user.email', 'test@test.com'])
-    await git(cloneDir, ['config', 'user.name', 'Test'])
-    // Two commits of the agent's, then a rename (HEAD is read through the
-    // admin dir, so it follows); one landed upstream and fetched.
-    await git(wtPath, ['commit', '--allow-empty', '-m', 'one'])
-    await git(wtPath, ['commit', '--allow-empty', '-m', 'two'])
-    await git(wtPath, ['branch', '-m', 'feature/renamed'])
-    await commitToSource('upstream.txt', 'upstream')
+describe('lastFetchedAtMs', () => {
+  it('is the newest of the server fetch record and the checkout\'s own fetches', async () => {
+    const main = path.join(tmpDir, 'main')
+    await cloneRepo(sourceRepo, main, null)
+    const base = await getDefaultBranch(main)
+    const wtPath = path.join(tmpDir, 'wt')
+    await createCheckout(main, wtPath, { branch: 'agent/f', baseBranch: base, remoteUrl: sourceRepo })
+    const gitDir = path.join(wtPath, '.git')
 
-    const fetchedBefore = Date.now()
-    await fetchOrigin(cloneDir, sourceRepo, null)
-    // A local-only branch, never pushed, at the fork point.
-    await git(cloneDir, ['branch', 'local-only', `origin/${main}~1`])
-
-    // The fetch just run is the newest on record; a local branch has none.
-    const counted = await worktreeAheadBehind(cloneDir, 'wt-ab', wtPath, main)
-    expect(counted).toMatchObject({ ref: `origin/${main}`, ahead: 2, behind: 1 })
-    expect(counted?.fetchedAtMs).toBeGreaterThanOrEqual(fetchedBefore)
-    expect(await worktreeAheadBehind(cloneDir, 'wt-ab', wtPath, 'local-only'))
-      .toEqual({ ref: 'local-only', ahead: 2, behind: 0, fetchedAtMs: null })
-    // A fetch the agent ran inside its worktree counts too: it leaves that
-    // worktree's FETCH_HEAD, which the server's fetches never touch.
-    // Whole seconds, so the filesystem stores it exactly.
+    const before = Date.now()
+    await fetchOrigin(main, sourceRepo, null)
+    expect(await lastFetchedAtMs(main, base, gitDir)).toBeGreaterThanOrEqual(before)
+    // A fetch the agent ran itself leaves the checkout's FETCH_HEAD. Whole
+    // seconds, so the filesystem stores it exactly.
     const agentFetch = new Date(Math.ceil(Date.now() / 1000) * 1000 + 60_000)
-    const fetchHead = path.join(cloneDir, '.git', 'worktrees', 'wt-ab', 'FETCH_HEAD')
-    await fs.writeFile(fetchHead, '')
-    await fs.utimes(fetchHead, agentFetch, agentFetch)
-    expect((await worktreeAheadBehind(cloneDir, 'wt-ab', wtPath, main))?.fetchedAtMs)
-      .toBe(agentFetch.getTime())
-    expect(await worktreeAheadBehind(cloneDir, 'wt-ab', wtPath, 'no-such-branch')).toBeNull()
-    // Not a branch name: a range would otherwise count something else.
-    expect(await worktreeAheadBehind(cloneDir, 'wt-ab', wtPath, `${main}..HEAD`)).toBeNull()
-  })
-})
-
-describe('worktreeUpstreamBranch', () => {
-  it('reads the tracked branch, null when unset or not a plain branch', async () => {
-    const cloneDir = path.join(tmpDir, 'clone-upstream')
-    await cloneRepo(sourceRepo, cloneDir, null)
-    const defaultBranch = await getDefaultBranch(cloneDir)
-
-    const wtPath = path.join(tmpDir, 'wt-upstream')
-    await addWorktree(cloneDir, wtPath, 'agent/up-test', `origin/${defaultBranch}`)
-    // addWorktree deliberately writes no tracking config
-    expect(await worktreeUpstreamBranch(cloneDir, 'agent/up-test')).toBeNull()
-
-    await git(wtPath, ['branch', '--set-upstream-to', `origin/${defaultBranch}`])
-    expect(await worktreeUpstreamBranch(cloneDir, 'agent/up-test')).toBe(defaultBranch)
-
-    // A pod writes this value, so anything but `refs/heads/<name>` is refused.
-    await git(cloneDir, ['config', 'branch.agent/up-test.merge', 'refs/tags/x y'])
-    expect(await worktreeUpstreamBranch(cloneDir, 'agent/up-test')).toBeNull()
+    await fs.writeFile(path.join(gitDir, 'FETCH_HEAD'), '')
+    await fs.utimes(path.join(gitDir, 'FETCH_HEAD'), agentFetch, agentFetch)
+    expect(await lastFetchedAtMs(main, base, gitDir)).toBe(agentFetch.getTime())
   })
 })
 

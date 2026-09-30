@@ -282,7 +282,7 @@ type MountOutcome = 'realized' | 'nothing-to-do' | 'nested' | 'in-workspace'
 
 async function realizeMount(
   mount: WorkspaceMount,
-  paths: { workspaceDir: string; repoGitDir: string },
+  paths: { workspaceDir: string },
   home: string,
 ): Promise<MountOutcome> {
   const { mountPath, source } = mount
@@ -296,9 +296,10 @@ async function realizeMount(
     )
   }
 
-  // Already where the workspace looks for it.
-  if (mountPath === paths.workspaceDir || mountPath === paths.repoGitDir) return 'nothing-to-do'
-  if (mountPath === '/workspace' || mountPath === '/repo/.git') return 'nothing-to-do'
+  // Already where the workspace looks for it: the checkout, and the main
+  // clone a pod mounts at the server's own path.
+  if (mountPath === paths.workspaceDir || mountPath === '/workspace') return 'nothing-to-do'
+  if (mountPath === source.path) return 'nothing-to-do'
 
   // A mount INTO the checkout is skipped rather than linked. Under a pod
   // these redirect cache volumes onto storage that is not the pod's
@@ -485,7 +486,6 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     ...(gitEmail !== undefined ? [`\temail = ${gitConfigValue(gitEmail)}`] : []),
     '[safe]',
     `\tdirectory = ${paths.workspaceDir}`,
-    `\tdirectory = ${paths.repoGitDir}`,
     ...gitAuth.gitconfig,
     '',
   ].join('\n')

@@ -18,6 +18,7 @@
 
 export { addProject, registerStagedProject } from './add'
 export { getProjectBranches } from './branches'
+export { fetchProjectOrigin, refreshProjectOrigins } from './origin'
 export {
   deleteBuildFile,
   listBuildFiles,

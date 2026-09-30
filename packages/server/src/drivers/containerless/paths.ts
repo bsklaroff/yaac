@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto'
 import { PACKAGE_ROOT, installTmpDir } from '@yaac/shared/paths'
 import {
   acpLogDir,
-  repoDir,
   worktreeAttachmentsDir,
   worktreeDir,
   worktreeStateDir,
@@ -102,7 +101,6 @@ export function assertShellSafePaths(paths: WorkspacePaths): void {
   const offender = ([
     ['tmux socket', paths.tmuxSock],
     ['workspace', paths.workspaceDir],
-    ['repo git dir', paths.repoGitDir],
     ['scratch', paths.scratchDir],
     ['acp socket dir', paths.acpSockDir],
   ] as const).find(([, value]) => SHELL_UNSAFE.test(value))
@@ -174,11 +172,9 @@ export function containerlessWorkspacePaths(jobName: string): WorkspacePaths {
   const state = workspaceStateDir(projectSlug, worktreeId)
   return {
     tmuxSock: path.join(tmuxSockDir(), `${shortId(worktreeId)}.sock`),
-    // The checkout is a real host path that already exists: `git worktree
-    // add` put it there. The launch still re-points its plumbing at these
-    // paths, since a checkout last started under k8s holds pod paths.
+    // The checkout is a real host path that already exists: the create put
+    // it there.
     workspaceDir: worktreeDir(projectSlug, worktreeId),
-    repoGitDir: path.join(repoDir(projectSlug), '.git'),
     scratchDir: path.join(state, 'scratch'),
     // Beside the socket rather than under the state dir, for the sun_path
     // reason above: an acpd socket is addressed the same way tmux's is.

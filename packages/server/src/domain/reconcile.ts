@@ -7,6 +7,7 @@ import {
   reconcileStaleWorktrees,
 } from '#domain/worktrees'
 import { reconcileGeneratedTitles } from '#domain/titles'
+import { refreshProjectOrigins } from '#domain/projects'
 import { adoptRefreshedToolCredentials, syncToolCredentialsThrottled } from '#domain/auth'
 import { worktreeDriver } from '#drivers/driver'
 import type { ReconcileStep } from '#drivers/contract'
@@ -129,6 +130,11 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // project, and the runtime throttles its node-local half.
     { name: 'orphan-modules-gc', triggers: [], run: () => gcOrphanEphemeralModuleDirs() },
     ...credentialSync,
+    // Keep every running worktree's `origin/*` within minutes of origin
+    // (docs/server-git.md): a worktree's clone moves only when the server
+    // fetches, and nothing else fetches a project nobody creates in.
+    // Throttled per project, and detached from the pass.
+    { name: 'origin-refresh', triggers: [], run: (ctx) => refreshProjectOrigins(ctx.snapshot()) },
     // Model-generated titles for untitled worktrees, after the
     // conversation sweep so a freshly captured prompt is eligible the same
     // pass — which means it owes a pass on whatever dirties that sweep.

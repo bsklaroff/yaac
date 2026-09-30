@@ -23,46 +23,37 @@ import type { WorkspacePaths } from '#drivers/contract'
 import type { AgentTool, YaacConfig } from '@yaac/shared/types'
 
 /**
- * Re-point the worktree's git plumbing at the launching substrate's view of
- * it, then lock it — one exec, run in the workspace on every launch:
+ * Point the checkout's clone at the main clone's objects, as this launch's
+ * workspace sees them, then bring its `origin/*` up to the main clone's —
+ * one exec, run in the workspace on every launch, on every driver.
  *
- *  - The `.git` file and the admin dir's `gitdir` are absolute paths saved
- *    in the data dir, written in whichever view last launched the checkout.
- *    Under k8s they must be /workspace and /repo/.git/worktrees/<id>; under
- *    containerless they are the host paths. Rewriting them every launch is
- *    what lets a stopped worktree restart on the other substrate.
- *  - The lock file keeps `git worktree prune` from ever reaping the
- *    worktree: under k8s its gitdir points at /workspace — valid only
- *    inside its own pod — so from the host, or any other pod sharing the
- *    /repo mount, it looks "prunable". A single prune would otherwise wipe
- *    every session's admin dir at once, breaking git in all live sessions.
- *    The lock file is checked before the prunable test, so prune skips it.
- *    Worktrees are never `git worktree remove`d (teardown rm -rf's the
- *    dirs), so the lock needs no clearing.
+ * The alternates line is the only path-shaped git state a checkout carries
+ * (docs/server-git.md). It is always the main clone's objects dir as the
+ * SERVER sees it: a pod mounts the main clone read-only at that same path,
+ * and a host workspace sees the server's paths as they are, so one string
+ * holds everywhere. Rewriting it every launch is what heals a checkout
+ * whose data dir moved, or that was last started by a server that sees the
+ * data dir elsewhere.
  */
-export function buildWorktreeLinkExec(worktreeId: string, paths: WorkspacePaths): string {
-  const admin = `${paths.repoGitDir}/worktrees/${worktreeId}`
-  const dotGit = `${paths.workspaceDir}/.git`
-  return `echo 'gitdir: ${admin}' > ${dotGit}`
-    + ` && echo '${dotGit}' > ${admin}/gitdir`
-    + ` && printf 'yaac worktree ${worktreeId}' > ${admin}/locked`
+export function buildCloneLinkExec(repoGitDir: string, paths: WorkspacePaths): string {
+  return `printf '%s\\n' '${shellEscape(`${repoGitDir}/objects`)}' > ${paths.workspaceDir}/.git/objects/info/alternates`
+    + ` && { ${buildOriginRefreshExec(repoGitDir, paths)}; }`
 }
 
 /**
- * Set the session branch's upstream from INSIDE the pod, not on the host
- * at worktree-add time. A host-side rewrite of the shared /repo/.git/config
- * replaces the file's inode underneath the VM-kernel virtiofs cache that
- * every session pod reads through, and any in-pod git command racing the
- * stale window dies with "fatal: unknown error occurred while reading the
- * configuration files" until the cache expires (see addWorktree). A write
- * from inside a pod goes through that same shared cache, so every pod —
- * and the host, which reads the real filesystem — observes it coherently.
- * Must run under `withUpstreamConfigLock` (git's config lock on the shared
- * /repo/.git/config).
+ * Fast-forward the checkout's `origin/*` to the main clone's, from the main
+ * clone on this disk: every object is already reachable through the
+ * alternates line, so nothing crosses the network and no credential is
+ * used. Never forced, so a ref the agent fetched ahead of the main clone is
+ * not moved back (git rejects that one ref and moves the rest); no
+ * `--prune`, so a ref the agent fetched that the main clone has not seen
+ * stays; and no FETCH_HEAD, which the agent's own `fetch` + `merge
+ * FETCH_HEAD` may be between. Its status is ignored: a ref it could not
+ * move is retried by the next refresh.
  */
-export function buildUpstreamExec(upstreamStartPoint: string, paths: WorkspacePaths): string {
-  return `git -C ${paths.workspaceDir} branch `
-    + `--set-upstream-to '${shellEscape(upstreamStartPoint)}'`
+export function buildOriginRefreshExec(repoGitDir: string, paths: WorkspacePaths): string {
+  return `git -C ${paths.workspaceDir} fetch --quiet --no-tags --no-write-fetch-head `
+    + `'${shellEscape(repoGitDir)}' 'refs/remotes/origin/*:refs/remotes/origin/*' 2>/dev/null || true`
 }
 
 /**

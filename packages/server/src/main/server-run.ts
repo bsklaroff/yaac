@@ -13,7 +13,7 @@ import {
 import { closeDb, listProjectRows, openDb } from '#db'
 import { clearGitScratch, startGitSshAgent, stopGitSshAgent } from '#domain/git'
 import { EventHub, type WsLike } from '#api/events'
-import { resolveWorktreeContainer } from '#domain/worktrees'
+import { convertLinkedCheckouts, resolveWorktreeContainer } from '#domain/worktrees'
 import { attachConvergence, releaseConvergence, stopConvergence } from '#main/convergence'
 import { coalesceCalls, onWorktreeListChanged } from '#notify'
 import { refreshClaudeBundledSkills } from '#domain/skills'
@@ -701,6 +701,12 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
       // Started before the startup GCs drain (they run detached), so the
       // server serves the reconcile path right away.
       loopDone = startReconciler({ signal: abortCtrl.signal })
+      // Finish moving an older install's stopped worktrees onto clones, and
+      // take their projects' main clones back from the pods (docs/server-git.md).
+      // After attach, since only a worktree with no running workspace may be
+      // converted. Detached: nothing waits on it.
+      void convertLinkedCheckouts()
+        .catch((err: unknown) => serverLog(`[server] linked checkout conversion failed: ${String(err)}`))
       // Adopt whatever the last server's worktrees refreshed before anything
       // reads the host store — the mirror of the k8s driver's placeholder
       // re-seed, which repairs the same split from the other side. Detached:

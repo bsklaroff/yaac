@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { ServerError } from '@yaac/shared/errors'
 import { ContextMenu } from '@base-ui/react/context-menu'
 import { Menu } from '@base-ui/react/menu'
 import { Tooltip } from '@base-ui/react/tooltip'
@@ -104,9 +105,14 @@ type Editing =
  * Changes — torn down off-screen, so a hidden explorer lists nothing — with
  * its view state kept in the store.
  */
+/** The listing's answer for a worktree that is not running. */
+function isStopped(err: unknown): boolean {
+  return err instanceof ServerError && err.code === 'CONFLICT'
+}
+
 export function WorktreeFiles({ worktreeId }: { worktreeId: string }): JSX.Element {
   const queryClient = useQueryClient()
-  const { data, isLoading, isError, refetch } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['files', worktreeId],
     queryFn: () => listWorktreeFiles(worktreeId),
     refetchInterval: 5000,
@@ -308,6 +314,15 @@ export function WorktreeFiles({ worktreeId }: { worktreeId: string }): JSX.Eleme
     return (
       <div className="flex h-full items-center justify-center bg-surface text-text-dim">
         <LoadingIcon size={18} className="animate-spin" />
+      </div>
+    )
+  }
+  if (isError && isStopped(error)) {
+    // The listing is read by the checkout's own git, inside the running
+    // worktree; a stopped one's files still open from the tabs they are in.
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 bg-surface text-xs text-text-dim">
+        <span>Start the worktree to browse its files.</span>
       </div>
     )
   }

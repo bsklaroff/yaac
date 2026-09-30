@@ -1,5 +1,4 @@
 import type { FileHandle } from 'node:fs/promises'
-import path from 'node:path'
 import { codexDir } from '@yaac/shared/project-paths'
 import { scanJsonlForward } from './jsonl'
 import { openSandboxDir, openSandboxFile, type SandboxFile } from './sandbox-fs'
@@ -85,7 +84,7 @@ export const CODEX_TITLE_ITEMS = ['activity', 'project-name', 'model'] as const
 
 /**
  * The `-c` settings that trust the repository root codex keys folder trust on
- * (the parent of `repoGitDir`) and skip its startup update check — the same
+ * (the checkout, a clone of its own) and skip its startup update check — the same
  * on every substrate, since nothing here needs an image to carry it.
  *
  * With the launch's `--dangerously-bypass-hook-trust` (`buildAgentCmd`),
@@ -98,11 +97,11 @@ export const CODEX_TITLE_ITEMS = ['activity', 'project-name', 'model'] as const
  * the posture yaac launched in and run code at startup, and yaac accepts that
  * (docs/permission-modes.md).
  */
-export function codexLaunchConfig(repoGitDir?: string): string[] {
+export function codexLaunchConfig(workspaceDir?: string): string[] {
   return [
     'check_for_update_on_startup=false',
-    ...(repoGitDir !== undefined
-      ? [`projects={${JSON.stringify(path.dirname(repoGitDir))}={trust_level="trusted"}}`]
+    ...(workspaceDir !== undefined
+      ? [`projects={${JSON.stringify(workspaceDir)}={trust_level="trusted"}}`]
       : []),
   ]
 }

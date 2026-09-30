@@ -1,11 +1,5 @@
-import {
-  fetchOrigin,
-  getDefaultBranch,
-  isGitAuthError,
-  listRemoteBranches,
-} from '#domain/git'
-import { resolveProjectCredential } from './credentials'
-import { projectRemoteUrl } from './detail'
+import { getDefaultBranch, isGitAuthError, listRemoteBranches } from '#domain/git'
+import { fetchProjectOrigin } from './origin'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 
@@ -28,12 +22,10 @@ export async function getProjectBranches(slug: string, opts: { refresh?: boolean
   const repo = repoDir(slug)
 
   if (opts.refresh) {
-    const remoteUrl = await projectRemoteUrl(slug)
     // No credential (or a local-path remote, in test fixtures) fetches
     // unauthenticated rather than failing the refresh.
-    const credential = await resolveProjectCredential(slug)
     try {
-      await fetchOrigin(repo, remoteUrl, credential)
+      await fetchProjectOrigin(slug)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       if (isGitAuthError(msg)) {

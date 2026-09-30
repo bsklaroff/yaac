@@ -667,8 +667,6 @@ export interface WorkspacePaths {
   tmuxSock: string
   /** The checkout: a window's cwd, and what `git -C` addresses. */
   workspaceDir: string
-  /** The project's shared git dir, as the workspace sees it. */
-  repoGitDir: string
   /** Workspace-private scratch: prompt scripts, their logs, diff indexes. */
   scratchDir: string
   /** Where acpd puts one socket per ACP conversation. */

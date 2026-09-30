@@ -240,3 +240,58 @@ in any project dir (a create empties it of its own worktree's logs, so only
 worktrees never restarted since the upgrade keep any there). Then drop
 `movePi` and point the `pi` layout at the history alone, and delete
 `piSessionsDir`.
+
+## The never-prune keys in a main clone's real config
+
+`ensureNeverPrune` (`domain/git/repo.ts`) writes `gc.pruneExpire`,
+`gc.reflogExpire` and `gc.reflogExpireUnreachable` = `never` into a project's
+main clone's own `.git/config` before it creates or converts a checkout there,
+whenever the main clone still has a `worktrees/` dir. That dir is how an
+install from before worktrees were clones is recognized: its pods mount the
+main clone read-write and auto-gc it with their own git, which reads this
+file and sees none of the clones' refs.
+
+**What it reads:** nothing; it is a write that legacy pods' git reads.
+
+**What breaks silently if it goes too early:** a legacy pod's auto-gc prunes,
+with git's two-week default, objects a clone borrows, and that clone fails
+weeks later with missing-object errors.
+
+**How to tell it is safe to remove:** no main clone has a `worktrees/` dir.
+Order: `adoptLinkedCheckout` calls `ensureNeverPrune` before it converts, so
+`ensureNeverPrune` goes with the conversion (next entry), never before it.
+Only the write for older main clones is legacy: `cloneRepo` writes the same
+keys into every new one, and `sanitizeMainClone` writes them back when it
+rewrites a config, for good — `maintainRepo`'s command-line pins cover the
+server, the keys cover git run in the main clone by anyone else.
+
+## Converting linked checkouts, and the main-clone hardening in `runGit`
+
+One entry, because the two must go together. `adoptLinkedCheckout` and
+`sanitizeMainClone` (`domain/git/adopt.ts`), run by the launch path for a
+checkout it restarts and by the `convertLinkedCheckouts` startup sweep for
+every stopped one, turn an older install's `git worktree add` checkouts into
+clones and, once a project has none left, strip the main clone of whatever a
+pod ever wrote into it. `deleteWorktreeState` still removes a reaped
+worktree's admin dir for the same installs. Until then `runGit` keeps
+building a throwaway git dir for every call on a main clone
+(docs/server-git.md), because a legacy pod can still write that clone's
+config.
+
+**What it reads:** `worktrees/<id>/.git` files (and `.git.linked`, a crashed
+conversion's), `repo/.git/worktrees/<id>/`, the main clone's refs and its
+`branch.agent/<id>.merge`.
+
+**What breaks if it goes too early:** loudly for the worktree — its restart
+writes an alternates line into a `.git` that is a file — but silently for the
+server if the hardening goes too: it would run git against a config legacy
+pods can still write.
+
+**How to tell it is safe to remove:** no row's checkout has a `.git` file or a
+`.git.linked`, and no main clone has a `worktrees/` dir. Then the conversion,
+its startup sweep, `readRepoConfig`, the admin-dir removal in
+`deleteWorktreeState`, and the throwaway git dir (`buildGitDir`, `readOnce`,
+`configEntries`, `KEPT_KEYS`, `LINKED`, `clearGitScratch` and its startup
+call) all go in one change, leaving `runGit` a plain `GIT_DIR` call with its
+pins. An install that carries a linked checkout past that change runs
+unhardened server git against a config its pods can write.

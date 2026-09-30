@@ -7,23 +7,25 @@ import { serverLocalPath } from '@yaac/shared/paths'
 /**
  * The one way the server starts git (docs/server-git.md).
  *
- * A project's `.git` is mounted read-write into every worktree pod, so
- * anything git reads from it is written by an agent. Git has no switch to
- * ignore a repository's config, and that config can name commands for git
- * to run (filter drivers, fsmonitor, credential helpers) under names only
- * its writer knows. So git never reads it: each call runs against a
- * throwaway git dir holding an allowlisted COPY of the config, read once, with
- * the real object store and refs linked in. A pod rewriting its config
- * mid-call changes nothing, because git never opens that file.
+ * A project's main clone is the server's, but until its last linked
+ * checkout is converted (`adoptLinkedCheckout`) a legacy pod may still hold
+ * its `.git` mounted read-write, so anything git reads from it may have been
+ * written by an agent. Git has no switch to ignore a repository's config,
+ * and that config can name commands for git to run (filter drivers,
+ * fsmonitor, credential helpers) under names only its writer knows. So git
+ * never reads it: each call runs against a throwaway git dir holding an
+ * allowlisted COPY of the config, read once, with the real object store and
+ * refs linked in. A pod rewriting its config mid-call changes nothing,
+ * because git never opens that file.
  */
 
 /** What a call runs against. */
 export type GitTarget =
   /** The project's clone itself — no work tree. */
   | { kind: 'repo'; repoPath: string }
-  /** A linked worktree's checkout. `worktreeId` names its admin dir under
-   *  `<repo>/.git/worktrees/`. */
-  | { kind: 'worktree'; repoPath: string; worktreeId: string; workTree: string }
+  /** A git dir only the server has written and no workspace can see yet (a
+   *  checkout being staged), used as it is. */
+  | { kind: 'private'; gitDir: string; workTree?: string }
   /** No repository yet (a clone), or one file read with `--file`. */
   | { kind: 'none' }
 
@@ -43,11 +45,14 @@ const KEPT_KEYS = /^(core\.repositoryformatversion|extensions\.(objectformat|ref
 
 /** Entries of the real git dir the throwaway one links. No `config` (it is
  *  the copy), no `hooks`, no `modules` (a submodule's git dir brings its
- *  own config), no `gc.pid` (the server runs no gc). */
+ *  own config), no `gc.pid` (`maintainRepo` runs gc in the throwaway dir,
+ *  in the foreground). */
 const LINKED = ['objects', 'refs', 'packed-refs', 'logs', 'worktrees', 'info', 'shallow']
 /** The linked directories that must exist for a write to land through the
- *  link: git creates `logs/…` and `worktrees/<name>` on demand. */
-const ENSURED_DIRS = ['logs', 'worktrees', 'info']
+ *  link: git creates `logs/…` on demand. Not `worktrees`: its absence is
+ *  how a converted project is told from one still holding linked
+ *  checkouts. */
+const ENSURED_DIRS = ['logs', 'info']
 
 /** Pinned on every call, on the command line, which beats any config. */
 const PINS = [
@@ -56,9 +61,8 @@ const PINS = [
   'submodule.recurse=false',
   'fetch.recurseSubmodules=false',
   'diff.ignoreSubmodules=all',
-  // The server runs no gc on the shared repo: an auto gc detaches and
-  // would outlive the throwaway git dir, and its lock (`gc.pid`) would sit
-  // in that dir where a pod's gc cannot see it. Pods gc it themselves.
+  // No auto gc: one detaches and would outlive the throwaway git dir, and a
+  // default gc prunes objects clones borrow. `maintainRepo` is the one gc.
   'gc.auto=0',
   'maintenance.auto=false',
   'protocol.allow=never',
@@ -78,20 +82,16 @@ export async function runGit(target: GitTarget, args: string[], opts: GitRunOpti
     let cwd = scratch
     if (target.kind === 'none') {
       env.GIT_CEILING_DIRECTORIES = path.dirname(scratch)
-    } else {
-      await buildGitDir(path.join(target.repoPath, '.git'), scratch, target.kind === 'repo')
-      // GIT_COMMON_DIR on a `repo` target too: a git child process
-      // `worktree add` starts in the new admin dir would otherwise resolve
-      // its `commondir` through the `worktrees` link, back to the real
-      // config.
-      env.GIT_COMMON_DIR = scratch
-      if (target.kind === 'repo') {
-        env.GIT_DIR = scratch
-      } else {
-        env.GIT_DIR = path.join(target.repoPath, '.git', 'worktrees', target.worktreeId)
+    } else if (target.kind === 'private') {
+      env.GIT_DIR = target.gitDir
+      if (target.workTree !== undefined) {
         env.GIT_WORK_TREE = target.workTree
         cwd = target.workTree
       }
+    } else {
+      await buildGitDir(path.join(target.repoPath, '.git'), scratch)
+      env.GIT_DIR = scratch
+      env.GIT_COMMON_DIR = scratch
     }
     const pins = [...PINS]
     if (opts.remoteUrl !== undefined) pins.push(`protocol.${transportOf(opts.remoteUrl)}.allow=always`)
@@ -104,8 +104,9 @@ export async function runGit(target: GitTarget, args: string[], opts: GitRunOpti
 /**
  * Values of `key` in the repository's config, read from a copy the same way
  * `runGit` reads it — for the data a server reads back out of config
- * (`branch.<name>.merge`), which the copy `runGit` builds does not keep.
- * Empty when the key is unset.
+ * (`branch.<name>.merge` when a linked checkout is converted, the
+ * never-prune keys), which the copy `runGit` builds does not keep. Empty
+ * when the key is unset.
  */
 export async function readRepoConfig(repoPath: string, key: string): Promise<string[]> {
   const scratch = await makeScratchDir()
@@ -138,7 +139,7 @@ async function makeScratchDir(): Promise<string> {
 }
 
 /** Lay out the throwaway git dir for `realGitDir` in `dir`. */
-async function buildGitDir(realGitDir: string, dir: string, bare: boolean): Promise<void> {
+async function buildGitDir(realGitDir: string, dir: string): Promise<void> {
   // One read of the real config. Nothing below opens it again, which is
   // what makes a concurrent write by a pod irrelevant.
   const copy = path.join(dir, 'config.src')
@@ -146,7 +147,7 @@ async function buildGitDir(realGitDir: string, dir: string, bare: boolean): Prom
   const kept = await configEntries(copy, dir)
   await fs.rm(copy)
 
-  const lines = ['[core]', `\tbare = ${bare}`, '\tlogallrefupdates = true']
+  const lines = ['[core]', '\tbare = true', '\tlogallrefupdates = true']
   const format = kept.get('core.repositoryformatversion') ?? '0'
   if (!/^[01]$/.test(format)) throw new Error(`unsupported repositoryformatversion ${format}`)
   lines.push(`\trepositoryformatversion = ${format}`)

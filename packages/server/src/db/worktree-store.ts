@@ -209,7 +209,7 @@ export async function recordWorktreeResumed(
 export async function claimSpareWorktree(
   projectSlug: string,
   worktreeId: string,
-  claim: Pick<WorktreeCreatedInput, 'baseBranch' | 'permissionMode' | 'model' | 'mode'> = {},
+  claim: Pick<WorktreeCreatedInput, 'permissionMode' | 'model' | 'mode'> = {},
 ): Promise<void> {
   const db = await getDb()
   const rows = await db.update(worktrees).set({
@@ -219,7 +219,6 @@ export async function claimSpareWorktree(
     deathReason: null,
     deathDetail: null,
     deathSeen: false,
-    ...(claim.baseBranch !== undefined ? { baseBranch: claim.baseBranch } : {}),
     ...(claim.permissionMode !== undefined ? { permissionMode: claim.permissionMode } : {}),
     ...(claim.model !== undefined ? { model: claim.model } : {}),
     ...(claim.mode !== undefined ? { mode: claim.mode } : {}),

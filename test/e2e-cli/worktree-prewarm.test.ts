@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { git } from '@yaac/test-utils/git'
-import { cloneRepo, worktreeUpstreamBranch } from '@yaac/server/domain/git'
+import { cloneRepo } from '@yaac/server/domain/git'
 import { listWorktreePods, isPrewarmed } from '@yaac/server/drivers/k8s/substrate/pods'
 import { listActiveWorktrees } from '@yaac/server/domain/worktrees/list'
 import { listProjects } from '@yaac/server/domain/projects/list'
@@ -205,17 +205,18 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     expect(retooled!.tool).toBe('codex')
 
     // The re-branch actually landed: the worktree tracks origin/dev and has
-    // the branch's file, and the shared repo config records the new upstream.
+    // the branch's file, and the worktree's row records the new base.
     const { stdout: upstream } = await execInJob(retooled!.jobName, [
       'git', '-C', '/workspace', 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}',
     ])
     expect(upstream.trim()).toBe('origin/dev')
     const { stdout: devFile } = await execInJob(retooled!.jobName, ['cat', '/workspace/dev-only.txt'])
     expect(devFile).toBe('dev content\n')
-    expect(await worktreeUpstreamBranch(
-      path.join(testEnv.dataDir, 'global', 'projects', 'repo-demo', 'repo'),
-      `agent/${retooled!.worktreeId}`,
-    )).toBe('dev')
+    // Read through the server: its claim wrote the row, and this process's
+    // own DB handle does not see that write.
+    const listed = await (await fetch(`http://127.0.0.1:${server.lock.port}/api/worktree/list?project=repo-demo`))
+      .json() as { worktrees: Array<{ worktreeId: string; baseBranch?: string }> }
+    expect(listed.worktrees.find((w) => w.worktreeId === retooled!.worktreeId)?.baseBranch).toBe('dev')
 
     // 5. The claim leaves the pool short, so a fresh spare is warmed to
     //    replace it — as the project's untouched create, and the `--tool

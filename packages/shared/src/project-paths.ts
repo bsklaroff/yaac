@@ -157,7 +157,8 @@ export function imageStoreDir(projectId: string): string {
   return nodeLocalPath('shared-images', projectId)
 }
 
-/** GLOBAL: the bare git repo. `repo/.git` is mounted into every worktree. */
+/** GLOBAL: the project's main clone. Its `.git` is mounted read-only into
+ *  every worktree pod, whose checkout borrows its objects. */
 export function repoDir(slug: string): string {
   return globalProjectPath(slug, 'repo')
 }
@@ -329,12 +330,11 @@ export function worktreesDir(slug: string): string {
 
 /**
  * GLOBAL, deliberately. The worktree's `/workspace`. A worktree is hot,
- * per-worktree data that would rather be node-local, but its `.git` file
- * points into `repo/.git/worktrees/<sid>` and the server creates it with
- * `git worktree add` from its own filesystem: keeping both halves on the
- * shared root means the server and the worktree pod see the same object
- * store with no new machinery. Moving it node-local needs worktree
- * creation to happen in an init container on the worktree's node.
+ * per-worktree data that would rather be node-local, but the server creates
+ * its checkout — a clone borrowing `repo/.git`'s objects — from its own
+ * filesystem. A clone needs only a read-only mount of the main clone to
+ * exist, so moving it node-local needs the checkout to be made by an init
+ * container on the worktree's node.
  */
 export function worktreeDir(slug: string, worktreeId: string): string {
   return path.join(worktreesDir(slug), worktreeId)

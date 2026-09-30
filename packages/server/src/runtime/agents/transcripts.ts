@@ -82,9 +82,10 @@ export function claudeProjectDirName(cwd: string): string {
  */
 export const CLAUDE_POD_CWD = claudeProjectDirName('/workspace')
 
-/** What claude keys a pod's auto-memory on: the canonical git root, `/repo`.
- *  Memory is shared by every worktree of a project, so this one directory of
- *  the shared `projects/` stays reachable through each worktree's history. */
+/** Where a project's shared auto-memory lives in the shared `projects/`:
+ *  named for the `/repo` claude once keyed it on, and mounted (or linked)
+ *  over each worktree's own `memory` folder, since claude keys memory on the
+ *  checkout's git root, which is now the checkout itself. */
 export const CLAUDE_POD_REPO = claudeProjectDirName('/repo')
 
 /**

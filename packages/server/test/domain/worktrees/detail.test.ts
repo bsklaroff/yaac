@@ -1,11 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { handleFixture, installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 
-// The fork-branch fallback reads the checkout host-side; that git call is the
-// process boundary, and stubbing it is what lets the changes cases below
-// choose a fork branch without a clone on disk.
-vi.mock('#domain/git', () => ({ worktreeUpstreamBranch: vi.fn() }))
-
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
@@ -13,7 +8,6 @@ import { claudeDir, projectDir } from '@yaac/shared/project-paths'
 import { recordAgentSessions, setAgentSessionCapture } from '#db/agent-session-store'
 import { recordWorktreeCreated } from '#db/worktree-store'
 import { closeDb } from '#db/client'
-import { worktreeUpstreamBranch } from '#domain/git'
 import {
   getWorktreeBlockedHosts,
   getWorktreeChanges,
@@ -90,10 +84,7 @@ describe('getWorktreeChanges', () => {
 
   beforeEach(async () => {
     mockChanges.mockReset().mockResolvedValue(EMPTY)
-    vi.mocked(worktreeUpstreamBranch).mockReset().mockResolvedValue('main')
     tmpDir = await createTempDataDir()
-    // A fresh id per case: the fork branch is cached per worktree for 30s,
-    // and a shared id would let one case answer the next one's lookup.
     seq += 1
   })
 
@@ -102,8 +93,10 @@ describe('getWorktreeChanges', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  function installRunning(): string {
+  /** A running worktree whose row records `base` as its fork branch. */
+  async function installRunning(base: string | null = 'main'): Promise<string> {
     const workspaceId = `chg-${seq}`
+    if (base !== null) await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: workspaceId, baseBranch: base })
     installFakeWorktreeDriver({
       find: () => Promise.resolve(handleFixture({
         workspaceId, projectSlug: 'demo', jobName: `yaac-demo-${workspaceId}`, state: 'running',
@@ -118,7 +111,7 @@ describe('getWorktreeChanges', () => {
   // is itself, so the runtime's default base collapses the diff to nothing.
   // The fork point keeps committed work visible until it merges.
   it('passes the fork branch as the default base', async () => {
-    const workspaceId = installRunning()
+    const workspaceId = await installRunning()
 
     await getWorktreeChanges(workspaceId)
 
@@ -128,7 +121,7 @@ describe('getWorktreeChanges', () => {
   })
 
   it('lets an explicit base win, still offering the fork branch as the default', async () => {
-    const workspaceId = installRunning()
+    const workspaceId = await installRunning()
 
     await getWorktreeChanges(workspaceId, 'origin/release')
 
@@ -137,11 +130,10 @@ describe('getWorktreeChanges', () => {
     )
   })
 
-  // Nothing recorded a fork branch and the checkout has none either: the
-  // runtime is asked with no default rather than with a guess.
+  // Nothing recorded a fork branch: the runtime is asked with no default
+  // rather than with a guess.
   it('asks with no default when nothing records a fork branch', async () => {
-    const workspaceId = installRunning()
-    vi.mocked(worktreeUpstreamBranch).mockResolvedValue(null)
+    const workspaceId = await installRunning(null)
 
     await getWorktreeChanges(workspaceId)
 
@@ -161,7 +153,7 @@ describe('getWorktreeChanges', () => {
   // is the only place that knows the ref came from them — left alone it
   // reaches the route as a bare exec failure and answers 500.
   it('answers VALIDATION for an explicit base that resolves nowhere', async () => {
-    const workspaceId = installRunning()
+    const workspaceId = await installRunning()
     mockChanges.mockRejectedValue(
       new WorkspaceExecError('command exited 4', CHANGES_BASE_UNRESOLVED, '', ''),
     )
@@ -177,7 +169,7 @@ describe('getWorktreeChanges', () => {
   // one that resolves nowhere — our inconsistency, not the caller's, so it
   // must keep surfacing as a fault rather than being blamed on them.
   it('keeps an unresolvable default base a server fault', async () => {
-    const workspaceId = installRunning()
+    const workspaceId = await installRunning()
     const failure = new WorkspaceExecError('command exited 4', CHANGES_BASE_UNRESOLVED, '', '')
     mockChanges.mockRejectedValue(failure)
 
@@ -188,7 +180,7 @@ describe('getWorktreeChanges', () => {
   // no evidence of a bad ref (exit 3 is "this worktree has no /workspace"),
   // and relabelling those as user error would hide real breakage.
   it('leaves other exec failures alone even with an explicit base', async () => {
-    const workspaceId = installRunning()
+    const workspaceId = await installRunning()
     const failure = new WorkspaceExecError('command exited 3', 3, '', '')
     mockChanges.mockRejectedValue(failure)
 

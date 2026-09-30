@@ -47,18 +47,11 @@ import type { WorktreeRow } from '#db'
 import { handOverAgent, type CreateSetup, type WorktreeCreateResult } from './create'
 import { parkAcpLaunchModel } from '#runtime/agents'
 import { isTmuxSessionAlive } from '#runtime/status'
+import { getDefaultBranch, remoteBranchExists, resolveRemoteRef } from '#domain/git'
 import {
-  fetchOrigin,
-  getDefaultBranch,
-  remoteBranchExists,
-  resolveLocalBranch,
-  resolveRemoteRef,
-  worktreeUpstreamBranch,
-} from '#domain/git'
-import {
+  fetchProjectOrigin,
   projectRemoteUrl,
   resolveProjectConfig,
-  resolveProjectCredential,
   resolveProjectEnv,
 } from '#domain/projects'
 import { shellEscape } from '#lib/shell'
@@ -220,13 +213,9 @@ export function resolveRebranchTarget(params: {
 
 /** Fetch the project's origin into its repo. Same e2e fixture escape hatch
  *  as the cold path (pre-populated bare repos, no reachable remote). */
-async function fetchProjectOrigin(projectSlug: string): Promise<void> {
+async function fetchSpareOrigin(projectSlug: string): Promise<void> {
   if (testEnv.e2eSkipFetch) return
-  await fetchOrigin(
-    repoDir(projectSlug),
-    await projectRemoteUrl(projectSlug),
-    await resolveProjectCredential(projectSlug),
-  )
+  await fetchProjectOrigin(projectSlug)
 }
 
 /** How long a claim that keeps its spare's branch waits on its fetch before
@@ -245,6 +234,7 @@ async function refreshTarget(
   repo: string,
   branch: string,
   worktreeId: string,
+  head: () => Promise<string>,
 ): Promise<string | null> {
   let timer: NodeJS.Timeout | undefined
   try {
@@ -257,7 +247,7 @@ async function refreshTarget(
       return null
     }
     const sha = await resolveRemoteRef(repo, branch)
-    return sha === await resolveLocalBranch(repo, `agent/${worktreeId}`) ? null : sha
+    return sha === await head() ? null : sha
   } catch (err) {
     console.warn(`Claimed session ${worktreeId} kept its warmed base: ${(err as Error).message}`)
     return null
@@ -356,7 +346,7 @@ export async function tryClaimPrewarmed(
     // is awaited where the checkout is prepped. Its failure is observed
     // there; the catch only keeps a claim that gives up first from leaving
     // it unhandled.
-    const fetched = fetchProjectOrigin(projectSlug)
+    const fetched = fetchSpareOrigin(projectSlug)
     fetched.catch(() => { /* observed below */ })
 
     // Every in-pod command below this line — re-branch, retool, the git
@@ -369,13 +359,10 @@ export async function tryClaimPrewarmed(
     // the claim degrades to a cold create instead of burning the spare.
     await runtime.awaitAgentTransport(chosen.jobName, { timeoutMs: 10_000 })
 
-    // Branch prep: the spare's warmed branch is read from its recorded
-    // upstream (`branch.agent/<id>.merge` in the shared /repo/.git/config —
-    // written before the tmux session exists, so always present on a
-    // claimable spare). No new state: prep's own --set-upstream-to keeps
-    // the record current.
+    // Branch prep: the spare's warmed branch is the one its row recorded
+    // when it was warmed.
     const repo = repoDir(projectSlug)
-    const spareUpstreamBranch = await worktreeUpstreamBranch(repo, `agent/${chosen.workspaceId}`)
+    const spareUpstreamBranch = warmed?.baseBranch ?? null
     const defaultBranch = await getDefaultBranch(repo)
     const rebranchTo = resolveRebranchTarget({
       requestedBranch: branch,
@@ -406,7 +393,6 @@ export async function tryClaimPrewarmed(
     // restart relaunches it that way. One UPDATE of the row warming
     // inserted: the id was claimed then, and is handed over now.
     await claimSpareWorktree(projectSlug, claimedId, {
-      ...(spareUpstreamBranch !== null ? { baseBranch: spareUpstreamBranch } : {}),
       permissionMode: setup.permissionMode,
       mode: setup.mode,
       ...(setup.model !== undefined ? { model: setup.model } : {}),
@@ -450,7 +436,13 @@ export async function tryClaimPrewarmed(
     } else {
       // The spare's own branch, as far as origin has moved it since warming.
       const warmedBranch = spareUpstreamBranch ?? defaultBranch
-      const sha = await refreshTarget(fetched, repo, warmedBranch, claimedId)
+      // What the spare's checkout stands at is read from inside it: its
+      // branch is in its own clone, which the server's git never reads.
+      const job = chosen.jobName
+      const head = async (): Promise<string> => (await runtime.exec(
+        job, `git -C ${runtime.workspacePaths(job).workspaceDir} rev-parse HEAD`,
+      )).stdout.trim()
+      const sha = await refreshTarget(fetched, repo, warmedBranch, claimedId, head)
       if (sha !== null) {
         prep = { branch: warmedBranch, sha }
         emit(`Updating prewarmed session to the latest ${warmedBranch}...`)

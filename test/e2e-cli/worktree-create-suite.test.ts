@@ -494,15 +494,13 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // Pre-seed claude-code's onboarding state so the first-run wizard is
       // skipped. The claude home mounts as /home/yaac/.claude in the session
       // pod, and names it CLAUDE_CONFIG_DIR, so its global config is
-      // `.claude.json` inside it. `/repo` (not `/workspace`) is the key
-      // claude uses because the session worktree's .git file points at
-      // /repo/.git.
+      // `.claude.json` inside it, keyed by the checkout — a clone of its
+      // own, so its git root is /workspace.
       await fs.writeFile(path.join(projectPath, 'claude', '.claude.json'), JSON.stringify({
         hasCompletedOnboarding: true,
         lastOnboardingVersion: AGENT_CLIS.claude.version,
         customApiKeyResponses: { approved: ['yaac-ph-api-key'], rejected: [] },
         projects: {
-          '/repo': { hasTrustDialogAccepted: true },
           '/workspace': { hasTrustDialogAccepted: true },
         },
       }) + '\n')
@@ -1628,8 +1626,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // The codex host dir drives session-create down the
       // writeProjectCodexPlaceholder path, which seeds a ChatGPT-mode
       // auth.json that codex can load without running its native login
-      // flow. `/repo` (not `/workspace`) is the key codex sees because the
-      // session worktree's .git file points at /repo/.git.
+      // flow.
       await fs.mkdir(path.join(projectPath, 'codex'), { recursive: true })
       const created = await createWorktree('codex-demo', '--tool', 'codex')
       jobName = created.jobName
@@ -1924,22 +1921,23 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // Whatever the node held is discarded on the next start, never merged.
       await execFileAsync('podman', ['exec', node, 'sh', '-c', `mkdir -p ${nodeCopy} && echo junk > ${nodeCopy}/junk.txt`])
 
-      // The git pointers a containerless launch leaves in the data dir —
-      // host paths no pod can resolve. The restart must point them back at
-      // the pod's view, or a switch containerless → k8s strands the agent's
-      // git (see buildWorktreeLinkExec).
-      const admin = path.join(projectPath, 'repo', '.git', 'worktrees', worktreeId)
-      const checkoutGit = path.join(projectPath, 'worktrees', worktreeId, '.git')
-      await fs.writeFile(checkoutGit, `gitdir: ${admin}\n`)
-      await fs.writeFile(path.join(admin, 'gitdir'), `${checkoutGit}\n`)
+      // The alternates line a host server's launch leaves in the data dir —
+      // a host path no pod can resolve. The restart must write the one the
+      // pod mounts the main clone at, or a switch containerless → k8s
+      // strands the agent's git (see buildCloneLinkExec).
+      const alternates = path.join(projectPath, 'worktrees', worktreeId, '.git', 'objects', 'info', 'alternates')
+      await fs.writeFile(alternates, `${path.join(projectPath, 'repo', '.git', 'objects')}\n`)
 
       const restarted = await runYaac(serverEnv, 'worktree', 'restart', worktreeId)
       expect(restarted.exitCode, restarted.stderr).toBe(0)
       jobName = (await findWorktreePod('oc-demo')).jobName
-      expect((await fs.readFile(checkoutGit, 'utf8')).trim())
-        .toBe(`gitdir: /repo/.git/worktrees/${worktreeId}`)
-      expect((await fs.readFile(path.join(admin, 'gitdir'), 'utf8')).trim()).toBe('/workspace/.git')
+      const line = (await fs.readFile(alternates, 'utf8')).trim()
+      expect(line).toMatch(/\/projects\/oc-demo\/repo\/\.git\/objects$/)
+      expect(line).not.toBe(path.join(projectPath, 'repo', '.git', 'objects'))
       await execInJob(jobName, ['git', '-C', '/workspace', 'status', '--porcelain'])
+      // The main clone is there to borrow from and never to write.
+      await expect(execInJob(jobName, ['touch', path.join(path.dirname(line), 'planted')])).rejects.toThrow()
+      await expect(execInJob(jobName, ['test', '-e', '/repo'])).rejects.toThrow()
       await expect(execInJob(jobName, ['test', '-e', '/home/yaac/.local/share/opencode/junk.txt'])).rejects.toThrow()
       let listed = ''
       for (let i = 0; i < 60 && !listed.includes(createdId ?? '\0'); i++) {
@@ -1986,7 +1984,6 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         lastOnboardingVersion: AGENT_CLIS.claude.version,
         customApiKeyResponses: { approved: ['yaac-ph-api-key'], rejected: [] },
         projects: {
-          '/repo': { hasTrustDialogAccepted: true },
           '/workspace': { hasTrustDialogAccepted: true },
         },
       }) + '\n')
@@ -2057,10 +2054,9 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // whatever survives here survives forever. Counted rather than named
       // because the CLI mints the id server-side.
       const worktreesRoot = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'worktrees')
-      const adminRoot = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'repo', '.git', 'worktrees')
       const ls = async (dir: string): Promise<string[]> =>
         (await fs.readdir(dir).catch((): string[] => [])).sort()
-      const [checkoutsBefore, adminBefore] = [await ls(worktreesRoot), await ls(adminRoot)]
+      const checkoutsBefore = await ls(worktreesRoot)
       const podsBefore = (await listWorktreePods(SLUG)).length
 
       const bad = await runYaac(serverEnv, 'worktree', 'create', SLUG, '--branch', 'ghost')
@@ -2077,7 +2073,6 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         await sleep(100)
       }
       expect(await ls(worktreesRoot)).toEqual(checkoutsBefore)
-      expect(await ls(adminRoot)).toEqual(adminBefore)
     }, 60_000)
   })
   describe('agent mode (--mode acp)', () => {

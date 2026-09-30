@@ -65,8 +65,11 @@ export async function convergeAgentHistory(
   if (runtime.layers) {
     // The source of the memory mount, and the mountpoints of every mount
     // nested in another — each server-owned rather than left to the kubelet.
+    // The memory mountpoint is a link where a host run left one.
+    const memoryMount = path.join(history, 'claude', CLAUDE_POD_CWD, 'memory')
+    if ((await fs.lstat(memoryMount).catch(() => null))?.isSymbolicLink() === true) await fs.unlink(memoryMount)
     await fs.mkdir(path.join(claudeDir(slug), 'projects', CLAUDE_POD_REPO, 'memory'), { recursive: true })
-    await fs.mkdir(path.join(history, 'claude', CLAUDE_POD_REPO, 'memory'), { recursive: true })
+    await fs.mkdir(memoryMount, { recursive: true })
     await fs.mkdir(path.join(claudeDir(slug), 'file-history'), { recursive: true })
     await fs.mkdir(path.join(codexDir(slug), 'sessions'), { recursive: true })
   }
@@ -325,9 +328,13 @@ async function movePi(slug: string, history: string, ids: Set<string>): Promise<
  *   the history's — so a host conversation is written straight into it. A
  *   real folder already there is emptied into the history first, unless it
  *   holds a conversation a sibling links too, which keeps it real.
- * - the folder the host repo path names, linked to the one a pod's memory
- *   uses, so auto-memory is one thing on both drivers. Two real folders are
- *   both left alone; memory is never merged.
+ * - the `memory` folder among those conversations, linked to the project's
+ *   shared memory, which a pod mounts at the same place — claude keys
+ *   memory on the checkout's git root, the checkout itself — so auto-memory
+ *   is one thing on both drivers and across worktrees. The folder the host
+ *   repo path names, where memory lived while checkouts were linked, is
+ *   folded into the shared one. Two real folders are both left alone;
+ *   memory is never merged.
  * - each file-history dir and codex rollout in the history, at the path
  *   claude or codex looks for it by. A new one a host run writes is a real
  *   file in the shared home until the next create moves it in.
@@ -357,7 +364,13 @@ async function linkOut(slug: string, worktreeId: string, history: string, shared
     await ensureLink(link, conversations)
   }
 
+  // claude keys memory on the checkout's git root, which is the checkout
+  // itself: its memory folder sits among this worktree's conversations, and
+  // is linked back to the project's shared one. An empty one is the pod's
+  // mountpoint, left by a run under the other driver.
   const memory = path.join(projects, CLAUDE_POD_REPO)
+  await fs.rmdir(path.join(conversations, 'memory')).catch(() => {})
+  await ensureLink(path.join(conversations, 'memory'), path.join(memory, 'memory'))
   for (const form of await repoForms(slug)) {
     const name = claudeProjectDirName(form)
     if (name === CLAUDE_POD_REPO) continue

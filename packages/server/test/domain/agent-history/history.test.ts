@@ -143,7 +143,7 @@ describe('convergeAgentHistory', () => {
     // Every mount source and nested mountpoint exists, server-made.
     for (const dir of [
       history('codex-sqlite'),
-      history('claude', '-repo', 'memory'),
+      history('claude', '-workspace', 'memory'),
       shared('claude', 'projects', '-repo', 'memory'),
       shared('claude', 'file-history'),
       shared('codex', 'sessions'),
@@ -206,9 +206,12 @@ describe('convergeAgentHistory', () => {
     expect(await exists(history('claude', '-workspace', 'h1.jsonl'))).toBe(true)
     expect((await listWorktreeAgentSessions(SLUG, WT))[0]?.transcriptPath)
       .toBe(path.join('history', WT, 'claude', '-workspace', 'h1.jsonl'))
-    // Memory became the one a pod uses, reached from the host name too.
+    // Memory became the project's shared one, reached from the host name
+    // too, and from the checkout's own memory folder, which is where claude
+    // looks for it now that the checkout is its own git root.
     expect(await fs.readFile(path.join(projects, '-repo', 'memory', 'MEMORY.md'), 'utf8')).toBe('remember\n')
     expect(await fs.readFile(path.join(repo, 'memory', 'MEMORY.md'), 'utf8')).toBe('remember\n')
+    expect(await fs.readFile(path.join(checkout, 'memory', 'MEMORY.md'), 'utf8')).toBe('remember\n')
     // Each file-history dir and rollout at the path its tool looks for it.
     expect(await fs.readFile(shared('claude', 'file-history', 'k1', 'edit@v1'), 'utf8')).toBe('{}\n')
     expect((await fs.lstat(shared('codex', 'sessions', ROLLOUT_REL('kt')))).isSymbolicLink()).toBe(true)
