@@ -490,13 +490,13 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
           // default, kubernetes leaves pods unconfined without it. (runsc
           // ignores it and installs its own host seccomp; harmless.) The
           // rootful nested graphroot is a root-owned tmpfs, so no fsGroup —
-          // which is why hostUidSecurityContext carries none.
+          // which is why installSecurityContext carries none.
           securityContext: {
             seccompProfile: { type: 'RuntimeDefault' },
             // Stamped rather than left to the image's own USER: the image
-            // bakes a fixed uid, and what a worktree must run as is the host
+            // bakes no uid, and what a worktree must run as is the install
             // uid that owns its checkout.
-            ...hostUidSecurityContext(),
+            ...installSecurityContext(),
           },
           // Containment for in-container root (reachable via the image's
           // passwordless sudo, a feature — agents install packages
@@ -610,7 +610,7 @@ function nodeDirsInitContainer(
   nodeRoot: string,
   dirs: string[],
 ): Record<string, unknown> {
-  const { runAsUser, runAsGroup } = hostUidSecurityContext()
+  const { runAsUser, runAsGroup } = installSecurityContext()
   const script = [
     'set -e',
     'for d in "$@"; do',
@@ -645,31 +645,59 @@ function nodeDirsInitContainer(
   }
 }
 
+/** The uid and gid an install's pods run as (docs/server-in-cluster.md). */
+export interface InstallIdentity {
+  uid: number
+  gid: number
+}
+
 /**
- * securityContext for every yaac pod that runs as this machine's own user:
+ * This process's own uid and gid. Inside the server pod that IS the install
+ * identity — the pod runs as whatever install stamped on its Deployment —
+ * so everything the server applies derives from it with no lookup.
+ *
+ * Throws rather than defaulting when getuid/getgid are unavailable: the
+ * uid model is POSIX-only, and emitting a manifest with an invented uid
+ * would move the failure to a place that cannot explain it.
+ */
+export function processIdentity(): InstallIdentity {
+  const uid = process.getuid?.()
+  const gid = process.getgid?.()
+  if (uid === undefined || gid === undefined) {
+    throw new Error(
+      'processIdentity: process.getuid/getgid unavailable — '
+      + 'the yaac server requires a POSIX host',
+    )
+  }
+  return { uid, gid }
+}
+
+/**
+ * securityContext for every yaac pod that runs as the install's identity:
  * the server, the proxy, worktree pods, the install's probe pods.
  *
  * Its two halves answer different questions.
  *
- * **The uid and gid are the HOST's.** Under gVisor there is no userns and no
- * idmap, so numeric uids pass through raw: a hostPath file owned by host uid
- * N appears in-container as uid N. That number is the install host's and on
- * macOS cannot be anything else — the data dir reaches the node over
- * virtiofs, whose host end performs every read and write as the user running
- * the VM, so the host uid is a ceiling no chown escapes in either direction
- * (docs/server-in-cluster.md). Inside the server pod this needs no
- * special-casing: the pod runs as the uid its install stamped, so
- * `process.getuid()` there IS the install host's uid, and every path the
- * server pre-creates for a worktree lands owned by it.
+ * **The uid and gid are the INSTALL's.** Under gVisor there is no userns
+ * and no idmap, so numeric uids pass through raw: a file on a claim owned
+ * by uid N appears in-container as uid N. Which N is an install decision
+ * (docs/server-in-cluster.md "The uid everything runs as"): on kind it is
+ * the host's, because on macOS the data dir reaches the node over virtiofs,
+ * whose host end performs every read and write as the user running the VM,
+ * so the host uid is a ceiling no chown escapes; on a byo cluster it is a
+ * fixed constant, since an NFS server passes uids through raw and the
+ * machine that ran install means nothing to it. Install stamps it on the
+ * server Deployment, so inside the cluster the default — this process's own
+ * identity — is always the install's, and every path the server pre-creates
+ * for a worktree lands owned by it. Host-side callers (`cluster check`, the
+ * e2e harness) pass the one the live Deployment records instead.
  *
- * **The supplementary group 0 is the IMAGE's.** yaac images bake a fixed
- * `yaac` user (uid 1000, primary group 0) and leave everything it owns
- * group-writable, which is what lets ONE image serve every host rather than
- * one image per uid (docs/arbitrary-uid-images.md). Membership in group 0 is
- * how a pod picks that grant up; without it a pod on a host whose uid is not
- * 1000 can write nothing in its own home. Supplementary rather than
- * `runAsGroup: 0` so that files the pod creates on a hostPath keep landing
- * in the host user's own group, exactly as they did when the uid was baked.
+ * **The supplementary group 0 is the IMAGE's.** yaac images bake no uid and
+ * leave everything the process writes group-writable by group 0, which is
+ * what lets ONE image serve every install (docs/arbitrary-uid-images.md).
+ * Membership in group 0 is how a pod picks that grant up. Supplementary
+ * rather than `runAsGroup: 0` so that files the pod creates on a claim keep
+ * landing in the install's own group.
  *
  * `fsGroup` is deliberately absent: it applies only to ownership-managed
  * volumes (emptyDir), never to hostPath, and the one emptyDir a worktree pod
@@ -677,23 +705,11 @@ function nodeDirsInitContainer(
  * Deployment adds `fsGroup: runAsGroup` at its call site, its HOME being an
  * emptyDir the kubelet has to hand over; nothing else here has a volume
  * `fsGroup` would touch.
- *
- * Throws rather than defaulting when getuid/getgid are unavailable: the
- * hostPath/uid model is POSIX-only, and emitting a manifest with an invented
- * uid would move the failure to a place that cannot explain it.
  */
-export function hostUidSecurityContext(): {
+export function installSecurityContext(identity: InstallIdentity = processIdentity()): {
   runAsUser: number
   runAsGroup: number
   supplementalGroups: number[]
 } {
-  const uid = process.getuid?.()
-  const gid = process.getgid?.()
-  if (uid === undefined || gid === undefined) {
-    throw new Error(
-      'hostUidSecurityContext: process.getuid/getgid unavailable — '
-      + 'the yaac server requires a POSIX host',
-    )
-  }
-  return { runAsUser: uid, runAsGroup: gid, supplementalGroups: [0] }
+  return { runAsUser: identity.uid, runAsGroup: identity.gid, supplementalGroups: [0] }
 }

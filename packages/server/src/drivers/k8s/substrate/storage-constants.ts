@@ -37,3 +37,16 @@ export const NODE_LOCAL_NODE_ROOT = '/var/lib/yaac/node'
  * leftovers without matching the real install's.
  */
 export const LABEL_INSTALL_NAMESPACE = 'yaac.install-namespace'
+/**
+ * Label naming which of the two claims a PersistentVolume backs. A
+ * class-provisioned volume's name is the provisioner's, so this — with the
+ * install id — is how a later install finds a volume that outlived its
+ * claim.
+ */
+export const LABEL_CLAIM = 'yaac.claim'
+/**
+ * Label carrying `server.json`'s `installId` on the server Deployment and
+ * on every volume a byo install provisions: which install they are, where
+ * the data-dir hash only says which PATH they were installed from.
+ */
+export const LABEL_INSTALL_ID = 'yaac.install-id'

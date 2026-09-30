@@ -7,6 +7,7 @@ import {
   k8sNamespace,
   kubectlApply,
   kubectlWithRetry,
+  processIdentity,
 } from '@yaac/server/drivers/k8s/substrate'
 import { buildServerIngressNpManifest, ensureNamespace, nodeIpBlocks } from '@yaac/server/drivers/k8s/cluster'
 import { registryHasTag, registryRef } from '@yaac/server/drivers/k8s/container'
@@ -105,7 +106,7 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
   const imageRef = await requirePrebuiltServerImage()
 
   await ensureNamespace()
-  await ensureTestStorageClaims()
+  await ensureTestStorageClaims(imageRef)
   await kubectlApply(buildServerServiceAccountManifest())
   await kubectlApply(buildServerClusterRoleManifest())
   await kubectlApply(buildServerClusterRoleBindingManifest())
@@ -198,7 +199,9 @@ function testServerDeploymentManifest(
   imageRef: string,
   env: NodeJS.ProcessEnv,
 ): Record<string, unknown> {
-  const manifest = buildServerDeploymentManifest(imageRef) as {
+  // This machine's own identity, as on a kind install; the byo tier refuses
+  // to run on a host whose uid is not its install's.
+  const manifest = buildServerDeploymentManifest(imageRef, processIdentity()) as {
     spec: { template: { spec: {
       containers: Array<{
         env: Array<{ name: string; value: string }>

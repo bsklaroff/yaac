@@ -36,6 +36,45 @@ export interface ServerConfig {
    * snapshot reports it live.
    */
   driver?: DriverKind
+  /**
+   * Who this k8s install IS: a random id minted by its first `yaac cluster
+   * install`, and stamped on its server Deployment and on every volume it
+   * provisions. A data-dir path cannot be the identity — `/root/.yaac` or
+   * `/home/ubuntu/.yaac` is every install on every machine like this one —
+   * so re-adopting a volume, refusing a foreign Deployment and the byo
+   * uninstall all key on this instead.
+   */
+  installId?: string
+  /**
+   * The cluster a k8s install is in, as the uid of its `kube-system`
+   * namespace — stable for a cluster's life and distinct across clusters,
+   * where a context name is a local label (`default`,
+   * `kubernetes-admin@kubernetes`) that a KUBECONFIG switch can reuse for
+   * another cluster. Every host-side verb that touches the cluster refuses
+   * when the current context's cluster is another one. Absent on a file
+   * written before it was recorded, which goes unchecked until the next
+   * install writes it (docs/legacy-compat-shims.md).
+   */
+  clusterUid?: string
+  /** The context the install ran through: only the hint a refusal gives. */
+  kubeContext?: string
+  /**
+   * The install is `--byo`: a cluster yaac did not create, which `yaac
+   * cluster delete` must refuse and whose nodes nothing here may exec into.
+   */
+  byo?: boolean
+}
+
+const INSTALL_KEYS = ['driver', 'installId', 'clusterUid', 'kubeContext', 'byo'] as const
+
+/** What this data dir records about its install, beside the selection. */
+export type InstallRecord = Pick<ServerConfig, typeof INSTALL_KEYS[number]>
+
+/** The install-level fields a rewrite of the selection must carry over. */
+function installFields(cfg: InstallRecord | null): InstallRecord {
+  const out: Record<string, unknown> = {}
+  for (const key of INSTALL_KEYS) if (cfg?.[key]) out[key] = cfg[key]
+  return out as InstallRecord
 }
 
 /**
@@ -69,12 +108,18 @@ export async function readServerConfig(): Promise<ServerConfig | null> {
     if (cfg.url !== '' && !saved.some((s) => s.url === cfg.url)) {
       saved.unshift({ url: cfg.url })
     }
-    const driver = cfg.driver === 'k8s' || cfg.driver === 'containerless' ? cfg.driver : undefined
+    const str = (v: unknown): string | undefined => typeof v === 'string' ? v : undefined
     return {
       url: cfg.url,
       enabled: cfg.enabled,
       saved,
-      ...(driver ? { driver } : {}),
+      ...installFields({
+        driver: cfg.driver === 'k8s' || cfg.driver === 'containerless' ? cfg.driver : undefined,
+        installId: str(cfg.installId),
+        clusterUid: str(cfg.clusterUid),
+        kubeContext: str(cfg.kubeContext),
+        byo: cfg.byo === true,
+      }),
     }
   } catch {
     return null
@@ -99,12 +144,12 @@ export async function writeServerConfig(cfg: ServerConfig): Promise<void> {
  * one data dir. With nothing left to record, the file goes.
  */
 export async function clearServerConfig(): Promise<void> {
-  const driver = (await readServerConfig())?.driver
-  if (driver === undefined) {
+  const install = installFields(await readServerConfig())
+  if (install.driver === undefined) {
     await fs.rm(serverConfigPath(), { force: true })
     return
   }
-  await writeServerConfig({ url: '', enabled: false, saved: [], driver })
+  await writeServerConfig({ url: '', enabled: false, saved: [], ...install })
 }
 
 /**
@@ -140,7 +185,7 @@ export function withServerSelected(existing: ServerConfig | null, url: string): 
     url,
     enabled: true,
     saved: [{ url }, ...others],
-    ...(existing?.driver ? { driver: existing.driver } : {}),
+    ...installFields(existing),
   }
 }
 
@@ -199,4 +244,21 @@ export async function probeServer(origin: string): Promise<{ buildId: string; pr
  */
 export async function registerServer(origin: string, driver: DriverKind): Promise<void> {
   await writeServerConfig({ ...withServerSelected(await readServerConfig(), origin), driver })
+}
+
+/**
+ * Merge `patch` into this data dir's install record, leaving the selection
+ * as it is (or empty, on a data dir with none yet); an `undefined` value
+ * drops the field. `yaac cluster install` records who and where the
+ * install is BEFORE it changes anything, so a run that fails halfway has
+ * already claimed what it made, and the next run recognizes it.
+ */
+export async function recordInstall(patch: InstallRecord): Promise<void> {
+  const existing = await readServerConfig()
+  await writeServerConfig({
+    url: existing?.url ?? '',
+    enabled: existing?.enabled ?? false,
+    saved: existing?.saved ?? [],
+    ...installFields({ ...installFields(existing), ...patch }),
+  })
 }

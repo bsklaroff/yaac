@@ -9,7 +9,8 @@ import {
   NESTED_GRAPHROOT_PATH,
   SSH_AGENT_SOCKET_PATH,
   buildPodJobManifest,
-  hostUidSecurityContext,
+  installSecurityContext,
+  processIdentity,
   sentryTmpfsAnnotations,
 } from '#drivers/k8s/substrate'
 // Internals, for fixtures and bounds only: the in-container cert and
@@ -355,7 +356,7 @@ describe('buildPodJobManifest', () => {
     // chown is unconditional: kubelet has already created the leaf by the
     // time the init container runs, so a chown gated on the mkdir would
     // never reach the one directory the worktree writes to.
-    const { runAsUser, runAsGroup } = hostUidSecurityContext()
+    const { runAsUser, runAsGroup } = installSecurityContext()
     expect(init.command?.[2]).toContain('[ -d "$p" ] || mkdir "$p"')
     expect(init.command?.[2]).toContain(`\n    chown ${String(runAsUser)}:${String(runAsGroup)} "$p"`)
   })
@@ -377,7 +378,7 @@ describe('buildPodJobManifest', () => {
       const args = (init.command ?? []).slice(4).map((d) => d.replace('/node', root))
       await expect(execFileAsync('sh', ['-c', script, '--', ...args])).resolves.toBeTruthy()
       const { uid, gid } = await fs.stat(path.join(root, 'projects/demo/opencode-data/abcd'))
-      const { runAsUser, runAsGroup } = hostUidSecurityContext()
+      const { runAsUser, runAsGroup } = installSecurityContext()
       expect([uid, gid]).toEqual([runAsUser, runAsGroup])
       await expect(fs.stat(path.join(root, 'projects/demo/.cached-packages/modules/abcd'))).resolves.toBeTruthy()
     } finally {
@@ -673,28 +674,49 @@ describe('sentryTmpfsAnnotations', () => {
   })
 })
 
-describe('hostUidSecurityContext', () => {
+describe('installSecurityContext', () => {
   afterEach(() => {
     vi.restoreAllMocks()
   })
 
-  it('mirrors the host uid and gid, and joins group 0 for the image', () => {
-    // The uid is the one that pre-created the hostPath dirs the pod writes
-    // — never a pinned constant, since macOS's first login uid is 501 and
-    // virtiofs makes it a ceiling. Group 0 is the image half: yaac images
-    // bake a fixed `yaac` user with primary group 0 and group-writable
-    // files, so one image runs at any uid (docs/arbitrary-uid-images.md).
+  it('stamps the identity it is handed, and joins group 0 for the image', () => {
+    // The uid is an install decision (the host's on kind, a constant on
+    // byo), handed in by whoever renders the manifest. Group 0 is the image
+    // half: yaac images bake no uid and leave what the process writes
+    // group-writable by 0, so one image runs at any uid
+    // (docs/arbitrary-uid-images.md).
+    expect(installSecurityContext({ uid: 1000, gid: 1000 })).toEqual({
+      runAsUser: 1000,
+      runAsGroup: 1000,
+      supplementalGroups: [0],
+    })
+  })
+
+  it('defaults to this process\'s identity, which inside the server pod is the install\'s', () => {
     vi.spyOn(process, 'getuid').mockReturnValue(501)
     vi.spyOn(process, 'getgid').mockReturnValue(20)
-    expect(hostUidSecurityContext()).toEqual({
+    expect(installSecurityContext()).toEqual({
       runAsUser: 501,
       runAsGroup: 20,
       supplementalGroups: [0],
     })
   })
 
+})
+
+describe('processIdentity', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('reads this process\'s uid and gid', () => {
+    vi.spyOn(process, 'getuid').mockReturnValue(1000)
+    vi.spyOn(process, 'getgid').mockReturnValue(1000)
+    expect(processIdentity()).toEqual({ uid: 1000, gid: 1000 })
+  })
+
   it('refuses to invent a uid when the platform has none', () => {
     vi.spyOn(process, 'getuid').mockReturnValue(undefined as unknown as number)
-    expect(() => hostUidSecurityContext()).toThrow(/POSIX/)
+    expect(() => processIdentity()).toThrow(/POSIX/)
   })
 })

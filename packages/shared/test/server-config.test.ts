@@ -8,6 +8,7 @@ import {
   normalizeServerUrl,
   probeServer,
   readServerConfig,
+  recordInstall,
   registerServer,
   serverConfigPath,
   withServerSelected,
@@ -147,6 +148,45 @@ describe('registerServer', () => {
       saved: [{ url: 'http://127.0.0.1:8787' }, { url: 'https://srv.ts.net' }],
       driver: 'k8s',
     })
+  })
+
+  it('keeps the install record it finds', async () => {
+    await writeServerConfig({ url: '', enabled: false, saved: [], driver: 'k8s', installId: 'i-1', byo: true })
+    await registerServer('https://yaac.tail.ts.net', 'k8s')
+    expect(await readServerConfig()).toMatchObject({ url: 'https://yaac.tail.ts.net', installId: 'i-1', byo: true })
+  })
+})
+
+describe('recordInstall', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-record-'))
+    setDataDir(dir)
+  })
+
+  afterEach(async () => {
+    setDataDir('')
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
+  it('records an install before any server, merges later records, and survives every rewrite of the selection', async () => {
+    // Install records who and where it is before it has an origin.
+    await recordInstall({ driver: 'k8s', installId: 'i-1', clusterUid: 'uid-1', kubeContext: 'prod', byo: true })
+    expect(await readServerConfig()).toEqual({
+      url: '', enabled: false, saved: [],
+      driver: 'k8s', installId: 'i-1', clusterUid: 'uid-1', kubeContext: 'prod', byo: true,
+    })
+    await registerServer('https://yaac.tail.ts.net', 'k8s')
+    // A later record merges; `undefined` drops a field.
+    await recordInstall({ clusterUid: 'uid-2', byo: undefined })
+    expect(await readServerConfig()).toMatchObject({ url: 'https://yaac.tail.ts.net', installId: 'i-1', clusterUid: 'uid-2' })
+    expect((await readServerConfig())?.byo).toBeUndefined()
+    // `yaac remote set` and a forget rewrite the selection, never the
+    // install's own record.
+    await writeServerConfig(withServerSelected(await readServerConfig(), 'https://other.ts.net'))
+    await clearServerConfig()
+    expect(await readServerConfig()).toMatchObject({ url: '', driver: 'k8s', installId: 'i-1', clusterUid: 'uid-2', kubeContext: 'prod' })
   })
 })
 

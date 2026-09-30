@@ -97,13 +97,16 @@ async function runningServerDriver(): Promise<string | undefined> {
 }
 
 /**
- * Run `yaac server start|stop|restart` against a server that is a
+ * Run `yaac server start|stop|restart|logs` against a server that is a
  * Deployment, and report whether it did.
  *
  * The k8s driver's server runs IN the cluster (docs/server-in-cluster.md),
  * so these verbs are a scale and a rollout rather than a spawn and a
  * SIGTERM — and spawning a host server beside the pod would be the worst of
  * the available wrong answers, since both would then hold the same data dir.
+ * `logs` reads through the cluster on a byo install for the same reason in
+ * the other direction: the log is on the server-local claim, which there is
+ * not on this machine at all.
  *
  * The cluster is asked rather than a marker file consulted: "is there a
  * server Deployment?" is the actual question, it needs no new state to
@@ -118,10 +121,22 @@ async function runningServerDriver(): Promise<string | undefined> {
  * `start` spawns a second server onto its data dir. On a k8s install the
  * unanswerable question is a refusal, not a fallback.
  */
-async function runDeployedServerVerb(verb: 'start' | 'stop' | 'restart'): Promise<boolean> {
+async function runDeployedServerVerb(
+  verb: 'start' | 'stop' | 'restart' | 'logs',
+  logsOpts: { follow?: boolean; lines?: number } = {},
+): Promise<boolean> {
   const { recordedDriver } = await import('@yaac/shared/install-driver')
   if (await recordedDriver() !== 'k8s') return false
+  // A kind install's server-local claim is a hostPath into this machine's
+  // data dir: its log is read off the disk, whatever state the pod is in.
+  const { readServerConfig } = await import('@yaac/shared/server-config')
+  if (verb === 'logs' && !(await readServerConfig())?.byo) return false
   const install = await import('@yaac/server/drivers/k8s/install')
+  // Before the cluster is asked anything: a foreign cluster with no server
+  // Deployment would otherwise answer "no" and send the verb down the host
+  // path, whose answers ("server is not running") are about the wrong cluster.
+  const refusal = await install.foreignClusterRefusal()
+  if (refusal) throw new Error(refusal)
   let deployed: boolean
   try {
     deployed = await install.serverDeploymentExists()
@@ -135,6 +150,10 @@ async function runDeployedServerVerb(verb: 'start' | 'stop' | 'restart'): Promis
     )
   }
   if (!deployed) return false
+  if (verb === 'logs') {
+    await install.clusterServerLogs(logsOpts)
+    return true
+  }
   if (verb === 'stop') {
     await install.stopClusterServer()
     console.error('[yaac] server stopped (Deployment scaled to 0)')
@@ -168,6 +187,21 @@ async function rejectClusterOnContainerless(): Promise<boolean> {
     `\n${where}: worktrees run on this host and there is no cluster to manage.`
     + '\n    Run `yaac host check` to verify this machine instead.',
   )
+  process.exitCode = 1
+  return true
+}
+
+/**
+ * Refuse a cluster verb when the kubeconfig's current context is not the
+ * cluster this install was recorded in — every cluster call would otherwise
+ * go to some other cluster (see cluster-identity.ts). `install` checks for
+ * itself, after a kind install has had the chance to create its cluster.
+ */
+async function rejectForeignCluster(): Promise<boolean> {
+  const { foreignClusterRefusal } = await import('@yaac/server/drivers/k8s/install')
+  const refusal = await foreignClusterRefusal()
+  if (refusal === null) return false
+  console.error(`\n${refusal}`)
   process.exitCode = 1
   return true
 }
@@ -266,10 +300,11 @@ server
 
 server
   .command('logs')
-  .description('Print the server log (~/.yaac/server-local/server.log)')
+  .description('Print the server log (~/.yaac/server-local/server.log; read through the cluster on a --byo install)')
   .option('-f, --follow', 'Keep printing new lines as they are appended')
   .option('-n, --lines <n>', 'Print only the last N lines', (v) => Number.parseInt(v, 10))
   .action(async (options: { follow?: boolean; lines?: number }) => {
+    if (await runDeployedServerVerb('logs', options)) return
     const { serverLogs } = await import('@yaac/server/main/lifecycle')
     await serverLogs(options)
   })
@@ -284,6 +319,7 @@ cluster
   .description('Verify cluster prerequisites (kubectl, registry, hostPath wiring)')
   .action(async () => {
     if (await rejectClusterOnContainerless()) return
+    if (await rejectForeignCluster()) return
     const { clusterCheck } = await import('#commands/cluster-check')
     await clusterCheck()
   })
@@ -292,9 +328,17 @@ cluster
   .command('install')
   .description('Converge this machine and its cluster to the installed yaac version: the kind cluster and CNI if there is none, the kind node fixups, every built-in image, and the in-cluster layers. Safe to re-run; never destructive.')
   .option('--nodes <count>', 'Number of kind nodes to create (default 1; worktrees run on the workers, so 3 is the smallest real multi-node rehearsal). Ignored when the cluster already exists')
-  .option('--adopt-cni', 'Install into the cluster your kubeconfig points at, adopting the Calico it already runs instead of creating a cluster (verifies the dataplane and refuses what would fail silently)')
+  .option('--byo', 'Bring your own cluster: install into the cluster your kubeconfig points at instead of creating one — gated on its nodes, its Calico, the Tailscale operator and its storage classes; the server is published on the tailnet')
+  .option('--rwx-storage-class <name>', 'With --byo (required): the NFS-family StorageClass the shared yaac-global claim is provisioned from')
+  .option('--rwo-storage-class <name>', 'With --byo: the StorageClass the server\'s own yaac-server-local claim is provisioned from (default: the cluster\'s default class)')
   .option('--tailnet', 'Publish the server on your Tailscale tailnet through the Tailscale Kubernetes operator (which must already be installed) instead of at 127.0.0.1, at an https origin whose callers are identified by their tailnet user')
-  .action(async (options: { nodes?: string; adoptCni?: boolean; tailnet?: boolean }) => {
+  .action(async (options: {
+    nodes?: string
+    byo?: boolean
+    rwxStorageClass?: string
+    rwoStorageClass?: string
+    tailnet?: boolean
+  }) => {
     if (await rejectClusterOnContainerless()) return
     if (rejectClusterArgs('install', options)) return
     const { clusterInstall } = await import('#commands/cluster-install')
@@ -310,6 +354,9 @@ cluster
   .option('-y, --yes', 'Skip the confirmation prompt')
   .action(async (options: { yes?: boolean }) => {
     if (await rejectClusterOnContainerless()) return
+    // No cluster guard: byo refuses outright, and kind deletes its cluster
+    // by name, never through the current context — and a cluster whose
+    // apiserver no longer answers is exactly the one to delete.
     if (rejectClusterArgs('delete')) return
     const { clusterDelete } = await import('#commands/cluster-delete')
     await clusterDelete(options)

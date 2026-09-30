@@ -24,6 +24,7 @@ import {
 import { DONE_MARKER } from '@yaac/server/drivers/k8s/images/store-writer'
 import { nodeLocalHostPath } from '@yaac/server/drivers/k8s/substrate/mount-sources'
 import { imageStoreDir } from '@yaac/shared/project-paths'
+import { serverLogPath } from '@yaac/shared/paths'
 import {
   createYaacTestEnv,
   spawnYaacServer,
@@ -321,6 +322,42 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     }
   }
 
+  /**
+   * Why a session's engine cannot see the store — for a failure message,
+   * since the cluster (and the server's log with it) is gone by the time
+   * anyone reads one: which node each session's pod ran on and whether it
+   * was a prewarmed spare, every node's store generations, what the
+   * session has mounted, and the server's store and prewarm lines.
+   */
+  async function podPlacement(job: string): Promise<string> {
+    const pods = await kubectlGetJson<{
+      items?: Array<{ metadata: { name: string; labels?: Record<string, string> }; spec: { nodeName?: string } }>
+    }>(['get', 'pods', '-n', k8sNamespace(), '-l', `job-name=${job}`]).catch(() => null)
+    const pod = pods?.items?.[0]
+    const prewarm = Object.entries(pod?.metadata.labels ?? {}).filter(([k]) => /prewarm|spare/.test(k))
+    return `${job}: pod ${pod?.metadata.name ?? '?'} on ${pod?.spec.nodeName ?? '?'}`
+      + `${prewarm.length ? ` (${prewarm.map(([k, v]) => `${k}=${v}`).join(', ')})` : ''}`
+  }
+
+  async function storeDiagnosis(placements: string[], last: string, projectId: string): Promise<string> {
+    const lines = [...placements, await podPlacement(last)]
+    const parent = nodeLocalHostPath(imageStoreDir(projectId))
+    const nodes = (await kubectlGetJson<{ items: Array<{ metadata: { name: string } }> }>(['get', 'nodes']).catch(() => null))
+      ?.items.map((n) => n.metadata.name) ?? []
+    for (const node of nodes) {
+      const { stdout } = await execFileAsync('podman', ['exec', node, 'sh', '-c', `ls -la --time-style=+%T ${parent}/ ${parent}/*/ 2>&1`])
+        .catch((err: unknown) => ({ stdout: String(err) }))
+      lines.push(`--- ${node}: ${parent}\n${stdout.trim()}`)
+    }
+    const { stdout: mounts } = await execInJob(last, ['sh', '-c', 'grep shared-images /proc/mounts; ls -la /var/lib/shared-images 2>&1 | head -20'])
+      .catch((err: unknown) => ({ stdout: String(err) }))
+    lines.push(`--- ${last}: shared-images\n${mounts.trim()}`)
+    const log = await fs.readFile(serverLogPath(), 'utf8').catch(() => '')
+    lines.push(`--- server log (store, prewarm, salvage):\n${log.split('\n')
+      .filter((l) => /image-store|prewarm|salvage|claim/i.test(l)).slice(-60).join('\n')}`)
+    return lines.join('\n')
+  }
+
   it('builds with in-pod podman and reuses layers across sessions via the project registry', async () => {
     const slug = 'nested-cache'
     await setupProject(slug)
@@ -393,6 +430,8 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     // Detached cleanup order: image salvage (in-pod survey → in-pod push to
     // the project registry) → job delete. Job absence proves the whole
     // pipeline ran.
+    // Where session 1 ran, for a failure below: its pod is gone by then.
+    const session1Placement = await podPlacement(name1)
     const { exitCode: delExit } = await runYaac(serverEnv, 'worktree', 'stop', session1.worktreeId)
     expect(delExit).toBe(0)
     await waitForJobGone(name1, 300_000)
@@ -458,6 +497,10 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     // read-only lower, so session 1's image is reachable there by NAME and
     // is the SAME IMAGE CONTENT: every uncompressed layer digest matches.
     const s2Id = await inspect(session2.jobName, 'yaac-cache-probe:v1', 'Id')
+    if (!/^(sha256:)?[0-9a-f]{64}$/.test(s2Id)) {
+      throw new Error(`session 2 cannot resolve yaac-cache-probe:v1 (${s2Id})\n`
+        + await storeDiagnosis([session1Placement], session2.jobName, session2.projectId!))
+    }
     const s2Parent = await inspect(session2.jobName, 'yaac-cache-probe:v1', 'Parent')
     expect(await inspect(session2.jobName, 'yaac-cache-probe:v1', 'RootFS.Layers')).toBe(layers1)
     // Byte-identical IDENTITY, both for the image and the intermediate it

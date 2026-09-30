@@ -1850,14 +1850,20 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       ])
       expect(nwKeyOut.trim()).toBe('')
 
-      // Write a config on the host and verify it's visible inside the container.
+      // Write a config on the host and verify it's visible inside the
+      // container — within the shared tier's coherence bound, not at once:
+      // on an NFS-backed claim (the e2e-byo tier) the client may serve a
+      // cached lookup for up to `actimeo`, one second.
       await fs.writeFile(
         path.join(hostOcConfigDir, 'opencode.json'),
         JSON.stringify({ model: 'anthropic/claude-sonnet-4-5' }),
       )
-      const { stdout: catOut } = await execInJob(jobName, [
-        'cat', '/home/yaac/.config/opencode/opencode.json',
-      ])
+      let catOut = ''
+      for (let i = 0; i < 10 && catOut === ''; i++) {
+        catOut = await execInJob(jobName, ['cat', '/home/yaac/.config/opencode/opencode.json'])
+          .then((r) => r.stdout, () => '')
+        if (catOut === '') await sleep(500)
+      }
       const inside: unknown = JSON.parse(catOut.trim())
       expect(inside).toEqual({ model: 'anthropic/claude-sonnet-4-5' })
     }, 60_000)

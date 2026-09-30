@@ -175,7 +175,7 @@ export async function clusterPodCidrs(): Promise<string[]> {
 /**
  * The three sources above, kept apart and unnormalized-into-one.
  *
- * `clusterPodCidrs` unions them; the `--adopt-cni` gate needs to know
+ * `clusterPodCidrs` unions them; the `--byo` gate needs to know
  * WHICH answered, because "only node spec.podCIDR answered" on a cluster
  * yaac did not build is the shape where the exclusion set is most likely
  * too narrow — and too narrow means pod-to-pod 443/80 gets redirected into
@@ -199,7 +199,7 @@ export async function podCidrSources(): Promise<{
    * present as "Calico publishes no pool" and silently narrow the set.
    * Absence stays a fact: a cluster without Calico serves no IPPool CRD,
    * and that is a source that does not exist rather than one we could not
-   * read. `--adopt-cni` refuses on anything listed here.
+   * read. `--byo` refuses on anything listed here.
    */
   unreadable: Array<{ source: string; cause: string }>
 }> {

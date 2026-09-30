@@ -13,7 +13,7 @@ import { resolveTrustedLayers } from '@yaac/server/drivers/k8s/image-engine/imag
 import { ensureNamespace } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { registryHasTag, registryRef } from '@yaac/server/drivers/k8s/container/registry'
 import { runtimeClassSpec } from '@yaac/server/drivers/k8s/substrate/gvisor'
-import { hostUidSecurityContext } from '@yaac/server/drivers/k8s/substrate'
+import { installSecurityContext } from '@yaac/server/drivers/k8s/substrate'
 // Setup values: the nested tier's volume, path and caps, so this pod is
 // shaped like the one buildPodJobManifest emits without re-deriving them.
 import {
@@ -154,12 +154,10 @@ beforeAll(async () => {
       ...runtimeClassSpec({ nested: true }),
       securityContext: {
         seccompProfile: { type: 'RuntimeDefault' },
-        // The production identity, with the uid and gid swapped for ones
-        // this cluster's host does not have. `supplementalGroups` is the
-        // part under test and comes from the real helper.
-        ...hostUidSecurityContext(),
-        runAsUser: ARBITRARY_UID,
-        runAsGroup: ARBITRARY_GID,
+        // The production identity helper, handed a uid and gid this
+        // cluster's host does not have. `supplementalGroups` is the part
+        // under test and comes from the real helper.
+        ...installSecurityContext({ uid: ARBITRARY_UID, gid: ARBITRARY_GID }),
       },
       containers: [{
         name: 'worktree',

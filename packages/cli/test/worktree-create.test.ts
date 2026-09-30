@@ -922,7 +922,7 @@ describe('createWorktree', () => {
   it('never chowns mounts in-container — uid alignment makes server dirs writable', async () => {
     await createWorktree('demo', { worktreeId: 'abcd1234' })
 
-    // The pod runs as the server's own uid (hostUidSecurityContext), so
+    // The pod runs as the server's own uid (installSecurityContext), so
     // server-created hostPath dirs are writable without privileged fixups.
     // A chown here would also corrupt host-side ownership on Linux.
     const cmds = [...mockContainerExec.mock.calls, ...mockPodExec.mock.calls].map((c) => c[1])

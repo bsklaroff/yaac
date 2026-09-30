@@ -59,6 +59,7 @@ import {
 import type { NodeTaint, PodToleration } from '#drivers/k8s/substrate'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { globalRoot, serverLocalRoot } from '@yaac/shared/paths'
+import { writeServerConfig } from '@yaac/shared/server-config'
 
 const mockGetJson = vi.mocked(kubectlGetJson)
 const mockRun = vi.mocked(execFileAsync)
@@ -74,12 +75,21 @@ type RunMock = ReturnType<typeof vi.fn<
 >>
 
 /**
- * Stand-in for the probe pod's side effect: the pod writes a marker file
- * through the hostPath mount, which the check verifies host-side. Called
- * from the mocked `kubectl logs` branch (the pod has "finished" by then).
+ * The arguments a probe pod this run applied was handed after its script
+ * (`sh -c <script> -- <args>`) — how the fakes below learn the nonce a peer
+ * pod was told to publish, since nothing crosses the host any more.
  */
-async function simulateProbeWrite(): Promise<void> {
-  await fs.writeFile(path.join(globalRoot(), '.cluster-check-write'), 'ok\n')
+function appliedPodArgs(name: string): string[] {
+  const pod = mockApply.mock.calls
+    .map((c) => c[0] as {
+      kind?: string
+      metadata?: { name?: string }
+      spec?: { containers?: Array<{ command?: string[] }> }
+    })
+    .filter((m) => m.kind === 'Pod' && m.metadata?.name === name)
+    .pop()
+  const command = pod?.spec?.containers?.[0]?.command ?? []
+  return command.slice(command.indexOf('--') + 1)
 }
 
 interface LivePriorityClass {
@@ -145,6 +155,7 @@ function nodeItem(
      *  schedule a sandboxed pod onto. */
     gvisorLabel?: boolean
     labels?: Record<string, string>
+    nodeInfo?: Record<string, string>
   } = {},
 ): Record<string, unknown> {
   const taints = [
@@ -170,6 +181,14 @@ function nodeItem(
       conditions: [{ type: 'Ready', status: opts.ready === false ? 'False' : 'True' }],
       runtimeHandlers: (opts.handlers ?? ['runc', 'runsc', 'runsc-nested'])
         .map((h) => ({ name: h })),
+      // A kind node on this machine: its architecture, stock containerd.
+      nodeInfo: {
+        architecture: process.arch === 'x64' ? 'amd64' : process.arch,
+        osImage: 'Debian GNU/Linux 13 (trixie)',
+        containerRuntimeVersion: 'containerd://2.3.4',
+        kubeletVersion: 'v1.37.0',
+        ...opts.nodeInfo,
+      },
     },
   }
 }
@@ -188,8 +207,10 @@ let gvisorTolerations: PodToleration[] = []
 let serverDeployEnv: Array<{ name: string; value?: string }> = []
 /** Pod name → terminal phase, for probe pods a test wants to fail. */
 let podPhases: Record<string, string> = {}
-/** Per-node probe indices whose pod "ran" without its write reaching the host. */
+/** Per-node probe indices whose pod "ran" without its write reaching the peer. */
 let nodeMarkerFails: Set<string> = new Set()
+/** Whether the end-to-end probe's write reached its peer; a case edits. */
+let peerSawWrite = true
 /** Pod name → the kubelet Warning event the check reads to attribute a
  *  probe pod that never ran, as `<reason>|<message>`. */
 let podEvents: Record<string, string> = {}
@@ -217,10 +238,14 @@ let npmCacheProbeOutput = 'NPM_CACHE_OK\n'
  * end-to-end probe's freshness assertion passes, and drops the probe
  * pod's write marker so the hostPath write-back assertion passes.
  */
-async function happyResponses(
+function happyResponses(
   file: string,
   args: string[],
 ): Promise<{ stdout: string; stderr: string }> {
+  return Promise.resolve(happyResponse(file, args))
+}
+
+function happyResponse(file: string, args: string[]): { stdout: string; stderr: string } {
   if (file === 'kubectl' && args[0] === 'get' && args[1] === 'nodes'
     && args.includes('jsonpath={.items[*].metadata.name}')) {
     // Honors `-l` so the gvisor gate's "does any node carry the installer
@@ -270,14 +295,25 @@ async function happyResponses(
     }
   }
   if (file === 'kubectl' && args[0] === 'logs' && args[1].startsWith('yaac-cluster-check-node-')) {
-    const index = args[1].slice('yaac-cluster-check-node-'.length)
-    const nonce = await fs.readFile(
-      path.join(globalRoot(), '.cluster-check-nodes-nonce'), 'utf8',
-    )
-    if (!nodeMarkerFails.has(index)) {
-      await fs.writeFile(path.join(globalRoot(), `.cluster-check-node-${index}`), 'ok\n')
-    }
+    const [, nonce] = appliedPodArgs('yaac-cluster-check-sweep-peer')
     return { stdout: `GVISOR_SANDBOXED\n${nonce}\n`, stderr: '' }
+  }
+  // The sweep's peer reports the marker of every node probe whose write
+  // reached it.
+  if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-sweep-peer') {
+    const count = Number(appliedPodArgs('yaac-cluster-check-sweep-peer')[2])
+    return {
+      stdout: Array.from({ length: count }, (_, i) => String(i))
+        .filter((i) => !nodeMarkerFails.has(i))
+        .map((i) => `PEER_MARKER=${i}\n`).join(''),
+      stderr: '',
+    }
+  }
+  if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-peer') {
+    return {
+      stdout: `PEER_NODE=yaac-control-plane\nPEER_RTT_MS=7\nPEER_SAW_WRITE=${peerSawWrite ? 'ok' : ''}\n`,
+      stderr: '',
+    }
   }
   if (file === 'kubectl' && args[0] === 'get' && args[1] === 'priorityclass') {
     return { stdout: JSON.stringify({ items: livePriorityClasses() }), stderr: '' }
@@ -380,10 +416,9 @@ async function happyResponses(
   if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-nested') {
     return { stdout: 'NESTED_MOUNT_OK\n', stderr: '' }
   }
-  if (file === 'kubectl' && args[0] === 'logs') {
-    const nonce = await fs.readFile(path.join(globalRoot(), '.cluster-check-nonce'), 'utf8')
-    await simulateProbeWrite()
-    return { stdout: `${nonce}\n`, stderr: '' }
+  if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check') {
+    const [, nonce] = appliedPodArgs('yaac-cluster-check-peer')
+    return { stdout: `PROBE_NODE=yaac-control-plane\nPROBE_READ=${nonce}\n`, stderr: '' }
   }
   return { stdout: '', stderr: '' }
 }
@@ -425,6 +460,23 @@ function happyGetJson(args: string[]): unknown {
   }
   if (args[1] === 'pod') return { status: { phase: podPhases[args[2]] ?? 'Succeeded' } }
   return { status: { phase: 'Succeeded' } }
+}
+
+/** A byo install's global volume as install leaves it: provisioned by an
+ *  NFS class, labelled, Retain, mounted with the coherence bound. */
+function byoGlobalVolume(): {
+  metadata: { labels: Record<string, string> }
+  spec: Record<string, unknown>
+} {
+  return {
+    metadata: { labels: { 'yaac.data-dir-hash': 'ddh16', 'yaac.claim': 'yaac-global' } },
+    spec: {
+      persistentVolumeReclaimPolicy: 'Retain',
+      storageClassName: 'byo-nfs',
+      csi: { driver: 'nfs.csi.k8s.io', volumeAttributes: { server: '10.96.5.5' } },
+      mountOptions: ['nfsvers=4.1', 'hard', 'actimeo=1'],
+    },
+  }
 }
 
 interface Staged {
@@ -472,6 +524,7 @@ describe('runClusterCheck', () => {
     mockGitUserConfig.mockResolvedValue({ name: 'A B', email: 'a@b.co' })
     podPhases = {}
     nodeMarkerFails = new Set()
+    peerSawWrite = true
     podEvents = {}
     storageClaims = {
       'yaac-global': { spec: { volumeName: 'yaac-global-ddh' }, status: { phase: 'Bound' } },
@@ -510,6 +563,8 @@ describe('runClusterCheck', () => {
       ['kubectl', 'pass'],
       ['cluster', 'pass'],
       ['nodes', 'pass'],
+      ['architecture', 'pass'],
+      ['node-os', 'pass'],
       ['podman', 'pass'],
       ['registry', 'pass'],
       ['namespace', 'pass'],
@@ -522,7 +577,7 @@ describe('runClusterCheck', () => {
       ['egress', 'pass'],
       ['npm-cache', 'pass'],
       ['datapath', 'pass'],
-      // Re-verified on every run, not only at --adopt-cni time: netd's
+      // Re-verified on every run, not only at --byo time: netd's
       // readiness is Envoy's config ack, which is green with zero pod →
       // veth mappings, so nothing else here would notice a prefix that
       // resolves nothing.
@@ -582,13 +637,58 @@ describe('runClusterCheck', () => {
     })
     expect(podManifest.spec.containers[0].securityContext).toBeUndefined()
     expect(podManifest.spec.containers[0].volumeMounts[0].readOnly).toBeUndefined()
-    // The nonce and write-marker files are cleaned up afterwards.
-    await expect(
-      fs.access(path.join(globalRoot(), '.cluster-check-nonce')),
-    ).rejects.toThrow()
-    await expect(
-      fs.access(path.join(globalRoot(), '.cluster-check-write')),
-    ).rejects.toThrow()
+    // Its other end is a peer at the server's footing: runc, the same
+    // identity, the same claim mounted whole — nothing on this host. It
+    // prefers another node than the probe's, so a multi-node cluster
+    // measures a cross-node round trip.
+    const peer = vi.mocked(deps.apply).mock.calls
+      .map((c) => c[0] as unknown as typeof podManifest & {
+        metadata: { name: string }
+        spec: { affinity?: Record<string, unknown> }
+      })
+      .find((m) => m.kind === 'Pod' && m.metadata.name === 'yaac-cluster-check-peer')
+    expect(peer?.spec.runtimeClassName).toBeUndefined()
+    expect(peer?.spec.volumes[0].persistentVolumeClaim?.claimName).toBe('yaac-global')
+    expect(peer?.spec.securityContext).toEqual(podManifest.spec.securityContext)
+    expect(JSON.stringify(peer?.spec.affinity)).toContain('podAntiAffinity')
+    expect(byName(results, 'probe')?.detail).toContain('round trip 7ms')
+    // Same node in the fake, so it does not claim a cross-node number.
+    expect(byName(results, 'probe')?.detail).not.toContain('cross-node')
+  })
+
+  it('runs its probe pods at the identity the server Deployment records, not this machine\'s', async () => {
+    // A byo install run from a laptop: the Deployment is the record of the
+    // install uid, and the claim is only writable at that one.
+    const deps = stage()
+    mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
+      args[1] === 'deployment'
+        ? { spec: { template: { spec: { securityContext: { runAsUser: 4242, runAsGroup: 4242 } } } } }
+        : happyGetJson(args),
+    ))
+    const { results } = await runClusterCheck()
+    const pods = vi.mocked(deps.apply).mock.calls
+      .map((c) => c[0] as { kind: string; metadata?: { name?: string }; spec?: { securityContext?: { runAsUser?: number } } })
+      .filter((m) => m.kind === 'Pod'
+        && ['yaac-cluster-check', 'yaac-cluster-check-peer', 'yaac-cluster-check-fsprobe'].includes(m.metadata?.name ?? ''))
+    expect(pods).toHaveLength(3)
+    for (const pod of pods) expect(pod.spec?.securityContext?.runAsUser).toBe(4242)
+    expect(byName(results, 'probe')?.detail).toContain('uid 4242')
+  })
+
+  it('reports an unreadable install identity as itself rather than probing at a guess', async () => {
+    // At the wrong uid every probe would fail as a misleading "write never
+    // reached its peer"; the read failure is the diagnosis.
+    const deps = stage()
+    mockGetJson.mockImplementation((args: string[]) => args[1] === 'deployment'
+      ? Promise.reject(new Error('Unable to connect to the server: dial tcp: i/o timeout'))
+      : Promise.resolve(happyGetJson(args)))
+    const { ok, results } = await runClusterCheck()
+    expect(ok).toBe(false)
+    expect(byName(results, 'probe')).toMatchObject({ status: 'fail' })
+    expect(byName(results, 'probe')?.detail).toMatch(/could not read the install identity .*i\/o timeout/)
+    expect(byName(results, 'egress')?.status).toBe('skip')
+    expect(vi.mocked(deps.apply).mock.calls.map((c) => (c[0] as { metadata?: { name?: string } }).metadata?.name))
+      .not.toContain('yaac-cluster-check-peer')
   })
 
   it('warns rather than crashing when the node list cannot be read', async () => {
@@ -1437,7 +1537,7 @@ describe('runClusterCheck', () => {
     // a wrong prefix (or a CNI writing no per-workload route) leaves netd
     // Ready with a chain that has no per-pod rules in it, and every session
     // quietly without egress. Re-checked here on every run, not just at
-    // --adopt-cni time, because a node pool added later can differ from the
+    // --byo time, because a node pool added later can differ from the
     // one adoption sampled.
     const run = happyRun()
     run.mockImplementation(async (file: string, args: string[]) => {
@@ -1665,33 +1765,171 @@ describe('runClusterCheck', () => {
     }
   })
 
-  it('warns on storage-semantics naming the failing probes, without failing the check', async () => {
+  it('fails on storage-semantics naming the failing probes', async () => {
     fsprobeOutput = [
       'PASS  creation ownership (uid passthrough)  uid/gid 1000/1000 preserved',
       'FAIL  flock (LOCK_EX)                       AssertionError: second flock did not block',
-      'FAIL  user.* xattr                          OSError: [Errno 95] Operation not supported',
+      'FAIL  hardlink / link(2)                    OSError: [Errno 95] Operation not supported',
       '',
       '9/11 passed',
     ].join('\n')
     podPhases = { 'yaac-cluster-check-fsprobe': 'Failed' }
     stage()
     const { ok, results } = await runClusterCheck()
-    expect(ok).toBe(true)
+    // Fail-level on every backend: a worktree on storage that fails one of
+    // these breaks in ways nothing downstream names.
+    expect(ok).toBe(false)
     const semantics = byName(results, 'storage-semantics')!
-    expect(semantics.status).toBe('warn')
+    expect(semantics.status).toBe('fail')
     expect(semantics.detail).toContain('flock (LOCK_EX)')
-    expect(semantics.detail).toContain('user.* xattr')
+    expect(semantics.detail).toContain('hardlink / link(2)')
     expect(semantics.detail).toContain('9/11 passed')
   })
 
-  it('warns on storage-semantics when the probe printed no summary, rather than passing on silence', async () => {
+  it('passes storage-semantics over a waived probe, naming it and why', async () => {
+    // NFS before 4.2 has no xattrs, and nothing on the shared tier uses
+    // them: reported by name, never a failure — and never a backend branch.
+    fsprobeOutput = [
+      'PASS  creation ownership (uid passthrough)  uid/gid 1000/1000 preserved',
+      'FAIL  user.* xattr                          AssertionError: setxattr user.* failed',
+      '',
+      '10/11 passed',
+    ].join('\n')
+    podPhases = { 'yaac-cluster-check-fsprobe': 'Failed' }
+    stage()
+    const { results } = await runClusterCheck()
+    const semantics = byName(results, 'storage-semantics')!
+    expect(semantics.status).toBe('pass')
+    expect(semantics.detail).toMatch(/10\/11 passed; waived: user\.\* xattr \(nothing yaac keeps on the shared tier uses xattrs\)/)
+  })
+
+  it('fails on storage-semantics when the probe printed no summary, rather than passing on silence', async () => {
     fsprobeOutput = ''
     stage()
     const { ok, results } = await runClusterCheck()
-    expect(ok).toBe(true)
+    expect(ok).toBe(false)
     const semantics = byName(results, 'storage-semantics')!
-    expect(semantics.status).toBe('warn')
+    expect(semantics.status).toBe('fail')
     expect(semantics.detail).toContain('no summary')
+  })
+
+  it('judges a class-provisioned global volume by its labels, its class and its actimeo', async () => {
+    // A byo install's volume: provisioned, not a hostPath, so what the gate
+    // can hold it to is what install pinned on it.
+    let volume = byoGlobalVolume()
+    let provisioner = 'nfs.csi.k8s.io'
+    mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
+      args[1] === 'pv' && args[2].startsWith('yaac-global') ? volume
+        : args[1] === 'storageclass' ? { provisioner }
+          : happyGetJson(args),
+    ))
+    const deps = stage()
+    let { results } = await runClusterCheck()
+    expect(byName(results, 'storage')).toMatchObject({ status: 'pass' })
+    expect(byName(results, 'storage')?.detail).toContain('yaac-global → yaac-global-ddh (byo-nfs)')
+    // The egress probe also dials the NFS server the volume names — it
+    // trusts any uid a client claims, so reaching it is reaching every
+    // project — and passes here because the fake pod was blocked.
+    const egressPod = vi.mocked(deps.apply).mock.calls
+      .map((c) => c[0] as { metadata?: { name?: string }; spec?: { containers?: Array<{ command: string[] }> } })
+      .find((m) => m.metadata?.name === 'yaac-cluster-check-egress')
+    expect(egressPod?.spec?.containers?.[0].command[2]).toContain('nc -w 4 10.96.5.5 2049')
+    expect(byName(results, 'egress')?.detail).toContain('the NFS server 10.96.5.5')
+
+    // A re-provisioned class that is no longer NFS, a lost label, and the
+    // class's own attribute caching left in place: each named.
+    provisioner = 'ebs.csi.aws.com'
+    volume = {
+      ...volume,
+      metadata: { labels: {} },
+      spec: { ...volume.spec, mountOptions: ['nfsvers=4.1', 'actimeo=30'] },
+    }
+    ;({ results } = await runClusterCheck())
+    const storage = byName(results, 'storage')!
+    expect(storage.status).toBe('fail')
+    expect(storage.detail).toContain('does not carry this install\'s labels')
+    expect(storage.detail).toContain('class byo-nfs (ebs.csi.aws.com) is not NFS-family')
+    expect(storage.detail).toContain('actimeo=30, not actimeo<=1')
+  })
+
+  it('tells a provisioned hostPath volume (local-path) from kind\'s static one by its class', async () => {
+    // k3s's default class, and kind-byo's: local-path provisions hostPath
+    // volumes at a path of its own choosing. Judged as the static pair,
+    // that path could never be the data dir's own tier folder.
+    await writeServerConfig({
+      url: 'https://yaac.tailnet.ts.net', enabled: true, saved: [], driver: 'k8s', installId: 'install-1', byo: true,
+    })
+    const labelled = (claim: string, id: string): Record<string, string> =>
+      ({ 'yaac.install-id': id, 'yaac.data-dir-hash': 'ddh16', 'yaac.claim': claim })
+    let localId = 'install-1'
+    mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
+      args[1] === 'pv' && args[2].startsWith('yaac-global')
+        ? { ...byoGlobalVolume(), metadata: { labels: labelled('yaac-global', 'install-1') } }
+        : args[1] === 'pv'
+          ? {
+            metadata: { labels: labelled('yaac-server-local', localId) },
+            spec: {
+              persistentVolumeReclaimPolicy: 'Retain', storageClassName: 'local-path',
+              hostPath: { path: '/var/lib/rancher/k3s/storage/pvc-1_yaac_yaac-server-local' },
+            },
+          }
+          : args[1] === 'storageclass' ? { provisioner: 'nfs.csi.k8s.io' }
+            : happyGetJson(args),
+    ))
+    stage()
+    let { results } = await runClusterCheck()
+    expect(byName(results, 'storage')).toMatchObject({ status: 'pass' })
+    expect(byName(results, 'storage')?.detail).toContain('(local-path)')
+
+    // With an install id recorded, it is the id that makes a volume this
+    // install's — what re-adoption keys on — not the data-dir path hash.
+    localId = 'install-2'
+    ;({ results } = await runClusterCheck())
+    expect(byName(results, 'storage')?.status).toBe('fail')
+    expect(byName(results, 'storage')?.detail).toMatch(/yaac-server-local: volume .* does not carry this install's labels/)
+  })
+
+  it('fails egress when a session pod reaches the NFS server behind the global claim', async () => {
+    mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
+      args[1] === 'pv' && args[2].startsWith('yaac-global') ? byoGlobalVolume()
+        : args[1] === 'storageclass' ? { provisioner: 'nfs.csi.k8s.io' }
+          : happyGetJson(args),
+    ))
+    const run = happyRun()
+    run.mockImplementation((file: string, args: string[]) =>
+      file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-egress'
+        ? Promise.resolve({ stdout: 'NP_BLOCKED\nNP_NFS_OPEN\n', stderr: '' })
+        : happyResponses(file, args))
+    stage({ run })
+    const { results } = await runClusterCheck()
+    expect(byName(results, 'egress')).toMatchObject({ status: 'fail' })
+    expect(byName(results, 'egress')?.detail).toMatch(/reached the NFS server .*10\.96\.5\.5/)
+  })
+
+  it('fails a pool that has drifted from what --byo installed on, naming the nodes', async () => {
+    // The same gates `--byo` installs behind, repeated so a node added
+    // later is caught here rather than as an image that will not run.
+    clusterNodes = [
+      nodeItem('pool-a'),
+      nodeItem('pool-b', { nodeInfo: { architecture: 'ppc64le' } }),
+      nodeItem('pool-c', { nodeInfo: { osImage: 'Bottlerocket OS 1.20.0' } }),
+    ]
+    stage()
+    const { ok, results } = await runClusterCheck()
+    expect(ok).toBe(false)
+    expect(byName(results, 'architecture')?.status).toBe('fail')
+    expect(byName(results, 'architecture')?.detail).toMatch(/mixes architectures .*ppc64le: pool-b/)
+    expect(byName(results, 'node-os')?.detail).toMatch(/pool-c runs Bottlerocket OS 1\.20\.0, an immutable OS/)
+  })
+
+  it('leaves the kind node fixups alone on a byo install, whose nodes are the pool\'s', async () => {
+    // kind-byo's nodes are podman containers named like the nodes: keyed
+    // on podman alone, the check would probe a cluster install never touched.
+    await writeServerConfig({ url: 'https://yaac.tailnet.ts.net', enabled: true, saved: [], driver: 'k8s', byo: true })
+    const deps = stage()
+    const { results } = await runClusterCheck()
+    expect(byName(results, 'node-fixups')).toMatchObject({ status: 'skip' })
+    expect(deps.run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'exec')).toBe(false)
   })
 
   it('warns (without failing) when the nested sentry mount fails', async () => {
@@ -1780,31 +2018,40 @@ describe('runClusterCheck', () => {
     expect(probe?.fix).toContain('ImagePullBackOff')
   })
 
-  it('fails the probe when the pod write never reaches the host', async () => {
-    const run = happyRun()
-    run.mockImplementation(async (file: string, args: string[]) => {
-      // Probe logs return the right nonce, but the pod's write marker
-      // never appears host-side (uid mismatch / read-only wiring).
-      if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check') {
-        const nonce = await fs.readFile(path.join(globalRoot(), '.cluster-check-nonce'), 'utf8')
-        return { stdout: `${nonce}\n`, stderr: '' }
-      }
-      return happyResponses(file, args)
-    })
-    stage({ run })
+  it('fails the probe when the pod write never reaches its peer', async () => {
+    // The probe read the right nonce, but its write marker never shows up
+    // where the server's footing reads the claim (uid mismatch, a volume
+    // root the install uid does not own).
+    peerSawWrite = false
+    stage()
     const { ok, results } = await runClusterCheck()
     expect(ok).toBe(false)
     const probe = byName(results, 'probe')
     expect(probe).toMatchObject({ status: 'fail' })
-    expect(probe?.detail).toContain('did not reach the host')
+    expect(probe?.detail).toContain('never reached its peer')
     expect(probe?.fix).toContain('uid')
   })
 
-  it('fails the probe when the pod reads stale hostPath data', async () => {
+  it('fails the probe, naming the peer, when the pod never sees the peer\'s nonce', async () => {
     const run = happyRun()
     run.mockImplementation((file: string, args: string[]) => {
       if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check') {
-        return Promise.resolve({ stdout: 'some-stale-nonce\n', stderr: '' })
+        return Promise.resolve({ stdout: 'PROBE_READ=\n', stderr: '' })
+      }
+      return happyResponses(file, args)
+    })
+    podPhases = { 'yaac-cluster-check-peer': 'Failed' }
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
+    expect(ok).toBe(false)
+    expect(byName(results, 'probe')?.detail).toMatch(/never saw the nonce.*peer: phase Failed/)
+  })
+
+  it('fails the probe when the pod reads stale data', async () => {
+    const run = happyRun()
+    run.mockImplementation((file: string, args: string[]) => {
+      if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check') {
+        return Promise.resolve({ stdout: 'PROBE_READ=some-stale-nonce\n', stderr: '' })
       }
       return happyResponses(file, args)
     })

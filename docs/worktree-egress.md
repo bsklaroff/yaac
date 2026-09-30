@@ -335,12 +335,11 @@ Cilium — enforces natively. Only the redirect is CNI-sensitive.
 `FelixConfiguration.bpfEnabled` (or `FELIX_BPFENABLED` on the calico-node
 container) bypasses iptables for pod traffic exactly the way Cilium's
 host-routing does, and it can be turned on under a Calico install that
-otherwise looks adoptable. `yaac cluster install --adopt-cni` — the mode
-that installs into a cluster whose Calico yaac did not install — refuses
-it outright rather than warning, along with a replaced kube-proxy, an
-empty pod-CIDR set, and a veth prefix that resolves no workload route.
-The full gate is in docs/cluster-setup.md ("Adopting a CNI yaac did not
-install"); the reason every one of them is a refusal is that each fails
+otherwise looks adoptable. `yaac cluster install --byo` — the mode that
+installs into a cluster whose Calico yaac did not install — refuses it
+outright rather than warning, along with a replaced kube-proxy, an empty
+pod-CIDR set, and a veth prefix that resolves no workload route. The full
+gate is in docs/cluster-setup.md ("The CNI gate"); the reason every one of them is a refusal is that each fails
 *silently*, as "worktrees have no egress" or as a chain that counts packets
 and never fires.
 
@@ -360,9 +359,9 @@ per provider.
 | AKS (Azure CNI, non-Cilium) | **Microsoft-managed Calico** (`--network-policy calico`) | plain NP enforced natively |
 | GKE Dataplane V2 / Autopilot, AKS-Cilium, DOKS | — | **out of scope**: Cilium-mandated (DOKS's is not replaceable), which defeats the veth-peer redirect. Autopilot also blocks the privileged DaemonSet netd needs |
 
-Every row but the first is an **adoption**: `yaac cluster install
---adopt-cni` installs into the cluster without touching its CNI, after
-verifying the dataplane it is about to depend on (docs/cluster-setup.md).
+Every row but the first is a **byo** install: `yaac cluster install --byo`
+installs into the cluster without touching its CNI, after verifying the
+dataplane it is about to depend on (docs/cluster-setup.md).
 
 ## Plain NetworkPolicy only
 

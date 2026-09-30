@@ -117,6 +117,15 @@ export const GVISOR_INSTALLER_READY_FILE = `${GVISOR_INSTALLER_STATE_DIR}/.ready
 /** Idempotence marker for the containerd config.toml runtime block. */
 export const GVISOR_CONTAINERD_MARKER = '# yaac-gvisor-runtimes'
 
+/**
+ * Where containerd reads per-registry `hosts.toml` files — the directory
+ * both registries' hosts writers mount, and so the one `config_path` a node
+ * must name for any yaac image to pull.
+ */
+export const NODE_CONTAINERD_CERTS_DIR = `${NODE_CONTAINERD_DIR}/certs.d`
+/** Marker on the registry block the installer appends when a node has none. */
+export const REGISTRY_CONFIG_MARKER = '# yaac-registry-config-path'
+
 /** How long the installer waits between converge passes. Long: a steady
  *  state is a handful of stats, and the pass exists to heal a node someone
  *  wiped under us, not to poll for work. */
@@ -226,6 +235,23 @@ export function runscShimConfigToml(handler: 'gvisor' | 'gvisor-nested'): string
  */
 export const CRI_PLUGIN_KEY_V2 = 'io.containerd.grpc.v1.cri'
 export const CRI_PLUGIN_KEY_V3 = 'io.containerd.cri.v1.runtime'
+/** Version 3 split image handling, registry config included, into its own plugin. */
+export const CRI_IMAGES_KEY_V3 = 'io.containerd.cri.v1.images'
+
+/**
+ * The registry block that points containerd at `certs.d`, for a node whose
+ * config has no registry table at all (a stock node; kind's own image). A
+ * node that sets `config_path` already keeps it, and one that configures
+ * registries the deprecated way (`mirrors`, `configs`) is refused rather
+ * than given a `config_path` containerd rejects beside them.
+ */
+export function registryConfigPathToml(pluginKey: string): string {
+  return [
+    `${REGISTRY_CONFIG_MARKER} (written by the yaac gVisor installer; do not edit)`,
+    `[plugins."${pluginKey}".registry]`,
+    `  config_path = "${NODE_CONTAINERD_CERTS_DIR}"`,
+  ].join('\n') + '\n'
+}
 
 /**
  * The containerd config.toml block registering both runsc handlers,
@@ -312,7 +338,14 @@ export function buildRuntimeClassManifests(
  *    the pinned release, and fetched only when the node-local cache does not
  *    already hold a checksum-verified copy (so a pod restart, or a second
  *    install sharing the node, costs nothing);
- *  - both flag files and the containerd block are compared before writing;
+ *  - both flag files and the containerd blocks are compared before writing;
+ *  - the node's containerd must read registry hosts from `certs.d`, which is
+ *    where both registries' hosts writers put them: a config that already
+ *    says so (alone, or as one entry of a `:`-separated list) is left alone, one with no registry table gets the block
+ *    (marker-guarded, under the key its config version speaks), and one
+ *    that points elsewhere or still uses the deprecated `mirrors` fails the
+ *    pass with the reason — containerd would refuse `config_path` beside
+ *    `mirrors`, and a node that can pull no yaac image must not read Ready;
  *  - containerd is restarted only when something changed, or when the
  *    per-version marker is absent — which is exactly the interrupted-restart
  *    state a previous pass can leave behind (files on disk, handlers not in
@@ -525,8 +558,35 @@ export function gvisorInstallScript(): string {
     '    changed=1',
     '  fi',
     '',
+    // Registry hosts: containerd reads the hosts.toml files the registries'
+    // writers put in certs.d only when config_path names it.
+    `  certs=${q(NODE_CONTAINERD_CERTS_DIR)}`,
+    `  if grep -qE '^[[:space:]]*config_path[[:space:]]*=' "$cfg"; then`,
+    // A `:`-separated list naming certs.d anywhere counts (EKS AL2023 ships
+    // `certs.d:/etc/docker/certs.d`), in either TOML string quote.
+    `    if ! grep -qE ${q(`^[[:space:]]*config_path[[:space:]]*=[[:space:]]*["']([^"']*:)?${NODE_CONTAINERD_CERTS_DIR.replace(/\./g, '\\.')}/?(:[^"']*)?["']`)} "$cfg"; then`,
+    '      echo "yaac-gvisor: $cfg sets a registry config_path other than $certs, where'
+    + ' the yaac registries write their hosts.toml — this node could pull none of'
+    + ' their images" >&2',
+    '      exit 1',
+    '    fi',
+    `  elif grep -qE '\\.registry(\\]|\\.)' "$cfg"; then`,
+    '    echo "yaac-gvisor: $cfg configures registries without config_path (the'
+    + ' deprecated mirrors/configs tables), and containerd refuses config_path beside'
+    + ' them — move this node\'s registry config to config_path under $certs" >&2',
+    '    exit 1',
+    '  else',
+    `    if grep -qF ${q(CRI_PLUGIN_KEY_V3)} "$cfg" || grep -qE '^[[:space:]]*version[[:space:]]*=[[:space:]]*3([^0-9].*)?$' "$cfg"; then`,
+    `      printf '\\n%s' ${q(registryConfigPathToml(CRI_IMAGES_KEY_V3))} >> "$cfg"`,
+    '    else',
+    `      printf '\\n%s' ${q(registryConfigPathToml(CRI_PLUGIN_KEY_V2))} >> "$cfg"`,
+    '    fi',
+    '    echo "yaac-gvisor: pointed containerd at $certs for registry hosts"',
+    '    changed=1',
+    '  fi',
+    '',
     '  if [ "$changed" = 1 ] || [ ! -f "$state/installed-$version" ]; then',
-    '    echo "yaac-gvisor: restarting containerd to pick up the runsc handlers"',
+    '    echo "yaac-gvisor: restarting containerd to pick up the runsc handlers and registry config"',
     // nsenter into PID 1's mount namespace runs the NODE's systemctl against
     // the node's systemd, which is the only way a pod can restart the
     // service that runs it. Restarting containerd does not stop running

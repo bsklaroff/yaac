@@ -138,7 +138,7 @@ export const env = {
    * Unset → `cali`, correct wherever Calico does the IPAM (every cluster
    * `yaac cluster install` builds). Policy-only Calico over the AWS VPC CNI
    * gives `eni`; other pairings give other names, which is why this is
-   * configuration rather than a constant. `yaac cluster install --adopt-cni`
+   * configuration rather than a constant. `yaac cluster install --byo`
    * verifies the effective prefix against the node's real routing table and
    * refuses an adoption where it resolves nothing.
    */
@@ -160,7 +160,7 @@ export const env = {
    * consumer (`podCidrSources`) — but never *silently*: an entry that simply
    * vanished would leave the exclusion set narrower than what the operator
    * believes they set, which is the failure this list exists to prevent.
-   * `--adopt-cni` refuses on one; a running server logs it. Raw strings are
+   * `--byo` refuses on one; a running server logs it. Raw strings are
    * returned here so the consumer can name what it rejected.
    */
   get podCidrs(): string[] {
@@ -171,7 +171,7 @@ export const env = {
 
   /**
    * `YAAC_KUBE_PROXY_EXTERNAL` — set to `1` when kube-proxy runs somewhere
-   * `--adopt-cni` cannot see it as a pod. k3s is the case that matters: it
+   * `--byo` cannot see it as a pod. k3s is the case that matters: it
    * runs kube-proxy **in-process inside the kubelet**, so the cluster has
    * no kube-proxy pod, DaemonSet or label to find — and self-managed k3s is
    * a primary target, not an exotic one.

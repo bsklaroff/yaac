@@ -9,11 +9,16 @@ import {
   vapAvailable,
 } from '#drivers/k8s/cluster'
 import crypto from 'node:crypto'
+import dns from 'node:dns/promises'
+import { isIP } from 'node:net'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
   GLOBAL_CLAIM_NAME,
   GVISOR_NODE_LABEL,
+  LABEL_CLAIM,
+  LABEL_DATA_DIR_HASH,
+  LABEL_INSTALL_ID,
   LABEL_NPM_CACHE,
   LABEL_WORKTREE_ID,
   NESTED_ENGINE_CAPS,
@@ -33,6 +38,7 @@ import {
   RUNTIME_CLASS_GVISOR_NESTED,
   TRANSPARENT_HTTPS_PORT,
   buildPriorityClassManifests,
+  dataDirHash,
   execFileAsync,
   formatTaint,
   k8sNamespace,
@@ -41,13 +47,23 @@ import {
   kubectlWithRetry,
   runPodToCompletion,
   runtimeClassSpec,
-  hostUidSecurityContext,
+  installSecurityContext,
+  kubectlErrorSummary,
   untoleratedTaints,
   worktreeIdLabels,
 } from '#drivers/k8s/substrate'
-import type { NodeTaint, PodToleration } from '#drivers/k8s/substrate'
+import type { InstallIdentity, NodeTaint, PodToleration } from '#drivers/k8s/substrate'
 import { assessVethSource, probeWorkloadVeths } from './cni-adopt'
 import { GVISOR_INSTALLER_APP_NAME } from './gvisor-installer'
+import { deployedInstallIdentity } from './server-deploy'
+import { isNfsFamily } from './storage'
+import {
+  hostNodeArchitecture,
+  nodeArchitectureProblems,
+  nodeOsProblems,
+  type PlatformNode,
+} from './byo-gates'
+import { readServerConfig } from '@yaac/shared/server-config'
 import {
   REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,
@@ -109,7 +125,9 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  *   1. kubectl binary present
  *   2. cluster API server reachable
  *   3. node inventory: how many nodes, how many of them can schedule a
- *      worktree, and are they all Ready
+ *      worktree, and are they all Ready — then the node pool's
+ *      `architecture` (one, and this machine's) and `node-os` (stock
+ *      containerd on a mutable OS), the two node gates `--byo` installs on
  *   4. podman present (the image build engine)
  *   5. the in-cluster registry answering (through this process's route to
  *      it — a kubectl port-forward, or the outer project registry nested)
@@ -135,12 +153,14 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  *      reads as tuned again once the installer's first pass lands
  *   7. end-to-end probe: push a tiny image to the registry, run a pod
  *      from its cluster ref (on the default gvisor tier) that mounts the
- *      `yaac-global` claim, reads a nonce the check wrote at the global
- *      root and writes a marker back at the worktree uid — proves
- *      in-cluster registry pulls, that the claim is the server's bytes,
- *      AND unprivileged writes through the gofer in one shot; it also
- *      round-trips a second nonce while the pod runs, which is the
- *      cross-visibility latency the pass detail reports
+ *      `yaac-global` claim, reads a nonce a PEER pod (runc, at the install
+ *      uid, the claim mounted whole — the server's footing) wrote there,
+ *      and writes a marker back at the worktree uid — proves in-cluster
+ *      registry pulls, that both sides see the same bytes, AND unprivileged
+ *      writes through the gofer in one shot; the peer also round-trips a
+ *      second nonce while the pod runs, cross-node where the cluster has
+ *      nodes to spread them over, which is the coherence latency the pass
+ *      detail reports
  *   8. egress enforcement: a worktree-labeled pod (gvisor, like real
  *      worktrees) cannot reach the apiserver (CNI enforces policy) and
  *      cannot dial a proxy transparent port directly (the forgery lock —
@@ -150,8 +170,8 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  *      one pinned probe pod per worktree-eligible node proves the three
  *      things a worktree needs from the node it lands on — the gvisor
  *      RuntimeClass is accepted there (runsc-nodes), its containerd can
- *      pull from the registry (registry-nodes), and the shared data dir is
- *      the same bytes the server sees (volume-nodes)
+ *      pull from the registry (registry-nodes), and the global claim is
+ *      the same bytes a peer at the server's footing sees (volume-nodes)
  *   9. datapath: calico-node is Ready (NetworkPolicy is enforced at all)
  *      and yaac-netd is Ready (worktree egress has a redirect).
  *      half of the same guarantee, warn-level until it is deployed
@@ -164,11 +184,12 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  *      (gvisor-nested + the engine's in-sandbox caps) in-sandbox root can
  *      mount a tmpfs — the core sentry prerequisite for the rootful in-pod
  *      engine (nestedContainers; suid/file-caps are covered by the e2e)
- *  10a. storage-semantics (warn-only): the POSIX semantics of what backs
- *      the global claim, as a gvisor pod sees them — ownership, O_EXCL,
- *      atomic rename, hardlinks, locks, fsync, mmap, append, xattrs
- *      (k8s/probes/fsprobe.py) — the probes a cloud install's storage
- *      class will be judged by, run here so a kind quirk surfaces early
+ *  10a. storage-semantics: the POSIX semantics of what backs the global
+ *      claim, as a gvisor pod sees them — ownership, O_EXCL, atomic
+ *      rename, hardlinks, locks, fsync, mmap, append, xattrs
+ *      (k8s/probes/fsprobe.py) — the probes a byo install's storage class
+ *      is judged by, and fail-level on every backend: a worktree on
+ *      storage that fails one breaks in ways nothing downstream names
  *  11. runtime-stamp (warn-only): every UNTRUSTED pod — the worktree pods,
  *      by their yaac.worktree-id label — carries a gvisor-tier
  *      runtimeClassName. Trusted infra (proxy, registries, node-write)
@@ -220,6 +241,10 @@ export async function runClusterCheck(
   } catch (err) {
     add({ name: 'nodes', status: 'warn', detail: `could not list nodes (${truncate(err)})` })
   }
+  // The node pool's architecture and OS, as `--byo` gates them at install:
+  // repeated on every run, so a pool that later gains a foreign node is
+  // reported here instead of failing to pull without explanation.
+  for (const r of await runNodePlatformChecks()) add(r)
 
   // 4. podman (build engine)
   try {
@@ -300,6 +325,23 @@ export async function runClusterCheck(
     skipFrom('probe', 'skipped — fix the failures above first')
     return { ok: false, results }
   }
+  // The identity every probe pod runs at: a worktree pod's, which is the
+  // one install stamped on the server Deployment — not this machine's,
+  // which on a byo install means nothing to the claim. A failed read is
+  // reported as itself rather than guessed past: a probe at the wrong uid
+  // fails as a misleading "write never reached its peer".
+  let identity: InstallIdentity
+  try {
+    identity = await deployedInstallIdentity((await readServerConfig())?.byo === true)
+  } catch (err) {
+    add({
+      name: 'probe', status: 'fail',
+      detail: `could not read the install identity off the ${SERVER_APP_NAME} Deployment: `
+        + `${kubectlErrorSummary(err)}`,
+    })
+    skipFrom('egress', 'skipped — fix the failures above first')
+    return { ok: false, results }
+  }
   // 8. The three pod-based probes, CONCURRENTLY. Each starts its own
   // gVisor sandbox, and serially they were most of the check's wall time
   // (~19s of a 71s `cluster install`). They share nothing: distinct pod
@@ -311,12 +353,12 @@ export async function runClusterCheck(
   const [
     probeResult, egressResult, npmCacheResult, nestedMountResult, multiNodeResults, semanticsResult,
   ] = await Promise.all([
-    runEndToEndProbe(),
+    runEndToEndProbe(identity),
     runNetworkPolicyProbe(),
     runNpmCacheProbe(),
     runNestedMountProbe(),
-    runMultiNodeReadiness(nodes, gvisorScheduling),
-    runStorageSemanticsProbe(),
+    runMultiNodeReadiness(nodes, gvisorScheduling, identity),
+    runStorageSemanticsProbe(identity),
   ])
   add(probeResult)
   add(egressResult)
@@ -335,7 +377,7 @@ export async function runClusterCheck(
   // is green with zero pod → veth mappings. So a wrong prefix (or a CNI that
   // writes no per-workload route) leaves netd Ready, its chain empty of
   // per-pod rules, and every worktree quietly without egress. Re-checked on
-  // every run, not just at `--adopt-cni` time, since a node pool added later
+  // every run, not just at `--byo` time, since a node pool added later
   // can differ from the one adoption sampled.
   add(await runVethSourceCheck())
 
@@ -512,6 +554,15 @@ const NODE_FIXUPS_FIX =
  * and are verified by the node-tuning gate below, on every backend.
  */
 async function runNodeFixupsCheck(): Promise<CheckResult> {
+  // Keyed on the record, not on podman happening to hold containers named
+  // like the nodes: kind-byo's nodes ARE podman containers, and a byo
+  // install's node settings are its pool's, which nothing here may exec.
+  if ((await readServerConfig())?.byo) {
+    return {
+      name: 'node-fixups', status: 'skip',
+      detail: 'a byo install — the kubelet and pids settings are the node pool\'s, not yaac\'s',
+    }
+  }
   try {
     const { stdout } = await execFileAsync('kubectl', [
       'get', 'nodes', '-o', 'jsonpath={.items[*].metadata.name}',
@@ -569,24 +620,41 @@ async function runNodeFixupsCheck(): Promise<CheckResult> {
 }
 
 const STORAGE_FIX =
-  'The two storage claims are applied by `yaac cluster install`: static '
-  + 'hostPath volumes into the data dir\'s `global/` and `server-local/` '
-  + 'folders, bound to `yaac-global` (RWX) and `yaac-server-local` (RWO) in '
-  + 'the install namespace. Re-run it.'
+  'The two storage claims are applied by `yaac cluster install`: on kind, '
+  + 'static hostPath volumes into the data dir\'s `global/` and `server-local/` '
+  + 'folders; on a byo install, volumes provisioned from the named classes, '
+  + 'pinned `Retain`, labelled, and (the RWX one) mounted with `actimeo=1`. '
+  + 'Re-run it; it converges each of these in place.'
 
 interface RawPvcRead {
   spec?: { volumeName?: string }
   status?: { phase?: string }
 }
 interface RawPvRead {
-  spec?: { persistentVolumeReclaimPolicy?: string; hostPath?: { path?: string } }
+  metadata?: { labels?: Record<string, string> }
+  spec?: {
+    persistentVolumeReclaimPolicy?: string
+    hostPath?: { path?: string }
+    csi?: { driver?: string; volumeAttributes?: Record<string, string> }
+    storageClassName?: string
+    mountOptions?: string[]
+  }
 }
 
 /**
- * The storage gate: both claims exist and are Bound, their volumes are
- * `Retain` (a claim or namespace delete must never take the data with it),
- * and where a volume is a hostPath it is the data dir's own tier folder —
- * anything else is a claim bound to bytes that are not this install's.
+ * The storage gate: both claims exist and are Bound, and their volumes are
+ * `Retain` (a claim or namespace delete must never take the data with it).
+ * Then per shape, told apart by the volume's class, which is what makes a
+ * volume static — not by its source, since local-path (k3s's default
+ * class, and kind-byo's) provisions hostPath volumes too. A static volume
+ * (kind's pair, the empty class) must be a hostPath into the data dir's own
+ * tier folder — anything else is a claim bound to bytes that are not this
+ * install's. A provisioned volume (byo) must carry this install's labels —
+ * its install id, when one is recorded — which are what a re-install
+ * re-adopts it by; and the RWX one must
+ * be NFS-family — judged on its class, which can be replaced under an
+ * install, else on its own driver — and mounted with `actimeo` at most 1,
+ * the coherence bound every cross-pod handoff on the shared tier assumes.
  * Fail-level: the server pod and every probe below mount the global claim.
  */
 async function runStorageCheck(): Promise<CheckResult> {
@@ -596,6 +664,8 @@ async function runStorageCheck(): Promise<CheckResult> {
     [SERVER_LOCAL_CLAIM_NAME]: serverLocalRoot(),
   }
   try {
+    // An e2e file's server records none; it is matched by its data dir.
+    const installId = (await readServerConfig())?.installId
     const problems: string[] = []
     const bound: string[] = []
     for (const name of [GLOBAL_CLAIM_NAME, SERVER_LOCAL_CLAIM_NAME]) {
@@ -615,11 +685,25 @@ async function runStorageCheck(): Promise<CheckResult> {
       if (reclaim !== 'Retain') {
         problems.push(`${name}: volume ${volumeName} reclaims by ${reclaim ?? 'an unknown policy'}, not Retain`)
       }
-      const hostPath = pv?.spec?.hostPath?.path
-      if (hostPath !== undefined && hostPath !== expectedHostPath[name]) {
-        problems.push(`${name}: volume ${volumeName} is ${hostPath}, not ${expectedHostPath[name]}`)
+      if (!pv?.spec?.storageClassName) {
+        const hostPath = pv?.spec?.hostPath?.path
+        if (hostPath !== expectedHostPath[name]) {
+          problems.push(`${name}: volume ${volumeName} is ${hostPath ?? 'not a hostPath volume'}, `
+            + `not ${expectedHostPath[name]}`)
+        }
+        bound.push(`${name} → ${volumeName} (${hostPath ?? '?'})`)
+        continue
       }
-      bound.push(`${name} → ${volumeName}${hostPath ? ` (${hostPath})` : ''}`)
+      const labels = pv.metadata?.labels ?? {}
+      const ours = installId !== undefined
+        ? labels[LABEL_INSTALL_ID] === installId
+        : labels[LABEL_DATA_DIR_HASH] === dataDirHash()
+      if (!ours || labels[LABEL_CLAIM] !== name) {
+        problems.push(`${name}: volume ${volumeName} does not carry this install's labels, so a `
+          + 're-install could not find it again')
+      }
+      if (name === GLOBAL_CLAIM_NAME) problems.push(...await sharedVolumeProblems(volumeName, pv))
+      bound.push(`${name} → ${volumeName} (${pv.spec.storageClassName})`)
     }
     if (problems.length > 0) {
       return { name: 'storage', status: 'fail', detail: problems.join('; '), fix: STORAGE_FIX }
@@ -632,6 +716,67 @@ async function runStorageCheck(): Promise<CheckResult> {
       fix: STORAGE_FIX,
     }
   }
+}
+
+/** What a provisioned global volume must be, beyond Bound and Retain. */
+async function sharedVolumeProblems(volumeName: string, pv: RawPvRead | null): Promise<string[]> {
+  const problems: string[] = []
+  const className = pv?.spec?.storageClassName ?? ''
+  const sc = className
+    ? await kubectlGetJson<{ provisioner?: string; parameters?: Record<string, string> }>([
+      'get', 'storageclass', className,
+    ])
+    : null
+  const nfs = sc
+    ? isNfsFamily(sc.provisioner ?? '', sc.parameters)
+    : isNfsFamily(pv?.spec?.csi?.driver ?? '', pv?.spec?.csi?.volumeAttributes)
+  if (!nfs) {
+    problems.push(`${GLOBAL_CLAIM_NAME}: ${sc ? `class ${className} (${sc.provisioner ?? '?'})` : `volume ${volumeName}`} `
+      + 'is not NFS-family — the only RWX storage a byo install is measured against')
+  }
+  const actimeo = (pv?.spec?.mountOptions ?? [])
+    .map((o) => /^actimeo=(\d+)$/.exec(o)?.[1]).find((v) => v !== undefined)
+  if (actimeo === undefined || Number(actimeo) > 1) {
+    problems.push(`${GLOBAL_CLAIM_NAME}: volume ${volumeName} is mounted with `
+      + `${actimeo === undefined ? 'no actimeo' : `actimeo=${actimeo}`}, not actimeo<=1 — another `
+      + 'pod\'s writes could stay invisible for up to a minute')
+  }
+  return problems
+}
+
+/**
+ * The two `--byo` node gates (byo-gates.ts), fail-level on every backend:
+ * yaac's images are built for this machine's architecture, and the gVisor
+ * installer needs stock containerd on a mutable OS. Trivially green on a
+ * kind cluster this machine created; the point is a pool that drifts.
+ */
+async function runNodePlatformChecks(): Promise<CheckResult[]> {
+  let nodes: PlatformNode[]
+  try {
+    const { stdout } = await execFileAsync('kubectl', ['get', 'nodes', '-o', 'json'])
+    nodes = (JSON.parse(stdout) as { items?: PlatformNode[] }).items ?? []
+  } catch (err) {
+    return ['architecture', 'node-os'].map((name) => ({
+      name, status: 'warn' as const, detail: `could not read the nodes (${truncate(err)})`,
+    }))
+  }
+  const hostArch = hostNodeArchitecture()
+  const arch = nodeArchitectureProblems(nodes, hostArch)
+  const os = nodeOsProblems(nodes)
+  return [
+    arch.length > 0
+      ? {
+        name: 'architecture', status: 'fail', detail: arch.join(' '),
+        fix: 'Replace or remove the nodes of the other architecture, or run yaac from a machine of theirs.',
+      }
+      : { name: 'architecture', status: 'pass', detail: `every node is ${hostArch}, as this machine is` },
+    os.length > 0
+      ? {
+        name: 'node-os', status: 'fail', detail: os.join(' '),
+        fix: 'Sessions need nodes running stock containerd on a mutable OS image.',
+      }
+      : { name: 'node-os', status: 'pass', detail: 'containerd on a mutable OS on every node' },
+  ]
 }
 
 /**
@@ -1026,75 +1171,160 @@ async function runRuntimeStampSweep(): Promise<CheckResult> {
   }
 }
 
-/** Files the e2e probe and the check pass each other through the claim. */
-const PROBE_BEACON_FILE = '.cluster-check-beacon'
-const PROBE_NONCE2_FILE = '.cluster-check-nonce2'
-const PROBE_ACK_FILE = '.cluster-check-ack'
+/**
+ * The shell helper a peer pod times with: milliseconds since the epoch.
+ * busybox's `date` has no `%N`, but its `adjtimex` reads the clock to the
+ * microsecond without setting anything (mode 0 needs no capability).
+ */
+const PEER_MS_FN =
+  'ms() { adjtimex | awk \'/tv_sec/{s=$2}/tv_usec/{u=$2}END{print s*1000+int(u/1000)}\'; }'
 
 /**
- * The pod's half of the cross-visibility round trip: announce that it is
- * running, wait for the second nonce the check writes on seeing that, and
- * acknowledge it. Bounded, and never a failure — a pod that hears nothing
- * simply exits without an ack and the detail omits the number.
+ * A PEER pod: the other end of a probe that needs someone to write the
+ * global claim and read it back. It stands where the host used to — which
+ * only worked while the claim's bytes were on the machine running the
+ * check — and is what a server pod is to a worktree: runc, at the install
+ * identity, mounting `yaac-global` whole. So on kind, where the claim is a
+ * hostPath into this machine's data dir, it proves exactly what the host
+ * half did; on a byo cluster it is the only half that can exist.
+ *
+ * Its node is in the environment so a report can say whether the exchange
+ * crossed nodes. `pair` labels it and asks the scheduler, as a preference,
+ * to keep it off any node already running a pod with the same label — its
+ * probe carries that label too — so on a multi-node cluster the round trip
+ * is cross-node, the coherence number a network-backed class is judged by,
+ * and on one node it still schedules.
  */
-const PROBE_ROUND_TRIP_SCRIPT =
-  `echo > /probe/${PROBE_BEACON_FILE}; i=0; `
-  + `while [ $i -lt 1500 ] && [ ! -f /probe/${PROBE_NONCE2_FILE} ]; do sleep 0.02; i=$((i+1)); done; `
-  + `if [ -f /probe/${PROBE_NONCE2_FILE} ]; then echo ok > /probe/${PROBE_ACK_FILE}; fi`
-
-/**
- * The check's half: watch for the pod's beacon while the pod runs, write
- * the second nonce the moment it shows, and time the acknowledgement. The
- * result is the host↔pod round trip through the claim — the coherence
- * number a network-backed class is judged by — or undefined when the pod
- * finished without ever announcing itself (a failed pod, or a fake one).
- */
-async function measureRoundTrip(dataDir: string, until: Promise<unknown>): Promise<number | undefined> {
-  let done = false
-  void until.then(() => { done = true }, () => { done = true })
-  const exists = (p: string): Promise<boolean> => fs.access(p).then(() => true, () => false)
-  const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 5))
-  while (!done) {
-    if (await exists(path.join(dataDir, PROBE_BEACON_FILE))) {
-      const started = Date.now()
-      await fs.writeFile(path.join(dataDir, PROBE_NONCE2_FILE), 'go')
-      while (!done) {
-        if (await exists(path.join(dataDir, PROBE_ACK_FILE))) return Date.now() - started
-        await tick()
-      }
-      return undefined
-    }
-    await tick()
+function buildPeerPodManifest(opts: {
+  name: string
+  imageRef: string
+  identity: InstallIdentity
+  pair: string
+  script: string
+  args: string[]
+}): Record<string, unknown> {
+  return {
+    apiVersion: 'v1',
+    kind: 'Pod',
+    metadata: { name: opts.name, namespace: k8sNamespace(), labels: pairLabels(opts.pair) },
+    spec: {
+      restartPolicy: 'Never',
+      // Its script is bounded; this bounds a peer an aborted check left Pending.
+      activeDeadlineSeconds: 300,
+      automountServiceAccountToken: false,
+      enableServiceLinks: false,
+      affinity: pairAntiAffinity(opts.pair),
+      securityContext: {
+        seccompProfile: { type: 'RuntimeDefault' },
+        ...installSecurityContext(opts.identity),
+      },
+      containers: [{
+        name: 'peer',
+        image: opts.imageRef,
+        securityContext: { allowPrivilegeEscalation: false },
+        command: ['sh', '-c', opts.script, '--', ...opts.args],
+        env: [{ name: 'NODE_NAME', valueFrom: { fieldRef: { fieldPath: 'spec.nodeName' } } }],
+        volumeMounts: [{ name: 'global', mountPath: '/probe' }],
+      }],
+      volumes: [{ name: 'global', persistentVolumeClaim: { claimName: GLOBAL_CLAIM_NAME } }],
+    },
   }
-  return undefined
 }
+
+const LABEL_CHECK_PAIR = 'yaac.cluster-check-pair'
+
+function pairLabels(pair: string): Record<string, string> {
+  return { [LABEL_CHECK_PAIR]: pair }
+}
+
+function pairAntiAffinity(pair: string): Record<string, unknown> {
+  return {
+    podAntiAffinity: {
+      preferredDuringSchedulingIgnoredDuringExecution: [{
+        weight: 100,
+        podAffinityTerm: {
+          topologyKey: 'kubernetes.io/hostname',
+          labelSelector: { matchLabels: pairLabels(pair) },
+        },
+      }],
+    },
+  }
+}
+
+/** A `KEY=value` line a probe or peer printed, or undefined. */
+function reported(logs: string, key: string): string | undefined {
+  return new RegExp(`^${key}=(.*)$`, 'm').exec(logs)?.[1]
+}
+
+/** Best-effort delete of a probe's peer once the probe can no longer need it. */
+async function releasePeer(name: string): Promise<void> {
+  await execFileAsync('kubectl', [
+    'delete', 'pod', name, '-n', k8sNamespace(), '--ignore-not-found', '--wait=false',
+  ]).catch(() => { /* its own run deletes it anyway */ })
+}
+
+const PEER_POD_NAME = 'yaac-cluster-check-peer'
+/** Every run's scratch is a directory of its own, named by its nonce, so
+ *  nothing an interrupted run left behind can be mistaken for this one's. */
+const PROBE_DIR_PREFIX = '.cluster-check-probe-'
+
+/**
+ * The peer's half of the end-to-end probe. It clears any earlier run's
+ * scratch, publishes the nonce (tmp + rename, so the probe never reads it
+ * half-written), waits for the probe's beacon, then writes the second nonce
+ * and times the acknowledgement — the round trip through the claim, in both
+ * directions. Last it reports whether the probe's own write reached it, and
+ * removes the scratch. Bounded throughout, and never a failure itself: the
+ * check reads what it printed.
+ */
+const PEER_PROBE_SCRIPT = [
+  PEER_MS_FN,
+  `rm -rf /probe/${PROBE_DIR_PREFIX}*`,
+  'd="/probe/$1"',
+  'mkdir "$d" && printf %s "$2" > "$d/nonce.tmp" && mv "$d/nonce.tmp" "$d/nonce"',
+  'echo "PEER_NODE=$NODE_NAME"',
+  'i=0; while [ $i -lt 1600 ] && [ ! -f "$d/beacon" ]; do sleep 0.05; i=$((i+1)); done',
+  'if [ -f "$d/beacon" ]; then',
+  '  t0=$(ms); echo go > "$d/nonce2"',
+  '  j=0; while [ $j -lt 6000 ] && [ ! -f "$d/ack" ]; do sleep 0.005; j=$((j+1)); done',
+  '  if [ -f "$d/ack" ]; then echo "PEER_RTT_MS=$(( $(ms) - t0 ))"; fi',
+  'fi',
+  'echo "PEER_SAW_WRITE=$(cat "$d/write" 2>/dev/null)"',
+  'rm -rf "$d"',
+].join('\n')
+
+/**
+ * The probe's half: wait for the peer's nonce, print what it read, write
+ * the marker the peer checks for, announce itself, and acknowledge the
+ * second nonce. It writes at the worktree identity, under gVisor, which is
+ * the write every worktree's first unprivileged setup step depends on.
+ */
+const PROBE_SCRIPT = [
+  'd="/probe/$1"',
+  'echo "PROBE_NODE=$NODE_NAME"',
+  'i=0; while [ $i -lt 3000 ] && [ ! -f "$d/nonce" ]; do sleep 0.02; i=$((i+1)); done',
+  'echo "PROBE_READ=$(cat "$d/nonce" 2>/dev/null)"',
+  // No nonce means no peer to talk to: the check says so from the empty read.
+  '[ -f "$d/nonce" ] || exit 0',
+  'echo ok > "$d/write" || exit 1',
+  'echo > "$d/beacon"',
+  'i=0; while [ $i -lt 1500 ] && [ ! -f "$d/nonce2" ]; do sleep 0.02; i=$((i+1)); done',
+  'if [ -f "$d/nonce2" ]; then echo ok > "$d/ack"; fi',
+].join('\n')
 
 /**
  * The one check that exercises the full wiring: registry pull from inside
- * the cluster, plus the global claim being the same bytes the server
- * writes. Failure modes map to the pieces `yaac cluster install` wires:
- * the containerd registry config, the claim and its volume, the runtime.
+ * the cluster, a sandboxed pod at the worktree identity reading and writing
+ * the global claim, and a peer at the server's footing seeing the same
+ * bytes. Failure modes map to the pieces `yaac cluster install` wires: the
+ * containerd registry config, the claim and its volume, the runtime.
  */
-async function runEndToEndProbe(): Promise<CheckResult> {
-  // The GLOBAL root: the probe writes here, and the pod mounts the claim
-  // that is (on kind) this very directory — which is exactly the
-  // visibility contract that tier states.
-  const dataDir = globalRoot()
+async function runEndToEndProbe(identity: InstallIdentity): Promise<CheckResult> {
   const nonce = crypto.randomUUID()
-  const nonceFile = path.join(dataDir, '.cluster-check-nonce')
-  const writeFile = path.join(dataDir, '.cluster-check-write')
-  const scratch = [PROBE_BEACON_FILE, PROBE_NONCE2_FILE, PROBE_ACK_FILE].map((f) => path.join(dataDir, f))
+  const dir = `${PROBE_DIR_PREFIX}${nonce}`
   const ns = k8sNamespace()
-  // The identity a worktree pod runs as. The probe's whole point is that a
-  // hostPath write at THIS uid reaches the host, so it must be the same
-  // answer buildPodJobManifest stamps.
-  const identity = hostUidSecurityContext()
-
+  const { runAsUser } = installSecurityContext(identity)
   try {
-    await fs.mkdir(dataDir, { recursive: true })
-    await fs.writeFile(nonceFile, nonce)
-    for (const f of [writeFile, ...scratch]) await fs.rm(f, { force: true })
-
     // Make sure the probe image exists locally, then push it through the
     // same registry path worktree images take.
     const imageRef = await ensureProbeImage()
@@ -1102,9 +1332,10 @@ async function runEndToEndProbe(): Promise<CheckResult> {
     const manifest = {
       apiVersion: 'v1',
       kind: 'Pod',
-      metadata: { name: PROBE_POD_NAME, namespace: ns },
+      metadata: { name: PROBE_POD_NAME, namespace: ns, labels: pairLabels('probe') },
       spec: {
         restartPolicy: 'Never',
+        affinity: pairAntiAffinity('probe'),
         // Mirror the worktree-pod containment (see buildPodJobManifest):
         // a host pod carries the gvisor RuntimeClass (no userns), so the
         // probe proves reads/writes on the claim work through the gofer at
@@ -1115,16 +1346,13 @@ async function runEndToEndProbe(): Promise<CheckResult> {
         // worktree gitdir pointer) fails exactly here when it does not.
         securityContext: {
           seccompProfile: { type: 'RuntimeDefault' },
-          ...identity,
+          ...installSecurityContext(identity),
         },
         containers: [{
           name: 'probe',
           image: imageRef,
-          command: [
-            'sh', '-c',
-            'cat /probe/.cluster-check-nonce && echo ok > /probe/.cluster-check-write && '
-            + PROBE_ROUND_TRIP_SCRIPT,
-          ],
+          command: ['sh', '-c', PROBE_SCRIPT, '--', dir],
+          env: [{ name: 'NODE_NAME', valueFrom: { fieldRef: { fieldPath: 'spec.nodeName' } } }],
           volumeMounts: [{ name: 'probe', mountPath: '/probe' }],
         }],
         // The claim, not a hostPath: what every worktree pod mounts its
@@ -1132,15 +1360,23 @@ async function runEndToEndProbe(): Promise<CheckResult> {
         volumes: [{ name: 'probe', persistentVolumeClaim: { claimName: GLOBAL_CLAIM_NAME } }],
       },
     }
-    // Run to a terminal phase; image-pull errors and mount failures both
-    // surface here. The round trip is timed alongside, from the host.
-    const run = runPodToCompletion(manifest, {
-      timeoutMs: 90_000,
+    const runOpts = {
       pollMs: 250,
-      kubectl: (args) => execFileAsync('kubectl', args),
+      kubectl: (args: string[]) => execFileAsync('kubectl', args),
       apply: kubectlApply,
-    })
-    const [{ phase, logs }, roundTripMs] = await Promise.all([run, measureRoundTrip(dataDir, run)])
+    }
+    // Run to a terminal phase; image-pull errors and mount failures both
+    // surface here. The peer runs alongside, and is released early when
+    // the probe fails — there is nothing left for it to wait for.
+    const probeRun = runPodToCompletion(manifest, { ...runOpts, timeoutMs: 90_000 })
+    const peerRun = runPodToCompletion(buildPeerPodManifest({
+      name: PEER_POD_NAME, imageRef, identity, pair: 'probe',
+      script: PEER_PROBE_SCRIPT, args: [dir, nonce],
+    }), { ...runOpts, timeoutMs: 150_000 })
+    void probeRun.then(async (r) => {
+      if (r.phase !== 'Succeeded') await releasePeer(PEER_POD_NAME)
+    }, () => { /* reported below */ })
+    const [{ phase, logs }, peer] = await Promise.all([probeRun, peerRun])
     if (phase !== 'Succeeded') {
       return {
         name: 'probe', status: 'fail',
@@ -1150,48 +1386,54 @@ async function runEndToEndProbe(): Promise<CheckResult> {
           + 'that host is missing or stale; re-apply it with `yaac cluster '
           + 'install`.\nIf it failed mounting /probe, the '
           + `${GLOBAL_CLAIM_NAME} claim or its volume is broken on the node — `
-          + `on kind the volume is a hostPath into ${dataDir}, which the `
+          + 'on kind the volume is a hostPath into the data dir, which the '
           + 'node needs the home extraMount to see; `yaac cluster install` '
           + 're-applies the claim.\n'
           + 'If it never got past Pending or failed with a runsc/'
           + 'RuntimeClass error, the gvisor runtime is broken — run '
           + '`yaac cluster install` (re-applies the runsc installer '
           + 'DaemonSet).\n'
-          + 'If it failed writing /probe/.cluster-check-write, uid '
-          + `${identity.runAsUser} cannot write the volume — see the `
-          + 'virtiofs ownership notes in docs/cluster-setup.md '
-          + '("macOS: the podman machine").',
+          + 'If it failed writing the claim, uid '
+          + `${runAsUser} cannot write the volume — see "The uid everything `
+          + 'runs as" in docs/server-in-cluster.md.',
       }
     }
-    if (logs.trim() !== nonce) {
+    const read = reported(logs, 'PROBE_READ') ?? ''
+    if (read !== nonce) {
       return {
         name: 'probe', status: 'fail',
-        detail: 'probe pod read stale data through the global claim',
-        fix: `The ${GLOBAL_CLAIM_NAME} claim is not bound to ${dataDir} as the `
-          + 'server sees it — check its volume (`kubectl get pv`) and the '
-          + 'extraMounts entry in your kind config.',
+        detail: read === ''
+          ? `probe pod never saw the nonce its peer wrote through the global claim (peer: ${
+            peer.phase === 'Succeeded' ? 'ran' : `phase ${peer.phase}`})`
+          : 'probe pod read stale data through the global claim',
+        fix: `The two pods mount the same ${GLOBAL_CLAIM_NAME} claim, so a write one `
+          + 'makes must be visible to the other. Check its volume (`kubectl get pv`) '
+          + 'and, on kind, the extraMounts entry in your kind config.',
       }
     }
-    // The pod's write must round-trip to the host: this is the server-side
-    // proof that a worktree's unprivileged uid can mutate the claim
+    // The pod's write must reach the peer: this is the proof that a
+    // worktree's unprivileged uid can mutate the claim the server reads
     // (worktree, config dirs) — a read-only probe passes on clusters where
     // every worktree still dies on its first write.
-    const written = await fs.readFile(writeFile, 'utf8').catch(() => null)
-    if (written?.trim() !== 'ok') {
+    if (reported(peer.logs, 'PEER_SAW_WRITE') !== 'ok') {
       return {
         name: 'probe', status: 'fail',
-        detail: `probe pod's write (uid ${identity.runAsUser}) through the `
-          + 'global claim did not reach the host',
-        fix: 'Session pods write the claim as the uid that owns the data '
-          + 'dir; on a strict-virtiofs host that uid is a ceiling nothing in '
-          + 'the cluster can raise. See the virtiofs ownership notes in '
-          + 'docs/cluster-setup.md ("macOS: the podman machine").',
+        detail: `probe pod's write (uid ${runAsUser}) through the global claim `
+          + 'never reached its peer',
+        fix: 'Session pods write the claim as the install uid; on a strict-virtiofs '
+          + 'host that uid is a ceiling nothing in the cluster can raise, and on an '
+          + 'NFS class the volume root must be the install uid\'s. See "The uid '
+          + 'everything runs as" in docs/server-in-cluster.md.',
       }
     }
+    const roundTrip = reported(peer.logs, 'PEER_RTT_MS')
+    const probeNode = reported(logs, 'PROBE_NODE')
+    const peerNode = reported(peer.logs, 'PEER_NODE')
+    const where = probeNode && peerNode && probeNode !== peerNode ? 'cross-node ' : ''
     return {
       name: 'probe', status: 'pass',
-      detail: `registry pull + global claim: read, write at uid ${identity.runAsUser}`
-        + (roundTripMs === undefined ? '' : `, cross-visibility round trip ${String(roundTripMs)}ms`),
+      detail: `registry pull + global claim: read, write at uid ${runAsUser}`
+        + (roundTrip === undefined ? '' : `, ${where}round trip ${roundTrip}ms`),
     }
   } catch (err) {
     return {
@@ -1199,34 +1441,43 @@ async function runEndToEndProbe(): Promise<CheckResult> {
       detail: `probe errored (${truncate(err)})`,
       fix: KIND_SETUP_FIX,
     }
-  } finally {
-    for (const f of [nonceFile, writeFile, ...scratch]) {
-      await fs.rm(f, { force: true }).catch(() => { /* best-effort */ })
-    }
   }
 }
 
 const FSPROBE_CONFIGMAP_NAME = 'yaac-cluster-check-fsprobe'
+
+/**
+ * fsprobe checks a failure of which is reported but does not fail the
+ * gate, each with the reason nothing on the shared tier needs it. Waived by
+ * name, never by backend: the same worktree runs on every one.
+ */
+const WAIVED_SEMANTICS: Record<string, string> = {
+  // NFS before 4.2 — EFS, Azure Files and a 4.1 mount — has no xattrs, and
+  // the one user.* xattr yaac writes (the image store's overlay markers)
+  // lives on the node-local tier.
+  'user.* xattr': 'nothing yaac keeps on the shared tier uses xattrs',
+}
 const FSPROBE_POD_NAME = 'yaac-cluster-check-fsprobe'
 
 const STORAGE_SEMANTICS_FIX =
   'A worktree relies on these from the global claim: creation ownership '
   + 'and O_EXCL for the lock and the staged files, atomic rename for every '
   + 'seed the server writes, hardlinks for the git object store, append for '
-  + 'the ACP conversation records. On kind a failure is a virtiofs or gofer quirk '
-  + 'worth reporting; on a cloud cluster it is the storage class, and the '
-  + 'claim needs one that passes.'
+  + 'the ACP conversation records. On kind a failure is a virtiofs or gofer quirk; '
+  + 'on a byo cluster it is the storage class, and the claim needs one that passes.'
 
 /**
- * Warn-level: the POSIX semantics of what backs the global claim, as a
- * sandboxed pod at the worktree uid sees them — the spike's `fsprobe.py`
- * (k8s/probes/), delivered by a ConfigMap this check applies and deletes,
- * run by the pinned podman mirror because it ships python3 and is already
- * in the registry. Every check must pass; the detail names the failures.
- * Warn rather than fail on kind so a virtiofs quirk surfaces without
- * blocking; a cloud install is where this becomes the gate.
+ * The POSIX semantics of what backs the global claim, as a sandboxed pod
+ * at the worktree uid sees them — the spike's `fsprobe.py` (k8s/probes/),
+ * delivered by a ConfigMap this check applies and deletes, run by the
+ * pinned podman mirror because it ships python3 and is already in the
+ * registry. Every check must pass; the detail names the failures.
+ * Fail-level on every backend, kind included: the same worktree runs on
+ * both, and a probe a backend genuinely cannot pass is fixed or waived by
+ * name here, never a branch per backend. A probe that could not run at all
+ * fails too, since unverified storage is not a pass.
  */
-async function runStorageSemanticsProbe(): Promise<CheckResult> {
+async function runStorageSemanticsProbe(identity: InstallIdentity): Promise<CheckResult> {
   const ns = k8sNamespace()
   try {
     const script = await fs.readFile(path.join(PACKAGE_ROOT, 'k8s', 'probes', 'fsprobe.py'), 'utf8')
@@ -1246,7 +1497,7 @@ async function runStorageSemanticsProbe(): Promise<CheckResult> {
         automountServiceAccountToken: false,
         enableServiceLinks: false,
         ...runtimeClassSpec(),
-        securityContext: { seccompProfile: { type: 'RuntimeDefault' }, ...hostUidSecurityContext() },
+        securityContext: { seccompProfile: { type: 'RuntimeDefault' }, ...installSecurityContext(identity) },
         containers: [{
           name: 'probe',
           image: imageRef,
@@ -1268,38 +1519,41 @@ async function runStorageSemanticsProbe(): Promise<CheckResult> {
       kubectl: (args) => execFileAsync('kubectl', args),
       apply: kubectlApply,
     })
-    const failed = logs.split('\n')
+    const failures = logs.split('\n')
       .filter((l) => l.startsWith('FAIL'))
       .map((l) => l.replace(/^FAIL\s+/, '').replace(/\s{2,}.*$/, '').trim())
+    const failed = failures.filter((f) => !(f in WAIVED_SEMANTICS))
+    const waived = failures.filter((f) => f in WAIVED_SEMANTICS)
+      .map((f) => `; waived: ${f} (${WAIVED_SEMANTICS[f]})`).join('')
     const summary = /(\d+\/\d+ passed)/.exec(logs)?.[1]
-    if (phase !== 'Succeeded' && failed.length === 0) {
+    if (phase !== 'Succeeded' && failures.length === 0) {
       return {
-        name: 'storage-semantics', status: 'warn',
+        name: 'storage-semantics', status: 'fail',
         detail: `fsprobe pod ended in phase ${phase} (${logs.trim().slice(-80) || 'no output'})`,
         fix: STORAGE_SEMANTICS_FIX,
       }
     }
     if (failed.length > 0) {
       return {
-        name: 'storage-semantics', status: 'warn',
+        name: 'storage-semantics', status: 'fail',
         detail: `the global claim fails: ${failed.join(', ')}${summary ? ` (${summary})` : ''}`,
         fix: STORAGE_SEMANTICS_FIX,
       }
     }
     if (!summary) {
       return {
-        name: 'storage-semantics', status: 'warn',
+        name: 'storage-semantics', status: 'fail',
         detail: `fsprobe printed no summary (${logs.trim().slice(-80) || 'no output'})`,
         fix: STORAGE_SEMANTICS_FIX,
       }
     }
     return {
       name: 'storage-semantics', status: 'pass',
-      detail: `POSIX semantics on the global claim under gvisor: ${summary}`,
+      detail: `POSIX semantics on the global claim under gvisor: ${summary}${waived}`,
     }
   } catch (err) {
     return {
-      name: 'storage-semantics', status: 'warn',
+      name: 'storage-semantics', status: 'fail',
       detail: `fsprobe errored (${truncate(err)})`,
       fix: STORAGE_SEMANTICS_FIX,
     }
@@ -1314,9 +1568,34 @@ async function runStorageSemanticsProbe(): Promise<CheckResult> {
 const MULTI_NODE_GATES = ['runsc-nodes', 'registry-nodes', 'volume-nodes'] as const
 
 const NODE_PROBE_POD_PREFIX = 'yaac-cluster-check-node'
-/** Nonce file for the per-node sweep — distinct from the e2e probe's, which
- *  runs concurrently and removes its own on the way out. */
-const NODE_PROBE_NONCE_FILE = '.cluster-check-nodes-nonce'
+const SWEEP_PEER_POD_NAME = 'yaac-cluster-check-sweep-peer'
+/** The sweep's scratch directory prefix — distinct from the e2e probe's,
+ *  which runs concurrently and clears its own. */
+const SWEEP_DIR_PREFIX = '.cluster-check-nodes-'
+
+/**
+ * The sweep's peer (see buildPeerPodManifest): publish the nonce, wait
+ * until every node's probe has left its marker — or until the check says
+ * the probes are done, which is how a node whose pod never ran stops
+ * holding the sweep for the whole bound — then report the markers it saw
+ * and clear the scratch.
+ */
+const SWEEP_PEER_SCRIPT = [
+  `rm -rf /probe/${SWEEP_DIR_PREFIX}*`,
+  'd="/probe/$1"; n=$3',
+  'mkdir "$d" && printf %s "$2" > "$d/nonce.tmp" && mv "$d/nonce.tmp" "$d/nonce"',
+  'i=0',
+  'while [ $i -lt 1400 ] && [ ! -f "$d/done" ]; do',
+  '  seen=0; k=0; while [ $k -lt $n ]; do [ -f "$d/node-$k" ] && seen=$((seen+1)); k=$((k+1)); done',
+  '  [ $seen -eq $n ] && break',
+  '  sleep 0.05; i=$((i+1))',
+  'done',
+  'k=0; while [ $k -lt $n ]; do',
+  '  [ "$(cat "$d/node-$k" 2>/dev/null)" = ok ] && echo "PEER_MARKER=$k"',
+  '  k=$((k+1))',
+  'done',
+  'rm -rf "$d"',
+].join('\n')
 
 /**
  * Which gate owns a probe pod that never ran. A pod that does not start
@@ -1453,9 +1732,9 @@ function blameProbeFailure(event: string): ProbeBlame {
 async function probeNode(
   node: ClusterNode,
   index: number,
-  ctx: { imageRef: string; nonce: string; dataDir: string },
+  ctx: { imageRef: string; nonce: string; dir: string; identity: InstallIdentity },
 ): Promise<NodeProbeOutcome> {
-  const marker = `.cluster-check-node-${index}`
+  const marker = `node-${String(index)}`
   const podName = `${NODE_PROBE_POD_PREFIX}-${index}`
   const outcome: NodeProbeOutcome = {
     node: node.name, phase: 'Pending', sandboxed: false, sawNonce: false, wroteMarker: false,
@@ -1474,7 +1753,7 @@ async function probeNode(
         enableServiceLinks: false,
         securityContext: {
           seccompProfile: { type: 'RuntimeDefault' },
-          ...hostUidSecurityContext(),
+          ...installSecurityContext(ctx.identity),
         },
         containers: [{
           name: 'probe',
@@ -1483,7 +1762,9 @@ async function probeNode(
           command: [
             'sh', '-c',
             'dmesg 2>/dev/null | grep -qi gvisor && echo GVISOR_SANDBOXED; '
-            + `cat /probe/${NODE_PROBE_NONCE_FILE} && echo ok > /probe/${marker}`,
+            + 'i=0; while [ $i -lt 2000 ] && [ ! -f "$1/nonce" ]; do sleep 0.02; i=$((i+1)); done; '
+            + `cat "$1/nonce" && echo ok > "$1/${marker}"`,
+            '--', `/probe/${ctx.dir}`,
           ],
           volumeMounts: [{ name: 'probe', mountPath: '/probe' }],
         }],
@@ -1502,8 +1783,6 @@ async function probeNode(
     outcome.phase = phase
     outcome.sandboxed = logs.includes('GVISOR_SANDBOXED')
     outcome.sawNonce = logs.includes(ctx.nonce)
-    outcome.wroteMarker = (await fs.readFile(path.join(ctx.dataDir, marker), 'utf8')
-      .catch(() => '')).trim() === 'ok'
     if (phase !== 'Succeeded') {
       outcome.failureHint = await podFailureEvent(podName)
       outcome.blame = blameProbeFailure(outcome.failureHint)
@@ -1511,9 +1790,6 @@ async function probeNode(
     return outcome
   } catch {
     return outcome
-  } finally {
-    await fs.rm(path.join(ctx.dataDir, marker), { force: true })
-      .catch(() => { /* best-effort */ })
   }
 }
 
@@ -1575,6 +1851,7 @@ function nodeList(names: string[]): string {
 async function runMultiNodeReadiness(
   nodes: ClusterNode[],
   gvisorScheduling: GvisorScheduling,
+  identity: InstallIdentity,
 ): Promise<CheckResult[]> {
   const uniform = (status: CheckResult['status'], detail: string, fix?: string): CheckResult[] =>
     MULTI_NODE_GATES.map((name) => ({ name, status, detail, ...(fix ? { fix } : {}) }))
@@ -1633,15 +1910,33 @@ async function runMultiNodeReadiness(
     )
   }
 
-  const dataDir = globalRoot()
   const nonce = crypto.randomUUID()
-  const nonceFile = path.join(dataDir, NODE_PROBE_NONCE_FILE)
+  const dir = `${SWEEP_DIR_PREFIX}${nonce}`
   try {
-    await fs.mkdir(dataDir, { recursive: true })
-    await fs.writeFile(nonceFile, nonce)
     const imageRef = await ensureProbeImage()
+    // The peer is where each node's write has to land: the claim as the
+    // server's footing sees it. It runs alongside the node probes, and is
+    // told they are done once they are, so a node whose pod never ran costs
+    // the sweep nothing past its own timeout.
+    const peerRun = runPodToCompletion(buildPeerPodManifest({
+      name: SWEEP_PEER_POD_NAME, imageRef, identity, pair: 'sweep',
+      script: SWEEP_PEER_SCRIPT, args: [dir, nonce, String(eligible.length)],
+    }), {
+      timeoutMs: 120_000,
+      pollMs: 250,
+      kubectl: (args) => execFileAsync('kubectl', args),
+      apply: kubectlApply,
+    })
     const outcomes = await Promise.all(eligible.map((node, i) =>
-      probeNode(node, i, { imageRef, nonce, dataDir })))
+      probeNode(node, i, { imageRef, nonce, dir, identity })))
+    await execFileAsync('kubectl', [
+      'exec', SWEEP_PEER_POD_NAME, '-n', k8sNamespace(), '--', 'touch', `/probe/${dir}/done`,
+    ]).catch(() => { /* it already finished, or it never ran — its logs say which */ })
+    const peer = await peerRun
+    const markers = new Set(peer.logs.split('\n')
+      .map((l) => /^PEER_MARKER=(\d+)$/.exec(l.trim())?.[1])
+      .filter((m): m is string => m !== undefined))
+    outcomes.forEach((o, i) => { o.wroteMarker = markers.has(String(i)) })
 
     const ran = new Map(outcomes.map((o) => [o.node, o]))
     const failed = outcomes.filter((o) => o.phase !== 'Succeeded')
@@ -1663,7 +1958,7 @@ async function runMultiNodeReadiness(
     }
 
     const sentryVerified = outcomes.filter((o) => o.sandboxed).length
-    const probeUid = hostUidSecurityContext().runAsUser
+    const probeUid = identity.uid
     const gate = (
       name: (typeof MULTI_NODE_GATES)[number],
       broken: string[],
@@ -1728,24 +2023,50 @@ async function runMultiNodeReadiness(
           ...outcomes
             .filter((o) => o.phase === 'Succeeded' && !(o.sawNonce && o.wroteMarker))
             .map((o) => `${o.node} (${o.sawNonce
-              ? `uid ${probeUid} write did not reach the host`
+              ? `uid ${probeUid} write did not reach the server's footing`
               : 'stale or absent mount'})`),
         ],
         [...failed.filter((o) => o.blame !== 'volume').map((o) => o.node), ...unlabelledNames],
         VOLUME_NODES_FIX,
-        (list) => `${globalRoot()} is not the server's on: ${list}`,
+        (list) => `the ${GLOBAL_CLAIM_NAME} claim is not the server's on: ${list}`,
         `shared data dir visible and writable at uid ${probeUid} from all `
           + `${eligible.length} session-eligible nodes`,
       ),
     ]
   } catch (err) {
     return uniform('warn', `multi-node readiness sweep errored (${truncate(err)})`)
-  } finally {
-    await fs.rm(nonceFile, { force: true }).catch(() => { /* best-effort */ })
   }
 }
 
 const NETPOL_PROBE_POD_NAME = 'yaac-cluster-check-egress'
+const NFS_PORT = 2049
+
+/**
+ * The NFS server the global claim's volume names (csi-driver-nfs's
+ * `server` attribute), resolved to an address the probe pod can dial with
+ * no DNS of its own: a session pod has none, so a name would fail to
+ * resolve and read as "blocked". A Service name resolves to its ClusterIP,
+ * anything else through this machine's resolver. `null` when the volume
+ * names no server (a hostPath, or a driver that does not say); `ip`
+ * undefined when it names one that cannot be resolved here.
+ */
+async function sharedVolumeNfsServer(): Promise<{ server: string; ip?: string } | null> {
+  const pvc = await kubectlGetJson<RawPvcRead>(['get', 'pvc', GLOBAL_CLAIM_NAME, '-n', k8sNamespace()])
+  const volume = pvc?.spec?.volumeName
+  const pv = volume ? await kubectlGetJson<RawPvRead>(['get', 'pv', volume]) : null
+  const server = pv?.spec?.csi?.volumeAttributes?.server
+  if (!server) return null
+  if (isIP(server)) return { server, ip: server }
+  const svc = /^([a-z0-9-]+)\.([a-z0-9-]+)\.svc(\.|$)/.exec(server)
+  if (svc) {
+    const ip = (await execFileAsync('kubectl', [
+      'get', 'svc', svc[1], '-n', svc[2], '-o', 'jsonpath={.spec.clusterIP}',
+    ]).then((r) => r.stdout.trim(), () => '')) || undefined
+    return { server, ip }
+  }
+  const ip = await dns.lookup(server).then((r) => r.address, () => undefined)
+  return { server, ip }
+}
 
 /**
  * Verify the CNI actually enforces the worktree egress NetworkPolicy. A
@@ -1846,6 +2167,18 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
         + ' && echo NP_SERVER_OPEN || echo NP_SERVER_LOCKED'
       : ''
 
+    // Fifth leg, same pod: the NFS server behind the global claim, where
+    // the volume names one. It speaks AUTH_SYS and trusts whatever uid a
+    // client claims, so a sandbox that could reach it could read and write
+    // every project as anyone — the session policy is what stops that, and
+    // this proves it holds on the cluster at hand. Absent on kind, whose
+    // volume is a hostPath.
+    const nfs = await sharedVolumeNfsServer()
+    const nfsCheck = nfs?.ip
+      ? `; nc -w 4 ${nfs.ip} ${String(NFS_PORT)} </dev/null >/dev/null 2>&1`
+        + ' && echo NP_NFS_OPEN || echo NP_NFS_LOCKED'
+      : ''
+
     const imageRef = await pushImageToRegistry(PROBE_LOCAL_TAG)
     const { phase, logs } = await runPodToCompletion({
       apiVersion: 'v1',
@@ -1868,7 +2201,7 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
           command: [
             'sh', '-c',
             `nc -w 4 ${apiserverIp} 443 </dev/null && echo NP_REACHED || echo NP_BLOCKED`
-            + proxyCheck + registryCheck + serverCheck,
+            + proxyCheck + registryCheck + serverCheck + nfsCheck,
           ],
         }],
       },
@@ -1892,8 +2225,8 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
         fix: 'Session egress lockdown fails open without NetworkPolicy '
           + 'enforcement, leaving the proxy allowlist advisory. Re-run '
           + '`yaac cluster install`, which installs Calico as the CNI and '
-          + 'policy engine.\nOn a cluster whose CNI yaac adopted '
-          + '(`--adopt-cni`), this is the probe that says the adopted engine '
+          + 'policy engine.\nOn a byo cluster, whose CNI yaac did not install, '
+          + 'this is the probe that says its engine '
           + 'is not actually enforcing plain networking.k8s.io/v1 policy — '
           + '"Calico is installed" does not imply it. Policy-only Calico over '
           + 'a foreign IPAM needs its policy plane genuinely wired up.',
@@ -1920,6 +2253,18 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
           + 'and the fronting alone, so a pod dialing the Service or pod IP is '
           + 'dropped. Re-run `yaac cluster install`, which applies both with '
           + 'the Deployment (the server re-applies the node half on start).',
+      }
+    }
+    if (logs.includes('NP_NFS_OPEN')) {
+      return {
+        name: 'egress', status: 'fail',
+        detail: `a session-labeled pod reached the NFS server behind ${GLOBAL_CLAIM_NAME} `
+          + `(${nfs?.server ?? '?'}) — it trusts whatever uid a client claims, so any session `
+          + 'could read and write every project as anyone',
+        fix: 'Session egress must default-deny everything but the node\'s netd listener '
+          + 'range. Restart the yaac server so the session policy is re-applied, and '
+          + 'firewall the NFS server to the node addresses as well — a kernel mount comes '
+          + 'from the node, never from a pod.',
       }
     }
     if (logs.includes('NP_PROXY_OPEN')) {
@@ -1954,11 +2299,13 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
       if (proxyIp) denied.push('a transparent port directly (forgery lock holds)')
       if (registryIp) denied.push('the image registry')
       if (serverIp) denied.push('the yaac server')
+      if (nfs?.ip) denied.push(`the NFS server ${nfs.server}`)
       const deniedHalf = denied.length ? `, and cannot dial ${denied.join(', nor ')}` : ''
       const unverified: string[] = []
       if (!proxyIp) unverified.push('proxy not deployed — forgery-lock half unverified')
       if (!registryIp) unverified.push('registry not deployed — that half unverified')
       if (!serverIp) unverified.push('server not deployed in-cluster — that half unverified')
+      if (nfs && !nfs.ip) unverified.push(`NFS server ${nfs.server} unresolvable from here — that half unverified`)
       const unverifiedHalf = unverified.length ? ` (${unverified.join('; ')})` : ''
       return {
         name: 'egress', status: 'pass',
@@ -2126,7 +2473,7 @@ async function runDatapathCheck(): Promise<CheckResult> {
         name: 'datapath', status: 'fail',
         detail: `calico-node is ${calico.trim()} ready — NetworkPolicy is not being enforced`,
         fix: 'Calico is the CNI and policy engine. Re-run `yaac cluster install` '
-          + '(or `--adopt-cni` on a cluster whose Calico yaac did not install), '
+          + '(on a byo cluster, whose Calico yaac did not install, `--byo`), '
           + 'or inspect with `kubectl -n kube-system get pods -l k8s-app=calico-node`.',
       }
     }
@@ -2172,7 +2519,7 @@ async function runDatapathCheck(): Promise<CheckResult> {
 
 /**
  * The pod → veth gate. Reads every netd pod's own node routing table and
- * applies the same verdict `--adopt-cni` applies (assessVethSource), so
+ * applies the same verdict `--byo` applies (assessVethSource), so
  * setup and check cannot disagree about what a working redirect source
  * looks like.
  *

@@ -16,7 +16,8 @@
     "@yaac/shared": "workspace:*",
     "hono": "catalog:",
     "tsx": "catalog:",
-    "ws": "catalog:"
+    "ws": "catalog:",
+    "yaml": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",

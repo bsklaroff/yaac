@@ -3,8 +3,12 @@ import { ClusterInstallError, runClusterInstall } from '@yaac/server/drivers/k8s
 export interface ClusterInstallCliOptions {
   /** Raw `--nodes` value; commander hands options through as strings. */
   nodes?: string
-  /** `--adopt-cni`: bring-your-own-CNI mode (commander camelCases the flag). */
-  adoptCni?: boolean
+  /** `--byo`: install into a cluster yaac did not create. */
+  byo?: boolean
+  /** `--rwx-storage-class` (commander camelCases the flags). */
+  rwxStorageClass?: string
+  /** `--rwo-storage-class`. */
+  rwoStorageClass?: string
   /** `--tailnet`: publish the server through the Tailscale operator. */
   tailnet?: boolean
 }
@@ -25,15 +29,18 @@ export interface ClusterInstallCliOptions {
  * `runClusterInstall` owns the bounds, and converting first would leave it
  * reporting `NaN` instead of what the user actually typed.
  *
- * `--adopt-cni` adopts the CNI an existing cluster already runs instead of
- * creating one. `--tailnet` fronts the server on the tailnet instead of at
- * this machine's loopback.
+ * `--byo` installs into the cluster the kubeconfig points at instead of
+ * creating one, provisioning the claims from the named classes and
+ * fronting the server on the tailnet. `--tailnet` fronts a kind install's
+ * server on the tailnet instead of at this machine's loopback.
  */
 export async function clusterInstall(options: ClusterInstallCliOptions = {}): Promise<void> {
   try {
     const ok = await runClusterInstall({
       nodes: options.nodes,
-      adoptCni: options.adoptCni,
+      byo: options.byo,
+      rwxStorageClass: options.rwxStorageClass,
+      rwoStorageClass: options.rwoStorageClass,
       tailnet: options.tailnet,
     })
     if (!ok) process.exitCode = 1

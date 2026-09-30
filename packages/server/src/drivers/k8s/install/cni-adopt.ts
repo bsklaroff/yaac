@@ -15,10 +15,11 @@ import type { execFileAsync } from '#drivers/k8s/substrate'
 import { env } from '@yaac/shared/env'
 
 /**
- * Adopting a CNI yaac did not install.
+ * The CNI gate: adopting a CNI yaac did not install (docs/cluster-setup.md
+ * "The CNI gate").
  *
  * `yaac cluster install` normally owns the CNI: it creates the cluster with
- * no default CNI and applies a checksum-pinned Calico. `--adopt-cni` skips
+ * no default CNI and applies a checksum-pinned Calico. `--byo` skips
  * that and runs this gate instead, so yaac can install into a Calico the
  * cluster already runs — our own, a self-managed one, or a
  * provider-managed one (GKE Dataplane V1, AKS `--network-policy calico`,
@@ -168,7 +169,7 @@ export function assessCniAdoption(facts: CniFacts): CniAssessment {
       + 'netfilter and which leaves ClusterIP translation to kube-proxy — Calico in its '
       + 'iptables dataplane, self-managed or provider-managed. Cilium is not supported '
       + 'in any configuration (its eBPF host-routing bypasses the hook the redirect '
-      + 'needs). Drop --adopt-cni to have yaac install its own pinned Calico.',
+      + 'needs). Install Calico into the cluster (or let a kind install bring its own).',
     )
   } else if (!(facts.calico.ready > 0) || facts.calico.ready !== facts.calico.desired) {
     refusals.push(
@@ -707,7 +708,7 @@ export async function probeWorkloadVeths(
 
 /**
  * The shared verdict on a `probeWorkloadVeths` sweep — used by BOTH
- * `--adopt-cni` (where a failure is a refusal) and every `yaac cluster
+ * `--byo` (where a failure is a refusal) and every `yaac cluster
  * check` (where it is a gate), so the two cannot drift.
  *
  * Re-checked on every cluster check on purpose. netd's readiness is Envoy's

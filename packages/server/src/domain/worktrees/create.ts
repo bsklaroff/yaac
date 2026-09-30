@@ -400,7 +400,7 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
   await Promise.race([transportReady, worktreeFailure])
 
   // No ownership fixup is needed for server-created hostPath mounts: the
-  // pod runs as the server's own uid (hostUidSecurityContext). Under gVisor
+  // pod runs as the server's own uid (installSecurityContext). Under gVisor
   // there is no userns and no idmapped mount, so numeric uids pass through
   // raw — server-owned dirs are writable as-is.
 

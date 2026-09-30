@@ -28,61 +28,57 @@ nothing in the CLI or webapp assumes the server is on the same machine.
 
 ## Server setup
 
+The two placements get onto the tailnet differently. A **containerless**
+server is a host process, fronted by the machine's own `tailscale serve`:
+
 ```sh
-# 1. Install yaac (see README "Install"). Under k8s, that is also what
-#    deploys the server; under containerless it is a host process:
-yaac cluster install && yaac cluster check     # k8s installs only
-
-# 2. Join the tailnet and serve the server over TLS — tailnet-only
-#    (`serve`, never `funnel`). The backend is the loopback origin the
-#    server already answers at under either placement:
+yaac server start
 tailscale up
-tailscale serve --bg https / http://127.0.0.1:8787
-
-# 3. Tell the server to admit its tailnet hostname:
-export YAAC_ALLOWED_HOSTS=srv.<tailnet>.ts.net
-
-# 4. Hand it to the server — which differs by placement (see below):
-yaac server restart                            # containerless
-yaac cluster install                           # k8s
+tailscale serve --bg https / http://127.0.0.1:8787   # tailnet-only: `serve`, never `funnel`
+export YAAC_ALLOWED_HOSTS=srv.<tailnet>.ts.net       # admit the tailnet hostname
+yaac server restart
 ```
 
-5. **Decide who on the tailnet may use it.** Anyone whose device can reach
-   the server's device through `serve` is a full-access user of it — the
-   trust boundary is the tailnet. On a tailnet that is yours alone there is
-   nothing to do. On a shared one, add an ACL grant that lets only the
-   intended users reach the server's device (or its tag) on port 443; that
-   grant is the whole of the access list.
+`YAAC_ALLOWED_HOSTS` is the server process's environment, so it belongs in
+a systemd unit or shell profile — a detached restart does not inherit an
+interactive `export`. Setting it is what opts a server into remote access,
+and remote access is identity-only: every request to that name has to come
+through `serve`.
 
-Where `YAAC_ALLOWED_HOSTS` LIVES is the one thing the two placements do not
-share. Under `containerless` it is the server process's environment, so it
-belongs in a systemd unit or shell profile — a detached restart does not
-inherit an interactive `export`. Under `k8s` there is no shell in a pod to
-export it in, so the Deployment carries it, read from the shell that runs
-`yaac cluster install` (`buildServerEnv`); the export has to be live for
-that command, and `yaac server restart` — a rollout of the Deployment as it
-already stands — will not pick up a new value. Install is idempotent, so
-re-running it against the cluster it already made is the supported way to
-change it. Setting it is what opts a server into remote access, and remote
-access is identity-only: every request to that name has to come through
-`serve`.
+A **k8s** server is published by the Tailscale Kubernetes operator, and
+install states the allowed host itself — no `serve`, no export:
 
-Under `k8s` there is a second way onto the tailnet that needs no
-`tailscale serve` and no exported variable: `yaac cluster install
---tailnet` publishes the server through the Tailscale Kubernetes operator
-(a `tailscale`-class Ingress — docs/server-in-cluster.md "Reachability"),
-sets `YAAC_ALLOWED_HOSTS` on the Deployment itself from the name the
-operator publishes, and registers `https://yaac.<tailnet>.ts.net`. The
-operator's Ingress proxy is `tailscale serve` running in the cluster: it
-terminates TLS with the tailnet's certificate and stamps the caller's
-identity exactly as a host `serve` does. Install the operator once (`helm
-upgrade --install tailscale-operator tailscale/tailscale-operator
---namespace=tailscale --create-namespace --set-string oauth.clientId=…
---set-string oauth.clientSecret=…`), with HTTPS certificates enabled for
-the tailnet, and `--tailnet` refuses, naming that command, until it is
-there. Under this fronting there is no loopback path, so the machine that
-ran install reaches its server through the Ingress like any other device —
-it has to be logged in as a tailnet user, and install warns when it is not.
+```sh
+yaac cluster install --tailnet && yaac cluster check                 # this machine's kind cluster
+yaac cluster install --byo --rwx-storage-class <nfs-class> \
+  && yaac cluster check                                              # a cluster you bring
+```
+
+`--tailnet` publishes the server through a `tailscale`-class Ingress
+(docs/server-in-cluster.md "Reachability"), sets `YAAC_ALLOWED_HOSTS` on the
+Deployment from the name the operator publishes, and registers
+`https://yaac.<tailnet>.ts.net`. On kind that origin **replaces**
+`127.0.0.1` rather than adding a second one, so every client — this
+machine's CLI included — reaches the server the same way. A byo install
+(docs/cluster-setup.md "Bring your own cluster") is remote-hosted from the
+start: `--byo` implies the same fronting, since a cloud cluster has no
+loopback to publish at. The operator's Ingress proxy is `tailscale serve`
+running in the cluster: it terminates TLS with the tailnet's certificate
+and stamps the caller's identity exactly as a host `serve` does. Install
+the operator once (`helm upgrade --install tailscale-operator
+tailscale/tailscale-operator --namespace=tailscale --create-namespace
+--set-string oauth.clientId=… --set-string oauth.clientSecret=…`), with
+HTTPS certificates enabled for the tailnet; install refuses, naming that
+command, until it is there. With no loopback path, the machine that ran
+install reaches its server through the Ingress like any other device — it
+has to be logged in as a tailnet user, and install warns when it is not.
+
+**Decide who on the tailnet may use it.** Anyone whose device can reach the
+server's device (or the operator's Ingress device) is a full-access user of
+it — the trust boundary is the tailnet. On a tailnet that is yours alone
+there is nothing to do. On a shared one, add an ACL grant that lets only
+the intended users reach that device (or its tag) on port 443; that grant
+is the whole of the access list.
 
 Optional — make forwarded dev-server ports reachable from other tailnet
 devices. The server offers the mappings but binds nothing
@@ -92,7 +88,7 @@ on that machine, and telling the webapp where it binds.
 ```sh
 export YAAC_FORWARD_BIND=<the server's tailnet IP>   # from `tailscale ip -4`
 yaac server restart                                  # containerless
-yaac cluster install                                 # k8s — same reason as above
+yaac cluster install                                 # k8s: the Deployment carries it, from the install shell
 yaac forward --bind <the server's tailnet IP>        # holds the listeners
 ```
 

@@ -48,7 +48,7 @@ export {
   REGISTRY_SERVICE_NAME,
   REGISTRY_SERVICE_PORT,
 } from './registry'
-export { registryAuthFile, registryGrantPublicKey } from './registry-grant'
+export { REGISTRY_GRANT_NAMESPACE, registryAuthFile, registryGrantPublicKey } from './registry-grant'
 export {
   ensureRootfulPodmanHost,
   execFileAsync,
