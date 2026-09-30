@@ -561,7 +561,6 @@ function CreateWorktreeForm({
     setModelQuery(null)
   }
 
-  const heading = initial !== undefined ? 'Edit queued worktree' : 'New worktree'
   const submitLabel = needsGitAuth ? 'Add git authentication…'
     : !signedIn ? `Sign in to ${TOOL_LABEL[tool]}…`
     : initial !== undefined ? 'Save'
@@ -607,7 +606,7 @@ function CreateWorktreeForm({
           />
         ) : (
           <div className="flex min-w-0 items-center gap-0.5">
-            <Dialog.Title className="min-w-0 truncate text-sm font-semibold">{titleText || heading}</Dialog.Title>
+            <Dialog.Title className="min-w-0 truncate text-sm font-semibold">{titleText || 'New worktree'}</Dialog.Title>
             <button
               type="button"
               onClick={titleEdit.start}

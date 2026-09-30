@@ -26,7 +26,15 @@ import { _resetTitleSummarizerForTests } from '#domain/titles/title-summarizer'
 import { LLAMA_CPP_TAG } from '#domain/titles/llama-cpp'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { getProjectWorktreeRows, setWorktreeTitle } from '#db/worktree-store'
-import { applyWorktreeEvent, insertDraftWorktree, listDraftWorktreeRows, updateDraftWorktree } from '#db'
+import {
+  applyWorktreeEvent,
+  getQueuedWorktreeRow,
+  insertDraftWorktree,
+  insertQueuedWorktree,
+  listDraftWorktreeRows,
+  updateDraftWorktree,
+  updateQueuedWorktree,
+} from '#db'
 import type * as storeModule from '#db/worktree-store'
 import { closeDb } from '#db/client'
 import { execFileAsync } from '#lib/shell'
@@ -386,6 +394,31 @@ describe('reconcileGeneratedTitles', () => {
     expect(payloadOf(inferences()[1])).toContain(edited)
     expect(await titleOf()).toBe('Document widget registry')
     // Worktree titles go through their own writer; a draft never touches it.
+    expect(mockSetTitle).not.toHaveBeenCalled()
+  })
+
+  // A queued entry is titled the same way, and re-titled when an edit
+  // changes its prompt — unless the user titled it.
+  it('titles a queued worktree, and again once its prompt is edited', async () => {
+    await seedCache()
+    const settings = {
+      prompt: PROMPT, tool: 'claude', model: 'opus', mode: 'tui', permissionMode: 'manual', branch: 'main',
+    } as const
+    const entry = await insertQueuedWorktree('p', { parentWorktreeId: 'w' }, settings)
+    await insertQueuedWorktree('p', { parentWorktreeId: 'w' }, { ...settings, title: 'Mine' })
+    await reconcileGeneratedTitles()
+    await flush()
+    expect(inferences()).toHaveLength(1)
+    const titleOf = async (): Promise<string | undefined> => (await getQueuedWorktreeRow(entry.id))?.generatedTitle
+    expect(await titleOf()).toBe(TITLE)
+
+    const edited = `${PROMPT}, and document the widget registry`
+    reply = () => Promise.resolve('Document widget registry')
+    await updateQueuedWorktree(entry.id, { ...settings, prompt: edited })
+    await reconcileGeneratedTitles()
+    await flush()
+    expect(inferences()).toHaveLength(2)
+    expect(await titleOf()).toBe('Document widget registry')
     expect(mockSetTitle).not.toHaveBeenCalled()
   })
 

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { discardDraftWorktree, listDraftWorktrees, saveDraftWorktree } from '#domain/worktrees'
+import { discardDraftWorktree, draftGeneratedTitle, listDraftWorktrees, saveDraftWorktree } from '#domain/worktrees'
+import { setDraftWorktreeTitle } from '#db'
 import { recordProject } from '#db/project-store'
 import { closeDb } from '#db/client'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
@@ -46,6 +47,19 @@ describe('discardDraftWorktree', () => {
     const { id } = await saveDraftWorktree('proj', SETTINGS)
     await discardDraftWorktree(id)
     await expect(discardDraftWorktree(id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+})
+
+describe('draftGeneratedTitle', () => {
+  it('answers a draft\'s generated title only for the prompt it describes', async () => {
+    const { id } = await saveDraftWorktree('proj', SETTINGS)
+    expect(await draftGeneratedTitle('proj', id, 'an idea')).toBeUndefined()
+    await setDraftWorktreeTitle(id, 'an idea', 'An idea')
+    expect(await draftGeneratedTitle('proj', id, 'an idea')).toBe('An idea')
+    expect(await draftGeneratedTitle('proj', id, 'an edited idea')).toBeUndefined()
+    expect(await draftGeneratedTitle('proj', id, undefined)).toBeUndefined()
+    expect(await draftGeneratedTitle('other', id, 'an idea')).toBeUndefined()
+    expect(await draftGeneratedTitle('proj', undefined, 'an idea')).toBeUndefined()
   })
 })
 

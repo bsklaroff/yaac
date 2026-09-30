@@ -38,6 +38,19 @@ export async function discardDraftWorktree(id: string): Promise<void> {
   if (!await deleteDraftWorktree(id)) throw new ServerError('NOT_FOUND', `draft worktree ${id} not found`)
 }
 
+/** The title generated for draft `id` while it still describes `prompt` —
+ *  what a worktree or entry created from the draft carries rather than being
+ *  titled again. */
+export async function draftGeneratedTitle(
+  projectSlug: string,
+  id: string | undefined,
+  prompt: string | undefined,
+): Promise<string | undefined> {
+  if (id === undefined || prompt === undefined) return undefined
+  const draft = (await listDraftWorktreeRows()).find((d) => d.id === id && d.projectSlug === projectSlug)
+  return draft?.prompt === prompt ? draft.generatedTitle : undefined
+}
+
 /** The snapshot feed: every project's drafts, oldest first. */
 export async function listDraftWorktrees(): Promise<DraftWorktreeEntry[]> {
   return (await listDraftWorktreeRows()).map(toEntry)

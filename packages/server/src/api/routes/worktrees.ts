@@ -38,6 +38,7 @@ import {
 import {
   discardDraftWorktree,
   discardQueuedWorktree,
+  draftGeneratedTitle,
   queueWorktree,
   runQueuedWorktree,
   saveDraftWorktree,
@@ -70,7 +71,7 @@ import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
 // is also what every route may ACCEPT. A larger bound would take a name in,
 // truncate it on the way to the table, and let two distinct long names
 // sharing a prefix resolve to one group.
-import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
+import { MAX_TITLE_LENGTH, normalizeTitle } from '@yaac/shared/titles'
 import {
   AGENT_MODES,
   AGENT_TOOLS,
@@ -188,6 +189,9 @@ export const worktreeApp = new Hono()
         const groupId = body.group === undefined
           ? undefined
           : (await resolveGroup(body.project, body.group, { create: true })).groupId
+        // Untitled, it keeps the title its draft was shown under.
+        const title = normalizeTitle(body.title ?? '')
+          || await draftGeneratedTitle(body.project, body.draftId, body.prompt)
         const created = await startWorktree({
           projectSlug: body.project,
           worktreeId,
@@ -197,7 +201,7 @@ export const worktreeApp = new Hono()
           ...(body.mode !== undefined ? { mode: body.mode } : {}),
           ...(body.branch !== undefined ? { branch: body.branch } : {}),
           ...(body.prompt !== undefined ? { prompt: body.prompt } : {}),
-          ...(body.title !== undefined ? { title: body.title } : {}),
+          ...(title ? { title } : {}),
           ...(groupId !== undefined ? { groupId } : {}),
           // A person asked for this; it becomes the project's next defaults,
           // from any client.
@@ -294,7 +298,8 @@ export const worktreeApp = new Hono()
     })),
     async (c) => {
       const { project, draftId: fromDraft, ...request } = c.req.valid('json')
-      const entry = await queueWorktree(project, request, 'user')
+      const entry = await queueWorktree(
+        project, request, 'user', await draftGeneratedTitle(project, fromDraft, request.prompt))
       await dropDraft(fromDraft)
       return c.json(entry)
     },

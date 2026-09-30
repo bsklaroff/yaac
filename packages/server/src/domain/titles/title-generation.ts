@@ -6,10 +6,10 @@
  * Eligibility is checked again by the write itself: a rename that lands
  * while the model is still running wins.
  *
- * Draft worktrees are titled from their prompt the same way, unless the user
- * gave one a title of their own. A generated draft title is cleared when its
- * prompt changes, so the write is conditional on the draft still holding the
- * prompt it was made from.
+ * Draft and queued worktrees are titled from their prompt the same way,
+ * unless the user gave one a title of their own. Such a generated title is
+ * cleared when its prompt changes, so the write is conditional on the draft
+ * or entry still holding the prompt it was made from.
  *
  * Each tick fires one detached task per eligible session — the tick body
  * never blocks on a model download or inference (those serialize inside
@@ -21,8 +21,10 @@
 import {
   firstAgentSessionsFor,
   listDraftWorktreeRows,
+  listQueuedWorktreeRows,
   listWorktreeRows,
   setDraftWorktreeTitle,
+  setQueuedWorktreeTitle,
   setWorktreeTitle,
 } from '#db'
 import { shouldGenerateTitle, summarizeTitle } from './title-summarizer'
@@ -33,7 +35,7 @@ import { env } from '@yaac/shared/env'
  *  task's first await so a concurrent tick can't double-fire. */
 const attempted = new Set<string>()
 
-/** Sweep live worktrees and drafts once, firing detached title-generation
+/** Sweep live worktrees, drafts and queued entries once, firing detached title-generation
  *  tasks. The candidates are the rows alone — a title and a founding prompt
  *  are both recorded state, so there is nothing to ask the runtime. */
 export async function reconcileGeneratedTitles(): Promise<void> {
@@ -48,11 +50,15 @@ export async function reconcileGeneratedTitles(): Promise<void> {
     if (prompt === undefined) continue
     void generateOnce(key, key, prompt, (t) => setWorktreeTitle(projectSlug, worktreeId, t, { ifUntitled: true }))
   }
-  // A draft is keyed on its prompt too: editing the prompt clears the title,
-  // and the new prompt is worth one attempt of its own.
+  // A draft or entry is keyed on its prompt too: editing the prompt clears
+  // the title, and the new prompt is worth one attempt of its own.
   for (const { id, prompt, title, generatedTitle } of await listDraftWorktreeRows()) {
     if (title !== undefined || generatedTitle !== undefined) continue
     void generateOnce(`draft:${id}:${prompt}`, `draft ${id}`, prompt, (t) => setDraftWorktreeTitle(id, prompt, t))
+  }
+  for (const { id, prompt, title, generatedTitle, launchWorktreeId } of await listQueuedWorktreeRows()) {
+    if (title !== undefined || generatedTitle !== undefined || launchWorktreeId !== undefined) continue
+    void generateOnce(`queued:${id}:${prompt}`, `queued ${id}`, prompt, (t) => setQueuedWorktreeTitle(id, prompt, t))
   }
 }
 

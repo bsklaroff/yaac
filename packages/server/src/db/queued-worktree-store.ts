@@ -43,6 +43,7 @@ export interface QueuedWorktreeRow {
   permissionMode: PermissionMode
   branch: string
   title?: string
+  generatedTitle?: string
   groupId?: string
   releasedAt?: Date
   launchWorktreeId?: string
@@ -78,6 +79,7 @@ function toRow(r: Row): QueuedWorktreeRow {
     permissionMode: r.permissionMode as PermissionMode,
     branch: r.branch,
     ...(r.title !== null ? { title: r.title } : {}),
+    ...(r.generatedTitle !== null ? { generatedTitle: r.generatedTitle } : {}),
     ...(r.groupId !== null ? { groupId: r.groupId } : {}),
     ...(r.releasedAt !== null ? { releasedAt: r.releasedAt } : {}),
     ...(r.launchWorktreeId !== null ? { launchWorktreeId: r.launchWorktreeId } : {}),
@@ -103,14 +105,21 @@ const notLaunching = isNull(queuedWorktrees.launchWorktreeId)
 /** Not launched yet — the filter on every read. */
 const pending = isNull(queuedWorktrees.launchedWorktreeId)
 
+/** `generatedTitle` is one made for the draft the entry came from. */
 export async function insertQueuedWorktree(
   projectSlug: string,
   parent: QueuedParent,
   settings: QueuedWorktreeSettings,
+  generatedTitle?: string,
 ): Promise<QueuedWorktreeRow> {
   const db = await getDb()
   const [row] = await db.insert(queuedWorktrees)
-    .values({ projectSlug, ...parentColumns(parent), ...settingsColumns(settings) })
+    .values({
+      projectSlug,
+      ...parentColumns(parent),
+      ...settingsColumns(settings),
+      generatedTitle: generatedTitle ?? null,
+    })
     .returning()
   notifyWorktreeListChanged()
   return toRow(row)
@@ -118,6 +127,7 @@ export async function insertQueuedWorktree(
 
 /**
  * Replace an entry's settings — all of them — and, when given, its parent.
+ * A changed prompt drops the generated title, which described the old one.
  * Answers the updated entry, or undefined when there is none to update — it
  * is gone, or mid-launch.
  *
@@ -135,9 +145,9 @@ export async function updateQueuedWorktree(
   const { parent, ...settings } = patch
   const db = await getDb()
   const rows = await db.transaction(async (tx) => {
+    const [self] = await tx.select().from(queuedWorktrees).where(eq(queuedWorktrees.id, id))
+    if (!self) return []
     if (parent !== undefined) {
-      const [self] = await tx.select().from(queuedWorktrees).where(eq(queuedWorktrees.id, id))
-      if (!self) return []
       const entries = (await tx.select().from(queuedWorktrees)
         .where(and(eq(queuedWorktrees.projectSlug, self.projectSlug), pending))).map(toRow)
       if (closesCycle(id, parent, entries)) {
@@ -145,7 +155,11 @@ export async function updateQueuedWorktree(
       }
     }
     return await tx.update(queuedWorktrees)
-      .set({ ...settingsColumns(settings), ...(parent !== undefined ? parentColumns(parent) : {}) })
+      .set({
+        ...settingsColumns(settings),
+        ...(parent !== undefined ? parentColumns(parent) : {}),
+        ...(self.prompt !== settings.prompt ? { generatedTitle: null } : {}),
+      })
       .where(and(eq(queuedWorktrees.id, id), notLaunching))
       .returning()
   })
@@ -209,6 +223,27 @@ export async function listQueuedWorktreeRows(projectSlug?: string): Promise<Queu
     .where(projectSlug === undefined ? pending : and(eq(queuedWorktrees.projectSlug, projectSlug), pending))
     .orderBy(asc(queuedWorktrees.createdAt))
   return rows.map(toRow)
+}
+
+/**
+ * Record a generated title — only while the entry is untitled, by the user
+ * or the model, still holds the prompt it was generated from, and is not
+ * mid-launch, so an edit that lands while the model runs is not labelled
+ * with a summary of what it replaced.
+ */
+export async function setQueuedWorktreeTitle(id: string, prompt: string, title: string): Promise<void> {
+  const db = await getDb()
+  const rows = await db.update(queuedWorktrees)
+    .set({ generatedTitle: title })
+    .where(and(
+      eq(queuedWorktrees.id, id),
+      eq(queuedWorktrees.prompt, prompt),
+      isNull(queuedWorktrees.title),
+      isNull(queuedWorktrees.generatedTitle),
+      notLaunching,
+    ))
+    .returning({ id: queuedWorktrees.id })
+  if (rows.length > 0) notifyWorktreeListChanged()
 }
 
 /**

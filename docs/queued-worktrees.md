@@ -104,7 +104,12 @@ default list. Moving the parent afterwards leaves the entry
 where it was filed; deleting its group returns it to the default list. A
 **title** is the user's own and never inherited; the worktree it launches
 carries it from the moment its row exists, so the title sweep never
-replaces it. Without one, that worktree is auto-titled as any other.
+replaces it. Without one, the title sweep (`reconcileGeneratedTitles`)
+titles the entry from its prompt as it does a draft (docs/draft-worktrees.md):
+one model attempt per prompt, written to the entry's `generatedTitle` only
+while it still holds that prompt and is not mid-launch. An edit that changes
+the prompt clears it, and the new prompt gets its own attempt. The sidebar
+shows it, and the worktree the entry launches carries it as its title.
 
 ## Launching
 

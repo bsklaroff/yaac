@@ -12,6 +12,7 @@ import {
   listQueuedWorktreeRows,
   releaseQueuedChildren,
   releaseQueuedWorktree,
+  setQueuedWorktreeTitle,
   updateQueuedWorktree,
   type QueuedParent,
   type QueuedWorktreeRow,
@@ -70,6 +71,37 @@ describe('queued worktree store', () => {
     await updateQueuedWorktree(child.id, settings)
     expect(await getQueuedWorktreeRow(child.id)).not.toHaveProperty('title')
     expect(await getQueuedWorktreeRow(child.id)).not.toHaveProperty('groupId')
+  })
+
+  it('keeps a generated title only for the untitled, unclaimed prompt it was made from', async () => {
+    const entry = await queue({ parentWorktreeId: 'wt-a' })
+    const titleOf = async (): Promise<string | undefined> => (await getQueuedWorktreeRow(entry.id))?.generatedTitle
+
+    // A write for a prompt the entry no longer holds is dropped.
+    await setQueuedWorktreeTitle(entry.id, 'stale', 'Stale title')
+    expect(await titleOf()).toBeUndefined()
+    await setQueuedWorktreeTitle(entry.id, 'next', 'Next up')
+    await setQueuedWorktreeTitle(entry.id, 'next', 'Second title')
+    expect(await titleOf()).toBe('Next up')
+
+    // An edit that keeps the prompt keeps the title; a new prompt drops it.
+    await updateQueuedWorktree(entry.id, { ...settings, branch: 'dev' })
+    expect(await titleOf()).toBe('Next up')
+    await updateQueuedWorktree(entry.id, { ...settings, prompt: 'edited' })
+    expect(await titleOf()).toBeUndefined()
+
+    // A user title, or a claimed launch, shuts the writer out.
+    await updateQueuedWorktree(entry.id, { ...settings, prompt: 'edited', title: 'Mine' })
+    await setQueuedWorktreeTitle(entry.id, 'edited', 'Generated')
+    expect(await titleOf()).toBeUndefined()
+    await updateQueuedWorktree(entry.id, { ...settings, prompt: 'edited' })
+    await claimQueuedLaunch(entry.id, 'wt-new')
+    await setQueuedWorktreeTitle(entry.id, 'edited', 'Generated')
+    expect(await titleOf()).toBeUndefined()
+
+    // An insert carries a draft's generated title.
+    const fromDraft = await insertQueuedWorktree('proj', { parentWorktreeId: 'wt-a' }, settings, 'From draft')
+    expect(fromDraft.generatedTitle).toBe('From draft')
   })
 
   it('claims a launch once, re-pointing its children at the worktree it becomes', async () => {

@@ -38,5 +38,7 @@ describe('queued helpers', () => {
   it('titles an entry by its own title, else its first non-blank line', () => {
     expect(queuedTitle({ prompt: '\n  fix it  \nthen more' })).toBe('fix it')
     expect(queuedTitle({ prompt: 'fix it', title: 'Named' })).toBe('Named')
+    expect(queuedTitle({ prompt: 'fix it', generatedTitle: 'Generated' })).toBe('Generated')
+    expect(queuedTitle({ prompt: 'fix it', title: 'Named', generatedTitle: 'Generated' })).toBe('Named')
   })
 })

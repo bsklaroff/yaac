@@ -184,7 +184,7 @@ try {
 
   // (4) Edit on click.
   await firstRow.getByText(first).click()
-  await page.getByText('Edit queued worktree').waitFor({ state: 'visible' })
+  await page.getByRole('button', { name: 'Save' }).waitFor({ state: 'visible' })
   await prompt.fill(`${first} edited`)
   await (await submitWhenReady('Save')).click()
   await prompt.waitFor({ state: 'detached' })
