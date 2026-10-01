@@ -59,10 +59,20 @@ export const claiming = new Set<string>()
  */
 export const inFlight = new Map<string, string>()
 
+/**
+ * Workspace ids of spares the reconciler is reaping. The pod stays listed
+ * and alive through the salvage, the Job delete and its grace period, so
+ * this stops a claim from taking it (the reap would then delete the
+ * claimed workspace) and later ticks from reaping it again (a second reap
+ * would exec into the dying pod and race the first one's checkout removal).
+ */
+export const reaping = new Set<string>()
+
 /** Test helper: reset all shared prewarm state. */
 export function clearPrewarmStateForTests(): void {
   claiming.clear()
   inFlight.clear()
+  reaping.clear()
 }
 
 export interface PrewarmSpawn {
@@ -274,7 +284,7 @@ export async function tryClaimPrewarmed(
         || b.createdAtMs - a.createdAtMs)
 
     for (const c of candidates) {
-      if (claiming.has(c.jobName)) continue
+      if (claiming.has(c.jobName) || reaping.has(c.workspaceId)) continue
       // No await between the check and the add.
       claiming.add(c.jobName)
       reserved = c.jobName

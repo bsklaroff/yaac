@@ -15,6 +15,7 @@ import {
   claiming,
   computePrewarmPlan,
   inFlight,
+  reaping,
 } from './prewarm'
 import { deleteSpareWorkspaceRow, getTimeZone, getWorkspaceRow, listProjectRows } from '#db'
 import { serverLog } from '#log'
@@ -51,6 +52,8 @@ export async function reconcilePrewarmPool(snapshot?: RuntimeSnapshot): Promise<
   } catch {
     return
   }
+  // A spare already being reaped is gone as far as the pool is concerned.
+  pods = pods.filter((p) => !reaping.has(p.workspaceId))
 
   const { toSpawn, toReap } = computePrewarmPlan(pods, poolSize, {
     inFlight,
@@ -66,12 +69,14 @@ export async function reconcilePrewarmPool(snapshot?: RuntimeSnapshot): Promise<
     // flagged row goes last, so the orphan sweep can still recognize and
     // retry what is left. Not awaited, so a slow teardown does not stall the
     // tick.
+    reaping.add(target.workspaceId)
     void cleanupWorkspace(target)
       .then((podGone) => podGone && deleteWorkspaceState(target.projectSlug, target.workspaceId))
       .then(async (removed) => {
         if (removed) await deleteSpareWorkspaceRow(target.projectSlug, target.workspaceId)
       })
       .catch(() => { /* see gcOrphanSpares in cleanup.ts */ })
+      .finally(() => { reaping.delete(target.workspaceId) })
   }
 
   for (const spawn of toSpawn) {
