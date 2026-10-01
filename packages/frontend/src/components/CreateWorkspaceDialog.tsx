@@ -20,7 +20,7 @@ import { useUiStore, type CreateWorkspaceDialogOpts } from '#lib/store'
 import {
   AGENT_TOOLS,
   PERMISSION_MODE_COPY,
-  supportedPermissionModes,
+  SUPPORTED_PERMISSION_MODES,
   toolSupportsPermissionMode,
 } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
@@ -360,7 +360,7 @@ function CreateWorkspaceForm({
   const model = picks.model ?? fromSeed?.model ?? base.model
   const mode = picks.mode ?? fromSeed?.mode ?? base.mode
   const seededPosture = fromSeed?.permissionMode !== undefined
-    && toolSupportsPermissionMode(tool, fromSeed.permissionMode, mode)
+    && toolSupportsPermissionMode(tool, fromSeed.permissionMode)
     ? fromSeed.permissionMode
     : undefined
   const permissionMode = picks.permissionMode ?? seededPosture ?? base.permissionMode
@@ -450,7 +450,7 @@ function CreateWorkspaceForm({
     : modelQuery !== null ? 'Pick a model from the list'
     : branchQuery !== null ? 'Pick a branch from the list'
     : branchUnverified ? 'Loading branches…'
-    : !toolSupportsPermissionMode(tool, permissionMode, mode) ? 'Pick a permission mode this UI offers'
+    : !toolSupportsPermissionMode(tool, permissionMode) ? 'Pick a permission mode this agent offers'
     : storesEntry && prompt.trim() === '' ? 'A queued workspace needs a prompt'
     : storesEntry && model === '' ? 'Pick a model'
     : storesEntry && branchValue === '' ? 'Pick a branch'
@@ -761,16 +761,9 @@ function CreateWorkspaceForm({
                 onChange={(e) => setPicks((p) => ({ ...p, permissionMode: e.target.value as PermissionMode }))}
                 className={SELECT}
               >
-                {/* List the terminal UI's modes (a superset of chat's);
-                    ones the chosen UI lacks are disabled. */}
-                {supportedPermissionModes(tool, 'tui').map((m) => {
-                  const offered = toolSupportsPermissionMode(tool, m, mode)
-                  return (
-                    <option key={m} value={m} disabled={!offered}>
-                      {PERMISSION_MODE_COPY[m]}{offered ? '' : ' (terminal only)'}
-                    </option>
-                  )
-                })}
+                {SUPPORTED_PERMISSION_MODES[tool].map((m) => (
+                  <option key={m} value={m}>{PERMISSION_MODE_COPY[m]}</option>
+                ))}
               </select>
             </Row>
             {permissionMode === 'bypass' && driver === 'containerless' && (
@@ -784,17 +777,9 @@ function CreateWorkspaceForm({
                 onChange={(e) => setPicks((p) => ({ ...p, mode: e.target.value as AgentMode }))}
                 className={SELECT}
               >
-                {(['tui', 'acp'] as const).map((m) => {
-                  // An ACP adapter may lack a mode its CLI has (codex-acp
-                  // has no plan mode).
-                  const offered = toolSupportsPermissionMode(tool, permissionMode, m)
-                  return (
-                    <option key={m} value={m} disabled={!offered}>
-                      {MODE_COPY[m]}
-                      {offered ? '' : ` (no ${PERMISSION_MODE_COPY[permissionMode].toLowerCase()})`}
-                    </option>
-                  )
-                })}
+                {(['tui', 'acp'] as const).map((m) => (
+                  <option key={m} value={m}>{MODE_COPY[m]}</option>
+                ))}
               </select>
             </Row>
           </>

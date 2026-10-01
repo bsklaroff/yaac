@@ -577,7 +577,7 @@ function model(id: string, name: unknown, description: unknown): AcpModel {
 /**
  * The model a session reports (see `sessionModels`), with the adapter's
  * display name when given: claude's adapter reports a picker alias
- * (`opus[1m]`) that only its name (`Opus 5.5`) ties to a recognizable model.
+ * (`opus`) that only its name (`Opus 5.5`) ties to a recognizable model.
  */
 export function sessionModel(state: unknown): { id: string; name?: string } | undefined {
   const s = sessionModels(state)

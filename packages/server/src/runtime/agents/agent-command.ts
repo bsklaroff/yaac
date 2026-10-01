@@ -119,14 +119,15 @@ interface OpencodeConfig {
 
 /**
  * The permission actions opencode knows, read off the pinned binary
- * (`@opencode/cli@2.0.12`): its tools plus the wildcard and
+ * (`@opencode/cli@2.0.21`): its tools plus the wildcard and
  * `external_directory`. Unknown actions are accepted silently and match
  * nothing, so `agent-command.test.ts` checks every action used below against
  * this list. Re-read it when the pin in dockerfiles/Dockerfile.tools moves.
  */
 export const OPENCODE_ACTIONS: readonly string[] = [
-  '*', 'edit', 'glob', 'grep', 'question', 'read', 'shell', 'skill', 'subagent',
-  'webfetch', 'websearch', 'execute', 'external_directory',
+  '*', 'browser', 'edit', 'glob', 'grep', 'question', 'read', 'shell', 'skill',
+  'subagent', 'webfetch', 'websearch', 'execute', 'external_directory',
+  'opencode_list_mcp_resources', 'opencode_read_mcp_resource',
 ]
 
 const rule = (action: string, effect: OpencodeRule['effect']): OpencodeRule =>

@@ -278,26 +278,6 @@ describe('CreateWorkspaceDialog', () => {
     expect(modelInput().value).toBe('Claude Opus 4.8')
   })
 
-  // codex's ACP adapter has no plan or manual mode. Each field disables the
-  // options the other rules out, rather than changing it.
-  it('disables the postures and UIs that rule each other out', async () => {
-    vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
-    await openReady()
-    fireEvent.change(select('Agent'), { target: { value: 'codex' } })
-
-    fireEvent.change(select('UI'), { target: { value: 'acp' } })
-    expect(option('Permissions', 'Read-only').disabled).toBe(true)
-    expect(option('Permissions', 'Accept').disabled).toBe(false)
-    // Not codex postures in either UI, so not offered at all.
-    expect(option('Permissions', 'Manual')).toBeUndefined()
-    expect(option('Permissions', 'Plan')).toBeUndefined()
-
-    fireEvent.change(select('UI'), { target: { value: 'tui' } })
-    fireEvent.change(select('Permissions'), { target: { value: 'read-only' } })
-    expect(option('UI', 'Chat').disabled).toBe(true)
-    expect(select('Permissions').value).toBe('read-only')
-  })
-
   it('searches models by name or id, and Enter picks before it creates', async () => {
     await openReady()
 

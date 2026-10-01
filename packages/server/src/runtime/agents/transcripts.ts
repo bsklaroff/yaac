@@ -57,8 +57,8 @@ const under = (sub: string, rel: string): string => sub === '' ? rel : `${sub}/$
  * The directory claude files a conversation under for a cwd: every
  * non-alphanumeric character replaced with `-` (`/workspace` becomes
  * `-workspace`), and past 200 characters truncated and suffixed with a hash
- * of the whole path. Matches claude 2.1.282's `cx` function (string hash
- * `(h << 5) - h + c | 0`); a test pins it.
+ * of the whole path. Matches claude 2.1.286's project-dir function (string
+ * hash `(h << 5) - h + c | 0`); a test pins it.
  */
 export function claudeProjectDirName(cwd: string): string {
   const munged = cwd.replace(/[^a-zA-Z0-9]/g, '-')

@@ -34,7 +34,7 @@ export interface AcpAdapterProfile {
   /**
    * How the model is set: `env` before launch, or `set_config_option` (the
    * `model` config option) after the handshake. Never `session/set_model`:
-   * opencode v2 removed it and pi-acp 0.0.33 answers "Method not found",
+   * opencode v2 removed it and pi-acp 0.0.34 answers "Method not found",
    * while both advertise `model` in `configOptions`.
    */
   modelVia: 'env' | 'set_config_option'
@@ -61,7 +61,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    *
    * The model comes only from `ANTHROPIC_MODEL`; the adapter ignores argv,
    * so `--model` would be silently dropped. It reports the picker's alias
-   * (`opus[1m]`) where one exists.
+   * (`opus`) where one exists.
    *
    * ACP's `default` mode is "Manual". `dontAsk` (deny anything not
    * pre-approved) is never selected by yaac and reads as `manual`.
@@ -85,18 +85,19 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    * Configured only through env. The model goes in `CODEX_CONFIG`: there is
    * no `--model`, and `session/set_model` ids carry an effort suffix
    * (`gpt-5.2-codex[medium]`) that `MODEL_RE` excludes. `NO_BROWSER=1` stops
-   * the ChatGPT login from opening a browser.
+   * the ChatGPT login from opening a browser. `CODEX_PATH` makes it run the
+   * pinned CLI on PATH rather than the copy it bundles.
    *
-   * Its three modes collapse codex's approval × sandbox grid, and none is a
-   * read-only sandbox (its `read-only` is yaac's `accept-edits`), so yaac's
-   * `read-only` is not available under acp. Its default is `agent`, weaker
-   * than `accept-edits`, which is why a failed `session/set_mode` is shown
-   * in the pane rather than only logged.
+   * Its four modes are presets of codex's approval × sandbox grid, one per
+   * posture the TUI offers. Its default is `agent`, weaker than
+   * `accept-edits`, which is why a failed `session/set_mode` is shown in the
+   * pane rather than only logged.
    */
   codex: {
     argv: [ACP_ADAPTERS.codex.binary],
     env: (spec) => [
       'NO_BROWSER=1',
+      'CODEX_PATH=codex',
       ...(spec.model !== undefined
         ? [envJsonAssignment('CODEX_CONFIG', { model: spec.model })]
         : []),
@@ -104,7 +105,8 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
     modeIds: {
       bypass: 'agent-full-access',
       auto: 'agent',
-      'accept-edits': 'read-only',
+      'accept-edits': 'workspace-write',
+      'read-only': 'read-only',
     },
     modelVia: 'env',
     forwardAsksUnderBypass: false,
@@ -114,12 +116,14 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    * `opencode acp` is built in, so no separate package can drift from the
    * CLI. Posture uses the same `OPENCODE_CONFIG_CONTENT` document as the TUI.
    *
-   * Verified against the pinned build, acp ignores two parts of it:
-   *  - `default_agent`, so `plan` is selected over the protocol. The
-   *    permission rules still travel in the config and supply most of what
-   *    `plan` means (the agent itself only adds `edit deny`).
-   *  - `model`, so the model is set with `session/set_config_option`
-   *    (`session/set_model` was removed in v2).
+   * A new acp session reports the server defaults (the `build` agent, the
+   * catalog's first model) and applies the config's `default_agent` and
+   * `model` only at the first prompt. So `plan` and the model are set over
+   * the protocol, which holds and reports them from the start. The
+   * permission rules still travel in the config and supply most of what
+   * `plan` means (the agent itself only adds `edit deny`). The model goes
+   * through `session/set_config_option`, since v2 removed
+   * `session/set_model`.
    */
   opencode: {
     argv: [ACP_ADAPTERS.opencode.binary, 'acp'],
@@ -135,8 +139,8 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    * the `model` config option. This matters: pi's model id names the
    * provider, which decides the api-key var the egress proxy swaps.
    *
-   * Its `availableModes` are thinking levels (`off`…`xhigh`), not postures,
-   * so pi is `bypass`-only. Its asks are extension questions, so they are
+   * Its `availableModes` are the model's thinking levels (`off`, `low`, …),
+   * not postures, so pi is `bypass`-only. Its asks are extension questions, so they are
    * forwarded even under `bypass`.
    */
   pi: {
@@ -149,8 +153,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
 }
 
 /**
- * The adapter profile for a tool. Every tool has one; a create can still be
- * refused for a posture the adapter lacks (`ACP_SUPPORTED_PERMISSION_MODES`).
+ * The adapter profile for a tool. Every tool has one.
  */
 export function acpAdapterFor(tool: AgentTool): AcpAdapterProfile {
   return PROFILES[tool]

@@ -66,7 +66,6 @@ export function useCreateDefaults(projectSlug: string | null): CreateDefaults {
       const resolved = resolveToolCreateDefaults({
         driver: driver ?? 'k8s',
         tool,
-        agentMode: mode,
         remembered,
         ...(provider !== undefined ? { provider } : {}),
         defaultModel,

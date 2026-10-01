@@ -46,7 +46,7 @@ const SHIPPED = [
 describe('Dockerfile.default', () => {
   it('ships the pinned upstream base and the session toolbelt, and installs no engine', async () => {
     const content = await read('Dockerfile.default')
-    expect(content).toContain('FROM docker.io/ubuntu:24.04')
+    expect(content).toContain('FROM docker.io/ubuntu:26.04')
     expect(content).toContain('gh')
     expect(content).toContain('tmux')
     // podman belongs only in the nestable layer. In the base image it could

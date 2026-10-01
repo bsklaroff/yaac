@@ -105,7 +105,7 @@ import {
   launchablePermissionMode,
   resolveToolCreateDefaults,
   SELF_NAMING_TOOLS,
-  supportedPermissionModes,
+  SUPPORTED_PERMISSION_MODES,
   toolSupportsPermissionMode,
   type AgentMode,
   type AgentTool,
@@ -558,23 +558,18 @@ export function launchPermissionMode(args: {
   driver: DriverKind
   requested?: PermissionMode
   resume?: boolean
-  agentMode?: AgentMode
 }): PermissionMode {
   const { tool, driver, requested } = args
-  const agentMode = args.agentMode ?? 'tui'
   const fallback = defaultPermissionMode(driver, tool)
   if (requested === undefined) return fallback
   if (args.resume === true) {
-    return launchablePermissionMode(tool, requested, agentMode)
+    return launchablePermissionMode(tool, requested)
   }
-  if (!toolSupportsPermissionMode(tool, requested, agentMode)) {
-    const supported = supportedPermissionModes(tool, agentMode).join(', ')
-    // Name acp when it is the reason: e.g. codex has a read-only sandbox, but
-    // its ACP adapter has no mode for it.
-    const where = agentMode === 'acp' ? ' under acp' : ''
+  if (!toolSupportsPermissionMode(tool, requested)) {
+    const supported = SUPPORTED_PERMISSION_MODES[tool].join(', ')
     throw new ServerError(
       'VALIDATION',
-      `${tool} has no "${requested}" permission mode${where}; it supports: ${supported}`,
+      `${tool} has no "${requested}" permission mode; it supports: ${supported}`,
     )
   }
   return requested
@@ -622,7 +617,6 @@ export async function resolveCreate(
   const fallback = resolveToolCreateDefaults({
     driver,
     tool,
-    agentMode: mode,
     remembered,
     ...(provider !== undefined ? { provider } : {}),
     defaultModel: defaultModelFor(tool, provider),
@@ -632,7 +626,7 @@ export async function resolveCreate(
     tool,
     ...(model !== '' ? { model } : {}),
     permissionMode: request.permissionMode !== undefined
-      ? launchPermissionMode({ tool, driver, requested: request.permissionMode, agentMode: mode })
+      ? launchPermissionMode({ tool, driver, requested: request.permissionMode })
       : fallback.permissionMode,
     mode,
   }
@@ -730,7 +724,6 @@ export async function createWorkspace(
   const permissionMode = launchPermissionMode({
     tool,
     driver: runtime.kind,
-    agentMode: mode,
     resume: options.resume === true,
     ...(options.permissionMode !== undefined ? { requested: options.permissionMode } : {}),
   })
@@ -1143,8 +1136,8 @@ export async function createWorkspace(
   env.push('PI_SKIP_VERSION_CHECK=1')
   // Containerless: one pnpm store per project, so each workspace's
   // `node_modules` hardlinks into it instead of holding a full copy. Set
-  // under both names since pnpm 11 reads only `pnpm_config_` and 10.x only
-  // `npm_config_`. Pods cannot share one: pnpm 11's SQLite (WAL) index needs
+  // under both names since pnpm 11+ reads only `pnpm_config_` and 10.x only
+  // `npm_config_`. Pods cannot share one: pnpm's SQLite (WAL) index needs
   // all writers on one kernel. A pod keeps its store in its `moduleDirs`.
   if (runtime.kind === 'containerless') {
     env.push(`pnpm_config_store_dir=${CACHED_PACKAGES_CONTAINER_DIR}/pnpm-store`)

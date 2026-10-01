@@ -25,7 +25,7 @@ import {
 import { builtinSkillsDir, sharedSkillRoots } from '@yaac/server/domain/skills'
 import { defaultModelFor } from '@yaac/server/domain/auth'
 import { AGENT_PACKAGES, agentPackagePrefix } from '@yaac/shared/tool-install'
-import { ACP_ADAPTERS, AGENT_TOOLS, toolSupportsPermissionMode } from '@yaac/shared/types'
+import { ACP_ADAPTERS, AGENT_TOOLS } from '@yaac/shared/types'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { FALLBACK_MODELS, PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import type { AgentSessionEntry, AgentTool, ServerSnapshot } from '@yaac/shared/types'
@@ -159,7 +159,7 @@ const ACP_MODES: Record<AgentTool, { current: string; available: string[] }> = {
   claude: { current: 'default', available: ['default', 'acceptEdits', 'plan', 'bypassPermissions'] },
   // codex-acp's real default. Getting it wrong would change whether
   // `applyPermissionMode` sends a switch at all.
-  codex: { current: 'agent', available: ['read-only', 'agent', 'agent-full-access'] },
+  codex: { current: 'agent', available: ['read-only', 'workspace-write', 'agent', 'agent-full-access'] },
   opencode: { current: 'build', available: ['build', 'plan'] },
   // pi advertises thinking levels, which yaac never sets.
   pi: { current: 'medium', available: ['off', 'medium', 'high'] },
@@ -1397,13 +1397,14 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
       model: 'claude-opus-5-5',
     },
     {
-      // Not `auto`, which is codex-acp's default and sends no switch.
-      // `read-only` exercises the switch, where failing would leave the
-      // conversation looser than asked.
+      // codex's strictest posture, a real read-only sandbox in codex-acp.
+      // It is a switch away from the adapter's `agent` default, where
+      // failing would leave the conversation looser than asked.
+      // (`accept-edits` → `workspace-write` is pinned in drivers.test.ts.)
       tool: 'codex',
-      posture: 'accept-edits',
+      posture: 'read-only',
       modeId: 'read-only',
-      launch: ['NO_BROWSER=1', '-- codex-acp'],
+      launch: ['NO_BROWSER=1', 'CODEX_PATH=codex', '-- codex-acp'],
       model: 'e2e-model',
     },
     {
@@ -1479,6 +1480,12 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
       // advertises a matching mode.
       const setMode = relayed.find((m) => m.method === 'session/set_mode')
       expect(setMode?.params?.modeId).toBe(modeId)
+      // The row keeps the posture asked for; a refused switch would record
+      // the adapter's looser default instead.
+      const after = await (await fetch(`${origin()}/api/workspace/list`)).json() as {
+        workspaces: Array<{ workspaceId: string; permissionMode?: string }>
+      }
+      expect(after.workspaces.find((w) => w.workspaceId === id)?.permissionMode).toBe(posture)
 
       // Check the launch command; a wrong variable would be silently ignored.
       const startCmd = await tmux(id, 'display', '-p', '-t', `yaac:${tool}`, '#{pane_start_command}')
@@ -1639,21 +1646,6 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
       await fs.rm(marker, { force: true })
     }
   }, 120_000)
-
-  it('refuses a posture the adapter has no mode for, before provisioning anything', async () => {
-    // codex-acp has no mode matching yaac's `read-only`; launching a looser
-    // one instead would be unsafe.
-    const before = (await listWorkspaces()).length
-    const { exitCode, stderr, stdout } = await runYaac(
-      serverEnv, 'workspace', 'create', SLUG,
-      '--tool', 'codex', '--mode', 'acp', '--permission-mode', 'read-only',
-    )
-    expect(exitCode).not.toBe(0)
-    expect(`${stdout}${stderr}`).toMatch(/read-only.*permission mode under acp/)
-    expect((await listWorkspaces()).length).toBe(before)
-    // The codex TUI supports it; the limit is the adapter's.
-    expect(toolSupportsPermissionMode('codex', 'read-only', 'tui')).toBe(true)
-  }, 60_000)
 })
 
 // Replaces the shared server, so it runs after the cases above.

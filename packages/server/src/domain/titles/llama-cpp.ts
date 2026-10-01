@@ -4,8 +4,9 @@
  * GGUF models into `<dataDir>/models`, and runs one-shot greedy completions
  * with `llama-completion` (a short-lived subprocess per call).
  *
- * The tag is pinned because T5 encoder-decoder support is not tested
- * upstream and has regressed silently; re-check title quality when bumping.
+ * The tag is pinned because upstream does not test the imatrix quant the
+ * title model uses, and it has broken silently before. Re-check title quality
+ * when bumping (docs/workspace-title-model-eval.md).
  *
  * After extraction a smoke check runs the binary, since the archive links
  * against a system OpenMP runtime it doesn't ship. Without the check, such a
@@ -20,7 +21,7 @@ import { serverLog } from '#log'
 import { serverLocalPath } from '@yaac/shared/paths'
 
 /** Pinned llama.cpp release tag; CPU archives exist for linux/macOS × x64/arm64. */
-export const LLAMA_CPP_TAG = 'b9940'
+export const LLAMA_CPP_TAG = 'b11313'
 
 /** The system library the ubuntu CPU archive links against but doesn't ship.
  *  Without it, no binary in the release starts. */

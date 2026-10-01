@@ -82,7 +82,7 @@ describe('getCodexFirstUserMessage', () => {
     expect(await getCodexFirstUserMessage(at(jsonlPath))).toBe('fix the login bug')
   })
 
-  it('returns the message of a completed UserMessage item, as codex 0.156.1 writes it', async () => {
+  it('returns the message of a completed UserMessage item, as codex 0.159.3 writes it', async () => {
     await writeEntry({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] } })
     await writeEntry({ type: 'event_msg', payload: { type: 'item_completed', item: { type: 'AgentMessage', content: [{ type: 'Text', text: 'hi' }] } } })
     await writeEntry({
@@ -185,7 +185,7 @@ describe('getCodexPermissionMode', () => {
     return jsonl
   }
 
-  // Profiles codex 0.156.1 writes: full access is `disabled`; a managed
+  // Profiles codex 0.159.3 writes: full access is `disabled`; a managed
   // profile is workspace-write if it grants a write, else read-only.
   const FULL = { type: 'disabled' }
   const WORKSPACE = {

@@ -9,7 +9,7 @@ ARG BASE_IMAGE
 # stage once gVisor (google/gvisor#13532) or bubblewrap
 # (containers/bubblewrap#745) is fixed and codex bundles the fix; the check
 # in test/e2e/codex-sandbox.test.ts fails when that happens.
-FROM docker.io/ubuntu:24.04 AS bwrap
+FROM docker.io/ubuntu:26.04 AS bwrap
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl gcc libc6-dev libcap-dev meson ninja-build patch pkg-config xz-utils
 RUN curl -fsSLO https://github.com/containers/bubblewrap/releases/download/v0.13.0/bubblewrap-0.13.0.tar.xz && \
@@ -65,18 +65,14 @@ COPY --from=bwrap /bubblewrap-0.13.0/_build/bwrap /usr/bin/bwrap
 # not rebuild the slow base image.
 USER root
 RUN ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x86_64; fi && \
-    curl -fsSL "https://github.com/neovim/neovim/releases/download/v0.12.4/nvim-linux-${ARCH}.tar.gz" | \
+    curl -fsSL "https://github.com/neovim/neovim/releases/download/v0.12.5/nvim-linux-${ARCH}.tar.gz" | \
     tar -xz -C /usr/local --strip-components=1 && \
     ln -sf /usr/local/bin/nvim /usr/local/bin/vi && \
     ln -sf /usr/local/bin/nvim /usr/local/bin/vim
 # fd for pi's file-search tool. Without it on PATH, pi downloads the latest
 # fd release from GitHub on first use. Keep in step with fd's latest release.
-RUN ARCH="$(dpkg --print-architecture)" && \
-    case "$ARCH" in amd64) ARCH=x86_64 ;; arm64) ARCH=aarch64 ;; esac && \
-    FD_VERSION=10.4.2 && \
-    curl -fsSL "https://github.com/sharkdp/fd/releases/download/v${FD_VERSION}/fd-v${FD_VERSION}-${ARCH}-unknown-linux-gnu.tar.gz" | \
-    tar -xz -C /usr/local/bin --strip-components=1 --wildcards '*/fd' && \
-    chmod +x /usr/local/bin/fd
+RUN curl -fsSL "https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-$(uname -m)-unknown-linux-gnu.tar.gz" | \
+    tar -xz -C /usr/local/bin --strip-components=1 --wildcards '*/fd'
 USER yaac
 ENV EDITOR=nvim
 
@@ -91,23 +87,23 @@ ENV EDITOR=nvim
 # that drops a permission-posture flag does not fail the build: it kills the
 # agent at launch or runs it in another posture (docs/permission-modes.md).
 # Re-verify postures against the new binary before moving a pin.
-RUN umask 002 && npm install -g chrome-devtools-mcp@0.24.0
+RUN umask 002 && npm install -g chrome-devtools-mcp@1.10.1
 # Bump with codex-acp below, which drives this CLI's app-server. Its sandbox
 # must keep using /usr/bin/bwrap (test/e2e/codex-sandbox.test.ts checks).
-RUN umask 002 && npm install -g @openai/codex@0.156.1
+RUN umask 002 && npm install -g @openai/codex@0.159.3
 # opencode 2 (`@opencode/cli`). The workspace env sets
 # OPENCODE_DISABLE_AUTOUPDATE=1 (domain/workspaces/create.ts) so it stays on
 # the pin. The 1.x line (`opencode-ai`) from 1.0.143 on never renders in our
 # tmux: it waits for a terminal query tmux never answers
 # (anomalyco/opencode#29802). Check the pane still draws when bumping.
-RUN umask 002 && npm install -g @opencode/cli@2.0.12
+RUN umask 002 && npm install -g @opencode/cli@2.0.21
 # pi. pi-acp (below) depends on pi's unstable `--mode rpc` event shapes, so
 # bump the two together and re-run the acp e2e tier.
-RUN umask 002 && npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.84.4
+RUN umask 002 && npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.99.2
 # Claude Code via its installer. The installer creates some dirs without
 # group write (~/.claude/sessions is 0700), so fix modes in the same layer.
 # If one of these paths stops existing, `find` fails the build.
-RUN umask 002 && curl -fsSL https://claude.ai/install.sh | bash -s 2.1.282 && \
+RUN umask 002 && curl -fsSL https://claude.ai/install.sh | bash -s 2.1.286 && \
     find /home/yaac/.claude* /home/yaac/.local/share/claude \
       ! -perm -g+w -exec chmod g=u {} +
 # ACP adapters for yaac's `acp` mode (docs/agent-modes.md), launched under
@@ -116,22 +112,23 @@ RUN umask 002 && curl -fsSL https://claude.ai/install.sh | bash -s 2.1.282 && \
 # that drops one silently runs in its default. A unit test ties each pin here
 # to the version that table was verified against. opencode's adapter is
 # `opencode acp`, part of the CLI above.
-RUN umask 002 && npm install -g @agentclientprotocol/claude-agent-acp@0.81.2
-# Runs the codex CLI above (`codex app-server`), so bump the two together
-# within codex-acp's `@openai/codex` dependency range. --ignore-scripts skips
-# fetching a platform binary the image already has; the unused second codex
-# copy from its optionalDependency still installs.
-RUN umask 002 && npm install -g --ignore-scripts @agentclientprotocol/codex-acp@1.13.1
+RUN umask 002 && npm install -g @agentclientprotocol/claude-agent-acp@0.84.0
+# Runs the codex CLI above (`codex app-server`, via the CODEX_PATH its launch
+# sets), so bump the two together within codex-acp's `@openai/codex`
+# dependency range. Its own codex copy still installs, unused.
+RUN umask 002 && npm install -g --ignore-scripts @agentclientprotocol/codex-acp@2.1.0
 # Runs the pinned pi CLI above (`pi --mode rpc`).
-RUN umask 002 && npm install -g --ignore-scripts pi-acp@0.0.33
+RUN umask 002 && npm install -g --ignore-scripts pi-acp@0.0.34
 
 # codex system config. The session discovery hook is passed at launch
 # (`codexLaunchConfig` in packages/server/src/runtime/agents/codex.ts).
-# requirements.toml keeps the hook engine on and disables the codex_apps MCP
-# server, whose handshake fails (openai/codex#16550). config.toml skips the
-# startup update check so unattended sessions do not stall on it.
+# requirements.toml keeps the hook engine on, disables the codex_apps MCP
+# server, whose handshake fails (openai/codex#16550), and stops a codex
+# started by hand from spawning the shared background server, whose hooks
+# would report to the first launcher's pane. config.toml skips the startup
+# update check so unattended sessions do not stall on it.
 USER root
 RUN mkdir -p /etc/codex \
   && printf 'check_for_update_on_startup = false\n' > /etc/codex/config.toml \
-  && printf '[features]\nhooks = true\napps = false\n' > /etc/codex/requirements.toml
+  && printf '[features]\nhooks = true\napps = false\ndaemon_auto_start = false\n' > /etc/codex/requirements.toml
 USER yaac

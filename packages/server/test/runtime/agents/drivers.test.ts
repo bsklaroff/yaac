@@ -17,7 +17,6 @@ import type { StreamChild, WorkspaceDriver } from '#drivers/contract'
 import type { AcpConversation } from '#runtime/agents/acp-client'
 import type { AcpEventInit } from '@yaac/shared/acp'
 import {
-  ACP_SUPPORTED_PERMISSION_MODES,
   AGENT_TOOLS,
   SUPPORTED_PERMISSION_MODES,
 } from '@yaac/shared/types'
@@ -221,21 +220,18 @@ describe('agentDriver', () => {
     expect(withModel).not.toContain('--model')
   })
 
-  it('offers a mode id for exactly the postures create will let through', () => {
-    // Create refuses postures outside the ACP-supported set, and the adapter
-    // gets a mode id for the rest. Postures without a mode id are carried
-    // another way (opencode's launch config) or not at all (pi).
+  it('offers a mode id only for postures create will let through', () => {
+    // Postures without a mode id are carried another way (opencode's launch
+    // config) or not at all (pi).
     for (const tool of AGENT_TOOLS) {
-      const withModeId = SUPPORTED_PERMISSION_MODES[tool].filter(
-        (m) => _ACP_PROFILES[tool].modeIds[m] !== undefined,
-      )
-      // No mode id for a posture create would refuse.
-      const supported = ACP_SUPPORTED_PERMISSION_MODES[tool]
-      expect(withModeId.filter((m) => !supported.includes(m)), tool).toEqual([])
+      const modeIdPostures = Object.keys(_ACP_PROFILES[tool].modeIds) as PermissionMode[]
+      expect(modeIdPostures.filter((m) => !SUPPORTED_PERMISSION_MODES[tool].includes(m)), tool).toEqual([])
     }
-    // The postures carried some other way, pinned explicitly.
-    expect(SUPPORTED_PERMISSION_MODES.claude.filter((m) => _ACP_PROFILES.claude.modeIds[m] === undefined))
-      .toEqual([])
+    // claude and codex name a mode for every posture they have.
+    for (const tool of ['claude', 'codex'] as const) {
+      expect(SUPPORTED_PERMISSION_MODES[tool].filter((m) => _ACP_PROFILES[tool].modeIds[m] === undefined), tool)
+        .toEqual([])
+    }
     expect(_ACP_PROFILES.opencode.modeIds).toEqual({ plan: 'plan' })
     expect(_ACP_PROFILES.pi.modeIds).toEqual({})
   })
@@ -255,7 +251,7 @@ describe('agentDriver', () => {
     // codex-acp takes no flags: the model goes through the environment, and
     // browser login is disabled since a workspace cannot open one.
     const codex = spec('codex')
-    expect(codex).toContain('NO_BROWSER=1 node /opt/yaac/acpd/main.js')
+    expect(codex).toContain('NO_BROWSER=1 CODEX_PATH=codex node /opt/yaac/acpd/main.js')
     expect(codex).toContain('-- codex-acp')
     expect(codex).not.toContain('CODEX_CONFIG')
     expect(spec('codex', { model: 'gpt-5.2-codex' }))
@@ -1372,21 +1368,21 @@ describe('agentDriver', () => {
         sessionId: 'acp-1',
         modes: {
           currentModeId: 'agent',
-          availableModes: [{ id: 'read-only' }, { id: 'agent' }, { id: 'agent-full-access' }],
+          availableModes: [{ id: 'read-only' }, { id: 'workspace-write' }, { id: 'agent' }, { id: 'agent-full-access' }],
         },
       },
     })}\n`)
 
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/set_mode')).toBe(true))
     const setMode = stream.sent().find((m) => m.method === 'session/set_mode')!
-    expect(setMode.params).toEqual({ sessionId: 'acp-1', modeId: 'read-only' })
+    expect(setMode.params).toEqual({ sessionId: 'acp-1', modeId: 'workspace-write' })
     stream.feed(`${JSON.stringify({
       jsonrpc: '2.0', id: setMode.id, error: { code: -32603, message: 'mode unavailable' },
     })}\n`)
 
     await vi.waitFor(() => expect(events.some((e) => e.type === 'error')).toBe(true))
     const message = (events.find((e) => e.type === 'error') as { message: string }).message
-    expect(message).toContain('read-only')
+    expect(message).toContain('workspace-write')
     // Names the mode actually in effect.
     expect(message).toContain('agent')
     // The conversation survives.

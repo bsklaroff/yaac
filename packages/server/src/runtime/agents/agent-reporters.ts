@@ -17,8 +17,8 @@ import type { ConfinedRoot } from '#lib/confined-fs'
  * opencode's run one at a time, in order, since pane options are
  * last-write-wins.
  *
- * Verified against claude 2.1.282, codex-cli 0.156.1, pi 0.84.4 and
- * @opencode/cli 2.0.12.
+ * Verified against claude 2.1.286, codex-cli 0.159.3, pi 0.99.2 and
+ * @opencode/cli 2.0.21.
  */
 
 /**

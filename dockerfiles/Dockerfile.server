@@ -8,17 +8,17 @@
 #
 # Built by `yaac cluster install` on the CLI's machine, never in-cluster
 # (docs/trust-split-builds.md), and tagged by the context's content hash.
-FROM docker.io/ubuntu:24.04
+FROM docker.io/ubuntu:26.04
 
 # Keep in step with Dockerfile.default's Node version.
-ARG NODE_VERSION=22.22.2
+ARG NODE_VERSION=24.21.0
 # The server uses kubectl for cluster writes and execs. Keep it within one minor
 # version of the kind node's Kubernetes.
-ARG KUBECTL_VERSION=v1.37.0
+ARG KUBECTL_VERSION=v1.37.1
 # Baked so auto-titles need no download, since a pod's $HOME does not
 # survive a roll. The builder passes LLAMA_CPP_TAG from
 # domain/titles/llama-cpp.ts.
-ARG LLAMA_CPP_TAG=b9940
+ARG LLAMA_CPP_TAG=b11313
 
 # catatonit: node is PID 1 here and would never reap the orphans of the
 # processes the server spawns (kubectl, git). libgomp1: the llama.cpp

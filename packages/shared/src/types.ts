@@ -67,10 +67,10 @@ export const AGENT_MODES: readonly AgentMode[] = ['tui', 'acp']
  * CLI's version.
  */
 export const AGENT_CLIS = {
-  claude: { package: '@anthropic-ai/claude-code', version: '2.1.282' },
-  codex: { package: '@openai/codex', version: '0.156.1' },
-  opencode: { package: '@opencode/cli', version: '2.0.12' },
-  pi: { package: '@earendil-works/pi-coding-agent', version: '0.84.4' },
+  claude: { package: '@anthropic-ai/claude-code', version: '2.1.286' },
+  codex: { package: '@openai/codex', version: '0.159.3' },
+  opencode: { package: '@opencode/cli', version: '2.0.21' },
+  pi: { package: '@earendil-works/pi-coding-agent', version: '0.99.2' },
 } as const satisfies Record<AgentTool, { package: string; version: string }>
 
 /**
@@ -89,13 +89,13 @@ export const ACP_ADAPTERS = {
   claude: {
     binary: 'claude-agent-acp',
     package: '@agentclientprotocol/claude-agent-acp',
-    verified: '0.81.2',
+    verified: '0.84.0',
     needsCli: false,
   },
   codex: {
     binary: 'codex-acp',
     package: '@agentclientprotocol/codex-acp',
-    verified: '1.13.1',
+    verified: '2.1.0',
     needsCli: true,
   },
   opencode: {
@@ -107,7 +107,7 @@ export const ACP_ADAPTERS = {
   pi: {
     binary: 'pi-acp',
     package: 'pi-acp',
-    verified: '0.0.33',
+    verified: '0.0.34',
     needsCli: true,
   },
 } as const satisfies Record<
@@ -168,7 +168,9 @@ function ranked(...modes: PermissionMode[]): readonly PermissionMode[] {
 }
 
 /**
- * Which postures each tool can be launched in (TUI mode).
+ * Which postures each tool can be launched in. The TUI takes them as CLI
+ * flags; in ACP mode they are the adapter's session modes, which cover the
+ * same set (runtime/agents/acp-adapters.ts).
  *
  * - claude: all but `read-only`, one `--permission-mode` value each.
  * - codex: four, as an approval-policy × sandbox pair (plus
@@ -185,59 +187,21 @@ export const SUPPORTED_PERMISSION_MODES: Record<AgentTool, readonly PermissionMo
   pi: ranked('bypass'),
 }
 
-/**
- * Postures per tool in ACP mode, where they are the adapter's advertised
- * session modes rather than CLI flags. Always a subset of the TUI list (a
- * test checks).
- *
- * - claude's adapter has a mode for each of its five.
- * - codex-acp has three: `read-only` (despite the name, codex's default
- *   preset, i.e. `accept-edits`), `agent` (`auto`) and `agent-full-access`
- *   (`bypass`). None matches yaac's `read-only`.
- * - opencode's ACP modes are its agents (`build`, `plan`); the other
- *   postures come from `OPENCODE_PERMISSION` at launch, as in the TUI.
- * - pi has no permission system.
- */
-export const ACP_SUPPORTED_PERMISSION_MODES: Record<AgentTool, readonly PermissionMode[]> = {
-  claude: SUPPORTED_PERMISSION_MODES.claude,
-  codex: ranked('bypass', 'auto', 'accept-edits'),
-  opencode: SUPPORTED_PERMISSION_MODES.opencode,
-  pi: ranked('bypass'),
+export function toolSupportsPermissionMode(tool: AgentTool, mode: PermissionMode): boolean {
+  return SUPPORTED_PERMISSION_MODES[tool].includes(mode)
 }
 
 /**
- * The postures `tool` can be launched in when driven in `agentMode`.
- */
-export function supportedPermissionModes(
-  tool: AgentTool,
-  agentMode: AgentMode = 'tui',
-): readonly PermissionMode[] {
-  return agentMode === 'acp'
-    ? ACP_SUPPORTED_PERMISSION_MODES[tool]
-    : SUPPORTED_PERMISSION_MODES[tool]
-}
-
-export function toolSupportsPermissionMode(
-  tool: AgentTool,
-  mode: PermissionMode,
-  agentMode: AgentMode = 'tui',
-): boolean {
-  return supportedPermissionModes(tool, agentMode).includes(mode)
-}
-
-/**
- * The most permissive posture `tool` offers under `agentMode` that is no
- * looser than `mode`. Undefined when it has nothing that strict (a spawn
- * refuses then), or when this build doesn't rank `mode`, which would
- * otherwise match `bypass`.
+ * The most permissive posture `tool` offers that is no looser than `mode`.
+ * Undefined when it has nothing that strict (a spawn refuses then), or when
+ * this build doesn't rank `mode`, which would otherwise match `bypass`.
  */
 export function nearestPermissionMode(
   tool: AgentTool,
   mode: PermissionMode,
-  agentMode: AgentMode = 'tui',
 ): PermissionMode | undefined {
   if (!isRankedPermissionMode(mode)) return undefined
-  return supportedPermissionModes(tool, agentMode).find((m) => !morePermissive(m, mode))
+  return SUPPORTED_PERMISSION_MODES[tool].find((m) => !morePermissive(m, mode))
 }
 
 /**
@@ -246,13 +210,9 @@ export function nearestPermissionMode(
  * strictest. Never the driver default (`bypass` in a container), so a
  * recorded restriction is kept as far as the tool allows.
  */
-export function launchablePermissionMode(
-  tool: AgentTool,
-  mode: PermissionMode,
-  agentMode: AgentMode = 'tui',
-): PermissionMode {
-  const supported = supportedPermissionModes(tool, agentMode)
-  return nearestPermissionMode(tool, mode, agentMode) ?? supported[supported.length - 1]
+export function launchablePermissionMode(tool: AgentTool, mode: PermissionMode): PermissionMode {
+  const supported = SUPPORTED_PERMISSION_MODES[tool]
+  return nearestPermissionMode(tool, mode) ?? supported[supported.length - 1]
 }
 
 /** User-facing labels for each posture. */
@@ -300,14 +260,13 @@ export interface ToolCreateDefaults {
 export function resolveToolCreateDefaults(args: {
   driver: DriverKind
   tool: AgentTool
-  agentMode: AgentMode
   remembered: ToolCreateDefaults | undefined
   /** opencode / pi: the provider the stored credential authenticates against. */
   provider?: string
   /** What the tool runs when nothing is remembered (`defaultModelFor`). */
   defaultModel: string
 }): { model: string; permissionMode: PermissionMode } {
-  const { driver, tool, agentMode, remembered, provider } = args
+  const { driver, tool, remembered, provider } = args
   const posture = remembered?.permissionMode
   const model = remembered?.model
   const qualified = tool === 'opencode' || tool === 'pi'
@@ -316,7 +275,7 @@ export function resolveToolCreateDefaults(args: {
   return {
     model: modelFits ? model : args.defaultModel,
     permissionMode: posture !== undefined
-      ? launchablePermissionMode(tool, posture, agentMode)
+      ? launchablePermissionMode(tool, posture)
       : defaultPermissionMode(driver, tool),
   }
 }

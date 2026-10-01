@@ -95,7 +95,7 @@ export async function decideSpawn(
     ?? await (deps.lastToolFn ?? lastTool)(request.callerProjectSlug)
     ?? 'claude'
   const uiMode = request.uiMode ?? 'tui'
-  const posture = agentPermissionMode(tool, uiMode, request.callerPermissionMode, request.permissionMode)
+  const posture = agentPermissionMode(tool, request.callerPermissionMode, request.permissionMode)
   if (!posture.ok) return posture
   // Last, so a refused spawn creates no group.
   const groupId = request.group === undefined
@@ -153,7 +153,6 @@ export async function decideSpawn(
  */
 export function agentPermissionMode(
   tool: AgentTool,
-  mode: AgentMode,
   ceiling: PermissionMode,
   requested: PermissionMode | undefined,
   inherited: PermissionMode = ceiling,
@@ -163,7 +162,6 @@ export function agentPermissionMode(
   if (!isRankedPermissionMode(ceiling)) {
     return { ok: false, error: `this workspace's recorded permission mode '${ceiling}' is not one this server knows` }
   }
-  const where = mode === 'acp' ? ' under acp' : ''
   if (requested !== undefined) {
     // Otherwise an agent in `plan` could escape it via a sibling.
     if (morePermissive(requested, ceiling)) {
@@ -174,17 +172,17 @@ export function agentPermissionMode(
           + `(${HIERARCHY})`,
       }
     }
-    return toolSupportsPermissionMode(tool, requested, mode)
+    return toolSupportsPermissionMode(tool, requested)
       ? { ok: true, permissionMode: requested }
-      : { ok: false, error: `${tool} has no '${requested}' permission mode${where}` }
+      : { ok: false, error: `${tool} has no '${requested}' permission mode` }
   }
   const cap = isRankedPermissionMode(inherited) && morePermissive(ceiling, inherited) ? inherited : ceiling
-  const stepped = nearestPermissionMode(tool, cap, mode)
+  const stepped = nearestPermissionMode(tool, cap)
   return stepped !== undefined
     ? { ok: true, permissionMode: stepped }
     : {
       ok: false,
-      error: `${tool} has no permission mode${where} at or below this workspace's own ('${ceiling}')`,
+      error: `${tool} has no permission mode at or below this workspace's own ('${ceiling}')`,
     }
 }
 

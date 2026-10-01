@@ -8,7 +8,7 @@
     "url": "git+https://github.com/bsklaroff/yaac.git"
   },
   "type": "module",
-  "packageManager": "pnpm@11.1.2",
+  "packageManager": "pnpm@11.28.2",
   "bin": {
     "yaac": "dist/cli.js"
   },

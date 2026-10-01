@@ -2011,12 +2011,12 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       {
         // Not `auto`: codex-acp already defaults to `agent`, so no
         // `session/set_mode` would be sent. `accept-edits` maps to
-        // `read-only`, where a failed switch would leave the conversation
-        // looser than requested.
+        // `workspace-write`, where a failed switch would leave the
+        // conversation looser than requested.
         tool: 'codex',
         posture: 'accept-edits',
-        launch: ['NO_BROWSER=1', 'codex-acp'],
-        modeId: 'read-only',
+        launch: ['NO_BROWSER=1', 'CODEX_PATH=codex', 'codex-acp'],
+        modeId: 'workspace-write',
         // A failed mode switch is reported in the pane because this default
         // is looser than `accept-edits`; a release changing it must be caught.
         defaultModeId: 'agent',
@@ -2075,34 +2075,19 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         }
       }, 600_000)
 
-    it('refuses a posture the adapter has no mode for, before provisioning anything', async () => {
-      // codex-acp offers three modes and yaac's `read-only` is not one of
-      // them. Refusing is safer than silently using a looser mode.
-      await setupProject('acp-unsupported')
-      const podsBefore = (await listWorkspacePods('acp-unsupported')).length
-      const bad = await runYaac(
-        serverEnv, 'workspace', 'create', 'acp-unsupported',
-        '--tool', 'codex', '--mode', 'acp', '--permission-mode', 'read-only',
-      )
-      expect(bad.exitCode).not.toBe(0)
-      expect(bad.stdout + bad.stderr).toMatch(/codex has no "read-only" permission mode under acp/)
-      // Refused before anything is created. The codex TUI accepts this
-      // posture (covered by unit tests).
-      expect((await listWorkspacePods('acp-unsupported')).length).toBe(podsBefore)
-    }, 120_000)
-
     // A posture the tool lacks would otherwise be a launch flag that silently
     // does nothing.
     it('refuses a posture the tool does not have', async () => {
-      const podsBefore = (await listWorkspacePods('acp-unsupported')).length
+      await setupProject('no-posture')
+      const podsBefore = (await listWorkspacePods('no-posture')).length
       // pi has no permission system, so no `plan`.
       const noPlan = await runYaac(
-        serverEnv, 'workspace', 'create', 'acp-unsupported',
+        serverEnv, 'workspace', 'create', 'no-posture',
         '--tool', 'pi', '--permission-mode', 'plan',
       )
       expect(noPlan.exitCode).not.toBe(0)
       expect(noPlan.stdout + noPlan.stderr).toMatch(/pi has no "plan" permission mode/)
-      expect((await listWorkspacePods('acp-unsupported')).length).toBe(podsBefore)
+      expect((await listWorkspacePods('no-posture')).length).toBe(podsBefore)
     }, 120_000)
 
     // Under acp the posture is not a launch flag but a `session/set_mode`
@@ -2139,7 +2124,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     // commander rejects values outside the enum before calling the server.
     it('rejects an unknown --permission-mode at the CLI', async () => {
       const bad = await runYaac(
-        serverEnv, 'workspace', 'create', 'acp-unsupported', '--permission-mode', 'yolo',
+        serverEnv, 'workspace', 'create', 'no-posture', '--permission-mode', 'yolo',
       )
       expect(bad.exitCode).not.toBe(0)
       expect(bad.stdout + bad.stderr).toMatch(/Allowed choices are bypass, auto, accept-edits/)

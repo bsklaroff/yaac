@@ -229,7 +229,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   // One pnpm store per workspace: pnpm 11 indexes the store in a SQLite WAL
   // database, which cannot be shared across pods. Put it inside the root
   // node_modules when that is a module dir, so pnpm hardlinks rather than
-  // copies; otherwise on the pod's own disk. Set under both names: pnpm 11
+  // copies; otherwise on the pod's own disk. Set under both names: pnpm 11+
   // reads only `pnpm_config_` for this key, pnpm 10 only `npm_config_`.
   const rootModules = `${k8sWorkspacePaths().workspaceDir}/node_modules`
   const store = spec.moduleDirs.includes(rootModules)

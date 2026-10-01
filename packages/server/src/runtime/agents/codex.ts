@@ -18,7 +18,7 @@ interface CodexEntry {
 }
 
 /**
- * A user turn's text: a `user_message` event, or (codex-cli 0.156.1) an
+ * A user turn's text: a `user_message` event, or (codex-cli 0.159.3) an
  * `item_completed` event with a `UserMessage` item. Never a user-role
  * `response_item`, which also carries injected bootstrap context
  * (AGENTS.md).
@@ -62,7 +62,7 @@ export async function getCodexFirstUserMessage(file: SandboxFile): Promise<strin
 /**
  * The items codex builds its title from: its default pair plus the model.
  * Idle reads `workspace | GPT-5.6-Sol`, a turn `⠙ workspace | GPT-5.6-Sol`,
- * and `/model` updates the last segment immediately (codex-cli 0.156.1).
+ * and `/model` updates the last segment immediately (codex-cli 0.159.3).
  * This is codex's only model-change signal: no hook fires, and the rollout
  * does not exist before the first turn.
  *
@@ -73,7 +73,9 @@ export const CODEX_TITLE_ITEMS = ['activity', 'project-name', 'model'] as const
 
 /**
  * `-c` settings that trust the repository root (codex keys folder trust on
- * it) and skip the startup update check.
+ * it), skip the startup update check, and keep codex from starting its
+ * shared background server (which `-c` overrides rule out anyway, with a
+ * startup warning).
  *
  * With `--dangerously-bypass-hook-trust` (`buildAgentCmd`) codex shows no
  * startup screen ("Trust this folder?", "Hooks need review", "Update
@@ -85,6 +87,7 @@ export const CODEX_TITLE_ITEMS = ['activity', 'project-name', 'model'] as const
 export function codexLaunchConfig(workspaceDir?: string): string[] {
   return [
     'check_for_update_on_startup=false',
+    'features.daemon_auto_start=false',
     ...(workspaceDir !== undefined
       ? [`projects={${JSON.stringify(workspaceDir)}={trust_level="trusted"}}`]
       : []),
@@ -147,7 +150,7 @@ export interface CodexPosture {
  * says more: `thread_settings_applied` is written as soon as
  * `/permissions` or Shift+Tab changes anything, and `turn_context` at every
  * turn, both naming the approval policy, reviewer and permission profile
- * (codex-cli 0.156.1). The newer wins.
+ * (codex-cli 0.159.3). The newer wins.
  *
  * The profile is read rather than `sandbox_policy` (only in
  * `turn_context`): `disabled` is full access; a managed profile is
@@ -238,14 +241,14 @@ function codexPosture(s: CodexThreadSettings): PermissionMode | undefined {
 /**
  * The thread id from a rollout filename,
  * `rollout-<YYYY-MM-DDTHH-MM-SS>-<thread id>.jsonl` (also `.jsonl.zst`;
- * codex-cli 0.156.1). Undefined for other files.
+ * codex-cli 0.159.3). Undefined for other files.
  */
 export function codexRolloutThreadId(fileName: string): string | undefined {
   return /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+?)\.jsonl(\.zst)?$/.exec(fileName)?.[1]
 }
 
 /** How much of a rollout's head to read for its first line (`session_meta`
- *  holds ~20 KB of base instructions in 0.156.1). */
+ *  holds ~20 KB of base instructions in 0.159.3). */
 const ROLLOUT_META_BYTES = 256 * 1024
 
 /**

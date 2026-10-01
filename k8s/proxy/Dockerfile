@@ -1,4 +1,4 @@
-FROM docker.io/node:22.22.2-slim
+FROM docker.io/node:24.21.0-slim
 # ca-certificates provides the public roots for the combined trust bundle
 # (see ca-bundle.ts).
 RUN apt-get update \

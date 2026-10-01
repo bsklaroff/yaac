@@ -74,6 +74,8 @@ describe('buildAgentCmd', () => {
         '-c', 'tui.terminal_title=["activity","project-name","model"]',
         // Otherwise an outdated codex opens an "Update available" screen.
         '-c', 'check_for_update_on_startup=false',
+        // A shared background server would run yaac's hooks outside the pane.
+        '-c', 'features.daemon_auto_start=false',
         // Trust the folder and run yaac's hooks without asking, so no startup
         // screen swallows the pasted prompt.
         '-c', 'projects={"/data/wt"={trust_level="trusted"}}',

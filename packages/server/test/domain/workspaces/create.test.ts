@@ -74,14 +74,12 @@ describe('launchPermissionMode', () => {
       expect(launch({ resume: true, driver, tool: 'codex', requested: 'manual' })).toBe('read-only')
     }
     expect(launch({ resume: true, tool: 'claude', requested: 'read-only' })).toBe('plan')
-    // Nothing that strict under the ACP adapter: its strictest mode.
-    expect(launch({ resume: true, tool: 'codex', requested: 'read-only', agentMode: 'acp' })).toBe('accept-edits')
     // pi has nothing but bypass.
     expect(launch({ resume: true, tool: 'pi', requested: 'plan' })).toBe('bypass')
     // A mode this build does not know gets the strictest, never bypass.
     const unranked = 'dontAsk' as PermissionMode
     expect(launch({ resume: true, tool: 'codex', requested: unranked })).toBe('read-only')
-    expect(launch({ resume: true, tool: 'claude', requested: unranked, agentMode: 'acp' })).toBe('plan')
+    expect(launch({ resume: true, tool: 'claude', requested: unranked })).toBe('plan')
   })
 })
 
@@ -126,10 +124,9 @@ describe('resolveCreate', () => {
       tool: 'codex', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'tui',
     })
     // The spare pool warms what the webapp would send, including the
-    // remembered agent mode. codex's ACP adapter has nothing as strict as
-    // `plan`, so its strictest mode is used, not bypass.
+    // remembered agent mode.
     expect(await resolveCreate('p', {}, { modeFromMemory: true })).toEqual({
-      tool: 'codex', model: 'gpt-5.5', permissionMode: 'accept-edits', mode: 'acp',
+      tool: 'codex', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'acp',
     })
     // Each agent has its own remembered settings.
     expect(await resolveCreate('p', { tool: 'claude' })).toMatchObject({ model: 'claude-sonnet-5' })
@@ -145,10 +142,10 @@ describe('resolveCreate', () => {
       .toEqual({ model: 'claude-sonnet-5', permissionMode: 'plan' })
   })
 
-  it('refuses a named posture the agent lacks under the named mode', async () => {
+  it('refuses a named posture the agent lacks, under either UI', async () => {
     await expect(resolveCreate('p', { tool: 'pi', permissionMode: 'plan' })).rejects.toThrow(/pi has no "plan"/)
     await expect(resolveCreate('p', { tool: 'codex', permissionMode: 'plan', mode: 'acp' }))
-      .rejects.toThrow(/under acp/)
+      .rejects.toThrow(/codex has no "plan"/)
   })
 })
 

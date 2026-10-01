@@ -417,7 +417,6 @@ async function resolveSettings(
   if (source !== 'user') {
     const resolved = agentPermissionMode(
       tool,
-      mode ?? 'tui',
       source.ceiling,
       request.permissionMode,
       parent.permissionMode ?? source.ceiling,
@@ -426,7 +425,7 @@ async function resolveSettings(
     permissionMode = resolved.permissionMode
   } else if (
     permissionMode === undefined && inherited !== undefined
-    && toolSupportsPermissionMode(tool, inherited, mode ?? 'tui')
+    && toolSupportsPermissionMode(tool, inherited)
   ) {
     permissionMode = inherited
   }
