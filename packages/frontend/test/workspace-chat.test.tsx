@@ -166,6 +166,26 @@ describe('WorkspaceChat drafts', () => {
   })
 })
 
+describe('WorkspaceChat width', () => {
+  afterEach(() => {
+    cleanup()
+    useUiStore.getState().setChatFullWidth(false)
+  })
+
+  it('toggles between a centered column and full width, and remembers the choice', () => {
+    show()
+    const column = (): HTMLElement => box().closest('.rounded-xl')?.parentElement as HTMLElement
+    expect(column().className).toContain('max-w-5xl')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Full-width chat' }))
+    expect(column().className).not.toContain('max-w-')
+    expect(localStorage.getItem('yaac.chatfullwidth.v1')).toBe('1')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Center chat' }))
+    expect(column().className).toContain('max-w-5xl')
+  })
+})
+
 /**
  * Images are sent inline in a message. jsdom decodes no images, so the
  * downscale's bitmap is faked; an image this small is sent unchanged.

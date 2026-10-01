@@ -4,7 +4,7 @@ import { AcpTranscript, groupEvents } from '#components/AcpTranscript'
 import { useComposerMenu } from '#components/ComposerMenu'
 import { imageBytes, imageFiles, prepareImage, toAcpImage, useImageSrc } from '#lib/attachments'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
-import { AttachImageIcon, CloseIcon, LoadingIcon, SendIcon, StopIcon } from '#lib/icons'
+import { AttachImageIcon, CloseIcon, LoadingIcon, NarrowIcon, SendIcon, StopIcon, WidenIcon } from '#lib/icons'
 import { chatDraftKey, useUiStore } from '#lib/store'
 import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
 import type { AcpContent, AcpImage } from '@yaac/shared/acp'
@@ -44,6 +44,9 @@ export function WorkspaceChat({
   const { events, busy, connected, send } = useAcpStream(workspaceId, agentSessionId)
   const setChatDraft = useUiStore((s) => s.setChatDraft)
   const setChatSent = useUiStore((s) => s.setChatSent)
+  const fullWidth = useUiStore((s) => s.chatFullWidth)
+  const setFullWidth = useUiStore((s) => s.setChatFullWidth)
+  const column = fullWidth ? 'w-full' : COLUMN
   /**
    * The draft is local state mirrored into the store, so typing needs no
    * store round trip. The pane is keyed by conversation, so seeding once on
@@ -224,7 +227,7 @@ export function WorkspaceChat({
 
   return (
     <div
-      className="flex h-full w-full flex-col bg-bg"
+      className="@container flex h-full w-full flex-col bg-bg"
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes('Files')) e.preventDefault()
       }}
@@ -245,7 +248,7 @@ export function WorkspaceChat({
             {connected ? 'No messages yet — say something.' : 'Connecting to the agent…'}
           </div>
         )}
-        <div className={COLUMN}>
+        <div className={column}>
           <AcpTranscript groups={groups} busy={busy} onAnswerPermission={answerPermission} />
           {busy && !awaitingPermission && (
             <div className="mt-3 flex items-center gap-1.5 text-xs text-text-dim">
@@ -259,8 +262,8 @@ export function WorkspaceChat({
         </div>
       </div>
 
-      <div className="px-3 pb-3">
-        <div className={COLUMN}>
+      <div className="px-4 pb-3">
+        <div className={column}>
           {!connected && (
             <div className="mb-1.5 px-1 text-xs text-text-faint">
               Disconnected — the agent keeps working; this pane reattaches automatically.
@@ -327,6 +330,15 @@ export function WorkspaceChat({
               >
                 <AttachImageIcon size={16} />
               </button>
+              <button
+                type="button"
+                aria-label={fullWidth ? 'Center chat' : 'Full-width chat'}
+                title={fullWidth ? 'Center chat' : 'Full-width chat'}
+                onClick={() => setFullWidth(!fullWidth)}
+                className="mr-auto hidden rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text @min-[66rem]:block"
+              >
+                {fullWidth ? <NarrowIcon size={16} /> : <WidenIcon size={16} />}
+              </button>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -370,8 +382,10 @@ export function WorkspaceChat({
 }
 
 /** The conversation and composer share one centered column, so lines stay
- *  readable in a wide pane. */
-const COLUMN = 'mx-auto w-full max-w-3xl'
+ *  readable in a wide pane, unless the user picks full width. The width
+ *  toggle shows only in a pane wider than this cap plus the `px-4` padding
+ *  (66rem), since in a narrower one both widths look the same. */
+const COLUMN = 'mx-auto w-full max-w-5xl'
 
 /** An image attached to the draft, removable until the message is sent. */
 function DraftImage({ image, onRemove }: { image: AcpImage; onRemove?: () => void }): JSX.Element {
