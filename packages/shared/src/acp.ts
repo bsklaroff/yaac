@@ -49,6 +49,10 @@ export interface AcpToolCall {
    *  place. */
   toolCallId: string
   title: string
+  /** Set for a call that runs a shell command, whose title is then the
+   *  command line. Adapters also file non-shell calls (codex's MCP tools)
+   *  under `execute`, so the kind alone does not say this. */
+  shell?: true
   kind: AcpToolKind
   status: AcpToolStatus
   /** Output produced so far — a diff, command output, or free text. */

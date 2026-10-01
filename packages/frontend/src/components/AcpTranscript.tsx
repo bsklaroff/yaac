@@ -324,7 +324,9 @@ function ToolRow({
   const edits = useMemo(() => groupDiffs(diffs), [diffs])
   const body = toolTextOf(call.content)
   const isRead = call.kind === 'read'
-  const hasContent = body !== '' || edits.length > 0
+  /** The row truncates a command, so a call that runs one always expands to
+   *  show it in full above any output. */
+  const hasContent = call.shell === true || body !== '' || edits.length > 0
   /** The user's expand/collapse choice, or `null` if they haven't made one.
    *  Edits default open. The default is derived each render because a call
    *  arrives empty and gains content in later updates. */
@@ -371,6 +373,16 @@ function ToolRow({
       </DisclosureRow>
       {open && (
         <div className="mt-1 mb-1.5 ml-[18px] max-h-96 overflow-auto rounded-lg border border-hairline bg-surface">
+          {call.shell === true && (
+            /* Capped on its own so a long command leaves its output in view. */
+            <pre className={clsx(
+              'max-h-40 overflow-auto px-2.5 py-1.5 font-mono text-[11px] leading-snug whitespace-pre-wrap',
+              'break-all text-text',
+              body !== '' && 'border-b border-hairline',
+            )}>
+              <span className="select-none text-text-faint">$ </span>{call.title}
+            </pre>
+          )}
           {edits.map((group, i) => (
             <div key={i} className={clsx(i > 0 && 'border-t border-hairline')}>
               <EditGroupView group={group} showPath={edits.length > 1} />
