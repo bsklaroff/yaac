@@ -49,6 +49,8 @@ describe('patchWheelPacing', () => {
     const reports: Report[] = []
     let handler: ((ev: WheelEvent) => boolean) | null = null
     let mouseActive = true
+    // Events default to 200 ms apart, far enough for each to be a notch.
+    let now = 0
     const coreMouseService = {
       get areMouseEventsActive(): boolean {
         return mouseActive
@@ -80,7 +82,7 @@ describe('patchWheelPacing', () => {
       reports,
       setMouseActive: (a) => { mouseActive = a },
       wheel: (deltaY, opts = {}) => handler?.({
-        deltaY, ctrlKey: false, altKey: false, shiftKey: false, ...opts,
+        deltaY, deltaMode: 0, timeStamp: (now += 200), ctrlKey: false, altKey: false, shiftKey: false, ...opts,
       } as WheelEvent),
     }
   }
@@ -116,10 +118,10 @@ describe('patchWheelPacing', () => {
     expect(f.wheel(100)).toBe(true)
   })
 
-  it('emits one wheel report per qualifying event, on the next frame', () => {
+  it('emits one wheel report per trackpad event, on the next frame', () => {
     const f = fakeTerm()
     patchWheelPacing(f.term)
-    f.wheel(-100)
+    f.wheel(-10)
     expect(f.reports).toHaveLength(0) // nothing until the frame flushes
     raf.step()
     expect(f.reports).toHaveLength(1)
@@ -127,6 +129,30 @@ describe('patchWheelPacing', () => {
     // 1-based coord fixup happens inside the real triggerMouseEvent; the
     // patch hands over the raw report coords.
     expect(f.reports[0]).toMatchObject({ col: 3, row: 4 })
+  })
+
+  it('emits extra reports for a mouse-wheel notch', () => {
+    const f = fakeTerm()
+    patchWheelPacing(f.term)
+    f.wheel(100) // pixel-mode notch
+    raf.step()
+    expect(f.reports).toHaveLength(2)
+    f.wheel(3, { deltaMode: 1 }) // line-mode notch (Firefox)
+    raf.step()
+    expect(f.reports).toHaveLength(4)
+    expect(f.reports.every((r) => r.action === 1)).toBe(true) // DOWN
+  })
+
+  it('treats a stream of large pixel deltas as a trackpad fling', () => {
+    const f = fakeTerm()
+    patchWheelPacing(f.term)
+    // A fling arrives at the frame rate; only its first event, with nothing
+    // before it, can pass for a notch.
+    for (let i = 0; i < 20; i++) {
+      f.wheel(-60, { timeStamp: 10_000 + i * 16 })
+      raf.step()
+    }
+    expect(f.reports).toHaveLength(21)
   })
 
   it('paces a burst across frames and drops backlog beyond the cap', () => {
@@ -145,8 +171,8 @@ describe('patchWheelPacing', () => {
   it('a reversal cancels queued scroll in the old direction', () => {
     const f = fakeTerm()
     patchWheelPacing(f.term)
-    for (let i = 0; i < 4; i++) f.wheel(100)
-    for (let i = 0; i < 4; i++) f.wheel(-100)
+    for (let i = 0; i < 3; i++) f.wheel(100)
+    for (let i = 0; i < 3; i++) f.wheel(-100)
     raf.step()
     raf.step()
     expect(f.reports).toHaveLength(0) // netted out before any flush
