@@ -1,4 +1,4 @@
-import { useMemo, useState, type JSX } from 'react'
+import { useMemo, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { CodeView } from '#components/CodeView'
 import { DiffView } from '#components/DiffView'
@@ -7,10 +7,14 @@ import { useImageSrc } from '#lib/attachments'
 import { codeLines, unfence } from '#lib/code'
 import { diffStats, diffTextPair, type DiffLine } from '#lib/diff'
 import { languageForFence, languageForPath } from '#lib/highlight'
-import { WarningIcon, ChevronIcon } from '#lib/icons'
+import {
+  ChevronIcon, DeleteIcon, DoneIcon, FailedIcon, FileTextIcon, InProgressIcon, LoadingIcon, MoveIcon,
+  InterruptedIcon, PendingIcon, PlanIcon, PreviewIcon, RenameIcon, SearchIcon, TerminalIcon, ThinkingIcon, ToolIcon,
+  WarningIcon, type Icon,
+} from '#lib/icons'
 import type {
   AcpContent, AcpDiff, AcpEvent, AcpImage, AcpPermissionOption, AcpPlanEntry, AcpToolCall,
-  AcpToolContent,
+  AcpToolContent, AcpToolKind,
 } from '@yaac/shared/acp'
 
 /**
@@ -30,7 +34,8 @@ export type Group =
   | { kind: 'user'; seq: number; text: string; images: AcpImage[] }
   | { kind: 'agent'; seq: number; text: string; images: AcpImage[] }
   | { kind: 'thought'; seq: number; text: string; images: AcpImage[] }
-  | { kind: 'tool'; seq: number; call: AcpToolCall }
+  /** `interrupted` marks a call whose turn is over though it never finished. */
+  | { kind: 'tool'; seq: number; call: AcpToolCall; interrupted?: true }
   | { kind: 'plan'; seq: number; entries: AcpPlanEntry[] }
   | { kind: 'error'; seq: number; message: string }
   | { kind: 'turn-end'; seq: number; stopReason: string }
@@ -53,10 +58,19 @@ function toolTextOf(content: AcpToolContent[] | undefined): string {
   return textOf((content ?? []).filter((c): c is AcpContent => c.type !== 'diff'))
 }
 
+/** Whether a call has yet to complete or fail. claude's adapter keeps a
+ *  running call `pending` until it finishes, so `pending` counts too. */
+function unfinished(call: AcpToolCall): boolean {
+  return call.status === 'pending' || call.status === 'in_progress'
+}
+
 /**
  * Fold the event stream into renderable groups:
  * - consecutive text chunks of one kind merge into one group;
  * - a tool call's updates replace its group in place, keeping the latest;
+ * - a tool call still unfinished when its turn ends is marked interrupted. A
+ *   replayed history has no turn boundaries, so the next `user` message also
+ *   ends the turn before it;
  * - a permission answer replaces its ask in place (an answer with no ask in
  *   the stream, i.e. a truncated record, is dropped);
  * - `turn-end` is kept only for an unusual stop reason, and `turn-start`
@@ -66,7 +80,14 @@ export function groupEvents(events: AcpEvent[]): Group[] {
   const groups: Group[] = []
   const toolIndex = new Map<string, number>()
   const permissionIndex = new Map<string, number>()
+  const interruptOpenCalls = (): void => {
+    for (const at of toolIndex.values()) {
+      const g = groups[at]
+      if (g.kind === 'tool' && unfinished(g.call)) groups[at] = { ...g, interrupted: true }
+    }
+  }
   for (const e of events) {
+    if (e.type === 'turn-start' || e.type === 'user') interruptOpenCalls()
     if (e.type === 'commands' || e.type === 'turn-start') continue
     if (e.type === 'permission-request') {
       permissionIndex.set(e.requestId, groups.length)
@@ -94,6 +115,7 @@ export function groupEvents(events: AcpEvent[]): Group[] {
       continue
     }
     if (e.type === 'turn-end') {
+      interruptOpenCalls()
       if (e.stopReason !== 'end_turn') {
         groups.push({ kind: 'turn-end', seq: e.seq, stopReason: e.stopReason })
       }
@@ -110,7 +132,7 @@ export function groupEvents(events: AcpEvent[]): Group[] {
     if (e.type === 'tool') {
       const at = toolIndex.get(e.call.toolCallId)
       if (at !== undefined) {
-        groups[at] = { kind: 'tool', seq: groups[at].seq, call: e.call }
+        groups[at] = { ...(groups[at] as Extract<Group, { kind: 'tool' }>), call: e.call }
         continue
       }
       toolIndex.set(e.call.toolCallId, groups.length)
@@ -222,7 +244,74 @@ function ReadView({ path, text }: { path?: string; text: string }): JSX.Element 
   return <CodeView lines={lines} language={language} className="px-2.5 py-1.5" />
 }
 
-function ToolRow({ call }: { call: AcpToolCall }): JSX.Element {
+/** The icon drawn beside a tool call, by its ACP kind. */
+const KIND_ICON: Record<AcpToolKind, Icon> = {
+  read: FileTextIcon,
+  edit: RenameIcon,
+  delete: DeleteIcon,
+  move: MoveIcon,
+  search: SearchIcon,
+  execute: TerminalIcon,
+  think: ThinkingIcon,
+  fetch: PreviewIcon,
+  switch_mode: ToolIcon,
+  other: ToolIcon,
+}
+
+/**
+ * The header line shared by tool calls and thinking: a disclosure caret on
+ * the left, then an icon and label. Rows with nothing to expand keep the
+ * caret's space so their icons line up with their neighbours'.
+ */
+function DisclosureRow({
+  open,
+  onToggle,
+  expandable,
+  icon: Icon,
+  children,
+}: {
+  open: boolean
+  onToggle: () => void
+  expandable: boolean
+  icon: Icon
+  children: ReactNode
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={!expandable}
+      aria-expanded={expandable ? open : undefined}
+      className="group -mx-1.5 flex w-[calc(100%+0.75rem)] items-center gap-1.5 rounded-md px-1.5 py-1
+        text-left text-xs text-text-dim enabled:hover:bg-surface-2 enabled:hover:text-text
+        disabled:cursor-default"
+    >
+      <ChevronIcon
+        size={12}
+        className={clsx(
+          'shrink-0 text-text-faint transition-transform',
+          open && 'rotate-90',
+          !expandable && 'invisible',
+        )}
+      />
+      <Icon size={13} className="shrink-0 text-text-faint group-enabled:group-hover:text-text-dim" />
+      {children}
+    </button>
+  )
+}
+
+/**
+ * One tool call. `progress` is how to mark an unfinished call: `running`
+ * spins, `interrupted` says its turn ended first. Omitted (a call awaiting
+ * permission) it gets no mark.
+ */
+function ToolRow({
+  call,
+  progress,
+}: {
+  call: AcpToolCall
+  progress?: 'running' | 'interrupted'
+}): JSX.Element {
   const diffs = useMemo(
     () => (call.content ?? []).filter((c): c is AcpDiff => c.type === 'diff'),
     [call.content],
@@ -246,38 +335,39 @@ function ToolRow({ call }: { call: AcpToolCall }): JSX.Element {
     ),
     [edits],
   )
-  const dot = call.status === 'failed'
-    ? 'bg-[#f85149]'
-    : call.status === 'completed'
-      ? 'bg-[#3fb950]'
-      : 'bg-[#d29922]'
   return (
-    <div className="overflow-hidden rounded-md border border-hairline bg-surface-2">
-      <button
-        type="button"
-        onClick={() => setChoice(!open)}
-        disabled={!hasContent}
-        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs disabled:cursor-default"
+    <div>
+      <DisclosureRow
+        open={open}
+        onToggle={() => setChoice(!open)}
+        expandable={hasContent}
+        icon={KIND_ICON[call.kind]}
       >
-        <span className={clsx('size-1.5 shrink-0 rounded-full', dot)} />
-        <span className="text-text-dim">{call.kind}</span>
-        <span className="truncate text-text">{call.title}</span>
+        <span className={clsx('truncate', call.kind === 'execute' && 'font-mono text-[11px]')}>
+          {call.title}
+        </span>
         {edits.length > 0 && (
-          <span className="ml-auto shrink-0 font-mono text-[10px]">
+          <span className="shrink-0 font-mono text-[10px]">
             {stats.additions > 0 && <span className="text-[#3fb950]">+{stats.additions}</span>}
             {stats.additions > 0 && stats.deletions > 0 && ' '}
             {stats.deletions > 0 && <span className="text-[#f85149]">−{stats.deletions}</span>}
           </span>
         )}
-        {hasContent && (
-          <ChevronIcon
-            size={12}
-            className={clsx('shrink-0 text-text-faint', edits.length === 0 && 'ml-auto', open && 'rotate-90')}
-          />
+        {unfinished(call) && progress === 'running' && (
+          <LoadingIcon size={12} aria-label="running" className="shrink-0 animate-spin text-text-faint" />
         )}
-      </button>
+        {unfinished(call) && progress === 'interrupted' && (
+          <span className="flex shrink-0 items-center gap-1 text-[11px] text-text-faint">
+            <InterruptedIcon size={12} />
+            interrupted
+          </span>
+        )}
+        {call.status === 'failed' && (
+          <FailedIcon size={12} aria-label="failed" className="shrink-0 text-[#f85149]" />
+        )}
+      </DisclosureRow>
       {open && (
-        <div className="max-h-96 overflow-auto border-t border-hairline bg-bg">
+        <div className="mt-1 mb-1.5 ml-[18px] max-h-96 overflow-auto rounded-lg border border-hairline bg-surface">
           {edits.map((group, i) => (
             <div key={i} className={clsx(i > 0 && 'border-t border-hairline')}>
               <EditGroupView group={group} showPath={edits.length > 1} />
@@ -303,17 +393,12 @@ function ToolRow({ call }: { call: AcpToolCall }): JSX.Element {
 function ThoughtRow({ text }: { text: string }): JSX.Element {
   const [open, setOpen] = useState(false)
   return (
-    <div className="text-xs">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1.5 text-text-faint hover:text-text-dim"
-      >
-        <ChevronIcon size={12} className={clsx('shrink-0', open && 'rotate-90')} />
-        thinking
-      </button>
+    <div>
+      <DisclosureRow open={open} onToggle={() => setOpen((v) => !v)} expandable icon={ThinkingIcon}>
+        Thinking
+      </DisclosureRow>
       {open && (
-        <div className="mt-1 border-l border-hairline pl-2.5 text-text-faint">
+        <div className="mt-1 mb-1.5 ml-[18px] border-l-2 border-hairline pl-3 text-xs text-text-dim">
           <Markdown>{text}</Markdown>
         </div>
       )}
@@ -359,10 +444,10 @@ function PermissionRow({
     const chosen = options.find((o) => o.optionId === decided.optionId)
     const allowed = decided.outcome === 'selected' && isAllow(chosen)
     return (
-      <div className="flex items-center gap-1.5 text-xs text-text-faint">
-        <span className={clsx('shrink-0', allowed ? 'text-[#3fb950]' : 'text-[#f85149]')}>
-          {allowed ? '✓' : '✕'}
-        </span>
+      <div className="flex items-center gap-1.5 py-1 pl-[18px] text-xs text-text-faint">
+        {allowed
+          ? <DoneIcon size={13} className="shrink-0 text-[#3fb950]" />
+          : <FailedIcon size={13} className="shrink-0 text-[#f85149]" />}
         <span className="truncate">
           {decided.outcome === 'cancelled'
             ? 'permission dismissed'
@@ -374,14 +459,14 @@ function PermissionRow({
   }
 
   return (
-    <div className="space-y-1.5 rounded-md border border-[#d29922] bg-surface-2 p-2">
-      <div className="flex items-center gap-1.5 px-0.5 text-xs text-[#d29922]">
+    <div className="space-y-2 rounded-lg border border-[#d29922]/60 bg-[#d29922]/5 px-3 py-2">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-[#d29922]">
         <WarningIcon size={12} className="shrink-0" />
         {onAnswer === undefined ? 'Permission was never answered' : 'Permission needed'}
       </div>
       {toolCall !== undefined && <ToolRow call={toolCall} />}
       {onAnswer !== undefined && (
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-1.5 pt-0.5">
           {options.map((o) => (
             <button
               key={o.optionId}
@@ -389,10 +474,10 @@ function PermissionRow({
               disabled={sending}
               onClick={() => answer(o.optionId)}
               className={clsx(
-                'rounded-md border px-2.5 py-1 text-xs disabled:opacity-40',
+                'rounded-md px-2.5 py-1 text-xs font-medium disabled:opacity-40',
                 isAllow(o)
-                  ? 'border-[#3fb950] text-[#3fb950] hover:bg-[#3fb950]/10'
-                  : 'border-hairline text-text-dim hover:text-text',
+                  ? 'bg-text text-bg hover:opacity-90'
+                  : 'border border-border text-text-dim hover:bg-surface-2 hover:text-text',
               )}
             >
               {o.name}
@@ -414,25 +499,42 @@ function PermissionRow({
   )
 }
 
+const PLAN_ICON: Record<AcpPlanEntry['status'], Icon> = {
+  pending: PendingIcon,
+  in_progress: InProgressIcon,
+  completed: DoneIcon,
+}
+
 function PlanRow({ entries }: { entries: AcpPlanEntry[] }): JSX.Element {
+  const done = entries.filter((e) => e.status === 'completed').length
   return (
-    <div className="rounded-md border border-hairline bg-surface-2 px-2.5 py-1.5 text-xs">
-      <div className="mb-1 text-text-dim">plan</div>
-      <ul className="space-y-0.5">
-        {entries.map((e, i) => (
-          <li
-            key={i}
-            className={clsx(
-              'flex gap-1.5',
-              e.status === 'completed' && 'text-text-faint line-through',
-              e.status === 'in_progress' && 'text-text',
-              e.status === 'pending' && 'text-text-dim',
-            )}
-          >
-            <span className="shrink-0">{e.status === 'completed' ? '✓' : e.status === 'in_progress' ? '▸' : '·'}</span>
-            <span>{e.content}</span>
-          </li>
-        ))}
+    <div className="rounded-lg border border-hairline bg-surface px-3 py-2 text-xs">
+      <div className="mb-1.5 flex items-center gap-1.5 text-text-dim">
+        <PlanIcon size={13} className="shrink-0 text-text-faint" />
+        Plan
+        <span className="ml-auto text-text-faint">{done}/{entries.length}</span>
+      </div>
+      <ul className="space-y-1">
+        {entries.map((e, i) => {
+          const Icon = PLAN_ICON[e.status]
+          return (
+            <li
+              key={i}
+              className={clsx(
+                'flex items-start gap-2',
+                e.status === 'completed' && 'text-text-faint line-through',
+                e.status === 'in_progress' && 'text-text',
+                e.status === 'pending' && 'text-text-dim',
+              )}
+            >
+              <Icon
+                size={12}
+                className={clsx('mt-0.5 shrink-0', e.status === 'in_progress' ? 'text-accent' : 'text-text-faint')}
+              />
+              <span>{e.content}</span>
+            </li>
+          )
+        })}
       </ul>
     </div>
   )
@@ -449,65 +551,106 @@ function PlanRow({ entries }: { entries: AcpPlanEntry[] }): JSX.Element {
 export function AcpTranscript({
   groups,
   className,
+  busy = false,
   onAnswerPermission,
 }: {
   groups: Group[]
   className?: string
+  /** Whether a turn is in flight. Only then can an unfinished call of the
+   *  current turn be running; otherwise it reads as interrupted, which also
+   *  covers a record cut off before its turn ended. */
+  busy?: boolean
   /** Sends a permission answer; returns false if it could not be sent.
    *  Omitted for a stopped workspace, whose asks render as unanswered. */
   onAnswerPermission?: (requestId: string, optionId?: string) => boolean
 }): JSX.Element {
+  /** Calls waiting on an unanswered ask: not running, and not interrupted. */
+  const asking = new Set(groups.flatMap((g) => (
+    g.kind === 'permission' && g.decided === undefined && g.toolCall !== undefined ? [g.toolCall.toolCallId] : []
+  )))
+  const progressOf = (g: Extract<Group, { kind: 'tool' }>): 'running' | 'interrupted' | undefined => {
+    if (g.interrupted !== undefined || !busy) return 'interrupted'
+    return asking.has(g.call.toolCallId) ? undefined : 'running'
+  }
   return (
-    <div className={clsx('space-y-2.5 break-words text-sm', className)}>
-      {groups.map((g) => {
-        if (g.kind === 'user') {
-          // Rendered as plain text, not markdown.
-          return (
-            <div key={g.seq} className="flex justify-start">
-              <div className="max-w-[85%] whitespace-pre-wrap rounded-md bg-surface-2 px-2.5 py-1.5 text-text">
-                <MessageImages images={g.images} />
-                {g.text}
-              </div>
-            </div>
-          )
-        }
-        if (g.kind === 'agent') {
-          return (
-            <div key={g.seq} className="text-text">
-              <Markdown>{g.text}</Markdown>
-              <MessageImages images={g.images} />
-            </div>
-          )
-        }
-        if (g.kind === 'thought') return <ThoughtRow key={g.seq} text={g.text} />
-        if (g.kind === 'tool') return <ToolRow key={g.seq} call={g.call} />
-        if (g.kind === 'plan') return <PlanRow key={g.seq} entries={g.entries} />
-        if (g.kind === 'permission') {
-          return (
-            <PermissionRow
-              key={g.seq}
-              requestId={g.requestId}
-              {...(g.toolCall !== undefined ? { toolCall: g.toolCall } : {})}
-              options={g.options}
-              {...(g.decided !== undefined ? { decided: g.decided } : {})}
-              {...(onAnswerPermission !== undefined ? { onAnswer: onAnswerPermission } : {})}
-            />
-          )
-        }
-        if (g.kind === 'turn-end') {
-          return (
-            <div key={g.seq} className="text-xs text-text-faint">
-              turn ended: {g.stopReason.replace(/_/g, ' ')}
-            </div>
-          )
-        }
-        return (
-          <div key={g.seq} className="flex items-start gap-1.5 text-xs text-[#f85149]">
-            <WarningIcon size={12} className="mt-0.5 shrink-0" />
-            <span>{g.message}</span>
-          </div>
-        )
-      })}
+    <div className={clsx('break-words text-sm', className)}>
+      {groups.map((g, i) => (
+        <div key={g.seq} className={clsx(i > 0 && (isStep(g) && isStep(groups[i - 1]) ? 'mt-0.5' : 'mt-4'))}>
+          <GroupView
+            group={g}
+            {...(g.kind === 'tool' ? { progress: progressOf(g) } : {})}
+            {...(onAnswerPermission !== undefined ? { onAnswerPermission } : {})}
+          />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** Tool calls and thinking: one-line rows that stack tightly into a run of
+ *  steps, set apart from the messages around them. */
+function isStep(g: Group): boolean {
+  return g.kind === 'tool' || g.kind === 'thought'
+}
+
+function GroupView({
+  group: g,
+  progress,
+  onAnswerPermission,
+}: {
+  group: Group
+  /** How to mark an unfinished tool call; see `ToolRow`. */
+  progress?: 'running' | 'interrupted'
+  onAnswerPermission?: (requestId: string, optionId?: string) => boolean
+}): JSX.Element {
+  if (g.kind === 'user') {
+    // Rendered as plain text, not markdown.
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-[85%] whitespace-pre-wrap rounded-xl border border-accent/20 bg-accent/10 px-3 py-2 text-text">
+          <MessageImages images={g.images} />
+          {g.text}
+        </div>
+      </div>
+    )
+  }
+  if (g.kind === 'agent') {
+    return (
+      <div className="leading-relaxed text-text">
+        <Markdown>{g.text}</Markdown>
+        <MessageImages images={g.images} />
+      </div>
+    )
+  }
+  if (g.kind === 'thought') return <ThoughtRow text={g.text} />
+  if (g.kind === 'tool') {
+    return <ToolRow call={g.call} {...(progress !== undefined ? { progress } : {})} />
+  }
+  if (g.kind === 'plan') return <PlanRow entries={g.entries} />
+  if (g.kind === 'permission') {
+    return (
+      <PermissionRow
+        requestId={g.requestId}
+        {...(g.toolCall !== undefined ? { toolCall: g.toolCall } : {})}
+        options={g.options}
+        {...(g.decided !== undefined ? { decided: g.decided } : {})}
+        {...(onAnswerPermission !== undefined ? { onAnswer: onAnswerPermission } : {})}
+      />
+    )
+  }
+  if (g.kind === 'turn-end') {
+    return (
+      <div className="flex items-center gap-2 text-[11px] text-text-faint">
+        <span className="h-px flex-1 bg-hairline" />
+        turn ended: {g.stopReason.replace(/_/g, ' ')}
+        <span className="h-px flex-1 bg-hairline" />
+      </div>
+    )
+  }
+  return (
+    <div className="flex items-start gap-1.5 rounded-lg border border-[#f85149]/40 bg-[#f85149]/5 px-3 py-2 text-xs text-[#f85149]">
+      <WarningIcon size={13} className="mt-px shrink-0" />
+      <span>{g.message}</span>
     </div>
   )
 }

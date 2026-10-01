@@ -134,6 +134,16 @@ describe('StoppedTranscript', () => {
     expect(await screen.findByText(/no messages/i)).toBeTruthy()
   })
 
+  it('shows a call the record left unfinished as interrupted, not running', async () => {
+    // A workspace stopped mid-command leaves no turn end in the record.
+    vi.mocked(getSessionTranscript).mockResolvedValue([
+      { type: 'tool', seq: 0, call: { toolCallId: 't1', title: 'sleep 50', kind: 'execute', status: 'pending' } },
+    ])
+    renderPane()
+    expect(await screen.findByText('interrupted')).toBeTruthy()
+    expect(screen.queryByLabelText('running')).toBeNull()
+  })
+
   it('shows an unanswered permission ask as one, without buttons that cannot work', async () => {
     // A workspace can be stopped while its agent waits on a question. Nothing
     // can answer it now, so the pane says so instead of showing an Allow

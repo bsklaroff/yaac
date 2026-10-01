@@ -6,6 +6,8 @@
  */
 import type { AgentTool } from '@yaac/shared/types'
 
+export type { LucideIcon as Icon } from 'lucide-react'
+
 export {
   Terminal as TerminalIcon,
   Folders as ProjectsIcon,
@@ -84,6 +86,17 @@ export {
   ChevronsDownUp as CollapseAllIcon,
   Clock as QueuedIcon,
   PencilLine as DraftIcon,
+  ArrowUp as SendIcon,
+  Square as StopIcon,
+  Brain as ThinkingIcon,
+  ListTodo as PlanIcon,
+  Circle as PendingIcon,
+  CircleDot as InProgressIcon,
+  CircleCheck as DoneIcon,
+  CircleX as FailedIcon,
+  Wrench as ToolIcon,
+  ArrowRightLeft as MoveIcon,
+  CircleSlash as InterruptedIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool. */
