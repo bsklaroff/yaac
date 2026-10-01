@@ -356,9 +356,9 @@ function ToolRow({
         </span>
         {edits.length > 0 && (
           <span className="shrink-0 font-mono text-[10px]">
-            {stats.additions > 0 && <span className="text-[#3fb950]">+{stats.additions}</span>}
+            {stats.additions > 0 && <span className="text-success">+{stats.additions}</span>}
             {stats.additions > 0 && stats.deletions > 0 && ' '}
-            {stats.deletions > 0 && <span className="text-[#f85149]">−{stats.deletions}</span>}
+            {stats.deletions > 0 && <span className="text-error">−{stats.deletions}</span>}
           </span>
         )}
         {unfinished(call) && progress === 'interrupted' && (
@@ -368,7 +368,7 @@ function ToolRow({
           </span>
         )}
         {call.status === 'failed' && (
-          <FailedIcon size={12} aria-label="failed" className="shrink-0 text-[#f85149]" />
+          <FailedIcon size={12} aria-label="failed" className="shrink-0 text-error" />
         )}
       </DisclosureRow>
       {open && (
@@ -461,8 +461,8 @@ function PermissionRow({
     return (
       <div className="flex items-center gap-1.5 py-1 pl-[18px] text-xs text-text-faint">
         {allowed
-          ? <DoneIcon size={13} className="shrink-0 text-[#3fb950]" />
-          : <FailedIcon size={13} className="shrink-0 text-[#f85149]" />}
+          ? <DoneIcon size={13} className="shrink-0 text-success" />
+          : <FailedIcon size={13} className="shrink-0 text-error" />}
         <span className="truncate">
           {decided.outcome === 'cancelled'
             ? 'permission dismissed'
@@ -474,8 +474,8 @@ function PermissionRow({
   }
 
   return (
-    <div className="space-y-2 rounded-lg border border-[#d29922]/60 bg-[#d29922]/5 px-3 py-2">
-      <div className="flex items-center gap-1.5 text-xs font-medium text-[#d29922]">
+    <div className="space-y-2 rounded-lg border border-warning/60 bg-warning/5 px-3 py-2">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-warning">
         <WarningIcon size={12} className="shrink-0" />
         {onAnswer === undefined ? 'Permission was never answered' : 'Permission needed'}
       </div>
@@ -663,7 +663,7 @@ function GroupView({
     )
   }
   return (
-    <div className="flex items-start gap-1.5 rounded-lg border border-[#f85149]/40 bg-[#f85149]/5 px-3 py-2 text-xs text-[#f85149]">
+    <div className="flex items-start gap-1.5 rounded-lg border border-error/40 bg-error/5 px-3 py-2 text-xs text-error">
       <WarningIcon size={13} className="mt-px shrink-0" />
       <span>{g.message}</span>
     </div>

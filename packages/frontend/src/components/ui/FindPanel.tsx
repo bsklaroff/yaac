@@ -238,7 +238,7 @@ function FindBar({ view, query, matches, current, commit }: {
             spellCheck={false}
             className="min-w-0 flex-1 bg-transparent py-0.5 text-text outline-none placeholder:text-text-faint"
           />
-          <span role="status" className={clsx('shrink-0 tabular-nums', miss ? 'text-[#f85149]' : 'text-text-faint')}>
+          <span role="status" className={clsx('shrink-0 tabular-nums', miss ? 'text-error' : 'text-text-faint')}>
             {status}
           </span>
           <Toggle
@@ -333,7 +333,7 @@ function Field({ invalid = false, children }: { invalid?: boolean; children: Rea
   return (
     <div className={clsx(
       'flex h-6 min-w-0 items-center gap-1.5 rounded border bg-bg pl-1.5 pr-0.5 transition',
-      invalid ? 'border-[#f85149]/60' : 'border-border focus-within:border-border-strong',
+      invalid ? 'border-error/60' : 'border-border focus-within:border-border-strong',
     )}>
       {children}
     </div>

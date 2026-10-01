@@ -4,6 +4,6 @@ import { backgroundColorFor } from '#theme-bg'
 describe('backgroundColorFor', () => {
   it('mirrors --color-shell per theme (the html/body background)', () => {
     expect(backgroundColorFor(true)).toBe('#0f0f12')
-    expect(backgroundColorFor(false)).toBe('#fcfcfb')
+    expect(backgroundColorFor(false)).toBe('#d3d2cc')
   })
 })

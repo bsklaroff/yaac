@@ -158,7 +158,7 @@ export function Sidebar({
                 : <span className="font-semibold tracking-tight">yaac</span>}
             </div>
             <div className="flex shrink-0 items-center gap-2 no-drag">
-              {!connected && <span className="text-xs text-amber-400/80">reconnecting…</span>}
+              {!connected && <span className="text-xs text-amber-400">reconnecting…</span>}
               {projectSlug && <SkillsButton projectSlug={projectSlug} />}
               {projectSlug && <NewWorkspaceButton projectSlug={projectSlug} />}
               <button
@@ -183,7 +183,7 @@ export function Sidebar({
                 projectSlug={projectSlug}
                 failures={gitAuthFailures}
                 iconSize={11}
-                className="hover:bg-[#d65858]/25"
+                className="hover:bg-danger/25"
               />
             )}
           </div>

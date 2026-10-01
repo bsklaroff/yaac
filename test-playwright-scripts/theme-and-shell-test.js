@@ -21,7 +21,7 @@ import { api, check, finish, origin, requirePlaywright, SHOTS } from './lib.js'
 
 // --color-shell and --color-surface in packages/frontend/src/index.css.
 const DARK_SHELL = 'rgb(15, 15, 18)'
-const LIGHT_SHELL = 'rgb(252, 252, 251)'
+const LIGHT_SHELL = 'rgb(211, 210, 204)'
 const DARK_SURFACE = '#1b1b21'
 
 const { chromium } = requirePlaywright()

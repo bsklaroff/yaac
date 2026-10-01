@@ -707,11 +707,11 @@ export function WorkspaceView({
               projectSlug={workspace.projectSlug}
               failures={gitAuthFailures}
               iconSize={12}
-              className="hover:bg-[#d65858]/25"
+              className="hover:bg-danger/25"
             />
           )}
           {workspace.blockedHosts.length > 0 && (
-            <BlockedHostsBadge hosts={workspace.blockedHosts} workspaceId={workspace.workspaceId} iconSize={12} className="hover:bg-[#d65858]/25" />
+            <BlockedHostsBadge hosts={workspace.blockedHosts} workspaceId={workspace.workspaceId} iconSize={12} className="hover:bg-danger/25" />
           )}
           {isMobile && (
             <PaneOverflowMenu

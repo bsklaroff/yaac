@@ -131,7 +131,7 @@ export function UnforwardedPortsBadge({
                           </button>
                         ))}
                         {error && (
-                          <div className="px-2 py-1 text-xs text-[#d65858]">{error}</div>
+                          <div className="px-2 py-1 text-xs text-danger">{error}</div>
                         )}
                       </div>
                     )}

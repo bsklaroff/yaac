@@ -24,7 +24,7 @@ function buildLabel(b: ImageBuildEntry): string {
 
 function StatusIcon({ status }: { status: ImageBuildEntry['status'] }): JSX.Element {
   if (status === 'running') return <LoadingIcon size={12} className="shrink-0 animate-spin text-text-dim" />
-  if (status === 'failed') return <WarningIcon size={12} className="shrink-0 text-[#d65858]" />
+  if (status === 'failed') return <WarningIcon size={12} className="shrink-0 text-danger" />
   return <CheckIcon size={12} className="shrink-0 text-emerald-400" />
 }
 
@@ -142,7 +142,7 @@ export function ImageBuildsOverlay({
                           <span className="truncate font-mono text-[10px] text-text-faint">{b.stepText}</span>
                         )}
                         {b.status === 'failed' && b.error && (
-                          <span className="truncate text-[10px] text-[#d65858]">{b.error}</span>
+                          <span className="truncate text-[10px] text-danger">{b.error}</span>
                         )}
                       </button>
                       {b.status !== 'running' && (

@@ -97,7 +97,7 @@ export function ConfirmDialog({
               className={clsx(
                 'flex h-8 items-center rounded-md px-3 text-xs font-medium transition disabled:opacity-50',
                 destructive
-                  ? 'bg-[#c94a4a] text-white hover:bg-[#d65858]'
+                  ? 'bg-[#c94a4a] text-white hover:bg-danger'
                   : 'bg-accent text-bg hover:brightness-110',
               )}
             >

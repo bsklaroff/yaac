@@ -38,8 +38,8 @@ export function ImageBuildIndicator({ projectSlug }: { projectSlug: string | nul
           type="button"
           onClick={() => setOpen(true)}
           aria-label="Show failed image builds"
-          className="flex shrink-0 items-center gap-1 rounded bg-[#d65858]/15 px-1 py-0.5 text-xs font-medium
-            text-[#d65858] transition hover:bg-[#d65858]/25"
+          className="flex shrink-0 items-center gap-1 rounded bg-danger/15 px-1 py-0.5 text-xs font-medium
+            text-danger transition hover:bg-danger/25"
         >
           <WarningIcon size={11} />
           build failed
