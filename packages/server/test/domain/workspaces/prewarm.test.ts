@@ -48,6 +48,7 @@ import {
   // Claim state, read to assert what a claim reserved and released.
   claiming,
   inFlight,
+  reaping,
   clearPrewarmStateForTests,
 } from '#domain/workspaces/prewarm'
 import {
@@ -387,6 +388,16 @@ describe('tryClaimPrewarmed', () => {
 
     expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
     expect(mockCleanup).toHaveBeenCalledTimes(1)
+  })
+
+  // The reap deletes the Job and checkout once its salvage finishes, so a
+  // claim landing first would lose the user's new workspace.
+  it('passes over a spare the reconciler is reaping', async () => {
+    mockList.mockResolvedValue([spare()])
+    reaping.add('spare1')
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
+    expect(mockClaimSpare).not.toHaveBeenCalled()
+    expect(claiming.size).toBe(0)
   })
 
   it('releases and skips a spare whose tmux is dead', async () => {

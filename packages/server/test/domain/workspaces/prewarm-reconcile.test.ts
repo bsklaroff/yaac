@@ -151,6 +151,23 @@ describe('reconcilePrewarmPool', () => {
     expect(mockDeleteState).not.toHaveBeenCalled()
   })
 
+  // The pod stays listed while its teardown runs. Reaping it again would
+  // exec into the dying pod and race the first reap's checkout removal.
+  it('reaps a spare once while its teardown runs, and retries one left behind', async () => {
+    let finishTeardown = (_gone: boolean): void => { /* replaced below */ }
+    mockCleanup.mockImplementation(() => new Promise((r) => { finishTeardown = r }))
+    mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true })])
+
+    await pass()
+    await pass()
+    expect(mockCleanup).toHaveBeenCalledTimes(1)
+
+    finishTeardown(false)
+    await flush()
+    await pass()
+    expect(mockCleanup).toHaveBeenCalledTimes(2)
+  })
+
   it('is a no-op when the pool size is 0', async () => {
     vi.stubEnv('YAAC_PREWARM_POOL_SIZE', '0')
     await pass()
