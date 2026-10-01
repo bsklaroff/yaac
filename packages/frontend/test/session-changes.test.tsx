@@ -355,6 +355,20 @@ describe('WorkspaceChanges', () => {
     expect(document.activeElement).toBe(screen.getByLabelText('Find in changes'))
   })
 
+  it('leaves focus in an open dialog when it is the pane to focus', async () => {
+    mock.mockResolvedValue(PAYLOAD)
+    const dialog = document.createElement('div')
+    dialog.setAttribute('role', 'dialog')
+    const prompt = document.createElement('textarea')
+    dialog.append(prompt)
+    document.body.append(dialog)
+    prompt.focus()
+    renderPane({ focusKey: 1 })
+    await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
+    expect(document.activeElement).toBe(prompt)
+    dialog.remove()
+  })
+
   it('keeps the base picker reachable even when there are no changes', async () => {
     mock.mockResolvedValue({ base: 'abc', baseResolved: true, files: [], diff: '', truncated: false })
     renderPane({ baseBranch: 'main' })

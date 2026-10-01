@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 
 import { useAcpStream } from '#lib/acp'
 import { AcpTranscript, groupEvents } from '#components/AcpTranscript'
 import { imageBytes, imageFiles, prepareImage, toAcpImage, useImageSrc } from '#lib/attachments'
+import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { AttachImageIcon, CloseIcon, LoadingIcon, SendIcon, StopIcon } from '#lib/icons'
 import { chatDraftKey, useUiStore } from '#lib/store'
 import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
@@ -114,7 +115,8 @@ export function WorkspaceChat({
   }, [])
 
   useEffect(() => {
-    if (visible) inputRef.current?.focus()
+    if (!visible || dialogHoldsFocus()) return
+    inputRef.current?.focus()
   }, [visible])
 
   useEffect(() => {
