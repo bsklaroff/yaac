@@ -41,6 +41,8 @@ export {
   ExternalLink as OpenLinkIcon,
   Maximize2 as ExpandIcon,
   Minimize2 as CollapseIcon,
+  UnfoldHorizontal as WidenIcon,
+  FoldHorizontal as NarrowIcon,
   GitBranch as BranchIcon,
   Globe as PreviewIcon,
   ArrowLeft as NavBackIcon,

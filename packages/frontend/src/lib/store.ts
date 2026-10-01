@@ -17,6 +17,7 @@ const CHAT_DRAFTS_LS_KEY = 'yaac.chatdrafts.v1'
 const MOBILE_SCREEN_LS_KEY = 'yaac.mobilescreen.v1'
 const SIDEBAR_WIDTH_LS_KEY = 'yaac.sidebarwidth.v1'
 const EDITOR_FONT_LS_KEY = 'yaac.editorfontsize.v1'
+const CHAT_FULL_WIDTH_LS_KEY = 'yaac.chatfullwidth.v1'
 
 /** Desktop sidebar width in px: the default and the drag bounds. */
 export const DEFAULT_SIDEBAR_WIDTH = 256
@@ -62,6 +63,21 @@ export function loadSoundEnabled(): boolean {
 export function persistSoundEnabled(enabled: boolean): void {
   try {
     if (typeof localStorage !== 'undefined') localStorage.setItem(SOUND_LS_KEY, enabled ? '1' : '0')
+  } catch { /* non-fatal */ }
+}
+
+/** Whether chat panes span the full pane width; off by default. */
+export function loadChatFullWidth(): boolean {
+  try {
+    if (typeof localStorage !== 'undefined') return localStorage.getItem(CHAT_FULL_WIDTH_LS_KEY) === '1'
+  } catch { /* fall through to the default */ }
+  return false
+}
+
+/** Save the chat width preference (best-effort). */
+export function persistChatFullWidth(full: boolean): void {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(CHAT_FULL_WIDTH_LS_KEY, full ? '1' : '0')
   } catch { /* non-fatal */ }
 }
 
@@ -549,6 +565,10 @@ interface UiState {
   /** Editor font size in px for all file panes. Saved and clamped. */
   editorFontSize: number
   setEditorFontSize: (px: number) => void
+  /** Whether chat panes span the full pane width instead of a centered
+   *  column. Saved; off by default. */
+  chatFullWidth: boolean
+  setChatFullWidth: (full: boolean) => void
   /** Tiles or tabs. Saved; small screens default to tabs. */
   viewMode: ViewMode
   /** Plan-usage metric pinned to the sidebar pill (a UsageBadge
@@ -739,6 +759,7 @@ export const useUiStore = create<UiState>((set) => ({
   themePref: loadThemePref(),
   soundEnabled: loadSoundEnabled(),
   editorFontSize: loadEditorFontSize(),
+  chatFullWidth: loadChatFullWidth(),
   viewMode: loadViewMode(),
   pinnedUsageMetric: loadPinnedUsageMetric(),
   activeTabs: {},
@@ -891,6 +912,10 @@ export const useUiStore = create<UiState>((set) => ({
   setSoundEnabled: (enabled) => {
     persistSoundEnabled(enabled)
     set({ soundEnabled: enabled })
+  },
+  setChatFullWidth: (full) => {
+    persistChatFullWidth(full)
+    set({ chatFullWidth: full })
   },
   setEditorFontSize: (px) => {
     const size = clampEditorFontSize(px)
