@@ -406,7 +406,7 @@ describe('attachAcp', () => {
         sessionId: 'acp-1',
         modes: {
           currentModeId: 'agent',
-          availableModes: [{ id: 'read-only' }, { id: 'agent' }, { id: 'agent-full-access' }],
+          availableModes: [{ id: 'read-only' }, { id: 'workspace-write' }, { id: 'agent' }, { id: 'agent-full-access' }],
         },
       },
     })
@@ -423,7 +423,7 @@ describe('attachAcp', () => {
     await waitFor(() => sock.sent.some((m) => m.type === 'event' && m.event.type === 'error'))
     const reported = sock.sent
       .flatMap((m) => (m.type === 'event' && m.event.type === 'error' ? [m.event.message] : []))
-    expect(reported.join(' ')).toContain('read-only')
+    expect(reported.join(' ')).toContain('workspace-write')
     // Names the mode actually in effect.
     expect(reported.join(' ')).toContain('agent')
     // Sent after hello, so it is not mistaken for old history.

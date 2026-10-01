@@ -10,7 +10,7 @@ import {
 describe('modelsForTool', () => {
   it('lists a vendor tool\'s models by bare id, newest first, named', () => {
     const claude = modelsForTool('claude', undefined)
-    expect(claude[0]).toEqual({ id: 'claude-opus-5-5', name: 'Opus 5.5' })
+    expect(claude[0]).toEqual({ id: 'claude-sonnet-5-5', name: 'Sonnet 5.5' })
     expect(claude.map((m) => m.id)).toEqual(MODELS_BY_PROVIDER['anthropic'])
     expect(modelsForTool('codex', undefined).map((m) => m.id)).toEqual(MODELS_BY_PROVIDER['openai'])
   })

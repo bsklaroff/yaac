@@ -2,34 +2,27 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 USER root
 
-RUN ARCH="$(dpkg --print-architecture)" && \
-    if [ "$ARCH" = "arm64" ]; then \
-      MIRROR="http://ports.ubuntu.com/ubuntu-ports"; \
-    else \
-      MIRROR="http://archive.ubuntu.com/ubuntu"; \
-    fi && \
-    printf 'Types: deb\nURIs: %s\nSuites: plucky plucky-updates\nComponents: main universe\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' "$MIRROR" \
-      > /etc/apt/sources.list.d/ubuntu-plucky.sources
-RUN cat <<'EOF' > /etc/apt/preferences.d/ubuntu-plucky
-Package: *
-Pin: release n=plucky
-Pin-Priority: 100
-EOF
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends -t plucky podman crun skopeo && \
+    apt-get install -y --no-install-recommends podman skopeo && \
     rm -rf /var/lib/apt/lists/*
+
+# crun from upstream, which containers.conf below selects over the archive's
+# (a podman dependency). Under gVisor, crun 1.21 fails every container start
+# ("cannot resolve `null` under rootfs") and 1.29+ fails to mount tmpfs on
+# sys/firmware; 1.22-1.28 work. Check nested `docker run` before bumping.
+RUN curl -fsSL -o /usr/local/bin/crun \
+      "https://github.com/containers/crun/releases/download/1.28/crun-1.28-linux-$(dpkg --print-architecture)" && \
+    chmod 755 /usr/local/bin/crun
 
 # Docker CLI + compose plugin, pointed (DOCKER_HOST below) at the rootful
 # podman socket, which serves the Docker Engine API. No buildx: its default
 # driver pulls moby/buildkit, which the egress proxy blocks; compose falls
 # back to the classic build endpoint podman implements.
-RUN ARCH="$(dpkg --print-architecture)" && \
-    if [ "$ARCH" = "amd64" ]; then DOCKER_ARCH=x86_64; COMPOSE_ARCH=x86_64; \
-    else DOCKER_ARCH=aarch64; COMPOSE_ARCH=aarch64; fi && \
-    curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-29.5.3.tgz" | \
+RUN ARCH="$(uname -m)" && \
+    curl -fsSL "https://download.docker.com/linux/static/stable/${ARCH}/docker-29.8.2.tgz" | \
       tar -xz -C /usr/local/bin --strip-components=1 docker/docker && \
     mkdir -p /usr/local/lib/docker/cli-plugins && \
-    curl -fsSL "https://github.com/docker/compose/releases/download/v5.1.4/docker-compose-linux-${COMPOSE_ARCH}" \
+    curl -fsSL "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-linux-${ARCH}" \
       -o /usr/local/lib/docker/cli-plugins/docker-compose && \
     chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
@@ -85,6 +78,8 @@ default_sysctls = []
 cgroup_manager="cgroupfs"
 events_logger="file"
 runtime="crun"
+[engine.runtimes]
+crun = ["/usr/local/bin/crun"]
 EOF
 
 # Unqualified image names resolve to docker.io, as with the docker CLI.

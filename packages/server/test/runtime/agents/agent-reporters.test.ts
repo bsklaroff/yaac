@@ -135,7 +135,7 @@ describe('ensureAgentReporters', () => {
     expect((await fs.lstat(path.join(homes.codexDir, 'hooks.json'))).isFile()).toBe(true)
   })
 
-  // Against the extension API of pi 0.84.4.
+  // Against the extension API of pi 0.99.2.
   it("reports pi's conversation and model, and ends each conversation as pi does", async () => {
     await ensureAgentReporters(await roots())
     expect(await runModule(path.join(homes.piAgentDir, 'extensions', 'yaac-report.ts'), [
@@ -162,7 +162,7 @@ describe('ensureAgentReporters', () => {
     ])
   })
 
-  // Against opencode 2.0.12's events. An agent switch arrives with the next
+  // Against opencode 2.0.21's events. An agent switch arrives with the next
   // prompt as `session.agent.selected`; subagent sessions (`parentID`) are
   // not the pane's.
   it("reports opencode's conversation, model and agent, and ends the conversation on dispose", async () => {

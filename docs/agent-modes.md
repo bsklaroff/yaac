@@ -19,7 +19,7 @@ docs/permission-modes.md) all read that one table:
 | tool | adapter | notes |
 |---|---|---|
 | claude | `claude-agent-acp` | bundles its own SDK |
-| codex | `codex-acp` | drives `codex app-server`, so the CLI must be installed too |
+| codex | `codex-acp` | drives `codex app-server` (the CLI on PATH, via `CODEX_PATH`), so the CLI must be installed too |
 | opencode | `opencode acp` | a subcommand of the CLI |
 | pi | `pi-acp` | drives `pi --mode rpc`, so the CLI must be installed too |
 
@@ -235,7 +235,7 @@ The model comes from the adapter: the handshake reply names it (as a
 changes arrive as `config_option_update`. It is published on the live agent
 set and stored as the catalog's id, matched by display name when the adapter
 uses its own id (claude's adapter may answer with a picker alias such as
-`opus[1m]`), so the sidebar label matches the create form. Mode changes
+`opus`), so the sidebar label matches the create form. Mode changes
 travel the same way and become the workspace's posture
 (docs/permission-modes.md, "Following the agent").
 

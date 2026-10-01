@@ -16,7 +16,7 @@ translated per tool at launch by `buildAgentCmd`:
 Rows run most permissive first, the order the create form and CLI list them
 in (`PERMISSION_MODES`). `plan` and `read-only` rank equal: each is the
 strictest posture its tools have. `SUPPORTED_PERMISSION_MODES` lists which
-postures each tool has; the create refusal and the webapp's disabled rows
+postures each tool has; the create refusal and the webapp's dropdown
 read it. The flags are written against the pinned CLIs (`AGENT_CLIS` in
 `@yaac/shared/types`).
 
@@ -113,27 +113,25 @@ codex `plan`/`manual` as `read-only`, claude's and opencode's `read-only` as
 `plan`, opencode `auto` as `accept-edits`, pi as `bypass`. It never falls
 back to the driver default, which in a container is `bypass`.
 
-## Under `acp`, the adapter decides
+## Under `acp`, the adapter's session modes
 
-For an ACP adapter a posture is a session mode the adapter advertises, and
-adapters offer fewer. `ACP_SUPPORTED_PERMISSION_MODES` is the `acp` column:
+For an ACP adapter a posture is a session mode the adapter advertises. Each
+adapter covers the same postures as its TUI (`SUPPORTED_PERMISSION_MODES`):
 
 | Mode | claude | codex | opencode | pi |
 |---|---|---|---|---|
 | `bypass` | `bypassPermissions` | `agent-full-access` | the TUI's config | — |
 | `auto` | `auto` | `agent` | — | — |
-| `accept-edits` | `acceptEdits` | `read-only` | the TUI's config | — |
+| `accept-edits` | `acceptEdits` | `workspace-write` | the TUI's config | — |
 | `manual` | `default` | — | the TUI's config | — |
 | `plan` | `plan` | — | its config, plus the `plan` agent over `session/set_mode` | — |
-| `read-only` | — | — | — | — |
+| `read-only` | — | `read-only` | — | — |
 
-- **codex has no `read-only` over ACP.** None of codex-acp's three modes is a
-  read-only sandbox; the one it calls `read-only` is yaac's `accept-edits`. A
-  create asking for `read-only` under acp is refused.
 - **opencode's postures are config, not ACP modes.** It gets the same
   `OPENCODE_CONFIG_CONTENT` as the TUI. Its ACP modes are its agents
-  (`build`, `plan`), and `plan` also needs the `plan` agent set over
-  `session/set_mode`, because the ACP path ignores `default_agent`.
+  (`build`, `plan`), and `plan` also sets the `plan` agent over
+  `session/set_mode`, because a new ACP session applies `default_agent` only
+  at its first prompt.
 - **pi's asks are questions, not permission prompts.** No mode is sent (its
   `availableModes` are thinking levels). What arrives on
   `session/request_permission` are its extensions' questions for the user,
@@ -170,8 +168,7 @@ since only there is it a person's choice.
 A request naming a posture its tool lacks is refused: silently launching
 with less restraint than asked is the failure worth being loud about. A
 remembered value is instead lowered like a row's (`launchablePermissionMode`),
-since it may have been recorded under the other agent mode or before a tool
-update. A remembered codex `read-only` under acp runs `accept-edits`.
+since it may have been recorded before a tool update.
 
 ### A spawned workspace's posture
 
@@ -325,7 +322,7 @@ it writes it down:
 
 - **claude.** Its hooks carry the mode as `permission_mode` (`manual` arrives
   as `default`), but no hook fires on the change itself, and its statusLine
-  input lacks the mode (checked against the pinned 2.1.282). So the reporter
+  input lacks the mode (checked against the pinned 2.1.286). So the reporter
   (`workspace-bin/yaac-agent-report`, which also reports the model) runs on
   `UserPromptSubmit` and `Stop` and sets the pane option
   `@yaac-permission-mode`. A Shift+Tab is seen at the next prompt or turn

@@ -71,10 +71,10 @@ brew install tmux socat fd ripgrep   # for the containerless driver
 sudo apt install podman acl libgomp1
 sudo apt install tmux socat fd-find ripgrep   # for the containerless driver
 
-# Node from nvm, not apt (see below). 22.22.2 matches .nvmrc.
+# Node from nvm, not apt (see below). 24.21.0 matches .nvmrc.
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.6/install.sh | bash
 export NVM_DIR="$HOME/.nvm" && \. "$NVM_DIR/nvm.sh"   # or open a new shell
-nvm install 22.22.2 && nvm alias default 22.22.2
+nvm install 24.21.0 && nvm alias default 24.21.0
 npm install -g pnpm
 
 curl -fsSLo kind "https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-$(dpkg --print-architecture)"
@@ -515,7 +515,7 @@ harness.
 
 ## Custom images (k8s)
 
-The default workspace image is Ubuntu 24.04 with Node.js, gh, tmux and the
+The default workspace image is Ubuntu 26.04 with Node.js, gh, tmux and the
 agent CLIs. Two files customize it:
 
 - **`Dockerfile.yaac`** (per project, `yaac config edit-dockerfile <project>`).

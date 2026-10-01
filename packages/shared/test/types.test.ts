@@ -10,7 +10,6 @@ import {
   PERMISSION_MODES,
   resolveToolCreateDefaults,
   SUPPORTED_PERMISSION_MODES,
-  supportedPermissionModes,
   toolSupportsPermissionMode,
   type PermissionMode,
 } from '#types'
@@ -53,55 +52,29 @@ describe('PERMISSION_MODES', () => {
   it('runs most permissive first, and so does every tool\'s list', () => {
     expect(PERMISSION_MODES).toEqual(['bypass', 'auto', 'accept-edits', 'manual', 'plan', 'read-only'])
     for (const tool of AGENT_TOOLS) {
-      for (const agentMode of ['tui', 'acp'] as const) {
-        const modes = supportedPermissionModes(tool, agentMode)
-        expect(modes, `${tool} ${agentMode}`).toEqual(PERMISSION_MODES.filter((m) => modes.includes(m)))
-      }
+      const modes = SUPPORTED_PERMISSION_MODES[tool]
+      expect(modes, tool).toEqual(PERMISSION_MODES.filter((m) => modes.includes(m)))
     }
   })
 })
 
 describe('toolSupportsPermissionMode', () => {
-  it('answers for the TUI by default, so every caller that predates modes is unchanged', () => {
+  it("answers from the tool's own list", () => {
     expect(toolSupportsPermissionMode('codex', 'read-only')).toBe(true)
+    expect(toolSupportsPermissionMode('codex', 'manual')).toBe(false)
     expect(toolSupportsPermissionMode('opencode', 'auto')).toBe(false)
     expect(toolSupportsPermissionMode('pi', 'bypass')).toBe(true)
     expect(toolSupportsPermissionMode('pi', 'manual')).toBe(false)
   })
 
-  it('answers for the ADAPTER under acp, which offers fewer postures', () => {
-    // codex has a read-only sandbox, but codex-acp does not: its mode named
-    // `read-only` is codex's default preset. Running it as that would give
-    // an unrestrained workspace, so it is refused.
-    expect(toolSupportsPermissionMode('codex', 'read-only', 'tui')).toBe(true)
-    expect(toolSupportsPermissionMode('codex', 'read-only', 'acp')).toBe(false)
-    expect(toolSupportsPermissionMode('codex', 'manual', 'acp')).toBe(false)
-    expect(toolSupportsPermissionMode('codex', 'auto', 'acp')).toBe(true)
-    // opencode keeps all four: `plan` is one of its agents, the rest use the
-    // permission config its TUI reads.
-    expect(supportedPermissionModes('opencode', 'acp')).toEqual(SUPPORTED_PERMISSION_MODES.opencode)
-    // claude's adapter names a mode for all five of its postures.
-    expect(supportedPermissionModes('claude', 'acp')).toEqual(SUPPORTED_PERMISSION_MODES.claude)
-  })
-
-  it('never offers a posture over acp that the tool itself does not have', () => {
-    // acp never adds a posture the tool itself lacks.
-    for (const tool of AGENT_TOOLS) {
-      for (const mode of supportedPermissionModes(tool, 'acp')) {
-        expect(toolSupportsPermissionMode(tool, mode, 'tui'), `${tool}/${mode}`).toBe(true)
-      }
-    }
-  })
-
-  it('never defaults a create into a posture its adapter cannot take', () => {
+  it('never defaults a create into a posture the tool cannot take', () => {
     // `defaultPermissionMode` is used unchecked when a create names no
-    // posture, so every entry must be one the adapter has; otherwise the
+    // posture, so every entry must be one the tool has; otherwise an ACP
     // adapter would silently run its own default.
     for (const driver of ['k8s', 'containerless'] as const) {
       for (const tool of AGENT_TOOLS) {
         const fallback = defaultPermissionMode(driver, tool)
-        expect(toolSupportsPermissionMode(tool, fallback, 'acp'), `${driver}/${tool}`).toBe(true)
-        expect(toolSupportsPermissionMode(tool, fallback, 'tui'), `${driver}/${tool}`).toBe(true)
+        expect(toolSupportsPermissionMode(tool, fallback), `${driver}/${tool}`).toBe(true)
       }
     }
   })
@@ -114,7 +87,7 @@ describe('toolSupportsPermissionMode', () => {
 describe('resolveToolCreateDefaults', () => {
   const resolve = (args: Partial<Parameters<typeof resolveToolCreateDefaults>[0]> = {}) =>
     resolveToolCreateDefaults({
-      driver: 'k8s', tool: 'claude', agentMode: 'tui', remembered: undefined, defaultModel: 'fallback', ...args,
+      driver: 'k8s', tool: 'claude', remembered: undefined, defaultModel: 'fallback', ...args,
     })
 
   it('falls back per field when nothing is remembered', () => {
@@ -130,9 +103,7 @@ describe('resolveToolCreateDefaults', () => {
   // A remembered posture is a preference, so it falls back rather than
   // being refused: to the strictest available, never the driver default
   // (bypass in a container).
-  it('lands a remembered posture the agent mode has nothing as strict as on its strictest', () => {
-    expect(resolve({ tool: 'codex', agentMode: 'acp', remembered: { permissionMode: 'read-only' } }).permissionMode)
-      .toBe('accept-edits')
+  it('lands a remembered posture the agent has nothing as strict as on its strictest', () => {
     expect(resolve({ tool: 'pi', remembered: { permissionMode: 'plan' } }).permissionMode).toBe('bypass')
   })
 
@@ -186,9 +157,9 @@ describe('ACP_ADAPTERS', () => {
   it('names the version the workspace image installs', () => {
     // `verified` is the version yaac's session-mode mapping was checked
     // against. An adapter that drops a mode fails silently (the session runs
-    // in its default), so on an image bump re-verify
-    // `ACP_SUPPORTED_PERMISSION_MODES` and the driver's mode ids, then move
-    // `verified`.
+    // in its default), so on an image bump re-verify the adapter's `modeIds`
+    // (runtime/agents/acp-adapters.ts) against `SUPPORTED_PERMISSION_MODES`,
+    // then move `verified`.
     const dockerfile = fs.readFileSync(
       path.resolve(import.meta.dirname, '../../../dockerfiles/Dockerfile.tools'),
       'utf8',

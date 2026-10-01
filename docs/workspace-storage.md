@@ -136,7 +136,12 @@ hand-started one reports as well:
   at startup. It also fires it for a throwaway titling session that has no
   rollout and an id `codex resume` rejects, so a report without a rollout is
   dropped. A resumed conversation fires nothing until its next turn, so a
-  resume launch sets the option itself in the same tmux command.
+  resume launch sets the option itself in the same tmux command. codex runs
+  embedded in its pane only with its shared background server off
+  (`features.daemon_auto_start=false`, which yaac passes and the image's
+  `requirements.toml` enforces). That server keeps the env of the first pane
+  that started it, as opencode's does, so on containerless a codex started
+  by hand needs `-c features.daemon_auto_start=false` to be recorded.
 - **pi**: an extension, on `session_start` (startup, resume, `/new`).
 - **opencode**: a plugin, on a top-level `session.created`. opencode creates a
   session at its first prompt, and a subagent's session has a `parentID`. A
@@ -152,7 +157,7 @@ hand-started one reports as well:
 Each tool also ends its conversation (claude's and codex's `SessionEnd`, pi's
 `session_shutdown`, the plugin's dispose), which clears the option when the
 agent quits. That matters in a shell pane that outlives the agent. (Verified
-against claude 2.1.282, codex-cli 0.156.1, pi 0.84.4 and @opencode/cli 2.0.12.)
+against claude 2.1.286, codex-cli 0.159.3, pi 0.99.2 and @opencode/cli 2.0.21.)
 
 A conversation is **active** exactly when a live agent names it. A pane option
 dies with its pane, and a new pod's tmux starts with none, so a previous pod's
@@ -480,7 +485,7 @@ each dir gets its own volume rather than a subPath. The volume goes with the pod
 pod's ephemeral-storage limit covers one dir's cap.
 
 pnpm's store is also per pod, set in both `pnpm_config_store_dir` and
-`npm_config_store_dir` (pnpm 11 reads only the first, a corepack-pinned pnpm 10
+`npm_config_store_dir` (pnpm 11+ reads only the first, a corepack-pinned pnpm 10
 only the second). It sits inside the root module dir,
 `/workspace/node_modules/.pnpm-store`, on the same mount as
 `node_modules/.pnpm`, so pnpm can hardlink instead of copy. If the project's
@@ -490,7 +495,7 @@ into the root one. Module dirs that are independent installs (with their own
 lockfiles) each hold a full copy, so several of them count against the one-dir
 limit.
 
-A store shared between pods is not possible. pnpm 11 indexes the store in one
+A store shared between pods is not possible. pnpm indexes the store in one
 SQLite database in WAL mode, which needs every writer on one kernel, and each
 pod is its own sandbox, so concurrent installs would corrupt it. A pod mounts
 no project-wide package tree at all, since one that every pod could write would

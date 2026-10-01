@@ -194,13 +194,13 @@ describe('decideSpawn', () => {
     expect(await posture({ callerPermissionMode: 'plan', tool: 'claude' })).toBe('plan')
     // opencode has no `auto`, so it inherits the next mode down.
     expect(await posture({ callerPermissionMode: 'auto', tool: 'opencode' })).toBe('accept-edits')
-    // Never steps up: codex's ACP adapter has nothing at or below `manual`,
-    // and pi has nothing below `bypass`, so both are refused.
-    expect(await posture({ callerPermissionMode: 'manual', uiMode: 'acp' })).toEqual({
+    // codex has no `manual`, so it steps down to `read-only`, in chat too.
+    expect(await posture({ callerPermissionMode: 'manual', uiMode: 'acp' })).toBe('read-only')
+    // Never steps up: pi has nothing below `bypass`, so it is refused.
+    expect(await posture({ callerPermissionMode: 'plan', tool: 'pi' })).toEqual({
       ok: false,
-      error: "codex has no permission mode under acp at or below this workspace's own ('manual')",
+      error: "pi has no permission mode at or below this workspace's own ('plan')",
     })
-    expect(await posture({ callerPermissionMode: 'plan', tool: 'pi' })).toMatchObject({ ok: false })
   })
 
   it('grants a named posture up to the caller\'s own, and refuses anything else loudly', async () => {
@@ -238,9 +238,9 @@ describe('decideSpawn', () => {
     for (const [caller, asked] of [['plan', 'bypass'], ['plan', 'manual'], ['manual', 'accept-edits'], ['auto', 'bypass']] as const) {
       expect((await at(caller, asked)).ok, `${caller} → ${asked}`).toBe(false)
     }
-    // Allowed by rank, but the tool lacks that mode under that UI.
+    // Allowed by rank, but the tool lacks that mode.
     expect(await decideSpawn(makeRequest({ permissionMode: 'plan', uiMode: 'acp' }))).toEqual({
-      ok: false, error: "codex has no 'plan' permission mode under acp",
+      ok: false, error: "codex has no 'plan' permission mode",
     })
     expect(await decideSpawn(makeRequest({ permissionMode: 'manual' }))).toEqual({
       ok: false, error: "codex has no 'manual' permission mode",

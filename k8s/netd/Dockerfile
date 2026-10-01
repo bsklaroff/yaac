@@ -1,4 +1,4 @@
-FROM docker.io/node:22.22.2-slim
+FROM docker.io/node:24.21.0-slim
 # iptables: ships both legacy and nft backends; netd picks at startup
 # whichever one holds Calico's chains, since writing to the other would
 # have no effect.

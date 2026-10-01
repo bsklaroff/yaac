@@ -165,7 +165,7 @@ a stop deletes them and a restart's init commands rebuild them.
 The rebuild is a relink, not a download, because every workspace uses the
 project's shared `.cached-packages/pnpm-store`: the create sets
 `pnpm_config_store_dir` (and `npm_config_store_dir`, for pnpm 10) to it. A
-shared store is safe only here: pnpm 11 indexes it in SQLite in WAL mode,
+shared store is safe only here: pnpm indexes it in SQLite in WAL mode,
 which needs every writer on one kernel, and pods are not (each keeps its own
 store; docs/workspace-storage.md "Package installs"). Otherwise pnpm would
 put a full store in each private HOME, kept alive by the checkout's

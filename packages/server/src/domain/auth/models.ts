@@ -87,7 +87,7 @@ export function modelDisplayName(tool: AgentTool, id: string): string | undefine
 /**
  * Map a model an agent reported to the catalog's id, so every surface names
  * it as the create form did. A known id is kept; otherwise match on the
- * reported name (claude's ACP adapter reports aliases like `opus[1m]` named
+ * reported name (claude's ACP adapter reports aliases like `opus` named
  * "Opus 5.5", the catalog's name for `claude-opus-5-5`). Failing that, the
  * reported id is returned.
  */
