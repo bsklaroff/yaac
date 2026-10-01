@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import fs from 'node:fs/promises'
+import http from 'node:http'
 import path from 'node:path'
 import {
   createYaacTestEnv,
@@ -133,6 +134,35 @@ describe('yaac remote (real CLI + shared server)', () => {
       const raw = JSON.parse(await fs.readFile(configPath(), 'utf8')) as { driver?: string }
       expect(raw.driver).toBe('containerless')
       await resetSelection()
+    })
+
+    // A loopback origin can still be another machine's server, reached
+    // through a tunnel such as `ssh -L`.
+    it('a remote server\'s driver does not decide `yaac cluster install`', async () => {
+      const remote = http.createServer((_req, res) => {
+        res.setHeader('content-type', 'application/json')
+        res.end(JSON.stringify({ ok: true, driver: 'containerless' }))
+      })
+      await new Promise<void>((resolve) => remote.listen(0, '127.0.0.1', resolve))
+      await resetSelection()
+      const saved = await fs.readFile(configPath(), 'utf8')
+      try {
+        const { port } = remote.address() as { port: number }
+        const url = `http://127.0.0.1:${port}`
+        await fs.writeFile(configPath(), JSON.stringify({
+          url, enabled: true, saved: [{ url }], driver: 'k8s',
+        }))
+        // An invalid --nodes stops the install before it touches a
+        // cluster, so reaching its message proves the refusal was skipped.
+        const res = await runYaac(testEnv.env, 'cluster', 'install', '--nodes', '0')
+        expect(res.exitCode).toBe(1)
+        expect(res.stderr).not.toContain('containerless')
+        expect(res.stderr).toContain('--nodes must be an integer')
+      } finally {
+        remote.close()
+        // `server start` would refuse the k8s record, so restore by hand.
+        await fs.writeFile(configPath(), saved)
+      }
     })
   })
 })

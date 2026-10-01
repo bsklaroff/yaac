@@ -54,16 +54,18 @@ function rejectClusterArgs(command: 'install' | 'delete', options: ClusterInstal
 }
 
 /**
- * Which substrate the running server uses, from its auth-exempt `/health`,
- * or undefined when none answers. A `YAAC_DRIVER` in this shell says nothing
- * about the running server. The origin comes from `server.json` like every
- * other command, not from the lock's port, which for an in-cluster server is
- * the port inside its pod.
+ * Which substrate this machine's running server uses, from its auth-exempt
+ * `/health`, or undefined when none answers. A `YAAC_DRIVER` in this shell
+ * says nothing about the running server. The origin comes from `server.json`
+ * like every other command, not from the lock's port, which for an
+ * in-cluster server is the port inside its pod. A selected server at a
+ * non-loopback origin is another machine's, so it is not asked.
  */
 async function runningServerDriver(): Promise<string | undefined> {
   try {
-    const { resolveServerTarget } = await import('@yaac/shared/server-api')
+    const { resolveServerTarget, isLoopbackOrigin } = await import('@yaac/shared/server-api')
     const target = await resolveServerTarget()
+    if (!isLoopbackOrigin(target.baseUrl)) return undefined
     const res = await fetch(`${target.baseUrl}/api/health`, {
       signal: AbortSignal.timeout(2_000),
     })
@@ -131,13 +133,16 @@ async function runDeployedServerVerb(
 /**
  * Refuse a `yaac cluster …` command on a containerless install. Returns true
  * when it did, and the action must then return without loading the command.
- * Asks the running server first, then falls back to the recorded driver
- * (all `cluster install` has before any server exists).
+ * The recorded driver decides: it is this install's, whatever server is
+ * selected, and a loopback origin can still be a tunnel to another machine.
+ * Only with nothing recorded (a bare `yaac server run` registers nothing) is
+ * a local running server asked.
  */
 async function rejectClusterOnContainerless(): Promise<boolean> {
   const { recordedDriver } = await import('@yaac/shared/install-driver')
-  const running = await runningServerDriver()
-  const kind = running ?? await recordedDriver()
+  const recorded = await recordedDriver()
+  const running = recorded === undefined ? await runningServerDriver() : undefined
+  const kind = recorded ?? running
   if (kind !== 'containerless') return false
   const where = running !== undefined
     ? 'The running server uses the containerless driver'
