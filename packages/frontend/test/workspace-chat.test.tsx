@@ -452,12 +452,17 @@ describe('WorkspaceChat rendering', () => {
     const { rerender } = show()
     expect(screen.getAllByLabelText('running')).toHaveLength(1)
     expect(screen.queryByText('interrupted')).toBeNull()
+    // The spinner takes the kind icon's slot rather than sitting beside it.
+    const sleepRow = () => screen.getByText('sleep 50').closest('button')
+    expect(sleepRow()?.querySelector('svg.lucide-loader-circle')).toBeTruthy()
+    expect(sleepRow()?.querySelector('svg.lucide-square-terminal')).toBeNull()
 
     stream.events = [...stream.events, { type: 'turn-end', seq: 2, stopReason: 'cancelled' }]
     stream.busy = false
     rerender(<WorkspaceChat workspaceId="w1" agentSessionId="acp-1" />)
     expect(screen.queryByLabelText('running')).toBeNull()
-    expect(screen.getByText('sleep 50').closest('button')?.textContent).toContain('interrupted')
+    expect(sleepRow()?.querySelector('svg.lucide-square-terminal')).toBeTruthy()
+    expect(sleepRow()?.textContent).toContain('interrupted')
     expect(screen.getByText('ls').closest('button')?.textContent).not.toContain('interrupted')
   })
 

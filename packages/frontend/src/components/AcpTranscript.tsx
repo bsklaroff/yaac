@@ -8,8 +8,8 @@ import { codeLines, unfence } from '#lib/code'
 import { diffStats, diffTextPair, type DiffLine } from '#lib/diff'
 import { languageForFence, languageForPath } from '#lib/highlight'
 import {
-  ChevronIcon, DeleteIcon, DoneIcon, FailedIcon, FileTextIcon, InProgressIcon, LoadingIcon, MoveIcon,
-  InterruptedIcon, PendingIcon, PlanIcon, PreviewIcon, RenameIcon, SearchIcon, TerminalIcon, ThinkingIcon, ToolIcon,
+  ChevronIcon, DeleteIcon, DoneIcon, ExecuteIcon, FailedIcon, FileTextIcon, InProgressIcon, LoadingIcon, MoveIcon,
+  InterruptedIcon, PendingIcon, PlanIcon, PreviewIcon, RenameIcon, SearchIcon, ThinkingIcon, ToolIcon,
   WarningIcon, type Icon,
 } from '#lib/icons'
 import type {
@@ -251,7 +251,7 @@ const KIND_ICON: Record<AcpToolKind, Icon> = {
   delete: DeleteIcon,
   move: MoveIcon,
   search: SearchIcon,
-  execute: TerminalIcon,
+  execute: ExecuteIcon,
   think: ThinkingIcon,
   fetch: PreviewIcon,
   switch_mode: ToolIcon,
@@ -261,19 +261,22 @@ const KIND_ICON: Record<AcpToolKind, Icon> = {
 /**
  * The header line shared by tool calls and thinking: a disclosure caret on
  * the left, then an icon and label. Rows with nothing to expand keep the
- * caret's space so their icons line up with their neighbours'.
+ * caret's space so their icons line up with their neighbours'. A `busy` row
+ * shows a spinner in the icon's place.
  */
 function DisclosureRow({
   open,
   onToggle,
   expandable,
   icon: Icon,
+  busy = false,
   children,
 }: {
   open: boolean
   onToggle: () => void
   expandable: boolean
   icon: Icon
+  busy?: boolean
   children: ReactNode
 }): JSX.Element {
   return (
@@ -294,7 +297,9 @@ function DisclosureRow({
           !expandable && 'invisible',
         )}
       />
-      <Icon size={13} className="shrink-0 text-text-faint group-enabled:group-hover:text-text-dim" />
+      {busy
+        ? <LoadingIcon size={13} aria-label="running" className="shrink-0 animate-spin text-text-faint" />
+        : <Icon size={13} className="shrink-0 text-text-faint group-enabled:group-hover:text-text-dim" />}
       {children}
     </button>
   )
@@ -342,6 +347,7 @@ function ToolRow({
         onToggle={() => setChoice(!open)}
         expandable={hasContent}
         icon={KIND_ICON[call.kind]}
+        busy={unfinished(call) && progress === 'running'}
       >
         <span className={clsx('truncate', call.kind === 'execute' && 'font-mono text-[11px]')}>
           {call.title}
@@ -352,9 +358,6 @@ function ToolRow({
             {stats.additions > 0 && stats.deletions > 0 && ' '}
             {stats.deletions > 0 && <span className="text-[#f85149]">−{stats.deletions}</span>}
           </span>
-        )}
-        {unfinished(call) && progress === 'running' && (
-          <LoadingIcon size={12} aria-label="running" className="shrink-0 animate-spin text-text-faint" />
         )}
         {unfinished(call) && progress === 'interrupted' && (
           <span className="flex shrink-0 items-center gap-1 text-[11px] text-text-faint">
