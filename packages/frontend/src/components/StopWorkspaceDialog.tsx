@@ -110,7 +110,7 @@ export function StopWorkspaceDialog({
               ref={confirmRef}
               onClick={onConfirm}
               className="flex h-8 items-center rounded-md bg-[#c94a4a] px-3 text-xs font-medium text-white transition
-                hover:bg-[#d65858]"
+                hover:bg-danger"
             >
               {direct.length > 0 ? `Stop and start ${direct.length} queued` : 'Stop'}
             </button>

@@ -30,7 +30,7 @@ export function ProjectsScreen({
       <MobileHeader
         title="yaac"
         actions={!connected
-          ? <span className="pr-1 text-xs text-amber-400/80">reconnecting…</span>
+          ? <span className="pr-1 text-xs text-amber-400">reconnecting…</span>
           : undefined}
       />
 

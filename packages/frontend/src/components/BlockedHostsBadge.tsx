@@ -46,7 +46,7 @@ export function BlockedHostsBadge({
       <Popover.Trigger
         aria-label={`${hosts.length} blocked host${hosts.length === 1 ? '' : 's'}`}
         className={clsx(
-          'flex shrink-0 items-center gap-1 rounded bg-[#d65858]/15 px-1 py-0.5 text-xs font-medium text-[#d65858] transition',
+          'flex shrink-0 items-center gap-1 rounded bg-danger/15 px-1 py-0.5 text-xs font-medium text-danger transition',
           className,
         )}
       >
@@ -100,7 +100,7 @@ export function BlockedHostsBadge({
                           </button>
                         ))}
                         {error && (
-                          <div className="px-2 py-1 text-xs text-[#d65858]">{error}</div>
+                          <div className="px-2 py-1 text-xs text-danger">{error}</div>
                         )}
                       </div>
                     )}

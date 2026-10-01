@@ -13,11 +13,11 @@ const DARK: ITheme = {
 }
 
 const LIGHT: ITheme = {
-  background: '#eeedec',
-  foreground: '#323130',
-  cursor: '#323130',
-  cursorAccent: '#eeedec',
-  selectionBackground: '#cdd6e0',
+  background: '#e2e1dc',
+  foreground: '#1a1918',
+  cursor: '#1a1918',
+  cursorAccent: '#e2e1dc',
+  selectionBackground: '#b9c6d6',
   black: '#24292e',
   red: '#cf222e',
   green: '#116329',
@@ -29,10 +29,10 @@ const LIGHT: ITheme = {
   brightBlack: '#57606a',
   brightRed: '#a40e26',
   brightGreen: '#1a7f37',
-  brightYellow: '#bf8700',
+  brightYellow: '#946300',
   brightBlue: '#0550ae',
   brightMagenta: '#6639ba',
-  brightCyan: '#3192aa',
+  brightCyan: '#1f7a91',
   brightWhite: '#24292f',
 }
 

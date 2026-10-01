@@ -804,7 +804,7 @@ function CreateWorkspaceForm({
           </div>
         )}
 
-        {error && <div className="mx-2 mb-1 text-[11px] text-[#d65858]">{error}</div>}
+        {error && <div className="mx-2 mb-1 text-[11px] text-danger">{error}</div>}
 
         <div className="flex gap-2 p-1 max-md:flex-col-reverse">
           {opts.editId === undefined && (
@@ -897,7 +897,7 @@ function SaveDraftDialog({
               ? 'Discarding keeps the draft as it was saved.'
               : 'A draft keeps the prompt and settings in the sidebar, to create from later.'}
           </AlertDialog.Description>
-          {error && <p className="mt-2 text-xs text-[#d65858]">{error}</p>}
+          {error && <p className="mt-2 text-xs text-danger">{error}</p>}
           <div className="mt-5 flex justify-end gap-2">
             <AlertDialog.Close
               disabled={busy}

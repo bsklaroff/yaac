@@ -61,7 +61,7 @@ export function WorkspacesScreen({
           : <span>yaac</span>}
         actions={
           <>
-            {!connected && <span className="pr-1 text-xs text-amber-400/80">reconnecting…</span>}
+            {!connected && <span className="pr-1 text-xs text-amber-400">reconnecting…</span>}
             {projectSlug && <SkillsButton projectSlug={projectSlug} />}
             {projectSlug && <NewWorkspaceButton projectSlug={projectSlug} />}
           </>
@@ -77,7 +77,7 @@ export function WorkspacesScreen({
             projectSlug={projectSlug}
             failures={gitAuthFailures}
             iconSize={11}
-            className="hover:bg-[#d65858]/25"
+            className="hover:bg-danger/25"
           />
         )}
       </div>

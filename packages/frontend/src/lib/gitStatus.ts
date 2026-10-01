@@ -10,10 +10,10 @@ export interface StatusMeta {
   className: string
 }
 
-const GREEN = 'text-[#3fb950]'
-const YELLOW = 'text-[#d29922]'
-const RED = 'text-[#f85149]'
-const BLUE = 'text-[#58a6ff]'
+const GREEN = 'text-success'
+const YELLOW = 'text-warning'
+const RED = 'text-error'
+const BLUE = 'text-link'
 
 export const CHANGE_STATUS: Record<ChangeStatus, StatusMeta> = {
   added: { letter: 'A', className: GREEN },

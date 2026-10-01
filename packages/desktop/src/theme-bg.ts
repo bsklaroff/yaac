@@ -5,5 +5,5 @@
  * is not told about a light/dark override chosen in the renderer.
  */
 export function backgroundColorFor(dark: boolean): string {
-  return dark ? '#0f0f12' : '#fcfcfb'
+  return dark ? '#0f0f12' : '#d3d2cc'
 }

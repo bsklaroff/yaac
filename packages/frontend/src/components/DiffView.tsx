@@ -48,8 +48,8 @@ export function DiffView({
             )}
             <span className={clsx(
               'w-3 shrink-0 select-none text-center',
-              line.kind === 'add' && 'text-[#3fb950]',
-              line.kind === 'del' && 'text-[#f85149]',
+              line.kind === 'add' && 'text-success',
+              line.kind === 'del' && 'text-error',
               line.kind === 'context' && 'text-transparent',
             )}>
               {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '}

@@ -390,7 +390,7 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
           {dirty && <span aria-label="Unsaved changes" className="ml-1.5 shrink-0 text-text-dim">●</span>}
         </span>
         {statusLabel && (
-          <span className={clsx('shrink-0', status === 'retrying' || conflict ? 'text-[#d29922]' : 'text-text-faint')}>
+          <span className={clsx('shrink-0', status === 'retrying' || conflict ? 'text-warning' : 'text-text-faint')}>
             {statusLabel}
           </span>
         )}
@@ -423,7 +423,7 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
       </div>
       {conflict?.version != null && (
         <div role="alert" className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-hairline
-          bg-[#d29922]/10 px-2 py-1 text-[11px] text-text-dim">
+          bg-warning/10 px-2 py-1 text-[11px] text-text-dim">
           <span>Changed on disk since you started editing:</span>
           <button onClick={() => void saver.reload()} className="font-medium text-text hover:underline">
             Reload

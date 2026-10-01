@@ -51,7 +51,7 @@ function Link({ href, children }: { href?: string; children: ReactNode }): JSX.E
       href={href}
       target="_blank"
       rel="noreferrer noopener"
-      className="text-[#58a6ff] underline decoration-[#58a6ff]/40 underline-offset-2 hover:decoration-[#58a6ff]"
+      className="text-link underline decoration-link/40 underline-offset-2 hover:decoration-link"
     >
       {children}
     </a>

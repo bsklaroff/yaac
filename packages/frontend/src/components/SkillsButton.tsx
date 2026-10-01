@@ -88,7 +88,7 @@ function SkillDetailPane(
       )}
       <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded bg-bg/80 p-3">
         {isLoading && <p className="text-xs text-text-faint">Loading…</p>}
-        {isError && <p className="text-xs text-red-400/80">Could not load this skill.</p>}
+        {isError && <p className="text-xs text-red-400">Could not load this skill.</p>}
         {data && (
           <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-text-dim">
             {data.body.trim() || '(no body)'}

@@ -102,13 +102,13 @@ export function usageTone(limit: PlanUsageLimit): 'ok' | 'warn' | 'high' {
 const TONE_BAR: Record<ReturnType<typeof usageTone>, string> = {
   ok: 'bg-emerald-400',
   warn: 'bg-amber-400',
-  high: 'bg-[#d65858]',
+  high: 'bg-danger',
 }
 
 const TONE_TRIGGER: Record<ReturnType<typeof usageTone>, string> = {
   ok: 'bg-surface-2 text-text-dim hover:bg-surface-3 hover:text-text',
   warn: 'bg-amber-400/15 text-amber-400 hover:bg-amber-400/25',
-  high: 'bg-[#d65858]/15 text-[#d65858] hover:bg-[#d65858]/25',
+  high: 'bg-danger/15 text-danger hover:bg-danger/25',
 }
 
 /** The snapshot's non-empty usage sections, in tool order. */

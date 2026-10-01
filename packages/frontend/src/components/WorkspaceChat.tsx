@@ -270,7 +270,7 @@ export function WorkspaceChat({
             </div>
           )}
           {imageError !== null && (
-            <div className="mb-1.5 px-1 text-xs text-[#f85149]">Image not attached: {imageError}</div>
+            <div className="mb-1.5 px-1 text-xs text-error">Image not attached: {imageError}</div>
           )}
           {menu}
           <div

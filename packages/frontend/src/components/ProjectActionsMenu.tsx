@@ -40,7 +40,7 @@ export function ProjectActionsMenu({ slug, remoteUrl }: {
               shadow-[0_12px_32px_var(--shadow-color)] outline-none transition-opacity duration-100
               data-[starting-style]:opacity-0 data-[ending-style]:opacity-0">
               <Menu.Item
-                className={clsx(ITEM, 'text-[#d65858] data-[highlighted]:bg-[#c94a4a]/15')}
+                className={clsx(ITEM, 'text-danger data-[highlighted]:bg-[#c94a4a]/15')}
                 onClick={() => setConfirm(true)}
               >
                 <DeleteIcon size={14} />

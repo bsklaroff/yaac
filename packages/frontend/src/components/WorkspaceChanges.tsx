@@ -202,8 +202,8 @@ export function WorkspaceChanges({ workspaceId, projectSlug, baseBranch, focusKe
                 ? `${visible.length} of ${files.length} files`
                 : `${files.length} file${files.length === 1 ? '' : 's'}`}
             </span>
-            <span className="text-[#3fb950]">+{totals.add}</span>
-            <span className="text-[#f85149]">−{totals.del}</span>
+            <span className="text-success">+{totals.add}</span>
+            <span className="text-error">−{totals.del}</span>
           </>
         ) : (
           // Without a resolved fork point, committed work is not in the diff.
@@ -211,7 +211,7 @@ export function WorkspaceChanges({ workspaceId, projectSlug, baseBranch, focusKe
         )}
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {data && !data.baseResolved && files.length > 0 && (
-            <span title="No fork point for the base branch — only uncommitted work is shown." className="text-[#d29922]">
+            <span title="No fork point for the base branch — only uncommitted work is shown." className="text-warning">
               uncommitted only
             </span>
           )}
@@ -319,9 +319,9 @@ function FileAccordion({
         {file.status !== 'deleted' && <span className="w-5 shrink-0" />}
         {!file.binary && (
           <span className="shrink-0 font-mono text-[10px] text-text-faint">
-            {file.additions > 0 && <span className="text-[#3fb950]">+{file.additions}</span>}
+            {file.additions > 0 && <span className="text-success">+{file.additions}</span>}
             {file.additions > 0 && file.deletions > 0 && ' '}
-            {file.deletions > 0 && <span className="text-[#f85149]">−{file.deletions}</span>}
+            {file.deletions > 0 && <span className="text-error">−{file.deletions}</span>}
           </span>
         )}
       </button>

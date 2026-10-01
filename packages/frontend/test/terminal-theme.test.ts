@@ -10,8 +10,8 @@ describe('terminalTheme', () => {
 
   it('is a light palette for light, with light-tuned ANSI colors', () => {
     const t = terminalTheme('light')
-    expect(t.background).toBe('#eeedec')
-    expect(t.foreground).toBe('#323130')
+    expect(t.background).toBe('#e2e1dc')
+    expect(t.foreground).toBe('#1a1918')
     // A full ANSI set is supplied (the dark defaults wash out on light).
     expect(t.red).toBeTruthy()
     expect(t.brightWhite).toBe('#24292f')

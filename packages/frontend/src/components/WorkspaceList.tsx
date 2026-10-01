@@ -545,7 +545,7 @@ function ProvisioningRow({ entry }: { entry: ProvisioningWorkspaceEntry }): JSX.
         </span>
         <span className="flex items-center gap-1.5 text-xs text-text-faint">
           {entry.error ? (
-            <span className="text-[#d65858]">failed</span>
+            <span className="text-danger">failed</span>
           ) : (
             <>
               <LoadingIcon size={11} className="animate-spin" />
@@ -672,7 +672,7 @@ function GroupSection({
                 {group.pinned && <PinIcon size={10} className="shrink-0 rotate-45" />}
                 <span className="truncate">{group.name}</span>
                 <span className="text-text-faint/70">({active}/{total})</span>
-                {died > 0 && <span className="text-[#d65858]">· {died} died</span>}
+                {died > 0 && <span className="text-danger">· {died} died</span>}
               </Collapsible.Trigger>
 
               {/* Outside the trigger, which is itself a button. */}
@@ -914,7 +914,7 @@ function WorkspaceRow({
                 hosts={workspace.blockedHosts}
                 workspaceId={workspace.workspaceId}
                 iconSize={11}
-                className="pointer-events-auto hover:bg-[#d65858]/25"
+                className="pointer-events-auto hover:bg-danger/25"
               />
             </span>
           )}
@@ -1232,7 +1232,7 @@ function QueuedSet({ parentId }: { parentId: string }): JSX.Element | null {
         text-text-faint outline-none transition hover:text-text-dim">
         <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
         {n} queued workspace{n === 1 ? '' : 's'}
-        {failed > 0 && <span className="text-[#d65858]">· {failed} failed</span>}
+        {failed > 0 && <span className="text-danger">· {failed} failed</span>}
       </Collapsible.Trigger>
       <Collapsible.Panel>
         <QueuedRows parentId={parentId} depth={1} />
@@ -1305,7 +1305,7 @@ function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEntry; dep
         </span>
         <span className="flex items-center gap-2 text-xs text-text-faint">
           {failure !== undefined
-            ? <span className="truncate text-[#d65858]" title={failure}>{failure}</span>
+            ? <span className="truncate text-danger" title={failure}>{failure}</span>
             : <span className="truncate">{agentLabel(entry.tool, entry)} · queued</span>}
           {entry.orphaned === true && <span className="ml-auto shrink-0">parent gone</span>}
         </span>

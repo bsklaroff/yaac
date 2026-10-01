@@ -49,7 +49,7 @@ const IMAGE = /\.(png|jpe?g|gif|webp|avif|bmp|ico|svg)$/i
 
 /** A file's icon and tint, by what kind of file its name says it is. */
 function fileIcon(path: string): { Icon: typeof FileIcon; className: string } {
-  if (IMAGE.test(path)) return { Icon: FileImageIcon, className: 'text-[#a371f7]' }
+  if (IMAGE.test(path)) return { Icon: FileImageIcon, className: 'text-purple' }
   const language = languageForPath(path)
   switch (language) {
     case null: {
@@ -58,12 +58,12 @@ function fileIcon(path: string): { Icon: typeof FileIcon; className: string } {
         ? { Icon: FileConfigIcon, className: 'text-text-faint' }
         : { Icon: FileIcon, className: 'text-text-faint' }
     }
-    case 'md': return { Icon: FileTextIcon, className: 'text-[#58a6ff]' }
-    case 'json': return { Icon: FileJsonIcon, className: 'text-[#d29922]' }
+    case 'md': return { Icon: FileTextIcon, className: 'text-link' }
+    case 'json': return { Icon: FileJsonIcon, className: 'text-warning' }
     case 'yaml': case 'toml': case 'xml': case 'dockerfile':
-      return { Icon: FileConfigIcon, className: 'text-[#a371f7]' }
-    case 'shell': return { Icon: FileShellIcon, className: 'text-[#3fb950]' }
-    default: return { Icon: FileCodeIcon, className: 'text-[#58a6ff]' }
+      return { Icon: FileConfigIcon, className: 'text-purple' }
+    case 'shell': return { Icon: FileShellIcon, className: 'text-success' }
+    default: return { Icon: FileCodeIcon, className: 'text-link' }
   }
 }
 
@@ -339,7 +339,7 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
         onCommit={(v) => void commitEdit(v)}
         onCancel={() => { setEditing(null); setEditError(null) }}
       />
-      {editError && <div className="py-0.5 text-[11px] text-[#f85149]">{editError}</div>}
+      {editError && <div className="py-0.5 text-[11px] text-error">{editError}</div>}
     </div>
   )
 
@@ -455,7 +455,7 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
     <div className="flex h-full flex-col bg-surface">
       {header}
       {actionError && (
-        <div role="alert" className="shrink-0 border-b border-hairline px-2 py-1 text-[11px] text-[#f85149]">
+        <div role="alert" className="shrink-0 border-b border-hairline px-2 py-1 text-[11px] text-error">
           {actionError}
         </div>
       )}

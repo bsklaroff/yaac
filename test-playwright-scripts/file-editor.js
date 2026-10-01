@@ -158,7 +158,7 @@ check('a file inside an ignored folder opens', true)
 // 7 (first half). Colors: untracked green.
 await page.getByRole('button', { name: /^Files$/ }).first().click()
 const tint = (rel) => page.locator(`button[title="${rel}"] span.truncate`).getAttribute('class')
-check('an untracked file is green', (await tint('pw-b.ts'))?.includes('3fb950'))
+check('an untracked file is green', (await tint('pw-b.ts'))?.includes('text-success'))
 
 // 6. Create, rename, delete. New file uses the selected folder, so select
 // a root-level row first.
@@ -188,7 +188,7 @@ check('deleting the folder removes it and closes its pane', gone)
 
 // 7 (second half). Colors: an edited tracked file is yellow.
 fs.appendFileSync(path.join(checkout, 'README.md'), '\nedited\n')
-const yellow = await eventually(async () => (await tint('README.md'))?.includes('d29922'), 8000)
+const yellow = await eventually(async () => (await tint('README.md'))?.includes('text-warning'), 8000)
 check('an edited tracked file is yellow', yellow)
 
 await page.screenshot({ path: path.join(SHOTS, 'file-editor.png') })

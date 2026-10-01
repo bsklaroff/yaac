@@ -29,6 +29,15 @@
   --color-accent: #d4875f;
   --color-accent-soft: #8a5a3d;
 
+  /* Status hues: diff add/delete, errors, destructive actions, warnings,
+   * links, and the purple file-type tint. */
+  --color-success: #3fb950;
+  --color-error: #f85149;
+  --color-danger: #d65858;
+  --color-warning: #d29922;
+  --color-link: #58a6ff;
+  --color-purple: #a371f7;
+
   /* Card edges / dividers. A hair of white on the dark cards; the light
    * palette flips these to a hair of black so edges still read on white
    * (a plain white/[0.06] border would vanish there). */
@@ -141,60 +150,94 @@
   --color-accent-soft: #8a5a3d;
   --color-hairline: rgb(255 255 255 / 0.06);
   --color-hairline-soft: rgb(255 255 255 / 0.04);
+  --color-success: #3fb950;
+  --color-error: #f85149;
+  --color-danger: #d65858;
+  --color-warning: #d29922;
+  --color-link: #58a6ff;
+  --color-purple: #a371f7;
+  /* Tailwind's own values, re-asserted against the light palette's remap. */
+  --color-red-400: oklch(70.4% 0.191 22.216);
+  --color-amber-400: oklch(82.8% 0.189 84.429);
+  --color-emerald-400: oklch(76.5% 0.177 163.223);
 }
 
-/* Light palette: white elevated cards on a near-white shell, near-black text,
- * rust accent. The neutrals carry only a whisper of warmth (heavily
- * desaturated from the original Cursor-like paper, which read too brown).
- * Applied for a forced light choice and, below, for system-follows-light —
- * CSS can't share a declaration list. */
+/* Light palette: off-white cards on a mid-gray shell, near-black text, rust
+ * accent. Nothing is pure white, so the screen is not glaring, and each step
+ * is far enough from its neighbours to read as its own level: the shell
+ * sits visibly below the cards, sunken fields (bg) below the card around
+ * them. Edges come from borders rather than shadow. Applied for a forced
+ * light choice and, below, for system-follows-light — CSS can't share a
+ * declaration list. */
 [data-theme="light"] {
-  --color-shell: #fcfcfb;       /* near-white shell the cards float on */
-  --color-bg: #eeedec;         /* soft neutral wash — settings nav, loading, window bg */
-  --color-surface: #ffffff;    /* white cards, panes, popups — the elevated surface */
-  --color-surface-2: #e9e8e7;  /* hover/selected fills, menu popups */
-  --color-surface-3: #dfdedd;  /* highlighted menu item — a touch deeper */
-  --color-border: #e1e0df;     /* subtle hairline */
-  --color-border-strong: #c9c8c5;
-  --color-text: #323130;       /* near-black */
-  --color-text-dim: #757471;   /* medium gray */
-  --color-text-faint: #a2a09e;
-  --color-accent: #bd5a2a;     /* rust-orange accent, richer on white */
-  --color-accent-soft: #d59a6a;
-  --color-hairline: rgb(0 0 0 / 0.08);
-  --color-hairline-soft: rgb(0 0 0 / 0.05);
+  --color-shell: #d3d2cc;       /* gray shell the cards sit on */
+  --color-bg: #e2e1dc;         /* sunken fields, chat/file panes, settings nav */
+  --color-surface: #eae9e4;    /* off-white cards, panes, popups */
+  --color-surface-2: #cccbc5;  /* hover/selected fills, menu popups */
+  --color-surface-3: #bfbeb8;  /* highlighted menu item — a touch deeper */
+  --color-border: #bcbab4;
+  --color-border-strong: #999791;
+  --color-text: #1a1918;       /* near-black */
+  --color-text-dim: #4b4a47;
+  --color-text-faint: #63615d;
+  --color-accent: #a3461a;     /* rust-orange accent */
+  --color-accent-soft: #d08a5a;
+  --color-hairline: rgb(0 0 0 / 0.16);
+  --color-hairline-soft: rgb(0 0 0 / 0.08);
+  /* Status hues, and the Tailwind -400 shades some components use: both are
+   * tuned for dark backgrounds and wash out on light, so light mode swaps in
+   * shades that reach 4.5:1 on the cards and sunken fields. */
+  --color-success: #116329;
+  --color-error: #b3121f;
+  --color-danger: #ad2a2a;
+  --color-warning: #7d5300;
+  --color-link: #0550ae;
+  --color-purple: #6639ba;
+  --color-red-400: var(--color-red-700);
+  --color-amber-400: var(--color-amber-800);
+  --color-emerald-400: var(--color-emerald-800);
 }
 
 @media (prefers-color-scheme: light) {
   [data-theme="system"] {
-    --color-shell: #fcfcfb;
-    --color-bg: #eeedec;
-    --color-surface: #ffffff;
-    --color-surface-2: #e9e8e7;
-    --color-surface-3: #dfdedd;
-    --color-border: #e1e0df;
-    --color-border-strong: #c9c8c5;
-    --color-text: #323130;
-    --color-text-dim: #757471;
-    --color-text-faint: #a2a09e;
-    --color-accent: #bd5a2a;
-    --color-accent-soft: #d59a6a;
-    --color-hairline: rgb(0 0 0 / 0.08);
-    --color-hairline-soft: rgb(0 0 0 / 0.05);
+    --color-shell: #d3d2cc;
+    --color-bg: #e2e1dc;
+    --color-surface: #eae9e4;
+    --color-surface-2: #cccbc5;
+    --color-surface-3: #bfbeb8;
+    --color-border: #bcbab4;
+    --color-border-strong: #999791;
+    --color-text: #1a1918;
+    --color-text-dim: #4b4a47;
+    --color-text-faint: #63615d;
+    --color-accent: #a3461a;
+    --color-accent-soft: #d08a5a;
+    --color-hairline: rgb(0 0 0 / 0.16);
+    --color-hairline-soft: rgb(0 0 0 / 0.08);
+    --color-success: #116329;
+    --color-error: #b3121f;
+    --color-danger: #ad2a2a;
+    --color-warning: #7d5300;
+    --color-link: #0550ae;
+    --color-purple: #6639ba;
+    --color-red-400: var(--color-red-700);
+    --color-amber-400: var(--color-amber-800);
+    --color-emerald-400: var(--color-emerald-800);
   }
 }
 
 /*
- * Card / menu / modal drop-shadow color. Follows the APP (root) theme only —
- * strong on the dark shell, barely-there on the light one — and is deliberately
- * kept off the nestable [data-theme] blocks above so a dark subtree still
- * casts the light-mode shadow when it sits on the light base. Root-scoped, so
+ * Card / menu / modal drop-shadow color: strong on the dark shell, a faint
+ * hint on the light one, where borders separate the layers instead. Follows
+ * the APP (root) theme only, and is deliberately kept off the nestable
+ * [data-theme] blocks above so a dark subtree still casts the light-mode
+ * shadow when it sits on the light base. Root-scoped, so
  * nested data-theme="dark" subtrees inherit it rather than resetting it.
  */
 :root { --shadow-color: rgb(0 0 0 / 0.44); }
-:root[data-theme="light"] { --shadow-color: rgb(0 0 0 / 0.10); }
+:root[data-theme="light"] { --shadow-color: rgb(0 0 0 / 0.06); }
 @media (prefers-color-scheme: light) {
-  :root[data-theme="system"] { --shadow-color: rgb(0 0 0 / 0.10); }
+  :root[data-theme="system"] { --shadow-color: rgb(0 0 0 / 0.06); }
 }
 
 /*

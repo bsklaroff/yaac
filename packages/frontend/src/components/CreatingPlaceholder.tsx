@@ -21,7 +21,7 @@ export function CreatingPlaceholder({ creating }: { creating: ProvisioningWorksp
     <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
       {creating.error ? (
         <>
-          <p className="text-sm font-medium text-[#d65858]">Couldn&apos;t create workspace</p>
+          <p className="text-sm font-medium text-danger">Couldn&apos;t create workspace</p>
           <p className="max-w-md text-xs text-text-faint">{creating.error}</p>
           <div className="mt-1 flex items-center gap-2">
             <button

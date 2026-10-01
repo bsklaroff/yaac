@@ -439,7 +439,7 @@ export function WorkspaceTerminal({
             </>
           ) : (
             <>
-              <span className="text-[#f85149]">Image not attached: {uploadError}</span>
+              <span className="text-error">Image not attached: {uploadError}</span>
               <button type="button" aria-label="Dismiss" onClick={() => setUploadError(null)} className="hover:text-text">
                 <CloseIcon size={12} />
               </button>
