@@ -432,6 +432,39 @@ describe('attachAcp', () => {
     expect(errorAt).toBeGreaterThan(helloAt)
   })
 
+  it('switches to a model the session offered, refuses any other, and reports an agent refusal', async () => {
+    await record([
+      { jsonrpc: '2.0', id: 'x-1', result: { sessionId: 'acp-1', configOptions: [{
+        id: 'model', currentValue: 'opus', options: [{ value: 'opus' }, { value: 'sonnet' }, { value: 'retired' }],
+      }] } },
+    ])
+    const sock = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', sock)
+    await waitForHello(sock)
+    const requests = (): Array<{ id: number; method?: string; params?: unknown }> =>
+      transport.written.map((l) => JSON.parse(l) as { id: number; method?: string; params?: unknown })
+        .filter((m) => m.method === 'session/set_config_option')
+
+    // Not on offer: the browser's string never reaches the agent or the row.
+    sock.clientSend({ type: 'model', modelId: "x'; rm -rf /" })
+    sock.clientSend({ type: 'model', modelId: 'sonnet' })
+    await waitFor(() => requests().length === 1)
+    expect(requests()).toHaveLength(1)
+    expect(requests()[0].params).toEqual({ sessionId: 'acp-1', configId: 'model', value: 'sonnet' })
+    transport.feed(`${JSON.stringify({ jsonrpc: '2.0', id: requests()[0].id, result: { configOptions: [] } })}\n`)
+
+    sock.clientSend({ type: 'model', modelId: 'retired' })
+    await waitFor(() => requests().length === 2)
+    transport.feed(`${JSON.stringify({
+      jsonrpc: '2.0', id: requests()[1].id, error: { code: -32602, message: 'Invalid value' },
+    })}\n`)
+    await waitFor(() => sock.sent.some((m) => m.type === 'event' && m.event.type === 'error'))
+    const errors = sock.sent.flatMap((m) => (m.type === 'event' && m.event.type === 'error' ? [m.event.message] : []))
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain('"retired"')
+    expect(errors[0]).toContain('Invalid value')
+  })
+
   it('tells a pane the conversation is not live rather than hanging it open', async () => {
     const sock = new FakeSocket()
     attachAcp('demo', 'wt-1', 'no-such-conversation', sock)

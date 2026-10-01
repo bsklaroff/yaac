@@ -74,6 +74,13 @@ export interface AcpPlanEntry {
   status: 'pending' | 'in_progress' | 'completed'
 }
 
+/** A slash command the session accepts. `hint` describes its argument, when
+ *  it takes one. */
+export interface AcpCommand { name: string; description?: string; hint?: string }
+
+/** A model the session can switch to, by the adapter's own id. */
+export interface AcpModel { id: string; name?: string; description?: string }
+
 /** Why a prompt turn ended. Anything but `end_turn` is shown to the user. */
 export type AcpStopReason =
   | 'end_turn'
@@ -96,7 +103,10 @@ export type AcpEvent =
   | { type: 'plan'; seq: number; entries: AcpPlanEntry[] }
   /** The slash commands this session accepts, pushed on connect and whenever
    *  they change. */
-  | { type: 'commands'; seq: number; commands: Array<{ name: string; description?: string }> }
+  | { type: 'commands'; seq: number; commands: AcpCommand[] }
+  /** The models this session offers and the one it runs, pushed by the
+   *  handshake and again whenever the model changes. */
+  | { type: 'models'; seq: number; current?: string; models: AcpModel[] }
   /** A prompt turn began, including one already running when the server
    *  reattached, which this pane did not start. */
   | { type: 'turn-start'; seq: number }
@@ -163,6 +173,9 @@ export type AcpClientMessage =
    * to an already settled ask, so two panes cannot both reply.
    */
   | { type: 'permission'; requestId: string; optionId?: string }
+  /** Switch the session's model to one a `models` event offered. A refusal
+   *  comes back as an `error` event. */
+  | { type: 'model'; modelId: string }
 
 /** The `/pty/attach`-style pane target that addresses one ACP conversation. */
 export const ACP_TARGET_PREFIX = 'acp:'

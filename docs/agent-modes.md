@@ -275,6 +275,33 @@ clearing a backlog takes one press per message. This is deliberate: a queued
 prompt is something the user asked for. A turn recovered after a reattach is
 treated the same way.
 
+## Commands, skills and models
+
+A chat pane's composer completes what a TUI's prompt would. Typing `/` lists
+the slash commands the session advertises (`available_commands_update`, a
+`commands` event), and `/model ` lists the models it can switch to. Both lists
+are projected from the record, like the rest of the conversation, so a pane
+that attaches late or after a server restart has them too.
+
+Skills arrive as commands, spelled as each tool's TUI spells them: claude's as
+plain `/name`, pi's as `/skill:name`, and codex's as `$name`, a mention codex
+resolves inside the message. So the composer also opens on `$` and inserts a
+`$` entry without a slash. opencode's adapter lists no skills.
+
+Enter runs a command that takes no argument (it is sent as the message text,
+which is how ACP invokes one) and completes one that does; Tab completes.
+
+The model list is the session's `model` config option, read from the
+`session/new` or `session/load` reply, from any `session/set_config_option`
+reply, and from `config_option_update` (each a `models` event). Every adapter
+yaac runs advertises that option and accepts `session/set_config_option` for
+it, so `/model` sends that rather than a prompt. claude's own `/model` command
+is replaced by the picker. A `models` block is read only when there is no
+config option: codex sends both, and its block's ids carry a reasoning effort
+(`gpt-6-astra[low]`) that the option's values do not. The new model reaches
+the row through the same `onModel` path as a model the adapter reports itself
+(see "State").
+
 ## Capabilities yaac declines
 
 In an editor the agent is remote from the files, so the client serves `fs/*`
@@ -367,4 +394,5 @@ the image.
 | Record location | `acpLogDir()` in `packages/shared/src/project-paths.ts` |
 | Wire types | `packages/shared/src/acp.ts` |
 | Chat pane | `packages/frontend/src/components/WorkspaceChat.tsx`, `src/lib/acp.ts` |
+| Composer `/` and `$` completion | `packages/frontend/src/components/ComposerMenu.tsx` |
 | Pasted images | `packages/frontend/src/lib/attachments.ts`, `packages/server/src/domain/workspaces/attachments.ts`, `packages/shared/src/attachments.ts` |

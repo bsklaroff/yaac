@@ -257,8 +257,8 @@ describe('WorkspaceChanges', () => {
     await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
 
     fireEvent.click(screen.getByTitle(BASE_TRIGGER))
-    await waitFor(() => expect(screen.getByRole('list')).toBeTruthy())
-    fireEvent.click(within(screen.getByRole('list')).getByText('dev'))
+    await waitFor(() => expect(screen.getByRole('listbox')).toBeTruthy())
+    fireEvent.click(within(screen.getByRole('listbox')).getByText('dev'))
 
     expect(useUiStore.getState().changesBase.s1).toBe('dev')
     await waitFor(() => expect(mock).toHaveBeenCalledWith('s1', 'dev'))
@@ -275,8 +275,8 @@ describe('WorkspaceChanges', () => {
     expect(mock).toHaveBeenCalledWith('s1', 'dev') // initial fetch used the override
 
     fireEvent.click(screen.getByTitle(BASE_TRIGGER))
-    await waitFor(() => expect(screen.getByRole('list')).toBeTruthy())
-    fireEvent.click(within(screen.getByRole('list')).getByText('main'))
+    await waitFor(() => expect(screen.getByRole('listbox')).toBeTruthy())
+    fireEvent.click(within(screen.getByRole('listbox')).getByText('main'))
 
     expect(useUiStore.getState().changesBase.s1).toBe('main')
     await waitFor(() => expect(mock).toHaveBeenCalledWith('s1', 'main'))

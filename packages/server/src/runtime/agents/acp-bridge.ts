@@ -88,11 +88,19 @@ export function attachAcp(
   // the two sources would duplicate or drop the overlap.
   let seq = 0
   let detached = false
+  /** The model ids the record last offered this pane. A switch is accepted
+   *  only to one of them, so the id the session row may record is one the
+   *  adapter named, never arbitrary browser input. */
+  let offeredModels = new Set<string>()
   const tail = tailAcpLog(
     { slug, workspaceId, agentSessionId },
     (events, reset) => {
       // A read already in progress still reports after close.
       if (detached) return
+      if (reset) offeredModels = new Set()
+      for (const event of events) {
+        if (event.type === 'models') offeredModels = new Set(event.models.map((m) => m.id))
+      }
       if (reset) {
         // The first read, or a new agent life that truncated the record:
         // the pane replaces what it holds.
@@ -155,6 +163,12 @@ export function attachAcp(
         msg.requestId,
         typeof msg.optionId === 'string' ? msg.optionId : undefined,
       )
+      return
+    }
+    if (msg.type === 'model' && typeof msg.modelId === 'string' && offeredModels.has(msg.modelId)) {
+      // The reply is recorded, so the pane learns the new model as a
+      // `models` event from the tail.
+      void conversation.switchModel(msg.modelId)
       return
     }
     if (msg.type === 'prompt' && typeof msg.text === 'string') {

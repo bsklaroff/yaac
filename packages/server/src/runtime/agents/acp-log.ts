@@ -18,7 +18,8 @@ import { StringDecoder } from 'node:string_decoder'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { agentSessionIdSchema } from '@yaac/shared/types'
 import {
-  ACP, ACPD, AcpProjection, asRecord, asString, sessionModeId, sessionStateModeId, toContentList,
+  ACP, ACPD, AcpProjection, asRecord, asString, sessionModeId, sessionModels, sessionStateModeId,
+  toContentList,
 } from './acp-protocol'
 import { openSandboxFile, readSandboxFile, type SandboxFile } from './sandbox-fs'
 import { serverLog } from '#log'
@@ -294,14 +295,17 @@ function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
     const id = lineId(msg)
     return id === undefined ? [] : [projection.openPermission(id, msg.params)]
   }
+  // A reply settles a permission ask, or carries the session's models: the
+  // handshake's `session/new` or `session/load`, or a model switch.
   if (msg.method === undefined) {
     const id = lineId(msg)
     if (id === undefined) return []
     const event = projection.closePermission(id, msg.result)
-    return event === undefined ? [] : [event]
+    if (event !== undefined) return [event]
+    const models = sessionModels(msg.result)
+    return models === undefined ? [] : [{ type: 'models', ...models }]
   }
-  // `initialize`, `session/new` and acpd's control lines carry no conversation
-  // content.
+  // Requests and acpd's control lines carry no conversation content.
   return []
 }
 

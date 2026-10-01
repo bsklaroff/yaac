@@ -10,7 +10,7 @@ const BRANCHES = ['main', 'dev', 'release/2.x', 'feature/login']
 describe('BranchPicker', () => {
   it('filters the list by the query, case-insensitively', () => {
     render(<BranchPicker branches={BRANCHES} query="REL" onQueryChange={() => {}} onSelect={() => {}} showList />)
-    const list = screen.getByRole('list')
+    const list = screen.getByRole('listbox')
     expect(within(list).queryByText('release/2.x')).toBeTruthy()
     expect(within(list).queryByText('main')).toBeNull()
     expect(within(list).queryByText('dev')).toBeNull()
@@ -19,12 +19,12 @@ describe('BranchPicker', () => {
   it('caps the list at `limit`', () => {
     const many = Array.from({ length: 20 }, (_, i) => `b${i}`)
     render(<BranchPicker branches={many} query="" onQueryChange={() => {}} onSelect={() => {}} showList limit={5} />)
-    expect(screen.getAllByRole('listitem')).toHaveLength(5)
+    expect(screen.getAllByRole('option')).toHaveLength(5)
   })
 
   it('tags the defaultBranch', () => {
     render(<BranchPicker branches={BRANCHES} defaultBranch="main" query="" onQueryChange={() => {}} onSelect={() => {}} showList />)
-    const mainRow = within(screen.getByRole('list')).getByText('main').closest('li')
+    const mainRow = within(screen.getByRole('listbox')).getByText('main').closest('li')
     expect(mainRow).toBeTruthy()
     expect(within(mainRow as HTMLElement).getByText('default')).toBeTruthy()
   })
@@ -39,12 +39,12 @@ describe('BranchPicker', () => {
   it('calls onSelect when a suggestion is clicked', () => {
     const onSelect = vi.fn()
     render(<BranchPicker branches={BRANCHES} query="" onQueryChange={() => {}} onSelect={onSelect} showList />)
-    fireEvent.click(within(screen.getByRole('list')).getByText('dev'))
+    fireEvent.click(within(screen.getByRole('listbox')).getByText('dev'))
     expect(onSelect).toHaveBeenCalledWith('dev')
   })
 
   it('hides the list when showList is false', () => {
     render(<BranchPicker branches={BRANCHES} query="" onQueryChange={() => {}} onSelect={() => {}} showList={false} />)
-    expect(screen.queryByRole('list')).toBeNull()
+    expect(screen.queryByRole('listbox')).toBeNull()
   })
 })

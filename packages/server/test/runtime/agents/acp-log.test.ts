@@ -436,6 +436,57 @@ describe('replayAcpLog', () => {
     })
   })
 
+  it('projects the commands and models the session offers, and each model switch', () => {
+    // Shapes as the pinned adapters send them: claude's `model` config
+    // option, codex's `models` block whose ids carry an effort (the config
+    // option wins), and a command list with an argument hint.
+    const modelOption = (current: string): unknown => ({
+      id: 'model',
+      type: 'select',
+      currentValue: current,
+      options: [
+        { value: 'default', name: 'Default (recommended)', description: 'Opus 5.5' },
+        { value: 'sonnet', name: 'Sonnet 5', description: null },
+      ],
+    })
+    const events = replayAcpLog([
+      line({ jsonrpc: '2.0', id: 'x-1', method: 'session/new', params: { cwd: '/workspace' } }),
+      line({
+        jsonrpc: '2.0',
+        id: 'x-1',
+        result: {
+          sessionId: 'acp-1',
+          models: { currentModelId: 'default[low]', availableModels: [{ modelId: 'default[low]' }] },
+          configOptions: [{ id: 'mode', currentValue: 'default', options: [] }, modelOption('default')],
+        },
+      }),
+      update({
+        sessionUpdate: 'available_commands_update',
+        availableCommands: [
+          { name: 'compact', description: 'Summarize', input: { hint: '<instructions>' } },
+          { name: 'review-pr', description: '', input: null },
+        ],
+      }),
+      line({ jsonrpc: '2.0', id: 'x-2', method: 'session/set_config_option', params: { configId: 'model', value: 'sonnet' } }),
+      line({ jsonrpc: '2.0', id: 'x-2', result: { configOptions: [modelOption('sonnet')] } }),
+      // A reply to a mode switch carries no model.
+      line({ jsonrpc: '2.0', id: 'x-3', result: {} }),
+    ].join('\n'))
+
+    expect(events.map((e) => e.type)).toEqual(['models', 'commands', 'models'])
+    expect(events[0]).toMatchObject({
+      current: 'default',
+      models: [
+        { id: 'default', name: 'Default (recommended)', description: 'Opus 5.5' },
+        { id: 'sonnet', name: 'Sonnet 5' },
+      ],
+    })
+    expect(events[1]).toMatchObject({
+      commands: [{ name: 'compact', description: 'Summarize', hint: '<instructions>' }, { name: 'review-pr' }],
+    })
+    expect(events[2]).toMatchObject({ current: 'sonnet' })
+  })
+
   it('ignores the lines that carry no conversation content', () => {
     const events = replayAcpLog([
       line({ jsonrpc: '2.0', method: '_acpd/life', params: { id: 'life-1' } }),
