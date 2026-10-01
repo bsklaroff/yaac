@@ -736,3 +736,38 @@ describe('WorkspaceChat scroll follow', () => {
     expect(top()).toBe(0)
   })
 })
+
+/**
+ * A pane takes focus when shown, but not from an open dialog: an agent that
+ * starts while the user types into the new-workspace dialog must leave the
+ * keystrokes there.
+ */
+describe('WorkspaceChat focus', () => {
+  beforeEach(() => {
+    stream.events = []
+    useUiStore.setState({ chatDrafts: {} })
+  })
+
+  afterEach(() => {
+    cleanup()
+    flushChatDrafts()
+    document.body.replaceChildren()
+  })
+
+  it('focuses the box when shown', () => {
+    show()
+    expect(document.activeElement).toBe(box())
+  })
+
+  it('leaves focus in an open dialog', () => {
+    const dialog = document.createElement('div')
+    dialog.setAttribute('role', 'dialog')
+    const prompt = document.createElement('textarea')
+    dialog.append(prompt)
+    document.body.append(dialog)
+    prompt.focus()
+
+    show()
+    expect(document.activeElement).toBe(prompt)
+  })
+})

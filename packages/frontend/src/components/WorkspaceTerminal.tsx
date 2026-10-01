@@ -6,6 +6,7 @@ import '@xterm/xterm/css/xterm.css'
 import { createSettleGate } from '#lib/attach-settle'
 import { clipboardImages, imageFiles, prepareImage, uploadAttachment } from '#lib/attachments'
 import { clipboardKeyAction } from '#lib/clipboard'
+import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { IS_MAC } from '#lib/platform'
 import { CloseIcon, LoadingIcon } from '#lib/icons'
 import { paneKey, registerPtyInput } from '#lib/ptyInput'
@@ -399,7 +400,7 @@ export function WorkspaceTerminal({
   // Focus xterm's textarea directly. A synthesized click would clear the
   // selection and be forwarded to the TUI.
   useEffect(() => {
-    if (focusKey === undefined) return
+    if (focusKey === undefined || dialogHoldsFocus()) return
     termRef.current?.focus()
   }, [focusKey])
 

@@ -11,6 +11,7 @@ import { changeMatchesQuery, indexDiffsByPath, type ParsedFileDiff } from '#lib/
 import { languageForPath } from '#lib/highlight'
 import { LoadingIcon, WarningIcon, ChevronIcon, BranchIcon, SearchIcon, OpenFileIcon } from '#lib/icons'
 import { CHANGE_STATUS } from '#lib/gitStatus'
+import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { chordMatches, findChord } from '#lib/shortcuts'
 import { PathLabel } from '#components/ui/PathLabel'
 import type { WorkspaceChange } from '@yaac/shared/types'
@@ -57,7 +58,7 @@ export function WorkspaceChanges({ workspaceId, projectSlug, baseBranch, focusKe
   useEffect(() => {
     // The root exists only once loading settles, hence isLoading in deps.
     const root = rootRef.current
-    if (focusKey === undefined || !root || root.contains(document.activeElement)) return
+    if (focusKey === undefined || !root || root.contains(document.activeElement) || dialogHoldsFocus()) return
     root.focus()
   }, [focusKey, isLoading])
   const onKeyDown = (e: KeyboardEvent): void => {
