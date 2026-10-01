@@ -18,8 +18,11 @@ to save the changes or leave the draft as it was. If the draft was deleted
 meanwhile (created from or discarded in another tab), the save makes a new
 draft instead.
 
-Two other exits keep the prompt too:
+Other exits keep the prompt too:
 
+- **Save draft**, beside Create, saves without asking and closes. It is
+  enabled once there is a prompt (and, on a reopened draft, a change), and is
+  absent when editing a queued workspace.
 - Create with a missing git or agent credential sends the user to Settings,
   and saves the typed prompt as a draft first without asking.
 - While a prompt is unsaved, a page reload or tab close triggers the browser's

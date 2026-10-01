@@ -692,6 +692,7 @@ describe('CreateWorkspaceDialog', () => {
       const offered = [...select('Start').options].map((o) => o.value)
       expect(offered).toEqual(['', 'w-parent', 'q1', 'q4'])
       expect(submitButton().textContent).toBe('Save')
+      expect(screen.queryByRole('button', { name: 'Save draft' })).toBeNull()
 
       vi.mocked(updateQueuedWorkspace)
         .mockResolvedValueOnce(entry('q2', { parentWorkspaceId: undefined, parentQueuedId: 'q4' }))
@@ -782,6 +783,37 @@ describe('CreateWorkspaceDialog', () => {
       expect(after.defaultPrevented).toBe(false)
     })
 
+    it('saves a draft from its own button once a prompt is typed, without asking', async () => {
+      await openReady()
+      const save = screen.getByRole<HTMLButtonElement>('button', { name: 'Save draft' })
+      expect(save.disabled).toBe(true)
+      fireEvent.change(promptInput(), { target: { value: 'for later' } })
+      expect(save.disabled).toBe(false)
+      // A browser keeps the form clickable through the close animation;
+      // jsdom has none, so hold the close back to reach that window.
+      const realClose = useUiStore.getState().closeCreateWorkspace
+      const close = vi.fn()
+      act(() => useUiStore.setState({ closeCreateWorkspace: close }))
+      try {
+        fireEvent.click(save)
+        expect(save.textContent).toBe('Saving…')
+        expect(createButton().textContent).toBe('Create')
+        await waitFor(() => expect(close).toHaveBeenCalled())
+        // Clicks after the save resolves repeat nothing.
+        await waitFor(() => expect(save.textContent).toBe('Save draft'))
+        expect(save.disabled).toBe(true)
+        expect(createButton().disabled).toBe(true)
+        fireEvent.click(save)
+        fireEvent.click(createButton())
+      } finally {
+        useUiStore.setState({ closeCreateWorkspace: realClose })
+      }
+      expect(saveDraftWorkspace).toHaveBeenCalledOnce()
+      expect(saveDraftWorkspace).toHaveBeenCalledWith('proj', expect.objectContaining({ prompt: 'for later' }), undefined)
+      expect(screen.queryByText('Save as a draft?')).toBeNull()
+      expect(createWorkspace).not.toHaveBeenCalled()
+    })
+
     it('keeps a typed prompt as a draft on the way to missing credentials', async () => {
       // Codex was last used, but only Claude is signed in.
       snapshot.mockReturnValue(project({ lastTool: 'codex' }))
@@ -836,9 +868,23 @@ describe('CreateWorkspaceDialog', () => {
       mount()
       act(() => useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', draftId: 'd1' }))
       await waitFor(() => expect(createButton().disabled).toBe(false))
+      const save = screen.getByRole<HTMLButtonElement>('button', { name: 'Save draft' })
+      expect(save.disabled).toBe(true)
+      expect(save.title).toBe('No changes to save')
       closeX()
       await waitFor(() => expect(useUiStore.getState().createWorkspaceDialog).toBeNull())
       expect(screen.queryByText('Save changes to this draft?')).toBeNull()
+
+      // Once changed, Save draft updates it in place.
+      cleanup()
+      vi.mocked(saveDraftWorkspace).mockClear()
+      mount()
+      act(() => useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', draftId: 'd1' }))
+      await waitFor(() => expect(createButton().disabled).toBe(false))
+      fireEvent.change(select('Permissions'), { target: { value: 'bypass' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save draft' }))
+      await waitFor(() => expect(useUiStore.getState().createWorkspaceDialog).toBeNull())
+      expect(saveDraftWorkspace).toHaveBeenCalledWith('proj', expect.objectContaining({ permissionMode: 'bypass' }), 'd1')
 
       // A title and group of its own ride the create.
       cleanup()
