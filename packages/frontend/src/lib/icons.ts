@@ -95,6 +95,7 @@ export {
   CircleCheck as DoneIcon,
   CircleX as FailedIcon,
   Wrench as ToolIcon,
+  SquareTerminal as ExecuteIcon,
   ArrowRightLeft as MoveIcon,
   CircleSlash as InterruptedIcon,
 } from 'lucide-react'
