@@ -41,6 +41,7 @@ vi.mock('@yaac/server/lib/confined-fs', () => ({
     mkdirp: () => Promise.resolve(),
     readFile: (rel: string) => fsFake.readFile(`${root}/${rel}`).catch(() => null),
     writeAtomic: (rel: string, data: string) => fsFake.writeFile(`${root}/${rel}`, data),
+    locked: <T>(_rel: string, task: () => Promise<T>) => task(),
   })),
 }))
 
