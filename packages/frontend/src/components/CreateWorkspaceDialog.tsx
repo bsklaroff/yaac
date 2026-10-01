@@ -412,6 +412,11 @@ function CreateWorkspaceForm({
   // Closing loses a typed prompt on a create (not an edit of a queued
   // entry), unless it matches the reopened draft exactly.
   const text = prompt.trim()
+  // An untitled edit or draft is headed by the title generated from its
+  // prompt until the prompt changes. It is read from the live row, since
+  // the title can land while the dialog is open.
+  const fromRow = editing ?? (snapshot?.draftWorkspaces ?? []).find((d) => d.id === opts.draftId)
+  const shownTitle = titleText || (text === from?.prompt ? fromRow?.generatedTitle : undefined) || 'New workspace'
   const current: DraftWorkspaceSettings = {
     prompt: text,
     tool,
@@ -586,7 +591,7 @@ function CreateWorkspaceForm({
           />
         ) : (
           <div className="flex min-w-0 items-center gap-0.5">
-            <Dialog.Title className="min-w-0 truncate text-sm font-semibold">{titleText || 'New workspace'}</Dialog.Title>
+            <Dialog.Title className="min-w-0 truncate text-sm font-semibold">{shownTitle}</Dialog.Title>
             <button
               type="button"
               onClick={titleEdit.start}

@@ -630,12 +630,12 @@ describe('CreateWorkspaceDialog', () => {
       vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
       snapshot.mockReturnValue(project({}, 'k8s', {
         workspaces: [PARENT],
-        queuedWorkspaces: [entry('q1', { groupId: 'g-review' })],
+        queuedWorkspaces: [entry('q1', { groupId: 'g-review', generatedTitle: 'Generated' })],
         workspaceGroups: GROUPS,
       }))
       await openWith({ editId: 'q1' })
-      // An untitled entry's edit keeps the create dialog's heading.
-      expect(heading()).toBe('New workspace')
+      // An untitled entry's edit is headed by its generated title.
+      expect(heading()).toBe('Generated')
       expect(select('Group').value).toBe('g-review')
       fireEvent.change(select('Group'), { target: { value: option('Group', '+ New group').value } })
       const name = screen.getByLabelText('New group name')
@@ -836,11 +836,24 @@ describe('CreateWorkspaceDialog', () => {
       act(() => useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', draftId: 'd1' }))
       await waitFor(() => expect(createButton().disabled).toBe(false))
       expect(promptInput().value).toBe('half an idea')
+      expect(heading()).toBe('New workspace')
       expect(select('Start').value).toBe('')
       expect(select('Agent').value).toBe('codex')
       expect(modelInput().value).toBe('GPT-5.5')
       expect(select('Permissions').value).toBe('read-only')
       await waitFor(() => expect(branchInput().value).toBe('dev'))
+
+      // A generated title landing while open heads the dialog; whitespace is
+      // not an edit, but a real edit drops it until reverted.
+      snapshot.mockReturnValue(project({}, 'k8s', {
+        draftWorkspaces: [draft({ startAfter: 'w-gone', generatedTitle: 'Half an idea' })],
+      }))
+      fireEvent.change(promptInput(), { target: { value: 'half an idea \n' } })
+      expect(heading()).toBe('Half an idea')
+      fireEvent.change(promptInput(), { target: { value: 'a whole idea' } })
+      expect(heading()).toBe('New workspace')
+      fireEvent.change(promptInput(), { target: { value: 'half an idea' } })
+      expect(heading()).toBe('Half an idea')
 
       fireEvent.change(promptInput(), { target: { value: 'a whole idea' } })
       closeX()
