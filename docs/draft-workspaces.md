@@ -63,6 +63,8 @@ draft and the prompt, so a new prompt gets its own attempt, and the write only
 lands if the draft still holds the prompt it was generated from. The sweep
 runs on the reconciler's resync (every minute), so a new draft is titled
 within about a minute. Until then the sidebar shows the prompt's first line.
+The create dialog, reopened on an untitled draft or queued entry, is headed by
+its generated title until the prompt is changed.
 
 ## Surfaces
 

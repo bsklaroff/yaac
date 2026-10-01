@@ -27,10 +27,16 @@
  *     picks the highlighted model, Enter again creates. The sidebar's
  *     provisioning row names the model from its first frame, and the new
  *     workspace carries the prompt.
+ *  9. An untitled draft and a queued entry (after check 8's workspace) are
+ *     each headed by their generated title (injected into the snapshot
+ *     feed), which also names the dialog and truncates to one line, at phone
+ *     width too; a title arriving while the dialog is open replaces "New
+ *     workspace". A whitespace-only edit keeps it, a real edit shows "New
+ *     workspace", reverting brings it back, and a save sends no title.
  *
  * Needs a claude credential (`yaac auth fake claude-oauth` will do). Creates
- * one workspace (check 8) and stops it at the end; check 7's drafts are
- * discarded.
+ * one workspace (check 8) and stops it at the end; check 7's and 9's drafts
+ * and entries are discarded.
  *
  * Run: YAAC_DATA_DIR=<data dir> PROJECT=<slug> node test-playwright-scripts/create-dialog-test.js
  */
@@ -350,6 +356,112 @@ try {
     null, 120_000)
   const created = (await api(`/workspace/list?project=${PROJECT}`)).workspaces.find((w) => w.workspaceId === createdId)
   check('the new workspace carries the prompt', created?.prompt === `${ask}\nsecond line`, created?.prompt ?? 'none')
+  // (9) The heading shows a generated title until the prompt changes. The
+  // title model may be unreachable here, so the snapshot feed is rewritten
+  // to give the test's draft and entry a long generated title while they
+  // still hold the prompt it was made from, as the server would.
+  const about = `pw heading ${Date.now()}: move the session cache behind the shared auth middleware`
+  const GEN = 'Move the session cache behind the shared auth middleware and add expiry tests for every path'
+  let injecting = false
+  const ctx9 = await browser.newContext({ viewport: { width: 1400, height: 900 } })
+  const inject = (frame) => {
+    if (!injecting || typeof frame !== 'string') return frame
+    const ev = JSON.parse(frame)
+    if (ev.type !== 'snapshot') return frame
+    for (const row of [...ev.data.draftWorkspaces ?? [], ...ev.data.queuedWorkspaces ?? []]) {
+      if (row.prompt.startsWith(about) && !row.prompt.endsWith(' and more') && row.title === undefined) row.generatedTitle = GEN
+    }
+    return JSON.stringify(ev)
+  }
+  await ctx9.routeWebSocket('**/api/events', (ws) => {
+    const server = ws.connectToServer()
+    server.onMessage((m) => ws.send(inject(m)))
+  })
+  const page9 = await ctx9.newPage()
+  page9.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
+  await page9.goto(`${origin}/?project=${PROJECT}`)
+  const dialog9 = page9.getByRole('dialog')
+  const prompt9 = page9.getByLabel('Prompt')
+  const heading9 = dialog9.getByRole('heading')
+  const headingText = async () => (await heading9.textContent()).trim()
+  const madeDraft = await api('/workspace/draft/save', {
+    method: 'POST',
+    body: { project: PROJECT, prompt: about, tool: 'claude', model: 'claude-sonnet-5', branch: defaultBranch, mode: 'tui', permissionMode: 'manual' },
+  })
+  const madeEntry = await api('/workspace/queue/create', {
+    method: 'POST',
+    body: { project: PROJECT, parent: createdId, prompt: `${about} (queued)`, tool: 'claude', model: 'claude-sonnet-5',
+      mode: 'tui', permissionMode: 'manual', branch: defaultBranch, title: '', group: null },
+  })
+  // Any write pushes a fresh snapshot.
+  const nudge = () => api('/workspace/draft/save', { method: 'POST', body: { id: madeDraft.id, project: PROJECT,
+    prompt: about, tool: 'claude', model: 'claude-sonnet-5', branch: defaultBranch, mode: 'tui', permissionMode: 'manual' } })
+  try {
+    // A title that lands while the dialog is open.
+    await page9.locator('aside').getByTitle(about, { exact: true }).click({ timeout: 15_000 })
+    await prompt9.waitFor({ state: 'visible' })
+    check('draft without a title yet: "New workspace"', await headingText() === 'New workspace', await headingText())
+    injecting = true
+    await nudge()
+    await page9.waitForTimeout(1500)
+    check('…and its generated title arriving while open replaces it', await headingText() === GEN, await headingText())
+    await dialog9.getByRole('button', { name: 'Close', exact: true }).click()
+    const ask9 = page9.getByRole('alertdialog')
+    if (await ask9.waitFor({ timeout: 500 }).then(() => true, () => false)) {
+      await ask9.getByRole('button', { name: /^Discard/ }).click()
+    }
+    await prompt9.waitFor({ state: 'detached' })
+
+    for (const [kind, text, saveRoute, saveName] of [
+      ['draft', about, '**/api/workspace/draft/save', 'Save draft'],
+      ['queued', `${about} (queued)`, '**/api/workspace/queue/update', 'Save'],
+    ]) {
+      const row9 = page9.locator('aside').getByTitle(text, { exact: true })
+      // A workspace's queued set starts collapsed behind its expander.
+      if (!(await row9.isVisible())) await page9.locator('aside').getByRole('button', { name: /queued workspace/ }).first().click()
+      await row9.click({ timeout: 15_000 })
+      await prompt9.waitFor({ state: 'visible' })
+      check(`${kind}: headed by its generated title`, await headingText() === GEN, await headingText())
+      check(`${kind}: …which names the dialog`, await page9.getByRole('dialog', { name: GEN }).count() === 1)
+      const fit = await heading9.evaluate((el) => ({ h: el.getBoundingClientRect().height,
+        lh: parseFloat(getComputedStyle(el).lineHeight), clipped: el.scrollWidth > el.clientWidth,
+        right: el.getBoundingClientRect().right, dlg: el.closest('[role=dialog]').getBoundingClientRect().right }))
+      check(`${kind}: …truncated to one line inside the dialog`, fit.h <= fit.lh + 1 && fit.right <= fit.dlg && fit.clipped,
+        JSON.stringify(fit))
+      await page9.screenshot({ path: path.join(SHOTS, `create-dialog-generated-${kind}.png`) })
+      await prompt9.fill(`${text} `)
+      check(`${kind}: a whitespace-only edit keeps it`, await headingText() === GEN, await headingText())
+      await prompt9.fill(`${text} and more`)
+      check(`${kind}: a real edit shows "New workspace"`, await headingText() === 'New workspace', await headingText())
+      await prompt9.fill(text)
+      check(`${kind}: reverting brings it back`, await headingText() === GEN, await headingText())
+      await dialog9.getByLabel('Permissions').selectOption({ index: 1 })
+      let sentBody = null
+      await page9.route(saveRoute, (r) => { sentBody = r.request().postDataJSON(); return r.continue() })
+      await dialog9.getByRole('button', { name: saveName, exact: true }).click()
+      await prompt9.waitFor({ state: 'detached' })
+      await page9.unroute(saveRoute)
+      check(`${kind}: the save sends no title`, sentBody !== null && !sentBody.title && sentBody.generatedTitle === undefined,
+        JSON.stringify(sentBody))
+    }
+
+    // Phone width: still one truncated line on screen.
+    await page9.setViewportSize({ width: 390, height: 844 })
+    await page9.reload()
+    await page9.getByTitle(about, { exact: true }).first().click({ timeout: 15_000 })
+    await prompt9.waitFor({ state: 'visible' })
+    await page9.waitForTimeout(300)
+    const pfit = await heading9.evaluate((el) => ({ h: el.getBoundingClientRect().height,
+      lh: parseFloat(getComputedStyle(el).lineHeight), right: el.getBoundingClientRect().right, vw: innerWidth }))
+    check('phone: the generated heading stays one line on screen', pfit.h <= pfit.lh + 1 && pfit.right <= pfit.vw,
+      JSON.stringify(pfit))
+    await page9.screenshot({ path: path.join(SHOTS, 'create-dialog-generated-phone.png') })
+    await page9.keyboard.press('Escape')
+  } finally {
+    await ctx9.close()
+    await api('/workspace/queue/discard', { method: 'POST', body: { id: madeEntry.id } }).catch(() => {})
+    await api('/workspace/draft/discard', { method: 'POST', body: { id: madeDraft.id } }).catch(() => {})
+  }
 } finally {
   await browser.close()
   if (createdId !== null) execSync(`yaac workspace stop ${createdId}`, { stdio: 'ignore' })
