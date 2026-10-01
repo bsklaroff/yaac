@@ -585,7 +585,20 @@ describe('WorkspaceChat rendering', () => {
     // a code block, not visible backticks.
     fireEvent.click(screen.getByText('ls'))
     expect(screen.getByText('a.ts')).toBeTruthy()
-    expect(screen.getByText('ls').closest('div')?.textContent).not.toContain('```')
+    expect(screen.getByText('a.ts').closest('div')?.textContent).not.toContain('```')
+  })
+
+  it('shows a command in full when its row is expanded', () => {
+    const command = `git commit -m "${'long message '.repeat(20)}"`
+    stream.events = [
+      toolCall(0, { toolCallId: 't1', title: command, shell: true, kind: 'execute', status: 'completed' }),
+      // codex files MCP calls under `execute` with no command: nothing to expand.
+      toolCall(1, { toolCallId: 't2', title: 'mcp.github.get_issue', kind: 'execute', status: 'completed' }),
+    ]
+    show()
+    fireEvent.click(screen.getByText(command))
+    expect(screen.getAllByText(command).map((el) => el.tagName)).toEqual(['SPAN', 'PRE'])
+    expect(screen.getByText('mcp.github.get_issue').closest('button')?.disabled).toBe(true)
   })
 
   it('shows a read as the file, highlighted for its path', () => {

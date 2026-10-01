@@ -436,6 +436,45 @@ describe('replayAcpLog', () => {
     })
   })
 
+  it('marks shell calls by their rawInput, and pi\'s by having none', () => {
+    const events = replayAcpLog([
+      // claude: the command arrives in rawInput, the title later.
+      update({
+        sessionUpdate: 'tool_call',
+        toolCallId: 'claude',
+        title: 'Terminal',
+        kind: 'execute',
+        rawInput: { command: 'ls -la', description: 'List files' },
+      }),
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 'claude', title: 'ls -la', status: 'completed' }),
+      // pi: a bash call carries no rawInput at all.
+      update({ sessionUpdate: 'tool_call', toolCallId: 'pi', title: 'git status', kind: 'execute' }),
+      // codex: an MCP call is filed under execute, with a rawInput but no command.
+      update({
+        sessionUpdate: 'tool_call',
+        toolCallId: 'mcp',
+        title: 'mcp.github.get_issue',
+        kind: 'execute',
+        rawInput: { server: 'github', tool: 'get_issue', arguments: { number: 1 } },
+      }),
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 'mcp', status: 'completed' }),
+      // claude and opencode pass an MCP tool's input through, under kind other.
+      update({
+        sessionUpdate: 'tool_call',
+        toolCallId: 'claude-mcp',
+        title: 'mcp__sandbox__execute_command',
+        kind: 'other',
+        rawInput: { command: 'ls' },
+      }),
+    ].join('\n'))
+
+    const calls = events.map((e) => (e as { call: { toolCallId: string; shell?: true } }).call)
+    expect(calls.map((c) => [c.toolCallId, c.shell])).toEqual([
+      ['claude', true], ['claude', true], ['pi', true], ['mcp', undefined], ['mcp', undefined],
+      ['claude-mcp', undefined],
+    ])
+  })
+
   it('projects the commands and models the session offers, and each model switch', () => {
     // Shapes as the pinned adapters send them: claude's `model` config
     // option, codex's `models` block whose ids carry an effort (the config

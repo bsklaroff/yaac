@@ -232,10 +232,25 @@ function toPlanEntries(value: unknown): AcpPlanEntry[] {
 export interface AcpToolCallPatch {
   toolCallId: string
   title?: string
+  shell?: boolean
   kind?: AcpToolKind
   status?: AcpToolStatus
   content?: AcpToolContent[]
   locations?: Array<{ path: string; line?: number }>
+}
+
+/**
+ * Whether an update marks its call as a shell command, or `undefined` when it
+ * does not say. A shell call's `rawInput` has a string `command` (claude,
+ * codex, opencode); pi sends no `rawInput` for its bash calls at all, while
+ * codex's MCP and dynamic calls always send one without a command. An MCP
+ * tool can take a `command` argument too, so `mergeToolCall` keeps the mark
+ * only on an `execute` call.
+ */
+function isShellCall(update: Record<string, unknown>, kind: string | undefined): boolean | undefined {
+  const rawInput = asRecord(update.rawInput)
+  if (rawInput !== undefined) return typeof rawInput.command === 'string'
+  return update.sessionUpdate === 'tool_call' && kind === 'execute' ? true : undefined
 }
 
 function toToolCallPatch(update: Record<string, unknown>): AcpToolCallPatch | undefined {
@@ -245,9 +260,11 @@ function toToolCallPatch(update: Record<string, unknown>): AcpToolCallPatch | un
   const status = asString(update.status)
   const content = 'content' in update ? toToolContent(update.content) : undefined
   const locations = toLocations(update.locations)
+  const shell = isShellCall(update, kind)
   return {
     toolCallId,
     ...(asString(update.title) !== undefined ? { title: asString(update.title) as string } : {}),
+    ...(shell !== undefined ? { shell } : {}),
     ...(kind !== undefined && (TOOL_KINDS as readonly string[]).includes(kind)
       ? { kind: kind as AcpToolKind }
       : {}),
@@ -264,10 +281,12 @@ export function mergeToolCall(
   previous: AcpToolCall | undefined,
   patch: AcpToolCallPatch,
 ): AcpToolCall {
+  const kind = patch.kind ?? previous?.kind ?? 'other'
   return {
     toolCallId: patch.toolCallId,
     title: patch.title ?? previous?.title ?? patch.toolCallId,
-    kind: patch.kind ?? previous?.kind ?? 'other',
+    kind,
+    ...(kind === 'execute' && (patch.shell ?? previous?.shell) ? { shell: true as const } : {}),
     status: patch.status ?? previous?.status ?? 'pending',
     // Content is cumulative; an update without it is a status change.
     ...(patch.content !== undefined && patch.content.length > 0
