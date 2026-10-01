@@ -246,16 +246,16 @@ export function persistPinnedUsageMetric(key: string | null): void {
 }
 
 /** Saved workspace layouts, dropping any that are invalid. */
-export function loadPersistedLayouts(): Record<string, PaneLayout | null> {
+export function loadPersistedLayouts(): Record<string, PaneLayout> {
   try {
     if (typeof localStorage === 'undefined') return {}
     const raw = localStorage.getItem(LAYOUTS_LS_KEY)
     if (!raw) return {}
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return {}
-    const out: Record<string, PaneLayout | null> = {}
+    const out: Record<string, PaneLayout> = {}
     for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-      if (v === null || isPaneLayout(v)) out[k] = v
+      if (isPaneLayout(v)) out[k] = v
     }
     return out
   } catch {
@@ -353,7 +353,7 @@ export function persistChatDrafts(drafts: Record<string, ChatDraft>): void {
 }
 
 /** Save workspace layouts (best-effort). */
-export function persistLayouts(layouts: Record<string, PaneLayout | null>): void {
+export function persistLayouts(layouts: Record<string, PaneLayout>): void {
   try {
     if (typeof localStorage === 'undefined') return
     localStorage.setItem(LAYOUTS_LS_KEY, JSON.stringify(layouts))
@@ -363,16 +363,17 @@ export function persistLayouts(layouts: Record<string, PaneLayout | null>): void
 }
 
 /**
- * Add a special pane (preview, changes or the explorer) to a workspace's
- * layout as a new column. Unchanged if it is already there.
+ * A workspace's layout. A workspace with none stored shows the single pane
+ * `fallback`. Callers that don't know the workspace's mode use `agent`; in an
+ * `acp` workspace the window sync (`syncPaneLayout`) then puts the chat pane
+ * in its place.
  */
-export function injectPaneLeaf(base: PaneLayout | null, target: string): PaneLayout {
-  return addColumn(base ?? singleColumn('agent'), target)
-}
-
-/** `injectPaneLeaf` for the preview pane. */
-export function injectPreviewLeaf(base: PaneLayout | null): PaneLayout {
-  return injectPaneLeaf(base, PREVIEW_TARGET)
+export function layoutOf(
+  layouts: Record<string, PaneLayout>,
+  workspaceId: string,
+  fallback = 'agent',
+): PaneLayout {
+  return layouts[workspaceId] ?? singleColumn(fallback)
 }
 
 /**
@@ -521,8 +522,8 @@ interface UiState {
    *  workspace's terminals (e.g. after a restart). */
   terminalNonces: Record<string, number>
   /** Per-workspace pane layout. A missing key means the default single
-   *  column; null means explicitly emptied. */
-  layouts: Record<string, PaneLayout | null>
+   *  column (see `layoutOf`). */
+  layouts: Record<string, PaneLayout>
   /** Per-workspace port the preview pane shows; missing means the first
    *  forwarded port. */
   previewPort: Record<string, number>
@@ -697,7 +698,7 @@ interface UiState {
   openWorkspace: (projectSlug: string, workspaceId: string) => void
   reconnectTerminal: (workspaceId: string) => void
   /** Replace a workspace's layout (see #lib/layout). */
-  setWorkspaceLayout: (workspaceId: string, layout: PaneLayout | null) => void
+  setWorkspaceLayout: (workspaceId: string, layout: PaneLayout) => void
   toggleSidebar: () => void
   setViewMode: (mode: ViewMode) => void
   /** Record a workspace's active pane without moving focus, for focus the
@@ -725,10 +726,9 @@ interface UiState {
 
 /** Open a special pane as its own column (if not already open) and focus it. */
 function openSpecialPane(s: UiState, workspaceId: string, target: string): Partial<UiState> {
-  const base = workspaceId in s.layouts ? s.layouts[workspaceId] : singleColumn('agent')
-  const injected = injectPaneLeaf(base, target)
+  const added = addColumn(layoutOf(s.layouts, workspaceId), target)
   return {
-    layouts: { ...s.layouts, [workspaceId]: withActive(injected, target) },
+    layouts: { ...s.layouts, [workspaceId]: withActive(added, target) },
     activeTabs: { ...s.activeTabs, [workspaceId]: target },
     focusNonce: s.focusNonce + 1,
   }
@@ -875,24 +875,17 @@ export const useUiStore = create<UiState>((set) => ({
       ? s
       : { previewPort: { ...s.previewPort, [workspaceId]: containerPort } }
   )),
-  openPreview: (workspaceId, containerPort) => set((s) => {
-    const base = workspaceId in s.layouts ? s.layouts[workspaceId] : singleColumn('agent')
-    const previewPort = containerPort !== undefined && s.previewPort[workspaceId] === undefined
-      ? { ...s.previewPort, [workspaceId]: containerPort }
-      : s.previewPort
-    return {
-      layouts: { ...s.layouts, [workspaceId]: injectPreviewLeaf(base) },
-      previewPort,
-      activeTabs: { ...s.activeTabs, [workspaceId]: PREVIEW_TARGET },
-      focusNonce: s.focusNonce + 1,
-    }
-  }),
+  openPreview: (workspaceId, containerPort) => set((s) => ({
+    ...openSpecialPane(s, workspaceId, PREVIEW_TARGET),
+    ...(containerPort !== undefined && s.previewPort[workspaceId] === undefined
+      ? { previewPort: { ...s.previewPort, [workspaceId]: containerPort } }
+      : {}),
+  })),
   openChanges: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, CHANGES_TARGET)),
   openFiles: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, FILES_TARGET)),
   openFile: (workspaceId, path) => set((s) => {
     const target = fileTarget(path)
-    const base = workspaceId in s.layouts ? s.layouts[workspaceId] : singleColumn('agent')
-    const placed = placeFile(base ?? [], target, s.activeTabs[workspaceId])
+    const placed = placeFile(layoutOf(s.layouts, workspaceId), target, s.activeTabs[workspaceId])
     return {
       layouts: { ...s.layouts, [workspaceId]: withActive(placed, target) },
       activeTabs: { ...s.activeTabs, [workspaceId]: target },
@@ -961,8 +954,8 @@ export const useUiStore = create<UiState>((set) => ({
     return { dirtyFiles: next }
   }),
   renameFiles: (workspaceId, from, to) => set((s) => {
-    const cur = workspaceId in s.layouts ? s.layouts[workspaceId] : null
-    const layout = cur && renameTargets(cur, fileTarget(from), fileTarget(to))
+    const cur = layoutOf(s.layouts, workspaceId)
+    const layout = renameTargets(cur, fileTarget(from), fileTarget(to))
     const renamed = (key: string): string => {
       const prefix = fileKey(workspaceId, from)
       return key === prefix || key.startsWith(`${prefix}/`) ? fileKey(workspaceId, to) + key.slice(prefix.length) : key
@@ -976,17 +969,18 @@ export const useUiStore = create<UiState>((set) => ({
     return {
       dirtyFiles,
       activeTabs,
-      ...(layout && layout !== cur ? { layouts: { ...s.layouts, [workspaceId]: layout } } : {}),
+      ...(layout !== cur ? { layouts: { ...s.layouts, [workspaceId]: layout } } : {}),
     }
   }),
   closeFiles: (workspaceId, paths) => set((s) => {
-    let layout = workspaceId in s.layouts ? s.layouts[workspaceId] : null
-    for (const p of paths) layout = layout && removeTarget(layout, fileTarget(p))
+    const cur = layoutOf(s.layouts, workspaceId)
+    let layout = cur
+    for (const p of paths) layout = removeTarget(layout, fileTarget(p))
     const dirtyFiles = { ...s.dirtyFiles }
     for (const p of paths) delete dirtyFiles[fileKey(workspaceId, p)]
     return {
       dirtyFiles,
-      ...(layout ? { layouts: { ...s.layouts, [workspaceId]: layout } } : {}),
+      ...(layout !== cur ? { layouts: { ...s.layouts, [workspaceId]: layout } } : {}),
     }
   }),
   setChatDraft: (workspaceId, agentSessionId, text) => set((s) => {
@@ -1021,7 +1015,7 @@ export const useUiStore = create<UiState>((set) => ({
   focusTerminal: (workspaceId, target) => set((s) => {
     // Also make it its column's visible tab. `layouts` changes only if
     // withActive changed something, so a plain focus doesn't rewrite storage.
-    const cur = workspaceId in s.layouts ? s.layouts[workspaceId] : singleColumn('agent')
+    const cur = layoutOf(s.layouts, workspaceId)
     const next = withActive(cur, target)
     return {
       ...(next === cur ? {} : { layouts: { ...s.layouts, [workspaceId]: next } }),

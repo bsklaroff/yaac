@@ -6,7 +6,7 @@ import { ContextMenu } from '@base-ui/react/context-menu'
 import { Menu } from '@base-ui/react/menu'
 import { Tooltip } from '@base-ui/react/tooltip'
 import type { FileStatus, SymlinkTarget } from '@yaac/shared/types'
-import { paneViewKey, useUiStore } from '#lib/store'
+import { layoutOf, paneViewKey, useUiStore } from '#lib/store'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { Tip, WithTip } from '#components/ui/Tooltip'
 import { FILE_STATUS } from '#lib/gitStatus'
@@ -194,8 +194,7 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
   /** Open file panes at or under `path`. */
   const openUnder = (path: string): string[] => {
     const state = useUiStore.getState()
-    const layout = workspaceId in state.layouts ? state.layouts[workspaceId] : null
-    return paneTargets(layout).filter(isFileTarget).map(fileTargetPath)
+    return paneTargets(layoutOf(state.layouts, workspaceId)).filter(isFileTarget).map(fileTargetPath)
       .filter((p) => p === path || p.startsWith(`${path}/`))
   }
 

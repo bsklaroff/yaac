@@ -4,6 +4,8 @@ import {
   resolveVacantSelection, unreadWaitingBySlug, useUiStore,
 } from '#lib/store'
 import type { ProvisioningWorkspaceEntry } from '@yaac/shared/types'
+import { PREVIEW_TARGET } from '#lib/preview'
+import { CHANGES_TARGET } from '#lib/changesApi'
 
 const initial = useUiStore.getState()
 
@@ -261,14 +263,14 @@ describe('selection + project switching', () => {
     expect(useUiStore.getState().terminalNonces).toEqual({ t1: 2, t2: 1 })
   })
 
-  it('setWorkspaceLayout stores per-workspace pane layouts (null = emptied)', () => {
+  it('setWorkspaceLayout stores per-workspace pane layouts', () => {
     const ws = [
       { tabs: ['agent'], active: 'agent' },
       { tabs: ['shell:shell'], active: 'shell:shell' },
     ]
     useUiStore.getState().setWorkspaceLayout('s1', ws)
-    useUiStore.getState().setWorkspaceLayout('s2', null)
-    expect(useUiStore.getState().layouts).toEqual({ s1: ws, s2: null })
+    useUiStore.getState().setWorkspaceLayout('s2', [])
+    expect(useUiStore.getState().layouts).toEqual({ s1: ws, s2: [] })
   })
 })
 
@@ -416,6 +418,21 @@ describe('view mode (tiles vs tabs)', () => {
     const before = useUiStore.getState()
     useUiStore.getState().setFilesFindPending(false)
     expect(useUiStore.getState()).toBe(before)
+  })
+
+  it('openPreview and openChanges add their pane once, as a focused column', () => {
+    useUiStore.getState().openPreview('s1', 3000)
+    useUiStore.getState().openChanges('s1')
+    useUiStore.getState().openPreview('s1', 4000)
+    const state = useUiStore.getState()
+    expect(state.layouts.s1).toEqual([
+      { tabs: ['agent'], active: 'agent' },
+      { tabs: [PREVIEW_TARGET], active: PREVIEW_TARGET },
+      { tabs: [CHANGES_TARGET], active: CHANGES_TARGET },
+    ])
+    expect(state.activeTabs.s1).toBe(PREVIEW_TARGET)
+    // The first port opened sticks; reopening only refocuses.
+    expect(state.previewPort.s1).toBe(3000)
   })
 
   it('openFile places a file beside the explorer, then as a tab of the file column, and focuses it', () => {

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { acpPaneTargets, defaultPaneTarget, paneStillLive } from '#lib/panes'
+import { acpPaneTargets, defaultPaneTarget, paneStillLive, syncPaneLayout } from '#lib/panes'
+import { addColumn, addTab, paneTargets, singleColumn } from '#lib/layout'
 import { PREVIEW_TARGET } from '#lib/preview'
 import { CHANGES_TARGET } from '#lib/changesApi'
 import type { AgentSessionEntry, WorkspaceListEntry } from '@yaac/shared/types'
@@ -98,5 +99,30 @@ describe('paneStillLive', () => {
       expect(paneStillLive(wt, PREVIEW_TARGET)).toBe(true)
       expect(paneStillLive(wt, CHANGES_TARGET)).toBe(true)
     }
+  })
+})
+
+describe('syncPaneLayout', () => {
+  it('appends new windows, drops killed ones, and keeps special panes', () => {
+    const layout = addColumn(addColumn(singleColumn('agent'), '%1'), PREVIEW_TARGET)
+    const next = syncPaneLayout(layout, tui, ['%2'])
+    expect(paneTargets(next)).toEqual(['agent', PREVIEW_TARGET, '%2'])
+    // Already in line: the same reference, so nothing is stored.
+    expect(syncPaneLayout(next, tui, ['%2'])).toBe(next)
+  })
+
+  it('puts the chat pane where the agent fallback was, left of panes opened beside it', () => {
+    // A shell opened before the conversation (or before any layout was
+    // stored) lands beside `agent`; the chat pane must take agent's column.
+    const layout = addColumn(singleColumn('agent'), '%1')
+    expect(paneTargets(syncPaneLayout(layout, acp, ['%1']))).toEqual(['acp:conv-a', '%1'])
+    // Also as a tab: it takes agent's tab, active if agent was.
+    const tabbed = addTab(singleColumn('%1'), 0, 'agent')
+    expect(syncPaneLayout(tabbed, acp, ['%1'])).toEqual([{ tabs: ['%1', 'acp:conv-a'], active: 'acp:conv-a' }])
+  })
+
+  it('drops the agent pane once the chat pane is already shown, and ended conversations', () => {
+    const layout = addColumn(addColumn(singleColumn('acp:conv-a'), 'agent'), 'acp:conv-old')
+    expect(paneTargets(syncPaneLayout(layout, acp, []))).toEqual(['acp:conv-a'])
   })
 })
