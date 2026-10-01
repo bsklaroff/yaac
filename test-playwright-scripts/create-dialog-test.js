@@ -15,13 +15,22 @@
  *     returns to the dropdown and leaves the dialog open.
  *  5. For every signed-in agent, no model suggestion's name is clipped.
  *  6. On a phone viewport, tapping a branch suggestion picks it.
- *  7. Keyboard only: Shift+Enter is a newline, Enter in the Model search
+ *  7. Save draft, beside Create: Enter in the prompt, Model, Base branch
+ *     and new-group boxes still creates (creates are refused with a 500
+ *     here, so nothing starts); Save draft is disabled with a reason until
+ *     there is a prompt, and clicks during or just after a save send one
+ *     save, no create and no close question; a reopened draft is disabled
+ *     until edited and saving updates it in place; with a missing agent
+ *     credential Create saves one draft and opens Settings; at phone width
+ *     the buttons stack, Create on top, with 32px tap targets.
+ *  8. Keyboard only: Shift+Enter is a newline, Enter in the Model search
  *     picks the highlighted model, Enter again creates. The sidebar's
  *     provisioning row names the model from its first frame, and the new
  *     workspace carries the prompt.
  *
  * Needs a claude credential (`yaac auth fake claude-oauth` will do). Creates
- * one workspace (check 7) and stops it at the end.
+ * one workspace (check 8) and stops it at the end; check 7's drafts are
+ * discarded.
  *
  * Run: YAAC_DATA_DIR=<data dir> PROJECT=<slug> node test-playwright-scripts/create-dialog-test.js
  */
@@ -165,7 +174,150 @@ try {
   await mpage.screenshot({ path: path.join(SHOTS, 'branch-typeahead-phone.png') })
   await phone.close()
 
-  // (7) Keyboard-only create.
+  // (7) Save draft beside Create. Creates are answered with a 500 here so
+  // no workspace starts; each case counts which request Enter or a click sent.
+  const sent = { create: 0, draft: 0 }
+  let draftDelay = 0
+  const savedIds = new Set()
+  // Sidebar draft rows whose text starts with `text`, once the push lands.
+  const draftRows = async (text) => {
+    await page.waitForTimeout(800)
+    return page.locator('aside').getByRole('group', { name: 'Drafts' }).getByText(text).count()
+  }
+  await page.route('**/api/workspace/create', (r) => { sent.create++; return r.fulfill({ status: 500, body: '{}' }) })
+  await page.route('**/api/workspace/draft/save', async (r) => {
+    sent.draft++
+    if (draftDelay) await new Promise((res) => setTimeout(res, draftDelay))
+    const res = await r.fetch()
+    if (res.ok()) savedIds.add((await res.json()).id)
+    return r.fulfill({ response: res })
+  })
+  const reset = () => { sent.create = 0; sent.draft = 0 }
+  const saveBtn = dialog.getByRole('button', { name: 'Save draft', exact: true })
+  const settle = () => page.waitForTimeout(400)
+
+  // Enter from each kind of field creates, never saves a draft.
+  const enterFrom = {
+    prompt: async () => { await prompt.focus() },
+    Model: async () => {
+      await page.getByLabel('Model').click()
+      await page.keyboard.press('Control+a')
+      await page.keyboard.type('sonnet 5')
+      await page.keyboard.press('Enter') // picks the suggestion
+    },
+    'Base branch': async () => {
+      const b = page.getByLabel('Base branch', { exact: true })
+      await b.click()
+      await b.fill(defaultBranch.slice(0, 3))
+      await page.keyboard.press('Enter') // picks the suggestion
+    },
+    'New group name': async () => {
+      await dialog.getByLabel('Group').selectOption({ label: '+ New group' })
+      await until(page, () => document.activeElement?.getAttribute('aria-label') === 'New group name', null, 2000)
+      await page.keyboard.type('pw group')
+    },
+  }
+  for (const [field, focusIt] of Object.entries(enterFrom)) {
+    await openByKey()
+    await page.getByLabel('Agent').selectOption('claude')
+    await create.and(page.locator(':enabled')).waitFor({ timeout: 15_000 })
+    await prompt.fill(`pw enter ${field}`)
+    await focusIt()
+    reset()
+    await page.keyboard.press('Enter')
+    await settle()
+    check(`Enter in ${field} creates, not saves a draft`, sent.create === 1 && sent.draft === 0, JSON.stringify(sent))
+    if (await prompt.isVisible()) await escape()
+  }
+
+  // A new dialog: disabled until a prompt, one save per burst of clicks, no
+  // close prompt afterwards.
+  await openByKey()
+  check('Save draft sits left of Create', (await saveBtn.boundingBox()).x < (await create.boundingBox()).x)
+  check('Save draft is disabled with no prompt', await saveBtn.isDisabled())
+  check('…with a reason in its title', await saveBtn.getAttribute('title') === 'Type a prompt to save a draft')
+  const hit = await saveBtn.evaluate((el) => {
+    const r = el.getBoundingClientRect()
+    return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === el
+  })
+  check('…and the disabled button still takes hover (its title can show)', hit)
+  const idea = `pw save-draft ${Date.now()}`
+  await prompt.fill(idea)
+  reset()
+  draftDelay = 300
+  const sb = await saveBtn.boundingBox()
+  const cb = await create.boundingBox()
+  // A double-click, then more clicks on each button while the dialog closes.
+  await page.mouse.click(sb.x + 10, sb.y + 10)
+  check('while saving, Create is disabled', await dialog.getByRole('button', { name: /^Create/ }).isDisabled())
+  for (let i = 0; i < 6; i++) {
+    await page.mouse.click((i % 2 ? cb : sb).x + 10, sb.y + 10)
+    await page.waitForTimeout(100)
+  }
+  await prompt.waitFor({ state: 'detached', timeout: 5000 })
+  draftDelay = 0
+  check('Save draft closes with no "Save as a draft?" question', !(await page.getByRole('alertdialog').isVisible()))
+  check('clicks during and after the save send one save and no create', sent.create === 0 && sent.draft === 1,
+    JSON.stringify(sent))
+  check('exactly one draft holds the prompt', await draftRows(idea) === 1, `${savedIds.size} ids saved`)
+  for (const id of savedIds) if (savedIds.size > 1) await api('/workspace/draft/discard', { method: 'POST', body: { id } })
+  if (savedIds.size > 1) { savedIds.clear(); await openByKey(); await prompt.fill(idea); await saveBtn.click()
+    await prompt.waitFor({ state: 'detached' }) }
+
+  // Reopened draft: disabled until changed; saving updates it in place.
+  const row = page.locator('aside').getByText(idea).first()
+  await row.click()
+  await prompt.waitFor({ state: 'visible' })
+  check('reopened draft: Save draft is disabled', await saveBtn.isDisabled())
+  check('…titled "No changes to save"', await saveBtn.getAttribute('title') === 'No changes to save')
+  await dialog.getByLabel('Permissions').selectOption({ index: 0 })
+  const permChanged = !(await saveBtn.isDisabled())
+  await prompt.fill(`${idea} v2`)
+  check('…enabled after an edit', !(await saveBtn.isDisabled()), `permissions-only edit enabled it: ${permChanged}`)
+  reset()
+  await saveBtn.click()
+  await prompt.waitFor({ state: 'detached' })
+  check('…and saving updates that draft (still one)', sent.draft === 1
+    && await draftRows(idea) === 1 && await draftRows(`${idea} v2`) === 1, `${savedIds.size} ids`)
+
+  // Missing credential: Create saves the prompt and opens Settings.
+  if (!tools.includes('codex')) {
+    await openByKey()
+    await page.getByLabel('Agent').selectOption('codex')
+    const handoff = `pw handoff ${Date.now()}`
+    await prompt.fill(handoff)
+    reset()
+    await dialog.getByRole('button', { name: /^Sign in to/ }).click()
+    await prompt.waitFor({ state: 'detached' })
+    const settingsOpen = await page.getByRole('dialog').waitFor({ timeout: 3000 }).then(() => true, () => false)
+    check('missing credential: Create saves one draft and opens Settings',
+      sent.draft === 1 && sent.create === 0 && settingsOpen, `${JSON.stringify(sent)}, settings ${settingsOpen}`)
+    await page.keyboard.press('Escape')
+  }
+
+  // Phone width: stacked, Create on top, full-width tap targets.
+  const phone2 = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+  const p2 = await phone2.newPage()
+  await p2.goto(`${origin}/?project=${PROJECT}`)
+  await p2.getByTitle('New workspace').first().tap({ timeout: 15_000 })
+  await p2.getByRole('button', { name: 'Create', exact: true }).and(p2.locator(':enabled')).waitFor({ timeout: 15_000 })
+  // Let the dialog's scale-in finish, or the two boxes are measured mid-zoom.
+  await p2.waitForTimeout(300)
+  const pc = await p2.getByRole('button', { name: 'Create', exact: true }).boundingBox()
+  const ps = await p2.getByRole('button', { name: 'Save draft', exact: true }).boundingBox()
+  check('phone: Create sits above Save draft, both full width',
+    pc.y < ps.y && Math.abs(pc.width - ps.width) < 1 && pc.width > 300, JSON.stringify({ pc, ps }))
+  check('phone: tap targets are at least 32px tall', pc.height >= 32 && ps.height >= 32, `${pc.height}/${ps.height}`)
+  await p2.screenshot({ path: path.join(SHOTS, 'create-dialog-save-draft-phone.png') })
+  await phone2.close()
+
+  await page.unrouteAll()
+  // The refused creates leave failed rows in this tab's sidebar.
+  await page.reload()
+  await plus.waitFor({ timeout: 15_000 })
+  for (const id of savedIds) await api('/workspace/draft/discard', { method: 'POST', body: { id } }).catch(() => {})
+
+  // (8) Keyboard-only create.
   const known = new Set((await api(`/workspace/list?project=${PROJECT}`)).workspaces.map((w) => w.workspaceId))
   await openByKey()
   await page.getByLabel('Agent').selectOption('claude')

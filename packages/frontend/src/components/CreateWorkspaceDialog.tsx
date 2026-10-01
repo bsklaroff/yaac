@@ -144,8 +144,8 @@ async function keepDraft(pending: PendingDraft): Promise<void> {
  * workspace is not auto-titled.
  *
  * Enter submits (except on a button); Shift+Enter in the prompt is a newline.
- * Dismissing with a typed prompt offers to save a draft
- * (docs/draft-workspaces.md).
+ * A typed prompt can be saved as a draft with "Save draft", and dismissing
+ * with one offers the same (docs/draft-workspaces.md).
  */
 export function CreateWorkspaceDialog(): JSX.Element {
   const opts = useUiStore((s) => s.createWorkspaceDialog)
@@ -285,6 +285,16 @@ function CreateWorkspaceForm({
   // null = not typing; the field shows the chosen model's name.
   const [modelQuery, setModelQuery] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Set once a create, queue or save succeeds. The form stays clickable
+  // through the close animation, so without this a further click repeats it.
+  const [done, setDone] = useState(false)
+  // A save from the Save draft button, which then shows "Saving…" in place
+  // of Create's "…".
+  const [savingDraft, setSavingDraft] = useState(false)
+  const finish = (): void => {
+    setDone(true)
+    onClose()
+  }
 
   // Start options: now, each live workspace (newest first), then each queued
   // entry in sidebar order. An edit excludes the entry and its descendants
@@ -442,21 +452,29 @@ function CreateWorkspaceForm({
     : newGroup !== null && newGroupName === '' ? 'Name the new group'
     : null
 
+  // Save the typed prompt as a draft, then close and run `then`. Called bare
+  // by the Save draft button, and with `then` by Create's hand-off.
+  const saveDraft = (then?: () => void): void => {
+    if (busy || done || pending === null) return
+    setBusy(true)
+    setSavingDraft(then === undefined)
+    setError(null)
+    keepDraft(pending)
+      .then(() => { finish(); then?.() }, (err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => { setBusy(false); setSavingDraft(false) })
+  }
+
   const submit = (): void => {
-    if (busy) return
+    if (busy || done) return
     // Missing credentials open Settings instead, saving any typed prompt as
     // a draft without asking.
     const handOff = (open: () => void): void => {
-      if (pending === null) {
-        onClose()
-        open()
+      if (pending !== null) {
+        saveDraft(open)
         return
       }
-      setBusy(true)
-      setError(null)
-      keepDraft(pending)
-        .then(() => { onClose(); open() }, (err: unknown) => setError(err instanceof Error ? err.message : String(err)))
-        .finally(() => setBusy(false))
+      finish()
+      open()
     }
     if (needsGitAuth) {
       handOff(() => openSettings('credentials', undefined, projectSlug))
@@ -469,7 +487,7 @@ function CreateWorkspaceForm({
     if (blocked !== null) return
     // The server deletes the source draft only once the create succeeds.
     if (!storesEntry) {
-      onClose()
+      finish()
       createWorkspace(projectSlug, tool, {
         model,
         ...(modelName !== undefined ? { modelName } : {}),
@@ -506,7 +524,7 @@ function CreateWorkspaceForm({
           if (!queued) await runQueuedWorkspace(initial.id)
           else if (moved) reveal(e)
         })
-    op.then(onClose, (err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+    op.then(finish, (err: unknown) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setBusy(false))
   }
 
@@ -783,16 +801,30 @@ function CreateWorkspaceForm({
 
         {error && <div className="mx-2 mb-1 text-[11px] text-[#d65858]">{error}</div>}
 
-        <div className="p-1">
+        <div className="flex gap-2 p-1 max-md:flex-col-reverse">
+          {opts.editId === undefined && (
+            <button
+              type="button"
+              onClick={() => saveDraft()}
+              disabled={busy || done || pending === null}
+              title={pending !== null ? undefined : text === '' ? 'Type a prompt to save a draft' : 'No changes to save'}
+              className="flex-1 rounded-md border border-border px-2 py-1.5 text-xs text-text-dim outline-none
+                transition hover:bg-surface-3 hover:text-text disabled:cursor-not-allowed disabled:opacity-50
+                max-md:py-2.5"
+            >
+              {savingDraft ? 'Saving…' : 'Save draft'}
+            </button>
+          )}
           <button
             type="button"
             onClick={submit}
-            disabled={busy || (!needsGitAuth && signedIn && blocked !== null)}
+            disabled={busy || done || (!needsGitAuth && signedIn && blocked !== null)}
             title={!needsGitAuth && signedIn ? blocked ?? undefined : undefined}
-            className="w-full rounded-md border border-border-strong bg-surface-3 px-2 py-1.5 text-xs font-medium
-              text-text outline-none transition hover:bg-border-strong disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex-1 rounded-md border border-border-strong bg-surface-3 px-2 py-1.5 text-xs font-medium
+              text-text outline-none transition hover:bg-border-strong disabled:cursor-not-allowed disabled:opacity-50
+              max-md:py-2.5"
           >
-            {busy ? `${submitLabel}…` : submitLabel}
+            {busy && !savingDraft ? `${submitLabel}…` : submitLabel}
           </button>
         </div>
       </div>
