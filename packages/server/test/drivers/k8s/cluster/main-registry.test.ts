@@ -82,35 +82,18 @@ function retryArgs(): string[][] {
 }
 
 /**
- * Serve the cluster reads an ensure makes: the grant-key Secret, the live
- * Deployment's storage volume, the Service's ClusterIP, the node list, and
- * the writer pod's status.
- *
- * `storage` picks the live Deployment's shape: `'pvc'` is up to date,
- * `'hostPath'` still uses the old node-local store, and `'absent'` has no
- * registry Deployment.
+ * Serve the cluster reads an ensure makes: the grant-key Secret, the
+ * Service's ClusterIP, the node list, and the writer pod's status.
  */
 function serveCluster(opts: {
   clusterIp?: string | null
   nodes?: string[]
   podPhase?: string
-  storage?: 'pvc' | 'hostPath' | 'absent'
 } = {}): void {
   const nodes = opts.nodes ?? ['yaac-control-plane']
   mockGetJson.mockImplementation((args: string[]) => {
     if (args[1] === 'secret') {
       return Promise.resolve({ data: { 'key.pem': Buffer.from(grantKeyPem).toString('base64') } })
-    }
-    if (args[1] === 'deployment') {
-      const storage = opts.storage ?? 'pvc'
-      if (storage === 'absent') return Promise.resolve(null)
-      return Promise.resolve({
-        spec: { template: { spec: { volumes: [
-          storage === 'pvc'
-            ? { name: 'storage', persistentVolumeClaim: { claimName: 'yaac-registry-storage-ddh16' } }
-            : { name: 'storage', hostPath: { path: '/var/lib/yaac/main-registry/ddh16' } },
-        ] } } },
-      })
     }
     if (args[1] === 'service') {
       const ip = opts.clusterIp === undefined ? CLUSTER_IP : opts.clusterIp
@@ -201,35 +184,13 @@ beforeEach(() => {
 })
 
 describe('ensureMainRegistry', () => {
-  it('is a no-op when the registry already answers from its claim', async () => {
+  it('is a no-op when the registry already answers', async () => {
     mockReachable.mockResolvedValue(true)
     await ensureMainRegistry()
-    // On a healthy install the boot check is one ping and one read.
+    // On a healthy install the boot check is one ping.
     expect(mockApply).not.toHaveBeenCalled()
     expect(mockRetry).not.toHaveBeenCalled()
-  })
-
-  it('converts an install still serving from the node hostPath', async () => {
-    // The old registry still answers, so the fast path also reads the live
-    // Deployment's volume; otherwise the install would stay on hostPath.
-    mockReachable.mockResolvedValue(true)
-    serveCluster({ storage: 'hostPath' })
-    await ensureMainRegistry()
-
-    const deploy = appliedOfKind('Deployment')
-    const volumes = (deploy.spec as {
-      template: { spec: { volumes: Array<{ persistentVolumeClaim?: { claimName: string } }> } }
-    }).template.spec.volumes
-    expect(volumes[0].persistentVolumeClaim).toEqual({ claimName: mainRegistryPvcName() })
-  })
-
-  it('stands the registry up when there is no Deployment to read', async () => {
-    // An absent or unreadable Deployment counts as out of date, so the
-    // worst case is a redundant apply.
-    mockReachable.mockResolvedValue(true)
-    serveCluster({ storage: 'absent' })
-    await ensureMainRegistry()
-    expect(applied().map((m) => m.kind)).toContain('PersistentVolumeClaim')
+    expect(mockGetJson).not.toHaveBeenCalled()
   })
 
   it('applies namespace, PVC, Deployment and Service, then wires every node up', async () => {

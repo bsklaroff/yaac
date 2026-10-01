@@ -7,8 +7,6 @@ import {
   agentHistoryDir,
   claudeDir,
   codexDir,
-  piDir,
-  piSessionsDir,
   projectDir,
 } from '@yaac/shared/project-paths'
 import {
@@ -115,15 +113,13 @@ describe('transcripts', () => {
       expect(await sessionTranscriptPath(slug, 'sid', 'codex')).toBeUndefined()
     })
 
-    it('picks pi\'s newest log for the id, from the history and the shared dir alike', async () => {
-      await write(path.join(piSessionsDir(slug), '100_sid.jsonl'))
-      await write(path.join(piSessionsDir(slug), 'workspace', '150_sid.jsonl'))
-      await write(path.join(piSessionsDir(slug), '300_other.jsonl'))
+    it('picks pi\'s newest log for the id from the history, one folder down too', async () => {
+      const dir = agentHistoryDir(slug, wt, 'pi')
+      await write(path.join(dir, '100_sid.jsonl'))
+      await write(path.join(dir, 'workspace', '150_sid.jsonl'))
+      await write(path.join(dir, '300_other.jsonl'))
       expect(await sessionTranscriptPath(slug, wt, 'pi', 'sid'))
-        .toEqual({ slug, dir: piDir(slug), rel: 'agent/sessions/workspace/150_sid.jsonl' })
-      await write(path.join(agentHistoryDir(slug, wt, 'pi'), '200_sid.jsonl'))
-      expect(await sessionTranscriptPath(slug, wt, 'pi', 'sid'))
-        .toEqual({ slug, dir: agentHistoryDir(slug, wt, 'pi'), rel: '200_sid.jsonl' })
+        .toEqual({ slug, dir, rel: 'workspace/150_sid.jsonl' })
       expect(await sessionTranscriptPath(slug, wt, 'pi', 'unknown')).toBeUndefined()
     })
 
@@ -208,7 +204,7 @@ describe('transcripts', () => {
       const files = {
         claude: claudeFile('sid'),
         codex: { slug, dir: codexDir(slug), rel: 'sessions/rollout-x.jsonl' },
-        pi: { slug, dir: piDir(slug), rel: 'agent/sessions/20260101-120000_sid.jsonl' },
+        pi: { slug, dir: agentHistoryDir(slug, wt, 'pi'), rel: '20260101-120000_sid.jsonl' },
       } as const
       for (const [tool, file] of Object.entries(files)) {
         const stored = toProjectRelative(file)
@@ -229,6 +225,7 @@ describe('transcripts', () => {
       expect(resolveProjectPath(slug, wt, 'claude', 'repo/.git/config')).toBeUndefined()
       expect(resolveProjectPath(slug, wt, 'claude', 'claude/../../../etc/passwd')).toBeUndefined()
       expect(resolveProjectPath(slug, wt, 'opencode', 'opencode-config/x.jsonl')).toBeUndefined()
+      expect(resolveProjectPath(slug, wt, 'pi', 'pi/agent/sessions/x.jsonl')).toBeUndefined()
       // Only project-relative values are accepted.
       expect(resolveProjectPath(slug, wt, 'claude', '/old/home/t.jsonl')).toBeUndefined()
     })

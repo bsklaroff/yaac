@@ -240,18 +240,11 @@ async function loadOrGenerateCA(): Promise<CA> {
   if (IN_CLUSTER) {
     const stored = decodeCa(await readOutputObject('secret', CA_SECRET_NAME))
     if (stored) {
-      const key = forge.pki.privateKeyFromPem(stored.keyPem)
-      const cert = forge.pki.certificateFromPem(stored.certPem)
-      // A CA minted by an older proxy may lack the SKI or critical
-      // basicConstraints that generateCA sets. Re-sign it over the same key,
-      // so processes that loaded the old cert still verify new leaves.
-      const bc = cert.getExtension('basicConstraints') as { critical?: boolean } | undefined
-      if (cert.getExtension('subjectKeyIdentifier') && bc?.critical) {
-        console.log('[proxy] Loaded existing CA')
-        result = { key, cert, pem: stored.certPem }
-      } else {
-        console.log('[proxy] Existing CA predates the current extensions — re-signing over its key')
-        result = generateCA({ privateKey: key, publicKey: cert.publicKey as forge.pki.rsa.PublicKey })
+      console.log('[proxy] Loaded existing CA')
+      result = {
+        key: forge.pki.privateKeyFromPem(stored.keyPem),
+        cert: forge.pki.certificateFromPem(stored.certPem),
+        pem: stored.certPem,
       }
     }
   }
@@ -267,15 +260,16 @@ async function loadOrGenerateCA(): Promise<CA> {
   return result
 }
 
-/** A random positive 128-bit serial. A re-signed CA must not reuse its old
- *  issuer+serial pair, which NSS rejects. */
+/** A random positive 128-bit serial, so no two certs share an issuer+serial
+ *  pair, which NSS rejects. */
 function randomSerial(): string {
   const bytes = crypto.randomBytes(16)
   bytes[0] &= 0x7f // positive
   return bytes.toString('hex')
 }
 
-function generateCA(keys = forge.pki.rsa.generateKeyPair(2048)): CA {
+function generateCA(): CA {
+  const keys = forge.pki.rsa.generateKeyPair(2048)
   console.log('[proxy] Generating CA...')
   const cert = forge.pki.createCertificate()
   cert.publicKey = keys.publicKey

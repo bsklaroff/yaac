@@ -53,8 +53,8 @@ export async function currentCluster(run: Run = execFileAsync): Promise<CurrentC
 
 /**
  * The refusal message when the current cluster is not the recorded one, or
- * null. A record without `clusterUid` is not checked
- * (docs/legacy-compat-shims.md). A cluster whose uid cannot be read is
+ * null. A record without `clusterUid` (before the first install) is not
+ * checked. A cluster whose uid cannot be read is
  * refused too: a namespace-scoped user on some other cluster cannot read
  * `kube-system`, while on the install's own cluster the read fails only
  * when the apiserver is down.
@@ -89,9 +89,17 @@ export function clusterRefusal(recorded: InstallRecord, current: CurrentCluster)
       : ` (its kube-system namespace has uid ${recorded.clusterUid}).`)
 }
 
-/** `clusterRefusal` for this data dir's recorded install, or null. */
+/**
+ * `clusterRefusal` for this data dir's recorded k8s install, or null when
+ * there is none. `yaac cluster install` records the cluster, so a k8s
+ * record without one is refused until it runs.
+ */
 export async function foreignClusterRefusal(): Promise<string | null> {
   const recorded = await readServerConfig()
-  if (!recorded?.clusterUid) return null
+  if (recorded?.driver !== 'k8s') return null
+  if (!recorded.clusterUid) {
+    return 'This install records no cluster to check kubectl against. Run `yaac cluster install`, '
+      + 'which records it, and try again.'
+  }
   return clusterRefusal(recorded, await currentCluster())
 }

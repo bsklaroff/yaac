@@ -22,7 +22,6 @@ import {
   getProjectsDir,
   globalProjectPath,
   opencodeCheckpointDir,
-  repoDir,
   workspaceDir,
   workspaceStateDir,
 } from '@yaac/shared/project-paths'
@@ -76,10 +75,9 @@ async function checkoutEphemeralPaths(
 }
 
 /**
- * Remove everything on disk that belongs to one workspace: the checkout, its
- * legacy git worktree admin dir (docs/legacy-compat-shims.md), the opencode
- * checkpoint, ACP records and agent history. Node-local working copies are
- * the driver's sweep's.
+ * Remove everything on disk that belongs to one workspace: the checkout, the
+ * opencode checkpoint, ACP records and agent history. Node-local working
+ * copies are the driver's sweep's.
  *
  * Not used by an ordinary stop, which keeps the checkout for restart. Used
  * when the workspace itself goes away: a reaped spare, a fresh create that
@@ -101,10 +99,8 @@ export async function deleteWorkspaceState(
     serverLog(`[server] delete workspace state ${projectSlug}: refused an empty workspace id`)
     return false
   }
-  const adminDir = path.join(repoDir(projectSlug), '.git', 'worktrees', workspaceId)
   const outcomes = await Promise.all([
     fs.rm(workspaceDir(projectSlug, workspaceId), { recursive: true, force: true }),
-    fs.rm(adminDir, { recursive: true, force: true }),
     fs.rm(opencodeCheckpointDir(projectSlug, workspaceId), { recursive: true, force: true }),
     fs.rm(acpLogDir(projectSlug, workspaceId), { recursive: true, force: true }),
     removeAgentHistory(projectSlug, workspaceId),

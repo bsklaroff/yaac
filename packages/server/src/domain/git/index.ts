@@ -4,9 +4,7 @@
 //  - `agent.ts` is the ssh-agent that invocation signs through;
 //  - `repo.ts` operates on a project's main clone and creates the checkouts
 //    that borrow from it;
-//  - `adopt.ts` converts legacy linked checkouts;
-//  - `run.ts` starts git without reading pod-writable config (exported only
-//    for the startup scratch sweep).
+//  - `run.ts` starts every git process, with hooks and transports pinned.
 //
 // It lives in domain because nothing under `src/runtime` runs git (drivers
 // mount checkouts, they don't make them). Adding a name here widens the
@@ -22,7 +20,6 @@ export {
   type ResolvedGitCredential,
 } from './transport'
 export { startGitSshAgent, stopGitSshAgent } from './agent'
-export { clearGitScratch } from './run'
 export {
   cloneRepo,
   createCheckout,
@@ -36,4 +33,3 @@ export {
   remoteBranchExists,
   resolveRemoteRef,
 } from './repo'
-export { adoptLinkedCheckout, sanitizeMainClone } from './adopt'

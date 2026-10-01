@@ -190,8 +190,8 @@ instead:
 - The folder claude files this checkout's conversations under (named from
   the cwd by claude's rule, for every spelling of the data dir) links to the
   history's `claude/-workspace`.
-- The folder named after the host repo path links to `-repo`, so claude's
-  auto-memory is the one a pod uses.
+- That folder's `memory` links to `-repo/memory`, so claude's auto-memory
+  is the one a pod uses.
 - Each file-history dir and codex rollout already in the history is linked
   where its tool looks.
 

@@ -14,7 +14,7 @@ import {
   type IdentityEnv,
 } from '#http'
 import { projectApp } from '#routes/projects'
-import { mamaApp, workspaceApp } from '#routes/workspaces'
+import { workspaceApp } from '#routes/workspaces'
 import { authApp } from '#routes/auth'
 import { shortcutsApp } from '#routes/shortcuts'
 import { configApp } from '#routes/config'
@@ -97,9 +97,6 @@ function apiRoutes(isReady: () => boolean, buildId: string) {
     .get('/whoami', (c) => c.json(c.get('principal')))
     .route('/project', projectApp)
     .route('/workspace', workspaceApp)
-    // Legacy path an older staged `yaac-mama` still posts to
-    // (docs/legacy-compat-shims.md).
-    .route('/worktree', mamaApp)
     .route('/auth', authApp)
     .route('/shortcuts', shortcutsApp)
     .route('/config', configApp)

@@ -434,36 +434,6 @@ async function refuseArpIgnoringPodNetns(): Promise<void> {
   )
 }
 
-/** The fields of the registry Deployment `mainRegistryStorageIsClaim`
- *  reads. */
-interface RawRegistryDeploy {
-  spec?: { template?: { spec?: { volumes?: Array<Record<string, unknown>> } } }
-  status?: { readyReplicas?: number }
-}
-
-/** True when a Deployment's `storage` volume is a PVC rather than a hostPath. */
-function specsClaimStorage(deploy: RawRegistryDeploy | null): boolean {
-  const volumes = deploy?.spec?.template?.spec?.volumes
-  if (!volumes) return false
-  return volumes.some((v) => v.name === 'storage' && 'persistentVolumeClaim' in v)
-}
-
-async function readMainRegistryDeploy(): Promise<RawRegistryDeploy | null> {
-  return kubectlGetJson<RawRegistryDeploy>([
-    'get', 'deployment', REGISTRY_SERVICE_NAME, '-n', REGISTRY_NAMESPACE,
-  ]).catch(() => null)
-}
-
-/**
- * Whether the Deployment spec stores on the PVC. False for an older install
- * on a node hostPath, or when the Deployment is missing or unreadable (which
- * costs only a redundant apply). The boot ensure's reachable-and-done path
- * checks this, since an old hostPath registry still answers.
- */
-export async function mainRegistryStorageIsClaim(): Promise<boolean> {
-  return specsClaimStorage(await readMainRegistryDeploy())
-}
-
 export interface EnsureMainRegistryOptions {
   /**
    * Apply everything even if the registry already answers. `yaac cluster
@@ -478,9 +448,7 @@ export interface EnsureMainRegistryOptions {
  * lock + node hosts.toml) and wait until this process can reach it.
  */
 export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): Promise<void> {
-  if (!opts.force && await registryReachable()) {
-    if (await mainRegistryStorageIsClaim()) return
-  }
+  if (!opts.force && await registryReachable()) return
 
   serverLog(`[registry] ensuring the in-cluster registry ${registryHost()}`)
   await kubectlApply({

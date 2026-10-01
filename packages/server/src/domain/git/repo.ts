@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { serverLocalPath } from '@yaac/shared/paths'
 import { createKeyedMutex } from '#lib/keyed-mutex'
-import { readRepoConfig, runGit } from './run'
+import { runGit } from './run'
 import type { GitTarget } from './run'
 import { gitEnvForCredential, injectTokenIntoUrl, torEnv } from './transport'
 import type { ResolvedGitCredential } from './transport'
@@ -120,8 +120,8 @@ const queuedFetches = new Map<string, Promise<void>>()
 
 /**
  * Where the server records when it last fetched a repo (see
- * lastFetchedAtMs). Server-private so no pod can forge it, and on disk so it
- * survives restarts.
+ * `lastFetchedAtMs`). Written only once a fetch succeeds: git empties
+ * FETCH_HEAD before it connects, so its mtime moves on a failed fetch too.
  */
 function fetchRecord(repoPath: string): string {
   return serverLocalPath('git-fetched', createHash('sha256').update(repoPath).digest('hex').slice(0, 32))
@@ -131,8 +131,8 @@ function fetchRecord(repoPath: string): string {
  * Fetch every branch of `remoteUrl` into `refs/remotes/origin/*`, pruning
  * branches origin deleted, so a deleted branch leaves the picker and a create
  * naming it is refused. Only that refspec is pruned; local `agent/*` heads
- * and `origin/HEAD` are kept. The URL comes from the project row, since a pod
- * could have written the repo's own `remote.origin.*`.
+ * and `origin/HEAD` are kept. The URL comes from the project row, never the
+ * repository's own `remote.origin.*`.
  *
  * Fetches of one repo run one at a time. A caller arriving mid-fetch joins
  * the single fetch queued behind it, which starts after all of them asked,
@@ -188,10 +188,9 @@ export function maintainRepo(repoPath: string): Promise<void> {
 /**
  * When `origin/<branch>` was last fetched, into the main clone or the
  * checkout at `checkoutGitDir`. Takes the newest of: the server's own record
- * (`fetchRecord`, since its FETCH_HEAD is in a throwaway dir), the branch's
- * reflog in either repo, and the checkout's FETCH_HEAD (from an agent's own
- * fetch). Files are only lstat'd for mtimes, so a planted symlink is
- * harmless.
+ * (`fetchRecord`), the branch's reflog in either repo, and the checkout's
+ * FETCH_HEAD (from an agent's own fetch). Files are only lstat'd for mtimes,
+ * so a planted symlink is harmless.
  */
 export async function lastFetchedAtMs(
   repoPath: string,
@@ -209,89 +208,12 @@ export async function lastFetchedAtMs(
 }
 
 /** Never-prune keys for the main clone's real config, read by git run there
- *  without the server's pins (`cloneRepo`, `ensureNeverPrune`). */
-export const NEVER_PRUNE_KEYS = ['gc.pruneExpire', 'gc.reflogExpire', 'gc.reflogExpireUnreachable']
-
-/**
- * Write the never-prune keys into the main clone's real config while it
- * still has linked checkouts (docs/legacy-compat-shims.md). A legacy pod
- * auto-gcs that `.git` with its own git, which can't see the clones' refs
- * and would eventually delete objects they borrow. Unneeded once
- * `worktrees/` is gone. Written only when a key is missing, since a write
- * replaces the file's inode under legacy pods' cached view.
- */
-export async function ensureNeverPrune(repoPath: string): Promise<void> {
-  const gitDir = path.join(repoPath, '.git')
-  if (!await fs.stat(path.join(gitDir, 'worktrees')).then(() => true, () => false)) return
-  const missing: string[] = []
-  for (const key of NEVER_PRUNE_KEYS) {
-    if ((await readRepoConfig(repoPath, key)).at(-1) !== 'never') missing.push(key)
-  }
-  if (missing.length === 0) return
-  // `git config --file` writes through a symlink, and a pod could plant one.
-  if (!(await fs.lstat(path.join(gitDir, 'config'))).isFile()) {
-    throw new Error(`${gitDir}/config is not a regular file`)
-  }
-  for (const key of missing) {
-    await runGit({ kind: 'none' }, ['config', '--file', path.join(gitDir, 'config'), key, 'never'])
-  }
-}
-
-/** Where a checkout's git dir is assembled before being moved into place:
- *  beside the checkout, where no workspace mounts it. */
-export function stagingGitDir(workspacePath: string): string {
-  return path.join(path.dirname(workspacePath), `.staging-${path.basename(workspacePath)}`, '.git')
-}
-
-/**
- * Create an empty clone of the main clone at `gitDir`: config with the
- * project row's URL as `origin` and `branch`'s upstream, and an alternates
- * line borrowing all objects from the main clone. `refs` (`<sha> <refname>`
- * lines) are written as `packed-refs` to avoid thousands of files per
- * workspace.
- *
- * The alternates path is the server's; a pod mounts the main clone at the
- * same path (docs/server-git.md), so it resolves everywhere.
- */
-export async function initClone(repoPath: string, gitDir: string, params: {
-  remoteUrl: string
-  branch: string
-  baseBranch: string | null
-  refs: string[]
-  originHead: string | null
-}): Promise<void> {
-  if (await fs.lstat(path.join(repoPath, '.git', 'shallow')).then(() => true, () => false)) {
-    throw new Error(`${repoPath} is a shallow clone, which a workspace cannot borrow from`)
-  }
-  const format = (await runGit(repo(repoPath), ['rev-parse', '--show-object-format'])).trim()
-  // No template, so no sample hooks or `info/exclude`.
-  await runGit({ kind: 'none' }, ['init', '--quiet', '--bare', '--template=', `--object-format=${format}`, gitDir])
-  const settings: Array<[string, string]> = [
-    ['core.bare', 'false'],
-    ['core.logallrefupdates', 'true'],
-    ['remote.origin.url', params.remoteUrl],
-    ['remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*'],
-  ]
-  if (params.baseBranch !== null) {
-    settings.push(
-      [`branch.${params.branch}.remote`, 'origin'],
-      [`branch.${params.branch}.merge`, `refs/heads/${params.baseBranch}`],
-    )
-  }
-  for (const [key, value] of settings) {
-    await runGit({ kind: 'none' }, ['config', '--file', path.join(gitDir, 'config'), key, value])
-  }
-  await fs.mkdir(path.join(gitDir, 'objects', 'info'), { recursive: true })
-  await fs.writeFile(path.join(gitDir, 'objects', 'info', 'alternates'), `${path.join(repoPath, '.git', 'objects')}\n`)
-  await fs.writeFile(path.join(gitDir, 'packed-refs'), params.refs.map((l) => `${l}\n`).join(''))
-  if (params.originHead !== null) {
-    await runGit({ kind: 'private', gitDir }, ['symbolic-ref', 'refs/remotes/origin/HEAD', params.originHead])
-  }
-}
+ *  without the server's pins. */
+const NEVER_PRUNE_KEYS = ['gc.pruneExpire', 'gc.reflogExpire', 'gc.reflogExpireUnreachable']
 
 /** `<sha> <refname>` for every main-clone ref under `prefixes`, plus the
  *  target of the symbolic `origin/HEAD`. */
-export async function mainRefs(
+async function mainRefs(
   repoPath: string,
   prefixes: string[],
 ): Promise<{ refs: string[]; originHead: string | null }> {
@@ -330,22 +252,45 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
   baseBranch: string
   remoteUrl: string
 }): Promise<void> {
-  await ensureNeverPrune(repoPath)
+  if (await fs.lstat(path.join(repoPath, '.git', 'shallow')).then(() => true, () => false)) {
+    throw new Error(`${repoPath} is a shallow clone, which a workspace cannot borrow from`)
+  }
   const startSha = await resolveRemoteRef(repoPath, params.baseBranch)
-  const gitDir = stagingGitDir(workspacePath)
-  await fs.rm(path.dirname(gitDir), { recursive: true, force: true })
-  await fs.mkdir(path.dirname(gitDir), { recursive: true })
+  // Assembled beside the checkout, where no workspace mounts it.
+  const staging = path.join(path.dirname(workspacePath), `.staging-${path.basename(workspacePath)}`)
+  const gitDir = path.join(staging, '.git')
+  await fs.rm(staging, { recursive: true, force: true })
+  await fs.mkdir(staging, { recursive: true })
   try {
-    await initClone(repoPath, gitDir, {
-      ...params,
-      ...await mainRefs(repoPath, ['refs/remotes/origin', 'refs/tags']),
-    })
+    const format = (await runGit(repo(repoPath), ['rev-parse', '--show-object-format'])).trim()
+    // No template, so no sample hooks or `info/exclude`.
+    await runGit({ kind: 'none' }, ['init', '--quiet', '--bare', '--template=', `--object-format=${format}`, gitDir])
+    for (const [key, value] of [
+      ['core.bare', 'false'],
+      ['core.logallrefupdates', 'true'],
+      ['remote.origin.url', params.remoteUrl],
+      ['remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*'],
+      [`branch.${params.branch}.remote`, 'origin'],
+      [`branch.${params.branch}.merge`, `refs/heads/${params.baseBranch}`],
+    ]) {
+      await runGit({ kind: 'none' }, ['config', '--file', path.join(gitDir, 'config'), key, value])
+    }
+    // The alternates path is the server's; a pod mounts the main clone at
+    // the same path, so it resolves everywhere. Refs are written as
+    // `packed-refs` to avoid thousands of files per workspace.
+    await fs.mkdir(path.join(gitDir, 'objects', 'info'), { recursive: true })
+    await fs.writeFile(path.join(gitDir, 'objects', 'info', 'alternates'), `${path.join(repoPath, '.git', 'objects')}\n`)
+    const { refs, originHead } = await mainRefs(repoPath, ['refs/remotes/origin', 'refs/tags'])
+    await fs.writeFile(path.join(gitDir, 'packed-refs'), refs.map((l) => `${l}\n`).join(''))
+    if (originHead !== null) {
+      await runGit({ kind: 'private', gitDir }, ['symbolic-ref', 'refs/remotes/origin/HEAD', originHead])
+    }
     await runGit({ kind: 'private', gitDir }, ['update-ref', `refs/heads/${params.branch}`, startSha])
     await runGit({ kind: 'private', gitDir }, ['symbolic-ref', 'HEAD', `refs/heads/${params.branch}`])
     await fs.mkdir(workspacePath, { recursive: true })
     await runGit({ kind: 'private', gitDir, workTree: workspacePath }, ['checkout', '--force', '--quiet'])
     await fs.rename(gitDir, path.join(workspacePath, '.git'))
   } finally {
-    await fs.rm(path.dirname(gitDir), { recursive: true, force: true })
+    await fs.rm(staging, { recursive: true, force: true })
   }
 }

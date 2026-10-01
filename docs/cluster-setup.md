@@ -217,12 +217,6 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
    "The write gate"). Install creates the key on its first run, as the
    Secret `yaac-registry-grant-key` in its own `yaac-registry-keys`
    namespace.
-
-   A registry still on the older node-hostPath store is switched to a
-   fresh, empty claim on the next server start. Nothing migrates blobs, so
-   the first workspace create afterwards re-pushes and rebuilds. The old
-   data stays on the nodes under `/var/lib/yaac/main-registry/<install-hash>`
-   if you need it.
 2. **Two extraMounts per node.** Your home directory, at the same path: the
    two storage claims (`yaac-global`, `yaac-server-local`) bind static
    hostPath volumes onto the data dir's `global/` and `server-local/`

@@ -181,14 +181,10 @@ describe('env (configuration)', () => {
 
   describe('workspaceId', () => {
     it('answers the id a workspace stamps, and undefined outside one', () => {
-      vi.stubEnv('YAAC_WORKTREE_ID', undefined)
       vi.stubEnv('YAAC_WORKSPACE_ID', 'abcd1234')
       expect(env.workspaceId).toBe('abcd1234')
       vi.stubEnv('YAAC_WORKSPACE_ID', undefined)
       expect(env.workspaceId).toBeUndefined()
-      // The spelling an older install uses for workspaces it launched.
-      vi.stubEnv('YAAC_WORKTREE_ID', 'ef012345')
-      expect(env.workspaceId).toBe('ef012345')
       // Blank counts as unset.
       vi.stubEnv('YAAC_WORKSPACE_ID', '  ')
       expect(env.workspaceId).toBeUndefined()
@@ -268,19 +264,6 @@ describe('env (configuration)', () => {
       expect(env.secret).toBe('hunter2')
       vi.stubEnv('YAAC_SECRET', '   ')
       expect(env.secret).toBeUndefined()
-    })
-  })
-
-  describe('requireAuthSet', () => {
-    it('is true for any non-empty YAAC_REQUIRE_AUTH — the tripwire fires on the ask, not its spelling', () => {
-      vi.stubEnv('YAAC_REQUIRE_AUTH', '1')
-      expect(env.requireAuthSet).toBe(true)
-      vi.stubEnv('YAAC_REQUIRE_AUTH', 'true')
-      expect(env.requireAuthSet).toBe(true)
-      vi.stubEnv('YAAC_REQUIRE_AUTH', '')
-      expect(env.requireAuthSet).toBe(false)
-      vi.stubEnv('YAAC_REQUIRE_AUTH', undefined)
-      expect(env.requireAuthSet).toBe(false)
     })
   })
 

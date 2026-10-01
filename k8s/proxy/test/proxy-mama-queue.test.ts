@@ -15,11 +15,6 @@ describe('parseMamaEnvelope', () => {
       .toEqual({ command: 'create', args: { tool: 'claude' }, body: 'do it' })
   })
 
-  it('renames the options an older install\'s yaac-mama sends', () => {
-    expect(parseMamaEnvelope('{"command":"queue","args":{"parent-worktree":"w1","worktree":"w2"}}')?.args)
-      .toEqual({ 'parent-workspace': 'w1', workspace: 'w2' })
-  })
-
   it('defaults the halves a command may legitimately omit', () => {
     // `list` carries neither options nor a positional.
     expect(parseMamaEnvelope('{"command":"list"}'))

@@ -48,7 +48,6 @@ import {
 } from '@yaac/shared/tool-auth'
 import { defaultModelFor, seedProjectToolHome } from '#domain/auth'
 import {
-  adoptLinkedCheckout,
   createCheckout,
   getDefaultBranch,
   isGitAuthError,
@@ -76,7 +75,6 @@ import {
   getProjectRow,
   getTimeZone,
   listActiveAgentSessions,
-  listProjectWorkspaceIds,
   setWorkspaceGroup,
   setWorkspaceMamaTokenHash,
   setWorkspaceTitle,
@@ -837,21 +835,6 @@ export async function createWorkspace(
     }
   }
 
-  // A legacy linked checkout is converted to a clone below, which must not
-  // happen while the previous runtime (whose teardown may not have finished)
-  // still uses it.
-  if (options.resume) {
-    const linked = await fs.lstat(path.join(wtDir, '.git')).then((st) => !st.isDirectory(), () => false)
-      || await fs.lstat(path.join(wtDir, '.git.linked')).then(() => true, () => false)
-    if (linked && await runtime.find(workspaceId) !== undefined) {
-      await reportCreateFailed(projectSlug, workspaceId, options)
-      throw new ServerError(
-        'CONFLICT',
-        `workspace ${workspaceId}'s previous workspace is still shutting down; retry the restart in a moment`,
-      )
-    }
-  }
-
   // ── Concurrent provisioning ─────────────────────────────────────────
   // Image, checkout, substrate and host fs prep run concurrently. The
   // checkout leg is joined later, inside launchWithSetup, so it also
@@ -886,13 +869,7 @@ export async function createWorkspace(
       }
     }
 
-    // An existing checkout has `.git`, or `.git.linked` if a conversion
-    // crashed mid-swap.
-    const exists = (name: string): Promise<boolean> =>
-      fs.access(path.join(wtDir, name)).then(() => true, () => false)
-    if (options.resume && (await exists('.git') || await exists('.git.linked'))) {
-      // Converts a legacy linked checkout to a clone; no-op otherwise.
-      await adoptLinkedCheckout(repo, wtDir, workspaceId, remoteUrl, new Set((await listProjectWorkspaceIds(projectSlug)).keys()))
+    if (options.resume && await fs.access(path.join(wtDir, '.git')).then(() => true, () => false)) {
       emit(`Reusing existing workspace at ${wtDir}`, options)
       return
     }

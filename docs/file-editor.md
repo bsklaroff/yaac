@@ -87,8 +87,8 @@ It never fetches, so `behind` is only as fresh as the checkout's `origin/*`
 (which the server keeps within minutes of origin, docs/server-git.md). The
 bar shows `fetchedAt`, the newest mtime among:
 
-- `server-local/git-fetched/`, a record each server fetch writes (those run in
-  a throwaway git dir, so their `FETCH_HEAD` is gone);
+- `server-local/git-fetched/`, a record each successful server fetch writes
+  (git empties `FETCH_HEAD` even when a fetch fails);
 - the checkout's `FETCH_HEAD`, for a fetch the agent ran;
 - the branch reflogs in the main clone and the checkout, for a fetch that
   moved the branch.

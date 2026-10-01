@@ -129,31 +129,11 @@ sets these on the command line, where they override any config:
 - `protocol.allow=never`, plus an allow for the transport of the remote the
   call talks to
 
-The server user's global and system config are still read.
-
-### The throwaway git dir
-
-A project may still hold a linked checkout (`git worktree add`) made by an
-older install, whose pod mounts the main clone read-write
-(docs/legacy-compat-shims.md). That pod can write the main clone's config, and
-config can name commands for git to run (filter drivers, fsmonitor,
-credential helpers, `url.*.insteadOf`). So git never reads it. Every call
-against a main clone builds a git dir in server-private scratch
-(`<server-local>/run/git-shadow/g-*`, cleared at startup) holding a config
-copied from an allowlist (`core.repositoryformatversion`,
-`extensions.objectformat`, `extensions.refstorage`) after one no-follow read,
-a validated copy of `HEAD`, and symlinks to the real `objects`, `refs`,
-`packed-refs`, `logs`, `worktrees`, `info` and `shallow`. A repository whose
-ref storage is not `files` is refused.
-
-Converting a project's last linked checkout cleans its main clone
-(`sanitizeMainClone`): a `.git` containing a symlink is refused, the config is
-rewritten from the allowlist plus the row's `remote.origin.url` and the
-never-prune keys, and `hooks/`, `info/attributes`, `objects/info/alternates`
-and `worktrees/` are removed. Branches stay, since an `agent/*` branch no
-checkout received may be the only name its commits have. After that no pod
-can write the main clone, and the throwaway dir can go once no install can
-still have a linked checkout.
+The server user's global and system config are still read, and so is the
+main clone's own config. No pod can write it; a containerless agent can, but
+it already runs as the server's user. A call with no
+repository runs in an empty server-private dir under a ceiling, so git never
+discovers one from its cwd.
 
 ## Remote URLs come from the project row
 

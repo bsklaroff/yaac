@@ -35,10 +35,9 @@ export interface WorkspaceMarker {
   sshAgentPid?: number
   /**
    * The launch's own env entries (caller's and git's) minus credentials, so
-   * a restarted server can rebuild `workspaceRunEnvironment`. Absent on
-   * older markers.
+   * a restarted server can rebuild `workspaceRunEnvironment`.
    */
-  launchEnv?: Record<string, string>
+  launchEnv: Record<string, string>
 }
 
 /** In-memory entry: the marker plus observed state. */

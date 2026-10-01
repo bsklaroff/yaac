@@ -1065,8 +1065,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   }, 120_000)
 
   it('creates a workspace without running what was planted in the main clone or a sibling', async () => {
-    // The server's checkout code is shared with the k8s server
-    // (docs/server-git.md), where the main clone may be writable by a pod.
+    // A checkout gets a git dir and config of its own (docs/server-git.md).
     // Plant a filter driver and hooks (each leaves a marker) in the main
     // clone and a sibling; the new checkout must run none of them.
     const gitDir = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'repo', '.git')
@@ -1254,20 +1253,11 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect((await fetch(`${origin()}/api/workspace/${workspaceId}/files`)).status).toBe(409)
   })
 
-  // Restarted from the layout an older k8s install leaves: a
-  // `git worktree add` checkout whose `.git` and admin `gitdir` name pod
-  // paths. The launch converts it to its own clone, keeping its index, and
-  // updates its `origin/*` from the main clone.
+  // The launch updates the checkout's `origin/*` from the main clone.
   it('restarts the stopped workspace back onto a live tmux server', async () => {
     const repoGit = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'repo', '.git')
     const checkout = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', workspaceId)
-    const admin = path.join(repoGit, 'worktrees', workspaceId)
-    const staged = path.join(testEnv.scratchDir, 'linked', workspaceId)
     const base = (await execFileAsync('git', ['--git-dir', repoGit, 'symbolic-ref', 'refs/remotes/origin/HEAD'])).stdout.trim()
-    await execFileAsync('git', ['--git-dir', repoGit, 'worktree', 'add', '-q', '-b', `agent/${workspaceId}`, staged, base])
-    await fs.rm(path.join(checkout, '.git'), { recursive: true })
-    await fs.writeFile(path.join(checkout, '.git'), `gitdir: /repo/.git/worktrees/${workspaceId}\n`)
-    await fs.writeFile(path.join(admin, 'gitdir'), '/workspace/.git\n')
     const upstream = (await execFileAsync('git', [
       '--git-dir', repoGit, 'commit-tree', '-p', base, '-m', 'upstream', `${base}^{tree}`,
     ], { env: { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t' } })).stdout.trim()
@@ -1301,7 +1291,6 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect((await fs.stat(path.join(checkout, '.git'))).isDirectory()).toBe(true)
     expect(await fs.readFile(path.join(checkout, '.git', 'objects', 'info', 'alternates'), 'utf8'))
       .toBe(`${path.join(repoGit, 'objects')}\n`)
-    await expect(fs.access(admin)).rejects.toThrow()
     await expect(execFileAsync('git', ['-C', checkout, 'status', '--porcelain']))
       .resolves.toBeDefined()
     expect((await execFileAsync('git', ['-C', checkout, 'rev-parse', base])).stdout.trim())

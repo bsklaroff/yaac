@@ -210,15 +210,9 @@ describe('yaac server start on a k8s install', () => {
 
     const { exitCode, stderr } = await runYaac(testEnv.env, 'server', 'start')
     expect(exitCode).toBe(1)
-    // Which refusal fires depends on whether this machine can reach a
-    // cluster (a containerless workspace usually cannot):
-    //   - with a cluster: no Deployment, so `assertHostServerAllowed`
-    //     refuses and names `yaac cluster install`.
-    //   - without one: `runDeployedServerVerb` cannot ask and refuses rather
-    //     than falling back to a host server.
-    expect(stderr).toMatch(/runs its server in the cluster|cannot ask the cluster/)
-    expect(stderr).toMatch(/yaac cluster install|Fix the cluster access/)
-    // Either way, nothing was spawned.
+    // The record names no cluster, so the CLI refuses before asking one.
+    expect(stderr).toMatch(/records no cluster[\s\S]*yaac cluster install/)
+    // Nothing was spawned.
     expect(await readLock()).toBeNull()
   })
 
@@ -254,17 +248,6 @@ describe('yaac server run refuses what the identity rule cannot defend', () => {
     )
     expect(exitCode).toBe(1)
     expect(stderr).toMatch(/YAAC_BIND_ADDR=0\.0\.0\.0 would expose the server.*tailscale serve/s)
-    expect(await readLock()).toBeNull()
-  })
-
-  it('YAAC_REQUIRE_AUTH, which asked for a gate that no longer exists', async () => {
-    // Without this refusal, a host shared with other OS users would
-    // silently serve them all as its owner (docs/legacy-compat-shims.md).
-    const { exitCode, stderr } = await runYaac(
-      { ...testEnv.env, YAAC_REQUIRE_AUTH: '1' }, 'server', 'run',
-    )
-    expect(exitCode).toBe(1)
-    expect(stderr).toMatch(/YAAC_REQUIRE_AUTH is set.*not a supported shared deployment/s)
     expect(await readLock()).toBeNull()
   })
 })

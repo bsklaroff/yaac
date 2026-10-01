@@ -55,12 +55,14 @@ describe('foreignClusterRefusal', () => {
     expect(await foreignClusterRefusal()).toBeNull()
   })
 
-  it('leaves a record with no cluster unchecked, and refuses a cluster it cannot identify, saying why', async () => {
-    // An older server.json with no recorded cluster is not checked
-    // (docs/legacy-compat-shims.md).
-    await writeServerConfig({ ...RECORD, clusterUid: undefined, kubeContext: undefined })
+  it('refuses a k8s record with no cluster, and a cluster it cannot identify, saying why', async () => {
+    // No k8s install here: nothing to compare against.
+    await writeServerConfig({ ...RECORD, driver: 'containerless', clusterUid: undefined, kubeContext: undefined })
     current('anything', 'uid-anything')
     expect(await foreignClusterRefusal()).toBeNull()
+    // A k8s record that `yaac cluster install` has not stamped yet.
+    await writeServerConfig({ ...RECORD, clusterUid: undefined, kubeContext: undefined })
+    expect(await foreignClusterRefusal()).toMatch(/records no cluster[\s\S]*yaac cluster install/)
     expect(mockRun).not.toHaveBeenCalled()
 
     // Namespace-scoped RBAC makes kube-system Forbidden, which means the

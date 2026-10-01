@@ -49,7 +49,7 @@ let dataDir: string
 function registered(extra: { sshAgentPid?: number } = {}): void {
   rememberWorkspace({
     projectSlug: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
-    prewarm: false, createdAtMs: 1_000, tmuxPid: 4242, ...extra,
+    prewarm: false, createdAtMs: 1_000, launchEnv: {}, tmuxPid: 4242, ...extra,
   })
 }
 
@@ -162,7 +162,7 @@ describe('destroyWorkspace ssh-agent', () => {
     // the agent holding its key until reboot.
     restoreWorkspace({
       projectSlug: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
-      prewarm: false, createdAtMs: 1_000, tmuxPid: 4242, sshAgentPid: 777,
+      prewarm: false, createdAtMs: 1_000, launchEnv: {}, tmuxPid: 4242, sshAgentPid: 777,
     }, false, { reason: 'agent-exited' })
 
     await destroyWorkspace(TARGET)
@@ -218,26 +218,23 @@ describe('reapNodeLocal', () => {
     return dir
   }
 
-  // Keyed on ids, so leftovers from a failed removal and legacy slug-named
-  // trees are collected, except a slug a running workspace still uses and a
+  // Keyed on ids, so leftovers from a failed removal are collected, except a
   // tree written since the sweep began.
-  it('removes node-local trees no live project id owns, sparing a running workspace\'s', async () => {
+  it('removes node-local trees no live project id owns', async () => {
     const live = await seed(nodeLocalProjectPath(DEMO.id))
     const liveStore = await seed(imageStoreDir(DEMO.id))
     const removed = await seed(nodeLocalProjectPath(KEEPER_ID))
     const removedStore = await seed(imageStoreDir(KEEPER_ID))
-    const legacy = await seed(nodeLocalProjectPath('other'))
-    const inUse = await seed(nodeLocalProjectPath('demo'))
+    const unknown = await seed(nodeLocalProjectPath('other'))
     const fresh = nodeLocalProjectPath('staging')
     await fsp.mkdir(fresh, { recursive: true })
-    registered()
 
     await reapNodeLocal({ projectIds: new Set([DEMO.id]), workspaceIds: new Set([UUID]) })
 
-    for (const dir of [live, liveStore, inUse, fresh]) {
+    for (const dir of [live, liveStore, fresh]) {
       await expect(fsp.access(dir)).resolves.toBeUndefined()
     }
-    for (const dir of [removed, removedStore, legacy]) {
+    for (const dir of [removed, removedStore, unknown]) {
       await expect(fsp.access(dir)).rejects.toThrow()
     }
   })

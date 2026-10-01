@@ -113,10 +113,6 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/workspace/mama', body: { command: 'list' },
     why: 'a pod reaches yaac-mama through the egress proxy, not the server',
     k8s: UNSUPPORTED, containerless: 401 },
-  // The same channel at an older install's path (docs/legacy-compat-shims.md).
-  { method: 'POST', path: '/api/worktree/mama', body: { command: 'list' },
-    why: 'a pod reaches yaac-mama through the egress proxy, not the server',
-    k8s: UNSUPPORTED, containerless: 401 },
   { method: 'POST', path: '/api/workspace/queue/create', body: { project: 'nope', parent: 'nope', prompt: 'p' }, k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/queue/update', body: { id: 'nope', prompt: 'p' }, k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/queue/discard', body: { id: 'nope' }, k8s: MISSING, containerless: MISSING },

@@ -42,15 +42,9 @@ describe('saveWorkspaceAttachment', () => {
     expect(await fs.readdir(workspaceAttachmentsDir('proj', 'wt-1'))).toHaveLength(1)
   })
 
-  it('refuses bytes that are not an image, a workspace launched without the mount, and one not running', async () => {
+  it('refuses bytes that are not an image, and a workspace not running', async () => {
     await expect(saveWorkspaceAttachment('wt-1', Buffer.from('#!/bin/sh\n')))
       .rejects.toMatchObject({ code: 'VALIDATION' })
-
-    // No directory means no mount: the path would name nothing the agent can
-    // open, so the user is told to restart rather than handed it.
-    await fs.rm(workspaceAttachmentsDir('proj', 'wt-1'), { recursive: true })
-    await expect(saveWorkspaceAttachment('wt-1', PNG)).rejects.toMatchObject({ code: 'CONFLICT' })
-    await expect(saveWorkspaceAttachment('wt-1', PNG)).rejects.toThrow(/restart/)
 
     installFakeWorkspaceDriver({
       find: () => Promise.resolve(handleFixture({ workspaceId: 'wt-1', state: 'stopped' })),

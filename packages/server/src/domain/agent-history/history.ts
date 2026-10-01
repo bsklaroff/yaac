@@ -6,9 +6,7 @@ import {
   agentHistoryDir,
   claudeDir,
   codexDir,
-  piDir,
   projectDir,
-  repoDir,
   workspaceDir,
 } from '@yaac/shared/project-paths'
 import { agentSessionIdSchema } from '@yaac/shared/types'
@@ -26,7 +24,6 @@ import {
   claudeProjectDirName,
   codexRolloutParent,
   codexRolloutThreadId,
-  sessionIdFromPiLog,
 } from '#runtime/agents'
 import { serverLog } from '#log'
 
@@ -73,7 +70,6 @@ export async function convergeAgentHistory(
   for (const step of [
     () => moveClaude(slug, history, ids),
     () => moveCodex(slug, history, ids, shared, rows),
-    () => movePi(slug, history, ids),
     ...(runtime.layers ? [] : [() => linkOut(slug, workspaceId, history, shared)]),
   ]) {
     await step().catch((err: unknown) => {
@@ -115,7 +111,6 @@ function historyDestination(workspaceId: string, stored: string): string | undef
   const into = (part: string, ...tail: string[]): string => path.join('history', workspaceId, part, ...tail)
   if (tool === 'claude' && sub === 'projects' && rest.length >= 2) return into('claude', CLAUDE_POD_CWD, ...rest.slice(1))
   if (tool === 'codex' && sub === 'sessions' && rest.length >= 1) return into('codex', ...rest)
-  if (tool === 'pi' && sub === 'agent' && rest[0] === 'sessions' && rest.length >= 2) return into('pi', rest[rest.length - 1])
   return undefined
 }
 
@@ -127,12 +122,8 @@ function historyDestination(workspaceId: string, stored: string): string | undef
 export async function removeAgentHistory(slug: string, workspaceId: string): Promise<void> {
   const history = agentHistoryDir(slug, workspaceId)
   const links = [
-    // Also the link an older install made under the checkout's legacy
-    // `worktrees/` path (docs/legacy-compat-shims.md).
-    ...[
-      ...await checkoutForms(slug, workspaceId),
-      ...await forms(slug, path.join(projectDir(slug), 'worktrees', workspaceId)),
-    ].map((form) => path.join(claudeDir(slug), 'projects', claudeProjectDirName(form))),
+    ...(await checkoutForms(slug, workspaceId))
+      .map((form) => path.join(claudeDir(slug), 'projects', claudeProjectDirName(form))),
     ...(await fs.readdir(path.join(history, 'claude-file-history')).catch(() => []))
       .map((sid) => path.join(claudeDir(slug), 'file-history', sid)),
     ...(await filesUnder(path.join(history, 'codex')))
@@ -286,25 +277,6 @@ async function moveCodex(
 }
 
 /**
- * Move pi's logs out of the shared session dir it used before each workspace
- * had its own (docs/legacy-compat-shims.md). Logs are named by conversation,
- * some nested one folder down.
- */
-async function movePi(slug: string, history: string, ids: Set<string>): Promise<void> {
-  const home = await openRoot(piDir(slug), 'no-links').catch(() => null)
-  if (home === null) return
-  const walk = async (rel: string, depth: number): Promise<void> => {
-    for (const e of await home.readdir(rel)) {
-      const child = `${rel}/${e.name}`
-      const id = e.isFile() ? sessionIdFromPiLog(e.name) : undefined
-      if (id !== undefined && ids.has(id)) await moveIn(home, child, path.join(history, 'pi', e.name))
-      else if (e.isDirectory() && depth > 0) await walk(child, depth - 1)
-    }
-  }
-  await walk('agent/sessions', 1)
-}
-
-/**
  * Plant symlinks in the shared homes for a host (containerless) workspace,
  * which has no mounts:
  *
@@ -314,9 +286,7 @@ async function movePi(slug: string, history: string, ids: Set<string>): Promise<
  *   in which case it stays real.
  * - the `memory` folder among those conversations, linked to the project's
  *   shared memory (which a pod mounts at the same place), so auto-memory is
- *   shared across drivers and workspaces. The folder under the host repo
- *   path is folded into the shared one; if both are real folders, both are
- *   left alone (memory is never merged).
+ *   shared across drivers and workspaces.
  * - each file-history dir and codex rollout, at the path claude or codex
  *   looks for it.
  *
@@ -347,23 +317,8 @@ async function linkOut(slug: string, workspaceId: string, history: string, share
   // claude keys memory on the git root (the checkout), so its memory folder
   // sits among this workspace's conversations; link it to the shared one. An
   // empty folder is a pod mountpoint left by the other driver.
-  const memory = path.join(projects, CLAUDE_POD_REPO)
   await fs.rmdir(path.join(conversations, 'memory')).catch(() => {})
-  await ensureLink(path.join(conversations, 'memory'), path.join(memory, 'memory'))
-  for (const form of await repoForms(slug)) {
-    const name = claudeProjectDirName(form)
-    if (name === CLAUDE_POD_REPO) continue
-    const link = path.join(projects, name)
-    if ((await fs.lstat(link).catch(() => null))?.isDirectory() === true) {
-      if (await fs.lstat(memory).then(() => true, () => false)) {
-        serverLog(`[agent-history] ${link} and ${memory} both hold memory; left both`)
-        continue
-      }
-      await fs.rename(link, memory)
-    }
-    await fs.mkdir(memory, { recursive: true })
-    await ensureLink(link, memory)
-  }
+  await ensureLink(path.join(conversations, 'memory'), path.join(projects, CLAUDE_POD_REPO, 'memory'))
 
   for (const sid of await fs.readdir(path.join(history, 'claude-file-history'))) {
     await ensureLink(
@@ -403,7 +358,6 @@ async function forms(slug: string, of: string): Promise<string[]> {
 
 const checkoutForms = (slug: string, workspaceId: string): Promise<string[]> =>
   forms(slug, workspaceDir(slug, workspaceId))
-const repoForms = (slug: string): Promise<string[]> => forms(slug, repoDir(slug))
 
 /** Every file below `dir`, relative to it; [] when there is no `dir`. */
 async function filesUnder(dir: string): Promise<string[]> {

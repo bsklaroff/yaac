@@ -115,7 +115,7 @@ async function dropDraft(id: string | undefined): Promise<void> {
  * the caller, so a request cannot claim to be another workspace. This sits on
  * top of the normal identity gate, which sees a loopback caller.
  */
-export const mamaApp = new Hono().post(
+const mamaApp = new Hono().post(
   '/mama',
   zv('json', z.object({
     command: z.string().min(1).max(32),

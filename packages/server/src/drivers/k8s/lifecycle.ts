@@ -11,7 +11,6 @@ import {
   ensureMainRegistry,
   ensureNamespace,
   nodeIpBlocks,
-  relabelLegacyWorkspaces,
 } from '#drivers/k8s/cluster'
 import {
   PortDetectorManager,
@@ -102,9 +101,6 @@ export async function startK8sDriver(sinks: DriverSinks): Promise<void> {
   // namespace exists before anything applies into it.
   await (async () => {
     await ensureNamespace()
-    // Before the informers start, so they see workspaces an older install
-    // left running (docs/legacy-compat-shims.md).
-    const upgrading = await relabelLegacyWorkspaces()
     // Every pod yaac creates names a priority class, and an older cluster
     // may lack them. Must run before the registry, whose pod names one and
     // would otherwise be rejected (`cluster install` uses the same order).
@@ -121,8 +117,6 @@ export async function startK8sDriver(sinks: DriverSinks): Promise<void> {
     // bootstrap skips an already-current proxy, so this is also applied on
     // every server start.
     await kubectlApply(buildProxyEgressNpManifest(nodeCidrs))
-    // Roll an older install's proxy now: it uses the old labels.
-    if (upgrading) await proxyClient.ensureRunning()
   })().catch((err) => serverLog(`[server] cluster bootstrap failed: ${String(err)}`))
 
   // Let the caller restore state the last server left running (such as

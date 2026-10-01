@@ -204,8 +204,7 @@ Things to keep in mind:
   A local process can forge any of these headers and gains nothing: it
   already owns the data dir. For the same reason, a machine shared with
   other OS users is not a supported shared setup, since they would count as
-  local too. Serve it over the tailnet instead. A server started with
-  `YAAC_REQUIRE_AUTH` set refuses to start and says so.
+  local too. Serve it over the tailnet instead.
 - **A browser sends its identity with every request**, at loopback and over
   the tailnet. Three guards protect it from malicious sites, on every
   request including WebSocket upgrades. The browser sets these headers and

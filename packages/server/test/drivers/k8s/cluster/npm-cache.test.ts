@@ -128,10 +128,6 @@ describe('ensureNpmCache', () => {
     expect(rollout).toBeGreaterThanOrEqual(0)
     expect(mockKubectlWithRetry.mock.invocationCallOrder[rollout])
       .toBeLessThan(mockKubectlApply.mock.invocationCallOrder.at(-1)!)
-    // Deletes the workspace-egress policy under its old name.
-    expect(mockKubectlWithRetry).toHaveBeenCalledWith([
-      'delete', 'networkpolicy', 'yaac-npm-cache-worktree-egress', '-n', 'test-ns', '--ignore-not-found',
-    ])
   })
 
   it('publishes no Service for a cache that never rolled out', async () => {

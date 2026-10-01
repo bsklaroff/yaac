@@ -103,10 +103,7 @@ export async function recordAgentSessions(
       for (const reported of discovered) {
         const linkId = `${reported.tool}/${reported.agentSessionId}`
         const pinId = `${reported.tool}/${workspaceId}`
-        // Only the tool's first conversation takes over. A pin beside another
-        // conversation of its tool is legacy (docs/legacy-compat-shims.md).
         const pinOrdinal = SELF_NAMING_TOOLS.includes(reported.tool) && !ordinalOf.has(linkId)
-          && !existing.some((e) => e.tool === reported.tool && e.agentSessionId !== workspaceId)
           ? ordinalOf.get(pinId)
           : undefined
         let d = reported

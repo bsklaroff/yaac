@@ -82,5 +82,5 @@ export function buildPriorityClassManifests(): Array<Record<string, unknown>> {
 export async function ensurePriorityClasses(): Promise<void> {
   for (const manifest of buildPriorityClassManifests()) await kubectlApply(manifest)
   // The old `yaac-session` and `yaac-worktree` classes are not deleted:
-  // another install on the cluster running older code may still use them.
+  // another install on the same cluster may still use them.
 }

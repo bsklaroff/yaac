@@ -47,15 +47,6 @@ pods writing to host directories (see the
 installs its pinned agent CLIs itself with npm; `yaac host check` shows what
 the host still lacks.
 
-Upgrading from an install that used `yaac-kind` or the old `virglrenderer`
-formula takes two one-time steps first (why:
-[homebrew/README.md](homebrew/README.md#migrating-an-existing-install)):
-
-```sh
-brew uninstall --ignore-dependencies yaac-kind && brew install kind && brew link kind
-brew uninstall --ignore-dependencies virglrenderer && brew upgrade yaac-libkrun
-```
-
 ### From source
 
 A source install replaces the brew one, since both own the same `bin/yaac`

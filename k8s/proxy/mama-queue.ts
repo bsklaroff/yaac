@@ -88,12 +88,6 @@ export interface MamaResult {
 export type MamaCompleter = (status: number, body: string) => void
 
 /**
- * Option names sent by the `yaac-mama` an older install staged in its
- * workspaces, mapped to the current ones (docs/legacy-compat-shims.md).
- */
-const LEGACY_ARGS = new Map([['worktree', 'workspace'], ['parent-worktree', 'parent-workspace']])
-
-/**
  * Read the `{command, args, body}` envelope off a request body, or null if it
  * is not that shape. Values are checked by `validateMamaRequest`; non-string
  * arg values are dropped.
@@ -114,7 +108,7 @@ export function parseMamaEnvelope(
   const args = Object.create(null) as Record<string, string>
   if (typeof env.args === 'object' && env.args !== null && !Array.isArray(env.args)) {
     for (const [name, value] of Object.entries(env.args as Record<string, unknown>)) {
-      if (typeof value === 'string') args[LEGACY_ARGS.get(name) ?? name] = value
+      if (typeof value === 'string') args[name] = value
     }
   }
   return {

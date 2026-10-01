@@ -76,7 +76,7 @@ describe('execInWorkspace', () => {
   })
 
   it('never falls back to the server\'s own environment', async () => {
-    // No marker, or one without launchEnv.
+    // No marker: a workspace the registry has forgotten.
     vi.stubEnv('YAAC_SERVER_WIRING', 'server-only')
     vi.stubEnv('HOME', '/home/server-user')
     vi.stubEnv('CODEX_HOME', '/home/server-user/.codex')

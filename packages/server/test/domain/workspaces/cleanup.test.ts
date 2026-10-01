@@ -296,19 +296,13 @@ describe('deleteWorkspaceState', () => {
     await fs.rm(dataDir, { recursive: true, force: true })
   })
 
-  it('removes the checkout, its git admin dir and its log, and confirms it', async () => {
+  it('removes the checkout and confirms it', async () => {
     const slug = 'dws'
     const wt = path.join(dataDir, 'global', 'projects', slug, 'workspaces', 'w1')
-    const admin = path.join(dataDir, 'global', 'projects', slug, 'repo', '.git', 'worktrees', 'w1')
     await fs.mkdir(wt, { recursive: true })
-    await fs.mkdir(admin, { recursive: true })
-    // Setup writes this so `git worktree prune` cannot reap a live workspace;
-    // teardown must clear it.
-    await fs.writeFile(path.join(admin, 'locked'), 'yaac\n')
 
     await expect(deleteWorkspaceState(slug, 'w1')).resolves.toBe(true)
     await expect(fs.access(wt)).rejects.toThrow()
-    await expect(fs.access(admin)).rejects.toThrow()
   })
 
   // Ids are server-minted today, but an empty id would resolve to the
