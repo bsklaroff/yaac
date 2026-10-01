@@ -6,7 +6,9 @@
  * bundled from source) end-to-end in headless Chromium against a real tmux,
  * with no server or workspace: a fast flick's wheel reports are sent at a
  * bounded per-frame rate with a capped backlog, so scrolling stops when the
- * gesture stops.
+ * gesture stops. Also checks that a spaced mouse-wheel notch (line mode or a
+ * large pixel delta) sends two reports, while a trackpad fling of equally
+ * large pixel deltas at the frame rate sends about one per event.
  *
  * Pipeline: xterm.js (tmux `mouse on` sends SGR wheel reports) <-WS-> an
  * in-script bridge that forwards like the server and adds LINK_DELAY_MS of
@@ -254,6 +256,38 @@ async function runConfig(browser, pacing) {
   return { label: pacing ? 'paced wheel' : 'stock wheel', ...r }
 }
 
+// Dispatches `events` ({ deltaY, deltaMode, gapMs }) on the paced page and
+// counts the wheel reports sent. Synthetic events carry their dispatch time
+// as timeStamp, so the gaps are what the notch test sees. Headless Chromium
+// drops animation frames, so even a fling is spaced with timers.
+async function countReports(browser, events) {
+  try { sh(`tmux -S ${sock} send-keys -t bench -X cancel`) } catch { /* not in copy mode */ }
+  const page = await browser.newPage({ viewport: { width: 1200, height: 800 } })
+  await page.goto(`http://127.0.0.1:${httpPort}/?pacing=1`)
+  await page.waitForFunction(() => window.__m.ready, { timeout: 10_000 })
+  await page.waitForFunction(() => {
+    const m = window.__m
+    return m.recv.length > 0 && performance.now() - m.recv[m.recv.length - 1].t > 800
+  }, { timeout: 20_000 })
+  const sent = await page.evaluate(async (evs) => {
+    const m = window.__m
+    m.sent = []
+    const el = document.querySelector('.xterm-screen')
+    const r = el.getBoundingClientRect()
+    for (const { deltaY, deltaMode, gapMs } of evs) {
+      await new Promise((res) => setTimeout(res, gapMs))
+      el.dispatchEvent(new WheelEvent('wheel', {
+        deltaY, deltaMode, bubbles: true, cancelable: true,
+        clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+      }))
+    }
+    await new Promise((res) => setTimeout(res, 500))
+    return m.sent.length
+  }, events)
+  await page.close()
+  return sent
+}
+
 const browser = await pw.chromium.launch()
 let failures = 0
 try {
@@ -272,6 +306,24 @@ try {
     paced.reportsAfterEnd <= 8)
   check(`pacing drops the over-rate excess of a hard flick (${stock.reportsSent} -> ${paced.reportsSent})`,
     paced.reportsSent < stock.reportsSent)
+
+  const notches = [
+    { deltaY: -3, deltaMode: 1, gapMs: 200 },
+    { deltaY: -3, deltaMode: 1, gapMs: 200 },
+    { deltaY: -100, deltaMode: 0, gapMs: 200 },
+    { deltaY: -100, deltaMode: 0, gapMs: 200 },
+  ]
+  const notchReports = await countReports(browser, notches)
+  check(`each spaced notch sends 2 reports (${notches.length} notches -> ${notchReports})`,
+    notchReports === 2 * notches.length)
+  const fling = Array.from({ length: 20 }, () => ({ deltaY: -60, deltaMode: 0, gapMs: 16 }))
+  const flingReports = await countReports(browser, fling)
+  // About one per event: the first event, and any that a late timer leaves
+  // 50 ms after the last, count as notches, and a stalled flush can drop a
+  // few over the backlog cap. The band still catches every event counting
+  // as a notch (2 per event).
+  check(`a large-delta fling sends ~1 report per event (${fling.length} events -> ${flingReports})`,
+    flingReports >= fling.length * 0.8 && flingReports <= fling.length * 1.3)
 } finally {
   await browser.close()
   server.close()

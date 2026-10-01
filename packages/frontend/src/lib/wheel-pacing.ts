@@ -11,9 +11,22 @@ import type { Terminal } from '@xterm/xterm'
  * frame, and drops any backlog beyond a small cap.
  *
  * As in stock xterm, each wheel event that crosses the line threshold
- * (xterm's consumeWheelEvent) becomes one report; only timing and the
- * queue limit differ.
+ * (xterm's consumeWheelEvent) becomes a report, except that a mouse-wheel
+ * notch becomes REPORTS_PER_NOTCH of them: tmux scrolls a fixed 5 lines per
+ * report, which is too little for one click of a wheel. Only a notch
+ * reported in line mode or as a large pixel delta is recognized (Chrome and
+ * Edge on Windows and Linux, Firefox); wheels that report small pixel
+ * deltas, as macOS mice and high-resolution wheels usually do, are handled
+ * like a trackpad.
  */
+
+/** Reports sent for one mouse-wheel notch. Trackpad events stay at one,
+ *  since a swipe already emits a stream of them. */
+const REPORTS_PER_NOTCH = 2
+/** Quiet time before an event that may count as a notch. A trackpad fling
+ *  arrives at the frame rate with deltas as large as a notch's, while
+ *  notches come one at a time. */
+const NOTCH_MIN_GAP_MS = 50
 
 /** Reports sent per animation frame. Matches typical wheel event rates, so
  *  only a free-spinning wheel is slowed. */
@@ -46,6 +59,16 @@ export function addToBacklog(
   const next = pending + add
   const sign = next < 0 ? -1 : 1
   return sign * Math.min(Math.abs(next), maxBacklog) || 0
+}
+
+/** Whether a wheel event is a mouse-wheel notch rather than part of a
+ *  trackpad swipe: a line- or page-mode delta, or a pixel delta of at least
+ *  50 (xterm's trackpad test in consumeWheelEvent), arriving at least
+ *  NOTCH_MIN_GAP_MS after the previous wheel event. */
+export function isWheelNotch(ev: WheelEvent, msSincePrevious: number): boolean {
+  if (msSincePrevious < NOTCH_MIN_GAP_MS) return false
+  // 0 is WheelEvent.DOM_DELTA_PIXEL.
+  return ev.deltaMode !== 0 || Math.abs(ev.deltaY) >= 50
 }
 
 /** xterm's ICoreMouseEvent (see selection.ts). */
@@ -117,6 +140,7 @@ export function patchWheelPacing(term: Terminal): (() => void) | null {
 
   let pending = 0
   let raf = 0
+  let lastWheelAt = -Infinity
   // Position and modifiers of the last wheel event.
   let at: { col: number; row: number; x: number; y: number } | null = null
   let mods: { ctrl: boolean; alt: boolean; shift: boolean } = { ctrl: false, alt: false, shift: false }
@@ -143,6 +167,8 @@ export function patchWheelPacing(term: Terminal): (() => void) | null {
   term.attachCustomWheelEventHandler((ev: WheelEvent): boolean => {
     // Without mouse reporting, leave the event to stock xterm.
     if (!coreMouse.areMouseEventsActive) return true
+    const msSincePrevious = ev.timeStamp - lastWheelAt
+    lastWheelAt = ev.timeStamp
     // consumeWheelEvent handles sensitivity and carries fractional lines.
     const lines = consume(ev, render.dimensions?.device?.cell?.height, browser.dpr)
     if (lines === 0) return false
@@ -150,7 +176,8 @@ export function patchWheelPacing(term: Terminal): (() => void) | null {
     if (!pos) return false
     at = pos
     mods = { ctrl: ev.ctrlKey, alt: ev.altKey, shift: ev.shiftKey }
-    pending = addToBacklog(pending, lines < 0 ? -1 : 1)
+    const reports = isWheelNotch(ev, msSincePrevious) ? REPORTS_PER_NOTCH : 1
+    pending = addToBacklog(pending, lines < 0 ? -reports : reports)
     if (raf === 0) raf = requestAnimationFrame(flush)
     return false
   })
