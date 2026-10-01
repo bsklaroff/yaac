@@ -23,6 +23,7 @@ import { rebranchSpare, retoolSpare } from './spare-pool'
 import {
   claimSpareWorkspace,
   getGitIdentity,
+  getTimeZone,
   getWorkspaceRow,
   restoreSpareWorkspace,
   setWorkspaceGroup,
@@ -87,7 +88,8 @@ export interface PrewarmState {
   claiming: ReadonlySet<string>
   /** Projects with a workspace being created or restarted. */
   provisioning: ReadonlySet<string>
-  /** Spares warmed in an agent mode the project no longer creates in. */
+  /** Spares warmed in an agent mode the project no longer creates in, or a
+   *  zone the user is no longer in. */
   stale: ReadonlySet<string>
 }
 
@@ -100,8 +102,8 @@ export interface PrewarmState {
  * - A project with a running user workspace gets `poolSize` spares: spawn to
  *   fill, reap the oldest excess. A different tool, model or permission mode
  *   does not make a spare stale (a claim can retool it).
- * - Spares in `stale` (wrong agent mode, which a claim cannot convert) are
- *   reaped and do not count.
+ * - Spares in `stale` (wrong agent mode or zone, which a claim cannot
+ *   convert) are reaped and do not count.
  * - A project with no running user workspace loses all its spares, unless a
  *   workspace is provisioning (e.g. mid-restart).
  */
@@ -254,15 +256,18 @@ export async function tryClaimPrewarmed(
     // a reservation never spans an unneeded await.
     const launched = new Map(await Promise.all(spares.map(async (p) =>
       [p.jobName, await getWorkspaceRow(projectSlug, p.workspaceId).catch(() => undefined)] as const)))
+    const timeZone = (await getTimeZone()).timeZone ?? undefined
     const matches = (p: RuntimeHandle): boolean => {
       const row = launched.get(p.jobName)
       return row !== undefined && p.tool === tool && row.model === setup.model
         && row.permissionMode === setup.permissionMode
     }
     const candidates = spares
-      // The mode cannot be converted: an `acp` pod has a mount a `tui` one
-      // lacks, and the pod spec is fixed.
-      .filter((p) => launched.get(p.jobName)?.mode === setup.mode)
+      // Neither the mode nor the zone can be converted: an `acp` pod has a
+      // mount a `tui` one lacks, the pod spec is fixed, and `TZ` is set at
+      // launch.
+      .filter((p) => launched.get(p.jobName)?.mode === setup.mode
+        && launched.get(p.jobName)?.timeZone === timeZone)
       // Prefer a matching agent (no respawn), then newest.
       .sort((a, b) =>
         Number(matches(b)) - Number(matches(a))

@@ -19,7 +19,9 @@ import {
   cancelToolInstall,
   cancelToolLogin,
   clearToolAuth,
+  deviceTimeZone,
   getGitIdentity,
+  getTimeZone,
   getToolInstall,
   getToolLogin,
   getUserDockerfile,
@@ -28,9 +30,11 @@ import {
   sendToolLoginInput,
   setGitIdentity as setGitIdentityApi,
   setShortcutOverride,
+  setTimeZone,
   setToolApiKey,
   startToolInstall,
   startToolLogin,
+  type TimeZoneSetting,
 } from '#lib/settingsApi'
 import { AUTH_LIST_KEY, useAuthList } from '#lib/useAuthList'
 import {
@@ -228,6 +232,7 @@ export function SettingsButton(
                 </button>
               </Field>
               <GitIdentityField />
+              <TimeZoneField />
             </section>
           )}
 
@@ -976,6 +981,62 @@ function GitIdentityField(): JSX.Element {
         </div>
         {error !== null && <p className="mt-2 text-xs text-red-400">{error}</p>}
       </form>
+    </Field>
+  )
+}
+
+/**
+ * The time zone this server's workspaces launch with. Automatic follows the
+ * device that last opened the web app, started the auth server or created a
+ * workspace from the CLI; picking a zone here pins it.
+ */
+function TimeZoneField(): JSX.Element {
+  const [setting, setSetting] = useState<TimeZoneSetting | undefined>()
+  const [error, setError] = useState<string | null>(null)
+  const zones = useMemo(() => Intl.supportedValuesOf('timeZone'), [])
+
+  useEffect(() => {
+    let cancelled = false
+    getTimeZone()
+      .then((v) => { if (!cancelled) setSetting(v) })
+      .catch((e: unknown) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)) })
+    return () => { cancelled = true }
+  }, [])
+
+  /** '' is Automatic: report this device's zone and unpin. */
+  const choose = async (value: string): Promise<void> => {
+    setError(null)
+    try {
+      setSetting(await setTimeZone(value === '' ? deviceTimeZone() : value, value !== ''))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  // Unpinned, the stored zone is the last device's, which may not be this one.
+  const automatic = setting?.pinned === false && setting.timeZone ? setting.timeZone : deviceTimeZone()
+
+  return (
+    <Field
+      label="Time zone"
+      hint={'The zone new workspaces launch in. Automatic follows whichever device last '
+        + 'connected, so it changes as you switch between machines in different zones; '
+        + 'pick a zone to pin it. A running workspace keeps the zone it started with.'}
+    >
+      <>
+        <select
+          aria-label="Time zone"
+          value={setting?.pinned ? setting.timeZone ?? '' : ''}
+          disabled={setting === undefined}
+          onChange={(e) => void choose(e.target.value)}
+          className="rounded-md border border-border bg-bg px-2.5 py-1.5 text-xs text-text
+            outline-none focus:border-border-strong disabled:opacity-50"
+        >
+          <option value="">Automatic ({automatic})</option>
+          {zones.map((z) => <option key={z} value={z}>{z}</option>)}
+        </select>
+        {error !== null && <p className="mt-2 text-xs text-red-400">{error}</p>}
+      </>
     </Field>
   )
 }

@@ -11,7 +11,7 @@ import { createTempDataDir, cleanupTempDir, createTestRepo } from '@yaac/test-ut
 import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { projectDir, repoDir } from '@yaac/shared/project-paths'
 import { closeDb } from '#db/client'
-import { getWorkspaceRow, insertGitCredential, setGitIdentity, setProjectGitCredential, type WorkspaceRow } from '#db'
+import { getWorkspaceRow, insertGitCredential, setGitIdentity, setProjectGitCredential, setTimeZone, type WorkspaceRow } from '#db'
 import {
   getProjectRow,
   recordProject,
@@ -210,7 +210,7 @@ describe('createWorkspace git identity', () => {
   })
 })
 
-describe('createWorkspace base branch', () => {
+describe('createWorkspace provisioning', () => {
   let tmpDir: string
 
   beforeEach(async () => {
@@ -253,5 +253,32 @@ describe('createWorkspace base branch', () => {
     expect((await rowAtProvisioning('wt-1', { branch: 'release' }))?.baseBranch).toBe('release')
     const fallback = (await rowAtProvisioning('wt-2', {}))?.baseBranch
     expect(fallback).toMatch(/^(main|master)$/)
+  })
+
+  it('launches in the time zone clients report, and records it', async () => {
+    /** The env and row at launch; the create is stopped there. */
+    const launched = async (workspaceId: string): Promise<{ env: string[]; row?: WorkspaceRow }> => {
+      let env: string[] = []
+      let row: WorkspaceRow | undefined
+      installFakeWorkspaceDriver({
+        launch: async (spec) => {
+          env = spec.env
+          row = await getWorkspaceRow('demo', workspaceId)
+          throw new Error('stop here')
+        },
+      })
+      await expect(createWorkspace('demo', { workspaceId })).rejects.toThrow('stop here')
+      return { env, row }
+    }
+    // A pod would otherwise run in UTC, whatever zone the user is in.
+    const before = await launched('wt-3')
+    expect(before.env.filter((e) => e.startsWith('TZ='))).toEqual([])
+    expect(before.row?.timeZone).toBeUndefined()
+
+    await setTimeZone('Asia/Tokyo', false)
+    const after = await launched('wt-4')
+    expect(after.env).toContain('TZ=Asia/Tokyo')
+    // Recorded, so a spare claim can tell which zone it launched in.
+    expect(after.row?.timeZone).toBe('Asia/Tokyo')
   })
 })

@@ -1,7 +1,7 @@
 /**
  * Reconcile step that keeps one prewarmed spare per active project, warmed
  * with the project's default create settings. The pure `computePrewarmPlan`
- * decides; this lists pods, finds spares in an outdated agent mode, and
+ * decides; this lists pods, finds spares in an outdated agent mode or zone, and
  * spawns (`createWorkspace({ prewarm: true })`) or reaps
  * (`cleanupWorkspace`).
  */
@@ -16,7 +16,7 @@ import {
   computePrewarmPlan,
   inFlight,
 } from './prewarm'
-import { deleteSpareWorkspaceRow, getWorkspaceRow, listProjectRows } from '#db'
+import { deleteSpareWorkspaceRow, getTimeZone, getWorkspaceRow, listProjectRows } from '#db'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 import type { RuntimeHandle } from '#drivers/contract'
@@ -56,7 +56,7 @@ export async function reconcilePrewarmPool(snapshot?: RuntimeSnapshot): Promise<
     inFlight,
     claiming,
     provisioning: new Set(listProvisioning().filter((e) => e.error === undefined).map((e) => e.projectSlug)),
-    stale: await staleModeSpares(pods),
+    stale: await staleSpares(pods),
   })
 
   for (const target of toReap) {
@@ -83,17 +83,19 @@ export async function reconcilePrewarmPool(snapshot?: RuntimeSnapshot): Promise<
 }
 
 /**
- * Spares warmed in a different agent mode than their project now creates in.
- * The mode is fixed at warm time, so the webapp cannot claim them. A row with
- * no mode (written before the column) counts as stale. Unreadable rows count
- * as not stale.
+ * Spares warmed in a different agent mode than their project now creates in,
+ * or in a zone other than the user's current one. Both are fixed at warm
+ * time, so no claim takes them. A row with no mode (written before the
+ * column) counts as stale. Unreadable rows count as not stale.
  */
-async function staleModeSpares(pods: RuntimeHandle[]): Promise<Set<string>> {
+async function staleSpares(pods: RuntimeHandle[]): Promise<Set<string>> {
   const spares = pods.filter((p) => p.prewarmed && p.projectSlug && !claiming.has(p.jobName))
   if (spares.length === 0) return new Set()
   let projects
+  let timeZone
   try {
     projects = await listProjectRows()
+    timeZone = (await getTimeZone()).timeZone ?? undefined
   } catch {
     return new Set()
   }
@@ -103,7 +105,7 @@ async function staleModeSpares(pods: RuntimeHandle[]): Promise<Set<string>> {
   await Promise.all(spares.map(async (p) => {
     const row = await getWorkspaceRow(p.projectSlug, p.workspaceId).catch(() => null)
     const want = wanted.get(p.projectSlug)
-    if (row && want !== undefined && row.mode !== want) stale.add(p.jobName)
+    if (row && want !== undefined && (row.mode !== want || row.timeZone !== timeZone)) stale.add(p.jobName)
   }))
   return stale
 }

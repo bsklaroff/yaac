@@ -18,6 +18,7 @@ vi.mock('#domain/workspaces/cleanup', () => ({
 }))
 vi.mock('#db', async (importOriginal) => ({
   ...(await importOriginal<typeof dbModule>()),
+  getTimeZone: vi.fn(),
   getWorkspaceRow: vi.fn(),
   listProjectRows: vi.fn(),
 }))
@@ -36,7 +37,7 @@ import {
 import { createWorkspace, resolveCreate, type CreateSetup } from '#domain/workspaces/create'
 import { clearAllProvisioningForTests, failProvisioning, registerProvisioning } from '#domain/workspaces/provisioning'
 import { cleanupWorkspace, deleteWorkspaceState } from '#domain/workspaces/cleanup'
-import { getWorkspaceRow, listProjectRows, type ProjectRow, type WorkspaceRow } from '#db'
+import { getTimeZone, getWorkspaceRow, listProjectRows, type ProjectRow, type WorkspaceRow } from '#db'
 
 /** The workspaces the runtime reports for a pass. */
 const mockWorkspaces = vi.fn<() => Promise<RuntimeHandle[]>>()
@@ -86,6 +87,7 @@ describe('reconcilePrewarmPool', () => {
     })
     mockResolveCreate.mockResolvedValue(SETUP)
     vi.mocked(listProjectRows).mockResolvedValue([])
+    vi.mocked(getTimeZone).mockResolvedValue({ timeZone: null, pinned: false })
     vi.mocked(getWorkspaceRow).mockResolvedValue(undefined)
     mockCreate.mockResolvedValue({ workspaceId: 's', jobName: 'yaac-p-s', forwardedPorts: [], tool: 'claude', mode: 'tui' as const })
     // Default to success: each reap step waits on the previous one, so a
@@ -285,6 +287,23 @@ describe('reconcilePrewarmPool', () => {
     vi.mocked(listProjectRows).mockResolvedValue([
       { slug: 'p', lastTool: 'codex', createDefaults: { codex: { mode: 'acp' } } } as unknown as ProjectRow,
     ])
+    vi.mocked(getWorkspaceRow).mockResolvedValue({ mode: 'tui' } as WorkspaceRow)
+    mockWorkspaces.mockResolvedValue([
+      pod({ jobName: 'yaac-p-real', workspaceId: 'r1' }),
+      pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true }),
+    ])
+    await pass()
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectSlug: 'p', workspaceId: 's2' })
+    expect(mockCreate).toHaveBeenCalledWith('p', WARM)
+  })
+
+  // `TZ` is fixed at launch too, so a spare warmed before the user's zone
+  // changed (or was first reported) is replaced rather than left unclaimable.
+  it('replaces a spare warmed in another zone than the user\'s current one', async () => {
+    vi.mocked(listProjectRows).mockResolvedValue([
+      { slug: 'p', createDefaults: {} } as unknown as ProjectRow,
+    ])
+    vi.mocked(getTimeZone).mockResolvedValue({ timeZone: 'Asia/Tokyo', pinned: false })
     vi.mocked(getWorkspaceRow).mockResolvedValue({ mode: 'tui' } as WorkspaceRow)
     mockWorkspaces.mockResolvedValue([
       pod({ jobName: 'yaac-p-real', workspaceId: 'r1' }),

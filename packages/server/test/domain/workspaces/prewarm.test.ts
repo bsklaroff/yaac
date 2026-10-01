@@ -13,6 +13,7 @@ vi.mock('#db', async (importOriginal) => ({
   setWorkspaceGroup: vi.fn(),
   setWorkspaceTitle: vi.fn(),
   getGitIdentity: mockGitIdentity,
+  getTimeZone: vi.fn(),
 }))
 
 vi.mock('#domain/workspaces/spare-pool', () => ({
@@ -68,6 +69,7 @@ import type { WorkspaceEvent } from '#db'
 import {
   applyWorkspaceEvent,
   claimSpareWorkspace,
+  getTimeZone,
   getWorkspaceRow,
   listActiveAgentSessions,
   restoreSpareWorkspace,
@@ -179,6 +181,7 @@ describe('tryClaimPrewarmed', () => {
     mockRemoteBranchExists.mockResolvedValue(true)
     mockFetchOrigin.mockResolvedValue(undefined)
     mockGitIdentity.mockResolvedValue({ name: 'A B', email: 'a@b.co' })
+    vi.mocked(getTimeZone).mockResolvedValue({ timeZone: null, pinned: false })
     launched()
   })
 
@@ -683,6 +686,20 @@ describe('tryClaimPrewarmed', () => {
     launched({ mode: undefined })
     expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
     expect(mockClaimSpare).not.toHaveBeenCalled()
+  })
+
+  // `TZ` is fixed at launch, so a spare warmed before the user's zone was
+  // known, or in another one, would hand out the wrong clock.
+  it('passes over a spare warmed in a zone other than the user\'s current one', async () => {
+    mockList.mockResolvedValue([spare()])
+    vi.mocked(getTimeZone).mockResolvedValue({ timeZone: 'Asia/Tokyo', pinned: false })
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
+    launched({ timeZone: 'Europe/Paris' })
+    expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
+    expect(mockClaimSpare).not.toHaveBeenCalled()
+
+    launched({ timeZone: 'Asia/Tokyo' })
+    expect((await tryClaimPrewarmed('p', 'req', setup('claude'), emit))?.workspaceId).toBe('spare1')
   })
 
   // A chat spare's adapter waits for a client; the handshake happens once the

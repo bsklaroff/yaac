@@ -51,6 +51,8 @@ export interface WorkspaceCreated {
    *  request against (see `workspaces.model`). */
   model?: string
   mode?: AgentMode
+  /** The zone it launches with as `TZ` (see `workspaces.timeZone`). */
+  timeZone?: string
 }
 
 /**

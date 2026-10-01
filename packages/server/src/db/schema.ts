@@ -12,7 +12,7 @@ import { boolean, index, integer, jsonb, primaryKey, snakeCase, text, timestamp,
  */
 
 /** Single-value user preferences, keyed by name (the git identity workspaces
- *  commit under). */
+ *  commit under, the user's time zone). */
 export const preferences = snakeCase.table('preferences', {
   key: text().primaryKey(),
   value: text().notNull(),
@@ -159,6 +159,11 @@ export const workspaces = snakeCase.table('workspaces', {
    */
   model: text(),
   mode: text(),
+  /**
+   * The IANA zone it launched with as `TZ`, null when none was set. A spare
+   * warmed in another zone than the user's current one is never claimed.
+   */
+  timeZone: text(),
   /**
    * SHA-256 of the bearer token this workspace's `yaac-mama` presents, for
    * containerless workspaces that reach the server directly. Null under k8s,

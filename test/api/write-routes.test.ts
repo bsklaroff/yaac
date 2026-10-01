@@ -356,6 +356,37 @@ describe('write routes', () => {
     })
   })
 
+  describe('GET/PUT /config/time-zone', () => {
+    it('takes device reports until the user pins a zone, then ignores them until unpinned', async () => {
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
+      const put = async (json: { timeZone: string; pinned?: boolean }): Promise<unknown> =>
+        (await client.config['time-zone'].$put({ json })).json()
+      expect(await (await client.config['time-zone'].$get()).json())
+        .toEqual({ timeZone: null, pinned: false })
+
+      expect(await put({ timeZone: 'America/New_York' }))
+        .toEqual({ timeZone: 'America/New_York', pinned: false })
+      expect(await put({ timeZone: 'Europe/Paris', pinned: true }))
+        .toEqual({ timeZone: 'Europe/Paris', pinned: true })
+      expect(await put({ timeZone: 'Asia/Tokyo' }))
+        .toEqual({ timeZone: 'Europe/Paris', pinned: true })
+      expect(await put({ timeZone: 'Asia/Tokyo', pinned: false }))
+        .toEqual({ timeZone: 'Asia/Tokyo', pinned: false })
+    })
+
+    it('refuses anything but an IANA zone name', async () => {
+      // The value lands in a workspace's `TZ`.
+      const app = buildApp({ buildId: 'test' })
+      for (const timeZone of ['Mars/Olympus', '+05:00', 'UTC\nFOO=1', 'A'.repeat(65), '']) {
+        const res = await app.request('/api/config/time-zone', rawInit({
+          method: 'PUT',
+          body: JSON.stringify({ timeZone }),
+        }))
+        expect(res.status).toBe(400)
+      }
+    })
+  })
+
   describe('project branches routes', () => {
     // A real repo behind the project: source with main + develop, cloned to
     // the project's repo dir so origin/* remote-tracking refs exist.

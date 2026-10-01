@@ -73,9 +73,11 @@ export {
   clearShortcutOverrides,
   getGitIdentity,
   getShortcutOverrides,
+  getTimeZone,
   isSerializedChord,
   setGitIdentity,
   setShortcutOverride,
+  setTimeZone,
 } from './preferences'
 export {
   deleteGitCredential,

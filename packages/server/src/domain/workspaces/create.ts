@@ -74,6 +74,7 @@ import {
   applyWorkspaceEvent,
   getGitIdentity,
   getProjectRow,
+  getTimeZone,
   listActiveAgentSessions,
   listProjectWorkspaceIds,
   setWorkspaceGroup,
@@ -765,6 +766,10 @@ export async function createWorkspace(
   // A prewarmed spare is recorded flagged `spare`, which listings filter out
   // and reaping uses to tell it from a stopped workspace. The base branch is
   // recorded now because a workspace queued after this one defaults to it.
+  // The user's zone, as clients report it; a pod otherwise runs in UTC, and
+  // a containerless server's host need not be where the user is. Recorded so
+  // a spare warmed in another zone is never claimed.
+  const { timeZone } = await getTimeZone()
   await applyWorkspaceEvent({
     type: 'workspace-created',
     projectSlug,
@@ -773,6 +778,7 @@ export async function createWorkspace(
     permissionMode,
     mode,
     ...(options.model !== undefined ? { model: options.model } : {}),
+    ...(timeZone !== null ? { timeZone } : {}),
     resume: options.resume,
     ...(options.prewarm === true ? { spare: true } : {}),
   })
@@ -1083,6 +1089,9 @@ export async function createWorkspace(
     const lock = await readLock()
     if (lock) env.push(`YAAC_MAMA_URL=http://127.0.0.1:${lock.port}`)
   }
+
+  // Before the project's variables, so a project `TZ` wins.
+  if (timeZone !== null) env.push(`TZ=${timeZone}`)
 
   for (const [name, value] of Object.entries(projectEnv.plain)) {
     env.push(`${name}=${value}`)

@@ -2,7 +2,16 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getDb, closeDb } from '#db/client'
 import { preferences, shortcutOverrides } from '#db/schema'
-import { clearShortcutOverrides, getGitIdentity, getShortcutOverrides, isSerializedChord, setGitIdentity, setShortcutOverride } from '#db'
+import {
+  clearShortcutOverrides,
+  getGitIdentity,
+  getShortcutOverrides,
+  getTimeZone,
+  isSerializedChord,
+  setGitIdentity,
+  setShortcutOverride,
+  setTimeZone,
+} from '#db'
 // Shape of a stored chord, for building fixtures. Not under test here.
 import type { SerializedChord } from '#db/preferences'
 
@@ -118,5 +127,21 @@ describe('setGitIdentity', () => {
 
     await setGitIdentity({ name: 'Grace', email: 'grace@example.com' })
     expect(await getGitIdentity()).toEqual({ name: 'Grace', email: 'grace@example.com' })
+  })
+})
+
+describe('getTimeZone', () => {
+  it('is unset and unpinned until a zone is stored', async () => {
+    expect(await getTimeZone()).toEqual({ timeZone: null, pinned: false })
+  })
+})
+
+describe('setTimeZone', () => {
+  it('round-trips the zone and the pin, replacing both', async () => {
+    await setTimeZone('Europe/Paris', true)
+    expect(await getTimeZone()).toEqual({ timeZone: 'Europe/Paris', pinned: true })
+
+    await setTimeZone('Asia/Tokyo', false)
+    expect(await getTimeZone()).toEqual({ timeZone: 'Asia/Tokyo', pinned: false })
   })
 })

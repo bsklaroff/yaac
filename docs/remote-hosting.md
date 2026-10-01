@@ -155,6 +155,10 @@ Things to keep in mind:
   CLI-only user sets it with `yaac config git-identity --name <name> --email
   <email>` (or Settings → General). Until then, workspace create is refused
   with that instruction.
+- **Workspaces run in your time zone, not the server's.** The web app, the
+  auth server and `yaac workspace create` report the device's zone, and
+  workspaces launch with it as `TZ`. With devices in several zones the last
+  report wins, unless a zone is pinned in Settings → General.
 - **Machine-scoped commands** act on the machine they run on and ignore the
   remote setting: `yaac server *`, `yaac cluster *`, and `yaac auth server
   *`.

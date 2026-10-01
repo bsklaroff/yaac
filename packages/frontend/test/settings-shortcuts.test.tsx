@@ -5,6 +5,9 @@ import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/re
 
 vi.mock('#lib/settingsApi', () => ({
   getGitIdentity: vi.fn().mockResolvedValue({ name: 'Ada', email: 'ada@example.com' }),
+  deviceTimeZone: () => 'America/New_York',
+  getTimeZone: vi.fn().mockResolvedValue({ timeZone: 'America/New_York', pinned: false }),
+  setTimeZone: vi.fn(),
   setGitIdentity: vi.fn().mockResolvedValue({ name: 'Ada', email: 'ada@example.com' }),
   getAuthList: vi.fn().mockResolvedValue({ gitCredentials: [], toolAuth: [] }),
   addGitCredential: vi.fn().mockResolvedValue(undefined),

@@ -5,12 +5,26 @@ import { readUserDockerfile, writeUserDockerfile } from '#domain/projects'
 import { userBuildDir } from '#lib/build-dirs'
 import { buildFilesApp } from '#routes/build-files'
 import { requireDriverFeature } from '#http'
-import { getGitIdentity, setGitIdentity } from '#db'
+import { getGitIdentity, getTimeZone, setGitIdentity, setTimeZone } from '#db'
 import { ServerError } from '@yaac/shared/errors'
 
 /**
+ * A zone name `Intl` knows. The charset check keeps it to IANA names, since
+ * `Intl` also takes offsets like `+05:00`, and the value lands in `TZ`.
+ */
+function isTimeZone(timeZone: string): boolean {
+  if (!/^[A-Za-z0-9_+\-/]+$/.test(timeZone)) return false
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * Global (not project-scoped) editable config: the git identity workspaces
- * commit under, the user Dockerfile (`~/.yaac/build/Dockerfile.user`) layered
+ * commit under, the time zone they run in, the user Dockerfile (`~/.yaac/build/Dockerfile.user`) layered
  * on every project image, and the other files in its build context.
  */
 export const configApp = new Hono()
@@ -36,6 +50,24 @@ export const configApp = new Hono()
       }
       await setGitIdentity(identity)
       return c.json({ identity })
+    },
+  )
+  .get('/time-zone', async (c) => c.json(await getTimeZone()))
+  // `pinned` absent is a device report, which a zone the user chose in
+  // settings outranks; present, it is that choice (`false` returns the zone
+  // to following devices).
+  .put(
+    '/time-zone',
+    zv('json', z.object({
+      timeZone: z.string().max(64).refine(isTimeZone, 'not an IANA time zone'),
+      pinned: z.boolean().optional(),
+    })),
+    async (c) => {
+      const { timeZone, pinned } = c.req.valid('json')
+      if (pinned !== undefined || !(await getTimeZone()).pinned) {
+        await setTimeZone(timeZone, pinned ?? false)
+      }
+      return c.json(await getTimeZone())
     },
   )
   // Both refuse on a runtime that builds no images.

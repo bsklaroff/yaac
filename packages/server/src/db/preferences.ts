@@ -92,3 +92,30 @@ export async function setGitIdentity(identity: { name: string; email: string }):
       .onConflictDoUpdate({ target: preferences.key, set: { value } })
   }
 }
+
+const TIME_ZONE_KEY = 'time_zone'
+const TIME_ZONE_PINNED_KEY = 'time_zone_pinned'
+
+/**
+ * The user's IANA time zone, which every workspace launches with as `TZ`
+ * (null when no client has reported one). Clients report their device's
+ * zone; `pinned` means the user chose one in settings, which device reports
+ * then leave alone.
+ */
+export async function getTimeZone(): Promise<{ timeZone: string | null; pinned: boolean }> {
+  const db = await getDb()
+  const rows = await db.select().from(preferences)
+    .where(inArray(preferences.key, [TIME_ZONE_KEY, TIME_ZONE_PINNED_KEY]))
+  const byKey = new Map(rows.map((r) => [r.key, r.value]))
+  return { timeZone: byKey.get(TIME_ZONE_KEY) ?? null, pinned: byKey.get(TIME_ZONE_PINNED_KEY) === '1' }
+}
+
+/** Store the zone. Validation is the caller's. */
+export async function setTimeZone(timeZone: string, pinned: boolean): Promise<void> {
+  const db = await getDb()
+  for (const [key, value] of [[TIME_ZONE_KEY, timeZone], [TIME_ZONE_PINNED_KEY, pinned ? '1' : '0']]) {
+    await db.insert(preferences)
+      .values({ key, value })
+      .onConflictDoUpdate({ target: preferences.key, set: { value } })
+  }
+}

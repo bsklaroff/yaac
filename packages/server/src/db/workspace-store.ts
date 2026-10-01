@@ -66,6 +66,8 @@ export interface WorkspaceRow {
    *  matches against. Absent on rows older than these columns. */
   model?: string
   mode?: AgentMode
+  /** The zone it launched with as `TZ`. */
+  timeZone?: string
 }
 
 /** Fields `recordWorkspaceCreated` stamps on a fresh workspace. */
@@ -82,6 +84,8 @@ export interface WorkspaceCreatedInput {
   /** The model and agent mode its first agent launches with. */
   model?: string
   mode?: AgentMode
+  /** The zone it launches with as `TZ`. */
+  timeZone?: string
 }
 
 type Row = typeof workspaces.$inferSelect
@@ -103,6 +107,7 @@ function toRow(r: Row): WorkspaceRow {
     permissionMode: r.permissionMode as PermissionMode,
     ...(r.model !== null ? { model: r.model } : {}),
     ...(r.mode !== null ? { mode: r.mode as AgentMode } : {}),
+    ...(r.timeZone !== null ? { timeZone: r.timeZone } : {}),
   }
 }
 
@@ -132,6 +137,7 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
       ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
       ...(input.mode !== undefined ? { mode: input.mode } : {}),
+      ...(input.timeZone !== undefined ? { timeZone: input.timeZone } : {}),
     })
     .onConflictDoNothing({ target: workspaces.workspaceId })
     .returning({ workspaceId: workspaces.workspaceId })
@@ -149,7 +155,10 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
  * example after a DB reset) is `NOT_FOUND`.
  */
 export async function recordWorkspaceResumed(
-  input: Pick<WorkspaceCreatedInput, 'projectSlug' | 'workspaceId' | 'permissionMode' | 'model' | 'mode'>,
+  input: Pick<
+    WorkspaceCreatedInput,
+    'projectSlug' | 'workspaceId' | 'permissionMode' | 'model' | 'mode' | 'timeZone'
+  >,
 ): Promise<void> {
   const db = await getDb()
   const rows = await db.update(workspaces).set({
@@ -160,6 +169,8 @@ export async function recordWorkspaceResumed(
     ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode } : {}),
     ...(input.model !== undefined ? { model: input.model } : {}),
     ...(input.mode !== undefined ? { mode: input.mode } : {}),
+    // A resume launches a new process, in the zone the create read now.
+    timeZone: input.timeZone ?? null,
   }).where(key(input.projectSlug, input.workspaceId))
     .returning({ workspaceId: workspaces.workspaceId })
   if (!rows[0]) {

@@ -568,6 +568,13 @@ object (newest wins).
   needed. A server without one refuses to create workspaces and says where
   to set it. A prewarmed spare has its identity baked in when warmed, so
   claiming it re-applies the current identity.
+- **The time zone is a server setting.** A pod runs in UTC, so every
+  workspace launches with `TZ` set to a zone the clients report: the web app
+  on load, the auth server on start, and `yaac workspace create`. Picking a
+  zone in Settings → General pins it, and reports then leave it alone. A
+  project's own `TZ` wins, and a workspace keeps the zone it launched with.
+  A prewarmed spare records its zone, and one warmed in another zone than
+  the current one is never claimed but re-warmed.
 - **`YAAC_USE_TOR`** points at a listener on the host, and a pod's loopback
   is its own. Install rewrites loopback addresses in
   `YAAC_HOST_TOR_SOCKS_URL` to the host's address on the kind network, so
