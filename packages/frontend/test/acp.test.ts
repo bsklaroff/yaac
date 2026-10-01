@@ -97,6 +97,23 @@ describe('groupEvents', () => {
     expect(groups[1]).toMatchObject({ call: { toolCallId: 't2', status: 'pending' } })
   })
 
+  it('marks a call its turn ended without finishing as interrupted', () => {
+    // A Stop kills a running command, and the adapter never reports it done.
+    const groups = groupEvents([
+      tool(0, 't1', 'completed', 'ls'),
+      tool(1, 't2', 'pending', 'sleep 50'),
+      { type: 'turn-end', seq: 2, stopReason: 'cancelled' },
+    ])
+    expect(groups[0]).not.toHaveProperty('interrupted')
+    expect(groups[1]).toMatchObject({ call: { toolCallId: 't2' }, interrupted: true })
+  })
+
+  it('ends an earlier turn at the next user message, since a replay has no turn ends', () => {
+    const groups = groupEvents([user(0, 'one'), tool(1, 't1', 'pending'), user(2, 'two'), tool(3, 't2', 'pending')])
+    expect(groups[1]).toMatchObject({ interrupted: true })
+    expect(groups[3]).not.toHaveProperty('interrupted')
+  })
+
   it('hides a normal turn end and surfaces an abnormal one', () => {
     // Only unusual stop reasons (a refusal, a token cap) get a divider.
     expect(groupEvents([agent(0, 'done'), { type: 'turn-end', seq: 1, stopReason: 'end_turn' }]))

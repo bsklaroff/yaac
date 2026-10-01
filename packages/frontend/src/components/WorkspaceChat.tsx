@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 
 import { useAcpStream } from '#lib/acp'
 import { AcpTranscript, groupEvents } from '#components/AcpTranscript'
 import { imageBytes, imageFiles, prepareImage, toAcpImage, useImageSrc } from '#lib/attachments'
-import { AttachImageIcon, CloseIcon, LoadingIcon } from '#lib/icons'
+import { AttachImageIcon, CloseIcon, LoadingIcon, SendIcon, StopIcon } from '#lib/icons'
 import { chatDraftKey, useUiStore } from '#lib/store'
 import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
 import type { AcpContent, AcpImage } from '@yaac/shared/acp'
@@ -222,123 +222,143 @@ export function WorkspaceChat({
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="flex-1 overflow-y-auto px-3 py-2.5"
+        className="flex-1 overflow-y-auto px-4 py-4"
       >
         {groups.length === 0 && (
           <div className="flex h-full items-center justify-center text-xs text-text-faint">
             {connected ? 'No messages yet — say something.' : 'Connecting to the agent…'}
           </div>
         )}
-        <AcpTranscript groups={groups} onAnswerPermission={answerPermission} />
-        {busy && !awaitingPermission && (
-          <div className="mt-2.5 flex items-center gap-1.5 text-xs text-text-dim">
-            <LoadingIcon size={12} className="animate-spin" />
-            <span>
-              working
-              <span className="working-dots" aria-hidden="true"><i>.</i><i>.</i><i>.</i></span>
-            </span>
-          </div>
-        )}
+        <div className={COLUMN}>
+          <AcpTranscript groups={groups} busy={busy} onAnswerPermission={answerPermission} />
+          {busy && !awaitingPermission && (
+            <div className="mt-3 flex items-center gap-1.5 text-xs text-text-dim">
+              <LoadingIcon size={12} className="animate-spin" />
+              <span>
+                working
+                <span className="working-dots" aria-hidden="true"><i>.</i><i>.</i><i>.</i></span>
+              </span>
+            </div>
+          )}
+        </div>
       </div>
 
-      <div className="border-t border-hairline p-2">
-        {!connected && (
-          <div className="mb-1.5 text-xs text-text-faint">
-            Disconnected — the agent keeps working; this pane reattaches automatically.
-          </div>
-        )}
-        {imageError !== null && (
-          <div className="mb-1.5 text-xs text-[#f85149]">Image not attached: {imageError}</div>
-        )}
-        {images.length > 0 && (
-          <div className="mb-1.5 flex flex-wrap gap-1.5">
-            {images.map((image, i) => (
-              <DraftImage
-                key={i}
-                image={image}
-                {...(awaitingEcho === null
-                  ? { onRemove: () => setImages((cur) => cur.filter((_, j) => j !== i)) }
-                  : {})}
-              />
-            ))}
-          </div>
-        )}
-        <div className="flex items-end gap-2">
-          <button
-            type="button"
-            aria-label="Attach image"
-            title="Attach image"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={awaitingEcho !== null}
-            className="rounded-md border border-hairline p-1.5 text-text-dim hover:text-text disabled:opacity-40"
-          >
-            <AttachImageIcon size={14} />
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            multiple
-            hidden
-            onChange={(e) => {
-              attach([...(e.target.files ?? [])])
-              e.target.value = ''
-            }}
-          />
-          <textarea
-            ref={inputRef}
-            rows={1}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onPaste={(e) => {
-              const files = imageFiles(e.clipboardData)
-              if (files.length === 0 || awaitingEcho !== null) return
-              e.preventDefault()
-              attach(files)
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                submit()
-              }
-            }}
-            placeholder={connected ? 'Message the agent…' : 'Reconnecting…'}
-            readOnly={awaitingEcho !== null}
-            // index.css raises this to 16px on phones so iOS Safari does not
-            // zoom on focus.
-            className="max-h-40 min-h-8 flex-1 resize-none rounded-md border border-hairline
-              bg-surface-2 px-2.5 py-1.5 text-sm text-text placeholder:text-text-faint
-              focus:outline-none"
-          />
-          {busy ? (
-            <button
-              type="button"
-              onClick={() => send({ type: 'cancel' })}
-              className="rounded-md border border-hairline px-2.5 py-1.5 text-xs text-text-dim hover:text-text"
-            >
-              Stop
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={submit}
-              disabled={(draft.trim() === '' && images.length === 0) || !connected || awaitingEcho !== null}
-              className="rounded-md border border-hairline px-2.5 py-1.5 text-xs text-text-dim hover:text-text disabled:opacity-40"
-            >
-              Send
-            </button>
+      <div className="px-3 pb-3">
+        <div className={COLUMN}>
+          {!connected && (
+            <div className="mb-1.5 px-1 text-xs text-text-faint">
+              Disconnected — the agent keeps working; this pane reattaches automatically.
+            </div>
           )}
+          {imageError !== null && (
+            <div className="mb-1.5 px-1 text-xs text-[#f85149]">Image not attached: {imageError}</div>
+          )}
+          <div
+            onClick={(e) => {
+              if (e.target === e.currentTarget) inputRef.current?.focus()
+            }}
+            className="rounded-xl border border-border bg-surface shadow-sm transition-colors
+              focus-within:border-border-strong"
+          >
+            {images.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 px-3 pt-3">
+                {images.map((image, i) => (
+                  <DraftImage
+                    key={i}
+                    image={image}
+                    {...(awaitingEcho === null
+                      ? { onRemove: () => setImages((cur) => cur.filter((_, j) => j !== i)) }
+                      : {})}
+                  />
+                ))}
+              </div>
+            )}
+            <textarea
+              ref={inputRef}
+              rows={1}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onPaste={(e) => {
+                const files = imageFiles(e.clipboardData)
+                if (files.length === 0 || awaitingEcho !== null) return
+                e.preventDefault()
+                attach(files)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  submit()
+                }
+              }}
+              placeholder={connected ? 'Message the agent…' : 'Reconnecting…'}
+              readOnly={awaitingEcho !== null}
+              // index.css raises this to 16px on phones so iOS Safari does not
+              // zoom on focus.
+              className="block max-h-60 min-h-10 w-full resize-none bg-transparent px-3 pt-2.5 pb-1
+                text-sm text-text placeholder:text-text-faint focus:outline-none"
+            />
+            <div className="flex items-center justify-between px-2 pb-2">
+              <button
+                type="button"
+                aria-label="Attach image"
+                title="Attach image"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={awaitingEcho !== null}
+                className="rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text disabled:opacity-40"
+              >
+                <AttachImageIcon size={16} />
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                hidden
+                onChange={(e) => {
+                  attach([...(e.target.files ?? [])])
+                  e.target.value = ''
+                }}
+              />
+              {busy ? (
+                <button
+                  type="button"
+                  aria-label="Stop turn"
+                  title="Stop"
+                  onClick={() => send({ type: 'cancel' })}
+                  className="flex size-8 items-center justify-center rounded-full bg-text text-bg hover:opacity-90"
+                >
+                  <StopIcon size={11} fill="currentColor" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  aria-label="Send"
+                  title="Send (Enter)"
+                  onClick={submit}
+                  disabled={(draft.trim() === '' && images.length === 0) || !connected || awaitingEcho !== null}
+                  className="flex size-8 items-center justify-center rounded-full bg-text text-bg
+                    hover:opacity-90 disabled:bg-surface-3 disabled:text-text-faint"
+                >
+                  <SendIcon size={15} strokeWidth={2.5} />
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>
   )
 }
 
+/** The conversation and composer share one centered column, so lines stay
+ *  readable in a wide pane. */
+const COLUMN = 'mx-auto w-full max-w-3xl'
+
 /** An image attached to the draft, removable until the message is sent. */
 function DraftImage({ image, onRemove }: { image: AcpImage; onRemove?: () => void }): JSX.Element {
   return (
     <div className="relative">
-      <img src={useImageSrc(image)} alt="" className="h-14 rounded border border-hairline" />
+      <img src={useImageSrc(image)} alt="" className="h-14 rounded-lg border border-hairline" />
       {onRemove && (
         <button
           type="button"

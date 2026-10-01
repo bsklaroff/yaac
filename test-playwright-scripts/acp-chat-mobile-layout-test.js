@@ -161,7 +161,7 @@ try {
   check('the grown box still shows all three lines',
     threeLines >= oneLine + 2 * 16, `${threeLines}px`)
   check('growth stops at the max height (the box scrolls past that)',
-    thirtyLines <= 200, `30 lines=${thirtyLines}px`)
+    thirtyLines <= 240, `30 lines=${thirtyLines}px`)
   const listHeight = await page.evaluate(() => {
     const pane = document.querySelector('textarea[placeholder]')?.closest('.flex-col')
     return Math.round(pane.firstElementChild.getBoundingClientRect().height)

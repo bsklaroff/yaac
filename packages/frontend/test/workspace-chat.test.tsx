@@ -102,7 +102,7 @@ describe('WorkspaceChat drafts', () => {
   it('clears the box when the server echoes the message back', async () => {
     const { rerender } = show()
     type('ship it')
-    fireEvent.click(screen.getByText('Send'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     expect(stream.send).toHaveBeenCalledWith({ type: 'prompt', text: 'ship it' })
     // Sent but not yet confirmed, so the text stays.
     expect(box().value).toBe('ship it')
@@ -199,7 +199,7 @@ describe('WorkspaceChat images', () => {
     await waitFor(() => expect(container.querySelectorAll('img')).toHaveLength(1))
 
     type('what is this?')
-    fireEvent.click(screen.getByText('Send'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     expect(stream.send).toHaveBeenCalledWith({ type: 'prompt', text: 'what is this?', images: [image] })
 
     // The echo draws the image in the conversation, and the composer clears
@@ -290,6 +290,61 @@ describe('WorkspaceChat rendering', () => {
     const { container } = show()
     expect(container.querySelectorAll('th')).toHaveLength(2)
     expect(container.querySelectorAll('td')).toHaveLength(2)
+  })
+
+  it('marks a call running until it finishes, and interrupted if its turn ends first', () => {
+    // claude's adapter keeps a running call `pending`, not `in_progress`.
+    stream.events = [
+      toolCall(0, { toolCallId: 't1', title: 'ls' }),
+      toolCall(1, { toolCallId: 't2', title: 'sleep 50', kind: 'execute', status: 'pending' }),
+    ]
+    stream.busy = true
+    const { rerender } = show()
+    expect(screen.getAllByLabelText('running')).toHaveLength(1)
+    expect(screen.queryByText('interrupted')).toBeNull()
+
+    stream.events = [...stream.events, { type: 'turn-end', seq: 2, stopReason: 'cancelled' }]
+    stream.busy = false
+    rerender(<WorkspaceChat workspaceId="w1" agentSessionId="acp-1" />)
+    expect(screen.queryByLabelText('running')).toBeNull()
+    expect(screen.getByText('sleep 50').closest('button')?.textContent).toContain('interrupted')
+    expect(screen.getByText('ls').closest('button')?.textContent).not.toContain('interrupted')
+  })
+
+  it('never spins a call left over from an earlier turn', () => {
+    // A replay on attach has no turn boundaries, so the call cancelled in turn
+    // one is only known to be over because turn two's message follows it.
+    stream.busy = true
+    stream.events = [
+      user(0, 'loop'),
+      toolCall(1, { toolCallId: 't1', title: 'sleep 50', kind: 'execute', status: 'pending' }),
+      user(2, 'again'),
+      toolCall(3, { toolCallId: 't2', title: 'sleep 60', kind: 'execute', status: 'pending' }),
+    ]
+    show()
+    expect(screen.getByText('sleep 50').closest('button')?.textContent).toContain('interrupted')
+    expect(screen.getByText('sleep 60').closest('button')?.querySelector('[aria-label="running"]')).toBeTruthy()
+  })
+
+  it('reads an unfinished call as interrupted once no turn is running', () => {
+    stream.busy = false
+    stream.events = [toolCall(0, { toolCallId: 't1', title: 'sleep 50', kind: 'execute', status: 'pending' })]
+    show()
+    expect(screen.queryByLabelText('running')).toBeNull()
+    expect(screen.getByText('interrupted')).toBeTruthy()
+  })
+
+  it('leaves a call waiting on a permission ask unmarked', () => {
+    const call = { toolCallId: 't1', title: 'rm -rf build', kind: 'execute' as const, status: 'pending' as const }
+    stream.busy = true
+    stream.events = [
+      toolCall(0, call),
+      { type: 'permission-request', seq: 1, requestId: '5', toolCall: call,
+        options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }] },
+    ]
+    show()
+    expect(screen.queryByLabelText('running')).toBeNull()
+    expect(screen.queryByText('interrupted')).toBeNull()
   })
 
   it('shows an edit as a diff, expanded, without being asked', () => {
