@@ -24,10 +24,10 @@ describe('layout persistence', () => {
     delete (globalThis as Record<string, unknown>).localStorage
   })
 
-  it('round-trips workspaces (including null = emptied)', () => {
+  it('round-trips workspaces, including an emptied one', () => {
     const layouts = {
       s1: addColumn(singleColumn('agent'), 'shell:shell'),
-      s2: null,
+      s2: [],
     }
     persistLayouts(layouts)
     expect(loadPersistedLayouts()).toEqual(layouts)

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type JSX, type PointerEvent as ReactPointe
 import clsx from 'clsx'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Menu } from '@base-ui/react/menu'
-import { shortcutsSuspended, useUiStore } from '#lib/store'
+import { layoutOf, shortcutsSuspended, useUiStore } from '#lib/store'
 import { WorkspaceTerminal } from '#components/WorkspaceTerminal'
 import { WorkspacePreview } from '#components/WorkspacePreview'
 import { WorkspaceChanges } from '#components/WorkspaceChanges'
@@ -15,7 +15,7 @@ import {
   discardFileSavers, fileKey, fileTabLabels, fileTargetPath, flushFileSavers, isFileTarget, isFilesTarget,
 } from '#lib/files'
 import { acpTargetSession, isAcpTarget } from '@yaac/shared/acp'
-import { acpPaneTargets, defaultPaneTarget, paneStillLive } from '#lib/panes'
+import { defaultPaneTarget, isSpecialPane, paneStillLive, syncPaneLayout } from '#lib/panes'
 import { agentLabel } from '#lib/agentLabel'
 import { isElectron } from '#lib/platform'
 import { goBackScreen } from '#lib/mobileHistory'
@@ -48,7 +48,6 @@ import {
   moveTargetToGroup,
   paneTargets,
   removeTarget,
-  singleColumn,
   type ColumnRect,
   type DropTarget,
   type PaneLayout,
@@ -114,17 +113,6 @@ function paneName(
   return entry?.name ?? 'window'
 }
 
-/**
- * Non-terminal panes: left out of the tmux-window sync and closed without a
- * kill confirmation (a file pane saves first, and asks only if that fails).
- * ACP chat panes count too: their tmux window runs acpd, not the
- * conversation, and they are addressed by conversation id.
- */
-function isSpecialPane(target: string): boolean {
-  return isPreviewTarget(target) || isChangesTarget(target) || isFilesTarget(target)
-    || isFileTarget(target) || isAcpTarget(target)
-}
-
 export function WorkspaceView({
   snapshot,
   provisioning,
@@ -173,11 +161,7 @@ export function WorkspaceView({
   // workspace isn't listed yet.
   const creatingHere = workspace ? null : provisioning.find((p) => p.workspaceId === selectedWorkspaceId) ?? null
 
-  // The workspace's layout: a missing key means the default single column;
-  // null means explicitly emptied.
-  const layout: PaneLayout | null = sid
-    ? (sid in layouts ? layouts[sid] : singleColumn(defaultPaneTarget(workspace)))
-    : null
+  const layout: PaneLayout = sid ? layoutOf(layouts, sid, defaultPaneTarget(workspace)) : []
 
   // The workspace's non-agent terminals, which decide which panes exist and
   // their names.
@@ -202,31 +186,13 @@ export function WorkspaceView({
     return () => ro.disconnect()
   }, [])
 
-  // Keep one pane per live tmux window: new windows (init commands, scratch
-  // shells) are added as columns, and killed windows are removed, including
-  // kills by another client and stale ids restored from localStorage after
-  // a restart. The user's arrangement is otherwise kept.
+  // Keep the layout's panes in line with the workspace's windows and
+  // conversations.
   useEffect(() => {
     if (!sid || !workspace || !terminals) return
-    const cur: PaneLayout | null = sid in layouts ? layouts[sid] : singleColumn(defaultPaneTarget(workspace))
-    // ACP conversations come from the snapshot, not the window list. When
-    // any exist, the `agent` window is acpd's log and is left out.
-    const acpPanes = acpPaneTargets(workspace)
-    const isAcp = acpPanes.length > 0
-    const live = [...(isAcp ? [] : ['agent']), ...acpPanes, ...terminals.map((t) => t.target)]
-    const liveSet = new Set(live)
-    let next: PaneLayout | null = cur
-    for (const t of paneTargets(next)) {
-      // Other special panes manage themselves; an ACP pane is removed once
-      // its conversation ends.
-      if (liveSet.has(t)) continue
-      if (isAcpTarget(t) || !isSpecialPane(t)) next = removeTarget(next, t)
-    }
-    for (const t of live) {
-      next = addColumn(next, t)
-    }
-    if (next !== cur) setWorkspaceLayout(sid, next)
-  }, [sid, workspace, terminals, layouts, setWorkspaceLayout])
+    const next = syncPaneLayout(layout, workspace, terminals.map((t) => t.target))
+    if (next !== layout) setWorkspaceLayout(sid, next)
+  }, [sid, workspace, terminals, layout, setWorkspaceLayout])
 
   // Tabs mode shows all panes as one tab strip; the column layout is kept so
   // switching back to tiles restores it.
@@ -252,7 +218,7 @@ export function WorkspaceView({
   // back is instant. Explicitly closed panes are dropped.
   const [opened, setOpened] = useState<string[]>([])
   useEffect(() => {
-    if (!sid || !layout) return
+    if (!sid) return
     const keys = paneTargets(layout).map((t) => `${sid}|${t}`)
     setOpened((prev) => {
       const fresh = keys.filter((k) => !prev.includes(k))
@@ -287,7 +253,7 @@ export function WorkspaceView({
         const target = keyTarget(key)
         if (!isFileTarget(target)) return true
         const id = key.slice(0, key.indexOf('|'))
-        return !(id in layouts) || paneTargets(layouts[id]).includes(target)
+        return paneTargets(layoutOf(layouts, id)).includes(target)
       })
       return next.length === prev.length ? prev : next
     })
@@ -350,8 +316,7 @@ export function WorkspaceView({
           (old) => old ? [...old.filter((t) => t.target !== entry.target), entry] : [entry],
         )
         const state = useUiStore.getState()
-        const cur = sid in state.layouts ? state.layouts[sid] : singleColumn('agent')
-        state.setWorkspaceLayout(sid, addColumn(cur, entry.target))
+        state.setWorkspaceLayout(sid, addColumn(layoutOf(state.layouts, sid), entry.target))
         state.focusTerminal(sid, entry.target)
       })
       .catch((e: unknown) => console.error('new shell failed', e))
@@ -424,8 +389,7 @@ export function WorkspaceView({
           if (!ctx.activeTab) return
           claimChord(e)
           const dir = id === 'move-terminal-right' ? 1 : -1
-          const cur = ctx.sid in state.layouts ? state.layouts[ctx.sid] : singleColumn('agent')
-          if (!cur) return
+          const cur = layoutOf(state.layouts, ctx.sid)
           const moved = state.viewMode === 'tiles'
             ? moveColumn(cur, ctx.activeTab, dir)
             : moveTabInStrip(cur, ctx.activeTab, dir)
@@ -453,7 +417,7 @@ export function WorkspaceView({
   }, [])
 
   const killPane = (target: string): void => {
-    if (!sid || !layout) return
+    if (!sid) return
     // Remove the cached window too, so the layout sync doesn't re-add it
     // mid-kill. If the kill fails, the next poll brings the pane back.
     queryClient.setQueryData<WorkspaceTerminalEntry[]>(
@@ -472,8 +436,7 @@ export function WorkspaceView({
   const dropPane = (id: string, target: string): void => {
     if (isFileTarget(target)) discardFileSavers([fileKey(id, fileTargetPath(target))])
     const st = useUiStore.getState()
-    const cur = id in st.layouts ? st.layouts[id] : null
-    if (cur) st.setWorkspaceLayout(id, removeTarget(cur, target))
+    st.setWorkspaceLayout(id, removeTarget(layoutOf(st.layouts, id), target))
     setOpened((prev) => prev.filter((k) => k !== `${id}|${target}`))
   }
   const closePane = (target: string): void => {
@@ -530,8 +493,7 @@ export function WorkspaceView({
       if (!d.active) { onSelect(); return }
       if (!d.over) return
       const cur = useUiStore.getState()
-      const node = sid in cur.layouts ? cur.layouts[sid] : singleColumn('agent')
-      if (!node) return
+      const node = layoutOf(cur.layouts, sid)
       const moved = d.over.kind === 'tab'
         ? moveTargetToGroup(node, d.src, d.over.group)
         : moveTargetToColumn(node, d.src, d.over.index)

@@ -58,25 +58,20 @@ export function isPaneLayout(v: unknown): v is PaneLayout {
 }
 
 /** All pane targets, column by column, left to right. */
-export function paneTargets(ws: PaneLayout | null): string[] {
-  if (!ws) return []
+export function paneTargets(ws: PaneLayout): string[] {
   return ws.flatMap((g) => g.tabs)
 }
 
 /** Index of the column containing `target`, or -1. */
-export function groupIndexOf(ws: PaneLayout | null, target: string): number {
-  if (!ws) return -1
+export function groupIndexOf(ws: PaneLayout, target: string): number {
   return ws.findIndex((g) => g.tabs.includes(target))
 }
 
-/**
- * Append `target` as a new single-tab column. Unchanged if the target is
- * already present; a null layout starts fresh.
- */
-export function addColumn(ws: PaneLayout | null, target: string): PaneLayout {
-  const base = ws ?? []
-  if (paneTargets(base).includes(target)) return base
-  return [...base, group([target], target)]
+/** Append `target` as a new single-tab column. Unchanged if the target is
+ *  already present. */
+export function addColumn(ws: PaneLayout, target: string): PaneLayout {
+  if (paneTargets(ws).includes(target)) return ws
+  return [...ws, group([target], target)]
 }
 
 /**
@@ -94,8 +89,7 @@ export function addTab(ws: PaneLayout, groupIdx: number, target: string): PaneLa
  * removed tab was active, the tab now at its position (clamped) becomes
  * active. The result may be empty.
  */
-export function removeTarget(ws: PaneLayout | null, target: string): PaneLayout {
-  if (!ws) return []
+export function removeTarget(ws: PaneLayout, target: string): PaneLayout {
   if (groupIndexOf(ws, target) === -1) return ws
   const out: PaneLayout = []
   for (const g of ws) {
@@ -198,8 +192,7 @@ export function renameTargets(ws: PaneLayout, from: string, to: string): PaneLay
 
 /** Make `target` the active tab of its column. No-op if absent or already
  *  active (returns the same reference). */
-export function withActive(ws: PaneLayout | null, target: string): PaneLayout {
-  if (!ws) return []
+export function withActive(ws: PaneLayout, target: string): PaneLayout {
   const gi = groupIndexOf(ws, target)
   if (gi === -1 || ws[gi].active === target) return ws
   return ws.map((g, i) => (i === gi ? group(g.tabs, target) : g))
@@ -225,8 +218,8 @@ export function focusPaneTarget(
 }
 
 /** Partition `rect` into equal-width columns, leaving `gap` px between them. */
-export function computeColumns(ws: PaneLayout | null, rect: Rect, gap: number): ColumnRect[] {
-  if (!ws || ws.length === 0) return []
+export function computeColumns(ws: PaneLayout, rect: Rect, gap: number): ColumnRect[] {
+  if (ws.length === 0) return []
   const n = ws.length
   const w = Math.max(0, (rect.w - gap * (n - 1)) / n)
   return ws.map((g, i) => ({

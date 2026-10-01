@@ -1,6 +1,6 @@
 /**
- * Which panes a workspace has, according to the snapshot (`#lib/layout`
- * handles how they are arranged).
+ * Which panes a workspace has, according to the snapshot and its tmux
+ * windows (`#lib/layout` handles how they are arranged).
  *
  * The window sync, the warm-up after a reload and the keep-alive set all use
  * these, so they agree and no pane stays mounted with nothing behind it.
@@ -10,6 +10,21 @@
 
 import { acpTarget, isAcpTarget } from '@yaac/shared/acp'
 import type { WorkspaceListEntry } from '@yaac/shared/types'
+import { isChangesTarget } from './changesApi'
+import { isFilesTarget, isFileTarget } from './files'
+import { addColumn, paneTargets, removeTarget, renameTargets, type PaneLayout } from './layout'
+import { isPreviewTarget } from './preview'
+
+/**
+ * Non-terminal panes: left out of the tmux-window sync and closed without a
+ * kill confirmation (a file pane saves first, and asks only if that fails).
+ * ACP chat panes count too: their tmux window runs acpd, not the
+ * conversation, and they are addressed by conversation id.
+ */
+export function isSpecialPane(target: string): boolean {
+  return isPreviewTarget(target) || isChangesTarget(target) || isFilesTarget(target)
+    || isFileTarget(target) || isAcpTarget(target)
+}
 
 /** The workspace's live conversations, as pane targets. */
 export function acpPaneTargets(workspace: WorkspaceListEntry | undefined): string[] {
@@ -41,4 +56,30 @@ export function paneStillLive(workspace: WorkspaceListEntry, target: string): bo
   const acp = acpPaneTargets(workspace)
   if (target === 'agent') return acp.length === 0
   return isAcpTarget(target) ? acp.includes(target) : true
+}
+
+/**
+ * Keep one pane per live tmux window and conversation: new ones (init
+ * commands, scratch shells) are appended as columns, and gone ones are
+ * removed, including kills by another client and stale ids restored from
+ * localStorage. Other special panes and the user's arrangement are kept.
+ *
+ * Once an `acp` workspace has a conversation, its `agent` pane (acpd's log)
+ * hands its place to the chat pane, so panes opened beside the `agent`
+ * fallback stay to the right of the chat pane that replaces it.
+ */
+export function syncPaneLayout(
+  layout: PaneLayout,
+  workspace: WorkspaceListEntry,
+  terminalTargets: string[],
+): PaneLayout {
+  const acp = acpPaneTargets(workspace)
+  const live = [...(acp.length > 0 ? [] : ['agent']), ...acp, ...terminalTargets]
+  const unshown = acp.find((t) => !paneTargets(layout).includes(t))
+  let next = unshown ? renameTargets(layout, 'agent', unshown) : layout
+  for (const t of paneTargets(next)) {
+    if (!live.includes(t) && (isAcpTarget(t) || !isSpecialPane(t))) next = removeTarget(next, t)
+  }
+  for (const t of live) next = addColumn(next, t)
+  return next
 }

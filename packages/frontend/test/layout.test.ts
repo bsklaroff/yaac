@@ -31,8 +31,8 @@ describe('singleColumn', () => {
 })
 
 describe('paneTargets', () => {
-  it('lists every tab left-to-right, empty for null', () => {
-    expect(paneTargets(null)).toEqual([])
+  it('lists every tab left-to-right', () => {
+    expect(paneTargets([])).toEqual([])
     expect(paneTargets(singleColumn('agent'))).toEqual(['agent'])
     const ws = addTab(addColumn(singleColumn('agent'), 'shell:a'), 0, 'shell:b')
     expect(paneTargets(ws)).toEqual(['agent', 'shell:b', 'shell:a'])
@@ -45,13 +45,12 @@ describe('groupIndexOf', () => {
     expect(groupIndexOf(ws, 'agent')).toBe(0)
     expect(groupIndexOf(ws, 'shell:a')).toBe(1)
     expect(groupIndexOf(ws, 'nope')).toBe(-1)
-    expect(groupIndexOf(null, 'agent')).toBe(-1)
   })
 })
 
 describe('addColumn', () => {
-  it('fills a null base and appends new columns', () => {
-    expect(addColumn(null, 'agent')).toEqual(singleColumn('agent'))
+  it('fills an empty base and appends new columns', () => {
+    expect(addColumn([], 'agent')).toEqual(singleColumn('agent'))
     expect(paneTargets(two())).toEqual(['agent', 'shell:a'])
   })
 
@@ -93,10 +92,9 @@ describe('removeTarget', () => {
     expect(removeTarget(ws2, 'shell:b')).toEqual([{ tabs: ['agent', 'shell:a'], active: 'agent' }])
   })
 
-  it('returns the same reference for an unknown target, and [] for null', () => {
+  it('returns the same reference for an unknown target', () => {
     const ws = two()
     expect(removeTarget(ws, 'nope')).toBe(ws)
-    expect(removeTarget(null, 'x')).toEqual([])
   })
 })
 
@@ -211,7 +209,6 @@ describe('withActive', () => {
     const ws = addTab(singleColumn('agent'), 0, 'shell:a')
     expect(withActive(ws, 'shell:a')).toBe(ws)
     expect(withActive(ws, 'nope')).toBe(ws)
-    expect(withActive(null, 'x')).toEqual([])
   })
 })
 
@@ -258,7 +255,6 @@ describe('focusPaneTarget', () => {
 
 describe('computeColumns', () => {
   it('returns nothing for an empty workspace', () => {
-    expect(computeColumns(null, rect, 8)).toEqual([])
     expect(computeColumns([], rect, 8)).toEqual([])
   })
 
