@@ -80,7 +80,7 @@ const stopKey = (projectSlug: string, workspaceId: string): string =>
   `${projectSlug}/${workspaceId}`
 
 async function applyCreated(event: WorkspaceCreated): Promise<void> {
-  const { projectSlug, workspaceId, baseBranch, resume, permissionMode, model, mode } = event
+  const { projectSlug, workspaceId, baseBranch, resume, permissionMode, model, mode, timeZone } = event
   const key = stopKey(projectSlug, workspaceId)
   // A resume is about to clear the row's stop. Remember it first so a failed
   // create can restore it rather than leaving a dead workspace looking alive.
@@ -102,6 +102,7 @@ async function applyCreated(event: WorkspaceCreated): Promise<void> {
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(mode !== undefined ? { mode } : {}),
+    ...(timeZone !== undefined ? { timeZone } : {}),
   }
   // A fresh create inserts the row (refusing a taken id); a resume updates
   // the existing row.

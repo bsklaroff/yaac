@@ -133,3 +133,28 @@ export async function setGitIdentity(
   const saved = await api.config['git-identity'].$put({ json: identity })
   return saved.identity
 }
+
+export interface TimeZoneSetting {
+  /** The IANA zone workspaces launch with; null until a client reports one. */
+  timeZone: string | null
+  /** The user chose it here, so device reports leave it alone. */
+  pinned: boolean
+}
+
+/** This browser's IANA time zone. */
+export function deviceTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone
+}
+
+/** The zone this server's workspaces launch with. */
+export async function getTimeZone(): Promise<TimeZoneSetting> {
+  return api.config['time-zone'].$get()
+}
+
+/**
+ * Set the zone. `pinned` omitted reports this device's zone, which the server
+ * ignores while the user has one pinned; `pinned: false` unpins.
+ */
+export async function setTimeZone(timeZone: string, pinned?: boolean): Promise<TimeZoneSetting> {
+  return api.config['time-zone'].$put({ json: { timeZone, pinned } })
+}

@@ -6,6 +6,7 @@ import { isLoopbackOrigin, resolveServerTarget } from '@yaac/shared/server-api'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { getProjectsDir } from '@yaac/shared/paths'
 import { testEnv } from '@yaac/shared/env'
+import { reportDeviceTimeZone } from '@yaac/shared/time-zone-report'
 import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 
 export interface WorkspaceCreateOptions {
@@ -61,6 +62,9 @@ export async function workspaceCreate(projectSlug: string, options: WorkspaceCre
       return
     }
   }
+
+  // Best-effort, so a CLI-only user's workspaces get their zone too.
+  await reportDeviceTimeZone().catch(() => {})
 
   const res = await api.workspace.create.$post({
     json: {

@@ -7,6 +7,9 @@ import { OPENCODE_PROVIDERS, PI_PROVIDERS } from '@yaac/shared/tool-providers'
 
 vi.mock('#lib/settingsApi', () => ({
   getGitIdentity: vi.fn().mockResolvedValue({ name: 'Ada', email: 'ada@example.com' }),
+  deviceTimeZone: () => 'America/New_York',
+  getTimeZone: vi.fn().mockResolvedValue({ timeZone: 'America/New_York', pinned: false }),
+  setTimeZone: vi.fn(),
   setGitIdentity: vi.fn().mockResolvedValue({ name: 'Ada', email: 'ada@example.com' }),
   getAuthList: vi.fn(),
   addHttpsCredential: vi.fn(),

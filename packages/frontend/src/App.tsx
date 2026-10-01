@@ -3,7 +3,7 @@ import clsx from 'clsx'
 import { api } from './lib/api'
 import { stopWorkspaceOptimistic } from './lib/stopWorkspaceFlow'
 import { claimChord, cycleDeltaFor, matchShortcut, mergeBindings, resolveCycleTarget } from './lib/shortcuts'
-import { getShortcutOverrides } from './lib/settingsApi'
+import { deviceTimeZone, getShortcutOverrides, setTimeZone } from './lib/settingsApi'
 import { useEvents } from './lib/useEvents'
 import { useSnapshot } from './lib/useSnapshot'
 import {
@@ -35,7 +35,11 @@ function App(): JSX.Element {
   useEffect(() => {
     let cancelled = false
     api.whoami.$get().then(
-      () => { if (!cancelled) setAuth({ kind: 'ok' }) },
+      () => {
+        if (!cancelled) setAuth({ kind: 'ok' })
+        // Workspaces launch in the zone of the device last used.
+        void setTimeZone(deviceTimeZone()).catch(() => {})
+      },
       (err: unknown) => {
         if (!cancelled) setAuth({ kind: 'unidentified', message: err instanceof Error ? err.message : String(err) })
       },

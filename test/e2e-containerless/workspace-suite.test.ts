@@ -312,7 +312,7 @@ async function createWorkspace(...extra: string[]): Promise<string> {
 async function createWorkspaceWith(tool: string, ...extra: string[]): Promise<string> {
   const before = new Set((await listWorkspaces()).map((w) => w.workspaceId))
   const { stdout, stderr, exitCode } = await runYaac(
-    serverEnv, 'workspace', 'create', SLUG, '--tool', tool, ...extra,
+    cliEnv(), 'workspace', 'create', SLUG, '--tool', tool, ...extra,
   )
   if (exitCode !== 0) {
     throw new Error(`create failed (exit ${String(exitCode)})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
@@ -326,6 +326,17 @@ async function createWorkspaceWith(tool: string, ...extra: string[]): Promise<st
     )
   }
   return fresh.workspaceId
+}
+
+/** The zone the CLI reports at create, unlike the server's own `TZ`. */
+const CLI_TIME_ZONE = 'Pacific/Auckland'
+
+/**
+ * The CLI's environment: a device in `CLI_TIME_ZONE`, and not inside a
+ * workspace (which this suite may itself run in), so it reports its zone.
+ */
+function cliEnv(): NodeJS.ProcessEnv {
+  return { ...serverEnv, TZ: CLI_TIME_ZONE, YAAC_WORKSPACE_ID: undefined, YAAC_WORKTREE_ID: undefined }
 }
 
 /** Run a tmux command against a workspace's own server. */
@@ -363,6 +374,9 @@ beforeAll(async () => {
     CLAUDE_CODE_CHILD_SESSION: '1',
     CLAUDE_CODE_SESSION_ID: 'parent',
     GIT_EDITOR: 'true',
+    // A host zone the workspace must not inherit (checked by the time-zone
+    // case below).
+    TZ: 'UTC',
   }
   server = await spawnYaacServer(serverEnv)
 
@@ -443,6 +457,12 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(workspaces.find((w) => w.workspaceId === workspaceId)?.agentSessions[0])
       .toMatchObject({ model: FALLBACK_MODELS.claude, modelName: 'Opus 5.5' })
   }, 120_000)
+
+  it('launches the workspace in the zone the CLI reported, not the server host\'s', async () => {
+    const res = await fetch(`${origin()}/api/config/time-zone`)
+    expect(await res.json()).toEqual({ timeZone: CLI_TIME_ZONE, pinned: false })
+    expect((await workspaceEnv(workspaceId)).TZ).toBe(CLI_TIME_ZONE)
+  })
 
   it('gives the workspace a real checkout on the host, which is what the agent sees', async () => {
     const dir = path.join(

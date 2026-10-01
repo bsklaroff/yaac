@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" ADD COLUMN "time_zone" text;

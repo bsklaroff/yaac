@@ -13,6 +13,7 @@ import {
 import { getApiClient, resolveServerTarget } from '@yaac/shared/server-api'
 import { buildAuthPayload } from '@yaac/shared/tool-auth-interactive'
 import { seedGitIdentityFromShell } from '@yaac/shared/git-identity-seed'
+import { reportDeviceTimeZone } from '@yaac/shared/time-zone-report'
 
 /**
  * `yaac auth server` lifecycle. The auth server only makes outbound
@@ -55,6 +56,9 @@ export async function runAuthDaemon(): Promise<void> {
   } catch (err) {
     log(`could not seed the git identity: ${err instanceof Error ? err.message : String(err)}`)
   }
+  await reportDeviceTimeZone().catch((err: unknown) => {
+    log(`could not report the time zone: ${err instanceof Error ? err.message : String(err)}`)
+  })
 
   await writeAuthDaemonLock({ pid: process.pid, baseUrl: target.baseUrl, startedAt: Date.now() })
   log(`lock=${authDaemonLockPath()} target=${target.baseUrl}`)

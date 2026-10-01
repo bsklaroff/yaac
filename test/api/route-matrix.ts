@@ -76,9 +76,12 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'PUT', path: '/api/project/:slug/build-files/file', request: '/api/project/nope/build-files/file', body: { path: 'a', content: '' }, why: 'builds no images', k8s: [200, 400, 404], containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/project/:slug/build-files/rename', request: '/api/project/nope/build-files/rename', body: { from: 'a', to: 'b' }, why: 'builds no images', k8s: [200, 400, 404], containerless: UNSUPPORTED },
   { method: 'DELETE', path: '/api/project/:slug/build-files/file', request: '/api/project/nope/build-files/file?path=a', why: 'builds no images', k8s: [200, 204, 400, 404], containerless: UNSUPPORTED },
-  // The git identity workspaces commit under; every substrate needs it.
+  // The git identity workspaces commit under and the zone they run in;
+  // every substrate needs both.
   { method: 'GET', path: '/api/config/git-identity', k8s: 200, containerless: 200 },
   { method: 'PUT', path: '/api/config/git-identity', body: { name: 'A', email: 'a@b.co' }, k8s: 200, containerless: 200 },
+  { method: 'GET', path: '/api/config/time-zone', k8s: 200, containerless: 200 },
+  { method: 'PUT', path: '/api/config/time-zone', body: { timeZone: 'America/New_York' }, k8s: 200, containerless: 200 },
   { method: 'GET', path: '/api/config/user-dockerfile', why: 'builds no images', k8s: 200, containerless: UNSUPPORTED },
   { method: 'PUT', path: '/api/config/user-dockerfile', body: { content: '' }, why: 'builds no images', k8s: 200, containerless: UNSUPPORTED },
   { method: 'GET', path: '/api/config/user-build-files', why: 'builds no images', k8s: 200, containerless: UNSUPPORTED },
