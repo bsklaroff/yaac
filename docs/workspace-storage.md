@@ -21,9 +21,7 @@ restart.
 Every sweep is driven by rows, so a checkout without a row is never collected
 automatically. Guessing "garbage" from disk alone is how a sweep deletes the
 only copy of someone's work. The code paths that delete a row therefore delete
-its files too. Older installs can hold rowless strays under
-`projects/<slug>/workspaces/<id>` with a matching `repo/.git/worktrees/<id>`.
-They are inert (ids are fresh UUIDs) and are removed by hand, if at all.
+its files too.
 
 Agents inside a workspace are separate rows. `agent_sessions` has one row per
 tool-native conversation (a claude, codex, pi or opencode session, keyed by the
@@ -307,8 +305,9 @@ The reporter names the path the tool sees (`claude/projects/…`,
 `locateTranscript`: first in `history/<workspaceId>/<tool>/`, then in the
 shared home, following links so a host workspace's row names the real file. A
 path that resolves outside the project, into a sibling's history, or to nothing
-yet is skipped (the next tick retries). pi's logs sit outside the home its
-reporter names, so pi conversations are found by the id in the log's filename.
+yet is skipped (the next tick retries). pi writes only to the history, and
+its reporter names no path, so pi conversations are found there by the id in
+the log's filename.
 
 `toProjectRelative` / `resolveProjectPath` in `runtime/agents/transcripts.ts`
 convert between the two forms. Disk code works with `SandboxFile`s (a dir plus
@@ -322,7 +321,7 @@ path only under the recording tool's shared home or that tool's part of the
 reading workspace's own history, so a pane naming `known_hosts`,
 `repo/.git/config` or a sibling's history resolves to no transcript.
 
-Readers without a recorded path (`sessionTranscriptPath`) search the same two
+Readers without a recorded path (`sessionTranscriptPath`) search the same
 places in the same order. codex is why the path is recorded at all: claude's
 transcript is named by conversation id and pi's contains the id in its
 filename, but codex names rollouts by timestamp plus thread id, so a conversation
@@ -355,9 +354,7 @@ Auto-memory stays shared. claude keys it on the checkout's git root, which is
 the checkout itself (`/workspace` in a pod). So the project's
 `claude/projects/-repo/memory` is mounted over the `projects/` overlay as
 `-workspace/memory`. On a host, create links the history's `-workspace/memory`
-to it instead, and moves in the memory folder named after the host repo path
-from older installs. If both folders are real, both are left alone; memory is
-never merged. The folder-name munging is claude's own rule
+to it instead. The folder-name munging is claude's own rule
 (`claudeProjectDirName`, pinned against the binary by a test).
 
 Isolation is per workspace, not per conversation. Conversations in one

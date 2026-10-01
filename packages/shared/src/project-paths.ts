@@ -243,15 +243,6 @@ export function piDir(slug: string): string {
 }
 
 /**
- * GLOBAL. Where pi kept its session logs before they moved into each
- * workspace's history — read as a fallback and moved in by the next create
- * (docs/legacy-compat-shims.md).
- */
-export function piSessionsDir(slug: string): string {
-  return path.join(piDir(slug), 'agent', 'sessions')
-}
-
-/**
  * GLOBAL. One workspace's agent conversation history, kept out of the
  * project's shared tool homes so other workspaces cannot delete it
  * (docs/workspace-storage.md). One subdirectory per

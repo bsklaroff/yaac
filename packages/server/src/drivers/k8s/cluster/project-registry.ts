@@ -52,11 +52,7 @@ export function projectRegistryName(projectId: string): string {
  * containerd matches it against the hosts.toml written here.
  */
 export function projectRegistryHostname(projectId: string): string {
-  return registryHostnameOf(projectRegistryName(projectId))
-}
-
-function registryHostnameOf(registryName: string): string {
-  return `${registryName}.${k8sNamespace()}.svc.cluster.local`
+  return `${projectRegistryName(projectId)}.${k8sNamespace()}.svc.cluster.local`
 }
 
 /** `projectRegistryHostname` with the registry port (the image-ref host). */
@@ -421,27 +417,24 @@ export function buildRegistryHostsWriterPodManifest(
 /**
  * One-shot pod removing the registry's `certs.d` dir from a node, the only
  * thing it writes outside the API server (the PVC goes with the other
- * objects). Mounts the parent dir so it can remove the child.
- *
- * Takes a name and labels rather than a project, because the orphan GC also
- * removes registries named before project ids
- * (docs/legacy-compat-shims.md, "Registries named before project ids").
+ * objects). Mounts the parent dir so it can remove the child. Labelled with
+ * the registry's selector labels, so a leftover pod falls inside its
+ * removal.
  */
-export function buildRegistryCleanupPodManifest(
-  registryName: string,
-  labels: Record<string, string>,
+function buildRegistryCleanupPodManifest(
+  projectId: string,
   imageRef: string,
   nodeName: string,
   nodeIndex: number,
   runId: string,
 ): Record<string, unknown> {
   return buildNodeWritePodManifest(
-    labels,
+    registryIdLabels(projectId),
     'cleanup',
-    `${registryName}-cleanup-${nodeIndex}-${runId}`,
+    `${projectRegistryName(projectId)}-cleanup-${nodeIndex}-${runId}`,
     nodeName,
     imageRef,
-    `rm -rf '/host-certs/${registryHostnameOf(registryName)}:${PROJECT_REGISTRY_PORT}'`,
+    `rm -rf '/host-certs/${projectRegistryHost(projectId)}'`,
     [{
       name: 'certs',
       hostPath: { path: '/etc/containerd/certs.d', type: 'DirectoryOrCreate' },
@@ -661,18 +654,12 @@ export async function ensureProjectRegistry(project: ProjectRef): Promise<void> 
 /** Delete a project's registry objects (PVC included) and each node's
  *  hosts.toml dir. Scoped to this install. */
 export async function removeProjectRegistry(projectId: string): Promise<void> {
-  const selector = registrySelector(projectId)
   // Skip the node cleanup if no registry ever existed; its pod could not
   // start (no mirror image) and would stall the remove for 60s per node.
   const existing = await kubectlGetJson<{ items?: unknown[] }>([
-    'get', 'deployment,service', '-l', selector, '-n', k8sNamespace(),
+    'get', 'deployment,service', '-l', registrySelector(projectId), '-n', k8sNamespace(),
   ])
-  const hadRegistry = (existing?.items?.length ?? 0) > 0
-  await removeRegistry(
-    selector,
-    hadRegistry ? projectRegistryName(projectId) : null,
-    registryIdLabels(projectId),
-  )
+  await removeRegistry(projectId, (existing?.items?.length ?? 0) > 0)
 }
 
 /** The labels an id's registry objects are selected by (`registrySelector`). */
@@ -684,25 +671,21 @@ function registryIdLabels(projectId: string): Record<string, string> {
   }
 }
 
-/** Delete the registry objects `selector` matches, then, if `name` is
- *  set, its hosts.toml dir on each node. */
-async function removeRegistry(
-  selector: string,
-  name: string | null,
-  cleanupLabels: Record<string, string>,
-): Promise<void> {
+/** Delete a project's registry objects, then, if `cleanNodes`, its
+ *  hosts.toml dir on each node. */
+async function removeRegistry(projectId: string, cleanNodes: boolean): Promise<void> {
   // Deleting the PVC while mounted is fine; it waits for the pod to go.
   await kubectlWithRetry([
-    'delete', 'deployment,service,networkpolicy,persistentvolumeclaim,pod', '-l', selector,
+    'delete', 'deployment,service,networkpolicy,persistentvolumeclaim,pod', '-l', registrySelector(projectId),
     '-n', k8sNamespace(), '--ignore-not-found',
   ])
-  if (!name) return
+  if (!cleanNodes) return
 
   const imageRef = registryRef(REGISTRY_MIRROR_TAG)
   const runId = crypto.randomBytes(4).toString('hex')
   for (const [i, node] of (await listNodeNames()).entries()) {
     // Best-effort.
-    await runNodeWritePod(buildRegistryCleanupPodManifest(name, cleanupLabels, imageRef, node, i, runId))
+    await runNodeWritePod(buildRegistryCleanupPodManifest(projectId, imageRef, node, i, runId))
       .catch(() => { /* node-side residue is harmless */ })
   }
 }
@@ -853,11 +836,9 @@ interface RawRegistryObjectList {
 }
 
 /**
- * Remove this install's registries belonging to no live project: an id not
- * in `liveProjectIds`, or no id at all (legacy slug-named registries). Keyed
- * on ids, so it also catches failed removals. Lists every object kind, so a
- * partially created registry still goes. Id-less objects are grouped by
- * slug, excluding id-labelled ones.
+ * Remove this install's registries whose project id is not in
+ * `liveProjectIds`. Keyed on ids, so it also catches failed removals. Lists
+ * every object kind, so a partially created registry still goes.
  */
 export async function gcOrphanProjectRegistries(
   liveProjectIds: ReadonlySet<string>,
@@ -875,40 +856,22 @@ export async function gcOrphanProjectRegistries(
     console.warn(`Orphan registry GC: failed to list registries: ${(err as Error).message}`)
     return
   }
-  // selector → Deployment/Service name (for the hosts.toml cleanup) and
-  // the cleanup pods' labels.
-  const orphans = new Map<string, { name: string | null; labels: Record<string, string> }>()
+  // id → whether a Deployment/Service exists (for the hosts.toml cleanup).
+  const orphans = new Map<string, boolean>()
   for (const { kind, metadata } of list?.items ?? []) {
-    const labels = metadata.labels ?? {}
-    const id = labels[LABEL_PROJECT_ID]
-    if (id !== undefined && liveProjectIds.has(id)) continue
+    const id = metadata.labels?.[LABEL_PROJECT_ID]
+    if (id === undefined || liveProjectIds.has(id)) continue
     // An unreadable age is never old enough.
     const created = Date.parse(metadata.creationTimestamp ?? '')
     if (Number.isNaN(created) || now - created < ORPHAN_REGISTRY_MIN_AGE_MS) continue
-    const slug = labels[LABEL_PROJECT]
-    const target = id !== undefined
-      ? { selector: registrySelector(id), labels: registryIdLabels(id) }
-      // A registry named before project ids: legacy-compat
-      // (docs/legacy-compat-shims.md, "Registries named before project ids").
-      : slug !== undefined
-        ? {
-          selector: `${installRegistrySelector()},${LABEL_PROJECT}=${slug},!${LABEL_PROJECT_ID}`,
-          labels: { app: REGISTRY_APP_LABEL, [LABEL_REGISTRY_DATA_DIR_HASH]: dataDirHash() },
-        }
-        : null
-    if (!target) continue
-    const name = kind === 'PersistentVolumeClaim' ? null : metadata.name
-    orphans.set(target.selector, {
-      name: orphans.get(target.selector)?.name ?? name,
-      labels: target.labels,
-    })
+    orphans.set(id, (orphans.get(id) ?? false) || kind !== 'PersistentVolumeClaim')
   }
-  for (const [selector, { name, labels }] of orphans) {
+  for (const [id, cleanNodes] of orphans) {
     try {
-      await removeRegistry(selector, name, labels)
-      console.log(`Removed orphan project registry (${selector})`)
+      await removeRegistry(id, cleanNodes)
+      console.log(`Removed orphan project registry ${projectRegistryName(id)}`)
     } catch (err) {
-      console.warn(`Orphan registry GC: failed to remove ${selector}: ${(err as Error).message}`)
+      console.warn(`Orphan registry GC: failed to remove ${projectRegistryName(id)}: ${(err as Error).message}`)
     }
   }
 }

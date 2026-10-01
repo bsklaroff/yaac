@@ -28,7 +28,7 @@ let dataDir: string
 function marker(workspaceId: string, over: Partial<WorkspaceMarker> = {}): WorkspaceMarker {
   return {
     projectSlug: 'demo', workspaceId, tool: 'claude', mode: 'tui',
-    prewarm: false, createdAtMs: 1_000, ...over,
+    prewarm: false, createdAtMs: 1_000, launchEnv: {}, ...over,
   }
 }
 

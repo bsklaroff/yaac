@@ -57,7 +57,6 @@ import {
   ensureProxyAuthSecret,
   ensureProxyResources,
   proxyServiceClusterIp,
-  relabelLegacyWorkspaces,
   removeProjectSecrets,
   resetProxyClusterIpCache,
   syncProjectSecrets,
@@ -294,13 +293,6 @@ describe('ensureProxyResources', () => {
     expect(byName('yaac-proxy-state')?.metadata.labels).toEqual({ app: 'yaac-proxy', 'yaac.proxy-output': 'state' })
     // The proxy Service (and so its ClusterIP) is never deleted.
     expect(mockRetry).not.toHaveBeenCalledWith(expect.arrayContaining(['delete', 'service']))
-    // Policies under their old names are deleted after the new ones apply.
-    const retire = mockRetry.mock.calls.findIndex((c) => c[0].includes('yaac-worktree-egress'))
-    expect(mockRetry.mock.calls[retire]?.[0]).toEqual([
-      'delete', 'networkpolicy', 'yaac-worktree-egress', 'yaac-worktree-ingress-lock', '-n', 'test-ns', '--ignore-not-found',
-    ])
-    const lastPolicy = kinds().lastIndexOf('NetworkPolicy')
-    expect(mockRetry.mock.invocationCallOrder[retire]).toBeGreaterThan(mockApply.mock.invocationCallOrder[lastPolicy] ?? Infinity)
     expect(mockRetry).toHaveBeenCalledWith(
       ['rollout', 'status', `daemonset/${NETD_APP_NAME}`, '-n', 'test-ns', '--timeout=180s'],
       expect.objectContaining({ maxAttempts: 2 }),
@@ -309,31 +301,6 @@ describe('ensureProxyResources', () => {
       ['rollout', 'status', `deployment/${PROXY_APP_NAME}`, '-n', 'test-ns', '--timeout=180s'],
       expect.objectContaining({ maxAttempts: 2 }),
     )
-  })
-
-  it('relabels an older install\'s pods before retiring its policies, and keeps them if it cannot', async () => {
-    // A create can reach this before the driver's startup relabel ran, or
-    // after one that failed: the policies those pods still rely on must stay.
-    stageClusterReads()
-    const staged = mockGetJson.getMockImplementation()!
-    mockGetJson.mockImplementation((args: string[]) => args[1] === 'pods'
-      ? Promise.resolve({ items: [{ metadata: { name: 'old-pod', labels: { 'yaac.worktree-id': 'w1' } } }] })
-      : staged(args))
-    const isRetire = (args: string[]): boolean => args.includes('yaac-worktree-egress')
-    mockRetry.mockImplementation((args: string[]) => args[0] === 'label'
-      ? Promise.reject(new Error('label failed'))
-      : Promise.resolve({ stdout: '', stderr: '' }))
-    await expect(ensureProxyResources('img')).rejects.toThrow('label failed')
-    expect(mockRetry.mock.calls.some(([args]) => isRetire(args))).toBe(false)
-
-    mockRetry.mockClear()
-    mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
-    await ensureProxyResources('img')
-    const label = mockRetry.mock.calls.findIndex(([args]) => args[0] === 'label')
-    const retire = mockRetry.mock.calls.findIndex(([args]) => isRetire(args))
-    expect(label).toBeGreaterThanOrEqual(0)
-    expect(retire).toBeGreaterThanOrEqual(0)
-    expect(mockRetry.mock.invocationCallOrder[label]).toBeLessThan(mockRetry.mock.invocationCallOrder[retire])
   })
 
   it('leaves the proxy’s outputs alone once they exist', async () => {
@@ -649,31 +616,6 @@ describe('ensureProxyResources', () => {
       .toBe(false)
   })
 
-})
-
-describe('relabelLegacyWorkspaces', () => {
-  it('adds the current label to what an older install labelled, keeping the old one', async () => {
-    const legacy = { 'yaac.worktree-id': 'w1' }
-    mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
-      args[1] === 'pods' ? { items: [{ metadata: { name: 'pod-a', labels: legacy } }] }
-        : args[1] === 'configmaps' ? { items: [{ metadata: { name: 'yaac-proxy-reg-w1', labels: legacy } }] }
-          : { items: [] },
-    ))
-    expect(await relabelLegacyWorkspaces()).toBe(true)
-    expect(mockGetJson).toHaveBeenCalledWith(
-      ['get', 'jobs', '-n', 'test-ns', '-l', `yaac.worktree-id,!${LABEL_WORKSPACE_ID}`],
-    )
-    expect(mockRetry.mock.calls.map((c) => c[0])).toEqual([
-      ['label', 'pods', 'pod-a', '-n', 'test-ns', `${LABEL_WORKSPACE_ID}=w1`, '--overwrite'],
-      ['label', 'configmaps', 'yaac-proxy-reg-w1', '-n', 'test-ns', `${LABEL_WORKSPACE_ID}=w1`, '--overwrite'],
-    ])
-  })
-
-  it('answers false and touches nothing on an install with nothing to relabel', async () => {
-    mockGetJson.mockResolvedValue({ items: [] })
-    expect(await relabelLegacyWorkspaces()).toBe(false)
-    expect(mockRetry).not.toHaveBeenCalled()
-  })
 })
 
 describe('ensureCaConfigMap', () => {

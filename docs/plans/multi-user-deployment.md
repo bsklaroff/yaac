@@ -59,9 +59,7 @@ Shipped, and what this plan builds on:
   globally unique workspace ids, confined server I/O on sandbox-writable
   paths, immutable project ids for names outside the data dir, main-registry
   write grants (docs/trust-split-builds.md "The write gate"), and a
-  read-only main clone (docs/server-git.md). The last holds for a project
-  once its legacy linked checkouts are converted
-  (docs/legacy-compat-shims.md "Converting linked checkouts").
+  read-only main clone (docs/server-git.md).
 
 Not there yet: nothing user-shaped is in the schema. The only non-server
 identity is per-workspace (`workspaces.mamaTokenHash`, the bearer a

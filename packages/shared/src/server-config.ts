@@ -36,8 +36,6 @@ export interface ServerConfig {
    * The uid of the install's cluster's `kube-system` namespace. Unlike a
    * context name, it cannot be reused by another cluster, so host-side
    * cluster commands refuse when the current context points elsewhere.
-   * Missing from older files until the next install
-   * (docs/legacy-compat-shims.md).
    */
   clusterUid?: string
   /** The kube context the install used; shown in refusal messages. */

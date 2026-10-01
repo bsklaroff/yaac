@@ -221,25 +221,6 @@ describe('reconcileAgentSessions', () => {
     expect(await summary('wt-2')).toEqual([['conv-c', 0, true, 'fix the login bug', undefined]])
   })
 
-  it('leaves a pin alone beside a conversation of its tool recorded before the takeover', async () => {
-    // Rows from before the placeholder was replaced: the placeholder with
-    // the prompt, then the real opencode conversation.
-    await recordAgentSessions('demo', 'wt-1', [
-      { tool: 'opencode', agentSessionId: 'wt-1', firstPrompt: 'the founding ask' },
-      { tool: 'opencode', agentSessionId: 'ses_old' },
-    ])
-    podExec.mockResolvedValue({ stdout: JSON.stringify({ data: { title: 'a later ask' } }), stderr: '' })
-    // A `/new` is not the first conversation, so it inherits nothing.
-    live([{ handle: '%0', tool: 'opencode', agentSessionId: 'ses_new' }])
-    await sweep()
-    const links = await listWorkspaceAgentSessions('demo', 'wt-1')
-    expect(links.map((l) => [l.agentSessionId, l.ordinal, l.firstPrompt])).toEqual([
-      ['wt-1', 0, 'the founding ask'],
-      ['ses_old', 1, undefined],
-      ['ses_new', 2, 'a later ask'],
-    ])
-  })
-
   it('keeps claude\'s pin, which is the conversation it runs', async () => {
     await applyWorkspaceEvent({
       type: 'sessions-launched',

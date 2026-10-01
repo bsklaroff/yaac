@@ -537,20 +537,17 @@ describe('gcOrphanProjectRegistries', () => {
     })
   }
 
-  it('removes registries no live project id owns, and those with no id, keeping the rest', async () => {
+  it('removes registries no live project id owns, keeping the rest', async () => {
     const labelled = (id: string, slug: string): Record<string, string> =>
       ({ app: REGISTRY_APP_LABEL, 'yaac.project': slug, 'yaac.project-id': id })
     stageRegistries([
       // A live project's registry, in every kind it is made of.
       { kind: 'Service', metadata: { name: `yaac-reg-${LIVE}`, labels: labelled(LIVE, 'app'), creationTimestamp: OLD } },
       { kind: 'PersistentVolumeClaim', metadata: { name: `yaac-reg-${LIVE}-storage`, labels: labelled(LIVE, 'app'), creationTimestamp: OLD } },
-      // A removed project's. The claim is listed first, but the cleanup
-      // must still use the Deployment's name (it names the hosts.toml dir).
+      // A removed project's. The claim is listed first, but the Deployment
+      // still earns it a node-side cleanup.
       { kind: 'PersistentVolumeClaim', metadata: { name: `yaac-reg-${GONE}-storage`, labels: labelled(GONE, 'app'), creationTimestamp: OLD } },
       { kind: 'Deployment', metadata: { name: `yaac-reg-${GONE}`, labels: labelled(GONE, 'app'), creationTimestamp: OLD } },
-      // A registry from before projects had ids, with the live project's
-      // slug: grouped by slug, never with an id-labelled object.
-      { kind: 'Service', metadata: { name: 'yaac-reg-app-1a2b3c4d', labels: { app: REGISTRY_APP_LABEL, 'yaac.project': 'app' }, creationTimestamp: OLD } },
       // Too young: a project added after the live set was read may be
       // creating it right now.
       { kind: 'Service', metadata: { name: 'yaac-reg-new', labels: labelled('5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9', 'new'), creationTimestamp: new Date(NOW - 1000).toISOString() } },
@@ -560,13 +557,11 @@ describe('gcOrphanProjectRegistries', () => {
 
     await gcOrphanProjectRegistries(new Set([LIVE]), NOW)
 
-    expect(objectDeletes().sort()).toEqual([
+    expect(objectDeletes()).toEqual([
       `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16,yaac.project-id=${GONE}`,
-      `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16,yaac.project=app,!yaac.project-id`,
-    ].sort())
-    // Both had a Deployment/Service, so each gets a node-side cleanup under
-    // the registry's real name. Cleanup pods carry the project id when there
-    // is one, so a leftover pod falls inside that id's removal selector.
+    ])
+    // Cleanup pods carry the project id, so a leftover pod falls inside that
+    // id's removal selector.
     const cleanups = mockApply.mock.calls
       .map((c) => c[0] as {
         kind: string
@@ -577,8 +572,8 @@ describe('gcOrphanProjectRegistries', () => {
       .map((m) => [m.spec.containers[0].command[2], m.metadata.labels['yaac.project-id']])
     expect(cleanups).toEqual(expect.arrayContaining([
       [expect.stringContaining(`/host-certs/yaac-reg-${GONE}.test-ns.svc.cluster.local:5000`), GONE],
-      [expect.stringContaining('/host-certs/yaac-reg-app-1a2b3c4d.test-ns.svc.cluster.local:5000'), undefined],
     ]))
+    expect(cleanups.every(([, id]) => id === GONE)).toBe(true)
     expect(mockGetJson).toHaveBeenCalledWith([
       'get', 'deployment,service,persistentvolumeclaim', '-n', 'test-ns',
       '-l', `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16`,

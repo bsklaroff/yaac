@@ -197,7 +197,6 @@ vi.mock('@yaac/shared/tool-auth', () => ({
 }))
 
 vi.mock('@yaac/server/domain/git', () => ({
-  adoptLinkedCheckout: vi.fn().mockResolvedValue(undefined),
   createCheckout: vi.fn().mockResolvedValue(undefined),
   // Inline so it survives resetAllMocks.
   maintainRepo: vi.fn(() => Promise.resolve()),
@@ -277,7 +276,7 @@ import { resolveProjectCredential } from '@yaac/server/domain/projects/credentia
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { CONTAINER_TMUX_DIR } from '@yaac/shared/paths'
 import { resolveAllowedHosts } from '@yaac/server/lib/allowed-hosts'
-import { adoptLinkedCheckout, createCheckout, getDefaultBranch, fetchOrigin, remoteBranchExists } from '@yaac/server/domain/git'
+import { createCheckout, getDefaultBranch, fetchOrigin, remoteBranchExists } from '@yaac/server/domain/git'
 import { getProjectRow } from '@yaac/server/db/project-store'
 import { podExec, waitForStreamd } from '@yaac/server/drivers/k8s/substrate/stream-relay'
 import type * as streamRelayModule from '@yaac/server/drivers/k8s/substrate/stream-relay'
@@ -289,7 +288,7 @@ import {
 } from '@yaac/server/drivers/k8s/forwarders/port-forwarders'
 import { buildStatusRight } from '@yaac/server/lib/status-right'
 import type * as statusRightModule from '@yaac/server/lib/status-right'
-import { handleFixture, installFakeWorkspaceDriver, type FakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { launchWorkspace, prepareWorkspaceSubstrate } from '@yaac/server/drivers/k8s/workspaces/launch'
 import { destroyWorkspace } from '@yaac/server/drivers/k8s/workspaces/teardown'
 import { prepareWorkspaceImage } from '@yaac/server/drivers/k8s/images/workspace-image'
@@ -363,7 +362,6 @@ function appliedJobManifest(): JobManifest {
 }
 
 describe('createWorkspace', () => {
-  let fake: FakeWorkspaceDriver
   beforeEach(() => {
     vi.resetAllMocks()
 
@@ -387,7 +385,6 @@ describe('createWorkspace', () => {
     vi.mocked(resolveProjectCredential).mockResolvedValue({ kind: 'https', token: 'token' } as never)
     vi.mocked(resolveAllowedHosts).mockReturnValue(['*'])
     vi.mocked(createCheckout).mockResolvedValue(undefined)
-    vi.mocked(adoptLinkedCheckout).mockResolvedValue(undefined)
     vi.mocked(getDefaultBranch).mockResolvedValue('main')
     vi.mocked(fetchOrigin).mockResolvedValue(undefined)
     vi.mocked(getProjectRow).mockResolvedValue(projectRow('https://github.com/example/repo.git'))
@@ -418,7 +415,7 @@ describe('createWorkspace', () => {
     // rest keep the fake's defaults, so a new driver dependency fails the
     // test instead of silently calling a cluster. kubectl, the proxy client,
     // the relay and podman stay mocked.
-    fake = installFakeWorkspaceDriver({
+    installFakeWorkspaceDriver({
       ensureRuntimeReachable: () => ensureKubernetes(),
       prepareImage: (o) => prepareWorkspaceImage(o),
       prepareSubstrate: (i) => prepareWorkspaceSubstrate(i),
@@ -1062,28 +1059,6 @@ describe('createWorkspace', () => {
       })
       expect(createCheckout).not.toHaveBeenCalled()
       expect(messages.some((m) => m.includes('Reusing existing workspace'))).toBe(true)
-    })
-
-    it('converts a reused checkout an older install left linked', async () => {
-      mockAccess.mockResolvedValue(undefined)
-      await createWorkspace('demo', { resume: true, workspaceId: 'abcd1234' })
-      expect(adoptLinkedCheckout).toHaveBeenCalledWith(
-        '/tmp/demo/repo', '/tmp/demo/workspaces/abcd1234', 'abcd1234', 'https://github.com/example/repo.git',
-        expect.any(Set),
-      )
-    })
-
-    it('refuses to convert a linked checkout its previous workspace still has', async () => {
-      // The old pod is still up with the checkout mounted read-write.
-      mockAccess.mockResolvedValue(undefined)
-      vi.mocked(fsFake.lstat).mockImplementation((p) => p.endsWith('/.git')
-        ? Promise.resolve({ isDirectory: () => false })
-        : Promise.reject(new Error('missing')))
-      fake.override({ find: () => Promise.resolve(handleFixture({ workspaceId: 'abcd1234', projectSlug: 'demo' })) })
-
-      await expect(createWorkspace('demo', { resume: true, workspaceId: 'abcd1234' }))
-        .rejects.toMatchObject({ code: 'CONFLICT' })
-      expect(adoptLinkedCheckout).not.toHaveBeenCalled()
     })
 
     it('still creates a checkout when the workspace directory is missing', async () => {

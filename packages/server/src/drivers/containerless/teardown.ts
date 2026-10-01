@@ -11,7 +11,6 @@ import {
 import {
   findWorkspace,
   forgetWorkspace,
-  listWorkspaces,
   markTerminating,
   removeMarker,
   sshAgentPidOf,
@@ -151,14 +150,11 @@ const REAP_SLACK_MS = 10_000
  * (opencode uses its checkpoint directly).
  */
 export async function reapNodeLocal(live: NodeLocalLiveSet): Promise<void> {
-  // Legacy-compat (docs/legacy-compat-shims.md, "Workspaces started before
-  // project ids"): a running workspace's slug keeps its slug-named tree.
-  const kept = new Set([...live.projectIds, ...listWorkspaces().map((w) => w.projectSlug)])
   const cutoff = Date.now() - REAP_SLACK_MS
   for (const root of [nodeLocalPath('projects'), nodeLocalPath('shared-images')]) {
     if (!(await fs.lstat(root).catch(() => null))?.isDirectory()) continue
     for (const name of await fs.readdir(root).catch((): string[] => [])) {
-      if (kept.has(name)) continue
+      if (live.projectIds.has(name)) continue
       const dir = path.join(root, name)
       const stat = await fs.lstat(dir).catch(() => null)
       if (!stat?.isDirectory() || stat.mtimeMs > cutoff) continue

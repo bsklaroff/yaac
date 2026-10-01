@@ -564,45 +564,4 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     // The mounted CA still verifies the replacement's leaves (--cacert
     // above), so the CA it serves is the one it read back.
   }, 300_000)
-
-  it('re-signs an outdated stored CA over its own key, so running pods keep verifying', async () => {
-    const key = await readSecretKey(PROXY_CA_SECRET_NAME, 'ca.key')
-    expect(key).toContain('PRIVATE KEY')
-    // An outdated CA: same key, non-critical basicConstraints.
-    const { stdout: outdated } = await kubectlWithRetry([
-      'exec', '-i', '-n', k8sNamespace(), podName, '--', 'sh', '-c', [
-        "cat > /tmp/ca.cnf <<'EOF'",
-        '[req]', 'distinguished_name = dn', 'x509_extensions = v3', 'prompt = no',
-        '[dn]', 'CN = yaac Proxy CA',
-        '[v3]', 'basicConstraints = CA:TRUE', 'keyUsage = keyCertSign, cRLSign', 'subjectKeyIdentifier = hash',
-        'EOF',
-        'openssl req -x509 -new -key /dev/stdin -days 1 -config /tmp/ca.cnf',
-      ].join('\n'),
-    ], { input: key, timeout: 40_000 })
-    await kubectlWithRetry([
-      'patch', 'secret', PROXY_CA_SECRET_NAME, '-n', k8sNamespace(),
-      '-p', JSON.stringify({ data: { 'ca.pem': Buffer.from(outdated).toString('base64') } }),
-    ])
-
-    await kubectlWithRetry([
-      'delete', 'pod', '-l', `app=${PROXY_APP_NAME}`, '-n', k8sNamespace(), '--wait=false',
-    ])
-    await kubectlWithRetry([
-      'rollout', 'status', `deployment/${PROXY_APP_NAME}`, '-n', k8sNamespace(), '--timeout=180s',
-    ], { timeout: 190_000 })
-
-    const resigned = await pollUntil(
-      async () => (await readSecretKey(PROXY_CA_SECRET_NAME, 'ca.pem')) ?? '', (pem) => pem !== outdated)
-    const spki = (pem: string): Buffer =>
-      new crypto.X509Certificate(pem).publicKey.export({ type: 'spki', format: 'der' })
-    expect(spki(resigned).equals(spki(outdated))).toBe(true)
-    const { stdout: text } = await kubectlWithRetry([
-      'exec', '-i', '-n', k8sNamespace(), podName, '--', 'openssl', 'x509', '-noout', '-text',
-    ], { input: resigned, timeout: 40_000 })
-    expect(text).toMatch(/Basic Constraints: critical/)
-    // The pod's already-mounted CA still verifies the re-signed CA's leaves.
-    const r = await curlUntil(podName, probeArgs(`-H 'x-api-key: ${PLACEHOLDER_API_KEY}'`),
-      (res) => res.exit === 0, 120_000)
-    expect(r.exit, r.out).toBe(0)
-  }, 300_000)
 })

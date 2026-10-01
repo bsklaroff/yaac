@@ -20,7 +20,7 @@ import {
   resolveServerImageTag,
 } from '@yaac/server/drivers/k8s/install/server-deploy'
 import { readLock } from '@yaac/shared/lock'
-import { registerServer } from '@yaac/shared/server-config'
+import { recordInstall, registerServer } from '@yaac/shared/server-config'
 import type { ServerLock } from '@yaac/shared/server-lock-file'
 import { startKubectlForward, type KubectlForward } from '#kubectl-forward'
 import { ensureTestStorageClaims } from '#storage-claims'
@@ -118,9 +118,14 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
     throw err
   }
 
-  // Point this file's CLI calls at the forward through `server.json`, as
-  // `yaac cluster install` does for the published origin.
+  // Point this file's CLI calls at the forward through `server.json`, and
+  // record the cluster, as `yaac cluster install` does; the CLI refuses
+  // server verbs on a k8s record with no cluster.
   await registerServer(forward.origin, 'k8s')
+  const { stdout: clusterUid } = await execFileAsync('kubectl', [
+    'get', 'namespace', 'kube-system', '-o', 'jsonpath={.metadata.uid}',
+  ], { timeout: 30_000 })
+  await recordInstall({ clusterUid: clusterUid.trim() })
 
   return {
     lock: { ...lock, port: forward.port },

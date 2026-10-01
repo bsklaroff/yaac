@@ -52,7 +52,6 @@ export {
 } from './detail'
 export { readProjectDockerfile, readUserDockerfile, writeProjectDockerfile, writeUserDockerfile } from './dockerfile'
 export { seedFakeAuth } from './fake-auth'
-export { moveLegacyWorkspacesDirs } from './legacy-workspaces-dir'
 export { listProjects } from './list'
 export {
   addAllowedHostToProjectConfig,

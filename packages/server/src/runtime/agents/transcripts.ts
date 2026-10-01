@@ -4,7 +4,6 @@ import {
   agentHistoryDir,
   claudeDir,
   codexDir,
-  piDir,
   projectDir,
   type AgentHistoryPart,
 } from '@yaac/shared/project-paths'
@@ -33,21 +32,21 @@ import { openSandboxDir, type SandboxFile } from './sandbox-fs'
 /** Where one tool's transcripts sit: the part of a workspace's history
  *  holding them, and the shared-home subdirectory it stands in for (the one
  *  a pod's mount covers). */
-const TRANSCRIPT_LAYOUT: Record<Exclude<AgentTool, 'opencode'>, {
+const TRANSCRIPT_LAYOUT: Record<'claude' | 'codex', {
   home: (slug: string) => string
   part: AgentHistoryPart
   shared: string
 }> = {
   claude: { home: claudeDir, part: 'claude', shared: 'projects' },
   codex: { home: codexDir, part: 'codex', shared: 'sessions' },
-  pi: { home: piDir, part: 'pi', shared: 'agent/sessions' },
 }
 
 /** The dirs a tool's transcripts are read under for one workspace, history
  *  first, each as the dir plus the subpath holding transcripts. Empty for a
- *  tool with none on the host. */
+ *  tool with none on the host; pi writes only to the history. */
 function transcriptRoots(slug: string, workspaceId: string, tool: AgentTool): Array<{ dir: string; sub: string }> {
   if (tool === 'opencode') return []
+  if (tool === 'pi') return [{ dir: agentHistoryDir(slug, workspaceId, 'pi'), sub: '' }]
   const { home, part, shared } = TRANSCRIPT_LAYOUT[tool]
   return [{ dir: agentHistoryDir(slug, workspaceId, part), sub: '' }, { dir: home(slug), sub: shared }]
 }
@@ -76,8 +75,8 @@ export function claudeProjectDirName(cwd: string): string {
  */
 export const CLAUDE_POD_CWD = claudeProjectDirName('/workspace')
 
-/** The project's shared auto-memory dir in the shared `projects/`, named for
- *  the old `/repo` key. It is mounted (or linked) over each workspace's own
+/** The project's shared auto-memory dir in the shared `projects/`, named as
+ *  claude would for a `/repo` cwd. It is mounted (or linked) over each workspace's own
  *  `memory` folder, since claude keys memory on the checkout's git root. */
 export const CLAUDE_POD_REPO = claudeProjectDirName('/repo')
 
@@ -222,11 +221,10 @@ export async function locateTranscript(
 }
 
 /**
- * pi's JSONL logs for one workspace, oldest first: its history's, then any
- * still in the shared home. pi names files `<timestamp>_<uuid>.jsonl`,
- * possibly under a cwd-derived subdir, so one level of subdirectories is
- * walked. The timestamp prefix makes a basename sort chronological (mtime
- * would change as pi appends).
+ * pi's JSONL logs for one workspace's history, oldest first. pi names files
+ * `<timestamp>_<uuid>.jsonl`, possibly under a cwd-derived subdir, so one
+ * level of subdirectories is walked. The timestamp prefix makes a basename
+ * sort chronological (mtime would change as pi appends).
  */
 async function listPiJsonlFiles(slug: string, workspaceId: string): Promise<SandboxFile[]> {
   const found: SandboxFile[] = []

@@ -72,28 +72,10 @@ Delete both temporary formulas, and point `yaac.rb` back at
 
    ```sh
    rsync -a --delete homebrew/Formula/ <tap>/Formula/
-   cp homebrew/tap_migrations.json <tap>/
    ```
-
-## Migrating an existing install
-
-Brew cannot carry these over by itself, so each is a one-time manual step:
-
-- **`yaac-kind` → core `kind`.** The tap's retired kind build conflicts with
-  core `kind`. Installing `kind` beside it leaves `kind` unlinked, so
-  uninstalling `yaac-kind` afterwards would leave no `kind` on PATH.
-  `--ignore-dependencies` is needed because an older installed `yaac` still
-  lists `yaac-kind` as a dependency:
-  `brew uninstall --ignore-dependencies yaac-kind && brew install kind && brew link kind`.
-  `tap_migrations.json` redirects the old `bsklaroff/yaac/yaac-kind` name to
-  core `kind`, but does not migrate an installed keg.
-- **`virglrenderer` → `virglrenderer-krun`.** The `libkrun/krun` tap renamed
-  its virglrenderer fork without a rename file. The new formula conflicts with
-  an installed old keg, so rebuilding `yaac-libkrun` fails until it is gone:
-  `brew uninstall --ignore-dependencies virglrenderer && brew upgrade yaac-libkrun`.
 
 ## Creating the tap (one-time)
 
 Create a GitHub repo named `bsklaroff/homebrew-yaac` with a `Formula/`
-directory holding these files and `tap_migrations.json` at its root.
+directory holding these files.
 `brew install bsklaroff/yaac/yaac` then taps it implicitly.

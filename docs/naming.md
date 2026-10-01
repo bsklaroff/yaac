@@ -15,11 +15,7 @@ enumerate an install's pods say so (`listWorkspacePods`,
 `workspacePodSelector`), because that is what sets them apart from other pods
 in the namespace.
 
-"Worktree" is not used: a workspace is a git clone, not a git worktree. It
-survives only in legacy-compat shims for workspaces an older install
-launched (`YAAC_WORKTREE_ID`, the `/worktree` route, the `yaac.worktree-id`
-label, checkouts under `worktrees/`), each listed in
-docs/legacy-compat-shims.md.
+"Worktree" is not used: a workspace is a git clone, not a git worktree.
 
 ## What still says "session", and why
 

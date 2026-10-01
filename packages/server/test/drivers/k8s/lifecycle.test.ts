@@ -32,7 +32,6 @@ vi.mock('#drivers/k8s/cluster', () => ({
   ensureMainRegistry: vi.fn().mockResolvedValue(undefined),
   ensureNamespace: vi.fn(() => { order.push('bootstrap'); return Promise.resolve() }),
   nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.2/32', '10.89.0.3/32']),
-  relabelLegacyWorkspaces: vi.fn(() => { order.push('relabel'); return Promise.resolve(false) }),
   gcOrphanProjectRegistries: vi.fn().mockResolvedValue(undefined),
 }))
 vi.mock('#drivers/k8s/forwarders', () => ({
@@ -48,7 +47,6 @@ vi.mock('#drivers/k8s/egress', () => ({
   },
   proxyClient: {
     disconnect: vi.fn(() => { order.push('proxy.disconnect') }),
-    ensureRunning: vi.fn(() => { order.push('proxy.ensure'); return Promise.resolve() }),
   },
 }))
 vi.mock('#drivers/k8s/workspaces', () => ({
@@ -57,7 +55,7 @@ vi.mock('#drivers/k8s/workspaces', () => ({
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import { startK8sDriver, stopK8sDriver, releaseK8sDriver, triggerFor } from '#drivers/k8s/lifecycle'
-import { ensureNamespace, relabelLegacyWorkspaces } from '#drivers/k8s/cluster'
+import { ensureNamespace } from '#drivers/k8s/cluster'
 import { kubectlApply } from '#drivers/k8s/substrate'
 import { _resetWorkspaceListChangedForTests, onWorkspaceListChanged } from '#notify'
 
@@ -93,19 +91,6 @@ describe('startK8sDriver', () => {
     expect(order.indexOf('bootstrap')).toBeLessThan(order.indexOf('recover'))
     expect(order.indexOf('recover')).toBeLessThan(order.indexOf('cache.start'))
     expect(order.indexOf('cache.start')).toBeLessThan(order.indexOf('attached'))
-  })
-
-  it('relabels an older install\'s workspaces before anything watches, and rolls its proxy', async () => {
-    await startK8sDriver(sinks())
-    expect(order).not.toContain('proxy.ensure')
-    expect(order.indexOf('relabel')).toBeLessThan(order.indexOf('cache.start'))
-
-    stopK8sDriver()
-    order.length = 0
-    vi.mocked(relabelLegacyWorkspaces).mockResolvedValueOnce(true)
-    await startK8sDriver(sinks())
-    expect(order.indexOf('proxy.ensure')).toBeGreaterThan(-1)
-    expect(order.indexOf('proxy.ensure')).toBeLessThan(order.indexOf('recover'))
   })
 
   it('re-renders the node half of the server wall from the live node list', async () => {

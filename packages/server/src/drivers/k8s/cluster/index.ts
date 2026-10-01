@@ -46,7 +46,6 @@ export {
   ensureProxyAuthSecret,
   ensureProxyResources,
   proxyServiceClusterIp,
-  relabelLegacyWorkspaces,
   removeProjectSecrets,
   resetProxyClusterIpCache,
   syncProjectSecrets,

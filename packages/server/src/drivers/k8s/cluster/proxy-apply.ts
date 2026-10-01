@@ -8,7 +8,6 @@ import {
   kubectlGetJson,
   kubectlWithRetry,
   LABEL_ROLE,
-  LABEL_WORKSPACE_ID,
   PRIVILEGED_PSS_LABELS,
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
@@ -39,34 +38,6 @@ import {
 } from './policy-manifests'
 import { nodeIpBlocks } from './cluster-cidrs'
 import { ensureNetd } from './netd'
-
-/** The workspace-id label older installs used instead of
- *  LABEL_WORKSPACE_ID. */
-const LEGACY_WORKSPACE_ID_LABEL = 'yaac.worktree-id'
-
-/**
- * Add the current workspace-id label to pods, Jobs and proxy registrations
- * that only carry LEGACY_WORKSPACE_ID_LABEL, so older workspaces are seen and
- * governed by the current policies (docs/legacy-compat-shims.md). The old
- * label stays until the proxy rolls. Returns whether anything was
- * relabelled.
- */
-export async function relabelLegacyWorkspaces(): Promise<boolean> {
-  let found = false
-  for (const kind of ['pods', 'jobs', 'configmaps']) {
-    const list = await kubectlGetJson<{ items?: Array<{ metadata: { name: string; labels: Record<string, string> } }> }>([
-      'get', kind, '-n', k8sNamespace(), '-l', `${LEGACY_WORKSPACE_ID_LABEL},!${LABEL_WORKSPACE_ID}`,
-    ])
-    for (const { metadata } of list?.items ?? []) {
-      found = true
-      await kubectlWithRetry([
-        'label', kind, metadata.name, '-n', k8sNamespace(),
-        `${LABEL_WORKSPACE_ID}=${metadata.labels[LEGACY_WORKSPACE_ID_LABEL]}`, '--overwrite',
-      ])
-    }
-  }
-  return found
-}
 
 /** True when the cluster serves the ValidatingAdmissionPolicy API. */
 export async function vapAvailable(): Promise<boolean> {
@@ -161,15 +132,6 @@ export async function ensureProxyResources(imageRef: string): Promise<void> {
   await kubectlApply(buildProxyIngressNpManifest(nodeCidrs))
   await kubectlApply(buildProxyEgressNpManifest(nodeCidrs))
   await kubectlApply(buildEgressWorldDenyNpManifest())
-  // Legacy-named policies, removed only after their replacements govern
-  // every pod an older install left running (docs/legacy-compat-shims.md).
-  // The relabel runs here too, not just at driver start, so any path that
-  // reaches this delete finishes it first.
-  await relabelLegacyWorkspaces()
-  await kubectlWithRetry([
-    'delete', 'networkpolicy', 'yaac-worktree-egress', 'yaac-worktree-ingress-lock',
-    '-n', k8sNamespace(), '--ignore-not-found',
-  ])
   await ensureNetd()
   await kubectlWithRetry([
     'rollout', 'status', `deployment/${PROXY_APP_NAME}`,

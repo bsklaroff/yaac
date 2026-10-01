@@ -11,9 +11,9 @@ import {
   syncToolCredentialsThrottled,
 } from '#domain/auth'
 import { closeDb, listProjectRows, openDb } from '#db'
-import { clearGitScratch, startGitSshAgent, stopGitSshAgent } from '#domain/git'
+import { startGitSshAgent, stopGitSshAgent } from '#domain/git'
 import { EventHub, type WsLike } from '#api/events'
-import { convertLinkedCheckouts, resolveWorkspaceContainer } from '#domain/workspaces'
+import { resolveWorkspaceContainer } from '#domain/workspaces'
 import { attachConvergence, releaseConvergence, stopConvergence } from '#main/convergence'
 import { coalesceCalls, onWorkspaceListChanged } from '#notify'
 import { refreshClaudeBundledSkills } from '#domain/skills'
@@ -34,7 +34,7 @@ import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-po
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { startReconciler } from '#main/reconciler'
 import { setWorkspaceDriver, workspaceDriver } from '#drivers/driver'
-import { moveLegacyWorkspacesDirs, resolveProjectEnv } from '#domain/projects'
+import { resolveProjectEnv } from '#domain/projects'
 import { createK8sDriver } from '#drivers/k8s'
 import { createContainerlessDriver } from '#drivers/containerless'
 import { assertHostServerAllowed, resolveDriverKind } from '#main/driver-choice'
@@ -141,17 +141,13 @@ function bindServer(
 }
 
 /**
- * Refuse two setups the identity model cannot protect
- * (docs/remote-hosting.md), before anything is bound.
+ * Refuse a bind the identity model cannot protect (docs/remote-hosting.md),
+ * before anything is bound.
  *
  * A loopback request that did not come through `tailscale serve` is
  * treated as the machine's owner. A non-loopback bind would let anyone who
  * reaches it send `Host: 127.0.0.1`, so it is refused, except in the pod,
  * whose ingress policy admits only the node and the fronting.
- *
- * `YAAC_REQUIRE_AUTH` asked for a credential gate on a shared loopback,
- * which no longer exists; starting anyway would silently serve other OS
- * users, so it is refused (docs/legacy-compat-shims.md).
  */
 function refuseUnsupportedExposure(): void {
   const bind = env.bindAddr
@@ -161,16 +157,6 @@ function refuseUnsupportedExposure(): void {
       + 'where anything that reaches it is taken for this machine\'s owner. '
       + 'Bind loopback and reach it from elsewhere through `tailscale serve` '
       + '(docs/remote-hosting.md).',
-    )
-  }
-  if (env.requireAuthSet) {
-    throw new Error(
-      'YAAC_REQUIRE_AUTH is set, and yaac no longer has a credential gate to '
-      + 'require: a request at this machine\'s loopback is its owner. A host '
-      + 'shared with other OS users is not a supported shared deployment — '
-      + 'serve it over the tailnet with `tailscale serve` and let each person '
-      + 'reach it by its ts.net name (docs/remote-hosting.md). Unset '
-      + 'YAAC_REQUIRE_AUTH to start.',
     )
   }
 }
@@ -503,10 +489,6 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     await removeLock(lease.instance)
     process.exit(1)
   }
-  // Before anything resolves a checkout path (docs/legacy-compat-shims.md).
-  await moveLegacyWorkspacesDirs()
-  // Clear git scratch left by a killed predecessor, before any git runs.
-  await clearGitScratch()
   // The ssh agent the server's git signs with (docs/git-credentials.md);
   // needs the DB.
   await startGitSshAgent()
@@ -585,11 +567,6 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   await attachConvergence({
     onAttached: () => {
       loopDone = startReconciler({ signal: abortCtrl.signal })
-      // Convert an older install's stopped workspaces onto clones
-      // (docs/server-git.md). After attach, since only stopped workspaces
-      // are converted.
-      void convertLinkedCheckouts()
-        .catch((err: unknown) => serverLog(`[server] linked checkout conversion failed: ${String(err)}`))
       // Adopt credentials the last server's workspaces refreshed before
       // anything reads the host store. Throttled like the reconcile step, so
       // this is its first run rather than an extra one. Only for drivers

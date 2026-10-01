@@ -186,12 +186,10 @@ export const env = {
    *
    * `identify()` uses it: a server inside a workspace is reached only
    * through the outer install's port-forward, so an unproxied request is
-   * local whatever Host it names (docs/remote-hosting.md). Workspaces
-   * launched by older installs set `YAAC_WORKTREE_ID` instead
-   * (docs/legacy-compat-shims.md).
+   * local whatever Host it names (docs/remote-hosting.md).
    */
   get workspaceId(): string | undefined {
-    const raw = (process.env.YAAC_WORKSPACE_ID ?? process.env.YAAC_WORKTREE_ID ?? '').trim()
+    const raw = (process.env.YAAC_WORKSPACE_ID ?? '').trim()
     return raw === '' ? undefined : raw
   },
 
@@ -289,15 +287,6 @@ export const env = {
     const raw = process.env.YAAC_ALLOWED_HOSTS
     if (!raw) return []
     return raw.split(',').map((h) => h.trim().toLowerCase()).filter((h) => h.length > 0)
-  },
-
-  /**
-   * Whether `YAAC_REQUIRE_AUTH` is set to anything. The server refuses to
-   * start when it is, since yaac has no credential gate for it to enable
-   * (docs/legacy-compat-shims.md).
-   */
-  get requireAuthSet(): boolean {
-    return (process.env.YAAC_REQUIRE_AUTH ?? '') !== ''
   },
 
   /**

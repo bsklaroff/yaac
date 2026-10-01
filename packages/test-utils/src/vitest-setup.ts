@@ -10,13 +10,13 @@ delete process.env.GIT_WORK_TREE
 // which would change what the servers under test accept:
 // - YAAC_ALLOWED_HOSTS would admit extra Host headers.
 // - YAAC_FORWARD_BIND would move forward listeners off loopback.
-// - YAAC_WORKSPACE_ID (and its older spelling YAAC_WORKTREE_ID) makes the
-//   identity rule treat any unproxied request as local.
+// - YAAC_WORKSPACE_ID makes the identity rule treat any unproxied request
+//   as local.
 // - YAAC_SECRET / YAAC_SECRETS choose the key secrets are sealed under.
 // Stripped for every project, since e2e/api servers inherit process.env.
 // Tests that exercise these stub them per case.
 for (const key of [
-  'YAAC_ALLOWED_HOSTS', 'YAAC_FORWARD_BIND', 'YAAC_WORKSPACE_ID', 'YAAC_WORKTREE_ID', 'YAAC_SECRET',
+  'YAAC_ALLOWED_HOSTS', 'YAAC_FORWARD_BIND', 'YAAC_WORKSPACE_ID', 'YAAC_SECRET',
   'YAAC_SECRETS',
 ] as const) {
   delete process.env[key]

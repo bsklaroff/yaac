@@ -281,11 +281,6 @@ export async function ensureNpmCache(): Promise<void> {
       + 'a Pending PVC means the cluster has no default StorageClass to bind it.',
     )
   }
-  // The workspace-egress policy under an older install's name, replaced by
-  // the one the workload set above carries (docs/legacy-compat-shims.md).
-  await kubectlWithRetry([
-    'delete', 'networkpolicy', `${NPM_CACHE_APP_NAME}-worktree-egress`, '-n', k8sNamespace(), '--ignore-not-found',
-  ])
   await kubectlApply(service)
 }
 

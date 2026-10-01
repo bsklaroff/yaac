@@ -92,26 +92,14 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
 }
 
 /**
- * Legacy option names sent by an older `yaac-mama` still staged in a
- * running workspace, mapped to current ones (docs/legacy-compat-shims.md).
- * The k8s proxy renames them too; this covers the containerless route.
- */
-const LEGACY_ARGS = new Map([['worktree', 'workspace'], ['parent-worktree', 'parent-workspace']])
-
-function withLegacyArgsRenamed(args: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(Object.entries(args).map(([name, value]) => [LEGACY_ARGS.get(name) ?? name, value]))
-}
-
-/**
  * Run one `yaac-mama` command for a workspace and return the text for its
  * stdout (plain text, since the reader is an agent via a shell script).
  * Errors are returned, never thrown, so the transport always has an answer.
  */
 export async function runMamaCommand(
   caller: MamaCaller,
-  sent: MamaRequestInput,
+  request: MamaRequestInput,
 ): Promise<MamaOutcome> {
-  const request = { ...sent, args: withLegacyArgsRenamed(sent.args) }
   if (!(MAMA_COMMANDS as readonly string[]).includes(request.command)) {
     return {
       ok: false,

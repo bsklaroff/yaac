@@ -298,14 +298,6 @@ describe('runMamaCommand', () => {
 
     const ME = { 'parent-workspace': 'caller-workspace' }
 
-    it('takes the option names an older install\'s yaac-mama sends', async () => {
-      const id = await output('queue', 'step 2', { 'parent-worktree': 'caller-workspace' })
-      expect((await listQueuedWorkspaceRows('proj')).find((r) => r.id === id))
-        .toMatchObject({ parentWorkspaceId: 'caller-workspace' })
-      await output('rename', 'renamed the old way', { worktree: 'loose-sibling' })
-      expect((await getProjectWorkspaceRows('proj')).get('loose-sibling')?.title).toBe('renamed the old way')
-    })
-
     it('queues under the named parent, prints the id, and chains after it', async () => {
       const first = await output('queue', 'step 2', { ...ME, tool: 'claude' })
       expect(first).toMatch(/^[0-9a-f-]{36}$/)

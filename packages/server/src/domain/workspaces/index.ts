@@ -17,7 +17,6 @@ export {
   gcOrphanEphemeralModuleDirs,
   teardownForRestart,
 } from './cleanup'
-export { convertLinkedCheckouts } from './linked-checkouts'
 export {
   createWorkspace,
   resolveCreate,
