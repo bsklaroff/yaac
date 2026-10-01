@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { useAcpStream } from '#lib/acp'
 import { AcpTranscript, groupEvents } from '#components/AcpTranscript'
+import { useComposerMenu } from '#components/ComposerMenu'
 import { imageBytes, imageFiles, prepareImage, toAcpImage, useImageSrc } from '#lib/attachments'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { AttachImageIcon, CloseIcon, LoadingIcon, SendIcon, StopIcon } from '#lib/icons'
@@ -16,7 +17,8 @@ import type { AcpContent, AcpImage } from '@yaac/shared/acp'
  * survives the pane unmounting or a reload.
  *
  * Rendering is `AcpTranscript`'s job (shared with stopped workspaces). This
- * component owns the stream, the draft, the composer and scroll-follow.
+ * component owns the stream, the draft, the composer and scroll-follow; the
+ * composer's completion menu is `useComposerMenu`'s.
  */
 
 /** The text parts of a `user` event, for comparing against a draft. */
@@ -168,12 +170,15 @@ export function WorkspaceChat({
     if (events.length > 0 && events[events.length - 1].type === 'error') setAwaitingEcho(null)
   }, [events])
 
-  const submit = (): void => {
-    const text = draft.trim()
+  /** Send the draft, or `override` in its place (a command picked from the
+   *  menu), which then stays in the box until its echo. */
+  const submit = (override?: string): void => {
+    const text = (override ?? draft).trim()
     // Checks `busy` so Enter cannot start a second turn the Send button
     // would block.
     if ((text === '' && images.length === 0) || !connected || busy || awaitingEcho !== null) return
     if (send({ type: 'prompt', text, ...(images.length > 0 ? { images } : {}) })) {
+      if (override !== undefined) setDraft(text)
       setAwaitingEcho(echoKey(text, images.length))
       // Stored so a remount before the echo knows this text was in flight.
       setChatSent(workspaceId, agentSessionId, text)
@@ -199,6 +204,15 @@ export function WorkspaceChat({
       })
       .catch((err: unknown) => setImageError(err instanceof Error ? err.message : String(err)))
   }
+
+  const { menu, inputProps: menuInputProps, onKeyDown: menuKeyDown } = useComposerMenu({
+    draft,
+    events,
+    disabled: awaitingEcho !== null,
+    setDraft,
+    runCommand: submit,
+    switchModel: (modelId) => send({ type: 'model', modelId }),
+  })
 
   /** Answer a permission ask. Returns whether it was sent, so the card can
    *  re-offer its buttons if the socket was down. */
@@ -255,6 +269,7 @@ export function WorkspaceChat({
           {imageError !== null && (
             <div className="mb-1.5 px-1 text-xs text-[#f85149]">Image not attached: {imageError}</div>
           )}
+          {menu}
           <div
             onClick={(e) => {
               if (e.target === e.currentTarget) inputRef.current?.focus()
@@ -277,6 +292,7 @@ export function WorkspaceChat({
             )}
             <textarea
               ref={inputRef}
+              {...menuInputProps}
               rows={1}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
@@ -287,6 +303,7 @@ export function WorkspaceChat({
                 attach(files)
               }}
               onKeyDown={(e) => {
+                if (menuKeyDown(e)) return
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault()
                   submit()
@@ -336,7 +353,7 @@ export function WorkspaceChat({
                   type="button"
                   aria-label="Send"
                   title="Send (Enter)"
-                  onClick={submit}
+                  onClick={() => submit()}
                   disabled={(draft.trim() === '' && images.length === 0) || !connected || awaitingEcho !== null}
                   className="flex size-8 items-center justify-center rounded-full bg-text text-bg
                     hover:opacity-90 disabled:bg-surface-3 disabled:text-text-faint"

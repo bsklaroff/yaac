@@ -715,14 +715,9 @@ export class AcpConversation {
   private async applyLaunchModel(): Promise<void> {
     const model = this.deps.launchModel
     if (model === undefined || this.sessionId === undefined) return
-    // As the `model` config option (see `AcpAdapterProfile.modelVia`).
     try {
-      const reply = await this.peer.request(ACP.sessionSetConfigOption,
-        { sessionId: this.sessionId, configId: 'model', value: model })
-      // The reply holds the resolved model; no update follows.
-      this.setModel(sessionModel(reply) ?? { id: model })
+      await this.requestModel(model)
       this.notices.delete('model')
-      this.log(`[server] acp: session model set to ${model}`)
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err)
       const message = `The agent would not switch to the model "${model}"`
@@ -730,6 +725,28 @@ export class AcpConversation {
       this.log(`[server] acp: ${message}`)
       this.notice('model', { type: 'error', message })
     }
+  }
+
+  /** Switch the model as the user asked from the pane (`/model`). A refusal
+   *  is shown there, and the session keeps the model it had. */
+  async switchModel(model: string): Promise<void> {
+    try {
+      await this.whenReady(120_000)
+      await this.requestModel(model)
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      this.emit({ type: 'error', message: `The agent would not switch to the model "${model}" (${detail}).` })
+    }
+  }
+
+  /** Set the `model` config option (see `AcpAdapterProfile.modelVia`). The
+   *  reply holds the resolved model; no update follows. */
+  private async requestModel(model: string): Promise<void> {
+    if (this.sessionId === undefined) throw new Error('no ACP session')
+    const reply = await this.peer.request(ACP.sessionSetConfigOption,
+      { sessionId: this.sessionId, configId: 'model', value: model })
+    this.setModel(sessionModel(reply) ?? { id: model })
+    this.log(`[server] acp: session model set to ${model}`)
   }
 
   /**

@@ -18,7 +18,7 @@ function field(props: Partial<Parameters<typeof Typeahead>[0]> = {}): { onSelect
   return { onSelect }
 }
 
-const rows = (): string[] => within(screen.getByRole('list')).getAllByRole('button').map((b) => b.textContent ?? '')
+const rows = (): string[] => within(screen.getByRole('listbox')).getAllByRole('option').map((b) => b.textContent ?? '')
 
 describe('Typeahead', () => {
   it('finds an item by its label or its value, and shows both', () => {
@@ -63,7 +63,7 @@ describe('Typeahead', () => {
   it('offers only items: a search matching nothing says so, and Enter picks nothing', () => {
     const { onSelect } = field({ query: 'claude-next', autoHighlight: true })
     expect(screen.getByText('No matches')).toBeTruthy()
-    expect(screen.queryByRole('list')).toBeNull()
+    expect(screen.queryByRole('listbox')).toBeNull()
     fireEvent.keyDown(screen.getByLabelText('Model'), { key: 'Enter' })
     expect(onSelect).not.toHaveBeenCalled()
   })
@@ -74,6 +74,6 @@ describe('Typeahead', () => {
       tag: (item) => item.value === 'claude-opus-5-5' && <span>default</span>,
     })
     expect(screen.getAllByTestId('glyph')).toHaveLength(3) // input + two rows
-    expect(within(screen.getByRole('list')).getAllByText('default')).toHaveLength(1)
+    expect(within(screen.getByRole('listbox')).getAllByText('default')).toHaveLength(1)
   })
 })

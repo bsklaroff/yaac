@@ -74,7 +74,7 @@ function unfinished(call: AcpToolCall): boolean {
  * - a permission answer replaces its ask in place (an answer with no ask in
  *   the stream, i.e. a truncated record, is dropped);
  * - `turn-end` is kept only for an unusual stop reason, and `turn-start`
- *   and `commands` are dropped.
+ *   and the session's `commands` and `models` are dropped.
  */
 export function groupEvents(events: AcpEvent[]): Group[] {
   const groups: Group[] = []
@@ -88,7 +88,7 @@ export function groupEvents(events: AcpEvent[]): Group[] {
   }
   for (const e of events) {
     if (e.type === 'turn-start' || e.type === 'user') interruptOpenCalls()
-    if (e.type === 'commands' || e.type === 'turn-start') continue
+    if (e.type === 'commands' || e.type === 'models' || e.type === 'turn-start') continue
     if (e.type === 'permission-request') {
       permissionIndex.set(e.requestId, groups.length)
       groups.push({

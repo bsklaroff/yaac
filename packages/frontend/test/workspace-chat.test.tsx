@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, beforeAll, beforeEach, vi } from 'vitest'
-import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react'
 import type { AcpClientMessage, AcpEvent, AcpToolCall } from '@yaac/shared/acp'
 
 /**
@@ -227,6 +227,156 @@ describe('WorkspaceChat images', () => {
       clipboardData: { types: ['text/plain', 'Files'], files: [file], getData: () => 'https://example.com/a.png' },
     })
     await waitFor(() => expect(container.querySelectorAll('img')).toHaveLength(1))
+  })
+})
+
+/**
+ * The `/` menu, fed by the session's `commands` and `models` events. Command
+ * and model shapes follow what the pinned adapters advertise (claude's skills
+ * as plain commands, codex's as `$name` mentions).
+ */
+describe('WorkspaceChat composer menu', () => {
+  const session: AcpEvent[] = [
+    {
+      type: 'commands',
+      seq: 0,
+      commands: [
+        { name: 'compact', description: 'Summarize the conversation', hint: '<instructions>' },
+        { name: 'context', description: 'Show context usage' },
+        { name: 'pr-comments', description: 'Fetch PR comments' },
+        { name: 'run-yaac', description: 'Build and run yaac' },
+        { name: 'run', description: 'Run the app' },
+        { name: 'model', description: 'The agent\'s own picker', hint: '<model>' },
+        { name: '$review-pr', description: 'Review a GitHub PR' },
+      ],
+    },
+    {
+      type: 'models',
+      seq: 1,
+      current: 'opus',
+      models: [{ id: 'default', name: 'Default' }, { id: 'opus', name: 'Opus 5.5' }, { id: 'sonnet', name: 'Sonnet 5' }],
+    },
+  ]
+
+  /** The menu's rows, as shown. */
+  const rows = (): string[] => {
+    const list = screen.queryByRole('listbox')
+    return list === null ? [] : within(list).getAllByRole('option').map((b) => b.textContent ?? '')
+  }
+  /** Each row's label, without its description. */
+  const labels = (): string[] =>
+    within(screen.getByRole('listbox')).getAllByRole('option').map((b) => b.firstElementChild?.textContent ?? '')
+  const key = (k: string): void => { fireEvent.keyDown(box(), { key: k }) }
+
+  beforeEach(() => {
+    stream.events = session
+    stream.busy = false
+    stream.connected = true
+    stream.send.mockClear()
+    useUiStore.setState({ chatDrafts: {} })
+  })
+
+  afterEach(() => {
+    cleanup()
+    flushChatDrafts()
+  })
+
+  it('lists matching commands on /, prefix matches first, and runs one that takes no argument', () => {
+    show()
+    expect(rows()).toEqual([])
+    type('/co')
+    expect(labels()).toEqual(['/compact', '/context', '/pr-comments'])
+
+    key('ArrowDown')
+    key('Enter')
+    expect(stream.send).toHaveBeenCalledWith({ type: 'prompt', text: '/context' })
+    // Held until the echo, like any message.
+    expect(box().value).toBe('/context')
+    expect(rows()).toEqual([])
+  })
+
+  it('ranks a fully typed command above longer ones it prefixes, so Enter runs that command', () => {
+    show()
+    type('/run')
+    expect(labels()).toEqual(['/run', '/run-yaac'])
+    key('Enter')
+    expect(stream.send).toHaveBeenCalledWith({ type: 'prompt', text: '/run' })
+  })
+
+  it('tells a screen reader which row is highlighted while the menu is open', () => {
+    show()
+    expect(box().getAttribute('aria-activedescendant')).toBeNull()
+    type('/co')
+    const options = within(screen.getByRole('listbox')).getAllByRole('option')
+    expect(box().getAttribute('aria-controls')).toBe(screen.getByRole('listbox').id)
+    expect(box().getAttribute('aria-activedescendant')).toBe(options[0].id)
+    key('ArrowDown')
+    expect(box().getAttribute('aria-activedescendant')).toBe(options[1].id)
+  })
+
+  it('opens on the running model even when hundreds are listed before it', () => {
+    // opencode and pi offer hundreds of models; this one runs #151.
+    const many = Array.from({ length: 300 }, (_, i) => ({ id: `m-${String(i)}` }))
+    stream.events = [{ type: 'models', seq: 0, current: 'm-150', models: many }]
+    show()
+    type('/model ')
+    const active = within(screen.getByRole('listbox')).getAllByRole('option')
+      .find((o) => o.getAttribute('aria-selected') === 'true')
+    expect(active?.textContent).toContain('m-150')
+    expect(active?.textContent).toContain('current')
+    key('Enter')
+    expect(stream.send).toHaveBeenCalledWith({ type: 'model', modelId: 'm-150' })
+  })
+
+  it('completes a command that takes an argument instead of sending it, and Tab always completes', () => {
+    show()
+    type('/comp')
+    key('Enter')
+    expect(box().value).toBe('/compact ')
+    expect(stream.send).not.toHaveBeenCalled()
+
+    type('/cont')
+    key('Tab')
+    expect(box().value).toBe('/context ')
+    expect(stream.send).not.toHaveBeenCalled()
+  })
+
+  it('switches the model from /model, marking the one running, and leaves the box empty', () => {
+    show()
+    type('/mod')
+    // One /model: the pane's picker, in place of the agent's own.
+    expect(rows()).toHaveLength(1)
+    key('Enter')
+    expect(box().value).toBe('/model ')
+    expect(labels()).toEqual(['Default', 'Opus 5.5', 'Sonnet 5'])
+    expect(rows()[1]).toContain('current')
+    // Opens on the running model, so Enter alone changes nothing.
+    expect(within(screen.getByRole('listbox')).getAllByRole('option')[1].getAttribute('aria-selected')).toBe('true')
+
+    type('/model son')
+    key('Enter')
+    expect(stream.send).toHaveBeenCalledWith({ type: 'model', modelId: 'sonnet' })
+    expect(box().value).toBe('')
+  })
+
+  it('offers codex skills on $ and inserts the mention for the message to follow', () => {
+    show()
+    type('/')
+    expect(rows().some((r) => r.includes('review-pr'))).toBe(false)
+    type('$rev')
+    expect(rows()).toEqual([expect.stringContaining('$review-pr') as string])
+    key('Enter')
+    expect(box().value).toBe('$review-pr ')
+    expect(stream.send).not.toHaveBeenCalled()
+  })
+
+  it('closes on Escape until the draft changes, leaving Enter to send what was typed', () => {
+    show()
+    type('/co')
+    key('Escape')
+    expect(rows()).toEqual([])
+    key('Enter')
+    expect(stream.send).toHaveBeenCalledWith({ type: 'prompt', text: '/co' })
   })
 })
 

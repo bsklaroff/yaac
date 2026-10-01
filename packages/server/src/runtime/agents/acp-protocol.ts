@@ -15,6 +15,7 @@
 import type {
   AcpContent,
   AcpEventInit,
+  AcpModel,
   AcpPermissionOption,
   AcpPlanEntry,
   AcpStopReason,
@@ -73,10 +74,12 @@ export interface AcpSessionModels {
   availableModels?: Array<{ modelId?: string; name?: string }>
 }
 
+/** A config option; a `select` option's choices may be grouped
+ *  (`{ group, name, options }` entries), which `selectChoices` flattens. */
 export interface AcpConfigOption {
   id?: string
   currentValue?: unknown
-  options?: Array<{ value?: unknown; name?: string }>
+  options?: Array<{ value?: unknown; name?: string; options?: unknown[] }>
 }
 
 export interface AcpNewSessionResult {
@@ -368,9 +371,18 @@ export function translateSessionUpdate(params: unknown): TranslatedUpdate | unde
         const name = asString(rec?.name)
         if (name === undefined) return []
         const description = asString(rec?.description)
-        return [{ name, ...(description !== undefined ? { description } : {}) }]
+        const hint = asString(asRecord(rec?.input)?.hint)
+        return [{
+          name,
+          ...(description !== undefined && description !== '' ? { description } : {}),
+          ...(hint !== undefined ? { hint } : {}),
+        }]
       })
       return event({ type: 'commands', commands })
+    }
+    case 'config_option_update': {
+      const models = sessionModels(update)
+      return models === undefined ? undefined : event({ type: 'models', ...models })
     }
     case 'tool_call':
     case 'tool_call_update': {
@@ -492,30 +504,66 @@ export function acpModeOffered(
 }
 
 /**
- * The model a session reports, from any message carrying session state
- * (`session/new` and `session/load` replies, `session/set_config_option`
- * replies, `config_option_update`). Reads `models.currentModelId` and the
- * `model` config option.
+ * The models a session offers and the one it runs, from any message carrying
+ * session state (`session/new`, `session/load` and `session/set_config_option`
+ * replies, `config_option_update`), or undefined when it names no model.
  *
- * Returns the adapter's display name too, when given: claude's adapter
- * reports a picker alias (`opus[1m]`) that only its name (`Opus 5.5`) ties
- * to a recognizable model.
+ * The `model` config option is preferred, since `session/set_config_option`
+ * is how a model is switched and takes its values; a `models` block is read
+ * when there is none. Adapters that send both use the same ids in each.
  */
-export function sessionModel(state: unknown): { id: string; name?: string } | undefined {
+export function sessionModels(state: unknown): { current?: string; models: AcpModel[] } | undefined {
   const r = asRecord(state)
   if (r === undefined) return undefined
-  const models = asRecord(r.models)
-  const current = asString(models?.currentModelId)
-  if (current !== undefined) {
-    const listed = Array.isArray(models?.availableModels) ? models.availableModels : []
-    return named(current, asString(listed.map(asRecord).find((m) => asString(m?.modelId) === current)?.name))
-  }
   const options = Array.isArray(r.configOptions) ? r.configOptions : []
-  const model = options.map(asRecord).find((o) => asString(o?.id) === 'model')
-  const value = asString(model?.currentValue)
-  if (value === undefined) return undefined
-  const choices = Array.isArray(model?.options) ? model.options : []
-  return named(value, asString(choices.map(asRecord).find((c) => asString(c?.value) === value)?.name))
+  const option = options.map(asRecord).find((o) => asString(o?.id) === 'model')
+  if (option !== undefined) {
+    const current = asString(option.currentValue)
+    return {
+      ...(current !== undefined ? { current } : {}),
+      models: selectChoices(option.options).flatMap((c) => {
+        const id = asString(c.value)
+        return id === undefined ? [] : [model(id, c.name, c.description)]
+      }),
+    }
+  }
+  const block = asRecord(r.models)
+  if (block === undefined) return undefined
+  const current = asString(block.currentModelId)
+  const listed = Array.isArray(block.availableModels) ? block.availableModels : []
+  return {
+    ...(current !== undefined ? { current } : {}),
+    models: listed.map(asRecord).flatMap((m) => {
+      const id = asString(m?.modelId)
+      return id === undefined ? [] : [model(id, m?.name, m?.description)]
+    }),
+  }
+}
+
+/** A `select` config option's choices, with groups flattened. */
+function selectChoices(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return []
+  return value.map(asRecord).flatMap((c) => {
+    if (c === undefined) return []
+    return Array.isArray(c.options) ? selectChoices(c.options) : [c]
+  })
+}
+
+function model(id: string, name: unknown, description: unknown): AcpModel {
+  const n = asString(name)
+  const d = asString(description)
+  return { id, ...(n !== undefined ? { name: n } : {}), ...(d !== undefined && d !== '' ? { description: d } : {}) }
+}
+
+/**
+ * The model a session reports (see `sessionModels`), with the adapter's
+ * display name when given: claude's adapter reports a picker alias
+ * (`opus[1m]`) that only its name (`Opus 5.5`) ties to a recognizable model.
+ */
+export function sessionModel(state: unknown): { id: string; name?: string } | undefined {
+  const s = sessionModels(state)
+  if (s?.current === undefined) return undefined
+  return named(s.current, s.models.find((m) => m.id === s.current)?.name)
 }
 
 function named(id: string, name: string | undefined): { id: string; name?: string } {
