@@ -1862,7 +1862,10 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
       expect(res.status).toBe(200)
       const { id } = await res.json() as { id: string }
 
-      // Killing tmux directly is a death, not a stop.
+      // Killing tmux directly is a death, not a stop. Wait out create's
+      // post-launch agent probe (buildAgentWindowCheck sleeps 1s) first, or
+      // it reports a failed launch, whose provisioning row hides the held one.
+      await new Promise((r) => setTimeout(r, 2_000))
       await tmux(parent, 'kill-server').catch(() => undefined)
       // The reaper can take a minute or more to notice.
       await vi.waitFor(() => {
