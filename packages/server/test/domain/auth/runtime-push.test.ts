@@ -3,7 +3,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import { adoptRefreshedToolCredentials, pushCredentialsToRuntime } from '#domain/auth'
 import { addHttpsCredential, assignProjectCredential } from '#domain/projects'

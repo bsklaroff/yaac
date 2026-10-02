@@ -6,13 +6,6 @@ import { remoteSet, remoteUnset, remoteOn, remoteOff, remoteStatus } from '#comm
 import { readServerConfig, writeServerConfig } from '@yaac/shared/server-config'
 import { setDataDir } from '@yaac/shared/paths'
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  })
-}
-
 describe('yaac remote commands', () => {
   let dir: string
   let logSpy: MockInstance<typeof console.log>
@@ -40,8 +33,8 @@ describe('yaac remote commands', () => {
   describe('remoteSet', () => {
     it('verifies health and identity, then persists an enabled remote, saying who it is', async () => {
       const fetchMock = vi.fn()
-        .mockResolvedValueOnce(jsonResponse({ ok: true, buildId: 'cli-build' }))
-        .mockResolvedValueOnce(jsonResponse({ kind: 'tailnet', login: 'alice@example.com', name: 'Alice' }))
+        .mockResolvedValueOnce(Response.json({ ok: true, buildId: 'cli-build' }))
+        .mockResolvedValueOnce(Response.json({ kind: 'tailnet', login: 'alice@example.com', name: 'Alice' }))
       vi.stubGlobal('fetch', fetchMock)
 
       await remoteSet('https://srv.ts.net/')
@@ -64,8 +57,8 @@ describe('yaac remote commands', () => {
         saved: [{ url: 'https://old.ts.net' }],
       })
       vi.stubGlobal('fetch', vi.fn()
-        .mockResolvedValueOnce(jsonResponse({ ok: true, buildId: 'cli-build' }))
-        .mockResolvedValueOnce(jsonResponse(LOCAL)))
+        .mockResolvedValueOnce(Response.json({ ok: true, buildId: 'cli-build' }))
+        .mockResolvedValueOnce(Response.json(LOCAL)))
 
       await remoteSet('https://new.ts.net')
 
@@ -78,8 +71,8 @@ describe('yaac remote commands', () => {
 
     it('warns (but succeeds) on build skew', async () => {
       vi.stubGlobal('fetch', vi.fn()
-        .mockResolvedValueOnce(jsonResponse({ ok: true, buildId: 'server-build' }))
-        .mockResolvedValueOnce(jsonResponse(LOCAL)))
+        .mockResolvedValueOnce(Response.json({ ok: true, buildId: 'server-build' }))
+        .mockResolvedValueOnce(Response.json(LOCAL)))
 
       await remoteSet('https://srv.ts.net')
 
@@ -98,13 +91,13 @@ describe('yaac remote commands', () => {
       // A tagged device (or Funnel) via tailscale serve: the server is up
       // but cannot identify the caller.
       vi.stubGlobal('fetch', vi.fn()
-        .mockResolvedValueOnce(jsonResponse({ ok: true, buildId: 'cli-build' }))
-        .mockResolvedValueOnce(jsonResponse({
+        .mockResolvedValueOnce(Response.json({ ok: true, buildId: 'cli-build' }))
+        .mockResolvedValueOnce(Response.json({
           error: {
             code: 'UNAUTHENTICATED',
             message: 'tailscale serve sent no user identity: this device is a tagged device',
           },
-        }, 401)))
+        }, { status: 401 })))
       await expect(remoteSet('https://srv.ts.net'))
         .rejects.toThrow(/refused to identify this device: tailscale serve sent no user identity.*tagged device/)
       expect(await readServerConfig()).toBeNull()

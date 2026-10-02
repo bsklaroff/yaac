@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -13,7 +13,8 @@ import {
   TEST_PROXY_CONFIG,
 } from '@yaac/test-utils/setup'
 import { e2eMkdtemp } from '@yaac/test-utils/tmp'
-import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
+import { resolveTestBaseImageRef } from '@yaac/test-utils/test-pods'
+import { startWorkspacePod, waitForPod } from '@yaac/test-utils/test-pods'
 import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
 import {
   applyProxyRegistration,
@@ -21,9 +22,6 @@ import {
   type ProxyRegistration,
 } from '@yaac/server/drivers/k8s/egress/proxy-registration'
 import { ensureNamespace, proxyServiceClusterIp, syncProxyCredentials } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
-import { runtimeClassSpec } from '@yaac/server/drivers/k8s/substrate/gvisor'
-import { CA_CONFIGMAP_NAME } from '@yaac/server/drivers/k8s/substrate/pod-spec'
-import { workspaceIdLabels } from '@yaac/server/drivers/k8s/substrate/pods'
 import {
   PROXY_APP_NAME,
   PROXY_CA_SECRET_NAME,
@@ -122,22 +120,6 @@ async function deleteTestPod(name: string): Promise<void> {
   ]).catch(() => { /* ok */ })
 }
 
-async function waitForPodRunning(name: string, timeoutMs = 120_000): Promise<void> {
-  interface RawPod { status?: { phase?: string } }
-  const deadline = Date.now() + timeoutMs
-  let phase = 'Pending'
-  while (Date.now() < deadline) {
-    const pod = await kubectlGetJson<RawPod>(['get', 'pod', name, '-n', k8sNamespace()])
-    phase = pod?.status?.phase ?? 'Unknown'
-    if (phase === 'Running') return
-    if (phase === 'Failed' || phase === 'Succeeded') {
-      throw new Error(`pod ${name} reached terminal phase ${phase}`)
-    }
-    await new Promise((r) => setTimeout(r, 500))
-  }
-  throw new Error(`pod ${name} not Running within ${timeoutMs}ms (phase ${phase})`)
-}
-
 /**
  * HTTP echo (request mirror as JSON) that also plays an OAuth token
  * endpoint: `/v1/oauth/token` answers a rotation numbered by how many it
@@ -194,39 +176,8 @@ async function startEchoPod(name: string): Promise<{ host: string }> {
       ports: [{ name: 'echo', port: ECHO_PORT, targetPort: ECHO_PORT }],
     },
   })
-  await waitForPodRunning(name)
+  await waitForPod(name)
   return { host: `${name}.${ns}.svc` }
-}
-
-/**
- * A bare workspace pod: workspace label, proxy-CA mount, and DNS pointed at
- * the proxy. Egress is redirected at the node, so no sidecars.
- */
-async function startWorkspacePod(name: string, workspaceId: string, proxyHost: string): Promise<void> {
-  await kubectlApply({
-    apiVersion: 'v1',
-    kind: 'Pod',
-    metadata: {
-      name,
-      namespace: k8sNamespace(),
-      labels: { ...workspaceIdLabels(workspaceId), 'yaac.test': 'true' },
-    },
-    spec: {
-      restartPolicy: 'Never',
-      automountServiceAccountToken: false,
-      enableServiceLinks: false,
-      ...runtimeClassSpec(),
-      dnsPolicy: 'None',
-      dnsConfig: { nameservers: [proxyHost] },
-      containers: [{
-        name: 'session',
-        image: await resolveTestBaseImageRef(),
-        imagePullPolicy: 'IfNotPresent',
-        volumeMounts: [{ name: 'proxy-ca', mountPath: '/etc/yaac/certs', readOnly: true }],
-      }],
-      volumes: [{ name: 'proxy-ca', configMap: { name: CA_CONFIGMAP_NAME } }],
-    },
-  })
 }
 
 /** Run curl in a pod, never failing the exec: emits `EXIT:<code>` last. */
@@ -253,15 +204,13 @@ async function curlUntil(
   pod: string,
   curlArgs: string,
   accept: (r: { exit: number; out: string }) => boolean,
-  timeoutMs = 60_000,
+  timeout = 60_000,
 ): Promise<{ exit: number; out: string }> {
-  const deadline = Date.now() + timeoutMs
-  let last: { exit: number; out: string } = { exit: -1, out: '(never ran)' }
-  for (;;) {
-    last = await curlInPod(pod, curlArgs)
-    if (accept(last) || Date.now() >= deadline) return last
-    await new Promise((r) => setTimeout(r, 1000))
-  }
+  return vi.waitFor(async () => {
+    const r = await curlInPod(pod, curlArgs)
+    if (!accept(r)) throw new Error(`curl not accepted yet (exit ${String(r.exit)}):\n${r.out}`)
+    return r
+  }, { timeout, interval: 1000 })
 }
 
 /** The MITM'd, redirected request every injection case sends. */
@@ -296,15 +245,6 @@ async function agentFingerprints(): Promise<string[]> {
     .map((parts) => parts[1])
 }
 
-async function pollUntil<T>(read: () => Promise<T>, accept: (v: T) => boolean, timeoutMs = 30_000): Promise<T> {
-  const deadline = Date.now() + timeoutMs
-  let last = await read()
-  while (!accept(last) && Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 500))
-    last = await read()
-  }
-  return last
-}
 
 interface RawObject { data?: Record<string, string> }
 const readSecretKey = async (name: string, key: string): Promise<string | undefined> => {
@@ -355,7 +295,6 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     }
     await applyProxyRegistration(workspaceId, registration)
     await startWorkspacePod(podName, workspaceId, proxyHost)
-    await waitForPodRunning(podName)
   }, 600_000)
 
   afterAll(async () => {
@@ -432,15 +371,16 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     // Two hosts, so known_hosts has several entries. ssh-add must be given
     // the file with -H or it never finds the host key.
     await syncProxyCredentials(withKeys([keyA, keyB]))
-    const loaded = await pollUntil(agentFingerprints, (f) => f.includes(keyA.fingerprint) && f.includes(keyB.fingerprint))
-    expect(loaded).toEqual(expect.arrayContaining([keyA.fingerprint, keyB.fingerprint]))
+    const agentHolds = (expected: unknown): Promise<void> =>
+      vi.waitFor(async () => expect(await agentFingerprints()).toEqual(expected), { timeout: 30_000, interval: 500 })
+    await agentHolds(expect.arrayContaining([keyA.fingerprint, keyB.fingerprint]))
 
     // An empty list empties the agent...
     await syncProxyCredentials(EMPTY)
-    expect(await pollUntil(agentFingerprints, (f) => f.length === 0)).toEqual([])
+    await agentHolds([])
     // ...and a cleared agent accepts keys again.
     await syncProxyCredentials(withKeys([keyA]))
-    expect(await pollUntil(agentFingerprints, (f) => f.includes(keyA.fingerprint))).toEqual([keyA.fingerprint])
+    await agentHolds([keyA.fingerprint])
   }, 180_000)
 
   it('captures a rotation a workspace drives, spending the credential once for a burst', async () => {
@@ -480,11 +420,12 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     const rotated = `rotated-access-${replies[0].rotations}`
 
     // Captured in the host store's shape.
-    const captured = await pollUntil(
-      () => readSecretKey(PROXY_REFRESHED_SECRET_NAME, 'claude.json'),
-      (v) => v !== undefined && v.includes(rotated),
-    )
-    expect(JSON.parse(captured!)).toMatchObject({
+    const captured = await vi.waitFor(async () => {
+      const v = await readSecretKey(PROXY_REFRESHED_SECRET_NAME, 'claude.json')
+      expect(v).toContain(rotated)
+      return v!
+    }, { timeout: 30_000, interval: 500 })
+    expect(JSON.parse(captured)).toMatchObject({
       kind: 'oauth',
       claudeAiOauth: {
         accessToken: rotated,
@@ -503,8 +444,8 @@ describe('proxy credentials suite (objects in, objects out)', () => {
   it('records a blocked host in the state ConfigMap, and widening the registration prunes it', async () => {
     const blocked = await curlInPod(podName, `-k --resolve ${BLOCKED_HOST}:443:${FAKE_IP} https://${BLOCKED_HOST}/`)
     expect(blocked.exit).not.toBe(0)
-    const recorded = await pollUntil(readState, (s) => (s.blockedHosts[workspaceId] ?? []).includes(BLOCKED_HOST))
-    expect(recorded.blockedHosts[workspaceId]).toContain(BLOCKED_HOST)
+    const blockedHosts = async (): Promise<string[]> => (await readState()).blockedHosts[workspaceId] ?? []
+    await vi.waitFor(async () => expect(await blockedHosts()).toContain(BLOCKED_HOST), { timeout: 30_000, interval: 500 })
 
     // Widening the registration prunes the blocked-host record.
     registration = {
@@ -517,8 +458,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
       `--cacert ${CA_PATH} --resolve ${BLOCKED_HOST}:443:${FAKE_IP} https://${BLOCKED_HOST}/after`,
       (r) => r.exit === 0)
     expect(allowed.exit, allowed.out).toBe(0)
-    const pruned = await pollUntil(readState, (s) => !(s.blockedHosts[workspaceId] ?? []).includes(BLOCKED_HOST))
-    expect(pruned.blockedHosts[workspaceId] ?? []).not.toContain(BLOCKED_HOST)
+    await vi.waitFor(async () => expect(await blockedHosts()).not.toContain(BLOCKED_HOST), { timeout: 30_000, interval: 500 })
   }, 180_000)
 
   it('injects a git token only into workspaces of the projects it is assigned to', async () => {

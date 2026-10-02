@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import {
@@ -10,7 +10,7 @@ import {
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
 import { TEST_NAMESPACE } from '@yaac/test-utils/setup'
-import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
+import { resolveTestBaseImageRef } from '@yaac/test-utils/test-pods'
 import { readLock } from '@yaac/shared/lock'
 import {
   RUNTIME_CLASS_GVISOR,
@@ -224,23 +224,14 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
     try {
       let stdout = ''
       child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
-      await waitFor(() => /\[server\] listening on 0\.0\.0\.0:/.test(stdout), 30_000)
+      await vi.waitFor(() => expect(stdout).toMatch(/\[server\] listening on 0\.0\.0\.0:/), { timeout: 30_000, interval: 100 })
       // A new line the follow must pick up.
       const before = stdout.length
       await fetch(`http://127.0.0.1:${String(server.lock.port)}/api/health`)
-      await waitFor(() => stdout.slice(before).includes('GET /api/health 200'), 20_000)
+      await vi.waitFor(() => expect(stdout.slice(before)).toContain('GET /api/health 200'), { timeout: 20_000, interval: 100 })
     } finally {
       child.kill('SIGINT')
       await new Promise<void>((resolve) => child.once('exit', () => resolve()))
     }
   })
 })
-
-async function waitFor(cond: () => boolean, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (cond()) return
-    await new Promise((r) => setTimeout(r, 100))
-  }
-  throw new Error('waitFor timed out')
-}

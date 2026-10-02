@@ -2,13 +2,9 @@ import { describe, it, expect, vi } from 'vitest'
 import { throwingFetch, createApiClient, createRawApiClient, wsUrl } from '#api-core'
 import { ServerError } from '#errors'
 
-function jsonResponse(body: string, status = 200): Response {
-  return new Response(body, { status, headers: { 'content-type': 'application/json' } })
-}
-
 describe('throwingFetch', () => {
   it('passes a 2xx response through untouched (caller can still read the body)', async () => {
-    const res = jsonResponse('{"tool":"claude"}')
+    const res = Response.json({ tool: 'claude' })
     const out = await throwingFetch(() => Promise.resolve(res))('/x')
     expect(out).toBe(res)
     expect(res.bodyUsed).toBe(false)
@@ -17,7 +13,7 @@ describe('throwingFetch', () => {
 
   it('throws a ServerError with the envelope code + message on a non-2xx', async () => {
     const wrapped = throwingFetch(() =>
-      Promise.resolve(jsonResponse('{"error":{"code":"NOT_FOUND","message":"nope"}}', 404)),
+      Promise.resolve(Response.json({ error: { code: 'NOT_FOUND', message: 'nope' } }, { status: 404 })),
     )
     await expect(wrapped('/x')).rejects.toBeInstanceOf(ServerError)
     await expect(wrapped('/x')).rejects.toMatchObject({ code: 'NOT_FOUND', message: 'nope', httpStatus: 404 })
@@ -32,14 +28,14 @@ describe('throwingFetch', () => {
 describe('createApiClient / createRawApiClient', () => {
   it('createApiClient rejects with a ServerError on a non-2xx route response', async () => {
     const fetchImpl = vi.fn(() =>
-      Promise.resolve(jsonResponse('{"error":{"code":"VALIDATION","message":"bad"}}', 400)),
+      Promise.resolve(Response.json({ error: { code: 'VALIDATION', message: 'bad' } }, { status: 400 })),
     )
     const client = createApiClient('http://server.local', fetchImpl as unknown as typeof fetch)
     await expect(client.auth.list.$get()).rejects.toMatchObject({ code: 'VALIDATION', message: 'bad' })
   })
 
   it('createApiClient resolves the parsed body directly on a JSON route (no .json() unwrap)', async () => {
-    const fetchImpl = vi.fn(() => Promise.resolve(jsonResponse('{"tool":"codex"}')))
+    const fetchImpl = vi.fn(() => Promise.resolve(Response.json({ tool: 'codex' })))
     const client = createApiClient('http://server.local', fetchImpl as unknown as typeof fetch)
     expect(await client.auth.list.$get()).toEqual({ tool: 'codex' })
     // Routes are addressed unprefixed; the client puts them under /api.
@@ -69,7 +65,7 @@ describe('createApiClient / createRawApiClient', () => {
 
   it('createRawApiClient returns the raw non-2xx response for the caller to inspect', async () => {
     const fetchImpl = vi.fn(() =>
-      Promise.resolve(jsonResponse('{"error":{"code":"VALIDATION","message":"bad"}}', 400)),
+      Promise.resolve(Response.json({ error: { code: 'VALIDATION', message: 'bad' } }, { status: 400 })),
     )
     const client = createRawApiClient('http://server.local', fetchImpl as unknown as typeof fetch)
     const res = await client.auth.list.$get()

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
@@ -61,21 +61,6 @@ afterAll(async () => {
   await testEnv.cleanup()
 })
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
-
-async function waitFor(
-  cond: () => boolean,
-  timeoutMs: number,
-  describeFailure: () => string,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (cond()) return
-    await new Promise((r) => setTimeout(r, 100))
-  }
-  throw new Error(describeFailure())
-}
-
 /** Open a WS against the server, collecting text + binary frames. */
 function openWs(url: string, headers: Record<string, string> = {}): {
   ws: WebSocket
@@ -119,11 +104,11 @@ async function runMonitorUntilFirstRender(...args: string[]): Promise<string> {
   child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
   child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
   try {
-    await waitFor(
-      () => stdout.includes('yaac workspace monitor') && stdout.includes('No running workspaces'),
-      30_000,
-      () => `monitor never rendered.\nstdout: ${stdout}\nstderr: ${stderr}`,
-    )
+    await vi.waitFor(() => {
+      if (!stdout.includes('yaac workspace monitor') || !stdout.includes('No running workspaces')) {
+        throw new Error(`monitor never rendered.\nstdout: ${stdout}\nstderr: ${stderr}`)
+      }
+    }, { timeout: 30_000, interval: 100 })
   } finally {
     child.kill('SIGTERM')
     await new Promise<void>((resolve) => child.once('exit', () => resolve()))
@@ -139,9 +124,8 @@ describe('empty state (must run before any state is seeded)', () => {
   it('GET /events sends a snapshot frame on connect', async () => {
     const { ws, text, opened } = openWs(`ws://127.0.0.1:${server.lock.port}/api/events`)
     await opened
-    for (let i = 0; i < 50 && text.length === 0; i++) await sleep(100)
+    await vi.waitFor(() => expect(text.length).toBeGreaterThan(0), { timeout: 5_000, interval: 100 })
     ws.close()
-    expect(text.length).toBeGreaterThan(0)
     const frame = JSON.parse(text[0]) as { type: string; data: Record<string, unknown> }
     expect(frame.type).toBe('snapshot')
     expect(frame.data).toMatchObject({ workspaces: [], projects: [] })
@@ -208,19 +192,16 @@ describe('provisioning sessions in the server snapshot (real server, no containe
     expect(ndjson).toContain('"type":"error"')
 
     // Reconnect, as a reloaded page would.
-    let snap = await firstSnapshot(server.lock.port)
-    let entry = snap.provisioning.find((p) => p.workspaceId === workspaceId)
     // The first reconnect can race the failure being recorded.
-    for (let i = 0; i < 20 && !entry?.error; i++) {
-      await sleep(100)
-      snap = await firstSnapshot(server.lock.port)
-      entry = snap.provisioning.find((p) => p.workspaceId === workspaceId)
-    }
-    expect(entry).toBeDefined()
-    expect(entry?.kind).toBe('create')
-    expect(entry?.projectSlug).toBe('ghost-project')
-    expect(entry?.createdAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
-    expect(entry?.error).toBeTruthy()
+    const entry = await vi.waitFor(async () => {
+      const snap = await firstSnapshot(server.lock.port)
+      const found = snap.provisioning.find((p) => p.workspaceId === workspaceId)
+      expect(found?.error).toBeTruthy()
+      return found!
+    }, { timeout: 10_000, interval: 100 })
+    expect(entry.kind).toBe('create')
+    expect(entry.projectSlug).toBe('ghost-project')
+    expect(entry.createdAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
 
     const dismiss = await fetch(`${base}/api/workspace/provisioning/${workspaceId}/dismiss`, {
       method: 'POST',

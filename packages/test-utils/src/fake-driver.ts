@@ -11,19 +11,6 @@ import type {
   WorkspaceDriver,
 } from '@yaac/server/drivers/contract'
 
-/**
- * A `WorkspaceDriver` for unit tests: every verb answers empty (or
- * succeeds) until a test overrides the one it cares about.
- *
- * Lets a mediator's tests run with no cluster and without importing
- * `@kubernetes/client-node` (seconds per file). A test that reaches the
- * runtime without installing one gets an error from `workspaceDriver()`.
- */
-export type FakeWorkspaceDriver = WorkspaceDriver & {
-  /** Replace some verbs mid-test without rebuilding the whole fake. */
-  override(overrides: Partial<WorkspaceDriver>): void
-}
-
 /** A `RuntimeHandle` with sane defaults — override only what a case is about. */
 export function handleFixture(overrides: Partial<RuntimeHandle> = {}): RuntimeHandle {
   return {
@@ -91,65 +78,18 @@ export function snapshotFixture(
 afterEach(resetWorkspaceDriver)
 
 /**
- * Build a fake runtime and register it as the process's. Call it from a
- * `beforeEach` (or inside the test); the teardown above forgets it.
+ * Register a fake `WorkspaceDriver` for unit tests: every verb answers empty
+ * (or succeeds) except those in `overrides`. Call it from a `beforeEach` (or
+ * inside the test); the teardown above forgets it.
+ *
+ * Lets a mediator's tests run with no cluster and without importing
+ * `@kubernetes/client-node` (seconds per file). A test that reaches the
+ * runtime without installing one gets an error from `workspaceDriver()`.
  */
 export function installFakeWorkspaceDriver(
   overrides: Partial<WorkspaceDriver> = {},
-): FakeWorkspaceDriver {
-  let current: WorkspaceDriver = { ...defaultRuntime(), ...overrides }
-  const fake: FakeWorkspaceDriver = {
-    // Read through `current`, so `override({kind})` changes them too.
-    get kind() { return current.kind },
-    workspacePaths: (ref) => current.workspacePaths(ref),
-    start: (sinks) => current.start(sinks),
-    stop: () => current.stop(),
-    release: () => current.release(),
-    find: (id, o) => current.find(id, o),
-    findForTeardown: (id, opts) => current.findForTeardown(id, opts),
-    list: (s, o) => current.list(s, o),
-    count: () => current.count(),
-    changes: (j, b, d) => current.changes(j, b, d),
-    snapshot: (r) => current.snapshot(r),
-    reconcileSteps: () => current.reconcileSteps(),
-    blockedHosts: (w) => current.blockedHosts(w),
-    gitAuthFailures: () => current.gitAuthFailures(),
-    forwardedPorts: (w) => current.forwardedPorts(w),
-    unforwardedPorts: (w) => current.unforwardedPorts(w),
-    allowHost: (t, h, o) => current.allowHost(t, h, o),
-    forwardPort: (t, p, o) => current.forwardPort(t, p, o),
-    dismissPort: (w, p) => current.dismissPort(w, p),
-    listImageBuilds: () => current.listImageBuilds(),
-    imageBuildLog: (id) => current.imageBuildLog(id),
-    dismissImageBuild: (id) => current.dismissImageBuild(id),
-    retryImageBuild: (id, cfg) => current.retryImageBuild(id, cfg),
-    exec: (j, c, o) => current.exec(j, c, o),
-    awaitAgentTransport: (j, o) => current.awaitAgentTransport(j, o),
-    dialCtrl: (j, a) => current.dialCtrl(j, a),
-    dialPty: (j, a, s) => current.dialPty(j, a, s),
-    reviveStatusStream: (j) => current.reviveStatusStream(j),
-    claimSpare: (w, t) => current.claimSpare(w, t),
-    assertCanLaunch: (o) => current.assertCanLaunch(o),
-    ensureRuntimeReachable: () => current.ensureRuntimeReachable(),
-    prepareImage: (o) => current.prepareImage(o),
-    prepareSubstrate: (i) => current.prepareSubstrate(i),
-    syncCredentials: (b) => current.syncCredentials(b),
-    syncProjectSecrets: (slug, values) => current.syncProjectSecrets(slug, values),
-    refreshedCredentials: () => current.refreshedCredentials(),
-    launch: (s) => current.launch(s),
-    awaitReady: (h) => current.awaitReady(h),
-    declareForwards: (w, f) => current.declareForwards(w, f),
-    dialPort: (w, p) => current.dialPort(w, p),
-    registerWorkspace: (r) => current.registerWorkspace(r),
-    deregisterWorkspace: (w) => current.deregisterWorkspace(w),
-    salvageImages: (t) => current.salvageImages(t),
-    destroy: (t, o) => current.destroy(t, o),
-    detachedTeardownCommand: (t) => current.detachedTeardownCommand(t),
-    destroyProjectSubstrate: (s) => current.destroyProjectSubstrate(s),
-    reapNodeLocal: (r) => current.reapNodeLocal(r),
-    get mamaRelay() { return current.mamaRelay },
-    override(next) { current = { ...current, ...next } },
-  }
+): WorkspaceDriver {
+  const fake = { ...defaultRuntime(), ...overrides }
   setWorkspaceDriver(fake)
   return fake
 }
@@ -183,7 +123,6 @@ function deadStreamPty(): StreamPty {
 
 function defaultRuntime(): WorkspaceDriver {
   return {
-    // A containerless case uses `override({kind, workspacePaths})`.
     kind: 'k8s',
     workspacePaths: () => workspacePathsFixture(),
     // Attaches instantly and reports nothing unless overridden.

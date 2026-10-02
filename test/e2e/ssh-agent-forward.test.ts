@@ -13,7 +13,8 @@ import {
   TEST_PROXY_CONFIG,
 } from '@yaac/test-utils/setup'
 import { e2eMkdtemp } from '@yaac/test-utils/tmp'
-import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
+import { resolveTestBaseImageRef } from '@yaac/test-utils/test-pods'
+import { startWorkspacePod, waitForPod } from '@yaac/test-utils/test-pods'
 import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
 import {
   applyProxyRegistration,
@@ -21,14 +22,11 @@ import {
 } from '@yaac/server/drivers/k8s/egress/proxy-registration'
 import { syncProxyCredentials } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { proxyServiceClusterIp } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
-import { runtimeClassSpec } from '@yaac/server/drivers/k8s/substrate/gvisor'
 import { SSH_AGENT_MOUNT, SSH_AGENT_SOCKET_PATH } from '@yaac/server/drivers/k8s/substrate/pod-spec'
-import { workspaceIdLabels } from '@yaac/server/drivers/k8s/substrate/pods'
 import { PROXY_APP_NAME, SSH_AGENT_PORT } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
 import {
   k8sNamespace,
   kubectlApply,
-  kubectlGetJson,
   kubectlWithRetry,
 } from '@yaac/server/drivers/k8s/substrate/kubectl'
 
@@ -84,42 +82,6 @@ async function makeTestKey(dir: string): Promise<{
   }
 }
 
-/**
- * A pod with the same ssh-agent wiring a real workspace gets: a pod-local
- * emptyDir at SSH_AGENT_MOUNT, SSH_AUTH_SOCK, and the forwarder's upstream.
- * The proxy attributes it to `workspaceId` by label.
- */
-async function startWorkspacePod(name: string, workspaceId: string): Promise<void> {
-  await kubectlApply({
-    apiVersion: 'v1',
-    kind: 'Pod',
-    metadata: {
-      name,
-      namespace: k8sNamespace(),
-      labels: { ...workspaceIdLabels(workspaceId), 'yaac.test': 'true' },
-    },
-    spec: {
-      restartPolicy: 'Never',
-      automountServiceAccountToken: false,
-      enableServiceLinks: false,
-      ...runtimeClassSpec(),
-      dnsPolicy: 'None',
-      dnsConfig: { nameservers: [proxyHost] },
-      containers: [{
-        name: 'session',
-        image: await resolveTestBaseImageRef(),
-        imagePullPolicy: 'IfNotPresent',
-        env: [
-          { name: 'SSH_AUTH_SOCK', value: SSH_AGENT_SOCKET_PATH },
-          { name: 'YAAC_SSH_AGENT_UPSTREAM', value: `${proxyHost}:${SSH_AGENT_PORT}` },
-        ],
-        volumeMounts: [{ name: 'ssh-agent', mountPath: SSH_AGENT_MOUNT }],
-      }],
-      volumes: [{ name: 'ssh-agent', emptyDir: {} }],
-    },
-  })
-}
-
 /** A pod with no workspace identity, which should reach nothing. */
 async function startStrayPod(name: string): Promise<void> {
   await kubectlApply({
@@ -137,22 +99,6 @@ async function startStrayPod(name: string): Promise<void> {
       }],
     },
   })
-}
-
-async function waitForPodRunning(name: string, timeoutMs = 180_000): Promise<void> {
-  interface RawPod { status?: { phase?: string } }
-  const deadline = Date.now() + timeoutMs
-  let phase = 'Pending'
-  while (Date.now() < deadline) {
-    const pod = await kubectlGetJson<RawPod>(['get', 'pod', name, '-n', k8sNamespace()])
-    phase = pod?.status?.phase ?? 'Unknown'
-    if (phase === 'Running') return
-    if (phase === 'Failed' || phase === 'Succeeded') {
-      throw new Error(`pod ${name} reached terminal phase ${phase}`)
-    }
-    await new Promise((r) => setTimeout(r, 500))
-  }
-  throw new Error(`pod ${name} not Running within ${timeoutMs}ms (phase ${phase})`)
 }
 
 /** Run a shell command in a pod, never failing the exec itself. */
@@ -243,11 +189,19 @@ beforeAll(async () => {
     repoUrl: 'https://github.com/acme/app.git',
   })
 
+  // The ssh-agent wiring a real workspace gets: a pod-local emptyDir at
+  // SSH_AGENT_MOUNT, SSH_AUTH_SOCK, and the forwarder's upstream.
+  const agentWiring = {
+    env: [
+      { name: 'SSH_AUTH_SOCK', value: SSH_AGENT_SOCKET_PATH },
+      { name: 'YAAC_SSH_AGENT_UPSTREAM', value: `${proxyHost}:${SSH_AGENT_PORT}` },
+    ],
+    emptyDirs: { 'ssh-agent': SSH_AGENT_MOUNT },
+  }
   await Promise.all([
-    startWorkspacePod(sshPod, sshSession),
-    startWorkspacePod(httpsPod, httpsSession),
+    startWorkspacePod(sshPod, sshSession, proxyHost, agentWiring),
+    startWorkspacePod(httpsPod, httpsSession, proxyHost, agentWiring),
   ])
-  await Promise.all([waitForPodRunning(sshPod), waitForPodRunning(httpsPod)])
 }, 900_000)
 
 afterAll(async () => {
@@ -301,7 +255,7 @@ describe('ssh-agent forwarding over the proxy', () => {
 
   it('gives a pod with no session identity no route to the agent port', async () => {
     await startStrayPod(strayPod)
-    await waitForPodRunning(strayPod)
+    await waitForPod(strayPod)
 
     // A policy DROP is silent, so bound the connect with `timeout`.
     const dial = await shInPod(strayPod,

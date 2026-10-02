@@ -213,15 +213,12 @@ describe('withServerSelected', () => {
 })
 
 describe('probeServer', () => {
-  const jsonResponse = (body: unknown, status = 200): Response =>
-    new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
-
   afterEach(() => vi.unstubAllGlobals())
 
   it('checks /health then /whoami, and returns the build id and who this device is', async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ ok: true, buildId: 'b1' }))
-      .mockResolvedValueOnce(jsonResponse({ kind: 'tailnet', login: 'bob@x', name: 'Bob' }))
+      .mockResolvedValueOnce(Response.json({ ok: true, buildId: 'b1' }))
+      .mockResolvedValueOnce(Response.json({ kind: 'tailnet', login: 'bob@x', name: 'Bob' }))
     vi.stubGlobal('fetch', fetchMock)
 
     expect(await probeServer('https://srv.ts.net')).toEqual({
@@ -237,7 +234,7 @@ describe('probeServer', () => {
     expect(String(unreachable)).toMatch(/cannot reach/)
     expect(unreachable).not.toBeInstanceOf(IdentityRejectedError)
 
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(jsonResponse({}, 500)))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(Response.json({}, { status: 500 })))
     await expect(probeServer('https://srv.ts.net')).rejects.toThrow(/HTTP 500/)
   })
 
@@ -245,10 +242,10 @@ describe('probeServer', () => {
     // A tagged device through tailscale serve: the fix is on the tailnet,
     // and the server's message says so.
     vi.stubGlobal('fetch', vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ ok: true, buildId: 'b' }))
-      .mockResolvedValueOnce(jsonResponse({
+      .mockResolvedValueOnce(Response.json({ ok: true, buildId: 'b' }))
+      .mockResolvedValueOnce(Response.json({
         error: { code: 'UNAUTHENTICATED', message: 'a tagged device, or Funnel' },
-      }, 401)))
+      }, { status: 401 })))
     const err = await probeServer('https://srv.ts.net').catch((e: unknown) => e)
     expect(err).toBeInstanceOf(IdentityRejectedError)
     expect(String(err)).toMatch(/refused to identify this device: a tagged device, or Funnel/)

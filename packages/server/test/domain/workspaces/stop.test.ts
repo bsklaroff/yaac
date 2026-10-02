@@ -1,56 +1,56 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type * as createModule from '#domain/workspaces/create'
-
-// A stop runs the (fake) driver's teardown, then creates whatever was queued
-// after the stopped workspace. createWorkspace is the stubbed boundary.
-vi.mock('#domain/workspaces/create', async (importOriginal) => ({
-  ...(await importOriginal<typeof createModule>()),
-  createWorkspace: vi.fn(),
-}))
-vi.mock('#domain/workspaces/cleanup', () => ({ cleanupWorkspaceDetached: vi.fn() }))
-
-import { createWorkspace, type WorkspaceCreateResult } from '#domain/workspaces/create'
-import { cleanupWorkspaceDetached } from '#domain/workspaces/cleanup'
 import { queueWorkspace, stopWorkspace } from '#domain/workspaces'
 import { clearQueuedLaunchesForTests } from '#domain/workspaces/queued-workspaces'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { getQueuedWorkspaceRow } from '#db/queued-workspace-store'
-import { recordProject } from '#db/project-store'
+import { getWorkspaceRow, listWorkspaceAgentSessions } from '#db'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { closeDb } from '#db/client'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { seedProject } from '@yaac/test-utils/project-fixture'
 
-const mockCreate = vi.mocked(createWorkspace)
+// A stop runs the (fake) driver's teardown, then creates whatever was queued
+// after the stopped workspace. Both run for real, over a real project.
 let tmpDir: string
+/** Workspaces the driver tore down, and the ones it launched. */
+let deregistered: string[]
+let launched: string[]
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
+  await seedProject('proj')
   clearAllProvisioningForTests()
   clearQueuedLaunchesForTests()
+  deregistered = []
+  launched = []
   installFakeWorkspaceDriver({
     findForTeardown: (id) => Promise.resolve(id === 'parent'
       ? { workspaceId: 'parent', projectSlug: 'proj', unitName: 'yaac-proj-parent' }
       : undefined),
+    deregisterWorkspace: (id) => { deregistered.push(id); return Promise.resolve() },
+    launch: (spec) => {
+      launched.push(spec.workspaceId)
+      return Promise.resolve(handleFixture({ workspaceId: spec.workspaceId, projectSlug: 'proj' }))
+    },
   })
-  await recordProject({ slug: 'proj', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
-  await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'parent', baseBranch: 'main', permissionMode: 'auto' })
-  vi.mocked(cleanupWorkspaceDetached).mockReset().mockResolvedValue()
-  // Record the row as the real create does; a launched entry has a foreign
-  // key to it.
-  mockCreate.mockReset().mockImplementation(async (slug, opts) => {
-    await recordWorkspaceCreated({ projectSlug: slug, workspaceId: opts.workspaceId ?? 'x' })
-    return {
-      workspaceId: opts.workspaceId ?? 'x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
-    } as WorkspaceCreateResult
-  })
+  await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'parent', baseBranch: 'dev', permissionMode: 'auto' })
 })
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   resetWorkspaceDriver()
   await closeDb()
   await cleanupTempDir(tmpDir)
 })
+
+/** The workspace whose first conversation began with `prompt`. */
+async function launchedWith(prompt: string): Promise<string | undefined> {
+  for (const id of launched) {
+    if ((await listWorkspaceAgentSessions('proj', id))[0]?.firstPrompt === prompt) return id
+  }
+  return undefined
+}
 
 describe('stopWorkspace', () => {
   // A stop never asks the driver for spares, so even a spare's exact id is
@@ -67,7 +67,7 @@ describe('stopWorkspace', () => {
     })
     await expect(stopWorkspace('spare1')).rejects.toMatchObject({ code: 'NOT_FOUND' })
     expect(asked).toEqual([undefined])
-    expect(cleanupWorkspaceDetached).not.toHaveBeenCalled()
+    expect(deregistered).toEqual([])
   })
 
   it('tears the workspace down, then starts what was queued after it — only the top of a chain', async () => {
@@ -75,19 +75,21 @@ describe('stopWorkspace', () => {
     const sibling = await queueWorkspace('proj', { parent: 'parent', prompt: 'sibling', tool: 'claude' }, 'user')
     const grandchild = await queueWorkspace('proj', { parent: child.id, prompt: 'grandchild' }, 'user')
 
-    expect(await stopWorkspace('parent')).toMatchObject({ workspaceId: 'parent', projectSlug: 'proj' })
-    expect(cleanupWorkspaceDetached).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'parent' }))
+    // Addressed by a prefix, which the rows expand.
+    expect(await stopWorkspace('par')).toMatchObject({ workspaceId: 'parent', projectSlug: 'proj' })
+    expect(deregistered).toEqual(['parent'])
 
-    // Both direct children start from their stored settings.
-    await vi.waitFor(() => { expect(mockCreate).toHaveBeenCalledTimes(2) })
-    expect(mockCreate.mock.calls.map((c) => c[1].initialPrompt).sort()).toEqual(['child', 'sibling'])
-    expect(mockCreate.mock.calls[0][1]).toMatchObject({ branch: 'main', permissionMode: 'auto' })
+    // Both direct children start from their stored settings: the parent's
+    // branch and posture.
     await vi.waitFor(async () => {
       expect(await getQueuedWorkspaceRow(child.id)).toBeUndefined()
       expect(await getQueuedWorkspaceRow(sibling.id)).toBeUndefined()
-    })
+    }, { timeout: 60_000 })
+    expect(launched).toHaveLength(2)
+    const becameId = await launchedWith('child')
+    expect(await launchedWith('sibling')).toBeDefined()
+    expect(await getWorkspaceRow('proj', becameId!)).toMatchObject({ baseBranch: 'dev', permissionMode: 'auto' })
     // The grandchild now waits for the child's new workspace to stop.
-    const becameId = mockCreate.mock.calls.find((c) => c[1].initialPrompt === 'child')?.[1].workspaceId
     const waiting = await getQueuedWorkspaceRow(grandchild.id)
     expect(waiting).toMatchObject({ parentWorkspaceId: becameId })
     expect(waiting?.releasedAt).toBeUndefined()

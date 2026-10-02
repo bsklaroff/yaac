@@ -24,7 +24,6 @@ vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
   dataDirHash: () => 'ddh16chars000000',
 }))
 
-vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 
 import { salvageJobImages } from '#drivers/k8s/images'
 // The project registry host is resolved for real, not stubbed.

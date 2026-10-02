@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
@@ -146,12 +146,8 @@ function reply(id: string | number, result: unknown): void {
   transport.feed(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`)
 }
 
-async function waitFor(cond: () => boolean, ms = 3000): Promise<void> {
-  const deadline = Date.now() + ms
-  while (!cond()) {
-    if (Date.now() > deadline) throw new Error('timed out')
-    await new Promise((r) => setTimeout(r, 10))
-  }
+async function waitFor(cond: () => boolean): Promise<void> {
+  await vi.waitFor(() => expect(cond()).toBe(true), { timeout: 3000, interval: 10 })
 }
 
 describe('attachAcp', () => {

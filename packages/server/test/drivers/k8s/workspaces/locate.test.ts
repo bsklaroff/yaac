@@ -172,6 +172,11 @@ describe('findWorkspaceForTeardown', () => {
     expect(await findWorkspaceForTeardown('orphan')).toBeUndefined()
     expect(await findWorkspaceForTeardown('yaac-proj-orphan')).toBeUndefined()
   })
+
+  it('surfaces a failed Job listing as RUNTIME_UNAVAILABLE', async () => {
+    mockJobs.mockRejectedValue(new Error('connection refused'))
+    await expect(findWorkspaceForTeardown('orphan-1')).rejects.toMatchObject({ code: 'RUNTIME_UNAVAILABLE' })
+  })
 })
 
 describe('listWorkspaces', () => {

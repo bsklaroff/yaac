@@ -14,7 +14,6 @@ vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
   kubectlGetJson: mockGetJson,
   kubectlWithRetry: mockRetry,
 }))
-vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import {
   _resetRegistrationGcForTests,

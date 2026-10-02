@@ -13,7 +13,8 @@ import {
   cleanupTempDir,
   TEST_PROXY_CONFIG,
 } from '@yaac/test-utils/setup'
-import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
+import { resolveTestBaseImageRef } from '@yaac/test-utils/test-pods'
+import { startWorkspacePod, waitForPod } from '@yaac/test-utils/test-pods'
 import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
 import {
   allowWorkspaceHost,
@@ -26,9 +27,6 @@ import {
   TRANSPARENT_HTTPS_PORT,
   TUNNEL_INGRESS_PORT,
 } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
-import { runtimeClassSpec } from '@yaac/server/drivers/k8s/substrate/gvisor'
-import { CA_CONFIGMAP_NAME } from '@yaac/server/drivers/k8s/substrate/pod-spec'
-import { workspaceIdLabels } from '@yaac/server/drivers/k8s/substrate/pods'
 import {
   k8sNamespace,
   kubectlApply,
@@ -94,22 +92,6 @@ async function execInPod(
   return kubectlWithRetry(['exec', '-n', k8sNamespace(), podName, '--', ...args], opts)
 }
 
-async function waitForPodRunning(name: string, timeoutMs = 120_000): Promise<void> {
-  interface RawPod { status?: { phase?: string } }
-  const deadline = Date.now() + timeoutMs
-  let phase = 'Pending'
-  while (Date.now() < deadline) {
-    const pod = await kubectlGetJson<RawPod>(['get', 'pod', name, '-n', k8sNamespace()])
-    phase = pod?.status?.phase ?? 'Unknown'
-    if (phase === 'Running') return
-    if (phase === 'Failed' || phase === 'Succeeded') {
-      throw new Error(`pod ${name} reached terminal phase ${phase}`)
-    }
-    await new Promise((r) => setTimeout(r, 500))
-  }
-  throw new Error(`pod ${name} not Running within ${timeoutMs}ms (phase ${phase})`)
-}
-
 /** HTTP echo (request mirror as JSON) — Pod + Service, ports 8080 and 80. */
 async function startEchoPod(name: string): Promise<{ host: string }> {
   const echoScript = `
@@ -156,7 +138,7 @@ async function startEchoPod(name: string): Promise<{ host: string }> {
       ],
     },
   })
-  await waitForPodRunning(name)
+  await waitForPod(name)
   // No self-reachability probe: a pod reaching its own Service is hairpin
   // NAT, which this kind+podman setup doesn't do. The actual tests reach the
   // echo pod-to-pod (session pod → proxy → echo) and retry via
@@ -210,43 +192,8 @@ async function startTlsEchoPod(name: string): Promise<{ host: string }> {
     metadata: { name, namespace: ns, labels: { 'yaac.test': 'true' } },
     spec: { type: 'ClusterIP', selector: { app: name }, ports: [{ port: 443, targetPort: TLS_ECHO_PORT }] },
   })
-  await waitForPodRunning(name)
+  await waitForPod(name)
   return { host }
-}
-
-/**
- * A bare workspace pod: the `yaac.workspace-id` label (which the proxy and
- * netd select on), the proxy-CA mount for `curl --cacert`, and DNS pointed
- * at the proxy.
- */
-async function startWorkspacePod(name: string, workspaceId: string, proxyHost: string): Promise<void> {
-  await kubectlApply({
-    apiVersion: 'v1',
-    kind: 'Pod',
-    metadata: {
-      name,
-      namespace: k8sNamespace(),
-      labels: { ...workspaceIdLabels(workspaceId), 'yaac.test': 'true' },
-    },
-    spec: {
-      restartPolicy: 'Never',
-      automountServiceAccountToken: false,
-      enableServiceLinks: false,
-      // Mirror real session pods: the default gvisor tier, so the redirect
-      // and source-IP identity are verified against netstack egress.
-      ...runtimeClassSpec(),
-      dnsPolicy: 'None',
-      dnsConfig: { nameservers: [proxyHost] },
-      containers: [{
-        name: 'session',
-        image: await resolveTestBaseImageRef(),
-        imagePullPolicy: 'IfNotPresent',
-        // Base image ENTRYPOINT keeps the pod alive (catatonit + sleep).
-        volumeMounts: [{ name: 'proxy-ca', mountPath: '/etc/yaac/certs', readOnly: true }],
-      }],
-      volumes: [{ name: 'proxy-ca', configMap: { name: CA_CONFIGMAP_NAME } }],
-    },
-  })
 }
 
 /** Run curl in a pod, never failing the exec: emits `EXIT:<code>` last. */
@@ -315,7 +262,6 @@ describe('node-level transparent egress (source-IP identity)', () => {
       startWorkspacePod(podA, workspaceA, proxyHost),
       startWorkspacePod(podB, workspaceB, proxyHost),
     ])
-    await Promise.all([waitForPodRunning(podA), waitForPodRunning(podB)])
   }, 300_000)
 
   afterAll(async () => {

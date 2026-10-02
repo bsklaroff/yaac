@@ -7,6 +7,9 @@ import { setDataDir, serverLogPath } from '@yaac/shared/paths'
 import { serverLog, pipeToServerLog } from '#log'
 import { serverLogs } from '#main/lifecycle'
 
+// The unit setup mocks the log; this file tests it.
+vi.unmock('#log')
+
 describe('serverLog', () => {
   let dataDir: string
   const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})

@@ -17,7 +17,6 @@ import type * as runtimeModule from '#drivers/k8s/container/runtime'
 import type * as imageEngineModule from '#drivers/k8s/image-engine'
 import type * as childProcessModule from 'node:child_process'
 
-vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 
 // `server logs` streams through a spawned `kubectl exec`.
 const mockSpawn = vi.hoisted(() => vi.fn())

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { git } from '@yaac/test-utils/git'
@@ -30,19 +30,6 @@ import {
   type MockGit,
 } from '@yaac/test-utils/mock-remotes'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
-
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
-
-/** Poll `fn` until it returns a truthy value or the budget elapses. */
-async function waitFor<T>(fn: () => Promise<T | undefined | false>, timeoutMs: number, intervalMs = 2_000): Promise<T> {
-  const deadline = Date.now() + timeoutMs
-  for (;;) {
-    const v = await fn()
-    if (v) return v
-    if (Date.now() > deadline) throw new Error('waitFor: timed out')
-    await sleep(intervalMs)
-  }
-}
 
 /**
  * Prewarmed workspaces: with the pool enabled, a project with an open
@@ -148,12 +135,12 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     expect(first.exitCode).toBe(0)
 
     // 2. Wait for a spare that is running with tmux up, so it is claimable.
-    const spare = await waitFor(async () => {
+    const spare = await vi.waitFor(async () => {
       const pods = await listWorkspacePods('repo-demo')
       const s = pods.find((p) => isPrewarmed(p) && p.running)
-      if (s && await tmuxAliveInPod(s.jobName)) return s
-      return undefined
-    }, 150_000)
+      if (!s || !await tmuxAliveInPod(s.jobName)) throw new Error('no claimable spare yet')
+      return s
+    }, { timeout: 150_000, interval: 2_000 })
     const spareJob = spare.jobName
 
     // 3. The spare is hidden from listings and the project's count.
@@ -200,10 +187,12 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
 
     // 5. A replacement spare is warmed with the project's last-used tool
     //    (codex). Nothing claims it, so running is enough.
-    const refilled = await waitFor(async () => {
+    const refilled = await vi.waitFor(async () => {
       const pods = await listWorkspacePods('repo-demo')
-      return pods.find((p) => isPrewarmed(p) && p.running && p.jobName !== spareJob)
-    }, 150_000)
+      const s = pods.find((p) => isPrewarmed(p) && p.running && p.jobName !== spareJob)
+      if (!s) throw new Error('no replacement spare yet')
+      return s
+    }, { timeout: 150_000, interval: 2_000 })
     expect(refilled.tool).toBe('codex')
   }, 420_000)
 })

@@ -1,3 +1,4 @@
+import { vi } from 'vitest'
 import { setHermeticScratch } from '#tmp'
 
 // Setup for the `unit:*` projects only. Unit tests are hermetic, so an
@@ -13,3 +14,12 @@ process.env.YAAC_TEST_SHARED_DB = '1'
 // Unit runs create no pods, so scratch goes in the OS tmpdir (see
 // testTmpBase()).
 setHermeticScratch(true)
+
+// Unit tests never call the real serverLog: it is stderr noise and a file
+// under the data dir. pipeToServerLog stays real, since callers read output
+// through its line callback. A file that tests the log itself unmocks it,
+// and one that asserts on log lines reads `vi.mocked(serverLog)`.
+vi.mock('@yaac/server/log', async (importOriginal) => ({
+  ...await importOriginal<object>(),
+  serverLog: vi.fn(),
+}))

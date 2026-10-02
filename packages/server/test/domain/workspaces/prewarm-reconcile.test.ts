@@ -22,7 +22,6 @@ vi.mock('#db', async (importOriginal) => ({
   getWorkspaceRow: vi.fn(),
   listProjectRows: vi.fn(),
 }))
-vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import { reconcilePrewarmPool } from '#domain/workspaces/prewarm-reconcile'
 // Module state, used to set up mid-claim / mid-spawn cases and assert on.

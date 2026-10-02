@@ -7,6 +7,7 @@ import {
   useTestNamespace,
 } from '@yaac/test-utils/setup'
 import { e2eMkdtemp } from '@yaac/test-utils/tmp'
+import { waitForPod } from '@yaac/test-utils/test-pods'
 import { stageWorkspaceBin, workspaceBinDir, WORKSPACE_INIT_SCRIPT }
   from '@yaac/server/domain/workspaces/workspace-bin'
 import { resolveTrustedLayers } from '@yaac/server/drivers/k8s/image-engine/image-builder'
@@ -26,7 +27,6 @@ import {
 import {
   k8sNamespace,
   kubectlApply,
-  kubectlGetJson,
   kubectlWithRetry,
 } from '@yaac/server/drivers/k8s/substrate/kubectl'
 
@@ -85,35 +85,6 @@ async function nestableImageRef(): Promise<string> {
     )
   }
   return registryRef(nestable.tag)
-}
-
-async function waitForPodReady(timeoutMs = 300_000): Promise<void> {
-  interface RawPod {
-    status?: {
-      phase?: string
-      conditions?: Array<{ type: string; status: string }>
-      containerStatuses?: Array<{ state?: Record<string, { reason?: string; message?: string }> }>
-    }
-  }
-  const deadline = Date.now() + timeoutMs
-  let last = 'Pending'
-  while (Date.now() < deadline) {
-    const pod = await kubectlGetJson<RawPod>(['get', 'pod', POD, '-n', k8sNamespace()])
-    last = pod?.status?.phase ?? 'Unknown'
-    const ready = pod?.status?.conditions?.find((c) => c.type === 'Ready')
-    // The postStart hook holds back Ready, not Running.
-    if (ready?.status === 'True') return
-    if (last === 'Failed' || last === 'Succeeded') {
-      const state = JSON.stringify(pod?.status?.containerStatuses?.[0]?.state ?? {})
-      throw new Error(`pod ${POD} reached ${last}: ${state}`)
-    }
-    await new Promise((r) => setTimeout(r, 1000))
-  }
-  const events = await kubectlWithRetry(
-    ['get', 'events', '-n', k8sNamespace(), '--field-selector', `involvedObject.name=${POD}`],
-    { timeout: 30_000 },
-  ).catch((err: Error) => ({ stdout: `events failed: ${err.message}` }))
-  throw new Error(`pod ${POD} not Ready in ${timeoutMs}ms (phase ${last})\n${events.stdout}`)
 }
 
 beforeAll(async () => {
@@ -185,7 +156,8 @@ beforeAll(async () => {
       ],
     },
   })
-  await waitForPodReady()
+  // The postStart hook holds back Ready, not Running.
+  await waitForPod(POD, { ready: true, timeoutMs: 300_000 })
 }, 600_000)
 
 afterAll(async () => {

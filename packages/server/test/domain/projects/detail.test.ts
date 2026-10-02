@@ -4,11 +4,10 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-import { projectConfigDir, getProjectsDir, repoDir } from '@yaac/shared/project-paths'
+import { projectConfigDir, repoDir } from '@yaac/shared/project-paths'
 import { getProjectDetail, resolveProjectConfigWithSource, assertProjectExists, projectRemoteUrl } from '#domain/projects'
 import { ServerError } from '@yaac/shared/errors'
-import { recordProject } from '#db'
-import type { ProjectMeta } from '@yaac/shared/types'
+import { recordTestProject } from '@yaac/test-utils/project-fixture'
 
 // The live workspace count comes from the driver, stubbed here. What it
 // includes is asserted with each driver's `countWorkspaces`.
@@ -26,12 +25,6 @@ afterEach(async () => {
   await cleanupTempDir(tmpDir)
 })
 
-async function writeProject(slug: string, meta: ProjectMeta): Promise<void> {
-  const dir = path.join(getProjectsDir(), slug)
-  await fs.mkdir(dir, { recursive: true })
-  await recordProject(meta)
-}
-
 describe('getProjectDetail', () => {
   it('throws NOT_FOUND when the slug is unknown', async () => {
     await expect(getProjectDetail('missing')).rejects.toThrow(ServerError)
@@ -39,8 +32,7 @@ describe('getProjectDetail', () => {
   })
 
   it('returns the parsed metadata, the stored config, and the live session count', async () => {
-    await writeProject('foo', {
-      slug: 'foo',
+    await recordTestProject('foo', {
       remoteUrl: 'https://example.com/foo',
       addedAt: '2026-01-01T00:00:00.000Z',
     })
@@ -63,8 +55,7 @@ describe('getProjectDetail', () => {
   // An unreachable substrate counts zero rather than throwing, so a project
   // still renders with no cluster.
   it('renders with a zero count when the substrate has nothing to report', async () => {
-    await writeProject('foo', {
-      slug: 'foo',
+    await recordTestProject('foo', {
       remoteUrl: 'https://example.com/foo',
       addedAt: '2026-01-01T00:00:00.000Z',
     })
@@ -81,7 +72,7 @@ describe('resolveProjectConfigWithSource', () => {
   })
 
   it('returns the local config when it exists', async () => {
-    await writeProject('foo', { slug: 'foo', remoteUrl: 'x', addedAt: '2026-01-01T00:00:00.000Z' })
+    await recordTestProject('foo', { remoteUrl: 'x', addedAt: '2026-01-01T00:00:00.000Z' })
     await fs.mkdir(projectConfigDir('foo'), { recursive: true })
     await fs.writeFile(
       path.join(projectConfigDir('foo'), 'yaac-config.json'),
@@ -92,7 +83,7 @@ describe('resolveProjectConfigWithSource', () => {
   })
 
   it('ignores yaac-config.json checked into the cloned repo', async () => {
-    await writeProject('foo', { slug: 'foo', remoteUrl: 'x', addedAt: '2026-01-01T00:00:00.000Z' })
+    await recordTestProject('foo', { remoteUrl: 'x', addedAt: '2026-01-01T00:00:00.000Z' })
     await fs.mkdir(repoDir('foo'), { recursive: true })
     await fs.writeFile(
       path.join(repoDir('foo'), 'yaac-config.json'),
@@ -103,7 +94,7 @@ describe('resolveProjectConfigWithSource', () => {
   })
 
   it('returns null when no config exists', async () => {
-    await writeProject('empty', { slug: 'empty', remoteUrl: 'x', addedAt: '2026-01-01T00:00:00.000Z' })
+    await recordTestProject('empty', { remoteUrl: 'x', addedAt: '2026-01-01T00:00:00.000Z' })
     const result = await resolveProjectConfigWithSource('empty')
     expect(result).toEqual({ config: null })
   })
@@ -115,12 +106,12 @@ describe('assertProjectExists', () => {
   })
 
   it('resolves for a registered project', async () => {
-    await writeProject('foo', { slug: 'foo', remoteUrl: 'x', addedAt: '2026-01-01T00:00:00.000Z' })
+    await recordTestProject('foo', { remoteUrl: 'x', addedAt: '2026-01-01T00:00:00.000Z' })
     await expect(assertProjectExists('foo')).resolves.toBeUndefined()
   })
 
   it('resolves even when yaac-config.json is malformed', async () => {
-    await writeProject('foo', { slug: 'foo', remoteUrl: 'x', addedAt: '2026-01-01T00:00:00.000Z' })
+    await recordTestProject('foo', { remoteUrl: 'x', addedAt: '2026-01-01T00:00:00.000Z' })
     await fs.mkdir(projectConfigDir('foo'), { recursive: true })
     await fs.writeFile(path.join(projectConfigDir('foo'), 'yaac-config.json'), '{ not json')
     await expect(assertProjectExists('foo')).resolves.toBeUndefined()
@@ -129,7 +120,7 @@ describe('assertProjectExists', () => {
 
 describe('projectRemoteUrl', () => {
   it('answers the row\'s remote, whatever the clone says, and NOT_FOUND for an unknown slug', async () => {
-    await writeProject('foo', { slug: 'foo', remoteUrl: 'https://example.com/foo', addedAt: '2026-01-01T00:00:00.000Z' })
+    await recordTestProject('foo', { remoteUrl: 'https://example.com/foo', addedAt: '2026-01-01T00:00:00.000Z' })
     // The clone's own origin is pod-writable and never consulted.
     await fs.mkdir(path.join(repoDir('foo'), '.git'), { recursive: true })
     await fs.writeFile(path.join(repoDir('foo'), '.git', 'config'),

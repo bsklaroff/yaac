@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import fs from 'node:fs/promises'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { claimPidFile } from '#pid-file'
 
 /**
  * A `kubectl port-forward` held by the test harness, so host-side tests can
@@ -134,46 +134,18 @@ async function waitForPortFree(port: number): Promise<number> {
 
 /**
  * A random free loopback port, bound and released to prove it is free, then
- * claimed (see {@link claimPort}) so no other draw returns it. Random rather
+ * claimed until this process exits, so no other draw returns it. Random rather
  * than a per-worker block, which would collide across test rigs.
  */
 export async function freeLocalPort(): Promise<number> {
   for (let attempt = 0; attempt < 50; attempt++) {
     const candidate = FORWARD_PORT_MIN
       + Math.floor(Math.random() * (FORWARD_PORT_MAX - FORWARD_PORT_MIN))
-    if (await portFree(candidate) && await claimPort(candidate)) return candidate
+    if (await portFree(candidate) && await claimPidFile(path.join(PORT_CLAIM_DIR, String(candidate)))) {
+      return candidate
+    }
   }
   throw new Error('no free local port for the test harness')
-}
-
-/**
- * Claim a port host-wide until this process exits. A claim whose process is
- * gone is taken over; this process's own claims count as taken.
- */
-async function claimPort(port: number): Promise<boolean> {
-  await fs.mkdir(PORT_CLAIM_DIR, { recursive: true })
-  const file = path.join(PORT_CLAIM_DIR, String(port))
-  for (;;) {
-    try {
-      await fs.writeFile(file, String(process.pid), { flag: 'wx' })
-      return true
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
-    }
-    const holder = Number.parseInt(await fs.readFile(file, 'utf8').catch(() => ''), 10)
-    // No pid yet: a claim still being written.
-    if (Number.isNaN(holder) || holder === process.pid || pidAlive(holder)) return false
-    await fs.unlink(file).catch(() => { /* another process took it over first */ })
-  }
-}
-
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
 }
 
 function portFree(port: number): Promise<boolean> {

@@ -26,7 +26,6 @@ vi.mock('#drivers/k8s/container/registry', () => ({
   registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
   pushImageToRegistry: vi.fn((tag: string) => Promise.resolve(`localhost:5001/${tag}`)),
 }))
-vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 
 import { reapNodeLocal } from '#drivers/k8s/images'
 import {

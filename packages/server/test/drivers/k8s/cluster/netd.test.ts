@@ -10,7 +10,6 @@ import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
 import type * as registryModule from '#drivers/k8s/container/registry'
 import type * as imageEngineModule from '#drivers/k8s/image-engine'
 
-vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 
 const mockKubectlApply = vi.hoisted(() => vi.fn())
 const mockKubectlWithRetry = vi.hoisted(() => vi.fn())

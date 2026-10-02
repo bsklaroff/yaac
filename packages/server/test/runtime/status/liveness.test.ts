@@ -6,7 +6,6 @@ import path from 'node:path'
 import {
   _clearAgentStartedCacheForTests,
   _clearTmuxAliveCacheForTests,
-  classifyTmuxProbeError,
   forgetLiveness,
   isTmuxSessionAlive,
   probeAgentPaneState,
@@ -60,10 +59,6 @@ describe('isTmuxSessionAlive', () => {
       return Promise.reject(transportFailure('unexpected exec call'))
     })
   }
-
-  it('is exported as a function', () => {
-    expect(typeof isTmuxSessionAlive).toBe('function')
-  })
 
   it('returns true when has-session exits 0', async () => {
     setProbeResult('p', 's-up', true)
@@ -186,24 +181,6 @@ describe('probeAgentPaneState', () => {
     await expect(probeAgentPaneState(target('p', 's-evict2'))).resolves.toBe('placeholder')
   })
 })
-describe('classifyTmuxProbeError', () => {
-  it('is dead only when the probe reached the pod and tmux exited non-zero', () => {
-    expect(classifyTmuxProbeError(
-      new WorkspaceExecError('exit 1', 1, '', "can't find session: yaac"),
-    )).toBe('dead')
-  })
-
-  it('is unknown on transport failures — never a reap signal', () => {
-    expect(classifyTmuxProbeError(transportFailure('relay refused'))).toBe('unknown')
-    expect(classifyTmuxProbeError(transportFailure('stream read timeout after 2000ms'))).toBe('unknown')
-  })
-
-  it('is unknown when there is no usable error detail', () => {
-    expect(classifyTmuxProbeError(new Error('boom'))).toBe('unknown')
-    expect(classifyTmuxProbeError(undefined)).toBe('unknown')
-    expect(classifyTmuxProbeError(null)).toBe('unknown')
-  })
-})
 describe('probeTmuxLiveness', () => {
   let dataDir: string
 
@@ -229,9 +206,14 @@ describe('probeTmuxLiveness', () => {
     await expect(probeTmuxLiveness(target('p', 's-dead'))).resolves.toBe('dead')
   })
 
-  it('is unknown on a transient transport failure — never a reap signal', async () => {
-    execMock.mockRejectedValue(transportFailure('relay dial timeout'))
-    await expect(probeTmuxLiveness(target('p', 's-blip'))).resolves.toBe('unknown')
+  // Only a probe that reached the workspace can prove it dead.
+  it('is unknown on a transport failure or a detail-less error — never a reap signal', async () => {
+    const errors = [transportFailure('relay dial timeout'), transportFailure('stream read timeout after 2000ms'),
+      new Error('boom'), undefined, null]
+    for (const [i, err] of errors.entries()) {
+      execMock.mockRejectedValue(err)
+      await expect(probeTmuxLiveness(target('p', `s-blip-${String(i)}`))).resolves.toBe('unknown')
+    }
   })
 
   it('coalesces concurrent callers onto a single in-flight probe', async () => {

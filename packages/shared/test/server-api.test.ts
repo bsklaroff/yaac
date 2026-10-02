@@ -14,20 +14,13 @@ import {
 import { writeServerConfig } from '#server-config'
 import { setDataDir } from '#paths'
 
-function jsonResponse(body: string, status = 200, headers: Record<string, string> = {}): Response {
-  return new Response(body, {
-    status,
-    headers: { 'content-type': 'application/json', ...headers },
-  })
-}
-
 describe('createServerFetch', () => {
   const target: ServerTarget = { baseUrl: 'http://127.0.0.1:4242' }
 
   it('issues requests against the target origin, carrying no credential', async () => {
     const fetchImpl = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
       expect(new Headers(init?.headers ?? {}).get('authorization')).toBeNull()
-      return Promise.resolve(jsonResponse('[]'))
+      return Promise.resolve(Response.json([]))
     })
     const serverFetch = createServerFetch({
       resolveTarget: () => Promise.resolve(target),
@@ -44,8 +37,8 @@ describe('createServerFetch', () => {
     // Only the 401's message says why (a tagged device, or no tailscale
     // serve), so it is shown verbatim and not retried.
     const remote: ServerTarget = { baseUrl: 'https://srv.ts.net' }
-    const fetchImpl = vi.fn(() => Promise.resolve(jsonResponse(
-      '{"error":{"code":"UNAUTHENTICATED","message":"tailscale serve sent no user identity"}}', 401,
+    const fetchImpl = vi.fn(() => Promise.resolve(Response.json(
+      { error: { code: 'UNAUTHENTICATED', message: 'tailscale serve sent no user identity' } }, { status: 401 },
     )))
     const api = getApiClient({
       resolveTarget: () => Promise.resolve(remote),
@@ -60,7 +53,7 @@ describe('createServerFetch', () => {
     const remote: ServerTarget = { baseUrl: 'https://srv.ts.net' }
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const fetchImpl = vi.fn(() => Promise.resolve(
-      jsonResponse('[]', 200, { 'x-yaac-build-id': 'other-build' }),
+      Response.json([], { headers: { 'x-yaac-build-id': 'other-build' } }),
     ))
     const serverFetch = createServerFetch({
       resolveTarget: () => Promise.resolve(remote),
@@ -79,7 +72,7 @@ describe('createServerFetch', () => {
     const remote: ServerTarget = { baseUrl: 'https://srv.ts.net' }
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const fetchImpl = vi.fn(() => Promise.resolve(
-      jsonResponse('[]', 200, { 'x-yaac-build-id': 'other-build' }),
+      Response.json([], { headers: { 'x-yaac-build-id': 'other-build' } }),
     ))
     const serverFetch = createServerFetch({
       resolveTarget: () => Promise.resolve(remote),
@@ -98,7 +91,7 @@ describe('createServerFetch', () => {
     vi.stubEnv('YAAC_BUILD_ID', 'local-build')
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const fetchImpl = vi.fn(() => Promise.resolve(
-      jsonResponse('[]', 200, { 'x-yaac-build-id': 'other-build' }),
+      Response.json([], { headers: { 'x-yaac-build-id': 'other-build' } }),
     ))
     const serverFetch = createServerFetch({
       resolveTarget: () => Promise.resolve(target),
@@ -113,7 +106,7 @@ describe('createServerFetch', () => {
 
   it('accepts a full URL input and uses only path+search', async () => {
     const fetchImpl = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
-      Promise.resolve(jsonResponse('[]')),
+      Promise.resolve(Response.json([])),
     )
     const serverFetch = createServerFetch({
       resolveTarget: () => Promise.resolve(target),

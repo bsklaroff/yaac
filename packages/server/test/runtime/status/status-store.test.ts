@@ -3,7 +3,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   readWorkspaceStatus,
   readWorkspaceWaitingSince,
-  isWorkspaceStreamHealthy,
   setAgentStatus,
   setWorkspaceStreamHealth,
   evictWorkspaceStatus,
@@ -20,55 +19,32 @@ beforeEach(() => {
   _resetWorkspaceListChangedForTests()
 })
 
+/**
+ * The status watcher writes (`setAgentStatus`, `setWorkspaceStreamHealth`);
+ * the snapshot reads, and re-reads whenever `#notify` announces a change.
+ */
 describe('readWorkspaceStatus', () => {
-  it('returns waiting for a session with no entry', () => {
+  it('reads waiting until a status is written, keyed by slug and session id', () => {
     expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
-  })
-
-  it('returns the stored status after a write', () => {
     setAgentStatus('demo', 's1', '%0', 'running')
     expect(readWorkspaceStatus('demo', 's1')).toBe('running')
-  })
-
-  it('keys by slug AND session id', () => {
-    setAgentStatus('demo', 's1', '%0', 'running')
     expect(readWorkspaceStatus('other', 's1')).toBe('waiting')
     expect(readWorkspaceStatus('demo', 's2')).toBe('waiting')
   })
-})
 
-describe('isWorkspaceStreamHealthy', () => {
-  it('returns false for a session with no entry', () => {
-    expect(isWorkspaceStreamHealthy('demo', 's1')).toBe(false)
-  })
-
-  it('returns true after a status write (classification implies a live stream)', () => {
-    setAgentStatus('demo', 's1', '%0', 'waiting')
-    expect(isWorkspaceStreamHealthy('demo', 's1')).toBe(true)
-  })
-})
-
-describe('setAgentStatus', () => {
-  it('fires the change listener when the status flips', () => {
+  it('announces a change on each flip, never on a re-set', () => {
     const listener = vi.fn()
     onWorkspaceListChanged(listener)
+    setAgentStatus('demo', 's1', '%0', 'running')
     setAgentStatus('demo', 's1', '%0', 'running')
     expect(listener).toHaveBeenCalledTimes(1)
     setAgentStatus('demo', 's1', '%0', 'waiting')
     expect(listener).toHaveBeenCalledTimes(2)
   })
 
-  it('does not fire when the same status is re-set on a healthy entry', () => {
-    setAgentStatus('demo', 's1', '%0', 'running')
-    const listener = vi.fn()
-    onWorkspaceListChanged(listener)
-    setAgentStatus('demo', 's1', '%0', 'running')
-    expect(listener).not.toHaveBeenCalled()
-  })
-
   // Per-agent status is in the snapshot too, so a change must push even
   // when the workspace's overall status is unchanged.
-  it('fires when a sibling flips but the workspace aggregate does not', () => {
+  it('announces a sibling flip that leaves the workspace aggregate alone', () => {
     setAgentStatus('demo', 's1', '%0', 'waiting')
     setAgentStatus('demo', 's1', '%1', 'running')
     const listener = vi.fn()
@@ -85,52 +61,29 @@ describe('setAgentStatus', () => {
     expect(listener).toHaveBeenCalledTimes(2)
   })
 
-  it('fires when re-classifying an unhealthy entry (health became visible)', () => {
-    setAgentStatus('demo', 's1', '%0', 'running')
+  // A status is sticky across a stream drop; the health bit flipping is
+  // itself announced, and so is a re-classification that restores it.
+  it('keeps the status across a health drop, announcing each health flip', () => {
+    const listener = vi.fn()
+    onWorkspaceListChanged(listener)
+    // Marking an absent session unhealthy does nothing; healthy creates a
+    // waiting entry.
     setWorkspaceStreamHealth('demo', 's1', false)
-    const listener = vi.fn()
-    onWorkspaceListChanged(listener)
-    setAgentStatus('demo', 's1', '%0', 'running')
-    expect(listener).toHaveBeenCalledTimes(1)
-    expect(isWorkspaceStreamHealthy('demo', 's1')).toBe(true)
-  })
-})
-
-describe('setWorkspaceStreamHealth', () => {
-  it('creates a waiting entry when marking an absent session healthy', () => {
-    const listener = vi.fn()
-    onWorkspaceListChanged(listener)
+    expect(listener).not.toHaveBeenCalled()
     setWorkspaceStreamHealth('demo', 's1', true)
     expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
-    expect(isWorkspaceStreamHealthy('demo', 's1')).toBe(true)
     expect(listener).toHaveBeenCalledTimes(1)
-  })
 
-  it('is a no-op when marking an absent session unhealthy', () => {
-    const listener = vi.fn()
-    onWorkspaceListChanged(listener)
-    setWorkspaceStreamHealth('demo', 's1', false)
-    expect(isWorkspaceStreamHealthy('demo', 's1')).toBe(false)
-    expect(listener).not.toHaveBeenCalled()
-  })
-
-  it('keeps the sticky status across a health drop', () => {
     setAgentStatus('demo', 's1', '%0', 'running')
-    setWorkspaceStreamHealth('demo', 's1', false)
-    expect(readWorkspaceStatus('demo', 's1')).toBe('running')
-    expect(isWorkspaceStreamHealthy('demo', 's1')).toBe(false)
-  })
-
-  it('fires only when the health bit actually flips', () => {
-    setAgentStatus('demo', 's1', '%0', 'running')
-    const listener = vi.fn()
-    onWorkspaceListChanged(listener)
     setWorkspaceStreamHealth('demo', 's1', true)
-    expect(listener).not.toHaveBeenCalled()
+    expect(listener).toHaveBeenCalledTimes(2)
     setWorkspaceStreamHealth('demo', 's1', false)
-    expect(listener).toHaveBeenCalledTimes(1)
     setWorkspaceStreamHealth('demo', 's1', false)
-    expect(listener).toHaveBeenCalledTimes(1)
+    expect(listener).toHaveBeenCalledTimes(3)
+    expect(readWorkspaceStatus('demo', 's1')).toBe('running')
+    // Same status, but the stream is visibly back.
+    setAgentStatus('demo', 's1', '%0', 'running')
+    expect(listener).toHaveBeenCalledTimes(4)
   })
 })
 
