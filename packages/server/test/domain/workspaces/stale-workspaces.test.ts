@@ -20,7 +20,6 @@ vi.mock('#domain/workspaces/cleanup', () => ({
   cleanupWorkspaceDetached: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 // The reaper reads the desired set from the DB and reports deaths as
 // events. Both are stubbed, so no DB is opened.

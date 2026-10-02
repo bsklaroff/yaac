@@ -11,10 +11,8 @@
     "./package.json": "./package.json"
   },
   "dependencies": {
-    "@hono/node-server": "catalog:",
     "@yaac/server": "workspace:*",
     "@yaac/shared": "workspace:*",
-    "hono": "catalog:",
     "tsx": "catalog:",
     "ws": "catalog:",
     "yaml": "catalog:"

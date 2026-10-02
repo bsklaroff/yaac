@@ -9,7 +9,6 @@ vi.mock('#db/workspace-store', async (importOriginal) => ({
   ...(await importOriginal<typeof storeModule>()),
   setWorkspaceTitle: vi.fn(),
 }))
-vi.mock('#log', () => ({ serverLog: vi.fn() }))
 // Every download and inference is a subprocess. Faking execFileAsync lets
 // the summarizer and llama.cpp setup logic run for real.
 vi.mock('#lib/shell', async (importOriginal) => ({

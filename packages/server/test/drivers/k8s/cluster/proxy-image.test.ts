@@ -7,7 +7,6 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type * as registryModule from '#drivers/k8s/container/registry'
 import type * as imageEngineModule from '#drivers/k8s/image-engine'
 
-vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 
 const mockContextHash = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/image-engine', async (importOriginal) => ({

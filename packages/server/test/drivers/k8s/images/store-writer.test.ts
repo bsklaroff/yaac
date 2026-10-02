@@ -35,7 +35,6 @@ vi.mock('#drivers/k8s/container/registry', () => ({
   pushImageToRegistry: vi.fn((tag: string) => Promise.resolve(`localhost:5001/${tag}`)),
 }))
 
-vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 
 import {
   ensureNodeImageStore,

@@ -4,10 +4,6 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
-  statusFromCode,
-  resolveRenamePath,
-  parseNumstat,
-  parseNameStatus,
   parseChangesOutput,
   buildChangesScript as buildScript,
   type ChangesLocation,
@@ -24,59 +20,6 @@ const LOC: ChangesLocation = {
 /** The script as a driver builds it, with `LOC` applied. */
 const buildChangesScript = (base?: string, defaultBase?: string): string =>
   buildScript(LOC, base, defaultBase)
-
-describe('statusFromCode', () => {
-  it('maps git status letters', () => {
-    expect(statusFromCode('A')).toBe('added')
-    expect(statusFromCode('M')).toBe('modified')
-    expect(statusFromCode('D')).toBe('deleted')
-    expect(statusFromCode('R100')).toBe('renamed')
-    expect(statusFromCode('C075')).toBe('copied')
-    expect(statusFromCode('T')).toBe('typechange')
-    expect(statusFromCode('X')).toBe('modified') // unknown → modified
-  })
-})
-
-describe('resolveRenamePath', () => {
-  it('collapses rename notations to the destination', () => {
-    expect(resolveRenamePath('old.ts => new.ts')).toBe('new.ts')
-    expect(resolveRenamePath('src/{old => new}/file.ts')).toBe('src/new/file.ts')
-    expect(resolveRenamePath('plain/path.ts')).toBe('plain/path.ts')
-  })
-})
-
-describe('parseNumstat', () => {
-  it('reads add/delete counts and flags binary', () => {
-    const m = parseNumstat('12\t3\tsrc/a.ts\n0\t9\tsrc/b.ts\n-\t-\timg/logo.png\n')
-    expect(m.get('src/a.ts')).toEqual({ additions: 12, deletions: 3, binary: false })
-    expect(m.get('src/b.ts')).toEqual({ additions: 0, deletions: 9, binary: false })
-    expect(m.get('img/logo.png')).toEqual({ additions: 0, deletions: 0, binary: true })
-  })
-  it('keys renames by destination path', () => {
-    const m = parseNumstat('4\t1\tsrc/{old => new}/x.ts\n')
-    expect(m.get('src/new/x.ts')).toEqual({ additions: 4, deletions: 1, binary: false })
-  })
-})
-
-describe('parseNameStatus', () => {
-  it('parses statuses and takes the new path for renames', () => {
-    const out = parseNameStatus('A\tsrc/new.ts\nM\tsrc/app.ts\nD\tsrc/gone.ts\nR100\told.ts\trenamed.ts\n')
-    expect(out).toEqual([
-      { path: 'src/new.ts', status: 'added' },
-      { path: 'src/app.ts', status: 'modified' },
-      { path: 'src/gone.ts', status: 'deleted' },
-      { path: 'renamed.ts', status: 'renamed', oldPath: 'old.ts' },
-    ])
-  })
-  it('captures the from-path of renames and copies, not other statuses', () => {
-    const out = parseNameStatus('R096\tsrc/old.ts\tsrc/new.ts\nC075\tlib/a.ts\tlib/b.ts\nM\tsrc/app.ts\n')
-    expect(out).toEqual([
-      { path: 'src/new.ts', status: 'renamed', oldPath: 'src/old.ts' },
-      { path: 'lib/b.ts', status: 'copied', oldPath: 'lib/a.ts' },
-      { path: 'src/app.ts', status: 'modified' },
-    ])
-  })
-})
 
 describe('parseChangesOutput', () => {
   const raw = [
@@ -107,6 +50,30 @@ describe('parseChangesOutput', () => {
     expect(out.diff).toContain('diff --git a/src/app.ts')
     expect(out.diff).toContain('+added line')
     expect(out.truncated).toBe(false)
+  })
+
+  // Every name-status letter, both rename notations numstat uses, a copy,
+  // and a binary file (numstat's `-` counts).
+  it('reads every status, keys counts by destination path, and flags binaries', () => {
+    const out = parseChangesOutput([
+      'BASE abc', 'FORK 1', '@@NUMSTAT@@',
+      '12\t3\tsrc/a.ts', '0\t9\tsrc/gone.ts', '-\t-\timg/logo.png', '2\t2\told.ts => renamed.ts',
+      '1\t0\tlib/{a.ts => b.ts}', '0\t0\tlink', '4\t4\todd.ts',
+      '@@NAMESTATUS@@',
+      'A\tsrc/a.ts', 'D\tsrc/gone.ts', 'M\timg/logo.png', 'R100\told.ts\trenamed.ts',
+      'C075\tlib/a.ts\tlib/b.ts', 'T\tlink', 'X\todd.ts',
+      '@@OK@@', '@@DIFF@@',
+    ].join('\n'))
+    expect(out.files).toEqual([
+      { path: 'src/a.ts', status: 'added', additions: 12, deletions: 3, binary: false },
+      { path: 'src/gone.ts', status: 'deleted', additions: 0, deletions: 9, binary: false },
+      { path: 'img/logo.png', status: 'modified', additions: 0, deletions: 0, binary: true },
+      { path: 'renamed.ts', status: 'renamed', additions: 2, deletions: 2, binary: false, oldPath: 'old.ts' },
+      { path: 'lib/b.ts', status: 'copied', additions: 1, deletions: 0, binary: false, oldPath: 'lib/a.ts' },
+      { path: 'link', status: 'typechange', additions: 0, deletions: 0, binary: false },
+      // An unknown letter reads as modified.
+      { path: 'odd.ts', status: 'modified', additions: 4, deletions: 4, binary: false },
+    ])
   })
 
   it('flags truncation when the diff exceeds the cap', () => {

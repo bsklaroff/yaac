@@ -15,7 +15,6 @@ vi.mock('#drivers/k8s/forwarders/port-detector', () => ({
   isDetectedPort: vi.fn().mockReturnValue(false),
 }))
 
-vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 // The relay is the boundary: a dial should open a `tcp` stream through the
 // pod's streamd.

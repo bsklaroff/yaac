@@ -3,17 +3,14 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { handleFixture, installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
-
-// Session teardown spawns a detached script, so it is mocked. The runtime is
-// a fake driver; directories are removed for real under the temp data dir.
-vi.mock('#domain/workspaces/cleanup', () => ({ cleanupWorkspaceDetached: vi.fn() }))
-
-import { cleanupWorkspaceDetached } from '#domain/workspaces/cleanup'
 import { purgeProjectBytes } from '#domain/workspaces'
+import { closeDb } from '#db/client'
 import { nodeLocalProjectPath, projectDir } from '@yaac/shared/project-paths'
 import type { ProjectRef, RuntimeHandle } from '#drivers/contract'
 
-const mockCleanup = vi.mocked(cleanupWorkspaceDetached)
+// The runtime is a fake driver; workspace teardown and the directories run
+// for real under the temp data dir. A torn-down workspace is deregistered.
+const mockDeregister = vi.fn<(workspaceId: string) => Promise<void>>()
 const mockList = vi.fn<(projectSlug?: string) => Promise<RuntimeHandle[]>>()
 const mockDestroySubstrate = vi.fn<(project: ProjectRef) => Promise<void>>()
 
@@ -24,16 +21,18 @@ let tmpDir: string
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  mockCleanup.mockReset().mockResolvedValue(undefined)
+  mockDeregister.mockReset().mockResolvedValue(undefined)
   mockList.mockReset().mockResolvedValue([])
   mockDestroySubstrate.mockReset().mockResolvedValue(undefined)
   installFakeWorkspaceDriver({
     list: mockList,
     destroyProjectSubstrate: mockDestroySubstrate,
+    deregisterWorkspace: mockDeregister,
   })
 })
 
 afterEach(async () => {
+  await closeDb()
   await cleanupTempDir(tmpDir)
 })
 
@@ -61,10 +60,7 @@ describe('purgeProjectBytes', () => {
 
     // First argument only: the fake records a trailing undefined opts.
     expect(mockList.mock.calls.map(([slug]) => slug)).toEqual(['demo'])
-    expect(mockCleanup.mock.calls.map(([c]) => c)).toEqual([
-      { jobName: 'yaac-demo-a', projectSlug: 'demo', workspaceId: 'a' },
-      { jobName: 'yaac-demo-b', projectSlug: 'demo', workspaceId: 'b' },
-    ])
+    expect(mockDeregister.mock.calls).toEqual([['a'], ['b']])
     expect(mockDestroySubstrate).toHaveBeenCalledWith(DEMO)
 
     await expect(fs.access(projectDir('demo'))).rejects.toThrow()
@@ -83,18 +79,18 @@ describe('purgeProjectBytes', () => {
 
     await purgeProjectBytes(DEMO)
 
-    expect(mockCleanup).not.toHaveBeenCalled()
+    expect(mockDeregister).not.toHaveBeenCalled()
     await expect(fs.access(projectDir('demo'))).rejects.toThrow()
   })
 
   it('carries on when one session fails to tear down', async () => {
     await writeProject('demo', DEMO.id)
     mockList.mockResolvedValue([workspace('demo', 'a'), workspace('demo', 'b')])
-    mockCleanup.mockRejectedValueOnce(new Error('exec failed'))
+    mockDeregister.mockRejectedValueOnce(new Error('exec failed'))
 
     await purgeProjectBytes(DEMO)
 
-    expect(mockCleanup).toHaveBeenCalledTimes(2)
+    expect(mockDeregister).toHaveBeenCalledTimes(2)
     await expect(fs.access(projectDir('demo'))).rejects.toThrow()
   })
 })

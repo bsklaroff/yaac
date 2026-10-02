@@ -96,7 +96,6 @@ import { serverLog } from '#log'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { execFile } from 'node:child_process'
 
-vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 const mockApply = vi.mocked(kubectlApply)
 const mockGetJson = vi.mocked(kubectlGetJson)

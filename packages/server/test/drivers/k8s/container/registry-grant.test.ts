@@ -60,7 +60,6 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }))
 
-vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 
 import { registryAuthFile, registryGrantPublicKey } from '#drivers/k8s/container'
 import { _resetRegistryGrantKeyForTests } from '#drivers/k8s/container/registry-grant'

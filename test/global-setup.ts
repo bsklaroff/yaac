@@ -1,7 +1,5 @@
 import { execFile } from 'node:child_process'
 import type { TestProject } from 'vitest/node'
-import { fileURLToPath } from 'node:url'
-import fs from 'node:fs/promises'
 import { promisify } from 'node:util'
 import path from 'node:path'
 import { contextHash, ensureImageByTag, resolveTrustedLayers } from '@yaac/server/drivers/k8s/image-engine/image-builder'
@@ -12,7 +10,7 @@ import {
 } from '@yaac/server/drivers/k8s/install/builtin-images'
 import { pushImageToRegistry, registryReachable } from '@yaac/server/drivers/k8s/container/registry'
 import { NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
-import { TEST_CLI_DIR } from '@yaac/test-utils/cli-bundle'
+import { buildCliBundle } from '@yaac/test-utils/cli-bundle'
 import { buildTestServerImage, testServerImageTag } from '@yaac/test-utils/deployed-server'
 import { testContainerOwnerLabel } from '@yaac/test-utils/setup'
 import { gcTestImages } from '@yaac/test-utils/test-images'
@@ -20,43 +18,6 @@ import { requireKindByo } from '@yaac/test-utils/kind-byo'
 import { testBackend } from '@yaac/test-utils/kind-byo-layout'
 
 const execFileAsync = promisify(execFile)
-
-const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-
-/**
- * Build the CLI and copy it to TEST_CLI_DIR
- * (packages/test-utils/src/cli-bundle.ts) for the suites to spawn. A bundle
- * avoids paying the tsx transpile on every spawn, and building every run
- * (an incremental pass takes seconds) means the suites never test a stale
- * bundle.
- *
- * The assets are copied too: in bundled mode PACKAGE_ROOT is the directory
- * holding cli.js, so the migrations, k8s manifests, builtin skills and
- * workspace-bin scripts must sit beside it. The SPA is built only if it
- * never has been, since it is slow and no suite reads it.
- */
-async function buildCliBundle(): Promise<void> {
-  if (!await fileExists(path.join(REPO_ROOT, 'packages', 'frontend', 'dist', 'index.html'))) {
-    await execFileAsync('pnpm', ['build:frontend'], { cwd: REPO_ROOT, maxBuffer: 32 * 1024 * 1024 })
-  }
-  for (const script of ['build:cli', 'build:assets', 'build:id']) {
-    await execFileAsync('pnpm', [script], { cwd: REPO_ROOT, maxBuffer: 32 * 1024 * 1024 })
-  }
-
-  // Copy out of dist/, which `pnpm watch` wipes on every save. Replace the
-  // copy wholesale so no stale file survives a rename or deletion.
-  await fs.rm(TEST_CLI_DIR, { recursive: true, force: true })
-  await fs.cp(path.join(REPO_ROOT, 'dist'), TEST_CLI_DIR, { recursive: true })
-}
-
-async function fileExists(p: string): Promise<boolean> {
-  try {
-    await fs.access(p)
-    return true
-  } catch {
-    return false
-  }
-}
 
 /**
  * Remove podman containers this rig's tests started directly on the host

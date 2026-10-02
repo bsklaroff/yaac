@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { setDataDir } from '@yaac/shared/paths'
 import { acpLogDir, codexDir } from '@yaac/shared/project-paths'
 import { agentDriver, type AgentObservation, type DrivenWorkspace } from '#runtime/agents/drivers'
@@ -333,6 +335,64 @@ describe('agentDriver', () => {
     // An unchanged push is ignored; an empty half keeps the last value.
     stream.feed('%subscription-changed report-7 $0 @0 0 %7 : claude-sonnet-5|\n')
     expect(agentSets().length).toBe(before + 3)
+
+    // A reply nothing asked for, and malformed notifications, change nothing.
+    const count = seen.length
+    stream.feed('%begin 1 900 1\nstray\n%end 1 900 1\n%subscription-changed status-7 $0\n%output nopane\n')
+    expect(seen.length).toBe(count)
+
+    // CRLF line endings are read like LF.
+    stream.feed('%subscription-changed status-7 $0 @0 0 %7 : ⠋ again\r\n')
+    expect(seen.at(-1)).toEqual({ kind: 'status', handle: '%7', status: 'running' })
+
+    // tmux detaching the client ends the stream; the command channel the
+    // connection published then refuses.
+    const channel = seen.flatMap((o) => (o.kind === 'command-channel' && o.send ? [o.send] : []))[0]
+    stream.feed('%exit\n')
+    expect(seen.some((o) => o.kind === 'down')).toBe(false)
+    stream.emitExit()
+    expect(seen.some((o) => o.kind === 'down')).toBe(true)
+    await expect(channel('display-message -p ok')).rejects.toThrow('stream torn down')
+  })
+
+  // tmux's framing, fed the way a loaded pod delivers it.
+  it('reads control mode however tmux frames it', async () => {
+    const stream = new FakeStream()
+    const seen: AgentObservation[] = []
+    connections.push(agentDriver('tui').connect(session, (o) => seen.push(o), {
+      dial: () => stream, heartbeatIntervalMs: 60_000, commandTimeoutMs: 1_000, log: () => {},
+    }))
+
+    // The listing goes out before the attach banner arrives; the banner is
+    // not its reply. The reply then lands split mid-line.
+    await vi.waitFor(() => expect(stream.writes.join('')).toContain('list-panes'))
+    stream.feed('%begin 1 100 0\n%end 1 100 0\n%session-changed $0 yaac\n')
+    stream.feed('%begin 1 1')
+    stream.feed('01 1\n%7\tclaude\t0\t\n%end 1 101 1\n')
+    await answer(stream, "refresh-client -B 'session-7:")
+    await answer(stream, "refresh-client -B 'status-7:")
+    await answer(stream, "refresh-client -B 'report-7:")
+    await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
+    expect(seen).toContainEqual({ kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude' }] })
+
+    // Colons inside a value are the value's.
+    stream.feed('%subscription-changed report-7 $0 @0 0 %7 : fix: parse a : b\n')
+    await vi.waitFor(() => expect(seen).toContainEqual({
+      kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', model: 'fix: parse a : b' }],
+    }))
+
+    // An %error reply rejects with its body.
+    const channel = seen.flatMap((o) => (o.kind === 'command-channel' && o.send ? [o.send] : []))[0]
+    const bogus = channel('bogus-command')
+    stream.feed('%begin 1 200 1\nparse error: unknown command: bogus-command\n%error 1 200 1\n')
+    await expect(bogus).rejects.toThrow(/unknown command/)
+
+    // A command still in flight when the stream ends is rejected too.
+    const inFlight = channel('display-message -p ok')
+    stream.feed('%exit detached\n')
+    stream.emitExit()
+    await expect(inFlight).rejects.toThrow('stream torn down')
+    expect(seen.some((o) => o.kind === 'down')).toBe(true)
   })
 
   it('follows the conversation each pane names, in an agent window or a shell', async () => {
@@ -491,6 +551,17 @@ describe('agentDriver', () => {
     // The watcher owns retries; the driver only reports.
     expect(seen.some((o) => o.kind === 'down')).toBe(true)
     expect(seen.at(-2)).toEqual({ kind: 'command-channel', send: null })
+
+    // A stream that cannot be written to is down from the first command.
+    const broken = new FakeStream()
+    broken.stdin = { write: () => { throw new Error('EPIPE') } }
+    const brokenSeen: AgentObservation[] = []
+    connections.push(agentDriver('tui').connect(session, (o) => brokenSeen.push(o), {
+      dial: () => broken, heartbeatIntervalMs: 60_000, commandTimeoutMs: 1_000, log: () => {},
+    }))
+    await vi.waitFor(() => expect(brokenSeen).toContainEqual(
+      { kind: 'down', reason: expect.stringContaining('EPIPE') as string },
+    ))
   })
 
   it('records no conversation under an id the agent minted in the wrong shape', async () => {
@@ -1645,5 +1716,107 @@ describe('agentDriver', () => {
     })}\n`)
 
     await vi.waitFor(() => expect(stream.sent().some((m) => m.id === 'perm-after-noise')).toBe(true))
+  })
+
+  /**
+   * A tui prompt is pasted by a detached in-workspace script, so the exec
+   * returns before the script's polling ends. The script is run here
+   * against a stub `tmux` (and a no-op `sleep`) that records what changed
+   * the pane.
+   */
+  describe('tui prompt delivery', () => {
+    let bin: string
+    beforeEach(() => {
+      bin = mkdtempSync(path.join(os.tmpdir(), 'yaac-paste-'))
+      writeFileSync(path.join(bin, 'sleep'), '#!/bin/sh\n', { mode: 0o755 })
+      writeFileSync(path.join(bin, 'tmux'), [
+        '#!/bin/sh',
+        'shift 2',
+        'case "$1" in',
+        '  display) echo 1 ;;',
+        '  capture-pane) cat "$STUB/screen" 2>/dev/null ;;',
+        '  load-buffer) cat > "$STUB/buffer" ;;',
+        '  paste-buffer)',
+        '    echo paste >> "$STUB/calls"',
+        '    case "$RENDER" in',
+        '      text) cat "$STUB/buffer" > "$STUB/screen" ;;',
+        '      claude) tr "\\t\\r" "  " < "$STUB/buffer" | fold -w 7 | tail -n 6 > "$STUB/screen" ;;',
+        '      marker) echo "> [paste #1 +13 lines]" > "$STUB/screen" ;;',
+        '    esac ;;',
+        '  send-keys) echo "send-keys $4" >> "$STUB/calls" ;;',
+        'esac',
+        'exit 0',
+        '',
+      ].join('\n'), { mode: 0o755 })
+    })
+    afterEach(() => { rmSync(bin, { recursive: true, force: true }) })
+
+    /** The script a delivery would leave running in the workspace. */
+    async function deliveredScript(prompt: string): Promise<string> {
+      await agentDriver('tui').deliverPrompt(session, '%3', prompt)
+      const [jobName, cmd, opts] = podExec.mock.calls.at(-1)!
+      expect(jobName).toBe(session.jobName)
+      // One attempt: a retried paste would submit the prompt twice.
+      expect(opts).toEqual({ maxAttempts: 1, timeout: 15_000 })
+      const b64 = /^printf %s ([A-Za-z0-9+/=]+) \| base64 -d > \/tmp\/\.yaac-prompt\.sh && /.exec(cmd)?.[1]
+      expect(cmd).toContain('setsid sh /tmp/.yaac-prompt.sh >/tmp/yaac-prompt.log 2>&1 </dev/null &')
+      return Buffer.from(b64!, 'base64').toString('utf8')
+    }
+
+    /**
+     * How the stub pane renders a paste:
+     * - `text`: verbatim, like a wide input box.
+     * - `claude`: tabs and CRs as spaces, wrapped at 7 columns, only the
+     *   last 6 rows visible, like claude's input box in a small window.
+     * - `marker`: a collapsed-paste placeholder, as pi and codex show a
+     *   long paste.
+     * - `none`: nothing, like a dialog that swallows the keys.
+     */
+    async function run(render: 'text' | 'claude' | 'marker' | 'none', prompt = 'hello there') {
+      const script = await deliveredScript(prompt)
+      writeFileSync(path.join(bin, 'calls'), '')
+      rmSync(path.join(bin, 'screen'), { force: true })
+      const res = spawnSync('sh', ['-c', script], {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, STUB: bin, RENDER: render },
+      })
+      const calls = readFileSync(path.join(bin, 'calls'), 'utf8').trim().split('\n')
+      return { status: res.status ?? -1, calls }
+    }
+    const submitted = { status: 0, calls: ['paste', 'send-keys Enter', 'send-keys Enter'] }
+
+    it('carries any text to the pane intact, as a bracketed paste', async () => {
+      const nasty = 'say "hi" && don\'t eval `$HOME`\nsecond line — ünïcode'
+      const script = await deliveredScript(nasty)
+      expect(script).not.toContain('$HOME')
+      const b64 = /printf %s ([A-Za-z0-9+/=]+) \| base64 -d \| tmux[^|]*load-buffer/.exec(script)?.[1]
+      expect(Buffer.from(b64!, 'base64').toString('utf8')).toBe(nasty)
+      expect(script).toContain('paste-buffer -p -d -b yaac-prompt -t %3')
+      expect(script).toContain('send-keys -t %3 Enter')
+    })
+
+    it('submits once the paste shows in the pane however the TUI wraps, scrolls or collapses it', async () => {
+      expect(await run('text')).toEqual(submitted)
+      // CRLF endings, wrapped lines, and a first line that scrolls out of
+      // view, so only the last-20 probe can match under `claude`.
+      const long = `Please\tfix the flaky login test todayxx\u{1F642} now\r\n${'more detail\r\n'.repeat(8)}thanks`
+      expect(await run('claude', long)).toEqual(submitted)
+      expect(await run('marker', long)).toEqual(submitted)
+      // 19 visible characters on each side of the emoji, so the first-20 and
+      // last-20 probes both reach it; a UTF-16 slice would cut it in half.
+      expect(await run('claude', 'Please\tfix the flakyyy\u{1F642} login test is red today')).toEqual(submitted)
+    })
+
+    it('never presses Enter on a pane that does not show the paste', async () => {
+      // A startup dialog (claude's folder trust) swallows the paste, and
+      // Enter there would pick its preselected "No, exit".
+      expect(await run('none')).toEqual({ status: 1, calls: Array<string>(10).fill('paste') })
+    })
+
+    it('pastes a whitespace-only prompt once, blind', async () => {
+      const script = await deliveredScript(' \n ')
+      expect(script).not.toContain('head=')
+      expect(script).toContain('paste-buffer -p -d -b yaac-prompt -t %3')
+    })
   })
 })

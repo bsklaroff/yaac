@@ -1,22 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { installRealWorkspaceDriver } from '@yaac/test-utils/real-driver'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-
-vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => {
-  const actual = await importOriginal<typeof podsModule>()
-  return {
-    ...actual,
-    listWorkspacePods: vi.fn().mockResolvedValue([]),
-  }
-})
-
-import { listWorkspacePods } from '#drivers/k8s/substrate/pods'
-import type * as podsModule from '#drivers/k8s/substrate/pods'
+import { handleFixture, installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 // The listing joins DB rows with what is read off disk (live runtimes,
-// transcripts for prompts and last-activity stamps). Only pod listing is
-// mocked; the rest runs for real.
+// transcripts for prompts and last-activity stamps). Only the runtime is
+// faked; the rest runs for real.
 import {
   recordWorkspaceCreated,
   recordWorkspaceStopped,
@@ -25,23 +14,10 @@ import {
 import { createWorkspaceGroup } from '#db/group-store'
 import { listWorkspaceAgentSessions, recordAgentSessions } from '#db/agent-session-store'
 import { closeDb } from '#db/client'
-import { recordProject } from '#db/project-store'
-import { claudeDir, getProjectsDir } from '@yaac/shared/project-paths'
+import { claudeDir } from '@yaac/shared/project-paths'
 import { listStoppedWorkspaces } from '#domain/workspaces/stopped-list'
-import type { AgentTool, ProjectMeta } from '@yaac/shared/types'
-
-const mockListPods = vi.mocked(listWorkspacePods)
-
-async function writeProject(slug: string, meta: Partial<ProjectMeta> = {}): Promise<void> {
-  const full: ProjectMeta = {
-    slug,
-    remoteUrl: meta.remoteUrl ?? `https://example.com/${slug}`,
-    addedAt: meta.addedAt ?? '2026-01-01T00:00:00.000Z',
-  }
-  const dir = path.join(getProjectsDir(), slug)
-  await fs.mkdir(dir, { recursive: true })
-  await recordProject(full)
-}
+import type { AgentTool } from '@yaac/shared/types'
+import { recordTestProject } from '@yaac/test-utils/project-fixture'
 
 /** Record a workspace, its first conversation, and optionally its stop. */
 async function seedWorkspace(
@@ -58,31 +34,13 @@ async function seedWorkspace(
   if (opts.deleted) await recordWorkspaceStopped(slug, workspaceId)
 }
 
-function activePod(slug: string, workspaceId: string): podsModule.PodInfo {
-  return {
-    jobName: `yaac-${slug}-${workspaceId}`,
-    podName: `yaac-${slug}-${workspaceId}-x1`,
-    workspaceId,
-    projectSlug: slug,
-    projectId: '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
-    tool: 'claude',
-    phase: 'Running',
-    running: true,
-    terminating: false,
-    createdAtMs: 0,
-    labels: {},
-  }
-}
-
 describe('listStoppedWorkspaces', () => {
   let tmpDir: string
 
   beforeEach(async () => {
-    installRealWorkspaceDriver()
+    installFakeWorkspaceDriver()
     tmpDir = await createTempDataDir()
-    mockListPods.mockReset()
-    mockListPods.mockResolvedValue([])
-    await writeProject('demo')
+    await recordTestProject('demo')
   })
 
   afterEach(async () => {
@@ -110,20 +68,20 @@ describe('listStoppedWorkspaces', () => {
     expect(result[0]?.stoppedAt).toBeDefined()
   })
 
-  it('skips sessions that still have an active pod', async () => {
+  it('skips sessions that are still running', async () => {
     await seedWorkspace('demo', 'active1')
-    mockListPods.mockResolvedValue([activePod('demo', 'active1')])
+    installFakeWorkspaceDriver({ list: () => Promise.resolve([handleFixture({ workspaceId: 'active1' })]) })
     expect(await listStoppedWorkspaces('demo')).toEqual([])
   })
 
-  it('treats every recorded session as deleted when the cluster is unreachable', async () => {
+  it('treats every recorded session as stopped when the runtime is unreachable', async () => {
     await seedWorkspace('demo', 'active1')
-    mockListPods.mockRejectedValue(new Error('cluster down'))
+    installFakeWorkspaceDriver({ list: () => Promise.reject(new Error('cluster down')) })
     expect((await listStoppedWorkspaces('demo')).map((r) => r.workspaceId)).toEqual(['active1'])
   })
 
   it('filters by project', async () => {
-    await writeProject('other')
+    await recordTestProject('other')
     await seedWorkspace('demo', 'here', { deleted: true })
     await seedWorkspace('other', 'elsewhere', { deleted: true })
     expect((await listStoppedWorkspaces('demo')).map((r) => r.workspaceId)).toEqual(['here'])

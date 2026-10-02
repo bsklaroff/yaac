@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs/promises'
 import tls from 'node:tls'
@@ -79,13 +79,9 @@ async function api(route: string, init: RequestInit = {}): Promise<Response> {
   return fetch(`${forward.origin}/api${route}`, init)
 }
 
-async function waitFor(what: string, cond: () => Promise<boolean>, timeoutMs = 60_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  for (;;) {
-    if (await cond().catch(() => false)) return
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
-    await new Promise((r) => setTimeout(r, 1_000))
-  }
+/** Waits until the server answers at the forward. */
+async function waitForHealth(timeout: number): Promise<void> {
+  await vi.waitFor(async () => expect((await api('/health')).ok).toBe(true), { timeout, interval: 1_000 })
 }
 
 async function claimVolumes(): Promise<Record<string, string>> {
@@ -111,7 +107,7 @@ beforeAll(async () => {
   // No TTY here, so `workspace create` must not attach after provisioning.
   userEnv = installEnv({ YAAC_DATA_DIR: path.join(scratch, 'user'), YAAC_E2E_NO_ATTACH: '1' })
   forward = await startKubectlForward({ namespace: 'yaac', target: 'svc/yaac-server', remotePort: SERVER_POD_PORT })
-  await waitFor('the loopback forward', async () => (await api('/health')).ok)
+  await waitForHealth(60_000)
 }, 120_000)
 
 afterAll(async () => {
@@ -223,7 +219,7 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     await new Promise<void>((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject) })
     await new Promise((r) => setTimeout(r, 3_000))
     ws.send(Buffer.from('echo BYO_$((40 + 2))\r'))
-    await waitFor('the terminal echo', () => Promise.resolve(screen.includes('BYO_42')), 30_000)
+    await vi.waitFor(() => expect(screen).toContain('BYO_42'), { timeout: 30_000, interval: 1_000 })
     ws.close()
 
     const port = 18_761
@@ -237,22 +233,22 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     let fwdOutput = ''
     fwd.stdout.on('data', (b: Buffer) => { fwdOutput += b.toString() })
     fwd.stderr.on('data', (b: Buffer) => { fwdOutput += b.toString() })
-    let mapping: { hostPort: number } | undefined
-    await waitFor('the detected port to be offered', async () => {
+    const mapping = await vi.waitFor(async () => {
       const res = await api(`/workspace/${workspaceId}/forward-port`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ containerPort: port }),
       })
-      if (res.ok) mapping = await res.json() as { hostPort: number }
-      return res.ok
-    }, 90_000)
+      if (!res.ok) throw new Error(`the detected port is not offered yet (${String(res.status)})`)
+      return await res.json() as { hostPort: number }
+    }, { timeout: 90_000, interval: 1_000 })
     // Wait for this forwarder's listener, not just any listener: an
     // orphaned forwarder from an earlier run could hold the port.
-    const bound = `forwarding 127.0.0.1:${String(mapping!.hostPort)} `
-    await waitFor('this suite\'s forwarder to bind the port', () =>
-      Promise.resolve(fwdOutput.includes(bound) || /cannot bind port/.test(fwdOutput)))
+    const bound = `forwarding 127.0.0.1:${String(mapping.hostPort)} `
+    await vi.waitFor(() => {
+      if (!fwdOutput.includes(bound) && !/cannot bind port/.test(fwdOutput)) throw new Error('forwarder not bound yet')
+    }, { timeout: 60_000, interval: 1_000 })
     expect(fwdOutput, 'yaac forward output').toContain(bound)
-    const body = await fetch(`http://127.0.0.1:${String(mapping!.hostPort)}/`).then((r) => r.text()).catch(async (err: unknown) => {
+    const body = await fetch(`http://127.0.0.1:${String(mapping.hostPort)}/`).then((r) => r.text()).catch(async (err: unknown) => {
       const serverLog = (await runYaac(operatorEnv, 'server', 'logs', '-n', '400')).stdout
       throw new Error(`the forwarded fetch failed (${String(err)})\n--- yaac forward:\n${fwdOutput}`
         + `\n--- server log (forward lines):\n${serverLog.split('\n').filter((l) => /forward|tunnel|relay|attach/i.test(l)).join('\n')}`)
@@ -269,8 +265,8 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     const stopped = await runYaac(operatorEnv, 'server', 'logs', '-n', '5')
     expect(stopped.exitCode, stopped.stderr).toBe(0)
     expect(stopped.stdout.split('\n').filter(Boolean).length).toBe(5)
-    await waitFor('the log reader to go', async () =>
-      !(await kubectl('get', 'pod', 'yaac-server-log-reader', '-n', 'yaac', '--ignore-not-found', '-o', 'name')).trim())
+    await vi.waitFor(async () => expect((await kubectl('get', 'pod', 'yaac-server-log-reader', '-n', 'yaac',
+      '--ignore-not-found', '-o', 'name')).trim()).toBe(''), { timeout: 60_000, interval: 1_000 })
     const start = await runYaac(operatorEnv, 'server', 'start')
     expect(start.exitCode, start.stderr).toBe(0)
     expect(start.stderr).toContain(`started at ${origin}`)
@@ -333,7 +329,7 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     expect(after['yaac-server-local']).toBe(before['yaac-server-local'])
 
     // The database came back with the volume: the project is still there.
-    await waitFor('the re-installed server', async () => (await api('/health')).ok, 120_000)
+    await waitForHealth(120_000)
     const projects = await (await api('/project/list')).json() as Array<{ slug: string }>
     expect(projects.map((p) => p.slug)).toContain(SLUG)
   }, INSTALL_TIMEOUT)

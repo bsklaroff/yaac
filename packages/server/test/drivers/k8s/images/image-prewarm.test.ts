@@ -6,7 +6,6 @@ vi.mock('#drivers/k8s/images/build-coordinator', () => ({
   ensureImage: vi.fn(),
 }))
 // image-builds is not mocked, so retry's forget/re-fire runs for real.
-vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import {
   prewarmProjectImage,

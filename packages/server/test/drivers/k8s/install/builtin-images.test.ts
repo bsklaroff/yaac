@@ -9,7 +9,6 @@ import type * as runtimeModule from '#drivers/k8s/container/runtime'
 import type * as hostProcsModule from '#drivers/k8s/container/host-procs'
 import type * as childProcessModule from 'node:child_process'
 
-vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 
 // Several modules promisify their own execFile for podman, so the mock sits
 // at node:child_process.

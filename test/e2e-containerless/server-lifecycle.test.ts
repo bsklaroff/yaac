@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import {
   createYaacTestEnv,
@@ -84,16 +84,14 @@ describe('yaac server lifecycle (real CLI + real server)', () => {
     try {
       // Generous budget for a cold start on a loaded host. The lock is
       // written at bind time, before DB init, so readiness is not awaited.
-      const deadline = Date.now() + 60_000
-      let lock = await readLock()
-      while (!lock && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 100))
-        lock = await readLock()
-      }
-      expect(lock, 'server never wrote its lock').not.toBeNull()
-      expect(lock?.port).toBeGreaterThanOrEqual(wanted)
-      expect(lock!.port).toBeLessThan(wanted + MAX_PORT_PROBES)
-      const res = await fetch(`http://127.0.0.1:${lock!.port}/api/health`)
+      const lock = await vi.waitFor(async () => {
+        const l = await readLock()
+        if (!l) throw new Error('server never wrote its lock')
+        return l
+      }, { timeout: 60_000, interval: 100 })
+      expect(lock.port).toBeGreaterThanOrEqual(wanted)
+      expect(lock.port).toBeLessThan(wanted + MAX_PORT_PROBES)
+      const res = await fetch(`http://127.0.0.1:${lock.port}/api/health`)
       expect(res.status).toBe(200)
     } finally {
       child.kill('SIGTERM')
@@ -310,12 +308,9 @@ describe('yaac server logs (real CLI)', () => {
       child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
 
       // The first wait absorbs the CLI's cold start.
-      await waitFor(() => stdout.includes('initial\n'), 15000)
+      await vi.waitFor(() => expect(stdout).toContain('initial\n'), { timeout: 15_000, interval: 50 })
       await fs.appendFile(serverLogPath(), 'appended\n')
-      await waitFor(() => stdout.includes('appended\n'), 5000)
-
-      expect(stdout).toContain('initial\n')
-      expect(stdout).toContain('appended\n')
+      await vi.waitFor(() => expect(stdout).toContain('appended\n'), { timeout: 5_000, interval: 50 })
     } finally {
       child.kill('SIGINT')
       await new Promise<void>((resolve) => child.once('exit', () => resolve()))
@@ -337,13 +332,4 @@ async function killServerByLock(): Promise<void> {
     if (!cur || cur.pid !== lock.pid) return
     await new Promise((r) => setTimeout(r, 50))
   }
-}
-
-async function waitFor(cond: () => boolean, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (cond()) return
-    await new Promise((r) => setTimeout(r, 50))
-  }
-  throw new Error('waitFor timed out')
 }

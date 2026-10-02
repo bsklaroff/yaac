@@ -4,7 +4,6 @@ import path from 'node:path'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // serverLog writes files — silence it.
-vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import {
   fanOutToolCredentials,
@@ -89,10 +88,9 @@ async function seedProject(slug: string, bundle: ClaudeOAuthBundle): Promise<voi
 
 describe('runtimeMediatesEgress', () => {
   it('is false only for the containerless runtime, and true with none registered', () => {
-    const fake = installFakeWorkspaceDriver({ kind: 'containerless' })
     expect(runtimeMediatesEgress()).toBe(false)
 
-    fake.override({ kind: 'k8s' })
+    installFakeWorkspaceDriver({ kind: 'k8s' })
     expect(runtimeMediatesEgress()).toBe(true)
   })
 })

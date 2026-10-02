@@ -5,7 +5,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { Duplex, PassThrough } from 'node:stream'
 
-vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import {
   TUNNEL_DIAL_FAILED,

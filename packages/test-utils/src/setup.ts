@@ -47,7 +47,7 @@ export function testContainerOwnerLabel(): string {
  * Unique suffix per test file (vitest re-imports this module in each file's
  * process), avoiding k8s name collisions between files and runs.
  */
-export const TEST_RUN_ID = crypto.randomBytes(4).toString('hex')
+const TEST_RUN_ID = crypto.randomBytes(4).toString('hex')
 
 /**
  * Per-file k8s namespace holding every object a test file creates. Tests
@@ -86,7 +86,7 @@ export const TEST_PROXY_CONFIG: ProxyClientConfig = {
 let proxyControlForward: Promise<KubectlForward> | null = null
 
 /** The port-forwarded proxy control origin (see TEST_PROXY_CONFIG). */
-export async function testProxyControlOrigin(): Promise<string> {
+async function testProxyControlOrigin(): Promise<string> {
   proxyControlForward ??= startKubectlForward({
     namespace: k8sNamespace(),
     target: `deployment/${PROXY_APP_NAME}`,
@@ -122,8 +122,8 @@ export async function execInJob(
 export async function cleanupWorkspaceJobs(timeoutMs = 120_000): Promise<void> {
   const selector = `${LABEL_DATA_DIR_HASH}=${dataDirHash()},${LABEL_WORKSPACE_ID}`
   try {
-    // Delete without waiting, then poll, so terminations overlap
-    // (`kubectl delete --wait` blocks per object).
+    // Delete without waiting, then wait for them all, so terminations
+    // overlap (`kubectl delete --wait` blocks per object).
     await kubectlWithRetry([
       'delete', 'jobs,pods',
       '-n', k8sNamespace(),
@@ -135,22 +135,11 @@ export async function cleanupWorkspaceJobs(timeoutMs = 120_000): Promise<void> {
     return // cluster unreachable — nothing to clean, and nothing to wait for
   }
 
-  const deadline = Date.now() + timeoutMs
-  for (;;) {
-    let remaining: number
-    try {
-      const { stdout } = await kubectlWithRetry([
-        'get', 'pods', '-n', k8sNamespace(), '-l', selector,
-        '-o', 'name',
-      ])
-      remaining = stdout.split('\n').filter((line) => line.trim().length > 0).length
-    } catch {
-      return // cluster went away mid-drain; the pods are not our problem now
-    }
-    if (remaining === 0) return
-    if (Date.now() > deadline) return
-    await new Promise((r) => setTimeout(r, 1_000))
-  }
+  // A pod still there at the bound is left; the cluster finishes it.
+  await execFileAsync('kubectl', [
+    'wait', '--for=delete', 'pods', '-n', k8sNamespace(), '-l', selector,
+    `--timeout=${String(Math.ceil(timeoutMs / 1000))}s`,
+  ]).catch(() => {})
 }
 
 /**

@@ -8,7 +8,8 @@ import {
   cleanupTempDir,
   TEST_PROXY_CONFIG,
 } from '@yaac/test-utils/setup'
-import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
+import { resolveTestBaseImageRef } from '@yaac/test-utils/test-pods'
+import { startWorkspacePod, waitForPod } from '@yaac/test-utils/test-pods'
 import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
 import {
   applyProxyRegistration,
@@ -16,8 +17,6 @@ import {
 } from '@yaac/server/drivers/k8s/egress/proxy-registration'
 import { proxyServiceClusterIp } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { NETD_APP_NAME } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
-import { runtimeClassSpec } from '@yaac/server/drivers/k8s/substrate/gvisor'
-import { CA_CONFIGMAP_NAME } from '@yaac/server/drivers/k8s/substrate/pod-spec'
 import { workspaceIdLabels } from '@yaac/server/drivers/k8s/substrate/pods'
 import {
   k8sNamespace,
@@ -62,69 +61,11 @@ async function deleteTestPod(name: string): Promise<void> {
   ]).catch(() => { /* ok */ })
 }
 
-async function waitForPodRunning(
-  name: string,
-  timeoutMs = 120_000,
-  namespace = k8sNamespace(),
-): Promise<void> {
-  interface RawPod { status?: { phase?: string } }
-  const deadline = Date.now() + timeoutMs
-  let phase = 'Pending'
-  while (Date.now() < deadline) {
-    const pod = await kubectlGetJson<RawPod>(['get', 'pod', name, '-n', namespace])
-    phase = pod?.status?.phase ?? 'Unknown'
-    if (phase === 'Running') {
-      await focusNetdOnPod(name)
-      return
-    }
-    if (phase === 'Failed' || phase === 'Succeeded') {
-      throw new Error(`pod ${name} reached terminal phase ${phase}`)
-    }
-    await new Promise((r) => setTimeout(r, 500))
-  }
-  throw new Error(`pod ${name} not Running within ${timeoutMs}ms (phase ${phase})`)
-}
-
-async function startWorkspacePod(
-  name: string,
-  workspaceId: string,
-  proxyHost: string,
-  opts: { netRaw?: boolean } = {},
-): Promise<void> {
-  await kubectlApply({
-    apiVersion: 'v1',
-    kind: 'Pod',
-    metadata: {
-      name,
-      namespace: k8sNamespace(),
-      labels: { ...workspaceIdLabels(workspaceId), 'yaac.test': 'true' },
-    },
-    spec: {
-      restartPolicy: 'Never',
-      automountServiceAccountToken: false,
-      enableServiceLinks: false,
-      ...runtimeClassSpec({ nested: opts.netRaw }),
-      dnsPolicy: 'None',
-      dnsConfig: { nameservers: [proxyHost] },
-      containers: [{
-        name: 'session',
-        image: await resolveTestBaseImageRef(),
-        imagePullPolicy: 'IfNotPresent',
-        ...(opts.netRaw
-          ? { securityContext: { capabilities: { add: ['NET_RAW', 'NET_ADMIN'] } } }
-          : {}),
-        volumeMounts: [{ name: 'proxy-ca', mountPath: '/etc/yaac/certs', readOnly: true }],
-      }],
-      volumes: [{ name: 'proxy-ca', configMap: { name: CA_CONFIGMAP_NAME } }],
-    },
-  })
-}
-
 /**
  * The node whose netd the probes read. Each netd instance programs only
  * pods on its own node, so on a multi-node cluster the probes must read the
  * instance on the node hosting the pod under test. Null (any node) until a
- * pod is up. `waitForPodRunning` sets it.
+ * pod is up; each test focuses it on the pod it starts.
  */
 let netdTargetNode: string | null = null
 
@@ -375,7 +316,7 @@ describe('netd datapath gates', () => {
       rules: [], allowedHosts: [], tool: 'claude', projectSlug: 'netd-raw',
     })
     await startWorkspacePod(podA, workspaceA, proxyHost)
-    await waitForPodRunning(podA)
+    await focusNetdOnPod(podA)
   }, 600_000)
 
   afterAll(async () => {
@@ -458,7 +399,7 @@ describe('netd datapath gates', () => {
     await waitForNetdReady(0)
 
     await startWorkspacePod(podLate, sessionLate, proxyHost)
-    await waitForPodRunning(podLate)
+    await focusNetdOnPod(podLate)
 
     expect((await shInPod(podLate, egressProbe)).exit).not.toBe(0)
     // Direct internet access is also blocked by the session NetworkPolicy.
@@ -547,7 +488,7 @@ describe('netd datapath gates', () => {
           }],
         },
       })
-      await waitForPodRunning(foreignPod, 120_000, foreignNs)
+      await waitForPod(foreignPod, { timeoutMs: 120_000, namespace: foreignNs })
 
       // Read each pod's rules from the netd on its own node.
       await focusNetdOnPod(podA)
@@ -573,7 +514,7 @@ describe('netd datapath gates', () => {
     // workspace's allowlist. The forger needs NET_RAW/NET_ADMIN and the
     // gvisor-nested tier, hence its own pod.
     await startWorkspacePod(podRaw, sessionRaw, proxyHost, { netRaw: true })
-    await waitForPodRunning(podRaw)
+    await focusNetdOnPod(podRaw)
 
     // The forger cannot reach the host legitimately...
     expect((await shInPod(podRaw, egressProbe)).exit).not.toBe(0)

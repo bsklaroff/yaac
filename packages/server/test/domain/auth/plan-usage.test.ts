@@ -3,7 +3,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-vi.mock('#log', () => ({ serverLog: vi.fn() }))
 vi.mock('#notify', () => ({ notifyWorkspaceListChanged: vi.fn() }))
 // Only whether a persisted rotation is pushed matters here; the push itself
 // is tested in runtime-push.test.ts.

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveStoppedLimit, STOPPED_DEFAULT_LIMIT, workspaceList } from '#commands/workspace-list'
+import { resolveStoppedLimit, STOPPED_DEFAULT_LIMIT } from '#commands/workspace-list'
 
 describe('resolveStoppedLimit', () => {
   it('returns the default limit when no options are supplied', () => {
@@ -26,11 +26,5 @@ describe('resolveStoppedLimit', () => {
     expect(resolveStoppedLimit({ num: 0 })).toBe(STOPPED_DEFAULT_LIMIT)
     expect(resolveStoppedLimit({ num: -5 })).toBe(STOPPED_DEFAULT_LIMIT)
     expect(resolveStoppedLimit({ num: Number.NaN })).toBe(STOPPED_DEFAULT_LIMIT)
-  })
-})
-
-describe('workspaceList', () => {
-  it('is exported as a function', () => {
-    expect(typeof workspaceList).toBe('function')
   })
 })

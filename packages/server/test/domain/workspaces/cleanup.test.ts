@@ -33,7 +33,6 @@ vi.mock('node:child_process', async () => {
 })
 
 // Mocked so the teardown log line can be asserted.
-vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import {
   cleanupWorkspace,

@@ -48,7 +48,6 @@ vi.mock('#drivers/k8s/egress', () => ({
 vi.mock('#drivers/k8s/workspaces', () => ({
   runtimeHandleFromPod: (p: { workspaceId: string }) => ({ workspaceId: p.workspaceId }),
 }))
-vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import { startK8sDriver, stopK8sDriver, releaseK8sDriver, triggerFor } from '#drivers/k8s/lifecycle'
 import { deleteLeakedBuilderPods } from '#drivers/k8s/images'

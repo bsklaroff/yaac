@@ -7,10 +7,7 @@ vi.mock('#notify', () => ({
 import {
   ensureProvisioning,
   registerProvisioning,
-  updateProvisioningMessage,
-  failProvisioning,
   removeProvisioning,
-  reportAgentLaunchFailure,
   runProvisioned,
   listProvisioning,
   inFlightWorkspaceIds,
@@ -30,121 +27,37 @@ function register(id: string, over: Partial<{ projectSlug: string; tool: 'claude
   registerProvisioning({ workspaceId: id, projectSlug: 'p', tool: 'claude', kind: 'create', ...over })
 }
 
+/** Fail a registered entry the way a create does: its run rejects. */
+async function fail(id: string, error: string): Promise<void> {
+  await expect(runProvisioned(id, () => Promise.reject(new Error(error)))).rejects.toThrow(error)
+}
+
 describe('registerProvisioning', () => {
-  it('inserts an entry with a default message and notifies', () => {
+  // No cap: nothing is ever evicted.
+  it('inserts entries with a default message and notifies', () => {
     register('a')
     const list = listProvisioning()
     expect(list).toHaveLength(1)
     expect(list[0]).toMatchObject({ workspaceId: 'a', projectSlug: 'p', tool: 'claude', kind: 'create', message: 'Starting…' })
     expect(typeof list[0].createdAt).toBe('string')
     expect(notify).toHaveBeenCalledTimes(1)
+    for (let i = 0; i < 60; i++) register(`s${i}`)
+    expect(listProvisioning()).toHaveLength(61)
   })
 
-  it('overwrites a failed entry on the same id (a retry), but refuses a live one', () => {
+  it('overwrites a failed entry on the same id (a retry), but refuses a live one', async () => {
     register('a', { message: 'first' })
     expect(() => register('a', { message: 'second' })).toThrow(
       expect.objectContaining({ code: 'CONFLICT' }) as Error,
     )
     expect(listProvisioning()[0].message).toBe('first')
 
-    failProvisioning('a', 'boom')
+    await fail('a', 'boom')
     register('a', { message: 'second' })
     const list = listProvisioning()
     expect(list).toHaveLength(1)
     expect(list[0]).toMatchObject({ message: 'second' })
     expect(list[0].error).toBeUndefined()
-  })
-})
-
-describe('updateProvisioningMessage', () => {
-  it('updates the message and clears a prior error', () => {
-    register('a')
-    failProvisioning('a', 'boom')
-    updateProvisioningMessage('a', 'Pulling image…')
-    const e = listProvisioning()[0]
-    expect(e.message).toBe('Pulling image…')
-    expect(e.error).toBeUndefined()
-  })
-
-  it('is a no-op for an unknown id (no resurrection)', () => {
-    notify.mockClear()
-    updateProvisioningMessage('missing', 'x')
-    expect(listProvisioning()).toEqual([])
-    expect(notify).not.toHaveBeenCalled()
-  })
-})
-
-describe('failProvisioning', () => {
-  it('marks an entry failed and keeps it', () => {
-    register('a')
-    failProvisioning('a', 'no token')
-    expect(listProvisioning()[0]).toMatchObject({ workspaceId: 'a', error: 'no token' })
-  })
-
-  it('is a no-op for an unknown id', () => {
-    failProvisioning('missing', 'x')
-    expect(listProvisioning()).toEqual([])
-  })
-})
-
-describe('reportAgentLaunchFailure', () => {
-  const report = (id: string, error = 'agent "codex" exited right after launch') =>
-    reportAgentLaunchFailure({ workspaceId: id, projectSlug: 'p', tool: 'codex', kind: 'create', error })
-
-  it('lands a failed row for a launch that died after its create resolved', async () => {
-    // The window probe is not awaited (its settle sleep would slow every
-    // create), so its verdict can arrive after the create finished. It
-    // re-registers a row so the user still sees the failure.
-    await report('a')
-    expect(listProvisioning()[0]).toMatchObject({
-      workspaceId: 'a', tool: 'codex', kind: 'create',
-      error: 'agent "codex" exited right after launch',
-    })
-  })
-
-  it('keeps the failed row out of the in-flight set, so the reaper still owns the workspace', async () => {
-    // The liveness watch and stale reaper handle a dying workspace. A row
-    // that shielded it would leave it in the sidebar forever.
-    await report('a', 'dead')
-    expect(inFlightWorkspaceIds()).toEqual([])
-  })
-
-  it('waits for the create still in flight, so its success cannot erase the verdict', async () => {
-    // The probe fires from inside the create, so its report can land first,
-    // and runProvisioned's success path would then remove the failed row.
-    // Here the verdict is filed mid-create.
-    register('a')
-    let filed: Promise<void> | undefined
-    let release!: () => void
-    const blocked = new Promise<void>((r) => { release = r })
-    const run = runProvisioned('a', async () => {
-      filed = report('a')
-      await blocked
-      return 'ok'
-    })
-    // Mid-create, the verdict must not have touched the registry yet.
-    await Promise.resolve()
-    expect(listProvisioning()[0]?.error).toBeUndefined()
-
-    release()
-    await run
-    await filed
-    expect(listProvisioning()[0]).toMatchObject({ workspaceId: 'a', error: 'agent "codex" exited right after launch' })
-  })
-
-  it('leaves a create that failed on its own to say why', async () => {
-    // The create's own error is the cause and the dead agent window only a
-    // symptom, so the create's message is kept.
-    register('a')
-    let filed: Promise<void> | undefined
-    const run = runProvisioned('a', () => {
-      filed = report('a', 'agent died')
-      return Promise.reject(new Error('create blew up'))
-    })
-    await expect(run).rejects.toThrow('create blew up')
-    await filed
-    expect(listProvisioning()).toHaveLength(1)
-    expect(listProvisioning()[0]?.error).toBe('create blew up')
   })
 })
 
@@ -178,7 +91,7 @@ describe('runProvisioned', () => {
     expect(listProvisioning()).toEqual([])
   })
 
-  it('marks the row failed and rethrows', async () => {
+  it('marks the row failed and rethrows, and a retry’s progress clears the error', async () => {
     register('a')
     await expect(
       runProvisioned('a', () => Promise.reject(new ServerError('NOT_FOUND', 'missing'))),
@@ -186,6 +99,15 @@ describe('runProvisioned', () => {
     expect(listProvisioning()[0]).toMatchObject({
       workspaceId: 'a', error: 'missing',
     })
+
+    let during: unknown
+    await runProvisioned('a', (onProgress) => {
+      onProgress('Pulling image…')
+      during = listProvisioning()[0]
+      return Promise.resolve()
+    })
+    expect(during).toMatchObject({ message: 'Pulling image…' })
+    expect(during).not.toHaveProperty('error')
   })
 
   // The create route reserves the id before it streams. A run refused before
@@ -207,6 +129,7 @@ describe('runProvisioned', () => {
     ])
   })
 
+  // A late callback must not resurrect a removed entry.
   it('leaves the registry alone when the caller never registered a row', async () => {
     notify.mockClear()
     await runProvisioned('unregistered', (onProgress) => {
@@ -216,6 +139,8 @@ describe('runProvisioned', () => {
     expect(listProvisioning()).toEqual([])
     // Only the post-success snapshot push; registry no-ops don't notify.
     expect(notify).toHaveBeenCalledTimes(1)
+    await fail('unregistered', 'boom')
+    expect(listProvisioning()).toEqual([])
   })
 })
 
@@ -241,13 +166,6 @@ describe('listProvisioning', () => {
   })
 })
 
-describe('no cap', () => {
-  it('keeps every tracked entry (no eviction)', () => {
-    for (let i = 0; i < 60; i++) register(`s${i}`)
-    expect(listProvisioning()).toHaveLength(60)
-  })
-})
-
 describe('inFlightWorkspaceIds', () => {
   it('reports every entry the server is still provisioning', () => {
     registerProvisioning({ workspaceId: 'a', projectSlug: 'p', tool: 'claude', kind: 'create' })
@@ -258,10 +176,10 @@ describe('inFlightWorkspaceIds', () => {
   // The in-flight set keeps sweeps from reaping mid-create. A failed row
   // lingers until dismissed, so counting it would shield the leftovers
   // forever.
-  it('drops a failed entry, which is not still running', () => {
+  it('drops a failed entry, which is not still running', async () => {
     registerProvisioning({ workspaceId: 'a', projectSlug: 'p', tool: 'claude', kind: 'create' })
     registerProvisioning({ workspaceId: 'gone', projectSlug: 'p', tool: 'claude', kind: 'create' })
-    failProvisioning('gone', 'image build exploded')
+    await fail('gone', 'image build exploded')
     expect(inFlightWorkspaceIds()).toEqual(['a'])
     // The row survives for the user to dismiss.
     expect(listProvisioning().map((e) => e.workspaceId).sort()).toEqual(['a', 'gone'])

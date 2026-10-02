@@ -1,34 +1,36 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type * as createModule from '#domain/workspaces/create'
-
-// Stub createWorkspace so the substrate is never touched; everything that
-// decides what gets created runs for real.
-vi.mock('#domain/workspaces/create', async (importOriginal) => ({
-  ...(await importOriginal<typeof createModule>()),
-  createWorkspace: vi.fn(),
-}))
-
-import { createWorkspace, type WorkspaceCreateResult } from '#domain/workspaces/create'
 import { startWorkspace } from '#domain/workspaces'
 import { clearAllProvisioningForTests, listProvisioning } from '#domain/workspaces/provisioning'
-import { getProjectRow, recordProject } from '#db/project-store'
+import { getProjectRow, getWorkspaceRow, listWorkspaceAgentSessions } from '#db'
 import { closeDb } from '#db/client'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { seedProject } from '@yaac/test-utils/project-fixture'
+import type { WorkspaceDriver } from '#drivers/contract'
 
-const mockCreate = vi.mocked(createWorkspace)
+// Everything runs for real down to the fake driver, over a real project.
 let tmpDir: string
+let launched: string[]
+/** Install the driver, recording launches; `list` is the spare lookup. */
+function installDriver(overrides: Partial<WorkspaceDriver> = {}): void {
+  installFakeWorkspaceDriver({
+    launch: (spec) => {
+      launched.push(spec.workspaceId)
+      return Promise.resolve(handleFixture({ workspaceId: spec.workspaceId, projectSlug: 'proj' }))
+    },
+    ...overrides,
+  })
+}
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
+  await seedProject('proj')
   clearAllProvisioningForTests()
-  await recordProject({ slug: 'proj', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
-  mockCreate.mockReset().mockImplementation((_slug, opts) => Promise.resolve({
-    workspaceId: opts.workspaceId ?? 'x', jobName: 'j', forwardedPorts: [], tool: opts.tool ?? 'claude', mode: 'tui',
-  } as WorkspaceCreateResult))
+  launched = []
 })
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   resetWorkspaceDriver()
   await closeDb()
   await cleanupTempDir(tmpDir)
@@ -37,11 +39,13 @@ afterEach(async () => {
 describe('startWorkspace', () => {
   it('resolves the setup, shows its row, and creates cold when no spare is wanted', async () => {
     const list = vi.fn(() => Promise.resolve([]))
-    installFakeWorkspaceDriver({ list })
     let row: ReturnType<typeof listProvisioning>[number] | undefined
-    mockCreate.mockImplementation(() => {
-      row = listProvisioning().find((p) => p.workspaceId === 'wt-1')
-      return Promise.resolve({ workspaceId: 'wt-1', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' })
+    installDriver({
+      list,
+      prepareImage: () => {
+        row = listProvisioning().find((p) => p.workspaceId === 'wt-1')
+        return Promise.resolve('img')
+      },
     })
 
     const result = await startWorkspace({
@@ -50,7 +54,7 @@ describe('startWorkspace', () => {
       tool: 'claude',
       model: 'claude-opus-5-5',
       permissionMode: 'plan',
-      branch: 'release',
+      branch: 'dev',
       prompt: 'go',
       rememberDefaults: false,
       claimSpare: false,
@@ -59,10 +63,12 @@ describe('startWorkspace', () => {
     expect(result.workspaceId).toBe('wt-1')
     // The row names what is coming up before any agent has answered.
     expect(row).toMatchObject({ kind: 'create', tool: 'claude', model: 'claude-opus-5-5', modelName: 'Opus 5.5' })
-    expect(mockCreate).toHaveBeenCalledWith('proj', expect.objectContaining({
-      workspaceId: 'wt-1', tool: 'claude', model: 'claude-opus-5-5', permissionMode: 'plan',
-      mode: 'tui', branch: 'release', initialPrompt: 'go',
-    }))
+    expect(await getWorkspaceRow('proj', 'wt-1')).toMatchObject({
+      model: 'claude-opus-5-5', permissionMode: 'plan', mode: 'tui', baseBranch: 'dev',
+    })
+    expect(await listWorkspaceAgentSessions('proj', 'wt-1')).toEqual([
+      expect.objectContaining({ tool: 'claude', firstPrompt: 'go' }),
+    ])
     // No spare was looked for, and nothing was remembered for the project.
     expect(list).not.toHaveBeenCalled()
     const project = await getProjectRow('proj')
@@ -72,14 +78,14 @@ describe('startWorkspace', () => {
 
   it('remembers what a person named, and looks for a spare before creating', async () => {
     const list = vi.fn(() => Promise.resolve([]))
-    installFakeWorkspaceDriver({ list })
+    installDriver({ list })
 
     await startWorkspace({
       projectSlug: 'proj',
       workspaceId: 'wt-2',
       tool: 'codex',
       permissionMode: 'accept-edits',
-      branch: 'develop',
+      branch: 'dev',
       rememberDefaults: true,
       claimSpare: true,
     }, () => {})
@@ -87,9 +93,9 @@ describe('startWorkspace', () => {
     expect(list).toHaveBeenCalled()
     expect(await getProjectRow('proj')).toMatchObject({
       lastTool: 'codex',
-      lastBranch: 'develop',
+      lastBranch: 'dev',
       createDefaults: { codex: { permissionMode: 'accept-edits' } },
     })
-    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(launched).toEqual(['wt-2'])
   })
 })

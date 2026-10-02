@@ -10,6 +10,7 @@ import { deployTestServer } from '#deployed-server'
 import { TEST_CLI_DIR, TEST_CLI_ENTRY } from '#cli-bundle'
 import { e2eMkdtemp, removeScratchTree, testTmpBase } from '#tmp'
 import { freeLocalPort } from '#kubectl-forward'
+import { claimPidFile } from '#pid-file'
 
 export { TEST_CLI_DIR, TEST_CLI_ENTRY }
 
@@ -23,7 +24,7 @@ const ENTRY = TEST_CLI_ENTRY
  * wait on each other.
  *
  * The lock file holds the owner's pid, so a crashed holder's lock can be
- * taken over. fs.open(wx) is atomic across processes.
+ * taken over.
  */
 function serverLockFile(): string {
   return path.join(testTmpBase(), 'server-mutex.lock')
@@ -33,60 +34,19 @@ function serverLockFile(): string {
 // file lock is released when it drops to zero, so a file-level hold can't
 // deadlock against a per-test acquire in the same worker.
 let localDepth = 0
-let pendingFileUnlink: Promise<void> | null = null
 
 export async function acquireServerMutex(): Promise<() => Promise<void>> {
-  if (localDepth > 0) {
-    localDepth += 1
-    let released = false
-    return async (): Promise<void> => {
-      if (released) return
-      released = true
-      localDepth -= 1
-      if (localDepth === 0 && pendingFileUnlink) {
-        await pendingFileUnlink
-        pendingFileUnlink = null
-      }
-    }
-  }
-
   const lockFile = serverLockFile()
-  await fs.mkdir(path.dirname(lockFile), { recursive: true })
-  for (;;) {
-    try {
-      const fh = await fs.open(lockFile, 'wx')
-      await fh.writeFile(String(process.pid))
-      await fh.close()
-      localDepth = 1
-      let released = false
-      return async (): Promise<void> => {
-        if (released) return
-        released = true
-        localDepth -= 1
-        if (localDepth === 0) {
-          pendingFileUnlink = fs.unlink(lockFile).catch(() => { /* already gone */ })
-          await pendingFileUnlink
-          pendingFileUnlink = null
-        }
-      }
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
-      // Existing lock — check if the holder is still alive.
-      try {
-        const raw = await fs.readFile(lockFile, 'utf8')
-        const holderPid = parseInt(raw.trim(), 10)
-        if (!Number.isNaN(holderPid)) {
-          try {
-            process.kill(holderPid, 0)
-          } catch {
-            // Holder is gone — steal the lock.
-            await fs.unlink(lockFile).catch(() => { /* raced */ })
-            continue
-          }
-        }
-      } catch { /* lock vanished between readdir and read; retry */ }
-      await new Promise((r) => setTimeout(r, 50))
-    }
+  if (localDepth === 0) {
+    while (!await claimPidFile(lockFile)) await new Promise((r) => setTimeout(r, 50))
+  }
+  localDepth += 1
+  let released = false
+  return async (): Promise<void> => {
+    if (released) return
+    released = true
+    localDepth -= 1
+    if (localDepth === 0) await fs.unlink(lockFile).catch(() => { /* already gone */ })
   }
 }
 
@@ -318,19 +278,12 @@ export interface RunYaacResult {
 
 export interface RunYaacOptions {
   /**
-   * Data to write to stdin (otherwise /dev/null), then close it.
-   *
-   * A single string suits commands with one readline interface. Commands
-   * that open a readline per prompt (`auth update`, `auth clear`) would
-   * lose later answers to the first reader, so pass an array: each chunk is
-   * written `chunkDelayMs` after the last. Prefer `stdinOnPrompt`.
+   * Data to write to stdin (otherwise /dev/null), then close it. Suits a
+   * command with one readline interface; one that opens a readline per
+   * prompt would lose later answers to the first reader, so use
+   * `stdinOnPrompt` there.
    */
-  stdin?: string | string[]
-  /**
-   * Delay between chunks when `stdin` is an array. Default 1500 ms. Races
-   * under CPU load; prefer `stdinOnPrompt`.
-   */
-  chunkDelayMs?: number
+  stdin?: string
   /**
    * Write each `send` once its `when` pattern appears in stdout after the
    * previous match. The prompt is printed by the readline that will read
@@ -358,20 +311,7 @@ export async function runYaac(
     env,
     stdio: [wantsStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
   })
-  if (opts.stdin !== undefined && child.stdin) {
-    const delay = opts.chunkDelayMs ?? 1500
-    if (Array.isArray(opts.stdin)) {
-      void (async () => {
-        for (let i = 0; i < opts.stdin!.length; i++) {
-          if (i > 0) await new Promise((r) => setTimeout(r, delay))
-          child.stdin!.write(opts.stdin![i])
-        }
-        child.stdin!.end()
-      })()
-    } else {
-      child.stdin.end(opts.stdin)
-    }
-  }
+  if (opts.stdin !== undefined) child.stdin?.end(opts.stdin)
   let stdout = ''
   let stderr = ''
   let promptIdx = 0

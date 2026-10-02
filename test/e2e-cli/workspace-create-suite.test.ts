@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { promisify } from 'node:util'
 import { randomUUID } from 'node:crypto'
@@ -304,7 +304,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
    * like this holding the listener.
    */
   function startForwardCli(...args: string[]): {
-    ready: (count: number, timeoutMs?: number) => Promise<string[]>
+    ready: (count: number) => Promise<string[]>
     output: () => string
     stop: () => Promise<void>
   } {
@@ -318,17 +318,13 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     forwardChildren.push(child)
     return {
       output: () => out,
-      ready: async (count, timeoutMs = 30_000) => {
-        const deadline = Date.now() + timeoutMs
-        for (;;) {
-          const lines = out.split('\n').filter((l) => l.startsWith('forwarding '))
-          if (lines.length >= count) return lines
-          if (Date.now() > deadline) {
-            throw new Error(`yaac forward never bound ${String(count)} port(s). Output:\n${out}`)
-          }
-          await sleep(200)
+      ready: (count) => vi.waitFor(() => {
+        const lines = out.split('\n').filter((l) => l.startsWith('forwarding '))
+        if (lines.length < count) {
+          throw new Error(`yaac forward never bound ${String(count)} port(s). Output:\n${out}`)
         }
-      },
+        return lines
+      }, { timeout: 30_000, interval: 200 }),
       stop: async () => {
         if (child.exitCode !== null || child.signalCode !== null) return
         child.kill('SIGTERM')
@@ -341,20 +337,12 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
    * Wait until something on this machine accepts on `hostPort`. A newly
    * offered port is bound only once the client forwarder notices it.
    */
-  async function waitForLocalListener(hostPort: number, timeoutMs = 20_000): Promise<void> {
-    const deadline = Date.now() + timeoutMs
-    for (;;) {
-      const open = await new Promise<boolean>((resolve) => {
-        const socket = net.connect(hostPort, '127.0.0.1')
-        socket.once('connect', () => { socket.destroy(); resolve(true) })
-        socket.once('error', () => { socket.destroy(); resolve(false) })
-      })
-      if (open) return
-      if (Date.now() > deadline) {
-        throw new Error(`nothing bound 127.0.0.1:${String(hostPort)} within ${String(timeoutMs)}ms`)
-      }
-      await sleep(250)
-    }
+  async function waitForLocalListener(hostPort: number): Promise<void> {
+    await vi.waitFor(() => new Promise<void>((resolve, reject) => {
+      const socket = net.connect(hostPort, '127.0.0.1')
+      socket.once('connect', () => { socket.destroy(); resolve() })
+      socket.once('error', (err) => { socket.destroy(); reject(err) })
+    }), { timeout: 20_000, interval: 250 })
   }
 
   /**
@@ -380,18 +368,13 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     ])
 
     const curlHost = bindAddress === '::1' ? '[::1]' : bindAddress
-    for (let i = 0; i < 40; i++) {
-      try {
-        const { stdout } = await execInJob(jobName, [
-          'sh', '-c',
-          `curl -sf http://${curlHost}:${containerPort}/`,
-        ], { timeout: 5000 })
-        if (stdout === responseText) return
-      } catch {
-        await sleep(250)
-      }
-    }
-    throw new Error(`HTTP server on ${bindAddress}:${containerPort} never became ready`)
+    await vi.waitFor(async () => {
+      const { stdout } = await execInJob(jobName, [
+        'sh', '-c',
+        `curl -sf http://${curlHost}:${containerPort}/`,
+      ], { timeout: 5000 })
+      expect(stdout, `HTTP server on ${bindAddress}:${containerPort}`).toBe(responseText)
+    }, { timeout: 30_000, interval: 250 })
   }
 
   describe('kitchen-sink claude session', () => {
@@ -595,17 +578,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
     it('runs initCommands at session start', async () => {
       // Init commands run in a background tmux window, so poll.
-      let ran = false
-      for (let i = 0; i < 40; i++) {
-        try {
-          await execInJob(jobName, ['test', '-f', '/tmp/init-ran'])
-          ran = true
-          break
-        } catch {
-          await sleep(250)
-        }
-      }
-      expect(ran).toBe(true)
+      await vi.waitFor(() => execInJob(jobName, ['test', '-f', '/tmp/init-ran']), { timeout: 30_000, interval: 250 })
     }, 60_000)
 
     it('surfaces forwarded host ports in the tmux status bar', async () => {
@@ -856,17 +829,13 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       return body.workspaces[0]
     }
 
-    async function waitForUnforwarded(
-      predicate: (ports: number[]) => boolean,
-      what: string,
-    ): Promise<number[]> {
-      let ports: number[] = []
-      for (let i = 0; i < 60; i++) {
-        ports = (await kitchenSession()).unforwardedPorts
-        if (predicate(ports)) return ports
-        await sleep(1000)
-      }
-      throw new Error(`${what} — last unforwardedPorts: [${ports.join(', ')}]`)
+    /** Waits for `port`'s listener to surface in unforwardedPorts. */
+    async function waitForUnforwarded(port: number): Promise<number[]> {
+      return vi.waitFor(async () => {
+        const ports = (await kitchenSession()).unforwardedPorts
+        expect(ports).toContain(port)
+        return ports
+      }, { timeout: 120_000, interval: 1000 })
     }
 
     it('detects unforwarded listeners, never surfacing denylisted or forwarded ports', async () => {
@@ -875,10 +844,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       await startHttpServerInContainer(jobName, detectedPort, '127.0.0.1', 'detected server')
       await startHttpServerInContainer(jobName, 9229, '127.0.0.1', 'sensitive server')
 
-      const unforwarded = await waitForUnforwarded(
-        (ports) => ports.includes(detectedPort),
-        `listener on ${detectedPort} never surfaced in unforwardedPorts`,
-      )
+      const unforwarded = await waitForUnforwarded(detectedPort)
       // Hidden: the denylisted port, streamd (10300), and ports already
       // forwarded by config.
       expect(unforwarded).not.toContain(9229)
@@ -927,10 +893,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
     it('persists a detected port into the project config and forwards it live', async () => {
       await startHttpServerInContainer(jobName, persistedPort, '127.0.0.1', 'persisted server')
-      await waitForUnforwarded(
-        (ports) => ports.includes(persistedPort),
-        `listener on ${persistedPort} never surfaced in unforwardedPorts`,
-      )
+      await waitForUnforwarded(persistedPort)
 
       const res = await fetch(`${base}/api/workspace/${workspaceId}/forward-port`, {
         method: 'POST',
@@ -959,10 +922,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
     it('dismisses a detected port so it stops being offered', async () => {
       await startHttpServerInContainer(jobName, 8092, '127.0.0.1', 'dismissed server')
-      await waitForUnforwarded(
-        (ports) => ports.includes(8092),
-        'listener on 8092 never surfaced in unforwardedPorts',
-      )
+      await waitForUnforwarded(8092)
 
       const res = await fetch(`${base}/api/workspace/${workspaceId}/dismiss-port`, {
         method: 'POST',
@@ -1034,16 +994,11 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         expect(res.status).toBe(204)
       }
       const seen: string[] = []
-      const untilSwapped = async (expected: string): Promise<void> => {
-        const deadline = Date.now() + 30_000
-        for (;;) {
-          const key = await probe()
-          if (key !== undefined) seen.push(key)
-          if (key === expected || Date.now() > deadline) break
-          await new Promise((r) => setTimeout(r, 500))
-        }
+      const untilSwapped = (expected: string): Promise<void> => vi.waitFor(async () => {
+        const key = await probe()
+        if (key !== undefined) seen.push(key)
         expect(seen.at(-1), `saw ${seen.join(', ')}`).toBe(expected)
-      }
+      }, { timeout: 30_000, interval: 500 })
 
       await putKey('sk-ant-fake-rotated-key')
       await untilSwapped('sk-ant-fake-rotated-key')
@@ -1079,13 +1034,13 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       // Poll for the mock's "Hello from mock!" reply. An Enter sent during
       // claude's startup render can be dropped, so resend it periodically.
       let pane = ''
-      let hitMockText = false
-      for (let i = 0; i < 30; i++) {
+      let polls = 0
+      const hitMockText = await vi.waitFor(async () => {
         pane = await capturePane()
-        if (pane.includes('Hello from mock')) { hitMockText = true; break }
-        if (i > 0 && i % 3 === 0) await send('Enter')
-        await sleep(500)
-      }
+        if (pane.includes('Hello from mock')) return
+        if (++polls % 3 === 0) await send('Enter')
+        throw new Error('no reply from the mock yet')
+      }, { timeout: 30_000, interval: 500 }).then(() => true, () => false)
 
       if (!hitMockText) {
         console.error('final pane:\n' + pane)
@@ -1125,9 +1080,8 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       await opened
       await sleep(3000) // let the shell start and paint its prompt
       ws.send(Buffer.from('echo WS_ROUNDTRIP_$((40 + 2))\r'))
-      for (let i = 0; i < 30 && !binary().includes('WS_ROUNDTRIP_42'); i++) await sleep(500)
+      await vi.waitFor(() => expect(binary()).toContain('WS_ROUNDTRIP_42'), { timeout: 15_000, interval: 500 })
       ws.close()
-      expect(binary()).toContain('WS_ROUNDTRIP_42')
 
       // target=native, used by `yaac workspace attach`. The tmux prefix
       // must work here (view sessions disable it), so C-b d detaches and
@@ -1136,15 +1090,13 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         `ws://127.0.0.1:${server!.lock.port}/api/pty/attach`
           + `?id=${workspaceId}&target=native&cols=100&rows=30`,
       )
-      const nativeClosed = new Promise<void>((resolve) => native.ws.on('close', () => resolve()))
+      let nativeClosed = false
+      native.ws.on('close', () => { nativeClosed = true })
       await native.opened
-      for (let i = 0; i < 30 && native.binary().length === 0; i++) await sleep(500)
-      expect(native.binary().length).toBeGreaterThan(0)
+      await vi.waitFor(() => expect(native.binary().length).toBeGreaterThan(0), { timeout: 15_000, interval: 500 })
       native.ws.send(Buffer.from('\x02d')) // C-b d
-      await Promise.race([
-        nativeClosed,
-        sleep(15_000).then(() => { throw new Error('C-b d did not close the native attach') }),
-      ])
+      await vi.waitFor(() => expect(nativeClosed, 'C-b d did not close the native attach').toBe(true),
+        { timeout: 15_000, interval: 100 })
 
       // target=shell, used by `yaac workspace shell`: a plain zsh with no
       // tmux. `exit` closes the socket.
@@ -1152,17 +1104,15 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         `ws://127.0.0.1:${server!.lock.port}/api/pty/attach`
           + `?id=${workspaceId}&target=shell&cols=100&rows=30`,
       )
-      const shellClosed = new Promise<void>((resolve) => rawShell.ws.on('close', () => resolve()))
+      let shellClosed = false
+      rawShell.ws.on('close', () => { shellClosed = true })
       await rawShell.opened
       await sleep(3000)
       rawShell.ws.send(Buffer.from('echo RAW_SHELL_$((20 + 3))\r'))
-      for (let i = 0; i < 30 && !rawShell.binary().includes('RAW_SHELL_23'); i++) await sleep(500)
-      expect(rawShell.binary()).toContain('RAW_SHELL_23')
+      await vi.waitFor(() => expect(rawShell.binary()).toContain('RAW_SHELL_23'), { timeout: 15_000, interval: 500 })
       rawShell.ws.send(Buffer.from('exit\r'))
-      await Promise.race([
-        shellClosed,
-        sleep(15_000).then(() => { throw new Error('exit did not close the raw shell attach') }),
-      ])
+      await vi.waitFor(() => expect(shellClosed, 'exit did not close the raw shell attach').toBe(true),
+        { timeout: 15_000, interval: 100 })
     }, 120_000)
 
     it('holds its streams with no kubectl child at all', async () => {
@@ -1245,23 +1195,12 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       const setTitle = (title: string): Promise<{ stdout: string }> => execInJob(jobName, [
         'tmux', '-S', CONTAINER_TMUX_SOCK, 'select-pane', '-t', 'yaac:claude.0', '-T', title,
       ])
-      const waitForListStatus = async (
-        expected: 'running' | 'waiting',
-        timeoutMs: number,
-      ): Promise<void> => {
-        const deadline = Date.now() + timeoutMs
-        let lastOut = ''
-        for (;;) {
+      const waitForListStatus = (expected: 'running' | 'waiting', timeout: number): Promise<void> =>
+        vi.waitFor(async () => {
           const { stdout } = await runYaac(serverEnv, 'workspace', 'list', 'kitchen')
-          lastOut = stdout
           const row = stdout.split('\n').find((l) => l.includes('kitchen') && !l.startsWith('WORKSPACE'))
-          if (row?.includes(expected)) return
-          if (Date.now() > deadline) {
-            throw new Error(`status never became ${expected} within ${timeoutMs}ms; last list:\n${lastOut}`)
-          }
-          await sleep(500)
-        }
-      }
+          if (!row?.includes(expected)) throw new Error(`status is not ${expected}; list:\n${stdout}`)
+        }, { timeout, interval: 500 })
 
       await setTitle('✳ marker-idle')
       await waitForListStatus('waiting', 20_000)
@@ -1397,18 +1336,8 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         body: JSON.stringify({ project: 'no-ephemeral', tool: 'claude', workspaceId }),
       }).then((r) => r.text())
 
-      let sawProvisioning = false
-      for (let i = 0; i < 100; i++) {
-        const row = sub.latest()?.provisioning.find((p) => p.workspaceId === workspaceId)
-        if (row) {
-          expect(row.kind).toBe('create')
-          expect(row.projectSlug).toBe('no-ephemeral')
-          sawProvisioning = true
-          break
-        }
-        await sleep(200)
-      }
-      expect(sawProvisioning).toBe(true)
+      await vi.waitFor(() => expect(sub.latest()?.provisioning.find((p) => p.workspaceId === workspaceId))
+        .toMatchObject({ kind: 'create', projectSlug: 'no-ephemeral' }), { timeout: 20_000, interval: 200 })
 
       const ndjson = await createDone
       expect(ndjson).toContain('"type":"result"')
@@ -1421,17 +1350,11 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
       // ...and replaces the provisioning row; buildSnapshot never shows
       // both.
-      let droppedFromProvisioning = false
-      for (let i = 0; i < 100; i++) {
+      await vi.waitFor(() => {
         const snap = sub.latest()
-        if (snap && snap.workspaces.some((s) => s.workspaceId === workspaceId)
-          && !snap.provisioning.some((p) => p.workspaceId === workspaceId)) {
-          droppedFromProvisioning = true
-          break
-        }
-        await sleep(200)
-      }
-      expect(droppedFromProvisioning).toBe(true)
+        expect(snap?.workspaces.some((s) => s.workspaceId === workspaceId)).toBe(true)
+        expect(snap?.provisioning.some((p) => p.workspaceId === workspaceId)).toBe(false)
+      }, { timeout: 20_000, interval: 200 })
       sub.ws.close()
 
       // No redirect, so no node_modules at all.
@@ -1508,14 +1431,13 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         { name: 'upgrade', match: /Introducing GPT|Try new model|Use existing model/i, keys: ['Down', 'Enter'] },
       ] as const
       const seen = new Set<string>()
-      // Done only once the typed text echoes in the composer.
-      let typed = false
       let lastPane = ''
       // Polls to wait before re-typing, so a slow render is not typed twice.
       let cooldown = 0
-      for (let i = 0; i < 120 && !typed; i++) {
+      // Done only once the typed text echoes in the composer.
+      const typed = await vi.waitFor(async () => {
         lastPane = await capturePane()
-        if (lastPane.includes('hello mock')) { typed = true; break }
+        if (lastPane.includes('hello mock')) return
         const dialog = DIALOGS.find((d) => d.match.test(lastPane))
         if (dialog) {
           seen.add(dialog.name)
@@ -1528,8 +1450,8 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
             cooldown = 6
           } else cooldown--
         }
-        await sleep(500)
-      }
+        throw new Error('prompt not typed yet')
+      }, { timeout: 120_000, interval: 500 }).then(() => true, () => false)
       if (!typed) {
         console.error('composer never echoed the prompt (dialogs seen: '
           + (Array.from(seen).join(', ') || 'none') + ')')
@@ -1540,13 +1462,13 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
       // Poll for the reply, resending Enter as in the claude case.
       let pane = ''
-      let hitMockText = false
-      for (let i = 0; i < 60; i++) {
+      let polls = 0
+      const hitMockText = await vi.waitFor(async () => {
         pane = await capturePane()
-        if (pane.includes('Hello from mock')) { hitMockText = true; break }
-        if (i > 0 && i % 3 === 0) await send('Enter')
-        await sleep(500)
-      }
+        if (pane.includes('Hello from mock')) return
+        if (++polls % 3 === 0) await send('Enter')
+        throw new Error('no reply from the mock yet')
+      }, { timeout: 120_000, interval: 500 }).then(() => true, () => false)
 
       if (!hitMockText) {
         console.error('final pane:\n' + pane)
@@ -1587,15 +1509,12 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       // under gVisor. Wait before starting any other opencode server, too:
       // two servers creating the SQLite schema at once race, and if the
       // TUI's loses, the TUI and the tmux server exit.
-      let pane = ''
-      for (let i = 0; i < 30 && !/Ask anything/.test(pane); i++) {
-        pane = await execInJob(jobName, [
+      await vi.waitFor(async () => {
+        const { stdout: pane } = await execInJob(jobName, [
           'sh', '-c', `tmux -S ${CONTAINER_TMUX_SOCK} capture-pane -t yaac:opencode -p`,
-        ]).then((r) => r.stdout, (err: unknown) => String(err))
-        if (!/Ask anything/.test(pane)) await sleep(1000)
-      }
-      if (!/Ask anything/.test(pane)) console.error('opencode tmux pane:\n' + pane)
-      expect(pane).toMatch(/Ask anything/)
+        ])
+        expect(pane).toMatch(/Ask anything/)
+      }, { timeout: 30_000, interval: 1000 })
 
       // The server's opencode probe (runtime/agents/opencode.ts) uses this
       // same `opencode api session.get` command.
@@ -1637,14 +1556,10 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         path.join(hostOcConfigDir, 'opencode.json'),
         JSON.stringify({ model: 'anthropic/claude-sonnet-4-5' }),
       )
-      let catOut = ''
-      for (let i = 0; i < 10 && catOut === ''; i++) {
-        catOut = await execInJob(jobName, ['cat', '/home/yaac/.config/opencode/opencode.json'])
-          .then((r) => r.stdout, () => '')
-        if (catOut === '') await sleep(500)
-      }
-      const inside: unknown = JSON.parse(catOut.trim())
-      expect(inside).toEqual({ model: 'anthropic/claude-sonnet-4-5' })
+      await vi.waitFor(async () => {
+        const { stdout } = await execInJob(jobName, ['cat', '/home/yaac/.config/opencode/opencode.json'])
+        expect(JSON.parse(stdout.trim())).toEqual({ model: 'anthropic/claude-sonnet-4-5' })
+      }, { timeout: 30_000, interval: 500 })
     }, 60_000)
 
     it('checkpoints its history to the global tier at stop, leaves nothing on the node, and resumes from it', async () => {
@@ -1672,19 +1587,12 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       expect(stopped.exitCode, stopped.stderr).toBe(0)
       // Stop returns before teardown finishes; the preStop hook checkpoints
       // and then empties the node copy.
-      let checkpointed = false
-      for (let i = 0; i < 120 && !checkpointed; i++) {
-        checkpointed = (await fs.readdir(checkpoint).catch(() => [] as string[])).some((f) => f.endsWith('.db'))
-        if (!checkpointed) await sleep(500)
-      }
-      expect(checkpointed).toBe(true)
-      let emptied = false
-      for (let i = 0; i < 40 && !emptied; i++) {
+      await vi.waitFor(async () => expect((await fs.readdir(checkpoint)).some((f) => f.endsWith('.db'))).toBe(true),
+        { timeout: 60_000, interval: 500 })
+      await vi.waitFor(async () => {
         const { stdout } = await execFileAsync('podman', ['exec', node, 'sh', '-c', `ls -A ${nodeCopy} 2>/dev/null | wc -l`])
-        emptied = stdout.trim() === '0'
-        if (!emptied) await sleep(250)
-      }
-      expect(emptied).toBe(true)
+        expect(stdout.trim()).toBe('0')
+      }, { timeout: 60_000, interval: 250 })
 
       // A checkpoint can have a WAL beside its db. Commit a title change to
       // the WAL only (exit without closing); the restore must include it.
@@ -1717,22 +1625,17 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       await expect(execInJob(jobName, ['touch', path.join(path.dirname(line), 'planted')])).rejects.toThrow()
       await expect(execInJob(jobName, ['test', '-e', '/repo'])).rejects.toThrow()
       await expect(execInJob(jobName, ['test', '-e', '/home/yaac/.local/share/opencode/junk.txt'])).rejects.toThrow()
-      let listed = ''
-      for (let i = 0; i < 60 && !listed.includes(createdId ?? '\0'); i++) {
-        listed = await execInJob(jobName, ['sh', '-c', 'opencode api --standalone session.list'], { timeout: 60_000 })
-          .then((r) => r.stdout).catch(() => '')
-        if (!listed.includes(createdId ?? '\0')) await sleep(1000)
-      }
-      expect(listed).toContain(createdId)
+      const listed = await vi.waitFor(async () => {
+        const { stdout } = await execInJob(jobName, ['sh', '-c', 'opencode api --standalone session.list'], { timeout: 60_000 })
+        expect(stdout).toContain(createdId)
+        return stdout
+      }, { timeout: 180_000, interval: 1000 })
       expect(listed).toContain('wal-only-title')
       // A fresh checkpoint removes the stale WAL.
-      let sidecarGone = false
-      for (let i = 0; i < 20 && !sidecarGone; i++) {
+      await vi.waitFor(async () => {
         await execInJob(jobName, ['/usr/local/bin/yaac-opencode-checkpoint'], { timeout: 60_000 })
-        sidecarGone = !await fs.stat(path.join(checkpoint, 'opencode.db-wal')).then(() => true, () => false)
-        if (!sidecarGone) await sleep(500)
-      }
-      expect(sidecarGone).toBe(true)
+        await expect(fs.stat(path.join(checkpoint, 'opencode.db-wal'))).rejects.toThrow()
+      }, { timeout: 120_000, interval: 500 })
     }, 300_000)
   })
 
@@ -1772,19 +1675,13 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     it('types the prompt into the agent pane and submits it, no attach needed', async () => {
       // The server pastes and submits the prompt (buildPromptPasteCmd); the
       // mock's reply in the pane shows it was sent.
-      let pane = ''
-      let ok = false
-      for (let i = 0; i < 60; i++) {
-        const { stdout } = await execInJob(jobName, [
+      await vi.waitFor(async () => {
+        const { stdout: pane } = await execInJob(jobName, [
           'sh', '-c',
           `tmux -S ${CONTAINER_TMUX_SOCK} capture-pane -t yaac:claude -p -S - -E - 2>&1`,
         ])
-        pane = stdout
-        if (pane.includes(marker) && pane.includes('Hello from mock')) { ok = true; break }
-        await sleep(1000)
-      }
-      if (!ok) console.error('final pane:\n' + pane)
-      expect(ok).toBe(true)
+        if (!pane.includes(marker) || !pane.includes('Hello from mock')) throw new Error(`final pane:\n${pane}`)
+      }, { timeout: 120_000, interval: 1000 })
     }, 240_000)
 
     it('launches claude with the requested --model and --permission-mode', async () => {
@@ -1828,10 +1725,8 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
       // Polled: removal waits for the checkout step to settle, so it cannot
       // run before a still-fetching checkout lands.
-      for (let i = 0; i < 50 && (await ls(workspacesRoot)).length > checkoutsBefore.length; i++) {
-        await sleep(100)
-      }
-      expect(await ls(workspacesRoot)).toEqual(checkoutsBefore)
+      await vi.waitFor(async () => expect(await ls(workspacesRoot)).toEqual(checkoutsBefore),
+        { timeout: 5_000, interval: 100 })
     }, 60_000)
   })
   describe('agent mode (--mode acp)', () => {
@@ -1854,7 +1749,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       workspaceId = (await findWorkspacePod(SLUG)).workspaceId
 
       // The ACP handshake creates the conversation id, which gets recorded.
-      for (let i = 0; i < 120 && agentSessionId === ''; i++) {
+      agentSessionId = await vi.waitFor(async () => {
         const res = await fetch(`${base}/api/workspace/list?project=${SLUG}`)
         const body = await res.json() as {
           workspaces: Array<{
@@ -1862,11 +1757,12 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
             agentSessions: Array<{ agentSessionId: string; mode?: string }>
           }>
         }
-        agentSessionId = body.workspaces
+        const id = body.workspaces
           .find((w) => w.workspaceId === workspaceId)
-          ?.agentSessions.find((a) => a.mode === 'acp')?.agentSessionId ?? ''
-        if (agentSessionId === '') await sleep(1000)
-      }
+          ?.agentSessions.find((a) => a.mode === 'acp')?.agentSessionId
+        if (!id) throw new Error('no acp conversation recorded yet')
+        return id
+      }, { timeout: 120_000, interval: 1000 })
     }, 300_000)
 
     it('runs the agent under acpd, not a TUI, with its socket in the pod', async () => {
@@ -1924,13 +1820,11 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         images: [{ type: 'image', mimeType: 'image/png', data: E2E_PNG.toString('base64') }],
       }))
 
-      let recorded = ''
-      for (let i = 0; i < 60 && !recorded.includes('e2e recorded prompt'); i++) {
-        await sleep(1000)
-        recorded = (await execInJob(jobName, [
-          'sh', '-c', `cat /home/yaac/.yaac-acp/${agentSessionId}.jsonl`,
-        ])).stdout
-      }
+      const recorded = await vi.waitFor(async () => {
+        const { stdout } = await execInJob(jobName, ['sh', '-c', `cat /home/yaac/.yaac-acp/${agentSessionId}.jsonl`])
+        expect(stdout).toContain('e2e recorded prompt')
+        return stdout
+      }, { timeout: 120_000, interval: 1000 })
       ws.close()
       expect(recorded).toContain('"method":"session/prompt"')
       expect(recorded).toContain('e2e recorded prompt')
@@ -1944,7 +1838,8 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
           + `?id=${workspaceId}&session=${encodeURIComponent(agentSessionId)}`,
       )
       await opened
-      for (let i = 0; i < 60 && !text.some((l) => l.includes('e2e recorded prompt')); i++) await sleep(500)
+      await vi.waitFor(() => expect(text.some((l) => l.includes('e2e recorded prompt'))).toBe(true),
+        { timeout: 30_000, interval: 500 })
       ws.close()
 
       const hello = text.map((l) => JSON.parse(l) as { type: string; events?: Array<{ type: string }> })
@@ -1976,11 +1871,9 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
           + `?id=${workspaceId}&session=${encodeURIComponent(agentSessionId)}`,
       )
       await opened
-      for (let i = 0; i < 30 && text.length === 0; i++) await sleep(500)
-      ws.close()
-
       // `hello` carries the event log a chat pane renders on attach.
-      expect(text.length).toBeGreaterThan(0)
+      await vi.waitFor(() => expect(text.length).toBeGreaterThan(0), { timeout: 15_000, interval: 500 })
+      ws.close()
       const hello = JSON.parse(text[0]) as {
         type: string
         agentSessionId?: string
@@ -2057,15 +1950,12 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
         // A `session/new` reply with an id means the adapter started and
         // accepted yaac declining the `fs/*` and `terminal/*` capabilities.
-        let recorded = ''
-        for (let i = 0; i < 90 && !recorded.includes('"sessionId"'); i++) {
-          recorded = (await execInJob(job, [
-            'sh', '-c', 'cat /home/yaac/.yaac-acp/*.jsonl 2>/dev/null || true',
-          ])).stdout
-          if (!recorded.includes('"sessionId"')) await sleep(2000)
-        }
+        const recorded = await vi.waitFor(async () => {
+          const { stdout } = await execInJob(job, ['sh', '-c', 'cat /home/yaac/.yaac-acp/*.jsonl 2>/dev/null || true'])
+          expect(stdout).toContain('"sessionId"')
+          return stdout
+        }, { timeout: 180_000, interval: 2000 })
         expect(recorded).toContain('"method":"initialize"')
-        expect(recorded).toContain('"sessionId"')
         if (modeId !== undefined) expect(recorded).toContain(`"modeId":"${modeId}"`)
         if (method !== undefined) expect(recorded).toContain(method)
         // An unrouted call gets "Method not found" and is otherwise silent.
@@ -2100,13 +1990,11 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       expect(startCmd).not.toContain('--permission-mode')
 
       // `accept-edits` is `acceptEdits` on the wire.
-      let recorded = ''
-      for (let i = 0; i < 60 && !recorded.includes('session/set_mode'); i++) {
-        recorded = (await execInJob(jobName, [
-          'sh', '-c', `cat /home/yaac/.yaac-acp/${agentSessionId}.jsonl`,
-        ])).stdout
-        if (!recorded.includes('session/set_mode')) await sleep(1000)
-      }
+      const recorded = await vi.waitFor(async () => {
+        const { stdout } = await execInJob(jobName, ['sh', '-c', `cat /home/yaac/.yaac-acp/${agentSessionId}.jsonl`])
+        expect(stdout).toContain('session/set_mode')
+        return stdout
+      }, { timeout: 120_000, interval: 1000 })
       const lines = recorded.split('\n').flatMap((l) => {
         try { return [JSON.parse(l) as Record<string, unknown>] } catch { return [] }
       })

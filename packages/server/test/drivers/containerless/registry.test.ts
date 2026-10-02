@@ -15,6 +15,7 @@ import {
   rememberWorkspace,
   restoreWorkspace,
   sshAgentPidOf,
+  tmuxPidOf,
   writeMarker,
   type WorkspaceMarker,
 } from '#drivers/containerless/registry'
@@ -41,20 +42,13 @@ afterEach(() => {
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
-describe('rememberWorkspace', () => {
-  it('answers as a running workspace addressed by the handle it minted', () => {
-    const handle = rememberWorkspace(marker(A))
-    expect(handle.jobName).toBe(containerlessJobName('demo', A))
-    expect(handle.running).toBe(true)
-    expect(handle.state).toBe('running')
-  })
-})
-
 describe('findWorkspace', () => {
   // Prefix expansion happens in the domain layer, over rows.
-  it('resolves by exact id only', () => {
+  it('resolves by exact id only, as a running workspace addressed by its minted handle', () => {
     rememberWorkspace(marker(A))
-    expect(findWorkspace(A)?.workspaceId).toBe(A)
+    expect(findWorkspace(A)).toMatchObject({
+      workspaceId: A, jobName: containerlessJobName('demo', A), running: true, state: 'running',
+    })
     expect(findWorkspace(A.slice(0, 8))).toBeUndefined()
     expect(findWorkspace(containerlessJobName('demo', A))).toBeUndefined()
     expect(findWorkspace('')).toBeUndefined()
@@ -84,6 +78,40 @@ describe('listWorkspaces', () => {
     expect(listWorkspaces('demo').map((w) => w.workspaceId)).toEqual([A])
     expect(listWorkspaces()).toHaveLength(2)
   })
+
+  /** Recover the registry from markers on disk, as a new server does. */
+  async function restart(): Promise<void> {
+    _resetRegistryForTests()
+    for (const m of await readMarkers()) restoreWorkspace(m, true, { reason: 'pod-stopped' })
+  }
+
+  it('lists every workspace a previous server left running, with what only the launch knew', async () => {
+    await restart()
+    // An install that has never had a project.
+    expect(listWorkspaces()).toEqual([])
+
+    await writeMarker(marker(A, { tmuxPid: 4242, sshAgentPid: 777, declaredTool: 'codex' }))
+    await writeMarker(marker(B, { projectSlug: 'other' }))
+    await restart()
+    expect(listWorkspaces().map((w) => w.workspaceId).sort()).toEqual([B, A].sort())
+    expect(findWorkspace(A)?.declaredTool).toBe('codex')
+    // The processes teardown must kill survive the reread.
+    expect(tmuxPidOf(A)).toBe(4242)
+    expect(sshAgentPidOf(A)).toBe(777)
+  })
+
+  it('takes identity from the marker path, and skips one it cannot read', async () => {
+    // Otherwise a copied state dir would claim to be its source workspace.
+    await writeMarker(marker(A))
+    await fsp.writeFile(markerPath('demo', A), JSON.stringify({
+      ...marker(A), projectSlug: 'somewhere-else', workspaceId: 'not-this-one',
+    }))
+    // One bad file must not fail the whole recovery.
+    await fsp.mkdir(path.dirname(markerPath('demo', B)), { recursive: true })
+    await fsp.writeFile(markerPath('demo', B), 'not json')
+    await restart()
+    expect(listWorkspaces().map((w) => [w.projectSlug, w.workspaceId])).toEqual([['demo', A]])
+  })
 })
 
 describe('countWorkspaces', () => {
@@ -110,64 +138,5 @@ describe('createRuntimeSnapshot', () => {
     rememberWorkspace(marker(B))
     // Destructive steps must all judge absence against the same view.
     expect(await snap.workspaces()).toHaveLength(1)
-  })
-})
-
-describe('readMarkers', () => {
-  it('finds every workspace a previous server left running', async () => {
-    await writeMarker(marker(A))
-    await writeMarker(marker(B, { projectSlug: 'other' }))
-    const found = await readMarkers()
-    expect(found.map((m) => m.workspaceId).sort()).toEqual([B, A].sort())
-  })
-
-  it('takes identity from the path, not from what the file claims', async () => {
-    // Otherwise a copied state dir would claim to be its source workspace.
-    await writeMarker(marker(A))
-    const file = markerPath('demo', A)
-    await fsp.writeFile(file, JSON.stringify({
-      ...marker(A), projectSlug: 'somewhere-else', workspaceId: 'not-this-one',
-    }))
-    const [found] = await readMarkers()
-    expect(found).toMatchObject({ projectSlug: 'demo', workspaceId: A })
-  })
-
-  it('skips an unreadable marker instead of failing the whole recovery', async () => {
-    await writeMarker(marker(A))
-    await fsp.mkdir(path.dirname(markerPath('demo', B)), { recursive: true })
-    await fsp.writeFile(markerPath('demo', B), 'not json')
-    expect((await readMarkers()).map((m) => m.workspaceId)).toEqual([A])
-  })
-
-  it('answers empty on an install that has never had a project', async () => {
-    expect(await readMarkers()).toEqual([])
-  })
-})
-
-describe('writeMarker', () => {
-  it('records what only the launch knew', async () => {
-    await writeMarker(marker(A, { tmuxPid: 4242, declaredTool: 'codex' }))
-    const raw = JSON.parse(await fsp.readFile(markerPath('demo', A), 'utf8')) as WorkspaceMarker
-    expect(raw).toMatchObject({ workspaceId: A, tmuxPid: 4242, declaredTool: 'codex' })
-  })
-})
-
-describe('sshAgentPidOf', () => {
-  it('answers for a live workspace and for one recovered after a restart', async () => {
-    // Teardown uses this to kill the workspace's ssh-agent, so it must work
-    // for a workspace recovered from its marker after a restart.
-    rememberWorkspace(marker(A, { sshAgentPid: 777 }))
-    expect(sshAgentPidOf(A)).toBe(777)
-
-    _resetRegistryForTests()
-    await writeMarker(marker(A, { sshAgentPid: 777 }))
-    for (const m of await readMarkers()) restoreWorkspace(m, true, { reason: 'pod-stopped' })
-    expect(sshAgentPidOf(A)).toBe(777)
-  })
-
-  it('is undefined for a project with no SSH remote, and for an unknown id', () => {
-    rememberWorkspace(marker(A))
-    expect(sshAgentPidOf(A)).toBeUndefined()
-    expect(sshAgentPidOf('nobody')).toBeUndefined()
   })
 })

@@ -4,8 +4,6 @@ import path from 'node:path'
 import os from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { baseImageHash } from '@yaac/server/drivers/k8s/image-engine/image-builder'
-import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
 import { ensureNamespace } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import {
   k8sNamespace,
@@ -14,8 +12,8 @@ import {
   kubectlWithRetry,
   type KubectlExecOptions,
 } from '@yaac/server/drivers/k8s/substrate/kubectl'
-import { registryHasTag, registryRef } from '@yaac/server/drivers/k8s/container/registry'
 import { e2eMkdtemp } from '#tmp'
+import { resolveTestBaseImageRef, waitForPod } from '#test-pods'
 
 const execFileAsync = promisify(execFile)
 
@@ -58,23 +56,6 @@ export interface MockGit {
   readonly reposDir: string
   stop(): Promise<void>
 }
-
-/**
- * The in-cluster ref of the `yaac-test-base` image, prebuilt and pushed by
- * `test/global-setup.ts`. A missing tag fails fast rather than building.
- */
-export async function resolveTestBaseImageRef(): Promise<string> {
-  const dockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
-  const tag = `yaac-test-base:${await baseImageHash(dockerfile)}`
-  if (!await registryHasTag(tag)) {
-    throw new Error(
-      `${tag} is not in the local registry — did test/global-setup.ts run `
-      + 'with the registry reachable?',
-    )
-  }
-  return registryRef(tag)
-}
-
 
 /** `kubectl exec` into a mock pod (argv passthrough, no shell quoting). */
 async function execInPod(
@@ -127,6 +108,17 @@ async function startMockPod(
           imagePullPolicy: 'IfNotPresent',
           command: ['node', '-e', script],
           ports: [{ containerPort: port }],
+          // Ready once the server accepts connections. An exec probe, so no
+          // network policy stands between it and the server.
+          readinessProbe: {
+            exec: {
+              command: ['node', '-e', `require('net').connect({ host: '127.0.0.1', port: ${String(port)} })`
+                + `.once('connect', () => process.exit(0)).once('error', () => process.exit(1))`],
+            },
+            periodSeconds: 1,
+            // A cold `node` start through the exec path can take seconds.
+            timeoutSeconds: 5,
+          },
           ...(opts.hostPathDir
             ? { volumeMounts: [{ name: 'repos', mountPath: '/srv/git', readOnly: true }] }
             : {}),
@@ -159,36 +151,9 @@ async function startMockPod(
     throw new Error(`mock service ${name} has no ClusterIP`)
   }
 
-  // Phase 1: wait for the pod to be Running (covers image pull).
-  interface RawPod { status?: { phase?: string } }
-  let phase = 'Pending'
-  for (let i = 0; i < 120; i++) {
-    const pod = await kubectlGetJson<RawPod>(['get', 'pod', name, '-n', ns])
-    phase = pod?.status?.phase ?? 'Unknown'
-    if (phase === 'Running') break
-    if (phase === 'Failed' || phase === 'Succeeded') {
-      throw new Error(`mock pod ${name} reached terminal phase ${phase}`)
-    }
-    await new Promise((r) => setTimeout(r, 500))
-  }
-  if (phase !== 'Running') {
-    throw new Error(`mock pod ${name} not Running after 60s (phase ${phase})`)
-  }
-
-  // Phase 2: wait for the node server inside to accept connections.
-  for (let i = 0; i < 40; i++) {
-    try {
-      await execInPod(name, [
-        'sh', '-c',
-        `node -e "require('net').connect({ host: '127.0.0.1', port: ${port} }).once('connect', () => process.exit(0)).once('error', () => process.exit(1))"`,
-      ], { timeout: 5000 })
-      return clusterIp
-    } catch {
-      if (i === 39) throw new Error(`mock pod ${name} server did not become ready in 10s`)
-      await new Promise((r) => setTimeout(r, 250))
-    }
-  }
-  throw new Error(`mock pod ${name} server did not become ready`)
+  // Covers the image pull and the server's startup.
+  await waitForPod(name, { ready: true, timeoutMs: 70_000 })
+  return clusterIp
 }
 
 /** Delete a mock's Pod + Service, swallowing every error. */

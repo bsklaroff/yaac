@@ -33,19 +33,19 @@ const KIND_BYO_DIR = path.join(REPO_ROOT, 'test', 'kind-byo')
 const GANESHA_CONTEXT = path.join(KIND_BYO_DIR, 'ganesha')
 
 /** The names the stand-in cloud's classes and server go by. */
-export const KIND_BYO_NFS_CLASS = 'kind-byo-nfs'
-export const KIND_BYO_LOCAL_CLASS = 'kind-byo-local'
+const KIND_BYO_NFS_CLASS = 'kind-byo-nfs'
+const KIND_BYO_LOCAL_CLASS = 'kind-byo-local'
 /**
  * A second, non-default block class that install is told to use for
  * `yaac-server-local`, so ignoring the named class would show.
  */
-export const KIND_BYO_RWO_CLASS = 'kind-byo-rwo'
-export const KIND_BYO_NFS_NAMESPACE = 'kind-byo-nfs'
+const KIND_BYO_RWO_CLASS = 'kind-byo-rwo'
+const KIND_BYO_NFS_NAMESPACE = 'kind-byo-nfs'
 const GANESHA_NAME = 'nfs-ganesha'
 /** Where the csi node plugin mounts from — the ganesha Service's name. */
-export const KIND_BYO_NFS_SERVER = `${GANESHA_NAME}.${KIND_BYO_NFS_NAMESPACE}.svc.cluster.local`
+const KIND_BYO_NFS_SERVER = `${GANESHA_NAME}.${KIND_BYO_NFS_NAMESPACE}.svc.cluster.local`
 /** The export's pseudo path, which a class names as its `share`. */
-export const KIND_BYO_NFS_SHARE = '/export'
+const KIND_BYO_NFS_SHARE = '/export'
 
 const CSI_NFS_VERSION = 'v4.13.4'
 const LOCAL_PATH_VERSION = 'v0.0.37'
@@ -71,7 +71,7 @@ const CSI_NFS_FILES = [
 
 
 /** The ganesha image's tag: this directory's content, like every test image. */
-export async function ganeshaImageTag(): Promise<string> {
+async function ganeshaImageTag(): Promise<string> {
   return `yaac-kind-byo-ganesha:${stringHash(await contextHash(GANESHA_CONTEXT))}`
 }
 
@@ -627,7 +627,7 @@ export async function requireKindByo(): Promise<void> {
   }
 }
 
-export async function kindByoUp(): Promise<void> {
+async function kindByoUp(): Promise<void> {
   const layout = kindByoLayout()
   await preflight(layout)
   await ensureCluster(layout)
@@ -646,7 +646,7 @@ export async function kindByoUp(): Promise<void> {
  * Delete the cluster after draining the workers. NFS mounts are `hard`, so
  * a node still holding one after the NFS server goes would hang forever.
  */
-export async function kindByoDown(): Promise<void> {
+async function kindByoDown(): Promise<void> {
   const layout = kindByoLayout()
   ensureRootfulPodmanHost()
   const workers = (await run(layout, 'kubectl', [
