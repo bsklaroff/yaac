@@ -1,5 +1,6 @@
 import net from 'node:net'
 import { WebSocket } from 'ws'
+import { wsUrl } from '#api-core'
 
 /**
  * The client half of a workspace port forward: a listener on the user's
@@ -42,18 +43,6 @@ export interface ForwardEvents {
 }
 
 /**
- * The `/forward/attach` URL one connection opens. The WS scheme follows the
- * origin's (`https:` → `wss:`). Exported so tests can check that directly.
- */
-export function tunnelUrl(target: TunnelTarget, spec: ForwardSpec): string {
-  const url = new URL('/api/forward/attach', target.baseUrl)
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
-  url.searchParams.set('id', spec.session)
-  url.searchParams.set('port', String(spec.containerPort))
-  return url.toString()
-}
-
-/**
  * Connect one accepted TCP connection to one tunnel WebSocket. The socket
  * stays paused until the WebSocket opens so early bytes are not lost.
  */
@@ -64,7 +53,10 @@ function bridge(
   events: ForwardEvents,
 ): void {
   socket.pause()
-  const ws = new WebSocket(tunnelUrl(target, spec))
+  const ws = new WebSocket(wsUrl(target.baseUrl, '/api/forward/attach', {
+    id: spec.session,
+    port: spec.containerPort,
+  }))
 
   let reported = false
   const fail = (message: string): void => {

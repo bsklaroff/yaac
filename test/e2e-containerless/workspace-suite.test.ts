@@ -641,6 +641,16 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       expect(await res.text()).toBe('hello from the workspace')
     } finally {
       await forwarder.stop()
+    }
+    // Without --port the ports come from the server's `/events` snapshots,
+    // bound on another loopback address so they miss the dev server's.
+    const offered = startForwardCli(workspaceId, '--bind', '127.0.0.2')
+    try {
+      await offered.ready()
+      const res = await fetch(`http://127.0.0.2:${String(devPort)}/`)
+      expect(await res.text()).toBe('hello from the workspace')
+    } finally {
+      await offered.stop()
       await tmux(workspaceId, 'kill-window', '-t', 'yaac:dev')
     }
     // A port the workspace is not listening on is refused, not relayed to

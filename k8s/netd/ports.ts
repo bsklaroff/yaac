@@ -2,10 +2,10 @@
  * Port allocation for an install's Envoy listener trio (https, http,
  * tunnel).
  *
- * Each install has one trio, shared by every redirected pod. Envoy picks
- * the egress target from the source pod IP (see envoy-config.ts), so
- * targets can change without moving a port, and conntrack's pinned DNAT
- * destinations stay valid for the life of the netd pod.
+ * Each install has one trio, shared by every redirected pod; Envoy admits
+ * a connection by its source pod IP (see envoy-config.ts). Pods come and
+ * go without moving a port, so conntrack's pinned DNAT destinations stay
+ * valid for the life of the netd pod.
  *
  * Installs on one node share the port range (all run hostNetwork), so
  * netd tries slots in a hash-derived order and takes the first free trio.

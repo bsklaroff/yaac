@@ -18,22 +18,6 @@ export function notificationFor(s: WorkspaceListEntry): { title: string; body: s
 }
 
 /**
- * Parse a raw `/events` frame; return the snapshot payload, or null for
- * anything that isn't a `snapshot` event (or is malformed).
- */
-export function parseSnapshotMessage(raw: string): ServerSnapshot | null {
-  try {
-    const parsed = JSON.parse(raw) as { type?: unknown; data?: unknown }
-    if (parsed.type === 'snapshot' && parsed.data !== null && typeof parsed.data === 'object') {
-      return parsed.data as ServerSnapshot
-    }
-  } catch {
-    // malformed frame — ignore
-  }
-  return null
-}
-
-/**
  * Folds successive snapshots into the waiting count and the workspaces that
  * just started waiting. The first snapshot only seeds state, so connecting to
  * a server with existing waits doesn't fire a burst of notifications.

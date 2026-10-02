@@ -90,6 +90,24 @@ export function createApiClient(origin: string, fetch: FetchLike) {
 }
 
 /**
+ * The WebSocket URL of a server route: `path` on `origin` with the scheme
+ * swapped to match (`https:` to `wss:`, else `ws:`) and each defined param
+ * set. A TLS origin must get `wss:`, or the upgrade goes out in the clear.
+ */
+export function wsUrl(
+  origin: string,
+  path: string,
+  params: Record<string, string | number | undefined> = {},
+): string {
+  const url = new URL(path, origin)
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) url.searchParams.set(key, String(value))
+  }
+  return url.toString()
+}
+
+/**
  * The typed client without throwing or unwrapping, for tests that assert
  * on raw status codes.
  */

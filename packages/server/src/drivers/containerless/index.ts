@@ -17,7 +17,6 @@ import { containerlessWorkspacePaths } from './paths'
 import { dialWorkspacePort, forgetPorts, workspacePorts } from './ports'
 import {
   claimWorkspaceTool,
-  countForProject,
   countWorkspaces,
   createRuntimeSnapshot,
   findForTeardown,
@@ -66,15 +65,13 @@ export function createContainerlessDriver(): WorkspaceDriver {
     findForTeardown: (workspaceId, opts) => Promise.resolve(findForTeardown(workspaceId, opts)),
     list: (projectSlug) => Promise.resolve(listWorkspaces(projectSlug)),
     count: () => Promise.resolve(countWorkspaces()),
-    countForProject: (projectSlug) => Promise.resolve(countForProject(projectSlug)),
     changes: (jobName, base, defaultBase) => getWorkspaceChanges(jobName, base, defaultBase),
     snapshot: (resync) => createRuntimeSnapshot(resync),
     reconcileSteps: () => ({ prePool: [], maintenance: [] }),
 
     // No egress mediation.
     blockedHosts: () => Promise.resolve([]),
-    gitAuthFailures: () => Promise.resolve([]),
-    allGitAuthFailures: () => Promise.resolve({}),
+    gitAuthFailures: () => Promise.resolve({}),
     allowHost: () => Promise.resolve(),
     // Credentials and secrets go into the workspace at launch. Token
     // refreshes are harvested from the tool home instead.

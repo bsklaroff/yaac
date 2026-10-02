@@ -239,7 +239,7 @@ if [ "${YAAC_NESTED_ENGINE:-}" = "1" ]; then
   # sudo's env_reset strips the pod env. It points at the combined bundle
   # ({public roots} ∪ {proxy CA}) so both MITM'd and tunnelled registries
   # verify — keep the path in sync with PROXY_CA_BUNDLE_PATH
-  # (packages/server/src/features/sessions/egress/proxy-client.ts).
+  # (packages/server/src/drivers/k8s/egress/proxy-client.ts).
   #
   # BUILDAH_ISOLATION=chroot: under buildah's default oci isolation the
   # sentry breaks the RUN-step stdio relay after a few tens of KB of output.

@@ -88,7 +88,7 @@ export async function ensureEnvoyImage(): Promise<string> {
   throw missingPrebuiltImage('Envoy', ENVOY_MIRROR_TAG)
 }
 
-export function buildNetdServiceAccountManifest(): Record<string, unknown> {
+function buildNetdServiceAccountManifest(): Record<string, unknown> {
   return {
     apiVersion: 'v1',
     kind: 'ServiceAccount',
@@ -97,38 +97,26 @@ export function buildNetdServiceAccountManifest(): Record<string, unknown> {
 }
 
 /**
- * Cluster-wide read-only access to pods only: netd must see every workspace
- * pod. It never writes to the API, so a compromised netd cannot change
- * cluster state.
+ * Read-only access to pods and Services in the install namespace: the
+ * workspace pods netd redirects, and the proxy Service's ClusterIP it
+ * redirects them to. `list`/`watch` cannot be limited by name, but that
+ * namespace holds only yaac's objects. netd never writes to the API, so a
+ * compromised netd cannot change cluster state.
  */
-export function buildNetdClusterRoleManifest(): Record<string, unknown> {
-  return {
-    apiVersion: 'rbac.authorization.k8s.io/v1',
-    kind: 'ClusterRole',
-    metadata: { name: netdClusterScopedName(), labels: netdClusterScopedLabels() },
-    rules: [{ apiGroups: [''], resources: ['pods'], verbs: ['get', 'list', 'watch'] }],
-  }
-}
-
-/**
- * Read-only access to Services in the install namespace, for the proxy
- * Service's ClusterIP (the redirect target). `list`/`watch` cannot be
- * limited by name, but that namespace holds only yaac's objects.
- */
-export function buildNetdRoleManifest(): Record<string, unknown> {
+function buildNetdRoleManifest(): Record<string, unknown> {
   return {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: 'Role',
     metadata: { name: NETD_SA_NAME, namespace: k8sNamespace(), labels: { app: NETD_APP_NAME } },
     rules: [{
       apiGroups: [''],
-      resources: ['services'],
+      resources: ['pods', 'services'],
       verbs: ['get', 'list', 'watch'],
     }],
   }
 }
 
-export function buildNetdRoleBindingManifest(): Record<string, unknown> {
+function buildNetdRoleBindingManifest(): Record<string, unknown> {
   return {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: 'RoleBinding',
@@ -138,29 +126,19 @@ export function buildNetdRoleBindingManifest(): Record<string, unknown> {
   }
 }
 
-export function buildNetdClusterRoleBindingManifest(): Record<string, unknown> {
-  return {
-    apiVersion: 'rbac.authorization.k8s.io/v1',
-    kind: 'ClusterRoleBinding',
-    metadata: { name: netdClusterScopedName(), labels: netdClusterScopedLabels() },
-    roleRef: { apiGroup: 'rbac.authorization.k8s.io', kind: 'ClusterRole', name: netdClusterScopedName() },
-    subjects: [{ kind: 'ServiceAccount', name: NETD_SA_NAME, namespace: k8sNamespace() }],
-  }
+/**
+ * Delete the cluster-wide pod read an older netd was granted, which would
+ * otherwise outlive the namespaced Role that replaces it. A legacy-compat
+ * shim: see docs/legacy-compat-shims.md.
+ */
+async function deleteLegacyNetdClusterRbac(): Promise<void> {
+  await kubectlWithRetry([
+    'delete', 'clusterrolebinding,clusterrole', '--ignore-not-found',
+    '-l', `app=${NETD_APP_NAME},${LABEL_INSTALL_NAMESPACE}=${k8sNamespace()}`,
+  ])
 }
 
-/** Cluster-scoped names include the install namespace, so the real install
- *  and e2e installs can coexist. */
-export function netdClusterScopedName(): string {
-  return `${NETD_APP_NAME}-${k8sNamespace()}`
-}
-
-/** Labels on netd's cluster-scoped RBAC, naming the install namespace so
- *  the e2e sweep can find leftovers (they do not cascade with it). */
-export function netdClusterScopedLabels(): Record<string, string> {
-  return { app: NETD_APP_NAME, [LABEL_INSTALL_NAMESPACE]: k8sNamespace() }
-}
-
-export interface NetdDaemonSetOptions {
+interface NetdDaemonSetOptions {
   netdImage: string
   envoyImage: string
   /** Cluster pod CIDRs — excluded from the redirect so pod-to-pod stays direct. */
@@ -183,7 +161,7 @@ export interface NetdDaemonSetOptions {
  * - Only netd has a readiness probe; it goes ready only once Envoy is
  *   serving the current config.
  */
-export function buildNetdDaemonSetManifest(opts: NetdDaemonSetOptions): Record<string, unknown> {
+function buildNetdDaemonSetManifest(opts: NetdDaemonSetOptions): Record<string, unknown> {
   const envoyDir = '/etc/yaac-envoy'
   return {
     apiVersion: 'apps/v1',
@@ -282,8 +260,6 @@ export async function ensureNetd(): Promise<void> {
     clusterPodCidrs(),
   ])
   await kubectlApply(buildNetdServiceAccountManifest())
-  await kubectlApply(buildNetdClusterRoleManifest())
-  await kubectlApply(buildNetdClusterRoleBindingManifest())
   await kubectlApply(buildNetdRoleManifest())
   await kubectlApply(buildNetdRoleBindingManifest())
   await kubectlApply(buildNetdDaemonSetManifest({
@@ -293,4 +269,6 @@ export async function ensureNetd(): Promise<void> {
     'rollout', 'status', `daemonset/${NETD_APP_NAME}`,
     '-n', k8sNamespace(), '--timeout=180s',
   ], { timeout: 190_000, maxAttempts: 2 })
+  // After the rollout, so the netd pods being replaced keep their watch.
+  await deleteLegacyNetdClusterRbac()
 }

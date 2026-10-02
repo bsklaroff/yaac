@@ -3,6 +3,7 @@ import { getDb } from './client'
 import { agentSessions, workspaceAgentSessions } from './schema'
 import { MAX_MODEL_LENGTH, MAX_PROMPT_LENGTH, SELF_NAMING_TOOLS } from '@yaac/shared/types'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
+import { nullsToUndefined } from '#lib/nulls'
 
 /**
  * Conversation rows: `agent_sessions` (one row per tool-native conversation,
@@ -268,44 +269,6 @@ function selectLinked() {
   }
 }
 
-type LinkedSelect = {
-  projectSlug: string
-  workspaceId: string
-  tool: string
-  agentSessionId: string
-  mode: string
-  active: boolean
-  ordinal: number
-  paneId: string | null
-  firstSeenAt: Date
-  lastSeenAt: Date
-  createdAt: Date
-  transcriptPath: string | null
-  firstPrompt: string | null
-  lastActiveAt: Date | null
-  model: string | null
-}
-
-function toLinkRow(r: LinkedSelect): AgentSessionLinkRow {
-  return {
-    projectSlug: r.projectSlug,
-    workspaceId: r.workspaceId,
-    tool: r.tool as AgentTool,
-    agentSessionId: r.agentSessionId,
-    mode: r.mode === 'acp' ? 'acp' : 'tui',
-    active: r.active,
-    ordinal: r.ordinal,
-    createdAt: r.createdAt,
-    firstSeenAt: r.firstSeenAt,
-    lastSeenAt: r.lastSeenAt,
-    ...(r.paneId !== null ? { paneId: r.paneId } : {}),
-    ...(r.transcriptPath !== null ? { transcriptPath: r.transcriptPath } : {}),
-    ...(r.firstPrompt !== null ? { firstPrompt: r.firstPrompt } : {}),
-    ...(r.lastActiveAt !== null ? { lastActiveAt: r.lastActiveAt } : {}),
-    ...(r.model !== null ? { model: r.model } : {}),
-  }
-}
-
 /**
  * The link-to-conversation join. A function rather than a module-scope const
  * so the table references are read at call time, avoiding any dependence on
@@ -328,7 +291,7 @@ export async function listWorkspaceAgentSessions(
     .innerJoin(agentSessions, linkJoin())
     .where(linkKey(projectSlug, workspaceId))
     .orderBy(asc(workspaceAgentSessions.ordinal))
-  return rows.map(toLinkRow)
+  return rows.map(nullsToUndefined)
 }
 
 /**
@@ -345,7 +308,7 @@ export async function listActiveAgentSessions(
     .innerJoin(agentSessions, linkJoin())
     .where(and(linkKey(projectSlug, workspaceId), eq(workspaceAgentSessions.active, true)))
     .orderBy(asc(workspaceAgentSessions.ordinal))
-  return rows.map(toLinkRow)
+  return rows.map(nullsToUndefined)
 }
 
 /**
@@ -387,7 +350,7 @@ export async function getProjectAgentSessions(
     .orderBy(asc(workspaceAgentSessions.ordinal))
   const byWorkspace = new Map<string, AgentSessionLinkRow[]>()
   for (const r of rows) {
-    const row = toLinkRow(r)
+    const row: AgentSessionLinkRow = nullsToUndefined(r)
     byWorkspace.set(row.workspaceId, [...(byWorkspace.get(row.workspaceId) ?? []), row])
   }
   return byWorkspace
@@ -412,7 +375,7 @@ export async function getAgentSessionsFor(
   const wanted = new Set(workspaceIds.map((w) => `${w.projectSlug}/${w.workspaceId}`))
   const byWorkspace = new Map<string, AgentSessionLinkRow[]>()
   for (const r of rows) {
-    const row = toLinkRow(r)
+    const row: AgentSessionLinkRow = nullsToUndefined(r)
     const k = `${row.projectSlug}/${row.workspaceId}`
     if (!wanted.has(k)) continue
     byWorkspace.set(k, [...(byWorkspace.get(k) ?? []), row])

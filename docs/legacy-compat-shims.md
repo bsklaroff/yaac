@@ -17,4 +17,29 @@ No test can catch a shim going stale. The suite runs on a database and disk it
 just created, where every shim is already a no-op, so a green run says nothing
 about them. That is why this is a list and not a check.
 
-There are no shims in the tree at present.
+## netd's cluster-wide RBAC sweep
+
+netd watches pods only in its install namespace, through a namespaced Role.
+Older installs granted it a ClusterRole and ClusterRoleBinding named
+`yaac-netd-<namespace>` for a pod watch across every namespace. `kubectl
+apply` never prunes, so on an upgraded install that grant would outlive the
+code that needed it.
+
+- **What it reads.** `deleteLegacyNetdClusterRbac` in
+  `packages/server/src/drivers/k8s/cluster/netd.ts` deletes the ClusterRole
+  and ClusterRoleBinding labelled `app=yaac-netd` and
+  `yaac.install-namespace=<namespace>`, after every netd rollout.
+  `test/global-setup.ts` keeps `yaac-netd` in its leaked-RBAC selector to
+  sweep the same objects left by earlier test runs.
+- **What breaks silently if it goes too early.** Nothing visibly: the netd
+  ServiceAccount keeps cluster-wide read on every pod (specs, env, labels) on
+  installs that predate the change, so a compromised netd sees more than it
+  should.
+- **When it is safe to remove.** Once no install set up before the change
+  remains: `kubectl get clusterrole -l app=yaac-netd` is empty on every
+  cluster yaac manages.
+- **Order.** Delete this sweep before dropping `clusterroles` and
+  `clusterrolebindings` from the server's ClusterRole
+  (`buildServerClusterRoleManifest`). Nothing else the server runs needs
+  them, but while the sweep exists, removing them makes it fail as
+  Forbidden, and `ensureNetd` with it.

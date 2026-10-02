@@ -38,8 +38,8 @@ export interface WorkspaceCreated {
    *  resume, which keeps the recorded base. */
   baseBranch?: string
   /** An existing workspace is being restarted. Its row has history (title,
-   *  founding prompt, how it last died), so a failed resume restores the row
-   *  rather than erasing it. */
+   *  founding prompt, how it last died), so a failed resume leaves the row
+   *  as it was rather than erasing it. */
   resume?: boolean
   /** A prewarmed spare. It gets a row so a reap can tell it from a stopped
    *  workspace once its runtime is gone, but listings hide it until claimed. */
@@ -57,8 +57,8 @@ export interface WorkspaceCreated {
 
 /**
  * Provisioning failed; undoes `workspace-created`. The handler decides what
- * that means: a fresh workspace's row is erased, a resumed one is restored
- * as the restart found it.
+ * that means: a fresh workspace's row is erased, a resumed one is left as
+ * the restart found it.
  */
 export interface WorkspaceCreateFailed {
   type: 'workspace-create-failed'

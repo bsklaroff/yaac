@@ -267,22 +267,15 @@ describe('workspaceRestart (CLI shim)', () => {
   })
 
   it('attaches a terminal to a restarted tui workspace', async () => {
-    consumeSpy.mockResolvedValueOnce({ workspaceId: 'w1', jobName: 'j1', mode: 'tui' })
-    await expect(workspaceRestart('w1')).resolves.toBe('w1')
+    consumeSpy.mockResolvedValueOnce({ workspaceId: 'w1', mode: 'tui' })
+    await workspaceRestart('w1')
     expect(attachSpy).toHaveBeenCalledWith('w1', 'native')
   })
 
   it('does not attach a terminal to a restarted acp workspace', async () => {
     // Its tmux window only runs acpd; attaching would hang, as on create.
-    consumeSpy.mockResolvedValueOnce({ workspaceId: 'w2', jobName: 'j2', mode: 'acp' })
-    await expect(workspaceRestart('w2')).resolves.toBe('w2')
+    consumeSpy.mockResolvedValueOnce({ workspaceId: 'w2', mode: 'acp' })
+    await workspaceRestart('w2')
     expect(attachSpy).not.toHaveBeenCalled()
-  })
-
-  it('attaches when the server reports no mode at all', async () => {
-    // An older server omits `mode`; treat it as tui.
-    consumeSpy.mockResolvedValueOnce({ workspaceId: 'w3', jobName: 'j3' })
-    await expect(workspaceRestart('w3')).resolves.toBe('w3')
-    expect(attachSpy).toHaveBeenCalledWith('w3', 'native')
   })
 })

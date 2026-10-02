@@ -12,7 +12,6 @@ import { workspaceRename } from '#commands/workspace-rename'
 import { workspaceStop } from '#commands/workspace-stop'
 import { workspaceRestart } from '#commands/workspace-restart'
 import { workspaceAttach } from '#commands/workspace-attach'
-import { workspaceShell } from '#commands/workspace-shell'
 import { workspaceMonitor } from '#commands/workspace-monitor'
 import { forward } from '#commands/forward'
 import { workspaceAgents } from '#commands/workspace-agents'
@@ -34,23 +33,17 @@ import { runAuthDaemon, startAuthDaemon, stopAuthDaemon, statusAuthDaemon } from
 import { DEFAULT_SERVER_PORT } from '@yaac/shared/server-port'
 import { env } from '@yaac/shared/env'
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
-import { FAKE_AUTH_KINDS, type FakeAuthKind } from '@yaac/shared/types'
+import { FAKE_AUTH_KINDS } from '@yaac/shared/types'
 import { clusterArgError, type ClusterInstallArgs } from '@yaac/server/drivers/k8s/install'
-import type { WorkspaceMonitorOptions } from '#commands/workspace-monitor'
-import type { ForwardOptions } from '#commands/forward'
 
 /**
- * Reject a `cluster install`/`delete` invocation whose flags or environment
- * are invalid, printing the command's own message. Returns true when it did,
- * and the action must then return. Runs the command's guards (arg-guards.ts)
- * early so a typo doesn't cost loading the kubernetes client first.
+ * Throw a `cluster install`/`delete` invocation's flag or environment error,
+ * if it has one. Runs the command's guards (arg-guards.ts) early so a typo
+ * doesn't cost loading the kubernetes client first.
  */
-function rejectClusterArgs(command: 'install' | 'delete', options: ClusterInstallArgs = {}): boolean {
+function assertClusterArgs(command: 'install' | 'delete', options: ClusterInstallArgs = {}): void {
   const message = clusterArgError(command, options)
-  if (message === null) return false
-  console.error(`\n${message}`)
-  process.exitCode = 1
-  return true
+  if (message !== null) throw new Error(message)
 }
 
 /**
@@ -131,43 +124,24 @@ async function runDeployedServerVerb(
 }
 
 /**
- * Refuse a `yaac cluster …` command on a containerless install. Returns true
- * when it did, and the action must then return without loading the command.
- * The recorded driver decides: it is this install's, whatever server is
- * selected, and a loopback origin can still be a tunnel to another machine.
- * Only with nothing recorded (a bare `yaac server run` registers nothing) is
- * a local running server asked.
+ * Refuse a `yaac cluster …` command on a containerless install. The recorded
+ * driver decides: it is this install's, whatever server is selected, and a
+ * loopback origin can still be a tunnel to another machine. Only with
+ * nothing recorded (a bare `yaac server run` registers nothing) is a local
+ * running server asked.
  */
-async function rejectClusterOnContainerless(): Promise<boolean> {
+async function refuseClusterOnContainerless(): Promise<void> {
   const { recordedDriver } = await import('@yaac/shared/install-driver')
   const recorded = await recordedDriver()
   const running = recorded === undefined ? await runningServerDriver() : undefined
-  const kind = recorded ?? running
-  if (kind !== 'containerless') return false
+  if ((recorded ?? running) !== 'containerless') return
   const where = running !== undefined
     ? 'The running server uses the containerless driver'
     : 'This install runs the containerless driver'
-  console.error(
-    `\n${where}: workspaces run on this host and there is no cluster to manage.`
+  throw new Error(
+    `${where}: workspaces run on this host and there is no cluster to manage.`
     + '\n    Run `yaac host check` to verify this machine instead.',
   )
-  process.exitCode = 1
-  return true
-}
-
-/**
- * Refuse a cluster verb when the kubeconfig's current context is not the
- * cluster this install was recorded in — every cluster call would otherwise
- * go to some other cluster (see cluster-identity.ts). `install` checks for
- * itself, after a kind install has had the chance to create its cluster.
- */
-async function rejectForeignCluster(): Promise<boolean> {
-  const { foreignClusterRefusal } = await import('@yaac/server/drivers/k8s/install')
-  const refusal = await foreignClusterRefusal()
-  if (refusal === null) return false
-  console.error(`\n${refusal}`)
-  process.exitCode = 1
-  return true
 }
 
 // On Linux, point every command (and kind, which inherits our env) at the
@@ -179,7 +153,10 @@ function collect(value: string, previous: string[]): string[] {
   return [...previous, value]
 }
 
-/** Help output with each subcommand's options nested under it. */
+/**
+ * Help output with each subcommand's options nested under it. Set on the
+ * root program, so every command inherits it.
+ */
 function nestedHelp(cmd: Command, helper: Help): string {
   const termWidth = helper.padWidth(cmd, helper)
   const output: string[] = []
@@ -188,6 +165,14 @@ function nestedHelp(cmd: Command, helper: Help): string {
 
   const desc = helper.commandDescription(cmd)
   if (desc) output.push(desc, '')
+
+  const args = helper.visibleArguments(cmd)
+  if (args.length) {
+    output.push('Arguments:')
+    for (const arg of args)
+      output.push(helper.formatItem(helper.argumentTerm(arg), termWidth, helper.argumentDescription(arg), helper))
+    output.push('')
+  }
 
   const opts = helper.visibleOptions(cmd)
   if (opts.length) {
@@ -215,11 +200,11 @@ const program = new Command()
   .name('yaac')
   .description('Agent sandbox manager')
   .version(pkg.version)
+  .configureHelp({ formatHelp: nestedHelp })
 
 const server = program
   .command('server')
   .description('Manage the yaac server (HTTP server the CLI talks to)')
-  .configureHelp({ formatHelp: nestedHelp })
 
 server
   .command('run')
@@ -271,14 +256,19 @@ server
 const cluster = program
   .command('cluster')
   .description('Manage the kubernetes cluster yaac runs workspaces on')
-  .configureHelp({ formatHelp: nestedHelp })
 
 cluster
   .command('check')
   .description('Verify cluster prerequisites (kubectl, registry, hostPath wiring)')
   .action(async () => {
-    if (await rejectClusterOnContainerless()) return
-    if (await rejectForeignCluster()) return
+    await refuseClusterOnContainerless()
+    // Refuse a kubeconfig context other than the cluster this install was
+    // recorded in, or every call would go there (see cluster-identity.ts).
+    // `install` checks for itself, after a kind install has had the chance
+    // to create its cluster.
+    const { foreignClusterRefusal } = await import('@yaac/server/drivers/k8s/install')
+    const refusal = await foreignClusterRefusal()
+    if (refusal !== null) throw new Error(refusal)
     const { clusterCheck } = await import('#commands/cluster-check')
     await clusterCheck()
   })
@@ -291,17 +281,13 @@ cluster
   .option('--rwx-storage-class <name>', 'With --byo (required): the NFS-family StorageClass the shared yaac-global claim is provisioned from')
   .option('--rwo-storage-class <name>', 'With --byo: the StorageClass the server\'s own yaac-server-local claim is provisioned from (default: the cluster\'s default class)')
   .option('--tailnet', 'Publish the server on your Tailscale tailnet through the Tailscale Kubernetes operator (which must already be installed) instead of at 127.0.0.1, at an https origin whose callers are identified by their tailnet user')
-  .action(async (options: {
-    nodes?: string
-    byo?: boolean
-    rwxStorageClass?: string
-    rwoStorageClass?: string
-    tailnet?: boolean
-  }) => {
-    if (await rejectClusterOnContainerless()) return
-    if (rejectClusterArgs('install', options)) return
-    const { clusterInstall } = await import('#commands/cluster-install')
-    await clusterInstall(options)
+  // `--nodes` stays a string so the install reports what the user typed
+  // rather than `NaN`. A failed finishing check exits 1.
+  .action(async (options: ClusterInstallArgs) => {
+    await refuseClusterOnContainerless()
+    assertClusterArgs('install', options)
+    const { runClusterInstall } = await import('@yaac/server/drivers/k8s/install')
+    if (!await runClusterInstall(options)) process.exitCode = 1
   })
 
 cluster
@@ -312,18 +298,17 @@ cluster
   )
   .option('-y, --yes', 'Skip the confirmation prompt')
   .action(async (options: { yes?: boolean }) => {
-    if (await rejectClusterOnContainerless()) return
+    await refuseClusterOnContainerless()
     // No foreign-cluster guard: kind deletes its cluster by name, not via
     // the current context, and byo refuses delete outright.
-    if (rejectClusterArgs('delete')) return
-    const { clusterDelete } = await import('#commands/cluster-delete')
-    await clusterDelete(options)
+    assertClusterArgs('delete')
+    const { runClusterDelete } = await import('@yaac/server/drivers/k8s/install')
+    await runClusterDelete(options)
   })
 
 const host = program
   .command('host')
   .description('Inspect the host yaac runs containerless workspaces on')
-  .configureHelp({ formatHelp: nestedHelp })
 
 host
   .command('check')
@@ -336,7 +321,6 @@ host
 const project = program
   .command('project')
   .description('Manage projects')
-  .configureHelp({ formatHelp: nestedHelp })
 
 project
   .command('list')
@@ -353,7 +337,6 @@ project
 const group = program
   .command('group')
   .description('Manage the named groups a project\'s workspaces are filed under in the sidebar')
-  .configureHelp({ formatHelp: nestedHelp })
 
 group
   .command('create')
@@ -388,7 +371,6 @@ group
 const workspace = program
   .command('workspace')
   .description('Manage workspaces — a git clone plus the container and agents running in it')
-  .configureHelp({ formatHelp: nestedHelp })
 
 workspace
   .command('create')
@@ -401,9 +383,7 @@ workspace
   .addOption(new Option('--mode <mode>', 'How the agent is driven: tui runs its terminal UI, acp drives it over the Agent Client Protocol and renders a chat pane in the web app. Every tool has an adapter; a tool\'s adapter may offer fewer permission modes than its terminal UI').choices([...AGENT_MODES]))
   .addOption(new Option('--permission-mode <mode>', 'How much the agent may do before it asks: bypass acts freely, auto lets a reviewer model judge each action, accept-edits edits without asking but asks for the rest, manual asks for everything, plan explores and asks to act on a plan, read-only (codex\'s strictest, in place of plan) asks before any edit. Defaults to this project\'s last choice for the tool, else bypass in a container and accept-edits on the host. Not every tool has every mode (pi has only bypass)').choices([...PERMISSION_MODES]))
   .option('-g, --group <group>', 'File the workspace under this sidebar group (by name; created if it does not exist)')
-  .action(async (project: string, options: Parameters<typeof workspaceCreate>[1]) => {
-    await workspaceCreate(project, options)
-  })
+  .action(workspaceCreate)
 
 workspace
   .command('list')
@@ -431,9 +411,7 @@ workspace
   .command('restart')
   .description('Restart a workspace: kill its container, reuse its checkout, resume the agents that were running')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
-  .action(async (workspaceId: string) => {
-    await workspaceRestart(workspaceId)
-  })
+  .action(workspaceRestart)
 
 workspace
   .command('agents')
@@ -446,27 +424,24 @@ workspace
   .description('Attach to the workspace\'s tmux session')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
   .addHelpText('after', '\nTmux shortcuts:\n  Ctrl-B C  Open a new shell\n  Ctrl-B N  Switch to the next window\n  Ctrl-B P  Switch to the previous window')
-  .action(workspaceAttach)
+  .action((workspaceId: string) => workspaceAttach(workspaceId, 'native'))
 
 workspace
   .command('shell')
   .description('Open an interactive zsh shell in the workspace container')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
-  .action(workspaceShell)
+  .action((workspaceId: string) => workspaceAttach(workspaceId, 'shell'))
 
 workspace
   .command('monitor')
   .description('Poll and display running workspaces in real-time')
   .argument('[project]', 'Filter by project slug')
   .option('-n, --interval <seconds>', 'Refresh interval in seconds', '5')
-  .action(async (project: string | undefined, options: WorkspaceMonitorOptions) => {
-    await workspaceMonitor(project, options)
-  })
+  .action(workspaceMonitor)
 
 const config = program
   .command('config')
   .description('Edit project configuration files and server settings')
-  .configureHelp({ formatHelp: nestedHelp })
 
 config
   .command('edit')
@@ -501,14 +476,11 @@ program
   .option('-p, --port <container[:host]>', 'Forward this port instead of what the server offers (repeatable)', collect, [])
   .option('-b, --bind <address>', 'Address to bind (default 127.0.0.1)')
   .addHelpText('after', '\nThe server cannot bind ports on your machine — under the k8s driver it runs\nas a pod, and under containerless they are bound on the server\'s own machine —\nso this holds the listener and tunnels each connection to it. Against a\ncontainerless server on this machine there is nothing to tunnel and it refuses;\nan explicit --bind is taken as "I know what I am binding" and proceeds.\nRuns until interrupted.')
-  .action(async (workspaceId: string | undefined, options: ForwardOptions) => {
-    await forward(workspaceId, options)
-  })
+  .action(forward)
 
 const remote = program
   .command('remote')
   .description('Point this CLI at a remote yaac server')
-  .configureHelp({ formatHelp: nestedHelp })
 
 remote
   .command('set')
@@ -539,7 +511,6 @@ remote
 const auth = program
   .command('auth')
   .description('Manage credentials (git credentials and tool sign-ins)')
-  .configureHelp({ formatHelp: nestedHelp })
 
 auth
   .command('list')
@@ -565,14 +536,11 @@ auth
       'Credential kinds to seed (claude-oauth, opencode-openrouter, pi-openrouter, github); pass one or more',
     ).choices([...FAKE_AUTH_KINDS]),
   )
-  .action(async (kinds: FakeAuthKind[]) => {
-    await authFake(kinds)
-  })
+  .action(authFake)
 
 const authDaemon = auth
   .command('server')
   .description('Run the login broker that executes Claude/Codex sign-ins on this machine')
-  .configureHelp({ formatHelp: nestedHelp })
 
 authDaemon
   .command('run')

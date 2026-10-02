@@ -1,6 +1,7 @@
 import { api } from '#commands/api'
 import { resolveServerTarget } from '@yaac/shared/server-api'
-import { createForwardSet, serverNeedsForwarder } from '@yaac/shared/port-tunnel-set'
+import { startEventsMonitor } from '@yaac/shared/events'
+import { createForwardSet, serverNeedsForwarder, snapshotForwards } from '@yaac/shared/port-tunnel-set'
 import type { DriverKind } from '@yaac/shared/types'
 import type { ForwardSpec } from '@yaac/shared/port-tunnel'
 
@@ -12,9 +13,8 @@ import type { ForwardSpec } from '@yaac/shared/port-tunnel'
  * app does the same from its tray; this is for headless machines. See
  * docs/port-forward-tunnel.md.
  *
- * The server's offer is re-polled every few seconds, so ports that come and
- * go while this runs are picked up. Polling is simpler than holding
- * `/events` open, and the delay is small next to a dev server's boot time.
+ * The server's offer is followed over `/events`, so ports that come and go
+ * while this runs are picked up.
  */
 
 export interface ForwardOptions {
@@ -27,10 +27,8 @@ export interface ForwardOptions {
   bind?: string
 }
 
-const POLL_MS = 3_000
-
 /** Parse `-p 3000` / `-p 3000:13000` into a spec for `session`. */
-export function parsePortOption(raw: string, session: string): ForwardSpec {
+function parsePortOption(raw: string, session: string): ForwardSpec {
   const [containerRaw, hostRaw] = raw.split(':')
   const containerPort = Number(containerRaw)
   const hostPort = hostRaw === undefined ? containerPort : Number(hostRaw)
@@ -40,22 +38,6 @@ export function parsePortOption(raw: string, session: string): ForwardSpec {
     }
   }
   return { session, containerPort, hostPort }
-}
-
-/**
- * What the server currently offers: every running session's ports, or one
- * session's when `only` is a resolved workspace id.
- */
-async function offeredForwards(only: string | undefined): Promise<ForwardSpec[]> {
-  const { workspaces } = await api.workspace.list.$get({ query: {} })
-  const specs: ForwardSpec[] = []
-  for (const w of workspaces) {
-    if (only !== undefined && w.workspaceId !== only) continue
-    for (const { containerPort, hostPort } of w.forwardedPorts) {
-      specs.push({ session: w.workspaceId, containerPort, hostPort })
-    }
-  }
-  return specs
 }
 
 /**
@@ -128,7 +110,7 @@ export async function forward(
     },
   )
 
-  // Explicit ports are bound once and never re-polled; the server may not
+  // Explicit ports are bound once and never re-read; the server may not
   // know about a port whose dev server has not started yet.
   if (explicit) {
     await set.reconcile(explicit)
@@ -149,17 +131,12 @@ export async function forward(
   process.once('SIGTERM', stop)
 
   if (!explicit) {
-    const poll = async (): Promise<void> => {
-      try {
-        await set.reconcile(await offeredForwards(workspaceId))
-      } catch (err) {
-        // Keep live forwards through a transient server error.
-        console.error(`cannot read the session list: ${err instanceof Error ? err.message : String(err)}`)
-      }
-    }
-    await poll()
-    const timer = setInterval(() => void poll(), POLL_MS)
-    void done.then(() => clearInterval(timer))
+    // A dropped connection reconnects and keeps the live forwards meanwhile.
+    const events = startEventsMonitor({
+      resolveTarget: () => Promise.resolve(target),
+      onSnapshot: (snapshot) => void set.reconcile(snapshotForwards(snapshot, workspaceId)),
+    })
+    void done.then(() => events.stop())
   }
 
   console.log('Forwarding. Press Ctrl-C to stop.')

@@ -31,19 +31,20 @@
 // LOC is reported but not scored: minimizing lines pushes toward shared
 // abstractions, which tend to widen interfaces and create cycles.
 
-import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { cruise, type ICruiseResult } from 'dependency-cruiser'
+import extractDepcruiseOptions from 'dependency-cruiser/config-utl/extract-depcruise-options'
+import extractTSConfig from 'dependency-cruiser/config-utl/extract-ts-config'
 import ts from 'typescript'
 
 const ROOT = path.resolve(import.meta.dirname, '..')
+process.chdir(ROOT)
 
 // ---------------------------------------------------------------- manifests
 
 interface Manifest {
-  name?: string
   imports?: Record<string, string>
-  exports?: Record<string, string>
 }
 
 interface Pkg {
@@ -69,74 +70,25 @@ function ownerOf(absFile: string): Pkg | undefined {
   return packages.find((p) => absFile.startsWith(p.dir + path.sep))
 }
 
-// ------------------------------------------------------- subpath resolution
-// dependency-cruiser cannot follow `#…` specifiers (see .dependency-cruiser.cjs),
-// so we redo that resolution against the owning package's imports map. The map
-// targets are output-form `./src/*.js`; the source they stand for is `.ts`.
-
-function existingSource(target: string): string | undefined {
-  const candidates = [
-    target.replace(/\.js$/, '.ts'),
-    target.replace(/\.js$/, '.tsx'),
-    target,
-    `${target}.ts`,
-    `${target}.tsx`,
-    path.join(target, 'index.ts'),
-    path.join(target, 'index.tsx'),
-  ]
-  return candidates.find((c) => fs.existsSync(c) && fs.statSync(c).isFile())
-}
-
-function applyMap(map: Record<string, string>, spec: string): string | undefined {
-  const exact = map[spec]
-  if (exact) return exact
-  for (const [key, target] of Object.entries(map)) {
-    const star = key.indexOf('*')
-    if (star === -1) continue
-    const prefix = key.slice(0, star)
-    const suffix = key.slice(star + 1)
-    if (!spec.startsWith(prefix) || !spec.endsWith(suffix)) continue
-    if (spec.length < prefix.length + suffix.length) continue
-    const filled = spec.slice(prefix.length, spec.length - suffix.length)
-    return target.replace('*', filled)
-  }
-  return undefined
-}
-
-function resolveSpec(fromFile: string, spec: string): string | undefined {
-  if (spec.startsWith('#')) {
-    const owner = ownerOf(fromFile)
-    if (!owner?.manifest.imports) return undefined
-    const target = applyMap(owner.manifest.imports, spec)
-    return target ? existingSource(path.join(owner.dir, target)) : undefined
-  }
-  if (spec.startsWith('@yaac/')) {
-    const [, , ...rest] = spec.split('/')
-    const pkgName = spec.split('/').slice(0, 2).join('/')
-    const target = packages.find((p) => p.manifest.name === pkgName)
-    if (!target?.manifest.exports) return undefined
-    const sub = rest.length ? `./${rest.join('/')}` : '.'
-    const mapped = applyMap(target.manifest.exports, sub)
-    return mapped ? existingSource(path.join(target.dir, mapped)) : undefined
-  }
-  return undefined
-}
-
 // ------------------------------------------------------------ module naming
 // A sealed folder is always its own module, even when its parent directory
 // also holds loose files (runtime/ is both). Otherwise a module is the
 // shallowest directory under src/ that holds source files directly, so a
 // directory holding only subdirectories is not a module.
 
-/** Directories whose index.ts is published through a package's imports map. */
-const sealedDirs = new Set<string>()
-for (const pkg of packages) {
-  for (const [spec, target] of Object.entries(pkg.manifest.imports ?? {})) {
-    if (spec.includes('*')) continue
-    const file = existingSource(path.join(pkg.dir, target))
-    if (file && /(^|\/)index\.tsx?$/.test(file)) sealedDirs.add(path.dirname(file))
-  }
-}
+/**
+ * The barrels: each exact imports-map entry, as [specifier, index.ts]. The
+ * map targets are output-form `./src/*.js`; the source they stand for is `.ts`.
+ */
+const barrels = packages.flatMap((pkg) =>
+  Object.entries(pkg.manifest.imports ?? {}).flatMap(([spec, target]) => {
+    const file = path.join(pkg.dir, target.replace(/\.js$/, '.ts'))
+    return !spec.includes('*') && /(^|\/)index\.ts$/.test(file) && fs.existsSync(file)
+      ? [[spec, file] as const]
+      : []
+  }),
+)
+const sealedDirs = new Set(barrels.map(([, file]) => path.dirname(file)))
 
 const dirHasSourceCache = new Map<string, boolean>()
 
@@ -171,40 +123,6 @@ function moduleOf(absFile: string): string {
     }
   }
   return `${label}/${segs.join('/')}`
-}
-
-// ----------------------------------------------------------------- the graph
-
-interface CruiseDep {
-  resolved: string
-  module: string
-  couldNotResolve?: boolean
-  coreModule?: boolean
-}
-interface CruiseModule {
-  source: string
-  dependencies: CruiseDep[]
-}
-interface CruiseResult {
-  modules: CruiseModule[]
-}
-
-function cruise(roots: string[]): CruiseResult {
-  const args = [...roots, '--config', '.dependency-cruiser.cjs', '--output-type', 'json']
-  let raw: string
-  try {
-    raw = execFileSync(path.join(ROOT, 'node_modules/.bin/depcruise'), args, {
-      cwd: ROOT,
-      encoding: 'utf8',
-      maxBuffer: 512 * 1024 * 1024,
-    })
-  } catch (err) {
-    // Rule violations make depcruise exit non-zero; the report is still on stdout.
-    const stdout = (err as { stdout?: string }).stdout
-    if (!stdout) throw err
-    raw = stdout
-  }
-  return JSON.parse(raw) as CruiseResult
 }
 
 // ------------------------------------------------------------- source counts
@@ -281,10 +199,6 @@ interface FileImports {
   typeOnly: Set<string>
 }
 
-/**
- * Type-only-ness is decided here because dependency-cruiser tags the `#…`
- * edges we re-resolve only as "unknown".
- */
 function fileImports(absFile: string): FileImports {
   const names = new Map<string, string[]>()
   const typeOnly = new Set<string>()
@@ -367,62 +281,20 @@ function balancedTreeCcd(n: number): number {
   return total || 1
 }
 
-/** Tarjan's strongly connected components; only groups of 2+ are cycles. */
-function stronglyConnected(nodes: string[], edges: Map<string, Set<string>>): string[][] {
-  const index = new Map<string, number>()
-  const low = new Map<string, number>()
-  const onStack = new Set<string>()
-  const stack: string[] = []
+/**
+ * Groups of 2+ nodes that all reach each other: the cycles. Mutual
+ * reachability is read straight off the transitive closure.
+ */
+function cyclesOf(nodes: string[], closed: Map<string, Set<string>>): string[][] {
+  const seen = new Set<string>()
   const out: string[][] = []
-  let counter = 0
-
-  const strongConnect = (v: string) => {
-    // Iterative, so a deep graph cannot blow the JS stack.
-    const work: { node: string; iter: Iterator<string> }[] = []
-    index.set(v, counter)
-    low.set(v, counter)
-    counter++
-    stack.push(v)
-    onStack.add(v)
-    work.push({ node: v, iter: (edges.get(v) ?? new Set<string>())[Symbol.iterator]() })
-    while (work.length) {
-      const frame = work[work.length - 1]
-      const step = frame.iter.next()
-      if (!step.done) {
-        const w = step.value
-        if (!index.has(w)) {
-          index.set(w, counter)
-          low.set(w, counter)
-          counter++
-          stack.push(w)
-          onStack.add(w)
-          work.push({ node: w, iter: (edges.get(w) ?? new Set<string>())[Symbol.iterator]() })
-        } else if (onStack.has(w)) {
-          low.set(frame.node, Math.min(low.get(frame.node) ?? 0, index.get(w) ?? 0))
-        }
-        continue
-      }
-      work.pop()
-      const parent = work[work.length - 1]
-      if (parent) {
-        low.set(parent.node, Math.min(low.get(parent.node) ?? 0, low.get(frame.node) ?? 0))
-      }
-      if (low.get(frame.node) === index.get(frame.node)) {
-        const group: string[] = []
-        for (;;) {
-          const w = stack.pop()
-          if (w === undefined) break
-          onStack.delete(w)
-          group.push(w)
-          if (w === frame.node) break
-        }
-        out.push(group)
-      }
-    }
+  for (const n of nodes) {
+    if (seen.has(n)) continue
+    const group = [...(closed.get(n) ?? [])].filter((m) => closed.get(m)?.has(n)).sort()
+    for (const m of group) seen.add(m)
+    if (group.length > 1) out.push(group)
   }
-
-  for (const n of nodes) if (!index.has(n)) strongConnect(n)
-  return out
+  return out.sort((a, b) => b.length - a.length)
 }
 
 interface Scored {
@@ -445,9 +317,7 @@ function score(nodes: string[], edges: Map<string, Set<string>>): Scored {
     cd.set(n, size)
     ccd += size
   }
-  const cycles = stronglyConnected(nodes, edges)
-    .filter((g) => g.length > 1)
-    .sort((a, b) => b.length - a.length)
+  const cycles = cyclesOf(nodes, closed)
   const cyclePenalty = cycles.reduce((sum, g) => sum + g.length * g.length - g.length, 0)
   return {
     nodes,
@@ -477,18 +347,25 @@ const roots = rootArgs.length
       .map((p) => path.relative(ROOT, path.join(p.dir, 'src')))
       .filter((r) => fs.existsSync(path.join(ROOT, r)))
 
-const result = cruise(roots)
+// dependency-cruiser's config file cannot set `importsFields` or
+// `extensionAlias`, so they are passed here: they follow the `#…` subpath
+// imports and map the output-form `./src/*.js` map targets to their sources.
+const { output } = await cruise(
+  roots,
+  await extractDepcruiseOptions('./.dependency-cruiser.cjs'),
+  { importsFields: ['imports'], extensionAlias: { '.js': ['.ts', '.tsx', '.js'] } },
+  { tsConfig: extractTSConfig('tsconfig.json') },
+)
 const inScope = (abs: string) =>
   roots.some((r) => abs.startsWith(path.join(ROOT, r) + path.sep)) && /\.tsx?$/.test(abs)
 
-// File graph, with the `#…` edges dependency-cruiser dropped resolved back in.
 const files: string[] = []
 const fileEdges = new Map<string, Set<string>>()
 /** "from\0to" file pairs joined by at least one runtime (non-type-only) import. */
 const valueEdges = new Set<string>()
 let unresolved = 0
 
-for (const mod of result.modules) {
+for (const mod of (output as ICruiseResult).modules) {
   const from = path.resolve(ROOT, mod.source)
   if (!inScope(from)) continue
   files.push(from)
@@ -498,16 +375,11 @@ for (const mod of result.modules) {
   for (const dep of mod.dependencies) {
     if (dep.coreModule) continue
     if (runtimeOnly && typeOnly.has(dep.module)) continue
-    let to: string | undefined
     if (dep.couldNotResolve) {
-      to = resolveSpec(from, dep.module)
-      if (!to) {
-        if (dep.module.startsWith('#') || dep.module.startsWith('@yaac/')) unresolved++
-        continue
-      }
-    } else {
-      to = path.resolve(ROOT, dep.resolved)
+      if (dep.module.startsWith('#') || dep.module.startsWith('@yaac/')) unresolved++
+      continue
     }
+    const to = path.resolve(ROOT, dep.resolved)
     if (!inScope(to) || to === from) continue
     targets.add(to)
     if (!typeOnly.has(dep.module)) valueEdges.add(`${from}\0${to}`)
@@ -582,31 +454,36 @@ function allSourceFiles(): string[] {
   return out
 }
 const ifaces = new Map<string, Iface>()
-for (const pkg of packages) {
-  for (const [spec, target] of Object.entries(pkg.manifest.imports ?? {})) {
-    if (spec.includes('*')) continue
-    const barrel = existingSource(path.join(pkg.dir, target))
-    if (!barrel || !moduleFiles.has(moduleOf(barrel))) continue
-    const shape = barrelExports(barrel)
-    ifaces.set(spec, {
-      module: moduleOf(barrel),
-      dir: path.dirname(barrel),
-      barrel,
-      exported: [...shape.names].sort(),
-      used: new Set<string>(),
-      viaBarrel: new Set<string>(),
-      consumers: new Map<string, Set<string>>(),
-      starFrom: shape.starFrom,
-    })
-  }
+for (const [spec, barrel] of barrels) {
+  if (!moduleFiles.has(moduleOf(barrel))) continue
+  const shape = barrelExports(barrel)
+  ifaces.set(spec, {
+    module: moduleOf(barrel),
+    dir: path.dirname(barrel),
+    barrel,
+    exported: [...shape.names].sort(),
+    used: new Set<string>(),
+    viaBarrel: new Set<string>(),
+    consumers: new Map<string, Set<string>>(),
+    starFrom: shape.starFrom,
+  })
 }
 
 const byDir = new Map<string, Iface>([...ifaces.values()].map((i) => [i.dir, i]))
+// Cruising the whole repo would take minutes, so imports resolve here through
+// TypeScript, under the repo's tsconfig. Only a relative, `#…` or `@yaac/…`
+// specifier can land in a barrel.
+const tsOptions = ts.parseJsonConfigFileContent(
+  ts.readConfigFile('tsconfig.json', (f) => ts.sys.readFile(f)).config,
+  ts.sys,
+  ROOT,
+).options
+const tsCache = ts.createModuleResolutionCache(ROOT, (f) => f, tsOptions)
 for (const f of allSourceFiles()) {
   for (const [spec, names] of fileImports(f).names) {
-    const target = spec.startsWith('.')
-      ? existingSource(path.resolve(path.dirname(f), spec))
-      : resolveSpec(f, spec)
+    if (!/^(\.|#|@yaac\/)/.test(spec)) continue
+    const target = ts.resolveModuleName(spec, f, tsOptions, ts.sys, tsCache).resolvedModule
+      ?.resolvedFileName
     if (!target) continue
     // Which sealed folder does this import land in, barrel or not? The
     // deepest one: drivers/k8s/substrate is sealed inside drivers/k8s.
@@ -664,7 +541,7 @@ if (wantJson) {
         // How many files carry each module edge -- the cost of cutting it.
         edgeWeights: Object.fromEntries(
           [...moduleEdges].flatMap(([from, tos]) =>
-            [...tos].map((to) => [
+            [...tos].sort().map((to) => [
               `${from} -> ${to}`,
               files.filter(
                 (f) =>

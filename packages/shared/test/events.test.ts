@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { eventsWsUrl, startEventsMonitor, type EventsSocket } from '#events'
-import type { ServerTarget } from '@yaac/shared/server-api'
+import { startEventsMonitor, type EventsSocket } from '#events'
+import type { ServerTarget } from '#server-api'
 
 const target = (port: number): ServerTarget =>
   ({ baseUrl: `http://127.0.0.1:${port}` })
@@ -14,15 +14,6 @@ class FakeSocket implements EventsSocket {
   onClose(cb: () => void): void { this.closeCb = cb }
   close(): void { this.closed = true }
 }
-
-describe('eventsWsUrl', () => {
-  it('maps http → ws and appends /events', () => {
-    expect(eventsWsUrl('http://127.0.0.1:8787')).toBe('ws://127.0.0.1:8787/api/events')
-  })
-  it('maps https → wss', () => {
-    expect(eventsWsUrl('https://srv.example.ts.net')).toBe('wss://srv.example.ts.net/api/events')
-  })
-})
 
 describe('startEventsMonitor', () => {
   beforeEach(() => vi.useFakeTimers())

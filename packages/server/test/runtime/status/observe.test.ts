@@ -52,7 +52,7 @@ describe('observeWorkspaces', () => {
       blockedHosts: () => Promise.resolve(['evil.test']),
       forwardedPorts: () => Promise.resolve([{ containerPort: 3000, hostPort: 19000 }]),
       unforwardedPorts: () => Promise.resolve([8080]),
-      allGitAuthFailures: () => Promise.resolve({
+      gitAuthFailures: () => Promise.resolve({
         proj: [{ host: 'github.com', status: 401, atMs: 1 }],
       }),
     })

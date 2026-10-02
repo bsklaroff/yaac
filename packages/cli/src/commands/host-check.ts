@@ -14,9 +14,7 @@ export async function hostCheck(): Promise<void> {
     console.log(formatCheckResult(r))
   }
   if (results.some((r) => r.status === 'fail')) {
-    console.error('\nThis host cannot run yaac workspaces yet. Fix the failures above and re-run.')
-    process.exitCode = 1
-  } else {
-    console.log('\nThis host can run yaac workspaces.')
+    throw new Error('\nThis host cannot run yaac workspaces yet. Fix the failures above and re-run.')
   }
+  console.log('\nThis host can run yaac workspaces.')
 }

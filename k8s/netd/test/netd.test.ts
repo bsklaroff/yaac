@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   CDS_PATH,
   LDS_PATH,
-  type ConfirmListenersInput,
   type NetdConfig,
   type ReconcileDeps,
   type ReconcileMemo,
@@ -11,7 +10,8 @@ import {
 } from 'yaac-netd/netd'
 import { ListenerRejectedError } from 'yaac-netd/envoy-admin'
 import { redirectChainName } from 'yaac-netd/rules'
-import type { NetdPod, NetdService } from 'yaac-netd/targets'
+import type { NetdPod } from 'yaac-netd/k8s-watch'
+import type { ExpectedListeners } from 'yaac-netd/envoy-admin'
 
 const ENV_KEYS = [
   'YAAC_NAMESPACE', 'NODE_NAME', 'NODE_IP', 'CLUSTER_POD_CIDRS', 'SSH_TUNNEL_SENTINEL',
@@ -110,11 +110,8 @@ const CONFIG: NetdConfig = {
   listenerRange: { base: 15100, slots: 300 },
 }
 
-const PROXY_SVC: NetdService = {
-  name: 'yaac-proxy', namespace: 'yaac', clusterIp: '10.96.0.50', labels: { app: 'yaac-proxy' },
-}
 const SESSION_POD: NetdPod = {
-  name: 'sess-1', namespace: 'yaac', podIp: '10.244.0.9', labels: { 'yaac.workspace-id': 's1' },
+  name: 'sess-1', namespace: 'yaac', podIp: '10.244.0.9',
 }
 
 interface Harness {
@@ -122,24 +119,23 @@ interface Harness {
   memo: ReconcileMemo
   calls: string[]
   written: Map<string, string>
-  confirmed: ConfirmListenersInput[]
+  confirmed: ExpectedListeners[]
   setPods: (pods: NetdPod[]) => void
-  setConfirm: (fn: (input: ConfirmListenersInput) => Promise<void>) => void
+  setConfirm: (fn: (input: ExpectedListeners) => Promise<void>) => void
 }
 
 function harness(overrides: Partial<ReconcileDeps> = {}): Harness {
   const calls: string[] = []
   const written = new Map<string, string>()
-  const confirmed: ConfirmListenersInput[] = []
+  const confirmed: ExpectedListeners[] = []
   let pods: NetdPod[] = [SESSION_POD]
-  let confirm: (input: ConfirmListenersInput) => Promise<void> = () => Promise.resolve()
+  let confirm: (input: ExpectedListeners) => Promise<void> = () => Promise.resolve()
 
   const deps: ReconcileDeps = {
     config: CONFIG,
-    backend: 'legacy',
     chain: redirectChainName(CONFIG.installNamespace),
     pods: () => pods,
-    services: () => [PROXY_SVC],
+    proxyIp: () => '10.96.0.50',
     routes: () => Promise.resolve('10.244.0.9 dev calia1 scope link\n'),
     trio: () => Promise.resolve({ https: 15100, http: 15101, tunnel: 15102 }),
     confirmListeners: (input) => {
@@ -154,7 +150,6 @@ function harness(overrides: Partial<ReconcileDeps> = {}): Harness {
       written.set(file, content)
       return Promise.resolve()
     },
-    log: () => { /* quiet */ },
     ...overrides,
   }
   return {
@@ -183,7 +178,7 @@ describe('reconcileOnce', () => {
     expect(h.confirmed[0]?.version).toBe(lds.version_info)
     expect(h.confirmed[0]?.ports).toEqual([15100, 15101, 15102])
     expect(h.confirmed[0]?.names).toEqual([
-      'yaac-listener-yaac-https', 'yaac-listener-yaac-http', 'yaac-listener-yaac-tunnel',
+      'yaac-yaac-https', 'yaac-yaac-http', 'yaac-yaac-tunnel',
     ])
   })
 
@@ -202,7 +197,7 @@ describe('reconcileOnce', () => {
     const h = harness()
     await reconcileOnce(h.deps, h.memo)
     h.calls.length = 0
-    const changed = await reconcileOnce(h.deps, h.memo, { resync: true })
+    const changed = await reconcileOnce(h.deps, h.memo, true)
     expect(h.calls).toEqual(['confirm', 'applyChain', 'ensureJump'])
     expect(changed.join()).toMatch(/^rules\(/)
   })
@@ -215,33 +210,33 @@ describe('reconcileOnce', () => {
     expect(h.calls).not.toContain('ensureJump')
   })
 
-  it('reports the pods and targets it programmed', async () => {
+  it('reports the proxy and pods it programmed', async () => {
     const h = harness()
     const changed = await reconcileOnce(h.deps, h.memo)
-    expect(changed[0]).toBe('cds(1 targets)')
+    expect(changed[0]).toBe('cds(proxy 10.96.0.50)')
     expect(changed[1]).toContain('15100/15101/15102')
     // 1 pod-CIDR RETURN + 3 DNAT rules.
     expect(changed[2]).toBe('rules(4 for 1 pods)')
   })
 
-  it('rewrites both documents when the pod set changes', async () => {
+  it('rewrites the listeners and the chain when the pod set changes', async () => {
     const h = harness()
     await reconcileOnce(h.deps, h.memo)
     h.calls.length = 0
     h.setPods([SESSION_POD, {
-      name: 'sess-2', namespace: 'yaac', podIp: '10.244.0.10', labels: { 'yaac.workspace-id': 's2' },
+      name: 'sess-2', namespace: 'yaac', podIp: '10.244.0.10',
     }])
     h.deps.routes = () => Promise.resolve(
       '10.244.0.9 dev calia1 scope link\n10.244.0.10 dev calib2 scope link\n',
     )
     await reconcileOnce(h.deps, h.memo)
-    // Same single target, so CDS is unchanged; the LDS filter chain gains
+    // The proxy is unchanged, so CDS is too; the LDS filter chain gains
     // a source, and the chain gains that pod's rules.
     expect(h.calls).toEqual(['writeLds', 'confirm', 'applyChain', 'ensureJump'])
   })
 
   it('programs nothing at all when the proxy Service is not up yet', async () => {
-    const h = harness({ services: () => [] })
+    const h = harness({ proxyIp: () => null })
     await reconcileOnce(h.deps, h.memo)
     expect(h.confirmed[0]?.names).toEqual([])
     const chain = h.written.get('chain')!
@@ -262,7 +257,6 @@ describe('reconcileOnce', () => {
       name: 'sess-2',
       namespace: 'yaac',
       podIp: '10.244.0.20',
-      labels: { 'yaac.workspace-id': 's2' },
     }])
     h.deps.routes = () => Promise.resolve(
       '10.244.0.9 dev calia1 scope link\n10.244.0.20 dev calib2 scope link\n',

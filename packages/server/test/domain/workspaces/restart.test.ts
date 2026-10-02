@@ -118,6 +118,14 @@ describe('restartWorkspace', () => {
     expect(mockClearDeleted).toHaveBeenCalledWith('proj', 'sid-1')
   })
 
+  // The workspace is running by then, so a lost clear must not report it
+  // as failed.
+  it('succeeds when clearing the deletion record fails', async () => {
+    mockClearDeleted.mockRejectedValueOnce(new Error('db write failed'))
+    expect(await restartWorkspace('sid-1')).toEqual(CREATED)
+    expect(listProvisioning()).toEqual([])
+  })
+
   it('keeps the deletion record when the resume fails', async () => {
     mockCreate.mockRejectedValue(new Error('image pull failed'))
     await expect(restartWorkspace('sid-1')).rejects.toThrow('image pull failed')

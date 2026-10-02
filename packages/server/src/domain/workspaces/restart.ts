@@ -9,6 +9,7 @@ import {
   updateProvisioningMessage,
 } from './provisioning'
 import { clearWorkspaceStopped, findWorkspaceRow } from '#db'
+import { serverLog } from '#log'
 import {
   firstAgentSession,
   listActiveAgentSessions,
@@ -127,8 +128,11 @@ export async function restartWorkspace(
       onProgress,
     })
 
-    // Only after success, so a failed restart keeps its stop record.
-    await clearWorkspaceStopped(projectSlug, workspaceId)
+    // Only after success, so a failed restart keeps its stop record. The
+    // workspace is running either way, so a lost clear is only logged.
+    await clearWorkspaceStopped(projectSlug, workspaceId).catch((err: unknown) => {
+      serverLog(`[server] restart ${projectSlug}/${workspaceId}: clear stop: ${String(err)}`)
+    })
 
     // `buildSnapshot` hides a workspace while its row exists.
     removeProvisioning(workspaceId)

@@ -2,14 +2,8 @@ import { eq, sql } from 'drizzle-orm'
 import { getDb } from './client'
 import { projects, projectToolDefaults } from './schema'
 import { notifyWorkspaceListChanged } from '#notify'
-import {
-  normalizeTool,
-  type AgentMode,
-  type AgentTool,
-  type PermissionMode,
-  type ProjectMeta,
-  type ToolCreateDefaults,
-} from '@yaac/shared/types'
+import { nullsToUndefined } from '#lib/nulls'
+import type { AgentTool, ProjectMeta, ToolCreateDefaults } from '@yaac/shared/types'
 
 /*
  * Which projects exist, as the server records them. The clone, config and
@@ -72,29 +66,16 @@ export interface ProjectRow extends ProjectMeta {
   knownHostsEntry: string | null
 }
 
-type DefaultsRow = typeof projectToolDefaults.$inferSelect
-
-/** Values are cast without checking; each is validated against the tool
- *  before anything launches with it. */
 function toProjectRow(
   r: typeof projects.$inferSelect,
-  defaults: DefaultsRow[],
+  defaults: Array<typeof projectToolDefaults.$inferSelect>,
 ): ProjectRow {
   const createDefaults: Partial<Record<AgentTool, ToolCreateDefaults>> = {}
-  for (const d of defaults) {
-    createDefaults[normalizeTool(d.tool)] = {
-      ...(d.model !== null ? { model: d.model } : {}),
-      ...(d.permissionMode !== null ? { permissionMode: d.permissionMode as PermissionMode } : {}),
-      ...(d.mode !== null ? { mode: d.mode as AgentMode } : {}),
-    }
+  for (const { tool, model, permissionMode, mode } of defaults) {
+    createDefaults[tool] = nullsToUndefined({ model, permissionMode, mode })
   }
   return {
-    slug: r.slug,
-    id: r.id,
-    remoteUrl: r.remoteUrl,
-    addedAt: r.addedAt,
-    ...(r.lastTool !== null ? { lastTool: normalizeTool(r.lastTool) } : {}),
-    ...(r.lastBranch !== null ? { lastBranch: r.lastBranch } : {}),
+    ...nullsToUndefined(r),
     createDefaults,
     gitCredentialId: r.gitCredentialId,
     knownHostsEntry: r.knownHostsEntry,

@@ -82,18 +82,33 @@ describe('cniVethPrefix', () => {
 })
 
 describe('ensureNetd', () => {
-  it('applies the RBAC set and the DaemonSet, then waits for the rollout', async () => {
+  it('applies namespaced RBAC and the DaemonSet, waits for the rollout, then drops the old cluster RBAC', async () => {
     await ensureNetd()
 
-    // RBAC before the DaemonSet that uses it: netd watches pods
-    // cluster-wide to find each one's veth.
-    expect(mockKubectlApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)).toEqual([
-      'ServiceAccount', 'ClusterRole', 'ClusterRoleBinding', 'Role', 'RoleBinding', 'DaemonSet',
+    // RBAC before the DaemonSet that uses it. netd reads only its own
+    // namespace, so nothing it is granted is cluster-wide.
+    const kinds = mockKubectlApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
+    expect(kinds).toEqual(['ServiceAccount', 'Role', 'RoleBinding', 'DaemonSet'])
+    const role = applied('Role') as { metadata: { namespace: string }; rules: Array<{ resources: string[]; verbs: string[] }> }
+    expect(role.metadata.namespace).toBe('test-ns')
+    expect(role.rules).toEqual([
+      { apiGroups: [''], resources: ['pods', 'services'], verbs: ['get', 'list', 'watch'] },
+    ])
+
+    // The legacy sweep runs after the rollout, so the pods being replaced
+    // keep their watch until then.
+    expect(mockKubectlWithRetry.mock.calls.map((c) => (c[0] as string[]).slice(0, 2))).toEqual([
+      ['rollout', 'status'],
+      ['delete', 'clusterrolebinding,clusterrole'],
     ])
     expect(mockKubectlWithRetry).toHaveBeenCalledWith(
       ['rollout', 'status', 'daemonset/yaac-netd', '-n', 'test-ns', '--timeout=180s'],
       expect.objectContaining({ maxAttempts: 2 }),
     )
+    expect(mockKubectlWithRetry).toHaveBeenCalledWith([
+      'delete', 'clusterrolebinding,clusterrole', '--ignore-not-found',
+      '-l', 'app=yaac-netd,yaac.install-namespace=test-ns',
+    ])
   })
 
   it('resolves both images from the registry and never builds one', async () => {

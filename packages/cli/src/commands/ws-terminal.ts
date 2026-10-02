@@ -1,5 +1,6 @@
 import WebSocket from 'ws'
 import { resolveServerTarget } from '@yaac/shared/server-api'
+import { wsUrl } from '@yaac/shared/api-core'
 
 /**
  * Attach the user's terminal to a workspace over the server's /pty/attach
@@ -10,23 +11,6 @@ import { resolveServerTarget } from '@yaac/shared/server-api'
  * frames are PTY bytes both ways; text frames are JSON control messages
  * (resize / ping / error).
  */
-
-/** http(s) origin → ws(s) origin. */
-export function toWsUrl(baseUrl: string): string {
-  return baseUrl.replace(/^http/, 'ws')
-}
-
-export function buildPtyAttachUrl(
-  baseUrl: string,
-  params: { workspaceId: string; target: string; cols?: number; rows?: number },
-): string {
-  const url = new URL(`${toWsUrl(baseUrl)}/api/pty/attach`)
-  url.searchParams.set('id', params.workspaceId)
-  url.searchParams.set('target', params.target)
-  if (params.cols) url.searchParams.set('cols', String(params.cols))
-  if (params.rows) url.searchParams.set('rows', String(params.rows))
-  return url.toString()
-}
 
 /** App-level keepalive so idle terminals survive proxy idle timeouts. */
 const PING_INTERVAL_MS = 30_000
@@ -43,13 +27,13 @@ export async function attachWorkspacePty(
   target: string,
 ): Promise<void> {
   const server = await resolveServerTarget()
-  const url = buildPtyAttachUrl(server.baseUrl, {
-    workspaceId,
+  // No size without a TTY; the server picks one.
+  const ws = new WebSocket(wsUrl(server.baseUrl, '/api/pty/attach', {
+    id: workspaceId,
     target,
     cols: process.stdout.columns,
     rows: process.stdout.rows,
-  })
-  const ws = new WebSocket(url)
+  }))
 
   await new Promise<void>((resolve, reject) => {
     const stdin = process.stdin

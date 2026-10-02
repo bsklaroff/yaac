@@ -1,10 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { closeDb } from '#db/client'
-import {
-  _resetPriorStopsForTests,
-  applyWorkspaceEvent,
-} from '#db/apply-workspace-event'
+import { applyWorkspaceEvent } from '#db/apply-workspace-event'
 import {
   getProjectWorkspaceRows,
   recordWorkspaceCreated,
@@ -20,7 +17,6 @@ describe('applyWorkspaceEvent', () => {
   let pushes: number
 
   beforeEach(async () => {
-    _resetPriorStopsForTests()
     _resetWorkspaceListChangedForTests()
     pushes = 0
     onWorkspaceListChanged(() => { pushes += 1 })
@@ -122,11 +118,10 @@ describe('applyWorkspaceEvent', () => {
       groupId: group.groupId,
       baseBranch: 'main',
       permissionMode: 'plan',
-      deathSeen: false,
+      // The stop stays until the restart succeeds (`clearWorkspaceStopped`).
+      stoppedAt: before?.stoppedAt,
+      deathReason: 'oom',
     })
-    const row = await rowOf('wt-1')
-    expect(row?.stoppedAt).toBeUndefined()
-    expect(row?.deathReason).toBeUndefined()
   })
 
   // A stop keeps its row, so only a pod yaac has no record of (a reset or
@@ -237,61 +232,16 @@ describe('applyWorkspaceEvent', () => {
     expect(await listWorkspaceAgentSessions('proj', 'wt-fresh')).toEqual([])
   })
 
-  // A resume re-stamped a row that already carried the workspace's history,
-  // so a failed one is put back exactly as the restart found it — including
-  // the cause it died of and whether the user had already dismissed it.
-  it('restores a failed resume to the stop it was found in', async () => {
+  // The row keeps its stop until a restart succeeds, so a failed resume
+  // leaves it exactly as the restart found it, death cause and all.
+  it('leaves a failed resume as the restart found it', async () => {
     await stopped('wt-1', { cause: { reason: 'oom', detail: 'exit code 137' } })
     const before = await rowOf('wt-1')
 
     await created('wt-1', { resume: true })
-    expect((await rowOf('wt-1'))?.stoppedAt).toBeUndefined() // live while it provisions
-
     await failed('wt-1', { resume: true })
 
-    const after = await rowOf('wt-1')
-    expect(after?.stoppedAt).toEqual(before?.stoppedAt)
-    expect(after?.deathReason).toBe('oom')
-    expect(after?.deathDetail).toBe('exit code 137')
-  })
-
-  // The remembered stop is re-read on every resume, so a second restart
-  // cannot put back a death the workspace has since stopped having.
-  it('restores the stop the latest resume found, not an earlier one', async () => {
-    await stopped('wt-1', { cause: { reason: 'oom' } })
-    await created('wt-1', { resume: true })
-    await failed('wt-1', { resume: true })
-
-    await stopped('wt-1', { cause: { reason: 'crashed', detail: 'exit code 1' } })
-    await created('wt-1', { resume: true })
-    await failed('wt-1', { resume: true })
-
-    expect((await rowOf('wt-1'))?.deathReason).toBe('crashed')
-  })
-
-  // A workspace that had no stop when the resume began must not inherit one
-  // remembered from an earlier life.
-  it('forgets a remembered stop once the row no longer carries it', async () => {
-    await stopped('wt-1', { cause: { reason: 'oom' } })
-    await created('wt-1', { resume: true }) // remembers the oom
-    await created('wt-1', { resume: true }) // row is live now — nothing to remember
-
-    await failed('wt-1', { resume: true })
-
-    const row = await rowOf('wt-1')
-    expect(row?.stoppedAt).toBeInstanceOf(Date)
-    expect(row?.deathReason).toBeUndefined()
-  })
-
-  // A workspace that was live when the restart began has no stop to put back.
-  it('records a plain stop for a failed resume that had none', async () => {
-    await created('wt-1', { resume: true })
-    await failed('wt-1', { resume: true })
-
-    const row = await rowOf('wt-1')
-    expect(row?.stoppedAt).toBeInstanceOf(Date)
-    expect(row?.deathReason).toBeUndefined()
-    expect(await rowOf('wt-1')).toBeDefined() // kept, not erased
+    expect(await rowOf('wt-1')).toEqual(before)
   })
 
   // Rows are a snapshot input and this is the only door they change

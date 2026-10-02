@@ -8,8 +8,9 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 const startForward = vi.hoisted(() => vi.fn())
 vi.mock('#port-tunnel', () => ({ startForward }))
 
-import { createForwardSet, serverNeedsForwarder } from '#port-tunnel-set'
+import { createForwardSet, serverNeedsForwarder, snapshotForwards } from '#port-tunnel-set'
 import type { ForwardSpec } from '#port-tunnel'
+import type { ServerSnapshot } from '#types'
 
 const TARGET = { baseUrl: 'http://127.0.0.1:8787' }
 
@@ -111,6 +112,12 @@ describe('createForwardSet', () => {
     expect(set.live()).toEqual([])
     expect(startForward).toHaveBeenCalledTimes(1)
   })
+
+  it('runs overlapping reconciles one at a time, so a new port is bound once', async () => {
+    const set = createForwardSet(TARGET)
+    await Promise.all([set.reconcile([spec('a', 3000)]), set.reconcile([spec('a', 3000)])])
+    expect(startForward).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('serverNeedsForwarder', () => {
@@ -131,5 +138,30 @@ describe('serverNeedsForwarder', () => {
   it('binds against a remote containerless server, whose ports are as far away as a pod\'s', () => {
     expect(serverNeedsForwarder('containerless', 'https://srv.ts.net')).toBe(true)
     expect(serverNeedsForwarder('containerless', 'http://10.0.0.7:8787')).toBe(true)
+  })
+})
+
+describe('snapshotForwards', () => {
+  const snapshot = {
+    driver: 'k8s',
+    workspaces: [
+      { workspaceId: 'a', forwardedPorts: [{ containerPort: 3000, hostPort: 3000 }, { containerPort: 5432, hostPort: 15432 }] },
+      { workspaceId: 'b', forwardedPorts: [{ containerPort: 3000, hostPort: 3001 }] },
+      { workspaceId: 'c', forwardedPorts: [] },
+    ],
+  } as unknown as ServerSnapshot
+
+  it('flattens every workspace\'s offered mappings into one desired set', () => {
+    expect(snapshotForwards(snapshot)).toEqual([
+      { session: 'a', containerPort: 3000, hostPort: 3000 },
+      { session: 'a', containerPort: 5432, hostPort: 15432 },
+      { session: 'b', containerPort: 3000, hostPort: 3001 },
+    ])
+  })
+
+  it('keeps only the named workspace\'s', () => {
+    expect(snapshotForwards(snapshot, 'b')).toEqual([
+      { session: 'b', containerPort: 3000, hostPort: 3001 },
+    ])
   })
 })

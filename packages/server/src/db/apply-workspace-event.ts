@@ -1,19 +1,14 @@
 import { deleteWorkspaceAgentSessions, recordAgentSessions, setActiveAgentSessions } from './agent-session-store'
 import {
   deleteWorkspaceRow,
-  getWorkspaceRow,
-  priorStopOf,
   recordWorkspaceCreated,
   recordWorkspaceLife,
   recordWorkspaceResumed,
   recordWorkspaceStopped,
-  restoreWorkspaceStop,
   setWorkspaceBaseBranch,
   setWorkspacePermissionMode,
-  type PriorStop,
 } from './workspace-store'
 import { notifyWorkspaceListChanged } from '#notify'
-import { serverLog } from '#log'
 import type { WorkspaceEvent, WorkspaceCreateFailed, WorkspaceCreated } from './events'
 
 /**
@@ -38,8 +33,6 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
       await applyCreateFailed(event)
       return
     case 'workspace-life-started':
-      // Errors propagate here: if the new life isn't recorded, the rows keep
-      // a dead pod's panes, so the create should fail.
       await recordWorkspaceLife(event.projectSlug, event.workspaceId)
       return
     case 'base-branch-resolved':
@@ -66,38 +59,8 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
   }
 }
 
-/**
- * The stop recorded on a resumed workspace's row before the create cleared
- * it, so a failed resume can restore it. Keyed by workspace.
- *
- * No success event clears an entry, so each successfully resumed workspace
- * leaves one small entry until its next restart. That bound is accepted
- * rather than adding an event just to free it.
- */
-const priorStops = new Map<string, PriorStop>()
-
-const stopKey = (projectSlug: string, workspaceId: string): string =>
-  `${projectSlug}/${workspaceId}`
-
 async function applyCreated(event: WorkspaceCreated): Promise<void> {
   const { projectSlug, workspaceId, baseBranch, resume, permissionMode, model, mode, timeZone } = event
-  const key = stopKey(projectSlug, workspaceId)
-  // A resume is about to clear the row's stop. Remember it first so a failed
-  // create can restore it rather than leaving a dead workspace looking alive.
-  if (resume) {
-    // A read failure is not fatal, but a later rollback loses the death
-    // cause, so log it.
-    const row = await getWorkspaceRow(projectSlug, workspaceId).catch((err: unknown) => {
-      serverLog(
-        `[db] ${projectSlug}/${workspaceId}: could not read the prior stop `
-        + `(${String(err)}); a failed resume will record a plain stop`,
-      )
-      return undefined
-    })
-    const prior = priorStopOf(row)
-    if (prior) priorStops.set(key, prior)
-    else priorStops.delete(key)
-  }
   const launch = {
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(model !== undefined ? { model } : {}),
@@ -119,33 +82,14 @@ async function applyCreated(event: WorkspaceCreated): Promise<void> {
   })
 }
 
-async function applyCreateFailed(event: WorkspaceCreateFailed): Promise<void> {
-  const { projectSlug, workspaceId, resume } = event
-  const key = stopKey(projectSlug, workspaceId)
-  const prior = priorStops.get(key)
-  priorStops.delete(key)
-  try {
-    if (!resume) {
-      // A create that never came up should leave nothing behind, and nothing
-      // else prunes these. Caught separately so a failure can't skip the row
-      // delete, which matters more since the row makes the workspace visible.
-      try {
-        await deleteWorkspaceAgentSessions(projectSlug, workspaceId)
-      } catch { /* best-effort */ }
-      await deleteWorkspaceRow(projectSlug, workspaceId)
-    } else if (prior) {
-      // Restore the stop as the restart found it, including cause and seen.
-      await restoreWorkspaceStop(projectSlug, workspaceId, prior)
-    } else {
-      await recordWorkspaceStopped(projectSlug, workspaceId)
-    }
-  } catch {
-    // Best-effort: the create is already failing, and the reaper handles a
-    // row whose pod never arrived.
-  }
-}
-
-/** Test helper: forget the remembered stops. */
-export function _resetPriorStopsForTests(): void {
-  priorStops.clear()
+/**
+ * Undo a create that never came up, so it leaves nothing behind (nothing else
+ * prunes these). A failed resume needs no undo: its row keeps the stop it
+ * had until the restart succeeds.
+ */
+async function applyCreateFailed({ projectSlug, workspaceId, resume }: WorkspaceCreateFailed): Promise<void> {
+  if (resume) return
+  // The row first, since it is what makes the workspace visible.
+  await deleteWorkspaceRow(projectSlug, workspaceId)
+  await deleteWorkspaceAgentSessions(projectSlug, workspaceId)
 }

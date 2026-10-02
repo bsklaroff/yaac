@@ -21,7 +21,7 @@ import {
 import { env } from '@yaac/shared/env'
 import type { WorkspaceListEntry } from '@yaac/shared/types'
 import { AttentionMonitor, badgeText, notificationFor } from '#attention'
-import { startEventsMonitor, type EventsSocket } from '#events'
+import { startEventsMonitor } from '@yaac/shared/events'
 import { startForwarder, type DesktopForwarder } from '#forwarder'
 import { probeIdentity, runFlow } from '#flow'
 import { connectPageUrl } from '#connect-page'
@@ -226,20 +226,6 @@ function applyAttention(waitingCount: number, toNotify: WorkspaceListEntry[]): v
   }
 }
 
-/** Adapt the global WebSocket to #events. */
-function openEventsSocket(url: string): EventsSocket {
-  const socket = new WebSocket(url)
-  return {
-    onMessage: (cb) => socket.addEventListener('message', (e) => { if (typeof e.data === 'string') cb(e.data) }),
-    // Error and close both end the connection; #events dedupes the pair.
-    onClose: (cb) => {
-      socket.addEventListener('close', cb)
-      socket.addEventListener('error', cb)
-    },
-    close: () => socket.close(),
-  }
-}
-
 function startEvents(): void {
   events?.stop()
   forwarder?.stop()
@@ -248,7 +234,6 @@ function startEvents(): void {
   forwarder = startForwarder({ resolveTarget })
   events = startEventsMonitor({
     resolveTarget,
-    openSocket: openEventsSocket,
     onSnapshot: (snapshot) => {
       const { waitingCount, toNotify } = attention.update(snapshot)
       applyAttention(waitingCount, toNotify)

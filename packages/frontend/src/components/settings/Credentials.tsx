@@ -8,7 +8,7 @@ import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
 import { GitCredentials } from '#components/settings/GitCredentials'
 import { Field } from '#components/settings/Field'
 import { OPENCODE_PROVIDERS, PI_PROVIDERS } from '@yaac/shared/tool-providers'
-import type { AgentTool, ToolAuthSummary, ToolInstallView, ToolLoginView } from '@yaac/shared/types'
+import { TOOL_LABELS, type AgentTool, type ToolAuthSummary, type ToolInstallView, type ToolLoginView } from '@yaac/shared/types'
 
 const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
 
@@ -304,7 +304,7 @@ function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): J
     onSuccess: login.replace,
   })
   const label = tool === 'claude' ? 'Sign in with Claude' : 'Sign in with ChatGPT'
-  const toolName = tool === 'claude' ? 'Claude Code' : 'Codex'
+  const toolName = TOOL_LABELS[tool]
   const busy = login.begin.isPending || install.begin.isPending
 
   // `onDone` is a new closure each render; fire it only once per success.

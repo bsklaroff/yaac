@@ -272,10 +272,10 @@ describe('validation errors (no state created)', () => {
     expect(stderr.toLowerCase()).toMatch(/not found|no-such-project/)
   })
 
-  it('workspace create errors out fast when the project slug does not exist', async () => {
+  it('workspace create errors with NOT_FOUND when the project slug does not exist', async () => {
     const { stderr, exitCode } = await runYaac(testEnv.env, 'workspace', 'create', 'nope')
     expect(exitCode).not.toBe(0)
-    expect(stderr).toMatch(/Project "nope" not found/)
+    expect(stderr).toMatch(/project nope not found/)
   })
 })
 

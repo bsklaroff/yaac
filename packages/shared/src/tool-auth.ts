@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
+import type { z } from 'zod'
 import {
   claudeCredentialsPath,
   codexCredentialsPath,
@@ -15,11 +16,16 @@ import {
 } from '#project-paths'
 import { ServerError } from '#errors'
 import {
+  claudeCredentialsFileSchema,
   claudeOAuthBundleSchema,
+  codexCredentialsFileSchema,
   codexOAuthBundleSchema,
+  opencodeCredentialsFileSchema,
+  piCredentialsFileSchema,
   type AgentTool,
   type ToolAuthKind,
   type ToolAuthEntry,
+  type ToolAuthPayload,
   type ClaudeCredentialsFile,
   type ClaudeOAuthBundle,
   type CodexCredentialsFile,
@@ -62,21 +68,6 @@ function providerError(tool: 'opencode' | 'pi', value: string | undefined): Serv
 }
 
 /**
- * Warn when a stored credential is ignored. Otherwise it would look like the
- * tool was never configured, and the session would fail later at an
- * in-container login prompt.
- */
-function warnDroppedCredential(tool: 'opencode' | 'pi', raw: unknown): void {
-  const detail = typeof raw === 'string' && raw
-    ? `names provider "${truncateForMessage(raw)}", which is not in this build's registry`
-    : 'records no provider'
-  console.warn(
-    `[yaac] Ignoring the stored ${tool} credential: it ${detail}. ` +
-    `Run \`yaac auth update ${tool}\` to re-record it against a current provider.`,
-  )
-}
-
-/**
  * Parse a provider on a write path. A missing or unknown id throws rather
  * than being guessed, since the provider decides where the key is sent.
  */
@@ -109,32 +100,26 @@ export const PLACEHOLDER_API_KEY = 'yaac-ph-api-key'
  */
 export const PLACEHOLDER_GH_TOKEN = 'yaac-ph-gh-token'
 
-async function ensureCredentialsDir(): Promise<void> {
-  await ensureDataDir()
-  await fs.mkdir(credentialsDir(), { recursive: true, mode: 0o700 })
-}
-
-function isClaudeOAuthBundle(v: unknown): v is ClaudeOAuthBundle {
-  return claudeOAuthBundleSchema.safeParse(v).success
-}
-
-/** Read the yaac-managed Claude credentials file. */
-export async function loadClaudeCredentialsFile(): Promise<ClaudeCredentialsFile | null> {
+/**
+ * Read a yaac-managed credentials file. A missing file is signed out; one
+ * that fails its schema is ignored with a warning, since otherwise it would
+ * look like the tool was never configured and the session would fail later
+ * at an in-container login prompt.
+ */
+async function loadCredFile<T>(tool: AgentTool, file: string, schema: z.ZodType<T>): Promise<T | null> {
+  const raw = await fs.readFile(file, 'utf8').catch(() => null)
+  if (raw === null) return null
+  let parsed: unknown
   try {
-    const raw = await fs.readFile(claudeCredentialsPath(), 'utf8')
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return null
-    const o = parsed as Record<string, unknown>
-    if (o.kind === 'oauth' && typeof o.savedAt === 'string' && isClaudeOAuthBundle(o.claudeAiOauth)) {
-      return { kind: 'oauth', savedAt: o.savedAt, claudeAiOauth: o.claudeAiOauth }
-    }
-    if (o.kind === 'api-key' && typeof o.savedAt === 'string' && typeof o.apiKey === 'string' && o.apiKey !== '') {
-      return { kind: 'api-key', savedAt: o.savedAt, apiKey: o.apiKey }
-    }
-    return null
-  } catch {
-    return null
-  }
+    parsed = JSON.parse(raw)
+  } catch { /* fails the schema below */ }
+  const result = schema.safeParse(parsed)
+  if (result.success) return result.data
+  console.warn(
+    `[yaac] Ignoring the stored ${tool} credential: ${result.error.issues[0]?.message}. `
+    + `Run \`yaac auth update ${tool}\` to re-record it.`,
+  )
+  return null
 }
 
 /**
@@ -154,43 +139,29 @@ async function writeCredentialsFileAtomic(filePath: string, contents: string): P
   }
 }
 
-export async function saveClaudeCredentialsFile(creds: ClaudeCredentialsFile): Promise<void> {
-  await ensureCredentialsDir()
-  await writeCredentialsFileAtomic(
-    claudeCredentialsPath(),
-    JSON.stringify(creds, null, 2) + '\n',
-  )
+async function saveCredFile(file: string, creds: object): Promise<void> {
+  await ensureDataDir()
+  await fs.mkdir(credentialsDir(), { recursive: true, mode: 0o700 })
+  await writeCredentialsFileAtomic(file, JSON.stringify(creds, null, 2) + '\n')
 }
 
-function isCodexOAuthBundle(v: unknown): v is CodexOAuthBundle {
-  return codexOAuthBundleSchema.safeParse(v).success
-}
+export const loadClaudeCredentialsFile = (): Promise<ClaudeCredentialsFile | null> =>
+  loadCredFile('claude', claudeCredentialsPath(), claudeCredentialsFileSchema)
+export const loadCodexCredentialsFile = (): Promise<CodexCredentialsFile | null> =>
+  loadCredFile('codex', codexCredentialsPath(), codexCredentialsFileSchema)
+export const loadOpencodeCredentialsFile = (): Promise<OpencodeCredentialsFile | null> =>
+  loadCredFile('opencode', opencodeCredentialsPath(), opencodeCredentialsFileSchema)
+export const loadPiCredentialsFile = (): Promise<PiCredentialsFile | null> =>
+  loadCredFile('pi', piCredentialsPath(), piCredentialsFileSchema)
 
-export async function loadCodexCredentialsFile(): Promise<CodexCredentialsFile | null> {
-  try {
-    const raw = await fs.readFile(codexCredentialsPath(), 'utf8')
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return null
-    const o = parsed as Record<string, unknown>
-    if (o.kind === 'oauth' && typeof o.savedAt === 'string' && isCodexOAuthBundle(o.codexOauth)) {
-      return { kind: 'oauth', savedAt: o.savedAt, codexOauth: o.codexOauth }
-    }
-    if (o.kind === 'api-key' && typeof o.savedAt === 'string' && typeof o.apiKey === 'string' && o.apiKey !== '') {
-      return { kind: 'api-key', savedAt: o.savedAt, apiKey: o.apiKey }
-    }
-    return null
-  } catch {
-    return null
-  }
-}
-
-export async function saveCodexCredentialsFile(creds: CodexCredentialsFile): Promise<void> {
-  await ensureCredentialsDir()
-  await writeCredentialsFileAtomic(
-    codexCredentialsPath(),
-    JSON.stringify(creds, null, 2) + '\n',
-  )
-}
+export const saveClaudeCredentialsFile = (creds: ClaudeCredentialsFile): Promise<void> =>
+  saveCredFile(claudeCredentialsPath(), creds)
+export const saveCodexCredentialsFile = (creds: CodexCredentialsFile): Promise<void> =>
+  saveCredFile(codexCredentialsPath(), creds)
+export const saveOpencodeCredentialsFile = (creds: OpencodeCredentialsFile): Promise<void> =>
+  saveCredFile(opencodeCredentialsPath(), creds)
+export const savePiCredentialsFile = (creds: PiCredentialsFile): Promise<void> =>
+  saveCredFile(piCredentialsPath(), creds)
 
 /** Save a full Codex OAuth bundle (refresh token, expiry, id_token). */
 export async function saveCodexOAuthBundle(bundle: CodexOAuthBundle): Promise<void> {
@@ -199,66 +170,6 @@ export async function saveCodexOAuthBundle(bundle: CodexOAuthBundle): Promise<vo
     savedAt: new Date().toISOString(),
     codexOauth: bundle,
   })
-}
-
-export async function loadOpencodeCredentialsFile(): Promise<OpencodeCredentialsFile | null> {
-  try {
-    const raw = await fs.readFile(opencodeCredentialsPath(), 'utf8')
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return null
-    const o = parsed as Record<string, unknown>
-    if (o.kind === 'api-key' && typeof o.savedAt === 'string' && typeof o.apiKey === 'string' && o.apiKey !== '') {
-      // A missing or retired provider reads as unconfigured rather than
-      // defaulting, which could send the key to the wrong vendor.
-      const provider = parseOpencodeProvider(
-        typeof o.provider === 'string' ? o.provider : undefined,
-      )
-      if (!provider) {
-        warnDroppedCredential('opencode', o.provider)
-        return null
-      }
-      return { kind: 'api-key', provider, savedAt: o.savedAt, apiKey: o.apiKey }
-    }
-    return null
-  } catch {
-    return null
-  }
-}
-
-export async function saveOpencodeCredentialsFile(creds: OpencodeCredentialsFile): Promise<void> {
-  await ensureCredentialsDir()
-  await writeCredentialsFileAtomic(
-    opencodeCredentialsPath(),
-    JSON.stringify(creds, null, 2) + '\n',
-  )
-}
-
-export async function loadPiCredentialsFile(): Promise<PiCredentialsFile | null> {
-  try {
-    const raw = await fs.readFile(piCredentialsPath(), 'utf8')
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return null
-    const o = parsed as Record<string, unknown>
-    if (o.kind === 'api-key' && typeof o.savedAt === 'string' && typeof o.apiKey === 'string' && o.apiKey !== '') {
-      const provider = parsePiProvider(typeof o.provider === 'string' ? o.provider : undefined)
-      if (!provider) {
-        warnDroppedCredential('pi', o.provider)
-        return null
-      }
-      return { kind: 'api-key', provider, savedAt: o.savedAt, apiKey: o.apiKey }
-    }
-    return null
-  } catch {
-    return null
-  }
-}
-
-export async function savePiCredentialsFile(creds: PiCredentialsFile): Promise<void> {
-  await ensureCredentialsDir()
-  await writeCredentialsFileAtomic(
-    piCredentialsPath(),
-    JSON.stringify(creds, null, 2) + '\n',
-  )
 }
 
 /** Every tool's stored credential file, as one value. */
@@ -430,58 +341,26 @@ export async function persistToolLogin(tool: AgentTool, result: ToolLoginResult)
 }
 
 /**
- * Validate and persist a tool-auth payload the CLI sent after running the
- * native login flow locally. Throws `VALIDATION` for anything unrecognized.
+ * Persist a `PUT /auth/:tool` body, already shaped by `toolAuthPayloadSchema`,
+ * after checking it against the named tool. Throws `VALIDATION` for another
+ * tool's OAuth bundle, OAuth for an api-key-only tool, or a bad provider.
  */
-export async function persistToolAuthPayload(tool: AgentTool, payload: unknown): Promise<void> {
-  if (tool !== 'claude' && tool !== 'codex' && tool !== 'opencode' && tool !== 'pi') {
-    throw new ServerError('VALIDATION', `Unknown tool "${String(tool)}".`)
-  }
-  if (!payload || typeof payload !== 'object') {
-    throw new ServerError('VALIDATION', 'Expected { kind, ... } body.')
-  }
-  const p = payload as Record<string, unknown>
-  const providerRaw = typeof p.provider === 'string' ? p.provider : undefined
-  if (p.kind === 'api-key') {
-    if (typeof p.apiKey !== 'string' || p.apiKey === '') {
-      throw new ServerError('VALIDATION', 'api-key payload requires a non-empty apiKey.')
-    }
-    await persistToolLogin(tool, {
-      apiKey: p.apiKey,
-      kind: 'api-key',
-      // An unknown provider is rejected here, at the wire boundary, rather
-      // than defaulted.
-      opencodeProvider: tool === 'opencode' ? requireOpencodeProvider(providerRaw) : undefined,
-      piProvider: tool === 'pi' ? requirePiProvider(providerRaw) : undefined,
-    })
+export async function persistToolAuthPayload(tool: AgentTool, payload: ToolAuthPayload): Promise<void> {
+  if (payload.kind === 'api-key') {
+    await saveToolAuth(tool, payload.apiKey, 'api-key', payload.provider)
     return
   }
-  if (p.kind === 'oauth') {
-    if (tool === 'opencode' || tool === 'pi') {
-      throw new ServerError('VALIDATION', `${tool} only supports api-key auth.`)
-    }
-    if (tool === 'claude') {
-      if (!isClaudeOAuthBundle(p.bundle)) {
-        throw new ServerError('VALIDATION', 'Claude oauth payload needs a valid bundle.')
-      }
-      await persistToolLogin('claude', {
-        apiKey: p.bundle.accessToken,
-        kind: 'oauth',
-        claudeBundle: p.bundle,
-      })
-      return
-    }
-    if (!isCodexOAuthBundle(p.bundle)) {
-      throw new ServerError('VALIDATION', 'Codex oauth payload needs a valid bundle.')
-    }
-    await persistToolLogin('codex', {
-      apiKey: p.bundle.accessToken,
-      kind: 'oauth',
-      codexBundle: p.bundle,
-    })
-    return
+  if (tool === 'opencode' || tool === 'pi') {
+    throw new ServerError('VALIDATION', `${tool} only supports api-key auth.`)
   }
-  throw new ServerError('VALIDATION', `Unknown payload kind "${String(p.kind)}".`)
+  if (tool === 'claude') {
+    const bundle = claudeOAuthBundleSchema.safeParse(payload.bundle)
+    if (bundle.success) return saveClaudeOAuthBundle(bundle.data)
+  } else {
+    const bundle = codexOAuthBundleSchema.safeParse(payload.bundle)
+    if (bundle.success) return saveCodexOAuthBundle(bundle.data)
+  }
+  throw new ServerError('VALIDATION', `The oauth bundle is not a valid ${tool} bundle.`)
 }
 
 /**

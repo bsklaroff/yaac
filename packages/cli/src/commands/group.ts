@@ -48,12 +48,10 @@ export async function groupMove(
 ): Promise<void> {
   const projectSlug = options.project ?? await projectOfWorkspace(workspaceId)
   if (!projectSlug) {
-    console.error(
+    throw new Error(
       `Could not find a running workspace "${workspaceId}". Pass --project <slug> to move a `
       + 'stopped one.',
     )
-    process.exitCode = 1
-    return
   }
   // No group (or `--`) returns the workspace to the default list. An unknown
   // name creates the group, as `--group` does on workspace create.
@@ -70,18 +68,12 @@ export async function groupMove(
 export async function groupDelete(projectSlug: string, group: string): Promise<void> {
   const { groups } = await api.workspace.group.list.$get({ query: { project: projectSlug } })
   const matches = resolveLocally(groups, group)
-  if (matches.length === 0) {
-    console.error(`No such group in ${projectSlug}: ${group}`)
-    process.exitCode = 1
-    return
-  }
+  if (matches.length === 0) throw new Error(`No such group in ${projectSlug}: ${group}`)
   if (matches.length > 1) {
-    console.error(
+    throw new Error(
       `"${group}" names ${matches.length} groups in ${projectSlug} — pass the group id instead `
       + `(${matches.map((g) => g.groupId).join(', ')})`,
     )
-    process.exitCode = 1
-    return
   }
   const match = matches[0]
   await api.workspace.group.delete.$post({ json: { projectSlug, groupId: match.groupId } })

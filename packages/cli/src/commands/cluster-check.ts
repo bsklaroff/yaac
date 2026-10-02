@@ -11,10 +11,6 @@ export async function clusterCheck(): Promise<void> {
   for (const r of results) {
     console.log(formatCheckResult(r))
   }
-  if (!ok) {
-    console.error('\nCluster is not ready for yaac workspaces. Fix the failures above and re-run.')
-    process.exitCode = 1
-  } else {
-    console.log('\nCluster is ready for yaac workspaces.')
-  }
+  if (!ok) throw new Error('\nCluster is not ready for yaac workspaces. Fix the failures above and re-run.')
+  console.log('\nCluster is ready for yaac workspaces.')
 }

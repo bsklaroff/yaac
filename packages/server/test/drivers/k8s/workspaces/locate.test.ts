@@ -13,7 +13,6 @@ import { LABEL_PREWARMED, listWorkspaceJobs, listWorkspacePods, type PodInfo } f
 import type * as podsModule from '#drivers/k8s/substrate/pods'
 import { getActiveClusterCache } from '#drivers/k8s/substrate/cluster-cache'
 import {
-  countProjectWorkspaces,
   countWorkspaces,
   findWorkspace,
   findWorkspaceForTeardown,
@@ -213,14 +212,3 @@ describe('countWorkspaces', () => {
 
 })
 
-describe('countProjectWorkspaces', () => {
-  // Includes spares, unlike `countWorkspaces`.
-  it('counts one project’s pods, and zero when the substrate is unavailable', async () => {
-    mockList.mockResolvedValue([pod(), pod({ labels: { [LABEL_PREWARMED]: 'true' } })])
-    expect(await countProjectWorkspaces('proj')).toBe(2)
-    expect(mockList).toHaveBeenCalledWith('proj')
-
-    mockList.mockRejectedValue(new Error('connection refused'))
-    expect(await countProjectWorkspaces('proj')).toBe(0)
-  })
-})

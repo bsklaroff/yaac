@@ -178,12 +178,6 @@ export function countWorkspaces(): Record<string, number> {
   return counts
 }
 
-/** See `WorkspaceDriver.countForProject`. */
-export function countForProject(projectSlug: string): number {
-  return [...entries.values()]
-    .filter((e) => e.marker.projectSlug === projectSlug && e.running).length
-}
-
 /** A pass's view of the runtime. `strayUnits` is always empty: the tmux
  *  server is the unit, so nothing can outlive it. */
 export function createRuntimeSnapshot(resync = false): RuntimeSnapshot {

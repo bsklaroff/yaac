@@ -6,13 +6,13 @@ import {
   type TunnelTarget,
 } from '#port-tunnel'
 import { isLoopbackOrigin } from '#server-api'
-import type { DriverKind } from '#types'
+import type { DriverKind, ServerSnapshot } from '#types'
 
 /**
- * A live set of port forwards, reconciled against a desired list. Shared by
- * `yaac forward` (which polls the workspace list) and the desktop app
- * (which watches `/events`). Unchanged specs are never restarted, so
- * adding a port does not drop other forwards' open connections.
+ * A live set of port forwards, reconciled against the ports each `/events`
+ * snapshot offers. Shared by `yaac forward` and the desktop app. Unchanged
+ * specs are never restarted, so adding a port does not drop other
+ * forwards' open connections.
  */
 
 /**
@@ -24,6 +24,17 @@ import type { DriverKind } from '#types'
  */
 export function serverNeedsForwarder(driver: DriverKind, baseUrl: string): boolean {
   return driver !== 'containerless' || !isLoopbackOrigin(baseUrl)
+}
+
+/**
+ * Every forward a snapshot offers, or only workspace `only`'s. Whether this
+ * client should bind them at all is `serverNeedsForwarder`'s answer.
+ */
+export function snapshotForwards(snapshot: ServerSnapshot, only?: string): ForwardSpec[] {
+  return snapshot.workspaces
+    .filter((w) => only === undefined || w.workspaceId === only)
+    .flatMap((w) => w.forwardedPorts.map(({ containerPort, hostPort }) =>
+      ({ session: w.workspaceId, containerPort, hostPort })))
 }
 
 /** A forward's identity: workspace, container port and host port. */
@@ -54,33 +65,40 @@ export function createForwardSet(
   const { onChange, onBindError, ...forwardOpts } = opts
   const live = new Map<string, { spec: ForwardSpec; handle: ForwardHandle }>()
   let closed = false
+  // One reconcile at a time, or two would both bind a newly offered port.
+  let running: Promise<void> = Promise.resolve()
+
+  const apply = async (specs: ForwardSpec[]): Promise<void> => {
+    if (closed) return
+    const wanted = new Map(specs.map((s) => [specKey(s), s]))
+    for (const [key, entry] of [...live]) {
+      if (wanted.has(key)) continue
+      live.delete(key)
+      entry.handle.close()
+      onChange?.(entry.spec, 'down')
+    }
+    for (const [key, spec] of wanted) {
+      if (live.has(key)) continue
+      try {
+        const handle = await startForward(target, spec, forwardOpts)
+        // close() may have run while binding.
+        if (closed) {
+          handle.close()
+          return
+        }
+        live.set(key, { spec, handle })
+        onChange?.(spec, 'up')
+      } catch (err) {
+        onBindError?.(spec, err instanceof Error ? err.message : String(err))
+      }
+    }
+  }
 
   return {
     live: () => [...live.values()].map((e) => e.spec),
-    async reconcile(specs) {
-      if (closed) return
-      const wanted = new Map(specs.map((s) => [specKey(s), s]))
-      for (const [key, entry] of [...live]) {
-        if (wanted.has(key)) continue
-        live.delete(key)
-        entry.handle.close()
-        onChange?.(entry.spec, 'down')
-      }
-      for (const [key, spec] of wanted) {
-        if (live.has(key)) continue
-        try {
-          const handle = await startForward(target, spec, forwardOpts)
-          // close() may have run while binding.
-          if (closed) {
-            handle.close()
-            return
-          }
-          live.set(key, { spec, handle })
-          onChange?.(spec, 'up')
-        } catch (err) {
-          onBindError?.(spec, err instanceof Error ? err.message : String(err))
-        }
-      }
+    reconcile(specs) {
+      running = running.then(() => apply(specs))
+      return running
     },
     close() {
       closed = true

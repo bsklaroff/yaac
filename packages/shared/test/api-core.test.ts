@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { throwingFetch, createApiClient, createRawApiClient } from '#api-core'
+import { throwingFetch, createApiClient, createRawApiClient, wsUrl } from '#api-core'
 import { ServerError } from '#errors'
 
 function jsonResponse(body: string, status = 200): Response {
@@ -74,5 +74,19 @@ describe('createApiClient / createRawApiClient', () => {
     const client = createRawApiClient('http://server.local', fetchImpl as unknown as typeof fetch)
     const res = await client.auth.list.$get()
     expect(res.status).toBe(400)
+  })
+})
+
+describe('wsUrl', () => {
+  it('speaks wss to an https origin, and ws to an http one', () => {
+    expect(wsUrl('https://srv.example.ts.net', '/api/forward/attach', { id: 'sess-1', port: 5173 }))
+      .toBe('wss://srv.example.ts.net/api/forward/attach?id=sess-1&port=5173')
+    expect(wsUrl('http://127.0.0.1:8787', '/api/events'))
+      .toBe('ws://127.0.0.1:8787/api/events')
+  })
+
+  it('leaves out undefined params', () => {
+    expect(wsUrl('http://127.0.0.1:8787', '/api/pty/attach', { id: 'abc', cols: undefined }))
+      .toBe('ws://127.0.0.1:8787/api/pty/attach?id=abc')
   })
 })

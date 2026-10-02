@@ -1,6 +1,5 @@
 import {
   claimSpareWorkspace,
-  countProjectWorkspaces,
   countWorkspaces,
   createRuntimeSnapshot,
   deregisterWorkspace,
@@ -22,7 +21,6 @@ import {
   proxyClient,
   readBlockedHosts,
   readAllGitAuthFailures,
-  readGitAuthFailures,
   refreshedCredentials,
 } from '#drivers/k8s/egress'
 import { syncProjectSecrets, syncProxyCredentials } from '#drivers/k8s/cluster'
@@ -105,14 +103,12 @@ export function createK8sDriver(): WorkspaceDriver {
     findForTeardown: (workspaceId, opts) => findWorkspaceForTeardown(workspaceId, opts),
     list: (projectSlug, opts) => listWorkspaces(projectSlug, opts),
     count: () => countWorkspaces(),
-    countForProject: (projectSlug) => countProjectWorkspaces(projectSlug),
     changes: (jobName, base, defaultBase) => getWorkspaceChanges(jobName, base, defaultBase),
     snapshot: (resync) => createRuntimeSnapshot(resync),
     reconcileSteps: () => k8sReconcileSteps(),
 
     blockedHosts: (workspaceId) => Promise.resolve(readBlockedHosts(workspaceId)),
-    gitAuthFailures: (projectSlug) => Promise.resolve(readGitAuthFailures(projectSlug)),
-    allGitAuthFailures: () => Promise.resolve(readAllGitAuthFailures()),
+    gitAuthFailures: () => Promise.resolve(readAllGitAuthFailures()),
     forwardedPorts: (workspaceId) => Promise.resolve(getWorkspacePorts(workspaceId)),
     unforwardedPorts: (workspaceId) => Promise.resolve(getUnforwardedPorts(workspaceId)),
     allowHost: (target, host, opts) => allowWorkspaceHost(target, host, opts),

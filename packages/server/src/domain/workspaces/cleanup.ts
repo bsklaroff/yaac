@@ -32,6 +32,19 @@ import type { TeardownTarget } from '#drivers/contract'
 import { serverLog } from '#log'
 
 /**
+ * Record the stop. A teardown carries on if the write fails: a lost stop
+ * stamp degrades a listing, while a skipped teardown leaks a runtime.
+ */
+async function recordStop(
+  projectSlug: string,
+  workspaceId: string,
+  cause: WorkspaceDeathCause | undefined,
+): Promise<void> {
+  await applyWorkspaceEvent({ type: 'workspace-stopped', projectSlug, workspaceId, cause })
+    .catch((err: unknown) => serverLog(`[server] record stop ${projectSlug}/${workspaceId}: ${String(err)}`))
+}
+
+/**
  * Detached teardown scripts still running, by workspace id. A restart waits
  * on these before relaunching into the same checkout: under containerless
  * the runtime forgets the workspace as soon as the stop returns, while the
@@ -146,9 +159,7 @@ export async function cleanupWorkspace(params: {
   // runtime reports the teardown.
   markWorkspaceTerminating(workspaceId)
 
-  await applyWorkspaceEvent({
-    type: 'workspace-stopped', projectSlug, workspaceId, cause,
-  })
+  await recordStop(projectSlug, workspaceId, cause)
 
   // Drop cached liveness and status so nothing stale outlives the stop.
   forgetLiveness(projectSlug, workspaceId)
@@ -209,9 +220,7 @@ export async function cleanupWorkspaceDetached(params: {
     markWorkspaceTerminating(workspaceId)
 
     if (!preserveDeletedRecord) {
-      await applyWorkspaceEvent({
-        type: 'workspace-stopped', projectSlug, workspaceId, cause,
-      })
+      await recordStop(projectSlug, workspaceId, cause)
     }
 
     forgetLiveness(projectSlug, workspaceId)

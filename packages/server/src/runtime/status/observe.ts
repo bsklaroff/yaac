@@ -86,7 +86,7 @@ export async function observeWorkspaces(projectFilter?: string): Promise<Runtime
   return {
     workspaces,
     stale,
-    gitAuthFailures: await driver.allGitAuthFailures(),
+    gitAuthFailures: await driver.gitAuthFailures(),
   }
 }
 

@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   readAllGitAuthFailures,
   readBlockedHosts,
-  readGitAuthFailures,
   refreshedCredentials,
 } from '#drivers/k8s/egress/proxy-state'
 import { setActiveClusterCache, type ClusterCache } from '#drivers/k8s/substrate'
@@ -29,15 +28,6 @@ describe('readBlockedHosts', () => {
     setActiveClusterCache(cacheOf({ blockedHosts: { w1: ['evil.example.com'] }, gitAuthFailures: {} }))
     expect(readBlockedHosts('w1')).toEqual(['evil.example.com'])
     expect(readBlockedHosts('w2')).toEqual([])
-  })
-})
-
-describe('readGitAuthFailures', () => {
-  it('answers one project’s failures', () => {
-    const failure = { host: 'github.com', status: 401, atMs: 5 }
-    setActiveClusterCache(cacheOf({ blockedHosts: {}, gitAuthFailures: { demo: [failure] } }))
-    expect(readGitAuthFailures('demo')).toEqual([failure])
-    expect(readGitAuthFailures('other')).toEqual([])
   })
 })
 

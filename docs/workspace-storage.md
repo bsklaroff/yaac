@@ -54,8 +54,8 @@ workspace. See "Agent workspaces" below.
   reaped spare and a stopped workspace look the same on disk, and deleting the
   wrong one loses uncommitted work.
 
-  `claimSpareWorkspace` clears the flag, and unlike other writes it throws on
-  failure: the startup sweep deletes checkouts based on the flag, so a lost
+  `claimSpareWorkspace` clears the flag, and throws when no unclaimed spare
+  matched: the startup sweep deletes checkouts based on the flag, so a lost
   clear would make the user's new workspace look reapable. The claim clears the
   flag first. If it then fails before changing the spare, it sets the flag back
   and the pod returns to the pool. If it fails after changing the spare, it
@@ -64,17 +64,17 @@ workspace. See "Agent workspaces" below.
   at that point, so it is deleted only once the files are really gone; whatever
   survives shows up as an ordinary stopped workspace.
 - **No stop deletes a row.** A row with `stoppedAt` set is a stopped
-  workspace. A restart reuses the id and clears `stoppedAt` and any death
-  cause, but keeps the title and sidebar group. Only two paths delete rows:
+  workspace. A restart reuses the id and, once the new runtime is up, clears
+  `stoppedAt` and any death cause, but keeps the title and sidebar group. Only
+  two paths delete rows:
   - `project remove`, which also removes the checkouts and transcripts (a
     leftover row would list a workspace whose checkout no longer exists).
   - A fresh create rolling back its own insert, which also removes its staged
-    checkout. A failed restart is marked stopped instead, since its checkout is
-    the work the user came back for.
-- Writes are best-effort: a failed write degrades a listing but never blocks a
-  create or teardown. The exceptions are `claimSpareWorkspace` and
-  `recordWorkspaceLife`, whose errors fail the create. Reads propagate
-  errors.
+    checkout. A failed restart leaves the row stopped as it found it, since
+    its checkout is the work the user came back for.
+- Reads and writes propagate errors. A teardown logs a failed stop write and
+  carries on, since a lost stop stamp degrades a listing while a skipped
+  teardown leaks a runtime.
 
 `stoppedAt` and the death columns are separate on purpose. Every stop sets
 `stoppedAt`. Only a stop performed by the reaper sets `deathReason` /

@@ -224,8 +224,6 @@ vi.mock('@yaac/server/db/workspace-store', () => ({
   deleteWorkspaceRow: vi.fn(),
   setWorkspaceBaseBranch: vi.fn(),
   getWorkspaceRow: vi.fn(),
-  priorStopOf: vi.fn(),
-  restoreWorkspaceStop: vi.fn(),
   listProjectWorkspaceIds: vi.fn(() => Promise.resolve(new Map<string, boolean>())),
 } satisfies Partial<typeof storeModule>))
 
@@ -254,15 +252,14 @@ import { createWorkspace } from '@yaac/server/domain/workspaces/create'
 import {
   deleteWorkspaceRow,
   getWorkspaceRow,
-  priorStopOf,
   recordWorkspaceCreated,
   recordWorkspaceStopped,
-  restoreWorkspaceStop,
 } from '@yaac/server/db/workspace-store'
 import { recordAgentSessions } from '@yaac/server/db/agent-session-store'
 import { buildAgentCmd, resolveInitWindows } from '@yaac/server/runtime/agents/agent-command'
 import { retoolSpare } from '@yaac/server/domain/workspaces/spare-pool'
 import { workspaceCreate } from '#commands/workspace-create'
+import { attachWorkspacePty } from '#commands/ws-terminal'
 import { ensureKubernetes } from '@yaac/server/drivers/k8s/substrate/kubectl'
 import { ensureImage, pushImageShared } from '@yaac/server/drivers/k8s/images/build-coordinator'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/drivers/k8s/substrate/kubectl'
@@ -488,32 +485,13 @@ describe('createWorkspace', () => {
     })
   })
 
-  it('re-marks a failed restart as deleted instead of erasing its history', async () => {
-    // The row holds the title, pin and prompt; a failed restart keeps them.
+  it('keeps a failed restart\'s row instead of erasing its history', async () => {
+    // The row holds the title, pin and prompt, and still carries its stop.
     mockWaitForPodReady.mockRejectedValue(new Error('pod never became ready'))
     await expect(
       createWorkspace('demo', { tool: 'claude', resume: true, workspaceId: 'prior-session' }),
     ).rejects.toThrow()
     expect(vi.mocked(deleteWorkspaceRow)).not.toHaveBeenCalled()
-    expect(vi.mocked(recordWorkspaceStopped)).toHaveBeenCalledWith('demo', 'prior-session')
-  })
-
-  it('restores the exact prior deletion when a restart of a died session fails', async () => {
-    // Keep the death reason and don't re-raise a dismissed notification.
-    const prior = {
-      stoppedAt: new Date('2026-07-30T00:00:00Z'),
-      deathReason: 'oom' as const,
-      deathDetail: 'exit code 137',
-      deathSeen: true,
-    }
-    vi.mocked(priorStopOf).mockReturnValueOnce(prior)
-    mockWaitForPodReady.mockRejectedValue(new Error('pod never became ready'))
-
-    await expect(
-      createWorkspace('demo', { tool: 'claude', resume: true, workspaceId: 'died-session' }),
-    ).rejects.toThrow()
-
-    expect(vi.mocked(restoreWorkspaceStop)).toHaveBeenCalledWith('demo', 'died-session', prior)
     expect(vi.mocked(recordWorkspaceStopped)).not.toHaveBeenCalled()
   })
 
@@ -1326,9 +1304,9 @@ describe('workspaceCreate (CLI shim)', () => {
     ]))
   })
 
-  it('POSTs /workspace/create and returns the workspaceId', async () => {
-    const result = await workspaceCreate('demo', {})
-    expect(result).toBe('sess-123')
+  it('POSTs /workspace/create and attaches to the workspace it made', async () => {
+    await workspaceCreate('demo', {})
+    expect(attachWorkspacePty).toHaveBeenCalledWith('sess-123', 'native')
     expect(mockPost).toHaveBeenCalledTimes(1)
     expect(mockPost).toHaveBeenCalledWith(expect.objectContaining({
       json: expect.objectContaining({

@@ -284,9 +284,8 @@ describe('ensureProxyResources', () => {
       // Workspace egress, workspace ingress lock, proxy ingress and egress,
       // world-deny.
       'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy',
-      // netd: SA, ClusterRole, ClusterRoleBinding, Role, RoleBinding, DaemonSet.
-      'ServiceAccount', 'ClusterRole', 'ClusterRoleBinding', 'Role', 'RoleBinding',
-      'DaemonSet',
+      // netd: SA, Role, RoleBinding, DaemonSet.
+      'ServiceAccount', 'Role', 'RoleBinding', 'DaemonSet',
     ])
     expect(byName('yaac-proxy-refreshed')?.metadata.labels).toEqual({ app: 'yaac-proxy', 'yaac.proxy-output': 'refreshed' })
     expect(byName('yaac-proxy-ca')?.metadata.labels).toEqual({ app: 'yaac-proxy', 'yaac.proxy-output': 'ca' })

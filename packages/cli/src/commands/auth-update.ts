@@ -7,7 +7,7 @@ import {
   promptForApiKey,
   runToolLogin,
 } from '@yaac/shared/tool-auth-interactive'
-import type { AgentTool } from '@yaac/shared/types'
+import { TOOL_LABELS, type AgentTool } from '@yaac/shared/types'
 
 export async function authUpdate(): Promise<void> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -63,10 +63,7 @@ async function runGitUpdate(): Promise<void> {
   if (kind === 'https') {
     const token = (await rl.question('Token (PAT): ')).trim()
     rl.close()
-    if (!token) {
-      console.error('Token cannot be empty.')
-      process.exit(1)
-    }
+    if (!token) throw new Error('Token cannot be empty.')
     await client.auth.git.credentials.$post({ json: { name, token } })
     console.log(`Git credential "${name}" saved.`)
   } else {
@@ -80,18 +77,11 @@ async function runGitUpdate(): Promise<void> {
 }
 
 async function runToolUpdate(tool: AgentTool): Promise<void> {
-  const label =
-    tool === 'claude' ? 'Claude Code' :
-    tool === 'codex' ? 'Codex' :
-    tool === 'pi' ? 'Pi' :
-    'OpenCode'
+  const label = TOOL_LABELS[tool]
 
   // Returns a result directly for the e2e hook and the opencode/pi api-key
   // prompt; otherwise null.
-  let result = await runToolLogin(tool).catch((err: unknown) => {
-    console.error(err instanceof Error ? err.message : String(err))
-    process.exit(1)
-  })
+  let result = await runToolLogin(tool)
 
   if (!result && (tool === 'claude' || tool === 'codex')) {
     // Browser sign-in runs in the auth daemon on this machine, which saves

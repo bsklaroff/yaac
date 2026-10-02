@@ -3,6 +3,7 @@ import { getDb } from './client'
 import { queuedWorkspaces } from './schema'
 import { notifyWorkspaceListChanged } from '#notify'
 import { isUuid } from '#lib/uuid'
+import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
 import { ServerError } from '@yaac/shared/errors'
 import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 
@@ -25,26 +26,6 @@ import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 /** What an entry waits on: a workspace or another entry. */
 export type QueuedParent = { parentWorkspaceId: string } | { parentQueuedId: string }
 
-export interface QueuedWorkspaceRow {
-  id: string
-  projectSlug: string
-  parentWorkspaceId?: string
-  parentQueuedId?: string
-  createdAt: Date
-  prompt: string
-  tool: AgentTool
-  model: string
-  mode: AgentMode
-  permissionMode: PermissionMode
-  branch: string
-  title?: string
-  generatedTitle?: string
-  groupId?: string
-  releasedAt?: Date
-  launchWorkspaceId?: string
-  launchError?: string
-}
-
 /** An entry's settings: what an insert takes and an update replaces. An
  *  absent title or group is stored as null. */
 export interface QueuedWorkspaceSettings {
@@ -60,26 +41,11 @@ export interface QueuedWorkspaceSettings {
 
 type Row = typeof queuedWorkspaces.$inferSelect
 
-function toRow(r: Row): QueuedWorkspaceRow {
-  return {
-    id: r.id,
-    projectSlug: r.projectSlug,
-    ...(r.parentWorkspaceId !== null ? { parentWorkspaceId: r.parentWorkspaceId } : {}),
-    ...(r.parentQueuedId !== null ? { parentQueuedId: r.parentQueuedId } : {}),
-    createdAt: r.createdAt,
-    prompt: r.prompt,
-    tool: r.tool as AgentTool,
-    model: r.model,
-    mode: r.mode as AgentMode,
-    permissionMode: r.permissionMode as PermissionMode,
-    branch: r.branch,
-    ...(r.title !== null ? { title: r.title } : {}),
-    ...(r.generatedTitle !== null ? { generatedTitle: r.generatedTitle } : {}),
-    ...(r.groupId !== null ? { groupId: r.groupId } : {}),
-    ...(r.releasedAt !== null ? { releasedAt: r.releasedAt } : {}),
-    ...(r.launchWorkspaceId !== null ? { launchWorkspaceId: r.launchWorkspaceId } : {}),
-    ...(r.launchError !== null ? { launchError: r.launchError } : {}),
-  }
+/** A pending entry (columns documented in schema.ts). */
+export type QueuedWorkspaceRow = NullsToUndefined<Omit<Row, 'launchedWorkspaceId'>>
+
+function toRow({ launchedWorkspaceId: _, ...r }: Row): QueuedWorkspaceRow {
+  return nullsToUndefined(r)
 }
 
 /** Both parent columns: one set, the other null. */

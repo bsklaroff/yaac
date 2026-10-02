@@ -30,7 +30,6 @@ export {
 export {
   readAllGitAuthFailures,
   readBlockedHosts,
-  readGitAuthFailures,
   refreshedCredentials,
 } from './proxy-state'
 export { workspaceSshTransport } from './ssh-transport'
