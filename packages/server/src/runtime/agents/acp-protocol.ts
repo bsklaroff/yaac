@@ -318,6 +318,16 @@ export class AcpProjection {
    *  took them (see `closeSteer`). */
   private readonly openSteers = new Map<string, AcpContent[]>()
 
+  /** The adapter's last state report (`agentRunningReport`). */
+  private agentRunning = false
+
+  /** Follow a state report; a run starting is an `agent-turn` boundary. */
+  agentState(running: boolean): AcpEventInit | undefined {
+    const started = running && !this.agentRunning
+    this.agentRunning = running
+    return started ? { type: 'agent-turn' } : undefined
+  }
+
   /** Hold a `_session/steering` request line until its reply. */
   openSteer(requestId: string, params: unknown): void {
     const content = toContentList(asRecord(params)?.prompt)
@@ -640,13 +650,61 @@ export function sessionStateModeId(state: unknown): string | undefined {
 }
 
 /**
- * Whether an update is codex reporting its thread idle. codex-acp forwards
- * every thread status change as a `session_info_update`, including for a
- * turn it started itself from a steer, whose end no `session/prompt` reply
- * reports (see `AcpConversation.steer`).
+ * Agents can start turns on their own (a background task finishing, a
+ * scheduled wakeup, a goal continuing, a steer codex turns into a turn of
+ * its own), which no `session/prompt` of ours brackets. ACP v1 has no
+ * standard running/idle report (v2's `state_update` is still a draft), so
+ * each adapter's own is read:
+ *
+ *  - claude forwards the Agent SDK's `session_state_changed` as a
+ *    `CLAUDE_SDK_MESSAGE` notification, once asked for it in the session's
+ *    `_meta` (`CLAUDE_SESSION_META`).
+ *  - codex-acp sends `session_info_update` with `_meta.codex.threadStatus`.
+ *  - pi-acp sends `session_info_update` with `_meta.piAcp.running`, but only
+ *    `false` for a run it did not start; see `AcpAdapterProfile.infersRunStart`.
+ *
+ * opencode's ACP server forwards nothing from a turn it did not start, so
+ * there is nothing to read.
  */
-export function codexThreadIdle(update: Record<string, unknown>): boolean {
-  if (update.sessionUpdate !== 'session_info_update') return false
-  const status = asRecord(asRecord(asRecord(update._meta)?.codex)?.threadStatus)
-  return status !== undefined && status.type !== 'active'
+export const CLAUDE_SDK_MESSAGE = '_claude/sdkMessage'
+
+/** `_meta` for claude's `session/new` and `session/load`; see
+ *  `CLAUDE_SDK_MESSAGE`. */
+export const CLAUDE_SESSION_META = {
+  claudeCode: { emitRawSDKMessages: [{ type: 'system', subtype: 'session_state_changed' }] },
+}
+
+/**
+ * Whether a notification is an adapter reporting the agent working (`true`)
+ * or idle (`false`); undefined for anything else. Waiting on a permission
+ * ask counts as working: the turn is still open.
+ */
+export function agentRunningReport(method: unknown, params: unknown): boolean | undefined {
+  if (method === CLAUDE_SDK_MESSAGE) {
+    const message = asRecord(asRecord(params)?.message)
+    if (message?.subtype !== 'session_state_changed') return undefined
+    const state = asString(message.state)
+    return state === undefined ? undefined : state !== 'idle'
+  }
+  if (method !== ACP.sessionUpdate) return undefined
+  const update = asRecord(asRecord(params)?.update)
+  if (update?.sessionUpdate !== 'session_info_update') return undefined
+  const meta = asRecord(update._meta)
+  const threadStatus = asString(asRecord(asRecord(meta?.codex)?.threadStatus)?.type)
+  if (threadStatus !== undefined) return threadStatus === 'active'
+  const running = asRecord(meta?.piAcp)?.running
+  return typeof running === 'boolean' ? running : undefined
+}
+
+/**
+ * Update variants only a run produces; see `AcpAdapterProfile.infersRunStart`.
+ * Plain text is not one: pi-acp also sends `agent_message_chunk` outside any
+ * run (an extension's `notify`, a UI request it cannot serve, its startup
+ * prelude), and no end report would follow it.
+ */
+const WORK_UPDATES = new Set(['agent_thought_chunk', 'tool_call', 'tool_call_update', 'plan'])
+
+export function isWorkUpdate(params: unknown): boolean {
+  const kind = asRecord(asRecord(params)?.update)?.sessionUpdate
+  return typeof kind === 'string' && WORK_UPDATES.has(kind)
 }

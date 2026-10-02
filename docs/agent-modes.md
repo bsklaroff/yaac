@@ -140,8 +140,9 @@ and the pane replaces what it held; later passes deliver only new lines
 in bursts.
 
 Two events come over the socket because the record can't carry them: turn end
-and error, both built from a `session/prompt` reply that acpd never sees. No
-event comes from both sources, so nothing is duplicated. The tail is flushed
+and error, built from a `session/prompt` reply that acpd never sees or from
+the adapter's own state report (below). No event comes from both sources, so
+nothing is duplicated. The tail is flushed
 before either is forwarded, so a turn never appears to end before its last
 words.
 
@@ -223,10 +224,9 @@ typed mid-turn where its adapter allows:
 
   codex's adapter ignores `promptRequired`: a steer that lands as its turn
   ends makes it start a turn of its own (`startedNewTurn`), which answers no
-  `session/prompt` of yaac's. codex-acp forwards codex's thread status as a
-  `session_info_update` (`_meta.codex.threadStatus`), so that turn counts as
-  running until the status leaves `active`, both live and when a reattach
-  reads the record.
+  `session/prompt` of yaac's. Like any turn an agent starts itself, it
+  counts as running until codex reports its thread idle, both live and when
+  a reattach reads the record (see "The agent can start turns itself").
 - **opencode queues.** Its TUI steers by default, but its acp refuses a
   second `session/prompt` while one runs and has no steering method, and the
   adapter is compiled into opencode's binary rather than shipped as a
@@ -262,10 +262,50 @@ already holds. `firstAttach` tracks whether a client ever *sent* anything, not
 whether one connected: a client that died during an adapter's cold start ran
 no handshake, and its successor must run one.
 
-**Busy state is recovered from the record.** In ACP a turn is running only
-while *your* `session/prompt` is unanswered, and the protocol has no status
+**The agent can start turns itself.** In ACP v1 a turn is running only while
+*your* `session/prompt` is unanswered, but agents also work unprompted: a
+claude background task finishing or scheduled wakeup, a codex goal
+continuing, a pi extension triggering a run. v1 has no standard report for
+this (v2's `state_update` is still a draft), so each adapter's own is read
+(`agentRunningReport`):
+
+- claude's adapter forwards the Agent SDK's `session_state_changed` as a
+  `_claude/sdkMessage` notification, which the handshake asks for in `_meta`.
+- codex-acp sends `session_info_update` carrying `_meta.codex.threadStatus`
+  (`active`/`idle`) for every turn.
+- pi-acp sends `session_info_update` carrying `_meta.piAcp.running`, but for
+  a run it did not start only the closing `false`. The first thought, tool
+  call or plan update while idle stands in for the start. Plain text does
+  not, since pi-acp also sends text outside any run (an extension's
+  `notify`, its startup prelude) that no `false` would follow, so a run
+  that only writes text shows as `running` late or not at all.
+- opencode's ACP server forwards nothing from a turn it did not start, not
+  even its content, so such a turn never reaches the record or the pane
+  (bsklaroff/yaac#288 tracks the upstream fix).
+
+A conversation is working while either signal says so. The pane's busy
+indicator, Stop and steering follow the combination: a message sent during a
+turn the agent started itself steers into it like any other. pi-acp is the
+exception: its steering patch reaches only turns pi-acp started, and it
+fails a `session/prompt` sent mid-run, so under pi such a message queues
+until pi reports the run settled.
+
+A report the adapter never follows up would pin the conversation running:
+claude's adapter sends no idle once the CLI under it exits, and a start
+inferred for pi has no end report of its own. So the report is dropped when
+Stop is pressed with no prompt of ours running, and when the adapter refuses
+a prompt; a run that goes on reports again. Recovery reads the record the
+same way.
+
+The record projection turns each reported run start into an `agent-turn`
+event. It moves no status; the transcript uses it to keep a self-started
+reply from running on from the reply before, which has no user message
+between them.
+
+**Busy state is recovered from the record.** The protocol has no status
 query. A connection taking over a live agent reads the record, which shows
-whether the last prompt was answered. Until then the conversation is
+whether the last prompt was answered and what state the adapter last
+reported. Until then the conversation is
 *unclassified* rather than idle, and no status is published, since guessing
 `waiting` would show a working agent as idle. A recovered turn is sent to
 panes as `turn-start`, so a pane can show a turn it didn't start.
@@ -334,7 +374,9 @@ pod without it is `tui`.
 
 ## Where status can mislead
 
-Status is exact at turn boundaries, with three exceptions.
+Status is exact at turn boundaries, with three exceptions. A turn opencode
+starts on its own is not seen at all (see "The agent can start turns
+itself").
 
 A **hung adapter** (process alive, prompt never answered) stays `running`
 forever: nothing times out a `session/prompt`, and `session/cancel` is a

@@ -117,6 +117,13 @@ export type AcpEvent =
   | { type: 'turn-start'; seq: number }
   /** A prompt turn finished; the agent is idle until the next prompt. */
   | { type: 'turn-end'; seq: number; stopReason: AcpStopReason }
+  /**
+   * The agent reported a run starting, which may be one it began by itself
+   * (a background task finishing) with no user message before it. Only
+   * separates that run's output from the reply before; it moves no status,
+   * which `turn-start`/`turn-end` own.
+   */
+  | { type: 'agent-turn'; seq: number }
   /** The agent, adapter, or transport failed. Ends the turn, not the
    *  conversation; the user can retry. */
   | { type: 'error'; seq: number; message: string }

@@ -74,12 +74,15 @@ function unfinished(call: AcpToolCall): boolean {
  * - a permission answer replaces its ask in place (an answer with no ask in
  *   the stream, i.e. a truncated record, is dropped);
  * - `turn-end` is kept only for an unusual stop reason, and `turn-start`
- *   and the session's `commands` and `models` are dropped.
+ *   and the session's `commands` and `models` are dropped;
+ * - `agent-turn` (a run the agent may have started itself) keeps the text
+ *   after it from joining the text before.
  */
 export function groupEvents(events: AcpEvent[]): Group[] {
   const groups: Group[] = []
   const toolIndex = new Map<string, number>()
   const permissionIndex = new Map<string, number>()
+  let split = false
   const interruptOpenCalls = (): void => {
     for (const at of toolIndex.values()) {
       const g = groups[at]
@@ -88,7 +91,8 @@ export function groupEvents(events: AcpEvent[]): Group[] {
   }
   for (const e of events) {
     if (e.type === 'turn-start' || (e.type === 'user' && e.steered !== true)) interruptOpenCalls()
-    if (e.type === 'commands' || e.type === 'models' || e.type === 'turn-start') continue
+    if (e.type === 'agent-turn') split = true
+    if (e.type === 'commands' || e.type === 'models' || e.type === 'turn-start' || e.type === 'agent-turn') continue
     if (e.type === 'permission-request') {
       permissionIndex.set(e.requestId, groups.length)
       groups.push({
@@ -142,12 +146,13 @@ export function groupEvents(events: AcpEvent[]): Group[] {
     const last = groups[groups.length - 1]
     const text = e.content.map((c) => (c.type === 'text' ? c.text : '')).join('')
     const images = e.content.filter((c) => c.type === 'image')
-    if (last !== undefined && last.kind === e.type) {
+    if (last !== undefined && last.kind === e.type && !split) {
       groups[groups.length - 1] = {
         kind: e.type, seq: last.seq, text: last.text + text, images: [...last.images, ...images],
       }
       continue
     }
+    split = false
     groups.push({ kind: e.type, seq: e.seq, text, images })
   }
   return groups

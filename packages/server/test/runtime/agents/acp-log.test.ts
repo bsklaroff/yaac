@@ -368,6 +368,22 @@ describe('replayAcpLog', () => {
     expect(events.map((e) => e.type)).toEqual(['user', 'agent'])
   })
 
+  it('marks each run an adapter reports starting, so a self-started reply stands apart', () => {
+    const state = (s: string): string => line({
+      jsonrpc: '2.0',
+      method: '_claude/sdkMessage',
+      params: { sessionId: 'acp-1', message: { type: 'system', subtype: 'session_state_changed', state: s } },
+    })
+    const text = (t: string): string => update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: t } })
+    const events = replayAcpLog([
+      prompt('run it in the background'),
+      state('running'), text('started'), state('idle'),
+      // The background task finishing wakes the agent with no prompt.
+      state('running'), text('finished'), state('idle'),
+    ].join('\n') + '\n')
+    expect(events.map((e) => e.type)).toEqual(['user', 'agent-turn', 'agent', 'agent-turn', 'agent'])
+  })
+
   it('replays a message\'s images with its words', () => {
     // User turns exist only as `session/prompt` lines, images included.
     const raw = (line({

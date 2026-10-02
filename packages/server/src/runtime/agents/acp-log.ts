@@ -18,7 +18,7 @@ import { StringDecoder } from 'node:string_decoder'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { agentSessionIdSchema } from '@yaac/shared/types'
 import {
-  ACP, ACPD, AcpProjection, asRecord, asString, codexThreadIdle, sessionModeId, sessionModels,
+  ACP, ACPD, AcpProjection, agentRunningReport, asRecord, asString, sessionModeId, sessionModels,
   sessionStateModeId, toContentList,
 } from './acp-protocol'
 import { openSandboxFile, readSandboxFile, type SandboxFile } from './sandbox-fs'
@@ -278,6 +278,14 @@ function lineId(msg: Record<string, unknown>): string | undefined {
 function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
   const msg = parseLine(line)
   if (msg === undefined) return []
+  // An adapter's own state report, the only boundary a run the agent
+  // started itself has. A new agent life starts idle.
+  if (msg.method === ACPD.exit) projection.agentState(false)
+  const running = agentRunningReport(msg.method, msg.params)
+  if (running !== undefined) {
+    const event = projection.agentState(running)
+    return event === undefined ? [] : [event]
+  }
   // The client's own prompts. The agent echoes user messages only when
   // replaying under `session/load`, so live prompts appear only here.
   if (msg.method === ACP.sessionPrompt) {
@@ -317,26 +325,34 @@ function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
   return []
 }
 
+/** What a record says was running when it was last written; see
+ *  `readAcpInFlight`. */
+export interface AcpInFlight {
+  /** Our last `session/prompt` has no reply. */
+  prompt: boolean
+  /** The agent's last own report of its state (`agentRunningReport`), if
+   *  its adapter sends one. */
+  agentRunning?: boolean
+}
+
 /**
- * Whether a prompt turn was in flight when the record was last written.
+ * What was in flight when the record was last written.
  *
  * ACP gives a reconnecting client no way to ask whether the agent is working
  * (turn state is tied to your own unanswered `session/prompt`). The record
- * has both directions, so a turn is in flight if the last recorded prompt
- * has no recorded reply. Turns never overlap (`AcpConversation` queues
- * them, and a steered message joins the running turn rather than starting
- * one), so only the last can be open. No record means no turn.
- *
- * The exception is a steer codex answers `startedNewTurn`: that turn has no
- * prompt of ours, and is open until codex reports its thread idle (see
- * `AcpConversation.steer`).
+ * has both directions, so a prompt is in flight if the last recorded one has
+ * no recorded reply. Turns never overlap (`AcpConversation` queues them, and
+ * a steered message joins the running turn rather than starting one), so
+ * only the last can be open. An adapter that reports its own state also
+ * covers turns the agent started itself, including one codex starts from a
+ * steer it answers `startedNewTurn`. No record means nothing running.
  */
-export async function readAcpInFlight(record: AcpRecordRef): Promise<boolean> {
+export async function readAcpInFlight(record: AcpRecordRef): Promise<AcpInFlight> {
   const raw = await readRecord(record)
-  if (raw === undefined) return false
+  if (raw === undefined) return { prompt: false }
   let pending: string | number | undefined
   const steers = new Set<string | number>()
-  let detached = false
+  let agentRunning: boolean | undefined
   for (const line of raw.split('\n')) {
     const msg = parseLine(line)
     if (msg === undefined) continue
@@ -350,28 +366,35 @@ export async function readAcpInFlight(record: AcpRecordRef): Promise<boolean> {
       if (id !== undefined) steers.add(id)
       continue
     }
-    if (msg.method === ACP.sessionUpdate) {
-      const update = asRecord(asRecord(msg.params)?.update)
-      if (update !== undefined && codexThreadIdle(update)) detached = false
+    // As live (`AcpConversation.cancel`): Stop with no prompt running drops
+    // the adapter's report.
+    if (msg.method === ACP.sessionCancel) {
+      if (pending === undefined) agentRunning = undefined
       continue
     }
     if (msg.method === ACPD.exit) {
       // The agent exited; acpd starts a fresh record for the next life.
       pending = undefined
-      detached = false
+      agentRunning = undefined
       continue
     }
+    agentRunning = agentRunningReport(msg.method, msg.params) ?? agentRunning
     // Only a reply (no method) can close a turn.
     if (msg.method !== undefined || id === undefined) continue
-    if (id === pending) pending = undefined
-    if (steers.delete(id) && asRecord(msg.result)?.outcome === 'startedNewTurn') detached = true
+    if (id === pending) {
+      pending = undefined
+      // As live (`AcpConversation.runTurn`): a refused prompt drops the
+      // adapter's report.
+      if (msg.error !== undefined) agentRunning = undefined
+    }
+    if (steers.delete(id) && asRecord(msg.result)?.outcome === 'startedNewTurn') agentRunning = true
   }
-  return pending !== undefined || detached
+  return { prompt: pending !== undefined, ...(agentRunning !== undefined ? { agentRunning } : {}) }
 }
 
 /**
  * Permission asks the agent was still blocked on when the record was last
- * written: asks with no recorded answer, found as in `readAcpInFlight`.
+ * written: asks with no recorded answer, paired as in `readAcpInFlight`.
  * Several can be open at once.
  *
  * Ids are returned verbatim, not as strings: JSON-RPC matches ids by value

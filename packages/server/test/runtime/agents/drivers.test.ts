@@ -708,6 +708,184 @@ describe('agentDriver', () => {
     expect(events[1]).toMatchObject({ stopReason: 'end_turn' })
   })
 
+  it("follows claude's own running/idle report, which covers turns the agent starts itself", async () => {
+    const stream = new FakeStream()
+    tmuxWindows = 'claude\n'
+    const seen: AgentObservation[] = []
+    const driver = agentDriver('acp')
+    connections.push(driver.connect(session, (o) => seen.push(o), { dial: acpDial(() => stream), log: () => {} }))
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
+    stream.feed(helloLine(true))
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
+    const init = stream.sent().find((m) => m.method === 'initialize')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: { agentCapabilities: {} } })}\n`)
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/new')).toBe(true))
+    const created = stream.sent().find((m) => m.method === 'session/new')!
+    // The report is opt-in, asked for when the session opens.
+    expect(created.params).toMatchObject({
+      _meta: { claudeCode: { emitRawSDKMessages: [{ type: 'system', subtype: 'session_state_changed' }] } },
+    })
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: created.id, result: { sessionId: 'acp-1' } })}\n`)
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
+    const conversation = acpConversation('demo', 'wt-1', 'acp-1')!
+    const events = collect(conversation)
+    await vi.waitFor(() => expect(statuses(seen)).toEqual(['waiting']))
+
+    const state = (s: string): string => `${JSON.stringify({
+      jsonrpc: '2.0',
+      method: '_claude/sdkMessage',
+      params: { sessionId: 'acp-1', message: { type: 'system', subtype: 'session_state_changed', state: s } },
+    })}\n`
+
+    // A background task wakes the agent with no prompt of ours in flight.
+    stream.feed(state('running'))
+    await vi.waitFor(() => expect(statuses(seen)).toEqual(['waiting', 'running']))
+    expect(conversation.isBusy).toBe(true)
+    // A message steers into it, as into any running turn.
+    await driver.deliverPrompt(session, 'claude', 'also this')
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === '_session/steering')).toBe(true))
+    const steer = stream.sent().find((m) => m.method === '_session/steering')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: steer.id, result: { outcome: 'injected' } })}\n`)
+    // Stop reaches it too, and ends it without waiting for the idle report.
+    conversation.cancel()
+    expect(stream.sent().some((m) => m.method === 'session/cancel')).toBe(true)
+    await vi.waitFor(() => expect(statuses(seen)).toEqual(['waiting', 'running', 'waiting']))
+    stream.feed(state('idle'))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(statuses(seen)).toEqual(['waiting', 'running', 'waiting'])
+    expect(events).toEqual([{ type: 'turn-start' }, { type: 'turn-end', stopReason: 'end_turn' }])
+
+    // Our prompt's reply comes before the adapter goes idle (it waits out
+    // background agents), so the turn ends at idle, with the reply's reason.
+    await driver.deliverPrompt(session, 'claude', 'next')
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/prompt')).toBe(true))
+    const prompt = stream.sent().find((m) => m.method === 'session/prompt')!
+    stream.feed(state('running'))
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'max_tokens' } })}\n`)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(statuses(seen).at(-1)).toBe('running')
+    stream.feed(state('idle'))
+    await vi.waitFor(() => expect(statuses(seen).at(-1)).toBe('waiting'))
+    expect(events.slice(2)).toEqual([{ type: 'turn-start' }, { type: 'turn-end', stopReason: 'max_tokens' }])
+
+    // The CLI under the adapter dies mid-run: no idle report ever comes, and
+    // the adapter refuses what is sent next. That refusal ends the run.
+    stream.feed(state('running'))
+    await vi.waitFor(() => expect(statuses(seen).at(-1)).toBe('running'))
+    await driver.deliverPrompt(session, 'claude', 'still there?')
+    await vi.waitFor(() => expect(stream.sent().filter((m) => m.method === '_session/steering')).toHaveLength(2))
+    const deadSteer = stream.sent().filter((m) => m.method === '_session/steering')[1]
+    const refusal = { code: -32603, message: 'the session has ended' }
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: deadSteer.id, error: refusal })}\n`)
+    await vi.waitFor(() => expect(stream.sent().filter((m) => m.method === 'session/prompt')).toHaveLength(2))
+    const deadPrompt = stream.sent().filter((m) => m.method === 'session/prompt')[1]
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: deadPrompt.id, error: refusal })}\n`)
+    await vi.waitFor(() => expect(statuses(seen).at(-1)).toBe('waiting'))
+    expect(conversation.isBusy).toBe(false)
+  })
+
+  it("recovers an agent-started turn from claude's report in the record", async () => {
+    await record('acp-live', [
+      lifeLine,
+      {
+        jsonrpc: '2.0',
+        method: '_claude/sdkMessage',
+        params: { sessionId: 'acp-live', message: { type: 'system', subtype: 'session_state_changed', state: 'running' } },
+      },
+    ])
+    const stream = new FakeStream()
+    tmuxWindows = 'claude\n'
+    const seen: AgentObservation[] = []
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+      dial: acpDial(() => stream),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-live' }]),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-live')).toBeDefined())
+    const events = collect(acpConversation('demo', 'wt-1', 'acp-live')!)
+    stream.feed(helloLine(false))
+    await vi.waitFor(() => expect(statuses(seen)).toEqual(['running']))
+    expect(events.map((e) => e.type)).toEqual(['turn-start'])
+
+    stream.feed(`${JSON.stringify({
+      jsonrpc: '2.0',
+      method: '_claude/sdkMessage',
+      params: { sessionId: 'acp-live', message: { type: 'system', subtype: 'session_state_changed', state: 'idle' } },
+    })}\n`)
+    await vi.waitFor(() => expect(statuses(seen)).toEqual(['running', 'waiting']))
+    expect(events.map((e) => e.type)).toEqual(['turn-start', 'turn-end'])
+  })
+
+  it("follows codex's and pi's own state reports, inferring the start pi does not report", async () => {
+    const streams = new Map([['codex', new FakeStream()], ['pi', new FakeStream()]])
+    tmuxWindows = 'codex\npi\n'
+    const seen: AgentObservation[] = []
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+      dial: acpDial((_s, argv) => streams.get([...streams.keys()].find((h) => argv.join(' ').includes(`/${h}.sock`))!)!),
+      recordedSessions: () => Promise.resolve([
+        { handle: 'codex', agentSessionId: 'acp-codex' },
+        { handle: 'pi', agentSessionId: 'acp-pi' },
+      ]),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-pi')).toBeDefined())
+    const of = (handle: string): string[] =>
+      seen.flatMap((o) => (o.kind === 'status' && o.handle === handle ? [o.status] : []))
+    const codex = streams.get('codex')!
+    const pi = streams.get('pi')!
+    const piEvents = collect(acpConversation('demo', 'wt-1', 'acp-pi')!)
+    codex.feed(helloLine(false))
+    pi.feed(helloLine(false))
+    await vi.waitFor(() => expect([of('codex').at(-1), of('pi').at(-1)]).toEqual(['waiting', 'waiting']))
+
+    // A goal continuation: codex brackets it with its thread status.
+    const threadStatus = (type: string): string =>
+      updateLine('acp-codex', { sessionUpdate: 'session_info_update', _meta: { codex: { threadStatus: { type } } } })
+    codex.feed(threadStatus('active'))
+    await vi.waitFor(() => expect(of('codex').at(-1)).toBe('running'))
+    codex.feed(threadStatus('idle'))
+    await vi.waitFor(() => expect(of('codex').at(-1)).toBe('waiting'))
+
+    // Metadata and plain text are not work: pi-acp sends text outside any
+    // run (an extension's `notify`), and no end report would follow it. An
+    // extension-started run's first tool call is, and its settle ends it.
+    pi.feed(updateLine('acp-pi', { sessionUpdate: 'available_commands_update', availableCommands: [] }))
+    pi.feed(updateLine('acp-pi', {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'build finished' },
+      _meta: { piAcp: { notify: { level: 'info' } } },
+    }))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(of('pi').at(-1)).toBe('waiting')
+    const toolCall = (id: string): string =>
+      updateLine('acp-pi', { sessionUpdate: 'tool_call', toolCallId: id, title: 'read', kind: 'read', status: 'pending' })
+    pi.feed(toolCall('t1'))
+    await vi.waitFor(() => expect(of('pi').at(-1)).toBe('running'))
+    // pi-acp steers only into a turn it started, and would fail a prompt
+    // sent mid-run, so the message waits for the settle.
+    await agentDriver('acp').deliverPrompt(session, 'pi', 'and then this')
+    await vi.waitFor(() => expect(pi.sent().some((m) => m.method === '_session/steering')).toBe(true))
+    const steer = pi.sent().find((m) => m.method === '_session/steering')!
+    pi.feed(`${JSON.stringify({ jsonrpc: '2.0', id: steer.id, result: { outcome: 'promptRequired' } })}\n`)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(pi.sent().some((m) => m.method === 'session/prompt')).toBe(false)
+    pi.feed(updateLine('acp-pi', { sessionUpdate: 'session_info_update', _meta: { piAcp: { queueDepth: 0, running: false } } }))
+    await vi.waitFor(() => expect(pi.sent().some((m) => m.method === 'session/prompt')).toBe(true))
+    // The held prompt starts as the run ends, so the pane sees two turns.
+    const prompt = pi.sent().find((m) => m.method === 'session/prompt')!
+    pi.feed(`${JSON.stringify({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } })}\n`)
+    await vi.waitFor(() => expect(piEvents.map((e) => e.type))
+      .toEqual(['turn-start', 'turn-end', 'turn-start', 'turn-end']))
+    expect(of('pi').at(-1)).toBe('waiting')
+
+    // Stop clears an inferred start at once, since no end report may follow.
+    pi.feed(toolCall('t2'))
+    await vi.waitFor(() => expect(of('pi').at(-1)).toBe('running'))
+    acpConversation('demo', 'wt-1', 'acp-pi')!.cancel()
+    expect(pi.sent().some((m) => m.method === 'session/cancel')).toBe(true)
+    await vi.waitFor(() => expect(of('pi').at(-1)).toBe('waiting'))
+  })
+
   it('resumes a recorded acp conversation with session/load instead of a new one', async () => {
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
