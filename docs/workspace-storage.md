@@ -523,6 +523,15 @@ least-recently-used entries past 1 GB, or when the node's disk has under 2 GB
 free, because a cache write that hits a full disk sends the client a truncated
 body. Its cache is lost when the pod restarts.
 
+nginx also answers the two npm endpoints Verdaccio lacks, npm's signing keys
+(`/-/npm/v1/keys`) and per-version attestations (`/-/npm/v1/attestations/`),
+by fetching them from npmjs over a certificate-checked connection. It sends
+only GET and HEAD there, and drops a client's `Authorization` and `Cookie`
+headers. Without the
+keys, `pnpm audit signatures` finds none for the cache, checks no package, and
+still reports success. Installs need neither endpoint: pnpm reads attestations
+only for a publish time, and falls back to the metadata's `time` field.
+
 The cache is only ever the **default** registry. The init script writes it to
 the workspace's user-level `~/.npmrc` (from `YAAC_NPM_REGISTRY`). pnpm 10, 11
 and npm all read that below a project's own `.npmrc`, so a project that names a

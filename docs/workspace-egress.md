@@ -155,7 +155,8 @@ installs"), on tcp/4873, which netd does not redirect. The cache fetches from
 workspace outside that workspace's allowlist.
 
 Why that is acceptable: it only brings npm content **in**. What goes out is
-package names (and `npm audit` bodies) sent to npmjs. Verdaccio serves a tarball
+package names (and `npm audit` bodies, and requests for npm's signing keys and
+attestations) sent to npmjs. Verdaccio serves a tarball
 only from a URL its upstream's own metadata named, forwards no credentials
 upstream, and accepts no publishes.
 
