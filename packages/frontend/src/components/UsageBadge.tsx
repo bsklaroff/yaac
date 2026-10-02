@@ -1,9 +1,10 @@
 import type { JSX } from 'react'
 import clsx from 'clsx'
+import { POPUP } from '#components/ui/menu'
 import { Popover } from '@base-ui/react/popover'
 import { PinIcon, UsageIcon, TOOL_LABEL } from '#lib/icons'
 import { useSnapshot } from '#lib/useSnapshot'
-import { requestUsageRefresh } from '#lib/usageApi'
+import { api } from '#lib/api'
 import { useUiStore } from '#lib/store'
 import type { AgentTool, PlanUsageLimit, PlanUsageResult } from '@yaac/shared/types'
 
@@ -159,7 +160,10 @@ export function UsageBadge(): JSX.Element | null {
       onOpenChange={(open) => {
         // Ask for a refresh on open; the server rate-limits it to once a
         // minute and pushes new numbers in the snapshot.
-        if (open) void requestUsageRefresh().catch(() => { /* best-effort */ })
+        if (open) {
+          api.auth.claude.usage.refresh.$post()
+            .catch((e: unknown) => console.error('usage refresh failed', e))
+        }
       }}
     >
       <Popover.Trigger
@@ -175,9 +179,7 @@ export function UsageBadge(): JSX.Element | null {
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner side="bottom" align="end" sideOffset={4}>
-          <Popover.Popup className="w-64 rounded-lg border border-border bg-surface-2 p-1 text-text
-            shadow-[0_12px_32px_rgba(0,0,0,0.5)] outline-none transition-opacity duration-100
-            data-[starting-style]:opacity-0 data-[ending-style]:opacity-0">
+          <Popover.Popup className={clsx('w-64', POPUP)}>
             <div className="px-2 pb-0.5 pt-1">
               <span className="text-[11px] font-medium text-text-faint">Plan usage</span>
             </div>

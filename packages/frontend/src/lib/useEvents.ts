@@ -1,65 +1,41 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { ServerEvent } from '@yaac/shared/types'
-import { INITIAL_RECONNECT_DELAY_MS, nextReconnectDelay } from '#lib/reconnect'
+import { reconnectingSocket } from '#lib/reconnect'
+import { useUiStore } from '#lib/store'
 
 export const SNAPSHOT_KEY = ['snapshot'] as const
 
 /**
  * Subscribe to the server's `/events` WebSocket and write each `snapshot`
- * frame into the React Query cache. Reconnects with backoff (see
- * `#lib/reconnect`). Returns whether the socket is connected.
+ * frame into the React Query cache, first folding it into the store's
+ * optimistic state (`reconcileSnapshot`). See `reconnectingSocket` for the
+ * reconnect policy. Returns whether the socket is connected.
  */
 export function useEvents(enabled: boolean): { connected: boolean } {
   const queryClient = useQueryClient()
   const [connected, setConnected] = useState(false)
-  const backoffRef = useRef(INITIAL_RECONNECT_DELAY_MS)
 
   useEffect(() => {
     if (!enabled) return
-    let ws: WebSocket | null = null
-    let reconnectTimer: ReturnType<typeof setTimeout> | undefined
-    let closedByUs = false
-
-    const connect = (): void => {
-      const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
-      ws = new WebSocket(`${scheme}://${window.location.host}/api/events`)
-
-      ws.onopen = (): void => {
-        setConnected(true)
-        backoffRef.current = INITIAL_RECONNECT_DELAY_MS
-      }
-
-      ws.onmessage = (evt: MessageEvent): void => {
-        if (typeof evt.data !== 'string') return
+    const sock = reconnectingSocket(() => '/api/events', {
+      open: () => setConnected(true),
+      message: (data) => {
+        if (typeof data !== 'string') return false
         let parsed: ServerEvent
         try {
-          parsed = JSON.parse(evt.data) as ServerEvent
+          parsed = JSON.parse(data) as ServerEvent
         } catch {
-          return
+          return false
         }
-        if (parsed.type === 'snapshot') {
-          queryClient.setQueryData(SNAPSHOT_KEY, parsed.data)
-        }
-      }
-
-      ws.onerror = (): void => ws?.close()
-
-      ws.onclose = (): void => {
-        setConnected(false)
-        if (closedByUs) return
-        reconnectTimer = setTimeout(connect, backoffRef.current)
-        backoffRef.current = nextReconnectDelay(backoffRef.current)
-      }
-    }
-
-    connect()
-
-    return (): void => {
-      closedByUs = true
-      if (reconnectTimer) clearTimeout(reconnectTimer)
-      ws?.close()
-    }
+        if (parsed.type !== 'snapshot') return false
+        useUiStore.getState().reconcileSnapshot(parsed.data)
+        queryClient.setQueryData(SNAPSHOT_KEY, parsed.data)
+        return true
+      },
+      close: () => setConnected(false),
+    })
+    return () => sock.close()
   }, [enabled, queryClient])
 
   return { connected }

@@ -1,28 +1,19 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
-import { ServerError } from '@yaac/shared/errors'
+import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import type { AcpEvent } from '@yaac/shared/acp'
 import type { AgentSessionEntry } from '@yaac/shared/types'
-import type * as transcriptApiModule from '#lib/transcriptApi'
+import { StoppedTranscript } from '#components/StoppedTranscript'
+import { mockFetch, renderWithClient, serverError, type FetchMock } from './harness'
 
 /**
- * The stopped-workspace pane's conversation view. The fetch is mocked at the
- * api module and rendering is real, so the tests check what the reader sees:
+ * The stopped-workspace pane's conversation view. The server is answered at
+ * `fetch` and rendering is real, so the tests check what the reader sees:
  * the conversation, a picker when there are several, and the founding prompt
  * when the tool left nothing readable.
  */
 
-vi.mock('#lib/transcriptApi', async (importOriginal) => ({
-  // Keep the real viewability predicate: the pane branches on it, so mocking
-  // it would mock the behavior under test.
-  ...await importOriginal<typeof transcriptApiModule>(),
-  getSessionTranscript: vi.fn(),
-}))
-
-import { StoppedTranscript } from '#components/StoppedTranscript'
-import { getSessionTranscript, TRANSCRIPT_UNAVAILABLE } from '#lib/transcriptApi'
+const TRANSCRIPT = 'GET /api/workspace/w1/agent-sessions/c1/transcript'
 
 const session = (over: Partial<AgentSessionEntry> = {}): AgentSessionEntry => ({
   agentSessionId: 'c1',
@@ -39,25 +30,28 @@ const said = (seq: number, text: string): AcpEvent =>
 const asked = (seq: number, text: string): AcpEvent =>
   ({ type: 'user', seq, content: [{ type: 'text', text }] })
 
+let server: FetchMock
 beforeEach(() => {
-  vi.clearAllMocks()
-  vi.mocked(getSessionTranscript).mockResolvedValue([asked(0, 'what changed?'), said(1, 'the router')])
+  server = mockFetch({ [TRANSCRIPT]: { events: [asked(0, 'what changed?'), said(1, 'the router')] } })
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
+
+/** Answer conversation c1's transcript with these events. */
+const transcript = (events: AcpEvent[]): void => server.route(TRANSCRIPT, { events })
 
 function renderPane(props: Partial<Parameters<typeof StoppedTranscript>[0]> = {}): void {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(
-    <QueryClientProvider client={client}>
-      <StoppedTranscript
-        workspaceId="w1"
-        sessions={[session()]}
-        tool="claude"
-        prompt="what changed?"
-        {...props}
-      />
-    </QueryClientProvider>,
+  renderWithClient(
+    <StoppedTranscript
+      workspaceId="w1"
+      sessions={[session()]}
+      tool="claude"
+      prompt="what changed?"
+      {...props}
+    />,
   )
 }
 
@@ -65,14 +59,14 @@ describe('StoppedTranscript', () => {
   it('renders what was actually said, not just the founding ask', async () => {
     renderPane()
     expect(await screen.findByText('the router')).toBeTruthy()
-    expect(getSessionTranscript).toHaveBeenCalledWith('w1', 'c1')
+    expect(server.called(TRANSCRIPT)).toHaveLength(1)
   })
 
   it('offers the workspace\'s conversations in restore order and switches between them', async () => {
     // `/clear` starts a second conversation in the same workspace; both are
     // readable, and the one the workspace was last in opens first.
-    vi.mocked(getSessionTranscript).mockImplementation((_w, id) =>
-      Promise.resolve([said(0, id === 'c1' ? 'the first answer' : 'the second answer')]))
+    transcript([said(0, 'the first answer')])
+    server.route(TRANSCRIPT.replace('c1', 'c2'), { events: [said(0, 'the second answer')] })
     renderPane({
       sessions: [
         session({ agentSessionId: 'c1', ordinal: 0, active: false, prompt: 'first ask' }),
@@ -93,7 +87,7 @@ describe('StoppedTranscript', () => {
 
     expect(screen.getByText('port it')).toBeTruthy()
     expect(screen.getByText(/keeps its history inside the workspace/)).toBeTruthy()
-    await waitFor(() => expect(getSessionTranscript).not.toHaveBeenCalled())
+    await waitFor(() => expect(server.calls).toEqual([]))
   })
 
   it('does not blame the tool for a workspace whose conversations are not listed yet', () => {
@@ -108,7 +102,7 @@ describe('StoppedTranscript', () => {
   it('falls back to the founding ask when the server cannot produce a transcript', async () => {
     // A 501 (a tool the server won't read) or a 404 (a server too old for the
     // route) falls back to the founding prompt rather than an error.
-    vi.mocked(getSessionTranscript).mockResolvedValue(TRANSCRIPT_UNAVAILABLE)
+    server.route(TRANSCRIPT, serverError('NOT_SUPPORTED', 'not readable', 501))
     renderPane({ prompt: 'port it' })
 
     expect(await screen.findByText('port it')).toBeTruthy()
@@ -120,23 +114,23 @@ describe('StoppedTranscript', () => {
   it('passes on the server\'s reason when it refuses to show a conversation', async () => {
     // A too-large conversation is refused with a specific reason; a generic
     // "could not be read" would give the user nothing to act on.
-    vi.mocked(getSessionTranscript).mockRejectedValue(
-      new ServerError('TOO_LARGE', 'this conversation is 300 MB, past the 64 MB a transcript can be shown at'),
-    )
+    server.route(TRANSCRIPT, serverError(
+      'TOO_LARGE', 'this conversation is 300 MB, past the 64 MB a transcript can be shown at', 413,
+    ))
     renderPane()
 
     expect(await screen.findByText(/past the 64 MB/)).toBeTruthy()
   })
 
   it('says so when the conversation is empty rather than showing a blank pane', async () => {
-    vi.mocked(getSessionTranscript).mockResolvedValue([])
+    transcript([])
     renderPane()
     expect(await screen.findByText(/no messages/i)).toBeTruthy()
   })
 
   it('shows a call the record left unfinished as interrupted, not running', async () => {
     // A workspace stopped mid-command leaves no turn end in the record.
-    vi.mocked(getSessionTranscript).mockResolvedValue([
+    transcript([
       { type: 'tool', seq: 0, call: { toolCallId: 't1', title: 'sleep 50', kind: 'execute', status: 'pending' } },
     ])
     renderPane()
@@ -148,7 +142,7 @@ describe('StoppedTranscript', () => {
     // A workspace can be stopped while its agent waits on a question. Nothing
     // can answer it now, so the pane says so instead of showing an Allow
     // button that does nothing.
-    vi.mocked(getSessionTranscript).mockResolvedValue([
+    transcript([
       {
         type: 'permission-request',
         seq: 0,
@@ -167,7 +161,7 @@ describe('StoppedTranscript', () => {
   })
 
   it('shows a decided ask as the decision, the same as a live pane would', async () => {
-    vi.mocked(getSessionTranscript).mockResolvedValue([
+    transcript([
       {
         type: 'permission-request',
         seq: 0,

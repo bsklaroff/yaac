@@ -1,10 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type KeyboardEvent } from 'react'
 import clsx from 'clsx'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { Popover } from '@base-ui/react/popover'
 import { paneViewKey, useUiStore } from '#lib/store'
-import { CHANGES_TARGET, getWorkspaceChanges } from '#lib/changesApi'
-import { getProjectBranches, projectBranchesKey } from '#lib/projectApi'
+import { api } from '#lib/api'
+import { CHANGES_TARGET } from '#lib/panes'
+import { useProjectBranches } from '#lib/useProjectBranches'
 import { BranchPicker } from '#components/BranchPicker'
 import { DiffView } from '#components/DiffView'
 import { changeMatchesQuery, indexDiffsByPath, type ParsedFileDiff } from '#lib/diff'
@@ -14,6 +15,7 @@ import { CHANGE_STATUS } from '#lib/gitStatus'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { chordMatches, findChord } from '#lib/shortcuts'
 import { PathLabel } from '#components/ui/PathLabel'
+import { POPUP } from '#components/ui/menu'
 import type { WorkspaceChange } from '@yaac/shared/types'
 
 /**
@@ -35,7 +37,7 @@ export function WorkspaceChanges({ workspaceId, projectSlug, baseBranch, focusKe
   const setChangesBase = useUiStore((s) => s.setChangesBase)
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['changes', workspaceId, base ?? null],
-    queryFn: () => getWorkspaceChanges(workspaceId, base),
+    queryFn: () => api.workspace[':id'].changes.$get({ param: { id: workspaceId }, query: base ? { base } : {} }),
     refetchInterval: 3000,
     staleTime: 1500,
   })
@@ -101,22 +103,10 @@ export function WorkspaceChanges({ workspaceId, projectSlug, baseBranch, focusKe
     el.scrollTop = useUiStore.getState().paneView[viewKey]?.scroll ?? 0
   }, [viewKey, files.length])
 
-  // Base picker. Shares the branch cache (projectBranchesKey) with other
-  // pickers; opening it refreshes from the remote in the background.
-  const queryClient = useQueryClient()
+  // Base picker; its branches load when it opens.
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerQuery, setPickerQuery] = useState('')
-  const { data: branchData } = useQuery({
-    queryKey: projectBranchesKey(projectSlug),
-    queryFn: () => getProjectBranches(projectSlug),
-    enabled: pickerOpen && projectSlug !== '',
-  })
-  useEffect(() => {
-    if (!pickerOpen || !projectSlug) return
-    getProjectBranches(projectSlug, { refresh: true })
-      .then((fresh) => queryClient.setQueryData(projectBranchesKey(projectSlug), fresh))
-      .catch(() => { /* stale-but-instant list stays */ })
-  }, [pickerOpen, projectSlug, queryClient])
+  const { data: branchData } = useProjectBranches(projectSlug, pickerOpen)
 
   // Always send an explicit base, even the workspace's own fork branch. The
   // server default reads the workspace's git config, which `git push -u`
@@ -173,11 +163,7 @@ export function WorkspaceChanges({ workspaceId, projectSlug, baseBranch, focusKe
           </Popover.Trigger>
           <Popover.Portal>
             <Popover.Positioner side="bottom" align="start" sideOffset={6}>
-              <Popover.Popup
-                className="w-[240px] rounded-lg border border-border bg-surface-2 p-1 text-text
-                  shadow-[0_12px_32px_var(--shadow-color)] outline-none transition-opacity duration-100
-                  data-[starting-style]:opacity-0 data-[ending-style]:opacity-0"
-              >
+              <Popover.Popup className={clsx('w-[240px]', POPUP)}>
                 <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">Diff base</div>
                 <BranchPicker
                   branches={branchData?.branches ?? []}

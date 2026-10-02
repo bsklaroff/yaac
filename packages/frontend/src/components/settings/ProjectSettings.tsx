@@ -1,17 +1,29 @@
-import { useCallback, useMemo, useState, type JSX } from 'react'
+import { useMemo, useState, type JSX } from 'react'
 import { remoteKind } from '#components/GitCredentialPicker'
 import { FileEditor } from '#components/settings/FileEditor'
 import { BuildFiles } from '#components/settings/BuildFiles'
 import { ProjectEnv } from '#components/settings/ProjectEnv'
-import {
-  getProjectConfig,
-  saveProjectConfig,
-  getProjectDockerfile,
-  saveProjectDockerfile,
-} from '#lib/projectApi'
+import { api } from '#lib/api'
 import { projectBuildFilesApi } from '#lib/buildFilesApi'
 import { useSnapshot } from '#lib/useSnapshot'
 import { useUiStore } from '#lib/store'
+
+const project = api.project[':slug']
+
+async function loadConfig(slug: string): Promise<string> {
+  const { config } = await project.config.$get({ param: { slug } })
+  return JSON.stringify(config ?? {}, null, 2) + '\n'
+}
+
+async function saveConfig(slug: string, text: string): Promise<void> {
+  let config: unknown
+  try {
+    config = JSON.parse(text)
+  } catch (e) {
+    throw new Error(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  await project.config.$put({ param: { slug }, json: { config } })
+}
 
 /**
  * Settings section for a project's overlay files: `yaac-config.json` and
@@ -33,23 +45,6 @@ export function ProjectSettings(): JSX.Element {
         : (projects[0]?.slug ?? null))
   const remoteUrl = projects.find((p) => p.slug === slug)?.remoteUrl
 
-  const loadConfig = useCallback(async (): Promise<string> => {
-    if (!slug) return '{}'
-    const config = await getProjectConfig(slug)
-    return JSON.stringify(config ?? {}, null, 2) + '\n'
-  }, [slug])
-
-  const saveConfig = useCallback(async (text: string): Promise<void> => {
-    if (!slug) return
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(text)
-    } catch (e) {
-      throw new Error(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
-    }
-    await saveProjectConfig(slug, parsed)
-  }, [slug])
-
   const filesApi = useMemo(() => (slug ? projectBuildFilesApi(slug) : null), [slug])
 
   // A containerless server builds no images, so the Dockerfile editors are
@@ -58,15 +53,6 @@ export function ProjectSettings(): JSX.Element {
   // Only with an egress proxy can a secret's value stay out of the
   // workspace.
   const mediatedEgress = useSnapshot()?.driver !== 'containerless'
-
-  const loadDockerfile = useCallback(
-    (): Promise<string> => (slug ? getProjectDockerfile(slug) : Promise.resolve('')),
-    [slug],
-  )
-  const saveDockerfile = useCallback(
-    (text: string): Promise<void> => (slug ? saveProjectDockerfile(slug, text) : Promise.resolve()),
-    [slug],
-  )
 
   return (
     <section>
@@ -112,8 +98,9 @@ export function ProjectSettings(): JSX.Element {
                 key={`config:${slug}`}
                 title={`${slug} · yaac-config.json`}
                 language="json"
-                load={loadConfig}
-                save={saveConfig}
+                queryKey={['project-config', slug]}
+                load={() => loadConfig(slug)}
+                save={(text) => saveConfig(slug, text)}
               />
             </div>
           </div>
@@ -131,8 +118,9 @@ export function ProjectSettings(): JSX.Element {
                 key={`dockerfile:${slug}`}
                 title={`${slug} · Dockerfile`}
                 language="dockerfile"
-                load={loadDockerfile}
-                save={saveDockerfile}
+                queryKey={['project-dockerfile', slug]}
+                load={async () => (await project.dockerfile.$get({ param: { slug } })).content}
+                save={async (content) => { await project.dockerfile.$put({ param: { slug }, json: { content } }) }}
               />
             </div>
           </div>

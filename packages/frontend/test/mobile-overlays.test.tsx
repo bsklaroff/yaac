@@ -1,40 +1,22 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react'
 import type { JSX } from 'react'
 import type { ImageBuildEntry, ProjectSkills, SkillDetail, StoppedWorkspaceEntry } from '@yaac/shared/types'
 
 const provision = vi.hoisted(() => vi.fn())
 
-vi.mock('#lib/stoppedApi', () => ({
-  getStoppedWorkspaces: vi.fn(),
-  markDeathSeen: vi.fn(),
-  markAllDeathsSeen: vi.fn(),
-}))
 vi.mock('#lib/createWorkspace', () => ({ restartWorkspace: vi.fn() }))
 vi.mock('#lib/useProvisionWorkspace', () => ({ useProvisionWorkspace: () => provision }))
-vi.mock('#lib/skillsApi', () => ({ getProjectSkills: vi.fn(), getSkillBody: vi.fn() }))
-vi.mock('#lib/projectApi', () => ({
-  getProjectBranches: vi.fn(),
-  projectBranchesKey: (slug: string) => ['project-branches', slug],
-}))
-vi.mock('#lib/imageBuildsApi', () => ({
-  getImageBuildLog: vi.fn(),
-  dismissImageBuild: vi.fn().mockResolvedValue(undefined),
-  retryImageBuild: vi.fn().mockResolvedValue(undefined),
-}))
 
 import { ImageBuildsOverlay } from '#components/ImageBuildsOverlay'
 import { SkillsButton } from '#components/SkillsButton'
 import { StoppedWorkspacesButton } from '#components/StoppedWorkspacesButton'
 import { useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
 import { MasterDetail } from '#components/ui/MasterDetail'
-import { getImageBuildLog } from '#lib/imageBuildsApi'
-import { getProjectBranches } from '#lib/projectApi'
-import { getProjectSkills, getSkillBody } from '#lib/skillsApi'
-import { getStoppedWorkspaces, markDeathSeen } from '#lib/stoppedApi'
 import { useUiStore } from '#lib/store'
+import { mockFetch, renderWithClient, testQueryClient, type FetchMock } from './harness'
 
 // jsdom has no ResizeObserver; Base UI needs one to exist.
 beforeAll(() => {
@@ -62,16 +44,21 @@ function setMobileViewport(mobile: boolean): void {
 
 const flushEffects = (): Promise<void> => act(async () => { await Promise.resolve() })
 
-const client = (): QueryClient => new QueryClient({ defaultOptions: { queries: { retry: false } } })
+const MARK = 'POST /api/workspace/mark-death-seen'
+const SKILL_BODY = 'GET /api/project/proj/skills/body'
+const BUILD_LOG = 'GET /api/image/builds/build-1/log'
 
+let server: FetchMock
 beforeEach(() => {
   vi.clearAllMocks()
   setMobileViewport(true)
+  server = mockFetch({ [MARK]: undefined, [BUILD_LOG]: { log: 'STEP 1/2: FROM ubuntu' } })
 })
 
 afterEach(() => {
   cleanup()
   window.matchMedia = realMatchMedia
+  vi.unstubAllGlobals()
 })
 
 describe('MasterDetail', () => {
@@ -142,20 +129,15 @@ describe('StoppedWorkspacesButton on a phone', () => {
 
   const openOverlay = async (): Promise<void> => {
     useUiStore.setState({ stoppedOverlayOpen: false, optimisticStopped: [] })
-    render(
-      <QueryClientProvider client={client()}>
-        <Harness />
-      </QueryClientProvider>,
-    )
+    renderWithClient(<Harness />)
     fireEvent.click(await screen.findByRole('button', { name: /^Stopped workspaces/ }))
   }
 
   beforeEach(() => {
-    vi.mocked(getStoppedWorkspaces).mockResolvedValue([
+    server.route('GET /api/workspace/list-stopped', [
       stopped({ workspaceId: 's1', title: 'OOMed run', prompt: 'fix the parser', deathReason: 'oom' }),
       stopped({ workspaceId: 's2', title: 'Add tests', tool: 'codex' }),
     ])
-    vi.mocked(markDeathSeen).mockResolvedValue(undefined)
   })
 
   it('opens on the list, with no row read until one is tapped', async () => {
@@ -166,7 +148,7 @@ describe('StoppedWorkspacesButton on a phone', () => {
     expect(screen.queryByText('fix the parser')).toBeNull()
     expect(screen.queryByRole('button', { name: /Restart/ })).toBeNull()
     await flushEffects()
-    expect(markDeathSeen).not.toHaveBeenCalled()
+    expect(server.called(MARK)).toEqual([])
   })
 
   it('drills into a row and comes back to the list', async () => {
@@ -175,7 +157,7 @@ describe('StoppedWorkspacesButton on a phone', () => {
     // Detail-only content: the prompt, the metadata grid, and Restart.
     await waitFor(() => expect(screen.getByText('fix the parser')).toBeTruthy())
     expect(screen.getByText('Cause')).toBeTruthy()
-    await waitFor(() => expect(markDeathSeen).toHaveBeenCalledWith('proj', 's1'))
+    await waitFor(() => expect(server.called(MARK).map((c) => c.body)).toEqual([{ projectSlug: 'proj', workspaceId: 's1' }]))
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to stopped workspaces' }))
     await waitFor(() => expect(screen.queryByText('fix the parser')).toBeNull())
@@ -210,20 +192,14 @@ describe('SkillsButton on a phone', () => {
 
   const openOverlay = (): void => {
     useUiStore.setState({ skillsOverlayOpen: false })
-    render(
-      <QueryClientProvider client={client()}>
-        <SkillsButton projectSlug="proj" />
-      </QueryClientProvider>,
-    )
+    renderWithClient(<SkillsButton projectSlug="proj" />)
     fireEvent.click(screen.getByRole('button', { name: 'Skills' }))
   }
 
   beforeEach(() => {
-    vi.mocked(getProjectSkills).mockResolvedValue(SKILLS)
-    vi.mocked(getSkillBody).mockResolvedValue(BODY)
-    vi.mocked(getProjectBranches).mockResolvedValue({
-      branches: ['main'], defaultBranch: 'main',
-    })
+    server.route('GET /api/project/proj/skills', SKILLS)
+    server.route(SKILL_BODY, BODY)
+    server.route('GET /api/project/proj/branches', { branches: ['main'], defaultBranch: 'main' })
   })
 
   it('opens on the list and fetches no SKILL.md until one is tapped', async () => {
@@ -232,14 +208,15 @@ describe('SkillsButton on a phone', () => {
     expect(screen.getByText('/lint')).toBeTruthy()
     await flushEffects()
     // The body is fetched only when the detail pane opens.
-    expect(getSkillBody).not.toHaveBeenCalled()
+    expect(server.called(SKILL_BODY)).toEqual([])
   })
 
   it('drills into a skill and comes back to the list', async () => {
     openOverlay()
     fireEvent.click(await screen.findByText('/deploy'))
     await waitFor(() => expect(screen.getByText('Run the deploy script.')).toBeTruthy())
-    expect(getSkillBody).toHaveBeenCalledWith('proj', 'p:deploy', 'claude', 'main')
+    expect(server.called(SKILL_BODY).map((c) => Object.fromEntries(c.query)))
+      .toEqual([{ id: 'p:deploy', tool: 'claude', branch: 'main' }])
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to skills' }))
     await waitFor(() => expect(screen.queryByText('Run the deploy script.')).toBeNull())
@@ -260,16 +237,12 @@ describe('ImageBuildsOverlay on a phone', () => {
     ...over,
   })
 
-  beforeEach(() => {
-    vi.mocked(getImageBuildLog).mockResolvedValue({ log: 'STEP 1/2: FROM ubuntu' })
-  })
-
   it('opens on the list and polls no log until a build is tapped', async () => {
-    render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={[build()]} />)
+    renderWithClient(<ImageBuildsOverlay open onOpenChange={() => {}} builds={[build()]} />)
     await flushEffects()
     expect(screen.getByText('base layer')).toBeTruthy()
     // Unlike desktop, mobile doesn't auto-follow the running build's log.
-    expect(getImageBuildLog).not.toHaveBeenCalled()
+    expect(server.called(BUILD_LOG)).toEqual([])
 
     fireEvent.click(screen.getByText('base layer'))
     await waitFor(() => expect(screen.getByText(/STEP 1\/2/)).toBeTruthy())
@@ -284,16 +257,20 @@ describe('ImageBuildsOverlay on a phone', () => {
 
   it('reopens on the list rather than on the last log read', async () => {
     // This overlay stays mounted while closed, so its pick must be reset.
-    const { rerender } = render(
-      <ImageBuildsOverlay open onOpenChange={() => {}} builds={[build()]} />,
+    const client = testQueryClient()
+    const overlay = (open: boolean): JSX.Element => (
+      <QueryClientProvider client={client}>
+        <ImageBuildsOverlay open={open} onOpenChange={() => {}} builds={[build()]} />
+      </QueryClientProvider>
     )
+    const { rerender } = render(overlay(true))
     await flushEffects()
     fireEvent.click(screen.getByText('base layer'))
     const detailPane = (await screen.findByText(/STEP 1\/2/)).parentElement as HTMLElement
     await waitFor(() => expect(detailPane.className).not.toContain('max-md:hidden'))
 
-    rerender(<ImageBuildsOverlay open={false} onOpenChange={() => {}} builds={[build()]} />)
-    rerender(<ImageBuildsOverlay open onOpenChange={() => {}} builds={[build()]} />)
+    rerender(overlay(false))
+    rerender(overlay(true))
     await waitFor(() => expect(detailPane.className).toContain('max-md:hidden'))
   })
 })

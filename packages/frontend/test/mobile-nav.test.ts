@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest'
-import { loadMobileScreen, persistMobileScreen, useUiStore } from '#lib/store'
+import { defaultMobileScreen, useUiStore } from '#lib/store'
 
 const initial = useUiStore.getState()
 
@@ -70,37 +70,13 @@ describe('mobile screen navigation', () => {
   })
 })
 
-describe('mobile screen persistence', () => {
-  it('round-trips through localStorage', () => {
-    persistMobileScreen('pane')
-    expect(loadMobileScreen()).toBe('pane')
-  })
-
-  it('defaults to the project list with nothing stored, or something bogus', () => {
-    expect(loadMobileScreen()).toBe('projects')
-    localStorage.setItem('yaac.mobilescreen.v1', 'wat')
-    expect(loadMobileScreen()).toBe('projects')
-  })
-
+describe('defaultMobileScreen', () => {
   it('opens a shared link on the screen it points at, on a device that has never visited', () => {
+    expect(defaultMobileScreen()).toBe('projects')
     window.history.replaceState({}, '', '/?project=p&workspace=s1')
-    expect(loadMobileScreen()).toBe('pane')
+    expect(defaultMobileScreen()).toBe('pane')
     window.history.replaceState({}, '', '/?project=p')
-    expect(loadMobileScreen()).toBe('workspaces')
+    expect(defaultMobileScreen()).toBe('workspaces')
     window.history.replaceState({}, '', '/')
-  })
-
-  it('lets a stored screen win over the URL, which every visit mirrors into', () => {
-    // The URL always has the params after any use, so a saved screen must
-    // win over them.
-    persistMobileScreen('workspaces')
-    window.history.replaceState({}, '', '/?project=p&workspace=s1')
-    expect(loadMobileScreen()).toBe('workspaces')
-    window.history.replaceState({}, '', '/')
-  })
-
-  it('is written by the store whenever the screen changes', () => {
-    useUiStore.getState().selectWorkspace('s1')
-    expect(localStorage.getItem('yaac.mobilescreen.v1')).toBe('pane')
   })
 })

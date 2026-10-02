@@ -1,14 +1,15 @@
 import { useEffect, useState, type JSX } from 'react'
 import clsx from 'clsx'
-import { useQuery, keepPreviousData, useQueryClient } from '@tanstack/react-query'
-import { Dialog } from '@base-ui/react/dialog'
+import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { Popover } from '@base-ui/react/popover'
-import { BranchIcon, ChevronIcon, CloseIcon, SkillsIcon, TOOL_LABEL } from '#lib/icons'
+import { BranchIcon, ChevronIcon, SkillsIcon, TOOL_LABEL } from '#lib/icons'
 import { BranchPicker } from '#components/BranchPicker'
 import { EmptyState } from '#components/ui/EmptyState'
 import { MasterDetail } from '#components/ui/MasterDetail'
-import { getProjectSkills, getSkillBody } from '#lib/skillsApi'
-import { getProjectBranches, projectBranchesKey } from '#lib/projectApi'
+import { Modal } from '#components/ui/Modal'
+import { POPUP } from '#components/ui/menu'
+import { api } from '#lib/api'
+import { useProjectBranches } from '#lib/useProjectBranches'
 import { useIsMobile } from '#lib/viewport'
 import { useUiStore } from '#lib/store'
 import { AGENT_TOOLS, type AgentTool, type SkillSource, type SkillSummary } from '@yaac/shared/types'
@@ -66,7 +67,10 @@ function SkillDetailPane(
 ): JSX.Element {
   const { data, isLoading, isError } = useQuery({
     queryKey: ['skill-body', projectSlug, tool, branch ?? null, skill.id],
-    queryFn: () => getSkillBody(projectSlug, skill.id, tool, branch),
+    queryFn: () => api.project[':slug'].skills.body.$get({
+      param: { slug: projectSlug },
+      query: { id: skill.id, tool, ...(branch ? { branch } : {}) },
+    }),
     staleTime: 30_000,
   })
   return (
@@ -122,28 +126,17 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
   const [pickerQuery, setPickerQuery] = useState('')
   const isMobile = useIsMobile()
 
-  const queryClient = useQueryClient()
-  const { data: branchData } = useQuery({
-    queryKey: projectBranchesKey(projectSlug),
-    queryFn: () => getProjectBranches(projectSlug),
-    enabled: open && projectSlug !== '',
-  })
-  // Refresh the branch list from the remote so a just-pushed branch appears.
-  useEffect(() => {
-    if (!open || projectSlug === '') return
-    let cancelled = false
-    getProjectBranches(projectSlug, { refresh: true })
-      .then((fresh) => { if (!cancelled) queryClient.setQueryData(projectBranchesKey(projectSlug), fresh) })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [open, projectSlug, queryClient])
+  const { data: branchData } = useProjectBranches(projectSlug, open)
 
   const defaultBranch = branchData?.defaultBranch
   const effectiveBranch = branch ?? defaultBranch
 
   const { data, isLoading } = useQuery({
     queryKey: ['skills', projectSlug, tool, effectiveBranch ?? null],
-    queryFn: () => getProjectSkills(projectSlug, tool, effectiveBranch),
+    queryFn: () => api.project[':slug'].skills.$get({
+      param: { slug: projectSlug },
+      query: { tool, ...(effectiveBranch ? { branch: effectiveBranch } : {}) },
+    }),
     enabled: open,
     staleTime: 5_000,
     // Avoid flashing an empty list while switching agents.
@@ -172,7 +165,7 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
   useEffect(() => { if (!open) setSelectedId(null) }, [open])
 
   return (
-    <Dialog.Root open={open} onOpenChange={(next) => { if (next) openOverlay(); else closeOverlay() }}>
+    <>
       <button
         onClick={openOverlay}
         title="Skills"
@@ -183,160 +176,142 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
         <SkillsIcon size={14} />
       </button>
 
-      <Dialog.Portal>
-        <Dialog.Backdrop className="fixed inset-0 bg-black/60 backdrop-blur-[1px] transition-opacity duration-150
-          data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
-        <Dialog.Popup className="fixed inset-4 flex flex-col gap-3
-          max-md:inset-0 max-md:rounded-none max-md:border-0 rounded-xl border border-hairline
-          bg-surface p-4 text-text shadow-[0_16px_48px_var(--shadow-color)] outline-none transition duration-150
-          data-[starting-style]:scale-95 data-[starting-style]:opacity-0 data-[ending-style]:scale-95
-          data-[ending-style]:opacity-0">
-          {/* On a phone the header wraps: title and Close, then the branch and
-              agent pickers on a second line. */}
-          <div className="flex flex-wrap items-center justify-between gap-2 md:flex-nowrap md:justify-start md:gap-3">
-            <Dialog.Title className="shrink-0 text-xs font-semibold text-text-dim max-md:text-sm">
-              Skills{all.length > 0 && (
-                <span className="ml-1.5 tabular-nums text-text-faint">({all.length})</span>
-              )}
-            </Dialog.Title>
-            <div className="flex items-center gap-2 md:ml-auto
-              max-md:order-last max-md:w-full max-md:justify-between max-md:overflow-x-auto">
-              {/* Project skills are read from origin/<branch>. First in the row so
-                  its variable-width label cannot shift the buttons to its right. */}
-              <Popover.Root
-                open={pickerOpen}
-                onOpenChange={(o) => { setPickerOpen(o); if (!o) setPickerQuery('') }}
-              >
-                <Popover.Trigger
-                  title="Choose the origin branch project skills are read from"
-                  className="flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-text-dim outline-none
-                    transition hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2 data-[popup-open]:text-text
-                    max-md:rounded-md max-md:bg-bg max-md:px-2 max-md:py-2 max-md:text-xs"
-                >
-                  <BranchIcon size={11} className="shrink-0 text-text-faint" />
-                  <span className="max-w-[180px] truncate font-mono">{effectiveBranch ?? '…'}</span>
-                  <ChevronIcon size={10} className="shrink-0 rotate-90 text-text-faint" />
-                </Popover.Trigger>
-                <Popover.Portal>
-                  <Popover.Positioner side="bottom" align="start" sideOffset={6}>
-                    <Popover.Popup
-                      className="w-[240px] rounded-lg border border-border bg-surface-2 p-1 text-text
-                        shadow-[0_12px_32px_var(--shadow-color)] outline-none transition-opacity duration-100
-                        data-[starting-style]:opacity-0 data-[ending-style]:opacity-0"
-                    >
-                      <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">Skills branch</div>
-                      <BranchPicker
-                        branches={branchData?.branches ?? []}
-                        defaultBranch={defaultBranch}
-                        query={pickerQuery}
-                        onQueryChange={setPickerQuery}
-                        onSelect={pickBranch}
-                        showList
-                        placeholder={branchData ? 'filter branches…' : 'loading branches…'}
-                        ariaLabel="Skills branch"
-                        className="px-1 pb-1"
-                      />
-                    </Popover.Popup>
-                  </Popover.Positioner>
-                </Popover.Portal>
-              </Popover.Root>
-              {/* Agent selector: each tool reads skills from its own dirs. Anchored
-                  right so the changing title count cannot move it. */}
-              <div className="flex shrink-0 items-center gap-0.5 rounded-md bg-bg p-0.5">
-                {AGENT_TOOLS.map((t) => (
-                  <button
-                    key={t}
-                    type="button"
-                    onClick={() => { setTool(t); setSelectedId(null) }}
-                    className={clsx(
-                      'rounded px-2.5 py-1.5 text-[11px] leading-none transition max-md:h-9 max-md:px-3',
-                      tool === t
-                        ? 'bg-surface-2 font-medium text-text'
-                        : 'text-text-faint hover:text-text-dim',
-                    )}
-                  >
-                    {TOOL_LABEL[t]}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <Dialog.Close
-              title="Close"
-              aria-label="Close"
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
-                hover:bg-surface-2 hover:text-text max-md:h-9 max-md:w-9"
+      <Modal
+        open={open}
+        onOpenChange={(next) => { if (next) openOverlay(); else closeOverlay() }}
+        variant="sheet"
+        title={(
+          <>
+            Skills{all.length > 0 && <span className="ml-1.5 tabular-nums text-text-faint">({all.length})</span>}
+          </>
+        )}
+        actions={(
+          // On a phone the pickers wrap onto a second line.
+          <div className="flex items-center gap-2
+            max-md:order-last max-md:w-full max-md:justify-between max-md:overflow-x-auto">
+            {/* Project skills are read from origin/<branch>. First in the row so
+                its variable-width label cannot shift the buttons to its right. */}
+            <Popover.Root
+              open={pickerOpen}
+              onOpenChange={(o) => { setPickerOpen(o); if (!o) setPickerQuery('') }}
             >
-              <CloseIcon size={14} />
-            </Dialog.Close>
+              <Popover.Trigger
+                title="Choose the origin branch project skills are read from"
+                className="flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-text-dim outline-none
+                  transition hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2 data-[popup-open]:text-text
+                  max-md:rounded-md max-md:bg-bg max-md:px-2 max-md:py-2 max-md:text-xs"
+              >
+                <BranchIcon size={11} className="shrink-0 text-text-faint" />
+                <span className="max-w-[180px] truncate font-mono">{effectiveBranch ?? '…'}</span>
+                <ChevronIcon size={10} className="shrink-0 rotate-90 text-text-faint" />
+              </Popover.Trigger>
+              <Popover.Portal>
+                <Popover.Positioner side="bottom" align="start" sideOffset={6}>
+                  <Popover.Popup className={clsx('w-[240px]', POPUP)}>
+                    <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">Skills branch</div>
+                    <BranchPicker
+                      branches={branchData?.branches ?? []}
+                      defaultBranch={defaultBranch}
+                      query={pickerQuery}
+                      onQueryChange={setPickerQuery}
+                      onSelect={pickBranch}
+                      showList
+                      placeholder={branchData ? 'filter branches…' : 'loading branches…'}
+                      ariaLabel="Skills branch"
+                      className="px-1 pb-1"
+                    />
+                  </Popover.Popup>
+                </Popover.Positioner>
+              </Popover.Portal>
+            </Popover.Root>
+            {/* Agent selector: each tool reads skills from its own dirs. Anchored
+                right so the changing title count cannot move it. */}
+            <div className="flex shrink-0 items-center gap-0.5 rounded-md bg-bg p-0.5">
+              {AGENT_TOOLS.map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => { setTool(t); setSelectedId(null) }}
+                  className={clsx(
+                    'rounded px-2.5 py-1.5 text-[11px] leading-none transition max-md:h-9 max-md:px-3',
+                    tool === t
+                      ? 'bg-surface-2 font-medium text-text'
+                      : 'text-text-faint hover:text-text-dim',
+                  )}
+                >
+                  {TOOL_LABEL[t]}
+                </button>
+              ))}
+            </div>
           </div>
-
-          {!isLoading && all.length === 0 ? (
-            <EmptyState
-              className="flex-1"
-              title={`No ${TOOL_LABEL[tool]} skills found`}
-              description="Personal, plugin, project, and built-in SKILL.md files show up here."
-            />
-          ) : (
-            <MasterDetail
-              detailOpen={isMobile && picked !== null}
-              onBack={() => setSelectedId(null)}
-              backLabel="Back to skills"
-              master={
-                <>
-                  <input
-                    value={queryText}
-                    onChange={(e) => setQueryText(e.target.value)}
-                    placeholder="Search skills…"
-                    className="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1.5 text-xs text-text
-                      outline-none focus:border-border-strong max-md:py-2.5"
-                  />
-                  <ul className="min-h-0 flex-1 overflow-y-auto">
-                    {rows.length === 0 && (
-                      <li className="px-2 py-2 text-xs text-text-faint">
-                        {isLoading ? 'Loading…' : 'No matches.'}
-                      </li>
-                    )}
-                    {rows.map((s, i) => {
-                      const group = skillGroup(s)
-                      const showHeader = i === 0 || skillGroup(rows[i - 1]) !== group
-                      return (
-                        <li key={s.id}>
-                          {showHeader && (
-                            <div className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wide text-text-faint">
-                              {groupLabel(group, tool)}
-                            </div>
+        )}
+      >
+        {!isLoading && all.length === 0 ? (
+          <EmptyState
+            className="flex-1"
+            title={`No ${TOOL_LABEL[tool]} skills found`}
+            description="Personal, plugin, project, and built-in SKILL.md files show up here."
+          />
+        ) : (
+          <MasterDetail
+            detailOpen={isMobile && picked !== null}
+            onBack={() => setSelectedId(null)}
+            backLabel="Back to skills"
+            master={
+              <>
+                <input
+                  value={queryText}
+                  onChange={(e) => setQueryText(e.target.value)}
+                  placeholder="Search skills…"
+                  className="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1.5 text-xs text-text
+                    outline-none focus:border-border-strong max-md:py-2.5"
+                />
+                <ul className="min-h-0 flex-1 overflow-y-auto">
+                  {rows.length === 0 && (
+                    <li className="px-2 py-2 text-xs text-text-faint">
+                      {isLoading ? 'Loading…' : 'No matches.'}
+                    </li>
+                  )}
+                  {rows.map((s, i) => {
+                    const group = skillGroup(s)
+                    const showHeader = i === 0 || skillGroup(rows[i - 1]) !== group
+                    return (
+                      <li key={s.id}>
+                        {showHeader && (
+                          <div className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wide text-text-faint">
+                            {groupLabel(group, tool)}
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setSelectedId(s.id)}
+                          className={clsx(
+                            'flex w-full flex-col gap-0.5 rounded-md px-2.5 py-1.5 text-left transition max-md:py-2.5',
+                            selected?.id === s.id ? 'bg-surface-2' : 'hover:bg-surface-2/50',
                           )}
-                          <button
-                            type="button"
-                            onClick={() => setSelectedId(s.id)}
-                            className={clsx(
-                              'flex w-full flex-col gap-0.5 rounded-md px-2.5 py-1.5 text-left transition max-md:py-2.5',
-                              selected?.id === s.id ? 'bg-surface-2' : 'hover:bg-surface-2/50',
-                            )}
-                          >
-                            <span className={clsx(
-                              'truncate text-sm font-medium',
-                              s.shadowedBy ? 'text-text-faint line-through' : 'text-text-dim',
-                            )}>
-                              /{s.name}
-                            </span>
-                            {s.description && (
-                              <span className="truncate text-[11px] text-text-faint">{s.description}</span>
-                            )}
-                          </button>
-                        </li>
-                      )
-                    })}
-                  </ul>
-                </>
-              }
-              detail={selected
-                ? <SkillDetailPane key={selected.id} projectSlug={projectSlug} tool={tool} branch={effectiveBranch} skill={selected} />
-                : <div className="flex-1" />}
-            />
-          )}
-        </Dialog.Popup>
-      </Dialog.Portal>
-    </Dialog.Root>
+                        >
+                          <span className={clsx(
+                            'truncate text-sm font-medium',
+                            s.shadowedBy ? 'text-text-faint line-through' : 'text-text-dim',
+                          )}>
+                            /{s.name}
+                          </span>
+                          {s.description && (
+                            <span className="truncate text-[11px] text-text-faint">{s.description}</span>
+                          )}
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </>
+            }
+            detail={selected
+              ? <SkillDetailPane key={selected.id} projectSlug={projectSlug} tool={tool} branch={effectiveBranch} skill={selected} />
+              : <div className="flex-1" />}
+          />
+        )}
+      </Modal>
+    </>
   )
 }

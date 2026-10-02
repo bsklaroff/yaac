@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useRef, useState, type JSX, type KeyboardEvent } from 'react'
 import clsx from 'clsx'
+import { POPUP } from '#components/ui/menu'
 import { Popover } from '@base-ui/react/popover'
 import type { EditorView } from '@uiw/react-codemirror'
 import { openSearchPanel } from '@codemirror/search'
@@ -457,11 +458,7 @@ function TextSizeMenu({ size, onChange }: { size: number; onChange: (px: number)
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner side="bottom" align="end" sideOffset={6}>
-          <Popover.Popup
-            className="flex items-center gap-1 rounded-lg border border-border bg-surface-2 p-1 text-xs text-text
-              shadow-[0_12px_32px_var(--shadow-color)] outline-none transition-opacity duration-100
-              data-[starting-style]:opacity-0 data-[ending-style]:opacity-0"
-          >
+          <Popover.Popup className={clsx('flex items-center gap-1 text-xs', POPUP)}>
             <button
               onClick={() => onChange(size - 1)}
               disabled={size <= MIN_EDITOR_FONT_SIZE}

@@ -1,33 +1,12 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
-import type { AuthListResult, DraftWorkspaceEntry, QueuedWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/types'
-import type { ProjectBranches } from '#lib/projectApi'
-import { ServerError } from '@yaac/shared/errors'
+import type {
+  AuthListResult, DraftWorkspaceEntry, QueuedWorkspaceEntry, WorkspaceListEntry,
+} from '@yaac/shared/types'
 
 const provision = vi.hoisted(() => vi.fn())
 
-vi.mock('#lib/settingsApi', () => ({
-  getAuthList: vi.fn(),
-}))
-vi.mock('#lib/createWorkspace', () => ({
-  createWorkspace: vi.fn(),
-}))
-vi.mock('#lib/queueApi', () => ({
-  queueWorkspace: vi.fn(),
-  updateQueuedWorkspace: vi.fn(),
-  runQueuedWorkspace: vi.fn(),
-  discardQueuedWorkspace: vi.fn(),
-}))
-vi.mock('#lib/draftApi', () => ({
-  saveDraftWorkspace: vi.fn(),
-  discardDraftWorkspace: vi.fn(),
-}))
-vi.mock('#lib/projectApi', () => ({
-  getProjectBranches: vi.fn(),
-  projectBranchesKey: (slug: string) => ['project-branches', slug],
-}))
 vi.mock('#lib/useProvisionWorkspace', () => ({
   useProvisionWorkspace: () => provision,
 }))
@@ -38,12 +17,9 @@ vi.mock('#lib/useSnapshot', () => ({ useSnapshot: snapshot }))
 
 import { CreateWorkspaceDialog } from '#components/CreateWorkspaceDialog'
 import { NewWorkspaceButton } from '#components/NewWorkspaceButton'
-import { createWorkspace } from '#lib/createWorkspace'
-import { discardDraftWorkspace, saveDraftWorkspace } from '#lib/draftApi'
-import { queueWorkspace, runQueuedWorkspace, updateQueuedWorkspace } from '#lib/queueApi'
-import { getProjectBranches } from '#lib/projectApi'
-import { getAuthList } from '#lib/settingsApi'
 import { useUiStore } from '#lib/store'
+import type { ProjectBranches } from '#lib/useProjectBranches'
+import { mockFetch, renderWithClient, serverError, type FetchMock } from './harness'
 
 // jsdom has no ResizeObserver; Base UI's positioner needs one to exist.
 beforeAll(() => {
@@ -132,6 +108,22 @@ const entry = (id: string, extra: Partial<QueuedWorkspaceEntry> = {}): QueuedWor
   ...extra,
 })
 
+const AUTH_LIST = 'GET /api/auth/list'
+const BRANCH_LIST = 'GET /api/project/proj/branches'
+const CREATE = 'POST /api/workspace/create'
+const QUEUE = 'POST /api/workspace/queue/create'
+const UPDATE = 'POST /api/workspace/queue/update'
+const RUN = 'POST /api/workspace/queue/run'
+const SAVE_DRAFT = 'POST /api/workspace/draft/save'
+const DISCARD_DRAFT = 'POST /api/workspace/draft/discard'
+
+type Body = Record<string, unknown>
+let server: FetchMock
+/** The bodies sent to one route, in order. */
+const sent = (route: string): Body[] => server.called(route).map((c) => c.body as Body)
+/** Forget the requests so far, between phases of one test. */
+const forget = (): void => { server.calls.length = 0 }
+
 beforeEach(() => {
   useUiStore.setState({
     settingsOpen: false, settingsSection: 'general', settingsFocusTool: null, settingsFocusProject: null,
@@ -139,32 +131,43 @@ beforeEach(() => {
   })
   vi.clearAllMocks()
   snapshot.mockReturnValue(project())
-  vi.mocked(getAuthList).mockResolvedValue(CLAUDE_ONLY)
-  vi.mocked(getProjectBranches).mockResolvedValue(BRANCHES)
   // Run the op passed to the provisioning flow, so the test can check what
-  // `createWorkspace` is called with.
+  // the create sends.
   provision.mockImplementation(
     (_slug, _tool, _kind, sid: string, op: (sid: string, p: () => void) => unknown) => {
       void op(sid, () => {})
     })
-  vi.mocked(queueWorkspace).mockImplementation((_p, parent, settings) =>
-    Promise.resolve({ id: 'q-new', projectSlug: 'proj', parentWorkspaceId: parent, createdAt: '', ...settings }))
-  vi.mocked(updateQueuedWorkspace).mockImplementation((id) => Promise.resolve(entry(id)))
-  vi.mocked(runQueuedWorkspace).mockResolvedValue({ workspaceId: 'w-run' })
-  vi.mocked(saveDraftWorkspace).mockImplementation((projectSlug, settings, id) =>
-    Promise.resolve({ id: id ?? 'd-new', projectSlug, createdAt: '', updatedAt: '', ...settings }))
-  vi.mocked(discardDraftWorkspace).mockResolvedValue(undefined)
+  server = mockFetch({
+    [AUTH_LIST]: CLAUDE_ONLY,
+    [BRANCH_LIST]: BRANCHES,
+    // The create's NDJSON stream, cut to its terminal event.
+    [CREATE]: { type: 'result', result: { workspaceId: 'w-new', jobName: 'job', tool: 'claude' } },
+    [QUEUE]: ({ body }: { body: Body }) => {
+      const { project: projectSlug, parent, draftId: _draftId, ...settings } = body
+      return { id: 'q-new', projectSlug, parentWorkspaceId: parent, createdAt: '', ...settings }
+    },
+    [UPDATE]: ({ body }: { body: Body }) => entry(body.id as string),
+    [RUN]: { workspaceId: 'w-run' },
+    [SAVE_DRAFT]: ({ body }: { body: Body }) => {
+      const { project: projectSlug, id, ...settings } = body
+      return { id: id ?? 'd-new', projectSlug, createdAt: '', updatedAt: '', ...settings }
+    },
+    [DISCARD_DRAFT]: undefined,
+  })
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 /** Mount the trigger beside the one dialog it opens, as App does. */
 function mount(): void {
-  render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+  renderWithClient(
+    <>
       <NewWorkspaceButton projectSlug="proj" />
       <CreateWorkspaceDialog />
-    </QueryClientProvider>,
+    </>,
   )
 }
 
@@ -181,6 +184,12 @@ async function openWith(opts: { parent?: string; editId?: string; draftId?: stri
   act(() => useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', ...opts }))
   await waitFor(() => expect(screen.getByLabelText('Agent')).toBeTruthy())
   await waitFor(() => expect(submitButton().title).not.toBe('Loading…'))
+}
+
+/** Wait until the credential list has landed and the agent can create.
+ *  Until then an agent reads as signed out, offering its sign-in button. */
+async function createReady(): Promise<void> {
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Create' }).disabled).toBe(false))
 }
 
 /** Open, and wait until the credential list has landed. */
@@ -209,7 +218,7 @@ function retitle(text: string): void {
 
 describe('CreateWorkspaceDialog', () => {
   it('opens on the project\'s last agent with what it last used, and creates with all of it', async () => {
-    vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+    server.route(AUTH_LIST, SIGNED_IN)
     snapshot.mockReturnValue(project({
       lastTool: 'codex',
       lastBranch: 'dev',
@@ -226,9 +235,10 @@ describe('CreateWorkspaceDialog', () => {
 
     fireEvent.click(createButton())
     // Every field is sent, so every field becomes the next default.
-    expect(vi.mocked(createWorkspace)).toHaveBeenCalledWith('proj', 'codex', expect.any(Function), expect.any(String), {
+    expect(sent(CREATE)).toEqual([{
+      project: 'proj', tool: 'codex', workspaceId: expect.any(String) as string,
       branch: 'dev', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'tui',
-    })
+    }])
     // The provisioning row names the model from its first frame.
     expect(provision.mock.calls[0][6]).toEqual({ model: 'gpt-5.5', modelName: 'GPT-5.5' })
     await waitFor(() => expect(screen.queryByLabelText('Agent')).toBeNull()) // closed
@@ -256,7 +266,7 @@ describe('CreateWorkspaceDialog', () => {
   })
 
   it('reloads an agent\'s own memory and options when the agent changes', async () => {
-    vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+    server.route(AUTH_LIST, SIGNED_IN)
     snapshot.mockReturnValue(project({
       createDefaults: {
         claude: { model: 'claude-sonnet-5', permissionMode: 'manual', mode: 'acp' },
@@ -290,11 +300,10 @@ describe('CreateWorkspaceDialog', () => {
     fireEvent.change(modelInput(), { target: { value: 'claude-sonnet' } })
     fireEvent.keyDown(modelInput(), { key: 'Enter' })
     expect(modelInput().value).toBe('Sonnet 5')
-    expect(createWorkspace).not.toHaveBeenCalled()
+    expect(sent(CREATE)).toHaveLength(0)
 
     fireEvent.keyDown(modelInput(), { key: 'Enter' })
-    expect(vi.mocked(createWorkspace)).toHaveBeenCalledWith('proj', 'claude', expect.any(Function), expect.any(String),
-      expect.objectContaining({ model: 'claude-sonnet-5' }))
+    expect(sent(CREATE).at(-1)).toMatchObject({ project: 'proj', tool: 'claude', model: 'claude-sonnet-5' })
   })
 
   it('closes a suggestion list on Escape, keeping the dialog and its prompt', async () => {
@@ -318,7 +327,7 @@ describe('CreateWorkspaceDialog', () => {
     fireEvent.keyDown(modelInput(), { key: 'Escape' })
     fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
     await waitFor(() => expect(useUiStore.getState().createWorkspaceDialog).toBeNull())
-    expect(saveDraftWorkspace).not.toHaveBeenCalled()
+    expect(sent(SAVE_DRAFT)).toHaveLength(0)
   })
 
   it('takes only models and branches the lists have', async () => {
@@ -334,7 +343,7 @@ describe('CreateWorkspaceDialog', () => {
       // Enter has nothing to pick, and the unpicked text cannot create.
       fireEvent.keyDown(input(), { key: 'Enter' })
       expect(createButton().disabled).toBe(true)
-      expect(createWorkspace).not.toHaveBeenCalled()
+      expect(sent(CREATE)).toHaveLength(0)
       // Escape reverts to the chosen value without closing the dialog.
       fireEvent.keyDown(input(), { key: 'Escape' })
       expect(input().value).toBe(shown)
@@ -351,11 +360,12 @@ describe('CreateWorkspaceDialog', () => {
     fireEvent.keyDown(branchInput(), { key: 'Enter' })
     expect(branchInput().value).toBe('dev')
     fireEvent.keyDown(createButton(), { key: 'Enter' })
-    expect(createWorkspace).not.toHaveBeenCalled()
+    expect(sent(CREATE)).toHaveLength(0)
 
     fireEvent.keyDown(promptInput(), { key: 'Enter' })
-    expect(vi.mocked(createWorkspace)).toHaveBeenCalledWith('proj', 'claude', expect.any(Function), expect.any(String),
-      expect.objectContaining({ branch: 'dev', model: 'claude-opus-5-5', permissionMode: 'bypass', mode: 'tui' }))
+    expect(sent(CREATE).at(-1)).toMatchObject({
+      project: 'proj', tool: 'claude', branch: 'dev', model: 'claude-opus-5-5', permissionMode: 'bypass', mode: 'tui',
+    })
   })
 
   it('routes a credential-less agent to settings → credentials instead of creating', async () => {
@@ -421,7 +431,7 @@ describe('CreateWorkspaceDialog', () => {
       await new Promise((r) => setTimeout(r, 0))
       expect(document.activeElement).toBe(document.body)
     }
-    expect(createWorkspace).toHaveBeenCalledTimes(1)
+    expect(sent(CREATE)).toHaveLength(1)
   })
 
   it('focuses the prompt, and a typed prompt rides the create', async () => {
@@ -430,11 +440,10 @@ describe('CreateWorkspaceDialog', () => {
 
     fireEvent.change(promptInput(), { target: { value: 'fix the flaky test' } })
     fireEvent.keyDown(promptInput(), { key: 'Enter', shiftKey: true })
-    expect(createWorkspace).not.toHaveBeenCalled()
+    expect(sent(CREATE)).toHaveLength(0)
 
     fireEvent.keyDown(promptInput(), { key: 'Enter' })
-    expect(vi.mocked(createWorkspace)).toHaveBeenCalledWith('proj', 'claude', expect.any(Function), expect.any(String),
-      expect.objectContaining({ prompt: 'fix the flaky test' }))
+    expect(sent(CREATE).at(-1)).toMatchObject({ project: 'proj', tool: 'claude', prompt: 'fix the flaky test' })
   })
 
   it('names and files a create: a title off the heading and a picked or new group ride it', async () => {
@@ -448,7 +457,7 @@ describe('CreateWorkspaceDialog', () => {
     expect(heading()).toBe('New workspace')
     retitle('  Fix   the build ')
     // Enter finishes the title, not the dialog.
-    expect(createWorkspace).not.toHaveBeenCalled()
+    expect(sent(CREATE)).toHaveLength(0)
     expect(heading()).toBe('Fix the build')
     // The Enter that confirms an IME candidate leaves the editor open.
     fireEvent.click(screen.getByRole('button', { name: 'Rename workspace' }))
@@ -456,8 +465,9 @@ describe('CreateWorkspaceDialog', () => {
     fireEvent.keyDown(screen.getByLabelText('Workspace title'), { key: 'Escape' })
     expect(heading()).toBe('Fix the build')
     fireEvent.click(createButton())
-    expect(vi.mocked(createWorkspace)).toHaveBeenCalledWith('proj', 'claude', expect.any(Function), expect.any(String),
-      expect.objectContaining({ title: 'Fix the build', group: 'g-other' }))
+    expect(sent(CREATE).at(-1)).toMatchObject({
+      project: 'proj', tool: 'claude', title: 'Fix the build', group: 'g-other',
+    })
     // The optimistic row is in the group from the start.
     expect(provision.mock.calls[0][5]).toBe('g-other')
 
@@ -484,15 +494,14 @@ describe('CreateWorkspaceDialog', () => {
     fireEvent.change(name, { target: { value: ' Release  prep ' } })
     fireEvent.click(createButton())
     // Sent by name for the server to create; there is no id yet.
-    expect(vi.mocked(createWorkspace)).toHaveBeenLastCalledWith('proj', 'claude', expect.any(Function),
-      expect.any(String), expect.objectContaining({ group: 'Release prep' }))
+    expect(sent(CREATE).at(-1)).toMatchObject({ project: 'proj', tool: 'claude', group: 'Release prep' })
     expect(provision.mock.calls[1][5]).toBeUndefined()
   })
 
   // The remembered branch (see the first test) falls back to origin's
   // default when origin no longer has it.
   it('opens on origin\'s default when origin lost the branch last created from', async () => {
-    vi.mocked(getProjectBranches).mockResolvedValue({ ...BRANCHES, defaultBranch: 'dev' })
+    server.route(BRANCH_LIST, { ...BRANCHES, defaultBranch: 'dev' })
     snapshot.mockReturnValue(project({ lastBranch: 'deleted' }))
     await openMenu()
     await waitFor(() => expect(branchInput().value).toBe('dev'))
@@ -501,7 +510,8 @@ describe('CreateWorkspaceDialog', () => {
   // Whether origin still has it is only known once the list lands.
   it('sends a remembered branch only once the list confirms it', async () => {
     let land: (b: ProjectBranches) => void = () => {}
-    vi.mocked(getProjectBranches).mockReturnValue(new Promise((r) => { land = r }))
+    const landed = new Promise<ProjectBranches>((r) => { land = r })
+    server.route(BRANCH_LIST, () => landed)
     snapshot.mockReturnValue(project({ lastBranch: 'dev' }))
     await openMenu()
     await waitFor(() => expect(createButton().title).toBe('Loading branches…'))
@@ -511,19 +521,18 @@ describe('CreateWorkspaceDialog', () => {
     act(() => land(BRANCHES))
     await waitFor(() => expect(createButton().disabled).toBe(false))
     fireEvent.click(createButton())
-    expect(vi.mocked(createWorkspace)).toHaveBeenCalledWith('proj', 'claude', expect.any(Function), expect.any(String),
-      expect.objectContaining({ branch: 'dev' }))
+    expect(sent(CREATE).at(-1)).toMatchObject({ project: 'proj', tool: 'claude', branch: 'dev' })
   })
 
   it('leaves the branch to the server when the list fails to load', async () => {
-    vi.mocked(getProjectBranches).mockRejectedValue(new Error('boom'))
+    server.route(BRANCH_LIST, serverError('INTERNAL', 'boom'))
     snapshot.mockReturnValue(project({ lastBranch: 'dev' }))
     await openMenu()
     await waitFor(() => expect(createButton().disabled).toBe(false))
     expect(branchInput().value).toBe('')
 
     fireEvent.click(createButton())
-    expect(vi.mocked(createWorkspace).mock.calls[0][4]).not.toHaveProperty('branch')
+    expect(sent(CREATE)[0]).not.toHaveProperty('branch')
   })
 
   it('typeahead filters the branch list and a picked branch rides the create', async () => {
@@ -539,8 +548,7 @@ describe('CreateWorkspaceDialog', () => {
     expect(branchInput().value).toBe('release/2.x')
 
     fireEvent.click(createButton())
-    expect(vi.mocked(createWorkspace)).toHaveBeenCalledWith('proj', 'claude', expect.any(Function), expect.any(String),
-      expect.objectContaining({ branch: 'release/2.x' }))
+    expect(sent(CREATE).at(-1)).toMatchObject({ project: 'proj', tool: 'claude', branch: 'release/2.x' })
   })
 
   describe('queueing', () => {
@@ -548,7 +556,7 @@ describe('CreateWorkspaceDialog', () => {
     // agent and model, the permission mode, and the fork branch. All are sent
     // as concrete values.
     it('seeds from the parent workspace and queues with every setting concrete', async () => {
-      vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+      server.route(AUTH_LIST, SIGNED_IN)
       snapshot.mockReturnValue(project({}, 'k8s', {
         workspaces: [{ ...PARENT, groupId: 'g-review' }], workspaceGroups: GROUPS,
       }))
@@ -568,18 +576,19 @@ describe('CreateWorkspaceDialog', () => {
       retitle('Follow-up')
       fireEvent.click(submitButton())
 
-      await waitFor(() => expect(vi.mocked(queueWorkspace)).toHaveBeenCalledWith('proj', 'w-parent', {
+      await waitFor(() => expect(sent(QUEUE)).toEqual([{
+        project: 'proj', parent: 'w-parent',
         prompt: 'follow up', tool: 'codex', model: 'gpt-5.5', mode: 'tui', permissionMode: 'accept-edits', branch: 'dev',
         title: 'Follow-up', group: 'g-review',
-      }, undefined))
-      expect(createWorkspace).not.toHaveBeenCalled()
+      }]))
+      expect(sent(CREATE)).toHaveLength(0)
       await waitFor(() => expect(screen.queryByLabelText('Agent')).toBeNull())
       // The sidebar opens the set it landed in.
       expect(useUiStore.getState().revealQueued).toEqual({ id: 'q-new', parent: 'w-parent' })
     })
 
     it('re-seeds only untouched fields when Start changes', async () => {
-      vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+      server.route(AUTH_LIST, SIGNED_IN)
       snapshot.mockReturnValue(project({}, 'k8s', {
         workspaces: [{ ...PARENT, groupId: 'g-review' }], workspaceGroups: GROUPS,
       }))
@@ -607,7 +616,7 @@ describe('CreateWorkspaceDialog', () => {
     })
 
     it('refuses a blank new group rather than moving an entry out of its own', async () => {
-      vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+      server.route(AUTH_LIST, SIGNED_IN)
       snapshot.mockReturnValue(project({}, 'k8s', {
         workspaces: [PARENT],
         queuedWorkspaces: [entry('q1', { groupId: 'g-review', generatedTitle: 'Generated' })],
@@ -623,7 +632,7 @@ describe('CreateWorkspaceDialog', () => {
       expect(submitButton().disabled).toBe(true)
       expect(submitButton().title).toBe('Name the new group')
       fireEvent.keyDown(name, { key: 'Enter' })
-      expect(updateQueuedWorkspace).not.toHaveBeenCalled()
+      expect(sent(UPDATE)).toHaveLength(0)
 
       // × restores its own group. Review holds only a queued entry, and is
       // still offered after the entry moves off its parent.
@@ -635,9 +644,9 @@ describe('CreateWorkspaceDialog', () => {
     })
 
     it('surfaces a refused queue and stays open', async () => {
-      vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+      server.route(AUTH_LIST, SIGNED_IN)
       snapshot.mockReturnValue(project({}, 'k8s', { workspaces: [PARENT] }))
-      vi.mocked(queueWorkspace).mockRejectedValue(new Error('no model is known for that tool'))
+      server.route(QUEUE, serverError('VALIDATION', 'no model is known for that tool', 400))
       await openWith({ parent: 'w-parent' })
       fireEvent.change(promptInput(), { target: { value: 'x' } })
       fireEvent.click(submitButton())
@@ -655,7 +664,7 @@ describe('CreateWorkspaceDialog', () => {
     ]
 
     it('opens on the entry\'s own settings and never offers a cycle', async () => {
-      vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+      server.route(AUTH_LIST, SIGNED_IN)
       snapshot.mockReturnValue(project({}, 'k8s', {
         workspaces: [PARENT], queuedWorkspaces: chain, workspaceGroups: GROUPS,
       }))
@@ -674,19 +683,18 @@ describe('CreateWorkspaceDialog', () => {
       expect(submitButton().textContent).toBe('Save')
       expect(screen.queryByRole('button', { name: 'Save draft' })).toBeNull()
 
-      vi.mocked(updateQueuedWorkspace)
-        .mockResolvedValueOnce(entry('q2', { parentWorkspaceId: undefined, parentQueuedId: 'q4' }))
+      server.route(UPDATE, entry('q2', { parentWorkspaceId: undefined, parentQueuedId: 'q4' }))
       fireEvent.change(select('Start'), { target: { value: 'q4' } })
       // Its own group, not the new parent's; a cleared title goes back to auto.
       expect(select('Group').value).toBe('g-review')
       retitle('')
       fireEvent.change(select('Group'), { target: { value: '' } })
       fireEvent.click(submitButton())
-      await waitFor(() => expect(vi.mocked(updateQueuedWorkspace)).toHaveBeenCalledWith('q2', {
-        prompt: 'step q2', tool: 'claude', model: 'claude-sonnet-5', mode: 'tui', permissionMode: 'manual',
+      await waitFor(() => expect(sent(UPDATE)).toEqual([{
+        id: 'q2', prompt: 'step q2', tool: 'claude', model: 'claude-sonnet-5', mode: 'tui', permissionMode: 'manual',
         branch: 'release/2.x', title: '', group: null, parent: 'q4',
-      }))
-      expect(runQueuedWorkspace).not.toHaveBeenCalled()
+      }]))
+      expect(sent(RUN)).toHaveLength(0)
       // The sidebar opens the set the server says it landed in.
       await waitFor(() => expect(useUiStore.getState().revealQueued).toEqual({ id: 'q2', parent: 'q4' }))
     })
@@ -701,9 +709,9 @@ describe('CreateWorkspaceDialog', () => {
 
       fireEvent.change(select('Start'), { target: { value: '' } })
       fireEvent.click(submitButton())
-      await waitFor(() => expect(vi.mocked(runQueuedWorkspace)).toHaveBeenCalledWith('q1'))
+      await waitFor(() => expect(sent(RUN)).toEqual([{ id: 'q1' }]))
       // Saved as it stands, without a parent: running it is what "Now" means.
-      expect(vi.mocked(updateQueuedWorkspace).mock.calls[0][1]).not.toHaveProperty('parent')
+      expect(sent(UPDATE)[0]).not.toHaveProperty('parent')
       expect(useUiStore.getState().revealQueued).toBeNull()
     })
 
@@ -729,7 +737,7 @@ describe('CreateWorkspaceDialog', () => {
     })
 
     it('asks on dismissal with a prompt, and saves every setting as shown', async () => {
-      vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+      server.route(AUTH_LIST, SIGNED_IN)
       snapshot.mockReturnValue(project({}, 'k8s', {
         workspaces: [{ ...PARENT, groupId: 'g-review' }], workspaceGroups: GROUPS,
       }))
@@ -752,12 +760,12 @@ describe('CreateWorkspaceDialog', () => {
       closeX()
       fireEvent.click(await screen.findByRole('button', { name: 'Save draft' }))
       await waitFor(() => expect(useUiStore.getState().createWorkspaceDialog).toBeNull())
-      expect(saveDraftWorkspace).toHaveBeenCalledWith('proj', {
-        prompt: 'later, maybe', tool: 'codex', model: 'gpt-5.5', mode: 'tui', permissionMode: 'accept-edits',
+      expect(sent(SAVE_DRAFT)).toEqual([{
+        project: 'proj', prompt: 'later, maybe', tool: 'codex', model: 'gpt-5.5', mode: 'tui', permissionMode: 'accept-edits',
         branch: 'dev', startAfter: 'w-parent', title: 'Someday', groupId: 'g-review',
-      }, undefined)
-      expect(createWorkspace).not.toHaveBeenCalled()
-      expect(queueWorkspace).not.toHaveBeenCalled()
+      }])
+      expect(sent(CREATE)).toHaveLength(0)
+      expect(sent(QUEUE)).toHaveLength(0)
       const after = new Event('beforeunload', { cancelable: true })
       window.dispatchEvent(after)
       expect(after.defaultPrevented).toBe(false)
@@ -788,10 +796,11 @@ describe('CreateWorkspaceDialog', () => {
       } finally {
         useUiStore.setState({ closeCreateWorkspace: realClose })
       }
-      expect(saveDraftWorkspace).toHaveBeenCalledOnce()
-      expect(saveDraftWorkspace).toHaveBeenCalledWith('proj', expect.objectContaining({ prompt: 'for later' }), undefined)
+      expect(sent(SAVE_DRAFT)).toHaveLength(1)
+      expect(sent(SAVE_DRAFT)[0]).toMatchObject({ project: 'proj', prompt: 'for later' })
+      expect(sent(SAVE_DRAFT)[0]).not.toHaveProperty('id')
       expect(screen.queryByText('Save as a draft?')).toBeNull()
-      expect(createWorkspace).not.toHaveBeenCalled()
+      expect(sent(CREATE)).toHaveLength(0)
     })
 
     it('keeps a typed prompt as a draft on the way to missing credentials', async () => {
@@ -802,19 +811,18 @@ describe('CreateWorkspaceDialog', () => {
       fireEvent.change(promptInput(), { target: { value: 'first thing' } })
       fireEvent.click(signIn)
       await waitFor(() => expect(useUiStore.getState().settingsOpen).toBe(true))
-      expect(saveDraftWorkspace).toHaveBeenCalledWith('proj', expect.objectContaining({
-        prompt: 'first thing', tool: 'codex',
-      }), undefined)
+      expect(sent(SAVE_DRAFT)).toEqual([expect.objectContaining({ project: 'proj', prompt: 'first thing', tool: 'codex' })])
+      expect(sent(SAVE_DRAFT)[0]).not.toHaveProperty('id')
       expect(useUiStore.getState().createWorkspaceDialog).toBeNull()
     })
 
     it('reopens a draft on its fields, asks only once it changes, and a create consumes it', async () => {
-      vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+      server.route(AUTH_LIST, SIGNED_IN)
       // Its Start parent has gone since it was saved: it starts now instead.
       snapshot.mockReturnValue(project({}, 'k8s', { draftWorkspaces: [draft({ startAfter: 'w-gone' })] }))
       mount()
       act(() => useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', draftId: 'd1' }))
-      await waitFor(() => expect(createButton().disabled).toBe(false))
+      await createReady()
       expect(promptInput().value).toBe('half an idea')
       expect(heading()).toBe('New workspace')
       expect(select('Start').value).toBe('')
@@ -839,28 +847,31 @@ describe('CreateWorkspaceDialog', () => {
       closeX()
       fireEvent.click(await screen.findByRole('button', { name: 'Save changes' }))
       await waitFor(() => expect(useUiStore.getState().createWorkspaceDialog).toBeNull())
-      expect(saveDraftWorkspace).toHaveBeenLastCalledWith('proj', expect.objectContaining({ prompt: 'a whole idea' }), 'd1')
+      expect(sent(SAVE_DRAFT).at(-1)).toMatchObject({ project: 'proj', prompt: 'a whole idea', id: 'd1' })
 
       // Deleted meanwhile (another tab created from it): saved as a new draft.
       cleanup()
-      vi.mocked(saveDraftWorkspace).mockClear()
-        .mockRejectedValueOnce(new ServerError('NOT_FOUND', 'project proj has no draft workspace d1'))
+      forget()
+      let saves = 0
+      server.route(SAVE_DRAFT, ({ body }: { body: Body }) => (saves++ === 0
+        ? serverError('NOT_FOUND', 'project proj has no draft workspace d1', 404)
+        : { ...draft(), ...body, id: 'd-new' }))
       mount()
       act(() => useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', draftId: 'd1' }))
-      await waitFor(() => expect(createButton().disabled).toBe(false))
+      await createReady()
       fireEvent.change(promptInput(), { target: { value: 'kept anyway' } })
       closeX()
       fireEvent.click(await screen.findByRole('button', { name: 'Save changes' }))
       await waitFor(() => expect(useUiStore.getState().createWorkspaceDialog).toBeNull())
-      expect(vi.mocked(saveDraftWorkspace).mock.calls.map((c) => c[2])).toEqual(['d1', undefined])
-      expect(vi.mocked(saveDraftWorkspace).mock.calls[1][1]).toMatchObject({ prompt: 'kept anyway' })
+      expect(sent(SAVE_DRAFT).map((b) => b.id)).toEqual(['d1', undefined])
+      expect(sent(SAVE_DRAFT)[1]).toMatchObject({ prompt: 'kept anyway' })
 
       // Reopened exactly as saved, a dismissal has nothing to lose.
       cleanup()
       snapshot.mockReturnValue(project({}, 'k8s', { draftWorkspaces: [draft()] }))
       mount()
       act(() => useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', draftId: 'd1' }))
-      await waitFor(() => expect(createButton().disabled).toBe(false))
+      await createReady()
       const save = screen.getByRole<HTMLButtonElement>('button', { name: 'Save draft' })
       expect(save.disabled).toBe(true)
       expect(save.title).toBe('No changes to save')
@@ -870,14 +881,14 @@ describe('CreateWorkspaceDialog', () => {
 
       // Once changed, Save draft updates it in place.
       cleanup()
-      vi.mocked(saveDraftWorkspace).mockClear()
+      forget()
       mount()
       act(() => useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', draftId: 'd1' }))
-      await waitFor(() => expect(createButton().disabled).toBe(false))
+      await createReady()
       fireEvent.change(select('Permissions'), { target: { value: 'bypass' } })
       fireEvent.click(screen.getByRole('button', { name: 'Save draft' }))
       await waitFor(() => expect(useUiStore.getState().createWorkspaceDialog).toBeNull())
-      expect(saveDraftWorkspace).toHaveBeenCalledWith('proj', expect.objectContaining({ permissionMode: 'bypass' }), 'd1')
+      expect(sent(SAVE_DRAFT)).toEqual([expect.objectContaining({ project: 'proj', permissionMode: 'bypass', id: 'd1' })])
 
       // A title and group of its own ride the create.
       cleanup()
@@ -886,16 +897,17 @@ describe('CreateWorkspaceDialog', () => {
       }))
       mount()
       act(() => useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', draftId: 'd1' }))
-      await waitFor(() => expect(createButton().disabled).toBe(false))
+      await createReady()
       expect(heading()).toBe('Named')
       expect(select('Group').value).toBe('g-other')
       fireEvent.click(createButton())
       // The server deletes the draft only once the create succeeds.
-      expect(vi.mocked(createWorkspace)).toHaveBeenCalledWith('proj', 'codex', expect.any(Function), expect.any(String), {
+      expect(sent(CREATE)).toEqual([{
+      project: 'proj', tool: 'codex', workspaceId: expect.any(String) as string,
         branch: 'dev', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'tui', prompt: 'half an idea',
         title: 'Named', group: 'g-other', draftId: 'd1',
-      })
-      expect(discardDraftWorkspace).not.toHaveBeenCalled()
+      }])
+      expect(sent(DISCARD_DRAFT)).toHaveLength(0)
     })
 
     it('keeps an untouched draft group following Start, and a picked one where it was', async () => {
@@ -938,21 +950,21 @@ describe('CreateWorkspaceDialog', () => {
       closeX()
       fireEvent.click(await screen.findByRole('button', { name: 'Save changes' }))
       await waitFor(() => expect(useUiStore.getState().createWorkspaceDialog).toBeNull())
-      expect(vi.mocked(saveDraftWorkspace).mock.calls[0][1]).toMatchObject({ groupId: 'g-other' })
+      expect(sent(SAVE_DRAFT)[0]).toMatchObject({ groupId: 'g-other' })
     })
 
     it('queueing from a draft names it, for the server to drop once queued', async () => {
-      vi.mocked(getAuthList).mockResolvedValue(SIGNED_IN)
+      server.route(AUTH_LIST, SIGNED_IN)
       snapshot.mockReturnValue(project({}, 'k8s', {
         workspaces: [PARENT], draftWorkspaces: [draft({ startAfter: 'w-parent' })],
       }))
       await openWith({ draftId: 'd1' })
       expect(select('Start').value).toBe('w-parent')
       fireEvent.click(submitButton())
-      await waitFor(() => expect(queueWorkspace).toHaveBeenCalledWith('proj', 'w-parent', expect.objectContaining({
-        prompt: 'half an idea', permissionMode: 'read-only',
-      }), 'd1'))
-      expect(discardDraftWorkspace).not.toHaveBeenCalled()
+      await waitFor(() => expect(sent(QUEUE)).toEqual([expect.objectContaining({
+        project: 'proj', parent: 'w-parent', prompt: 'half an idea', permissionMode: 'read-only', draftId: 'd1',
+      })]))
+      expect(sent(DISCARD_DRAFT)).toHaveLength(0)
     })
   })
 })

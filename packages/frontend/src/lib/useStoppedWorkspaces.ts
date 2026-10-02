@@ -1,13 +1,13 @@
-import { useEffect } from 'react'
 import { useQuery, type QueryClient } from '@tanstack/react-query'
-import { getStoppedWorkspaces } from '#lib/stoppedApi'
+import { api } from '#lib/api'
 import { useUiStore } from '#lib/store'
 import type { StoppedWorkspaceEntry } from '@yaac/shared/types'
 
 type Live = { workspaceId: string }[]
 
 /**
- * The project's stopped workspaces for the sidebar: optimistic just-stopped
+ * The project's stopped workspaces for the sidebar (as `yaac workspace list
+ * -s` lists them, with transcripts to resume): optimistic just-stopped
  * entries first, then the fetched list, minus any workspace that is still
  * stopping or restarting (those have live or provisioning rows).
  *
@@ -24,17 +24,16 @@ export function useStoppedWorkspaces(
   const removeOptimistic = useUiStore((s) => s.removeOptimisticStopped)
   const { data = [] } = useQuery({
     queryKey: ['stopped', projectSlug, workspaces.map((w) => w.workspaceId).sort().join(',')],
-    queryFn: () => getStoppedWorkspaces(projectSlug ?? '', 100),
+    queryFn: async () => {
+      const list = await api.workspace['list-stopped'].$get({ query: { project: projectSlug ?? '', limit: '100' } })
+      // An optimistic entry is no longer needed once the server lists it.
+      for (const e of list) removeOptimistic(e.workspaceId)
+      return list
+    },
     enabled: projectSlug !== null,
     staleTime: 2000,
     placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === projectSlug ? prev : undefined),
   })
-
-  // Drop optimistic entries once the fetched list includes them.
-  useEffect(() => {
-    const fetched = new Set(data.map((d) => d.workspaceId))
-    for (const e of optimistic) if (fetched.has(e.workspaceId)) removeOptimistic(e.workspaceId)
-  }, [data, optimistic, removeOptimistic])
 
   const fetched = new Set(data.map((d) => d.workspaceId))
   const live = new Set([...workspaces, ...provisioning].map((w) => w.workspaceId))

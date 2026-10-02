@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach, beforeAll } from 'vitest'
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { FileEditor } from '#components/settings/FileEditor'
+import { renderWithClient } from './harness'
 
 // Replace CodeMirror, which doesn't work under jsdom, with a textarea. This
 // suite tests FileEditor's load, save and dirty handling only.
@@ -29,7 +30,7 @@ function saveButton(): HTMLButtonElement {
 describe('FileEditor', () => {
   it('loads the initial content and keeps Save disabled until edited', async () => {
     const save = vi.fn().mockResolvedValue(undefined)
-    render(<FileEditor title="a.json" language="json" load={() => Promise.resolve('hello')} save={save} />)
+    renderWithClient(<FileEditor queryKey={['file']} title="a.json" language="json" load={() => Promise.resolve('hello')} save={save} />)
 
     const editor = await screen.findByLabelText<HTMLTextAreaElement>('editor')
     expect(editor.value).toBe('hello')
@@ -41,20 +42,20 @@ describe('FileEditor', () => {
 
   it('saves the edited content and shows a Saved indicator', async () => {
     const save = vi.fn().mockResolvedValue(undefined)
-    render(<FileEditor title="Dockerfile" language="dockerfile" load={() => Promise.resolve('FROM a')} save={save} />)
+    renderWithClient(<FileEditor queryKey={['file']} title="Dockerfile" language="dockerfile" load={() => Promise.resolve('FROM a')} save={save} />)
 
     const editor = await screen.findByLabelText<HTMLTextAreaElement>('editor')
     fireEvent.change(editor, { target: { value: 'FROM b' } })
     fireEvent.click(saveButton())
 
-    await waitFor(() => expect(save).toHaveBeenCalledWith('FROM b'))
+    await waitFor(() => expect(save.mock.calls.map((c) => c[0] as string)).toEqual(['FROM b']))
     await screen.findByText('Saved')
     expect(saveButton().disabled).toBe(true)
   })
 
   it('surfaces a save error and leaves the editor dirty', async () => {
     const save = vi.fn().mockRejectedValue(new Error('boom'))
-    render(<FileEditor title="a.json" language="json" load={() => Promise.resolve('{}')} save={save} />)
+    renderWithClient(<FileEditor queryKey={['file']} title="a.json" language="json" load={() => Promise.resolve('{}')} save={save} />)
 
     const editor = await screen.findByLabelText<HTMLTextAreaElement>('editor')
     fireEvent.change(editor, { target: { value: '{ bad' } })
@@ -70,13 +71,13 @@ describe('FileEditor', () => {
 
   it('shows the load error when loading fails', async () => {
     const save = vi.fn()
-    render(<FileEditor title="a.json" language="json" load={() => Promise.reject(new Error('nope'))} save={save} />)
+    renderWithClient(<FileEditor queryKey={['file']} title="a.json" language="json" load={() => Promise.reject(new Error('nope'))} save={save} />)
     await screen.findByText('nope')
   })
 
   it('expands into a titled overlay and saves from there', async () => {
     const save = vi.fn().mockResolvedValue(undefined)
-    render(<FileEditor title="proj · yaac-config.json" language="json" load={() => Promise.resolve('{}')} save={save} />)
+    renderWithClient(<FileEditor queryKey={['file']} title="proj · yaac-config.json" language="json" load={() => Promise.resolve('{}')} save={save} />)
 
     await screen.findByLabelText('editor')
     fireEvent.click(screen.getByRole('button', { name: 'Expand editor' }))
@@ -91,12 +92,12 @@ describe('FileEditor', () => {
 
     const saveButtons = screen.getAllByRole<HTMLButtonElement>('button', { name: /save/i })
     fireEvent.click(saveButtons[saveButtons.length - 1])
-    await waitFor(() => expect(save).toHaveBeenCalledWith('{"a":1}'))
+    await waitFor(() => expect(save.mock.calls.map((c) => c[0] as string)).toEqual(['{"a":1}']))
   })
 
   it('keeps unsaved edits when collapsing the overlay', async () => {
     const save = vi.fn().mockResolvedValue(undefined)
-    render(<FileEditor title="Dockerfile.user" language="dockerfile" load={() => Promise.resolve('FROM a')} save={save} />)
+    renderWithClient(<FileEditor queryKey={['file']} title="Dockerfile.user" language="dockerfile" load={() => Promise.resolve('FROM a')} save={save} />)
 
     await screen.findByLabelText('editor')
     fireEvent.click(screen.getByRole('button', { name: 'Expand editor' }))

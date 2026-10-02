@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
-  isUnreadWaiting, isUnseenDeath, loadViewMode, mergeProvisioning, paneViewKey,
+  isUnreadWaiting, isUnseenDeath, defaultViewMode, mergeProvisioning, paneViewKey,
   resolveVacantSelection, unreadWaitingBySlug, useUiStore,
 } from '#lib/store'
-import type { ProvisioningWorkspaceEntry } from '@yaac/shared/types'
+import type { ProvisioningWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/types'
 import { PREVIEW_TARGET } from '#lib/preview'
-import { CHANGES_TARGET } from '#lib/changesApi'
+import { CHANGES_TARGET } from '#lib/panes'
 
 const initial = useUiStore.getState()
 
@@ -307,6 +307,49 @@ describe('optimistic provisioning tracking', () => {
   })
 })
 
+describe('reconcileSnapshot', () => {
+  const prov = (workspaceId: string, over: Partial<ProvisioningWorkspaceEntry> = {}): ProvisioningWorkspaceEntry => ({
+    workspaceId, projectSlug: 'p', tool: 'claude', kind: 'create', message: 'Starting…',
+    createdAt: '2026-01-01 00:00:00', ...over,
+  })
+  const live = (workspaceId: string) => ({ workspaceId }) as WorkspaceListEntry
+
+  it('folds a snapshot into the stops, provisioning rows and claims it settles', () => {
+    const s = useUiStore.getState()
+    s.beginDelete('stopping')
+    s.beginDelete('gone')
+    for (const id of ['listed', 'provisioning', 'pending']) s.addOptimisticProvisioning(prov(id))
+    s.recordClaim('failed', 'spare-1')
+    s.recordClaim('listed', 'spare-2')
+    s.reconcileSnapshot({
+      workspaces: [live('stopping'), live('listed')],
+      provisioning: [prov('provisioning', { claimedId: 'spare-3' }), prov('failed', { error: 'boom' })],
+    })
+    const after = useUiStore.getState()
+    // A stop stays tracked while the workspace is listed.
+    expect(after.pendingDeleteIds).toEqual(['stopping'])
+    // An optimistic row goes once the server lists the id either way.
+    expect(after.optimisticProvisioning.map((e) => e.workspaceId)).toEqual(['pending'])
+    // Claims follow the server's rows; a failed or self-listed create forgets its claim.
+    expect(after.claims).toEqual({ provisioning: 'spare-3' })
+  })
+
+  it('does not mark a stop for a workspace the last snapshot no longer lists', () => {
+    useUiStore.getState().reconcileSnapshot({ workspaces: [live('a')], provisioning: [] })
+    useUiStore.getState().beginDelete('died-meanwhile')
+    useUiStore.getState().beginDelete('a')
+    expect(useUiStore.getState().pendingDeleteIds).toEqual(['a'])
+  })
+
+  it('keeps state identity when nothing changes', () => {
+    useUiStore.getState().addOptimisticProvisioning(prov('pending'))
+    useUiStore.getState().reconcileSnapshot({ workspaces: [], provisioning: [] })
+    const before = useUiStore.getState()
+    useUiStore.getState().reconcileSnapshot({ workspaces: [], provisioning: [] })
+    expect(useUiStore.getState()).toBe(before)
+  })
+})
+
 describe('mergeProvisioning', () => {
   const e = (workspaceId: string, over: Partial<ProvisioningWorkspaceEntry> = {}): ProvisioningWorkspaceEntry => ({
     workspaceId, projectSlug: 'p', tool: 'claude', kind: 'create', message: 'm',
@@ -329,36 +372,12 @@ describe('mergeProvisioning', () => {
 })
 
 describe('view mode (tiles vs tabs)', () => {
-  afterEach(() => {
-    delete (globalThis as Record<string, unknown>).localStorage
-  })
-
   it('defaults by viewport width when nothing is persisted', () => {
-    expect(loadViewMode(1440)).toBe('tiles')
-    expect(loadViewMode(800)).toBe('tabs')
+    expect(defaultViewMode(1440)).toBe('tiles')
+    expect(defaultViewMode(800)).toBe('tabs')
   })
 
-  it('prefers the persisted value over the width default', () => {
-    const store = new Map<string, string>()
-    ;(globalThis as Record<string, unknown>).localStorage = {
-      getItem: (k: string) => store.get(k) ?? null,
-      setItem: (k: string, v: string) => { store.set(k, String(v)) },
-    }
-    store.set('yaac.viewmode.v1', 'tabs')
-    expect(loadViewMode(1440)).toBe('tabs')
-    store.set('yaac.viewmode.v1', 'garbage')
-    expect(loadViewMode(1440)).toBe('tiles')
-  })
-
-  it('setViewMode updates state and persists; setActiveTab is per session', () => {
-    const store = new Map<string, string>()
-    ;(globalThis as Record<string, unknown>).localStorage = {
-      getItem: (k: string) => store.get(k) ?? null,
-      setItem: (k: string, v: string) => { store.set(k, String(v)) },
-    }
-    useUiStore.getState().setViewMode('tabs')
-    expect(useUiStore.getState().viewMode).toBe('tabs')
-    expect(store.get('yaac.viewmode.v1')).toBe('tabs')
+  it('setActiveTab is per workspace', () => {
     useUiStore.getState().setActiveTab('s1', 'shell:shell')
     useUiStore.getState().setActiveTab('s2', 'agent')
     expect(useUiStore.getState().activeTabs).toEqual({ s1: 'shell:shell', s2: 'agent' })

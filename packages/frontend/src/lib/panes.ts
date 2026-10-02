@@ -10,10 +10,17 @@
 
 import { acpTarget, isAcpTarget } from '@yaac/shared/acp'
 import type { WorkspaceListEntry } from '@yaac/shared/types'
-import { isChangesTarget } from './changesApi'
 import { isFilesTarget, isFileTarget } from './files'
 import { addColumn, paneTargets, removeTarget, renameTargets, type PaneLayout } from './layout'
 import { isPreviewTarget } from './preview'
+
+/** The one layout target a workspace's Changes (review) pane uses. */
+export const CHANGES_TARGET = 'changes'
+
+/** Whether a layout target is the Changes pane. */
+export function isChangesTarget(target: string): boolean {
+  return target === CHANGES_TARGET
+}
 
 /**
  * Non-terminal panes: left out of the tmux-window sync and closed without a

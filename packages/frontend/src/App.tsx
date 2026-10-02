@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
+import { useQuery } from '@tanstack/react-query'
 import { api } from './lib/api'
 import { stopWorkspaceOptimistic } from './lib/stopWorkspaceFlow'
 import { claimChord, cycleDeltaFor, matchShortcut, mergeBindings, resolveCycleTarget } from './lib/shortcuts'
-import { deviceTimeZone, getShortcutOverrides, setTimeZone } from './lib/settingsApi'
+import { deviceTimeZone } from './lib/time'
 import { useEvents } from './lib/useEvents'
 import { useSnapshot } from './lib/useSnapshot'
 import {
@@ -18,37 +19,30 @@ import { ProjectsScreen } from './components/mobile/ProjectsScreen'
 import { WorkspacesScreen } from './components/mobile/WorkspacesScreen'
 import { goBackScreen, useMobileHistory } from './lib/mobileHistory'
 import { useIsMobile, useVisualViewportHeight } from './lib/viewport'
-import { newlyWaitingWorkspaces, shouldChime, waitingSpellKeys } from './lib/attentionChime'
+import { newlyWaiting, waitingKeys } from '@yaac/shared/waiting'
 import { playChime } from './lib/sound'
 import { isElectron } from './lib/platform'
 import { CreateWorkspaceDialog } from './components/CreateWorkspaceDialog'
 import { StopWorkspaceDialog } from './components/StopWorkspaceDialog'
 import type { WorkspaceListEntry } from '@yaac/shared/types'
 
-/** `unidentified` carries the server's explanation of why it could not
- *  identify this device, or the error from asking. */
-type AuthState = { kind: 'checking' } | { kind: 'ok' } | { kind: 'unidentified'; message: string }
-
 function App(): JSX.Element {
-  const [auth, setAuth] = useState<AuthState>({ kind: 'checking' })
-
-  useEffect(() => {
-    let cancelled = false
-    api.whoami.$get().then(
-      () => {
-        if (!cancelled) setAuth({ kind: 'ok' })
-        // Workspaces launch in the zone of the device last used.
-        void setTimeZone(deviceTimeZone()).catch(() => {})
-      },
-      (err: unknown) => {
-        if (!cancelled) setAuth({ kind: 'unidentified', message: err instanceof Error ? err.message : String(err) })
-      },
-    )
-    return () => { cancelled = true }
-  }, [])
+  // The server identifies the caller from the request (loopback, or
+  // tailscale serve's identity headers); a refusal carries its reason.
+  const whoami = useQuery({
+    queryKey: ['whoami'],
+    queryFn: async () => {
+      const me = await api.whoami.$get()
+      // Workspaces launch in the zone of the device last used.
+      api.config['time-zone'].$put({ json: { timeZone: deviceTimeZone() } })
+        .catch((e: unknown) => console.error('reporting the time zone failed', e))
+      return me
+    },
+  })
+  const authed = whoami.isSuccess
 
   // Hooks must run unconditionally; the WS only connects once authed.
-  const { connected } = useEvents(auth.kind === 'ok')
+  const { connected } = useEvents(authed)
   const snapshot = useSnapshot()
 
   // Chime when a workspace starts waiting for input. The first snapshot only
@@ -59,22 +53,22 @@ function App(): JSX.Element {
   const waitingSpells = useRef<Set<string> | null>(null)
   useEffect(() => {
     if (!snapshot) return
-    const current = waitingSpellKeys(snapshot.workspaces)
+    const current = waitingKeys(snapshot.workspaces)
     if (waitingSpells.current === null) { waitingSpells.current = current; return }
-    const fresh = newlyWaitingWorkspaces(waitingSpells.current, snapshot.workspaces)
+    const fresh = newlyWaiting(waitingSpells.current, snapshot.workspaces)
     waitingSpells.current = current
     const watching = typeof document !== 'undefined' && document.hasFocus() ? selectedWorkspaceId : null
-    if (soundEnabled && shouldChime(fresh, watching)) playChime()
+    if (soundEnabled && fresh.some((w) => w.workspaceId !== watching)) playChime()
   }, [snapshot, soundEnabled, selectedWorkspaceId])
 
   let content: JSX.Element
-  if (auth.kind === 'checking') content = <FullScreen>Loading…</FullScreen>
-  else if (auth.kind === 'unidentified') {
+  if (whoami.isPending) content = <FullScreen>Loading…</FullScreen>
+  else if (whoami.isError) {
     content = (
       <FullScreen>
         <div className="max-w-md px-8">
           <h1 className="text-lg font-semibold text-text">This server will not say who you are</h1>
-          <p className="mt-3 text-sm text-text-dim">{auth.message}</p>
+          <p className="mt-3 text-sm text-text-dim">{whoami.error.message}</p>
         </div>
       </FullScreen>
     )
@@ -83,10 +77,9 @@ function App(): JSX.Element {
   // In Electron the title bar is hidden and the window controls float over
   // the UI. Full-screen states reserve a draggable strip for them; the
   // workspace layout provides its own drag regions and clearance instead.
-  const inShell = auth.kind === 'ok'
   return (
     <div className="flex h-full flex-col bg-shell">
-      {isElectron() && !inShell && <div className="titlebar-drag h-7 shrink-0" aria-hidden="true" />}
+      {isElectron() && !authed && <div className="titlebar-drag h-7 shrink-0" aria-hidden="true" />}
       <div className="min-h-0 flex-1">{content}</div>
     </div>
   )
@@ -104,12 +97,9 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   const setActiveProject = useUiStore((s) => s.setActiveProject)
   const restoreActiveProject = useUiStore((s) => s.restoreActiveProject)
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
-  const endDelete = useUiStore((s) => s.endDelete)
   const optimisticProvisioning = useUiStore((s) => s.optimisticProvisioning)
-  const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
   const claims = useUiStore((s) => s.claims)
   const inFlightProvisions = useUiStore((s) => s.inFlightProvisions)
-  const recordClaim = useUiStore((s) => s.recordClaim)
   const forgetClaim = useUiStore((s) => s.forgetClaim)
   const selectedWorkspaceId = useUiStore((s) => s.selectedWorkspaceId)
   const autoSelectWorkspace = useUiStore((s) => s.autoSelectWorkspace)
@@ -146,34 +136,6 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
     if (activeProjectSlug && projects.some((p) => p.slug === activeProjectSlug)) return
     restoreActiveProject(projects[0].slug)
   }, [activeProjectSlug, projects, restoreActiveProject])
-
-  // Stop tracking an optimistic delete once the snapshot drops the workspace,
-  // so the set can't grow forever or hide a later workspace with the same id.
-  useEffect(() => {
-    const live = new Set(workspaces.map((s) => s.workspaceId))
-    for (const id of pendingDeleteIds) if (!live.has(id)) endDelete(id)
-  }, [workspaces, pendingDeleteIds, endDelete])
-
-  // Drop the local optimistic provisioning row once the server reports the
-  // id, as a workspace or its own provisioning row.
-  useEffect(() => {
-    const known = new Set<string>([
-      ...workspaces.map((s) => s.workspaceId),
-      ...(snapshot?.provisioning ?? []).map((p) => p.workspaceId),
-    ])
-    for (const e of optimisticProvisioning) if (known.has(e.workspaceId)) removeOptimisticProvisioning(e.workspaceId)
-  }, [workspaces, snapshot, optimisticProvisioning, removeOptimisticProvisioning])
-
-  // A create that claims a prewarmed spare ends up under the spare's id.
-  // Remember that mapping so the selection can follow it, and forget it if
-  // the create fails or lists under its own id.
-  useEffect(() => {
-    for (const p of snapshot?.provisioning ?? []) {
-      if (p.error !== undefined) forgetClaim(p.workspaceId)
-      else if (p.claimedId) recordClaim(p.workspaceId, p.claimedId)
-    }
-    for (const w of workspaces) forgetClaim(w.workspaceId)
-  }, [snapshot, workspaces, recordClaim, forgetClaim])
 
   const scoped = workspaces.filter((s) => s.projectSlug === activeProjectSlug)
   const scopedProvisioning = provisioning.filter((p) => p.projectSlug === activeProjectSlug)
@@ -235,9 +197,9 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
 
   // Load saved shortcut overrides; the defaults apply until then, or on error.
   useEffect(() => {
-    void getShortcutOverrides()
-      .then((overrides) => useUiStore.getState().setBindings(mergeBindings(overrides)))
-      .catch((e: unknown) => console.error(e))
+    api.shortcuts.get.$get()
+      .then(({ overrides }) => useUiStore.getState().setBindings(mergeBindings(overrides)))
+      .catch((e: unknown) => console.error('loading shortcut overrides failed', e))
   }, [])
 
   // Fill the pane when the project changed or the open workspace vanished

@@ -1,24 +1,19 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
 import type { JSX } from 'react'
 import type { StoppedWorkspaceEntry } from '@yaac/shared/types'
 
 const provision = vi.hoisted(() => vi.fn())
 
-vi.mock('#lib/stoppedApi', () => ({
-  getStoppedWorkspaces: vi.fn(),
-  markDeathSeen: vi.fn(),
-  markAllDeathsSeen: vi.fn(),
-}))
 vi.mock('#lib/createWorkspace', () => ({ restartWorkspace: vi.fn() }))
 vi.mock('#lib/useProvisionWorkspace', () => ({ useProvisionWorkspace: () => provision }))
 
 import { StoppedWorkspacesButton } from '#components/StoppedWorkspacesButton'
 import { useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
-import { getStoppedWorkspaces, markAllDeathsSeen, markDeathSeen } from '#lib/stoppedApi'
 import { useUiStore } from '#lib/store'
+import { mockFetch, renderWithClient, serverError, testQueryClient, type FetchMock } from './harness'
 
 // jsdom has no ResizeObserver; Base UI needs one to exist.
 beforeAll(() => {
@@ -49,15 +44,24 @@ const TWO = [
   entry({ workspaceId: 's2', title: 'Add tests', tool: 'codex' }),
 ]
 
+const LIST = 'GET /api/workspace/list-stopped'
+const MARK = 'POST /api/workspace/mark-death-seen'
+const MARK_ALL = 'POST /api/workspace/mark-all-deaths-seen'
+
+let server: FetchMock
 beforeEach(() => {
   useUiStore.setState({ stoppedOverlayOpen: false, optimisticStopped: [] })
   vi.clearAllMocks()
-  vi.mocked(getStoppedWorkspaces).mockResolvedValue(TWO)
-  vi.mocked(markDeathSeen).mockResolvedValue(undefined)
-  vi.mocked(markAllDeathsSeen).mockResolvedValue(undefined)
+  server = mockFetch({ [LIST]: TWO, [MARK]: undefined, [MARK_ALL]: undefined })
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
+
+/** Answer the stopped list with these rows. */
+const listing = (rows: StoppedWorkspaceEntry[]): void => server.route(LIST, rows)
 
 /** The button as WorkspaceList mounts it: fed by the hook, given the live ids. */
 function Harness({ live = [], provisioning = [] }: { live?: string[]; provisioning?: string[] }): JSX.Element {
@@ -67,11 +71,7 @@ function Harness({ live = [], provisioning = [] }: { live?: string[]; provisioni
 }
 
 function renderButton(): void {
-  render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <Harness />
-    </QueryClientProvider>,
-  )
+  renderWithClient(<Harness />)
 }
 
 /** Render, wait for the (data-gated) sidebar entry point, and open the overlay. */
@@ -84,13 +84,14 @@ describe('StoppedWorkspacesButton', () => {
   it('fetches on mount so the sidebar entry point can hide when empty', async () => {
     renderButton()
     // Fetched without user interaction: the list decides visibility.
-    await waitFor(() => expect(getStoppedWorkspaces).toHaveBeenCalledWith('proj', 100))
+    await waitFor(() => expect(server.called(LIST)).toHaveLength(1))
+    expect(Object.fromEntries(server.called(LIST)[0].query)).toEqual({ project: 'proj', limit: '100' })
   })
 
   it('hides the entry point when nothing is deleted', async () => {
-    vi.mocked(getStoppedWorkspaces).mockResolvedValue([])
+    listing([])
     renderButton()
-    await waitFor(() => expect(getStoppedWorkspaces).toHaveBeenCalled())
+    await waitFor(() => expect(server.called(LIST)).toHaveLength(1))
     expect(screen.queryByRole('button', STOPPED_ENTRY)).toBeNull()
   })
 
@@ -120,7 +121,7 @@ describe('StoppedWorkspacesButton', () => {
   })
 
   it('names the agent with its model in the row, the detail, and the search', async () => {
-    vi.mocked(getStoppedWorkspaces).mockResolvedValue([
+    listing([
       ...TWO,
       entry({
         workspaceId: 's3', title: 'Tune cache', tool: 'opencode',
@@ -142,7 +143,7 @@ describe('StoppedWorkspacesButton', () => {
   })
 
   it('renders a died row with its cause in the list and detail, and its title in the restart dialog', async () => {
-    vi.mocked(getStoppedWorkspaces).mockResolvedValue([
+    listing([
       entry({
         workspaceId: 's3',
         title: 'OOMed run',
@@ -167,7 +168,7 @@ describe('StoppedWorkspacesButton', () => {
   })
 
   it('flags an unseen abnormal death with a notification dot on the entry point', async () => {
-    vi.mocked(getStoppedWorkspaces).mockResolvedValue([
+    listing([
       entry({ workspaceId: 's3', title: 'OOMed run', deathReason: 'oom' }),
     ])
     renderButton()
@@ -182,7 +183,7 @@ describe('StoppedWorkspacesButton', () => {
   })
 
   it('marks the death seen server-side and clears the dot once its row is clicked', async () => {
-    vi.mocked(getStoppedWorkspaces).mockResolvedValue([
+    listing([
       entry({ workspaceId: 's3', title: 'OOMed run', deathReason: 'oom' }),
     ])
     await open()
@@ -190,12 +191,12 @@ describe('StoppedWorkspacesButton', () => {
     // read: the acknowledgement is durable and cross-client, so it waits for a
     // click.
     await waitFor(() => expect(screen.getByText('Cause')).toBeTruthy())
-    expect(markDeathSeen).not.toHaveBeenCalled()
+    expect(server.called(MARK)).toEqual([])
 
     fireEvent.click(screen.getAllByText('OOMed run')[0])
     // Persisted via the server; the cached list is patched optimistically so
     // the dot clears without a refetch.
-    await waitFor(() => expect(markDeathSeen).toHaveBeenCalledWith('proj', 's3'))
+    await waitFor(() => expect(server.called(MARK).map((c) => c.body)).toEqual([{ projectSlug: 'proj', workspaceId: 's3' }]))
     await waitFor(() => expect(screen.queryByTitle(/died unexpectedly/)).toBeNull())
   })
 
@@ -203,7 +204,7 @@ describe('StoppedWorkspacesButton', () => {
     // Each keystroke re-filters the list, changing the top row that fills the
     // desktop detail pane. Acknowledging it would mark every death whose title
     // matches a prefix of the query.
-    vi.mocked(getStoppedWorkspaces).mockResolvedValue([
+    listing([
       entry({ workspaceId: 's3', title: 'Oomed parser', deathReason: 'oom' }),
       entry({ workspaceId: 's4', title: 'Oomed indexer', deathReason: 'oom' }),
       entry({ workspaceId: 's5', title: 'Evicted run', deathReason: 'evicted' }),
@@ -212,25 +213,25 @@ describe('StoppedWorkspacesButton', () => {
     const search = screen.getByPlaceholderText('Search…')
     for (const q of ['e', 'ev', 'evi']) fireEvent.change(search, { target: { value: q } })
     await waitFor(() => expect(screen.getAllByText('Evicted run').length).toBeGreaterThan(0))
-    expect(markDeathSeen).not.toHaveBeenCalled()
+    expect(server.called(MARK)).toEqual([])
     expect(await screen.findByTitle('3 workspaces died unexpectedly')).toBeTruthy()
   })
 
   it('keeps the dot until each died row is individually viewed', async () => {
-    vi.mocked(getStoppedWorkspaces).mockResolvedValue([
+    listing([
       entry({ workspaceId: 's1', title: 'Plain delete' }),
       entry({ workspaceId: 's3', title: 'OOMed run', deathReason: 'oom' }),
     ])
     await open() // nothing clicked yet → the died row stays unseen
     expect(await screen.findByTitle('1 workspace died unexpectedly')).toBeTruthy()
-    expect(markDeathSeen).not.toHaveBeenCalled() // the plain delete isn't a death
+    expect(server.called(MARK)).toEqual([]) // the plain delete isn't a death
     fireEvent.click(screen.getAllByText('OOMed run')[0]) // view it → marked seen
-    await waitFor(() => expect(markDeathSeen).toHaveBeenCalledWith('proj', 's3'))
+    await waitFor(() => expect(server.called(MARK).map((c) => c.body)).toEqual([{ projectSlug: 'proj', workspaceId: 's3' }]))
     await waitFor(() => expect(screen.queryByTitle(/died unexpectedly/)).toBeNull())
   })
 
   it('clears every death at once from the overlay header', async () => {
-    vi.mocked(getStoppedWorkspaces).mockResolvedValue([
+    listing([
       entry({ workspaceId: 's1', title: 'Plain delete' }),
       entry({ workspaceId: 's3', title: 'OOMed run', deathReason: 'oom' }),
       entry({ workspaceId: 's4', title: 'Evicted run', deathReason: 'evicted' }),
@@ -239,7 +240,7 @@ describe('StoppedWorkspacesButton', () => {
     expect(await screen.findByTitle('2 workspaces died unexpectedly')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Mark all as read' }))
-    await waitFor(() => expect(markAllDeathsSeen).toHaveBeenCalledWith('proj'))
+    await waitFor(() => expect(server.called(MARK_ALL).map((c) => c.body)).toEqual([{ projectSlug: 'proj' }]))
     // Optimistic patch: the dot clears without a refetch, and with nothing left
     // unread the button itself goes away.
     await waitFor(() => expect(screen.queryByTitle(/died unexpectedly/)).toBeNull())
@@ -247,7 +248,25 @@ describe('StoppedWorkspacesButton', () => {
     // Selecting a row that is already marked doesn't re-post a per-row ack.
     fireEvent.click(screen.getAllByText('OOMed run')[0])
     await waitFor(() => expect(screen.getByText('Cause')).toBeTruthy())
-    expect(markDeathSeen).not.toHaveBeenCalled()
+    expect(server.called(MARK)).toEqual([])
+  })
+
+  it('shows a failed mark-seen in the header and puts the dot back from a refetch', async () => {
+    listing([
+      entry({ workspaceId: 's1', title: 'Plain delete' }),
+      entry({ workspaceId: 's3', title: 'OOMed run', deathReason: 'oom' }),
+    ])
+    server.route(MARK_ALL, serverError('INTERNAL', 'database is locked'))
+    await open()
+    expect(await screen.findByTitle('1 workspace died unexpectedly')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mark all as read' }))
+    expect(await screen.findByText('database is locked')).toBeTruthy()
+    // The optimistic patch is undone by refetching the server's list, which
+    // still has the death unseen.
+    await waitFor(() => expect(server.called(LIST)).toHaveLength(2))
+    expect(await screen.findByTitle('1 workspace died unexpectedly')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Mark all as read' })).toBeTruthy()
   })
 
   it('offers no mark-all when every deletion was user-initiated', async () => {
@@ -281,7 +300,7 @@ describe('StoppedWorkspacesButton', () => {
   it('hides live and provisioning entries, and never blinks out while refetching', async () => {
     // Each change to the live set is a fresh fetch. The last list is kept
     // until it lands, or the entry point and every ghost row would blink out.
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const client = testQueryClient()
     const mount = (live: string[], provisioning: string[] = []): JSX.Element => (
       <QueryClientProvider client={client}><Harness live={live} provisioning={provisioning} /></QueryClientProvider>
     )
@@ -295,12 +314,13 @@ describe('StoppedWorkspacesButton', () => {
     expect(screen.getByRole('button', { name: /^Stopped workspaces\s*1/ })).toBeTruthy()
     rerender(mount([]))
     expect(screen.getByRole('button', { name: /^Stopped workspaces\s*2/ })).toBeTruthy()
-    expect(getStoppedWorkspaces).toHaveBeenCalledTimes(1)
+    expect(server.called(LIST)).toHaveLength(1)
 
     let land: (rows: StoppedWorkspaceEntry[]) => void = () => {}
-    vi.mocked(getStoppedWorkspaces).mockReturnValue(new Promise((r) => { land = r }))
+    const pending = new Promise<StoppedWorkspaceEntry[]>((r) => { land = r })
+    server.route(LIST, () => pending)
     rerender(mount(['w1']))
-    await waitFor(() => expect(getStoppedWorkspaces).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(server.called(LIST)).toHaveLength(2))
     expect(screen.getByRole('button', { name: /^Stopped workspaces\s*2/ })).toBeTruthy()
 
     // A restart landing: s1 is live again, so it leaves the list at once, and
@@ -308,7 +328,7 @@ describe('StoppedWorkspacesButton', () => {
     rerender(mount(['w1', 's1']))
     expect(screen.getByRole('button', { name: /^Stopped workspaces\s*1/ })).toBeTruthy()
     land([TWO[1]])
-    await waitFor(() => expect(getStoppedWorkspaces).toHaveBeenCalledTimes(3))
+    await waitFor(() => expect(server.called(LIST)).toHaveLength(3))
     expect(screen.getByRole('button', { name: /^Stopped workspaces\s*1/ })).toBeTruthy()
   })
 })

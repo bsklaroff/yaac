@@ -1,20 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { encodeBase64, projectBuildFilesApi, userBuildFilesApi } from '#lib/buildFilesApi'
+import { mockFetch } from './harness'
 
-const realFetch = globalThis.fetch
-afterEach(() => { globalThis.fetch = realFetch })
-
-function stub(json: unknown, status = 200): ReturnType<typeof vi.fn> {
-  const fetchMock = vi.fn().mockResolvedValue({
-    ok: status < 400,
-    headers: new Headers({ 'content-type': 'application/json' }),
-    status,
-    json: () => Promise.resolve(json),
-    text: () => Promise.resolve(''),
-  })
-  globalThis.fetch = fetchMock as unknown as typeof fetch
-  return fetchMock
-}
+afterEach(() => vi.unstubAllGlobals())
 
 describe('encodeBase64', () => {
   it('encodes bytes, including multi-chunk inputs', () => {
@@ -25,64 +13,42 @@ describe('encodeBase64', () => {
 })
 
 describe('projectBuildFilesApi', () => {
-  it('list GETs the project route and unwraps { files }', async () => {
+  it('drives every project build-files route', async () => {
     const entry = { path: 'a.txt', size: 1, binary: false }
-    const fetchMock = stub({ files: [entry] })
-    expect(await projectBuildFilesApi('demo').list()).toEqual([entry])
-    expect(fetchMock.mock.calls[0][0] as string).toBe('/api/project/demo/build-files')
-  })
+    const server = mockFetch({
+      'GET /api/project/demo/build-files': { files: [entry] },
+      'GET /api/project/demo/build-files/file': { ...entry, content: 'x' },
+      'PUT /api/project/demo/build-files/file': entry,
+      'POST /api/project/demo/build-files/rename': entry,
+      'DELETE /api/project/demo/build-files/file': undefined,
+    })
+    const files = projectBuildFilesApi('demo')
 
-  it('read GETs /file with the path query', async () => {
-    const file = { path: 'a.txt', size: 1, binary: false, content: 'x' }
-    const fetchMock = stub(file)
-    expect(await projectBuildFilesApi('demo').read('nvim/init.lua')).toEqual(file)
-    expect(fetchMock.mock.calls[0][0] as string)
-      .toBe('/api/project/demo/build-files/file?path=nvim%2Finit.lua')
-  })
+    expect(await files.list()).toEqual([entry])
+    expect(await files.read('nvim/init.lua')).toEqual({ ...entry, content: 'x' })
+    await files.saveText('a.txt', 'x')
+    await files.upload('b.bin', new Uint8Array([0, 1]).buffer)
+    await files.rename('a.txt', 'b.txt')
+    await files.remove('a.txt')
 
-  it('saveText PUTs { path, content }', async () => {
-    const fetchMock = stub({ path: 'a.txt', size: 1, binary: false })
-    await projectBuildFilesApi('demo').saveText('a.txt', 'x')
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/api/project/demo/build-files/file')
-    expect(init.method).toBe('PUT')
-    expect(JSON.parse(init.body as string)).toEqual({ path: 'a.txt', content: 'x' })
-  })
-
-  it('upload PUTs { path, contentBase64 }', async () => {
-    const fetchMock = stub({ path: 'b.bin', size: 2, binary: true })
-    await projectBuildFilesApi('demo').upload('b.bin', new Uint8Array([0, 1]).buffer)
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(JSON.parse(init.body as string)).toEqual({ path: 'b.bin', contentBase64: 'AAE=' })
-  })
-
-  it('rename POSTs /rename with { from, to }', async () => {
-    const fetchMock = stub({ path: 'b.txt', size: 1, binary: false })
-    await projectBuildFilesApi('demo').rename('a.txt', 'b.txt')
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/api/project/demo/build-files/rename')
-    expect(init.method).toBe('POST')
-    expect(JSON.parse(init.body as string)).toEqual({ from: 'a.txt', to: 'b.txt' })
-  })
-
-  it('remove DELETEs /file with the path query', async () => {
-    const fetchMock = stub(undefined, 200)
-    await projectBuildFilesApi('demo').remove('a.txt')
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/api/project/demo/build-files/file?path=a.txt')
-    expect(init.method).toBe('DELETE')
+    expect(server.called('GET /api/project/demo/build-files/file')[0].query.get('path')).toBe('nvim/init.lua')
+    expect(server.called('PUT /api/project/demo/build-files/file').map((c) => c.body)).toEqual([
+      { path: 'a.txt', content: 'x' },
+      { path: 'b.bin', contentBase64: 'AAE=' },
+    ])
+    expect(server.called('POST /api/project/demo/build-files/rename')[0].body).toEqual({ from: 'a.txt', to: 'b.txt' })
+    expect(server.called('DELETE /api/project/demo/build-files/file')[0].query.get('path')).toBe('a.txt')
   })
 })
 
 describe('userBuildFilesApi', () => {
   it('targets the /config/user-build-files routes', async () => {
-    const fetchMock = stub({ files: [] })
+    const server = mockFetch({
+      'GET /api/config/user-build-files': { files: [] },
+      'PUT /api/config/user-build-files/file': { path: 'a', size: 1, binary: false },
+    })
     expect(await userBuildFilesApi().list()).toEqual([])
-    expect(fetchMock.mock.calls[0][0] as string).toBe('/api/config/user-build-files')
-
-    stub({ path: 'a', size: 1, binary: false })
     await userBuildFilesApi().saveText('a', 'x')
-    expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string)
-      .toBe('/api/config/user-build-files/file')
+    expect(server.called('PUT /api/config/user-build-files/file')[0].body).toEqual({ path: 'a', content: 'x' })
   })
 })

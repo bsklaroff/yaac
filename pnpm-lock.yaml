@@ -267,16 +267,10 @@ importers:
       '@yaac/shared':
         specifier: workspace:*
         version: link:../shared
-      ws:
-        specifier: 'catalog:'
-        version: 8.21.0
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.6
-      '@types/ws':
-        specifier: 'catalog:'
-        version: 8.18.1
       electron:
         specifier: 43.0.0
         version: 43.0.0(supports-color@7.2.0)

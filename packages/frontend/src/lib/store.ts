@@ -1,23 +1,13 @@
 import { create } from 'zustand'
 import { addColumn, isPaneLayout, removeTarget, renameTargets, singleColumn, withActive, type PaneLayout } from '#lib/layout'
 import { PREVIEW_TARGET } from '#lib/preview'
-import { CHANGES_TARGET } from '#lib/changesApi'
+import { CHANGES_TARGET } from '#lib/panes'
 import { FILES_TARGET, fileKey, fileTarget, placeFile } from '#lib/files'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '#lib/shortcuts'
-import { applyThemeAttribute, loadThemePref, persistThemePref, type ThemePref } from '#lib/theme'
-import type { AgentTool, StoppedWorkspaceEntry, ProvisioningWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/types'
-
-const LAYOUTS_LS_KEY = 'yaac.layouts.v2'
-const VIEWMODE_LS_KEY = 'yaac.viewmode.v1'
-const SELECTION_LS_KEY = 'yaac.selection.v1'
-const READ_WAITING_LS_KEY = 'yaac.readwaiting.v1'
-const PINNED_USAGE_LS_KEY = 'yaac.pinnedusage.v1'
-const SOUND_LS_KEY = 'yaac.sound.v1'
-const CHAT_DRAFTS_LS_KEY = 'yaac.chatdrafts.v1'
-const MOBILE_SCREEN_LS_KEY = 'yaac.mobilescreen.v1'
-const SIDEBAR_WIDTH_LS_KEY = 'yaac.sidebarwidth.v1'
-const EDITOR_FONT_LS_KEY = 'yaac.editorfontsize.v1'
-const CHAT_FULL_WIDTH_LS_KEY = 'yaac.chatfullwidth.v1'
+import { applyThemeAttribute, type ThemePref } from '#lib/theme'
+import type {
+  AgentTool, ProvisioningWorkspaceEntry, ServerSnapshot, StoppedWorkspaceEntry, WorkspaceListEntry,
+} from '@yaac/shared/types'
 
 /** Desktop sidebar width in px: the default and the drag bounds. */
 export const DEFAULT_SIDEBAR_WIDTH = 256
@@ -30,57 +20,6 @@ export function clampSidebarWidth(px: number): number {
   return Math.round(Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, px)))
 }
 
-/** Saved sidebar width, or the default when unset or invalid. */
-export function loadSidebarWidth(): number {
-  try {
-    if (typeof localStorage !== 'undefined') {
-      const raw = localStorage.getItem(SIDEBAR_WIDTH_LS_KEY)
-      if (raw !== null && raw.trim() !== '') {
-        const px = Number(raw)
-        if (Number.isFinite(px)) return clampSidebarWidth(px)
-      }
-    }
-  } catch { /* fall through to the default */ }
-  return DEFAULT_SIDEBAR_WIDTH
-}
-
-/** Save the sidebar width (best-effort). */
-export function persistSidebarWidth(px: number): void {
-  try {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(SIDEBAR_WIDTH_LS_KEY, String(px))
-  } catch { /* non-fatal — the width just won't stick */ }
-}
-
-/** Whether the attention chime plays; on by default. */
-export function loadSoundEnabled(): boolean {
-  try {
-    if (typeof localStorage !== 'undefined') return localStorage.getItem(SOUND_LS_KEY) !== '0'
-  } catch { /* fall through to the default */ }
-  return true
-}
-
-/** Save the sound preference (best-effort). */
-export function persistSoundEnabled(enabled: boolean): void {
-  try {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(SOUND_LS_KEY, enabled ? '1' : '0')
-  } catch { /* non-fatal */ }
-}
-
-/** Whether chat panes span the full pane width; off by default. */
-export function loadChatFullWidth(): boolean {
-  try {
-    if (typeof localStorage !== 'undefined') return localStorage.getItem(CHAT_FULL_WIDTH_LS_KEY) === '1'
-  } catch { /* fall through to the default */ }
-  return false
-}
-
-/** Save the chat width preference (best-effort). */
-export function persistChatFullWidth(full: boolean): void {
-  try {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(CHAT_FULL_WIDTH_LS_KEY, full ? '1' : '0')
-  } catch { /* non-fatal */ }
-}
-
 /** File-pane editor font size, in px, and the range the A−/A+ steps stay in. */
 export const DEFAULT_EDITOR_FONT_SIZE = 12
 export const MIN_EDITOR_FONT_SIZE = 9
@@ -88,15 +27,6 @@ export const MAX_EDITOR_FONT_SIZE = 24
 
 const clampEditorFontSize = (px: number): number =>
   Math.min(MAX_EDITOR_FONT_SIZE, Math.max(MIN_EDITOR_FONT_SIZE, Math.round(px)))
-
-/** Saved editor font size, clamped, or the default when unset or invalid. */
-export function loadEditorFontSize(): number {
-  try {
-    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(EDITOR_FONT_LS_KEY) : null
-    if (raw && raw.trim() !== '' && Number.isFinite(Number(raw))) return clampEditorFontSize(Number(raw))
-  } catch { /* fall through to the default */ }
-  return DEFAULT_EDITOR_FONT_SIZE
-}
 
 /**
  * Which of the three mobile screens is showing (docs/mobile-layout.md).
@@ -111,57 +41,29 @@ export function loadEditorFontSize(): number {
 export type MobileScreen = 'projects' | 'workspaces' | 'pane'
 
 /**
- * The saved mobile screen, so a reload returns to it.
- *
- * With nothing saved, this is a first visit, so a `?workspace=` link opens
- * the pane. The URL alone can't decide, since persistSelection always
- * writes the params.
+ * The mobile screen of a first visit, when none is saved: a `?workspace=`
+ * link opens the pane. Only a first visit can go by the URL, since
+ * persistSelection always writes the params.
  */
-export function loadMobileScreen(): MobileScreen {
+export function defaultMobileScreen(): MobileScreen {
   try {
-    if (typeof localStorage !== 'undefined') {
-      const raw = localStorage.getItem(MOBILE_SCREEN_LS_KEY)
-      if (raw === 'projects' || raw === 'workspaces' || raw === 'pane') return raw
-    }
-  } catch { /* fall through — treat as never visited */ }
-  try {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search)
-      if (params.get('workspace')) return 'pane'
-      if (params.get('project')) return 'workspaces'
-    }
-  } catch { /* fall through to the default */ }
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('workspace')) return 'pane'
+    if (params.get('project')) return 'workspaces'
+  } catch { /* no window: fall through to the default */ }
   return 'projects'
-}
-
-/** Save the mobile screen (best-effort). */
-export function persistMobileScreen(screen: MobileScreen): void {
-  try {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(MOBILE_SCREEN_LS_KEY, screen)
-  } catch { /* non-fatal */ }
 }
 
 /** How a workspace's panes are shown: side-by-side columns, or one tab at a
  *  time. */
 export type ViewMode = 'tiles' | 'tabs'
 
-/** Saved view mode; on first run, based on the viewport width. */
-export function loadViewMode(viewportWidth?: number): ViewMode {
-  try {
-    if (typeof localStorage !== 'undefined') {
-      const raw = localStorage.getItem(VIEWMODE_LS_KEY)
-      if (raw === 'tiles' || raw === 'tabs') return raw
-    }
-  } catch { /* fall through to the default */ }
-  const width = viewportWidth ?? (typeof window !== 'undefined' ? window.innerWidth : 1440)
-  return width < 1024 ? 'tabs' : 'tiles'
+/** The view mode of a first run, by viewport width. */
+export function defaultViewMode(viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1440): ViewMode {
+  return viewportWidth < 1024 ? 'tabs' : 'tiles'
 }
 
-function persistViewMode(mode: ViewMode): void {
-  try {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(VIEWMODE_LS_KEY, mode)
-  } catch { /* non-fatal */ }
-}
+const SELECTION_LS_KEY = 'yaac.selection.v1'
 
 /** The selected project and workspace, saved so a reload or a shared link
  *  reopens the same view. */
@@ -225,73 +127,6 @@ export function persistSelection(projectSlug: string | null, workspaceId: string
   } catch { /* history failures are non-fatal */ }
 }
 
-/** The saved pinned plan-usage metric (a UsageBadge `metricKey`), or null. */
-export function loadPinnedUsageMetric(): string | null {
-  try {
-    if (typeof localStorage !== 'undefined') {
-      const raw = localStorage.getItem(PINNED_USAGE_LS_KEY)
-      if (raw) return raw
-    }
-  } catch { /* fall through to the default */ }
-  return null
-}
-
-/** Save the pinned plan-usage metric (null clears it); best-effort. */
-export function persistPinnedUsageMetric(key: string | null): void {
-  try {
-    if (typeof localStorage === 'undefined') return
-    if (key) localStorage.setItem(PINNED_USAGE_LS_KEY, key)
-    else localStorage.removeItem(PINNED_USAGE_LS_KEY)
-  } catch { /* non-fatal — the pin just won't stick */ }
-}
-
-/** Saved workspace layouts, dropping any that are invalid. */
-export function loadPersistedLayouts(): Record<string, PaneLayout> {
-  try {
-    if (typeof localStorage === 'undefined') return {}
-    const raw = localStorage.getItem(LAYOUTS_LS_KEY)
-    if (!raw) return {}
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return {}
-    const out: Record<string, PaneLayout> = {}
-    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-      if (isPaneLayout(v)) out[k] = v
-    }
-    return out
-  } catch {
-    return {}
-  }
-}
-
-/** Saved read-waiting marks (workspaceId → the viewed waitingSinceMs),
- *  dropping non-numbers. syncWaitingRead prunes stale marks. */
-export function loadReadWaiting(): Record<string, number> {
-  try {
-    if (typeof localStorage === 'undefined') return {}
-    const raw = localStorage.getItem(READ_WAITING_LS_KEY)
-    if (!raw) return {}
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
-    const out: Record<string, number> = {}
-    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof v === 'number') out[k] = v
-    }
-    return out
-  } catch {
-    return {}
-  }
-}
-
-/** Save read-waiting marks (best-effort). */
-export function persistReadWaiting(marks: Record<string, number>): void {
-  try {
-    if (typeof localStorage === 'undefined') return
-    localStorage.setItem(READ_WAITING_LS_KEY, JSON.stringify(marks))
-  } catch {
-    // Non-fatal: the marks just won't persist.
-  }
-}
-
 /** A chat draft's key: one per conversation, since a workspace can have
  *  several chat panes. */
 export function chatDraftKey(workspaceId: string, agentSessionId: string): string {
@@ -314,52 +149,96 @@ export interface ChatDraft {
  *  where they could exhaust the quota for every other key. */
 const MAX_PERSISTED_DRAFT = 64 * 1024
 
-/** Saved chat drafts, dropping invalid entries. syncChatDrafts prunes stale
- *  keys. */
-export function loadChatDrafts(): Record<string, ChatDraft> {
-  try {
-    if (typeof localStorage === 'undefined') return {}
-    const raw = localStorage.getItem(CHAT_DRAFTS_LS_KEY)
-    if (!raw) return {}
+/**
+ * How one store field is saved in localStorage. Each field has its own key,
+ * which is the key existing installs already hold. `parse` returns undefined
+ * for a value it rejects, leaving the default; `serialize` (default
+ * `String`) returning null removes the key.
+ */
+interface Persisted<T> {
+  key: string
+  parse: (raw: string) => T | undefined
+  serialize?: (value: T) => string | null
+}
+
+const flag = (key: string): Persisted<boolean> => ({
+  key,
+  parse: (raw) => (raw === '1' ? true : raw === '0' ? false : undefined),
+  serialize: (v) => (v ? '1' : '0'),
+})
+
+const oneOf = <T extends string>(key: string, values: readonly T[]): Persisted<T> => ({
+  key,
+  parse: (raw) => values.find((v) => v === raw),
+})
+
+const number = (key: string, clamp: (n: number) => number): Persisted<number> => ({
+  key,
+  parse: (raw) => (raw.trim() !== '' && Number.isFinite(Number(raw)) ? clamp(Number(raw)) : undefined),
+})
+
+/** A JSON object, keeping only the entries `keep` accepts. */
+const jsonRecord = <V>(key: string, keep: (v: unknown) => v is V): Persisted<Record<string, V>> => ({
+  key,
+  parse: (raw) => {
     const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
-    const out: Record<string, ChatDraft> = {}
-    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-      if (!v || typeof v !== 'object' || Array.isArray(v)) continue
-      const { text, sent } = v as { text?: unknown; sent?: unknown }
-      if (typeof text !== 'string') continue
-      if (sent !== undefined && typeof sent !== 'string') continue
-      if (text === '' && sent === undefined) continue
-      out[k] = sent === undefined ? { text } : { text, sent }
-    }
-    return out
-  } catch {
-    return {}
-  }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+    return Object.fromEntries(Object.entries(parsed).filter(([, v]) => keep(v))) as Record<string, V>
+  },
+  serialize: JSON.stringify,
+})
+
+function isChatDraft(v: unknown): v is ChatDraft {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false
+  const { text, sent } = v as { text?: unknown; sent?: unknown }
+  return typeof text === 'string' && (sent === undefined || typeof sent === 'string')
+    && (text !== '' || sent !== undefined)
 }
 
-/** Save chat drafts (best-effort). */
-export function persistChatDrafts(drafts: Record<string, ChatDraft>): void {
-  try {
-    if (typeof localStorage === 'undefined') return
-    const storable = Object.fromEntries(
-      Object.entries(drafts).filter(([, d]) =>
-        d.text.length <= MAX_PERSISTED_DRAFT && (d.sent ?? '').length <= MAX_PERSISTED_DRAFT),
-    )
-    localStorage.setItem(CHAT_DRAFTS_LS_KEY, JSON.stringify(storable))
-  } catch {
-    // Non-fatal: the drafts just won't persist.
-  }
+/** The store fields saved across reloads. */
+const PERSISTED: { [K in keyof UiState]?: Persisted<UiState[K]> } = {
+  // A restart keeps the workspace id, so its layout survives it.
+  layouts: jsonRecord('yaac.layouts.v2', isPaneLayout),
+  viewMode: oneOf('yaac.viewmode.v1', ['tiles', 'tabs']),
+  readWaiting: jsonRecord('yaac.readwaiting.v1', (v): v is number => typeof v === 'number'),
+  pinnedUsageMetric: { key: 'yaac.pinnedusage.v1', parse: (raw) => raw || undefined, serialize: (v) => v },
+  soundEnabled: flag('yaac.sound.v1'),
+  chatDrafts: {
+    ...jsonRecord('yaac.chatdrafts.v1', isChatDraft),
+    serialize: (drafts) => JSON.stringify(Object.fromEntries(Object.entries(drafts).filter(([, d]) =>
+      d.text.length <= MAX_PERSISTED_DRAFT && (d.sent ?? '').length <= MAX_PERSISTED_DRAFT))),
+  },
+  mobileScreen: oneOf('yaac.mobilescreen.v1', ['projects', 'workspaces', 'pane']),
+  sidebarWidth: number('yaac.sidebarwidth.v1', clampSidebarWidth),
+  editorFontSize: number('yaac.editorfontsize.v1', clampEditorFontSize),
+  chatFullWidth: flag('yaac.chatfullwidth.v1'),
+  // index.html reads this key before first paint, to avoid a theme flash.
+  themePref: oneOf('yaac.theme.v1', ['system', 'light', 'dark']),
 }
 
-/** Save workspace layouts (best-effort). */
-export function persistLayouts(layouts: Record<string, PaneLayout>): void {
-  try {
-    if (typeof localStorage === 'undefined') return
-    localStorage.setItem(LAYOUTS_LS_KEY, JSON.stringify(layouts))
-  } catch {
-    // Non-fatal: the layouts just won't persist.
+const persistedFields = Object.keys(PERSISTED) as (keyof UiState)[]
+
+/** Every saved field that is present and valid. */
+export function loadPersisted(): Partial<UiState> {
+  const out: Record<string, unknown> = {}
+  for (const field of persistedFields) {
+    const p = PERSISTED[field] as Persisted<unknown>
+    try {
+      const raw = localStorage.getItem(p.key)
+      const value = raw === null ? undefined : p.parse(raw)
+      if (value !== undefined) out[field] = value
+    } catch { /* no or unreadable storage: keep the default */ }
   }
+  return out as Partial<UiState>
+}
+
+function savePersisted(field: keyof UiState, value: unknown): void {
+  const p = PERSISTED[field] as Persisted<unknown>
+  try {
+    const raw = (p.serialize ?? String)(value)
+    if (raw === null) localStorage.removeItem(p.key)
+    else localStorage.setItem(p.key, raw)
+  } catch { /* non-fatal: the value just won't survive a reload */ }
 }
 
 /**
@@ -378,8 +257,7 @@ export function layoutOf(
 
 /**
  * Merge the snapshot's provisioning rows with optimistic ones, by
- * workspaceId (the snapshot wins), sorted by createdAt then id. App prunes
- * an optimistic row once the snapshot has it.
+ * workspaceId (the snapshot wins), sorted by createdAt then id.
  */
 export function mergeProvisioning(
   snapshot: ProvisioningWorkspaceEntry[],
@@ -605,8 +483,8 @@ interface UiState {
    *  filter. The explorer clears it once handled. */
   filesFindPending: boolean
   setFilesFindPending: (pending: boolean) => void
-  /** Optimistic provisioning rows, shown until the snapshot's
-   *  `provisioning[]` lists the id. */
+  /** Optimistic provisioning rows, shown until a snapshot lists the id
+   *  (`reconcileSnapshot`). */
   optimisticProvisioning: ProvisioningWorkspaceEntry[]
   /** Create id → the prewarmed spare it claimed, from the snapshot row
    *  (`claimedId`) or the create's result. Lets the selection follow the
@@ -621,6 +499,9 @@ interface UiState {
   /** Workspaces whose stop was confirmed, shown as stopping until the
    *  snapshot drops them. */
   pendingDeleteIds: string[]
+  /** The workspaces the last snapshot listed (`reconcileSnapshot`); null
+   *  before the first. */
+  liveWorkspaceIds: ReadonlySet<string> | null
   /** Just-stopped workspaces, shown in the stopped list until the server's
    *  list includes them. */
   optimisticStopped: StoppedWorkspaceEntry[]
@@ -683,8 +564,16 @@ interface UiState {
     workspaceId: string,
     patch: { message?: string; error?: string },
   ) => void
-  /** Drop an optimistic row, once the snapshot has it or on dismiss. */
+  /** Drop an optimistic row, e.g. on dismiss. */
   removeOptimisticProvisioning: (workspaceId: string) => void
+  /**
+   * Fold a snapshot from the server into the optimistic state: stop
+   * tracking stops of workspaces it no longer lists, drop optimistic
+   * provisioning rows it now has (as a workspace or its own row), and record
+   * or forget prewarm claims (`claims`): a claim is forgotten when its create
+   * failed or listed under its own id.
+   */
+  reconcileSnapshot: (snapshot: Pick<ServerSnapshot, 'workspaces' | 'provisioning'>) => void
   setActiveProject: (slug: string | null) => void
   /** Like `setActiveProject`, for when App picks a project itself. Leaves
    *  the mobile screen alone (see MobileScreen). */
@@ -706,10 +595,11 @@ interface UiState {
   setActiveTab: (workspaceId: string, target: string) => void
   /** Make a pane active and focus it, for tab clicks and shortcuts. */
   focusTerminal: (workspaceId: string, target: string) => void
-  /** Mark a workspace as stopping, optimistically. */
+  /** Mark a workspace as stopping, optimistically. A workspace the last
+   *  snapshot no longer lists (it died while the stop was being confirmed)
+   *  is not marked, since no later snapshot would clear it. */
   beginDelete: (workspaceId: string) => void
-  /** Clear the stopping mark, when the stop fails or the snapshot drops the
-   *  workspace. */
+  /** Clear the stopping mark, when the stop fails. */
   endDelete: (workspaceId: string) => void
   /** Optimistically add a just-stopped workspace to the stopped list. */
   addOptimisticStopped: (entry: StoppedWorkspaceEntry) => void
@@ -750,28 +640,30 @@ export const useUiStore = create<UiState>((set) => ({
   selectedWorkspaceId: initialSelection.workspaceId,
   focusNonce: 0,
   terminalNonces: {},
-  layouts: loadPersistedLayouts(),
+  layouts: {},
   previewPort: {},
   sidebarOpen: true,
-  sidebarWidth: loadSidebarWidth(),
-  mobileScreen: loadMobileScreen(),
+  sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
+  mobileScreen: defaultMobileScreen(),
   setMobileScreen: (screen) => set((s) => (s.mobileScreen === screen ? s : { mobileScreen: screen })),
-  themePref: loadThemePref(),
-  soundEnabled: loadSoundEnabled(),
-  editorFontSize: loadEditorFontSize(),
-  chatFullWidth: loadChatFullWidth(),
-  viewMode: loadViewMode(),
-  pinnedUsageMetric: loadPinnedUsageMetric(),
+  themePref: 'system',
+  soundEnabled: true,
+  editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
+  chatFullWidth: false,
+  viewMode: defaultViewMode(),
+  pinnedUsageMetric: null,
+  chatDrafts: {},
+  readWaiting: {},
+  ...loadPersisted(),
   activeTabs: {},
   changesBase: {},
   paneView: {},
   filesFindPending: false,
   dirtyFiles: {},
-  chatDrafts: loadChatDrafts(),
   optimisticProvisioning: [],
   pendingDeleteIds: [],
+  liveWorkspaceIds: null,
   optimisticStopped: [],
-  readWaiting: loadReadWaiting(),
   bindings: DEFAULT_BINDINGS,
   setBindings: (bindings) => set({ bindings }),
   setBinding: (id, chord) => set((s) => ({ bindings: { ...s.bindings, [id]: chord } })),
@@ -824,6 +716,29 @@ export const useUiStore = create<UiState>((set) => ({
       ? { optimisticProvisioning: s.optimisticProvisioning.filter((e) => e.workspaceId !== workspaceId) }
       : s
   )),
+  reconcileSnapshot: (snapshot) => set((s) => {
+    const live = new Set(snapshot.workspaces.map((w) => w.workspaceId))
+    const known = new Set([...live, ...snapshot.provisioning.map((p) => p.workspaceId)])
+    const claims = { ...s.claims }
+    for (const p of snapshot.provisioning) {
+      if (p.error !== undefined) delete claims[p.workspaceId]
+      else if (p.claimedId) claims[p.workspaceId] = p.claimedId
+    }
+    for (const id of live) delete claims[id]
+    const pendingDeleteIds = s.pendingDeleteIds.filter((id) => live.has(id))
+    const optimisticProvisioning = s.optimisticProvisioning.filter((e) => !known.has(e.workspaceId))
+    const sameClaims = Object.keys(claims).length === Object.keys(s.claims).length
+      && Object.entries(claims).every(([k, v]) => s.claims[k] === v)
+    const sameLive = s.liveWorkspaceIds !== null && s.liveWorkspaceIds.size === live.size
+      && [...live].every((id) => s.liveWorkspaceIds?.has(id))
+    const patch = {
+      ...(sameLive ? {} : { liveWorkspaceIds: live }),
+      ...(sameClaims ? {} : { claims }),
+      ...(pendingDeleteIds.length === s.pendingDeleteIds.length ? {} : { pendingDeleteIds }),
+      ...(optimisticProvisioning.length === s.optimisticProvisioning.length ? {} : { optimisticProvisioning }),
+    }
+    return Object.keys(patch).length === 0 ? s : patch
+  }),
   claims: {},
   forgetClaim: (workspaceId) => set((s) => {
     if (!(workspaceId in s.claims)) return s
@@ -898,33 +813,14 @@ export const useUiStore = create<UiState>((set) => ({
     return width === s.sidebarWidth ? s : { sidebarWidth: width }
   }),
   setThemePref: (pref) => {
-    persistThemePref(pref)
     applyThemeAttribute(pref)
     set({ themePref: pref })
   },
-  setSoundEnabled: (enabled) => {
-    persistSoundEnabled(enabled)
-    set({ soundEnabled: enabled })
-  },
-  setChatFullWidth: (full) => {
-    persistChatFullWidth(full)
-    set({ chatFullWidth: full })
-  },
-  setEditorFontSize: (px) => {
-    const size = clampEditorFontSize(px)
-    try {
-      if (typeof localStorage !== 'undefined') localStorage.setItem(EDITOR_FONT_LS_KEY, String(size))
-    } catch { /* non-fatal — the size just won't stick */ }
-    set({ editorFontSize: size })
-  },
-  setViewMode: (mode) => {
-    persistViewMode(mode)
-    set({ viewMode: mode })
-  },
-  setPinnedUsageMetric: (key) => {
-    persistPinnedUsageMetric(key)
-    set({ pinnedUsageMetric: key })
-  },
+  setSoundEnabled: (enabled) => set({ soundEnabled: enabled }),
+  setChatFullWidth: (full) => set({ chatFullWidth: full }),
+  setEditorFontSize: (px) => set({ editorFontSize: clampEditorFontSize(px) }),
+  setViewMode: (mode) => set({ viewMode: mode }),
+  setPinnedUsageMetric: (key) => set({ pinnedUsageMetric: key }),
   setActiveTab: (workspaceId, target) => set((s) => (
     s.activeTabs[workspaceId] === target
       ? s
@@ -1024,7 +920,7 @@ export const useUiStore = create<UiState>((set) => ({
     }
   }),
   beginDelete: (workspaceId) => set((s) => (
-    s.pendingDeleteIds.includes(workspaceId)
+    s.pendingDeleteIds.includes(workspaceId) || s.liveWorkspaceIds?.has(workspaceId) === false
       ? s
       : { pendingDeleteIds: [...s.pendingDeleteIds, workspaceId] }
   )),
@@ -1058,29 +954,19 @@ export const useUiStore = create<UiState>((set) => ({
   }),
 }))
 
-// Save layouts. A restart keeps the workspace id, so the layout survives it.
+// Save each persisted field as it changes, and mirror the selection into
+// the URL so a link is shareable. Chat drafts change on every keystroke, so
+// they are saved on a trailing timer instead.
 useUiStore.subscribe((state, prev) => {
-  if (state.layouts !== prev.layouts) persistLayouts(state.layouts)
-})
-
-// Save the sidebar width; small enough to write on every drag step.
-useUiStore.subscribe((state, prev) => {
-  if (state.sidebarWidth !== prev.sidebarWidth) persistSidebarWidth(state.sidebarWidth)
-})
-
-// Save the selection and mirror it into the URL, so a link is shareable.
-useUiStore.subscribe((state, prev) => {
+  for (const field of persistedFields) {
+    if (field !== 'chatDrafts' && state[field] !== prev[field]) savePersisted(field, state[field])
+  }
   if (
     state.activeProjectSlug !== prev.activeProjectSlug
     || state.selectedWorkspaceId !== prev.selectedWorkspaceId
   ) {
     persistSelection(state.activeProjectSlug, state.selectedWorkspaceId)
   }
-})
-
-// Save read marks so viewed waiting workspaces don't flag again on reload.
-useUiStore.subscribe((state, prev) => {
-  if (state.readWaiting !== prev.readWaiting) persistReadWaiting(state.readWaiting)
 })
 
 /** Delay before saving chat drafts after a change. */
@@ -1097,11 +983,10 @@ export function flushChatDrafts(): void {
     draftTimer = undefined
   }
   if (unwrittenDrafts === null) return
-  persistChatDrafts(unwrittenDrafts)
+  savePersisted('chatDrafts', unwrittenDrafts)
   unwrittenDrafts = null
 }
 
-// Save drafts on a trailing timer, since they change on every keystroke.
 useUiStore.subscribe((state, prev) => {
   if (state.chatDrafts === prev.chatDrafts) return
   unwrittenDrafts = state.chatDrafts
@@ -1121,7 +1006,3 @@ if (typeof window !== 'undefined') {
     if (document.visibilityState === 'hidden') flushChatDrafts()
   })
 }
-// Save the mobile screen so a reload returns to it.
-useUiStore.subscribe((state, prev) => {
-  if (state.mobileScreen !== prev.mobileScreen) persistMobileScreen(state.mobileScreen)
-})

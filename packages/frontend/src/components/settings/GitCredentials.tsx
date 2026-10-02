@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState, type FormEvent, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
-import { useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   GitCredentialPicker, INPUT, PublicKey, remoteKind, TrustedHostKey, type GitCredentialKind,
 } from '#components/GitCredentialPicker'
 import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { setProjectGitCredential } from '#lib/projectApi'
-import { deleteGitCredential, renameGitCredential, replaceGitCredential } from '#lib/settingsApi'
+import { api } from '#lib/api'
 import { AUTH_LIST_KEY, useAuthList } from '#lib/useAuthList'
 import { useInlineEdit } from '#lib/useInlineRename'
 import { useSnapshot } from '#lib/useSnapshot'
@@ -44,7 +43,10 @@ export function GitCredentials(): JSX.Element {
   const refresh = (): Promise<void> => queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
 
   const assign = async (slug: string, credentialId: string): Promise<void> => {
-    const hostKey = await setProjectGitCredential(slug, credentialId)
+    const { knownHostsEntry: hostKey } = await api.project[':slug']['git-credential'].$put({
+      param: { slug },
+      json: { credentialId },
+    })
     setFocus(null)
     setTrusted((t) => {
       const next = { ...t }
@@ -143,40 +145,37 @@ function CredentialRow({ credential: c, projects, focus, trusted, newKey, onAssi
   /** A Delete or Replace failed, possibly after the server made it. */
   onFailed: (message: string) => void
 }): JSX.Element {
-  const [error, setError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<'delete' | 'replace' | null>(null)
   const [replacingToken, setReplacingToken] = useState(false)
   const [token, setToken] = useState('')
-  const [busy, setBusy] = useState(false)
-  const rename = useInlineEdit(c.name, (next) => {
-    if (next === '') return
-    setError(null)
-    renameGitCredential(c.id, next)
-      .then(onChanged)
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : 'failed to rename'))
+  const credential = api.auth.git.credentials[':id']
+  const renaming = useMutation({
+    mutationFn: (name: string) => credential.$patch({ param: { id: c.id }, json: { name } }),
+    onSuccess: onChanged,
   })
-
-  const run = async (action: () => Promise<void>, failure: string): Promise<void> => {
-    setBusy(true)
-    setError(null)
-    try {
-      await action()
-    } catch (err) {
-      onFailed(`${c.name}: ${err instanceof Error ? err.message : failure}`)
-    } finally {
-      setBusy(false)
-      setConfirm(null)
-    }
-  }
-  const replace = (): Promise<void> => run(async () => {
-    const replaced = await replaceGitCredential(c.id, c.kind === 'https' ? token.trim() : undefined)
+  const rename = useInlineEdit(c.name, (next) => {
+    if (next !== '') renaming.mutate(next)
+  })
+  // A failure goes up to the list (`onFailed`), since the server may have
+  // made the change anyway and the refreshed list may drop this row.
+  const change = useMutation({
+    mutationFn: (action: () => Promise<void>) => action(),
+    onError: (err) => onFailed(`${c.name}: ${err.message}`),
+    onSettled: () => setConfirm(null),
+  })
+  const busy = change.isPending
+  const replace = (): void => change.mutate(async () => {
+    const replaced = await credential.replace.$post({
+      param: { id: c.id },
+      json: c.kind === 'https' ? { token: token.trim() } : {},
+    })
     setReplacingToken(false)
     setToken('')
     onReplaced(replaced.id, replaced.publicKey)
-  }, 'failed to replace')
+  })
   const submitToken = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault()
-    if (token.trim() !== '' && !busy) void replace()
+    if (token.trim() !== '' && !busy) replace()
   }
 
   const using = c.projects.join(', ')
@@ -261,7 +260,7 @@ function CredentialRow({ credential: c, projects, focus, trusted, newKey, onAssi
           onAssign={(id) => onAssign(slug, id)}
         />
       ))}
-      {error && <p className="text-[11px] text-red-400">{error}</p>}
+      {renaming.error && <p className="text-[11px] text-red-400">{renaming.error.message}</p>}
       <ConfirmDialog
         open={confirm === 'delete'}
         onOpenChange={(open) => { if (!open) setConfirm(null) }}
@@ -270,7 +269,7 @@ function CredentialRow({ credential: c, projects, focus, trusted, newKey, onAssi
           : `${using} will be left with no git credential, and cannot create workspaces until assigned another.`}
         busy={busy}
         requireClick
-        onConfirm={() => void run(async () => { await deleteGitCredential(c.id); onChanged() }, 'failed to delete')}
+        onConfirm={() => change.mutate(async () => { await credential.$delete({ param: { id: c.id } }); onChanged() })}
       />
       <ConfirmDialog
         open={confirm === 'replace'}
@@ -282,7 +281,7 @@ function CredentialRow({ credential: c, projects, focus, trusted, newKey, onAssi
         confirmLabel="Generate new key"
         busy={busy}
         requireClick
-        onConfirm={() => void replace()}
+        onConfirm={replace}
       />
     </div>
   )

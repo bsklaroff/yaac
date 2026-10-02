@@ -15,12 +15,10 @@
     "app:install": "pnpm app:build && tsx scripts/install-app.ts"
   },
   "dependencies": {
-    "@yaac/shared": "workspace:*",
-    "ws": "catalog:"
+    "@yaac/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "@types/ws": "catalog:",
     "electron": "43.0.0",
     "electron-builder": "26.15.3",
     "tsup": "catalog:",

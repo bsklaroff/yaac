@@ -24,11 +24,7 @@ import { createOutputBatcher } from '@yaac/shared/batcher'
 import { resolveEffectiveTheme } from '#lib/theme'
 import { terminalTheme } from '#lib/terminalTheme'
 import { useUiStore } from '#lib/store'
-import {
-  DISCONNECT_NOTICE_DELAY_MS,
-  INITIAL_RECONNECT_DELAY_MS,
-  nextReconnectDelay,
-} from '#lib/reconnect'
+import { DISCONNECT_NOTICE_DELAY_MS, reconnectingSocket, type ReconnectingSocket } from '#lib/reconnect'
 
 /** Keystroke coalescing window, for bursts faster than a human types
  *  (autorepeat, a paste in pieces, mouse reports). The batcher sends on the
@@ -171,99 +167,85 @@ export function WorkspaceTerminal({
       }
       return false
     }
-    let ws: WebSocket | null = null
-    let reconnectTimer: ReturnType<typeof setTimeout> | undefined
+    let sock: ReconnectingSocket | null = null
     let noticeTimer: ReturnType<typeof setTimeout> | undefined
     let pingTimer: ReturnType<typeof setInterval> | undefined
-    let reconnectDelay = INITIAL_RECONNECT_DELAY_MS
-    let closedByUs = false
     const encoder = new TextEncoder()
 
     // Batch keystrokes so bursts share a frame instead of one frame per
-    // onData. Input pending when the socket drops is discarded, since the
-    // send requires an OPEN socket and reconnecting takes far longer than
-    // the batch window.
+    // onData. Input pending when the socket drops is discarded, since
+    // reconnecting takes far longer than the batch window.
     const input = createOutputBatcher((d) => {
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(encoder.encode(d))
+      sock?.send(encoder.encode(d))
     }, { batchMs: INPUT_BATCH_MS })
 
     const sendResize = (): void => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-      }
+      sock?.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+    }
+    // Measure the round trip for #lib/link-quality.
+    const sendPing = (): void => {
+      sock?.send(JSON.stringify({ type: 'ping', t: performance.now() }))
     }
 
     const gate = createSettleGate(() => setSettled(true), { hasContent })
 
     // (Re)attach to the workspace's tmux. tmux outlives client detaches, so
-    // reconnecting loses nothing. Backoff is shared with useEvents
-    // (#lib/reconnect).
-    const connect = (): void => {
-      // Send the fitted size so the PTY starts at the right dimensions and
-      // full-screen TUIs don't garble on a resize.
-      const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
+    // reconnecting loses nothing. The fitted size goes in the URL so the PTY
+    // starts at the right dimensions and full-screen TUIs don't garble on a
+    // resize.
+    const attachPath = (): string => {
       const params = new URLSearchParams({ id: workspaceId, target })
       if (term.cols > 0 && term.rows > 0) {
         params.set('cols', String(term.cols))
         params.set('rows', String(term.rows))
       }
-      const sock = new WebSocket(`${scheme}://${window.location.host}/api/pty/attach?${params.toString()}`)
-      ws = sock
-      sock.binaryType = 'arraybuffer'
-      let opened = false
-
-      // Measure the round trip for #lib/link-quality.
-      const sendPing = (): void => {
-        if (sock.readyState !== WebSocket.OPEN) return
-        sock.send(JSON.stringify({ type: 'ping', t: performance.now() }))
-      }
-
-      sock.onopen = (): void => {
-        opened = true
-        // Reconnected before the notice showed; cancel it.
-        clearTimeout(noticeTimer)
-        noticeTimer = undefined
-        reconnectDelay = INITIAL_RECONNECT_DELAY_MS
-        gate.onOpen()
-        fit.fit()
-        sendResize()
-        sendPing()
-        clearInterval(pingTimer)
-        pingTimer = setInterval(sendPing, RTT_PROBE_INTERVAL_MS)
-      }
-      sock.onmessage = (e: MessageEvent): void => {
-        if (typeof e.data === 'string') {
-          // Control frame: only a timed pong is used.
-          const rtt = parsePongRtt(e.data, performance.now())
-          if (rtt !== null) recordRtt(rtt)
-          return
-        }
-        gate.onData()
-        term.write(new Uint8Array(e.data as ArrayBuffer))
-      }
-      sock.onclose = (): void => {
-        // Ignore a stale socket, before touching the ping timer, which a
-        // replacement socket may already own.
-        if (closedByUs || sock !== ws) return
-        clearInterval(pingTimer)
-        pingTimer = undefined
-        // CAN (0x18) resets the parser in case the stream died inside an
-        // escape sequence, which would otherwise swallow what comes next.
-        if (opened) term.write('\x18')
-        // Announce only a drop of an opened socket that outlasts
-        // DISCONNECT_NOTICE_DELAY_MS; most heal within a second. The reveal
-        // happens with the notice, so a half-drawn frame isn't shown
-        // unexplained.
-        if (opened && noticeTimer === undefined) {
-          noticeTimer = setTimeout(() => {
-            noticeTimer = undefined
-            gate.onClose()
-            term.write('\r\n\x1b[2m[disconnected, reconnecting…]\x1b[0m\r\n')
-          }, DISCONNECT_NOTICE_DELAY_MS)
-        }
-        reconnectTimer = setTimeout(connect, reconnectDelay)
-        reconnectDelay = nextReconnectDelay(reconnectDelay)
-      }
+      return `/api/pty/attach?${params.toString()}`
+    }
+    const connect = (): void => {
+      sock = reconnectingSocket(attachPath, {
+        open: () => {
+          // Reconnected before the notice showed; cancel it.
+          clearTimeout(noticeTimer)
+          noticeTimer = undefined
+          gate.onOpen()
+          fit.fit()
+          sendResize()
+          sendPing()
+          clearInterval(pingTimer)
+          pingTimer = setInterval(sendPing, RTT_PROBE_INTERVAL_MS)
+        },
+        message: (data) => {
+          if (typeof data === 'string') {
+            // Control frame: only a timed pong is used.
+            const rtt = parsePongRtt(data, performance.now())
+            if (rtt !== null) recordRtt(rtt)
+            return false
+          }
+          // PTY bytes mean the attach succeeded; a failed one sends a text
+          // error frame and closes.
+          gate.onData()
+          term.write(new Uint8Array(data as ArrayBuffer))
+          return true
+        },
+        close: (opened) => {
+          clearInterval(pingTimer)
+          pingTimer = undefined
+          // CAN (0x18) resets the parser in case the stream died inside an
+          // escape sequence, which would otherwise swallow what comes next.
+          if (opened) term.write('\x18')
+          // Announce only a drop of an opened socket that outlasts
+          // DISCONNECT_NOTICE_DELAY_MS; most heal within a second. The reveal
+          // happens with the notice, so a half-drawn frame isn't shown
+          // unexplained.
+          if (opened && noticeTimer === undefined) {
+            noticeTimer = setTimeout(() => {
+              noticeTimer = undefined
+              gate.onClose()
+              term.write('\r\n\x1b[2m[disconnected, reconnecting…]\x1b[0m\r\n')
+            }, DISCONNECT_NOTICE_DELAY_MS)
+          }
+        },
+      })
     }
 
     // Subscribed on the terminal, so they follow reconnects to the new socket.
@@ -316,24 +298,12 @@ export function WorkspaceTerminal({
     // Let the mobile key bar type into this pane (see #lib/ptyInput).
     const unregisterInput = registerPtyInput(paneKey(workspaceId, target), (d) => term.input(d))
 
-    // A suspended laptop drops the socket silently, so reattach right away
-    // when the tab is shown again or the network returns.
-    const reconnectNow = (): void => {
-      if (closedByUs) return
-      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
-      if (reconnectTimer) clearTimeout(reconnectTimer)
-      reconnectDelay = INITIAL_RECONNECT_DELAY_MS
-      connect()
-    }
+    // After a system sleep the WebGL canvas can be blank without a
+    // contextlost event; a full refresh from the buffer restores it.
     const onVisible = (): void => {
-      if (document.visibilityState !== 'visible') return
-      reconnectNow()
-      // After a system sleep the WebGL canvas can be blank without a
-      // contextlost event; a full refresh from the buffer restores it.
-      term.refresh(0, term.rows - 1)
+      if (document.visibilityState === 'visible') term.refresh(0, term.rows - 1)
     }
     document.addEventListener('visibilitychange', onVisible)
-    window.addEventListener('online', reconnectNow)
 
     // Defer the first connect one tick. React StrictMode mounts, unmounts
     // and remounts synchronously, and a socket closed while CONNECTING can
@@ -349,17 +319,14 @@ export function WorkspaceTerminal({
     observer.observe(el)
 
     return (): void => {
-      closedByUs = true
       gate.dispose()
       clearTimeout(connectTimer)
-      if (reconnectTimer) clearTimeout(reconnectTimer)
       clearTimeout(noticeTimer)
       clearInterval(pingTimer)
       // Send any pending input before closing the socket below.
       input.flush()
       input.dispose()
       document.removeEventListener('visibilitychange', onVisible)
-      window.removeEventListener('online', reconnectNow)
       observer.disconnect()
       cancelAnimationFrame(fitRaf)
       dataSub.dispose()
@@ -372,18 +339,7 @@ export function WorkspaceTerminal({
       disposeWheelPacing?.()
       disposeTouchScroll?.()
       disposeClickForwarding?.()
-      if (ws) {
-        // Drop handlers so a late event can't touch the disposed terminal.
-        // If still CONNECTING, close again once open so the server-side
-        // PTY is torn down.
-        ws.onmessage = null
-        ws.onclose = null
-        if (ws.readyState === WebSocket.CONNECTING) {
-          const sock = ws
-          sock.onopen = () => sock.close()
-        }
-        ws.close()
-      }
+      sock?.close()
       // Before term.dispose(), so a late context-loss callback can't touch it.
       webgl.dispose()
       webglRef.current = null

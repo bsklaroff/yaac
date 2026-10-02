@@ -26,9 +26,9 @@ export function transcriptViewable(session: AgentSessionEntry): boolean {
 
 /**
  * A conversation's events, or `TRANSCRIPT_UNAVAILABLE`. A 501 (history not
- * readable for this tool) and a 404 (an older server without this route)
- * both return that instead of an error, and the view shows the first
- * prompt instead.
+ * readable for this tool) and a 404 (a conversation the server has no
+ * record of) both return that instead of an error, and the view shows the
+ * first prompt instead.
  */
 export async function getSessionTranscript(
   workspaceId: string,

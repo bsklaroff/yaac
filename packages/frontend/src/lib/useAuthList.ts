@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { getAuthList } from '#lib/settingsApi'
+import { api } from '#lib/api'
 import type { AgentTool, AuthListResult } from '@yaac/shared/types'
 
 /** React Query key for the masked credentials list. Code that changes a
@@ -20,6 +20,6 @@ export function configuredTools(auth: AuthListResult | undefined): Set<AgentTool
  * AUTH_LIST_KEY when shown, to pick up changes made from the CLI.
  */
 export function useAuthList(): AuthListResult | undefined {
-  const { data } = useQuery({ queryKey: AUTH_LIST_KEY, queryFn: getAuthList })
+  const { data } = useQuery({ queryKey: AUTH_LIST_KEY, queryFn: () => api.auth.list.$get() })
   return data
 }
