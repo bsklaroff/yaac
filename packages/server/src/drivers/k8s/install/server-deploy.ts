@@ -24,7 +24,6 @@ import {
   POD_NODE_LOCAL_ROOT,
   POD_SERVER_LOCAL_ROOT,
   PRIORITY_CLASS_INFRA,
-  RELAY_PORT,
   SERVER_APP_NAME,
   SERVER_LOCAL_CLAIM_NAME,
   SERVER_POD_PORT,
@@ -34,10 +33,10 @@ import {
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
+  waitForRollout,
   installSecurityContext,
   nodeLocalNodePath,
   processIdentity,
-  proxyServiceHost,
   type InstallIdentity,
 } from '#drivers/k8s/substrate'
 import { ensureStorageClaims, type StorageShape } from './storage'
@@ -71,7 +70,7 @@ import { env, testEnv } from '@yaac/shared/env'
  * source tree. In an npm install `PACKAGE_ROOT` is the bundle; in a source
  * checkout it is `dist/` under the repo root, produced by `pnpm build`.
  */
-export function serverImageContext(): string {
+function serverImageContext(): string {
   return env.bundled ? PACKAGE_ROOT : path.join(PACKAGE_ROOT, 'dist')
 }
 
@@ -141,7 +140,7 @@ export function buildServerServiceAccountManifest(): Record<string, unknown> {
  * Name of the server's ClusterRole and ClusterRoleBinding, suffixed with
  * the namespace since several installs (e.g. e2e runs) share a cluster.
  */
-export function serverClusterScopedName(): string {
+function serverClusterScopedName(): string {
   return `${SERVER_SA_NAME}-${k8sNamespace()}`
 }
 
@@ -150,16 +149,15 @@ export function serverClusterScopedName(): string {
  * the namespace, so the install namespace label lets the e2e sweep find an
  * interrupted run's leftovers.
  */
-export function serverClusterScopedLabels(): Record<string, string> {
+function serverClusterScopedLabels(): Record<string, string> {
   return { app: SERVER_APP_NAME, [LABEL_INSTALL_NAMESPACE]: k8sNamespace() }
 }
 
 /**
  * The server's permissions. Cluster-scoped because per-project registries
  * live in namespaces the server creates at runtime, and because it applies
- * cluster-scoped objects on start (PriorityClasses, RuntimeClasses, the
- * builder-role admission guard). Full access to what it owns, read-only on
- * what it only observes.
+ * the cluster-scoped builder-role admission guard. Full access to what it
+ * owns, read-only on what it only observes.
  */
 export function buildServerClusterRoleManifest(): Record<string, unknown> {
   return {
@@ -188,8 +186,6 @@ export function buildServerClusterRoleManifest(): Record<string, unknown> {
         resources: ['roles', 'rolebindings', 'clusterroles', 'clusterrolebindings'],
         verbs: ['*'],
       },
-      { apiGroups: ['scheduling.k8s.io'], resources: ['priorityclasses'], verbs: ['*'] },
-      { apiGroups: ['node.k8s.io'], resources: ['runtimeclasses'], verbs: ['*'] },
       {
         apiGroups: ['admissionregistration.k8s.io'],
         resources: ['validatingadmissionpolicies', 'validatingadmissionpolicybindings'],
@@ -223,7 +219,7 @@ export function buildServerClusterRoleBindingManifest(): Record<string, unknown>
   }
 }
 
-export interface ServerEnvOptions {
+interface ServerEnvOptions {
   /**
    * The host's address on the kind network, when `YAAC_USE_TOR` is set.
    * Absent leaves the configured Tor URL unchanged.
@@ -246,7 +242,7 @@ export interface ServerEnvOptions {
  * Pass-through settings are copied from the environment that ran
  * `yaac cluster install`, since a pod has no shell to set them in later.
  */
-export function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: string; value: string }> {
+function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: string; value: string }> {
   const hosting = effectiveRemoteHosting(opts.remoteHosting)
   const vars: Array<{ name: string; value: string }> = [
     { name: 'YAAC_IN_CLUSTER', value: '1' },
@@ -258,7 +254,6 @@ export function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: strin
     { name: 'YAAC_SERVER_LOCAL_ROOT', value: POD_SERVER_LOCAL_ROOT },
     { name: 'YAAC_NODE_LOCAL_ROOT', value: POD_NODE_LOCAL_ROOT },
     { name: 'YAAC_DRIVER', value: 'k8s' },
-    { name: 'YAAC_RELAY_ADDR', value: proxyServiceHost(k8sNamespace(), RELAY_PORT) },
   ]
   const passThrough: Array<[string, string | undefined]> = [
     ['YAAC_K8S_NAMESPACE', testEnv.k8sNamespace],
@@ -300,7 +295,7 @@ function effectiveRemoteHosting(fromFronting: RemoteHosting = { allowedHosts: []
  * with the host's address on the kind network. Tor must listen on that
  * interface, which install warns about; otherwise git fetches hang.
  */
-export function torSocksUrlForPod(hostAddr?: string): string {
+function torSocksUrlForPod(hostAddr?: string): string {
   const raw = env.torSocksUrl
   if (hostAddr === undefined) return raw
   try {
@@ -404,7 +399,7 @@ export function buildServerDeploymentManifest(
  * ingress policies before the Service, so workspaces never see an open
  * API; and the fronting before the Deployment, whose env needs the origin.
  */
-export async function ensureServerDeployment(
+async function ensureServerDeployment(
   imageRef: string,
   fronting: ServerFronting,
   identity: InstallIdentity,
@@ -427,21 +422,21 @@ export async function ensureServerDeployment(
   }))
   for (const manifest of manifests) {
     if (manifest.kind !== 'Deployment') continue
-    const name = (manifest.metadata as { name: string }).name
-    await kubectlWithRetry([
-      'rollout', 'status', `deployment/${name}`, '-n', k8sNamespace(), '--timeout=120s',
-    ], { timeout: 130_000, maxAttempts: 2 })
+    await waitForDeployment((manifest.metadata as { name: string }).name, 120)
   }
-  await kubectlWithRetry([
-    'rollout', 'status', `deployment/${SERVER_APP_NAME}`,
-    '-n', k8sNamespace(),
-    '--timeout=300s',
-  ], { timeout: 310_000, maxAttempts: 2 })
+  await waitForDeployment(SERVER_APP_NAME)
   return origin
 }
 
+/** Wait for a Deployment in this install's namespace to roll out. */
+function waitForDeployment(name: string, timeoutSeconds = 300): Promise<void> {
+  return waitForRollout({
+    workload: `deployment/${name}`, namespace: k8sNamespace(), timeoutMs: timeoutSeconds * 1000,
+  })
+}
+
 /** Scale the Deployment to `replicas` and wait for the change to settle. */
-export async function scaleServerDeployment(replicas: number): Promise<void> {
+async function scaleServerDeployment(replicas: number): Promise<void> {
   await kubectlWithRetry([
     'scale', `deployment/${SERVER_APP_NAME}`,
     '-n', k8sNamespace(), `--replicas=${String(replicas)}`,
@@ -494,8 +489,7 @@ export async function serverDeploymentExists(): Promise<boolean> {
 /**
  * Stop any running server pod, build the image, set up storage, apply the
  * workload, wait for the origin to answer, and register it in
- * `server.json`. Returns the origin. `yaac cluster install` injects this so
- * unit tests can replace it.
+ * `server.json`. Returns the origin.
  */
 export async function deployServerWorkload(
   opts: ServerEnvOptions & {
@@ -566,8 +560,7 @@ async function refuseIfHostServerRunning(): Promise<void> {
 
 /**
  * Wait for the rolled-out server to report ready at its origin. On timeout,
- * an unreachable origin gets the fronting's diagnosis; a reachable but
- * never-ready one most likely runs an older yaac image.
+ * an unreachable origin gets the fronting's diagnosis.
  */
 async function waitForPublishedServer(origin: string, fronting: ServerFronting): Promise<void> {
   const deadline = Date.now() + fronting.publishTimeoutMs
@@ -588,16 +581,10 @@ async function waitForPublishedServer(origin: string, fronting: ServerFronting):
     }
     await new Promise((r) => setTimeout(r, 500))
   }
-  if (reached) {
-    throw new Error(
-      `the server Deployment rolled out and ${origin} answers, but not as a ready server (${last}).\n`
-      + '    If an older yaac installed it, roll this bundle with `yaac cluster install`.',
-    )
-  }
-  throw new Error(
-    `the server Deployment rolled out, but ${origin} does not answer (${last}).\n`
-    + `    ${fronting.unreachableDiagnosis(origin)}`,
-  )
+  throw new Error(reached
+    ? `the server Deployment rolled out and ${origin} answers, but not as a ready server (${last}).`
+    : `the server Deployment rolled out, but ${origin} does not answer (${last}).\n`
+      + `    ${fronting.unreachableDiagnosis(origin)}`)
 }
 
 /** The installed fronting, read from the live cluster (see frontingOfIngress). */
@@ -623,10 +610,7 @@ async function waitForInstalledServer(): Promise<string> {
 export async function startClusterServer(): Promise<string> {
   await deleteLogReader()
   await scaleServerDeployment(1)
-  await kubectlWithRetry([
-    'rollout', 'status', `deployment/${SERVER_APP_NAME}`,
-    '-n', k8sNamespace(), '--timeout=300s',
-  ], { timeout: 310_000, maxAttempts: 2 })
+  await waitForDeployment(SERVER_APP_NAME)
   return waitForInstalledServer()
 }
 
@@ -655,10 +639,7 @@ export async function restartClusterServer(): Promise<string> {
   await kubectlWithRetry([
     'rollout', 'restart', `deployment/${SERVER_APP_NAME}`, '-n', k8sNamespace(),
   ], { timeout: 60_000 })
-  await kubectlWithRetry([
-    'rollout', 'status', `deployment/${SERVER_APP_NAME}`,
-    '-n', k8sNamespace(), '--timeout=300s',
-  ], { timeout: 310_000, maxAttempts: 2 })
+  await waitForDeployment(SERVER_APP_NAME)
   return waitForInstalledServer()
 }
 

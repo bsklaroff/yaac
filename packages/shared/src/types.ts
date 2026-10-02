@@ -1212,19 +1212,16 @@ export interface HeldWorkspaceEntry {
 export type ImageLayerName = 'base' | 'tools' | 'nestable' | 'project' | 'user'
 
 /**
- * An image build or registry push tracked in server memory. The snapshot
+ * An image build tracked in server memory. The snapshot
  * carries metadata only; the log tail comes from
  * `GET /image/builds/:id/log`.
  */
 export interface ImageBuildEntry {
   id: string
   tag: string
-  /** The chain step; `'push'` for a registry push; `'proxy'` / `'netd'`
-   *  for the shared proxy sidecar and network daemon images. */
-  layer: ImageLayerName | 'push' | 'proxy' | 'netd'
-  action: 'build' | 'push'
-  /** Every project that requested this tag. Empty for shared
-   *  infrastructure builds, which the webapp shows for every project. */
+  /** The chain step. */
+  layer: ImageLayerName
+  /** Every project that requested this tag. */
   projectSlugs: string[]
   reason: 'session' | 'prewarm'
   status: 'running' | 'succeeded' | 'failed'

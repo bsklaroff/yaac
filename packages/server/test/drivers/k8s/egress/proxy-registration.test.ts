@@ -384,16 +384,19 @@ describe('reconcileRegistrationGc', () => {
       .toEqual(['yaac-proxy-reg-orphan'])
   })
 
-  it('does nothing against an untrusted cache, and throttles itself', async () => {
+  it('lists Jobs live past an untrusted cache, and throttles itself', async () => {
+    // An unseeded cache would look like every workspace is gone.
     setActiveClusterCache(cacheOf({ healthy: false }))
-    mockGetJson.mockResolvedValue({ items: [registrationObject('orphan', REG, OLD)] })
+    mockGetJson.mockImplementation((args: string[]) => Promise.resolve(args[1] === 'jobs'
+      ? { items: [{ metadata: {
+        name: 'yaac-demo-job-only',
+        labels: { 'yaac.workspace-id': 'job-only', 'yaac.project': 'demo' },
+        creationTimestamp: OLD,
+      } }] }
+      : { items: [registrationObject('job-only', REG, OLD), registrationObject('orphan', REG, OLD)] }))
     await reconcileRegistrationGc(ctxOf([]))
-    // An unseeded cache would look like every workspace is gone, so skip.
-    expect(mockGetJson).not.toHaveBeenCalled()
+    expect(mockRetry.mock.calls.map(([args]) => (args as string[])[2])).toEqual(['yaac-proxy-reg-orphan'])
 
-    setActiveClusterCache(cacheOf({ healthy: true }))
-    await reconcileRegistrationGc(ctxOf([]))
-    expect(mockRetry).toHaveBeenCalledTimes(1)
     await reconcileRegistrationGc(ctxOf([]))
     expect(mockRetry).toHaveBeenCalledTimes(1)
   })

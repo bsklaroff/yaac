@@ -42,7 +42,6 @@ import {
   getWorkspacePorts,
 } from '#drivers/k8s/forwarders'
 import {
-  RelayExecError,
   SERVER_MAMA_PORT,
   bootStreamd,
   dialCtrlStream,
@@ -56,7 +55,7 @@ import {
 } from '#drivers/k8s/substrate'
 import { k8sReconcileSteps } from '#drivers/k8s/steps'
 import { releaseK8sDriver, startK8sDriver, stopK8sDriver } from '#drivers/k8s/lifecycle'
-import { WorkspaceExecError, type WorkspaceDriver } from '#drivers/contract'
+import type { WorkspaceDriver } from '#drivers/contract'
 
 /**
  * The Kubernetes driver: `createK8sDriver` is the only export of this
@@ -68,27 +67,6 @@ import { WorkspaceExecError, type WorkspaceDriver } from '#drivers/contract'
  * functions, and every e2e run exercises the wiring. Only the composition
  * root imports it, to register the driver.
  */
-
-/**
- * `podExec`, with a nonzero exit (`RelayExecError`, which the driver's
- * internals branch on) mapped to the contract's `WorkspaceExecError`.
- * Other failures, such as a dial error or timeout, propagate unchanged so
- * callers can tell them apart.
- */
-async function execInWorkspace(
-  jobName: string,
-  cmd: string,
-  opts?: { timeout?: number; maxAttempts?: number },
-): Promise<{ stdout: string; stderr: string }> {
-  try {
-    return await podExec(jobName, cmd, opts)
-  } catch (err) {
-    if (err instanceof RelayExecError) {
-      throw new WorkspaceExecError(err.message, err.code, err.stdout, err.stderr, { cause: err })
-    }
-    throw err
-  }
-}
 
 export function createK8sDriver(): WorkspaceDriver {
   return {
@@ -120,7 +98,7 @@ export function createK8sDriver(): WorkspaceDriver {
     dismissImageBuild: (id) => dismissImageBuild(id),
     retryImageBuild: (id, projectConfig) => retryImageBuild(id, projectConfig),
 
-    exec: (jobName, cmd, opts) => execInWorkspace(jobName, cmd, opts),
+    exec: podExec,
     awaitAgentTransport: (jobName, opts) => waitForStreamd(jobName, opts),
     // The relay addresses streams by workspace id, not Job name.
     dialCtrl: (jobName, argv) => dialCtrlStream(workspaceIdFromJobName(jobName), argv),

@@ -37,12 +37,12 @@ import { FAKE_AUTH_KINDS } from '@yaac/shared/types'
 import { clusterArgError, type ClusterInstallArgs } from '@yaac/server/drivers/k8s/install'
 
 /**
- * Throw a `cluster install`/`delete` invocation's flag or environment error,
- * if it has one. Runs the command's guards (arg-guards.ts) early so a typo
- * doesn't cost loading the kubernetes client first.
+ * Throw a `cluster install` invocation's flag error, if it has one. Runs
+ * the guards (arg-guards.ts) early so a typo doesn't cost loading the
+ * kubernetes client first.
  */
-function assertClusterArgs(command: 'install' | 'delete', options: ClusterInstallArgs = {}): void {
-  const message = clusterArgError(command, options)
+function assertClusterInstallArgs(options: ClusterInstallArgs): void {
+  const message = clusterArgError(options)
   if (message !== null) throw new Error(message)
 }
 
@@ -285,9 +285,9 @@ cluster
   // rather than `NaN`. A failed finishing check exits 1.
   .action(async (options: ClusterInstallArgs) => {
     await refuseClusterOnContainerless()
-    assertClusterArgs('install', options)
-    const { runClusterInstall } = await import('@yaac/server/drivers/k8s/install')
-    if (!await runClusterInstall(options)) process.exitCode = 1
+    assertClusterInstallArgs(options)
+    const { clusterInstall } = await import('#commands/cluster-install')
+    await clusterInstall(options)
   })
 
 cluster
@@ -301,7 +301,6 @@ cluster
     await refuseClusterOnContainerless()
     // No foreign-cluster guard: kind deletes its cluster by name, not via
     // the current context, and byo refuses delete outright.
-    assertClusterArgs('delete')
     const { runClusterDelete } = await import('@yaac/server/drivers/k8s/install')
     await runClusterDelete(options)
   })

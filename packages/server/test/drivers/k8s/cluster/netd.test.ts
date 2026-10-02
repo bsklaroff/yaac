@@ -41,9 +41,13 @@ import { cniVethPrefix, ensureNetd, resolveNetdImageTag } from '#drivers/k8s/clu
 import { DEFAULT_VETH_PREFIX, ENVOY_MIRROR_TAG } from '#drivers/k8s/cluster/netd'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster'
 
+/** Each applied object, with a `List` apply's items in order. */
 const applied = (kind: string): Record<string, unknown> | undefined =>
   mockKubectlApply.mock.calls
-    .map((c) => c[0] as { kind: string })
+    .flatMap((c) => {
+      const m = c[0] as { kind: string; items?: Array<{ kind: string }> }
+      return m.kind === 'List' ? m.items ?? [] : [m]
+    })
     .find((m) => m.kind === kind) as Record<string, unknown> | undefined
 
 beforeEach(() => {
@@ -85,10 +89,12 @@ describe('ensureNetd', () => {
   it('applies namespaced RBAC and the DaemonSet, waits for the rollout, then drops the old cluster RBAC', async () => {
     await ensureNetd()
 
-    // RBAC before the DaemonSet that uses it. netd reads only its own
-    // namespace, so nothing it is granted is cluster-wide.
-    const kinds = mockKubectlApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
-    expect(kinds).toEqual(['ServiceAccount', 'Role', 'RoleBinding', 'DaemonSet'])
+    // One apply, RBAC before the DaemonSet that uses it. netd reads only
+    // its own namespace, so nothing it is granted is cluster-wide.
+    expect(mockKubectlApply).toHaveBeenCalledOnce()
+    const list = mockKubectlApply.mock.calls[0][0] as { kind: string; items: Array<{ kind: string }> }
+    expect(list.kind).toBe('List')
+    expect(list.items.map((m) => m.kind)).toEqual(['ServiceAccount', 'Role', 'RoleBinding', 'DaemonSet'])
     const role = applied('Role') as { metadata: { namespace: string }; rules: Array<{ resources: string[]; verbs: string[] }> }
     expect(role.metadata.namespace).toBe('test-ns')
     expect(role.rules).toEqual([

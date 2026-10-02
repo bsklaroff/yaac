@@ -1,9 +1,4 @@
-import {
-  getActiveClusterCache,
-  isNested,
-  isPrewarmed,
-  listWorkspacePods,
-} from '#drivers/k8s/substrate'
+import { isNested, isPrewarmed, readWorkspacePods } from '#drivers/k8s/substrate'
 import { salvageJobImages } from '#drivers/k8s/images'
 
 /**
@@ -39,14 +34,14 @@ export async function reconcileImageSalvage(
 ): Promise<void> {
   let pods
   try {
-    pods = getActiveClusterCache()?.workspacePods() ?? await listWorkspacePods()
+    pods = await readWorkspacePods()
   } catch {
     return
   }
 
   const live = new Set<string>()
   for (const p of pods) {
-    if (!p.running || !p.workspaceId || !p.projectId || isPrewarmed(p)) continue
+    if (!p.running || !p.workspaceId || isPrewarmed(p)) continue
     if (!isNested(p)) continue
     if (p.terminating || isTerminating(p.workspaceId)) continue
     live.add(p.workspaceId)

@@ -1,7 +1,7 @@
 import { k8sNamespace, shellKubectlWithRetry, type KubectlExecOptions } from './kubectl'
 
 /** kubectl target for a workspace Job; kubectl resolves its pod. */
-export function execTarget(jobName: string): string {
+function execTarget(jobName: string): string {
   return `job/${jobName}`
 }
 

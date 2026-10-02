@@ -82,7 +82,7 @@ export function sentryTmpfsAnnotations(volume: string, sizeBytes: number): Recor
  * Volume-name prefix of a workspace's module dirs (`PodJobParams.moduleDirs`),
  * one volume per dir: `pnpm-modules-0` for the first, and so on.
  */
-export const MODULES_VOLUME_PREFIX = 'pnpm-modules'
+const MODULES_VOLUME_PREFIX = 'pnpm-modules'
 
 /**
  * Tmpfs cap of each module-dir volume, sized for a large monorepo's root
@@ -117,7 +117,7 @@ export const NESTED_ENGINE_CAPS = [
  * single-file binds, and `''` (kubernetes' "no check" type) for
  * user-supplied paths that may be either.
  */
-export type HostPathType = 'Directory' | 'DirectoryOrCreate' | 'File' | 'FileOrCreate' | ''
+type HostPathType = 'Directory' | 'DirectoryOrCreate' | 'File' | 'FileOrCreate' | ''
 
 /**
  * Where a workspace mount's bytes come from. `resolveMountSource` picks it
@@ -249,7 +249,7 @@ export interface PodJobParams {
 }
 
 /** Split a `NAME=VALUE` env entry at the first `=`. */
-export function parseEnvEntry(entry: string): { name: string; value: string } {
+function parseEnvEntry(entry: string): { name: string; value: string } {
   const idx = entry.indexOf('=')
   if (idx < 0) return { name: entry, value: '' }
   return { name: entry.slice(0, idx), value: entry.slice(idx + 1) }

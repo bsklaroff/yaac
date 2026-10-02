@@ -1,5 +1,4 @@
 import { confirmDefault, kindEnv } from './install'
-import { ClusterDeleteError } from './arg-guards'
 import {
   BUILDER_ROLE_GUARD_NAME,
   LABEL_INSTALL_ID,
@@ -24,10 +23,10 @@ import { env } from '@yaac/shared/env'
  * re-pushes the images.
  */
 
-// Defined in arg-guards.ts, which is cheap to import.
-export { ClusterDeleteError }
+/** A delete step failed in a way the user must resolve; message is the fix. */
+export class ClusterDeleteError extends Error {}
 
-export interface ClusterDeleteOptions {
+interface ClusterDeleteOptions {
   /** Skip the interactive confirmation (for scripts / non-interactive use). */
   yes?: boolean
 }

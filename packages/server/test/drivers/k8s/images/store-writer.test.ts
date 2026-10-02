@@ -41,7 +41,6 @@ import {
   ensureNodeImageStore,
   nodeImageStoreMount,
   reconcileNodeImageStores,
-  removeNodeLocalProject,
 } from '#drivers/k8s/images'
 // Setup values and state reset, not units under test.
 import {
@@ -54,7 +53,7 @@ import {
   generationName,
 } from '#drivers/k8s/images/store-writer'
 import { CACHED_GENERATIONS_KEPT, CACHE_TAG_PREFIX } from '#drivers/k8s/images/image-promoter'
-import { imageStoreDir, nodeLocalProjectPath } from '@yaac/shared/project-paths'
+import { imageStoreDir } from '@yaac/shared/project-paths'
 import { nodeLocalHostPath, nodeLocalNodePath } from '#drivers/k8s/substrate'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/substrate/kubectl'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
@@ -144,13 +143,6 @@ const CATALOG: Record<string, RepoFixture> = {
     [GENERATIONS.new]: '2026-03-01T00:00:00Z',
     [`${CACHE_TAG_PREFIX}${GENERATIONS.old}-1`]: null,
     [`${CACHE_TAG_PREFIX}${GENERATIONS.new}-1`]: null,
-  },
-  // The `localhost/`-prefixed form of a yaac repo, which older registries
-  // may still hold until the GC removes it. Its tags count as generations.
-  'localhost/yaac-base': {
-    [GENERATIONS.old]: '2026-01-02T00:00:00Z',
-    [GENERATIONS.mid]: '2026-02-02T00:00:00Z',
-    [GENERATIONS.new]: '2026-03-02T00:00:00Z',
   },
   // The newest generation's config blob is missing.
   'yaac-flaky': {
@@ -375,12 +367,8 @@ describe('ensureNodeImageStore', () => {
     expect(pulled).toContain(gen('yaac-tools', 'new'))
     expect(pulled).toContain(gen('yaac-tools', 'mid'))
     expect(pulled).toContain(`${CLUSTER_IP}:5000/yaac-tools:${CACHE_TAG_PREFIX}${GENERATIONS.new}-1`)
-    // The same for the `localhost/`-prefixed form.
-    expect(pulled).toContain(gen('localhost/yaac-base', 'new'))
-    expect(pulled).toContain(gen('localhost/yaac-base', 'mid'))
     // Not the oldest generation, nor its chain slots.
     expect(pulled).not.toContain(gen('yaac-tools', 'old'))
-    expect(pulled).not.toContain(gen('localhost/yaac-base', 'old'))
     expect(pulled.some((r) => r.includes(`${CACHE_TAG_PREFIX}${GENERATIONS.old}`))).toBe(false)
     // yaac-flaky's newest config is unreadable, but it is kept and the
     // oldest is dropped, so a transient fetch failure does not lose the
@@ -560,20 +548,5 @@ describe('reconcileNodeImageStores', () => {
     await vi.waitFor(() => expect(appliedPods()).toHaveLength(2))
     const ids = appliedPods().map((p) => p.metadata.labels['yaac.project-id'])
     expect(new Set(ids)).toEqual(new Set([ID, other.id]))
-  })
-})
-
-describe('removeNodeLocalProject', () => {
-  it('removes the image store and the node-local project tree from every node with a one-shot pod', async () => {
-    stageLiveCluster()
-    await removeNodeLocalProject(ID)
-    const [pod] = appliedPods()
-    expect(pod.spec.nodeName).toBe(NODE)
-    // The server cannot remove the root-owned store, and the project tree
-    // may be on another node, so a pod removes both.
-    expect(pod.spec.volumes[0].hostPath?.path).toBe(nodeLocalNodePath())
-    expect(pod.spec.containers[0].command[2])
-      .toBe(`rm -rf "/node/shared-images/${ID}" "/node/projects/${ID}"`)
-    expect(nodeLocalHostPath(nodeLocalProjectPath(ID))).toBe(`${nodeLocalNodePath()}/projects/${ID}`)
   })
 })

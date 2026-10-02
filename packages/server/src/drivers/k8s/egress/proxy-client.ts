@@ -15,6 +15,7 @@ import {
   k8sNamespace,
   kubectlGetJson,
   kubectlWithRetry,
+  readProxyAuthSecret,
 } from '#drivers/k8s/substrate'
 import { registryRef } from '#drivers/k8s/container'
 import { serverLog } from '#log'
@@ -26,7 +27,7 @@ import { testEnv } from '@yaac/shared/env'
  * and the Secret may be created after this server starts.
  */
 export async function isProxyAuthSecret(bearer: string): Promise<boolean> {
-  const secret = await readExistingProxyAuthSecret()
+  const secret = await readProxyAuthSecret()
   if (secret === null) return false
   const a = Buffer.from(bearer)
   const b = Buffer.from(secret)
@@ -242,14 +243,6 @@ export class ProxyClient {
     // A recreated Service may get a new ClusterIP.
     resetProxyClusterIpCache()
   }
-}
-
-async function readExistingProxyAuthSecret(): Promise<string | null> {
-  const secret = await kubectlGetJson<{ data?: Record<string, string> }>([
-    'get', 'secret', 'yaac-proxy-auth', '-n', k8sNamespace(),
-  ])
-  const encoded = secret?.data?.secret
-  return encoded ? Buffer.from(encoded, 'base64').toString('utf8') : null
 }
 
 /** Default singleton. The image name comes from YAAC_PROXY_IMAGE, which

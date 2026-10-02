@@ -66,6 +66,7 @@ function pod(o: Partial<PodInfo> & { prewarmed?: boolean } = {}): RuntimeHandle 
     podName: 'yaac-p-s1-x',
     workspaceId: 's1',
     projectSlug: 'p',
+    projectId: '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
     tool: 'claude',
     phase: 'Running',
     running: true,

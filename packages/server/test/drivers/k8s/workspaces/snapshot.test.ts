@@ -6,7 +6,6 @@ vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => ({
   listWorkspacePods: vi.fn(),
   listWorkspaceJobs: vi.fn(),
 }))
-vi.mock('#drivers/k8s/substrate/cluster-cache', () => ({ getActiveClusterCache: vi.fn(() => null) }))
 
 import { listWorkspaceJobs, listWorkspacePods, type JobInfo, type PodInfo } from '#drivers/k8s/substrate/pods'
 import type * as podsModule from '#drivers/k8s/substrate/pods'

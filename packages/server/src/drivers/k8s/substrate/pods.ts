@@ -1,11 +1,6 @@
 import { z } from 'zod'
-import {
-  dataDirHash,
-  k8sNamespace,
-  kubectlApply,
-  kubectlGetJson,
-  kubectlWithRetry,
-} from './kubectl'
+import { dataDirHash, k8sNamespace, kubectlGetJson } from './kubectl'
+import { serverLog } from '#log'
 
 /** Label keys attached to every workspace Job and its Pod. */
 export const LABEL_PROJECT = 'yaac.project'
@@ -13,8 +8,7 @@ export const LABEL_PROJECT = 'yaac.project'
  * The project's immutable id (`ProjectRef`), on workspace pods and on the
  * project's registry and image-store objects. Registry NetworkPolicies and
  * the orphan GCs key on it, so a later project with the same slug can never
- * claim an object. Pods from older installs lack it; they reach no
- * id-named registry and are skipped by image salvage.
+ * claim an object.
  */
 export const LABEL_PROJECT_ID = 'yaac.project-id'
 /**
@@ -97,8 +91,8 @@ export interface PodInfo {
   podName: string
   workspaceId: string
   projectSlug: string
-  /** `yaac.project-id` when stamped (see LABEL_PROJECT_ID). */
-  projectId?: string
+  /** See LABEL_PROJECT_ID. */
+  projectId: string
   tool: string
   /** `yaac.mode` when stamped; absent on every TUI pod (see LABEL_MODE). */
   mode?: string
@@ -138,23 +132,23 @@ export const JOB_NAME_LABEL = 'batch.kubernetes.io/job-name'
  */
 const timestampSchema = z.union([z.string().min(1), z.date()])
 
-export function toEpochMs(ts: string | Date): number {
+function toEpochMs(ts: string | Date): number {
   return typeof ts === 'string' ? Date.parse(ts) : ts.getTime()
 }
 
 /**
  * Schema for a workspace pod. The API server guarantees name, timestamp and
  * phase, and workspace create sets the labels, so a failure means a yaac bug
- * or a hand-edited object. A kubectl list then fails as a whole; a single
- * informer event is skipped.
+ * or a hand-edited object, which every reader skips.
  */
-export const podItemSchema = z.object({
+const podItemSchema = z.object({
   metadata: z.object({
     name: z.string().min(1),
     labels: z.object({
       [JOB_NAME_LABEL]: z.string().min(1),
       [LABEL_WORKSPACE_ID]: z.string().min(1),
       [LABEL_PROJECT]: z.string().min(1),
+      [LABEL_PROJECT_ID]: z.string().min(1),
       [LABEL_TOOL]: z.string().min(1),
     }).catchall(z.string()),
     creationTimestamp: timestampSchema,
@@ -178,10 +172,10 @@ export const podItemSchema = z.object({
   }),
 })
 
-export type PodItem = z.infer<typeof podItemSchema>
+type PodItem = z.infer<typeof podItemSchema>
 
 /** Map a validated pod object to the PodInfo row the rest of yaac uses. */
-export function mapPodItem({ metadata, status }: PodItem): PodInfo {
+function mapPodItem({ metadata, status }: PodItem): PodInfo {
   const terminating = metadata.deletionTimestamp !== undefined
   const terminated = status.containerStatuses?.[0]?.state?.terminated
   const terminal: PodTerminalState | undefined =
@@ -201,9 +195,7 @@ export function mapPodItem({ metadata, status }: PodItem): PodInfo {
     podName: metadata.name,
     workspaceId: metadata.labels[LABEL_WORKSPACE_ID],
     projectSlug: metadata.labels[LABEL_PROJECT],
-    ...(metadata.labels[LABEL_PROJECT_ID] !== undefined
-      ? { projectId: metadata.labels[LABEL_PROJECT_ID] }
-      : {}),
+    projectId: metadata.labels[LABEL_PROJECT_ID],
     tool: metadata.labels[LABEL_TOOL],
     ...(metadata.labels[LABEL_MODE] !== undefined ? { mode: metadata.labels[LABEL_MODE] } : {}),
     phase: status.phase,
@@ -215,15 +207,27 @@ export function mapPodItem({ metadata, status }: PodItem): PodInfo {
   }
 }
 
-/** Validate+map one raw pod object (informer events); null = malformed. */
+/** Pods already reported as malformed, so a skip is logged once per pod
+ *  rather than on every list and informer event. */
+const reportedMalformed = new Set<string>()
+
+/**
+ * Validate+map one raw pod object; null = malformed. A skipped pod is
+ * invisible to every reader, so its Job reads as having no pod and the
+ * stale reaper tears it down; the log line names the pod and the fields
+ * it lacks, so that reap can be traced.
+ */
 export function mapPodObject(obj: unknown): PodInfo | null {
   const res = podItemSchema.safeParse(obj)
-  return res.success ? mapPodItem(res.data) : null
+  if (res.success) return mapPodItem(res.data)
+  const name = (obj as { metadata?: { name?: string } } | null)?.metadata?.name ?? '<unnamed>'
+  if (!reportedMalformed.has(name)) {
+    reportedMalformed.add(name)
+    const fields = res.error.issues.map((i) => i.path.join('.')).join(', ')
+    serverLog(`[server] ignoring workspace pod ${name}: missing or invalid ${fields}`)
+  }
+  return null
 }
-
-const podListSchema = z.object({
-  items: z.array(podItemSchema),
-})
 
 const jobItemSchema = z.object({
   metadata: z.object({
@@ -249,30 +253,16 @@ export function mapJobObject(obj: unknown): JobInfo | null {
   }
 }
 
-const jobListSchema = z.object({
-  items: z.array(jobItemSchema),
-})
-
-/** Validate a kubectl list payload, naming the object kind in the error. */
-function parseListPayload<T>(schema: z.ZodType<T>, payload: unknown, kind: string): T {
-  const res = schema.safeParse(payload)
-  if (!res.success) {
-    throw new Error(`malformed workspace ${kind} list from kubectl: ${z.prettifyError(res.error)}`)
-  }
-  return res.data
-}
-
 /**
- * List this install's workspace pods, optionally for one project. Throws
- * when the payload fails validation.
+ * List this install's workspace pods live, optionally for one project. A
+ * malformed pod is skipped, as the informer skips it. Most callers want
+ * `readWorkspacePods`, which answers from the watch when it can.
  */
 export async function listWorkspacePods(projectFilter?: string): Promise<PodInfo[]> {
-  const list = await kubectlGetJson<unknown>([
+  const list = await kubectlGetJson<{ items: unknown[] }>([
     'get', 'pods', '-n', k8sNamespace(), '-l', workspacePodSelector(projectFilter),
   ])
-  if (!list) return []
-  const { items } = parseListPayload(podListSchema, list, 'pod')
-  return items.map(mapPodItem)
+  return (list?.items ?? []).flatMap((item) => mapPodObject(item) ?? [])
 }
 
 /** The label selector `listWorkspacePods` and the pod watcher share. */
@@ -303,80 +293,16 @@ export interface JobInfo {
   createdAtMs: number
 }
 
-export interface RunPodOptions {
-  /** Deadline for the pod to reach a terminal phase. */
-  timeoutMs: number
-  /** Poll interval between phase checks (default 1000ms). */
-  pollMs?: number
-  /** kubectl argv runner for the delete/logs calls; injectable for tests. */
-  kubectl?: (args: string[]) => Promise<{ stdout: string }>
-  /** Manifest apply; injectable for tests. */
-  apply?: (manifest: object) => Promise<void>
-}
-
-export interface PodRunResult {
-  /**
-   * Terminal phase; `Deleted` if the pod disappeared while polling; or the
-   * last phase seen when the deadline passed.
-   */
-  phase: string
-  /** Pod logs, best-effort ('' when unavailable). */
-  logs: string
-}
-
 /**
- * Run a one-shot pod (restartPolicy: Never) to completion: delete any stray
- * pod of the same name, apply, poll to a terminal phase, fetch logs, and
- * always delete the pod afterwards. Polls rather than using `kubectl wait`
- * so a Failed pod returns immediately. The caller judges the result.
- */
-export async function runPodToCompletion(
-  manifest: Record<string, unknown>,
-  opts: RunPodOptions,
-): Promise<PodRunResult> {
-  const { name, namespace } = (manifest as { metadata: { name: string; namespace: string } }).metadata
-  const kubectl = opts.kubectl ?? ((args: string[]) => kubectlWithRetry(args))
-  const apply = opts.apply ?? kubectlApply
-  await kubectl(['delete', 'pod', name, '-n', namespace, '--ignore-not-found'])
-  try {
-    await apply(manifest)
-    const deadline = Date.now() + opts.timeoutMs
-    let phase = 'Pending'
-    while (Date.now() < deadline) {
-      const pod = await kubectlGetJson<{ status?: { phase?: string } }>([
-        'get', 'pod', name, '-n', namespace,
-      ])
-      // Something else deleted the pod; it will never finish.
-      if (pod === null) {
-        phase = 'Deleted'
-        break
-      }
-      phase = pod.status?.phase ?? 'Unknown'
-      if (phase === 'Succeeded' || phase === 'Failed') break
-      await new Promise((r) => setTimeout(r, opts.pollMs ?? 1000))
-    }
-    const logs = await kubectl(['logs', name, '-n', namespace])
-      .then((r) => r.stdout)
-      .catch(() => '')
-    return { phase, logs }
-  } finally {
-    await kubectl(['delete', 'pod', name, '-n', namespace, '--ignore-not-found'])
-      .catch(() => { /* best-effort cleanup */ })
-  }
-}
-
-/**
- * List this install's workspace Jobs, for the orphan-Job sweep (a Job whose
- * pod was deleted is invisible to the pod-based reaper). Throws when the
- * payload fails validation.
+ * List this install's workspace Jobs live. A Job whose pod was deleted is
+ * invisible to the pod listing, so teardown and the orphan-Job sweep need
+ * this too.
  */
 export async function listWorkspaceJobs(): Promise<JobInfo[]> {
-  const list = await kubectlGetJson<unknown>([
+  const list = await kubectlGetJson<{ items: unknown[] }>([
     'get', 'jobs', '-n', k8sNamespace(), '-l', workspaceJobSelector(),
   ])
-  if (!list) return []
-  const { items } = parseListPayload(jobListSchema, list, 'job')
-  return items.flatMap((item) => mapJobObject(item) ?? [])
+  return (list?.items ?? []).flatMap((item) => mapJobObject(item) ?? [])
 }
 
 /** The label selector `listWorkspaceJobs` and the Jobs informer share. */

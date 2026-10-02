@@ -71,7 +71,6 @@ export {
 export {
   ensureMainRegistry,
   mainRegistryExec,
-  restartMainRegistry,
 } from './main-registry'
 export {
   NGINX_MIRROR_TAG,

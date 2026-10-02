@@ -1,8 +1,7 @@
 import net from 'node:net'
 import crypto from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { env } from '@yaac/shared/env'
-import type { StreamChild } from '#drivers/contract'
+import { WorkspaceExecError, type StreamChild } from '#drivers/contract'
 import { FRAME_DATA, FRAME_EXIT, FRAME_RESIZE, FRAME_SIGNAL, FrameParser, encodeFrame } from '@yaac/shared/stream-frames'
 import { k8sNamespace, kubectlGetJson } from './kubectl'
 import { workspaceIdFromJobName } from './pods'
@@ -57,29 +56,31 @@ export function _resetRelayCacheForTests(): void {
 /**
  * The relay address: the proxy's Service, dialed pod-to-pod since the
  * server runs in the same namespace (docs/server-in-cluster.md).
- * `YAAC_RELAY_ADDR`, set by the Deployment, overrides it. The default lets
- * a server started by hand against a standard install still resolve.
  */
 function resolveRelayAddr(): RelayAddr {
-  if (env.relayAddr) return env.relayAddr
   const addr = proxyServiceHost(k8sNamespace(), RELAY_PORT)
   const idx = addr.lastIndexOf(':')
   return { host: addr.slice(0, idx), port: Number.parseInt(addr.slice(idx + 1), 10) }
 }
 
 /**
- * The install's proxy auth secret: the relay bearer token and the HMAC key
- * for per-workspace stream tokens. Read once per server run; it is never
- * rotated in place.
+ * The install's proxy auth secret: the proxy's control-API key, the relay
+ * bearer token, and the HMAC key for per-workspace stream tokens. Null
+ * before the proxy's first deploy creates it.
  */
-async function relaySecret(): Promise<string> {
-  if (cachedSecret) return cachedSecret
+export async function readProxyAuthSecret(): Promise<string | null> {
   const secret = await kubectlGetJson<{ data?: Record<string, string> }>([
     'get', 'secret', PROXY_AUTH_SECRET_NAME, '-n', k8sNamespace(),
   ])
   const encoded = secret?.data?.secret
-  if (!encoded) throw new Error('stream relay: proxy auth secret not found — is the proxy deployed?')
-  cachedSecret = Buffer.from(encoded, 'base64').toString('utf8')
+  return encoded ? Buffer.from(encoded, 'base64').toString('utf8') : null
+}
+
+/** `readProxyAuthSecret`, read once per server run: it is never rotated in
+ *  place. */
+async function relaySecret(): Promise<string> {
+  cachedSecret ??= await readProxyAuthSecret()
+  if (!cachedSecret) throw new Error('stream relay: proxy auth secret not found — is the proxy deployed?')
   return cachedSecret
 }
 
@@ -95,7 +96,7 @@ export async function podStreamToken(workspaceId: string): Promise<string> {
 
 /**
  * Transport failure (relay unreachable, handshake refused, timeout, missing
- * reply). Unlike RelayExecError it says nothing about the command's outcome.
+ * reply). Unlike WorkspaceExecError it says nothing about the command's outcome.
  */
 export class RelayDialError extends Error {
   constructor(
@@ -194,21 +195,6 @@ export async function relayDial(
 
 // ── One-shot commands ──────────────────────────────────────────────────────
 
-/**
- * The command ran and exited nonzero: a conclusive result about the pod,
- * unlike RelayDialError. Carries child_process-style `code` and `stderr`.
- */
-export class RelayExecError extends Error {
-  constructor(
-    message: string,
-    readonly code: number,
-    readonly stdout: string,
-    readonly stderr: string,
-  ) {
-    super(message)
-  }
-}
-
 /** Read a whole (already-handshaken) stream to its end. */
 function readAll(socket: net.Socket, timeoutMs: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -230,7 +216,7 @@ function readAll(socket: net.Socket, timeoutMs: number): Promise<Buffer> {
   })
 }
 
-export interface RelayExecOptions {
+interface RelayExecOptions {
   /**
    * Overall deadline (dial + run). Default 30s. The dial is capped at
    * DIAL_TIMEOUT_MS regardless, so a long budget cannot turn a hung
@@ -248,7 +234,7 @@ export interface RelayExecOptions {
 /**
  * Run a shell command in a workspace pod through its streamd (as
  * `sh -c <cmd>`). Resolves `{stdout, stderr}` on exit 0; throws
- * RelayExecError on a nonzero exit and RelayDialError when the pod was not
+ * WorkspaceExecError on a nonzero exit and RelayDialError when the pod was not
  * reached. Only the dial is retried: once streamd has the command, any
  * failure is final so a non-idempotent command is never run twice.
  */
@@ -289,7 +275,7 @@ export async function podExec(
       }
       const { exitCode, stdout = '', stderr = '', signal, spawnFailed } = result
       // Only a real exit is a verdict about the pod: the reaper treats a
-      // RelayExecError as `dead` and tears the workspace down. A signal
+      // WorkspaceExecError as `dead` and tears the workspace down. A signal
       // kill, a spawn failure, or a result with no exit code (all common
       // under in-pod memory pressure) are reported as transport failures
       // instead, which callers keep rather than reap. They are marked
@@ -304,7 +290,7 @@ export async function podExec(
         throw new RelayDialError(`exec result carried no exit code in ${jobName}`, true)
       }
       if (exitCode === 0) return { stdout, stderr }
-      throw new RelayExecError(
+      throw new WorkspaceExecError(
         `command exited ${exitCode} in ${jobName}: ${stderr.trim() || stdout.trim()}`,
         exitCode, stdout, stderr,
       )

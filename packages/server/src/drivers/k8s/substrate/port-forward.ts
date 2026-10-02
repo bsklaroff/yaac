@@ -8,12 +8,12 @@ import { spawn, type ChildProcess } from 'node:child_process'
  * always ephemeral, so installs on one machine never collide.
  */
 
-export interface ForwardAddr {
+interface ForwardAddr {
   host: string
   port: number
 }
 
-export interface PortForwardSpec {
+interface PortForwardSpec {
   namespace: string
   /** kubectl port-forward target, e.g. `deploy/yaac-proxy`. */
   target: string

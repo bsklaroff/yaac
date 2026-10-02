@@ -205,50 +205,11 @@ describe('ensureGvisorRuntime', () => {
     }
   })
 
-  it('installs on every node by default, and only in a pool when one is named', async () => {
+  it('installs on every node', async () => {
     await ensureGvisorRuntime()
-    const spec = (): Record<string, unknown> =>
-      ((ofKind('DaemonSet')[0].spec as { template: { spec: Record<string, unknown> } })
-        .template.spec)
-    // No selector field, rather than an empty one.
-    expect(spec()).not.toHaveProperty('nodeSelector')
-
-    // With a workspace node pool, only that pool gets gVisor (and a
-    // containerd restart). The RuntimeClass selector follows the label.
-    vi.clearAllMocks()
-    mockHasTag.mockResolvedValue(true)
-    await ensureGvisorRuntime({ nodeSelector: { 'yaac.node-pool': 'sessions' } })
-    expect(spec().nodeSelector).toEqual({ 'yaac.node-pool': 'sessions' })
-  })
-
-  it('declares a tainted pool\'s toleration on the RuntimeClasses, not on the DaemonSet', async () => {
-    const tolerations = [
-      { key: 'yaac.dev/sessions', operator: 'Equal', value: 'true', effect: 'NoSchedule' },
-      { key: 'yaac.dev/sessions', operator: 'Equal', value: 'true', effect: 'NoExecute' },
-    ]
-    await ensureGvisorRuntime({
-      nodeSelector: { 'yaac.node-pool': 'sessions' },
-      tolerations,
-    })
-
-    // The pool toleration goes on the RuntimeClasses: admission adds it to
-    // every pod using the class, so gVisor pods reach a tainted pool without
-    // knowing about it. Cluster check reads it back too.
-    const classes = ofKind('RuntimeClass') as unknown as Array<{
-      scheduling: { nodeSelector: Record<string, string>; tolerations?: unknown }
-    }>
-    expect(classes).toHaveLength(2)
-    for (const c of classes) {
-      expect(c.scheduling.tolerations).toEqual(tolerations)
-      expect(c.scheduling.nodeSelector).toEqual({ [GVISOR_NODE_LABEL]: 'true' })
-    }
-
-    // The DaemonSet already tolerates everything.
-    const pod = (ofKind('DaemonSet')[0].spec as {
-      template: { spec: { tolerations: unknown; nodeSelector: Record<string, string> } }
-    }).template.spec
-    expect(pod.tolerations).toEqual([{ operator: 'Exists' }])
-    expect(pod.nodeSelector).toEqual({ 'yaac.node-pool': 'sessions' })
+    const spec = (ofKind('DaemonSet')[0].spec as { template: { spec: Record<string, unknown> } })
+      .template.spec
+    expect(spec).not.toHaveProperty('nodeSelector')
   })
 
   it('takes the installer image from the registry, never the host engine', async () => {

@@ -39,15 +39,26 @@ vi.mock('@kubernetes/client-node', async (importOriginal) => {
   }
 })
 
+// The live-list fallback's process boundary.
+vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
+  ...(await importOriginal<typeof kubectlModule>()),
+  kubectlGetJson: vi.fn(),
+}))
+
 import {
   ClusterCache,
   LABEL_PROJECT,
   LABEL_TOOL,
   getActiveClusterCache,
   k8sNamespace,
+  readWorkspaceJobs,
+  readWorkspacePods,
   setActiveClusterCache,
   workspaceIdLabels,
+  type PodInfo,
 } from '#drivers/k8s/substrate'
+import { kubectlGetJson } from '#drivers/k8s/substrate/kubectl'
+import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
 // Setup values and a reset hook, not units under test.
 import { _resetK8sClientForTests } from '#drivers/k8s/substrate/client'
 import type { DeltaSource } from '#drivers/k8s/substrate/cluster-cache'
@@ -109,6 +120,7 @@ function rawPod(name: string, project = 'proj'): unknown {
         [JOB_NAME_LABEL]: `yaac-${project}-${name}`,
         ...workspaceIdLabels(`sid-${name}`),
         [LABEL_PROJECT]: project,
+        'yaac.project-id': `id-${project}`,
         [LABEL_TOOL]: 'claude',
       },
       creationTimestamp: '2026-07-21T00:00:00Z',
@@ -432,5 +444,46 @@ describe('setActiveClusterCache', () => {
 describe('getActiveClusterCache', () => {
   it('is null outside the server, so callers fall back to one-shot lists', () => {
     expect(getActiveClusterCache()).toBeNull()
+  })
+})
+
+/** A published cache whose informers report `healthy`. */
+function stubCache(healthy: boolean): ClusterCache {
+  return {
+    healthy: () => healthy,
+    workspacePods: (project?: string) => [{ podName: `cached-${project ?? 'all'}` } as PodInfo],
+    workspaceJobs: () => [{ jobName: 'cached-job' }],
+  } as unknown as ClusterCache
+}
+
+describe('readWorkspacePods', () => {
+  it('answers from a healthy cache, scoped to the project, without listing', async () => {
+    setActiveClusterCache(stubCache(true))
+    expect((await readWorkspacePods('demo')).map((p) => p.podName)).toEqual(['cached-demo'])
+    expect(vi.mocked(kubectlGetJson)).not.toHaveBeenCalled()
+  })
+
+  // Unseeded, a cache reads as an empty cluster; with a dropped watch, a
+  // stale one.
+  it.each([['no cache', null], ['an unhealthy cache', stubCache(false)]])(
+    'lists live past %s', async (_case, cache) => {
+      setActiveClusterCache(cache)
+      vi.mocked(kubectlGetJson).mockResolvedValue({ items: [] })
+      await expect(readWorkspacePods('demo')).resolves.toEqual([])
+      expect(vi.mocked(kubectlGetJson).mock.calls[0][0].join(' ')).toMatch(/^get pods .*yaac\.project=demo$/)
+    },
+  )
+})
+
+describe('readWorkspaceJobs', () => {
+  it('answers from a healthy cache, and lists live past an unhealthy one', async () => {
+    setActiveClusterCache(stubCache(true))
+    expect((await readWorkspaceJobs()).map((j) => j.jobName)).toEqual(['cached-job'])
+    expect(vi.mocked(kubectlGetJson)).not.toHaveBeenCalled()
+
+    setActiveClusterCache(stubCache(false))
+    vi.mocked(kubectlGetJson).mockResolvedValue({ items: [] })
+    await expect(readWorkspaceJobs()).resolves.toEqual([])
+    expect(vi.mocked(kubectlGetJson).mock.calls[0][0].slice(0, 2)).toEqual(['get', 'jobs'])
   })
 })

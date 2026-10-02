@@ -21,7 +21,6 @@ const cacheStub = {
 
 vi.mock('#drivers/k8s/substrate', () => ({
   ClusterCache: class { constructor() { return cacheStub } },
-  ensurePriorityClasses: vi.fn().mockResolvedValue(undefined),
   kubectlApply: vi.fn(() => { order.push('wall'); return Promise.resolve() }),
   invalidateRelayAddr: vi.fn(),
   setActiveClusterCache: vi.fn((c: unknown) => { order.push(c ? 'cache.registered' : 'cache.cleared') }),
@@ -30,9 +29,11 @@ vi.mock('#drivers/k8s/cluster', () => ({
   buildServerIngressNpManifest: vi.fn((cidrs: string[]) => ({ kind: 'NetworkPolicy', cidrs })),
   buildProxyEgressNpManifest: vi.fn((cidrs: string[]) => ({ kind: 'NetworkPolicy', proxyEgress: cidrs })),
   ensureMainRegistry: vi.fn().mockResolvedValue(undefined),
-  ensureNamespace: vi.fn(() => { order.push('bootstrap'); return Promise.resolve() }),
   nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.2/32', '10.89.0.3/32']),
   gcOrphanProjectRegistries: vi.fn().mockResolvedValue(undefined),
+}))
+vi.mock('#drivers/k8s/images', () => ({
+  deleteLeakedBuilderPods: vi.fn(() => { order.push('bootstrap'); return Promise.resolve() }),
 }))
 vi.mock('#drivers/k8s/forwarders', () => ({
   PortDetectorManager: class { sync = vi.fn(); stopAll = vi.fn() },
@@ -50,7 +51,8 @@ vi.mock('#drivers/k8s/workspaces', () => ({
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import { startK8sDriver, stopK8sDriver, releaseK8sDriver, triggerFor } from '#drivers/k8s/lifecycle'
-import { ensureNamespace } from '#drivers/k8s/cluster'
+import { deleteLeakedBuilderPods } from '#drivers/k8s/images'
+import { ensureMainRegistry } from '#drivers/k8s/cluster'
 import { kubectlApply } from '#drivers/k8s/substrate'
 import { _resetWorkspaceListChangedForTests, onWorkspaceListChanged } from '#notify'
 
@@ -141,13 +143,22 @@ describe('startK8sDriver', () => {
   })
 
   it('attaches even when the cluster bootstrap fails', async () => {
-    vi.mocked(ensureNamespace).mockRejectedValueOnce(new Error('no cluster'))
+    vi.mocked(ensureMainRegistry).mockRejectedValueOnce(new Error('no cluster'))
 
     await startK8sDriver(sinks())
 
     // A server without a working cluster still serves projects and auth, so a
     // failed bootstrap must not fail the attach.
     expect(order).toContain('attached')
+  })
+
+  it('still bootstraps the rest when the leaked builder pods cannot be deleted', async () => {
+    vi.mocked(deleteLeakedBuilderPods).mockRejectedValueOnce(new Error('forbidden'))
+
+    await startK8sDriver(sinks())
+
+    expect(vi.mocked(ensureMainRegistry)).toHaveBeenCalled()
+    expect(order).toContain('wall')
   })
 })
 

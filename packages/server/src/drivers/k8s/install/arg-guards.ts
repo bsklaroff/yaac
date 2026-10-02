@@ -1,9 +1,9 @@
 
 /**
- * `cluster install`/`cluster delete` flag checks that need no cluster,
- * binaries or kubeconfig.
+ * `cluster install` flag checks that need no cluster, binaries or
+ * kubeconfig.
  *
- * Kept apart from install.ts and delete.ts because those load
+ * Kept apart from install.ts because it loads
  * `@kubernetes/client-node`, which takes seconds (see
  * packages/cli/src/cli.ts). This module has no imports, so the CLI can
  * call `clusterArgError` before loading the command and reject a typo
@@ -13,9 +13,6 @@
 
 /** An install step failed in a way the user must resolve; message is the fix. */
 export class ClusterInstallError extends Error {}
-
-/** A delete step failed in a way the user must resolve; message is the fix. */
-export class ClusterDeleteError extends Error {}
 
 /**
  * Max `--nodes`. Every kind node is a full node container on one host, so
@@ -85,20 +82,15 @@ export function resolveNodeCount(opts: ClusterInstallArgs): number {
 }
 
 /**
- * Run the flag-only checks for a command and return the error message, or
- * null when the flags are fine.
+ * Run the flag-only install checks and return the error message, or null
+ * when the flags are fine.
  */
-export function clusterArgError(
-  command: 'install' | 'delete',
-  opts: ClusterInstallArgs = {},
-): string | null {
+export function clusterArgError(opts: ClusterInstallArgs): string | null {
   try {
-    if (command === 'install') resolveNodeCount(opts)
+    resolveNodeCount(opts)
     return null
   } catch (err) {
-    if (err instanceof ClusterInstallError || err instanceof ClusterDeleteError) {
-      return err.message
-    }
+    if (err instanceof ClusterInstallError) return err.message
     throw err
   }
 }

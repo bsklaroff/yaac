@@ -27,7 +27,7 @@ export interface CurrentCluster {
 }
 
 /** The kubeconfig's current context, or undefined when it names none. */
-export async function currentKubeContext(run: Run = execFileAsync): Promise<string | undefined> {
+async function currentKubeContext(run: Run = execFileAsync): Promise<string | undefined> {
   try {
     return (await run('kubectl', ['config', 'current-context'])).stdout.trim() || undefined
   } catch {

@@ -344,10 +344,8 @@ describe('deployServerWorkload', () => {
     expect(env.YAAC_SERVER_LOCAL_ROOT).toBe('/yaac/server-local')
     expect(env.YAAC_NODE_LOCAL_ROOT).toBe('/yaac/node-local')
     expect(env.YAAC_DRIVER).toBe('k8s')
-    // IN_CLUSTER makes the registry client dial Service DNS; the relay
-    // address is the proxy Service.
+    // IN_CLUSTER makes the registry client dial Service DNS.
     expect(env.YAAC_IN_CLUSTER).toBe('1')
-    expect(env.YAAC_RELAY_ADDR).toContain('yaac-proxy.test-ns.svc.cluster.local:')
   })
 
   it('stamps the identity install decided, not the uid of the machine running it', async () => {
@@ -739,14 +737,14 @@ describe('startClusterServer', () => {
     }
   })
 
-  it('points an origin that answers 404 at a re-install, never at recreating the cluster', async () => {
-    // A server from an older yaac is reachable but outdated; the fix is a
-    // re-install, not recreating the cluster (which loses workspaces).
+  it('reports an origin that answers but never readies, without the unreachable diagnosis', async () => {
+    // Recreating the cluster (which loses workspaces) is no fix for a
+    // server that answers.
     vi.useFakeTimers()
     try {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('{}', { status: 404 }))))
       const pending = startClusterServer()
-      const verdict = expect(pending).rejects.toThrow(/answered HTTP 404[\s\S]*yaac cluster install`\.$/)
+      const verdict = expect(pending).rejects.toThrow(/answers, but not as a ready server \(answered HTTP 404\)\.$/)
       await vi.advanceTimersByTimeAsync(61_000)
       await verdict
     } finally {

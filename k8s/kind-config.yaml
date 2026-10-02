@@ -24,11 +24,9 @@
 # worker` entries — so both extraMounts land on every node, which is what
 # keeps the PVs and the node-local path resolving when a session schedules
 # off the control plane (all kind node containers share the one host
-# filesystem). The
-# `nodes:` list must therefore stay LAST in this file, and hold exactly one
-# entry. Everything above it is cluster-scoped and kind applies it to every
-# node already: the containerd registry patch, the kubelet swap patch, and
-# disableDefaultCNI.
+# filesystem). The `nodes:` list must therefore hold exactly one entry. Everything else is
+# cluster-scoped and kind applies it to every node already: the containerd
+# registry patch, the kubelet swap patch, and disableDefaultCNI.
 #
 # Anything added to the node entry is therefore copied to every worker too,
 # so it must be a per-node property. A HOST-scoped one — extraPortMappings

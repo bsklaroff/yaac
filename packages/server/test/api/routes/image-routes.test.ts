@@ -23,7 +23,6 @@ function buildEntry(overrides: Partial<ImageBuildEntry> = {}): ImageBuildEntry {
     id: 'b1',
     tag: 'yaac-base:abc',
     layer: 'base',
-    action: 'build',
     projectSlugs: ['p'],
     reason: 'session',
     status: 'running',

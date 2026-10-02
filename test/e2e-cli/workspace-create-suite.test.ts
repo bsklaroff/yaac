@@ -1356,7 +1356,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       // The node-local sweep removes a stale opencode dir (untouched for two
       // days) and a removed project's tree, but keeps a fresh dir (a create
       // may be staging into it) and live projects' trees.
-      const kitchenTree = `${nodeLocalNodePath()}/projects/${secondPod.projectId!}`
+      const kitchenTree = `${nodeLocalNodePath()}/projects/${secondPod.projectId}`
       const opencodeData = `${kitchenTree}/opencode-data`
       const removedTree = `${nodeLocalNodePath()}/projects/${randomUUID()}`
       await execFileAsync('podman', ['exec', node, 'sh', '-c',
@@ -1365,7 +1365,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         + ` && find ${opencodeData}/dead-workspace ${removedTree} -exec touch -d '2 days ago' {} +`])
       const pods = await listWorkspacePods()
       await reapNodeLocal({
-        projectIds: new Set([secondPod.projectId!, ...pods.flatMap((p) => p.projectId ?? [])]),
+        projectIds: new Set([secondPod.projectId, ...pods.map((p) => p.projectId)]),
         workspaceIds: new Set(pods.map((p) => p.workspaceId)),
       })
       const onNode = (p: string): Promise<boolean> =>
@@ -1662,7 +1662,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       const sessionId = (JSON.parse(created.trim()) as { data?: { id?: string }; id?: string })
       const createdId = sessionId.data?.id ?? sessionId.id
       expect(createdId).toBeTruthy()
-      const nodeCopy = `${nodeLocalNodePath()}/projects/${projectId!}/opencode-data/${workspaceId}`
+      const nodeCopy = `${nodeLocalNodePath()}/projects/${projectId}/opencode-data/${workspaceId}`
       const checkpoint = path.join(projectPath, 'opencode-data', workspaceId)
       const onNode = (p: string): Promise<boolean> =>
         execFileAsync('podman', ['exec', node, 'test', '-e', p]).then(() => true, () => false)

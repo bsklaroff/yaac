@@ -1,4 +1,5 @@
 import { testEnv } from '@yaac/shared/env'
+import { registryHasTag, registryRef } from '#drivers/k8s/container'
 
 /**
  * The error for a yaac-shipped image missing from the registry. These
@@ -15,4 +16,10 @@ export function missingPrebuiltImage(what: string, tag: string): Error {
       ? 'Restart the test run so the global setup can build it.'
       : 'Build and push it with `yaac cluster install`.'),
   )
+}
+
+/** The in-cluster ref of a yaac-shipped image, or `missingPrebuiltImage`. */
+export async function prebuiltRef(what: string, tag: string): Promise<string> {
+  if (await registryHasTag(tag)) return registryRef(tag)
+  throw missingPrebuiltImage(what, tag)
 }

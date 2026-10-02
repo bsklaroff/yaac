@@ -49,9 +49,7 @@ vi.mock('#drivers/k8s/container/registry', async (importOriginal) => ({
 }))
 
 import { buildBuiltinImages } from '#drivers/k8s/install'
-import { listImageBuilds, resolveTrustedLayers } from '#drivers/k8s/image-engine'
-// State-reset hook, not a unit under test.
-import { clearAllImageBuildsForTests } from '#drivers/k8s/image-engine/image-builds'
+import { resolveTrustedLayers } from '#drivers/k8s/image-engine'
 // Setup values, not units under test.
 import { TRUSTED_PARENT_COMPRESSION } from '#drivers/k8s/install/builtin-images'
 import { BUILDER_LOCAL_TAG } from '#drivers/k8s/cluster/builder-image'
@@ -67,7 +65,6 @@ const pushed = (): string[] =>
 
 beforeEach(() => {
   vi.clearAllMocks()
-  clearAllImageBuildsForTests()
   mockExecFile.mockResolvedValue({ stdout: '', stderr: '' })
   mockRunTrackedPodman.mockResolvedValue(undefined)
   mockReap.mockResolvedValue(undefined)
@@ -131,11 +128,8 @@ describe('buildBuiltinImages', () => {
     expect(mockExecFile.mock.calls.some(([, a]) => a[0] === 'pull')).toBe(false)
   })
 
-  it('marks a failed image build failed in the registry, and rethrows', async () => {
-    // The proxy and netd builds appear in the webapp's build list. A failed
-    // build must show as failed, and install must fail too.
+  it('fails the install when a shipped image fails to build', async () => {
     mockRegistryHasTag.mockResolvedValue(false)
-    // Only the proxy build fails; the trusted chain has no build row.
     mockRunTrackedPodman.mockImplementation((_args: string[], opts: { tag: string }) =>
       opts.tag.startsWith('yaac-proxy:')
         ? Promise.reject(new Error('podman build exited with code 1'))
@@ -143,10 +137,6 @@ describe('buildBuiltinImages', () => {
 
     await expect(buildBuiltinImages({ log: vi.fn() }))
       .rejects.toThrow('podman build exited with code 1')
-
-    const failed = listImageBuilds().filter((e) => e.status === 'failed')
-    expect(failed).not.toHaveLength(0)
-    expect(failed[0].error).toContain('exited with code 1')
   })
 
   it('refuses an upstream mirror built for another architecture', async () => {

@@ -23,14 +23,14 @@ export const NODE_TASKSMAX_CONTENT = '[Manager]\nDefaultTasksMax=infinity\n'
 /** What `systemctl show -p DefaultTasksMax --value` answers once applied. */
 export const NODE_TASKSMAX_LIVE = 'infinity'
 
-export const NODE_MIN_FREE_KBYTES = 262144
+const NODE_MIN_FREE_KBYTES = 262144
 /**
  * inotify limits. On kind all nodes share the host's pool, and the default
  * 128 instances is too few for a multi-node cluster: netd's Envoy then
  * crashes (SIGSEGV on `inotify_fd_ >= 0`) and workspaces lose egress.
  */
-export const NODE_INOTIFY_MAX_USER_INSTANCES = 1024
-export const NODE_INOTIFY_MAX_USER_WATCHES = 524288
+const NODE_INOTIFY_MAX_USER_INSTANCES = 1024
+const NODE_INOTIFY_MAX_USER_WATCHES = 524288
 
 /**
  * One sysctl the installer applies. `raise` writes only when the live value

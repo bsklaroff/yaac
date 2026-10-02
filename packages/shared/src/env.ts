@@ -208,23 +208,6 @@ export const env = {
   },
 
   /**
-   * `YAAC_RELAY_ADDR` — `host:port` of the proxy's stream relay, stated by
-   * the server Deployment. Unset → the proxy Service's DNS name in this
-   * install's namespace (the same address).
-   */
-  get relayAddr(): { host: string; port: number } | undefined {
-    const raw = process.env.YAAC_RELAY_ADDR
-    if (!raw || raw.trim() === '') return undefined
-    const idx = raw.lastIndexOf(':')
-    const host = idx > 0 ? raw.slice(0, idx) : ''
-    const port = Number(raw.slice(idx + 1))
-    if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
-      throw new Error(`YAAC_RELAY_ADDR must be host:port, got ${raw}`)
-    }
-    return { host, port }
-  },
-
-  /**
    * `YAAC_SECRETS` — the keys the server encrypts stored secrets with, as
    * `"<version>:<secret>,<version>:<secret>"`. New writes use the first
    * entry; the rest still decrypt older rows, so rotating a key needs only

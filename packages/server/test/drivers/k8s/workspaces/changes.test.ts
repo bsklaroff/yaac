@@ -6,7 +6,7 @@ vi.mock('#drivers/k8s/substrate/stream-relay', async (importOriginal) => ({
   podExec: vi.fn(),
 }))
 import type * as StreamRelay from '#drivers/k8s/substrate/stream-relay'
-import { RelayDialError, RelayExecError, podExec } from '#drivers/k8s/substrate/stream-relay'
+import { RelayDialError, podExec } from '#drivers/k8s/substrate/stream-relay'
 import { getWorkspaceChanges } from '#drivers/k8s/workspaces/changes'
 import { CHANGES_BASE_UNRESOLVED, WorkspaceExecError } from '#drivers/contract'
 
@@ -102,15 +102,14 @@ describe('getWorkspaceChanges', () => {
 
   // Callers map the exit code (e.g. a bad base → 400), so it must arrive
   // as the contract's error type.
-  it('restates a nonzero exit as the contract error, carrying the code', async () => {
+  it('passes a nonzero exit through as the contract error, carrying the code', async () => {
     mockExec.mockRejectedValue(
-      new RelayExecError('command exited 4 in yaac-proj-abc: ', CHANGES_BASE_UNRESOLVED, '', ''),
+      new WorkspaceExecError('command exited 4 in yaac-proj-abc: ', CHANGES_BASE_UNRESOLVED, '', ''),
     )
 
     const err = await getWorkspaceChanges('yaac-proj-abc', 'no-such-branch').catch((e: unknown) => e)
     expect(err).toBeInstanceOf(WorkspaceExecError)
     expect(err).toMatchObject({ code: CHANGES_BASE_UNRESOLVED })
-    expect((err as WorkspaceExecError).cause).toBeInstanceOf(RelayExecError)
   })
 
   // A transport failure says nothing about the base, so it must not look

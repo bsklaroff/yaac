@@ -35,24 +35,20 @@ started by one of them could delete a blob another run is pushing. One pass:
    has a current image, and losing it would cost a rebuild.
 
    Both reads are strict. If the workload list cannot be read, the pass
-   stops. If any project's chain cannot be resolved, step 6 is skipped for
+   stops. If any project's chain cannot be resolved, step 5 is skipped for
    every project: the `yaac-base` repo holds every project's
    `Dockerfile.yaac` layer side by side, so keeping the newest two protects
    none of them in particular. The usual cause, a non-layered
    `Dockerfile.user` mid-edit, breaks every chain at once.
-2. **Finishes an owed restart.** A collect leaves a marker file in the
-   registry's storage until the restart after it succeeds. A marker still
-   there means a restart was lost (a failed rollout, or the server died
-   mid-collect), so the registry is restarted now.
-3. **Stands down** if the registry is taking a push: an upload in progress,
+2. **Stands down** if the registry is taking a push: an upload in progress,
    or any link file written in the last 5 minutes.
-4. **Retires step-cache tags** that no build has written for one
+3. **Retires step-cache tags** that no build has written for one
    `--cache-ttl` (docs/trust-split-builds.md "Collecting the step cache").
-5. **Removes orphaned project repos**: `yaac-proj-<id>`, `yaac-user-<id>`
+4. **Removes orphaned project repos**: `yaac-proj-<id>`, `yaac-user-<id>`
    and `yaac-buildcache-<id>` whose id belongs to no live project, unless a
    workload still names one of their tags. Repos younger than 10 minutes
    are skipped, since a newly added project may be pushing its first image.
-6. **Retires old content-hash generations** of every `yaac-*` repo with
+5. **Retires old content-hash generations** of every `yaac-*` repo with
    `buildRegistryRetentionScript` (the retention the project registries
    use), passing the live set as tags it must never retire. Beyond the live
    set, the newest two per repo are kept for rollback (project registries
@@ -60,12 +56,13 @@ started by one of them could delete a blob another run is pushing. One pass:
    16-hex tag, so they are never candidates. Neither are `yaac-test-*`
    repos: an e2e run uses them from its global setup to its last file,
    often with no pod naming them.
-7. **Collects** blobs with the registry's `garbage-collect
-   --delete-untagged`, then restarts the registry, but only if something
-   was retired and the push signals and this server's own builds are still
-   quiet. docs/trust-split-builds.md explains why the collect needs no
-   maintenance window and why the restart is needed even when it fails.
-8. **Prunes the nodes** (below), against a fresh read of the workloads.
+6. **Collects** blobs with the registry's `garbage-collect
+   --delete-untagged`, but only if something was retired and the push
+   signals and this server's own builds are still quiet.
+   docs/trust-split-builds.md explains why the collect needs no maintenance
+   window. The registry runs with its blob-descriptor cache off, so a blob
+   the collect deletes is never answered from memory as still present.
+7. **Prunes the nodes** (below), against a fresh read of the workloads.
    This step runs even when the registry stood down.
 
 Retiring tags also clears the build coordinator's cache of tags it has seen
@@ -99,8 +96,7 @@ only policy for both stores:
 The server reads each node's images from `node.status.images`, which lists
 only the node's 50 largest images; smaller ones show up as the big ones go.
 An image is removed only when the registry answers 404 for every one of its
-tags. A timeout or 5xx is not proof, and the pass runs just after a registry
-restart, when slow answers are most likely.
+tags. A timeout or 5xx is not proof.
 
 The removal runs on the node. A privileged `hostPID` pod runs
 `nsenter -t 1 -m -- crictl -t 10m rmi` with the node's own `crictl`, the

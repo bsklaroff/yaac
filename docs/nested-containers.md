@@ -135,8 +135,8 @@ same node share one copy.
 node-side pod writes it and marks it complete with a `.yaac-store-done`
 file written last. It lives outside the project tree because that pod
 writes it as root, and the server's uid could not delete it on project
-removal. A one-shot cleanup pod removes a project's node-local tree
-instead.
+removal. The hourly node-local sweep (docs/server-in-cluster.md) removes a
+removed project's node-local tree instead.
 
 Generations are write-once. Workspace create pins the newest complete
 generation's path into the pod spec, so a running engine's store never
@@ -368,5 +368,5 @@ and admitted by the per-project NetworkPolicy.
 
 `yaac cluster check` has a warn-level `nested-mount` probe: under the
 nested securityContext, root inside the sandbox must be able to `mount -t
-tmpfs`, which the rootful engine requires. The `gvisor` gate and the
-`runtime-stamp` sweep cover all workspaces, nested or not.
+tmpfs`, which the rootful engine requires. The `gvisor` gate covers all
+workspaces, nested or not.

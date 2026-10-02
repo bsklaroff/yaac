@@ -120,10 +120,9 @@ In this order: EKS on Amazon Linux, then AKS on Ubuntu. On each:
 - The lock's lease stays. On byo the RWO claim's attach exclusivity is a
   second guard. On kind, where hostPath enforces nothing, an OFD/`flock`
   fence is still worth adding.
-- A dedicated workspace node pool. The installer DaemonSet takes a
-  `nodeSelector` and the RuntimeClasses take `tolerations`, both defaulting
-  to none. `--byo` gets a `--workspace-pool-taint` option that sets both and
-  persists across re-installs. Today install's re-apply removes a
+- A dedicated workspace node pool: a `--workspace-pool-taint` option for
+  `--byo` that puts a `nodeSelector` on the installer DaemonSet and
+  `tolerations` on the RuntimeClasses, and persists across re-installs. Today install's re-apply removes a
   toleration added with `kubectl apply` (docs/cluster-setup.md "Which nodes
   count as workspace-eligible").
 

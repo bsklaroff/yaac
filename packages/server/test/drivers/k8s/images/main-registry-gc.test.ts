@@ -98,13 +98,11 @@ interface Fixture {
   /** Called with each in-registry argv before it runs. */
   beforeExec?: (argv: string[]) => Promise<void> | void
   collect?: () => Promise<void>
-  restart?: () => Promise<void>
 }
 
 /** Every argv the pass ran inside the registry pod. */
 let execs: string[][]
 const collected = (): boolean => execs.some((a) => a.includes('garbage-collect'))
-const restarted = (): boolean => mockKubectl.mock.calls.some(([a]) => a[0] === 'rollout' && a[1] === 'restart')
 const logged = (needle: string): boolean =>
   mockServerLog.mock.calls.some((call) => String(call[0]).includes(needle))
 interface PodManifest {
@@ -155,7 +153,6 @@ function stage(f: Fixture = {}): void {
       const { stdout } = await run(real[0], real.slice(1))
       return { stdout, stderr: '' }
     }
-    if (args[0] === 'rollout' && args[1] === 'restart') await f.restart?.()
     // The prune pod's log, as the node's crictl prints it.
     if (args[0] === 'logs') {
       const pod = prunePods().find((p) => p.metadata.name === args[1])
@@ -238,12 +235,10 @@ describe('reconcileMainRegistryGc', () => {
       `${USER}:${hex('2')}`, `${USER}:${hex('4')}`, `${USER}:${hex('5')}`,
       wantedBase, wantedTools,
     ].sort())
-    // Untagging frees no disk until garbage-collect runs, and the restart
-    // clears cached blob descriptors that would break a re-push. The collect
-    // has an in-container timeout, since killing the exec client would not
+    // Untagging frees no disk until garbage-collect runs. The collect has
+    // an in-container timeout, since killing the exec client would not
     // stop it.
     expect(execs.find((a) => a.includes('garbage-collect'))?.[0]).toBe('timeout')
-    expect(restarted()).toBe(true)
     expect(logged('retired 4 stale tag(s) and collected their blobs')).toBe(true)
   })
 
@@ -345,7 +340,7 @@ describe('reconcileMainRegistryGc', () => {
     expect(pods[0].spec.containers[0].image).toMatch(/@sha256:[0-9a-f]{64}$/)
     expect(pods[0].spec.containers[0].securityContext).toEqual({ privileged: true, runAsUser: 0 })
     expect(pods[0].spec.tolerations).toEqual([{ operator: 'Exists' }])
-    expect(logged('n1: removed 2 of 2 retired image(s)')).toBe(true)
+    expect(logged('n1: removed 2 retired image(s)')).toBe(true)
   })
 
   it('keeps a node\'s image unless the registry answers that it is gone', async () => {
@@ -359,7 +354,7 @@ describe('reconcileMainRegistryGc', () => {
     expect(prunePods().flatMap(prunedRefs)).toEqual([ref(`yaac-old:${hex('6')}`)])
   })
 
-  it('restarts the registry even when the collect fails part-way through', async () => {
+  it('logs a collect that fails part-way through', async () => {
     await pushTag(`yaac-tools:${hex('a')}`, 30)
     await pushTag(`yaac-tools:${hex('9')}`, 20)
     await pushTag(`yaac-tools:${hex('8')}`, 10)
@@ -367,35 +362,8 @@ describe('reconcileMainRegistryGc', () => {
 
     await runPass()
 
-    // A failed collect may have deleted blobs, so the restart is still
-    // needed, and a later sweep would not find anything to redo.
-    expect(restarted()).toBe(true)
     expect(logged('collect timed out')).toBe(true)
     expect(logged('collected their blobs')).toBe(false)
-  })
-
-  it('leaves the collect marker for the next sweep when the restart fails, and finishes it first', async () => {
-    await pushTag(`yaac-tools:${hex('a')}`, 30)
-    await pushTag(`yaac-tools:${hex('9')}`, 20)
-    await pushTag(`yaac-tools:${hex('8')}`, 10)
-    stage({ restart: () => Promise.reject(new Error('rollout failed')) })
-
-    await runPass()
-
-    // The marker is cleared only after a successful restart.
-    const marker = path.join(storage, '.yaac-collect-started')
-    await expect(fs.access(marker)).resolves.toBeUndefined()
-    expect(logged('could not be restarted')).toBe(true)
-
-    // The marker is on disk, so the next pass restarts the registry even if
-    // it then skips GC for an in-flight push.
-    await startUpload()
-    mockKubectl.mockClear()
-    stage()
-    await runPass(Date.now() + MAIN_REGISTRY_GC_INTERVAL_MS)
-    expect(restarted()).toBe(true)
-    await expect(fs.access(marker)).rejects.toThrow()
-    expect(logged('previous collect went unfinished')).toBe(true)
   })
 
   it('stands down while a push is in flight rather than untagging under it', async () => {
@@ -409,7 +377,6 @@ describe('reconcileMainRegistryGc', () => {
 
     expect(await survivors()).toContain(`yaac-tools:${hex('a')}`)
     expect(collected()).toBe(false)
-    expect(restarted()).toBe(false)
     expect(logged('pushes in flight')).toBe(true)
   })
 
@@ -421,11 +388,9 @@ describe('reconcileMainRegistryGc', () => {
 
     await runPass()
 
-    // The tags are already untagged and no blobs were deleted, so no
-    // restart is needed.
+    // The tags are already untagged; the next pass collects their blobs.
     expect(await survivors()).not.toContain(`yaac-tools:${hex('a')}`)
     expect(collected()).toBe(false)
-    expect(restarted()).toBe(false)
   })
 
   it('leaves the registry alone when nothing aged out', async () => {
@@ -435,7 +400,6 @@ describe('reconcileMainRegistryGc', () => {
     await runPass()
 
     expect(collected()).toBe(false)
-    expect(restarted()).toBe(false)
     expect(mockServerLog).not.toHaveBeenCalled()
   })
 
@@ -472,7 +436,7 @@ describe('reconcileMainRegistryGc', () => {
 
     release()
     await _mainRegistryGcSettledForTests()
-    expect(restarted()).toBe(true)
+    expect(logged('collected their blobs')).toBe(true)
   })
 
   it('is a no-op on test-isolated installs', async () => {

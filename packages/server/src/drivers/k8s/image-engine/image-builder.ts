@@ -60,7 +60,7 @@ export async function contextHash(dir: string): Promise<string> {
   return hasher.digest('hex').slice(0, 16)
 }
 
-export interface BuildOptions {
+interface BuildOptions {
   onLog?: (line: string) => void
 }
 
@@ -137,7 +137,7 @@ export interface ImageLayer {
 }
 
 /** The yaac-shipped layers, in dependency order. */
-export interface TrustedLayers {
+interface TrustedLayers {
   base: ImageLayer
   tools: ImageLayer
   nestable: ImageLayer

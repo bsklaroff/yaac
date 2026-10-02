@@ -51,7 +51,6 @@ vi.mock('@yaac/server/drivers/k8s/image-engine/image-builder', () => ({
 
 vi.mock('@yaac/server/drivers/k8s/images/build-coordinator', () => ({
   ensureImage: vi.fn().mockResolvedValue('yaac-test-image'),
-  pushImageShared: vi.fn().mockResolvedValue('localhost:5000/yaac-test-image'),
 } satisfies Partial<typeof buildCoordinatorModule>))
 
 vi.mock('@yaac/server/drivers/k8s/substrate/kubectl', () => ({
@@ -96,7 +95,7 @@ vi.mock('@yaac/server/lib/allowed-hosts', async (importOriginal) => {
   }
 })
 
-// Spread the real module so `instanceof RelayExecError` checks still work.
+// Spread the real module so `instanceof RelayDialError` checks still work.
 vi.mock('@yaac/server/drivers/k8s/substrate/stream-relay', async (importOriginal) => ({
   ...await importOriginal<typeof streamRelayModule>(),
   bootStreamd: vi.fn().mockResolvedValue(undefined),
@@ -261,7 +260,7 @@ import { retoolSpare } from '@yaac/server/domain/workspaces/spare-pool'
 import { workspaceCreate } from '#commands/workspace-create'
 import { attachWorkspacePty } from '#commands/ws-terminal'
 import { ensureKubernetes } from '@yaac/server/drivers/k8s/substrate/kubectl'
-import { ensureImage, pushImageShared } from '@yaac/server/drivers/k8s/images/build-coordinator'
+import { ensureImage } from '@yaac/server/drivers/k8s/images/build-coordinator'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/drivers/k8s/substrate/kubectl'
 import { containerExec } from '@yaac/server/drivers/k8s/substrate/exec'
 import { proxyServiceClusterIp } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
@@ -377,7 +376,6 @@ describe('createWorkspace', () => {
     )) as never)
     vi.mocked(ensureKubernetes).mockResolvedValue(undefined)
     vi.mocked(ensureImage).mockResolvedValue('yaac-test-image')
-    vi.mocked(pushImageShared).mockResolvedValue('localhost:5000/yaac-test-image')
     vi.mocked(resolveProjectConfig).mockResolvedValue({})
     vi.mocked(resolveProjectCredential).mockResolvedValue({ kind: 'https', token: 'token' } as never)
     vi.mocked(resolveAllowedHosts).mockReturnValue(['*'])
@@ -672,7 +670,7 @@ describe('createWorkspace', () => {
     expect(manifest.spec.template.spec.restartPolicy).toBe('Never')
 
     const container = manifest.spec.template.spec.containers[0]
-    expect(container.image).toBe('localhost:5000/yaac-test-image')
+    expect(container.image).toBe('yaac-registry.yaac.svc.cluster.local:5000/yaac-test-image')
     expect(container.env).toEqual(expect.arrayContaining([
       { name: 'YAAC_WORKSPACE_ID', value: 'abcd1234' },
       { name: 'SSL_CERT_FILE', value: '/etc/yaac/certs/proxy-ca.pem' },
@@ -832,7 +830,6 @@ describe('createWorkspace', () => {
     })
     expect(messages).toContain('Fetching latest from remote...')
     expect(messages).toContain('Ensuring container images are built...')
-    expect(messages).toContain('Publishing the session image to the local registry...')
     expect(messages).toContain('Creating workspace from main...')
     expect(messages).toContain('Ensuring proxy deployment...')
     expect(messages.some((m) => m.startsWith('Creating session job yaac-demo-'))).toBe(true)

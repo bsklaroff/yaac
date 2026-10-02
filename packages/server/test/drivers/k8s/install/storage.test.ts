@@ -121,6 +121,11 @@ function fakeRetry(args: string[]): Promise<{ stdout: string; stderr: string }> 
     }
   }
   if (args[0] === 'logs') return Promise.resolve({ stdout: binderLogs, stderr: '' })
+  if (args[0] === 'wait') {
+    const pending = args.filter((a) => a.startsWith('pvc/'))
+      .filter((a) => claims.get(a.slice(4))?.status?.phase !== 'Bound')
+    if (pending.length > 0) return Promise.reject(new Error('timed out waiting for the condition'))
+  }
   return Promise.resolve({ stdout: '', stderr: '' })
 }
 
@@ -237,22 +242,15 @@ describe('ensureStorageClaims', () => {
   })
 
   it('static: fails with the claim named when it never binds', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] })
-    try {
-      mockApply.mockResolvedValue(undefined)
-      claims.set('yaac-global', {
-        kind: 'PersistentVolumeClaim', metadata: { name: 'yaac-global' }, spec: {}, status: { phase: 'Pending' },
-      })
-      const verdict = expect(ensureStorageClaims({ shape: staticShape() }))
-        .rejects.toThrow(/yaac-global claim did not bind/)
-      // The host dirs are real I/O, so advance the clock only once the
-      // claims are applied.
-      await vi.waitFor(() => { expect(mockApply).toHaveBeenCalledTimes(4) })
-      for (let i = 0; i < 200; i += 1) await vi.advanceTimersByTimeAsync(1_000)
-      await verdict
-    } finally {
-      vi.useRealTimers()
-    }
+    mockApply.mockResolvedValue(undefined)
+    claims.set('yaac-global', {
+      kind: 'PersistentVolumeClaim', metadata: { name: 'yaac-global' }, spec: {}, status: { phase: 'Pending' },
+    })
+    await expect(ensureStorageClaims({ shape: staticShape() }))
+      .rejects.toThrow(/yaac-global claim did not bind within 60s \(phase Pending\)/)
+    expect(mockWithRetry).toHaveBeenCalledWith(expect.arrayContaining([
+      'wait', 'pvc/yaac-global', 'pvc/yaac-server-local', '--for=jsonpath={.status.phase}=Bound',
+    ]), expect.anything())
   })
 
   it('classes: provisions through the named classes, binds by consuming, and pins what bound', async () => {

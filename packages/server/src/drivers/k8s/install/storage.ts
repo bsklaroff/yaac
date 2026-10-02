@@ -421,21 +421,21 @@ async function runBinder(
   }
 }
 
+/** Wait for every claim to bind, then log the volume each bound to. */
 async function waitForBound(claims: ClaimShape[], log: (message: string) => void): Promise<void> {
-  const deadline = Date.now() + BIND_TIMEOUT_MS
+  // A failed wait is judged by the claims' phases below.
+  await kubectlWithRetry([
+    'wait', ...claims.map((c) => `pvc/${c.claimName}`), '-n', k8sNamespace(),
+    '--for=jsonpath={.status.phase}=Bound', `--timeout=${String(BIND_TIMEOUT_MS / 1000)}s`,
+  ], { timeout: BIND_TIMEOUT_MS + 10_000, maxAttempts: 1 }).catch(() => undefined)
   for (const claim of claims) {
-    let bound: RawPvc | null
-    for (;;) {
-      bound = await readClaim(claim.claimName)
-      if (bound?.status?.phase === 'Bound') break
-      if (Date.now() > deadline) {
-        throw new Error(
-          `the ${claim.claimName} claim did not bind within ${String(BIND_TIMEOUT_MS / 1000)}s `
-          + `(phase ${bound?.status?.phase ?? 'absent'}). Inspect it with `
-          + `\`kubectl -n ${k8sNamespace()} describe pvc ${claim.claimName}\`.`,
-        )
-      }
-      await new Promise((r) => setTimeout(r, 500))
+    const bound = await readClaim(claim.claimName)
+    if (bound?.status?.phase !== 'Bound') {
+      throw new Error(
+        `the ${claim.claimName} claim did not bind within ${String(BIND_TIMEOUT_MS / 1000)}s `
+        + `(phase ${bound?.status?.phase ?? 'absent'}). Inspect it with `
+        + `\`kubectl -n ${k8sNamespace()} describe pvc ${claim.claimName}\`.`,
+      )
     }
     log(`Storage claim ${claim.claimName} bound (${bound.spec?.volumeName ?? '?'}).`)
   }
@@ -473,7 +473,7 @@ async function pinVolume(claim: ClaimShape, installId: string): Promise<void> {
  * including `soft`/`hard`, are kept (docs/cluster-setup.md "Bring your
  * own cluster").
  */
-export function withNfsCoherence(options: string[]): string[] {
+function withNfsCoherence(options: string[]): string[] {
   const superseded = /^(actimeo|acregmin|acregmax|acdirmin|acdirmax)=|^noac$/
   return [...options.filter((o) => !superseded.test(o)), 'actimeo=1']
 }

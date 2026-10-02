@@ -1,14 +1,13 @@
 /**
- * Builds and pushes each project's image chain (from `resolveImageChain`),
- * running at most one build or push per tag at a time. Tags are content
+ * Builds each project's image chain (from `resolveImageChain`), running at
+ * most one build per tag at a time. Tags are content
  * hashes, so concurrent creates or projects needing the same layer share
  * one build. Module-level maps are enough locking because the server is a
  * single process. The first caller owns the build row; later callers
  * attach their project and await the same promise.
  */
-import { engineForLayer } from './build-engine'
-import { BuilderPodLease } from './builder-pod'
-import { pushImageToRegistry, registryHasTag, registryRef } from '#drivers/k8s/container'
+import { BuilderPodLease, buildLayerInPod } from './builder-pod'
+import { registryHasTag } from '#drivers/k8s/container'
 import { serverLog } from '#log'
 import type { ImageLayerName } from '@yaac/shared/types'
 import type { ProjectRef } from '#drivers/contract'
@@ -19,6 +18,7 @@ import {
   type ImageBuildReason,
   type ImageLayer,
   ingestImageBuildLine,
+  missingPrebuiltImage,
   registerImageBuild,
   resolveImageChain,
 } from '#drivers/k8s/image-engine'
@@ -33,24 +33,32 @@ interface BuildContext {
   lease: BuilderPodLease
 }
 
+/**
+ * The yaac-shipped layers, built and pushed by `yaac cluster install`, so
+ * the server only looks them up (docs/trust-split-builds.md). Every other
+ * layer runs user- or agent-editable RUN steps and builds in a sandboxed
+ * builder pod. This is an allowlist, so a new layer name is sandboxed by
+ * default; `resolveImageChain()` assigns these names only to the
+ * yaac-shipped Dockerfiles.
+ */
+const TRUSTED_LAYERS: ReadonlySet<ImageLayerName> = new Set(['base', 'tools', 'nestable'])
+
 const inflightBuilds = new Map<string, { id: string; promise: Promise<void> }>()
-const inflightPushes = new Map<string, Promise<string>>()
 
 /**
- * Tags confirmed to be in the registry during this server run (built, or
- * pushed). Tags are content hashes and never change, so each needs checking
- * only once. If the registry is wiped mid-run, the next pod fails fast with
+ * Tags confirmed to be in the registry during this server run. Tags are
+ * content hashes and never change, so each needs checking only once. If
+ * the registry is wiped mid-run, the next pod fails fast with
  * ErrImagePull. `forgetVerifiedTags` clears them after GC.
  */
 const realizedTags = new Set<string>()
-const pushedTags = new Set<string>()
 
 /**
- * True while this server is building or pushing an image. Builds write to
- * the registry, so main registry GC skips its collect while this is true.
+ * True while this server is building an image. Builds write to the
+ * registry, so main registry GC skips its collect while this is true.
  */
 export function imageWorkInFlight(): boolean {
-  return inflightBuilds.size > 0 || inflightPushes.size > 0
+  return inflightBuilds.size > 0
 }
 
 /**
@@ -59,14 +67,13 @@ export function imageWorkInFlight(): boolean {
  */
 export function forgetVerifiedTags(): void {
   realizedTags.clear()
-  pushedTags.clear()
 }
 
 /**
  * Build one layer, joining any in-flight build of the same tag. All callers
  * share the outcome, including a failure.
  */
-export function buildLayerShared(layer: ImageLayer, ctx: BuildContext): Promise<void> {
+function buildLayerShared(layer: ImageLayer, ctx: BuildContext): Promise<void> {
   const existing = inflightBuilds.get(layer.tag)
   if (existing) {
     attachImageBuildProject(existing.id, ctx.project)
@@ -76,7 +83,6 @@ export function buildLayerShared(layer: ImageLayer, ctx: BuildContext): Promise<
   const id = registerImageBuild({
     tag: layer.tag,
     layer: layer.name,
-    action: 'build',
     project: ctx.project,
     reason: ctx.reason,
   })
@@ -92,8 +98,10 @@ async function runBuild(
   ctx: BuildContext,
 ): Promise<void> {
   try {
+    // A missing trusted layer means a missing install, not a build to run.
+    if (TRUSTED_LAYERS.has(layer.name)) throw missingPrebuiltImage(layer.name, layer.tag)
     serverLog(`[build] starting ${layer.tag}`)
-    await engineForLayer(layer.name).build(layer, {
+    await buildLayerInPod(layer, {
       project: ctx.project,
       lease: ctx.lease,
       onLog: (line) => ingestImageBuildLine(id, line),
@@ -108,56 +116,7 @@ async function runBuild(
   }
 }
 
-/**
- * Push a built tag to the local registry, joining any in-flight push of the
- * same tag. When the tag is already there, skips the push and creates no
- * build row (the prewarm sweep calls this every tick). Returns the
- * in-cluster ref.
- */
-export async function pushImageShared(
-  tag: string,
-  ctx: { project: ProjectRef; reason: ImageBuildReason },
-  opts: { compressionFormat?: 'zstd' | 'gzip' } = {},
-): Promise<string> {
-  const existing = inflightPushes.get(tag)
-  if (existing) return existing
-
-  if (pushedTags.has(tag)) return registryRef(tag)
-  if (await registryHasTag(tag)) {
-    pushedTags.add(tag)
-    return registryRef(tag)
-  }
-
-  // Re-check after the await: another caller may have started the push.
-  const raced = inflightPushes.get(tag)
-  if (raced) return raced
-
-  const id = registerImageBuild({
-    tag,
-    layer: 'push',
-    action: 'push',
-    project: ctx.project,
-    reason: ctx.reason,
-  })
-  const promise = pushImageToRegistry(tag, {
-    onLog: (line) => ingestImageBuildLine(id, line),
-    compressionFormat: opts.compressionFormat,
-  })
-    .then((ref) => {
-      finishImageBuild(id)
-      pushedTags.add(tag)
-      return ref
-    })
-    .catch((err: unknown) => {
-      failImageBuild(id, err instanceof Error ? err.message : String(err))
-      throw err
-    })
-    .finally(() => inflightPushes.delete(tag))
-  inflightPushes.set(tag, promise)
-  return promise
-}
-
-export interface EnsureImageOpts {
+interface EnsureImageOpts {
   /** What triggered the build; shown in the webapp's build list. */
   reason?: ImageBuildReason
   /** Fired before each missing layer starts building (1-based index). */
@@ -225,10 +184,8 @@ export async function ensureImage(
   return finalTag
 }
 
-/** Test helper: forget all in-flight builds, pushes, and verified tags. */
+/** Test helper: forget all in-flight builds and verified tags. */
 export function _clearBuildCoordinatorForTests(): void {
   inflightBuilds.clear()
-  inflightPushes.clear()
   realizedTags.clear()
-  pushedTags.clear()
 }

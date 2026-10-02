@@ -10,16 +10,20 @@ vi.mock('#drivers/k8s/substrate/kubectl', () => ({
   kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
+const mockLog = vi.hoisted(() => vi.fn())
+vi.mock('#log', () => ({ serverLog: mockLog }))
+
 import {
   LABEL_DATA_DIR_HASH,
   LABEL_PREWARMED,
   LABEL_PROJECT,
+  LABEL_PROJECT_ID,
   LABEL_TOOL,
+  LABEL_WORKSPACE_ID,
   findWorkspacePod,
   isPrewarmed,
   listWorkspaceJobs,
   listWorkspacePods,
-  runPodToCompletion,
   workspaceIdFromJobName,
   workspaceJobName,
   workspaceIdLabels,
@@ -27,7 +31,7 @@ import {
 } from '#drivers/k8s/substrate'
 // Internal, for fixtures only.
 import { JOB_NAME_LABEL } from '#drivers/k8s/substrate/pods'
-import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/substrate/kubectl'
+import { kubectlGetJson } from '#drivers/k8s/substrate/kubectl'
 
 const mockGetJson = vi.mocked(kubectlGetJson)
 
@@ -81,6 +85,11 @@ describe('workspaceIdFromJobName', () => {
   })
 })
 
+interface RawPod {
+  metadata: { name?: string; labels: Record<string, string> }
+  status?: unknown
+}
+
 function rawPod(overrides: {
   name?: string
   labels?: Record<string, string>
@@ -96,6 +105,7 @@ function rawPod(overrides: {
         [JOB_NAME_LABEL]: 'yaac-demo-s1',
         ...workspaceIdLabels('s1'),
         [LABEL_PROJECT]: 'demo',
+        [LABEL_PROJECT_ID]: 'id-demo',
         [LABEL_TOOL]: 'codex',
         [LABEL_DATA_DIR_HASH]: 'ddh0123456789abc',
       },
@@ -140,6 +150,7 @@ describe('listWorkspacePods', () => {
       podName: 'yaac-demo-s1-x1y2z',
       workspaceId: 's1',
       projectSlug: 'demo',
+      projectId: 'id-demo',
       tool: 'codex',
       phase: 'Running',
       running: true,
@@ -149,47 +160,33 @@ describe('listWorkspacePods', () => {
     }])
   })
 
-  it('throws when a pod carries no workspace-id label', async () => {
-    mockGetJson.mockResolvedValue({
-      items: [rawPod({
-        labels: {
-          [JOB_NAME_LABEL]: 'yaac-demo-s9',
-          [LABEL_PROJECT]: 'demo',
-          [LABEL_TOOL]: 'codex',
-        },
-      })],
-    })
-    await expect(listWorkspacePods()).rejects.toThrow(
-      /malformed workspace pod list[\s\S]*yaac\.workspace-id/,
-    )
+  // The informer skips the same pods, so every reader agrees.
+  it.each([
+    ['the workspace-id label', (p: RawPod) => { delete p.metadata.labels[LABEL_WORKSPACE_ID] }],
+    ['the job-name label', (p: RawPod) => { delete p.metadata.labels[JOB_NAME_LABEL] }],
+    ['the tool label', (p: RawPod) => { delete p.metadata.labels[LABEL_TOOL] }],
+    ['the project-id label', (p: RawPod) => { delete p.metadata.labels[LABEL_PROJECT_ID] }],
+    ['metadata.name', (p: RawPod) => { delete p.metadata.name }],
+    ['status', (p: RawPod) => { delete p.status }],
+  ])('skips a pod missing %s', async (_field, strip) => {
+    const bad = rawPod() as unknown as RawPod
+    strip(bad)
+    mockGetJson.mockResolvedValue({ items: [bad, rawPod()] })
+    expect((await listWorkspacePods()).map((p) => p.podName)).toEqual(['yaac-demo-s1-x1y2z'])
   })
 
-  it('throws when the job-name label is missing', async () => {
-    mockGetJson.mockResolvedValue({
-      items: [rawPod({
-        labels: {
-          ...workspaceIdLabels('s2'),
-          [LABEL_PROJECT]: 'demo',
-          [LABEL_TOOL]: 'codex',
-        },
-      })],
-    })
-    await expect(listWorkspacePods()).rejects.toThrow(
-      /malformed workspace pod list[\s\S]*batch\.kubernetes\.io\/job-name/,
-    )
-  })
-
-  it('throws when the tool label is missing', async () => {
-    mockGetJson.mockResolvedValue({
-      items: [rawPod({
-        labels: {
-          [JOB_NAME_LABEL]: 'yaac-demo-s2',
-          ...workspaceIdLabels('s2'),
-          [LABEL_PROJECT]: 'demo',
-        },
-      })],
-    })
-    await expect(listWorkspacePods()).rejects.toThrow(/yaac\.tool/)
+  // Its Job then reads as having no pod and is reaped, so the skip must be
+  // traceable, without a line on every listing.
+  it('names a skipped pod and what it lacks, once', async () => {
+    const bad = rawPod({ name: 'yaac-demo-old-abcde' }) as unknown as RawPod
+    delete bad.metadata.labels[LABEL_PROJECT_ID]
+    mockGetJson.mockResolvedValue({ items: [bad] })
+    mockLog.mockClear()
+    await listWorkspacePods()
+    await listWorkspacePods()
+    expect(mockLog.mock.calls).toEqual([[
+      expect.stringMatching(/yaac-demo-old-abcde: missing or invalid metadata\.labels\.yaac\.project-id/),
+    ]])
   })
 
   it('marks non-Running phases and terminating pods as not running', async () => {
@@ -268,20 +265,6 @@ describe('listWorkspacePods', () => {
     expect(pods[1].terminal).toBeUndefined()
   })
 
-  it('throws when status.phase is missing', async () => {
-    const item = rawPod() as { status?: unknown }
-    delete item.status
-    mockGetJson.mockResolvedValue({ items: [item] })
-    await expect(listWorkspacePods()).rejects.toThrow(/items\[0\]\.status/)
-  })
-
-  it('throws when metadata.name is missing', async () => {
-    const item = rawPod() as { metadata: { name?: string } }
-    delete item.metadata.name
-    mockGetJson.mockResolvedValue({ items: [item] })
-    await expect(listWorkspacePods()).rejects.toThrow(/items\[0\]\.metadata\.name/)
-  })
-
   it('returns [] when the list call yields null (namespace absent)', async () => {
     mockGetJson.mockResolvedValue(null)
     await expect(listWorkspacePods()).resolves.toEqual([])
@@ -295,6 +278,7 @@ describe('findWorkspacePod', () => {
       podName: 'yaac-demo-abcd1234-x7k2p',
       workspaceId: 'abcd1234',
       projectSlug: 'demo',
+      projectId: 'id-demo',
       tool: 'claude',
       phase: 'Running',
       running: true,
@@ -357,37 +341,16 @@ describe('listWorkspaceJobs', () => {
   })
 
   // The orphan-Job sweep must not act on a Job with no workspace id.
-  it('throws when a job carries no workspace-id label', async () => {
+  it('skips a job missing its name, workspace-id or project label', async () => {
+    const meta = { creationTimestamp: '2026-06-01T00:00:00Z' }
     mockGetJson.mockResolvedValue({
-      items: [{
-        metadata: {
-          name: 'yaac-demo-s9',
-          labels: { [LABEL_PROJECT]: 'demo' },
-          creationTimestamp: '2026-06-01T00:00:00Z',
-        },
-      }],
+      items: [
+        {},
+        { metadata: { ...meta, name: 'a', labels: { [LABEL_PROJECT]: 'demo' } } },
+        { metadata: { ...meta, name: 'b', labels: workspaceIdLabels('s1') } },
+      ],
     })
-    await expect(listWorkspaceJobs()).rejects.toThrow(
-      /malformed workspace job list[\s\S]*yaac\.workspace-id/,
-    )
-  })
-
-  it('throws when a job lacks metadata.name', async () => {
-    mockGetJson.mockResolvedValue({ items: [{}] })
-    await expect(listWorkspaceJobs()).rejects.toThrow(/malformed workspace job list/)
-  })
-
-  it('throws when a job lacks the project label', async () => {
-    mockGetJson.mockResolvedValue({
-      items: [{
-        metadata: {
-          name: 'yaac-demo-s1',
-          labels: workspaceIdLabels('s1'),
-          creationTimestamp: '2026-06-01T00:00:00Z',
-        },
-      }],
-    })
-    await expect(listWorkspaceJobs()).rejects.toThrow(/yaac\.project/)
+    await expect(listWorkspaceJobs()).resolves.toEqual([])
   })
 
   it('returns [] when the list call yields null', async () => {
@@ -403,6 +366,7 @@ describe('isPrewarmed', () => {
       podName: 'yaac-p-s1-x',
       workspaceId: 's1',
       projectSlug: 'p',
+      projectId: '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
       tool: 'claude',
       phase: 'Running',
       running: true,
@@ -419,105 +383,3 @@ describe('isPrewarmed', () => {
   })
 })
 
-describe('runPodToCompletion', () => {
-  const MANIFEST = {
-    apiVersion: 'v1',
-    kind: 'Pod',
-    metadata: { name: 'yaac-oneshot', namespace: 'test-ns' },
-    spec: { restartPolicy: 'Never' },
-  }
-  const mockApply = vi.mocked(kubectlApply)
-  const mockRetry = vi.mocked(kubectlWithRetry)
-
-  beforeEach(() => {
-    mockApply.mockReset()
-    mockApply.mockResolvedValue(undefined)
-    mockRetry.mockReset()
-    mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
-    mockGetJson.mockReset()
-  })
-
-  it('deletes any stray namesake, applies, polls to Succeeded, and returns the logs', async () => {
-    mockGetJson.mockResolvedValue({ status: { phase: 'Succeeded' } })
-    mockRetry.mockImplementation((args: string[]) =>
-      Promise.resolve({ stdout: args[0] === 'logs' ? 'hello\n' : '', stderr: '' }))
-
-    await expect(runPodToCompletion(MANIFEST, { timeoutMs: 5_000 }))
-      .resolves.toEqual({ phase: 'Succeeded', logs: 'hello\n' })
-
-    // Stray delete before the apply, cleanup delete after the logs.
-    const retryCalls = mockRetry.mock.calls.map((c) => c[0])
-    expect(retryCalls[0]).toEqual(
-      ['delete', 'pod', 'yaac-oneshot', '-n', 'test-ns', '--ignore-not-found'])
-    expect(retryCalls.at(-2)).toEqual(['logs', 'yaac-oneshot', '-n', 'test-ns'])
-    expect(retryCalls.at(-1)).toEqual(
-      ['delete', 'pod', 'yaac-oneshot', '-n', 'test-ns', '--ignore-not-found'])
-    expect(mockApply).toHaveBeenCalledWith(MANIFEST)
-    expect(mockGetJson).toHaveBeenCalledWith(
-      ['get', 'pod', 'yaac-oneshot', '-n', 'test-ns'])
-  })
-
-  it('returns Failed immediately (with logs) instead of burning the timeout', async () => {
-    mockGetJson.mockResolvedValue({ status: { phase: 'Failed' } })
-    mockRetry.mockImplementation((args: string[]) =>
-      Promise.resolve({ stdout: args[0] === 'logs' ? 'boom\n' : '', stderr: '' }))
-    const start = Date.now()
-    await expect(runPodToCompletion(MANIFEST, { timeoutMs: 60_000 }))
-      .resolves.toEqual({ phase: 'Failed', logs: 'boom\n' })
-    expect(Date.now() - start).toBeLessThan(5_000)
-    expect(mockGetJson).toHaveBeenCalledTimes(1)
-  })
-
-  it('fails fast with phase Deleted when the pod vanishes after apply', async () => {
-    // The pod was deleted after apply, so polling stops at once.
-    mockGetJson.mockResolvedValue(null)
-    const start = Date.now()
-    await expect(runPodToCompletion(MANIFEST, { timeoutMs: 60_000 }))
-      .resolves.toEqual({ phase: 'Deleted', logs: '' })
-    expect(Date.now() - start).toBeLessThan(5_000)
-    expect(mockGetJson).toHaveBeenCalledTimes(1)
-    expect(mockRetry.mock.calls.map((c) => c[0]).at(-1)).toEqual(
-      ['delete', 'pod', 'yaac-oneshot', '-n', 'test-ns', '--ignore-not-found'])
-  })
-
-  it('returns the last seen phase when the deadline passes without a terminal one', async () => {
-    mockGetJson.mockResolvedValue({ status: { phase: 'Pending' } })
-    const { phase } = await runPodToCompletion(MANIFEST, { timeoutMs: 5, pollMs: 1 })
-    expect(phase).toBe('Pending')
-    expect(mockRetry.mock.calls.map((c) => c[0]).at(-1)).toEqual(
-      ['delete', 'pod', 'yaac-oneshot', '-n', 'test-ns', '--ignore-not-found'])
-  })
-
-  it('routes kubectl and apply through the injected seams when provided', async () => {
-    mockGetJson.mockResolvedValue({ status: { phase: 'Succeeded' } })
-    const kubectl = vi.fn((args: string[]) =>
-      Promise.resolve({ stdout: args[0] === 'logs' ? 'via-seam\n' : '' }))
-    const apply = vi.fn().mockResolvedValue(undefined)
-
-    await expect(runPodToCompletion(MANIFEST, { timeoutMs: 5_000, kubectl, apply }))
-      .resolves.toEqual({ phase: 'Succeeded', logs: 'via-seam\n' })
-    expect(apply).toHaveBeenCalledWith(MANIFEST)
-    expect(kubectl).toHaveBeenCalledWith(
-      ['delete', 'pod', 'yaac-oneshot', '-n', 'test-ns', '--ignore-not-found'])
-    expect(mockApply).not.toHaveBeenCalled()
-    expect(mockRetry).not.toHaveBeenCalled()
-  })
-
-  it('swallows logs failures ("" logs) but still deletes the pod', async () => {
-    mockGetJson.mockResolvedValue({ status: { phase: 'Succeeded' } })
-    mockRetry.mockImplementation((args: string[]) =>
-      args[0] === 'logs'
-        ? Promise.reject(new Error('container not found'))
-        : Promise.resolve({ stdout: '', stderr: '' }))
-    await expect(runPodToCompletion(MANIFEST, { timeoutMs: 5_000 }))
-      .resolves.toEqual({ phase: 'Succeeded', logs: '' })
-  })
-
-  it('propagates apply failures after best-effort cleanup', async () => {
-    mockApply.mockRejectedValue(new Error('admission denied'))
-    await expect(runPodToCompletion(MANIFEST, { timeoutMs: 5_000 }))
-      .rejects.toThrow('admission denied')
-    // Stray delete and cleanup delete around the failed apply.
-    expect(mockRetry.mock.calls.filter((c) => c[0][0] === 'delete')).toHaveLength(2)
-  })
-})

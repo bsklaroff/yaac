@@ -40,4 +40,4 @@ export {
   type ImageBuildReason,
 } from './image-builds'
 export { gcHostImages } from './image-gc'
-export { missingPrebuiltImage } from './prebuilt'
+export { missingPrebuiltImage, prebuiltRef } from './prebuilt'

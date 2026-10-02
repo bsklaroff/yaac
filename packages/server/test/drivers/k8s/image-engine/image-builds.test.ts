@@ -22,7 +22,6 @@ function register(overrides: Partial<Parameters<typeof registerImageBuild>[0]> =
   return registerImageBuild({
     tag: 'yaac-base:abc123',
     layer: 'base',
-    action: 'build',
     project: { slug: 'proj-a', id: '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f' },
     reason: 'prewarm',
     ...overrides,
@@ -42,7 +41,6 @@ describe('registerImageBuild', () => {
     expect(entry.id).toBe(id)
     expect(entry.tag).toBe('yaac-base:abc123')
     expect(entry.layer).toBe('base')
-    expect(entry.action).toBe('build')
     expect(entry.projectSlugs).toEqual(['proj-a'])
     expect(entry.reason).toBe('prewarm')
     expect(entry.status).toBe('running')
@@ -50,28 +48,13 @@ describe('registerImageBuild', () => {
     expect(entry.finishedAt).toBeUndefined()
   })
 
-  it('supersedes a finished entry for the same tag+action', () => {
+  it('supersedes a finished entry for the same tag', () => {
     const first = register()
     failImageBuild(first, 'boom')
     const second = register()
     const entries = listImageBuilds()
     expect(entries.map((e) => e.id)).toEqual([second])
     expect(entries[0].status).toBe('running')
-  })
-
-  it('keeps a running entry for the same tag alongside a new one', () => {
-    // The coordinator runs one build per tag, but a push and a build of one
-    // tag can coexist.
-    register({ action: 'build' })
-    register({ action: 'push', layer: 'push' })
-    expect(listImageBuilds()).toHaveLength(2)
-  })
-
-  it('registers an infra build with no owning project (empty projectSlugs)', () => {
-    registerImageBuild({ tag: 'yaac-proxy:xyz', layer: 'proxy', action: 'build', reason: 'session' })
-    const [entry] = listImageBuilds()
-    expect(entry.layer).toBe('proxy')
-    expect(entry.projectSlugs).toEqual([])
   })
 })
 

@@ -1,8 +1,4 @@
-import {
-  registryHasTag,
-  registryRef,
-} from '#drivers/k8s/container'
-import { missingPrebuiltImage } from '#drivers/k8s/image-engine'
+import { prebuiltRef } from '#drivers/k8s/image-engine'
 
 /**
  * The digest-pinned podman image the sandboxed builder pods run, mirrored
@@ -17,6 +13,5 @@ export const BUILDER_LOCAL_TAG = 'podman-stable:v5.5'
 
 /** The builder image's in-cluster ref, from the registry. Lookup-only. */
 export async function ensureBuilderImage(): Promise<string> {
-  if (await registryHasTag(BUILDER_LOCAL_TAG)) return registryRef(BUILDER_LOCAL_TAG)
-  throw missingPrebuiltImage('builder', BUILDER_LOCAL_TAG)
+  return prebuiltRef('builder', BUILDER_LOCAL_TAG)
 }

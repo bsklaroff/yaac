@@ -5,8 +5,8 @@
  * runs the script in the pod and serializes access to its shared index.
  */
 
-import { RelayExecError, k8sWorkspacePaths, podExec } from '#drivers/k8s/substrate'
-import { CHANGES_BASE_UNRESOLVED, WorkspaceExecError } from '#drivers/contract'
+import { k8sWorkspacePaths, podExec } from '#drivers/k8s/substrate'
+import { CHANGES_BASE_UNRESOLVED } from '#drivers/contract'
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import {
   buildChangesScript,
@@ -54,12 +54,7 @@ export async function getWorkspaceChanges(jobName: string, base?: string, defaul
     const { stdout } = await podExec(
       jobName, buildChangesScript(podLocation(), base, defaultBase),
       { timeout: 20_000, maxAttempts: 2 },
-    ).catch((err: unknown) => {
-      if (err instanceof RelayExecError) {
-        throw new WorkspaceExecError(err.message, err.code, err.stdout, err.stderr, { cause: err })
-      }
-      throw err
-    })
+    )
     return parseChangesOutput(stdout)
   })
   inFlight.set(key, run)

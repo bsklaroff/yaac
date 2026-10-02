@@ -1,5 +1,5 @@
-import { listWorkspaceJobs, listWorkspacePods, type JobInfo, type PodInfo } from './pods'
-import { getActiveClusterCache } from './cluster-cache'
+import type { JobInfo, PodInfo } from './pods'
+import { readWorkspaceJobs, readWorkspacePods } from './cluster-cache'
 
 /**
  * One reconcile pass's shared view of the cluster. Each getter reads the
@@ -24,24 +24,11 @@ export interface TickSnapshot {
 }
 
 export function createTickSnapshot(resync = true): TickSnapshot {
-  const memo = new Map<string, Promise<unknown>>()
-  const get = <T>(key: string, fromCache: () => T[] | null, list: () => Promise<T[]>): Promise<T[]> => {
-    let p = memo.get(key) as Promise<T[]> | undefined
-    if (!p) {
-      const cached = fromCache()
-      p = cached !== null ? Promise.resolve(cached) : list()
-      memo.set(key, p)
-    }
-    return p
-  }
-  const cache = getActiveClusterCache()
+  let pods: Promise<PodInfo[]> | undefined
+  let jobs: Promise<JobInfo[]> | undefined
   return {
     resync,
-    pods: () => get('pods',
-      () => (cache?.healthy('workspace-pods') ? cache.workspacePods() : null),
-      () => listWorkspacePods()),
-    jobs: () => get('jobs',
-      () => (cache?.healthy('workspace-jobs') ? cache.workspaceJobs() : null),
-      () => listWorkspaceJobs()),
+    pods: () => (pods ??= readWorkspacePods()),
+    jobs: () => (jobs ??= readWorkspaceJobs()),
   }
 }

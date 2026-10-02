@@ -7,11 +7,10 @@ vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => ({
   listWorkspaceJobs: vi.fn(),
   listWorkspacePods: vi.fn(),
 }))
-vi.mock('#drivers/k8s/substrate/cluster-cache', () => ({ getActiveClusterCache: vi.fn(() => null) }))
 
 import { LABEL_PREWARMED, listWorkspaceJobs, listWorkspacePods, type PodInfo } from '#drivers/k8s/substrate/pods'
 import type * as podsModule from '#drivers/k8s/substrate/pods'
-import { getActiveClusterCache } from '#drivers/k8s/substrate/cluster-cache'
+import { setActiveClusterCache, type ClusterCache } from '#drivers/k8s/substrate/cluster-cache'
 import {
   countWorkspaces,
   findWorkspace,
@@ -21,7 +20,6 @@ import {
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
 const mockList = vi.mocked(listWorkspacePods)
-const mockCache = vi.mocked(getActiveClusterCache)
 const mockJobs = vi.mocked(listWorkspaceJobs)
 
 function pod(over: Partial<PodInfo> = {}): PodInfo {
@@ -41,11 +39,11 @@ function pod(over: Partial<PodInfo> = {}): PodInfo {
 }
 
 /** A cluster cache whose workspace-pods informer is connected and seeded. */
-function healthyCache(pods: PodInfo[]): ReturnType<typeof getActiveClusterCache> {
+function healthyCache(pods: PodInfo[]): ClusterCache {
   return {
     healthy: (source: string) => source === 'workspace-pods',
     workspacePods: () => pods,
-  } as unknown as ReturnType<typeof getActiveClusterCache>
+  } as unknown as ClusterCache
 }
 
 let tmpDir: string
@@ -53,7 +51,7 @@ let tmpDir: string
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
   mockList.mockReset().mockResolvedValue([])
-  mockCache.mockReset().mockReturnValue(null)
+  setActiveClusterCache(null)
   mockJobs.mockReset().mockResolvedValue([])
 })
 
@@ -105,7 +103,7 @@ describe('findWorkspace', () => {
 
   // Polled endpoints resolve without a live listing.
   it('answers from the informer cache without listing, when asked to', async () => {
-    mockCache.mockReturnValue(healthyCache([pod()]))
+    setActiveClusterCache(healthyCache([pod()]))
     const found = await findWorkspace('abc123def456', { preferCache: true })
     expect(found?.jobName).toBe('yaac-proj-abc123')
     expect(mockList).not.toHaveBeenCalled()
@@ -114,7 +112,7 @@ describe('findWorkspace', () => {
   // A just-created pod may not be cached yet, and the terminal attach
   // right after create must still find it.
   it('falls back to a live listing when the cache does not have it yet', async () => {
-    mockCache.mockReturnValue(healthyCache([]))
+    setActiveClusterCache(healthyCache([]))
     mockList.mockResolvedValue([pod()])
     const found = await findWorkspace('abc123def456', { preferCache: true })
     expect(found?.jobName).toBe('yaac-proj-abc123')
@@ -122,10 +120,10 @@ describe('findWorkspace', () => {
   })
 
   it('ignores an unhealthy cache and lists live', async () => {
-    mockCache.mockReturnValue({
+    setActiveClusterCache({
       healthy: () => false,
       workspacePods: () => { throw new Error('must not read an unhealthy cache') },
-    } as unknown as ReturnType<typeof getActiveClusterCache>)
+    } as unknown as ClusterCache)
     mockList.mockResolvedValue([pod()])
     const found = await findWorkspace('abc123def456', { preferCache: true })
     expect(found?.jobName).toBe('yaac-proj-abc123')
@@ -133,7 +131,7 @@ describe('findWorkspace', () => {
 
   // Restart and detail views must not read a slightly stale tool label.
   it('does not consult the cache unless asked', async () => {
-    mockCache.mockReturnValue(healthyCache([pod()]))
+    setActiveClusterCache(healthyCache([pod()]))
     mockList.mockResolvedValue([pod({ jobName: 'yaac-proj-live' })])
     const found = await findWorkspace('abc123def456')
     expect(found?.jobName).toBe('yaac-proj-live')

@@ -1,6 +1,5 @@
 import {
   ClusterCache,
-  ensurePriorityClasses,
   kubectlApply,
   setActiveClusterCache,
   type WorkspaceDeltaSource,
@@ -9,7 +8,6 @@ import {
   buildProxyEgressNpManifest,
   buildServerIngressNpManifest,
   ensureMainRegistry,
-  ensureNamespace,
   nodeIpBlocks,
 } from '#drivers/k8s/cluster'
 import {
@@ -17,6 +15,7 @@ import {
   stopAllWorkspaceForwarders,
 } from '#drivers/k8s/forwarders'
 import { proxyClient } from '#drivers/k8s/egress'
+import { deleteLeakedBuilderPods } from '#drivers/k8s/images'
 import { runtimeHandleFromPod } from '#drivers/k8s/workspaces'
 import { notifyWorkspaceListChanged } from '#notify'
 import { serverLog } from '#log'
@@ -51,7 +50,7 @@ export const K8S_TRIGGERS = [
   'proxy-refreshed',
 ] as const
 
-export type K8sTrigger = typeof K8S_TRIGGERS[number]
+type K8sTrigger = typeof K8S_TRIGGERS[number]
 
 /**
  * Map a cluster-cache delta source to a reconcile trigger: pod changes are
@@ -90,14 +89,14 @@ export async function startK8sDriver(sinks: DriverSinks): Promise<void> {
 
   // Best-effort cluster bootstrap. Failures are logged, not fatal: the
   // server can serve project/auth RPCs without a cluster, and workspace
-  // creation reports RUNTIME_UNAVAILABLE on its own. Awaited so the
-  // namespace exists before anything applies into it.
+  // creation reports RUNTIME_UNAVAILABLE on its own. The namespace and the
+  // PriorityClasses need no ensure: `cluster install` creates both, and
+  // this server runs as a pod in that namespace.
   await (async () => {
-    await ensureNamespace()
-    // Every pod yaac creates names a priority class, and an older cluster
-    // may lack them. Must run before the registry, whose pod names one and
-    // would otherwise be rejected (`cluster install` uses the same order).
-    await ensurePriorityClasses()
+    // Before the first build, which a leaked pod's memory reservation
+    // could keep from scheduling. Its failure must not skip the rest.
+    await deleteLeakedBuilderPods().catch((err: unknown) =>
+      serverLog(`[server] leaked builder pod delete failed: ${String(err)}`))
     // A healthy registry costs one HTTP ping here.
     await ensureMainRegistry()
     // Re-render the node part of the server's ingress policy from the

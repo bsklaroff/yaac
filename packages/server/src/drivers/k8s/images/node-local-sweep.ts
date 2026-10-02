@@ -13,16 +13,13 @@
  * Anything modified since the cutoff is kept, since a create may be
  * staging into it before its pod appears.
  */
-import crypto from 'node:crypto'
 import path from 'node:path'
 import {
-  PRIORITY_CLASS_INFRA,
   dataDirHash,
   k8sNamespace,
   kubectlGetJson,
-  kubectlWithRetry,
   nodeLocalNodePath,
-  runPodToCompletion,
+  runOnEachNode,
   workspacePodSelector,
 } from '#drivers/k8s/substrate'
 import { ensureBuilderImage } from '#drivers/k8s/cluster'
@@ -30,28 +27,23 @@ import { serverLog } from '#log'
 import type { NodeLocalLiveSet } from '#drivers/contract'
 
 /** Where the sweep pod mounts the install's node-local tree. */
-export const SWEEP_POD_PATH = '/node'
+const SWEEP_POD_PATH = '/node'
 
 /** `app` label of every sweep pod, used to delete strays. */
-export const NODE_LOCAL_SWEEP_APP_LABEL = 'yaac-node-local-sweep'
+const NODE_LOCAL_SWEEP_APP_LABEL = 'yaac-node-local-sweep'
 
 /** Ties sweep pods to this install without making them visible to the
  *  workspace reaper (which filters on `yaac.workspace-id`). */
 export const LABEL_SWEEP_DATA_DIR_HASH = 'yaac.sweep-data-dir-hash'
 
-/** Label selector of this install's sweep pods. */
-export function sweepPodSelector(): string {
-  return `app=${NODE_LOCAL_SWEEP_APP_LABEL},${LABEL_SWEEP_DATA_DIR_HASH}=${dataDirHash()}`
-}
-
 /** Min interval between sweeps; each one runs a pod per node. */
 export const NODE_LOCAL_SWEEP_INTERVAL_MS = 60 * 60_000
 
 /** Deadline for one node's sweep: a walk over one tree and some `rm -rf`s. */
-export const NODE_LOCAL_SWEEP_TIMEOUT_MS = 5 * 60_000
+const NODE_LOCAL_SWEEP_TIMEOUT_MS = 5 * 60_000
 
 /** How far before the sweep's start a write still counts as in use. */
-export const NODE_LOCAL_SWEEP_SLACK_MS = 10_000
+const NODE_LOCAL_SWEEP_SLACK_MS = 10_000
 
 function sweepLabels(): Record<string, string> {
   return { app: NODE_LOCAL_SWEEP_APP_LABEL, [LABEL_SWEEP_DATA_DIR_HASH]: dataDirHash() }
@@ -99,55 +91,6 @@ export function buildNodeLocalSweepScript(): string {
   ].join('\n')
 }
 
-/**
- * The sweep pod for one node: root, runc, pinned by `nodeName`, tolerating
- * every taint, with the install's node directory mounted read-write. Uses
- * the builder image because busybox lacks `find -newermt`.
- */
-export function buildNodeLocalSweepPodManifest(params: {
-  nodeName: string
-  imageRef: string
-  /** Live project ids plus every name a live pod mounts. */
-  kept: ReadonlySet<string>
-  liveWorkspaceIds: ReadonlySet<string>
-  cutoffEpoch: number
-  runId: string
-  nodeIndex: number
-}): Record<string, unknown> {
-  return {
-    apiVersion: 'v1',
-    kind: 'Pod',
-    metadata: {
-      name: `yaac-node-sweep-${params.nodeIndex}-${params.runId}`,
-      namespace: k8sNamespace(),
-      labels: sweepLabels(),
-    },
-    spec: {
-      nodeName: params.nodeName,
-      restartPolicy: 'Never',
-      tolerations: [{ operator: 'Exists' }],
-      automountServiceAccountToken: false,
-      enableServiceLinks: false,
-      priorityClassName: PRIORITY_CLASS_INFRA,
-      containers: [{
-        name: 'sweep',
-        image: params.imageRef,
-        imagePullPolicy: 'IfNotPresent',
-        command: [
-          'sh', '-c', `${buildNodeLocalSweepScript()}\n`, '--',
-          String(params.cutoffEpoch), [...params.kept].join(','), [...params.liveWorkspaceIds].join(','),
-        ],
-        securityContext: { runAsUser: 0 },
-        volumeMounts: [{ name: 'node', mountPath: SWEEP_POD_PATH }],
-      }],
-      volumes: [{
-        name: 'node',
-        hostPath: { path: nodeLocalNodePath(), type: 'DirectoryOrCreate' },
-      }],
-    },
-  }
-}
-
 interface RawPodList {
   items: Array<{ spec?: { volumes?: Array<{ hostPath?: { path?: string } }> } }>
 }
@@ -183,10 +126,6 @@ export function _resetNodeLocalSweepForTests(): void {
   sweeping = false
 }
 
-interface RawNodeList {
-  items: Array<{ metadata: { name: string } }>
-}
-
 /**
  * See `WorkspaceDriver.reapNodeLocal`. Runs one pod per node, at most once
  * per {@link NODE_LOCAL_SWEEP_INTERVAL_MS}. Failures are only logged.
@@ -201,38 +140,40 @@ export async function reapNodeLocal(
   sweeping = true
   lastSweepMs = now
   try {
-    // Delete sweep pods a previous server left behind.
-    await kubectlWithRetry([
-      'delete', 'pods', '-n', k8sNamespace(), '-l', sweepPodSelector(),
-      '--ignore-not-found', '--wait=false',
-    ], { maxAttempts: 1 }).catch((err: unknown) => {
-      serverLog(`[node-local-sweep] stray pod delete failed: ${String(err)}`)
-    })
     const imageRef = await ensureBuilderImage()
-    const runId = crypto.randomBytes(4).toString('hex')
     const cutoffEpoch = Math.floor((now - NODE_LOCAL_SWEEP_SLACK_MS) / 1000)
     const kept = new Set([...live.projectIds, ...await mountedProjectNames()])
-    const nodes = await kubectlGetJson<RawNodeList>(['get', 'nodes'])
-    for (const [nodeIndex, { metadata }] of (nodes?.items ?? []).entries()) {
-      const manifest = buildNodeLocalSweepPodManifest({
-        nodeName: metadata.name,
-        imageRef,
-        kept,
-        liveWorkspaceIds: live.workspaceIds,
-        cutoffEpoch,
-        runId,
-        nodeIndex,
-      })
-      const { phase, logs } = await runPodToCompletion(manifest, {
-        timeoutMs: NODE_LOCAL_SWEEP_TIMEOUT_MS,
-        pollMs: 1000,
-      })
+    // Root, with the install's node directory mounted read-write. The
+    // builder image, because busybox lacks `find -newermt`.
+    const runs = await runOnEachNode({
+      name: 'yaac-node-sweep',
+      labels: sweepLabels(),
+      timeoutMs: NODE_LOCAL_SWEEP_TIMEOUT_MS,
+      pod: () => ({
+        image: imageRef,
+        command: [
+          'sh', '-c', `${buildNodeLocalSweepScript()}\n`, '--',
+          String(cutoffEpoch), [...kept].join(','), [...live.workspaceIds].join(','),
+        ],
+        container: {
+          securityContext: { runAsUser: 0 },
+          volumeMounts: [{ name: 'node', mountPath: SWEEP_POD_PATH }],
+        },
+        spec: {
+          volumes: [{
+            name: 'node',
+            hostPath: { path: nodeLocalNodePath(), type: 'DirectoryOrCreate' },
+          }],
+        },
+      }),
+    })
+    for (const { node, phase, logs } of runs) {
       const tail = logs.trim().split('\n').slice(-3).join(' | ')
       if (phase !== 'Succeeded') {
-        serverLog(`[node-local-sweep] ${metadata.name}: pod ${phase}${tail ? `; ${tail}` : ''}`)
-        continue
+        serverLog(`[node-local-sweep] ${node}: pod ${phase}${tail ? `; ${tail}` : ''}`)
+      } else if (tail && !tail.endsWith('removed 0')) {
+        serverLog(`[node-local-sweep] ${node}: ${tail}`)
       }
-      if (tail && !tail.endsWith('removed 0')) serverLog(`[node-local-sweep] ${metadata.name}: ${tail}`)
     }
   } catch (err) {
     serverLog(`[node-local-sweep] ${String(err)}`)

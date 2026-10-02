@@ -1,14 +1,13 @@
 import {
   PRE_STOP_GRACE_SECONDS,
   findWorkspacePod,
-  getActiveClusterCache,
   k8sNamespace,
   kubectlWithRetry,
-  listWorkspacePods,
+  readWorkspacePods,
 } from '#drivers/k8s/substrate'
 import { deregisterWorkspaceEgress } from '#drivers/k8s/egress'
 import { stopWorkspaceForwarders } from '#drivers/k8s/forwarders'
-import { removeNodeLocalProject, salvageJobImages } from '#drivers/k8s/images'
+import { salvageJobImages } from '#drivers/k8s/images'
 import { removeProjectRegistry, removeProjectSecrets } from '#drivers/k8s/cluster'
 import type { ProjectRef, TeardownTarget } from '#drivers/contract'
 
@@ -43,17 +42,15 @@ export async function deregisterWorkspace(workspaceId: string): Promise<void> {
  * Best-effort and never throws: a lost salvage only costs a rebuild. The
  * in-pod survey decides whether there is anything to do (a pod with no
  * engine costs one probe), so unlike the periodic salvage this does not
- * check the nested label. The registry is named by the pod's project id,
- * so a pod without one is skipped.
+ * check the nested label. The registry is named by the pod's project id.
  */
 export async function salvageWorkspaceImages(target: TeardownTarget): Promise<void> {
-  const pods = getActiveClusterCache()?.workspacePods()
-    ?? await listWorkspacePods().catch(() => [])
-  const projectId = findWorkspacePod(pods, target.workspaceId, { spares: true })?.projectId
-  if (!projectId) return
+  const pods = await readWorkspacePods().catch(() => [])
+  const pod = findWorkspacePod(pods, target.workspaceId, { spares: true })
+  if (!pod) return
   await salvageJobImages({
     jobName: target.unitName,
-    project: { slug: target.projectSlug, id: projectId },
+    project: { slug: target.projectSlug, id: pod.projectId },
     workspaceId: target.workspaceId,
   }).then(() => undefined, () => undefined)
 }
@@ -122,9 +119,9 @@ export function detachedTeardownCommand(target: TeardownTarget): string {
 
 /**
  * Remove what the runtime holds for a project once its workspaces are gone:
- * the push registry, node-local image stores, and the egress proxy's secret
- * values. Each step is best-effort on its own, since they fail for
- * unrelated reasons.
+ * the push registry and the egress proxy's secret values. Each step is
+ * best-effort on its own, since they fail for unrelated reasons. The
+ * node-local sweep reaps the project's node-local data and image stores.
  */
 export async function destroyProjectSubstrate(project: ProjectRef): Promise<void> {
   try {
@@ -137,10 +134,5 @@ export async function destroyProjectSubstrate(project: ProjectRef): Promise<void
   } catch (err) {
     // The object lingers, naming a project nothing registers under.
     console.warn(`Failed to remove the egress secrets of ${project.slug}: ${(err as Error).message}`)
-  }
-  try {
-    await removeNodeLocalProject(project.id)
-  } catch {
-    // The node-local sweep reaps an id no live project holds.
   }
 }

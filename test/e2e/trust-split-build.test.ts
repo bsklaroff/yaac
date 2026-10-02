@@ -36,7 +36,7 @@ import {
   ensureMainRegistry,
 } from '@yaac/server/drivers/k8s/cluster/main-registry'
 import { RUNTIME_CLASS_GVISOR } from '@yaac/server/drivers/k8s/substrate/gvisor'
-import { runPodToCompletion } from '@yaac/server/drivers/k8s/substrate/pods'
+import { runPodToCompletion } from '@yaac/server/drivers/k8s/substrate/one-shot-pods'
 import {
   k8sNamespace,
   kubectlApply,
@@ -138,7 +138,7 @@ async function writeProjectDockerfile(content: string): Promise<void> {
 }
 
 function buildLogFor(tag: string): string {
-  const entry = listImageBuilds().find((e) => e.tag === tag && e.action === 'build')
+  const entry = listImageBuilds().find((e) => e.tag === tag)
   expect(entry, `expected a build entry for ${tag}`).toBeTruthy()
   expect(entry?.status).toBe('succeeded')
   return getImageBuildLog(entry!.id) ?? ''

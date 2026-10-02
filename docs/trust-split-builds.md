@@ -96,9 +96,9 @@ Build flow, for a layer tag `T` with parent tag `P`:
    `RUN` step's output relay after tens of KB.
 4. `podman push` `T` to the registry. Only new layers upload; cross-repo
    blob mounts reuse the parent's blobs.
-5. Delete the pod whether the build succeeded or failed. The
-   `builder-pod-gc` reconcile step (`reconcileBuilderPodGc`) deletes any
-   leaked builder pods.
+5. Delete the pod whether the build succeeded or failed. A pod leaked by
+   a server that died mid-build is deleted when the next server starts
+   (`deleteLeakedBuilderPods`).
 
 ### Timeouts
 
@@ -185,16 +185,15 @@ of collecting a live registry directly:
   `PUT`, leaving an image that never pulls and that the `registryHasTag`
   skip never re-pushes. The collect waits while there is an upload in
   progress, any link file written in the last few minutes, or an
-  in-flight build or push in this server. The first two are read from the
+  in-flight build in this server. The first two are read from the
   registry's filesystem, so they also see builder pods and e2e servers,
   and are re-checked just before the collect. A push that starts during
   the collect is still possible, so the collect is kept rare and short.
-- **Stale blob descriptors.** The registry caches them in memory, so after
-  a collect a re-pushed digest writes a link with no blob and the tag 404s
-  permanently. The GC restarts the registry in a `finally` block. A marker
-  file in the registry's storage records that a collect started, so a
-  restart lost to a failed rollout or a server crash is redone by the next
-  sweep.
+- **Stale blob descriptors.** registry:2 caches them in memory by
+  default, so after a collect a re-pushed digest would write a link with no
+  blob and the tag would 404 permanently. The main registry runs with that
+  cache turned off (`REGISTRY_STORAGE_CACHE_BLOBDESCRIPTOR` set empty), so
+  every lookup reads the storage the collect just changed.
 
 The pass runs detached and never overlaps itself, because reconcile passes
 run one at a time and a collect takes minutes.
@@ -222,11 +221,12 @@ its starter is invisible to the next process, which starts a second build
 of the same tag that then fights the first over the image store lock. Both
 halves of the split clean up after an interrupted run:
 
-- **Builder pods.** `reconcileBuilderPodGc` deletes every
-  `yaac.role=builder` pod created before this server process started. The
-  data-dir lock allows one server per install, so an older pod belongs to
-  a dead server. It runs before the `image-prewarm` step, so a leaked
-  pod's memory reservation is freed before new builds are scheduled.
+- **Builder pods.** The k8s driver's start deletes every
+  `yaac.role=builder` pod of the install (`deleteLeakedBuilderPods`). The
+  data-dir lock allows one server per install, so any builder pod then
+  belongs to a dead server, and its memory reservation is freed before the
+  first build is scheduled. A pod leaked later is bounded by its
+  `activeDeadlineSeconds`.
 - **Host podman.** `yaac cluster install` runs its `podman build` and
   `podman push` children through `drivers/k8s/container/host-procs.ts`,
   which records each pid in `<data dir>/host-podman.json`. The next install
@@ -246,12 +246,12 @@ the next prewarm sweep recomputes what is missing.
   `drivers/k8s/cluster` next to the server's lookup, because both sides
   must agree on the name for the same bytes. The install folder owns only
   the building, which only the CLI does.
-- `drivers/k8s/images/build-engine.ts` picks an engine per layer
-  (`engineForLayer`, keyed on `ImageLayer.name`). `prebuilt` looks the tag
-  up in the registry and refuses to build. `cluster-pod` drives a builder
-  pod (`builder-pod.ts`). Push is not routed separately: a builder pod's
-  push is part of its build, and a prebuilt layer was pushed by the install
-  that built it.
+- The build coordinator (`drivers/k8s/images/build-coordinator.ts`)
+  routes each missing layer by `ImageLayer.name`: a trusted layer is
+  refused with a pointer to `yaac cluster install`, and any other layer
+  drives a builder pod (`builder-pod.ts`). There is no separate push: a
+  builder pod's push is part of its build, and a trusted layer was pushed
+  by the install that built it.
 - Every layer's existence check is `registryHasTag()`, because the
   registry is what pods pull from and an in-cluster server cannot see the
   install machine's local store. That local store is only a build cache,

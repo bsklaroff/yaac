@@ -4,12 +4,7 @@ import type { YaacConfig } from '@yaac/shared/types'
 vi.mock('#drivers/k8s/image-engine/image-builder', () => ({ resolveImageChain: vi.fn() }))
 vi.mock('#drivers/k8s/images/build-coordinator', () => ({
   ensureImage: vi.fn(),
-  pushImageShared: vi.fn(),
 }))
-// The proxy has no project chain; retrying its build means re-running
-// ensureRunning.
-const { ensureRunning } = vi.hoisted(() => ({ ensureRunning: vi.fn() }))
-vi.mock('#drivers/k8s/egress', () => ({ proxyClient: { ensureRunning } }))
 // image-builds is not mocked, so retry's forget/re-fire runs for real.
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
@@ -21,7 +16,7 @@ import {
   _resetImagePrewarmForTests,
 } from '#drivers/k8s/images/image-prewarm'
 import { resolveImageChain } from '#drivers/k8s/image-engine/image-builder'
-import { ensureImage, pushImageShared } from '#drivers/k8s/images/build-coordinator'
+import { ensureImage } from '#drivers/k8s/images/build-coordinator'
 import {
   attachImageBuildProject,
   clearAllImageBuildsForTests,
@@ -37,7 +32,6 @@ import { serverLog } from '#log'
 const mockResolveConfig = vi.fn<(slug: string) => Promise<YaacConfig | undefined>>()
 const mockResolveChain = vi.mocked(resolveImageChain)
 const mockEnsureImage = vi.mocked(ensureImage)
-const mockPush = vi.mocked(pushImageShared)
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
@@ -61,7 +55,6 @@ describe('reconcileImagePrewarm', () => {
     mockResolveConfig.mockResolvedValue(undefined)
     mockResolveChain.mockResolvedValue({ layers: [], finalTag: 'yaac-tools:t' })
     mockEnsureImage.mockResolvedValue('yaac-tools:t')
-    mockPush.mockResolvedValue('localhost:5001/yaac-tools:t')
   })
   afterEach(() => {
     vi.unstubAllEnvs()
@@ -83,7 +76,7 @@ describe('reconcileImagePrewarm', () => {
     expect(mockEnsureImage).not.toHaveBeenCalled()
   })
 
-  it('ensures and pushes every project, threading nestedContainers from config', async () => {
+  it('ensures every project, threading nestedContainers from config', async () => {
     mockResolveConfig.mockImplementation((slug) =>
       Promise.resolve(slug === 'nested' ? { nestedContainers: true } : undefined))
     mockResolveChain.mockImplementation((project) =>
@@ -97,10 +90,6 @@ describe('reconcileImagePrewarm', () => {
       PLAIN, undefined, false, false, { reason: 'prewarm' })
     expect(mockEnsureImage).toHaveBeenCalledWith(
       NESTED, undefined, false, true, { reason: 'prewarm' })
-    expect(mockPush).toHaveBeenCalledWith(
-      'final-plain:x', { project: PLAIN, reason: 'prewarm' })
-    expect(mockPush).toHaveBeenCalledWith(
-      'final-nested:x', { project: NESTED, reason: 'prewarm' })
   })
 
   it('skips a project whose prewarm is still in flight, then resumes', async () => {
@@ -131,7 +120,6 @@ describe('reconcileImagePrewarm', () => {
     await flush()
 
     expect(mockEnsureImage).not.toHaveBeenCalled()
-    expect(mockPush).not.toHaveBeenCalled()
     expect(vi.mocked(serverLog)).toHaveBeenCalledWith(
       expect.stringContaining('[image-prewarm] p:'))
   })
@@ -170,14 +158,13 @@ describe('reconcileImagePrewarm', () => {
     })
     // A recent failed build of one of the chain's tags blocks the sweep.
     const id = registerImageBuild({
-      tag: 'yaac-base:b', layer: 'base', action: 'build', project: P, reason: 'prewarm',
+      tag: 'yaac-base:b', layer: 'base', project: P, reason: 'prewarm',
     })
     failImageBuild(id, 'boom')
 
     await prewarmProjectImage(P, {})
 
     expect(mockEnsureImage).not.toHaveBeenCalled()
-    expect(mockPush).not.toHaveBeenCalled()
   })
 
   it('respects the test image prefix', async () => {
@@ -198,8 +185,6 @@ describe('retryImageBuild', () => {
     mockResolveConfig.mockResolvedValue(undefined)
     mockResolveChain.mockResolvedValue({ layers: [], finalTag: 'yaac-tools:t' })
     mockEnsureImage.mockResolvedValue('yaac-tools:t')
-    mockPush.mockResolvedValue('localhost:5001/yaac-tools:t')
-    ensureRunning.mockResolvedValue(undefined)
   })
   afterEach(() => {
     clearAllImageBuildsForTests()
@@ -208,7 +193,7 @@ describe('retryImageBuild', () => {
 
   it('forgets a failed project build and re-triggers its chain', () => {
     const id = registerImageBuild({
-      tag: 'yaac-tools:abc', layer: 'tools', action: 'build', project: PROJ_A, reason: 'prewarm',
+      tag: 'yaac-tools:abc', layer: 'tools', project: PROJ_A, reason: 'prewarm',
     })
     failImageBuild(id, 'boom')
     expect(hasBlockingFailure(['yaac-tools:abc'], 10 * 60_000)).toBe(true)
@@ -222,7 +207,7 @@ describe('retryImageBuild', () => {
 
   it('re-triggers every owning project of a shared layer', async () => {
     const id = registerImageBuild({
-      tag: 'yaac-base:abc', layer: 'base', action: 'build', project: PROJ_A, reason: 'prewarm',
+      tag: 'yaac-base:abc', layer: 'base', project: PROJ_A, reason: 'prewarm',
     })
     attachImageBuildProject(id, PROJ_B)
     failImageBuild(id, 'boom')
@@ -236,58 +221,14 @@ describe('retryImageBuild', () => {
     expect(mockResolveChain).toHaveBeenCalledWith(PROJ_B, expect.any(String), false)
   })
 
-  // A build with no project is the shared egress proxy. ensureRunning
-  // redeploys it when its image tag is missing, which rebuilds it. Not
-  // awaited, like the project path.
-  it('rebuilds the sidecar for an infra build with no owning project', async () => {
-    const id = registerImageBuild({
-      tag: 'yaac-proxy:abc', layer: 'proxy', action: 'build', reason: 'session',
-    })
-    failImageBuild(id, 'boom')
-
-    expect(retryImageBuild(id, mockResolveConfig)).toBe(true)
-    expect(getImageBuild(id)).toBeUndefined()
-    expect(ensureRunning).toHaveBeenCalledTimes(1)
-    expect(mockResolveConfig).not.toHaveBeenCalled()
-    await flush()
-  })
-
-  // Redeploying the proxy would disrupt running workspaces, so a project
-  // build leaves it alone.
-  it('leaves the sidecar alone for a project build', () => {
-    const id = registerImageBuild({
-      tag: 'yaac-tools:abc', layer: 'tools', action: 'build', project: PROJ_A, reason: 'prewarm',
-    })
-    failImageBuild(id, 'boom')
-
-    retryImageBuild(id, mockResolveConfig)
-
-    expect(ensureRunning).not.toHaveBeenCalled()
-  })
-
-  // A failed proxy rebuild is logged, not thrown; the retry is not awaited.
-  it('swallows a sidecar rebuild that fails', async () => {
-    ensureRunning.mockRejectedValue(new Error('cluster down'))
-    const id = registerImageBuild({
-      tag: 'yaac-proxy:abc', layer: 'proxy', action: 'build', reason: 'session',
-    })
-    failImageBuild(id, 'boom')
-
-    expect(() => retryImageBuild(id, mockResolveConfig)).not.toThrow()
-    await flush()
-    expect(vi.mocked(serverLog).mock.calls.map((c) => String(c[0])).join('\n'))
-      .toMatch(/image-retry.*proxy.*cluster down/)
-  })
-
   it('no-ops (and rebuilds nothing) for an unknown id or a running build', () => {
     expect(retryImageBuild('missing', mockResolveConfig)).toBe(false)
 
     const running = registerImageBuild({
-      tag: 'x:1', layer: 'base', action: 'build', project: P, reason: 'session',
+      tag: 'x:1', layer: 'base', project: P, reason: 'session',
     })
     expect(retryImageBuild(running, mockResolveConfig)).toBe(false)
     expect(getImageBuild(running)?.status).toBe('running') // still tracked
     expect(mockResolveConfig).not.toHaveBeenCalled()
-    expect(ensureRunning).not.toHaveBeenCalled()
   })
 })

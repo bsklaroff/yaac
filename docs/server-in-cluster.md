@@ -20,10 +20,10 @@ one mounts two (see "Storage is two claims").
    runs the server image, which is why the image comes first.
 3. **A ServiceAccount** (`yaac-server`) and a **ClusterRole** bound to it.
    The role is cluster-scoped because the server creates per-project
-   registry namespaces at runtime and applies cluster-scoped objects on
-   every start (PriorityClasses, RuntimeClasses, the builder-role admission
-   guard). It has full verbs on what the server owns and read-only access to
-   what it only observes (nodes, events, storage classes).
+   registry namespaces at runtime and applies the cluster-scoped
+   builder-role admission guard. It has full verbs on what the server owns
+   and read-only access to what it only observes (nodes, events, storage
+   classes).
 4. **The two ingress NetworkPolicies**, before the Service, so the server's
    port is never reachable from pods before the policy exists (see "The
    ingress policy is the wall").
@@ -249,7 +249,7 @@ port-forward` or `kubectl exec` relay.
   which runs outside the cluster, uses a `kubectl port-forward` for the
   pushes `yaac cluster install` does.)
 - **The stream relay** is the proxy Service's relay port
-  (docs/stream-relay.md). The Deployment sets it as `YAAC_RELAY_ADDR`.
+  (docs/stream-relay.md).
 - **The proxy control API** is another port on the same Service. The
   proxy's ingress policy admits both ports from the server's pods and no
   other pods, so a workspace can reach neither.

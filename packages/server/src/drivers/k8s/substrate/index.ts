@@ -9,7 +9,13 @@
 // (client.ts) and the informer registry (informer-cache.ts) are internal;
 // they are covered through the cluster cache and the pod-readiness wait.
 
-export { ClusterCache, getActiveClusterCache, setActiveClusterCache } from './cluster-cache'
+export {
+  ClusterCache,
+  getActiveClusterCache,
+  readWorkspaceJobs,
+  readWorkspacePods,
+  setActiveClusterCache,
+} from './cluster-cache'
 export type { WorkspaceDeltaSource } from './cluster-cache'
 export { containerExec } from './exec'
 export {
@@ -65,6 +71,8 @@ export {
   ensurePriorityClasses,
 } from './priority-classes'
 export { waitForJobPodReady } from './pod-wait'
+export { waitForRollout } from './rollout'
+export { runOnEachNode, runPodToCompletion } from './one-shot-pods'
 export { PRIVILEGED_PSS_LABELS } from './pss'
 export {
   GLOBAL_CLAIM_NAME,
@@ -90,7 +98,6 @@ export {
   isPrewarmed,
   listWorkspaceJobs,
   listWorkspacePods,
-  runPodToCompletion,
   workspaceIdFromJobName,
   workspaceJobName,
   workspaceIdLabels,
@@ -150,13 +157,13 @@ export {
   proxyServiceHost,
 } from './proxy-constants'
 export {
-  RelayExecError,
   bootStreamd,
   dialCtrlStream,
   dialPtyStream,
   relayDial,
   podExec,
   podStreamToken,
+  readProxyAuthSecret,
   waitForStreamd,
 } from './stream-relay'
 export { formatTaint, untoleratedTaints } from './taints'

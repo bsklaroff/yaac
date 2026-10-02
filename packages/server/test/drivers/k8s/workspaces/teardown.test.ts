@@ -16,11 +16,9 @@ vi.mock('#drivers/k8s/forwarders/port-forwarders', () => ({
   stopWorkspaceForwarders: mockStopForwarders,
 }))
 
-// Mock salvage and image-store removal, which run their own pods.
+// Mock salvage, which runs its own pods.
 const mockSalvage = vi.hoisted(() => vi.fn())
-const mockRemoveStore = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/images/image-promoter', () => ({ salvageJobImages: mockSalvage }))
-vi.mock('#drivers/k8s/images/store-writer', () => ({ removeNodeLocalProject: mockRemoveStore }))
 
 const mockRemoveRegistry = vi.hoisted(() => vi.fn())
 const mockRemoveSecrets = vi.hoisted(() => vi.fn())
@@ -83,7 +81,6 @@ beforeEach(() => {
   mockGetJson.mockReset().mockResolvedValue(podList({ 'yaac.project-id': PROJECT.id }))
   mockStopForwarders.mockReset()
   mockSalvage.mockReset().mockResolvedValue(true)
-  mockRemoveStore.mockReset().mockResolvedValue(undefined)
   mockRemoveRegistry.mockReset().mockResolvedValue(undefined)
   mockRemoveSecrets.mockReset().mockResolvedValue(undefined)
 })
@@ -116,9 +113,8 @@ describe('salvageWorkspaceImages', () => {
     })
   })
 
-  // No project id means no registry to push to.
-  it('skips a pod that carries no project id', async () => {
-    mockGetJson.mockResolvedValue(podList({}))
+  it('skips a workspace whose pod is gone', async () => {
+    mockGetJson.mockResolvedValue({ items: [] })
     await salvageWorkspaceImages(TARGET)
     expect(mockSalvage).not.toHaveBeenCalled()
   })
@@ -212,29 +208,22 @@ describe('detachedTeardownCommand', () => {
 })
 
 describe('destroyProjectSubstrate', () => {
-  it('removes the project registry, its egress secrets and the node-local trees', async () => {
+  it('removes the project registry and its egress secrets', async () => {
     await destroyProjectSubstrate(PROJECT)
-    // Most objects are keyed by id; egress secrets by slug.
+    // The registry is keyed by id; egress secrets by slug.
     expect(mockRemoveRegistry).toHaveBeenCalledWith(PROJECT.id)
     expect(mockRemoveSecrets).toHaveBeenCalledWith('proj')
-    expect(mockRemoveStore).toHaveBeenCalledWith(PROJECT.id)
   })
 
-  it('still removes the rest when the egress secrets will not go', async () => {
-    mockRemoveSecrets.mockRejectedValue(new Error('cluster offline'))
-    await expect(destroyProjectSubstrate(PROJECT)).resolves.toBeUndefined()
-    expect(mockRemoveStore).toHaveBeenCalledWith(PROJECT.id)
-  })
-
-  // One failing piece must not block the others.
-  it('still removes the image stores when the registry teardown fails', async () => {
+  // One failing piece must not block the other.
+  it('still removes each when the other fails', async () => {
     mockRemoveRegistry.mockRejectedValue(new Error('cluster offline'))
     await expect(destroyProjectSubstrate(PROJECT)).resolves.toBeUndefined()
-    expect(mockRemoveStore).toHaveBeenCalledWith(PROJECT.id)
-  })
+    expect(mockRemoveSecrets).toHaveBeenCalledWith('proj')
 
-  it('survives a failing image-store removal', async () => {
-    mockRemoveStore.mockRejectedValue(new Error('node gone'))
+    mockRemoveRegistry.mockReset()
+    mockRemoveSecrets.mockRejectedValue(new Error('cluster offline'))
     await expect(destroyProjectSubstrate(PROJECT)).resolves.toBeUndefined()
+    expect(mockRemoveRegistry).toHaveBeenCalledWith(PROJECT.id)
   })
 })

@@ -1,8 +1,4 @@
-import {
-  contextHash,
-  missingPrebuiltImage,
-} from '#drivers/k8s/image-engine'
-import { registryHasTag, registryRef } from '#drivers/k8s/container'
+import { contextHash, prebuiltRef } from '#drivers/k8s/image-engine'
 import { PROXY_DIR } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 
@@ -19,7 +15,5 @@ export async function resolveProxyImageTag(image = testEnv.proxyImage): Promise<
 
 /** The proxy image's in-cluster ref, from the registry. Lookup-only. */
 export async function ensureProxyImage(image = testEnv.proxyImage): Promise<string> {
-  const localTag = await resolveProxyImageTag(image)
-  if (await registryHasTag(localTag)) return registryRef(localTag)
-  throw missingPrebuiltImage('Proxy', localTag)
+  return prebuiltRef('Proxy', await resolveProxyImageTag(image))
 }

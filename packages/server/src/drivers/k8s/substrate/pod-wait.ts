@@ -4,13 +4,13 @@ import { k8sNamespace } from './kubectl'
 import { JOB_NAME_LABEL } from './pods'
 
 /**
- * Wait for one workspace pod to become Ready: list the Job's pod, then
- * watch it for status changes instead of polling. Used by workspace
- * create.
+ * Waits on single pods by listing them, then watching for status changes
+ * instead of polling: a workspace pod becoming Ready (workspace create),
+ * and one-shot pods running to completion (one-shot-pods.ts).
  */
 
 /** Outcome of evaluating one pod snapshot against "ready to exec into". */
-export type PodReadyVerdict =
+type PodReadyVerdict =
   | { kind: 'ready' }
   | { kind: 'fatal'; reason: string }
   | { kind: 'pending'; detail: string }
@@ -22,7 +22,7 @@ export type PodReadyVerdict =
  * pull failures are fatal: tags are content hashes, so a failed pull will
  * not fix itself.
  */
-export function evaluatePodReady(pod: V1Pod): PodReadyVerdict {
+function evaluatePodReady(pod: V1Pod): PodReadyVerdict {
   const phase = pod.status?.phase ?? 'Unknown'
   // The workspace container is the pod's only container.
   const cs = pod.status?.containerStatuses?.[0]
@@ -46,7 +46,7 @@ export function evaluatePodReady(pod: V1Pod): PodReadyVerdict {
   return { kind: 'pending', detail }
 }
 
-/** List/watch seam so unit tests drive the wait with fake pod streams. */
+/** List/watch seam so unit tests drive a wait with fake pod streams. */
 export interface PodReadyDeps {
   listPods: () => Promise<{ resourceVersion?: string; pods: V1Pod[] }>
   watchPods: (
@@ -56,74 +56,68 @@ export interface PodReadyDeps {
   ) => Promise<{ abort: () => void }>
 }
 
-function realDeps(jobName: string): PodReadyDeps {
-  const selector = `${JOB_NAME_LABEL}=${jobName}`
+/** Watch pods in `namespace` matching a label or field selector. */
+export function watchPodsBy(
+  namespace: string,
+  selector: { labelSelector: string } | { fieldSelector: string },
+): PodReadyDeps['watchPods'] {
+  return async (resourceVersion, onEvent, onDone) => {
+    const watch = new Watch(getKubeConfig())
+    const controller = await watch.watch(
+      `/api/v1/namespaces/${namespace}/pods`,
+      { ...selector, ...(resourceVersion ? { resourceVersion } : {}) },
+      (type, obj) => onEvent(type, obj as V1Pod),
+      (err) => onDone(err),
+    )
+    return { abort: () => controller.abort() }
+  }
+}
+
+function jobPodDeps(jobName: string): PodReadyDeps {
+  const labelSelector = `${JOB_NAME_LABEL}=${jobName}`
   return {
     listPods: async () => {
-      const list = await getCoreApi().listNamespacedPod({
-        namespace: k8sNamespace(),
-        labelSelector: selector,
-      })
+      const list = await getCoreApi().listNamespacedPod({ namespace: k8sNamespace(), labelSelector })
       return { resourceVersion: list.metadata?.resourceVersion, pods: list.items }
     },
-    watchPods: async (resourceVersion, onEvent, onDone) => {
-      const watch = new Watch(getKubeConfig())
-      const controller = await watch.watch(
-        `/api/v1/namespaces/${k8sNamespace()}/pods`,
-        {
-          labelSelector: selector,
-          ...(resourceVersion ? { resourceVersion } : {}),
-        },
-        (type, obj) => onEvent(type, obj as V1Pod),
-        (err) => onDone(err),
-      )
-      return { abort: () => controller.abort() }
-    },
+    watchPods: watchPodsBy(k8sNamespace(), { labelSelector }),
   }
 }
 
 /** Max watch duration before re-listing, in case a watch silently stalls. */
 const WATCH_EPISODE_MS = 15_000
 
+/** Pause before re-listing after a failed list or watch, so a broken API
+ *  connection is not hammered. */
+const RETRY_PAUSE_MS = 1_000
+
 /**
- * Resolve when the Job's workspace pod is Ready; reject on a terminal state,
- * an image-pull failure, or the deadline. Each round lists, then watches
- * from the list's resourceVersion. Any watch error (including 410 Gone) or
- * list failure just starts another round.
+ * Follow the first pod `deps` lists until `decide` answers, instead of
+ * polling. Each round lists, then watches from the list's resourceVersion.
+ * A DELETED event, a watch error (including 410 Gone) or a stalled watch
+ * starts another round. `decide` sees `undefined` when no pod matches, and
+ * may throw to fail the wait. Resolves `undefined` at the deadline.
  */
-export async function waitForJobPodReady(
-  jobName: string,
-  timeoutMs = 180_000,
-  deps?: PodReadyDeps,
-): Promise<void> {
-  const d = deps ?? realDeps(jobName)
+export async function followPod<T>(
+  deps: PodReadyDeps,
+  decide: (pod: V1Pod | undefined) => T | undefined,
+  timeoutMs: number,
+): Promise<T | undefined> {
   const deadline = Date.now() + timeoutMs
-  let lastDetail = 'pod not created yet'
-
-  const check = (pod: V1Pod | undefined): boolean => {
-    if (!pod) return false
-    const verdict = evaluatePodReady(pod)
-    if (verdict.kind === 'ready') return true
-    if (verdict.kind === 'fatal') {
-      throw new Error(`workspace pod for ${jobName} ${verdict.reason}`)
-    }
-    lastDetail = verdict.detail
-    return false
-  }
-
   while (Date.now() < deadline) {
     let listed: { resourceVersion?: string; pods: V1Pod[] }
     try {
-      listed = await d.listPods()
+      listed = await deps.listPods()
     } catch {
-      await new Promise((r) => setTimeout(r, 1_000))
+      await new Promise((r) => setTimeout(r, RETRY_PAUSE_MS))
       continue
     }
-    if (check(listed.pods[0])) return
+    const now = decide(listed.pods[0])
+    if (now !== undefined) return now
 
     const episodeMs = Math.min(WATCH_EPISODE_MS, deadline - Date.now())
     if (episodeMs <= 0) break
-    const ready = await new Promise<boolean>((resolve, reject) => {
+    const outcome = await new Promise<{ value: T } | 'relist' | 'pause'>((resolve, reject) => {
       let settled = false
       let abort: (() => void) | null = null
       const settle = (fn: () => void): void => {
@@ -133,34 +127,60 @@ export async function waitForJobPodReady(
         abort?.()
         fn()
       }
-      const timer = setTimeout(() => settle(() => resolve(false)), episodeMs)
-      d.watchPods(
+      const timer = setTimeout(() => settle(() => resolve('relist')), episodeMs)
+      deps.watchPods(
         listed.resourceVersion,
         (eventType, pod) => {
-          // A DELETED event carries the pod's last state, which may still
-          // read ready. Re-list instead of trusting it.
-          if (eventType === 'DELETED') {
-            lastDetail = 'pod deleted while waiting'
-            settle(() => resolve(false))
+          // A DELETED event carries the pod's last state, and an ERROR
+          // event carries a Status, not a pod; re-list instead of trusting
+          // either.
+          if (eventType === 'DELETED' || eventType === 'ERROR') {
+            settle(() => resolve('relist'))
             return
           }
           try {
-            if (check(pod)) settle(() => resolve(true))
+            const value = decide(pod)
+            if (value !== undefined) settle(() => resolve({ value }))
           } catch (err) {
             settle(() => reject(err as Error))
           }
         },
-        () => settle(() => resolve(false)),
+        () => settle(() => resolve('pause')),
       ).then(
         (handle) => {
           abort = handle.abort
           if (settled) handle.abort()
         },
-        () => settle(() => resolve(false)),
+        () => settle(() => resolve('pause')),
       )
     })
-    if (ready) return
+    if (typeof outcome === 'object') return outcome.value
+    if (outcome === 'pause') await new Promise((r) => setTimeout(r, RETRY_PAUSE_MS))
   }
+  return undefined
+}
+
+/**
+ * Resolve when the Job's workspace pod is Ready; reject on a terminal state,
+ * an image-pull failure, or the deadline.
+ */
+export async function waitForJobPodReady(
+  jobName: string,
+  timeoutMs = 180_000,
+  deps?: PodReadyDeps,
+): Promise<void> {
+  let lastDetail = 'pod not created yet'
+  const ready = await followPod(deps ?? jobPodDeps(jobName), (pod) => {
+    if (!pod) return undefined
+    const verdict = evaluatePodReady(pod)
+    if (verdict.kind === 'ready') return true
+    if (verdict.kind === 'fatal') {
+      throw new Error(`workspace pod for ${jobName} ${verdict.reason}`)
+    }
+    lastDetail = verdict.detail
+    return undefined
+  }, timeoutMs)
+  if (ready) return
   throw new Error(
     `workspace pod for ${jobName} not ready after ${timeoutMs}ms (${lastDetail})`,
   )

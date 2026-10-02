@@ -23,11 +23,6 @@ const MAX_DETECTED_PORTS = 100
 /** Line-buffer cap for the ports stream (each line is a small JSON set). */
 const LINE_MAX_BYTES = 64 * 1024
 
-/** Retry interval for a pod whose streamd predates the `ports` kind. The
- *  refusal won't change soon, so retrying at the normal backoff only fills
- *  the log; still retry in case streamd is updated. */
-const UNSUPPORTED_KIND_RETRY_MS = 10 * 60_000
-
 const detected = new Map<string, number[]>()
 const dismissed = new Map<string, Set<number>>()
 
@@ -92,7 +87,7 @@ function normalizePorts(value: unknown): number[] | null {
   return [...new Set(ports)].sort((a, b) => a - b).slice(0, MAX_DETECTED_PORTS)
 }
 
-export interface PortDetectorDeps {
+interface PortDetectorDeps {
   /** Injected for tests — replaces the real relay `ports`-stream dial. */
   dialPorts?: (workspaceId: string) => Promise<net.Socket>
   /** First respawn delay after a stream death; doubles to the max. */
@@ -156,7 +151,6 @@ class WorkspacePortsWatcher {
     } catch (err) {
       if (this.stopped || generation !== this.generation) return
       this.log(`[server] port-detector ${this.workspaceId.slice(0, 8)}: dial failed: ${String(err)}`)
-      if (String(err).includes('unknown kind')) this.backoffMs = UNSUPPORTED_KIND_RETRY_MS
       this.scheduleRespawn()
       return
     }

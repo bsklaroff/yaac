@@ -2,14 +2,9 @@ import path from 'node:path'
 import {
   buildImage,
   ensureImageByTag,
-  failImageBuild,
-  finishImageBuild,
   gcHostImages,
-  ingestImageBuildLine,
-  registerImageBuild,
   resolveTrustedLayers,
 } from '#drivers/k8s/image-engine'
-
 import {
   execFileAsync,
   imageExists,
@@ -34,11 +29,11 @@ import {
 } from '#drivers/k8s/cluster'
 import { NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
-import { serverLog } from '#log'
 import {
   GVISOR_INSTALLER_MIRROR_TAG,
   GVISOR_INSTALLER_UPSTREAM_IMAGE,
 } from './gvisor-installer'
+import { hostNodeArchitecture } from './byo-gates'
 
 /**
  * Builds and pushes every image yaac ships, as part of `yaac cluster
@@ -59,40 +54,17 @@ import {
  */
 export const TRUSTED_PARENT_COMPRESSION = 'zstd' as const
 
-export interface BuiltinImageDeps {
+interface BuiltinImageDeps {
   log: (message: string) => void
 }
 
-/**
- * Build one yaac-shipped image if the registry lacks it, and push it. The
- * build is registered (with no project) so it shows in the build list.
- */
-async function buildShippedImage(
-  localTag: string,
-  contextDir: string,
-  layer: 'proxy' | 'netd',
-): Promise<string> {
+/** Build one yaac-shipped image if the registry lacks it, and push it. */
+async function buildShippedImage(localTag: string, contextDir: string): Promise<string> {
   if (await registryHasTag(localTag)) return registryRef(localTag)
-
   if (!await imageExists(localTag)) {
-    const id = registerImageBuild({ tag: localTag, layer, action: 'build', reason: 'session' })
-    serverLog(`[build] starting ${localTag} (${layer})`)
-    try {
-      await buildImage(localTag, path.join(contextDir, 'Dockerfile'), contextDir, undefined, {
-        onLog: (line) => ingestImageBuildLine(id, line),
-      })
-      finishImageBuild(id)
-    } catch (err) {
-      failImageBuild(id, err instanceof Error ? err.message : String(err))
-      throw err
-    }
+    await buildImage(localTag, path.join(contextDir, 'Dockerfile'), contextDir)
   }
   return pushImageToRegistry(localTag)
-}
-
-/** podman's GOARCH name for this host, which mirrored images must match. */
-export function hostImageArch(arch: string = process.arch): string {
-  return arch === 'x64' ? 'amd64' : arch
 }
 
 /**
@@ -103,7 +75,7 @@ export function hostImageArch(arch: string = process.arch): string {
 export function assertMirrorArch(
   image: string,
   actual: string,
-  expected: string = hostImageArch(),
+  expected: string = hostNodeArchitecture(),
 ): void {
   if (!actual.trim() || actual.trim() === expected) return
   throw new Error(
@@ -172,9 +144,9 @@ export async function buildBuiltinImages(deps: BuiltinImageDeps): Promise<void> 
   }
 
   deps.log('Ensuring the egress proxy image...')
-  await buildShippedImage(await resolveProxyImageTag(testEnv.proxyImage), PROXY_DIR, 'proxy')
+  await buildShippedImage(await resolveProxyImageTag(testEnv.proxyImage), PROXY_DIR)
   deps.log('Ensuring the netd image...')
-  await buildShippedImage(await resolveNetdImageTag(testEnv.netdImage), NETD_DIR, 'netd')
+  await buildShippedImage(await resolveNetdImageTag(testEnv.netdImage), NETD_DIR)
 
   deps.log('Ensuring the pinned upstream mirrors...')
   await mirrorPinnedUpstreams()

@@ -36,7 +36,7 @@ import {
   PRIVILEGED_PSS_LABELS,
   ROLE_BUILDER,
   SERVER_APP_NAME,
-  runPodToCompletion,
+  waitForRollout,
 } from '#drivers/k8s/substrate'
 import { nodeIpBlocks } from './cluster-cidrs'
 import {
@@ -48,7 +48,11 @@ import {
   registryHost,
   registryReachable,
 } from '#drivers/k8s/container'
-import { LABEL_REGISTRY_DATA_DIR_HASH, REGISTRY_UPSTREAM_IMAGE } from './project-registry'
+import {
+  LABEL_REGISTRY_DATA_DIR_HASH,
+  REGISTRY_UPSTREAM_IMAGE,
+  writeNodeHostsToml,
+} from './project-registry'
 import { ENVOY_UPSTREAM_IMAGE } from './netd'
 import {
   REGISTRY_BACKEND_PORT,
@@ -91,7 +95,7 @@ export const MAIN_REGISTRY_STORAGE_SIZE = '100Gi'
  * The blob store's claim. No `storageClassName`, so it uses the cluster's
  * default class. Never deleted; it lives as long as the cluster.
  */
-export function buildMainRegistryPvcManifest(): Record<string, unknown> {
+function buildMainRegistryPvcManifest(): Record<string, unknown> {
   return {
     apiVersion: 'v1',
     kind: 'PersistentVolumeClaim',
@@ -111,7 +115,7 @@ export function buildMainRegistryPvcManifest(): Record<string, unknown> {
 const REGISTRY_GATE_NAME = `${REGISTRY_SERVICE_NAME}-gate`
 
 /** The gate's Envoy bootstrap, rendered around the grant key's public half. */
-export function buildMainRegistryGateConfigMapManifest(publicKeyDer: Buffer): Record<string, unknown> {
+function buildMainRegistryGateConfigMapManifest(publicKeyDer: Buffer): Record<string, unknown> {
   return {
     apiVersion: 'v1',
     kind: 'ConfigMap',
@@ -129,12 +133,17 @@ export function buildMainRegistryGateConfigMapManifest(publicKeyDer: Buffer): Re
  * (registry-gate.ts) on the Service port. Trusted infra, so it runs on runc,
  * not gVisor. `Recreate` avoids two pods on one RWO volume.
  *
+ * The blob-descriptor cache is off (an empty override of the stock
+ * config's `inmemory`): the GC deletes blobs behind the registry's back,
+ * and a cached descriptor would then answer a re-push "already present"
+ * for a blob that is gone.
+ *
  * A hash of the gate config in the template rolls the pod when the key or
  * gate changes (Envoy reads its bootstrap only at start). Readiness is
  * probed through the gate with an empty Basic credential, since the gate
  * challenges a bare `/v2/` (which is what makes podman send its grant).
  */
-export function buildMainRegistryDeploymentManifest(publicKeyDer: Buffer): Record<string, unknown> {
+function buildMainRegistryDeploymentManifest(publicKeyDer: Buffer): Record<string, unknown> {
   const selector = { app: MAIN_REGISTRY_APP_LABEL }
   const gateConfigHash = crypto.createHash('sha256')
     .update(registryGateBootstrap(REGISTRY_SERVICE_PORT, publicKeyDer))
@@ -166,7 +175,10 @@ export function buildMainRegistryDeploymentManifest(publicKeyDer: Buffer): Recor
               name: 'registry',
               image: REGISTRY_UPSTREAM_IMAGE,
               imagePullPolicy: 'IfNotPresent',
-              env: [{ name: 'REGISTRY_HTTP_ADDR', value: `127.0.0.1:${String(REGISTRY_BACKEND_PORT)}` }],
+              env: [
+                { name: 'REGISTRY_HTTP_ADDR', value: `127.0.0.1:${String(REGISTRY_BACKEND_PORT)}` },
+                { name: 'REGISTRY_STORAGE_CACHE_BLOBDESCRIPTOR', value: '' },
+              ],
               volumeMounts: [{ name: 'storage', mountPath: '/var/lib/registry' }],
             },
             {
@@ -208,7 +220,7 @@ export function buildMainRegistryDeploymentManifest(publicKeyDer: Buffer): Recor
  * The registry Service. Never deleted, so its ClusterIP (and the hosts.toml
  * naming it) stays valid across rollouts.
  */
-export function buildMainRegistryServiceManifest(): Record<string, unknown> {
+function buildMainRegistryServiceManifest(): Record<string, unknown> {
   return {
     apiVersion: 'v1',
     kind: 'Service',
@@ -246,7 +258,7 @@ export function buildMainRegistryServiceManifest(): Record<string, unknown> {
  * again. The server's boot ensure does not catch this; `cluster check`
  * does.
  */
-export function buildMainRegistryIngressNetworkPolicyManifest(
+function buildMainRegistryIngressNetworkPolicyManifest(
   nodeCidrs: string[],
 ): Record<string, unknown> {
   const registryPort = { protocol: 'TCP', port: REGISTRY_SERVICE_PORT }
@@ -285,103 +297,6 @@ export function buildMainRegistryIngressNetworkPolicyManifest(
   }
 }
 
-/**
- * One-shot pod, pinned by `nodeName`, that writes one node's containerd
- * hosts.toml for the registry. Its hostPath is only that registry's
- * `certs.d` dir.
- *
- * Tolerates every taint: `nodeName` skips the scheduler but a `NoExecute`
- * taint would still evict it, and tainted workspace nodes need the file
- * most. Runs the upstream `registry:2` image, which the rollout already put
- * on the node, since nothing can pull from this registry before the file
- * exists.
- */
-export function buildMainRegistryHostsWriterPodManifest(
-  nodeName: string,
-  clusterIp: string,
-  nodeIndex: number,
-  runId: string,
-): Record<string, unknown> {
-  const content = `[host."http://${clusterIp}:${REGISTRY_SERVICE_PORT}"]`
-  return {
-    apiVersion: 'v1',
-    kind: 'Pod',
-    metadata: {
-      name: `${REGISTRY_SERVICE_NAME}-hosts-${nodeIndex}-${runId}`,
-      namespace: REGISTRY_NAMESPACE,
-      labels: { ...mainRegistryLabels(), [LABEL_MAIN_REGISTRY_NODE_WRITE]: 'hosts' },
-    },
-    spec: {
-      nodeName,
-      // Trusted infra: runs on runc.
-      restartPolicy: 'Never',
-      tolerations: [{ operator: 'Exists' }],
-      automountServiceAccountToken: false,
-      enableServiceLinks: false,
-      priorityClassName: PRIORITY_CLASS_INFRA,
-      containers: [{
-        name: 'write',
-        image: REGISTRY_UPSTREAM_IMAGE,
-        imagePullPolicy: 'IfNotPresent',
-        command: ['sh', '-c', `printf '%s\\n' '${content}' > /host-certs/hosts.toml`],
-        volumeMounts: [{ name: 'certs', mountPath: '/host-certs' }],
-      }],
-      volumes: [{
-        name: 'certs',
-        hostPath: {
-          path: `/etc/containerd/certs.d/${registryHost()}`,
-          type: 'DirectoryOrCreate',
-        },
-      }],
-    },
-  }
-}
-
-interface RawNodeList {
-  items: Array<{ metadata: { name: string } }>
-}
-
-/** Node names, for pinning the one-shot writer pods via `nodeName`. */
-async function listNodeNames(): Promise<string[]> {
-  const list = await kubectlGetJson<RawNodeList>(['get', 'nodes'])
-  return (list?.items ?? []).map((n) => n.metadata.name)
-}
-
-/**
- * Write the node containerd hosts.toml mapping the registry's svc-DNS host
- * to its live ClusterIP on every node. The node is not a cluster-DNS
- * client, so it needs the IP; hosts.toml is read per-pull (no containerd
- * restart needed). Must run after the Service exists and the Deployment has
- * rolled out — the rollout is also what guarantees the writer pod's own
- * image is already on the node.
- */
-export async function writeNodeMainRegistryHostsToml(): Promise<void> {
-  const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
-    'get', 'service', REGISTRY_SERVICE_NAME, '-n', REGISTRY_NAMESPACE,
-  ])
-  const clusterIp = svc?.spec?.clusterIP
-  if (!clusterIp) {
-    throw new Error(`registry Service ${REGISTRY_SERVICE_NAME} has no ClusterIP yet`)
-  }
-  // Remove writer pods left by crashed runs (names are per run).
-  await kubectlWithRetry([
-    'delete', 'pod', '-l', `app=${MAIN_REGISTRY_APP_LABEL},${LABEL_MAIN_REGISTRY_NODE_WRITE}`,
-    '-n', REGISTRY_NAMESPACE, '--ignore-not-found',
-  ])
-  const runId = crypto.randomBytes(4).toString('hex')
-  for (const [i, node] of (await listNodeNames()).entries()) {
-    const manifest = buildMainRegistryHostsWriterPodManifest(node, clusterIp, i, runId)
-    const name = (manifest as { metadata: { name: string } }).metadata.name
-    const { phase, logs } = await runPodToCompletion(manifest, { timeoutMs: 120_000, pollMs: 500 })
-    if (phase !== 'Succeeded') {
-      throw new Error(
-        `registry hosts.toml pod ${name} did not complete (phase ${phase})`
-        + (logs.trim() ? `; logs: ${logs.trim()}` : ''),
-      )
-    }
-  }
-}
-
 /** Rollout timeout, including the first upstream image pulls. */
 const ROLLOUT_TIMEOUT_MS = 300_000
 
@@ -391,13 +306,6 @@ const ROLLOUT_STALL_MS = 60_000
 /** How long a rolled-out registry may take to answer a dial (e.g. while a
  *  restarted node's pod network comes back). */
 const REACHABLE_TIMEOUT_MS = 90_000
-
-async function waitForRegistryRollout(timeoutMs: number): Promise<void> {
-  await kubectlWithRetry([
-    'rollout', 'status', `deployment/${REGISTRY_SERVICE_NAME}`, '-n', REGISTRY_NAMESPACE,
-    `--timeout=${Math.floor(timeoutMs / 1000)}s`,
-  ], { timeout: timeoutMs + 10_000, maxAttempts: 2 })
-}
 
 /**
  * Throw an actionable error if the registry pod's netns has `arp_ignore` 2
@@ -434,7 +342,7 @@ async function refuseArpIgnoringPodNetns(): Promise<void> {
   )
 }
 
-export interface EnsureMainRegistryOptions {
+interface EnsureMainRegistryOptions {
   /**
    * Apply everything even if the registry already answers. `yaac cluster
    * install` sets this to rewrite wiring a node or VM restart may have
@@ -465,24 +373,39 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
   await kubectlApply(buildMainRegistryDeploymentManifest(publicKeyDer))
   await kubectlApply(buildMainRegistryServiceManifest())
   await kubectlApply(buildMainRegistryIngressNetworkPolicyManifest(await nodeIpBlocks()))
-  const rolledOut = await waitForRegistryRollout(ROLLOUT_STALL_MS).then(() => true, () => false)
+  const rollout = { workload: `deployment/${REGISTRY_SERVICE_NAME}`, namespace: REGISTRY_NAMESPACE }
+  const rolledOut = await waitForRollout({ ...rollout, timeoutMs: ROLLOUT_STALL_MS })
+    .then(() => true, () => false)
   if (!rolledOut) {
     await refuseArpIgnoringPodNetns()
-    try {
-      await waitForRegistryRollout(ROLLOUT_TIMEOUT_MS - ROLLOUT_STALL_MS)
-    } catch (err) {
-      // kubectl only says it timed out; point at the likely causes.
-      throw new Error(
-        `${err instanceof Error ? err.message : String(err)}\n`
-        + `Inspect with \`kubectl -n ${REGISTRY_NAMESPACE} get pods,pvc `
+    await waitForRollout({
+      ...rollout,
+      timeoutMs: ROLLOUT_TIMEOUT_MS - ROLLOUT_STALL_MS,
+      hint: `Inspect with \`kubectl -n ${REGISTRY_NAMESPACE} get pods,pvc `
         + `-l app=${MAIN_REGISTRY_APP_LABEL}\` — Pending means the node had no `
         + 'room, ImagePullBackOff means it could not fetch the pinned '
         + 'registry:2 or Envoy from upstream, and a Pending PVC means the cluster has '
         + 'no default StorageClass to bind it.',
-      )
-    }
+    })
   }
-  await writeNodeMainRegistryHostsToml()
+  // Point every node's containerd at the registry's live ClusterIP. The
+  // writer pods run the upstream `registry:2` ref the rollout put there.
+  const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
+    'get', 'service', REGISTRY_SERVICE_NAME, '-n', REGISTRY_NAMESPACE,
+  ])
+  const clusterIp = svc?.spec?.clusterIP
+  if (!clusterIp) {
+    throw new Error(`registry Service ${REGISTRY_SERVICE_NAME} has no ClusterIP yet`)
+  }
+  await writeNodeHostsToml({
+    host: registryHost(),
+    clusterIp,
+    port: REGISTRY_SERVICE_PORT,
+    image: REGISTRY_UPSTREAM_IMAGE,
+    name: `${REGISTRY_SERVICE_NAME}-hosts`,
+    namespace: REGISTRY_NAMESPACE,
+    labels: { ...mainRegistryLabels(), [LABEL_MAIN_REGISTRY_NODE_WRITE]: 'hosts' },
+  })
 
   // Rolled out is not reachable: a cached port-forward may be stale, and
   // after a node restart the pod can read Available before its network is
@@ -507,21 +430,4 @@ export async function mainRegistryExec(argv: string[], timeoutMs: number): Promi
     { timeout: timeoutMs, maxAttempts: 1 },
   )
   return stdout
-}
-
-/**
- * Restart the registry after a garbage collect to clear its in-memory blob
- * cache (otherwise a re-pushed digest 404s forever). The ClusterIP survives,
- * but a port-forward to the old pod must be re-established. The blobs are
- * on the PVC, so the new pod may land on any node.
- */
-export async function restartMainRegistry(): Promise<void> {
-  await kubectlWithRetry([
-    'rollout', 'restart', `deployment/${REGISTRY_SERVICE_NAME}`, '-n', REGISTRY_NAMESPACE,
-  ], { maxAttempts: 2 })
-  await kubectlWithRetry([
-    'rollout', 'status', `deployment/${REGISTRY_SERVICE_NAME}`, '-n', REGISTRY_NAMESPACE,
-    '--timeout=120s',
-  ], { timeout: 130_000, maxAttempts: 2 })
-  invalidateRegistryEndpoint()
 }

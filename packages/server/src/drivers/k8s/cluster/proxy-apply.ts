@@ -13,6 +13,8 @@ import {
   PROXY_AUTH_SECRET_NAME,
   PROXY_CA_SECRET_NAME,
   ROLE_BUILDER,
+  readProxyAuthSecret,
+  waitForRollout,
 } from '#drivers/k8s/substrate'
 import type { CredentialBundle } from '#drivers/contract'
 import { serverLog } from '#log'
@@ -65,18 +67,11 @@ export async function ensureNamespace(): Promise<void> {
   })
 }
 
-interface RawSecret {
-  data?: Record<string, string>
-}
-
 /** Ensure the proxy auth Secret exists (generated once per cluster) and
  *  return its value. */
 export async function ensureProxyAuthSecret(): Promise<string> {
-  const existing = await kubectlGetJson<RawSecret>([
-    'get', 'secret', PROXY_AUTH_SECRET_NAME, '-n', k8sNamespace(),
-  ])
-  const encoded = existing?.data?.secret
-  if (encoded) return Buffer.from(encoded, 'base64').toString('utf8')
+  const existing = await readProxyAuthSecret()
+  if (existing) return existing
 
   const secret = crypto.randomBytes(32).toString('hex')
   await kubectlApply({
@@ -113,10 +108,6 @@ export function resetProxyClusterIpCache(): void {
 }
 
 export async function ensureProxyResources(imageRef: string): Promise<void> {
-  // RBAC before the Deployment that uses it.
-  await kubectlApply(buildProxyServiceAccountManifest())
-  await kubectlApply(buildProxyRoleManifest())
-  await kubectlApply(buildProxyRoleBindingManifest())
   // The objects the proxy writes, created empty (so its Role can name them)
   // only if absent, since applying over them would wipe its output.
   for (const manifest of buildProxyOutputManifests()) {
@@ -124,22 +115,30 @@ export async function ensureProxyResources(imageRef: string): Promise<void> {
     const existing = await kubectlGetJson<object>(['get', kind.toLowerCase(), metadata.name, '-n', k8sNamespace()])
     if (!existing) await kubectlApply(manifest)
   }
-  await kubectlApply(buildProxyDeploymentManifest(imageRef))
-  await kubectlApply(buildProxyServiceManifest())
-  await kubectlApply(buildServerMamaServiceManifest())
-  // Policies go on with the proxy, before any workspace pod can exist.
   const nodeCidrs = await nodeIpBlocks()
-  await kubectlApply(buildWorkspaceEgressNpManifest(nodeCidrs))
-  await kubectlApply(buildWorkspaceIngressLockNpManifest())
-  await kubectlApply(buildProxyIngressNpManifest(nodeCidrs))
-  await kubectlApply(buildProxyEgressNpManifest(nodeCidrs))
-  await kubectlApply(buildEgressWorldDenyNpManifest())
+  // One apply, in order: RBAC before the Deployment that uses it, and the
+  // policies with the proxy, before any workspace pod can exist.
+  await kubectlApply({
+    apiVersion: 'v1',
+    kind: 'List',
+    items: [
+      buildProxyServiceAccountManifest(),
+      buildProxyRoleManifest(),
+      buildProxyRoleBindingManifest(),
+      buildProxyDeploymentManifest(imageRef),
+      buildProxyServiceManifest(),
+      buildServerMamaServiceManifest(),
+      buildWorkspaceEgressNpManifest(nodeCidrs),
+      buildWorkspaceIngressLockNpManifest(),
+      buildProxyIngressNpManifest(nodeCidrs),
+      buildProxyEgressNpManifest(nodeCidrs),
+      buildEgressWorldDenyNpManifest(),
+    ],
+  })
   await ensureNetd()
-  await kubectlWithRetry([
-    'rollout', 'status', `deployment/${PROXY_APP_NAME}`,
-    '-n', k8sNamespace(),
-    '--timeout=180s',
-  ], { timeout: 190_000, maxAttempts: 2 })
+  await waitForRollout({
+    workload: `deployment/${PROXY_APP_NAME}`, namespace: k8sNamespace(), timeoutMs: 180_000,
+  })
 }
 
 interface RawObject {
@@ -231,10 +230,14 @@ export async function ensureBuilderRoleGuard(): Promise<void> {
   if (!await vapAvailable()) {
     throw new Error(
       'sandboxed image builds need the ValidatingAdmissionPolicy API to '
-      + `reserve the ${LABEL_ROLE}=${ROLE_BUILDER} pod label (kubernetes `
-      + '>= 1.30). Recreate the cluster with `yaac cluster install`.',
+      + `reserve the ${LABEL_ROLE}=${ROLE_BUILDER} pod label, which Kubernetes `
+      + 'serves from 1.30. Upgrade the control plane to 1.30 or later; for a kind '
+      + 'cluster yaac created, run `yaac cluster delete`, then `yaac cluster install`.',
     )
   }
-  await kubectlApply(buildBuilderRoleGuardPolicyManifest())
-  await kubectlApply(buildBuilderRoleGuardBindingManifest())
+  await kubectlApply({
+    apiVersion: 'v1',
+    kind: 'List',
+    items: [buildBuilderRoleGuardPolicyManifest(), buildBuilderRoleGuardBindingManifest()],
+  })
 }
