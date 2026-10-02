@@ -189,4 +189,22 @@ describe('groupEvents', () => {
     // A resolution without its ask (a truncated record) renders nothing.
     expect(groupEvents([resolved(0, 'allow')])).toEqual([])
   })
+
+  it('shows one thread at a time, with each subagent as a card where it was spawned', () => {
+    const events: AcpEvent[] = [
+      user(0, 'look'),
+      { type: 'subagent', seq: 1, subagent: { id: 'sub-1', name: 'Explore', task: 't', state: 'running' } },
+      { type: 'agent', seq: 2, thread: 'sub-1', content: [{ type: 'text', text: 'inside' }] },
+      { ...(ask(3) as Extract<AcpEvent, { type: 'permission-request' }>), thread: 'sub-1' },
+      { type: 'subagent', seq: 4, subagent: { id: 'sub-1', name: 'Explore', task: 't', state: 'completed' } },
+      { type: 'task', seq: 5, task: { id: 'b1', name: 'dev', kind: 'shell', description: '', state: 'running' } },
+      agent(6, 'outside'),
+    ]
+    // The main conversation keeps a subagent's ask, which blocks its turn.
+    expect(groupEvents(events).map((g) => g.kind)).toEqual(['user', 'subagent', 'permission', 'task', 'agent'])
+    // The card shows the latest state, where the subagent started.
+    expect(groupEvents(events)[1]).toMatchObject({ seq: 1, subagent: { state: 'completed' } })
+
+    expect(groupEvents(events, 'sub-1').map((g) => g.kind)).toEqual(['agent', 'permission'])
+  })
 })

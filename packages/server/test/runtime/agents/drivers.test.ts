@@ -654,7 +654,9 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
 
     const init = stream.sent().find((m) => m.method === 'initialize')!
-    // No fs/terminal capabilities: the agent has the real files itself.
+    // No fs/terminal capabilities: the agent has the real files itself. No
+    // `_meta` either: claude renders tool calls differently for an AIR
+    // client (a read's text is dropped), so it is never told yaac is one.
     expect((init.params as { clientCapabilities: unknown }).clientCapabilities).toEqual({
       fs: { readTextFile: false, writeTextFile: false },
       terminal: false,
@@ -722,9 +724,9 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/new')).toBe(true))
     const created = stream.sent().find((m) => m.method === 'session/new')!
     // The report is opt-in, asked for when the session opens.
-    expect(created.params).toMatchObject({
-      _meta: { claudeCode: { emitRawSDKMessages: [{ type: 'system', subtype: 'session_state_changed' }] } },
-    })
+    const asked = (created.params as { _meta?: { claudeCode?: { emitRawSDKMessages?: unknown[] } } })
+      ._meta?.claudeCode?.emitRawSDKMessages
+    expect(asked).toContainEqual({ type: 'system', subtype: 'session_state_changed' })
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: created.id, result: { sessionId: 'acp-1' } })}\n`)
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
     const conversation = acpConversation('demo', 'wt-1', 'acp-1')!
@@ -814,6 +816,30 @@ describe('agentDriver', () => {
     })}\n`)
     await vi.waitFor(() => expect(statuses(seen)).toEqual(['running', 'waiting']))
     expect(events.map((e) => e.type)).toEqual(['turn-start', 'turn-end'])
+  })
+
+  it('declares each adapter its own opt-ins for reporting subagents and background work', async () => {
+    const streams = new Map([['codex', new FakeStream()], ['opencode', new FakeStream()]])
+    tmuxWindows = 'codex\nopencode\n'
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      dial: acpDial((_s, argv) => streams.get([...streams.keys()].find((h) => argv.join(' ').includes(`/${h}.sock`))!)!),
+      log: () => {},
+    }))
+    const capabilities = async (handle: string): Promise<unknown> => {
+      const stream = streams.get(handle)!
+      await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', handle)).toBeDefined())
+      stream.feed(helloLine(true))
+      await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
+      return (stream.sent().find((m) => m.method === 'initialize')!.params as { clientCapabilities: unknown })
+        .clientCapabilities
+    }
+    expect(await capabilities('codex')).toMatchObject({
+      _meta: {
+        jetbrains: { air: { version: 1, capabilities: ['nativeSubagentSessions', 'asyncTasks'] } },
+        terminal_output_delta: true,
+      },
+    })
+    expect(await capabilities('opencode')).toMatchObject({ _meta: { 'opencode/child-session-updates': true } })
   })
 
   it("follows codex's and pi's own state reports, inferring the start pi does not report", async () => {

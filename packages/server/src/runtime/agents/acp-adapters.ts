@@ -13,7 +13,7 @@ import { ACP_ADAPTERS, type AgentTool, type PermissionMode } from '@yaac/shared/
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import { envJsonAssignment } from '#lib/shell'
 import { opencodeConfigArg } from './agent-command'
-import { CLAUDE_SESSION_META } from './acp-protocol'
+import { CLAUDE_SESSION_META, CODEX_CAPABILITIES_META, OPENCODE_CAPABILITIES_META } from './acp-protocol'
 import type { AgentLaunchSpec } from './drivers'
 
 export interface AcpAdapterProfile {
@@ -55,6 +55,9 @@ export interface AcpAdapterProfile {
   steers: boolean
   /** `_meta` sent with `session/new` and `session/load`. */
   sessionMeta?: Record<string, unknown>
+  /** `_meta` sent in `initialize`'s client capabilities: the adapter's own
+   *  opt-ins, such as how it reports subagents. */
+  capabilitiesMeta?: Record<string, unknown>
   /**
    * The adapter reports a run's end but not the start of one it began on its
    * own (`agentRunningReport`), so a work update while idle stands in for
@@ -141,6 +144,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
     modelVia: 'env',
     forwardAsksUnderBypass: false,
     steers: true,
+    capabilitiesMeta: CODEX_CAPABILITIES_META,
   },
 
   /**
@@ -163,6 +167,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
     modelVia: 'set_config_option',
     forwardAsksUnderBypass: false,
     steers: false,
+    capabilitiesMeta: OPENCODE_CAPABILITIES_META,
   },
 
   /**

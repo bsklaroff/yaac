@@ -420,6 +420,75 @@ config option: codex sends both, and its block's ids carry a reasoning effort
 the row through the same `onModel` path as a model the adapter reports itself
 (see "State").
 
+## Subagents and background tasks
+
+A TUI lists the subagents and background shells its agent started, and lets
+you open one to read it. A chat pane does the same: a strip over the
+composer lists what is still running, the transcript holds a card where each
+one started, and opening either switches the pane to that subagent's own
+transcript or to the task's output. Esc or Back returns. Those views have no
+composer, since an agent takes messages only on its main thread.
+
+No protocol standard covers this yet, so each adapter is asked in its own
+way, and the projection turns every answer into the same `subagent` and
+`task` events:
+
+| tool | subagents | background tasks | Stop |
+|---|---|---|---|
+| claude | from the Agent SDK's task messages | the same, output in a file | no |
+| codex | AIR | AIR, output streamed onto the call | yes |
+| opencode | its own child-session notifications | not reported (#297) | no |
+| pi | none (pi has no subagents) | none (pi has no background shells) | no |
+
+- **AIR is a client identity, not a feature switch.** claude's and codex's
+  adapters report subagents and background tasks only to JetBrains' AIR
+  client, and declaring `_meta.jetbrains.air` makes an adapter treat yaac as
+  that client in everything it sends. claude then drops a read's text and
+  changes how it renders most tool calls, so claude is never told this.
+  codex is (`CODEX_CAPABILITIES_META`), and so sends plain ACP's fields and
+  a command's output differently. Each adapter's opt-ins live in its profile
+  (`capabilitiesMeta`).
+- **claude** forwards the Agent SDK's own `task_started`, `task_updated`,
+  `task_progress`, `task_notification` and `background_tasks_changed`
+  messages once asked in the session's `_meta` (the same channel as its
+  running/idle report). A subagent is keyed by the Agent call that spawned
+  it, which is what its own updates name (`_meta.claudeCode.parentToolUseId`),
+  so its card stands in for that call; its final report arrives in its
+  `task_notification` and ends its view.
+  A background command names its output file in its call's result. claude
+  stops a task only for an AIR client, so there is no Stop.
+- **codex (AIR)** announces a subagent with `subagent_spawned`, sends its
+  updates under the subagent's own session id, and ends it with
+  `subagent_state_update`. A background shell arrives as `async_task_spawned`
+  and `_state_update`, and `_session/async_task/stop` stops it. Its output is
+  streamed onto the call that started it (`terminal_output_delta`, which
+  yaac asks for; an AIR client that does not gets a command's output only
+  once it ends).
+- **opencode** sends `opencode/session/child_update` notifications: `status`
+  ones move a subagent through its life, and `update` ones carry one of its
+  own `session/update`s, projected as if sent under its id. It reports a
+  background shell only as a finished call whose metadata says it is still
+  running, with no end and no stop, so yaac shows it as an ordinary call.
+
+The projection tags a subagent's events with a `thread`, and a pane shows
+one thread at a time. A subagent's permission asks also show in the main
+thread, since an unanswered one blocks the whole turn.
+
+Streamed terminal output is projected as `tool-output` deltas, apart from the
+call: it is raw text, shown verbatim rather than as Markdown, and resending
+the merged call for every chunk would make a replay grow with the square of
+the output. A pane keeps the last 64 KB of a call's output.
+
+A task's output is read one of two ways. With an output file (claude), the
+pane asks for its end every two seconds while the task is open and running
+(`task-output`), and the server runs `tail` in the workspace, only on a path
+the record gave for that task that ends in `/tasks/<id>.output`. Without one
+(codex), the pane shows what the starting call streamed.
+
+Both are projected from the record like everything else, so a pane that
+attaches late, and a stopped workspace's transcript, show them too. A
+stopped transcript can open a subagent but not a task.
+
 ## Capabilities yaac declines
 
 In an editor the agent is remote from the files, so the client serves `fs/*`
@@ -513,4 +582,5 @@ the image.
 | Wire types | `packages/shared/src/acp.ts` |
 | Chat pane | `packages/frontend/src/components/WorkspaceChat.tsx`, `src/lib/acp.ts` |
 | Composer `/` and `$` completion | `packages/frontend/src/components/ComposerMenu.tsx` |
+| Subagent and task views | `packages/frontend/src/components/AcpActivity.tsx` |
 | Pasted images | `packages/frontend/src/lib/attachments.ts`, `packages/server/src/domain/workspaces/attachments.ts`, `packages/shared/src/attachments.ts` |

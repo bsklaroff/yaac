@@ -19,6 +19,10 @@ import type {
   AcpPermissionOption,
   AcpPlanEntry,
   AcpStopReason,
+  AcpSubagent,
+  AcpSubagentState,
+  AcpTask,
+  AcpTaskState,
   AcpToolCall,
   AcpToolContent,
   AcpToolKind,
@@ -43,6 +47,12 @@ export const ACP = {
   /** Not in the spec: the steering extension claude's and codex's adapters
    *  implement, which adds a message to the running turn. */
   sessionSteer: '_session/steering',
+  /** Stop one background task (see `AcpTask`); claude's and codex's
+   *  adapters serve it. */
+  asyncTaskStop: '_session/async_task/stop',
+  /** opencode's report of a subagent's life and updates (see
+   *  `AcpProjection.applyChildUpdate`). */
+  opencodeChildUpdate: 'opencode/session/child_update',
 } as const
 
 /** acpd's own control notifications (see dockerfiles/acpd/acpd.js). */
@@ -106,14 +116,37 @@ export interface AcpPromptResult {
 /**
  * The capabilities yaac declares. `fs` and `terminal` are off (see the
  * module comment); `readTextFile`/`writeTextFile` are set explicitly so an
- * adapter cannot default them to true.
+ * adapter cannot default them to true. `meta` is the adapter's own opt-ins
+ * (`AcpAdapterProfile.capabilitiesMeta`).
  */
-export function clientCapabilities(): Record<string, unknown> {
+export function clientCapabilities(meta?: Record<string, unknown>): Record<string, unknown> {
   return {
     fs: { readTextFile: false, writeTextFile: false },
     terminal: false,
+    ...(meta !== undefined ? { _meta: meta } : {}),
   }
 }
+
+/**
+ * codex's opt-ins. codex reports subagents and background shells only to
+ * JetBrains AIR, so yaac declares itself that client. The declaration is the
+ * client's identity, not a feature list: it also changes how codex renders
+ * every tool call (it drops the fields it sends plain ACP clients, and sends
+ * a command's output only as chunks). `terminal_output_delta` asks for those
+ * chunks as `tool_call_update._meta.terminal_output_delta`; without it an AIR
+ * client gets a command's output only once it ends.
+ *
+ * claude's adapter changes even more for AIR (a read's text is dropped), so
+ * claude is not told this; see `CLAUDE_SESSION_META`.
+ */
+export const CODEX_CAPABILITIES_META = {
+  jetbrains: { air: { version: 1, capabilities: ['nativeSubagentSessions', 'asyncTasks'] } },
+  terminal_output_delta: true,
+}
+
+/** opencode's opt-in to its subagents' updates
+ *  (`AcpProjection.applyChildUpdate`). */
+export const OPENCODE_CAPABILITIES_META = { 'opencode/child-session-updates': true }
 
 const TOOL_KINDS: readonly AcpToolKind[] = [
   'read', 'edit', 'delete', 'move', 'search', 'execute', 'think', 'fetch', 'switch_mode', 'other',
@@ -122,6 +155,55 @@ const TOOL_STATUSES: readonly AcpToolStatus[] = ['pending', 'in_progress', 'comp
 const STOP_REASONS: readonly AcpStopReason[] = [
   'end_turn', 'max_tokens', 'max_turn_requests', 'refusal', 'cancelled',
 ]
+const SUBAGENT_STATES: readonly AcpSubagentState[] = [
+  'running', 'completed', 'failed', 'cancelled', 'disconnected',
+]
+const TASK_STATES: readonly AcpTaskState[] = ['running', 'paused', 'completed', 'failed', 'stopped']
+/** claude's task types, as the kinds a pane names. */
+const CLAUDE_TASK_KINDS: Record<string, string> = {
+  local_bash: 'shell',
+  local_workflow: 'workflow',
+  local_monitor: 'monitor',
+  mcp: 'monitor',
+}
+/** claude's task statuses, as task and subagent states. */
+const CLAUDE_TASK_STATES: Record<string, AcpTaskState> = {
+  pending: 'running',
+  running: 'running',
+  paused: 'paused',
+  completed: 'completed',
+  failed: 'failed',
+  killed: 'stopped',
+  cancelled: 'stopped',
+  stopped: 'stopped',
+}
+const CLAUDE_SUBAGENT_STATES: Record<string, AcpSubagentState> = {
+  pending: 'running',
+  running: 'running',
+  completed: 'completed',
+  failed: 'failed',
+  killed: 'cancelled',
+  cancelled: 'cancelled',
+  stopped: 'cancelled',
+}
+
+/** The output file a claude background command's result names
+ *  (`…Output is being written to: <path>. You will be notified…`), if it
+ *  is that task's. */
+function outputFileOf(call: AcpToolCall, taskId: string): string | undefined {
+  const text = (call.content ?? []).map((c) => (c.type === 'text' ? c.text : '')).join('')
+  const path = /Output is being written to: (\S+)\. You will be notified/.exec(text)?.[1]
+  return path?.endsWith(`/tasks/${taskId}.output`) === true ? path : undefined
+}
+
+/** opencode's child session statuses, as subagent states. */
+const OPENCODE_CHILD_STATES: Record<string, AcpSubagentState> = {
+  created: 'running',
+  running: 'running',
+  completed: 'completed',
+  interrupted: 'cancelled',
+  failed: 'failed',
+}
 
 export function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined
@@ -240,6 +322,10 @@ export interface AcpToolCallPatch {
   status?: AcpToolStatus
   content?: AcpToolContent[]
   locations?: Array<{ path: string; line?: number }>
+  /** Terminal output to append, projected as a `tool-output` event: codex
+   *  streams a command's output this way, including a background shell's
+   *  after its turn has ended. */
+  output?: string
 }
 
 /**
@@ -264,6 +350,7 @@ function toToolCallPatch(update: Record<string, unknown>): AcpToolCallPatch | un
   const content = 'content' in update ? toToolContent(update.content) : undefined
   const locations = toLocations(update.locations)
   const shell = isShellCall(update, kind)
+  const output = asString(asRecord(asRecord(update._meta)?.terminal_output_delta)?.data)
   return {
     toolCallId,
     ...(asString(update.title) !== undefined ? { title: asString(update.title) as string } : {}),
@@ -276,6 +363,7 @@ function toToolCallPatch(update: Record<string, unknown>): AcpToolCallPatch | un
       : {}),
     ...(content !== undefined ? { content } : {}),
     ...(locations !== undefined ? { locations } : {}),
+    ...(output !== undefined ? { output } : {}),
   }
 }
 
@@ -309,6 +397,17 @@ export function mergeToolCall(
  */
 export class AcpProjection {
   private readonly toolCalls = new Map<string, AcpToolCall>()
+  /** Subagents by session id; an update under one of these ids is that
+   *  subagent's, so its event gets a `thread`. */
+  private readonly subagents = new Map<string, AcpSubagent>()
+  /** Tasks shown to the pane, by id. */
+  private readonly tasks = new Map<string, AcpTask>()
+  /** The thread each tool call ran in, when not the main one. */
+  private readonly toolThreads = new Map<string, string>()
+  /** Every claude task, shown or not, at its latest state. */
+  private readonly claudeTasks = new Map<string, AcpTask>()
+  /** claude's task ids for subagents, mapped to the subagent's id. */
+  private readonly subagentTasks = new Map<string, string>()
   /**
    * Permission asks not yet answered. A reply line is just `{id, result}`,
    * so only a seen request identifies it as settling a permission ask.
@@ -355,8 +454,10 @@ export class AcpProjection {
   openPermission(requestId: string, params: unknown): AcpEventInit {
     this.openPermissions.add(requestId)
     const { toolCall, options } = parsePermissionRequest(params)
+    const thread = this.threadOf(params)
     return {
       type: 'permission-request',
+      ...(thread !== undefined ? { thread } : {}),
       requestId,
       ...(toolCall !== undefined ? { toolCall } : {}),
       options,
@@ -384,15 +485,262 @@ export class AcpProjection {
     return [...this.openPermissions]
   }
 
-  /** Project one `session/update`'s params, or undefined when it carries
-   *  nothing a pane can render. */
-  apply(params: unknown): AcpEventInit | undefined {
+  /** Project one `session/update`'s params into what a pane renders, which
+   *  may be nothing. */
+  apply(params: unknown): AcpEventInit[] {
+    const update = asRecord(asRecord(params)?.update)
+    const parentToolUseId = asString(asRecord(asRecord(update?._meta)?.claudeCode)?.parentToolUseId)
+    const out: AcpEventInit[] = []
+    // claude's subagents run in the main session; their updates name the
+    // Agent call that spawned them instead.
+    if (parentToolUseId !== undefined && !this.subagents.has(parentToolUseId)) {
+      out.push(this.setSubagent({
+        id: parentToolUseId,
+        ...this.parentOf(parentToolUseId),
+        name: this.toolCalls.get(parentToolUseId)?.title ?? 'Subagent',
+        task: '',
+        state: 'running',
+      }))
+    }
+    const thread = this.threadOf(params) ?? parentToolUseId
+    if (update !== undefined) {
+      const lifecycle = this.applyLifecycle(update, thread)
+      if (lifecycle !== null) return lifecycle === undefined ? out : [...out, lifecycle]
+    }
     const translated = translateSessionUpdate(params)
-    if (!translated) return undefined
-    if (translated.kind === 'event') return translated.event
-    const call = mergeToolCall(this.toolCalls.get(translated.patch.toolCallId), translated.patch)
-    this.toolCalls.set(call.toolCallId, call)
-    return { type: 'tool', call }
+    if (!translated) return out
+    const tag = thread !== undefined ? { thread } : {}
+    if (translated.kind === 'event') return [...out, { ...translated.event, ...tag } as AcpEventInit]
+    const { output, ...patch } = translated.patch
+    const known = this.toolCalls.get(patch.toolCallId)
+    // An update naming nothing about a call never shown (an adapter
+    // closing a call it hid) would render as a bare id.
+    if (known === undefined && Object.keys(patch).length === 1 && output === undefined) return out
+    if (known === undefined || Object.keys(patch).length > 1) {
+      const call = mergeToolCall(known, patch)
+      this.toolCalls.set(call.toolCallId, call)
+      if (known === undefined && thread !== undefined) this.toolThreads.set(call.toolCallId, thread)
+      out.push({ type: 'tool', ...tag, call })
+      out.push(...this.claimOutputFile(call))
+    }
+    if (output !== undefined && output !== '') {
+      out.push({ type: 'tool-output', ...tag, toolCallId: patch.toolCallId, data: output })
+    }
+    return out
+  }
+
+  /**
+   * Project one of the Agent SDK messages claude forwards
+   * (`CLAUDE_SDK_MESSAGE`) into subagents and background tasks, which it
+   * reports this way to a client that is not JetBrains AIR. A subagent is
+   * keyed by the Agent call that spawned it, which is what its own updates
+   * name (`parentToolUseId`); a task by the SDK's task id.
+   */
+  applyClaudeSdk(params: unknown): AcpEventInit[] {
+    const m = asRecord(asRecord(params)?.message)
+    if (m?.type !== 'system') return []
+    if (m.subtype === 'background_tasks_changed') {
+      const live = new Set((Array.isArray(m.tasks) ? m.tasks : []).map((t) => asString(asRecord(t)?.task_id)))
+      // The live set is authoritative: a task missing from it is gone, even
+      // if its own end was never reported.
+      return [...this.tasks.values()]
+        .filter((t) => this.claudeTasks.has(t.id) && t.state === 'running' && !live.has(t.id))
+        .map((t) => this.setTask({ ...t, state: 'stopped' }))
+    }
+    const taskId = asString(m.task_id)
+    if (taskId === undefined) return []
+    const toolUseId = asString(m.tool_use_id)
+    const patch = asRecord(m.patch)
+    if (m.subtype === 'task_started') {
+      if (m.task_type === 'local_agent' || m.subagent_type !== undefined) {
+        if (toolUseId === undefined) return []
+        this.subagentTasks.set(taskId, toolUseId)
+        const known = this.subagents.get(toolUseId)
+        return [this.setSubagent({
+          id: toolUseId,
+          ...this.parentOf(toolUseId),
+          name: asString(m.description) ?? known?.name ?? 'Subagent',
+          task: asString(m.prompt) ?? known?.task ?? '',
+          state: 'running',
+        })]
+      }
+      const started: AcpTask = {
+        id: taskId,
+        name: asString(m.workflow_name) ?? asString(m.description) ?? 'Background task',
+        kind: CLAUDE_TASK_KINDS[asString(m.task_type) ?? ''] ?? 'task',
+        description: asString(m.description) ?? '',
+        state: 'running',
+        ...(toolUseId !== undefined ? { toolCallId: toolUseId } : {}),
+      }
+      // A command run in the foreground is a task too, but only one moved
+      // to the background is shown; it may be moved later (`task_updated`).
+      const backgrounded = m.is_backgrounded === true || (m.is_backgrounded === undefined && m.task_type !== 'local_bash')
+      this.claudeTasks.set(taskId, started)
+      return backgrounded ? this.announceClaudeTask(started) : []
+    }
+    const subagentId = this.subagentTasks.get(taskId)
+    const status = asString(patch?.status) ?? (m.subtype === 'task_notification' ? asString(m.status) : undefined)
+    if (subagentId !== undefined) {
+      const known = this.subagents.get(subagentId)
+      const state = CLAUDE_SUBAGENT_STATES[status ?? '']
+      const summary = m.subtype === 'task_notification' ? asString(m.summary) : undefined
+      if (known === undefined || ((state === undefined || state === known.state) && summary === undefined)) return []
+      return [this.setSubagent({
+        ...known,
+        ...(state !== undefined ? { state } : {}),
+        ...(summary !== undefined ? { summary } : {}),
+      })]
+    }
+    const pending = this.claudeTasks.get(taskId)
+    if (pending === undefined) return []
+    const state = CLAUDE_TASK_STATES[status ?? '']
+    const summary = asString(m.summary)
+    const outputFile = asString(m.output_file)
+    const next: AcpTask = {
+      ...pending,
+      ...(state !== undefined ? { state } : {}),
+      ...(summary !== undefined ? { summary } : {}),
+      ...(outputFile !== undefined ? { outputFile } : {}),
+    }
+    this.claudeTasks.set(taskId, next)
+    if (this.tasks.has(taskId)) return [this.setTask(next)]
+    return patch?.is_backgrounded === true ? this.announceClaudeTask(next) : []
+  }
+
+  /** Show a claude task, with the output file its call already named. */
+  private announceClaudeTask(task: AcpTask): AcpEventInit[] {
+    const call = task.toolCallId === undefined ? undefined : this.toolCalls.get(task.toolCallId)
+    const outputFile = task.outputFile ?? (call === undefined ? undefined : outputFileOf(call, task.id))
+    return [this.setTask(outputFile === undefined ? task : { ...task, outputFile })]
+  }
+
+  /**
+   * claude names a background command's output file only in its call's
+   * result text, which may arrive before or after the task; this covers
+   * the call arriving second.
+   */
+  private claimOutputFile(call: AcpToolCall): AcpEventInit[] {
+    const task = [...this.tasks.values()].find((t) => t.toolCallId === call.toolCallId && t.outputFile === undefined)
+    const outputFile = task === undefined ? undefined : outputFileOf(call, task.id)
+    return task === undefined || outputFile === undefined ? [] : [this.setTask({ ...task, outputFile })]
+  }
+
+  private setSubagent(subagent: AcpSubagent): AcpEventInit {
+    this.subagents.set(subagent.id, subagent)
+    return { type: 'subagent', subagent }
+  }
+
+  private setTask(task: AcpTask): AcpEventInit {
+    this.tasks.set(task.id, task)
+    return { type: 'task', task }
+  }
+
+  /** The thread a claude subagent's Agent call ran in, when not the main
+   *  one: a subagent spawned by a subagent. */
+  private parentOf(toolUseId: string): { parent?: string } {
+    const parent = this.toolThreads.get(toolUseId)
+    return parent !== undefined ? { parent } : {}
+  }
+
+  /**
+   * Project one `opencode/session/child_update` into the same events AIR's
+   * subagent updates make. A `status` message moves the subagent's state; an
+   * `update` carries one `session/update` of the subagent's own, which is
+   * projected as if sent under its session id.
+   */
+  applyChildUpdate(params: unknown): AcpEventInit[] {
+    const p = asRecord(params)
+    const id = asString(p?.childSessionId)
+    if (p === undefined || id === undefined) return []
+    const out: AcpEventInit[] = []
+    const known = this.subagents.get(id)
+    const state = p.type === 'status' ? OPENCODE_CHILD_STATES[asString(p.status) ?? ''] : undefined
+    if (known === undefined || (state !== undefined && state !== known.state)) {
+      const parent = asString(p.parentSessionId)
+      out.push(this.setSubagent({
+        id,
+        ...(parent !== undefined && this.subagents.has(parent) ? { parent } : {}),
+        name: asString(p.title) ?? 'Subagent',
+        task: '',
+        ...known,
+        state: state ?? known?.state ?? 'running',
+      }))
+    }
+    if (p.type === 'update') out.push(...this.apply({ sessionId: id, update: p.update }))
+    return out
+  }
+
+  /** The subagent a message's `sessionId` names, or undefined for the main
+   *  conversation. */
+  private threadOf(params: unknown): string | undefined {
+    const sessionId = asString(asRecord(params)?.sessionId)
+    return sessionId !== undefined && this.subagents.has(sessionId) ? sessionId : undefined
+  }
+
+  /**
+   * Project a subagent or background-task update (see `clientCapabilities`)
+   * into its merged state. Null when the update is neither; undefined when
+   * it is one but names nothing known.
+   */
+  private applyLifecycle(
+    update: Record<string, unknown>,
+    thread: string | undefined,
+  ): AcpEventInit | undefined | null {
+    switch (update.sessionUpdate) {
+      case 'subagent_spawned': {
+        const id = asString(update.subagentSessionId)
+        if (id === undefined) return undefined
+        const subagent: AcpSubagent = {
+          id,
+          ...(thread !== undefined ? { parent: thread } : {}),
+          name: asString(update.name) ?? 'Subagent',
+          task: asString(update.task) ?? '',
+          state: 'running',
+        }
+        this.subagents.set(id, subagent)
+        return { type: 'subagent', subagent }
+      }
+      case 'subagent_state_update': {
+        const known = this.subagents.get(asString(update.subagentSessionId) ?? '')
+        const state = asString(update.state)
+        if (known === undefined || !(SUBAGENT_STATES as readonly string[]).includes(state ?? '')) return undefined
+        const subagent = { ...known, state: state as AcpSubagentState }
+        this.subagents.set(subagent.id, subagent)
+        return { type: 'subagent', subagent }
+      }
+      case 'async_task_spawned':
+      case 'async_task_progress':
+      case 'async_task_state_update': {
+        const id = asString(update.asyncTaskId)
+        if (id === undefined) return undefined
+        const known = this.tasks.get(id)
+        if (known === undefined && update.sessionUpdate !== 'async_task_spawned') return undefined
+        const description = asString(update.description)
+        const state = asString(update.state)
+        const toolCallId = asString(update.toolCallId)
+        const outputFile = asString(update.outputFilePath)
+        const summary = asString(update.summary)
+        // Progress and state updates name only what changed.
+        const task: AcpTask = {
+          ...known,
+          id,
+          name: asString(update.name) ?? known?.name ?? description ?? 'Background task',
+          kind: asString(update.taskType) ?? known?.kind ?? 'task',
+          description: description ?? known?.description ?? '',
+          state: (TASK_STATES as readonly string[]).includes(state ?? '')
+            ? state as AcpTaskState
+            : known?.state ?? 'running',
+          ...(toolCallId !== undefined ? { toolCallId } : {}),
+          ...(outputFile !== undefined ? { outputFile } : {}),
+          ...(summary !== undefined ? { summary } : {}),
+          ...(update.canStop === true ? { canStop: true as const } : {}),
+        }
+        this.tasks.set(id, task)
+        return { type: 'task', task }
+      }
+      default:
+        return null
+    }
   }
 }
 
@@ -668,10 +1016,19 @@ export function sessionStateModeId(state: unknown): string | undefined {
  */
 export const CLAUDE_SDK_MESSAGE = '_claude/sdkMessage'
 
-/** `_meta` for claude's `session/new` and `session/load`; see
- *  `CLAUDE_SDK_MESSAGE`. */
+/**
+ * `_meta` for claude's `session/new` and `session/load`: the Agent SDK
+ * messages it forwards as `CLAUDE_SDK_MESSAGE`. Besides the running/idle
+ * report, the task messages are how claude reports subagents and background
+ * tasks to a client that is not AIR (`AcpProjection.applyClaudeSdk`).
+ */
 export const CLAUDE_SESSION_META = {
-  claudeCode: { emitRawSDKMessages: [{ type: 'system', subtype: 'session_state_changed' }] },
+  claudeCode: {
+    emitRawSDKMessages: [
+      'session_state_changed', 'task_started', 'task_updated', 'task_progress', 'task_notification',
+      'background_tasks_changed',
+    ].map((subtype) => ({ type: 'system', subtype })),
+  },
 }
 
 /**

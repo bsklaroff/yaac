@@ -31,6 +31,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { serverLog } from '#log'
+import { shellQuote } from '#lib/shell'
 import { AcpConversation } from './acp-client'
 import { readAcpInFlight, readAcpModeId, readAcpPendingPermissions, type AcpRecordRef } from './acp-log'
 import {
@@ -409,6 +410,11 @@ class AcpConnection implements AgentConnection {
       transport: ctrlTransport(child),
       queue,
       cwd: workspaceDriver().workspacePaths(this.session.jobName).workspaceDir,
+      tailFile: async (file, bytes) => (await workspaceDriver().exec(
+        this.session.jobName,
+        `tail -c ${String(bytes)} -- ${shellQuote(file)}`,
+        { maxAttempts: 1, timeout: this.commandTimeoutMs },
+      )).stdout,
       permissionMode: () => this.permissionMode,
       profile,
       ...(launchModel !== undefined ? { launchModel } : {}),

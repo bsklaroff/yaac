@@ -114,7 +114,7 @@ export interface AcpConversationDeps {
    * adapter's strict default.
    */
   profile?: Pick<AcpAdapterProfile, 'modeIds' | 'readsAs' | 'forwardAsksUnderBypass' | 'steers'
-    | 'sessionMeta' | 'infersRunStart' | 'refusesPromptMidRun'>
+    | 'sessionMeta' | 'capabilitiesMeta' | 'infersRunStart' | 'refusesPromptMidRun'>
   /**
    * The model to send, for adapters that only accept one over the protocol.
    * Sent once after `session/new`, never after `session/load` (the user may
@@ -139,6 +139,11 @@ export interface AcpConversationDeps {
    * disconnected.
    */
   recoverModeId?: () => Promise<string | undefined>
+  /**
+   * The last `bytes` of a file in the workspace, for showing a background
+   * task's output (`readTaskOutput`). Absent means unreadable.
+   */
+  tailFile?: (path: string, bytes: number) => Promise<string>
   onDown: (reason: string) => void
   /** Messages the conversation this one replaces had queued (`takeQueue`),
    *  sent once this one knows no turn is running. */
@@ -152,6 +157,10 @@ export interface QueuedTurn extends AcpQueuedPrompt {
   resolve: () => void
   reject: (err: unknown) => void
 }
+
+/** How much of a task's output a pane is shown: its end, like a TUI's
+ *  task view. */
+const TASK_OUTPUT_BYTES = 64 * 1024
 
 export class AcpConversation {
   private readonly peer: JsonRpcPeer
@@ -690,7 +699,7 @@ export class AcpConversation {
 
       const init = await this.peer.request<AcpInitializeResult>(ACP.initialize, {
         protocolVersion: ACP_PROTOCOL_VERSION,
-        clientCapabilities: clientCapabilities(),
+        clientCapabilities: clientCapabilities(this.deps.profile?.capabilitiesMeta),
       })
 
       const canLoad = init.agentCapabilities?.loadSession === true
@@ -1088,6 +1097,21 @@ export class AcpConversation {
       this.emit({ type: 'error', message })
       throw err
     }
+  }
+
+  /** Stop one background task (claude's and codex's adapters announce
+   *  them). The adapter reports the stop as the task's state, through the
+   *  record. */
+  async stopTask(taskId: string): Promise<void> {
+    if (this.sessionId === undefined) throw new Error('no ACP session')
+    await this.peer.request(ACP.asyncTaskStop, { sessionId: this.sessionId, asyncTaskId: taskId })
+  }
+
+  /** The end of a background task's output file; `path` is the one the
+   *  adapter announced (see `attachAcp`). */
+  async readTaskOutput(path: string): Promise<string> {
+    if (this.deps.tailFile === undefined) throw new Error('task output is not readable here')
+    return this.deps.tailFile(path, TASK_OUTPUT_BYTES)
   }
 
   /**

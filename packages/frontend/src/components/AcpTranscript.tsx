@@ -9,17 +9,19 @@ import { diffStats, diffTextPair, type DiffLine } from '#lib/diff'
 import { languageForFence, languageForPath } from '#lib/highlight'
 import {
   ChevronIcon, DeleteIcon, DoneIcon, ExecuteIcon, FailedIcon, FileTextIcon, InProgressIcon, LoadingIcon, MoveIcon,
-  InterruptedIcon, PendingIcon, PlanIcon, PreviewIcon, RenameIcon, SearchIcon, ThinkingIcon, ToolIcon,
-  WarningIcon, type Icon,
+  InterruptedIcon, MonitorIcon, PendingIcon, PlanIcon, PreviewIcon, RenameIcon, SearchIcon, SubagentIcon,
+  ThinkingIcon, ToolIcon, WarningIcon, type Icon,
 } from '#lib/icons'
+import { stripAnsi } from '@yaac/shared/ansi'
 import type {
-  AcpContent, AcpDiff, AcpEvent, AcpImage, AcpPermissionOption, AcpPlanEntry, AcpToolCall,
+  AcpContent, AcpDiff, AcpEvent, AcpImage, AcpPermissionOption, AcpPlanEntry, AcpSubagent, AcpTask, AcpToolCall,
   AcpToolContent, AcpToolKind,
 } from '@yaac/shared/acp'
 
 /**
- * Renders an ACP conversation: messages, thinking, tool calls, plans and
- * permission asks. Shared by the live chat pane and a stopped workspace's
+ * Renders an ACP conversation: messages, thinking, tool calls, plans,
+ * permission asks, and cards for the subagents and background tasks the
+ * agent started. Shared by the live chat pane and a stopped workspace's
  * transcript, so it depends only on the events it is given (no socket, store
  * or workspace id).
  *
@@ -34,9 +36,14 @@ export type Group =
   | { kind: 'user'; seq: number; text: string; images: AcpImage[] }
   | { kind: 'agent'; seq: number; text: string; images: AcpImage[] }
   | { kind: 'thought'; seq: number; text: string; images: AcpImage[] }
-  /** `interrupted` marks a call whose turn is over though it never finished. */
-  | { kind: 'tool'; seq: number; call: AcpToolCall; interrupted?: true }
+  /** `interrupted` marks a call whose turn is over though it never finished;
+   *  `background` one that runs on as a task (codex's background shell);
+   *  `output` is the terminal output it streamed (raw text, not Markdown). */
+  | { kind: 'tool'; seq: number; call: AcpToolCall; output?: string; interrupted?: true; background?: true }
   | { kind: 'plan'; seq: number; entries: AcpPlanEntry[] }
+  /** A subagent or task, at the point it started, with its latest state. */
+  | { kind: 'subagent'; seq: number; subagent: AcpSubagent }
+  | { kind: 'task'; seq: number; task: AcpTask }
   | { kind: 'error'; seq: number; message: string }
   | { kind: 'turn-end'; seq: number; stopReason: string }
   /** A permission ask, merged with its answer once one arrives. */
@@ -64,10 +71,39 @@ function unfinished(call: AcpToolCall): boolean {
   return call.status === 'pending' || call.status === 'in_progress'
 }
 
+/** The events that belong to one thread; the rest concern the whole
+ *  conversation. */
+const THREADED = ['user', 'agent', 'thought', 'tool', 'tool-output', 'plan', 'permission-request'] as const
+
+/** How much streamed output a call keeps: its end, as a terminal shows. */
+export const MAX_TOOL_OUTPUT_CHARS = 64 * 1024
+type ThreadedEvent = Extract<AcpEvent, { type: typeof THREADED[number] }>
+
+function isThreaded(e: AcpEvent): e is ThreadedEvent {
+  return (THREADED as readonly string[]).includes(e.type)
+}
+
+/** Whether a subagent or task is still going. */
+export function active(item: AcpSubagent | AcpTask): boolean {
+  return item.state === 'running' || item.state === 'paused'
+}
+
 /**
- * Fold the event stream into renderable groups:
+ * Fold one thread of the event stream into renderable groups. `thread` is a
+ * subagent's id, or undefined for the main conversation:
+ * - only that thread's content is kept, except that the main conversation
+ *   also keeps every subagent's permission asks, since an unanswered one
+ *   blocks the whole turn;
+ * - a subagent's card goes in the thread that spawned it, in place of the
+ *   call that spawned it when that is in the stream (claude's Agent call),
+ *   and its final report, once it has finished, ends its own thread. Task
+ *   cards and turn outcomes go in the main conversation;
+ * - a call's streamed output is appended to it, keeping the end;
+ * - a call that started a task still running is not interrupted by its turn
+ *   ending: it runs on in the background;
  * - consecutive text chunks of one kind merge into one group;
- * - a tool call's updates replace its group in place, keeping the latest;
+ * - a tool call's, subagent's or task's updates replace its group in place,
+ *   keeping the latest;
  * - a tool call still unfinished when its turn ends is marked interrupted. A
  *   replayed history has no turn boundaries, so the next `user` message also
  *   ends the turn before it, unless it was steered into that turn;
@@ -78,11 +114,27 @@ function unfinished(call: AcpToolCall): boolean {
  * - `agent-turn` (a run the agent may have started itself) keeps the text
  *   after it from joining the text before.
  */
-export function groupEvents(events: AcpEvent[]): Group[] {
+export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
   const groups: Group[] = []
   const toolIndex = new Map<string, number>()
   const permissionIndex = new Map<string, number>()
   let split = false
+  const cardIndex = new Map<string, number>()
+  /** Calls a subagent's card stands in for. */
+  const absorbed = new Set<string>()
+  /** The subagent this thread is, at its latest state. */
+  let self: AcpSubagent | undefined
+  const main = thread === undefined
+  /** Add a card, or replace it in place once it exists. */
+  const card = (key: string, group: Extract<Group, { kind: 'subagent' | 'task' }>): void => {
+    const at = cardIndex.get(key)
+    if (at !== undefined) {
+      groups[at] = { ...group, seq: groups[at].seq } as Group
+      return
+    }
+    cardIndex.set(key, groups.length)
+    groups.push(group)
+  }
   const interruptOpenCalls = (): void => {
     for (const at of toolIndex.values()) {
       const g = groups[at]
@@ -90,6 +142,25 @@ export function groupEvents(events: AcpEvent[]): Group[] {
     }
   }
   for (const e of events) {
+    if (e.type === 'subagent' && e.subagent.id === thread) self = e.subagent
+    if (e.type === 'subagent') {
+      if (e.subagent.parent !== thread) continue
+      const key = `s:${e.subagent.id}`
+      const call = toolIndex.get(e.subagent.id)
+      if (call !== undefined && !cardIndex.has(key)) {
+        toolIndex.delete(e.subagent.id)
+        absorbed.add(e.subagent.id)
+        cardIndex.set(key, call)
+      }
+      card(key, { kind: 'subagent', seq: e.seq, subagent: e.subagent })
+      continue
+    }
+    if (e.type === 'task') {
+      if (main) card(`t:${e.task.id}`, { kind: 'task', seq: e.seq, task: e.task })
+      continue
+    }
+    if (isThreaded(e) && e.thread !== thread && !(main && e.type === 'permission-request')) continue
+    if (!main && (e.type === 'turn-end' || e.type === 'error')) continue
     if (e.type === 'turn-start' || (e.type === 'user' && e.steered !== true)) interruptOpenCalls()
     if (e.type === 'agent-turn') split = true
     if (e.type === 'commands' || e.type === 'models' || e.type === 'turn-start' || e.type === 'agent-turn') continue
@@ -133,7 +204,15 @@ export function groupEvents(events: AcpEvent[]): Group[] {
       groups.push({ kind: 'plan', seq: e.seq, entries: e.entries })
       continue
     }
+    if (e.type === 'tool-output') {
+      const at = toolIndex.get(e.toolCallId)
+      const g = at === undefined ? undefined : groups[at]
+      if (at === undefined || g?.kind !== 'tool') continue
+      groups[at] = { ...g, output: ((g.output ?? '') + e.data).slice(-MAX_TOOL_OUTPUT_CHARS) }
+      continue
+    }
     if (e.type === 'tool') {
+      if (absorbed.has(e.call.toolCallId)) continue
       const at = toolIndex.get(e.call.toolCallId)
       if (at !== undefined) {
         groups[at] = { ...(groups[at] as Extract<Group, { kind: 'tool' }>), call: e.call }
@@ -154,6 +233,16 @@ export function groupEvents(events: AcpEvent[]): Group[] {
     }
     split = false
     groups.push({ kind: e.type, seq: e.seq, text, images })
+  }
+  const tasks = new Map<string, AcpTask>()
+  for (const e of events) if (e.type === 'task') tasks.set(e.task.id, e.task)
+  for (const task of tasks.values()) {
+    const at = task.toolCallId === undefined || !active(task) ? undefined : toolIndex.get(task.toolCallId)
+    const g = at === undefined ? undefined : groups[at]
+    if (at !== undefined && g?.kind === 'tool') groups[at] = { ...g, background: true }
+  }
+  if (self?.summary !== undefined && !active(self)) {
+    groups.push({ kind: 'agent', seq: (events[events.length - 1]?.seq ?? 0) + 1, text: self.summary, images: [] })
   }
   return groups
 }
@@ -315,11 +404,14 @@ function DisclosureRow({
  * spins, `interrupted` says its turn ended first. Omitted (a call awaiting
  * permission) it gets no mark.
  */
-function ToolRow({
+export function ToolRow({
   call,
+  output = '',
   progress,
 }: {
   call: AcpToolCall
+  /** Terminal output the call streamed, shown verbatim. */
+  output?: string
   progress?: 'running' | 'interrupted'
 }): JSX.Element {
   const diffs = useMemo(
@@ -331,7 +423,7 @@ function ToolRow({
   const isRead = call.kind === 'read'
   /** The row truncates a command, so a call that runs one always expands to
    *  show it in full above any output. */
-  const hasContent = call.shell === true || body !== '' || edits.length > 0
+  const hasContent = call.shell === true || body !== '' || output !== '' || edits.length > 0
   /** The user's expand/collapse choice, or `null` if they haven't made one.
    *  Edits default open. The default is derived each render because a call
    *  arrives empty and gains content in later updates. */
@@ -383,7 +475,7 @@ function ToolRow({
             <pre className={clsx(
               'max-h-40 overflow-auto px-2.5 py-1.5 font-mono text-[11px] leading-snug whitespace-pre-wrap',
               'break-all text-text',
-              body !== '' && 'border-b border-hairline',
+              (body !== '' || output !== '') && 'border-b border-hairline',
             )}>
               <span className="select-none text-text-faint">$ </span>{call.title}
             </pre>
@@ -404,6 +496,14 @@ function ToolRow({
               <Markdown>{body}</Markdown>
             </div>
           ))}
+          {output !== '' && (
+            <pre className={clsx(
+              'px-2.5 py-1.5 font-mono text-[11px] leading-snug whitespace-pre-wrap break-all text-text-dim',
+              (body !== '' || edits.length > 0) && 'border-t border-hairline',
+            )}>
+              {stripAnsi(output)}
+            </pre>
+          )}
         </div>
       )}
     </div>
@@ -560,6 +660,75 @@ function PlanRow({ entries }: { entries: AcpPlanEntry[] }): JSX.Element {
   )
 }
 
+/** The icon for a background task, by its kind. */
+export function taskIcon(task: AcpTask): Icon {
+  if (task.kind === 'shell') return ExecuteIcon
+  if (task.kind === 'monitor') return MonitorIcon
+  return ToolIcon
+}
+
+/**
+ * How far a subagent or task got. `live` says the conversation is running;
+ * without it, one still marked running was cut off when the workspace
+ * stopped.
+ */
+export function StateMark({ state, live }: { state: (AcpSubagent | AcpTask)['state']; live: boolean }): JSX.Element {
+  if (state === 'running' && live) {
+    return <LoadingIcon size={12} aria-label="running" className="shrink-0 animate-spin text-text-faint" />
+  }
+  if (state === 'completed') return <DoneIcon size={12} aria-label="completed" className="shrink-0 text-success" />
+  if (state === 'failed') return <FailedIcon size={12} aria-label="failed" className="shrink-0 text-error" />
+  return (
+    <span className="flex shrink-0 items-center gap-1 text-[11px] text-text-faint">
+      <InterruptedIcon size={12} />
+      {state === 'running' ? 'unfinished' : state}
+    </span>
+  )
+}
+
+/** A subagent or task in the transcript; opens its own view when the
+ *  caller can show one. */
+function ActivityCard({
+  icon: Icon,
+  label,
+  title,
+  detail,
+  state,
+  live,
+  onOpen,
+}: {
+  icon: Icon
+  label: string
+  title: string
+  detail?: string
+  state: (AcpSubagent | AcpTask)['state']
+  live: boolean
+  onOpen?: () => void
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      disabled={onOpen === undefined}
+      className="group flex w-full items-center gap-2 rounded-lg border border-hairline bg-surface px-3 py-2 text-left
+        text-xs enabled:hover:border-border enabled:hover:bg-surface-2 disabled:cursor-default"
+    >
+      <Icon size={14} className="shrink-0 text-text-faint" />
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="flex items-center gap-1.5">
+          <span className="shrink-0 text-text-faint">{label}</span>
+          <span className="truncate text-text">{title}</span>
+        </span>
+        {detail !== undefined && detail !== '' && <span className="truncate text-text-faint">{detail}</span>}
+      </span>
+      <StateMark state={state} live={live} />
+      {onOpen !== undefined && (
+        <ChevronIcon size={12} className="shrink-0 text-text-faint group-hover:text-text-dim" />
+      )}
+    </button>
+  )
+}
+
 /**
  * A conversation, rendered from groups (see `groupEvents`) so a caller that
  * also needs them folds the stream only once.
@@ -572,7 +741,10 @@ export function AcpTranscript({
   groups,
   className,
   busy = false,
+  live = false,
   onAnswerPermission,
+  onOpenSubagent,
+  onOpenTask,
 }: {
   groups: Group[]
   className?: string
@@ -583,12 +755,18 @@ export function AcpTranscript({
   /** Sends a permission answer; returns false if it could not be sent.
    *  Omitted for a stopped workspace, whose asks render as unanswered. */
   onAnswerPermission?: (requestId: string, optionId?: string) => boolean
+  /** Whether the conversation is running (see `StateMark`). */
+  live?: boolean
+  /** Show a subagent's or task's own view; a card is inert without one. */
+  onOpenSubagent?: (id: string) => void
+  onOpenTask?: (id: string) => void
 }): JSX.Element {
   /** Calls waiting on an unanswered ask: not running, and not interrupted. */
   const asking = new Set(groups.flatMap((g) => (
     g.kind === 'permission' && g.decided === undefined && g.toolCall !== undefined ? [g.toolCall.toolCallId] : []
   )))
   const progressOf = (g: Extract<Group, { kind: 'tool' }>): 'running' | 'interrupted' | undefined => {
+    if (g.background !== undefined) return 'running'
     if (g.interrupted !== undefined || !busy) return 'interrupted'
     return asking.has(g.call.toolCallId) ? undefined : 'running'
   }
@@ -596,11 +774,33 @@ export function AcpTranscript({
     <div className={clsx('break-words text-sm', className)}>
       {groups.map((g, i) => (
         <div key={g.seq} className={clsx(i > 0 && (isStep(g) && isStep(groups[i - 1]) ? 'mt-0.5' : 'mt-4'))}>
-          <GroupView
-            group={g}
-            {...(g.kind === 'tool' ? { progress: progressOf(g) } : {})}
-            {...(onAnswerPermission !== undefined ? { onAnswerPermission } : {})}
-          />
+          {g.kind === 'subagent' ? (
+            <ActivityCard
+              icon={SubagentIcon}
+              label="Agent"
+              title={g.subagent.name}
+              detail={g.subagent.task}
+              state={g.subagent.state}
+              live={live}
+              {...(onOpenSubagent !== undefined ? { onOpen: () => onOpenSubagent(g.subagent.id) } : {})}
+            />
+          ) : g.kind === 'task' ? (
+            <ActivityCard
+              icon={taskIcon(g.task)}
+              label={g.task.kind}
+              title={g.task.name}
+              {...(g.task.summary !== undefined ? { detail: g.task.summary } : {})}
+              state={g.task.state}
+              live={live}
+              {...(onOpenTask !== undefined ? { onOpen: () => onOpenTask(g.task.id) } : {})}
+            />
+          ) : (
+            <GroupView
+              group={g}
+              {...(g.kind === 'tool' ? { progress: progressOf(g) } : {})}
+              {...(onAnswerPermission !== undefined ? { onAnswerPermission } : {})}
+            />
+          )}
         </div>
       ))}
     </div>
@@ -618,7 +818,7 @@ function GroupView({
   progress,
   onAnswerPermission,
 }: {
-  group: Group
+  group: Exclude<Group, { kind: 'subagent' | 'task' }>
   /** How to mark an unfinished tool call; see `ToolRow`. */
   progress?: 'running' | 'interrupted'
   onAnswerPermission?: (requestId: string, optionId?: string) => boolean
@@ -644,7 +844,13 @@ function GroupView({
   }
   if (g.kind === 'thought') return <ThoughtRow text={g.text} />
   if (g.kind === 'tool') {
-    return <ToolRow call={g.call} {...(progress !== undefined ? { progress } : {})} />
+    return (
+      <ToolRow
+        call={g.call}
+        {...(g.output !== undefined ? { output: g.output } : {})}
+        {...(progress !== undefined ? { progress } : {})}
+      />
+    )
   }
   if (g.kind === 'plan') return <PlanRow entries={g.entries} />
   if (g.kind === 'permission') {

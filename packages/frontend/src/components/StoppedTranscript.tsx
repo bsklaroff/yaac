@@ -2,7 +2,8 @@ import { useMemo, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
 import { AcpTranscript, groupEvents } from '#components/AcpTranscript'
-import { TOOL_LABEL } from '#lib/icons'
+import { ActivityHeader, latestActivity } from '#components/AcpActivity'
+import { SubagentIcon, TOOL_LABEL } from '#lib/icons'
 import { ServerError } from '@yaac/shared/errors'
 import {
   getSessionTranscript, transcriptViewable, TRANSCRIPT_UNAVAILABLE,
@@ -16,7 +17,8 @@ import type { AgentSessionEntry, AgentTool } from '@yaac/shared/types'
  *
  * A workspace can have several (`/clear`, or more than one agent); they show
  * as tabs in restore order. Fetched once and cached forever, since a stopped
- * conversation cannot change.
+ * conversation cannot change. A subagent's card opens its own transcript, as
+ * in the live pane.
  */
 export function StoppedTranscript({
   workspaceId,
@@ -49,9 +51,14 @@ export function StoppedTranscript({
     staleTime: Infinity,
   })
 
+  /** The subagent being read instead of the conversation, if any. */
+  const [opened, setOpened] = useState<string | null>(null)
+  const subagent = opened === null || !Array.isArray(data)
+    ? undefined
+    : latestActivity(data).subagents.get(opened)
   const groups = useMemo(
-    () => (Array.isArray(data) ? groupEvents(data) : []),
-    [data],
+    () => (Array.isArray(data) ? groupEvents(data, subagent?.id) : []),
+    [data, subagent?.id],
   )
 
   // Nothing readable: a `tui` conversation of a tool whose history the server
@@ -88,7 +95,10 @@ export function StoppedTranscript({
             <button
               key={s.agentSessionId}
               type="button"
-              onClick={() => setPicked(s.agentSessionId)}
+              onClick={() => {
+                setPicked(s.agentSessionId)
+                setOpened(null)
+              }}
               title={s.prompt ?? undefined}
               className={clsx(
                 'max-w-52 truncate rounded-md px-2 py-1 text-[11px] transition max-md:py-2',
@@ -101,6 +111,16 @@ export function StoppedTranscript({
             </button>
           ))}
         </div>
+      )}
+      {subagent !== undefined && (
+        <ActivityHeader
+          icon={SubagentIcon}
+          label="Agent"
+          title={subagent.name}
+          state={subagent.state}
+          live={false}
+          onBack={() => setOpened(null)}
+        />
       )}
       <div className="min-h-0 flex-1 overflow-y-auto rounded bg-bg/80 p-2.5">
         {isPending && <p className="text-xs text-text-faint">Loading the conversation…</p>}
@@ -115,7 +135,7 @@ export function StoppedTranscript({
         {!isPending && !isError && groups.length === 0 && (
           <p className="text-xs text-text-faint">This conversation has no messages.</p>
         )}
-        <AcpTranscript groups={groups} className="text-xs" />
+        <AcpTranscript groups={groups} className="text-xs" onOpenSubagent={setOpened} />
       </div>
     </div>
   )
