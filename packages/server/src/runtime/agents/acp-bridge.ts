@@ -25,12 +25,12 @@ import type { AcpClientMessage, AcpEvent, AcpImage, AcpServerMessage } from '@ya
 export interface AcpSocket {
   send(data: string): void
   close(code?: number, reason?: string): void
-  onMessage(cb: (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => void): void
+  onMessage(cb: (data: string | Buffer | ArrayBuffer, isBinary: boolean) => void): void
   onClose(cb: () => void): void
 }
 
-function toText(data: Buffer | ArrayBuffer | Buffer[]): string {
-  if (Array.isArray(data)) return Buffer.concat(data).toString('utf8')
+function toText(data: string | Buffer | ArrayBuffer): string {
+  if (typeof data === 'string') return data
   return Buffer.isBuffer(data) ? data.toString('utf8') : Buffer.from(data).toString('utf8')
 }
 

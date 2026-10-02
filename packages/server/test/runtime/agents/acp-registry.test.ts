@@ -1,13 +1,13 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   _resetAcpRegistryForTests,
   acpConversation,
-  acpConversationByHandle,
   dropAcpQueues,
   parkAcpQueue,
   registerAcpConversation,
   takeAcpQueue,
   unregisterAcpConversation,
+  whenAcpConversation,
 } from '#runtime/agents/acp-registry'
 import type { AcpConversation, QueuedTurn } from '#runtime/agents/acp-client'
 
@@ -25,7 +25,6 @@ describe('acpConversation', () => {
     registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, c)
 
     expect(acpConversation('demo', 'wt-1', 'acp-1')).toBe(c)
-    expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBe(c)
   })
 
   it('is scoped per workspace and per project, so ids cannot collide across them', () => {
@@ -33,29 +32,46 @@ describe('acpConversation', () => {
 
     expect(acpConversation('demo', 'wt-2', 'acp-1')).toBeUndefined()
     expect(acpConversation('other', 'wt-1', 'acp-1')).toBeUndefined()
-    // Handles repeat across workspaces (each primary window is named for its tool).
-    registerAcpConversation('demo', 'wt-2', { handle: 'claude', agentSessionId: 'acp-2' }, fake('b'))
-    expect(acpConversationByHandle('demo', 'wt-1', 'claude'))
-      .not.toBe(acpConversationByHandle('demo', 'wt-2', 'claude'))
   })
 
-  it('is reachable by handle before the handshake mints an id, and by both after', () => {
-    const c = fake('a')
-    // No session id until `session/new` answers.
-    registerAcpConversation('demo', 'wt-1', { handle: 'claude' }, c)
-    expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBe(c)
-
-    registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, c)
-    expect(acpConversation('demo', 'wt-1', 'acp-1')).toBe(c)
-    expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBe(c)
-  })
-
-  it('drops both names on unregister, so a dead conversation is never handed out', () => {
+  it('drops both names on unregister, so a dead conversation is never handed out', async () => {
     registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, fake('a'))
     unregisterAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' })
 
     expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeUndefined()
-    expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeUndefined()
+    await expect(whenAcpConversation('demo', 'wt-1', 'claude', 0)).resolves.toBeUndefined()
+  })
+})
+
+describe('whenAcpConversation', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  // A fresh conversation is registered by handle at attach, then again with
+  // the id `session/new` mints; only the second is a conversation a pane
+  // and a prompt can use.
+  it('waits for the handshake to name the conversation on a handle', async () => {
+    const c = fake('a')
+    const waited = whenAcpConversation('demo', 'wt-1', 'claude', 60_000)
+    registerAcpConversation('demo', 'wt-1', { handle: 'claude' }, c)
+    let settled = false
+    void waited.then(() => { settled = true })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, c)
+    await expect(waited).resolves.toBe(c)
+    // Already named: answered at once, and scoped per workspace.
+    await expect(whenAcpConversation('demo', 'wt-1', 'claude', 0)).resolves.toBe(c)
+    await expect(whenAcpConversation('demo', 'wt-2', 'claude', 0)).resolves.toBeUndefined()
+  })
+
+  it('gives up after the timeout', async () => {
+    vi.useFakeTimers()
+    const waited = whenAcpConversation('demo', 'wt-1', 'claude', 5_000)
+    await vi.advanceTimersByTimeAsync(5_000)
+    await expect(waited).resolves.toBeUndefined()
   })
 })
 

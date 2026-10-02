@@ -500,8 +500,7 @@ describe('createWorkspace', () => {
     expect(env().filter((e) => e.startsWith('GH_TOKEN='))).toEqual([])
   })
 
-  it('refuses a branch missing from origin without retrying the launch', async () => {
-    // A bad input skips the relaunch retries: one launch, one teardown.
+  it('refuses a branch missing from origin, tearing its launch down', async () => {
     await expect(createWorkspace('demo', { branch: 'ghost', workspaceId: 'wt-ghost' }))
       .rejects.toThrow(/branch "ghost" not found on origin/)
     expect(specs).toHaveLength(1)
@@ -514,15 +513,15 @@ describe('createWorkspace', () => {
     expect(specs).toHaveLength(1)
   })
 
-  it('tears down every failed attempt, then rolls a fresh create back entirely', async () => {
+  it('fails on its first failed launch and rolls a fresh create back entirely', async () => {
     installDriver({ awaitReady: () => Promise.reject(new Error('pod never became ready')) })
 
     await expect(createWorkspace('demo', { workspaceId: 'wt-fail' })).rejects.toThrow('pod never became ready')
 
-    // Retries keep the substrate; the last attempt of a fresh create drops
-    // it, since its row is about to go.
-    expect(specs).toHaveLength(3)
-    expect(destroys).toEqual([true, true, false])
+    // One launch, and a fresh create drops its substrate too, since its row
+    // is about to go.
+    expect(specs).toHaveLength(1)
+    expect(destroys).toEqual([false])
     expect(deregistered).toEqual(['wt-fail'])
     // The rollback is not awaited, so it lands after the rejection.
     await vi.waitFor(async () => {
@@ -584,9 +583,9 @@ describe('createWorkspace', () => {
 
       expect((await getWorkspaceRow('demo', 'wt-fail'))?.stoppedAt).toBeInstanceOf(Date)
       await expect(fs.access(workspaceDir('demo', 'wt-fail'))).resolves.toBeUndefined()
-      // Its row survives, so every teardown keeps the substrate for the
+      // Its row survives, so the teardown keeps the substrate for the
       // runtime's own sweeps.
-      expect(destroys).toEqual([true, true, true])
+      expect(destroys).toEqual([true])
       expect(deregistered).toEqual(['wt-fail'])
     })
 
@@ -623,7 +622,7 @@ describe('createWorkspace', () => {
     await expect(createWorkspace('demo', { prewarm: true, workspaceId: 'wt-spare' })).rejects.toThrow()
     expect(await getWorkspaceRow('demo', 'wt-spare')).toMatchObject({ spare: true })
     await expect(fs.access(workspaceDir('demo', 'wt-spare'))).resolves.toBeUndefined()
-    expect(destroys).toEqual([true, true, true])
+    expect(destroys).toEqual([true])
   })
 
   it('records the branch it forks from with the row, before anything is provisioned', async () => {

@@ -11,7 +11,6 @@ import {
   prewarmProjectImage,
   reconcileImagePrewarm,
   retryImageBuild,
-  PREWARM_SWEEP_INTERVAL_MS,
   _resetImagePrewarmForTests,
 } from '#drivers/k8s/images/image-prewarm'
 import { resolveImageChain } from '#drivers/k8s/image-engine/image-builder'
@@ -96,15 +95,14 @@ describe('reconcileImagePrewarm', () => {
     mockEnsureImage.mockImplementation(() =>
       new Promise((res) => { release = () => res('yaac-tools:t') }))
 
-    // Timestamps an interval apart, so only the in-flight mark can dedupe.
-    reconcileImagePrewarm([P], mockResolveConfig, PREWARM_SWEEP_INTERVAL_MS)
-    reconcileImagePrewarm([P], mockResolveConfig, PREWARM_SWEEP_INTERVAL_MS * 2)
+    reconcileImagePrewarm([P], mockResolveConfig)
+    reconcileImagePrewarm([P], mockResolveConfig)
     await flush()
     expect(mockEnsureImage).toHaveBeenCalledTimes(1)
 
     release()
     await flush()
-    reconcileImagePrewarm([P], mockResolveConfig, PREWARM_SWEEP_INTERVAL_MS * 3)
+    reconcileImagePrewarm([P], mockResolveConfig)
     await flush()
     expect(mockEnsureImage).toHaveBeenCalledTimes(2)
   })
@@ -115,7 +113,7 @@ describe('reconcileImagePrewarm', () => {
     // layer.
     mockResolveConfig.mockRejectedValueOnce(new Error('yaac-config.json: invalid nestedContainers'))
 
-    reconcileImagePrewarm([P], mockResolveConfig, PREWARM_SWEEP_INTERVAL_MS)
+    reconcileImagePrewarm([P], mockResolveConfig)
     await flush()
 
     expect(mockEnsureImage).not.toHaveBeenCalled()
@@ -126,24 +124,12 @@ describe('reconcileImagePrewarm', () => {
   it('logs a failed prewarm and retries it on a later sweep', async () => {
     mockEnsureImage.mockRejectedValueOnce(new Error('podman build exited with code 1'))
 
-    reconcileImagePrewarm([P], mockResolveConfig, PREWARM_SWEEP_INTERVAL_MS)
+    reconcileImagePrewarm([P], mockResolveConfig)
     await flush()
     expect(vi.mocked(serverLog)).toHaveBeenCalledWith(
       expect.stringContaining('[image-prewarm] p:'))
 
-    reconcileImagePrewarm([P], mockResolveConfig, PREWARM_SWEEP_INTERVAL_MS * 2)
-    await flush()
-    expect(mockEnsureImage).toHaveBeenCalledTimes(2)
-  })
-
-  it('throttles: a sweep inside the interval is a no-op', async () => {
-    reconcileImagePrewarm([P], mockResolveConfig, PREWARM_SWEEP_INTERVAL_MS)
-    await flush()
-    reconcileImagePrewarm([P], mockResolveConfig, PREWARM_SWEEP_INTERVAL_MS + 5_000)
-    await flush()
-    expect(mockEnsureImage).toHaveBeenCalledTimes(1)
-
-    reconcileImagePrewarm([P], mockResolveConfig, PREWARM_SWEEP_INTERVAL_MS * 2)
+    reconcileImagePrewarm([P], mockResolveConfig)
     await flush()
     expect(mockEnsureImage).toHaveBeenCalledTimes(2)
   })

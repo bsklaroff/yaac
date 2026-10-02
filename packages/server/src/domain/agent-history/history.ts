@@ -31,19 +31,17 @@ import { serverLog } from '#log'
  * Prepare a workspace's agent history before launch
  * (docs/workspace-storage.md).
  *
- * Moves every conversation the workspace owns out of the project's shared
- * tool homes into its own `history/`. A runtime that `layers` mounts over the
- * tool homes (k8s) then sees the history through those mounts.
+ * A runtime that `layers` mounts over the tool homes (k8s) only needs the
+ * mount sources: its pods write their history through those mounts, never
+ * into the shared homes. Creating them must succeed, since the kubelet would
+ * create a missing mount source root-owned.
  *
- * A runtime that can't layer mounts (containerless) instead gets symlinks in
- * the shared homes pointing into the history: claude's folder for this
- * checkout, the memory folder, and each file-history dir and codex rollout.
- * Files a host run writes outside those links are moved in at the next
- * create.
- *
- * This runs on every create, since switching drivers can leave files in the
- * other layout. Creating the directories must succeed (the kubelet would
- * create a missing mount source root-owned); the moves are best-effort.
+ * A runtime that can't layer mounts (containerless) has every conversation
+ * the workspace owns moved out of the project's shared tool homes into its
+ * own `history/`, then gets symlinks in the shared homes pointing into it:
+ * claude's folder for this checkout, the memory folder, and each
+ * file-history dir and codex rollout. Files a host run writes outside those
+ * links are moved in at the next create. The moves are best-effort.
  */
 export async function convergeAgentHistory(
   slug: string,
@@ -54,14 +52,12 @@ export async function convergeAgentHistory(
   await Promise.all(AGENT_HISTORY_PARTS.map((part) => fs.mkdir(path.join(history, part), { recursive: true })))
   await fs.mkdir(path.join(history, 'claude', CLAUDE_POD_CWD), { recursive: true })
   if (runtime.layers) {
-    // Create the memory mount source and every nested mountpoint so the
-    // kubelet doesn't create them. Replace a memory link a host run left.
-    const memoryMount = path.join(history, 'claude', CLAUDE_POD_CWD, 'memory')
-    if ((await fs.lstat(memoryMount).catch(() => null))?.isSymbolicLink() === true) await fs.unlink(memoryMount)
+    // The memory mount source and every nested mountpoint.
     await fs.mkdir(path.join(claudeDir(slug), 'projects', CLAUDE_POD_REPO, 'memory'), { recursive: true })
-    await fs.mkdir(memoryMount, { recursive: true })
+    await fs.mkdir(path.join(history, 'claude', CLAUDE_POD_CWD, 'memory'), { recursive: true })
     await fs.mkdir(path.join(claudeDir(slug), 'file-history'), { recursive: true })
     await fs.mkdir(path.join(codexDir(slug), 'sessions'), { recursive: true })
+    return
   }
 
   const rows = await listWorkspaceAgentSessions(slug, workspaceId)
@@ -70,7 +66,7 @@ export async function convergeAgentHistory(
   for (const step of [
     () => moveClaude(slug, history, ids),
     () => moveCodex(slug, history, ids, shared, rows),
-    ...(runtime.layers ? [] : [() => linkOut(slug, workspaceId, history, shared)]),
+    () => linkOut(slug, workspaceId, history, shared),
   ]) {
     await step().catch((err: unknown) => {
       serverLog(`[agent-history] ${slug}/${workspaceId}: ${String(err)}`)
@@ -83,8 +79,8 @@ export async function convergeAgentHistory(
  * Update the transcript path of each row whose file has moved from the shared
  * home into the history (the caller excludes rows a sibling shares). Checks
  * the disk rather than this pass's moves, so an interrupted converge is
- * repaired next time. The shared home is checked `no-links`, since a pod's
- * reader doesn't follow the host's links.
+ * repaired next time. The shared home is checked `no-links`, since through
+ * the links into the history every moved file would look unmoved.
  */
 async function repointRows(slug: string, workspaceId: string, rows: AgentSessionLinkRow[]): Promise<void> {
   const project = projectDir(slug)

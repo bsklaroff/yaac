@@ -6,7 +6,6 @@
  * (`cleanupWorkspace`).
  */
 import crypto from 'node:crypto'
-import { workspaceDriver } from '#drivers/driver'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import { cleanupWorkspace, deleteWorkspaceState } from './cleanup'
 import { createWorkspace, resolveCreate } from './create'
@@ -38,22 +37,13 @@ async function spawnSpare(projectSlug: string, workspaceId: string): Promise<voi
   }
 }
 
-/**
- * Reconcile the prewarm pool once. No-op when `YAAC_PREWARM_POOL_SIZE=0`.
- * Best-effort: a cluster hiccup just skips this tick.
- */
-export async function reconcilePrewarmPool(snapshot?: RuntimeSnapshot): Promise<void> {
+/** Reconcile the prewarm pool once. No-op when `YAAC_PREWARM_POOL_SIZE=0`. */
+export async function reconcilePrewarmPool(view: RuntimeSnapshot): Promise<void> {
   const poolSize = env.prewarmPoolSize
   if (poolSize === 0) return
 
-  let pods
-  try {
-    pods = await (snapshot ?? workspaceDriver().snapshot()).workspaces()
-  } catch {
-    return
-  }
   // A spare already being reaped is gone as far as the pool is concerned.
-  pods = pods.filter((p) => !reaping.has(p.workspaceId))
+  const pods = (await view.workspaces()).filter((p) => !reaping.has(p.workspaceId))
 
   const { toSpawn, toReap } = computePrewarmPlan(pods, poolSize, {
     inFlight,
@@ -75,7 +65,10 @@ export async function reconcilePrewarmPool(snapshot?: RuntimeSnapshot): Promise<
       .then(async (removed) => {
         if (removed) await deleteSpareWorkspaceRow(target.projectSlug, target.workspaceId)
       })
-      .catch(() => { /* see gcOrphanSpares in cleanup.ts */ })
+      .catch((err: unknown) => {
+        // gcOrphanSpares in cleanup.ts retries what is left.
+        serverLog(`[prewarm] reaping spare ${target.workspaceId} failed: ${String(err)}`)
+      })
       .finally(() => { reaping.delete(target.workspaceId) })
   }
 
@@ -91,24 +84,22 @@ export async function reconcilePrewarmPool(snapshot?: RuntimeSnapshot): Promise<
  * Spares warmed in a different agent mode than their project now creates in,
  * or in a zone other than the user's current one. Both are fixed at warm
  * time, so no claim takes them. A row with no mode (written before the
- * column) counts as stale. Unreadable rows count as not stale.
+ * column) counts as stale. An unreadable row is logged and counts as not
+ * stale.
  */
 async function staleSpares(pods: RuntimeHandle[]): Promise<Set<string>> {
   const spares = pods.filter((p) => p.prewarmed && p.projectSlug && !claiming.has(p.jobName))
   if (spares.length === 0) return new Set()
-  let projects
-  let timeZone
-  try {
-    projects = await listProjectRows()
-    timeZone = (await getTimeZone()).timeZone ?? undefined
-  } catch {
-    return new Set()
-  }
+  const projects = await listProjectRows()
+  const timeZone = (await getTimeZone()).timeZone ?? undefined
   const wanted = new Map(projects.map((p) =>
     [p.slug, p.createDefaults[p.lastTool ?? 'claude']?.mode ?? 'tui']))
   const stale = new Set<string>()
   await Promise.all(spares.map(async (p) => {
-    const row = await getWorkspaceRow(p.projectSlug, p.workspaceId).catch(() => null)
+    const row = await getWorkspaceRow(p.projectSlug, p.workspaceId).catch((err: unknown) => {
+      serverLog(`[prewarm] reading spare ${p.workspaceId} failed: ${String(err)}`)
+      return null
+    })
     const want = wanted.get(p.projectSlug)
     if (row && want !== undefined && (row.mode !== want || row.timeZone !== timeZone)) stale.add(p.jobName)
   }))

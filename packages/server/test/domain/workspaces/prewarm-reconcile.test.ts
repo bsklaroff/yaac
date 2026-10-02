@@ -53,8 +53,8 @@ const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
 /** Run one reconcile pass, then wait for its spawns to reach
  *  `createWorkspace`. */
-async function pass(snapshot?: Parameters<typeof reconcilePrewarmPool>[0]): Promise<void> {
-  await reconcilePrewarmPool(snapshot)
+async function pass(): Promise<void> {
+  await reconcilePrewarmPool({ ...snapshotFixture(), workspaces: mockWorkspaces })
   await flush()
 }
 
@@ -82,9 +82,7 @@ describe('reconcilePrewarmPool', () => {
     clearPrewarmStateForTests()
     clearAllProvisioningForTests()
     mockWorkspaces.mockResolvedValue([])
-    installFakeWorkspaceDriver({
-      snapshot: () => ({ resync: true, workspaces: mockWorkspaces, strayUnits: () => Promise.resolve([]) }),
-    })
+    installFakeWorkspaceDriver()
     mockResolveCreate.mockResolvedValue(SETUP)
     vi.mocked(listProjectRows).mockResolvedValue([])
     vi.mocked(getTimeZone).mockResolvedValue({ timeZone: null, pinned: false })
@@ -191,14 +189,6 @@ describe('reconcilePrewarmPool', () => {
     expect(inFlight.size).toBe(0)
   })
 
-  it("reads workspaces from the pass view when one is provided, not the runtime's own", async () => {
-    const workspaces = vi.fn().mockResolvedValue([pod({ jobName: 'yaac-p-real', workspaceId: 'r1' })])
-    await pass({ ...snapshotFixture(), workspaces })
-    expect(mockWorkspaces).not.toHaveBeenCalled()
-    expect(workspaces).toHaveBeenCalledTimes(1)
-    expect(mockCreate).toHaveBeenCalledWith('p', WARM)
-  })
-
   it('does nothing for an empty cluster', async () => {
     mockWorkspaces.mockResolvedValue([])
     await pass()
@@ -206,9 +196,9 @@ describe('reconcilePrewarmPool', () => {
     expect(mockCleanup).not.toHaveBeenCalled()
   })
 
-  it('skips the tick when listing pods throws', async () => {
+  it('fails the step without acting when listing pods throws', async () => {
     mockWorkspaces.mockRejectedValue(new Error('cluster down'))
-    await pass()
+    await expect(pass()).rejects.toThrow('cluster down')
     expect(mockCreate).not.toHaveBeenCalled()
     expect(mockCleanup).not.toHaveBeenCalled()
   })

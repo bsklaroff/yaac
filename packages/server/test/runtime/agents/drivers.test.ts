@@ -6,9 +6,14 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { setDataDir } from '@yaac/shared/paths'
 import { acpLogDir, codexDir } from '@yaac/shared/project-paths'
-import { agentDriver, type AgentObservation, type DrivenWorkspace } from '#runtime/agents/drivers'
+import {
+  agentDriver,
+  type AgentConnectDeps,
+  type AgentObservation,
+  type DrivenWorkspace,
+} from '#runtime/agents/drivers'
 // Imported so the test follows any change to the bound.
-import { MAX_FAST_ATTACH_ATTEMPTS } from '#runtime/agents/acp-driver'
+import { MAX_FAST_ATTACH_ATTEMPTS, setAcpPermissionMode } from '#runtime/agents/acp-driver'
 import {
   _resetAcpRegistryForTests,
   acpConversation,
@@ -73,6 +78,40 @@ class FakeStream implements StreamChild {
 async function answer(stream: FakeStream, cmd: string): Promise<void> {
   await vi.waitFor(() => expect(stream.writes.join('')).toContain(cmd))
   stream.feed('%begin 1 1 1\n%end 1 1 1\n')
+}
+
+/** The windows an acp connection's tmux client lists, one name per line. */
+let tmuxWindows = ''
+/** Listed windows still running create's placeholder. */
+const placeholders = new Set<string>()
+/** The last tmux client an acp connection dialed. */
+let lastTmux: FakeTmux | undefined
+
+/**
+ * The workspace's tmux server as an acp connection's control-mode client
+ * sees it: it lists `tmuxWindows`, the ones in `placeholders` as still
+ * running the placeholder, and accepts every other command.
+ */
+class FakeTmux extends FakeStream {
+  private bannerSent = false
+  override stdin = {
+    write: (data: string): void => {
+      this.writes.push(data)
+      const body = data.startsWith('list-windows')
+        ? tmuxWindows.split('\n').filter((w) => w !== '')
+          .map((w, i) => `${w}\t%${String(i)}\t${placeholders.has(w) ? '1' : '0'}\n`).join('')
+        : ''
+      const banner = this.bannerSent ? '' : '%begin 0 0 0\n%end 0 0 0\n'
+      this.bannerSent = true
+      queueMicrotask(() => this.feed(`${banner}%begin 1 1 1\n${body}%end 1 1 1\n`))
+    },
+  }
+}
+
+/** An acp dial: a `FakeTmux` for the control-mode attach, `acpd` for each
+ *  conversation's socket. */
+function acpDial(acpd: (s: DrivenWorkspace, argv: string[]) => StreamChild): NonNullable<AgentConnectDeps['dial']> {
+  return (s, argv) => (argv[0] === 'tmux' ? (lastTmux = new FakeTmux()) : acpd(s, argv))
 }
 
 const session: DrivenWorkspace = {
@@ -154,10 +193,10 @@ async function attachedUnder(
   agentSessionId: string,
 ): Promise<{ stream: FakeStream; seen: AgentObservation[] }> {
   const stream = new FakeStream()
-  podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+  tmuxWindows = 'claude\n'
   const seen: AgentObservation[] = []
   connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
-    dial: () => stream,
+    dial: acpDial(() => stream),
     recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId }]),
     permissionMode: () => Promise.resolve(permissionMode),
     log: () => {},
@@ -175,6 +214,8 @@ beforeEach(async () => {
   _resetAcpRegistryForTests()
   podExec.mockReset()
   podExec.mockResolvedValue({ stdout: '', stderr: '' })
+  tmuxWindows = ''
+  placeholders.clear()
   installFakeWorkspaceDriver({ exec: podExec })
 })
 
@@ -567,11 +608,11 @@ describe('agentDriver', () => {
   it('records no conversation under an id the agent minted in the wrong shape', async () => {
     // The id ends up in file paths and launch commands.
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
     const driver = agentDriver('acp')
     connections.push(driver.connect(session, (o) => seen.push(o), {
-      dial: () => stream, commandTimeoutMs: 1_000, log: () => {},
+      dial: acpDial(() => stream), commandTimeoutMs: 1_000, log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: true } })}\n`)
@@ -597,11 +638,11 @@ describe('agentDriver', () => {
       { value: 'sonnet', name: 'Sonnet 5' },
     ]
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'claude\ninit\n', stderr: '' })
+    tmuxWindows = 'claude\ninit\n'
     const seen: AgentObservation[] = []
     const driver = agentDriver('acp')
     connections.push(driver.connect(session, (o) => seen.push(o), {
-      dial: () => stream, commandTimeoutMs: 1_000, log: () => {},
+      dial: acpDial(() => stream), commandTimeoutMs: 1_000, log: () => {},
     }))
 
     // Only agent windows count (`init` runs init commands).
@@ -669,10 +710,10 @@ describe('agentDriver', () => {
 
   it('resumes a recorded acp conversation with session/load instead of a new one', async () => {
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-old' }]),
       log: () => {},
     }))
@@ -698,9 +739,9 @@ describe('agentDriver', () => {
 
   it('skips the handshake when reattaching to an agent that is already running', async () => {
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    tmuxWindows = 'claude\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-live' }]),
       log: () => {},
     }))
@@ -730,10 +771,10 @@ describe('agentDriver', () => {
       },
     ])
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-live' }]),
       log: () => {},
     }))
@@ -772,10 +813,10 @@ describe('agentDriver', () => {
       { jsonrpc: '2.0', id: 'old-1', result: { stopReason: 'end_turn' } },
     ])
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-done' }]),
       log: () => {},
     }))
@@ -794,10 +835,10 @@ describe('agentDriver', () => {
       { jsonrpc: '2.0', method: '_acpd/exit', params: { code: 1, signal: null } },
     ])
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-dead' }]),
       log: () => {},
     }))
@@ -812,9 +853,9 @@ describe('agentDriver', () => {
     // would end the wrong one. claude's adapter takes it as a steer instead.
     await record('acp-live', [lifeLine, promptLine('acp-live', 'old-1', 'the running turn')])
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    tmuxWindows = 'claude\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-live' }]),
       log: () => {},
     }))
@@ -844,10 +885,10 @@ describe('agentDriver', () => {
     // the log, so the scan must not overwrite it.
     await record('acp-live', [lifeLine, promptLine('acp-live', 'old-1', 'go')])
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-live' }]),
       log: () => {},
     }))
@@ -866,9 +907,9 @@ describe('agentDriver', () => {
   it('grants tool permission rather than prompting under bypass, matching the sandbox posture', async () => {
     await recordMode('acp-1', 'bypassPermissions')
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    tmuxWindows = 'claude\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       // A reattach needs the recorded id (without one, see below).
       recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
       log: () => {},
@@ -994,13 +1035,10 @@ describe('agentDriver', () => {
   // launched with, even if another conversation later changes the row.
   it('answers by the posture it launched in where its mode names none', async () => {
     const stream = new FakeStream()
-    let row: PermissionMode = 'accept-edits'
-    let reads = 0
-    podExec.mockResolvedValue({ stdout: 'opencode\n', stderr: '' })
+    tmuxWindows = 'opencode\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
-      dial: () => stream,
-      permissionMode: () => { reads++; return Promise.resolve(row) },
-      heartbeatIntervalMs: 20,
+      dial: acpDial(() => stream),
+      permissionMode: () => Promise.resolve('accept-edits'),
       log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'opencode')).toBeDefined())
@@ -1017,10 +1055,8 @@ describe('agentDriver', () => {
     })}\n`)
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-oc')?.status).toBe('waiting'))
 
-    // Another conversation raises the row's posture.
-    row = 'bypass'
-    const before = reads
-    await vi.waitFor(() => expect(reads).toBeGreaterThan(before + 1))
+    // Another conversation raises the workspace's posture.
+    setAcpPermissionMode('demo', 'wt-1', 'bypass')
     stream.feed(permissionAsk(4))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-oc')!.isAwaitingPermission).toBe(true))
     expect(stream.sent().some((m) => m.id === 4)).toBe(false)
@@ -1028,10 +1064,10 @@ describe('agentDriver', () => {
 
   it('reads a mode change reported as a config option, which is how codex-acp says it', async () => {
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'codex\n', stderr: '' })
+    tmuxWindows = 'codex\n'
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       recordedSessions: () => Promise.resolve([{ handle: 'codex', agentSessionId: 'acp-1' }]),
       permissionMode: () => Promise.resolve('accept-edits'),
       log: () => {},
@@ -1053,9 +1089,9 @@ describe('agentDriver', () => {
     await recordMode('acp-a', 'bypassPermissions')
     await recordMode('acp-b', 'bypassPermissions')
     const streams = new Map([['claude', new FakeStream()], ['claude-2', new FakeStream()]])
-    podExec.mockResolvedValue({ stdout: 'claude\nclaude-2\n', stderr: '' })
+    tmuxWindows = 'claude\nclaude-2\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
-      dial: (_s, argv) => streams.get([...streams.keys()].find((h) => argv.join(' ').includes(`${h}.sock`))!)!,
+      dial: acpDial((_s, argv) => streams.get([...streams.keys()].find((h) => argv.join(' ').includes(`${h}.sock`))!)!),
       recordedSessions: () => Promise.resolve([
         { handle: 'claude', agentSessionId: 'acp-a' },
         { handle: 'claude-2', agentSessionId: 'acp-b' },
@@ -1145,9 +1181,9 @@ describe('agentDriver', () => {
       { jsonrpc: '2.0', id: 42, method: 'session/request_permission', params: askParams },
     ])
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    tmuxWindows = 'claude\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-held' }]),
       permissionMode: () => Promise.resolve('manual'),
       log: () => {},
@@ -1169,9 +1205,9 @@ describe('agentDriver', () => {
     // A needless prompt costs a click; a wrong approval cannot be undone. So
     // an unknown posture never auto-answers.
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    tmuxWindows = 'claude\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
       permissionMode: () => Promise.reject(new Error('database is down')),
       log: () => {},
@@ -1188,9 +1224,9 @@ describe('agentDriver', () => {
 
   it('tells the adapter its posture on a first attach, and leaves a live one alone', async () => {
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    tmuxWindows = 'claude\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       permissionMode: () => Promise.resolve('plan'),
       log: () => {},
     }))
@@ -1225,9 +1261,9 @@ describe('agentDriver', () => {
     // agent ids), with no `modes` block. Missing it would leave a `plan`
     // workspace in `build`, able to edit.
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'opencode\n', stderr: '' })
+    tmuxWindows = 'opencode\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       permissionMode: () => Promise.resolve('plan'),
       log: () => {},
     }))
@@ -1262,9 +1298,9 @@ describe('agentDriver', () => {
   it('leaves a mode alone when the adapter is already in it', async () => {
     // A missing `session/set_mode` then does not mean a posture was dropped.
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'opencode\n', stderr: '' })
+    tmuxWindows = 'opencode\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       permissionMode: () => Promise.resolve('plan'),
       log: () => {},
     }))
@@ -1295,7 +1331,7 @@ describe('agentDriver', () => {
     // pi's adapter has no `--model`, and the model decides the provider (and
     // so which api key the proxy injects).
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'pi\n', stderr: '' })
+    tmuxWindows = 'pi\n'
     // The launch knows the provider default; the handshake delivers it.
     agentDriver('acp').launchCmd({
       tool: 'pi',
@@ -1306,7 +1342,7 @@ describe('agentDriver', () => {
       permissionMode: 'bypass',
     })
     connections.push(agentDriver('acp').connect(session, () => {}, {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       permissionMode: () => Promise.resolve('bypass'),
       log: () => {},
     }))
@@ -1343,9 +1379,9 @@ describe('agentDriver', () => {
     // pi has no permission system; its permission requests are extension
     // questions the user must answer.
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'pi\n', stderr: '' })
+    tmuxWindows = 'pi\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       permissionMode: () => Promise.resolve('bypass'),
       log: () => {},
     }))
@@ -1378,9 +1414,9 @@ describe('agentDriver', () => {
     const stream = new FakeStream()
     const events: AcpEventInit[] = []
     const seen: AgentObservation[] = []
-    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    tmuxWindows = 'claude\n'
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       permissionMode: () => Promise.resolve('bypass'),
       log: () => {},
     }))
@@ -1423,9 +1459,9 @@ describe('agentDriver', () => {
     // refused `session/set_mode` must be reported to the pane.
     const stream = new FakeStream()
     const events: AcpEventInit[] = []
-    podExec.mockResolvedValue({ stdout: 'codex\n', stderr: '' })
+    tmuxWindows = 'codex\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       permissionMode: () => Promise.resolve('accept-edits'),
       log: () => {},
     }))
@@ -1467,10 +1503,10 @@ describe('agentDriver', () => {
 
   it('gives up on a reattach it cannot address rather than talking to the wrong session', async () => {
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
-      dial: () => stream, log: () => {},
+      dial: acpDial(() => stream), log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
 
@@ -1486,16 +1522,16 @@ describe('agentDriver', () => {
     // acpd keeps the agent across the drop, so what was queued is still owed.
     await record('acp-q', [lifeLine])
     const streams: FakeStream[] = []
-    podExec.mockResolvedValue({ stdout: 'opencode\n', stderr: '' })
+    tmuxWindows = 'opencode\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
       heartbeatIntervalMs: 60_000,
       log: () => {},
       recordedSessions: () => Promise.resolve([{ handle: 'opencode', agentSessionId: 'acp-q' }]),
-      dial: () => {
+      dial: acpDial(() => {
         const stream = new FakeStream()
         streams.push(stream)
         return stream
-      },
+      }),
     }))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-q')).toBeDefined())
     const first = acpConversation('demo', 'wt-1', 'acp-q')!
@@ -1520,18 +1556,18 @@ describe('agentDriver', () => {
   })
 
   it('keeps the queue across the whole connection going down, for the reconnect to send', async () => {
-    // A failed window listing takes the connection down and the watcher
+    // A dropped tmux client takes the connection down and the watcher
     // reconnects; acpd kept every agent meanwhile. (A stop is the watcher's
     // to discard, see status-watcher's stop test.)
     await record('acp-s', [lifeLine])
-    podExec.mockResolvedValue({ stdout: 'opencode\n', stderr: '' })
+    tmuxWindows = 'opencode\n'
     const seen: AgentObservation[] = []
     const connectWith = (stream: FakeStream): void => {
       connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
         heartbeatIntervalMs: 100,
         log: () => {},
         recordedSessions: () => Promise.resolve([{ handle: 'opencode', agentSessionId: 'acp-s' }]),
-        dial: () => stream,
+        dial: acpDial(() => stream),
       }))
     }
     const before = new FakeStream()
@@ -1545,9 +1581,8 @@ describe('agentDriver', () => {
     void first.prompt('then commit').catch(() => {})
     await vi.waitFor(() => expect(first.queuedPrompts).toHaveLength(1))
 
-    podExec.mockRejectedValue(new Error('exec channel dropped'))
+    lastTmux!.emitExit()
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'down')).toBe(true), { timeout: 5_000 })
-    podExec.mockResolvedValue({ stdout: 'opencode\n', stderr: '' })
 
     const after = new FakeStream()
     connectWith(after)
@@ -1560,41 +1595,71 @@ describe('agentDriver', () => {
 
   it('re-dials a window whose acpd has not bound its socket yet', async () => {
     const streams: FakeStream[] = []
-    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    tmuxWindows = 'claude\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
       // A long settled interval, so only the fast retry after a drop can make
       // the second dial happen in time.
       heartbeatIntervalMs: 60_000,
       log: () => {},
-      dial: () => {
+      dial: acpDial(() => {
         const stream = new FakeStream()
         streams.push(stream)
         // The first dial into a new window often beats acpd's bind and closes.
         if (streams.length === 1) setTimeout(() => stream.emitExit(), 0)
         return stream
-      },
+      }),
     }))
 
     await vi.waitFor(() => expect(streams.length).toBe(2), { timeout: 5_000 })
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
   })
 
+  // tmux pushes window adds, and a respawn into the placeholder fires its
+  // boot subscription, so neither waits for the heartbeat or costs an exec.
+  it('dials a new window and a respawned placeholder as tmux announces them', async () => {
+    const dialed: string[] = []
+    tmuxWindows = 'claude\n'
+    placeholders.add('claude')
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      heartbeatIntervalMs: 600_000,
+      log: () => {},
+      dial: acpDial((_s, argv) => {
+        dialed.push(argv.join(' '))
+        return new FakeStream()
+      }),
+    }))
+    // Still the placeholder: watched, not dialed.
+    await vi.waitFor(() => expect(lastTmux?.writes.join('')).toContain("refresh-client -B 'boot-0:%0:"))
+    expect(dialed).toEqual([])
+
+    placeholders.delete('claude')
+    lastTmux!.feed('%subscription-changed boot-0 $0 @0 0 %0 : 0\n')
+    await vi.waitFor(() => expect(dialed).toHaveLength(1))
+    expect(dialed[0]).toContain('claude.sock')
+
+    tmuxWindows = 'claude\nclaude-2\n'
+    lastTmux!.feed('%window-add @1\n')
+    await vi.waitFor(() => expect(dialed).toHaveLength(2))
+    expect(dialed[1]).toContain('claude-2.sock')
+    expect(podExec).not.toHaveBeenCalled()
+  })
+
   it('stops re-dialing a window that can never hold an attach', async () => {
     const streams: FakeStream[] = []
-    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    tmuxWindows = 'claude\n'
     vi.useFakeTimers()
     try {
       connections.push(agentDriver('acp').connect(session, () => {}, {
         // Far apart, so the two intervals are distinguishable.
         heartbeatIntervalMs: 600_000,
         log: () => {},
-        dial: () => {
+        dial: acpDial(() => {
           // acpd is gone but its window remains, so every dial fails.
           const stream = new FakeStream()
           streams.push(stream)
           setTimeout(() => stream.emitExit(), 0)
           return stream
-        },
+        }),
       }))
 
       // Fast retries stop after the limit.
@@ -1614,9 +1679,9 @@ describe('agentDriver', () => {
     // A character split across two chunks must not be decoded per chunk,
     // which would silently corrupt a JSON string.
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    tmuxWindows = 'claude\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
       log: () => {},
     }))
@@ -1642,10 +1707,10 @@ describe('agentDriver', () => {
     // ACP adapters assume one turn at a time; overlapping would also let the
     // first reply end the second turn.
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
       log: () => {},
     }))
@@ -1668,10 +1733,10 @@ describe('agentDriver', () => {
     // Only an id from another connection means "the previous turn ended". An
     // unknown id with this connection's prefix is a duplicate.
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
       log: () => {},
     }))
@@ -1697,9 +1762,9 @@ describe('agentDriver', () => {
   it('survives a non-JSON line from the adapter instead of killing the conversation', async () => {
     await recordMode('acp-1', 'bypassPermissions')
     const stream = new FakeStream()
-    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    tmuxWindows = 'claude\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
-      dial: () => stream,
+      dial: acpDial(() => stream),
       recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
       log: () => {},
     }))

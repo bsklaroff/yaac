@@ -387,6 +387,10 @@ export interface ReconcileStep {
   name: string
   /** Sources that dirty this step; every step also runs on resync. */
   triggers: readonly ReconcileTrigger[]
+  /** Minimum ms between successful runs, for upkeep too costly for every
+   *  pass; the reconciler keeps the clock, and a failed run retries on the
+   *  next resync. */
+  every?: number
   run: (ctx: PassContext) => Promise<void>
 }
 
@@ -766,8 +770,8 @@ export interface WorkspaceDriver {
    * Delete node-local leftovers on every node: project trees not in
    * `live.projectIds` and workspace working copies not in
    * `live.workspaceIds`. Keyed on ids, so it also catches failed removals.
-   * The caller sweeps the global tier. The driver throttles it; never
-   * rejects.
+   * The caller sweeps the global tier and throttles this, since it may run
+   * a pod per node. Never rejects.
    */
   reapNodeLocal(live: NodeLocalLiveSet): Promise<void>
 

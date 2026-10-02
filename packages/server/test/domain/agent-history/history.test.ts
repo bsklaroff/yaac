@@ -63,7 +63,7 @@ async function rollout(dir: string, thread: string, parent?: string, forkedFrom?
 const ROLLOUT_REL = (thread: string): string => `2026/09/29/rollout-2026-09-29T08-32-40-${thread}.jsonl`
 
 describe('convergeAgentHistory', () => {
-  it('moves every conversation the workspace held out of the shared homes, under a runtime that layers', async () => {
+  it('moves every conversation the workspace held out of the shared homes, under a runtime that cannot layer', async () => {
     const projects = shared('claude', 'projects', '-workspace')
     // Rows: an active claude conversation with its path, an inactive one
     // without, and a codex thread.
@@ -109,7 +109,7 @@ describe('convergeAgentHistory', () => {
     // A name already taken in the history is never overwritten.
     await write(history('claude', '-workspace', 'a1.jsonl'), 'kept\n')
 
-    await convergeAgentHistory(SLUG, WT, { layers: true })
+    await convergeAgentHistory(SLUG, WT, { layers: false })
 
     for (const moved of [
       history('claude', '-workspace', 'c1.jsonl'),
@@ -133,15 +133,6 @@ describe('convergeAgentHistory', () => {
     expect((await fs.lstat(path.join(projects, 'c2.jsonl'))).isSymbolicLink()).toBe(true)
     expect(await exists(path.join(projects, 'c1.jsonl'))).toBe(false)
 
-    // Every mount source and nested mountpoint exists, server-made.
-    for (const dir of [
-      history('codex-sqlite'),
-      history('claude', '-workspace', 'memory'),
-      shared('claude', 'projects', '-repo', 'memory'),
-      shared('claude', 'file-history'),
-      shared('codex', 'sessions'),
-    ]) expect(await exists(dir), dir).toBe(true)
-
     // The rows follow the files.
     const rows = await listWorkspaceAgentSessions(SLUG, WT)
     expect(rows.find((r) => r.agentSessionId === 'c1')?.transcriptPath)
@@ -152,8 +143,26 @@ describe('convergeAgentHistory', () => {
       .toBe(`codex/sessions/${ROLLOUT_REL('tx')}`)
 
     // A second pass finds nothing left to do.
-    await convergeAgentHistory(SLUG, WT, { layers: true })
+    await convergeAgentHistory(SLUG, WT, { layers: false })
     expect(await exists(history('claude', '-workspace', 'c1.jsonl'))).toBe(true)
+  })
+
+  // A pod writes its history through the mounts, so a layering runtime
+  // needs only the mount sources, which the kubelet would otherwise create
+  // root-owned.
+  it('creates every mount source and nested mountpoint, and moves nothing, under a runtime that layers', async () => {
+    const left = await write(shared('claude', 'projects', '-workspace', `${WT}.jsonl`))
+
+    await convergeAgentHistory(SLUG, WT, { layers: true })
+
+    for (const dir of [
+      history('codex-sqlite'),
+      history('claude', '-workspace', 'memory'),
+      shared('claude', 'projects', '-repo', 'memory'),
+      shared('claude', 'file-history'),
+      shared('codex', 'sessions'),
+    ]) expect(await exists(dir), dir).toBe(true)
+    expect(await exists(left)).toBe(true)
   })
 
   it('repoints a row whose file an interrupted pass already moved', async () => {
@@ -164,7 +173,7 @@ describe('convergeAgentHistory', () => {
     ])
     await write(history('claude', '-workspace', 'y1.jsonl'))
 
-    await convergeAgentHistory(SLUG, WT, { layers: true })
+    await convergeAgentHistory(SLUG, WT, { layers: false })
 
     const rows = await listWorkspaceAgentSessions(SLUG, WT)
     expect(rows.map((r) => r.transcriptPath)).toEqual([

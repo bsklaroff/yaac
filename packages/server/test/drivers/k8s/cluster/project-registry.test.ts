@@ -47,12 +47,10 @@ import {
   REGISTRY_APP_LABEL,
   REGISTRY_IMAGE_DIGEST,
   REGISTRY_UPSTREAM_IMAGE,
-  ORPHAN_REGISTRY_GC_INTERVAL_MS,
   ORPHAN_REGISTRY_MIN_AGE_MS,
   REGISTRY_GC_INTERVAL_MS,
   REGISTRY_GENERATIONS_KEPT,
   _registryGcSettledForTests,
-  _resetOrphanRegistryGcForTests,
   _resetRegistryGcForTests,
   projectRegistryName,
   projectRegistryPvcName,
@@ -464,10 +462,6 @@ describe('gcOrphanProjectRegistries', () => {
   const NOW = Date.parse('2026-09-29T12:00:00Z')
   const OLD = new Date(NOW - ORPHAN_REGISTRY_MIN_AGE_MS - 1).toISOString()
 
-  beforeEach(() => {
-    _resetOrphanRegistryGcForTests()
-  })
-
   const objectDeletes = (): string[] => mockRetry.mock.calls
     .map((c) => c[0])
     .filter((args) => args[0] === 'delete'
@@ -510,15 +504,6 @@ describe('gcOrphanProjectRegistries', () => {
       'get', 'deployment,service,persistentvolumeclaim', '-n', 'test-ns',
       '-l', `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16`,
     ])
-  })
-
-  it('runs at most once per interval', async () => {
-    stageRegistries([])
-    await gcOrphanProjectRegistries(new Set(), NOW)
-    await gcOrphanProjectRegistries(new Set(), NOW + ORPHAN_REGISTRY_GC_INTERVAL_MS - 1)
-    expect(mockGetJson).toHaveBeenCalledTimes(1)
-    await gcOrphanProjectRegistries(new Set(), NOW + ORPHAN_REGISTRY_GC_INTERVAL_MS)
-    expect(mockGetJson).toHaveBeenCalledTimes(2)
   })
 
   it('tolerates an unreachable cluster', async () => {

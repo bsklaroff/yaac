@@ -36,8 +36,6 @@ const NODE_LOCAL_SWEEP_APP_LABEL = 'yaac-node-local-sweep'
  *  workspace reaper (which filters on `yaac.workspace-id`). */
 export const LABEL_SWEEP_DATA_DIR_HASH = 'yaac.sweep-data-dir-hash'
 
-/** Min interval between sweeps; each one runs a pod per node. */
-export const NODE_LOCAL_SWEEP_INTERVAL_MS = 60 * 60_000
 
 /** Deadline for one node's sweep: a walk over one tree and some `rm -rf`s. */
 const NODE_LOCAL_SWEEP_TIMEOUT_MS = 5 * 60_000
@@ -116,29 +114,12 @@ async function mountedProjectNames(): Promise<Set<string>> {
   return names
 }
 
-/** Last sweep this server life ran, or never. */
-let lastSweepMs: number | undefined
-let sweeping = false
-
-/** Test hook: forget the throttle. */
-export function _resetNodeLocalSweepForTests(): void {
-  lastSweepMs = undefined
-  sweeping = false
-}
-
 /**
- * See `WorkspaceDriver.reapNodeLocal`. Runs one pod per node, at most once
- * per {@link NODE_LOCAL_SWEEP_INTERVAL_MS}. Failures are only logged.
+ * See `WorkspaceDriver.reapNodeLocal`. Runs one pod per node. Failures are
+ * only logged.
  */
-export async function reapNodeLocal(
-  live: NodeLocalLiveSet,
-  opts: { nowMs?: number } = {},
-): Promise<void> {
-  const now = opts.nowMs ?? Date.now()
-  if (sweeping) return
-  if (lastSweepMs !== undefined && now - lastSweepMs < NODE_LOCAL_SWEEP_INTERVAL_MS) return
-  sweeping = true
-  lastSweepMs = now
+export async function reapNodeLocal(live: NodeLocalLiveSet): Promise<void> {
+  const now = Date.now()
   try {
     const imageRef = await ensureBuilderImage()
     const cutoffEpoch = Math.floor((now - NODE_LOCAL_SWEEP_SLACK_MS) / 1000)
@@ -177,7 +158,5 @@ export async function reapNodeLocal(
     }
   } catch (err) {
     serverLog(`[node-local-sweep] ${String(err)}`)
-  } finally {
-    sweeping = false
   }
 }

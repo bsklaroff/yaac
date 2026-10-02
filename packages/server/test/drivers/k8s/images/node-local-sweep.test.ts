@@ -28,11 +28,7 @@ vi.mock('#drivers/k8s/container/registry', () => ({
 }))
 
 import { reapNodeLocal } from '#drivers/k8s/images'
-import {
-  NODE_LOCAL_SWEEP_INTERVAL_MS,
-  _resetNodeLocalSweepForTests,
-  buildNodeLocalSweepScript,
-} from '#drivers/k8s/images/node-local-sweep'
+import { buildNodeLocalSweepScript } from '#drivers/k8s/images/node-local-sweep'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/substrate/kubectl'
 
 const mockApply = vi.mocked(kubectlApply)
@@ -70,7 +66,6 @@ beforeEach(() => {
   mockApply.mockReset().mockResolvedValue(undefined)
   mockGetJson.mockReset()
   mockWithRetry.mockReset().mockResolvedValue({ stdout: '', stderr: '' })
-  _resetNodeLocalSweepForTests()
 })
 
 describe('reapNodeLocal', () => {
@@ -121,15 +116,6 @@ describe('reapNodeLocal', () => {
     expect(strays).toHaveLength(1)
     expect(strays[0].args).toContain('app=yaac-node-local-sweep,yaac.sweep-data-dir-hash=ddh16')
     expect(strays[0].order).toBeLessThan(mockApply.mock.invocationCallOrder[0])
-  })
-
-  it('throttles to once per interval, and runs again after it', async () => {
-    stageNodes(['n1'])
-    await reapNodeLocal(NOTHING, { nowMs: 1_000_000 })
-    await reapNodeLocal(NOTHING, { nowMs: 1_000_000 + 60_000 })
-    expect(appliedPods()).toHaveLength(1)
-    await reapNodeLocal(NOTHING, { nowMs: 1_000_000 + NODE_LOCAL_SWEEP_INTERVAL_MS })
-    expect(appliedPods()).toHaveLength(2)
   })
 
   it('never rejects: a node whose pod fails is logged and the next one still runs', async () => {

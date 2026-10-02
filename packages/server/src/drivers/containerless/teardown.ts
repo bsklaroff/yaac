@@ -3,7 +3,9 @@ import path from 'node:path'
 import { imageStoreDir, nodeLocalPath, nodeLocalProjectPath } from '@yaac/shared/project-paths'
 import { serverLog } from '#log'
 import { shellQuote } from '#lib/shell'
+import { waitFor } from '#lib/wait-for'
 import { descendantPids, isSshAgentFor, killPids, runHost } from './host'
+import { tmuxAnswers } from './exec'
 import {
   containerlessWorkspacePaths,
   containerlessStateDir,
@@ -86,18 +88,8 @@ async function killWorkspaceSshAgent(
   killPids([agentPid], 'SIGTERM')
 }
 
-async function confirmGone(sock: string): Promise<boolean> {
-  const deadline = Date.now() + CONFIRM_TIMEOUT_MS
-  for (;;) {
-    try {
-      await runHost(['tmux', '-S', sock, 'has-session', '-t', 'yaac'], { timeoutMs: 5_000 })
-    } catch {
-      // No session.
-      return true
-    }
-    if (Date.now() >= deadline) return false
-    await new Promise((r) => setTimeout(r, 200))
-  }
+function confirmGone(sock: string): Promise<boolean> {
+  return waitFor(async () => !await tmuxAnswers(sock), { timeoutMs: CONFIRM_TIMEOUT_MS, intervalMs: 200 })
 }
 
 /**

@@ -425,6 +425,20 @@ describe('reconcileQueuedWorkspaces', () => {
     expect(mockCreate).not.toHaveBeenCalled()
   })
 
+  // The backstop runs every resync, but only the first pass can tell a
+  // claim a previous server left from one this process holds.
+  it('puts back only the claims a previous server left', async () => {
+    await workspace('p')
+    await reconcileQueuedWorkspaces()
+    const mine = await queueWorkspace('proj', { parent: 'p', prompt: 'mine' }, 'user')
+    await claimQueuedLaunch(mine.id, 'launching-here')
+
+    await reconcileQueuedWorkspaces()
+
+    expect(await getQueuedWorkspaceRow(mine.id)).toMatchObject({ launchWorkspaceId: 'launching-here' })
+    expect((await getQueuedWorkspaceRow(mine.id))?.launchError).toBeUndefined()
+  })
+
   it('launches a release a restart lost, and leaves a stop-released chain\'s lower links waiting', async () => {
     await workspace('p')
     const a = await queueWorkspace('proj', { parent: 'p', prompt: 'a' }, 'user')

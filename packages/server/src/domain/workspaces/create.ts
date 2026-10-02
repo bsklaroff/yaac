@@ -67,6 +67,8 @@ import {
   openSandboxDir,
   validateInitWindows,
   verifyAgentWindowAlive,
+  whenAcpConversation,
+  type AcpConversation,
   type InitWindow,
 } from '#runtime/agents'
 import {
@@ -74,7 +76,6 @@ import {
   getGitIdentity,
   getProjectRow,
   getTimeZone,
-  listActiveAgentSessions,
   setWorkspaceGroup,
   setWorkspaceMamaTokenHash,
   setWorkspaceTitle,
@@ -91,6 +92,7 @@ import {
 } from '#domain/skills'
 import { convergeAgentHistory } from '#domain/agent-history'
 import { deleteWorkspaceState } from './cleanup'
+import { reconcileWorkspaceAgentSessions } from './agent-session-registry'
 import {
   OPENCODE_CHECKPOINT_SCRIPT,
   WORKSPACE_INIT_SCRIPT,
@@ -99,6 +101,7 @@ import {
   stageWorkspaceBin,
 } from './workspace-bin'
 import { ServerError } from '@yaac/shared/errors'
+import { waitFor } from '#lib/wait-for'
 import {
   AGENT_CLIS,
   defaultPermissionMode,
@@ -289,24 +292,15 @@ interface WorkspaceSetupParams {
   /**
    * Host-side checkout provisioning (fetch, branch checks, `createCheckout`),
    * started before launch so it overlaps pod boot. A rejection means bad
-   * input (bad branch, fetch failure), surfaced as SetupInputError so the
-   * retry loop fails fast.
+   * input (bad branch, fetch failure).
    */
   workspace: Promise<void>
 }
 
-/** Marks a failure as bad input (not retryable), as opposed to a pod setup
- *  failure (retryable). */
-class SetupInputError extends Error {
-  constructor(readonly inner: unknown) {
-    super(inner instanceof Error ? inner.message : String(inner))
-  }
-}
-
 /**
- * Launch the workspace's runtime and run the in-workspace setup. One attempt;
- * the caller retries (after teardown) when the pod failed rather than the
- * inputs. Everything here goes through the driver contract.
+ * Launch the workspace's runtime and run the in-workspace setup. On failure
+ * the caller tears down what was launched. Everything here goes through the
+ * driver contract.
  */
 async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHandle> {
   const {
@@ -320,7 +314,6 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   // branch, git auth) fail fast instead of after the pod boots.
   const workspaceFailure: Promise<never> = workspace.then(
     () => new Promise<never>(() => { /* success: races resolve on the pod wait */ }),
-    (err) => { throw new SetupInputError(err) },
   )
   // Avoid an unhandled rejection if no race observes it; the join below
   // reads the real outcome.
@@ -341,11 +334,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   await Promise.race([transportReady, workspaceFailure])
 
   // Everything below reads the checkout, so join it now.
-  try {
-    await workspace
-  } catch (err) {
-    throw new SetupInputError(err)
-  }
+  await workspace
 
   // Link the checkout to the main clone's objects and update its `origin/*`,
   // on every launch, so the agent starts current.
@@ -355,23 +344,16 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   // it so a broken engine fails the create with a clear error.
   if (spec.nestedContainers) {
     emit('Waiting for the in-pod container engine...', options)
-    const deadline = Date.now() + 60_000
-    for (;;) {
-      try {
-        await runtime.exec(jobName, 'docker version', { maxAttempts: 1, timeout: 10_000 })
-        break
-      } catch (err) {
-        if (Date.now() > deadline) {
-          throw new Error(
-            'in-pod podman did not become ready within 60s — check '
-            + `/tmp/podman-service.log and /tmp/yaac-engine-setup.log in session ${workspaceId} `
-            + `(${(err as Error).message})`,
-          )
-        }
-        await new Promise((r) => setTimeout(r, 500))
-      }
+    let lastErr: unknown
+    const engineUp = await waitFor(() => runtime.exec(jobName, 'docker version', { maxAttempts: 1, timeout: 10_000 })
+      .then(() => true, (err: unknown) => { lastErr = err; return false }), { timeoutMs: 60_000, intervalMs: 500 })
+    if (!engineUp) {
+      throw new Error(
+        'in-pod podman did not become ready within 60s — check '
+        + `/tmp/podman-service.log and /tmp/yaac-engine-setup.log in session ${workspaceId} `
+        + `(${String(lastErr)})`,
+      )
     }
-
   }
 
   // Open the init windows and replace the placeholder window with the agents
@@ -435,9 +417,10 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
 /**
  * The last step of a create, cold or claimed: hand the agent over.
  *
- * A fresh acp conversation has no row until the agent answers `session/new`,
- * and until then the webapp has no chat pane to show. So an acp create waits
- * for the row. Then the initial prompt is delivered (pasted under `tui`,
+ * A fresh acp conversation has no id, and so no row or chat pane, until the
+ * agent answers `session/new`. So an acp create waits for that, then
+ * records the row itself rather than waiting for the reconciler's pass.
+ * Then the initial prompt is delivered (pasted under `tui`,
  * `session/prompt` under `acp`) without waiting for a reply. Failures are
  * logged, not thrown: the workspace is usable either way.
  */
@@ -455,7 +438,12 @@ export async function handOverAgent(input: {
   let conversationUp = true
   if (mode === 'acp') {
     emit(`Connecting to ${TOOL_LABELS[tool]}...`)
-    conversationUp = await awaitConversationRow(projectSlug, workspaceId, jobName, window)
+    conversationUp = await awaitConversation(projectSlug, workspaceId, jobName, window)
+    if (conversationUp) {
+      await reconcileWorkspaceAgentSessions(projectSlug, workspaceId, mode, jobName).catch((err: unknown) => {
+        serverLog(`[server] create ${workspaceId}: recording the conversation failed: ${String(err)}`)
+      })
+    }
   }
   if (prompt === undefined) return
   if (!conversationUp) {
@@ -470,34 +458,40 @@ export async function handOverAgent(input: {
 }
 
 /**
- * Poll until the workspace has a live conversation row; resolves whether one
- * appeared. Gives up at the deadline or when the agent's window is gone. A
- * failed read counts as "not yet"; the status watcher retries the handshake.
+ * Wait for the agent's conversation to complete its handshake, including
+ * the launch model and mode that follow `session/new`, so the row recorded
+ * next shows them; resolves whether it did. Gives up at the deadline or when the agent's window is
+ * gone, which the window probe (an exec) checks every two seconds.
  */
-async function awaitConversationRow(
+async function awaitConversation(
   projectSlug: string,
   workspaceId: string,
   jobName: string,
   window: string,
 ): Promise<boolean> {
-  const deadline = Date.now() + ACP_CONVERSATION_WAIT_MS
-  for (let polls = 0; Date.now() < deadline; polls++) {
-    const rows = await listActiveAgentSessions(projectSlug, workspaceId).catch(() => [])
-    if (rows.length > 0) return true
-    // The window probe costs an exec, so run it every 8th poll.
-    if (polls % 8 === 7) {
-      const dead = await verifyAgentWindowAlive(jobName, [window])
-        .then(() => false, (err: unknown) => err instanceof AgentLaunchDeadError)
-      if (dead) {
-        serverLog(`[server] create ${workspaceId}: acp agent window exited before its handshake`)
-        return false
-      }
-    }
-    await new Promise((r) => setTimeout(r, 250))
+  let settled = false
+  const conversation = whenAcpConversation(projectSlug, workspaceId, window, ACP_CONVERSATION_WAIT_MS)
+    .finally(() => { settled = true })
+  const windowGone = waitFor(async () => settled || await verifyAgentWindowAlive(jobName, [window])
+    .then(() => false, (err: unknown) => err instanceof AgentLaunchDeadError),
+  { timeoutMs: ACP_CONVERSATION_WAIT_MS, intervalMs: 2_000 })
+  const outcome = await Promise.race([
+    conversation,
+    windowGone.then<AcpConversation | 'dead' | undefined>((stop) => (stop && !settled ? 'dead' : conversation)),
+  ])
+  if (outcome === 'dead') {
+    serverLog(`[server] create ${workspaceId}: acp agent window exited before its handshake`)
+    return false
   }
-  serverLog(`[server] create ${workspaceId}: no acp conversation recorded after `
-    + `${String(ACP_CONVERSATION_WAIT_MS / 1000)}s`)
-  return false
+  if (outcome === undefined) {
+    serverLog(`[server] create ${workspaceId}: no acp conversation after `
+      + `${String(ACP_CONVERSATION_WAIT_MS / 1000)}s`)
+    return false
+  }
+  return outcome.whenReady(ACP_CONVERSATION_WAIT_MS).then(() => true, (err: unknown) => {
+    serverLog(`[server] create ${workspaceId}: acp handshake did not finish: ${String(err)}`)
+    return false
+  })
 }
 
 /**
@@ -870,8 +864,7 @@ export async function createWorkspace(
   })()
   workspaceTask.catch(() => { /* awaited later */ })
 
-  // Egress registration and registry plumbing. It belongs to the workspace,
-  // so the retry loop below reuses it across attempts.
+  // Egress registration and registry plumbing, owned by the workspace.
   const substrateTask = runtime.prepareSubstrate({
     projectSlug,
     projectId,
@@ -1253,87 +1246,64 @@ export async function createWorkspace(
     onProgress: (m) => emit(m, options),
   }
 
-  // Retry launch + setup as a whole, so a runtime that dies right after
-  // starting is replaced rather than retried command by command.
-  const maxStartAttempts = 3
-  // What a teardown must address, once an attempt has launched.
+  // What a teardown must address, once the runtime has launched.
   let target: TeardownTarget | undefined
-  let handle: RuntimeHandle | undefined
+  let handle: RuntimeHandle
+  try {
+    handle = await launchWithSetup({
+      spec, projectSlug, workspaceId, tool, mode, launching, initWindows, permissionMode,
+      piProvider: toolAuthByTool.pi?.piProvider,
+      onLaunched: (h) => {
+        target = { projectSlug, workspaceId: workspaceId, unitName: h.jobName }
+      },
+      options, workspace: workspaceTask,
+    })
+  } catch (err) {
+    // Tear down the half-started unit, or it would list as a bogus
+    // workspace and collide with a relaunch. Keep the prepared substrate
+    // (`unitOnly`) when the row survives (resume, spare). A fresh create
+    // tears down everything, since its row is about to go.
+    const unitOnly = !failedCreateCollectsCheckout(options)
 
-  const setupParams: WorkspaceSetupParams = {
-    spec, projectSlug, workspaceId, tool, mode, launching, initWindows, permissionMode,
-    piProvider: toolAuthByTool.pi?.piProvider,
-    onLaunched: (h) => {
-      target = { projectSlug, workspaceId: workspaceId, unitName: h.jobName }
-    },
-    options, workspace: workspaceTask,
-  }
-
-  for (let attempt = 1; attempt <= maxStartAttempts; attempt++) {
+    // If `launch` failed after the unit was created, `onLaunched` never
+    // ran, so ask the runtime what exists. `podGone` gates the checkout
+    // removal below; an unreachable runtime counts as not gone. Only a
+    // unit of this project is torn down.
+    let podGone: boolean
     try {
-      handle = await launchWithSetup(setupParams)
-      break
-    } catch (err) {
-      // Bad input fails fast; relaunching would hit the same error.
-      const lastAttempt = err instanceof SetupInputError || attempt >= maxStartAttempts
-
-      // Always tear down the half-started unit, or it would list as a bogus
-      // workspace and collide with a relaunch. Keep the prepared substrate
-      // (`unitOnly`) when retrying, or when the row survives (resume,
-      // spare). A fresh create that gave up tears down everything, since its
-      // row is about to go.
-      const unitOnly = !lastAttempt || !failedCreateCollectsCheckout(options)
-
-      // If `launch` failed after the unit was created, `onLaunched` never
-      // ran, so ask the runtime what exists. `podGone` gates the checkout
-      // removal below; an unreachable runtime counts as not gone. Only a
-      // unit of this project is torn down.
-      let podGone: boolean
-      try {
-        target ??= await workspaceDriver().findForTeardown(workspaceId, { spares: options.prewarm === true })
-        if (target !== undefined && target.projectSlug !== projectSlug) target = undefined
-        podGone = target === undefined
-          ? true
-          : await workspaceDriver().destroy(target, { salvageImages: false, unitOnly })
-      } catch {
-        podGone = false
-      }
-
-      if (!lastAttempt) {
-        emit(`Session startup failed (attempt ${attempt}/${maxStartAttempts}), retrying...`, options)
-        continue
-      }
-      // Free the declared host ports for the next create.
-      await workspaceDriver().deregisterWorkspace(workspaceId)
-        .catch(() => { /* best-effort; the reaper covers what this misses */ })
-      if (!options.prewarm) {
-        // A fresh create deletes its own checkout (see
-        // failedCreateCollectsCheckout); no row-based sweep would find it
-        // once the row is gone. Chained after the checkout leg, which may
-        // still be running after a pod-side failure and would otherwise
-        // recreate the dir after the delete. Each step runs only if the
-        // previous one succeeded; if the row stays, the stale reaper turns it
-        // into a stopped workspace the user can delete.
-        if (failedCreateCollectsCheckout(options)) {
-          void workspaceTask
-            .catch(() => { /* the failure is already the caller's */ })
-            .then(() => podGone && deleteWorkspaceState(projectSlug, workspaceId))
-            .then((removed) => (removed
-              ? reportCreateFailed(projectSlug, workspaceId, options)
-              : undefined))
-            .catch(() => { /* best-effort; nothing else can retry it */ })
-        } else {
-          await reportCreateFailed(projectSlug, workspaceId, options)
-        }
-      }
-      throw err instanceof SetupInputError ? err.inner : err
+      target ??= await workspaceDriver().findForTeardown(workspaceId, { spares: options.prewarm === true })
+      if (target !== undefined && target.projectSlug !== projectSlug) target = undefined
+      podGone = target === undefined
+        ? true
+        : await workspaceDriver().destroy(target, { salvageImages: false, unitOnly })
+    } catch {
+      podGone = false
     }
-  }
 
-  if (handle === undefined) {
-    // Unreachable: the loop leaves only by `break` with a handle, or by
-    // throwing on its last attempt.
-    throw new ServerError('INTERNAL', 'workspace launch reported no handle')
+    // Free the declared host ports for the next create.
+    await workspaceDriver().deregisterWorkspace(workspaceId)
+      .catch(() => { /* best-effort; the reaper covers what this misses */ })
+    if (!options.prewarm) {
+      // A fresh create deletes its own checkout (see
+      // failedCreateCollectsCheckout); no row-based sweep would find it
+      // once the row is gone. Chained after the checkout leg, which may
+      // still be running after a pod-side failure and would otherwise
+      // recreate the dir after the delete. Each step runs only if the
+      // previous one succeeded; if the row stays, the stale reaper turns it
+      // into a stopped workspace the user can delete.
+      if (failedCreateCollectsCheckout(options)) {
+        void workspaceTask
+          .catch(() => { /* the failure is already the caller's */ })
+          .then(() => podGone && deleteWorkspaceState(projectSlug, workspaceId))
+          .then((removed) => (removed
+            ? reportCreateFailed(projectSlug, workspaceId, options)
+            : undefined))
+          .catch(() => { /* best-effort; nothing else can retry it */ })
+      } else {
+        await reportCreateFailed(projectSlug, workspaceId, options)
+      }
+    }
+    throw err
   }
 
   // A spare's agent is handed over when it is claimed.

@@ -277,9 +277,9 @@ running workspace's rotation.
   running agent out.
 
 Sync runs where staleness would cause a failure: before a host-side refresh,
-before seeding a create, on attach, on workspace stop, and on the reconcile
-resync at most every five minutes (on macOS each sweep spawns one `security`
-process per project). Each project keeps its own copy and catches up on the
+before seeding a create, on workspace stop, and from a reconcile step that
+runs at most every five minutes, first on the pass that follows attach (on
+macOS each sweep spawns one `security` process per project). Each project keeps its own copy and catches up on the
 next push. An explicit sign-in ignores newest-wins: it is the user choosing
 the account, so it is written to every project.
 

@@ -163,8 +163,7 @@ export class WorkspaceStatusWatcher {
 
   /**
    * Publish (or retract) the driver's read-only command channel so other
-   * read-only tmux queries (the terminal listing) reuse the connection. Only
-   * the TUI driver offers one.
+   * read-only tmux queries (the terminal listing) reuse the connection.
    */
   private setCommandChannel(send: ControlStreamSend | null): void {
     if (this.registeredSend) {

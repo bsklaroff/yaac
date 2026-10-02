@@ -8,7 +8,6 @@ import {
   pushCredentialsToRuntime,
   refreshPlanUsage,
   runtimeMediatesEgress,
-  syncToolCredentialsThrottled,
 } from '#domain/auth'
 import { closeDb, listProjectRows, openDb } from '#db'
 import { startGitSshAgent, stopGitSshAgent } from '#domain/git'
@@ -64,6 +63,24 @@ interface RawWebSocket {
 
 /** `WebSocket.OPEN` (the `ws` class constant is not importable here). */
 const WS_OPEN = 1
+
+/** The raw socket behind a Hono WebSocket context, which @hono/node-ws
+ *  always sets. */
+function rawOf(ws: { raw?: unknown }): RawWebSocket {
+  return ws.raw as RawWebSocket
+}
+
+/** A binary-capable socket for the PTY, forward and ACP bridges. */
+function socketOf(ws: { raw?: unknown }): SocketLike {
+  const raw = rawOf(ws)
+  return {
+    send: (data) => raw.send(data),
+    close: (code, reason) => raw.close(code, reason),
+    onMessage: (cb) => raw.on('message', (data, isBinary) =>
+      cb(Array.isArray(data) ? Buffer.concat(data) : data, isBinary)),
+    onClose: (cb) => raw.on('close', () => cb()),
+  }
+}
 
 /**
  * Heartbeat interval for the auth-agent socket. We ping the daemon and drop
@@ -190,8 +207,9 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // Read the build id first so a broken install fails before binding.
   const buildId = await readBuildId()
 
-  // Best-effort early exit if a live server holds the lock; acquireLock
-  // below is the race-safe check.
+  // Exit early if a live server holds the lock, before anything below starts
+  // timers that would keep this process alive. acquireLock below is the
+  // race-safe check.
   const preExisting = await readLock()
   if (preExisting && await isLockLive(preExisting)) {
     serverLog(`[server] already running pid=${preExisting.pid} port=${preExisting.port}`)
@@ -244,11 +262,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     let conn: WsLike | null = null
     return {
       onOpen: (_evt, ws) => {
-        const raw = ws.raw as RawWebSocket | undefined
-        if (!raw) {
-          ws.close(1011, 'no raw socket')
-          return
-        }
+        const raw = rawOf(ws)
         // `ws` ignores sends on a closed socket, so removal relies on
         // onClose/onError; the guard just skips sends while closing.
         conn = {
@@ -268,11 +282,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // outbound socket here; sign-in routes forward ops over it.
   app.get('/api/agent/auth', nodeWs.upgradeWebSocket(() => ({
     onOpen: (_evt, ws) => {
-      const raw = ws.raw as RawWebSocket | undefined
-      if (!raw) {
-        ws.close(1011, 'no raw socket')
-        return
-      }
+      const raw = rawOf(ws)
       const sock = {
         send: (data: string) => raw.send(data),
         close: (code?: number, reason?: string) => raw.close(code, reason),
@@ -342,19 +352,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
             ws.close(1011, 'resolve failed')
             return
           }
-          const raw = ws.raw as RawWebSocket | undefined
-          if (!raw) {
-            ws.close(1011, 'no raw socket')
-            return
-          }
-          const sock: SocketLike = {
-            send: (data) => raw.send(data),
-            close: (code, reason) => raw.close(code, reason),
-            onMessage: (cb) => raw.on('message', (data, isBinary) =>
-              cb(Array.isArray(data) ? Buffer.concat(data) : data, isBinary)),
-            onClose: (cb) => raw.on('close', () => cb()),
-          }
-          attachPty(jobName, sock, query)
+          attachPty(jobName, socketOf(ws), query)
           serverLog(`[server] pty attach: session=${id} job=${jobName}`)
         })()
       },
@@ -387,19 +385,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
             fail('session not found or not running')
             return
           }
-          const raw = ws.raw as RawWebSocket | undefined
-          if (!raw) {
-            ws.close(1011, 'no raw socket')
-            return
-          }
-          attachPortTunnel(workspaceId, port, {
-            // Binary only, in both directions: this carries bytes.
-            send: (data) => raw.send(data),
-            close: (code, reason) => raw.close(code, reason),
-            onMessage: (cb) => raw.on('message', (data, isBinary) =>
-              cb(Array.isArray(data) ? Buffer.concat(data) : data, isBinary)),
-            onClose: (cb) => raw.on('close', () => cb()),
-          })
+          attachPortTunnel(workspaceId, port, socketOf(ws))
         })()
       },
     }
@@ -428,18 +414,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
             fail('session not found or not running')
             return
           }
-          const raw = ws.raw as RawWebSocket | undefined
-          if (!raw) {
-            ws.close(1011, 'no raw socket')
-            return
-          }
-          attachAcp(projectSlug, id, agentSessionId, {
-            send: (data) => raw.send(data),
-            close: (code, reason) => raw.close(code, reason),
-            onMessage: (cb) => raw.on('message', (data, isBinary) =>
-              cb(Array.isArray(data) ? Buffer.concat(data) : data, isBinary)),
-            onClose: (cb) => raw.on('close', () => cb()),
-          })
+          attachAcp(projectSlug, id, agentSessionId, socketOf(ws))
           serverLog(`[server] acp attach: session=${id} conversation=${agentSessionId}`)
         })()
       },
@@ -461,6 +436,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   })
   if (!outcome.acquired) {
     serverLog(`[server] already running pid=${outcome.existing.pid} port=${outcome.existing.port}`)
+    clearInterval(planUsageTimer)
     await new Promise<void>((resolve) => server.close(() => resolve()))
     return
   }
@@ -580,16 +556,10 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   await attachConvergence({
     onAttached: () => {
       loopDone = startReconciler({ signal: abortCtrl.signal })
-      // Adopt credentials the last server's workspaces refreshed before
-      // anything reads the host store. Throttled like the reconcile step, so
-      // this is its first run rather than an extra one. Only for drivers
-      // that do not mediate egress.
-      if (!runtimeMediatesEgress()) {
-        void syncToolCredentialsThrottled()
-          .catch((err: unknown) => serverLog(`[server] credential sync failed: ${String(err)}`))
-      } else {
-        // Egress-mediating drivers get the full credential set and every
-        // project's secrets once per start.
+      // Egress-mediating drivers get the full credential set and every
+      // project's secrets once per start. Without mediation the reconciler's
+      // first pass runs the credential sync.
+      if (runtimeMediatesEgress()) {
         void convergeRuntimeCredentials()
           .catch((err: unknown) => serverLog(`[server] credential push failed: ${String(err)}`))
       }

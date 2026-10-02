@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { snapshotFixture } from '@yaac/test-utils/fake-driver'
 import { installRealWorkspaceDriver } from '@yaac/test-utils/real-driver'
 import { K8S_TRIGGERS } from '#drivers/k8s/lifecycle'
@@ -16,6 +16,7 @@ vi.mock('#domain/workspaces/agent-session-registry', () => ({ reconcileAgentSess
 vi.mock('#domain/workspaces/cleanup', async (importOriginal) => ({
   ...(await importOriginal<typeof cleanupModule>()),
   gcOrphanEphemeralModuleDirs: vi.fn(),
+  reapOrphanNodeLocal: vi.fn(),
 }))
 vi.mock('#drivers/k8s/images/main-registry-gc', () => ({ reconcileMainRegistryGc: vi.fn() }))
 vi.mock('#drivers/k8s/images/store-writer', () => ({ reconcileNodeImageStores: vi.fn() }))
@@ -47,7 +48,7 @@ import { reconcileStaleWorkspaces } from '#domain/workspaces/stale-workspaces'
 import { reconcilePrewarmPool } from '#domain/workspaces/prewarm-reconcile'
 import { reconcileImageSalvage } from '#drivers/k8s/workspaces/salvage-reconcile'
 import { reconcileAgentSessions } from '#domain/workspaces/agent-session-registry'
-import { gcOrphanEphemeralModuleDirs } from '#domain/workspaces/cleanup'
+import { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal } from '#domain/workspaces/cleanup'
 import { reconcileMainRegistryGc } from '#drivers/k8s/images/main-registry-gc'
 import { reconcileNodeImageStores } from '#drivers/k8s/images/store-writer'
 import { reconcileImagePrewarm } from '#drivers/k8s/images/image-prewarm'
@@ -63,7 +64,8 @@ const ALL_STEP_FNS = [
   reconcileImageSalvage, reconcileNodeImageStores, reconcileProjectRegistryGc,
   reconcileAgentSessions,
   reconcileRegistrationGc, reconcileMainRegistryGc,
-  gcOrphanEphemeralModuleDirs, adoptRefreshedToolCredentials, reconcileGeneratedTitles,
+  gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal, adoptRefreshedToolCredentials,
+  reconcileGeneratedTitles,
 ] as const
 
 type StepRuns = Array<{ name: string; resync: boolean }>
@@ -104,18 +106,24 @@ function start(steps: ReconcileStep[], opts: {
     signal: ctrl.signal,
     steps,
     onDelta: (fn) => { emit = fn },
-    // No debounce delay, so no fake timers are needed.
-    sleep: async () => {},
     resyncIntervalMs: opts.resyncIntervalMs ?? 60 * 60_000,
   })
   return harness
 }
 
+/** Let pending passes run, debounce included (fake timers). */
 async function flush(): Promise<void> {
-  for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r))
+  await vi.advanceTimersByTimeAsync(1_000)
 }
 
 describe('startReconciler', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('runs an immediate full pass (every step, resync snapshot)', async () => {
     const runs: StepRuns = []
     const h = start([
@@ -192,35 +200,55 @@ describe('startReconciler', () => {
   // The resync is the safety net for missed triggers, so it runs every
   // step on every tick.
   it('the resync timer runs every step, including untriggered ones', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval'] })
-    try {
-      const runs: StepRuns = []
-      const h = start([
-        makeStep(runs, 'triggered', ['workspace-pods']),
-        makeStep(runs, 'idle', []),
-      ], { resyncIntervalMs: 60_000 })
-      await flush()
-      runs.length = 0
+    const runs: StepRuns = []
+    const h = start([
+      makeStep(runs, 'triggered', ['workspace-pods']),
+      makeStep(runs, 'idle', []),
+    ], { resyncIntervalMs: 60_000 })
+    await flush()
+    runs.length = 0
 
-      await vi.advanceTimersByTimeAsync(60_000)
-      await flush()
-      expect(runs).toEqual([
-        { name: 'triggered', resync: true },
-        { name: 'idle', resync: true },
-      ])
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(runs).toEqual([
+      { name: 'triggered', resync: true },
+      { name: 'idle', resync: true },
+    ])
 
-      runs.length = 0
-      await vi.advanceTimersByTimeAsync(60_000)
-      await flush()
-      expect(runs).toEqual([
-        { name: 'triggered', resync: true },
-        { name: 'idle', resync: true },
-      ])
-      h.abort()
-      await h.done
-    } finally {
-      vi.useRealTimers()
-    }
+    runs.length = 0
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(runs).toEqual([
+      { name: 'triggered', resync: true },
+      { name: 'idle', resync: true },
+    ])
+    h.abort()
+    await h.done
+  })
+
+  // The reconciler is the clock for upkeep too costly for every resync. A
+  // step timed at the resync interval itself must still run every resync,
+  // and a failed run is retried rather than waiting out its interval.
+  it('runs a timed step at most every `every` ms after it last succeeded', async () => {
+    const runs: StepRuns = []
+    let failures = 1
+    const h = start([
+      { ...makeStep(runs, 'per-resync', []), every: 60_000 },
+      { ...makeStep(runs, 'every-3', []), every: 180_000 },
+      {
+        ...makeStep(runs, 'flaky', [], () => {
+          if (failures-- > 0) throw new Error('db hiccup')
+        }),
+        every: 600_000,
+      },
+    ], { resyncIntervalMs: 60_000 })
+    await flush()
+    expect(runs.map((r) => r.name)).toEqual(['per-resync', 'every-3', 'flaky'])
+
+    runs.length = 0
+    for (let i = 0; i < 3; i++) await vi.advanceTimersByTimeAsync(60_000)
+    expect(runs.map((r) => r.name))
+      .toEqual(['per-resync', 'flaky', 'per-resync', 'per-resync', 'every-3'])
+    h.abort()
+    await h.done
   })
 
   it('isolates step failures and still runs the steps after them', async () => {
@@ -241,6 +269,7 @@ describe('startReconciler', () => {
       makeStep(runs, 'first', [], () => h.abort()),
       makeStep(runs, 'second', []),
     ])
+    await flush()
     await h.done
     expect(runs).toEqual([{ name: 'first', resync: true }])
 

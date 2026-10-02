@@ -1,6 +1,6 @@
 /**
  * Minimal tmux control-mode (`tmux -C`) client. The status watchers hold one
- * persistent stream per workspace, used both ways:
+ * persistent stream per workspace (in both agent modes), used both ways:
  * - notifications push state (`%subscription-changed` carries the
  *   subscribed format's value; `%output` is parsed but unused, since the
  *   watchers attach `no-output`);
@@ -19,11 +19,45 @@
  *   arrives at the first check, giving an initial classification.
  */
 
+import type { WorkspacePaths } from '#drivers/contract'
+
+/**
+ * The in-workspace control-mode attach argv, dialed as a ctrl stream. Flags:
+ * `read-only` (never inject input), `ignore-size` (never reshape the grid a
+ * content search reads), `no-output` (state comes only from subscriptions
+ * and notifications).
+ */
+export function controlModeAttachArgv(paths: WorkspacePaths): string[] {
+  return [
+    'tmux', '-S', paths.tmuxSock, '-C', 'attach-session', '-t', 'yaac',
+    '-f', 'read-only,ignore-size,no-output',
+  ]
+}
+
+/**
+ * `1` while a pane still runs the session's `sleep infinity` keepalive
+ * (some tmux versions quote the start command). An agent respawned into
+ * the pane announces nothing, so a driver subscribes to this to learn when
+ * the agent has replaced it.
+ */
+export const PLACEHOLDER_FORMAT = '#{m/r:^"?sleep infinity"?$,#{pane_start_command}}'
+
+/** Reject `promise` if it has not settled within `ms`. */
+export function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms)
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v) },
+      (err: unknown) => { clearTimeout(timer); reject(err instanceof Error ? err : new Error(String(err))) },
+    )
+  })
+}
+
 export type ControlModeNotification =
   | { kind: 'subscription'; name: string; paneId: string; value: string }
   | { kind: 'output'; paneId: string }
-  /** A window was added or closed; the watcher re-lists agent panes, since a
-   *  new conversation arrives as a new window. */
+  /** A window was added or closed; the driver re-lists agents, since a new
+   *  conversation arrives as a new window. */
   | { kind: 'windows-changed' }
   | { kind: 'exit' }
 

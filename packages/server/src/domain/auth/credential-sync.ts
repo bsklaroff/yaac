@@ -242,11 +242,11 @@ export async function seedProjectToolHome(
 
 /**
  * Converge every project both ways: adopt the newest credential anywhere,
- * then update projects that are behind. Run by the reconcile resync,
- * containerless attach and workspace stop. A no-op with a proxy, where
- * project homes hold sentinels kept current by `fanOutToolCredentials`.
+ * then update projects that are behind. Run by a timed reconcile step,
+ * whose first run is at attach. A no-op with a proxy, where project homes
+ * hold sentinels kept current by `fanOutToolCredentials`.
  */
-async function syncToolCredentials(): Promise<void> {
+export async function syncToolCredentials(): Promise<void> {
   if (runtimeMediatesEgress()) return
   const slugs = await listCredentialProjectSlugs()
   if (slugs.length === 0) return
@@ -260,26 +260,6 @@ async function syncToolCredentials(): Promise<void> {
       serverLog(`[server] credential-sync: push to project "${slug}" failed: ${String(err)}`)
     }
   }
-}
-
-/** How often the standing sweep may actually run. */
-const SYNC_MIN_INTERVAL_MS = 5 * 60_000
-let lastSyncAt = 0
-
-/** Test-only: forget the throttle so cases don't inherit each other's clock. */
-export function _resetCredentialSyncThrottleForTests(): void {
-  lastSyncAt = 0
-}
-
-/**
- * `syncToolCredentials` at most every five minutes, for the 60s reconcile
- * pass. On macOS each Claude read spawns `security`, and tokens have hours of
- * slack. Five minutes matches the plan-usage cadence.
- */
-export async function syncToolCredentialsThrottled(): Promise<void> {
-  if (Date.now() - lastSyncAt < SYNC_MIN_INTERVAL_MS) return
-  lastSyncAt = Date.now()
-  await syncToolCredentials()
 }
 
 /**

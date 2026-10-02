@@ -72,14 +72,18 @@ import {
   claimSpareWorkspace,
   getTimeZone,
   getWorkspaceRow,
-  listActiveAgentSessions,
   restoreSpareWorkspace,
   setWorkspaceGroup,
   setWorkspaceTitle,
   type WorkspaceRow,
 } from '#db'
 import type { CreateSetup } from '#domain/workspaces/create'
-import { _resetAcpRegistryForTests, takeAcpLaunchModel } from '#runtime/agents/acp-registry'
+import {
+  _resetAcpRegistryForTests,
+  registerAcpConversation,
+  takeAcpLaunchModel,
+} from '#runtime/agents/acp-registry'
+import type { AcpConversation } from '#runtime/agents/acp-client'
 import { handleFixture, installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import type { RuntimeHandle, WorkspaceRegistration } from '#drivers/contract'
 import type { AgentTool } from '@yaac/shared/types'
@@ -718,13 +722,17 @@ describe('tryClaimPrewarmed', () => {
   it('claims a chat spare and holds for its conversation, recording none itself', async () => {
     mockList.mockResolvedValue([spare()])
     launched({ mode: 'acp', model: 'claude-opus-5-5' })
-    vi.mocked(listActiveAgentSessions).mockResolvedValue([{ agentSessionId: 'minted' }] as never)
+    let claimed = false
+    const claim = tryClaimPrewarmed('p', 'req', setup('claude', { mode: 'acp', model: 'claude-opus-5-5' }), emit)
+      .finally(() => { claimed = true })
+    await new Promise((r) => setTimeout(r, 50))
+    expect(claimed).toBe(false)
 
-    const result = await tryClaimPrewarmed('p', 'req', setup('claude', { mode: 'acp', model: 'claude-opus-5-5' }), emit)
-    expect(result).toMatchObject({ workspaceId: 'spare1', mode: 'acp' })
+    // The handshake names the conversation.
+    registerAcpConversation('p', 'spare1', { handle: 'claude', agentSessionId: 'minted' }, { whenReady: () => Promise.resolve() } as unknown as AcpConversation)
+    expect(await claim).toMatchObject({ workspaceId: 'spare1', mode: 'acp' })
     expect(mockRetool).not.toHaveBeenCalled()
     expect(appliedEvents.some((e) => e.type === 'sessions-launched')).toBe(false)
-    expect(vi.mocked(listActiveAgentSessions)).toHaveBeenCalledWith('p', 'spare1')
   })
 
   // The launch model parked at warm time is in memory, and a spare can
@@ -734,10 +742,10 @@ describe('tryClaimPrewarmed', () => {
     _resetAcpRegistryForTests() // the warming server has restarted
     mockList.mockResolvedValue([spare({ tool: 'pi', declaredTool: 'pi' })])
     launched({ mode: 'acp', model: 'openrouter/moonshotai/kimi-k2.6' })
-    vi.mocked(listActiveAgentSessions).mockResolvedValue([{ agentSessionId: 'minted' }] as never)
     mockClaimSpare.mockImplementation(() => {
       // Parked by the time the claim unhides the spare.
       expect(takeAcpLaunchModel('spare1')).toBe('openrouter/moonshotai/kimi-k2.6')
+      registerAcpConversation('p', 'spare1', { handle: 'pi', agentSessionId: 'minted' }, { whenReady: () => Promise.resolve() } as unknown as AcpConversation)
       return Promise.resolve()
     })
 

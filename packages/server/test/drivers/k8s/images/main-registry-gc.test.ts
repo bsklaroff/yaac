@@ -33,7 +33,6 @@ vi.mock('#log', () => ({ serverLog: mockServerLog, pipeToServerLog: vi.fn() }))
 import { reconcileMainRegistryGc } from '#drivers/k8s/images'
 // Setup values and test hooks, not units under test.
 import {
-  MAIN_REGISTRY_GC_INTERVAL_MS,
   _mainRegistryGcSettledForTests,
   _resetMainRegistryGcForTests,
 } from '#drivers/k8s/images/main-registry-gc'
@@ -163,8 +162,8 @@ function stage(f: Fixture = {}): void {
 }
 
 /** Drive one reconcile and wait out the detached pass it starts. */
-async function runPass(nowMs?: number): Promise<void> {
-  await reconcileMainRegistryGc([DEMO], () => Promise.resolve({}), nowMs)
+async function runPass(): Promise<void> {
+  await reconcileMainRegistryGc([DEMO], () => Promise.resolve({}))
   await _mainRegistryGcSettledForTests()
 }
 
@@ -403,19 +402,6 @@ describe('reconcileMainRegistryGc', () => {
     expect(mockServerLog).not.toHaveBeenCalled()
   })
 
-  it('sweeps immediately, then throttles to the interval', async () => {
-    stage()
-    const t0 = MAIN_REGISTRY_GC_INTERVAL_MS * 100
-    const probes = (): number => execs.filter((a) => a[2]?.includes('_uploads')).length
-
-    await runPass(t0)
-    await runPass(t0 + MAIN_REGISTRY_GC_INTERVAL_MS - 1)
-    expect(probes()).toBe(1)
-
-    await runPass(t0 + MAIN_REGISTRY_GC_INTERVAL_MS)
-    expect(probes()).toBe(2)
-  })
-
   it('detaches the pass so a collect cannot stall the reconcile tick', async () => {
     await pushTag(`yaac-tools:${hex('a')}`, 30)
     await pushTag(`yaac-tools:${hex('9')}`, 20)
@@ -431,7 +417,7 @@ describe('reconcileMainRegistryGc', () => {
     await reconcileMainRegistryGc([DEMO], () => Promise.resolve({}))
     await reachedCollect
     const before = execs.length
-    await reconcileMainRegistryGc([DEMO], () => Promise.resolve({}), MAIN_REGISTRY_GC_INTERVAL_MS * 200)
+    await reconcileMainRegistryGc([DEMO], () => Promise.resolve({}))
     expect(execs).toHaveLength(before)
 
     release()
