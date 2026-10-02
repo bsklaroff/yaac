@@ -6,7 +6,8 @@
  *  - Frames are JSON text (`AcpServerMessage` / `AcpClientMessage`).
  *  - Attaching replays: `hello` carries the conversation record so far, and
  *    the same record tail feeds all later content. The live subscription
- *    adds only turn boundaries and errors, which the record cannot carry.
+ *    adds only turn boundaries, errors and the queue of messages waiting
+ *    for the turn to end, none of which the record carries.
  *  - Detaching only unsubscribes; the driver's connection owns the
  *    conversation (which is why acpd exists).
  *
@@ -109,6 +110,7 @@ export function attachAcp(
           type: 'hello',
           agentSessionId,
           busy: conversation.isBusy,
+          queued: conversation.queuedPrompts,
           events: events.map((event) => ({ ...event, seq: seq++ }) as AcpEvent),
         })
         // Standing notices from the handshake (e.g. the adapter running in a
@@ -125,14 +127,24 @@ export function attachAcp(
 
   // Turn boundaries and errors come from the live subscription; they never
   // overlap the record. Flush the record first so a turn does not appear
-  // to end before its last words.
-  const unsubscribe = conversation.subscribe((event) => {
-    void tail.flush()
+  // to end before its last words. Returning the delivery lets the queue hold
+  // its next message until the pane has this turn's end.
+  const unsubscribe = conversation.subscribe((event) =>
+    tail.flush()
       .catch(() => { /* the next pass retries */ })
       .then(() => {
         // The pane may have left during the flush.
         if (detached) return
         send({ type: 'event', event: { ...event, seq: seq++ } as AcpEvent })
+      }),
+  )
+  // Flushed like turn boundaries, so a message leaving the queue to start a
+  // turn is already in the record the pane shows.
+  const unsubscribeQueue = conversation.onQueue((queued) => {
+    void tail.flush()
+      .catch(() => { /* the next pass retries */ })
+      .then(() => {
+        if (!detached) send({ type: 'queue', queued })
       })
   })
   // The pane is bound to this conversation object. When it closes, close
@@ -154,6 +166,10 @@ export function attachAcp(
     }
     if (msg.type === 'cancel') {
       conversation.cancel()
+      return
+    }
+    if (msg.type === 'unqueue' && typeof msg.id === 'string') {
+      conversation.unqueue(msg.id)
       return
     }
     if (msg.type === 'permission' && typeof msg.requestId === 'string') {
@@ -191,6 +207,7 @@ export function attachAcp(
     detached = true
     tail.close()
     unsubscribe()
+    unsubscribeQueue()
     unsubscribeClose()
   })
 }

@@ -24,6 +24,18 @@ export interface AgentPackage {
    * to put their native binary in place.
    */
   runScripts: boolean
+  /**
+   * A script in `dockerfiles/agent-patches/` the install runs on the package
+   * after npm, as the image build does. `revision` names the patched install
+   * apart from an unpatched or older one, so bump it whenever the script
+   * changes.
+   */
+  patch?: { script: string; entry: string; revision: number }
+}
+
+/** Packages yaac patches after installing; see `AgentPackage.patch`. */
+const PATCHES: Record<string, AgentPackage['patch']> = {
+  'pi-acp': { script: 'pi-acp.js', entry: 'dist/index.js', revision: 1 },
 }
 
 /**
@@ -37,17 +49,19 @@ export const AGENT_PACKAGES: Record<string, AgentPackage> = Object.fromEntries([
     .filter((tool) => ACP_ADAPTERS[tool].binary !== tool)
     .map((tool): [string, AgentPackage] => {
       const { binary, package: pkg, verified } = ACP_ADAPTERS[tool]
-      return [binary, { package: pkg, version: verified, runScripts: false }]
+      const patch = PATCHES[binary]
+      return [binary, { package: pkg, version: verified, runScripts: false, ...(patch ? { patch } : {}) }]
     }),
 ])
 
 /**
  * NODE-LOCAL: the npm prefix a pinned package is installed under (binaries
- * in `<prefix>/bin`). Named by package and version, so a version bump
- * installs beside the old one and running workspaces keep theirs.
+ * in `<prefix>/bin`). Named by package, version and patch revision, so a
+ * bump installs beside the old one and running workspaces keep theirs.
  */
-export function agentPackagePrefix({ package: pkg, version }: AgentPackage): string {
-  return nodeLocalPath('agent-tools', `${pkg.replace('/', '+')}@${version}`)
+export function agentPackagePrefix({ package: pkg, version, patch }: AgentPackage): string {
+  const revision = patch === undefined ? '' : `+yaac.${patch.revision}`
+  return nodeLocalPath('agent-tools', `${pkg.replace('/', '+')}@${version}${revision}`)
 }
 
 /** Every pinned package's bin dir — what a workspace's PATH leads with. */

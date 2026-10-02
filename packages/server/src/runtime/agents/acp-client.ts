@@ -27,6 +27,7 @@
  * scan cannot pin a finished conversation busy.
  */
 
+import { randomUUID } from 'node:crypto'
 import { JsonRpcCallError, JsonRpcPeer, type JsonRpcTransport } from './acp-jsonrpc'
 import {
   ACP,
@@ -36,6 +37,7 @@ import {
   asRecord,
   chooseAllowOption,
   clientCapabilities,
+  codexThreadIdle,
   permissionReply,
   sessionModeId,
   sessionModel,
@@ -49,7 +51,7 @@ import {
 } from './acp-protocol'
 import { acpPermissionModeFor, type AcpAdapterProfile } from './acp-adapters'
 import { serverLog } from '#log'
-import type { AcpEventInit, AcpImage } from '@yaac/shared/acp'
+import type { AcpEventInit, AcpImage, AcpQueuedPrompt } from '@yaac/shared/acp'
 import type { PermissionMode } from '@yaac/shared/types'
 
 export interface AcpConversationDeps {
@@ -98,7 +100,7 @@ export interface AcpConversationDeps {
    * protocol directly) means tell it nothing: no mode, no model, leaving the
    * adapter's strict default.
    */
-  profile?: Pick<AcpAdapterProfile, 'modeIds' | 'readsAs' | 'forwardAsksUnderBypass'>
+  profile?: Pick<AcpAdapterProfile, 'modeIds' | 'readsAs' | 'forwardAsksUnderBypass' | 'steers'>
   /**
    * The model to send, for adapters that only accept one over the protocol.
    * Sent once after `session/new`, never after `session/load` (the user may
@@ -129,13 +131,26 @@ export interface AcpConversationDeps {
    */
   recoverModeId?: () => Promise<string | undefined>
   onDown: (reason: string) => void
+  /** Messages the conversation this one replaces had queued (`takeQueue`),
+   *  sent once this one knows no turn is running. */
+  queue?: QueuedTurn[]
   log?: (msg: string) => void
+}
+
+/** A queued message with what is needed to send it and settle its caller. */
+export interface QueuedTurn extends AcpQueuedPrompt {
+  blocks: Array<Record<string, string>>
+  resolve: () => void
+  reject: (err: unknown) => void
 }
 
 export class AcpConversation {
   private readonly peer: JsonRpcPeer
   private readonly log: (msg: string) => void
-  private readonly subscribers = new Set<(event: AcpEventInit) => void>()
+  private readonly subscribers = new Set<(event: AcpEventInit) => unknown>()
+  /** Settles once every subscriber has delivered the last event; see
+   *  `subscribe`. */
+  private delivered: Promise<unknown> = Promise.resolve()
   private readonly closeSubscribers = new Set<() => void>()
   private sessionId: string | undefined
   private busy = false
@@ -146,16 +161,23 @@ export class AcpConversation {
    */
   private statusKnown = false
   /**
-   * Tail of the prompt-turn chain. Adapters assume one turn at a time and a
-   * second Enter mid-turn can reach here, so turns queue; otherwise the
-   * first reply would end the turn while the second still streams.
+   * Messages waiting for the running turn to end. Adapters assume one turn
+   * at a time, so a message one cannot steer into the turn waits here;
+   * otherwise the first reply would end the turn while the second still
+   * streams. Panes show the queue and may drop entries (`unqueue`).
    */
-  private turn: Promise<void> = Promise.resolve()
-  /**
-   * Woken when a turn ends. A recovered turn was not started here and so is
-   * not in `turn`; new prompts wait on this instead.
-   */
-  private idleWaiters: Array<() => void> = []
+  private readonly queue: QueuedTurn[] = []
+  private readonly queueSubscribers = new Set<(queued: AcpQueuedPrompt[]) => void>()
+  /** Whether `drain` is running, which is also when a new message must wait. */
+  private draining = false
+  /** Tail of message routing; see `prompt`. */
+  private intake: Promise<unknown> = Promise.resolve()
+  /** Whether panes were last told of a non-empty queue. */
+  private queueShown = false
+  /** A turn the agent started itself from a steer; see `steer`. */
+  private detachedTurn = false
+  /** Woken on every status change; see `whenStatus`. */
+  private statusWaiters: Array<() => void> = []
   private ready = false
   /**
    * acpd's greeting is always the first line. A later one is ignored: acpd
@@ -217,6 +239,11 @@ export class AcpConversation {
       onOrphanResponse: () => this.endTurn('end_turn'),
       onClose: (reason) => this.onClose(reason),
     })
+    if (deps.queue !== undefined && deps.queue.length > 0) {
+      this.queue.push(...deps.queue)
+      this.queueShown = true
+      void this.drain()
+    }
   }
 
   /** The ACP session id, once the handshake has produced one. */
@@ -256,10 +283,32 @@ export class AcpConversation {
    * Watch the live stream; returns the unsubscribe. Events are unsequenced:
    * each attach numbers its own replay from zero, so only the subscriber
    * knows its numbering. Several panes may subscribe.
+   *
+   * A subscriber may return a promise that settles once it has delivered
+   * the event. The queue waits for that before starting the next turn, so a
+   * pane gets a turn's end before the queued message that follows it.
    */
-  subscribe(fn: (event: AcpEventInit) => void): () => void {
+  subscribe(fn: (event: AcpEventInit) => unknown): () => void {
     this.subscribers.add(fn)
     return () => this.subscribers.delete(fn)
+  }
+
+  /** The messages waiting for the running turn to end, oldest first. */
+  get queuedPrompts(): AcpQueuedPrompt[] {
+    return this.queue.map(({ id, text, images }) => ({ id, text, images }))
+  }
+
+  /** Watch the queue; returns the unsubscribe. */
+  onQueue(fn: (queued: AcpQueuedPrompt[]) => void): () => void {
+    this.queueSubscribers.add(fn)
+    return () => this.queueSubscribers.delete(fn)
+  }
+
+  private publishQueue(): void {
+    const queued = this.queuedPrompts
+    if (queued.length === 0 && !this.queueShown) return
+    this.queueShown = queued.length > 0
+    for (const fn of this.queueSubscribers) fn(queued)
   }
 
   /** Watch for the conversation closing, so an attached pane can show it.
@@ -280,7 +329,7 @@ export class AcpConversation {
    */
   private emit(event: AcpEventInit): void {
     this.deps.onEvent?.(event)
-    for (const fn of this.subscribers) fn(event)
+    this.delivered = Promise.allSettled([...this.subscribers].map((fn) => Promise.resolve(fn(event))))
   }
 
   /**
@@ -297,29 +346,34 @@ export class AcpConversation {
     // turns. Panes infer nothing from content: a replay's `user` messages
     // have no closing boundary (docs/agent-modes.md).
     if (started) this.emit({ type: 'turn-start' })
-    if (!busy) this.wakeIdleWaiters()
+    this.wakeStatusWaiters()
     this.deps.onBusy(busy)
   }
 
-  /** Release whatever is queued behind a turn this connection did not start. */
-  private wakeIdleWaiters(): void {
-    for (const fn of this.idleWaiters) fn()
-    this.idleWaiters = []
+  private wakeStatusWaiters(): void {
+    for (const fn of this.statusWaiters) fn()
+    this.statusWaiters = []
+  }
+
+  /** Resolve once `cond` holds after a status change, or the conversation
+   *  closes. */
+  private async whenStatus(cond: () => boolean): Promise<void> {
+    while (!cond() && !this.closed) await new Promise<void>((resolve) => this.statusWaiters.push(resolve))
   }
 
   /**
-   * Resolve once no turn is running. Own turns are serialized by `turn`, so
-   * this only waits out a recovered turn, which ends via the orphan reply,
-   * the agent exiting, or the conversation closing.
+   * Resolve once no turn is known to be running. Own turns run one at a
+   * time in `drain`, so this waits out an unclassified conversation and a
+   * recovered turn, which ends via the orphan reply, the agent exiting, or
+   * the conversation closing.
    *
    * A turn recovered from a torn record (its reply already lost) never
-   * ends, so its queue holds until the workspace restarts
+   * ends, so a queue behind it holds until the workspace restarts
    * (docs/agent-modes.md, "Where status can mislead"). A timer could not
    * tell that from a long-running turn.
    */
   private whenIdle(): Promise<void> {
-    if (!this.busy) return Promise.resolve()
-    return new Promise((resolve) => this.idleWaiters.push(resolve))
+    return this.whenStatus(() => this.statusKnown && !this.busy)
   }
 
   private endTurn(stopReason: Parameters<typeof toStopReason>[0]): void {
@@ -344,6 +398,7 @@ export class AcpConversation {
         // The asking process is gone; release parked asks so the
         // conversation does not stay `waiting`.
         this.cancelPendingPermissions()
+        this.detachedTurn = false
         this.endTurn('cancelled')
         this.emit({ type: 'error', message: `the agent process exited (code ${code ?? '?'})` })
         return
@@ -356,6 +411,10 @@ export class AcpConversation {
         const update = asRecord(asRecord(params)?.update)
         if (update?.sessionUpdate === 'config_option_update') this.setModel(sessionModel(update))
         if (update !== undefined) this.setModeId(sessionModeId(update))
+        if (update !== undefined && this.detachedTurn && codexThreadIdle(update)) {
+          this.detachedTurn = false
+          this.endTurn('end_turn')
+        }
         return
       }
       default:
@@ -563,8 +622,8 @@ export class AcpConversation {
           throw new Error('reattached to a live agent with no recorded session id')
         }
         this.log(`[server] acp: reattached to session ${this.sessionId}`)
-        // Ready before recovery so a prompt need not wait on a file read.
-        // Asks do wait for the posture to be recovered.
+        // Ready before recovery; a prompt still waits for it to classify
+        // the turn (`prompt`), and asks for the posture to be recovered.
         this.postureRecovery = this.recoverMode().finally(() => { this.postureRecovery = undefined })
         this.markReady()
         await this.postureRecovery
@@ -822,9 +881,15 @@ export class AcpConversation {
   }
 
   /**
-   * Send a user message and run the turn; resolves when the agent stops.
-   * Callers do not await it (panes are fed by events). `images` follow the
-   * text as image blocks; every adapter yaac runs supports them.
+   * Send a user message; resolves when its turn ends, or once the agent
+   * takes it as a steer. Callers do not await it (panes are fed by events).
+   * `images` follow the text as image blocks; every adapter yaac runs
+   * supports them.
+   *
+   * Mid-turn, an adapter that steers gets the message added to the running
+   * turn, as its TUI would. Otherwise, or if the agent does not take the
+   * steer, it queues behind the turn. Messages are routed one at a time, so
+   * one sent while an earlier steer is unanswered cannot overtake it.
    */
   async prompt(text: string, images: readonly AcpImage[] = [], timeoutMs = 120_000): Promise<void> {
     try {
@@ -839,24 +904,106 @@ export class AcpConversation {
       throw err
     }
     if (this.sessionId === undefined) throw new Error('no ACP session')
-    const run = this.turn.then(() => this.runTurn([
+    const blocks = [
       ...(text === '' ? [] : [{ type: 'text', text }]),
       ...images.map(({ mimeType, data }) => ({ type: 'image', mimeType, data })),
-    ]))
-    // Keep the chain alive after a failed turn.
-    this.turn = run.catch(() => { /* reported to its own caller */ })
-    return run
+    ]
+    // `done` is wrapped so routing settles without waiting for the turn.
+    const routed = this.intake.then(async () => {
+      // On a reattach, steering depends on whether the recovered turn runs.
+      await this.whenStatus(() => this.statusKnown)
+      if (this.busy && this.queue.length === 0 && this.deps.profile?.steers === true && await this.steer(blocks)) {
+        return { done: Promise.resolve() }
+      }
+      return { done: this.enqueue({ id: randomUUID(), text, images: images.length, blocks }) }
+    })
+    this.intake = routed
+    return (await routed).done
   }
 
-  /** One prompt turn, run only once its predecessor has finished. */
+  /**
+   * Add a message to the running turn. Returns whether the agent took it;
+   * anything else (the turn already over, an adapter without steering, a
+   * failure) leaves the message for the queue rather than losing it.
+   *
+   * codex-acp ignores `promptRequired`: a steer arriving as its turn ends
+   * starts a new turn itself (`startedNewTurn`), which answers no
+   * `session/prompt` of ours. That turn is held as running until codex
+   * reports its thread idle (`codexThreadIdle`).
+   */
+  private async steer(prompt: Array<Record<string, string>>): Promise<boolean> {
+    try {
+      const result = await this.peer.request<{ outcome?: string }>(ACP.sessionSteer, {
+        sessionId: this.sessionId,
+        prompt,
+        _meta: { steering: { idleBehavior: 'promptRequired' } },
+      })
+      if (result.outcome === 'startedNewTurn') {
+        this.detachedTurn = true
+        this.setBusy(true)
+      }
+      if (result.outcome === 'injected' || result.outcome === 'startedNewTurn') return true
+      if (result.outcome !== 'promptRequired') this.log(`[server] acp: steer not taken (${String(result.outcome)}); queueing`)
+      return false
+    } catch (err) {
+      this.log(`[server] acp: steer failed, queueing instead: ${err instanceof Error ? err.message : String(err)}`)
+      return false
+    }
+  }
+
+  /** Queue a message behind the running turn; resolves when its turn ends. */
+  private enqueue(entry: AcpQueuedPrompt & { blocks: Array<Record<string, string>> }): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      this.queue.push({ ...entry, resolve, reject })
+      // A message that starts at once was never waiting, so panes are not
+      // shown it as queued.
+      if (this.busy || this.draining) this.publishQueue()
+      void this.drain()
+    })
+  }
+
+  /**
+   * Hand the queue to the conversation that replaces this one after a
+   * dropped connection (`AcpConversationDeps.queue`), so it survives the
+   * reconnect. Leaves this conversation's queue empty.
+   */
+  takeQueue(): QueuedTurn[] {
+    return this.queue.splice(0)
+  }
+
+  /** Drop a queued message before it is sent. A message already sent is
+   *  past recall, so an unknown id is ignored. */
+  unqueue(id: string): void {
+    const i = this.queue.findIndex((q) => q.id === id)
+    if (i === -1) return
+    const [dropped] = this.queue.splice(i, 1)
+    dropped.resolve()
+    this.publishQueue()
+  }
+
+  /** Run queued turns one at a time until the queue is empty. */
+  private async drain(): Promise<void> {
+    if (this.draining) return
+    this.draining = true
+    try {
+      for (;;) {
+        // Wait out a recovered turn, which this connection did not start,
+        // and on a reattach the read that says whether one is running.
+        await this.whenIdle()
+        await this.delivered
+        const next = this.queue.shift()
+        if (next === undefined) return
+        this.publishQueue()
+        await this.runTurn(next.blocks).then(next.resolve, next.reject)
+      }
+    } finally {
+      this.draining = false
+    }
+  }
+
+  /** One prompt turn. */
   private async runTurn(prompt: Array<Record<string, string>>): Promise<void> {
     if (this.closed) throw new Error('conversation is closed')
-    // Wait out a recovered turn (not in `turn`): the adapter assumes one
-    // turn at a time, and overlapping would end the wrong turn.
-    if (this.busy) {
-      await this.whenIdle()
-      if (this.closed) throw new Error('conversation is closed')
-    }
     if (this.sessionId === undefined) throw new Error('no ACP session')
     this.setBusy(true)
     try {
@@ -899,11 +1046,12 @@ export class AcpConversation {
     // connection recovers the asks from the record.
     this.cancelPendingPermissions()
     this.failWaiters(new Error('conversation is closed'))
-    // Release prompts waiting on a recovered turn; they then fail as closed.
-    this.wakeIdleWaiters()
+    // Release the queue; its turns then fail as closed.
+    this.wakeStatusWaiters()
     this.peer.close()
     for (const fn of this.closeSubscribers) fn()
     this.closeSubscribers.clear()
     this.subscribers.clear()
+    this.queueSubscribers.clear()
   }
 }

@@ -736,9 +736,9 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(statuses(seen)).toEqual(['waiting']))
   })
 
-  it('holds a prompt sent straight after a reattach behind the turn it recovered', async () => {
-    // Sending now would overlap two turns, and the first reply would end the
-    // wrong one.
+  it('steers a prompt sent straight after a reattach into the turn it recovered, or holds it behind', async () => {
+    // A new `session/prompt` now would overlap two turns, and the first reply
+    // would end the wrong one. claude's adapter takes it as a steer instead.
     await record('acp-live', [lifeLine, promptLine('acp-live', 'old-1', 'the running turn')])
     const stream = new FakeStream()
     podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
@@ -753,6 +753,11 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(conversation.isBusy).toBe(true))
 
     void conversation.prompt('and now this').catch(() => {})
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === '_session/steering')).toBe(true))
+    // The agent says that turn is over (its reply is still on the way), so
+    // the message waits for it rather than overlapping.
+    const steer = stream.sent().find((m) => m.method === '_session/steering')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: steer.id, result: { outcome: 'promptRequired' } })}\n`)
     await new Promise((r) => setTimeout(r, 50))
     expect(stream.sent().some((m) => m.method === 'session/prompt')).toBe(false)
 
@@ -1406,6 +1411,82 @@ describe('agentDriver', () => {
     })
   })
 
+  it('hands a queued message to the conversation that replaces a dropped one', async () => {
+    // acpd keeps the agent across the drop, so what was queued is still owed.
+    await record('acp-q', [lifeLine])
+    const streams: FakeStream[] = []
+    podExec.mockResolvedValue({ stdout: 'opencode\n', stderr: '' })
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      heartbeatIntervalMs: 60_000,
+      log: () => {},
+      recordedSessions: () => Promise.resolve([{ handle: 'opencode', agentSessionId: 'acp-q' }]),
+      dial: () => {
+        const stream = new FakeStream()
+        streams.push(stream)
+        return stream
+      },
+    }))
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-q')).toBeDefined())
+    const first = acpConversation('demo', 'wt-1', 'acp-q')!
+    streams[0].feed(helloLine(false))
+    await vi.waitFor(() => expect(first.status).toBe('waiting'))
+    void first.prompt('fix the build').catch(() => {})
+    await vi.waitFor(() => expect(streams[0].sent().some((m) => m.method === 'session/prompt')).toBe(true))
+    void first.prompt('then commit').catch(() => {})
+    await vi.waitFor(() => expect(first.queuedPrompts.map((q) => q.text)).toEqual(['then commit']))
+
+    streams[0].emitExit()
+    await vi.waitFor(() => expect(streams.length).toBe(2), { timeout: 5_000 })
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-q')).toBeDefined())
+    const replacement = acpConversation('demo', 'wt-1', 'acp-q')!
+    expect(replacement).not.toBe(first)
+    expect(replacement.queuedPrompts.map((q) => q.text)).toEqual(['then commit'])
+    // Sent once the replacement knows no turn is running.
+    streams[1].feed(helloLine(false))
+    await vi.waitFor(() => expect(streams[1].sent().some((m) => m.method === 'session/prompt')).toBe(true))
+    expect((streams[1].sent().find((m) => m.method === 'session/prompt')!.params as { prompt: Array<{ text: string }> })
+      .prompt[0].text).toBe('then commit')
+  })
+
+  it('keeps the queue across the whole connection going down, for the reconnect to send', async () => {
+    // A failed window listing takes the connection down and the watcher
+    // reconnects; acpd kept every agent meanwhile. (A stop is the watcher's
+    // to discard, see status-watcher's stop test.)
+    await record('acp-s', [lifeLine])
+    podExec.mockResolvedValue({ stdout: 'opencode\n', stderr: '' })
+    const seen: AgentObservation[] = []
+    const connectWith = (stream: FakeStream): void => {
+      connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+        heartbeatIntervalMs: 100,
+        log: () => {},
+        recordedSessions: () => Promise.resolve([{ handle: 'opencode', agentSessionId: 'acp-s' }]),
+        dial: () => stream,
+      }))
+    }
+    const before = new FakeStream()
+    connectWith(before)
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-s')).toBeDefined())
+    const first = acpConversation('demo', 'wt-1', 'acp-s')!
+    before.feed(helloLine(false))
+    await vi.waitFor(() => expect(first.status).toBe('waiting'))
+    void first.prompt('fix the build').catch(() => {})
+    await vi.waitFor(() => expect(before.sent().some((m) => m.method === 'session/prompt')).toBe(true))
+    void first.prompt('then commit').catch(() => {})
+    await vi.waitFor(() => expect(first.queuedPrompts).toHaveLength(1))
+
+    podExec.mockRejectedValue(new Error('exec channel dropped'))
+    await vi.waitFor(() => expect(seen.some((o) => o.kind === 'down')).toBe(true), { timeout: 5_000 })
+    podExec.mockResolvedValue({ stdout: 'opencode\n', stderr: '' })
+
+    const after = new FakeStream()
+    connectWith(after)
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-s')).toBeDefined())
+    const resumed = acpConversation('demo', 'wt-1', 'acp-s')!
+    expect(resumed.queuedPrompts.map((q) => q.text)).toEqual(['then commit'])
+    after.feed(helloLine(false))
+    await vi.waitFor(() => expect(after.sent().some((m) => m.method === 'session/prompt')).toBe(true))
+  })
+
   it('re-dials a window whose acpd has not bound its socket yet', async () => {
     const streams: FakeStream[] = []
     podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
@@ -1486,7 +1567,7 @@ describe('agentDriver', () => {
       .toEqual({ outcome: { outcome: 'selected', optionId: 'yes-🚀' } })
   })
 
-  it('queues a second prompt instead of overlapping turns', async () => {
+  it('steers a second prompt into the running turn instead of overlapping turns', async () => {
     // ACP adapters assume one turn at a time; overlapping would also let the
     // first reply end the second turn.
     const stream = new FakeStream()
@@ -1505,15 +1586,10 @@ describe('agentDriver', () => {
     void conversation.prompt('second').catch(() => {})
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/prompt')).toBe(true))
 
-    // One turn on the wire at a time.
+    // One turn on the wire, which the second message joins.
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === '_session/steering')).toBe(true))
     expect(stream.sent().filter((m) => m.method === 'session/prompt')).toHaveLength(1)
-
-    const first = stream.sent().find((m) => m.method === 'session/prompt')!
-    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: first.id, result: { stopReason: 'end_turn' } })}\n`)
-    await vi.waitFor(() => {
-      expect(stream.sent().filter((m) => m.method === 'session/prompt')).toHaveLength(2)
-    })
-    expect((stream.sent().filter((m) => m.method === 'session/prompt')[1].params as { prompt: Array<{ text: string }> }).prompt[0].text)
+    expect((stream.sent().find((m) => m.method === '_session/steering')!.params as { prompt: Array<{ text: string }> }).prompt[0].text)
       .toBe('second')
   })
 

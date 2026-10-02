@@ -117,8 +117,15 @@ RUN umask 002 && npm install -g @agentclientprotocol/claude-agent-acp@0.84.0
 # sets), so bump the two together within codex-acp's `@openai/codex`
 # dependency range. Its own codex copy still installs, unused.
 RUN umask 002 && npm install -g --ignore-scripts @agentclientprotocol/codex-acp@2.1.0
-# Runs the pinned pi CLI above (`pi --mode rpc`).
-RUN umask 002 && npm install -g --ignore-scripts pi-acp@0.0.34
+# Runs the pinned pi CLI above (`pi --mode rpc`). Patched to steer mid-turn
+# messages into the running turn (agent-patches/pi-acp.js says when the patch
+# can go); the patch fails the build if this release no longer matches it.
+# Copied as yaac (this stage's user) so the RUN can delete it, and as .mjs
+# since its package.json, which says it is a module, stays behind.
+COPY --chown=yaac agent-patches/pi-acp.js /tmp/pi-acp-patch.mjs
+RUN umask 002 && npm install -g --ignore-scripts pi-acp@0.0.34 && \
+    node /tmp/pi-acp-patch.mjs "$(npm root -g)/pi-acp/dist/index.js" && \
+    rm -f /tmp/pi-acp-patch.mjs
 
 # codex system config. The session discovery hook is passed at launch
 # (`codexLaunchConfig` in packages/server/src/runtime/agents/codex.ts).

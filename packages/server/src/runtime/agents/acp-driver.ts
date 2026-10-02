@@ -36,9 +36,12 @@ import { tmuxCmd } from './agent-command'
 import { agentWindowTool } from './agent-tools'
 import {
   acpConversationByHandle,
+  dropAcpQueues,
+  parkAcpQueue,
   registerAcpConversation,
   stashAcpLaunchModel,
   takeAcpLaunchModel,
+  takeAcpQueue,
   unregisterAcpConversation,
 } from './acp-registry'
 import { acpAdapterFor, acpLaunchModel, acpModelIsProtocol } from './acp-adapters'
@@ -248,9 +251,8 @@ class AcpConnection implements AgentConnection {
       this.detach(entry, 'window closed')
     }
 
-    const recorded = new Map(
-      (await this.recordedSessions().catch(() => [])).map((r) => [r.handle, r.agentSessionId]),
-    )
+    const sessions = await this.recordedSessions().catch(() => undefined)
+    const recorded = new Map((sessions ?? []).map((r) => [r.handle, r.agentSessionId]))
     // Refresh before attaching so new conversations handshake with the
     // current posture. On a failed read keep the last known value (falling
     // back to `bypass` would silently stop enforcing the user's choice);
@@ -260,6 +262,17 @@ class AcpConnection implements AgentConnection {
     } catch (err) {
       this.log(`[server] acp-driver ${this.session.workspaceId}: could not read the`
         + ` permission posture: ${String(err)}`)
+    }
+    // A queue parked for a conversation whose window is gone has no taker.
+    // Without the recorded sessions that cannot be told, so nothing is
+    // dropped.
+    if (sessions !== undefined) {
+      dropAcpQueues(this.session.slug, this.session.workspaceId, new Set(
+        windows.flatMap((w) => {
+          const id = recorded.get(w.handle)
+          return id === undefined ? [] : [id]
+        }),
+      ))
     }
     for (const w of windows) {
       if (this.attached.has(w.handle)) continue
@@ -333,8 +346,13 @@ class AcpConnection implements AgentConnection {
       this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: no launch model`
         + ' was parked for this conversation — the agent runs its own default')
     }
+    // Messages the previous connection to this conversation still had queued.
+    const queue = resumeSessionId === undefined
+      ? []
+      : takeAcpQueue(this.session.slug, this.session.workspaceId, resumeSessionId)
     entry.conversation = new AcpConversation({
       transport: ctrlTransport(child),
+      queue,
       cwd: workspaceDriver().workspacePaths(this.session.jobName).workspaceDir,
       permissionMode: () => this.permissionMode,
       profile,
@@ -390,7 +408,7 @@ class AcpConnection implements AgentConnection {
         // Only this conversation's stream dropped, and acpd still holds its
         // agent. The next sweep re-attaches without a handshake.
         this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: ${reason}`)
-        this.detach(entry, reason)
+        this.detach(entry, reason, { keepQueue: true })
       },
     })
     // A synchronous failure above already detached; do not re-publish it.
@@ -407,13 +425,23 @@ class AcpConnection implements AgentConnection {
     return { slug: this.session.slug, workspaceId: this.session.workspaceId, agentSessionId }
   }
 
-  private detach(entry: Attached, reason: string): void {
+  /**
+   * `keepQueue` is for a dropped connection: acpd keeps the agent, so the
+   * conversation that replaces this one sends what was queued. A closed
+   * window ends the conversation, and its queue with it. A workspace stop
+   * parks too; the status watcher retiring it discards what was parked
+   * (`dropAcpQueues`).
+   */
+  private detach(entry: Attached, reason: string, { keepQueue = false } = {}): void {
     if (!this.attached.has(entry.handle)) return
     this.attached.delete(entry.handle)
     unregisterAcpConversation(this.session.slug, this.session.workspaceId, {
       handle: entry.handle,
       ...(entry.agentSessionId !== undefined ? { agentSessionId: entry.agentSessionId } : {}),
     })
+    if (keepQueue && entry.conversation !== undefined && entry.agentSessionId !== undefined) {
+      parkAcpQueue(this.session.slug, this.session.workspaceId, entry.agentSessionId, entry.conversation.takeQueue())
+    }
     entry.conversation?.close()
     this.log(`[server] acp-driver ${this.session.workspaceId}/${entry.handle}: detached (${reason})`)
     // A drop can land between sweeps (e.g. a dial into a window whose acpd
@@ -455,7 +483,9 @@ class AcpConnection implements AgentConnection {
     this.done = true
     if (this.sweepTimer) clearInterval(this.sweepTimer)
     this.sweepTimer = null
-    for (const entry of [...this.attached.values()]) this.detach(entry, 'connection closed')
+    // The watcher reconnects after a `down`, so this parks like a dropped
+    // conversation; only the watcher knows whether the workspace stopped.
+    for (const entry of [...this.attached.values()]) this.detach(entry, 'connection closed', { keepQueue: true })
   }
 
   close(): void {

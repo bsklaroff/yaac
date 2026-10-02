@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, beforeAll, beforeEach, vi } from 'vitest'
 import { render, screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react'
-import type { AcpClientMessage, AcpEvent, AcpToolCall } from '@yaac/shared/acp'
+import type { AcpClientMessage, AcpEvent, AcpQueuedPrompt, AcpToolCall } from '@yaac/shared/acp'
 
 /**
  * jsdom has no ResizeObserver; the pane uses one to follow the tail when it
@@ -31,6 +31,7 @@ beforeAll(() => {
 const stream = {
   events: [] as AcpEvent[],
   busy: false,
+  queued: [] as AcpQueuedPrompt[],
   connected: true,
   send: vi.fn((_msg: AcpClientMessage) => true),
 }
@@ -163,6 +164,68 @@ describe('WorkspaceChat drafts', () => {
     useUiStore.getState().setChatDraft('w1', 'acp-1', 'unsent')
     show()
     await waitFor(() => expect(box().value).toBe('unsent'))
+  })
+})
+
+/**
+ * Messages sent while the agent works, as a TUI allows. The server adds each
+ * to the running turn or queues it; the pane offers Send beside Stop and
+ * shows the queue.
+ */
+describe('WorkspaceChat mid-turn', () => {
+  beforeEach(() => {
+    stream.events = [user(0, 'build it')]
+    stream.busy = true
+    stream.queued = []
+    stream.connected = true
+    stream.send.mockClear()
+    stream.send.mockReturnValue(true)
+    useUiStore.setState({ chatDrafts: {} })
+  })
+
+  afterEach(() => {
+    stream.busy = false
+    stream.queued = []
+    cleanup()
+    flushChatDrafts()
+  })
+
+  it('sends with Enter while the agent works, keeping Stop on offer', async () => {
+    const { rerender } = show()
+    // Grouped, so the row's spacing cannot push Stop away from Send.
+    expect(screen.getByRole('button', { name: 'Stop turn' }).parentElement)
+      .toBe(screen.getByRole('button', { name: 'Send' }).parentElement)
+    type('use the staging config')
+    fireEvent.keyDown(box(), { key: 'Enter' })
+    expect(stream.send).toHaveBeenCalledWith({ type: 'prompt', text: 'use the staging config' })
+
+    // A steered message echoes like any other and clears the box.
+    stream.events = [...stream.events, { type: 'user', seq: 1, content: [{ type: 'text', text: 'use the staging config' }], steered: true }]
+    rerender(<WorkspaceChat workspaceId="w1" agentSessionId="acp-1" />)
+    await waitFor(() => expect(box().value).toBe(''))
+  })
+
+  it('clears the box once the message is queued, shows it, and lets it be dropped', async () => {
+    const { rerender } = show()
+    type('then write the docs')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    // Queued, not echoed: the box is free for the next message.
+    stream.queued = [{ id: 'q1', text: 'then write the docs', images: 0 }]
+    rerender(<WorkspaceChat workspaceId="w1" agentSessionId="acp-1" />)
+    await waitFor(() => expect(box().value).toBe(''))
+    expect(screen.getByText('then write the docs')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove queued message' }))
+    expect(stream.send).toHaveBeenLastCalledWith({ type: 'unqueue', id: 'q1' })
+  })
+
+  it('drops a restored draft the server is holding in its queue', async () => {
+    useUiStore.getState().setChatDraft('w1', 'acp-1', 'queued before reload')
+    useUiStore.getState().setChatSent('w1', 'acp-1', 'queued before reload')
+    stream.queued = [{ id: 'q1', text: 'queued before reload', images: 0 }]
+    show()
+    await waitFor(() => expect(box().value).toBe(''))
   })
 })
 
@@ -495,6 +558,8 @@ describe('WorkspaceChat rendering', () => {
       toolCall(1, { toolCallId: 't1', title: 'sleep 50', kind: 'execute', status: 'pending' }),
       user(2, 'again'),
       toolCall(3, { toolCallId: 't2', title: 'sleep 60', kind: 'execute', status: 'pending' }),
+      // Steered into the running turn, so the call it lands beside keeps going.
+      { type: 'user', seq: 4, content: [{ type: 'text', text: 'also check the logs' }], steered: true },
     ]
     show()
     expect(screen.getByText('sleep 50').closest('button')?.textContent).toContain('interrupted')

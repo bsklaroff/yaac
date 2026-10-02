@@ -1,12 +1,15 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   _resetAcpRegistryForTests,
   acpConversation,
   acpConversationByHandle,
+  dropAcpQueues,
+  parkAcpQueue,
   registerAcpConversation,
+  takeAcpQueue,
   unregisterAcpConversation,
 } from '#runtime/agents/acp-registry'
-import type { AcpConversation } from '#runtime/agents/acp-client'
+import type { AcpConversation, QueuedTurn } from '#runtime/agents/acp-client'
 
 /**
  * A stand-in conversation. The registry must find it under both its
@@ -53,5 +56,25 @@ describe('acpConversation', () => {
 
     expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeUndefined()
     expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeUndefined()
+  })
+})
+
+describe('dropAcpQueues', () => {
+  const turn = (text: string): QueuedTurn =>
+    ({ id: text, text, images: 0, blocks: [], resolve: () => {}, reject: vi.fn() })
+
+  it('discards a workspace\'s parked queues, sparing the sessions still live and other workspaces', () => {
+    const [live, gone, elsewhere] = [turn('live'), turn('gone'), turn('elsewhere')]
+    parkAcpQueue('demo', 'wt-1', 'acp-live', [live])
+    parkAcpQueue('demo', 'wt-1', 'acp-gone', [gone])
+    parkAcpQueue('demo', 'wt-2', 'acp-gone', [elsewhere])
+
+    dropAcpQueues('demo', 'wt-1', new Set(['acp-live']))
+
+    // A dropped message is rejected, so its sender logs it.
+    expect(gone.reject).toHaveBeenCalled()
+    expect(takeAcpQueue('demo', 'wt-1', 'acp-gone')).toEqual([])
+    expect(takeAcpQueue('demo', 'wt-1', 'acp-live')).toEqual([live])
+    expect(takeAcpQueue('demo', 'wt-2', 'acp-gone')).toEqual([elsewhere])
   })
 })

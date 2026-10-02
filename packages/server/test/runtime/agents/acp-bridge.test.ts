@@ -6,7 +6,7 @@ import { setDataDir } from '@yaac/shared/paths'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { attachAcp } from '#runtime/agents/acp-bridge'
 import { AcpConversation } from '#runtime/agents/acp-client'
-import { acpAdapterFor } from '#runtime/agents/acp-adapters'
+import { acpAdapterFor, type AcpAdapterProfile } from '#runtime/agents/acp-adapters'
 import { readAcpInFlight, readAcpPendingPermissions } from '#runtime/agents/acp-log'
 import {
   _resetAcpRegistryForTests,
@@ -89,13 +89,14 @@ const updateLine = (u: unknown): unknown => ({
  * so it recovers a running turn and pending asks. It reads the log when
  * constructed, so write the log first.
  */
-function liveConversation(): AcpConversation {
+function liveConversation(profile?: AcpAdapterProfile): AcpConversation {
   transport = new FakeTransport()
   const record = { slug: 'demo', workspaceId: 'wt-1', agentSessionId: 'acp-1' }
   const c = new AcpConversation({
     transport,
     cwd: '/workspace',
     resumeSessionId: 'acp-1',
+    ...(profile !== undefined ? { profile } : {}),
     recoverInFlight: () => readAcpInFlight(record),
     recoverPendingPermissions: () => readAcpPendingPermissions(record),
     onSessionId: () => {},
@@ -108,9 +109,9 @@ function liveConversation(): AcpConversation {
 }
 
 /** Recreate the conversation after the test has written its log. */
-function reattach(): void {
+function reattach(profile?: AcpAdapterProfile): void {
   conversation.close()
-  conversation = liveConversation()
+  conversation = liveConversation(profile)
   registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, conversation)
 }
 
@@ -131,6 +132,18 @@ afterEach(async () => {
 /** Wait for `hello`, which follows reading the log. */
 async function waitForHello(sock: FakeSocket): Promise<void> {
   await waitFor(() => sock.sent.some((m) => m.type === 'hello'))
+}
+
+/** The requests the conversation wrote to the agent with this method. */
+function requests(method: string): Array<{ id: string | number; params: Record<string, unknown> }> {
+  return transport.written
+    .map((l) => JSON.parse(l.trim()) as { id: string | number; method?: string; params: Record<string, unknown> })
+    .filter((m) => m.method === method)
+}
+
+/** Answer one of the conversation's requests as the agent. */
+function reply(id: string | number, result: unknown): void {
+  transport.feed(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`)
 }
 
 async function waitFor(cond: () => boolean, ms = 3000): Promise<void> {
@@ -201,8 +214,7 @@ describe('attachAcp', () => {
     await waitForHello(sock)
 
     sock.clientSend({ type: 'prompt', text: 'do the thing' })
-    await Promise.resolve()
-    await Promise.resolve()
+    await waitFor(() => requests('session/prompt').length === 1)
     const prompt = transport.written
       .map((l) => JSON.parse(l.trim()) as Record<string, unknown>)
       .find((m) => m.method === 'session/prompt')
@@ -286,13 +298,198 @@ describe('attachAcp', () => {
     })
   })
 
+  it('steers a mid-turn message into the running turn for an adapter that can, as its TUI does', async () => {
+    reattach(acpAdapterFor('claude'))
+    await waitFor(() => conversation.status !== undefined)
+    const sock = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', sock)
+    await waitForHello(sock)
+    sock.clientSend({ type: 'prompt', text: 'fix the build' })
+    await waitFor(() => requests('session/prompt').length === 1)
+
+    // Mid-turn: sent at once as a steer, not held for the turn to end.
+    sock.clientSend({ type: 'prompt', text: 'and the lint' })
+    await waitFor(() => requests('_session/steering').length === 1)
+    const [steer] = requests('_session/steering')
+    expect(steer.params).toEqual({
+      sessionId: 'acp-1',
+      prompt: [{ type: 'text', text: 'and the lint' }],
+      _meta: { steering: { idleBehavior: 'promptRequired' } },
+    })
+    reply(steer.id, { outcome: 'injected' })
+
+    // The turn ended just as the next one arrived: the agent hands it back,
+    // and it runs as the next turn.
+    sock.clientSend({ type: 'prompt', text: 'then commit' })
+    await waitFor(() => requests('_session/steering').length === 2)
+    const late = requests('_session/steering')[1]
+    reply(requests('session/prompt')[0].id, { stopReason: 'end_turn' })
+    await waitFor(() => !conversation.isBusy)
+    await new Promise((r) => setTimeout(r, 10))
+    reply(late.id, { outcome: 'promptRequired' })
+    await waitFor(() => requests('session/prompt').length === 2)
+    expect(requests('session/prompt')[1].params.prompt).toEqual([{ type: 'text', text: 'then commit' }])
+    // Never shown as queued: it went straight to the agent.
+    expect(sock.sent.some((m) => m.type === 'queue')).toBe(false)
+
+    // In the record, a steer the agent took is a user message inside the
+    // turn; one it handed back shows once, as the prompt that followed.
+    await record([
+      { jsonrpc: '2.0', id: 'a', method: 'session/prompt', params: { sessionId: 'acp-1', prompt: [{ type: 'text', text: 'fix the build' }] } },
+      { jsonrpc: '2.0', id: 'b', method: '_session/steering', params: { sessionId: 'acp-1', prompt: [{ type: 'text', text: 'and the lint' }] } },
+      { jsonrpc: '2.0', id: 'b', result: { outcome: 'injected' } },
+      { jsonrpc: '2.0', id: 'c', method: '_session/steering', params: { sessionId: 'acp-1', prompt: [{ type: 'text', text: 'then commit' }] } },
+      { jsonrpc: '2.0', id: 'a', result: { stopReason: 'end_turn' } },
+      { jsonrpc: '2.0', id: 'c', result: { outcome: 'promptRequired' } },
+      { jsonrpc: '2.0', id: 'd', method: 'session/prompt', params: { sessionId: 'acp-1', prompt: [{ type: 'text', text: 'then commit' }] } },
+    ])
+    const users = (): unknown[] => sock.sent
+      .flatMap((m) => m.type === 'event' ? [m.event] : m.type === 'hello' ? m.events : [])
+      .filter((e) => e.type === 'user')
+    await waitFor(() => users().length === 3)
+    expect(users()).toEqual([
+      expect.objectContaining({ content: [{ type: 'text', text: 'fix the build' }] }),
+      expect.objectContaining({ content: [{ type: 'text', text: 'and the lint' }], steered: true }),
+      expect.objectContaining({ content: [{ type: 'text', text: 'then commit' }] }),
+    ])
+  })
+
+  it('queues a steer the agent does not take, in the order messages were sent', async () => {
+    reattach(acpAdapterFor('claude'))
+    await waitFor(() => conversation.status !== undefined)
+    const sock = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', sock)
+    await waitForHello(sock)
+    const texts = (method: string): unknown[] => requests(method).map((r) => (r.params.prompt as Array<{ text: string }>)[0].text)
+    sock.clientSend({ type: 'prompt', text: 'fix the build' })
+    await waitFor(() => requests('session/prompt').length === 1)
+
+    // codex-acp answers a steer it could not deliver with `failed`.
+    sock.clientSend({ type: 'prompt', text: 'and the lint' })
+    await waitFor(() => requests('_session/steering').length === 1)
+    reply(requests('_session/steering')[0].id, { outcome: 'failed' })
+    await waitFor(() => conversation.queuedPrompts.length === 1)
+
+    // An adapter without the method (an unpatched pi-acp) is queued too.
+    reattach(acpAdapterFor('pi'))
+    await waitFor(() => conversation.status !== undefined)
+    const late = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', late)
+    await waitForHello(late)
+    late.clientSend({ type: 'prompt', text: 'first' })
+    await waitFor(() => requests('session/prompt').length === 1)
+    late.clientSend({ type: 'prompt', text: 'A' })
+    await waitFor(() => requests('_session/steering').length === 1)
+    // B arrives while A's steer is unanswered and the turn has ended, and
+    // still waits for A.
+    reply(requests('session/prompt')[0].id, { stopReason: 'end_turn' })
+    late.clientSend({ type: 'prompt', text: 'B' })
+    await new Promise((r) => setTimeout(r, 50))
+    expect(requests('session/prompt')).toHaveLength(1)
+    transport.feed(`${JSON.stringify({ jsonrpc: '2.0', id: requests('_session/steering')[0].id, error: { code: -32601, message: 'Method not found' } })}\n`)
+    await waitFor(() => requests('session/prompt').length === 2)
+    // A runs as its own turn, which B then joins.
+    await waitFor(() => requests('_session/steering').length === 2)
+    expect(texts('session/prompt')).toEqual(['first', 'A'])
+    expect(texts('_session/steering')).toEqual(['A', 'B'])
+    late.clientClose()
+  })
+
+  it('holds a turn codex starts itself from a late steer as running until codex reports idle', async () => {
+    // codex-acp ignores `promptRequired`: a steer landing as its turn ends
+    // starts a turn no `session/prompt` reply of ours will ever end.
+    reattach(acpAdapterFor('codex'))
+    await waitFor(() => conversation.status !== undefined)
+    const sock = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', sock)
+    await waitForHello(sock)
+    sock.clientSend({ type: 'prompt', text: 'fix the build' })
+    await waitFor(() => requests('session/prompt').length === 1)
+    sock.clientSend({ type: 'prompt', text: 'and the lint' })
+    await waitFor(() => requests('_session/steering').length === 1)
+
+    reply(requests('session/prompt')[0].id, { stopReason: 'end_turn' })
+    await waitFor(() => !conversation.isBusy)
+    reply(requests('_session/steering')[0].id, { outcome: 'startedNewTurn' })
+    await waitFor(() => conversation.isBusy)
+    await waitFor(() => paneBusy(sock.sent))
+
+    const threadStatus = (type: string): string => `${JSON.stringify(updateLine({
+      sessionUpdate: 'session_info_update',
+      _meta: { codex: { threadStatus: { type } } },
+    }))}\n`
+    transport.feed(threadStatus('active'))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(conversation.isBusy).toBe(true)
+    transport.feed(threadStatus('idle'))
+    await waitFor(() => !conversation.isBusy)
+    await waitFor(() => !paneBusy(sock.sent))
+
+    // A reattach mid-way through such a turn finds it running in the record,
+    // and one after codex went idle finds it over.
+    const life = [
+      { jsonrpc: '2.0', id: 's1', method: '_session/steering', params: { sessionId: 'acp-1', prompt: [{ type: 'text', text: 'x' }] } },
+      { jsonrpc: '2.0', id: 's1', result: { outcome: 'startedNewTurn' } },
+    ]
+    const ref = { slug: 'demo', workspaceId: 'wt-1', agentSessionId: 'acp-1' }
+    await record(life)
+    expect(await readAcpInFlight(ref)).toBe(true)
+    await record([...life, JSON.parse(threadStatus('idle')) as unknown])
+    expect(await readAcpInFlight(ref)).toBe(false)
+  })
+
+  it('queues a mid-turn message for an adapter that cannot steer, shown to every pane until it runs', async () => {
+    const sock = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', sock)
+    await waitForHello(sock)
+    sock.clientSend({ type: 'prompt', text: 'fix the build' })
+    await waitFor(() => requests('session/prompt').length === 1)
+
+    sock.clientSend({ type: 'prompt', text: 'and the lint' })
+    sock.clientSend({ type: 'prompt', text: 'then commit' })
+    const lastQueue = (s: FakeSocket): unknown[] | undefined => s.sent.flatMap((m) => {
+      if (m.type === 'queue') return [m.queued]
+      return m.type === 'hello' ? [m.queued] : []
+    }).at(-1)
+    await waitFor(() => lastQueue(sock)?.length === 2)
+    expect(requests('session/prompt')).toHaveLength(1)
+    expect(lastQueue(sock)).toEqual(conversation.queuedPrompts)
+    expect(conversation.queuedPrompts.map((q) => [q.text, q.images])).toEqual([['and the lint', 0], ['then commit', 0]])
+
+    // A pane attaching now is greeted with the queue.
+    const late = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', late)
+    await waitForHello(late)
+    expect(lastQueue(late)).toHaveLength(2)
+
+    // Dropping one means the agent never sees it.
+    const [dropped] = conversation.queuedPrompts
+    sock.clientSend({ type: 'unqueue', id: dropped.id })
+    await waitFor(() => lastQueue(late)?.length === 1)
+
+    // The next queued message goes out only once panes have this turn's end,
+    // so a pane never draws it inside the turn it followed.
+    const write = transport.write.bind(transport)
+    let endedFirst: boolean | undefined
+    transport.write = (data: string): void => {
+      if (data.includes('session/prompt')) endedFirst ??= sock.sent.some((m) => m.type === 'event' && m.event.type === 'turn-end')
+      write(data)
+    }
+    reply(requests('session/prompt')[0].id, { stopReason: 'end_turn' })
+    await waitFor(() => requests('session/prompt').length === 2)
+    expect(endedFirst).toBe(true)
+    expect(requests('session/prompt')[1].params.prompt).toEqual([{ type: 'text', text: 'then commit' }])
+    await waitFor(() => lastQueue(sock)?.length === 0)
+    expect(paneBusy(sock.sent)).toBe(true)
+    late.clientClose()
+  })
+
   it('cancels the running turn without tearing the pane down', async () => {
     const sock = new FakeSocket()
     attachAcp('demo', 'wt-1', 'acp-1', sock)
     await waitForHello(sock)
     sock.clientSend({ type: 'prompt', text: 'long job' })
-    await Promise.resolve()
-    await Promise.resolve()
+    await waitFor(() => requests('session/prompt').length === 1)
 
     sock.clientSend({ type: 'cancel' })
     const cancel = transport.written

@@ -1,0 +1,6 @@
+{
+  "name": "yaac-agent-patches",
+  "private": true,
+  "type": "module",
+  "description": "Install-time patches to pinned third-party agent adapters"
+}

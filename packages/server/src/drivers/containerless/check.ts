@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ServerError } from '@yaac/shared/errors'
+import { PACKAGE_ROOT } from '@yaac/shared/paths'
 import { AGENT_PACKAGES, agentPackagePrefix } from '@yaac/shared/tool-install'
 import {
   ACP_ADAPTERS,
@@ -157,7 +158,8 @@ async function sweepAbandonedStaging(dir: string): Promise<void> {
 /**
  * Install the pinned package that ships `binary`, unless already installed.
  * npm installs into a staging prefix that is renamed into place only once
- * the binary exists, since the prefix's existence means "installed". If
+ * the binary exists (and any patch is applied, as the image does), since the
+ * prefix's existence means "installed". If
  * another server wins the rename race, its identical copy is kept.
  */
 async function ensureAgentBinary(
@@ -203,6 +205,16 @@ async function ensureAgentBinary(
     if (!(await fs.access(path.join(staging, 'bin', binary)).then(() => true, () => false))) {
       await discard()
       throw new ServerError('MISSING_TOOL', `installing ${spec} left no "${binary}" binary behind`)
+    }
+    if (pkg.patch !== undefined) {
+      const script = path.join(PACKAGE_ROOT, 'dockerfiles', 'agent-patches', pkg.patch.script)
+      const entry = path.join(staging, 'lib', 'node_modules', pkg.package, pkg.patch.entry)
+      try {
+        await runHost(['node', script, entry], { timeoutMs: 60_000 })
+      } catch (err) {
+        await discard()
+        throw new ServerError('MISSING_TOOL', `patching ${spec} failed${installerDetail(err)}`)
+      }
     }
     // A failed rename usually means another install won the race.
     await fs.rename(staging, prefix).catch(discard)

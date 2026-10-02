@@ -18,8 +18,8 @@ import { StringDecoder } from 'node:string_decoder'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { agentSessionIdSchema } from '@yaac/shared/types'
 import {
-  ACP, ACPD, AcpProjection, asRecord, asString, sessionModeId, sessionModels, sessionStateModeId,
-  toContentList,
+  ACP, ACPD, AcpProjection, asRecord, asString, codexThreadIdle, sessionModeId, sessionModels,
+  sessionStateModeId, toContentList,
 } from './acp-protocol'
 import { openSandboxFile, readSandboxFile, type SandboxFile } from './sandbox-fs'
 import { serverLog } from '#log'
@@ -284,6 +284,13 @@ function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
     const content = toContentList(asRecord(msg.params)?.prompt)
     return content.length === 0 ? [] : [{ type: 'user', content }]
   }
+  // A message steered into a running turn shows once its reply says the
+  // agent took it, so one that fell back to `session/prompt` shows once.
+  if (msg.method === ACP.sessionSteer) {
+    const id = lineId(msg)
+    if (id !== undefined) projection.openSteer(id, msg.params)
+    return []
+  }
   if (msg.method === ACP.sessionUpdate) {
     const event = projection.apply(msg.params)
     return event === undefined ? [] : [event]
@@ -295,12 +302,13 @@ function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
     const id = lineId(msg)
     return id === undefined ? [] : [projection.openPermission(id, msg.params)]
   }
-  // A reply settles a permission ask, or carries the session's models: the
-  // handshake's `session/new` or `session/load`, or a model switch.
+  // A reply settles a permission ask or a steer, or carries the session's
+  // models: the handshake's `session/new` or `session/load`, or a model
+  // switch.
   if (msg.method === undefined) {
     const id = lineId(msg)
     if (id === undefined) return []
-    const event = projection.closePermission(id, msg.result)
+    const event = projection.closePermission(id, msg.result) ?? projection.closeSteer(id, msg.result)
     if (event !== undefined) return [event]
     const models = sessionModels(msg.result)
     return models === undefined ? [] : [{ type: 'models', ...models }]
@@ -316,12 +324,19 @@ function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
  * (turn state is tied to your own unanswered `session/prompt`). The record
  * has both directions, so a turn is in flight if the last recorded prompt
  * has no recorded reply. Turns never overlap (`AcpConversation` queues
- * them), so only the last can be open. No record means no turn.
+ * them, and a steered message joins the running turn rather than starting
+ * one), so only the last can be open. No record means no turn.
+ *
+ * The exception is a steer codex answers `startedNewTurn`: that turn has no
+ * prompt of ours, and is open until codex reports its thread idle (see
+ * `AcpConversation.steer`).
  */
 export async function readAcpInFlight(record: AcpRecordRef): Promise<boolean> {
   const raw = await readRecord(record)
   if (raw === undefined) return false
   let pending: string | number | undefined
+  const steers = new Set<string | number>()
+  let detached = false
   for (const line of raw.split('\n')) {
     const msg = parseLine(line)
     if (msg === undefined) continue
@@ -331,16 +346,27 @@ export async function readAcpInFlight(record: AcpRecordRef): Promise<boolean> {
       if (id !== undefined) pending = id
       continue
     }
+    if (msg.method === ACP.sessionSteer) {
+      if (id !== undefined) steers.add(id)
+      continue
+    }
+    if (msg.method === ACP.sessionUpdate) {
+      const update = asRecord(asRecord(msg.params)?.update)
+      if (update !== undefined && codexThreadIdle(update)) detached = false
+      continue
+    }
     if (msg.method === ACPD.exit) {
       // The agent exited; acpd starts a fresh record for the next life.
       pending = undefined
+      detached = false
       continue
     }
     // Only a reply (no method) can close a turn.
-    if (msg.method !== undefined) continue
-    if (id !== undefined && id === pending) pending = undefined
+    if (msg.method !== undefined || id === undefined) continue
+    if (id === pending) pending = undefined
+    if (steers.delete(id) && asRecord(msg.result)?.outcome === 'startedNewTurn') detached = true
   }
-  return pending !== undefined
+  return pending !== undefined || detached
 }
 
 /**

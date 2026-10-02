@@ -98,8 +98,9 @@ export type AcpStopReason =
  * emits it; a pane joins consecutive `agent` events into one bubble.
  */
 export type AcpEvent =
-  /** A user message, echoed back so live history matches a replay. */
-  | { type: 'user'; seq: number; content: AcpContent[] }
+  /** A user message, echoed back so live history matches a replay.
+   *  `steered` marks one added to a running turn, which it does not end. */
+  | { type: 'user'; seq: number; content: AcpContent[]; steered?: true }
   | { type: 'agent'; seq: number; content: AcpContent[] }
   /** Extended thinking. Panes render it collapsed. */
   | { type: 'thought'; seq: number; content: AcpContent[] }
@@ -154,12 +155,23 @@ export type AcpEventInit = AcpEvent extends infer T
   ? T extends AcpEvent ? Omit<T, 'seq'> : never
   : never
 
+/**
+ * A message sent while a turn runs, held by the server until the turn ends
+ * because the adapter cannot take it mid-turn (docs/agent-modes.md, "Sending
+ * mid-turn"). `images` is a count; the pane shows the message, not its
+ * pictures.
+ */
+export interface AcpQueuedPrompt { id: string; text: string; images: number }
+
 /** Server → pane. */
 export type AcpServerMessage =
   /** Sent once per attach, before any event: the recorded conversation,
    *  numbered from zero. Replaces whatever the pane held. */
-  | { type: 'hello'; agentSessionId: string; busy: boolean; events: AcpEvent[] }
+  | { type: 'hello'; agentSessionId: string; busy: boolean; queued: AcpQueuedPrompt[]; events: AcpEvent[] }
   | { type: 'event'; event: AcpEvent }
+  /** The queued messages changed. Not an event: it is current state, not
+   *  history, so it replaces what the pane held. */
+  | { type: 'queue'; queued: AcpQueuedPrompt[] }
   /** The connection to the agent dropped or came back. acpd keeps the agent
    *  running meanwhile, so a reconnect resumes mid-turn. */
   | { type: 'health'; connected: boolean }
@@ -167,8 +179,11 @@ export type AcpServerMessage =
 /** Pane → server. */
 export type AcpClientMessage =
   /** A user message. `images` go to the agent as ACP image blocks after the
-   *  text, so a message may be images alone; `data` is base64. */
+   *  text, so a message may be images alone; `data` is base64. Allowed
+   *  mid-turn: the server steers it into the turn or queues it. */
   | { type: 'prompt'; text: string; images?: AcpImage[] }
+  /** Drop a queued message before it is sent to the agent. */
+  | { type: 'unqueue'; id: string }
   /** Interrupt the running turn (ACP `session/cancel`). */
   | { type: 'cancel' }
   /**

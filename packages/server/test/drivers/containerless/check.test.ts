@@ -1,4 +1,6 @@
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -307,6 +309,36 @@ describe('assertHostCanLaunch', () => {
     specs.length = 0
     await assertHostCanLaunch({ tool: 'opencode', mode: 'acp' })
     expect(specs).toEqual([specOf('opencode')])
+  })
+
+  it('patches pi-acp before it counts as installed, and installs nothing the patch refuses', async () => {
+    // The patch runs for real on what the fake npm installs.
+    let source = '#!/usr/bin/env node\nnot the pinned pi-acp\n'
+    fakeNpm()
+    const npm = mockRunHost.getMockImplementation() as (argv: string[], opts: unknown) => Promise<unknown>
+    mockRunHost.mockImplementation(async (argv: string[], opts: unknown) => {
+      if (argv[0] === 'node') {
+        execFileSync(process.execPath, argv.slice(1), { stdio: 'pipe' })
+        return { stdout: '', stderr: '' }
+      }
+      const result = await npm(argv, opts)
+      if (argv[0] === 'npm' && argv.at(-1) === specOf('pi-acp')) {
+        const entry = path.join(argv[argv.indexOf('--prefix') + 1], 'lib', 'node_modules', 'pi-acp', 'dist', 'index.js')
+        fs.mkdirSync(path.dirname(entry), { recursive: true })
+        fs.writeFileSync(entry, source)
+      }
+      return result
+    })
+    const prefix = agentPackagePrefix(AGENT_PACKAGES['pi-acp'])
+
+    await expect(assertHostCanLaunch({ tool: 'pi', mode: 'acp' })).rejects.toThrow(/patching pi-acp@\S+ failed/)
+    expect(fs.existsSync(prefix)).toBe(false)
+
+    const require = createRequire(import.meta.url)
+    source = fs.readFileSync(path.join(path.dirname(require.resolve('pi-acp/package.json')), 'dist', 'index.js'), 'utf8')
+    await assertHostCanLaunch({ tool: 'pi', mode: 'acp' })
+    expect(fs.readFileSync(path.join(prefix, 'lib', 'node_modules', 'pi-acp', 'dist', 'index.js'), 'utf8'))
+      .toContain('"_session/steering"')
   })
 
   it('asks for socat under acp, whose absence hangs a pane instead of failing', async () => {

@@ -40,6 +40,10 @@ minimumReleaseAgeExclude:
   # Adopted at days old (only release; the attention chime's one cue) after
   # reading its full source — see packages/frontend/src/lib/sound.ts.
   - cuelume
+  # Adopted at days old because it must match the pi-acp the workspace image
+  # installs: the tests of dockerfiles/agent-patches/pi-acp.js run the patch
+  # on this exact release. Dev-only, and its source is what the patch edits.
+  - "pi-acp@0.0.34"
   # Adopted at days old because they must match the claude CLI the workspace
   # image pins (dockerfiles/Dockerfile.tools, `AGENT_CLIS`): the server replays
   # stopped transcripts through the same adapter version the image runs live.

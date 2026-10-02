@@ -25,8 +25,9 @@ docs/permission-modes.md) all read that one table:
 
 How the adapters differ is described by per-tool profiles in
 `#runtime/agents/acp-adapters.ts`: the argv, the environment that carries a
-posture or model, the session mode ids for yaac's postures, and whether the
-adapter's asks are permission prompts. These facts depend on each other (a
+posture or model, the session mode ids for yaac's postures, whether the
+adapter's asks are permission prompts, and whether a message can join a
+running turn. These facts depend on each other (a
 tool that can't take a model at launch must be sent one over the protocol),
 so they live in one table.
 
@@ -171,14 +172,84 @@ the webapp's persisted ui store (keyed per conversation) so it survives a
 stop, a closed tab or a reload. A sent message stays in the composer until
 the server echoes it. If the pane is torn down in between, the store also
 keeps the exact text sent: the composer is cleared only if it still holds
-that text and the replayed history shows it arrived. (Matching on history
-alone would clear a fresh "ok" because of an earlier one.)
+that text and the replayed history shows it arrived, or the server holds it
+queued. (Matching on history alone would clear a fresh "ok" because of an
+earlier one.)
 
 An off-screen pane stays mounted and keeps its socket, like a terminal, so
 switching tabs or workspaces costs no network. Attaching is the slow part (a
 handshake, then the whole conversation in one `hello` frame): that is the
 "Connecting to the agent…" wait. The warm-up that pre-attaches terminals
 after a page load covers chat panes too.
+
+## Sending mid-turn
+
+The composer stays open while the agent works, as a TUI's prompt does: Enter
+sends, and Stop sits beside Send. What happens to the message is the adapter
+profile's `steers` fact, matching what each tool's TUI does with a message
+typed mid-turn where its adapter allows:
+
+- **claude, codex and pi steer.** Their adapters implement the
+  `_session/steering` extension, which adds the message to the running turn.
+  When it lands differs per adapter:
+  - codex delivers it at the turn's next model call, as its TUI does.
+  - pi delivers it once the current tool calls finish, before the next model
+    call, as Enter does in its TUI. pi-acp steers only as yaac patches it at
+    install, in the image and in a host install alike
+    (`dockerfiles/agent-patches/pi-acp.js`, which says when it can go).
+  - claude's adapter interrupts: the generation in progress is cut off where
+    it stands and the message runs as a second cycle of the same turn. While
+    a permission ask is open it waits for the answer instead. claude's TUI
+    holds a typed message for the next tool boundary, and the pinned adapter
+    offers no way to ask for that. Stop after a steer does not stop the
+    turn: the adapter interrupts the cycle the steer pre-empted, the SDK
+    keeps the steered message queued across the interrupt, and the turn runs
+    on until that message is answered before it reports `cancelled`. yaac
+    sends `session/cancel` at once; the hold-up is the adapter's.
+
+  The request asks for `idleBehavior: promptRequired`, so a steer that
+  arrives just after the turn ended is handed back. Any steer the agent does
+  not take (handed back, refused, or an adapter without the method, such as
+  an unpatched pi-acp in a workspace older than the patch) is queued rather
+  than lost. Messages are routed one at a time, so one sent while an earlier
+  steer awaits its answer cannot overtake it.
+
+  A steered message has no turn of its own, so it moves no status. In the
+  record it is a request whose reply says whether the agent took it, so the
+  projection shows it as a `user` event only once that reply arrives (marked
+  `steered` when it joined the turn, so the pane does not read it as ending
+  the calls before it); one that was not taken shows once, as the prompt
+  that followed.
+
+  codex's adapter ignores `promptRequired`: a steer that lands as its turn
+  ends makes it start a turn of its own (`startedNewTurn`), which answers no
+  `session/prompt` of yaac's. codex-acp forwards codex's thread status as a
+  `session_info_update` (`_meta.codex.threadStatus`), so that turn counts as
+  running until the status leaves `active`, both live and when a reattach
+  reads the record.
+- **opencode queues.** Its TUI steers by default, but its acp refuses a
+  second `session/prompt` while one runs and has no steering method, and the
+  adapter is compiled into opencode's binary rather than shipped as a
+  script yaac could patch.
+
+**The queue.** A message that is not steered waits in `AcpConversation`'s
+queue and runs as the next turn. The queue is server state, not history, so
+it reaches panes beside the record: in `hello` and as `queue` frames. Every
+pane shows it, the composer clears as soon as its message appears there, and
+a queued message can be removed (`unqueue`) until it is sent.
+
+The queue is in the server's memory. It survives a dropped connection,
+whether one conversation's relay or the whole workspace's: acpd keeps the
+agent, and the conversation that replaces the dropped one takes the queue
+over (keyed by session id, since a restart can move window names) and sends
+it once it knows no turn is running. The status watcher stopping is what
+discards it. It does not survive a workspace stop, a server
+restart or the agent's window closing; those messages are dropped with only
+a log line, so a resumed conversation never acts on stale instructions.
+
+**Stop cancels the running turn, not the queue.** A queued prompt is
+something the user asked for, so it runs once the turn ends; removing it is a
+separate click. A turn recovered after a reattach is treated the same way.
 
 ## Reconnect
 
@@ -264,16 +335,11 @@ A **torn record** can leave a reattached conversation `running`. Recovery
 reads "last prompt unanswered" as a turn in flight, so if the reply's bytes
 never reached the record nothing clears it (an agent exit is recorded and
 clears it; a lost write is not). It shows as working with nothing streaming.
-The pane can't release it: new messages queue behind the phantom turn, and
+The pane can't release it: new messages queue behind the phantom turn (a
+steering adapter hands them back, having no turn to add them to), and
 Stop's `session/cancel` names a turn the adapter doesn't have, so nothing
 ends it. Restart the workspace; a fresh acpd
 starts idle.
-
-**Stop cancels the running turn, not the queue.** Messages sent while the
-agent works are queued, and Stop interrupts only the current turn, so
-clearing a backlog takes one press per message. This is deliberate: a queued
-prompt is something the user asked for. A turn recovered after a reattach is
-treated the same way.
 
 ## Commands, skills and models
 

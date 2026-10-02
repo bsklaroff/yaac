@@ -6,3 +6,4 @@ streamd/test
 streamd/node_modules
 acpd/test
 acpd/node_modules
+agent-patches/test

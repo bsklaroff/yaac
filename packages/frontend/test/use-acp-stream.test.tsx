@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { useAcpStream } from '#lib/acp'
-import type { AcpEvent, AcpServerMessage } from '@yaac/shared/acp'
+import type { AcpEvent, AcpQueuedPrompt, AcpServerMessage } from '@yaac/shared/acp'
 
 /**
  * The chat pane's transport state machine: attach, replay, busy tracking and
@@ -44,10 +44,11 @@ class FakeSocket {
   }
 }
 
-const hello = (events: AcpEvent[], busy = false): AcpServerMessage => ({
+const hello = (events: AcpEvent[], busy = false, queued: AcpQueuedPrompt[] = []): AcpServerMessage => ({
   type: 'hello',
   agentSessionId: 'acp-1',
   busy,
+  queued,
   events,
 })
 
@@ -215,6 +216,20 @@ describe('useAcpStream', () => {
     })
     // Attaching mid-turn must show the agent working, not idle.
     await waitFor(() => expect(result.current.busy).toBe(true))
+  })
+
+  it('shows the messages queued behind the turn, from attach and as they change', async () => {
+    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1'))
+    const waiting = { id: 'q1', text: 'then this', images: 0 }
+    act(() => {
+      latest().open()
+      latest().deliver(hello([], true, [waiting]))
+    })
+    // A pane attaching mid-turn sees what another tab queued.
+    await waitFor(() => expect(result.current.queued).toEqual([waiting]))
+
+    act(() => latest().deliver({ type: 'queue', queued: [] }))
+    await waitFor(() => expect(result.current.queued).toEqual([]))
   })
 
   it('greys out on a health frame without tearing the pane down', async () => {
