@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises'
+import { rmSync } from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
@@ -70,22 +71,19 @@ const registry = createCliSessionRegistry<LoginSession>({
   onRelease: discardScratch,
 })
 
-/** Drop every session (test isolation). */
-export function clearAllToolLoginsForTests(): void {
-  registry.clearAllForTests()
-}
-
-/** Kill every login subprocess (auth-daemon shutdown). */
+/** Kill every login subprocess and forget its session (auth-daemon
+ *  shutdown, test isolation). */
 export function killAllToolLogins(): void {
-  registry.clearAllForTests()
+  registry.killAll()
 }
 
-/** Drop the scratch config home and (claude) its scoped Keychain item. */
+/** Drop the scratch config home and (claude) its scoped Keychain item.
+ *  Synchronous, so a shutdown that exits right after `killAll` finishes it. */
 function discardScratch(s: LoginSession): void {
   if (s.view.tool === 'claude') {
     deleteScopedClaudeKeychainItem(claudeKeychainService(s.scratchDir))
   }
-  void fs.rm(s.scratchDir, { recursive: true, force: true }).catch(() => {})
+  rmSync(s.scratchDir, { recursive: true, force: true })
 }
 
 /**

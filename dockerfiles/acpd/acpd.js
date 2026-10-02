@@ -151,13 +151,7 @@ export function createAcpd({
     client = null
 
     const previous = child
-    const hard = setTimeout(() => {
-      try {
-        previous.kill('SIGKILL')
-      } catch { /* already gone */ }
-    }, killGraceMs)
-    hard.unref()
-
+    const hard = terminate(previous)
     previous.once('exit', () => {
       clearTimeout(hard)
       if (closing) return
@@ -170,7 +164,15 @@ export function createAcpd({
       childExit = null
       startChild()
     })
-    previous.kill('SIGTERM')
+  }
+
+  /** SIGTERM `proc`, then SIGKILL it if it outlives the grace period.
+   *  Returns the SIGKILL timer so a caller that sees the exit can clear it. */
+  function terminate(proc) {
+    proc.kill('SIGTERM')
+    const hard = setTimeout(() => proc.kill('SIGKILL'), killGraceMs)
+    hard.unref()
+    return hard
   }
 
   /** Append relayed bytes to the record; a failure restarts the agent. */
@@ -313,16 +315,8 @@ export function createAcpd({
   function shutdown(code, signal) {
     if (closing) return
     closing = true
-    try {
-      client?.destroy()
-    } catch {
-      /* ignore */
-    }
-    try {
-      server?.close()
-    } catch {
-      /* ignore */
-    }
+    client?.destroy()
+    server?.close()
     try {
       fs.unlinkSync(sockPath)
     } catch {
@@ -334,21 +328,7 @@ export function createAcpd({
       } catch { /* already gone */ }
       logFd = null
     }
-    if (childExit === null) {
-      try {
-        child.kill('SIGTERM')
-      } catch {
-        /* already gone */
-      }
-      const hard = setTimeout(() => {
-        try {
-          child.kill('SIGKILL')
-        } catch {
-          /* already gone */
-        }
-      }, killGraceMs)
-      hard.unref()
-    }
+    if (child && childExit === null) terminate(child)
     onExit?.(code, signal)
   }
 

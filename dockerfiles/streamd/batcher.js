@@ -61,7 +61,7 @@ export function createOutputBatcher(write, { batchMs = BATCH_MS, maxBytes = MAX_
         return
       }
       timer = setTimeout(flushNow, batchMs - sinceFlush)
-      if (typeof timer.unref === 'function') timer.unref()
+      timer.unref()
     },
     /** Drain everything now (ordering barrier — e.g. before an exit frame). */
     flush: flushNow,

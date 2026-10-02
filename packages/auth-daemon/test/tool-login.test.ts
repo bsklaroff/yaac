@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import type * as cliResolveModule from '#cli-resolve'
 import {
-  clearAllToolLoginsForTests,
+  killAllToolLogins,
   cancelToolLogin,
   getToolLogin,
   sendToolLoginInput,
@@ -34,7 +34,7 @@ describe('tool login sessions', () => {
   })
 
   afterEach(async () => {
-    clearAllToolLoginsForTests()
+    killAllToolLogins()
     delete process.env.YAAC_E2E_CLAUDE_LOGIN_CLI
     delete process.env.YAAC_E2E_CODEX_LOGIN_CLI
     delete process.env.FAKE_LOGIN_MODE

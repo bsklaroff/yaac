@@ -37,7 +37,7 @@ describe('cli-session registry', () => {
   })
 
   afterEach(() => {
-    registry.clearAllForTests()
+    registry.killAll()
     released.length = 0
     vi.useRealTimers()
   })
@@ -104,12 +104,14 @@ describe('cli-session registry', () => {
     expect(released).toEqual(['s1'])
   })
 
-  it('clearAllForTests drops everything without running onRelease', () => {
-    start('s1')
+  it('killAll drops everything, releasing only flows still running', () => {
+    const s1 = start('s1')
     start('s2', 'codex')
-    registry.clearAllForTests()
+    registry.finish(s1, 'success')
+    released.length = 0
+    registry.killAll()
     expect(() => registry.getView('s1')).toThrow(/No test session/)
     expect(() => registry.getView('s2')).toThrow(/No test session/)
-    expect(released).toEqual([])
+    expect(released).toEqual(['s2'])
   })
 })
