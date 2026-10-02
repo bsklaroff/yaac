@@ -123,7 +123,7 @@ sandboxed builder pods (`packages/server/src/drivers/k8s/cluster/builder-image.t
 `envoyproxy/envoy` for netd's redirect sidecar
 (`packages/server/src/drivers/k8s/cluster/netd.ts`), `curlimages/curl` for
 the gVisor installer (`packages/server/src/drivers/k8s/install/gvisor-installer.ts`),
-and `verdaccio/verdaccio` for the npm cache
+and `verdaccio/verdaccio` plus `nginxinc/nginx-unprivileged` for the npm cache
 (`packages/server/src/drivers/k8s/cluster/npm-cache.ts`).
 
 **Rules:**

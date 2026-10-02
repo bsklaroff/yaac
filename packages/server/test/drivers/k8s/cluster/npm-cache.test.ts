@@ -1,5 +1,6 @@
 /**
- * The npm cache's barrel functions: deploying Verdaccio, and the URL a
+ * The npm cache's barrel functions: deploying Verdaccio behind its caching
+ * nginx, and the URL a
  * workspace create reads to decide whether pnpm installs through it.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
@@ -32,7 +33,12 @@ vi.mock('#drivers/k8s/container/registry', async (importOriginal) => ({
   registryRef: (tag: string) => `localhost:5001/${tag}`,
 }))
 
-import { VERDACCIO_MIRROR_TAG, ensureNpmCache, servingNpmCacheUrl } from '#drivers/k8s/cluster'
+import {
+  NGINX_MIRROR_TAG,
+  VERDACCIO_MIRROR_TAG,
+  ensureNpmCache,
+  servingNpmCacheUrl,
+} from '#drivers/k8s/cluster'
 
 interface Manifest {
   kind: string
@@ -53,7 +59,7 @@ beforeEach(() => {
 })
 
 describe('ensureNpmCache', () => {
-  it('stands up one read-only Verdaccio on its claim, walled to workspaces, and publishes it last', async () => {
+  it('stands up one read-only Verdaccio on its claim behind nginx, walled to workspaces, and publishes it last', async () => {
     await ensureNpmCache()
 
     const config = appliedNamed('ConfigMap', 'yaac-npm-cache-config')?.data?.['config.yaml'] ?? ''
@@ -72,13 +78,42 @@ describe('ensureNpmCache', () => {
         spec: {
           // The uplink resolves as-is, never via the node's search domains.
           dnsConfig: { options: [{ name: 'ndots', value: '1' }] },
-          containers: [{ image: `localhost:5001/${VERDACCIO_MIRROR_TAG}` }],
+          containers: [
+            {
+              name: 'verdaccio',
+              image: `localhost:5001/${VERDACCIO_MIRROR_TAG}`,
+              // Reachable only through nginx; tarball URLs name the Service.
+              env: expect.arrayContaining([
+                { name: 'VERDACCIO_ADDRESS', value: '127.0.0.1' },
+                { name: 'VERDACCIO_PUBLIC_URL', value: 'http://yaac-npm-cache.test-ns.svc.cluster.local:4873/' },
+                { name: 'NODE_OPTIONS', value: '--max-old-space-size=3072' },
+              ]) as unknown,
+              resources: { requests: { cpu: '1' }, limits: { memory: String(4 * 1024 ** 3) } },
+            },
+            {
+              name: 'nginx',
+              image: `localhost:5001/${NGINX_MIRROR_TAG}`,
+              ports: [{ containerPort: 4873 }],
+              readinessProbe: { httpGet: { path: '/-/ping', port: 4873 } },
+            },
+          ],
           volumes: expect.arrayContaining([
             { name: 'storage', persistentVolumeClaim: { claimName: 'yaac-npm-cache-storage-ddh16' } },
           ]) as unknown,
         },
       },
     })
+    // Concurrent identical metadata requests cost Verdaccio one parse, and
+    // the abbreviated and full documents at one URL never collide. Tarballs
+    // pass through, since Verdaccio already serves them from its claim.
+    const nginxConf = appliedNamed('ConfigMap', 'yaac-npm-cache-config')?.data?.['npm-cache.conf'] ?? ''
+    expect(nginxConf).toContain('listen 4873;')
+    expect(nginxConf).toContain('server 127.0.0.1:4874;')
+    expect(nginxConf).toContain('proxy_cache_lock on;')
+    expect(nginxConf).toContain('proxy_cache_key "$request_uri $http_accept";')
+    expect(nginxConf).toMatch(/location ~ \\\.tgz\$ \{\s*proxy_cache off;/)
+    // ...and stream rather than spool to the container's disk.
+    expect(nginxConf).toContain('proxy_max_temp_file_size 0;')
     // No storageClassName: binds through the cluster's default class.
     expect(appliedNamed('PersistentVolumeClaim', 'yaac-npm-cache-storage-ddh16')?.spec).toEqual({
       accessModes: ['ReadWriteOnce'],
@@ -137,10 +172,12 @@ describe('ensureNpmCache', () => {
     expect(applied().some((m) => m.kind === 'Service')).toBe(false)
   })
 
-  it('refuses before applying anything when the image was never mirrored', async () => {
+  it('refuses before applying anything when an image was never mirrored', async () => {
     mockRegistryHasTag.mockResolvedValue(false)
-
     await expect(ensureNpmCache()).rejects.toThrow(/Verdaccio/)
+
+    mockRegistryHasTag.mockImplementation((tag: string) => Promise.resolve(tag !== NGINX_MIRROR_TAG))
+    await expect(ensureNpmCache()).rejects.toThrow(/nginx/)
     expect(mockKubectlApply).not.toHaveBeenCalled()
   })
 })

@@ -23,6 +23,8 @@ import {
   BUILDER_UPSTREAM_IMAGE,
   ENVOY_MIRROR_TAG,
   ENVOY_UPSTREAM_IMAGE,
+  NGINX_MIRROR_TAG,
+  NGINX_UPSTREAM_IMAGE,
   REGISTRY_MIRROR_TAG,
   REGISTRY_UPSTREAM_IMAGE,
   resolveNetdImageTag,
@@ -131,8 +133,8 @@ async function mirrorPinnedImage(upstream: string, mirrorTag: string): Promise<s
 
 /**
  * Mirror every digest-pinned upstream yaac runs: `registry:2`, Envoy, the
- * builder pods' podman, the gVisor installer's curl, and Verdaccio. The
- * e2e global setup also calls this.
+ * builder pods' podman, the gVisor installer's curl, and the npm cache's
+ * Verdaccio and nginx. The e2e global setup also calls this.
  */
 export async function mirrorPinnedUpstreams(): Promise<void> {
   await mirrorPinnedImage(REGISTRY_UPSTREAM_IMAGE, REGISTRY_MIRROR_TAG)
@@ -140,6 +142,7 @@ export async function mirrorPinnedUpstreams(): Promise<void> {
   await mirrorPinnedImage(BUILDER_UPSTREAM_IMAGE, BUILDER_LOCAL_TAG)
   await mirrorPinnedImage(GVISOR_INSTALLER_UPSTREAM_IMAGE, GVISOR_INSTALLER_MIRROR_TAG)
   await mirrorPinnedImage(VERDACCIO_UPSTREAM_IMAGE, VERDACCIO_MIRROR_TAG)
+  await mirrorPinnedImage(NGINX_UPSTREAM_IMAGE, NGINX_MIRROR_TAG)
 }
 
 /**

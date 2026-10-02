@@ -2003,7 +2003,7 @@ const NPM_CACHE_PROBE_PATHS = ['is-number', 'is-number/-/is-number-7.0.0.tgz']
 function npmCacheFix(): string {
   return 'Re-run `yaac cluster install`, which deploys the npm cache. Inspect it with '
     + `\`kubectl -n ${k8sNamespace()} get pods,pvc -l app=${NPM_CACHE_APP_NAME}\` and `
-    + `\`kubectl -n ${k8sNamespace()} logs deploy/${NPM_CACHE_APP_NAME}\`.`
+    + `\`kubectl -n ${k8sNamespace()} logs deploy/${NPM_CACHE_APP_NAME} --all-containers\`.`
 }
 
 /**

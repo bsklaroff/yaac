@@ -57,7 +57,8 @@ Every image yaac ships is built by `podman build` on the machine running
 the CLI and pushed to the in-cluster registry. That covers the
 base/tools/nestable workspace chain, the egress proxy, netd and the server.
 Install also mirrors the digest-pinned upstream images yaac uses
-(registry:2, Envoy, podman-stable, curl for the gVisor installer, Verdaccio).
+(registry:2, Envoy, podman-stable, curl for the gVisor installer, Verdaccio and
+nginx for the npm cache).
 Tags carry a content hash, so an unchanged source tree costs one registry
 HEAD per image and re-running install is cheap. The server image's hash is
 taken over the built bundle (`dist/`), so a rebuilt server is a new image
@@ -300,8 +301,9 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
    `k8s/calico/README.md` has the steps for changing the pin.
 7. **The npm cache**: one Verdaccio (`yaac-npm-cache`) in the install
    namespace, which every workspace's `pnpm install` goes through
-   (docs/workspace-storage.md "Package installs"). A one-replica Deployment
-   over an RWO claim, like the registry. A new workspace uses it only while
+   (docs/workspace-storage.md "Package installs"), behind an nginx
+   sidecar that caches package metadata. A one-replica Deployment over an
+   RWO claim, like the registry. A new workspace uses it only while
    a cache pod is ready; otherwise its pnpm goes to npmjs. Install carries on
    if the cache fails, since installs are only slower without it.
 
@@ -629,7 +631,9 @@ syscall-heavy workspace (an e2e suite, say) starves the node. The limit is
 far above the request, so it does not throttle an interactive agent.
 
 In practice this caps concurrent workspaces at roughly `cores × 4` or `GB
-of memory`, whichever is lower. A workspace that does not fit sits
+of memory`, whichever is lower, less the install's own infra. The npm
+cache's Verdaccio alone requests a full core, four workspaces' worth, so
+that a burst of installs cannot starve the metadata parsing they wait on. A workspace that does not fit sits
 `Pending` with an `Insufficient cpu` (or memory) event rather than failing.
 
 ## Runtimes and uids
