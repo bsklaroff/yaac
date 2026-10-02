@@ -108,10 +108,22 @@ function npmCacheRegistryUrl(): string {
  * `min_free` left, nginx evicts least-recently-used entries. A cache write that hits a full disk
  * sends the client a truncated body, so the cache sheds itself well before
  * that.
+ *
+ * Verdaccio answers 404 for npm's signing keys and attestations, so nginx
+ * fetches those two from npmjs itself. Without the keys, `pnpm audit
+ * signatures` finds no keys for this registry, checks nothing, and still
+ * reports success. The certificate is verified, since keys from anyone else
+ * would make that audit vouch for their packages. Only GET and HEAD go out,
+ * and no client's `Authorization` or `Cookie` header does (Verdaccio has no
+ * users, so it needs neither). The host is resolved per
+ * request through the pod's DNS server, which the image's entrypoint
+ * substitutes into this template, so nginx still starts when DNS is down.
+ * IPv6 is off because the egress policy allows IPv4 only.
  */
 function buildNpmCacheNginxConf(): string {
   return `proxy_cache_path /var/cache/npm levels=1:2 keys_zone=npm:10m max_size=1g min_free=2g inactive=1d use_temp_path=off;
 log_format npm_cache '$remote_addr "$request" $status $body_bytes_sent $upstream_cache_status $request_time';
+resolver \${NGINX_LOCAL_RESOLVERS} ipv6=off valid=60s;
 upstream verdaccio {
   server 127.0.0.1:${VERDACCIO_PORT};
   keepalive 16;
@@ -124,6 +136,8 @@ server {
   proxy_http_version 1.1;
   proxy_set_header Connection "";
   proxy_set_header Accept-Encoding gzip;
+  proxy_set_header Authorization "";
+  proxy_set_header Cookie "";
   gunzip on;
   proxy_cache npm;
   proxy_cache_key "$request_uri $http_accept";
@@ -134,6 +148,18 @@ server {
   proxy_cache_lock_age 60s;
   proxy_cache_use_stale updating error timeout http_502 http_503 http_504;
   proxy_cache_background_update on;
+  set $npmjs registry.npmjs.org;
+  proxy_ssl_server_name on;
+  proxy_ssl_verify on;
+  proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+  location = /-/npm/v1/keys {
+    limit_except GET { deny all; }
+    proxy_pass https://$npmjs;
+  }
+  location ^~ /-/npm/v1/attestations/ {
+    limit_except GET { deny all; }
+    proxy_pass https://$npmjs;
+  }
   location ^~ /-/ {
     proxy_cache off;
     proxy_pass http://verdaccio;
@@ -214,7 +240,7 @@ function buildNpmCacheManifests(
       apiVersion: 'v1',
       kind: 'ConfigMap',
       metadata: metadata(CONFIG_MAP_NAME),
-      data: { 'config.yaml': buildNpmCacheConfigYaml(), 'npm-cache.conf': buildNpmCacheNginxConf() },
+      data: { 'config.yaml': buildNpmCacheConfigYaml(), 'npm-cache.conf.template': buildNpmCacheNginxConf() },
     },
     {
       apiVersion: 'v1',
@@ -283,6 +309,12 @@ function buildNpmCacheManifests(
               image: images.nginx,
               imagePullPolicy: 'IfNotPresent',
               ports: [{ containerPort: NPM_CACHE_PORT }],
+              // The entrypoint renders the template into conf.d with the
+              // pod's DNS server, and substitutes nothing else.
+              env: [
+                { name: 'NGINX_ENTRYPOINT_LOCAL_RESOLVERS', value: '1' },
+                { name: 'NGINX_ENVSUBST_FILTER', value: '^NGINX_LOCAL_RESOLVERS$' },
+              ],
               // Through nginx to Verdaccio's uncached ping.
               readinessProbe: {
                 httpGet: { path: '/-/ping', port: NPM_CACHE_PORT },
@@ -295,7 +327,9 @@ function buildNpmCacheManifests(
                 limits: { memory: String(256 * 1024 ** 2) },
               },
               volumeMounts: [
-                { name: 'config', mountPath: '/etc/nginx/conf.d', readOnly: true },
+                { name: 'config', mountPath: '/etc/nginx/templates', readOnly: true },
+                // Empty, so the image's default server is not loaded.
+                { name: 'nginx-conf', mountPath: '/etc/nginx/conf.d' },
                 { name: 'http-cache', mountPath: '/var/cache/npm' },
               ],
             }],
@@ -304,6 +338,7 @@ function buildNpmCacheManifests(
               { name: 'storage', persistentVolumeClaim: { claimName: npmCachePvcName() } },
               // Lost on restart; Verdaccio's claim still has every package.
               { name: 'http-cache', emptyDir: {} },
+              { name: 'nginx-conf', emptyDir: {} },
             ],
           },
         },

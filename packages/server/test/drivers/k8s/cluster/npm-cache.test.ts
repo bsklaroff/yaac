@@ -95,6 +95,13 @@ describe('ensureNpmCache', () => {
               image: `localhost:5001/${NGINX_MIRROR_TAG}`,
               ports: [{ containerPort: 4873 }],
               readinessProbe: { httpGet: { path: '/-/ping', port: 4873 } },
+              env: [
+                { name: 'NGINX_ENTRYPOINT_LOCAL_RESOLVERS', value: '1' },
+                { name: 'NGINX_ENVSUBST_FILTER', value: '^NGINX_LOCAL_RESOLVERS$' },
+              ],
+              volumeMounts: expect.arrayContaining([
+                { name: 'config', mountPath: '/etc/nginx/templates', readOnly: true },
+              ]) as unknown,
             },
           ],
           volumes: expect.arrayContaining([
@@ -106,7 +113,7 @@ describe('ensureNpmCache', () => {
     // Concurrent identical metadata requests cost Verdaccio one parse, and
     // the abbreviated and full documents at one URL never collide. Tarballs
     // pass through, since Verdaccio already serves them from its claim.
-    const nginxConf = appliedNamed('ConfigMap', 'yaac-npm-cache-config')?.data?.['npm-cache.conf'] ?? ''
+    const nginxConf = appliedNamed('ConfigMap', 'yaac-npm-cache-config')?.data?.['npm-cache.conf.template'] ?? ''
     expect(nginxConf).toContain('listen 4873;')
     expect(nginxConf).toContain('server 127.0.0.1:4874;')
     expect(nginxConf).toContain('proxy_cache_lock on;')
@@ -114,6 +121,18 @@ describe('ensureNpmCache', () => {
     expect(nginxConf).toMatch(/location ~ \\\.tgz\$ \{\s*proxy_cache off;/)
     // ...and stream rather than spool to the container's disk.
     expect(nginxConf).toContain('proxy_max_temp_file_size 0;')
+    // Signing keys and attestations, which Verdaccio lacks, come from npmjs
+    // over a verified connection, so `pnpm audit signatures` checks packages.
+    // Only reads go out, and never a client's credentials.
+    expect(nginxConf).toContain('resolver ${NGINX_LOCAL_RESOLVERS} ipv6=off')
+    for (const loc of ['= /-/npm/v1/keys', '^~ /-/npm/v1/attestations/']) {
+      expect(nginxConf).toContain(
+        `location ${loc} {\n    limit_except GET { deny all; }\n    proxy_pass https://$npmjs;\n  }`)
+    }
+    expect(nginxConf).toContain('proxy_set_header Authorization "";')
+    expect(nginxConf).toContain('proxy_set_header Cookie "";')
+    expect(nginxConf).toContain('set $npmjs registry.npmjs.org;')
+    expect(nginxConf).toContain('proxy_ssl_verify on;')
     // No storageClassName: binds through the cluster's default class.
     expect(appliedNamed('PersistentVolumeClaim', 'yaac-npm-cache-storage-ddh16')?.spec).toEqual({
       accessModes: ['ReadWriteOnce'],
