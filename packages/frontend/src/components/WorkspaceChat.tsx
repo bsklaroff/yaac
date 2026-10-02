@@ -7,7 +7,7 @@ import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { AttachImageIcon, CloseIcon, LoadingIcon, NarrowIcon, SendIcon, StopIcon, WidenIcon } from '#lib/icons'
 import { chatDraftKey, useUiStore } from '#lib/store'
 import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
-import type { AcpContent, AcpImage } from '@yaac/shared/acp'
+import type { AcpContent, AcpImage, AcpQueuedPrompt } from '@yaac/shared/acp'
 
 /**
  * The chat pane for an `acp` conversation; `WorkspaceTerminal` fills the
@@ -41,7 +41,7 @@ export function WorkspaceChat({
   agentSessionId: string
   visible?: boolean
 }): JSX.Element {
-  const { events, busy, connected, send } = useAcpStream(workspaceId, agentSessionId)
+  const { events, busy, queued, connected, send } = useAcpStream(workspaceId, agentSessionId)
   const setChatDraft = useUiStore((s) => s.setChatDraft)
   const setChatSent = useUiStore((s) => s.setChatSent)
   const fullWidth = useUiStore((s) => s.chatFullWidth)
@@ -131,8 +131,9 @@ export function WorkspaceChat({
   /**
    * On first connect, settle a message a previous mount sent but never saw
    * echoed. Clear the box only if it still holds that exact message (the
-   * `sent` marker, so a freshly typed identical text is kept) and the replayed
-   * history's last user message matches it. The marker is dropped either way.
+   * `sent` marker, so a freshly typed identical text is kept) and either the
+   * replayed history's last user message matches it or the server holds it
+   * queued. The marker is dropped either way.
    */
   useEffect(() => {
     if (reconciledRef.current || !connected) return
@@ -143,23 +144,25 @@ export function WorkspaceChat({
     if (restoredRef.current.trim() !== sent) return
     let lastUser: string | undefined
     for (const e of events) if (e.type === 'user') lastUser = promptText(e.content)
-    if (lastUser !== sent) return
+    if (lastUser !== sent && !queued.some((q) => q.text === sent)) return
     // Keep anything typed while connecting.
     setDraft((cur) => (cur === restoredRef.current ? '' : cur))
-  }, [connected, events, workspaceId, agentSessionId, setChatSent])
+  }, [connected, events, queued, workspaceId, agentSessionId, setChatSent])
 
-  // The server's `user` echo confirms a send and clears the box.
+  // The server's `user` echo confirms a send and clears the box, as does the
+  // message showing up in the queue.
   useEffect(() => {
     if (awaitingEcho === null) return
     const echoed = events.some((e) => e.type === 'user'
       && echoKey(promptText(e.content), e.content.filter((c) => c.type === 'image').length) === awaitingEcho)
+      || queued.some((q) => echoKey(q.text, q.images) === awaitingEcho)
     if (echoed) {
       setDraft('')
       setImages([])
       setAwaitingEcho(null)
       setChatSent(workspaceId, agentSessionId, undefined)
     }
-  }, [events, awaitingEcho, workspaceId, agentSessionId, setChatSent])
+  }, [events, queued, awaitingEcho, workspaceId, agentSessionId, setChatSent])
 
   // A drop before the echo means the message may not have arrived; unlock
   // the box with the text still in it.
@@ -173,13 +176,14 @@ export function WorkspaceChat({
     if (events.length > 0 && events[events.length - 1].type === 'error') setAwaitingEcho(null)
   }, [events])
 
-  /** Send the draft, or `override` in its place (a command picked from the
-   *  menu), which then stays in the box until its echo. */
+  /**
+   * Send the draft, or `override` in its place (a command picked from the
+   * menu), which then stays in the box until its echo. Allowed mid-turn, as
+   * in a TUI: the server adds the message to the turn or queues it.
+   */
   const submit = (override?: string): void => {
     const text = (override ?? draft).trim()
-    // Checks `busy` so Enter cannot start a second turn the Send button
-    // would block.
-    if ((text === '' && images.length === 0) || !connected || busy || awaitingEcho !== null) return
+    if ((text === '' && images.length === 0) || !connected || awaitingEcho !== null) return
     if (send({ type: 'prompt', text, ...(images.length > 0 ? { images } : {}) })) {
       if (override !== undefined) setDraft(text)
       setAwaitingEcho(echoKey(text, images.length))
@@ -259,6 +263,9 @@ export function WorkspaceChat({
               </span>
             </div>
           )}
+          {queued.map((q) => (
+            <QueuedMessage key={q.id} prompt={q} onRemove={() => send({ type: 'unqueue', id: q.id })} />
+          ))}
         </div>
       </div>
 
@@ -350,17 +357,19 @@ export function WorkspaceChat({
                   e.target.value = ''
                 }}
               />
-              {busy ? (
-                <button
-                  type="button"
-                  aria-label="Stop turn"
-                  title="Stop"
-                  onClick={() => send({ type: 'cancel' })}
-                  className="flex size-8 items-center justify-center rounded-full bg-text text-bg hover:opacity-90"
-                >
-                  <StopIcon size={11} fill="currentColor" />
-                </button>
-              ) : (
+              {/* One group, so Stop stays beside Send however the row spreads. */}
+              <div className="flex items-center">
+                {busy && (
+                  <button
+                    type="button"
+                    aria-label="Stop turn"
+                    title="Stop"
+                    onClick={() => send({ type: 'cancel' })}
+                    className="mr-1.5 flex size-8 items-center justify-center rounded-full bg-text text-bg hover:opacity-90"
+                  >
+                    <StopIcon size={11} fill="currentColor" />
+                  </button>
+                )}
                 <button
                   type="button"
                   aria-label="Send"
@@ -372,7 +381,7 @@ export function WorkspaceChat({
                 >
                   <SendIcon size={15} strokeWidth={2.5} />
                 </button>
-              )}
+              </div>
             </div>
           </div>
         </div>
@@ -386,6 +395,36 @@ export function WorkspaceChat({
  *  toggle shows only in a pane wider than this cap plus the `px-4` padding
  *  (66rem), since in a narrower one both widths look the same. */
 const COLUMN = 'mx-auto w-full max-w-5xl'
+
+/**
+ * A message waiting for the running turn to end, drawn like the user bubble
+ * it becomes but faded. Removing it drops it before the agent sees it.
+ */
+function QueuedMessage({ prompt, onRemove }: { prompt: AcpQueuedPrompt; onRemove: () => void }): JSX.Element {
+  return (
+    <div className="mt-3 flex items-start gap-1.5 text-sm opacity-60">
+      <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-xl border border-dashed border-accent/40 px-3 py-2 text-text">
+        {prompt.text}
+        {prompt.images > 0 && (
+          <span className="text-text-faint">
+            {prompt.text === '' ? '' : ' '}
+            [{prompt.images} {prompt.images === 1 ? 'image' : 'images'}]
+          </span>
+        )}
+        <div className="mt-0.5 text-[11px] text-text-faint">queued until the agent finishes</div>
+      </div>
+      <button
+        type="button"
+        aria-label="Remove queued message"
+        title="Remove"
+        onClick={onRemove}
+        className="mt-1 rounded-md p-1 text-text-faint hover:bg-surface-2 hover:text-text"
+      >
+        <CloseIcon size={12} />
+      </button>
+    </div>
+  )
+}
 
 /** An image attached to the draft, removable until the message is sent. */
 function DraftImage({ image, onRemove }: { image: AcpImage; onRemove?: () => void }): JSX.Element {

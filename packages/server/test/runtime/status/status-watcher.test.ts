@@ -15,6 +15,8 @@ import {
   setAgentStatus,
   _resetWorkspaceStatusStoreForTests,
 } from '#runtime/status/status-store'
+import { parkAcpQueue, takeAcpQueue } from '#runtime/agents/acp-registry'
+import type { QueuedTurn } from '#runtime/agents/acp-client'
 import {
   workspaceControlStreamSend,
   _clearControlStreamRegistryForTests,
@@ -270,14 +272,21 @@ describe('WorkspaceStatusWatcher (title tools)', () => {
     expect(revives).toHaveLength(1)
   })
 
-  it('stop() kills the child and prevents respawn', async () => {
+  it('stop() kills the child, prevents respawn, and discards chat messages parked for a reconnect', async () => {
     const { watcher, children } = makeWatcher('claude', { respawnDelayMs: 1 })
     watchers.push(watcher)
     watcher.start()
     const child = children[0]
     await connectWatcher(child)
+    // A chat's queue parked by a dropped connection would otherwise be sent
+    // when the workspace is next resumed.
+    const reject = vi.fn()
+    const turn: QueuedTurn = { id: 'q1', text: 'stale', images: 0, blocks: [], resolve: () => {}, reject }
+    parkAcpQueue('demo', 's1', 'acp-1', [turn])
     watcher.stop()
     expect(child.killed).toBe(true)
+    expect(reject).toHaveBeenCalled()
+    expect(takeAcpQueue('demo', 's1', 'acp-1')).toEqual([])
     child.emitExit()
     await new Promise((r) => setTimeout(r, 20))
     expect(children.length).toBe(1)

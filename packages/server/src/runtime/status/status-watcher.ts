@@ -2,6 +2,7 @@ import type { RuntimeHandle } from '#drivers/contract'
 import { workspaceDriver } from '#drivers/driver'
 import {
   agentDriver,
+  dropAcpQueues,
   type AgentConnectDeps,
   type AgentObservation,
   type DrivenWorkspace,
@@ -101,11 +102,17 @@ export class WorkspaceStatusWatcher {
     this.connect()
   }
 
+  /**
+   * Retire the watcher for good. A connection drop parks a chat's queued
+   * messages for the reconnect; stopping is when no reconnect will come, so
+   * they are discarded rather than sent if the workspace is resumed later.
+   */
   stop(): void {
     this.stopped = true
     if (this.respawnTimer) clearTimeout(this.respawnTimer)
     this.respawnTimer = null
     this.teardown()
+    dropAcpQueues(this.session.slug, this.session.workspaceId)
   }
 
   private connect(): void {

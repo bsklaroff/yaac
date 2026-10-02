@@ -25,7 +25,8 @@ export {
 } from './drivers'
 export { attachAcp } from './acp-bridge'
 export { parkAcpLaunchModel } from './acp-driver'
-export { acpConversation } from './acp-registry'
+// The status watcher discards a stopped workspace's queued messages.
+export { acpConversation, dropAcpQueues } from './acp-registry'
 export { acpRecord, readAcpFirstPrompt, replayAcpLog } from './acp-log'
 // A tui claude conversation rendered as acp events (see the module header).
 export { claudeTranscriptAsAcp } from './claude-acp-replay'

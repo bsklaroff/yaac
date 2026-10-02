@@ -40,6 +40,9 @@ export const ACP = {
   sessionSetMode: 'session/set_mode',
   sessionSetConfigOption: 'session/set_config_option',
   requestPermission: 'session/request_permission',
+  /** Not in the spec: the steering extension claude's and codex's adapters
+   *  implement, which adds a message to the running turn. */
+  sessionSteer: '_session/steering',
 } as const
 
 /** acpd's own control notifications (see dockerfiles/acpd/acpd.js). */
@@ -311,6 +314,32 @@ export class AcpProjection {
    * so only a seen request identifies it as settling a permission ask.
    */
   private readonly openPermissions = new Set<string>()
+  /** Steered messages awaiting their reply, which says whether the agent
+   *  took them (see `closeSteer`). */
+  private readonly openSteers = new Map<string, AcpContent[]>()
+
+  /** Hold a `_session/steering` request line until its reply. */
+  openSteer(requestId: string, params: unknown): void {
+    const content = toContentList(asRecord(params)?.prompt)
+    if (content.length > 0) this.openSteers.set(requestId, content)
+  }
+
+  /**
+   * Project a steering reply as the user message it delivered, or undefined
+   * when it settles no steer this projection holds or the agent did not take
+   * it. A message not taken is queued and sent as a `session/prompt`, whose
+   * own line shows it.
+   */
+  closeSteer(requestId: string, result: unknown): AcpEventInit | undefined {
+    const content = this.openSteers.get(requestId)
+    if (content === undefined) return undefined
+    this.openSteers.delete(requestId)
+    const outcome = asRecord(result)?.outcome
+    // `startedNewTurn` began a turn of its own, so it does end the one
+    // before it.
+    if (outcome === 'injected') return { type: 'user', content, steered: true }
+    return outcome === 'startedNewTurn' ? { type: 'user', content } : undefined
+  }
 
   /** Project one `session/request_permission` request line. */
   openPermission(requestId: string, params: unknown): AcpEventInit {
@@ -608,4 +637,16 @@ export function sessionStateModeId(state: unknown): string | undefined {
   if (current !== undefined) return current
   const options = Array.isArray(r?.configOptions) ? r.configOptions : []
   return asString(options.map(asRecord).find((o) => asString(o?.id) === 'mode')?.currentValue)
+}
+
+/**
+ * Whether an update is codex reporting its thread idle. codex-acp forwards
+ * every thread status change as a `session_info_update`, including for a
+ * turn it started itself from a steer, whose end no `session/prompt` reply
+ * reports (see `AcpConversation.steer`).
+ */
+export function codexThreadIdle(update: Record<string, unknown>): boolean {
+  if (update.sessionUpdate !== 'session_info_update') return false
+  const status = asRecord(asRecord(asRecord(update._meta)?.codex)?.threadStatus)
+  return status !== undefined && status.type !== 'active'
 }

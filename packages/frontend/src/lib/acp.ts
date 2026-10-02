@@ -13,12 +13,14 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { INITIAL_RECONNECT_DELAY_MS, nextReconnectDelay } from '#lib/reconnect'
-import type { AcpClientMessage, AcpEvent, AcpServerMessage } from '@yaac/shared/acp'
+import type { AcpClientMessage, AcpEvent, AcpQueuedPrompt, AcpServerMessage } from '@yaac/shared/acp'
 
 export interface AcpStream {
   events: AcpEvent[]
   /** A prompt turn is in flight (the agent is working). */
   busy: boolean
+  /** Messages the server holds until the running turn ends. */
+  queued: AcpQueuedPrompt[]
   /** The pane has a live connection to the conversation. False while
    *  reconnecting, or when the workspace has no live conversation yet. */
   connected: boolean
@@ -50,6 +52,7 @@ export function useAcpStream(
 ): AcpStream {
   const [events, setEvents] = useState<AcpEvent[]>([])
   const [busy, setBusy] = useState(false)
+  const [queued, setQueued] = useState<AcpQueuedPrompt[]>([])
   const [connected, setConnected] = useState(false)
   const socketRef = useRef<WebSocket | null>(null)
 
@@ -78,6 +81,7 @@ export function useAcpStream(
           // Replace, don't merge: each attach renumbers history from zero.
           setEvents(msg.events)
           setBusy(msg.busy)
+          setQueued(msg.queued)
           setConnected(true)
           delay = INITIAL_RECONNECT_DELAY_MS
           return
@@ -90,6 +94,10 @@ export function useAcpStream(
           // at "working…".
           if (msg.event.type === 'turn-end' || msg.event.type === 'error') setBusy(false)
           if (msg.event.type === 'turn-start') setBusy(true)
+          return
+        }
+        if (msg.type === 'queue') {
+          setQueued(msg.queued)
           return
         }
         if (msg.type === 'health') setConnected(msg.connected)
@@ -129,6 +137,7 @@ export function useAcpStream(
   return {
     events,
     busy,
+    queued,
     connected,
     send: (msg) => {
       const sock = socketRef.current

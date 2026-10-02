@@ -9,7 +9,7 @@
  * handle (tmux window / acpd socket name), known before the handshake.
  */
 
-import type { AcpConversation } from './acp-client'
+import type { AcpConversation, QueuedTurn } from './acp-client'
 
 const byName = new Map<string, AcpConversation>()
 
@@ -71,6 +71,43 @@ export function acpConversationByHandle(
 export function _resetAcpRegistryForTests(): void {
   byName.clear()
   launchModels.clear()
+  parkedQueues.clear()
+}
+
+/**
+ * Queues of conversations whose connection dropped, held for the
+ * conversation that replaces them (`AcpConversation.takeQueue`). Keyed by
+ * session id rather than handle, since a restart can shift window names
+ * onto other conversations. A dropped connection parks its queue; the
+ * workspace's status watcher stopping, or the window closing, discards it
+ * (`dropAcpQueues`). In memory only, so a server restart loses them.
+ */
+const parkedQueues = new Map<string, QueuedTurn[]>()
+
+export function parkAcpQueue(slug: string, workspaceId: string, agentSessionId: string, queue: QueuedTurn[]): void {
+  if (queue.length === 0) return
+  const key = sessionKey(slug, workspaceId, agentSessionId)
+  parkedQueues.set(key, [...(parkedQueues.get(key) ?? []), ...queue])
+}
+
+/**
+ * Discard a workspace's parked queues except those of `keep`, rejecting each
+ * message so its sender logs it. Used when the workspace stops and when a
+ * conversation's window is gone, since nothing will reattach to take them.
+ */
+export function dropAcpQueues(slug: string, workspaceId: string, keep: ReadonlySet<string> = new Set()): void {
+  for (const [key, queue] of parkedQueues) {
+    if (!key.startsWith(`${slug}/${workspaceId}/id:`) || keep.has(key.slice(key.indexOf('/id:') + 4))) continue
+    parkedQueues.delete(key)
+    for (const turn of queue) turn.reject(new Error('the conversation ended before the queued message was sent'))
+  }
+}
+
+export function takeAcpQueue(slug: string, workspaceId: string, agentSessionId: string): QueuedTurn[] {
+  const key = sessionKey(slug, workspaceId, agentSessionId)
+  const queue = parkedQueues.get(key) ?? []
+  parkedQueues.delete(key)
+  return queue
 }
 
 /**

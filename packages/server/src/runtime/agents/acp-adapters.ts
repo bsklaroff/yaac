@@ -44,6 +44,14 @@ export interface AcpAdapterProfile {
    * extension questions that auto-answering would answer for the user.
    */
   forwardAsksUnderBypass: boolean
+  /**
+   * Whether a message sent mid-turn can join the running turn
+   * (`_session/steering`), as the tool's TUI lets it. Otherwise it waits for
+   * the turn to end: opencode's acp refuses a second `session/prompt`
+   * outright and has no steering method. pi-acp steers only as yaac patches
+   * it (dockerfiles/agent-patches/pi-acp.js).
+   */
+  steers: boolean
 }
 
 /** The model to name for an ACP conversation. For pi, the provider decides
@@ -79,6 +87,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
     readsAs: { dontAsk: 'manual' },
     modelVia: 'env',
     forwardAsksUnderBypass: false,
+    steers: true,
   },
 
   /**
@@ -110,6 +119,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
     },
     modelVia: 'env',
     forwardAsksUnderBypass: false,
+    steers: true,
   },
 
   /**
@@ -131,6 +141,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
     modeIds: { plan: 'plan' },
     modelVia: 'set_config_option',
     forwardAsksUnderBypass: false,
+    steers: false,
   },
 
   /**
@@ -149,6 +160,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
     modeIds: {},
     modelVia: 'set_config_option',
     forwardAsksUnderBypass: true,
+    steers: true,
   },
 }
 
