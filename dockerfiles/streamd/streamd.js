@@ -67,10 +67,8 @@ function isArgv(cmd) {
 /** Kill a piped child gently, then hard after the grace. */
 function killChild(child) {
   if (child.exitCode !== null || child.signalCode !== null) return
-  try { child.kill('SIGTERM') } catch { /* already gone */ }
-  const hard = setTimeout(() => {
-    try { child.kill('SIGKILL') } catch { /* already gone */ }
-  }, CHILD_KILL_GRACE_MS)
+  child.kill('SIGTERM')
+  const hard = setTimeout(() => child.kill('SIGKILL'), CHILD_KILL_GRACE_MS)
   hard.unref()
   child.once('exit', () => clearTimeout(hard))
 }
@@ -83,17 +81,10 @@ function handleTcp(socket, params, leftover) {
   // 'localhost' reaches servers bound to either 127.0.0.1 or ::1.
   const target = net.connect({ port, host: 'localhost', allowHalfOpen: true })
   target.setNoDelay(true)
-  // Buffer client bytes until the dial lands. The socket is already in
-  // flowing mode, so data with no listener would be discarded.
-  let pending = leftover
-  const buffer = (chunk) => { pending = Buffer.concat([pending, chunk]) }
-  socket.on('data', buffer)
-  target.on('connect', () => {
-    socket.removeListener('data', buffer)
-    if (pending.length > 0) target.write(pending)
-    socket.pipe(target)
-    target.pipe(socket)
-  })
+  // A socket still dialing queues writes, so client bytes can flow at once.
+  if (leftover.length > 0) target.write(leftover)
+  socket.pipe(target)
+  target.pipe(socket)
   target.on('error', () => socket.destroy())
   target.on('close', () => socket.destroy())
   socket.on('close', () => target.destroy())
@@ -249,12 +240,10 @@ function handlePty(socket, params, leftover) {
   // the pty when the socket backs up and resume on drain.
   const batcher = createOutputBatcher((buf) => {
     const writable = socket.write(encodeFrame(FRAME_DATA, buf))
-    if (!writable && typeof ptyProc.pause === 'function') ptyProc.pause()
+    if (!writable) ptyProc.pause()
   })
   ptyProc.onData((data) => batcher.push(Buffer.from(data, 'utf8')))
-  socket.on('drain', () => {
-    if (typeof ptyProc.resume === 'function') ptyProc.resume()
-  })
+  socket.on('drain', () => ptyProc.resume())
   ptyProc.onExit(({ exitCode }) => {
     try {
       batcher.flush() // all output precedes the exit frame

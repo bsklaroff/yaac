@@ -21,7 +21,7 @@ vi.mock('@yaac/shared/tool-auth-interactive', async (importOriginal) => {
 })
 
 import {
-  clearAllToolLoginsForTests,
+  killAllToolLogins,
   getToolLogin,
   startToolLogin,
 } from '#tool-login'
@@ -57,7 +57,7 @@ describe('claude web login detected via the macOS keychain', () => {
   })
 
   afterEach(async () => {
-    clearAllToolLoginsForTests()
+    killAllToolLogins()
     delete process.env.YAAC_E2E_CLAUDE_LOGIN_CLI
     delete process.env.FAKE_LOGIN_MODE
     await cleanupTempDir(tmpDir)

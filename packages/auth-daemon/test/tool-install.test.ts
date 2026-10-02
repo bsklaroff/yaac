@@ -18,7 +18,7 @@ vi.mock('#cli-resolve', async (importOriginal) => {
 
 import {
   cancelToolInstall,
-  clearAllToolInstallsForTests,
+  killAllToolInstalls,
   getToolInstall,
   startToolInstall,
 } from '#tool-install'
@@ -42,7 +42,7 @@ describe('tool install sessions', () => {
   })
 
   afterEach(() => {
-    clearAllToolInstallsForTests()
+    killAllToolInstalls()
     delete process.env.YAAC_E2E_CLAUDE_INSTALL_CLI
     delete process.env.YAAC_E2E_CODEX_INSTALL_CLI
     delete process.env.FAKE_INSTALL_MODE

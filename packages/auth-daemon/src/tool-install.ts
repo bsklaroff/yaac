@@ -24,14 +24,10 @@ type InstallSession = CliSession<ToolInstallView>
 
 const registry = createCliSessionRegistry<InstallSession>({ noun: 'install session' })
 
-/** Drop every session (test isolation). */
-export function clearAllToolInstallsForTests(): void {
-  registry.clearAllForTests()
-}
-
-/** Kill every installer subprocess (auth-daemon shutdown). */
+/** Kill every installer subprocess and forget its session (auth-daemon
+ *  shutdown, test isolation). */
 export function killAllToolInstalls(): void {
-  registry.clearAllForTests()
+  registry.killAll()
 }
 
 /** The argv that installs a tool's CLI, or null when no installer can run. */

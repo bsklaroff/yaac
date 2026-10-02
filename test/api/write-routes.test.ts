@@ -80,14 +80,14 @@ import type { AgentOp } from '@yaac/shared/auth-agent-protocol'
 import { CLAUDE_STUB, CODEX_STUB, INSTALL_STUB } from '@yaac/test-utils/fixtures'
 import {
   cancelToolLogin,
-  clearAllToolLoginsForTests,
+  killAllToolLogins,
   getToolLogin,
   sendToolLoginInput,
   startToolLogin,
 } from '@yaac/auth-daemon/tool-login'
 import {
   cancelToolInstall,
-  clearAllToolInstallsForTests,
+  killAllToolInstalls,
   getToolInstall,
   startToolInstall,
 } from '@yaac/auth-daemon/tool-install'
@@ -1441,7 +1441,7 @@ describe('write routes', () => {
 
     afterEach(() => {
       teardownAgent()
-      clearAllToolLoginsForTests()
+      killAllToolLogins()
       delete process.env.YAAC_E2E_CODEX_LOGIN_CLI
       delete process.env.YAAC_E2E_CLAUDE_LOGIN_CLI
       delete process.env.FAKE_LOGIN_MODE
@@ -1525,7 +1525,7 @@ describe('write routes', () => {
 
     afterEach(() => {
       teardownAgent()
-      clearAllToolInstallsForTests()
+      killAllToolInstalls()
       delete process.env.YAAC_E2E_CLAUDE_INSTALL_CLI
     })
 

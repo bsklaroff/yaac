@@ -89,15 +89,15 @@ export interface CliSessionRegistry<S extends CliSession<CliSessionView>> {
   finish(s: S, status: 'success' | 'error', error?: string): void
   /** Kill a flow and forget it. Unknown ids are a no-op (already gone). */
   cancel(id: string): void
-  /** Drop every session (test isolation). */
-  clearAllForTests(): void
+  /** Kill and release every flow (auth-daemon shutdown, test isolation). */
+  killAll(): void
 }
 
 export function createCliSessionRegistry<S extends CliSession<CliSessionView>>(opts: {
   /** NOT_FOUND wording: `No ${noun} "${id}".` */
   noun: string
   /** Extra teardown when a session finishes or is cancelled (scratch config
-   *  homes); not run by clearAllForTests, whose dirs the test harness owns. */
+   *  homes). */
   onRelease?: (s: S) => void
 }): CliSessionRegistry<S> {
   const sessions = new Map<string, S>()
@@ -156,14 +156,16 @@ export function createCliSessionRegistry<S extends CliSession<CliSessionView>>(o
     opts.onRelease?.(s)
   }
 
-  function clearAllForTests(): void {
+  /** A finished flow was released by `finish`, so only running ones are. */
+  function killAll(): void {
     for (const s of sessions.values()) {
       clearTimeout(s.timer)
       if (s.poller) clearInterval(s.poller)
       s.proc?.kill()
+      if (s.view.status === 'running') opts.onRelease?.(s)
     }
     sessions.clear()
   }
 
-  return { liveForTool, create, getById, getView, ingest, finish, cancel, clearAllForTests }
+  return { liveForTool, create, getById, getView, ingest, finish, cancel, killAll }
 }
