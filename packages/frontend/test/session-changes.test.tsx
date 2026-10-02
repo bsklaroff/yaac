@@ -1,26 +1,21 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, beforeAll, beforeEach, afterAll, vi } from 'vitest'
-import { render, screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { screen, cleanup, waitFor, fireEvent, within, type RenderResult } from '@testing-library/react'
 import type { WorkspaceChanges as SessionChangesData } from '@yaac/shared/types'
-import type { ProjectBranches } from '#lib/projectApi'
-import type * as ChangesApi from '#lib/changesApi'
-
-vi.mock('#lib/changesApi', async (importOriginal) => ({
-  ...await importOriginal<typeof ChangesApi>(),
-  getWorkspaceChanges: vi.fn(),
-}))
-vi.mock('#lib/projectApi', () => ({
-  getProjectBranches: vi.fn(),
-  projectBranchesKey: (slug: string) => ['project-branches', slug],
-}))
-import { getWorkspaceChanges } from '#lib/changesApi'
-import { getProjectBranches } from '#lib/projectApi'
+import type { ProjectBranches } from '#lib/useProjectBranches'
 import { WorkspaceChanges } from '#components/WorkspaceChanges'
 import { useUiStore } from '#lib/store'
 import { findChord } from '#lib/shortcuts'
+import { mockFetch, renderWithClient, type FetchMock } from './harness'
 
-const mock = vi.mocked(getWorkspaceChanges)
+const CHANGES = 'GET /api/workspace/s1/changes'
+
+let server: FetchMock
+/** Answer the changes route with this payload. */
+const changes = (payload: SessionChangesData): void => server.route(CHANGES, payload)
+/** The `base` each changes fetch asked for (undefined: the server default). */
+const basesAsked = (): (string | undefined)[] =>
+  server.called(CHANGES).map((c) => c.query.get('base') ?? undefined)
 
 const BRANCHES: ProjectBranches = {
   branches: ['main', 'dev', 'feature/x'],
@@ -55,12 +50,9 @@ const PAYLOAD: SessionChangesData = {
 
 function renderPane(
   { baseBranch = 'main', focusKey }: { baseBranch?: string; focusKey?: number } = {},
-): ReturnType<typeof render> {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
-    <QueryClientProvider client={qc}>
-      <WorkspaceChanges workspaceId="s1" projectSlug="proj" baseBranch={baseBranch} focusKey={focusKey} />
-    </QueryClientProvider>,
+): RenderResult {
+  return renderWithClient(
+    <WorkspaceChanges workspaceId="s1" projectSlug="proj" baseBranch={baseBranch} focusKey={focusKey} />,
   )
 }
 
@@ -87,20 +79,20 @@ afterAll(() => {
 })
 
 beforeEach(() => {
-  vi.mocked(getProjectBranches).mockResolvedValue(BRANCHES)
+  server = mockFetch({ 'GET /api/project/proj/branches': BRANCHES })
 })
 
 // The pane's view state and chosen base live in the shared store, so clear
 // them between tests.
 afterEach(() => {
   cleanup()
-  mock.mockReset()
+  vi.unstubAllGlobals()
   useUiStore.setState({ paneView: {}, changesBase: {} })
 })
 
 describe('WorkspaceChanges', () => {
   it('lists changed files and auto-expands the first file’s diff', async () => {
-    mock.mockResolvedValue(PAYLOAD)
+    changes(PAYLOAD)
     renderPane()
     await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
     expect(screen.getByText('new1')).toBeTruthy() // first file expanded by default
@@ -109,7 +101,7 @@ describe('WorkspaceChanges', () => {
   })
 
   it('expands a file’s diff inline when its row is clicked, and collapses it again', async () => {
-    mock.mockResolvedValue(PAYLOAD)
+    changes(PAYLOAD)
     renderPane()
     await waitFor(() => expect(screen.getByTitle('new.ts')).toBeTruthy())
     fireEvent.click(screen.getByTitle('new.ts'))
@@ -121,7 +113,7 @@ describe('WorkspaceChanges', () => {
   })
 
   it('restores which files are expanded after the pane unmounts and remounts', async () => {
-    mock.mockResolvedValue(PAYLOAD)
+    changes(PAYLOAD)
     renderPane()
     await waitFor(() => expect(screen.getByTitle('new.ts')).toBeTruthy())
     // Expand the second file (the first auto-opens), then collapse the first.
@@ -138,7 +130,7 @@ describe('WorkspaceChanges', () => {
   })
 
   it('records the file list’s scroll offset as the user scrolls', async () => {
-    mock.mockResolvedValue(PAYLOAD)
+    changes(PAYLOAD)
     const { container } = renderPane()
     await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
     const list = container.querySelector('.overflow-y-auto')
@@ -150,7 +142,7 @@ describe('WorkspaceChanges', () => {
 
   it('restores the saved scroll offset when the pane remounts', async () => {
     useUiStore.setState({ paneView: { 's1|changes': { scroll: 220 } } })
-    mock.mockResolvedValue(PAYLOAD)
+    changes(PAYLOAD)
     const { container } = renderPane()
     await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
     const list = container.querySelector('.overflow-y-auto')
@@ -159,7 +151,7 @@ describe('WorkspaceChanges', () => {
   })
 
   it('renders a renamed file as old → new with the old path in its title', async () => {
-    mock.mockResolvedValue({
+    changes({
       base: 'abc',
       baseResolved: true,
       files: [
@@ -176,7 +168,7 @@ describe('WorkspaceChanges', () => {
   })
 
   it('syntax-highlights the diff for a recognized language', async () => {
-    mock.mockResolvedValue({
+    changes({
       base: 'abc',
       baseResolved: true,
       files: [{ path: 'src/app.ts', status: 'added', additions: 1, deletions: 0, binary: false }],
@@ -195,7 +187,7 @@ describe('WorkspaceChanges', () => {
   })
 
   it('renders an unrecognized language as plain, un-tokenized text', async () => {
-    mock.mockResolvedValue({
+    changes({
       base: 'abc',
       baseResolved: true,
       files: [{ path: 'notes.unknownext', status: 'added', additions: 1, deletions: 0, binary: false }],
@@ -214,7 +206,7 @@ describe('WorkspaceChanges', () => {
   })
 
   it('shows an empty state when nothing changed', async () => {
-    mock.mockResolvedValue({ base: 'abc', baseResolved: true, files: [], diff: '', truncated: false })
+    changes({ base: 'abc', baseResolved: true, files: [], diff: '', truncated: false })
     renderPane()
     await waitFor(() => expect(screen.getByText('No changes yet')).toBeTruthy())
   })
@@ -222,7 +214,7 @@ describe('WorkspaceChanges', () => {
   // Without a fork point the diff covers only uncommitted work, so an empty
   // result must name the missing branch rather than say "No changes".
   it('distinguishes an unresolved fork point from having no changes', async () => {
-    mock.mockResolvedValue({ base: 'abc', baseResolved: false, files: [], diff: '', truncated: false })
+    changes({ base: 'abc', baseResolved: false, files: [], diff: '', truncated: false })
     renderPane({ baseBranch: 'never-pushed' })
     await waitFor(() => expect(screen.getByText('Nothing uncommitted')).toBeTruthy())
     expect(screen.queryByText('No changes yet')).toBeNull()
@@ -233,26 +225,26 @@ describe('WorkspaceChanges', () => {
   })
 
   it('flags a listed diff as uncommitted-only when the fork point is unresolved', async () => {
-    mock.mockResolvedValue({ ...PAYLOAD, baseResolved: false })
+    changes({ ...PAYLOAD, baseResolved: false })
     renderPane()
     await waitFor(() => expect(screen.getByText('uncommitted only')).toBeTruthy())
   })
 
   it('warns when the diff was truncated', async () => {
-    mock.mockResolvedValue({ ...PAYLOAD, truncated: true })
+    changes({ ...PAYLOAD, truncated: true })
     renderPane()
     await waitFor(() => expect(screen.getByText(/truncated/)).toBeTruthy())
   })
 
   it('shows the effective base branch in the header', async () => {
-    mock.mockResolvedValue(PAYLOAD)
+    changes(PAYLOAD)
     renderPane({ baseBranch: 'main' })
     await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
     expect(screen.getByTitle(BASE_TRIGGER).textContent).toContain('main')
   })
 
   it('lets the user pick a different base, which refetches against it', async () => {
-    mock.mockResolvedValue(PAYLOAD)
+    changes(PAYLOAD)
     renderPane({ baseBranch: 'main' })
     await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
 
@@ -261,7 +253,7 @@ describe('WorkspaceChanges', () => {
     fireEvent.click(within(screen.getByRole('listbox')).getByText('dev'))
 
     expect(useUiStore.getState().changesBase.s1).toBe('dev')
-    await waitFor(() => expect(mock).toHaveBeenCalledWith('s1', 'dev'))
+    await waitFor(() => expect(basesAsked()).toContain('dev'))
   })
 
   // Picking the workspace's own base branch sends it explicitly. The server
@@ -269,22 +261,22 @@ describe('WorkspaceChanges', () => {
   // the pushed branch, so a pushed PR would show "No changes".
   it('sends the session’s own base branch explicitly when it is picked', async () => {
     useUiStore.setState({ changesBase: { s1: 'dev' } })
-    mock.mockResolvedValue(PAYLOAD)
+    changes(PAYLOAD)
     renderPane({ baseBranch: 'main' })
     await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
-    expect(mock).toHaveBeenCalledWith('s1', 'dev') // initial fetch used the override
+    expect(basesAsked()).toEqual(['dev']) // initial fetch used the override
 
     fireEvent.click(screen.getByTitle(BASE_TRIGGER))
     await waitFor(() => expect(screen.getByRole('listbox')).toBeTruthy())
     fireEvent.click(within(screen.getByRole('listbox')).getByText('main'))
 
     expect(useUiStore.getState().changesBase.s1).toBe('main')
-    await waitFor(() => expect(mock).toHaveBeenCalledWith('s1', 'main'))
-    expect(mock).not.toHaveBeenCalledWith('s1', undefined)
+    await waitFor(() => expect(basesAsked()).toContain('main'))
+    expect(basesAsked()).not.toContain(undefined)
   })
 
   it('filters the file list by a path substring, with a filtered count in the header', async () => {
-    mock.mockResolvedValue(PAYLOAD)
+    changes(PAYLOAD)
     renderPane()
     await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
     fireEvent.change(screen.getByLabelText('Find in changes'), { target: { value: 'new.ts' } })
@@ -294,7 +286,7 @@ describe('WorkspaceChanges', () => {
   })
 
   it('filters by diff content, not just the path', async () => {
-    mock.mockResolvedValue(PAYLOAD)
+    changes(PAYLOAD)
     renderPane()
     await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
     // 'alpha' appears only inside new.ts's diff.
@@ -304,7 +296,7 @@ describe('WorkspaceChanges', () => {
   })
 
   it('shows a no-match state, and Escape clears the query', async () => {
-    mock.mockResolvedValue(PAYLOAD)
+    changes(PAYLOAD)
     renderPane()
     await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
     const input = screen.getByLabelText('Find in changes')
@@ -317,7 +309,7 @@ describe('WorkspaceChanges', () => {
   })
 
   it('keeps the query across a pane unmount/remount (store-backed)', async () => {
-    mock.mockResolvedValue(PAYLOAD)
+    changes(PAYLOAD)
     renderPane()
     await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
     fireEvent.change(screen.getByLabelText('Find in changes'), { target: { value: 'new.ts' } })
@@ -328,7 +320,7 @@ describe('WorkspaceChanges', () => {
   })
 
   it('Cmd/Ctrl+F in the focused pane jumps to the find box; other chords do not', async () => {
-    mock.mockResolvedValue(PAYLOAD)
+    changes(PAYLOAD)
     renderPane()
     await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
     const input = screen.getByLabelText('Find in changes')
@@ -345,7 +337,7 @@ describe('WorkspaceChanges', () => {
   })
 
   it('takes focus once loaded when it is the pane to focus, so Cmd/Ctrl+F needs no click', async () => {
-    mock.mockResolvedValue(PAYLOAD)
+    changes(PAYLOAD)
     renderPane({ focusKey: 1 })
     await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
     const root = screen.getByLabelText('Find in changes').closest('[tabindex="-1"]')
@@ -356,7 +348,7 @@ describe('WorkspaceChanges', () => {
   })
 
   it('leaves focus in an open dialog when it is the pane to focus', async () => {
-    mock.mockResolvedValue(PAYLOAD)
+    changes(PAYLOAD)
     const dialog = document.createElement('div')
     dialog.setAttribute('role', 'dialog')
     const prompt = document.createElement('textarea')
@@ -370,7 +362,7 @@ describe('WorkspaceChanges', () => {
   })
 
   it('keeps the base picker reachable even when there are no changes', async () => {
-    mock.mockResolvedValue({ base: 'abc', baseResolved: true, files: [], diff: '', truncated: false })
+    changes({ base: 'abc', baseResolved: true, files: [], diff: '', truncated: false })
     renderPane({ baseBranch: 'main' })
     await waitFor(() => expect(screen.getByText('No changes yet')).toBeTruthy())
     expect(screen.getByTitle(BASE_TRIGGER)).toBeTruthy()

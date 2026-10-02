@@ -1,6 +1,6 @@
 /**
  * Client side of an ACP conversation: one WebSocket per mounted chat pane,
- * with the same reconnect backoff as `WorkspaceTerminal`'s PTY socket. The
+ * reconnecting like the SPA's other sockets (`reconnectingSocket`). The
  * server translates ACP into the small `AcpEvent` union, so this module only
  * handles transport and ordering.
  *
@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { INITIAL_RECONNECT_DELAY_MS, nextReconnectDelay } from '#lib/reconnect'
+import { reconnectingSocket, type ReconnectingSocket } from '#lib/reconnect'
 import type { AcpClientMessage, AcpEvent, AcpQueuedPrompt, AcpServerMessage } from '@yaac/shared/acp'
 
 export interface AcpStream {
@@ -54,28 +54,19 @@ export function useAcpStream(
   const [busy, setBusy] = useState(false)
   const [queued, setQueued] = useState<AcpQueuedPrompt[]>([])
   const [connected, setConnected] = useState(false)
-  const socketRef = useRef<WebSocket | null>(null)
+  const socketRef = useRef<ReconnectingSocket | null>(null)
 
   useEffect(() => {
     if (workspaceId === '' || agentSessionId === '') return
-    let closed = false
-    let delay = INITIAL_RECONNECT_DELAY_MS
-    let retry: ReturnType<typeof setTimeout> | undefined
-
-    const connect = (): void => {
-      if (closed) return
-      const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
-      const params = new URLSearchParams({ id: workspaceId, session: agentSessionId })
-      const sock = new WebSocket(`${scheme}://${window.location.host}/api/acp/attach?${params}`)
-      socketRef.current = sock
-
-      sock.onmessage = (e) => {
-        if (typeof e.data !== 'string') return
+    const params = new URLSearchParams({ id: workspaceId, session: agentSessionId })
+    const sock = reconnectingSocket(() => `/api/acp/attach?${params}`, {
+      message: (data) => {
+        if (typeof data !== 'string') return false
         let msg: AcpServerMessage
         try {
-          msg = JSON.parse(e.data) as AcpServerMessage
+          msg = JSON.parse(data) as AcpServerMessage
         } catch {
-          return
+          return false
         }
         if (msg.type === 'hello') {
           // Replace, don't merge: each attach renumbers history from zero.
@@ -83,8 +74,9 @@ export function useAcpStream(
           setBusy(msg.busy)
           setQueued(msg.queued)
           setConnected(true)
-          delay = INITIAL_RECONNECT_DELAY_MS
-          return
+          // Only a hello is healthy: with no live conversation the server
+          // sends a health frame and closes.
+          return true
         }
         if (msg.type === 'event') {
           setEvents((prev) => mergeEvents(prev, [msg.event]))
@@ -94,42 +86,20 @@ export function useAcpStream(
           // at "working…".
           if (msg.event.type === 'turn-end' || msg.event.type === 'error') setBusy(false)
           if (msg.event.type === 'turn-start') setBusy(true)
-          return
+          return false
         }
         if (msg.type === 'queue') {
           setQueued(msg.queued)
-          return
+          return false
         }
         if (msg.type === 'health') setConnected(msg.connected)
-      }
-      sock.onclose = () => {
-        socketRef.current = null
-        setConnected(false)
-        if (closed) return
-        retry = setTimeout(connect, delay)
-        delay = nextReconnectDelay(delay)
-      }
-      sock.onerror = () => sock.close()
-    }
-
-    connect()
-    // Reattach right away when the tab returns to the foreground or the
-    // machine comes back online, instead of waiting out the backoff.
-    const wake = (): void => {
-      if (closed || socketRef.current) return
-      if (retry) clearTimeout(retry)
-      delay = INITIAL_RECONNECT_DELAY_MS
-      connect()
-    }
-    document.addEventListener('visibilitychange', wake)
-    window.addEventListener('online', wake)
-
+        return false
+      },
+      close: () => setConnected(false),
+    })
+    socketRef.current = sock
     return () => {
-      closed = true
-      if (retry) clearTimeout(retry)
-      document.removeEventListener('visibilitychange', wake)
-      window.removeEventListener('online', wake)
-      socketRef.current?.close()
+      sock.close()
       socketRef.current = null
     }
   }, [workspaceId, agentSessionId])
@@ -139,11 +109,6 @@ export function useAcpStream(
     busy,
     queued,
     connected,
-    send: (msg) => {
-      const sock = socketRef.current
-      if (sock?.readyState !== WebSocket.OPEN) return false
-      sock.send(JSON.stringify(msg))
-      return true
-    },
+    send: (msg) => socketRef.current?.send(JSON.stringify(msg)) ?? false,
   }
 }

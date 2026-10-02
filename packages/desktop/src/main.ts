@@ -14,13 +14,13 @@ import { fileURLToPath } from 'node:url'
 import {
   app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, screen, shell, Tray,
 } from 'electron'
-import WebSocket from 'ws'
 import { resolveServerTarget } from '@yaac/shared/server-api'
 import {
   normalizeServerUrl, probeServer, readServerConfig, withServerSelected, writeServerConfig,
 } from '@yaac/shared/server-config'
 import { env } from '@yaac/shared/env'
-import { AttentionMonitor, badgeText, notificationFor, type WaitingWorkspace } from '#attention'
+import type { WorkspaceListEntry } from '@yaac/shared/types'
+import { AttentionMonitor, badgeText, notificationFor } from '#attention'
 import { startEventsMonitor, type EventsSocket } from '#events'
 import { startForwarder, type DesktopForwarder } from '#forwarder'
 import { probeIdentity, runFlow } from '#flow'
@@ -215,7 +215,7 @@ function updateTray(waitingCount: number): void {
   ]))
 }
 
-function applyAttention(waitingCount: number, toNotify: WaitingWorkspace[]): void {
+function applyAttention(waitingCount: number, toNotify: WorkspaceListEntry[]): void {
   if (process.platform === 'darwin') app.dock?.setBadge(badgeText(waitingCount))
   updateTray(waitingCount)
   if (!Notification.isSupported()) return
@@ -226,19 +226,15 @@ function applyAttention(waitingCount: number, toNotify: WaitingWorkspace[]): voi
   }
 }
 
-/** Adapt `ws` to #events. */
+/** Adapt the global WebSocket to #events. */
 function openEventsSocket(url: string): EventsSocket {
   const socket = new WebSocket(url)
-  const rawToString = (data: Buffer | ArrayBuffer | Buffer[]): string => {
-    if (Array.isArray(data)) return Buffer.concat(data).toString('utf8')
-    return Buffer.isBuffer(data) ? data.toString('utf8') : Buffer.from(data).toString('utf8')
-  }
   return {
-    onMessage: (cb) => socket.on('message', (data) => cb(rawToString(data))),
+    onMessage: (cb) => socket.addEventListener('message', (e) => { if (typeof e.data === 'string') cb(e.data) }),
     // Error and close both end the connection; #events dedupes the pair.
     onClose: (cb) => {
-      socket.on('close', cb)
-      socket.on('error', cb)
+      socket.addEventListener('close', cb)
+      socket.addEventListener('error', cb)
     },
     close: () => socket.close(),
   }

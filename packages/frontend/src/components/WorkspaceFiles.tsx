@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
+import { MENU_ITEM, POPUP } from '#components/ui/menu'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ServerError } from '@yaac/shared/errors'
 import { ContextMenu } from '@base-ui/react/context-menu'
@@ -274,32 +275,28 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
   }
 
   const menuItems = (row: Row | null, Item: typeof Menu.Item): ReactNode => {
-    const ITEM = 'flex w-full cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-xs text-text-dim '
-      + 'outline-none data-[highlighted]:bg-surface-3 data-[highlighted]:text-text'
     const folder = row === null ? '' : row.dir && !row.symlink ? row.path : null
     return (
       <>
         {folder !== null && (
           <>
-            <Item className={ITEM} onClick={() => startEdit({ kind: 'file', parent: folder })}>
+            <Item className={MENU_ITEM} onClick={() => startEdit({ kind: 'file', parent: folder })}>
               <NewFileIcon size={13} /> New file
             </Item>
-            <Item className={ITEM} onClick={() => startEdit({ kind: 'folder', parent: folder })}>
+            <Item className={MENU_ITEM} onClick={() => startEdit({ kind: 'folder', parent: folder })}>
               <NewFolderIcon size={13} /> New folder
             </Item>
           </>
         )}
         {row !== null && (
           <>
-            <Item className={ITEM} onClick={() => startEdit({ kind: 'rename', path: row.path })}>Rename</Item>
-            <Item className={ITEM} onClick={() => setConfirmDelete(row)}>Delete</Item>
+            <Item className={MENU_ITEM} onClick={() => startEdit({ kind: 'rename', path: row.path })}>Rename</Item>
+            <Item className={MENU_ITEM} onClick={() => setConfirmDelete(row)}>Delete</Item>
           </>
         )}
       </>
     )
   }
-  const POPUP = 'min-w-[160px] rounded-lg border border-border bg-surface-2 p-1 text-text '
-    + 'shadow-[0_12px_32px_var(--shadow-color)] outline-none'
 
   // ── rendering ───────────────────────────────────────────────────────
   if (isLoading) {
@@ -503,7 +500,7 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
           </ContextMenu.Trigger>
           <ContextMenu.Portal>
             <ContextMenu.Positioner>
-              <ContextMenu.Popup className={POPUP}>{menuItems(contextRow, ContextMenu.Item)}</ContextMenu.Popup>
+              <ContextMenu.Popup className={clsx('min-w-[160px]', POPUP)}>{menuItems(contextRow, ContextMenu.Item)}</ContextMenu.Popup>
             </ContextMenu.Positioner>
           </ContextMenu.Portal>
         </ContextMenu.Root>
@@ -512,7 +509,7 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
       <Menu.Root open={menu !== null} onOpenChange={(open) => { if (!open) setMenu(null) }}>
         <Menu.Portal>
           <Menu.Positioner anchor={menu?.anchor} side="bottom" align="end" sideOffset={4}>
-            <Menu.Popup className={POPUP}>{menu && menuItems(menu.row, Menu.Item)}</Menu.Popup>
+            <Menu.Popup className={clsx('min-w-[160px]', POPUP)}>{menu && menuItems(menu.row, Menu.Item)}</Menu.Popup>
           </Menu.Positioner>
         </Menu.Portal>
       </Menu.Root>

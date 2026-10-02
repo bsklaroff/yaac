@@ -1,12 +1,8 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
+import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
-import { allowBlockedHost } from '#lib/blockedHostsApi'
-
-vi.mock('#lib/blockedHostsApi', () => ({
-  allowBlockedHost: vi.fn(() => Promise.resolve()),
-}))
+import { mockFetch, renderWithClient as render, serverError, type FetchMock } from './harness'
 
 // jsdom has no ResizeObserver; Base UI's positioner needs one to exist.
 beforeAll(() => {
@@ -18,10 +14,17 @@ beforeAll(() => {
 })
 
 // Without vitest globals there is no auto-cleanup, so unmount explicitly.
+let server: FetchMock
+beforeEach(() => {
+  server = mockFetch({ 'POST /api/workspace/sess-1/allow-host': {} })
+})
+
 afterEach(() => {
   cleanup()
-  vi.mocked(allowBlockedHost).mockClear()
+  vi.unstubAllGlobals()
 })
+
+const ALLOW = 'POST /api/workspace/sess-1/allow-host'
 
 const HOSTS = ['registry.npmjs.org', 'evil.example.com']
 
@@ -70,8 +73,10 @@ describe('BlockedHostsBadge', () => {
     fireEvent.click(screen.getByText('Allow for this workspace'))
 
     await waitFor(() => {
-      expect(allowBlockedHost).toHaveBeenCalledWith('sess-1', 'registry.npmjs.org', { persist: false })
+      expect(server.called(ALLOW).map((c) => c.body)).toEqual([{ host: 'registry.npmjs.org', persist: false }])
     })
+    // Success collapses the host until the next snapshot drops it.
+    await waitFor(() => expect(screen.queryByText('Allow for this workspace')).toBeNull())
   })
 
   it('allows a host permanently for the project (persist:true)', async () => {
@@ -81,7 +86,18 @@ describe('BlockedHostsBadge', () => {
     fireEvent.click(screen.getByText('Allow permanently for this project'))
 
     await waitFor(() => {
-      expect(allowBlockedHost).toHaveBeenCalledWith('sess-1', 'evil.example.com', { persist: true })
+      expect(server.called(ALLOW).map((c) => c.body)).toEqual([{ host: 'evil.example.com', persist: true }])
     })
+  })
+
+  it('shows a refused allow under the host, and keeps it open', async () => {
+    server.route(ALLOW, serverError('VALIDATION', 'host is not valid', 400))
+    render(<BlockedHostsBadge hosts={HOSTS} workspaceId="sess-1" iconSize={12} />)
+    openPopover()
+    fireEvent.click(screen.getByText('evil.example.com'))
+    fireEvent.click(screen.getByText('Allow for this workspace'))
+
+    await waitFor(() => expect(screen.getByText('host is not valid')).toBeTruthy())
+    expect(screen.getByText('Allow for this workspace')).toBeTruthy()
   })
 })

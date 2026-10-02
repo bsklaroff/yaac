@@ -1,18 +1,9 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, cleanup, act } from '@testing-library/react'
-
-vi.mock('#lib/imageBuildsApi', () => ({
-  getImageBuildLog: vi.fn(),
-  dismissImageBuild: vi.fn().mockResolvedValue(undefined),
-  retryImageBuild: vi.fn().mockResolvedValue(undefined),
-}))
-
+import { screen, fireEvent, cleanup, act, waitFor } from '@testing-library/react'
 import { ImageBuildsOverlay } from '#components/ImageBuildsOverlay'
-import { dismissImageBuild, getImageBuildLog, retryImageBuild } from '#lib/imageBuildsApi'
+import { mockFetch, renderWithClient as render, serverError, type FetchMock } from './harness'
 import type { ImageBuildEntry } from '@yaac/shared/types'
-
-const mockGetLog = vi.mocked(getImageBuildLog)
 
 // jsdom has no ResizeObserver; Base UI needs one to exist.
 beforeAll(() => {
@@ -23,14 +14,34 @@ beforeAll(() => {
   }
 })
 
+const LOG = 'GET /api/image/builds/:id/log'
+const RETRY = 'POST /api/image/builds/:id/retry'
+const DISMISS = 'DELETE /api/image/builds/:id'
+
+/** The server's routes for every build id the tests use. */
+function routes(): Record<string, unknown> {
+  const table: Record<string, unknown> = {}
+  for (const id of ['build-1', 'build-2', 'running-build', 'newest-failed', 'old-failed', 'ok-build', 'bad-build']) {
+    table[LOG.replace(':id', id)] = { log: 'STEP 1/2: FROM ubuntu\n' }
+    table[RETRY.replace(':id', id)] = { ok: true }
+    table[DISMISS.replace(':id', id)] = { ok: true }
+  }
+  return table
+}
+
+/** The ids whose log was fetched, in order. */
+const logFetches = (): string[] =>
+  server.calls.filter((c) => c.method === 'GET' && c.path.endsWith('/log')).map((c) => c.path.split('/')[4])
+
+let server: FetchMock
 beforeEach(() => {
-  vi.clearAllMocks()
-  mockGetLog.mockResolvedValue({ log: 'STEP 1/2: FROM ubuntu\n' })
+  server = mockFetch(routes())
 })
 
 afterEach(() => {
   cleanup()
   vi.useRealTimers()
+  vi.unstubAllGlobals()
 })
 
 function build(overrides: Partial<ImageBuildEntry> = {}): ImageBuildEntry {
@@ -47,24 +58,24 @@ function build(overrides: Partial<ImageBuildEntry> = {}): ImageBuildEntry {
   }
 }
 
-const flushEffects = (): Promise<void> => act(async () => { await Promise.resolve() })
+const flushEffects = (): Promise<void> => act(async () => { await vi.advanceTimersByTimeAsync(0) })
 
 describe('ImageBuildsOverlay', () => {
   it('shows an empty state when nothing was tracked', async () => {
     render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={[]} />)
-    await flushEffects()
     expect(screen.getByText('No image builds yet.')).toBeTruthy()
-    expect(mockGetLog).not.toHaveBeenCalled()
+    await act(async () => { await Promise.resolve() })
+    expect(server.calls).toEqual([])
   })
 
-  it('renders build rows with layer, projects, step, and error details', async () => {
+  it('renders build rows with layer, projects, step, and error details', () => {
     const builds = [
       build({ stepCurrent: 3, stepTotal: 14, stepText: 'RUN apt-get update' }),
       build({ id: 'build-2', tag: 'yaac-tools:def', layer: 'push', action: 'push', status: 'failed', error: 'registry down' }),
     ]
     render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={builds} />)
-    await flushEffects()
 
+    expect(screen.getByText('Image builds')).toBeTruthy()
     expect(screen.getByText('base layer')).toBeTruthy()
     expect(screen.getByText('yaac-base:abc123')).toBeTruthy()
     expect(screen.getByText(/step 3\/14/)).toBeTruthy()
@@ -82,11 +93,11 @@ describe('ImageBuildsOverlay', () => {
     render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={builds} />)
     await flushEffects()
 
-    expect(mockGetLog).toHaveBeenCalledWith('running-build')
+    expect(logFetches()).toEqual(['running-build'])
     expect(screen.getByText(/STEP 1\/2: FROM ubuntu/)).toBeTruthy()
 
     await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
-    expect(mockGetLog).toHaveBeenCalledTimes(3)
+    expect(logFetches()).toEqual(['running-build', 'running-build', 'running-build'])
   })
 
   it('fetches a finished build once without polling', async () => {
@@ -94,9 +105,9 @@ describe('ImageBuildsOverlay', () => {
     render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={[build({ status: 'succeeded' })]} />)
     await flushEffects()
 
-    expect(mockGetLog).toHaveBeenCalledTimes(1)
+    expect(logFetches()).toEqual(['build-1'])
     await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
-    expect(mockGetLog).toHaveBeenCalledTimes(1)
+    expect(logFetches()).toEqual(['build-1'])
   })
 
   it('switches the log pane when a row is clicked', async () => {
@@ -105,18 +116,15 @@ describe('ImageBuildsOverlay', () => {
       build({ id: 'old-failed', tag: 'yaac-tools:def', status: 'failed', error: 'x' }),
     ]
     render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={builds} />)
-    await flushEffects()
-    expect(mockGetLog).toHaveBeenCalledWith('running-build')
+    await waitFor(() => expect(logFetches()).toEqual(['running-build']))
 
     fireEvent.click(screen.getByText('yaac-tools:def'))
-    await flushEffects()
-    expect(mockGetLog).toHaveBeenCalledWith('old-failed')
+    await waitFor(() => expect(logFetches()).toEqual(['running-build', 'old-failed']))
   })
 
-  it('labels a proxy sidecar build', async () => {
+  it('labels a proxy sidecar build', () => {
     const builds = [build({ layer: 'proxy', projectSlugs: [], status: 'succeeded' })]
     render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={builds} />)
-    await flushEffects()
     expect(screen.getByText('proxy sidecar')).toBeTruthy()
   })
 
@@ -126,21 +134,19 @@ describe('ImageBuildsOverlay', () => {
       build({ id: 'old-failed', status: 'failed', error: 'x' }),
     ]
     render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={builds} />)
-    await flushEffects()
 
     const dismissButtons = screen.getAllByRole('button', { name: 'Dismiss build entry' })
     expect(dismissButtons).toHaveLength(1)
     fireEvent.click(dismissButtons[0])
-    expect(vi.mocked(dismissImageBuild)).toHaveBeenCalledWith('old-failed')
+    await waitFor(() => expect(server.called(DISMISS.replace(':id', 'old-failed'))).toHaveLength(1))
   })
 
-  it('offers Retry only on a failed build, wired to retryImageBuild', async () => {
+  it('offers Retry only on a failed build, and posts it for that build', async () => {
     const builds = [
       build({ id: 'ok-build', status: 'succeeded' }),
       build({ id: 'bad-build', tag: 'yaac-tools:def', status: 'failed', error: 'x' }),
     ]
     render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={builds} />)
-    await flushEffects()
 
     // Retry appears once (on the failed row), while both finished rows can be dismissed.
     const retryButtons = screen.getAllByRole('button', { name: 'Retry build' })
@@ -148,7 +154,21 @@ describe('ImageBuildsOverlay', () => {
     expect(screen.getAllByRole('button', { name: 'Dismiss build entry' })).toHaveLength(2)
 
     fireEvent.click(retryButtons[0])
-    expect(vi.mocked(retryImageBuild)).toHaveBeenCalledWith('bad-build')
-    expect(vi.mocked(dismissImageBuild)).not.toHaveBeenCalled()
+    await waitFor(() => expect(server.called(RETRY.replace(':id', 'bad-build'))).toHaveLength(1))
+    expect(server.calls.filter((c) => c.method === 'DELETE')).toEqual([])
+  })
+
+  it('shows why a retry or a dismiss failed', async () => {
+    server.route(RETRY.replace(':id', 'bad-build'), serverError('NOT_FOUND', 'no such build to retry', 404))
+    server.route(DISMISS.replace(':id', 'bad-build'), serverError('INTERNAL', 'dismiss exploded'))
+    const builds = [build({ id: 'bad-build', status: 'failed', error: 'x' })]
+    render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={builds} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry build' }))
+    expect(await screen.findByText('no such build to retry')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss build entry' }))
+    expect(await screen.findByText('dismiss exploded')).toBeTruthy()
+    expect(screen.queryByText('no such build to retry')).toBeNull()
   })
 })

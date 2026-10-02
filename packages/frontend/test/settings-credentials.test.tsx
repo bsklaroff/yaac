@@ -1,46 +1,17 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
-import type { AuthListResult, GitCredentialSummary, ProjectSummary } from '@yaac/shared/types'
+import type { QueryClient } from '@tanstack/react-query'
+import { screen, fireEvent, cleanup, waitFor, within, act } from '@testing-library/react'
+import type { AuthListResult, GitCredentialSummary, ProjectSummary, ToolLoginView } from '@yaac/shared/types'
 import { OPENCODE_PROVIDERS, PI_PROVIDERS } from '@yaac/shared/tool-providers'
 
-vi.mock('#lib/settingsApi', () => ({
-  getGitIdentity: vi.fn().mockResolvedValue({ name: 'Ada', email: 'ada@example.com' }),
-  deviceTimeZone: () => 'America/New_York',
-  getTimeZone: vi.fn().mockResolvedValue({ timeZone: 'America/New_York', pinned: false }),
-  setTimeZone: vi.fn(),
-  setGitIdentity: vi.fn().mockResolvedValue({ name: 'Ada', email: 'ada@example.com' }),
-  getAuthList: vi.fn(),
-  addHttpsCredential: vi.fn(),
-  generateSshKey: vi.fn(),
-  renameGitCredential: vi.fn().mockResolvedValue(undefined),
-  deleteGitCredential: vi.fn().mockResolvedValue(undefined),
-  replaceGitCredential: vi.fn(),
-  setToolApiKey: vi.fn().mockResolvedValue(undefined),
-  clearToolAuth: vi.fn().mockResolvedValue(undefined),
-  startToolLogin: vi.fn(),
-  getToolLogin: vi.fn(),
-  sendToolLoginInput: vi.fn(),
-  cancelToolLogin: vi.fn().mockResolvedValue(undefined),
-  startToolInstall: vi.fn(),
-  getToolInstall: vi.fn(),
-  cancelToolInstall: vi.fn().mockResolvedValue(undefined),
-  getShortcutOverrides: vi.fn().mockResolvedValue({}),
-  setShortcutOverride: vi.fn().mockResolvedValue(undefined),
-  resetShortcuts: vi.fn().mockResolvedValue(undefined),
-}))
-vi.mock('#lib/projectApi', () => ({ setProjectGitCredential: vi.fn() }))
 const snapshot = vi.hoisted(() => vi.fn())
 vi.mock('#lib/useSnapshot', () => ({ useSnapshot: snapshot }))
 
 import { SettingsButton } from '#components/SettingsButton'
-import { setProjectGitCredential } from '#lib/projectApi'
-import {
-  cancelToolLogin, clearToolAuth, deleteGitCredential, generateSshKey, getAuthList, renameGitCredential,
-  replaceGitCredential, sendToolLoginInput, setToolApiKey, startToolInstall, startToolLogin,
-} from '#lib/settingsApi'
 import { useUiStore } from '#lib/store'
+import { AUTH_LIST_KEY } from '#lib/useAuthList'
+import { mockFetch, renderWithClient, serverError, testQueryClient, type FetchMock } from './harness'
 
 // jsdom has no ResizeObserver; Base UI's positioner needs one to exist.
 beforeAll(() => {
@@ -57,36 +28,55 @@ const CLAUDE_CONFIGURED: AuthListResult = {
     { tool: 'claude', kind: 'oauth', keyPreview: '***host', savedAt: '2026-01-01T00:00:00.000Z', models: [], defaultModel: 'claude-opus-5-5' },
   ],
 }
+const SIGNED_OUT: AuthListResult = { gitCredentials: [], toolAuth: [] }
+
+/** What GET /api/auth/list answers; a test reassigns it to change the list. */
+let authList: AuthListResult
+let server: FetchMock
+let client: QueryClient
 
 beforeEach(() => {
   useUiStore.setState({
     settingsOpen: false, settingsSection: 'general', settingsFocusTool: null, settingsFocusProject: null,
   })
-  vi.clearAllMocks()
   snapshot.mockReturnValue(undefined)
-  vi.mocked(getAuthList).mockResolvedValue(CLAUDE_CONFIGURED)
+  authList = CLAUDE_CONFIGURED
+  server = mockFetch({
+    'GET /api/auth/list': () => authList,
+    'GET /api/config/git-identity': { identity: { name: 'Ada', email: 'ada@example.com' } },
+    'GET /api/config/time-zone': { timeZone: 'America/New_York', pinned: false },
+    'PUT /api/auth/codex': undefined,
+    'PUT /api/auth/opencode': undefined,
+    'PUT /api/auth/pi': undefined,
+    'POST /api/auth/clear': undefined,
+  })
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 function renderSettings(): void {
-  render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <SettingsButton />
-    </QueryClientProvider>,
-  )
+  client = testQueryClient()
+  renderWithClient(<SettingsButton />, client)
 }
 
-/** Open the settings modal onto the Credentials section and let the list load. */
+/** Open the settings modal onto the Credentials section and let the list
+ *  load, so rows show credentials rather than signed out. */
 async function openCredentials(): Promise<void> {
   renderSettings()
   fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
   fireEvent.click(screen.getByRole('button', { name: 'Credentials' }))
-  await waitFor(() => expect(screen.getByText(/claude/)).toBeTruthy())
-  // Wait for the list, so rows show credentials rather than signed out.
-  await waitFor(() => expect(vi.mocked(getAuthList)).toHaveBeenCalled())
-  await vi.mocked(getAuthList).mock.results[0]?.value
-  await new Promise((r) => setTimeout(r, 0))
+  await waitFor(() => expect(client.getQueryState(AUTH_LIST_KEY)?.fetchStatus).toBe('idle'))
+  await waitFor(() => expect(client.getQueryData(AUTH_LIST_KEY)).toBeDefined())
+  await act(() => new Promise((r) => setTimeout(r, 0)))
+}
+
+/** Answer a tool's sign-in start with `view`, and its poll with the same. */
+function serveLogin(tool: string, view: ToolLoginView): void {
+  server.route(`POST /api/auth/${tool}/login/start`, view)
+  server.route(`GET /api/auth/login/${view.id}`, view)
 }
 
 /** The credential row containing the tool's name. */
@@ -102,6 +92,9 @@ async function pickProvider(label: string): Promise<void> {
   fireEvent.change(screen.getByPlaceholderText('Search providers…'), { target: { value: label } })
   fireEvent.click(await screen.findByText(label))
 }
+
+/** Requests to any sign-in or install cancel route. */
+const cancels = (): unknown[] => server.calls.filter((c) => c.path.endsWith('/cancel'))
 
 const NEURALWATT_LABEL = OPENCODE_PROVIDERS.find((p) => p.id === 'neuralwatt')?.label ?? 'neuralwatt'
 const PI_ANTHROPIC_LABEL = PI_PROVIDERS.find((p) => p.id === 'anthropic')?.label ?? 'anthropic'
@@ -125,8 +118,9 @@ describe('Settings → Credentials', () => {
     fireEvent.change(screen.getByPlaceholderText('OpenAI API key'), { target: { value: 'sk-openai-x' } })
     fireEvent.submit(screen.getByPlaceholderText('OpenAI API key').closest('form') as HTMLFormElement)
 
-    await waitFor(() => expect(setToolApiKey).toHaveBeenCalledWith('codex', 'sk-openai-x', undefined))
     expect(await screen.findByText('Signed in successfully.')).toBeTruthy()
+    expect(server.called('PUT /api/auth/codex').map((c) => c.body))
+      .toEqual([{ kind: 'api-key', apiKey: 'sk-openai-x' }])
   })
 
   it('saves an opencode key with the picked provider (no web sign-in offered)', async () => {
@@ -139,7 +133,8 @@ describe('Settings → Credentials', () => {
     fireEvent.change(screen.getByPlaceholderText(`${NEURALWATT_LABEL} API key`), { target: { value: 'nw-key' } })
     fireEvent.submit(screen.getByPlaceholderText(`${NEURALWATT_LABEL} API key`).closest('form') as HTMLFormElement)
 
-    await waitFor(() => expect(setToolApiKey).toHaveBeenCalledWith('opencode', 'nw-key', 'neuralwatt'))
+    await waitFor(() => expect(server.called('PUT /api/auth/opencode').map((c) => c.body))
+      .toEqual([{ kind: 'api-key', apiKey: 'nw-key', provider: 'neuralwatt' }]))
   })
 
   it('saves a pi key with the picked provider (no web sign-in offered)', async () => {
@@ -153,7 +148,8 @@ describe('Settings → Credentials', () => {
     fireEvent.change(screen.getByPlaceholderText(`${PI_ANTHROPIC_LABEL} API key`), { target: { value: 'sk-ant-key' } })
     fireEvent.submit(screen.getByPlaceholderText(`${PI_ANTHROPIC_LABEL} API key`).closest('form') as HTMLFormElement)
 
-    await waitFor(() => expect(setToolApiKey).toHaveBeenCalledWith('pi', 'sk-ant-key', 'anthropic'))
+    await waitFor(() => expect(server.called('PUT /api/auth/pi').map((c) => c.body))
+      .toEqual([{ kind: 'api-key', apiKey: 'sk-ant-key', provider: 'anthropic' }]))
   })
 
   it('signs a configured tool out', async () => {
@@ -161,7 +157,8 @@ describe('Settings → Credentials', () => {
 
     fireEvent.click(within(toolRow('claude')).getByRole('button', { name: 'Sign out' }))
 
-    await waitFor(() => expect(clearToolAuth).toHaveBeenCalledWith('claude'))
+    await waitFor(() => expect(server.called('POST /api/auth/clear').map((c) => c.body))
+      .toEqual([{ service: 'claude' }]))
   })
 
   it('auto-expands the focus tool set by an external Sign in affordance', async () => {
@@ -174,8 +171,8 @@ describe('Settings → Credentials', () => {
 })
 
 describe('Settings → Credentials → web sign-in', () => {
-  it('starting a codex sign-in shows the finish-in-browser panel with linked CLI output', async () => {
-    vi.mocked(startToolLogin).mockResolvedValue({
+  it('starting a codex sign-in shows the finish-in-browser panel, then polls until it succeeds', async () => {
+    serveLogin('codex', {
       id: 'l1', tool: 'codex', status: 'running',
       output: 'If your browser did not open, navigate to this URL:\nhttps://auth.openai.com/oauth/authorize?state=x',
     })
@@ -184,40 +181,29 @@ describe('Settings → Credentials → web sign-in', () => {
     fireEvent.click(within(toolRow('codex')).getByRole('button', { name: 'Sign in' }))
     fireEvent.click(screen.getByRole('button', { name: 'Sign in with ChatGPT' }))
 
-    await waitFor(() => expect(startToolLogin).toHaveBeenCalledWith('codex'))
     expect(await screen.findByText(/Finish signing in from the browser window/)).toBeTruthy()
+    expect(server.called('POST /api/auth/codex/login/start')).toHaveLength(1)
     // The CLI's printed URL renders as a clickable link…
     const link = screen.getByRole('link', { name: 'https://auth.openai.com/oauth/authorize?state=x' })
     expect(link.getAttribute('href')).toBe('https://auth.openai.com/oauth/authorize?state=x')
     // …and codex flows take no stdin.
     expect(screen.queryByPlaceholderText('paste code here if prompted')).toBeNull()
-  })
 
-  it('the claude panel forwards a pasted code to the CLI stdin', async () => {
-    vi.mocked(getAuthList).mockResolvedValue({ gitCredentials: [], toolAuth: [] })
-    vi.mocked(startToolLogin).mockResolvedValue({
+    // The next poll (every 1.5s) sees the browser flow finish.
+    server.route('GET /api/auth/login/l1', { id: 'l1', tool: 'codex', status: 'success' })
+    expect(await screen.findByText('Signed in successfully.', {}, { timeout: 8000 })).toBeTruthy()
+    expect(server.called('GET /api/auth/login/l1').length).toBeGreaterThan(1)
+  }, 15_000)
+
+  it('the claude panel forwards a pasted code to the CLI stdin, and shows a rejected one inline', async () => {
+    authList = SIGNED_OUT
+    serveLogin('claude', {
       id: 'l4', tool: 'claude', status: 'running', output: 'If the browser didn\'t open, visit: https://claude.com/cai/oauth/authorize?state=x',
     })
-    vi.mocked(sendToolLoginInput).mockResolvedValue({ id: 'l4', tool: 'claude', status: 'running' })
-    await openCredentials()
-
-    fireEvent.click(within(toolRow('claude')).getByRole('button', { name: 'Sign in' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in with Claude' }))
-
-    const input = await screen.findByPlaceholderText('paste code here if prompted')
-    fireEvent.change(input, { target: { value: 'code#state' } })
-    fireEvent.submit(input.closest('form') as HTMLFormElement)
-
-    await waitFor(() => expect(sendToolLoginInput).toHaveBeenCalledWith('l4', 'code#state'))
-  })
-
-  it('a rejected paste shows inline and keeps the flow running', async () => {
-    vi.mocked(getAuthList).mockResolvedValue({ gitCredentials: [], toolAuth: [] })
-    vi.mocked(startToolLogin).mockResolvedValue({
-      id: 'l5', tool: 'claude', status: 'running', output: 'If the browser didn\'t open, visit: https://claude.com/cai/oauth/authorize?state=x',
-    })
-    vi.mocked(sendToolLoginInput).mockRejectedValue(
-      new Error('Expected the code from the authorize page (letters, digits, "#", "-", "_" only).'))
+    server.route('POST /api/auth/login/l4/input', ({ body }: { body: unknown }) =>
+      ((body as { text: string }).text === 'code#state'
+        ? { id: 'l4', tool: 'claude', status: 'running' }
+        : serverError('VALIDATION', 'Expected the code from the authorize page (letters, digits, "#", "-", "_" only).', 400)))
     await openCredentials()
 
     fireEvent.click(within(toolRow('claude')).getByRole('button', { name: 'Sign in' }))
@@ -232,23 +218,29 @@ describe('Settings → Credentials → web sign-in', () => {
     expect(screen.getByPlaceholderText('paste code here if prompted')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
+
+    fireEvent.change(input, { target: { value: 'code#state' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    await waitFor(() => expect(server.called('POST /api/auth/login/l4/input').map((c) => c.body))
+      .toEqual([{ text: 'rm -rf /' }, { text: 'code#state' }]))
   })
 
   it('an immediately-successful claude sign-in refreshes the list and confirms in green', async () => {
-    vi.mocked(getAuthList).mockResolvedValue({ gitCredentials: [], toolAuth: [] })
-    vi.mocked(startToolLogin).mockResolvedValue({ id: 'l2', tool: 'claude', status: 'success' })
+    authList = SIGNED_OUT
+    serveLogin('claude', { id: 'l2', tool: 'claude', status: 'success' })
     await openCredentials()
+    const fetches = server.called('GET /api/auth/list').length
 
     fireEvent.click(within(toolRow('claude')).getByRole('button', { name: 'Sign in' }))
     fireEvent.click(screen.getByRole('button', { name: 'Sign in with Claude' }))
 
     // Success refetches the credentials list.
-    await waitFor(() => expect(vi.mocked(getAuthList).mock.calls.length).toBeGreaterThan(1))
+    await waitFor(() => expect(server.called('GET /api/auth/list').length).toBeGreaterThan(fetches))
     expect(await screen.findByText('Signed in successfully.')).toBeTruthy()
   })
 
   it('shows a failed start inline and offers a retry, cancelling nothing', async () => {
-    vi.mocked(startToolLogin).mockRejectedValue(new Error('codex CLI not found on the server host'))
+    server.route('POST /api/auth/codex/login/start', serverError('AUTH_AGENT_OFFLINE', 'codex CLI not found on the server host'))
     await openCredentials()
 
     fireEvent.click(within(toolRow('codex')).getByRole('button', { name: 'Sign in' }))
@@ -257,11 +249,12 @@ describe('Settings → Credentials → web sign-in', () => {
     await waitFor(() => expect(screen.getByText('codex CLI not found on the server host')).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(screen.getByRole('button', { name: 'Sign in with ChatGPT' })).toBeTruthy()
-    expect(cancelToolLogin).not.toHaveBeenCalled()
+    expect(cancels()).toEqual([])
   })
 
-  it('cancel aborts a live flow server-side and returns to the start button', async () => {
-    vi.mocked(startToolLogin).mockResolvedValue({ id: 'l3', tool: 'codex', status: 'running' })
+  it('cancel aborts a live flow server-side and returns to the start button, reporting a failed abort', async () => {
+    serveLogin('codex', { id: 'l3', tool: 'codex', status: 'running' })
+    server.route('POST /api/auth/login/l3/cancel', undefined)
     await openCredentials()
 
     fireEvent.click(within(toolRow('codex')).getByRole('button', { name: 'Sign in' }))
@@ -269,21 +262,29 @@ describe('Settings → Credentials → web sign-in', () => {
     await screen.findByText(/Finish signing in from the browser window/)
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(cancelToolLogin).toHaveBeenCalledWith('l3')
+    expect(screen.getByRole('button', { name: 'Sign in with ChatGPT' })).toBeTruthy()
+    await waitFor(() => expect(server.called('POST /api/auth/login/l3/cancel')).toHaveLength(1))
+
+    // A second flow whose abort the server refuses: the panel still resets,
+    // and the failure shows beside the start button.
+    serveLogin('codex', { id: 'l7', tool: 'codex', status: 'running' })
+    server.route('POST /api/auth/login/l7/cancel', serverError('INTERNAL', 'auth server gone'))
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in with ChatGPT' }))
+    await screen.findByText(/Finish signing in from the browser window/)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(await screen.findByText('Cancel failed: auth server gone')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Sign in with ChatGPT' })).toBeTruthy()
   })
 })
 
 describe('Settings → Credentials → CLI install', () => {
-  const CLI_MISSING = {
-    id: 'l6', tool: 'codex', status: 'error',
-    error: 'Codex is not installed on this machine.', cliMissing: true,
-  } as const
-
   /** Drive a codex sign-in into the cliMissing state. */
   async function reachInstallOffer(): Promise<HTMLElement> {
-    vi.mocked(getAuthList).mockResolvedValue({ gitCredentials: [], toolAuth: [] })
-    vi.mocked(startToolLogin).mockResolvedValue(CLI_MISSING)
+    authList = SIGNED_OUT
+    serveLogin('codex', {
+      id: 'l6', tool: 'codex', status: 'error',
+      error: 'Codex is not installed on this machine.', cliMissing: true,
+    })
     await openCredentials()
 
     fireEvent.click(within(toolRow('codex')).getByRole('button', { name: 'Sign in' }))
@@ -292,21 +293,21 @@ describe('Settings → Credentials → CLI install', () => {
   }
 
   it('a cliMissing failure offers Install instead of retry and starts the install', async () => {
-    vi.mocked(startToolInstall).mockResolvedValue({
-      id: 'i1', tool: 'codex', status: 'running', output: 'Downloading installer…',
-    })
+    const running = { id: 'i1', tool: 'codex', status: 'running', output: 'Downloading installer…' } as const
+    server.route('POST /api/auth/codex/install/start', running)
+    server.route('GET /api/auth/install/i1', running)
     const installButton = await reachInstallOffer()
     expect(screen.getByText(/isn't installed on this machine/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
 
     fireEvent.click(installButton)
-    await waitFor(() => expect(startToolInstall).toHaveBeenCalledWith('codex'))
     expect(await screen.findByText(/Installing Codex/)).toBeTruthy()
+    expect(server.called('POST /api/auth/codex/install/start')).toHaveLength(1)
     expect(screen.getByText('Downloading installer…')).toBeTruthy()
   })
 
   it('a finished install returns to the sign-in button with a nudge', async () => {
-    vi.mocked(startToolInstall).mockResolvedValue({ id: 'i2', tool: 'codex', status: 'success' })
+    server.route('POST /api/auth/codex/install/start', { id: 'i2', tool: 'codex', status: 'success' })
     fireEvent.click(await reachInstallOffer())
 
     expect(await screen.findByText(/Codex installed — try signing in again/)).toBeTruthy()
@@ -314,7 +315,7 @@ describe('Settings → Credentials → CLI install', () => {
   })
 
   it('a failed install surfaces the error and offers a retry', async () => {
-    vi.mocked(startToolInstall).mockResolvedValue({
+    server.route('POST /api/auth/codex/install/start', {
       id: 'i3', tool: 'codex', status: 'error', error: 'install failed: no network',
     })
     fireEvent.click(await reachInstallOffer())
@@ -360,13 +361,13 @@ describe('Settings → Credentials → git', () => {
   }
 
   beforeEach(() => {
-    vi.mocked(getAuthList).mockResolvedValue({ ...CLAUDE_CONFIGURED, gitCredentials: [TOKEN, KEY] })
+    authList = { ...CLAUDE_CONFIGURED, gitCredentials: [TOKEN, KEY] }
     snapshot.mockReturnValue({ driver: 'k8s', projects: [ALPHA, BETA, GAMMA] })
   })
 
   it('lists credentials with their projects, and assigns one to a project that has none', async () => {
     // The server lists oldest first; an unused credential still sorts last.
-    vi.mocked(getAuthList).mockResolvedValue({ ...CLAUDE_CONFIGURED, gitCredentials: [KEY, TOKEN] })
+    authList = { ...CLAUDE_CONFIGURED, gitCredentials: [KEY, TOKEN] }
     await openCredentials()
     const token = await waitFor(() => credentialRow('alpha-token'))
     const key = credentialRow('gitlab-key')
@@ -396,10 +397,8 @@ describe('Settings → Credentials → git', () => {
     expect(within(projectRow('gamma')).getByLabelText<HTMLInputElement>('Credential name').value).toBe('gamma-token')
 
     // Assigning trusts the host key, which is shown under the credential.
-    vi.mocked(setProjectGitCredential).mockResolvedValue('gitlab.com ssh-ed25519 HOSTKEY')
-    vi.mocked(getAuthList).mockResolvedValue({
-      ...CLAUDE_CONFIGURED, gitCredentials: [TOKEN, { ...KEY, projects: ['beta'] }],
-    })
+    server.route('PUT /api/project/beta/git-credential', { knownHostsEntry: 'gitlab.com ssh-ed25519 HOSTKEY' })
+    authList = { ...CLAUDE_CONFIGURED, gitCredentials: [TOKEN, { ...KEY, projects: ['beta'] }] }
     snapshot.mockReturnValue({
       driver: 'k8s', projects: [ALPHA, { ...BETA, gitCredential: { id: 'c-key', name: 'gitlab-key' } }, GAMMA],
     })
@@ -407,12 +406,14 @@ describe('Settings → Credentials → git', () => {
     fireEvent.change(within(beta).getByLabelText('Git credential'), { target: { value: 'c-key' } })
     fireEvent.click(within(beta).getByRole('button', { name: 'Assign' }))
 
-    await waitFor(() => expect(setProjectGitCredential).toHaveBeenCalledWith('beta', 'c-key'))
     await waitFor(() => expect(within(credentialRow('gitlab-key')).getByText('beta')).toBeTruthy())
+    expect(server.called('PUT /api/project/beta/git-credential').map((c) => c.body)).toEqual([{ credentialId: 'c-key' }])
     expect(within(projectRow('beta')).getByText('gitlab.com ssh-ed25519 HOSTKEY')).toBeTruthy()
   })
 
   it('renames inline, and deletes only on a click in a confirmation naming the projects left without', async () => {
+    server.route('PATCH /api/auth/git/credentials/c-key', undefined)
+    server.route('DELETE /api/auth/git/credentials/c-token', undefined)
     await openCredentials()
     await waitFor(() => credentialRow('gitlab-key'))
 
@@ -420,7 +421,8 @@ describe('Settings → Credentials → git', () => {
     const input = screen.getByLabelText<HTMLInputElement>('Rename credential')
     fireEvent.change(input, { target: { value: 'gitlab-deploy-key' } })
     fireEvent.keyDown(input, { key: 'Enter' })
-    await waitFor(() => expect(renameGitCredential).toHaveBeenCalledWith('c-key', 'gitlab-deploy-key'))
+    await waitFor(() => expect(server.called('PATCH /api/auth/git/credentials/c-key').map((c) => c.body))
+      .toEqual([{ name: 'gitlab-deploy-key' }]))
 
     // Cancel keeps it.
     let dialog = await openConfirm(credentialRow('alpha-token'), 'Delete', 'Delete')
@@ -430,48 +432,52 @@ describe('Settings → Credentials → git', () => {
 
     // A credential in use can still be deleted.
     dialog = await openConfirm(credentialRow('alpha-token'), 'Delete', 'Delete')
-    expect(deleteGitCredential).not.toHaveBeenCalled()
+    expect(server.called('DELETE /api/auth/git/credentials/c-token')).toEqual([])
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }))
-    await waitFor(() => expect(deleteGitCredential).toHaveBeenCalledWith('c-token'))
+    await waitFor(() => expect(server.called('DELETE /api/auth/git/credentials/c-token')).toHaveLength(1))
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
 
     // Deleted, but the proxy wasn't updated: the row goes and the warning
     // stays.
-    vi.mocked(deleteGitCredential).mockRejectedValueOnce(
-      new Error('The credential is deleted, but the egress proxy could not be updated'),
-    )
-    const fetches = vi.mocked(getAuthList).mock.calls.length
-    vi.mocked(getAuthList).mockResolvedValue({ ...CLAUDE_CONFIGURED, gitCredentials: [TOKEN] })
+    server.route('DELETE /api/auth/git/credentials/c-key', serverError(
+      'RUNTIME_UNAVAILABLE', 'The credential is deleted, but the egress proxy could not be updated', 503,
+    ))
+    const fetches = server.called('GET /api/auth/list').length
+    authList = { ...CLAUDE_CONFIGURED, gitCredentials: [TOKEN] }
     dialog = await openConfirm(credentialRow('gitlab-key'), 'Delete', 'Delete')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }))
     expect(await screen.findByText(/gitlab-key: The credential is deleted, but the egress proxy/)).toBeTruthy()
-    await waitFor(() => expect(vi.mocked(getAuthList).mock.calls.length).toBeGreaterThan(fetches))
+    await waitFor(() => expect(server.called('GET /api/auth/list').length).toBeGreaterThan(fetches))
     await waitFor(() => expect(screen.queryByRole('button', { name: 'gitlab-key' })).toBeNull())
   })
 
   it('replaces a token in place, and a key behind a confirmation, showing the new public key', async () => {
-    vi.mocked(replaceGitCredential).mockResolvedValueOnce({ id: 'c-token2' })
+    server.route('POST /api/auth/git/credentials/c-token/replace', { id: 'c-token2' })
+    server.route('POST /api/auth/git/credentials/c-key/replace', {
+      id: 'c-key2', publicKey: 'ssh-ed25519 AAAAnew yaac gitlab-key',
+    })
     await openCredentials()
     await waitFor(() => credentialRow('alpha-token'))
 
     fireEvent.click(within(credentialRow('alpha-token')).getByRole('button', { name: 'Replace' }))
     fireEvent.change(screen.getByLabelText('New token'), { target: { value: 'ghp_new' } })
     fireEvent.click(within(credentialRow('alpha-token')).getByRole('button', { name: 'Replace' }))
-    await waitFor(() => expect(replaceGitCredential).toHaveBeenCalledWith('c-token', 'ghp_new'))
     await waitFor(() => expect(screen.queryByLabelText('New token')).toBeNull())
+    expect(server.called('POST /api/auth/git/credentials/c-token/replace').map((c) => c.body))
+      .toEqual([{ token: 'ghp_new' }])
 
     // Same name and projects, new id and public key.
-    vi.mocked(replaceGitCredential).mockResolvedValueOnce({ id: 'c-key2', publicKey: 'ssh-ed25519 AAAAnew yaac gitlab-key' })
     const dialog = await openConfirm(credentialRow('gitlab-key'), 'Replace', 'Generate new key')
     expect(within(dialog).getByText(/current key is discarded/)).toBeTruthy()
-    expect(replaceGitCredential).toHaveBeenCalledTimes(1)
-    vi.mocked(getAuthList).mockResolvedValue({
+    expect(server.called('POST /api/auth/git/credentials/c-key/replace')).toEqual([])
+    authList = {
       ...CLAUDE_CONFIGURED,
       gitCredentials: [TOKEN, { ...KEY, id: 'c-key2', publicKey: 'ssh-ed25519 AAAAnew yaac gitlab-key' }],
-    })
+    }
     fireEvent.click(within(dialog).getByRole('button', { name: 'Generate new key' }))
 
-    await waitFor(() => expect(replaceGitCredential).toHaveBeenLastCalledWith('c-key', undefined))
+    await waitFor(() => expect(server.called('POST /api/auth/git/credentials/c-key/replace').map((c) => c.body))
+      .toEqual([{}]))
     const key = await waitFor(() => {
       const row = credentialRow('gitlab-key')
       expect(within(row).getByText(/Register this public key with your git host/)).toBeTruthy()
@@ -482,10 +488,8 @@ describe('Settings → Credentials → git', () => {
   })
 
   it('generates a key no project uses yet, showing its public half under a unique default name', async () => {
-    vi.mocked(getAuthList).mockResolvedValue({
-      ...CLAUDE_CONFIGURED, gitCredentials: [TOKEN, { ...KEY, name: 'git-key' }],
-    })
-    vi.mocked(generateSshKey).mockResolvedValue({ id: 'c-new', publicKey: 'ssh-ed25519 AAAAnew git-key-2' })
+    authList = { ...CLAUDE_CONFIGURED, gitCredentials: [TOKEN, { ...KEY, name: 'git-key' }] }
+    server.route('POST /api/auth/git/ssh-keys', { id: 'c-new', publicKey: 'ssh-ed25519 AAAAnew git-key-2' })
     await openCredentials()
     await waitFor(() => credentialRow('git-key'))
 
@@ -494,8 +498,8 @@ describe('Settings → Credentials → git', () => {
     expect(name.value).toBe('git-key-2')
     fireEvent.click(screen.getByRole('button', { name: 'Generate key' }))
 
-    await waitFor(() => expect(generateSshKey).toHaveBeenCalledWith('git-key-2'))
     expect(await screen.findByText('ssh-ed25519 AAAAnew git-key-2')).toBeTruthy()
+    expect(server.called('POST /api/auth/git/ssh-keys').map((c) => c.body)).toEqual([{ name: 'git-key-2' }])
     expect(screen.getByText(/Register this public key with your git host/)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Done' }))
     await waitFor(() => expect(screen.queryByText('ssh-ed25519 AAAAnew git-key-2')).toBeNull())

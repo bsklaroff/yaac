@@ -20,6 +20,9 @@ export interface BuildFileContent extends BuildFileEntry {
 }
 
 export interface BuildFilesApi {
+  /** React Query key for this scope's file list; a file's text is cached
+   *  under it too. */
+  key: readonly unknown[]
   list(): Promise<BuildFileEntry[]>
   read(path: string): Promise<BuildFileContent>
   saveText(path: string, content: string): Promise<BuildFileEntry>
@@ -45,6 +48,7 @@ export function encodeBase64(data: ArrayBuffer): string {
 export function projectBuildFilesApi(slug: string): BuildFilesApi {
   const bf = api.project[':slug']['build-files']
   return {
+    key: ['build-files', 'project', slug],
     list: async () => (await bf.$get({ param: { slug } })).files,
     read: (path) => bf.file.$get({ param: { slug }, query: { path } }),
     saveText: (path, content) => bf.file.$put({ param: { slug }, json: { path, content } }),
@@ -61,6 +65,7 @@ export function projectBuildFilesApi(slug: string): BuildFilesApi {
 export function userBuildFilesApi(): BuildFilesApi {
   const bf = api.config['user-build-files']
   return {
+    key: ['build-files', 'user'],
     list: async () => (await bf.$get()).files,
     read: (path) => bf.file.$get({ query: { path } }),
     saveText: (path, content) => bf.file.$put({ json: { path, content } }),

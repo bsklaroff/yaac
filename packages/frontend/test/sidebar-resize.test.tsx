@@ -1,20 +1,11 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, fireEvent, cleanup } from '@testing-library/react'
+import { screen, fireEvent, cleanup } from '@testing-library/react'
 
-vi.mock('#lib/stoppedApi', () => ({ getStoppedWorkspaces: vi.fn(() => Promise.resolve([])) }))
 vi.mock('#lib/createWorkspace', () => ({
   dismissProvisioning: vi.fn(),
   restartWorkspace: vi.fn(),
   renameWorkspace: vi.fn(() => Promise.resolve()),
-}))
-vi.mock('#lib/groupApi', () => ({
-  createWorkspaceGroup: vi.fn(() => Promise.resolve({ groupId: 'g-new' })),
-  renameWorkspaceGroup: vi.fn(() => Promise.resolve()),
-  setWorkspaceGroupPinned: vi.fn(() => Promise.resolve()),
-  deleteWorkspaceGroup: vi.fn(() => Promise.resolve()),
-  setWorkspaceGroup: vi.fn(() => Promise.resolve()),
 }))
 vi.mock('#lib/stopWorkspaceFlow', () => ({ stopWorkspaceOptimistic: vi.fn() }))
 vi.mock('#lib/useProvisionWorkspace', () => ({ useProvisionWorkspace: () => vi.fn() }))
@@ -24,9 +15,10 @@ import {
   DEFAULT_SIDEBAR_WIDTH,
   MAX_SIDEBAR_WIDTH,
   MIN_SIDEBAR_WIDTH,
-  loadSidebarWidth,
+  loadPersisted,
   useUiStore,
 } from '#lib/store'
+import { mockFetch, renderWithClient } from './harness'
 
 beforeAll(() => {
   globalThis.ResizeObserver ??= class {
@@ -44,33 +36,31 @@ const initial = useUiStore.getState()
 beforeEach(() => {
   localStorage.clear()
   useUiStore.setState(initial, true)
+  // The handle needs no server; anything the sidebar asks for answers 404.
+  mockFetch()
 })
 
 afterEach(() => {
   cleanup()
   document.body.className = ''
+  vi.unstubAllGlobals()
 })
 
 /** The sidebar with no project selected: the handle, without project menus. */
 function renderSidebar(): HTMLElement {
-  render(
-    <QueryClientProvider client={new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    })}
-    >
-      <Sidebar
-        projectSlug={null}
-        projectRemoteUrl=""
-        workspaces={[]}
-        groups={[]}
-        queued={[]}
-        held={[]}
-        drafts={[]}
-        provisioning={[]}
-        connected
-        gitAuthFailures={[]}
-      />
-    </QueryClientProvider>,
+  renderWithClient(
+    <Sidebar
+      projectSlug={null}
+      projectRemoteUrl=""
+      workspaces={[]}
+      groups={[]}
+      queued={[]}
+      held={[]}
+      drafts={[]}
+      provisioning={[]}
+      connected
+      gitAuthFailures={[]}
+    />,
   )
   return screen.getByRole('separator', { name: 'Resize sidebar' })
 }
@@ -114,7 +104,7 @@ describe('sidebar resize', () => {
   it('persists the dragged width and restores it', () => {
     const handle = renderSidebar()
     drag(handle, 300, 360)
-    expect(loadSidebarWidth()).toBe(DEFAULT_SIDEBAR_WIDTH + 60)
+    expect(loadPersisted().sidebarWidth).toBe(DEFAULT_SIDEBAR_WIDTH + 60)
   })
 
   it('clamps to the bounds, however far the pointer travels', () => {
@@ -149,15 +139,5 @@ describe('sidebar resize', () => {
 
     fireEvent.doubleClick(handle)
     expect(width()).toBe(DEFAULT_SIDEBAR_WIDTH)
-  })
-
-  it('falls back to the default for junk or an out-of-bounds store', () => {
-    localStorage.setItem('yaac.sidebarwidth.v1', 'wide please')
-    expect(loadSidebarWidth()).toBe(DEFAULT_SIDEBAR_WIDTH)
-    localStorage.removeItem('yaac.sidebarwidth.v1')
-    expect(loadSidebarWidth()).toBe(DEFAULT_SIDEBAR_WIDTH)
-    // An out-of-range saved width is clamped.
-    localStorage.setItem('yaac.sidebarwidth.v1', '4000')
-    expect(loadSidebarWidth()).toBe(MAX_SIDEBAR_WIDTH)
   })
 })

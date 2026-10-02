@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { JSX } from 'react'
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { act, render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
 import type {
   DraftWorkspaceEntry,
@@ -13,43 +13,21 @@ import type {
   WorkspaceListEntry,
 } from '@yaac/shared/types'
 
-const stoppedRows: StoppedWorkspaceEntry[] = []
-vi.mock('#lib/stoppedApi', () => ({ getStoppedWorkspaces: vi.fn(() => Promise.resolve(stoppedRows)) }))
 vi.mock('#lib/createWorkspace', () => ({
   dismissProvisioning: vi.fn(),
   restartWorkspace: vi.fn(),
   renameWorkspace: vi.fn(() => Promise.resolve()),
 }))
-vi.mock('#lib/groupApi', () => ({
-  createWorkspaceGroup: vi.fn(() => Promise.resolve({ groupId: 'g-new' })),
-  renameWorkspaceGroup: vi.fn(() => Promise.resolve()),
-  setWorkspaceGroupPinned: vi.fn(() => Promise.resolve()),
-  deleteWorkspaceGroup: vi.fn(() => Promise.resolve()),
-  setWorkspaceGroup: vi.fn(() => Promise.resolve()),
-}))
 vi.mock('#lib/stopWorkspaceFlow', () => ({ stopWorkspaceOptimistic: vi.fn() }))
 vi.mock('#lib/useProvisionWorkspace', () => ({ useProvisionWorkspace: () => vi.fn() }))
-vi.mock('#lib/queueApi', () => ({
-  runQueuedWorkspace: vi.fn(() => Promise.resolve({ workspaceId: 'w-run' })),
-  discardQueuedWorkspace: vi.fn(() => Promise.resolve()),
-}))
-vi.mock('#lib/draftApi', () => ({ discardDraftWorkspace: vi.fn(() => Promise.resolve()) }))
 // The stop dialog lists what is queued, off the snapshot.
 const snapshot = vi.hoisted(() => vi.fn())
 vi.mock('#lib/useSnapshot', () => ({ useSnapshot: snapshot }))
 
 import { WorkspaceList } from '#components/WorkspaceList'
 import { renameWorkspace } from '#lib/createWorkspace'
-import { discardDraftWorkspace } from '#lib/draftApi'
-import { discardQueuedWorkspace, runQueuedWorkspace } from '#lib/queueApi'
-import {
-  createWorkspaceGroup,
-  deleteWorkspaceGroup,
-  renameWorkspaceGroup,
-  setWorkspaceGroup,
-  setWorkspaceGroupPinned,
-} from '#lib/groupApi'
 import { useUiStore } from '#lib/store'
+import { mockFetch, testQueryClient, type FetchMock } from './harness'
 
 beforeAll(() => {
   globalThis.ResizeObserver ??= class {
@@ -61,16 +39,45 @@ beforeAll(() => {
 
 const initial = useUiStore.getState()
 
+const SET_GROUP = 'POST /api/workspace/set-group'
+const GROUP_CREATE = 'POST /api/workspace/group/create'
+const GROUP_RENAME = 'POST /api/workspace/group/rename'
+const GROUP_PIN = 'POST /api/workspace/group/set-pinned'
+const GROUP_DELETE = 'POST /api/workspace/group/delete'
+const QUEUE_RUN = 'POST /api/workspace/queue/run'
+const QUEUE_DISCARD = 'POST /api/workspace/queue/discard'
+const DRAFT_DISCARD = 'POST /api/workspace/draft/discard'
+
+/** The project's stopped workspaces, as the server lists them. */
+const stoppedRows: StoppedWorkspaceEntry[] = []
+let server: FetchMock
+/** The JSON bodies posted to a route so far. */
+const posted = (route: string): unknown[] => server.called(route).map((c) => c.body)
+/** A set-group body filing `workspaceId` under `groupId` (null: ungrouped). */
+const filed = (workspaceId: string, groupId: string | null): unknown => ({ projectSlug: 'proj', workspaceId, groupId })
+
 beforeEach(() => {
   localStorage.clear()
   stoppedRows.length = 0
   snapshot.mockReturnValue(undefined)
   useUiStore.setState(initial, true)
+  server = mockFetch({
+    'GET /api/workspace/list-stopped': () => stoppedRows,
+    [SET_GROUP]: undefined,
+    [GROUP_CREATE]: { groupId: 'g-new', name: 'Release' },
+    [GROUP_RENAME]: undefined,
+    [GROUP_PIN]: undefined,
+    [GROUP_DELETE]: undefined,
+    [QUEUE_RUN]: { workspaceId: 'w-run' },
+    [QUEUE_DISCARD]: undefined,
+    [DRAFT_DISCARD]: undefined,
+  })
 })
 
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  vi.unstubAllGlobals()
 })
 
 const entry = (over: Partial<WorkspaceListEntry> = {}): WorkspaceListEntry => ({
@@ -135,7 +142,7 @@ function renderList(
   workspaces: WorkspaceListEntry[],
   opts: ListOpts = {},
 ): (workspaces: WorkspaceListEntry[], opts?: ListOpts) => void {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const client = testQueryClient()
   const element = (w: WorkspaceListEntry[], o: ListOpts): JSX.Element => (
     <QueryClientProvider client={client}>
       <WorkspaceList
@@ -225,7 +232,7 @@ describe('WorkspaceList', () => {
       .toBeGreaterThan(section.textContent?.indexOf('Filed one') ?? Infinity)
     const row = screen.getByText('Stopped one').closest<HTMLElement>('.group')
     fireEvent.click(within(row ?? document.body).getByLabelText('Remove from group'))
-    await waitFor(() => expect(setWorkspaceGroup).toHaveBeenCalledWith('proj', 'gone', null))
+    await waitFor(() => expect(posted(SET_GROUP)).toEqual([filed('gone', null)]))
 
     // Hiding them leaves the live rows where they were.
     await pickAction('Hide stopped workspaces', 'Group actions')
@@ -422,7 +429,7 @@ describe('WorkspaceList', () => {
     expect(screen.getByText(/waits for its parent/)).toBeTruthy()
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Discard' })[0])
-    expect(discardQueuedWorkspace).toHaveBeenCalledWith('q1')
+    await waitFor(() => expect(posted(QUEUE_DISCARD)).toEqual([{ id: 'q1' }]))
     fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[1])
     expect(useUiStore.getState().createWorkspaceDialog).toEqual({ projectSlug: 'proj', editId: 'q2' })
   })
@@ -554,7 +561,7 @@ describe('WorkspaceList', () => {
       expect(useUiStore.getState().createWorkspaceDialog).toEqual({ projectSlug: 'proj', editId: 'q1' })
 
       await pickAction('Run now', 'Queued workspace actions')
-      await waitFor(() => expect(runQueuedWorkspace).toHaveBeenCalledWith('q1'))
+      await waitFor(() => expect(posted(QUEUE_RUN)).toEqual([{ id: 'q1' }]))
 
       await pickAction('Queue workspace after this…', 'Queued workspace actions')
       await waitFor(() => expect(useUiStore.getState().createWorkspaceDialog)
@@ -566,7 +573,7 @@ describe('WorkspaceList', () => {
         '“Step q1” will not run. The workspace queued after it will start when “Parent” stops instead.',
       )).toBeTruthy()
       fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
-      await waitFor(() => expect(discardQueuedWorkspace).toHaveBeenCalledWith('q1'))
+      await waitFor(() => expect(posted(QUEUE_DISCARD)).toEqual([{ id: 'q1' }]))
     })
   })
 
@@ -611,7 +618,7 @@ describe('WorkspaceList', () => {
 
       await pickAction('Discard…', 'Draft actions')
       fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
-      await waitFor(() => expect(discardDraftWorkspace).toHaveBeenCalledWith('d1'))
+      await waitFor(() => expect(posted(DRAFT_DISCARD)).toEqual([{ id: 'd1' }]))
     })
   })
 
@@ -635,7 +642,7 @@ describe('WorkspaceList', () => {
       })
       fireEvent.click(screen.getByRole('button', { name: 'Create group' }))
 
-      await waitFor(() => expect(createWorkspaceGroup).toHaveBeenCalledWith('proj', 'a', 'Release'))
+      await waitFor(() => expect(posted(GROUP_CREATE)).toEqual([{ projectSlug: 'proj', workspaceId: 'a', name: 'Release' }]))
     })
 
     it('offers only the groups the sidebar is showing', async () => {
@@ -658,13 +665,13 @@ describe('WorkspaceList', () => {
       })
       await pickAction('Move to group…')
       fireEvent.click(await screen.findByRole('button', { name: 'Release' }))
-      await waitFor(() => expect(setWorkspaceGroup).toHaveBeenCalledWith('proj', 'a', 'g1'))
+      await waitFor(() => expect(posted(SET_GROUP)).toEqual([filed('a', 'g1')]))
 
       cleanup()
       renderList([entry({ workspaceId: 'a', title: 'Fix parser', groupId: 'g1' })], { groups: [group()] })
       await pickAction('Move to group…')
       fireEvent.click(await screen.findByRole('button', { name: 'Remove from group' }))
-      await waitFor(() => expect(setWorkspaceGroup).toHaveBeenCalledWith('proj', 'a', null))
+      await waitFor(() => expect(posted(SET_GROUP)).toEqual([filed('a', 'g1'), filed('a', null)]))
     })
   })
 
@@ -676,17 +683,17 @@ describe('WorkspaceList', () => {
     it('pins, deletes, and renames the group inline', async () => {
       renderGrouped()
       await pickAction('Pin', 'Group actions')
-      await waitFor(() => expect(setWorkspaceGroupPinned).toHaveBeenCalledWith('proj', 'g1', true))
+      await waitFor(() => expect(posted(GROUP_PIN)).toEqual([{ projectSlug: 'proj', groupId: 'g1', pinned: true }]))
 
       await pickAction('Rename', 'Group actions')
       const input = await screen.findByRole<HTMLInputElement>('textbox', { name: 'Group name' })
       expect(input.value).toBe('Release')
       fireEvent.change(input, { target: { value: 'Shipping' } })
       fireEvent.keyDown(input, { key: 'Enter' })
-      await waitFor(() => expect(renameWorkspaceGroup).toHaveBeenCalledWith('proj', 'g1', 'Shipping'))
+      await waitFor(() => expect(posted(GROUP_RENAME)).toEqual([{ projectSlug: 'proj', groupId: 'g1', name: 'Shipping' }]))
 
       await pickAction('Delete group', 'Group actions')
-      await waitFor(() => expect(deleteWorkspaceGroup).toHaveBeenCalledWith('proj', 'g1'))
+      await waitFor(() => expect(posted(GROUP_DELETE)).toEqual([{ projectSlug: 'proj', groupId: 'g1' }]))
     })
   })
 
@@ -719,12 +726,11 @@ describe('WorkspaceList', () => {
 
       press('Loose one', 10)
       dropAt(150)
-      await waitFor(() => expect(setWorkspaceGroup).toHaveBeenCalledWith('proj', 'a', 'g1'))
+      await waitFor(() => expect(posted(SET_GROUP)).toEqual([filed('a', 'g1')]))
 
-      vi.mocked(setWorkspaceGroup).mockClear()
       press('Filed one', 150)
       dropAt(10)
-      await waitFor(() => expect(setWorkspaceGroup).toHaveBeenCalledWith('proj', 'b', null))
+      await waitFor(() => expect(posted(SET_GROUP)).toEqual([filed('a', 'g1'), filed('b', null)]))
     })
 
     it('leaves a press that never travels as a plain selection', () => {
@@ -736,7 +742,7 @@ describe('WorkspaceList', () => {
 
       press('Loose one', 10)
       dropAt(12) // inside the threshold
-      expect(setWorkspaceGroup).not.toHaveBeenCalled()
+      expect(posted(SET_GROUP)).toEqual([])
       expect(useUiStore.getState().selectedWorkspaceId).toBe('a')
     })
 
@@ -750,12 +756,12 @@ describe('WorkspaceList', () => {
       press('Loose one', 10)
       fireEvent.pointerMove(window, { clientX: 10, clientY: 150 })
       fireEvent.pointerCancel(window, { clientX: 10, clientY: 150 })
-      expect(setWorkspaceGroup).not.toHaveBeenCalled()
+      expect(posted(SET_GROUP)).toEqual([])
 
       // The listeners were removed, so a later unrelated pointerup can't
       // replay the move.
       fireEvent.pointerUp(window, { clientX: 10, clientY: 150 })
-      expect(setWorkspaceGroup).not.toHaveBeenCalled()
+      expect(posted(SET_GROUP)).toEqual([])
     })
 
     it('ignores a drop back where the workspace started', () => {
@@ -764,7 +770,7 @@ describe('WorkspaceList', () => {
 
       press('Filed one', 150)
       dropAt(190)
-      expect(setWorkspaceGroup).not.toHaveBeenCalled()
+      expect(posted(SET_GROUP)).toEqual([])
     })
   })
 

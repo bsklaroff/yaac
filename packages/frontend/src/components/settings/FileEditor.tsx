@@ -1,19 +1,16 @@
-import { useEffect, useState, type JSX } from 'react'
-import { Dialog } from '@base-ui/react/dialog'
+import { useState, type JSX } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CodeEditor } from '#components/ui/CodeEditor'
+import { Modal } from '#components/ui/Modal'
 import type { HighlightLanguage } from '#lib/highlight'
 import { CollapseIcon, ExpandIcon } from '#lib/icons'
 import { useUiStore } from '#lib/store'
 
-function errMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e)
-}
-
 /**
- * A syntax-highlighted file editor that loads text via `load`, tracks dirty
- * state, and saves via `save`. Memoize `load`/`save` per file: the editor
- * reloads whenever `load` changes identity, which is how a caller switches
- * files.
+ * A syntax-highlighted file editor that loads text via `load` (cached under
+ * `queryKey`, and refetched each time the editor mounts), tracks dirty
+ * state, and saves via `save`. A caller switches files by changing
+ * `queryKey`.
  *
  * An expand button opens the same buffer in a near-fullscreen dialog titled
  * `title`; edits carry over in both directions. Text size follows the file
@@ -22,73 +19,58 @@ function errMessage(e: unknown): string {
 export function FileEditor({
   title,
   language,
+  queryKey,
   load,
   save,
   hint,
 }: {
   title: string
   language: HighlightLanguage | null
+  queryKey: readonly unknown[]
   load: () => Promise<string>
   save: (text: string) => Promise<void>
   hint?: string
 }): JSX.Element {
-  const [text, setText] = useState<string | null>(null)
-  const [original, setOriginal] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  const [saved, setSaved] = useState(false)
-  const [busy, setBusy] = useState(false)
+  const queryClient = useQueryClient()
+  const loaded = useQuery({ queryKey, queryFn: load, staleTime: 0 })
+  // The edited text; null while it matches what was loaded or saved.
+  const [edit, setEdit] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(false)
   const fontSize = useUiStore((s) => s.editorFontSize)
+  const saving = useMutation({
+    mutationFn: save,
+    onSuccess: (_, text) => {
+      queryClient.setQueryData(queryKey, text)
+      setEdit(null)
+    },
+  })
 
-  useEffect(() => {
-    let cancelled = false
-    setText(null)
-    setError(null)
-    setSaved(false)
-    load()
-      .then((t) => { if (!cancelled) { setText(t); setOriginal(t) } })
-      .catch((e: unknown) => { if (!cancelled) { setText(''); setOriginal(''); setError(errMessage(e)) } })
-    return () => { cancelled = true }
-  }, [load])
+  if (loaded.isPending) return <p className="text-xs text-text-faint">Loading…</p>
 
-  const dirty = text !== null && text !== original
-
+  const text = edit ?? loaded.data ?? ''
+  const dirty = edit !== null && edit !== loaded.data
+  const error = saving.error ?? loaded.error
   const onEdit = (v: string): void => {
-    setText(v)
-    setSaved(false)
-    setError(null)
+    setEdit(v)
+    saving.reset()
   }
-
-  const onSave = (): void => {
-    if (text === null) return
-    setBusy(true)
-    setError(null)
-    setSaved(false)
-    save(text)
-      .then(() => { setOriginal(text); setSaved(true) })
-      .catch((e: unknown) => setError(errMessage(e)))
-      .finally(() => setBusy(false))
-  }
-
-  if (text === null && error === null) {
-    return <p className="text-xs text-text-faint">Loading…</p>
-  }
+  const onSave = (): void => saving.mutate(text)
 
   const footer = (
     <>
       {hint && <p className="text-[11px] leading-relaxed text-text-faint">{hint}</p>}
-      {error && <p className="whitespace-pre-wrap text-xs text-red-400">{error}</p>}
+      {error && <p className="whitespace-pre-wrap text-xs text-red-400">{error.message}</p>}
       <div className="flex items-center gap-2">
         <button
           type="button"
           onClick={onSave}
-          disabled={busy || !dirty}
+          disabled={saving.isPending || !dirty}
           className="shrink-0 rounded-md bg-surface-3 px-3 py-1.5 text-xs font-medium text-text transition
             hover:bg-border-strong disabled:opacity-50"
         >
-          {busy ? 'Saving…' : 'Save'}
+          {saving.isPending ? 'Saving…' : 'Save'}
         </button>
-        {saved && !dirty && <span className="text-xs text-emerald-400">Saved</span>}
+        {saving.isSuccess && !dirty && <span className="text-xs text-emerald-400">Saved</span>}
       </div>
     </>
   )
@@ -96,7 +78,7 @@ export function FileEditor({
   return (
     <div className="flex flex-col gap-2">
       <div className="relative">
-        <CodeEditor value={text ?? ''} onChange={onEdit} language={language} fontSize={fontSize} />
+        <CodeEditor value={text} onChange={onEdit} language={language} fontSize={fontSize} />
         <button
           type="button"
           onClick={() => setExpanded(true)}
@@ -110,38 +92,24 @@ export function FileEditor({
       </div>
       {footer}
 
-      <Dialog.Root open={expanded} onOpenChange={setExpanded}>
-        <Dialog.Portal>
-          <Dialog.Backdrop className="fixed inset-0 bg-black/60 backdrop-blur-[1px] transition-opacity duration-150
-            data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
-          <Dialog.Popup className="fixed inset-4 flex flex-col gap-2 rounded-xl border border-hairline
-            max-md:inset-0 max-md:rounded-none max-md:border-0
-            bg-surface p-4 text-text shadow-[0_16px_48px_var(--shadow-color)] outline-none transition duration-150
-            data-[starting-style]:scale-95 data-[starting-style]:opacity-0 data-[ending-style]:scale-95
-            data-[ending-style]:opacity-0">
-            <div className="flex items-center justify-between">
-              <Dialog.Title className="text-xs font-semibold text-text-dim">{title}</Dialog.Title>
-              <Dialog.Close
-                title="Collapse editor"
-                aria-label="Collapse editor"
-                className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
-                  hover:bg-surface-2 hover:text-text max-md:h-9 max-md:w-9"
-              >
-                <CollapseIcon size={14} />
-              </Dialog.Close>
-            </div>
-            <CodeEditor
-              value={text ?? ''}
-              onChange={onEdit}
-              language={language}
-              fontSize={fontSize}
-              height="100%"
-              className="min-h-0 flex-1"
-            />
-            {footer}
-          </Dialog.Popup>
-        </Dialog.Portal>
-      </Dialog.Root>
+      <Modal
+        open={expanded}
+        onOpenChange={setExpanded}
+        variant="sheet"
+        title={title}
+        closeLabel="Collapse editor"
+        closeIcon={<CollapseIcon size={14} />}
+      >
+        <CodeEditor
+          value={text}
+          onChange={onEdit}
+          language={language}
+          fontSize={fontSize}
+          height="100%"
+          className="min-h-0 flex-1"
+        />
+        {footer}
+      </Modal>
     </div>
   )
 }

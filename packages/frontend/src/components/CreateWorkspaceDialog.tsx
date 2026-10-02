@@ -1,16 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState, type JSX, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertDialog } from '@base-ui/react/alert-dialog'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Dialog } from '@base-ui/react/dialog'
-import clsx from 'clsx'
 import { CloseIcon, RenameIcon, TOOL_LABEL } from '#lib/icons'
 import { BranchPicker } from '#components/BranchPicker'
+import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { Modal } from '#components/ui/Modal'
 import { Typeahead } from '#components/ui/Typeahead'
-import { saveDraftWorkspace } from '#lib/draftApi'
+import { api } from '#lib/api'
 import { shownGroups } from '#lib/groups'
-import { getProjectBranches, projectBranchesKey } from '#lib/projectApi'
-import { queueWorkspace, runQueuedWorkspace, updateQueuedWorkspace } from '#lib/queueApi'
+import { useProjectBranches } from '#lib/useProjectBranches'
 import { clip, queuedDescendants, queuedInTreeOrder, queuedParentId, queuedTitle } from '#lib/queued'
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
 import { useCreateDefaults, useCreateWorkspace } from '#lib/useCreateDefaults'
@@ -124,11 +122,14 @@ interface PendingDraft {
 /** Save `pending` as a draft. If the draft it was opened from has since
  *  been deleted, save a new one instead. */
 async function keepDraft(pending: PendingDraft): Promise<void> {
+  const save = (id?: string) => api.workspace.draft.save.$post({
+    json: { project: pending.projectSlug, ...pending.settings, ...(id !== undefined ? { id } : {}) },
+  })
   try {
-    await saveDraftWorkspace(pending.projectSlug, pending.settings, pending.id)
+    await save(pending.id)
   } catch (err) {
     if (pending.id === undefined || !(err instanceof ServerError && err.code === 'NOT_FOUND')) throw err
-    await saveDraftWorkspace(pending.projectSlug, pending.settings)
+    await save()
   }
 }
 
@@ -368,19 +369,12 @@ function CreateWorkspaceForm({
   const signedIn = defaults.configured.has(tool)
   const needsGitAuth = defaults.ready && !defaults.hasGitCredential
 
-  const { data: branchData, isError: branchesFailed } = useQuery({
-    queryKey: projectBranchesKey(projectSlug),
-    queryFn: () => getProjectBranches(projectSlug),
-  })
+  const { data: branchData, isError: branchesFailed } = useProjectBranches(projectSlug)
 
-  // On open, refetch credentials (they may have changed via the CLI) and
-  // refresh branches from the remote; the cached list shows meanwhile.
+  // On open, refetch credentials; they may have changed via the CLI.
   useEffect(() => {
     void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
-    getProjectBranches(projectSlug, { refresh: true })
-      .then((fresh) => queryClient.setQueryData(projectBranchesKey(projectSlug), fresh))
-      .catch(() => { /* stale-but-instant list stays */ })
-  }, [projectSlug, queryClient])
+  }, [queryClient])
 
   // Focus as soon as the form mounts, before the dialog's own focus
   // handling, so keys typed right after the shortcut aren't lost.
@@ -521,12 +515,15 @@ function CreateWorkspaceForm({
     const reveal = (e: QueuedWorkspaceEntry): void =>
       useUiStore.getState().setRevealQueued({ id: e.id, parent: queuedParentId(e) })
     const moved = initial !== undefined && queued && start !== queuedParentId(initial)
+    const queue = api.workspace.queue
     const op = initial === undefined
-      ? queueWorkspace(projectSlug, start, settings, draft?.id).then(reveal)
-      : updateQueuedWorkspace(initial.id, { ...settings, ...(moved ? { parent: start } : {}) })
+      ? queue.create.$post({
+        json: { project: projectSlug, parent: start, ...settings, ...(draft !== undefined ? { draftId: draft.id } : {}) },
+      }).then(reveal)
+      : queue.update.$post({ json: { id: initial.id, ...settings, ...(moved ? { parent: start } : {}) } })
         .then(async (e) => {
           // "Now" on a queued workspace is Save then Run now.
-          if (!queued) await runQueuedWorkspace(initial.id)
+          if (!queued) await queue.run.$post({ json: { id: initial.id } })
           else if (moved) reveal(e)
         })
     op.then(finish, (err: unknown) => setError(err instanceof Error ? err.message : String(err)))
@@ -847,69 +844,23 @@ function SaveDraftDialog({
   onCancel: () => void
   onDone: () => void
 }): JSX.Element {
-  const saveRef = useRef<HTMLButtonElement>(null)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const save = (): void => {
-    if (pending === null) return
-    setBusy(true)
-    setError(null)
-    keepDraft(pending)
-      .then(onDone, (err: unknown) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setBusy(false))
-  }
-  const BUTTON = 'flex h-8 items-center rounded-md px-3 text-xs transition disabled:opacity-50'
+  const save = useMutation({ mutationFn: keepDraft, onSuccess: onDone })
+  const editing = pending?.id !== undefined
   return (
-    <AlertDialog.Root
+    <ConfirmDialog
       open={pending !== null}
-      onOpenChange={(next) => { if (!next && !busy) { setError(null); onCancel() } }}
-    >
-      <AlertDialog.Portal>
-        <AlertDialog.Backdrop className="fixed inset-0 bg-black/40 transition-opacity duration-150
-          data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
-        <AlertDialog.Popup
-          initialFocus={saveRef}
-          className="fixed left-1/2 top-1/2 w-[400px] max-w-[calc(100vw-2rem)] -translate-x-1/2
-            -translate-y-1/2 rounded-lg border border-border bg-surface-2 p-5 text-text shadow-[0_16px_48px_var(--shadow-color)]
-            outline-none transition duration-150 data-[starting-style]:scale-95 data-[starting-style]:opacity-0
-            data-[ending-style]:scale-95 data-[ending-style]:opacity-0"
-        >
-          <AlertDialog.Title className="text-sm font-semibold">
-            {pending?.id !== undefined ? 'Save changes to this draft?' : 'Save as a draft?'}
-          </AlertDialog.Title>
-          <AlertDialog.Description className="mt-1 text-xs leading-relaxed text-text-dim">
-            {pending?.id !== undefined
-              ? 'Discarding keeps the draft as it was saved.'
-              : 'A draft keeps the prompt and settings in the sidebar, to create from later.'}
-          </AlertDialog.Description>
-          {error && <p className="mt-2 text-xs text-danger">{error}</p>}
-          <div className="mt-5 flex justify-end gap-2">
-            <AlertDialog.Close
-              disabled={busy}
-              className={clsx(BUTTON, 'mr-auto text-text-dim hover:bg-surface-3 hover:text-text')}
-            >
-              Keep editing
-            </AlertDialog.Close>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={onDone}
-              className={clsx(BUTTON, 'text-text-dim hover:bg-surface-3 hover:text-text')}
-            >
-              {pending?.id !== undefined ? 'Discard changes' : 'Discard'}
-            </button>
-            <button
-              ref={saveRef}
-              type="button"
-              disabled={busy}
-              onClick={save}
-              className={clsx(BUTTON, 'bg-accent font-medium text-bg hover:brightness-110')}
-            >
-              {busy ? 'Saving…' : pending?.id !== undefined ? 'Save changes' : 'Save draft'}
-            </button>
-          </div>
-        </AlertDialog.Popup>
-      </AlertDialog.Portal>
-    </AlertDialog.Root>
+      onOpenChange={(next) => { if (!next) { save.reset(); onCancel() } }}
+      destructive={false}
+      title={editing ? 'Save changes to this draft?' : 'Save as a draft?'}
+      description={editing
+        ? 'Discarding keeps the draft as it was saved.'
+        : 'A draft keeps the prompt and settings in the sidebar, to create from later.'}
+      cancelLabel="Keep editing"
+      alternative={{ label: editing ? 'Discard changes' : 'Discard', onClick: onDone }}
+      confirmLabel={editing ? 'Save changes' : 'Save draft'}
+      busy={save.isPending}
+      error={save.error?.message}
+      onConfirm={() => { if (pending !== null) save.mutate(pending) }}
+    />
   )
 }

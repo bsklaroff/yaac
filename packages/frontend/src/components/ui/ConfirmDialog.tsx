@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type JSX } from 'react'
+import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { AlertDialog } from '@base-ui/react/alert-dialog'
 import { useOpenerFocus } from '#lib/useOpenerFocus'
@@ -23,6 +23,9 @@ export function ConfirmDialog({
   destructive = true,
   busy = false,
   requireClick = false,
+  error,
+  children,
+  alternative,
   onConfirm,
 }: {
   open: boolean
@@ -36,6 +39,12 @@ export function ConfirmDialog({
   destructive?: boolean
   busy?: boolean
   requireClick?: boolean
+  /** Why the last confirm failed, shown above the buttons. */
+  error?: string
+  /** Extra content between the description and the buttons. */
+  children?: ReactNode
+  /** A third button, between Cancel and confirm. */
+  alternative?: { label: string; onClick: () => void }
   onConfirm: () => void
 }): JSX.Element {
   const confirmRef = useRef<HTMLButtonElement>(null)
@@ -80,6 +89,8 @@ export function ConfirmDialog({
               />
             </div>
           )}
+          {children}
+          {error && <p className="mt-2 text-xs text-danger">{error}</p>}
           <div className="mt-5 flex justify-end gap-2">
             <AlertDialog.Close
               ref={cancelRef}
@@ -89,6 +100,17 @@ export function ConfirmDialog({
             >
               {cancelLabel}
             </AlertDialog.Close>
+            {alternative && (
+              <button
+                type="button"
+                onClick={alternative.onClick}
+                disabled={busy}
+                className="flex h-8 items-center rounded-md px-3 text-xs text-text-dim transition
+                  hover:bg-surface-3 hover:text-text disabled:opacity-50"
+              >
+                {alternative.label}
+              </button>
+            )}
             <button
               ref={confirmRef}
               onClick={onConfirm}

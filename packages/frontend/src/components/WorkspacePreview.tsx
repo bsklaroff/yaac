@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
+import { POPUP, MENU_ITEM } from '#components/ui/menu'
 import { Menu } from '@base-ui/react/menu'
 import { isElectron } from '#lib/platform'
 import { windowApi } from '#components/WindowControls'
@@ -169,8 +170,6 @@ export function WorkspacePreview({
 
   const iconBtn = 'flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-dim '
     + 'transition hover:bg-surface-2 hover:text-text disabled:opacity-30 disabled:hover:bg-transparent'
-  const menuItem = 'flex w-full cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-xs '
-    + 'text-text-dim outline-none data-[highlighted]:bg-surface-3 data-[highlighted]:text-text'
   const activePreset = DEVICE_PRESETS.find((p) => p.width === deviceWidth)
 
   return (
@@ -234,13 +233,11 @@ export function WorkspacePreview({
           </Menu.Trigger>
           <Menu.Portal>
             <Menu.Positioner side="bottom" align="end" sideOffset={6}>
-              <Menu.Popup className="min-w-[180px] rounded-lg border border-border bg-surface-2 p-1 text-text
-                shadow-[0_12px_32px_var(--shadow-color)] outline-none transition-opacity duration-100
-                data-[starting-style]:opacity-0 data-[ending-style]:opacity-0">
-                <Menu.Item className={menuItem} onClick={goHome}>
+              <Menu.Popup className={clsx('min-w-[180px]', POPUP)}>
+                <Menu.Item className={MENU_ITEM} onClick={goHome}>
                   <HomeIcon size={14} /> Home
                 </Menu.Item>
-                <Menu.Item className={menuItem} onClick={copyUrl}>
+                <Menu.Item className={MENU_ITEM} onClick={copyUrl}>
                   <CopyIcon size={14} /> Copy URL
                 </Menu.Item>
                 <div className="my-1 h-px bg-border" />
@@ -248,17 +245,17 @@ export function WorkspacePreview({
                   Responsive
                 </div>
                 {DEVICE_PRESETS.map((p) => (
-                  <Menu.Item key={p.label} className={menuItem} onClick={() => setDeviceWidth(p.width)}>
+                  <Menu.Item key={p.label} className={MENU_ITEM} onClick={() => setDeviceWidth(p.width)}>
                     <p.Icon size={14} />
                     <span className="flex-1">{p.label}{p.width ? ` · ${p.width}` : ''}</span>
                     {deviceWidth === p.width && <CheckIcon size={13} />}
                   </Menu.Item>
                 ))}
                 <div className="my-1 h-px bg-border" />
-                <Menu.Item className={menuItem} onClick={hardReload}>
+                <Menu.Item className={MENU_ITEM} onClick={hardReload}>
                   <ReloadIcon size={13} /> Reload ignoring cache
                 </Menu.Item>
-                <Menu.Item className={menuItem} onClick={openDevTools}>
+                <Menu.Item className={MENU_ITEM} onClick={openDevTools}>
                   <DevToolsIcon size={14} /> Open DevTools
                 </Menu.Item>
               </Menu.Popup>

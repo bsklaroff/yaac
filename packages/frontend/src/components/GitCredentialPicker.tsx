@@ -1,7 +1,7 @@
 import { useState, type FormEvent, type JSX } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
-import { addHttpsCredential, generateSshKey } from '#lib/settingsApi'
+import { api } from '#lib/api'
 import { AUTH_LIST_KEY, useAuthList } from '#lib/useAuthList'
 import { projectSlugFor } from '@yaac/shared/project-slug'
 
@@ -86,47 +86,29 @@ export function GitCredentialPicker({
   const [name, setName] = useState<string | null>(null) // null = the default
   const [token, setToken] = useState('')
   const [generated, setGenerated] = useState<{ id: string; publicKey: string } | null>(null)
-  const [busy, setBusy] = useState<'generate' | 'submit' | null>(null)
-  const [error, setError] = useState<string | null>(null)
 
   const choice = pick === NEW || existing.some((c) => c.id === pick) ? pick as string
     : existing.length > 0 || (offerExisting && !auth) ? '' : NEW
   const shownName = name ?? defaultCredentialName(kind, project, all.map((c) => c.name))
   // Ignore a generated key if the remote is no longer SSH.
   const key = kind === 'ssh' ? generated : null
-  const ready = !disabled && busy === null && (choice === NEW
-    ? (kind === 'ssh' ? key !== null : shownName.trim() !== '' && token.trim() !== '')
-    : choice !== '')
-
   const refresh = (): Promise<void> => queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
 
-  const generate = async (): Promise<void> => {
-    if (shownName.trim() === '' || busy !== null) return
-    setBusy('generate')
-    setError(null)
-    try {
-      setGenerated(await generateSshKey(shownName.trim()))
+  const generateKey = useMutation({
+    mutationFn: (keyName: string) => api.auth.git['ssh-keys'].$post({ json: { name: keyName } }),
+    onSuccess: (made) => {
+      setGenerated(made)
       void refresh()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'failed to generate a key')
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault()
-    if (choice === NEW && kind === 'ssh' && key === null) { await generate(); return }
-    if (!ready) return
-    setBusy('submit')
-    setError(null)
-    try {
+    },
+  })
+  const choose = useMutation({
+    mutationFn: async (): Promise<void> => {
       let id = choice
       if (choice === NEW) {
         if (key !== null) {
           id = key.id
         } else {
-          id = await addHttpsCredential(shownName.trim(), token.trim())
+          id = (await api.auth.git.credentials.$post({ json: { name: shownName.trim(), token: token.trim() } })).id
           // Switch to it as an existing credential so a retry doesn't
           // store it twice.
           await refresh()
@@ -136,20 +118,40 @@ export function GitCredentialPicker({
         }
       }
       await onSubmit(id)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'failed')
-    } finally {
-      setBusy(null)
-    }
+    },
+  })
+  const busy = generateKey.isPending ? 'generate' : choose.isPending ? 'submit' : null
+  const error = (choose.error ?? generateKey.error)?.message ?? null
+  const clearError = (): void => {
+    choose.reset()
+    generateKey.reset()
+  }
+
+  const ready = !disabled && busy === null && (choice === NEW
+    ? (kind === 'ssh' ? key !== null : shownName.trim() !== '' && token.trim() !== '')
+    : choice !== '')
+
+  const generate = (): void => {
+    if (shownName.trim() === '' || busy !== null) return
+    clearError()
+    generateKey.mutate(shownName.trim())
+  }
+
+  const submit = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault()
+    if (choice === NEW && kind === 'ssh' && key === null) { generate(); return }
+    if (!ready) return
+    clearError()
+    choose.mutate()
   }
 
   return (
-    <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-2 text-xs">
+    <form onSubmit={submit} className="flex flex-col gap-2 text-xs">
       {offerExisting && (
         <select
           aria-label="Git credential"
           value={choice}
-          onChange={(e) => { setPick(e.target.value); setError(null) }}
+          onChange={(e) => { setPick(e.target.value); clearError() }}
           className="rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-text outline-none"
         >
           {choice === '' && <option value="" disabled>Choose a git credential…</option>}
@@ -187,7 +189,7 @@ export function GitCredentialPicker({
           ) : (
             <button
               type="button"
-              onClick={() => void generate()}
+              onClick={generate}
               disabled={busy !== null || shownName.trim() === ''}
               className={BUTTON}
             >

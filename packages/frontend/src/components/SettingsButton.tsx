@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type JSX, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type FormEvent, type JSX } from 'react'
 import clsx from 'clsx'
-import { useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Dialog } from '@base-ui/react/dialog'
 import { Modal } from '#components/ui/Modal'
 import { Radio } from '@base-ui/react/radio'
@@ -15,33 +15,14 @@ import {
   ServerIcon,
   SettingsIcon,
 } from '#lib/icons'
+import { api } from '#lib/api'
+import { AUTH_LIST_KEY } from '#lib/useAuthList'
 import {
-  cancelToolInstall,
-  cancelToolLogin,
-  clearToolAuth,
-  deviceTimeZone,
-  getGitIdentity,
-  getTimeZone,
-  getToolInstall,
-  getToolLogin,
-  getUserDockerfile,
-  resetShortcuts,
-  saveUserDockerfile,
-  sendToolLoginInput,
-  setGitIdentity as setGitIdentityApi,
-  setShortcutOverride,
-  setTimeZone,
-  setToolApiKey,
-  startToolInstall,
-  startToolLogin,
-  type TimeZoneSetting,
-} from '#lib/settingsApi'
-import { AUTH_LIST_KEY, useAuthList } from '#lib/useAuthList'
-import {
-  SHORTCUTS, chordFromEvent, chordsEqual, formatChord, isModifierCode, validateChord, type ShortcutId,
+  SHORTCUTS, chordFromEvent, chordsEqual, formatChord, isModifierCode, validateChord, type Chord, type ShortcutId,
 } from '#lib/shortcuts'
-import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
-import { GitCredentials } from '#components/settings/GitCredentials'
+import { deviceTimeZone } from '#lib/time'
+import { CredentialsPane } from '#components/settings/Credentials'
+import { Field } from '#components/settings/Field'
 import { ProjectSettings } from '#components/settings/ProjectSettings'
 import { ServerSettings } from '#components/settings/ServerSettings'
 import { serverBridge } from '#lib/desktopServer'
@@ -50,27 +31,8 @@ import { BuildFiles } from '#components/settings/BuildFiles'
 import { userBuildFilesApi } from '#lib/buildFilesApi'
 import { useUiStore, type SettingsSection } from '#lib/store'
 import type { ThemePref } from '#lib/theme'
-import type { AgentTool, ToolAuthSummary, ToolInstallView, ToolLoginView } from '@yaac/shared/types'
-import { OPENCODE_PROVIDERS, PI_PROVIDERS } from '@yaac/shared/tool-providers'
 import { useSnapshot } from '#lib/useSnapshot'
 import { IS_MAC } from '#lib/platform'
-
-const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
-
-/**
- * Provider choices for the API-key-only tools: which backend the pasted key
- * is for. The first entry is the default. Unlisted tools have no provider.
- */
-interface ProviderOption { id: string; label: string }
-const PROVIDER_OPTIONS: Partial<Record<AgentTool, ProviderOption[]>> = {
-  opencode: OPENCODE_PROVIDERS.map((p) => ({ id: p.id, label: p.label })),
-  pi: PI_PROVIDERS.map((p) => ({ id: p.id, label: p.label })),
-}
-
-/** Default provider id for a tool that has a picker, else undefined. */
-function defaultProvider(tool: AgentTool): string | undefined {
-  return PROVIDER_OPTIONS[tool]?.[0].id
-}
 
 const THEMES: { value: ThemePref; label: string }[] = [
   { value: 'system', label: 'System' },
@@ -273,8 +235,9 @@ function UserDockerfilePane(): JSX.Element {
         <FileEditor
           title="Dockerfile.user"
           language="dockerfile"
-          load={getUserDockerfile}
-          save={saveUserDockerfile}
+          queryKey={['user-dockerfile']}
+          load={async () => (await api.config['user-dockerfile'].$get()).content}
+          save={async (content) => { await api.config['user-dockerfile'].$put({ json: { content } }) }}
         />
       </Field>
       <Field
@@ -294,482 +257,6 @@ function UserDockerfilePane(): JSX.Element {
 }
 
 /**
- * Per-tool sign-in plus git credentials. claude and codex sign in through the
- * vendor's browser login or a pasted API key; opencode and pi take a provider
- * and an API key. Creating a workspace needs a credential for its tool, and a
- * git credential for its project.
- */
-function CredentialsPane(): JSX.Element {
-  const auth = useAuthList()
-  const focusTool = useUiStore((s) => s.settingsFocusTool)
-  const queryClient = useQueryClient()
-  const refresh = (): void => {
-    void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
-  }
-
-  return (
-    <section>
-      <h2 className="text-sm font-semibold">Credentials</h2>
-      <Field label="Agent tools" hint="Sign in to create workspaces with a tool. Keys stay on this machine — containers only ever see placeholders.">
-        <div className="space-y-2 text-xs">
-          {TOOLS.map((t) => (
-            <ToolAuthRow
-              key={t}
-              tool={t}
-              summary={auth?.toolAuth.find((a) => a.tool === t) ?? null}
-              autoExpand={focusTool === t}
-              onChanged={refresh}
-            />
-          ))}
-        </div>
-      </Field>
-      <GitCredentials />
-    </section>
-  )
-}
-
-/** What the key-paste input asks for, per tool (and opencode/pi provider). */
-function apiKeyLabel(tool: AgentTool, provider: string | undefined): string {
-  if (tool === 'claude') return 'Anthropic API key'
-  if (tool === 'codex') return 'OpenAI API key'
-  const label = PROVIDER_OPTIONS[tool]?.find((o) => o.id === provider)?.label
-  return label ? `${label} API key` : 'API key'
-}
-
-/** Max provider rows rendered at once; search to reach the rest. */
-const PROVIDER_VISIBLE_LIMIT = 50
-
-/**
- * Searchable provider picker for the API-key-only tools. opencode has 150+
- * providers, so a filtered list replaces a radio row. The value is the
- * provider id.
- */
-function ProviderCombobox({ options, value, onChange }: {
-  options: ProviderOption[]
-  value: string
-  onChange: (id: string) => void
-}): JSX.Element {
-  const [query, setQuery] = useState('')
-  const q = query.trim().toLowerCase()
-  const matches = q
-    ? options.filter((o) => o.label.toLowerCase().includes(q) || o.id.toLowerCase().includes(q))
-    : options
-  const shown = matches.slice(0, PROVIDER_VISIBLE_LIMIT)
-  const hidden = matches.length - shown.length
-
-  return (
-    <div className="flex flex-col gap-1.5">
-      <input
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Search providers…"
-        className="w-full rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-xs
-          text-text outline-none focus:border-border-strong"
-      />
-      <div className="max-h-40 overflow-y-auto rounded-md border border-hairline-soft">
-        {shown.length === 0 ? (
-          <p className="px-2 py-1.5 text-[11px] text-text-faint">No providers found.</p>
-        ) : (
-          shown.map((o) => (
-            <button
-              key={o.id}
-              type="button"
-              onClick={() => onChange(o.id)}
-              className={clsx(
-                'flex w-full items-center justify-between gap-2 px-2 py-1 text-left text-[11px] transition',
-                o.id === value
-                  ? 'bg-surface-3 text-text'
-                  : 'text-text-dim hover:bg-surface-2 hover:text-text',
-              )}
-            >
-              <span className="truncate">{o.label}</span>
-              <span className="shrink-0 font-mono text-[10px] text-text-faint">{o.id}</span>
-            </button>
-          ))
-        )}
-        {hidden > 0 && (
-          <p className="px-2 py-1 text-[10px] text-text-faint">+{hidden} more — keep typing to narrow.</p>
-        )}
-      </div>
-    </div>
-  )
-}
-
-/**
- * One tool's credential row. Signed in: masked key + sign-out. Signed out:
- * a "Sign in" expander with the tool's available methods.
- */
-function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
-  tool: AgentTool
-  summary: ToolAuthSummary | null
-  autoExpand: boolean
-  onChanged: () => void
-}): JSX.Element {
-  const [expanded, setExpanded] = useState(false)
-  const [busy, setBusy] = useState<'save' | 'signout' | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [justSignedIn, setJustSignedIn] = useState(false)
-  const providerOptions = PROVIDER_OPTIONS[tool]
-  const [provider, setProvider] = useState<string>(defaultProvider(tool) ?? 'openrouter')
-
-  // Opened from a "Sign in" link elsewhere: start with this tool's form open.
-  useEffect(() => {
-    if (autoExpand && !summary) setExpanded(true)
-  }, [autoExpand, summary])
-
-  const run = async (kind: 'save' | 'signout', op: () => Promise<void>): Promise<void> => {
-    setBusy(kind)
-    setError(null)
-    try {
-      await op()
-      setExpanded(false)
-      setJustSignedIn(kind === 'save') // sign-out clears a stale confirmation
-      onChanged()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : `failed to ${kind === 'signout' ? 'sign out' : 'sign in'}`)
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  const saveKey = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault()
-    const formElement = event.currentTarget
-    const raw = new FormData(formElement).get('apiKey')
-    const apiKey = (typeof raw === 'string' ? raw : '').trim()
-    if (!apiKey) return
-    await run('save', async () => {
-      await setToolApiKey(tool, apiKey, providerOptions ? provider : undefined)
-      formElement.reset()
-    })
-  }
-
-  return (
-    <div className="rounded-md bg-bg px-2.5 py-1.5">
-      <div className="flex items-center justify-between">
-        <span className="truncate font-mono text-text-dim">
-          {tool}
-          {summary && ` · ${(() => {
-            const p = summary.opencodeProvider ?? summary.piProvider
-            return p ? `${p} · ` : ''
-          })()}${summary.kind}`}
-        </span>
-        {summary ? (
-          <span className="ml-2 flex shrink-0 items-center gap-2">
-            <span className="font-mono text-text-faint">{summary.keyPreview}</span>
-            <button
-              onClick={() => void run('signout', () => clearToolAuth(tool))}
-              disabled={busy !== null}
-              className={TEXT_BUTTON}
-            >
-              {busy === 'signout' ? 'Signing out…' : 'Sign out'}
-            </button>
-          </span>
-        ) : (
-          <button onClick={() => { setError(null); setExpanded((e) => !e) }} className={clsx(BUTTON, 'ml-2')}>
-            Sign in
-          </button>
-        )}
-      </div>
-
-      {justSignedIn && (
-        <p className="mt-1 text-[11px] text-emerald-400">Signed in successfully.</p>
-      )}
-
-      {!summary && expanded && (
-        <div className="mt-2 flex flex-col gap-2 border-t border-hairline-soft pt-2">
-          {!providerOptions && (
-            <>
-              <CliSignIn tool={tool} onDone={() => { setJustSignedIn(true); onChanged() }} />
-              <p className="text-[11px] text-text-faint">
-                …or paste an API key:
-              </p>
-            </>
-          )}
-          {providerOptions && (
-            <ProviderCombobox
-              options={providerOptions}
-              value={provider}
-              onChange={setProvider}
-            />
-          )}
-          <form onSubmit={(e) => void saveKey(e)} className="flex items-center gap-2">
-            <input
-              name="apiKey"
-              type="password"
-              placeholder={apiKeyLabel(tool, provider)}
-              className="flex-1 rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-xs
-                text-text outline-none focus:border-border-strong"
-            />
-            <button type="submit" disabled={busy !== null} className={BUTTON}>
-              {busy === 'save' ? 'Saving…' : 'Save'}
-            </button>
-          </form>
-        </div>
-      )}
-      {error && <p className="mt-1.5 text-[11px] text-red-400">{error}</p>}
-    </div>
-  )
-}
-
-/**
- * Browser sign-in: the server runs the vendor's login command
- * (`claude auth login` / `codex login`), which opens a browser and completes
- * through its localhost callback. The UI polls for the outcome.
- */
-function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): JSX.Element {
-  const [login, setLogin] = useState<ToolLoginView | null>(null)
-  const [install, setInstall] = useState<ToolInstallView | null>(null)
-  const [justInstalled, setJustInstalled] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [inputError, setInputError] = useState<string | null>(null)
-  const label = tool === 'claude' ? 'Sign in with Claude' : 'Sign in with ChatGPT'
-  const toolName = tool === 'claude' ? 'Claude Code' : 'Codex'
-
-  // Poll while the login runs. A login the server no longer knows (restart,
-  // expiry) resets to the start button.
-  useEffect(() => {
-    if (login?.status !== 'running') return
-    const t = setInterval(() => {
-      getToolLogin(login.id).then(setLogin).catch(() => setLogin(null))
-    }, 1500)
-    return () => clearInterval(t)
-  }, [login])
-
-  // `onDone` is a new closure each render; fire it only once per success.
-  const doneRef = useRef(false)
-  const succeeded = login?.status === 'success'
-  useEffect(() => {
-    if (!succeeded || doneRef.current) return
-    doneRef.current = true
-    onDone()
-  }, [succeeded, onDone])
-
-  useEffect(() => {
-    if (install?.status !== 'running') return
-    const t = setInterval(() => {
-      getToolInstall(install.id).then(setInstall).catch(() => setInstall(null))
-    }, 1500)
-    return () => clearInterval(t)
-  }, [install])
-
-  // A finished install returns to the start button with a "try again" nudge.
-  const installed = install?.status === 'success'
-  useEffect(() => {
-    if (!installed) return
-    setInstall(null)
-    setLogin(null)
-    setJustInstalled(true)
-  }, [installed])
-
-  const start = async (): Promise<void> => {
-    setBusy(true)
-    doneRef.current = false
-    try {
-      setLogin(await startToolLogin(tool))
-    } catch (err) {
-      setLogin({
-        id: '', tool, status: 'error',
-        error: err instanceof Error ? err.message : 'failed to start sign-in',
-      })
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const cancel = (): void => {
-    if (login?.status === 'running') void cancelToolLogin(login.id).catch(() => {})
-    setLogin(null)
-  }
-
-  const installCli = async (): Promise<void> => {
-    setBusy(true)
-    setLogin(null)
-    try {
-      setInstall(await startToolInstall(tool))
-    } catch (err) {
-      setInstall({
-        id: '', tool, status: 'error',
-        error: err instanceof Error ? err.message : 'failed to start install',
-      })
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const cancelInstall = (): void => {
-    if (install?.status === 'running') void cancelToolInstall(install.id).catch(() => {})
-    setInstall(null)
-  }
-
-  if (install) {
-    if (install.status === 'error') {
-      return (
-        <div className="flex flex-col gap-1.5">
-          <p className="text-[11px] text-red-400">{install.error ?? 'install failed'}</p>
-          <div className="flex gap-2">
-            <button onClick={() => void installCli()} className={BUTTON}>
-              Try again
-            </button>
-            <button onClick={cancelInstall} className={BUTTON}>
-              Cancel
-            </button>
-          </div>
-        </div>
-      )
-    }
-    return (
-      <div className="flex flex-col gap-2 rounded-md border border-accent/20 bg-accent/5 p-2.5">
-        <div className="flex items-center gap-2.5">
-          <p className="flex-1 text-[11px] leading-relaxed text-text-dim">
-            Installing {toolName}…
-          </p>
-          <button onClick={cancelInstall} className={BUTTON}>
-            Cancel
-          </button>
-        </div>
-        {install.output && <CliOutput text={install.output} />}
-      </div>
-    )
-  }
-
-  if (!login) {
-    return (
-      <div className="flex flex-col gap-1">
-        {justInstalled && (
-          <p className="text-[11px] text-emerald-400">{toolName} installed — try signing in again.</p>
-        )}
-        <button onClick={() => void start()} disabled={busy} className={BUTTON}>
-          {busy ? 'Starting…' : label}
-        </button>
-        <p className="text-[11px] text-text-faint">
-          Opens a browser window on this machine to authorize.
-        </p>
-      </div>
-    )
-  }
-
-  if (login.status === 'error') {
-    if (login.cliMissing) {
-      return (
-        <div className="flex flex-col gap-1.5">
-          <p className="text-[11px] text-text-dim">{toolName} isn't installed on this machine.</p>
-          <div className="flex gap-2">
-            <button onClick={() => void installCli()} disabled={busy} className={BUTTON}>
-              {busy ? 'Starting…' : `Install ${toolName}`}
-            </button>
-            <button onClick={cancel} className={BUTTON}>
-              Cancel
-            </button>
-          </div>
-        </div>
-      )
-    }
-    return (
-      <div className="flex flex-col gap-1.5">
-        <p className="text-[11px] text-red-400">{login.error ?? 'sign-in failed'}</p>
-        <button onClick={cancel} className={BUTTON}>
-          Try again
-        </button>
-      </div>
-    )
-  }
-
-  const sendInput = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault()
-    if (login.status !== 'running') return
-    const formElement = event.currentTarget
-    const raw = new FormData(formElement).get('text')
-    const text = (typeof raw === 'string' ? raw : '').trim()
-    if (!text) return
-    try {
-      setLogin(await sendToolLoginInput(login.id, text))
-      setInputError(null)
-      formElement.reset()
-    } catch (err) {
-      // The server rejects codes with unexpected characters; keep the flow
-      // open so the user can paste again.
-      setInputError(err instanceof Error ? err.message : 'failed to send input')
-    }
-  }
-
-  return (
-    <div className="flex flex-col gap-2 rounded-md border border-accent/20 bg-accent/5 p-2.5">
-      <div className="flex items-center gap-2.5">
-        <p className="flex-1 text-[11px] leading-relaxed text-text-dim">
-          Finish signing in from the browser window that just opened. No window? Use
-          the sign-in link the CLI printed below.
-        </p>
-        <button onClick={cancel} className={BUTTON}>
-          Cancel
-        </button>
-      </div>
-      {login.output && <CliOutput text={login.output} />}
-      {tool === 'claude' && (
-        <>
-          <form onSubmit={(e) => void sendInput(e)} className="flex items-center gap-2">
-            <input
-              name="text"
-              autoComplete="off"
-              placeholder="paste code here if prompted"
-              className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono
-                text-xs text-text outline-none focus:border-border-strong"
-            />
-            <button type="submit" className={BUTTON}>
-              Send
-            </button>
-          </form>
-          {inputError && <p className="text-[11px] text-red-400">{inputError}</p>}
-        </>
-      )}
-    </div>
-  )
-}
-
-const URL_RE = /https:\/\/[^\s"'<>]+/g
-
-/**
- * The login command's live output with clickable URLs, for when the server
- * could not open a browser itself.
- */
-function CliOutput({ text }: { text: string }): JSX.Element {
-  const boxRef = useRef<HTMLPreElement>(null)
-  useEffect(() => {
-    const el = boxRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [text])
-
-  const parts: (string | JSX.Element)[] = []
-  let last = 0
-  for (const m of text.matchAll(URL_RE)) {
-    parts.push(text.slice(last, m.index))
-    parts.push(
-      <a
-        key={m.index}
-        href={m[0]}
-        target="_blank"
-        rel="noreferrer"
-        className="break-all font-medium text-accent underline decoration-accent/40 hover:decoration-accent"
-      >
-        {m[0]}
-      </a>,
-    )
-    last = m.index + m[0].length
-  }
-  parts.push(text.slice(last))
-
-  return (
-    <pre
-      ref={boxRef}
-      className="max-h-36 overflow-y-auto whitespace-pre-wrap break-words rounded bg-bg/80 p-2 font-mono
-        text-[10px] leading-relaxed text-text-dim"
-    >
-      {parts}
-    </pre>
-  )
-}
-
-/**
  * View and rebind keyboard shortcuts. Click a row to record; the next unbound
  * chord with a modifier becomes its binding. While recording, the store's
  * `recordingShortcut` flag stops other keydown listeners from also running
@@ -781,6 +268,12 @@ function ShortcutsPane(): JSX.Element {
   const resetBindings = useUiStore((s) => s.resetBindings)
   const [recordingId, setRecordingId] = useState<ShortcutId | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // null resets every binding.
+  const saveBinding = useMutation({
+    mutationFn: (b: { id: ShortcutId; chord: Chord } | null) => (b === null
+      ? api.shortcuts.reset.$post()
+      : api.shortcuts.set.$post({ json: b })),
+  })
 
   useEffect(() => {
     if (!recordingId) return
@@ -800,14 +293,14 @@ function ShortcutsPane(): JSX.Element {
       setRecordingId(null)
       setError(null)
       setBinding(id, chord)
-      void setShortcutOverride(id, chord).catch((err: unknown) => console.error(err))
+      saveBinding.mutate({ id, chord })
     }
     window.addEventListener('keydown', onKeyDown, { capture: true })
     return () => {
       window.removeEventListener('keydown', onKeyDown, { capture: true })
       setRecording(false)
     }
-  }, [recordingId, bindings, setBinding])
+  }, [recordingId, bindings, setBinding, saveBinding.mutate])
 
   const startRecording = (id: ShortcutId): void => {
     setError(null)
@@ -822,14 +315,14 @@ function ShortcutsPane(): JSX.Element {
     if (!check.ok) { setError(check.reason); return }
     setError(null)
     setBinding(id, def.defaultChord)
-    void setShortcutOverride(id, def.defaultChord).catch((err: unknown) => console.error(err))
+    saveBinding.mutate({ id, chord: def.defaultChord })
   }
 
   const resetAll = (): void => {
     setRecordingId(null)
     setError(null)
     resetBindings()
-    void resetShortcuts().catch((err: unknown) => console.error(err))
+    saveBinding.mutate(null)
   }
 
   return (
@@ -842,6 +335,9 @@ function ShortcutsPane(): JSX.Element {
         Some chords the browser reserves — like Ctrl+W — can’t be captured.
       </p>
       {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+      {saveBinding.error && (
+        <p className="mt-2 text-xs text-red-400">Not saved: {saveBinding.error.message}</p>
+      )}
 
       <div className="mt-4 space-y-1">
         {SHORTCUTS.map((def) => {
@@ -892,17 +388,6 @@ function ShortcutsPane(): JSX.Element {
   )
 }
 
-/** A labeled settings field: small bold label, dim hint, then the control. */
-function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: JSX.Element }): JSX.Element {
-  return (
-    <div className="mt-6">
-      <div className="text-xs font-medium text-text">{label}</div>
-      {hint && <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">{hint}</p>}
-      <div className="mt-2">{children}</div>
-    </div>
-  )
-}
-
 /**
  * The git identity this server's workspaces commit under. It is a server
  * setting because the server's host may have no git config (a k8s pod) or
@@ -910,39 +395,29 @@ function Field({ label, hint, children }: { label: string; hint?: ReactNode; chi
  * your machine's git config on first contact, so it is usually already set.
  */
 function GitIdentityField(): JSX.Element {
-  const [identity, setIdentity] = useState<{ name: string; email: string } | null | undefined>()
-  const [name, setName] = useState('')
-  const [email, setEmail] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [saved, setSaved] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    getGitIdentity()
-      .then((v) => {
-        if (cancelled) return
-        setIdentity(v)
-        setName(v?.name ?? '')
-        setEmail(v?.email ?? '')
-      })
-      .catch((e: unknown) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)) })
-    return () => { cancelled = true }
-  }, [])
-
-  const save = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+  const [name, setName] = useState<string | null>(null)
+  const [email, setEmail] = useState<string | null>(null)
+  const queryClient = useQueryClient()
+  const { data: identity, error: loadError } = useQuery({
+    queryKey: ['git-identity'],
+    queryFn: async () => (await api.config['git-identity'].$get()).identity,
+    staleTime: 0,
+  })
+  const save = useMutation({
+    mutationFn: async (v: { name: string; email: string }) => (await api.config['git-identity'].$put({ json: v })).identity,
+    onSuccess: (saved) => {
+      queryClient.setQueryData(['git-identity'], saved)
+      setName(null)
+      setEmail(null)
+    },
+  })
+  // The fields show the stored identity until edited.
+  const shownName = name ?? identity?.name ?? ''
+  const shownEmail = email ?? identity?.email ?? ''
+  const error = save.error ?? loadError
+  const submit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault()
-    setBusy(true)
-    setError(null)
-    setSaved(false)
-    try {
-      setIdentity(await setGitIdentityApi({ name: name.trim(), email: email.trim() }))
-      setSaved(true)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-    }
+    save.mutate({ name: shownName.trim(), email: shownEmail.trim() })
   }
 
   const inputClass = 'flex-1 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono '
@@ -956,30 +431,30 @@ function GitIdentityField(): JSX.Element {
           + 'the auth server fill this in from your machine\'s git config.'
         : 'What workspaces on this server commit as.'}
     >
-      <form onSubmit={(e) => void save(e)}>
+      <form onSubmit={submit}>
         <div className="flex gap-2">
           <input
-            value={name}
-            onChange={(e) => { setName(e.target.value); setSaved(false) }}
+            value={shownName}
+            onChange={(e) => { setName(e.target.value); save.reset() }}
             placeholder="Your Name"
             className={inputClass}
           />
           <input
-            value={email}
-            onChange={(e) => { setEmail(e.target.value); setSaved(false) }}
+            value={shownEmail}
+            onChange={(e) => { setEmail(e.target.value); save.reset() }}
             placeholder="you@example.com"
             className={inputClass}
           />
           <button
             type="submit"
-            disabled={busy || name.trim() === '' || email.trim() === ''}
+            disabled={save.isPending || shownName.trim() === '' || shownEmail.trim() === ''}
             className="shrink-0 rounded-md bg-surface-3 px-3 text-xs font-medium text-text transition
               hover:bg-border-strong disabled:opacity-50"
           >
-            {busy ? 'Saving…' : saved ? 'Saved' : 'Save'}
+            {save.isPending ? 'Saving…' : save.isSuccess ? 'Saved' : 'Save'}
           </button>
         </div>
-        {error !== null && <p className="mt-2 text-xs text-red-400">{error}</p>}
+        {error && <p className="mt-2 text-xs text-red-400">{error.message}</p>}
       </form>
     </Field>
   )
@@ -991,27 +466,21 @@ function GitIdentityField(): JSX.Element {
  * workspace from the CLI; picking a zone here pins it.
  */
 function TimeZoneField(): JSX.Element {
-  const [setting, setSetting] = useState<TimeZoneSetting | undefined>()
-  const [error, setError] = useState<string | null>(null)
   const zones = useMemo(() => Intl.supportedValuesOf('timeZone'), [])
-
-  useEffect(() => {
-    let cancelled = false
-    getTimeZone()
-      .then((v) => { if (!cancelled) setSetting(v) })
-      .catch((e: unknown) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)) })
-    return () => { cancelled = true }
-  }, [])
-
+  const queryClient = useQueryClient()
+  const { data: setting, error: loadError } = useQuery({
+    queryKey: ['time-zone'],
+    queryFn: () => api.config['time-zone'].$get(),
+    staleTime: 0,
+  })
   /** '' is Automatic: report this device's zone and unpin. */
-  const choose = async (value: string): Promise<void> => {
-    setError(null)
-    try {
-      setSetting(await setTimeZone(value === '' ? deviceTimeZone() : value, value !== ''))
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }
+  const choose = useMutation({
+    mutationFn: (value: string) => api.config['time-zone'].$put({
+      json: { timeZone: value === '' ? deviceTimeZone() : value, pinned: value !== '' },
+    }),
+    onSuccess: (saved) => queryClient.setQueryData(['time-zone'], saved),
+  })
+  const error = choose.error ?? loadError
 
   // Unpinned, the stored zone is the last device's, which may not be this one.
   const automatic = setting?.pinned === false && setting.timeZone ? setting.timeZone : deviceTimeZone()
@@ -1028,14 +497,14 @@ function TimeZoneField(): JSX.Element {
           aria-label="Time zone"
           value={setting?.pinned ? setting.timeZone ?? '' : ''}
           disabled={setting === undefined}
-          onChange={(e) => void choose(e.target.value)}
+          onChange={(e) => choose.mutate(e.target.value)}
           className="rounded-md border border-border bg-bg px-2.5 py-1.5 text-xs text-text
             outline-none focus:border-border-strong disabled:opacity-50"
         >
           <option value="">Automatic ({automatic})</option>
           {zones.map((z) => <option key={z} value={z}>{z}</option>)}
         </select>
-        {error !== null && <p className="mt-2 text-xs text-red-400">{error}</p>}
+        {error && <p className="mt-2 text-xs text-red-400">{error.message}</p>}
       </>
     </Field>
   )

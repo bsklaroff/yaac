@@ -1,12 +1,12 @@
 import { useState, type JSX } from 'react'
 import clsx from 'clsx'
+import { useMutation } from '@tanstack/react-query'
 import { Menu } from '@base-ui/react/menu'
 import { DeleteIcon } from '#lib/icons'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { removeProject } from '#lib/projectApi'
+import { MENU_ITEM, POPUP } from '#components/ui/menu'
+import { api } from '#lib/api'
 import { useUiStore } from '#lib/store'
-
-const ITEM = 'flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-xs outline-none'
 
 /** The project name as a menu trigger. The only action is Remove, which
  *  asks for confirmation. */
@@ -17,15 +17,10 @@ export function ProjectActionsMenu({ slug, remoteUrl }: {
 }): JSX.Element {
   const setActiveProject = useUiStore((s) => s.setActiveProject)
   const [confirm, setConfirm] = useState(false)
-  const [busy, setBusy] = useState(false)
-
-  const onConfirm = (): void => {
-    setBusy(true)
-    void removeProject(slug)
-      .then(() => { setActiveProject(null); setConfirm(false) })
-      .catch((e: unknown) => console.error('remove project failed', e))
-      .finally(() => setBusy(false))
-  }
+  const remove = useMutation({
+    mutationFn: () => api.project[':slug'].$delete({ param: { slug } }),
+    onSuccess: () => { setActiveProject(null); setConfirm(false) },
+  })
 
   return (
     <>
@@ -36,11 +31,9 @@ export function ProjectActionsMenu({ slug, remoteUrl }: {
         </Menu.Trigger>
         <Menu.Portal>
           <Menu.Positioner side="bottom" align="start" sideOffset={6}>
-            <Menu.Popup className="min-w-[170px] rounded-lg border border-border bg-surface-2 p-1 text-text
-              shadow-[0_12px_32px_var(--shadow-color)] outline-none transition-opacity duration-100
-              data-[starting-style]:opacity-0 data-[ending-style]:opacity-0">
+            <Menu.Popup className={clsx('min-w-[170px]', POPUP)}>
               <Menu.Item
-                className={clsx(ITEM, 'text-danger data-[highlighted]:bg-[#c94a4a]/15')}
+                className={clsx(MENU_ITEM, 'text-danger data-[highlighted]:bg-[#c94a4a]/15 data-[highlighted]:text-danger')}
                 onClick={() => setConfirm(true)}
               >
                 <DeleteIcon size={14} />
@@ -53,13 +46,14 @@ export function ProjectActionsMenu({ slug, remoteUrl }: {
 
       <ConfirmDialog
         open={confirm}
-        onOpenChange={setConfirm}
-        busy={busy}
+        onOpenChange={(next) => { setConfirm(next); remove.reset() }}
+        busy={remove.isPending}
+        error={remove.error?.message}
         title="Remove project?"
         description={`Removes "${slug}" and all its workspaces. This can't be undone.`}
         confirmText={remoteUrl}
         confirmLabel="Remove"
-        onConfirm={onConfirm}
+        onConfirm={() => remove.mutate()}
       />
     </>
   )

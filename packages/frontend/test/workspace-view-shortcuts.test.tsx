@@ -1,28 +1,15 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach, beforeAll, beforeEach } from 'vitest'
-import { render, screen, cleanup, waitFor, fireEvent, act } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { screen, cleanup, waitFor, fireEvent, act } from '@testing-library/react'
 import type { ServerSnapshot, WorkspaceListEntry } from '@yaac/shared/types'
-import type * as FilesModule from '#lib/files'
 
-// Stub the workspace panes: no xterm, no PTY, and a file listing for the
-// explorer.
+// Stub the terminal pane: no xterm, no PTY.
 vi.mock('#components/WorkspaceTerminal', () => ({ WorkspaceTerminal: () => <div data-testid="terminal" /> }))
-vi.mock('#lib/terminalsApi', () => ({
-  getWorkspaceTerminals: vi.fn(() => Promise.resolve([])),
-  createShellTerminal: vi.fn(),
-  killWorkspaceTerminal: vi.fn(),
-}))
-vi.mock('#lib/files', async (importOriginal) => ({
-  ...await importOriginal<typeof FilesModule>(),
-  listWorkspaceFiles: vi.fn(() => Promise.resolve({
-    paths: ['a.ts'], symlinks: {}, ignored: [], emptyDirs: [], status: {}, truncated: false,
-  })),
-}))
 
 import { WorkspaceView } from '#components/WorkspaceView'
 import { DEFAULT_BINDINGS } from '#lib/shortcuts'
 import { shortcutsSuspended, useUiStore } from '#lib/store'
+import { mockFetch, renderWithClient } from './harness'
 
 beforeAll(() => {
   globalThis.ResizeObserver ??= class {
@@ -48,16 +35,21 @@ const snapshot = { workspaces: [workspace] } as unknown as ServerSnapshot
 const initial = useUiStore.getState()
 beforeEach(() => {
   useUiStore.setState({ ...initial, selectedWorkspaceId: 's1', layouts: {}, activeTabs: {}, filesFindPending: false })
+  // No shell terminals, and a one-file listing for the explorer.
+  mockFetch({
+    'GET /api/workspace/s1/terminals': [],
+    'GET /api/workspace/s1/files': {
+      paths: ['a.ts'], symlinks: {}, ignored: [], emptyDirs: [], status: {}, truncated: false,
+    },
+  })
 })
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 function renderView(): void {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(
-    <QueryClientProvider client={client}>
-      <WorkspaceView snapshot={snapshot} provisioning={[]} />
-    </QueryClientProvider>,
-  )
+  renderWithClient(<WorkspaceView snapshot={snapshot} provisioning={[]} />)
 }
 
 const altE = (): void => { fireEvent.keyDown(window, { code: 'KeyE', key: 'e', altKey: true }) }

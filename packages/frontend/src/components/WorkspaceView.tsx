@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type JSX, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
+import { POPUP } from '#components/ui/menu'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Menu } from '@base-ui/react/menu'
-import { layoutOf, shortcutsSuspended, useUiStore } from '#lib/store'
+import { layoutOf, useUiStore } from '#lib/store'
 import { WorkspaceTerminal } from '#components/WorkspaceTerminal'
 import { WorkspacePreview } from '#components/WorkspacePreview'
 import { WorkspaceChanges } from '#components/WorkspaceChanges'
@@ -10,12 +11,12 @@ import { WorkspaceChat } from '#components/WorkspaceChat'
 import { WorkspaceFiles } from '#components/WorkspaceFiles'
 import { WorkspaceFile } from '#components/WorkspaceFile'
 import { isPreviewTarget, previewLabel } from '#lib/preview'
-import { isChangesTarget } from '#lib/changesApi'
+import { isChangesTarget } from '#lib/panes'
 import {
   discardFileSavers, fileKey, fileTabLabels, fileTargetPath, flushFileSavers, isFileTarget, isFilesTarget,
 } from '#lib/files'
 import { acpTargetSession, isAcpTarget } from '@yaac/shared/acp'
-import { defaultPaneTarget, isSpecialPane, paneStillLive, syncPaneLayout } from '#lib/panes'
+import { defaultPaneTarget, isSpecialPane, syncPaneLayout } from '#lib/panes'
 import { agentLabel } from '#lib/agentLabel'
 import { isElectron } from '#lib/platform'
 import { goBackScreen } from '#lib/mobileHistory'
@@ -35,15 +36,15 @@ import { UnforwardedPortsBadge } from '#components/UnforwardedPortsBadge'
 import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
 import { GitStatusBar } from '#components/GitStatusBar'
 import { ForwardedPortLinks, portLinkHref, portLinkLabel } from '#components/ForwardedPortLinks'
-import { getWorkspaceTerminals, createShellTerminal, killWorkspaceTerminal } from '#lib/terminalsApi'
-import { claimChord, cycleDeltaFor, matchShortcut, resolveCycleTarget } from '#lib/shortcuts'
+import { api } from '#lib/api'
+import { usePressDrag } from '#lib/usePressDrag'
+import { useKeptPanes } from '#lib/useKeptPanes'
+import { usePaneShortcuts } from '#lib/usePaneShortcuts'
 import {
   addColumn,
   computeColumns,
   dropTargetAt,
   focusPaneTarget,
-  moveColumn,
-  moveTabInStrip,
   moveTargetToColumn,
   moveTargetToGroup,
   paneTargets,
@@ -67,22 +68,12 @@ const HEADER_H = 28
 const MOBILE_HEADER_H = 38
 /** Pane card inner padding around the terminal block. */
 const PAD = 3
-/** Pointer must travel this far before a tab-drag becomes a move. */
-const DRAG_THRESHOLD = 5
 /** Most workspaces attached in the background after a page load. Each costs
  *  a server-side PTY, so a large install shouldn't open dozens at once;
  *  the rest attach when first viewed. */
 const EAGER_ATTACH_MAX = 12
 /** The same limit on a phone, where each live stream costs mobile data. */
 const MOBILE_EAGER_ATTACH_MAX = 2
-
-interface DragState {
-  src: string
-  startX: number
-  startY: number
-  active: boolean
-  over?: DropTarget
-}
 
 /**
  * A pane's tab label. An agent pane is named for its tool and model
@@ -167,7 +158,7 @@ export function WorkspaceView({
   // their names.
   const { data: terminals } = useQuery({
     queryKey: ['terminals', sid],
-    queryFn: () => getWorkspaceTerminals(sid ?? ''),
+    queryFn: () => api.workspace[':id'].terminals.$get({ param: { id: sid ?? '' } }),
     enabled: !!workspace,
     refetchInterval: 10_000,
     staleTime: 5_000,
@@ -214,92 +205,24 @@ export function WorkspaceView({
   // Each column's visible pane rect, for positioning and the drop highlight.
   const activePaneRect = new Map(cols.map((c) => [c.group.active, c.rect]))
 
-  // Keep-alive: every pane ever shown stays mounted (hidden) so switching
-  // back is instant. Explicitly closed panes are dropped.
-  const [opened, setOpened] = useState<string[]>([])
-  useEffect(() => {
-    if (!sid) return
-    const keys = paneTargets(layout).map((t) => `${sid}|${t}`)
-    setOpened((prev) => {
-      const fresh = keys.filter((k) => !prev.includes(k))
-      return fresh.length ? [...prev, ...fresh] : prev
-    })
-  }, [sid, layout])
-
-  /** The workspace a `<id>|<target>` key belongs to, if this snapshot has it. */
-  const keyWorkspace = (key: string): WorkspaceListEntry | undefined =>
-    workspaces.find((s) => s.workspaceId === key.slice(0, key.indexOf('|')))
-  const keyTarget = (key: string): string => key.slice(key.indexOf('|') + 1)
-
-  // Permanently drop a pane its workspace no longer has. Filtering `mounted`
-  // alone isn't enough: an ACP workspace's early `agent` key would come back
-  // while the workspace stops (it then reports no conversations) and attach
-  // a PTY to a workspace being torn down. Workspaces missing from this
-  // snapshot are left alone.
-  useEffect(() => {
-    setOpened((prev) => {
-      const next = prev.filter((key) => {
-        const wt = keyWorkspace(key)
-        return wt === undefined || paneStillLive(wt, keyTarget(key))
-      })
-      return next.length === prev.length ? prev : next
-    })
-  }, [workspaces])
-
-  // Likewise drop a file pane that left its layout (renamed or deleted).
-  useEffect(() => {
-    setOpened((prev) => {
-      const next = prev.filter((key) => {
-        const target = keyTarget(key)
-        if (!isFileTarget(target)) return true
-        const id = key.slice(0, key.indexOf('|'))
-        return paneTargets(layoutOf(layouts, id)).includes(target)
-      })
-      return next.length === prev.length ? prev : next
-    })
-  }, [layouts])
-
-  // The panes to render now; the prune effects above make removals permanent.
-  const mounted = opened.filter((key) => {
-    const wt = keyWorkspace(key)
-    return wt !== undefined && paneStillLive(wt, keyTarget(key))
+  // Eager attach: after a page load, each live workspace's default pane
+  // (`defaultPaneTarget`) is kept mounted hidden. Only the default pane,
+  // since it exists for every workspace and persisted window ids may be
+  // stale. Limited by EAGER_ATTACH_MAX.
+  const { mounted, forget, lastRects } = useKeptPanes({
+    sid,
+    layout,
+    layouts,
+    workspaces,
+    eagerKeys: workspaces
+      .filter((s) => !s.stopping)
+      .slice(0, isMobile ? MOBILE_EAGER_ATTACH_MAX : EAGER_ATTACH_MAX)
+      .map((s) => `${s.workspaceId}|${defaultPaneTarget(s)}`),
+    // The tabs-mode rect, which is the size a pane is first shown at.
+    eagerRect: wsSize.w > 0 && wsSize.h > 0
+      ? { left: PAD, top: headerH, width: wsSize.w - PAD * 2, height: wsSize.h - headerH - PAD }
+      : null,
   })
-
-  // Last shown rect per mounted pane. Hidden panes keep it, so showing them
-  // again needs no resize.
-  const lastRects = useRef(new Map<string, { left: number; top: number; width: number; height: number }>())
-  for (const k of [...lastRects.current.keys()]) {
-    if (!mounted.includes(k)) lastRects.current.delete(k)
-  }
-
-  // Eager attach: after a page load, mount each live workspace's default
-  // pane (`defaultPaneTarget`) hidden, so it attaches in the background and
-  // the first click shows it instantly. Only the default pane, since it
-  // exists for every workspace and persisted window ids may be stale. Its
-  // rect is set to the tabs-mode rect so it attaches at the size it will be
-  // shown at. Limited by EAGER_ATTACH_MAX.
-  const eagerKeys = workspaces
-    .filter((s) => !s.stopping)
-    .slice(0, isMobile ? MOBILE_EAGER_ATTACH_MAX : EAGER_ATTACH_MAX)
-    .map((s) => `${s.workspaceId}|${defaultPaneTarget(s)}`)
-    .join(',')
-  useEffect(() => {
-    if (wsSize.w <= 0 || wsSize.h <= 0 || eagerKeys === '') return
-    const keys = eagerKeys.split(',')
-    const rect = {
-      left: PAD,
-      top: headerH,
-      width: wsSize.w - PAD * 2,
-      height: wsSize.h - headerH - PAD,
-    }
-    for (const k of keys) {
-      if (!lastRects.current.has(k)) lastRects.current.set(k, rect)
-    }
-    setOpened((prev) => {
-      const fresh = keys.filter((k) => !prev.includes(k))
-      return fresh.length ? [...prev, ...fresh] : prev
-    })
-  }, [eagerKeys, wsSize.w, wsSize.h, headerH])
 
   const refetchTerminals = (): void => {
     void queryClient.invalidateQueries({ queryKey: ['terminals', sid] })
@@ -309,7 +232,7 @@ export function WorkspaceView({
    *  waiting for the next terminals poll. */
   const openShell = (): void => {
     if (!sid) return
-    void createShellTerminal(sid)
+    void api.workspace[':id'].terminals.$post({ param: { id: sid } })
       .then((entry) => {
         queryClient.setQueryData<WorkspaceTerminalEntry[]>(
           ['terminals', sid],
@@ -327,95 +250,6 @@ export function WorkspaceView({
   // A file pane whose unsaved text could not be saved on close.
   const [confirmDiscard, setConfirmDiscard] = useState<{ target: string; name: string } | null>(null)
 
-  // Pane-scoped shortcuts (see SHORTCUTS in #lib/shortcuts); Shell handles
-  // the project-scoped ones. Captured on window so a chord is consumed
-  // before xterm could send it to the PTY. The ref gives the listener the
-  // current render's state.
-  const shortcutCtx = useRef({ sid, targets, activeTab, terminals, openShell, previewPorts, isMobile })
-  shortcutCtx.current = { sid, targets, activeTab, terminals, openShell, previewPorts, isMobile }
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent): void => {
-      const ctx = shortcutCtx.current
-      if (!ctx.sid) return
-      const state = useUiStore.getState()
-      // A rebind being recorded, or the create dialog open.
-      if (shortcutsSuspended(state)) return
-      const id = matchShortcut(state.bindings, e)
-      switch (id) {
-        case 'new-shell':
-          claimChord(e)
-          ctx.openShell()
-          return
-        case 'kill-terminal': {
-          // The agent pane can't be killed.
-          if (!ctx.activeTab || ctx.activeTab === 'agent') return
-          claimChord(e)
-          // A special pane just closes, without confirmation.
-          if (isSpecialPane(ctx.activeTab)) {
-            closePaneRef.current(ctx.activeTab)
-            return
-          }
-          setConfirmKill({ target: ctx.activeTab, name: paneName(ctx.activeTab, ctx.terminals) })
-          return
-        }
-        case 'open-files':
-          // Open the explorer with its filter focused, for quick-open.
-          claimChord(e)
-          state.openFiles(ctx.sid)
-          state.setFilesFindPending(true)
-          return
-        case 'open-changes':
-          claimChord(e)
-          state.openChanges(ctx.sid)
-          return
-        case 'open-preview':
-          // Nothing to preview without a forwarded port.
-          if (ctx.previewPorts.length === 0) return
-          claimChord(e)
-          state.openPreview(ctx.sid)
-          return
-        case 'view-tabs':
-        case 'view-tiles':
-          // On mobile the chord would do nothing visible but still overwrite
-          // the saved desktop preference.
-          if (ctx.isMobile) return
-          claimChord(e)
-          state.setViewMode(id === 'view-tabs' ? 'tabs' : 'tiles')
-          return
-        case 'move-terminal-left':
-        case 'move-terminal-right': {
-          // Move the active pane's column (tiles) or tab (tabs), then keep it
-          // focused.
-          if (!ctx.activeTab) return
-          claimChord(e)
-          const dir = id === 'move-terminal-right' ? 1 : -1
-          const cur = layoutOf(state.layouts, ctx.sid)
-          const moved = state.viewMode === 'tiles'
-            ? moveColumn(cur, ctx.activeTab, dir)
-            : moveTabInStrip(cur, ctx.activeTab, dir)
-          if (moved === cur) return
-          state.setWorkspaceLayout(ctx.sid, moved)
-          state.focusTerminal(ctx.sid, ctx.activeTab)
-          return
-        }
-        case 'prev-terminal':
-        case 'next-terminal': {
-          const delta = cycleDeltaFor(id)
-          if (delta === null) return
-          const next = resolveCycleTarget(ctx.targets, ctx.activeTab, delta)
-          if (!next) return
-          claimChord(e)
-          useUiStore.getState().focusTerminal(ctx.sid, next)
-          return
-        }
-        default:
-          return
-      }
-    }
-    window.addEventListener('keydown', onKeyDown, { capture: true })
-    return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
-  }, [])
-
   const killPane = (target: string): void => {
     if (!sid) return
     // Remove the cached window too, so the layout sync doesn't re-add it
@@ -425,8 +259,8 @@ export function WorkspaceView({
       (old) => old?.filter((t) => t.target !== target),
     )
     setWorkspaceLayout(sid, removeTarget(layout, target))
-    setOpened((prev) => prev.filter((k) => k !== `${sid}|${target}`))
-    void killWorkspaceTerminal(sid, target)
+    forget(`${sid}|${target}`)
+    void api.workspace[':id'].terminals.close.$post({ param: { id: sid }, json: { target } })
       .catch((e: unknown) => console.error('kill terminal failed', e))
       .finally(refetchTerminals)
   }
@@ -437,7 +271,7 @@ export function WorkspaceView({
     if (isFileTarget(target)) discardFileSavers([fileKey(id, fileTargetPath(target))])
     const st = useUiStore.getState()
     st.setWorkspaceLayout(id, removeTarget(layoutOf(st.layouts, id), target))
-    setOpened((prev) => prev.filter((k) => k !== `${id}|${target}`))
+    forget(`${id}|${target}`)
   }
   const closePane = (target: string): void => {
     if (!sid) return
@@ -451,62 +285,38 @@ export function WorkspaceView({
       else setConfirmDiscard({ target, name: fileTargetPath(target) })
     })
   }
-  const closePaneRef = useRef(closePane)
-  closePaneRef.current = closePane
+  usePaneShortcuts({
+    sid,
+    targets,
+    activeTab,
+    canPreview: previewPorts.length > 0,
+    isMobile,
+    openShell,
+    closePane,
+    askKill: (target) => setConfirmKill({ target, name: paneName(target, terminals) }),
+  })
 
   // --- tab drag (rearrange columns / merge into tabs) ---
-  const [drag, setDrag] = useState<DragState | null>(null)
-  const dragRef = useRef<DragState | null>(null)
-  dragRef.current = drag
-
-  // A tab is a drag handle and a click target: a press that stays within
-  // DRAG_THRESHOLD selects it; a drag moves the pane (see dropTargetAt).
-  const onTabDown = (e: ReactPointerEvent, src: string, onSelect: () => void): void => {
-    e.preventDefault()
-    if (!sid) return
-    const ws = wsRef.current
-    if (!ws) return
-    const wsRect = ws.getBoundingClientRect()
-    // Set the ref too; the move handler may fire before the next render.
-    const init: DragState = { src, startX: e.clientX, startY: e.clientY, active: false }
-    dragRef.current = init
-    setDrag(init)
-
-    const onMove = (ev: globalThis.PointerEvent): void => {
-      const d = dragRef.current
-      if (!d) return
-      const dist = Math.hypot(ev.clientX - d.startX, ev.clientY - d.startY)
-      const active = d.active || dist > DRAG_THRESHOLD
-      if (!active) return
-      const px = ev.clientX - wsRect.left
-      const over = dropTargetAt(colsRef.current, px)
-      const next: DragState = { ...d, active, over }
-      dragRef.current = next
-      setDrag(next)
-    }
-    const onUp = (): void => {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-      const d = dragRef.current
-      setDrag(null)
-      if (!d) return
-      if (!d.active) { onSelect(); return }
-      if (!d.over) return
+  // A tab's press selects it; a drag moves its pane (see dropTargetAt).
+  const { drag, start: onTabDown } = usePressDrag<string, DropTarget>({
+    over: (x) => {
+      const ws = wsRef.current
+      return ws ? dropTargetAt(colsRef.current, x - ws.getBoundingClientRect().left) : undefined
+    },
+    onDrop: ({ item: src, over }) => {
+      if (!sid || !over) return
       const cur = useUiStore.getState()
       const node = layoutOf(cur.layouts, sid)
-      const moved = d.over.kind === 'tab'
-        ? moveTargetToGroup(node, d.src, d.over.group)
-        : moveTargetToColumn(node, d.src, d.over.index)
-      cur.setWorkspaceLayout(sid, moved)
-    }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-  }
+      cur.setWorkspaceLayout(sid, over.kind === 'tab'
+        ? moveTargetToGroup(node, src, over.group)
+        : moveTargetToColumn(node, src, over.index))
+    },
+  })
 
   // While dragging: a box over the target column, or a bar where a new
   // column would open.
   const dropHighlight: { rect: { x: number; y: number; w: number; h: number }; bar: boolean } | null =
-    drag?.active && drag.over
+    drag?.over
       ? (() => {
           const over = drag.over
           if (over.kind === 'tab') {
@@ -546,7 +356,7 @@ export function WorkspaceView({
             'max-md:h-8 max-md:rounded-md max-md:px-3 max-md:text-xs',
             opts.draggable && 'cursor-grab select-none active:cursor-grabbing',
             t !== 'agent' && 'pr-5 max-md:pr-7',
-            drag?.active && drag.src === t && 'opacity-60',
+            drag?.item === t && 'opacity-60',
             opts.isActive
               ? 'bg-surface-3 font-medium text-text'
               : 'text-text-faint hover:text-text-dim',
@@ -987,9 +797,7 @@ function PaneOverflowMenu({
       </Menu.Trigger>
       <Menu.Portal>
         <Menu.Positioner side="bottom" align="end" sideOffset={6}>
-          <Menu.Popup className="min-w-[200px] rounded-lg border border-border bg-surface-2 p-1 text-text
-            shadow-[0_12px_32px_var(--shadow-color)] outline-none transition-opacity duration-100
-            data-[starting-style]:opacity-0 data-[ending-style]:opacity-0">
+          <Menu.Popup className={clsx('min-w-[200px]', POPUP)}>
             <Menu.Item className={ITEM} onClick={onNewShell}>
               <AddIcon size={14} />
               New shell

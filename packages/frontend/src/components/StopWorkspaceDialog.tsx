@@ -1,11 +1,11 @@
 import { useRef, type JSX } from 'react'
-import { AlertDialog } from '@base-ui/react/alert-dialog'
+import { useMutation } from '@tanstack/react-query'
+import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { QueuedIcon } from '#lib/icons'
 import { agentLabel } from '#lib/agentLabel'
-import { discardQueuedWorkspace } from '#lib/queueApi'
+import { api } from '#lib/api'
 import { clip, queuedChildren, queuedTitle } from '#lib/queued'
 import { useSnapshot } from '#lib/useSnapshot'
-import { useOpenerFocus } from '#lib/useOpenerFocus'
 import { useUiStore } from '#lib/store'
 import type { QueuedWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/types'
 
@@ -17,7 +17,8 @@ import type { QueuedWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/type
  * further confirm). Deeper entries show under their parent as waiting, since
  * they start when that parent stops.
  *
- * The confirm button takes initial focus, so Alt+D then Enter stops.
+ * The confirm button takes initial focus, so Alt+D then Enter stops
+ * (ConfirmDialog).
  */
 export function StopWorkspaceDialog({
   workspace,
@@ -29,8 +30,6 @@ export function StopWorkspaceDialog({
   onOpenChange: (open: boolean) => void
   onConfirm: () => void
 }): JSX.Element {
-  const confirmRef = useRef<HTMLButtonElement>(null)
-  const finalFocus = useOpenerFocus(workspace !== null)
   const snapshot = useSnapshot()
   const openCreateWorkspace = useUiStore((s) => s.openCreateWorkspace)
   // Kept through the close animation, when `workspace` is already null.
@@ -41,6 +40,10 @@ export function StopWorkspaceDialog({
   const children = queuedChildren(snapshot?.queuedWorkspaces ?? [])
   const direct = shown !== null ? children.get(shown.workspaceId) ?? [] : []
   const name = shown ? clip(shown.title || shown.prompt || 'New workspace') : ''
+  // The entry leaves the snapshot once discarded.
+  const discard = useMutation({
+    mutationFn: (id: string) => api.workspace.queue.discard.$post({ json: { id } }),
+  })
 
   const renderEntry = (entry: QueuedWorkspaceEntry, depth: number): JSX.Element => (
     <li key={entry.id}>
@@ -61,9 +64,7 @@ export function StopWorkspaceDialog({
         </button>
         <button
           type="button"
-          onClick={() => {
-            void discardQueuedWorkspace(entry.id).catch((e: unknown) => console.error('discard failed', e))
-          }}
+          onClick={() => discard.mutate(entry.id)}
           className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-text-dim transition hover:bg-surface-3 hover:text-text"
         >
           Discard
@@ -76,47 +77,22 @@ export function StopWorkspaceDialog({
   )
 
   return (
-    <AlertDialog.Root open={workspace !== null} onOpenChange={onOpenChange}>
-      <AlertDialog.Portal>
-        <AlertDialog.Backdrop className="fixed inset-0 bg-black/60 backdrop-blur-[1px] transition-opacity duration-150
-          data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
-        <AlertDialog.Popup
-          initialFocus={confirmRef}
-          finalFocus={finalFocus}
-          className="fixed left-1/2 top-1/2 w-[420px] max-w-[calc(100vw-2rem)] -translate-x-1/2
-            -translate-y-1/2 rounded-lg border border-border bg-surface-2 p-5 text-text shadow-[0_16px_48px_var(--shadow-color)]
-            outline-none transition duration-150 data-[starting-style]:scale-95 data-[starting-style]:opacity-0
-            data-[ending-style]:scale-95 data-[ending-style]:opacity-0"
-        >
-          <AlertDialog.Title className="text-sm font-semibold">{`Stop “${name}”?`}</AlertDialog.Title>
-          <AlertDialog.Description className="mt-1 text-xs leading-relaxed text-text-dim">
-            Stops and removes the workspace's container. The workspace history and workspace will be saved,
-            and can be restarted.
-          </AlertDialog.Description>
-          {direct.length > 0 && (
-            <div className="mt-3">
-              <p className="text-[11px] uppercase tracking-wide text-text-faint">Starts when this stops</p>
-              <ul className="mt-1 max-h-[240px] overflow-y-auto">{direct.map((e) => renderEntry(e, 0))}</ul>
-            </div>
-          )}
-          <div className="mt-5 flex justify-end gap-2">
-            <AlertDialog.Close
-              className="flex h-8 items-center rounded-md px-3 text-xs text-text-dim transition
-                hover:bg-surface-3 hover:text-text"
-            >
-              Cancel
-            </AlertDialog.Close>
-            <button
-              ref={confirmRef}
-              onClick={onConfirm}
-              className="flex h-8 items-center rounded-md bg-[#c94a4a] px-3 text-xs font-medium text-white transition
-                hover:bg-danger"
-            >
-              {direct.length > 0 ? `Stop and start ${direct.length} queued` : 'Stop'}
-            </button>
-          </div>
-        </AlertDialog.Popup>
-      </AlertDialog.Portal>
-    </AlertDialog.Root>
+    <ConfirmDialog
+      open={workspace !== null}
+      onOpenChange={onOpenChange}
+      title={`Stop “${name}”?`}
+      description={'Stops and removes the workspace\'s container. The workspace history and workspace will be '
+        + 'saved, and can be restarted.'}
+      confirmLabel={direct.length > 0 ? `Stop and start ${direct.length} queued` : 'Stop'}
+      onConfirm={onConfirm}
+    >
+      {direct.length > 0 && (
+        <div className="mt-3">
+          <p className="text-[11px] uppercase tracking-wide text-text-faint">Starts when this stops</p>
+          <ul className="mt-1 max-h-[240px] overflow-y-auto">{direct.map((e) => renderEntry(e, 0))}</ul>
+        </div>
+      )}
+      {discard.error && <p className="mt-2 text-xs text-danger">Discard failed: {discard.error.message}</p>}
+    </ConfirmDialog>
   )
 }

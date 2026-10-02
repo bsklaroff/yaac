@@ -1,21 +1,10 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
-
-vi.mock('#lib/settingsApi', () => ({
-  getGitIdentity: vi.fn().mockResolvedValue({ name: 'Ada', email: 'ada@example.com' }),
-  setGitIdentity: vi.fn(),
-  deviceTimeZone: () => 'America/New_York',
-  getTimeZone: vi.fn(),
-  setTimeZone: vi.fn(),
-  getAuthList: vi.fn().mockResolvedValue({ gitCredentials: [], toolAuth: [] }),
-  getShortcutOverrides: vi.fn().mockResolvedValue({}),
-}))
-
+import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import { SettingsButton } from '#components/SettingsButton'
-import { getTimeZone, setTimeZone } from '#lib/settingsApi'
 import { useUiStore } from '#lib/store'
+import { deviceTimeZone } from '#lib/time'
+import { mockFetch, renderWithClient, type FetchMock } from './harness'
 
 // jsdom has no ResizeObserver; Base UI's positioner needs one to exist.
 beforeAll(() => {
@@ -28,17 +17,25 @@ beforeAll(() => {
 
 beforeEach(() => {
   useUiStore.setState({ settingsOpen: false, settingsSection: 'general' })
-  vi.clearAllMocks()
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
+
+/** Serve the General pane with `stored` as the server's time zone setting;
+ *  a PUT answers with what it was sent. */
+function serve(stored: { timeZone: string; pinned: boolean }): FetchMock {
+  return mockFetch({
+    'GET /api/config/git-identity': { identity: { name: 'Ada', email: 'ada@example.com' } },
+    'GET /api/config/time-zone': stored,
+    'PUT /api/config/time-zone': ({ body }: { body: unknown }) => body,
+  })
+}
 
 async function openTimeZone(): Promise<HTMLSelectElement> {
-  render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <SettingsButton />
-    </QueryClientProvider>,
-  )
+  renderWithClient(<SettingsButton />)
   fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
   const select = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Time zone' })
   await waitFor(() => expect(select.disabled).toBe(false))
@@ -47,25 +44,23 @@ async function openTimeZone(): Promise<HTMLSelectElement> {
 
 describe('Settings → General → Time zone', () => {
   it('shows the zone the last device reported as Automatic, and pins a picked one', async () => {
-    vi.mocked(getTimeZone).mockResolvedValue({ timeZone: 'Europe/Paris', pinned: false })
-    vi.mocked(setTimeZone).mockResolvedValue({ timeZone: 'Asia/Tokyo', pinned: true })
+    const server = serve({ timeZone: 'Europe/Paris', pinned: false })
     const select = await openTimeZone()
     expect(select.value).toBe('')
     expect(screen.getByRole('option', { name: 'Automatic (Europe/Paris)' })).toBeTruthy()
 
     fireEvent.change(select, { target: { value: 'Asia/Tokyo' } })
     await waitFor(() => expect(select.value).toBe('Asia/Tokyo'))
-    expect(setTimeZone).toHaveBeenCalledWith('Asia/Tokyo', true)
+    expect(server.called('PUT /api/config/time-zone')[0].body).toEqual({ timeZone: 'Asia/Tokyo', pinned: true })
   })
 
   it('unpins to this device\'s zone when Automatic is picked', async () => {
-    vi.mocked(getTimeZone).mockResolvedValue({ timeZone: 'Asia/Tokyo', pinned: true })
-    vi.mocked(setTimeZone).mockResolvedValue({ timeZone: 'America/New_York', pinned: false })
+    const server = serve({ timeZone: 'Asia/Tokyo', pinned: true })
     const select = await openTimeZone()
     expect(select.value).toBe('Asia/Tokyo')
 
     fireEvent.change(select, { target: { value: '' } })
     await waitFor(() => expect(select.value).toBe(''))
-    expect(setTimeZone).toHaveBeenCalledWith('America/New_York', false)
+    expect(server.called('PUT /api/config/time-zone')[0].body).toEqual({ timeZone: deviceTimeZone(), pinned: false })
   })
 })

@@ -1,13 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type JSX } from 'react'
+import { useRef, useState, type FormEvent, type JSX } from 'react'
 import clsx from 'clsx'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { FileEditor } from '#components/settings/FileEditor'
 import { languageForPath } from '#lib/highlight'
 import { DeleteIcon, RenameIcon } from '#lib/icons'
-import type { BuildFileEntry, BuildFilesApi } from '#lib/buildFilesApi'
-
-function errMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e)
-}
+import type { BuildFilesApi } from '#lib/buildFilesApi'
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -25,118 +22,86 @@ export function BuildFiles({ filesApi, title }: {
   filesApi: BuildFilesApi
   title: string
 }): JSX.Element {
-  const [files, setFiles] = useState<BuildFileEntry[] | null>(null)
+  const queryClient = useQueryClient()
+  const { data: files, error: loadError } = useQuery({
+    queryKey: filesApi.key,
+    queryFn: () => filesApi.list(),
+    staleTime: 0,
+  })
   const [selected, setSelected] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState<string | null>(null)
+  const [progress, setProgress] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
 
-  const refresh = useCallback(async (): Promise<void> => {
-    try {
-      setFiles(await filesApi.list())
-    } catch (e) {
-      setError(errMessage(e))
-    }
-  }, [filesApi])
-
-  useEffect(() => {
-    setFiles(null)
-    setSelected(null)
-    setError(null)
-    void refresh()
-  }, [refresh])
-
-  const uploadAll = async (items: { rel: string; file: File }[]): Promise<void> => {
-    if (items.length === 0) return
-    setError(null)
-    try {
-      for (let i = 0; i < items.length; i++) {
-        setBusy(`Uploading ${i + 1}/${items.length}…`)
-        await filesApi.upload(items[i].rel, await items[i].file.arrayBuffer())
-      }
-    } catch (e) {
-      setError(errMessage(e))
-    } finally {
-      setBusy(null)
-      await refresh()
-    }
-  }
+  // Every change re-lists, since sizes and paths move.
+  const op = useMutation({
+    mutationFn: (run: () => Promise<void>) => run(),
+    onSettled: () => {
+      setProgress(null)
+      return queryClient.invalidateQueries({ queryKey: filesApi.key, exact: true })
+    },
+  })
+  const error = op.error ?? loadError
 
   const onPickFiles = (input: HTMLInputElement, relOf: (f: File) => string): void => {
     const items = Array.from(input.files ?? []).map((file) => ({ rel: relOf(file), file }))
     input.value = '' // so re-picking the same selection fires change again
-    void uploadAll(items)
+    if (items.length === 0) return
+    op.mutate(async () => {
+      for (let i = 0; i < items.length; i++) {
+        setProgress(`Uploading ${i + 1}/${items.length}…`)
+        await filesApi.upload(items[i].rel, await items[i].file.arrayBuffer())
+      }
+    })
   }
 
-  const createFile = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+  const createFile = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault()
     const formElement = event.currentTarget
     const raw = new FormData(formElement).get('path')
     const rel = (typeof raw === 'string' ? raw : '').trim()
     if (!rel) return
-    setError(null)
-    try {
+    op.mutate(async () => {
       await filesApi.saveText(rel, '')
       formElement.reset()
-      await refresh()
       setSelected(rel)
-    } catch (e) {
-      setError(errMessage(e))
-    }
+    })
   }
 
-  const renameFile = async (from: string): Promise<void> => {
-    const raw = window.prompt(`Rename ${from} to:`, from)
-    const to = raw?.trim()
+  const renameFile = (from: string): void => {
+    const to = window.prompt(`Rename ${from} to:`, from)?.trim()
     if (!to || to === from) return
-    setError(null)
-    try {
+    op.mutate(async () => {
       await filesApi.rename(from, to)
       // Follow the open editor to the new path (file or a parent folder move).
       if (selected === from) setSelected(to)
       else if (selected?.startsWith(`${from}/`)) setSelected(`${to}${selected.slice(from.length)}`)
-      await refresh()
-    } catch (e) {
-      setError(errMessage(e))
-    }
+    })
   }
 
-  const removeFile = async (path: string): Promise<void> => {
+  const removeFile = (path: string): void => {
     if (!window.confirm(`Delete ${path}?`)) return
-    setError(null)
-    try {
+    op.mutate(async () => {
       await filesApi.remove(path)
       if (selected === path || selected?.startsWith(`${path}/`)) setSelected(null)
-      await refresh()
-    } catch (e) {
-      setError(errMessage(e))
-    }
+    })
   }
 
-  // FileEditor reloads when `load` changes identity, so key it on the file.
-  const load = useCallback(async (): Promise<string> => {
-    if (!selected) return ''
-    const file = await filesApi.read(selected)
+  const load = async (path: string): Promise<string> => {
+    const file = await filesApi.read(path)
     if (file.content === null) {
-      throw new Error(file.binary ? `${selected} is a binary file` : `${selected} is too large to edit inline`)
+      throw new Error(file.binary ? `${path} is a binary file` : `${path} is too large to edit inline`)
     }
     return file.content
-  }, [filesApi, selected])
+  }
 
-  const save = useCallback(async (text: string): Promise<void> => {
-    if (!selected) return
-    await filesApi.saveText(selected, text)
-    void refresh() // sizes changed
-  }, [filesApi, selected, refresh])
-
-  if (files === null && error === null) {
+  if (files === undefined && !loadError) {
     return <p className="text-xs text-text-faint">Loading…</p>
   }
 
   return (
     <div className="flex flex-col gap-2 text-xs">
-      {files !== null && files.length > 0 && (
+      {files !== undefined && files.length > 0 && (
         <div className="overflow-hidden rounded-md border border-hairline-soft">
           {files.map((f) => (
             <div
@@ -163,7 +128,7 @@ export function BuildFiles({ filesApi, title }: {
               </span>
               <button
                 type="button"
-                onClick={() => void renameFile(f.path)}
+                onClick={() => renameFile(f.path)}
                 title={`Rename ${f.path}`}
                 aria-label={`Rename ${f.path}`}
                 className="shrink-0 rounded p-0.5 text-text-faint transition hover:text-text"
@@ -172,7 +137,7 @@ export function BuildFiles({ filesApi, title }: {
               </button>
               <button
                 type="button"
-                onClick={() => void removeFile(f.path)}
+                onClick={() => removeFile(f.path)}
                 title={`Delete ${f.path}`}
                 aria-label={`Delete ${f.path}`}
                 className="shrink-0 rounded p-0.5 text-text-faint transition hover:text-red-400"
@@ -183,7 +148,7 @@ export function BuildFiles({ filesApi, title }: {
           ))}
         </div>
       )}
-      {files !== null && files.length === 0 && (
+      {files !== undefined && files.length === 0 && (
         <p className="text-text-faint">No files yet.</p>
       )}
 
@@ -191,7 +156,7 @@ export function BuildFiles({ filesApi, title }: {
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          disabled={busy !== null}
+          disabled={op.isPending}
           className="rounded-md bg-surface-3 px-2.5 py-1 text-[11px] font-medium text-text transition
             hover:bg-border-strong disabled:opacity-50"
         >
@@ -200,13 +165,13 @@ export function BuildFiles({ filesApi, title }: {
         <button
           type="button"
           onClick={() => folderInputRef.current?.click()}
-          disabled={busy !== null}
+          disabled={op.isPending}
           className="rounded-md bg-surface-3 px-2.5 py-1 text-[11px] font-medium text-text transition
             hover:bg-border-strong disabled:opacity-50"
         >
           Upload folder
         </button>
-        {busy && <span className="text-[11px] text-text-faint">{busy}</span>}
+        {progress && <span className="text-[11px] text-text-faint">{progress}</span>}
         <input
           ref={fileInputRef}
           type="file"
@@ -235,7 +200,7 @@ export function BuildFiles({ filesApi, title }: {
         automatically.
       </p>
 
-      <form onSubmit={(e) => void createFile(e)} className="flex gap-2">
+      <form onSubmit={createFile} className="flex gap-2">
         <input
           name="path"
           placeholder="new file path, e.g. nvim/init.lua"
@@ -252,15 +217,19 @@ export function BuildFiles({ filesApi, title }: {
         </button>
       </form>
 
-      {error && <p className="whitespace-pre-wrap text-red-400">{error}</p>}
+      {error && <p className="whitespace-pre-wrap text-red-400">{error.message}</p>}
 
       {selected && (
         <FileEditor
           key={`${title}:${selected}`}
           title={`${title} · ${selected}`}
           language={languageForPath(selected)}
-          load={load}
-          save={save}
+          queryKey={[...filesApi.key, selected]}
+          load={() => load(selected)}
+          save={async (text) => {
+            await filesApi.saveText(selected, text)
+            void queryClient.invalidateQueries({ queryKey: filesApi.key, exact: true }) // sizes changed
+          }}
         />
       )}
     </div>

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { acpPaneTargets, defaultPaneTarget, paneStillLive, syncPaneLayout } from '#lib/panes'
 import { addColumn, addTab, paneTargets, singleColumn } from '#lib/layout'
 import { PREVIEW_TARGET } from '#lib/preview'
-import { CHANGES_TARGET } from '#lib/changesApi'
+import { CHANGES_TARGET } from '#lib/panes'
 import type { AgentSessionEntry, WorkspaceListEntry } from '@yaac/shared/types'
 
 /**

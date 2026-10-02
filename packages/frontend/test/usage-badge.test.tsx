@@ -3,12 +3,9 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 
 vi.mock('#lib/useSnapshot', () => ({ useSnapshot: vi.fn() }))
-vi.mock('#lib/usageApi', () => ({
-  requestUsageRefresh: vi.fn().mockResolvedValue(undefined),
-}))
 
 import { useSnapshot } from '#lib/useSnapshot'
-import { requestUsageRefresh } from '#lib/usageApi'
+import { mockFetch, type FetchMock } from './harness'
 import {
   limitLabel,
   metricKey,
@@ -30,11 +27,17 @@ beforeAll(() => {
   }
 })
 
+let server: FetchMock
+
 beforeEach(() => {
   vi.clearAllMocks()
   useUiStore.setState({ pinnedUsageMetric: null })
+  server = mockFetch({ 'POST /api/auth/claude/usage/refresh': undefined })
 })
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 function limit(overrides: Partial<PlanUsageLimit> = {}): PlanUsageLimit {
   return {
@@ -254,9 +257,9 @@ describe('UsageBadge', () => {
   it('nudges a background usage refresh when opened', () => {
     stubSnapshot(CLAUDE_USAGE, CODEX_USAGE)
     render(<UsageBadge />)
-    expect(requestUsageRefresh).not.toHaveBeenCalled()
+    expect(server.called('POST /api/auth/claude/usage/refresh')).toHaveLength(0)
     fireEvent.click(pill())
-    expect(requestUsageRefresh).toHaveBeenCalledTimes(1)
+    expect(server.called('POST /api/auth/claude/usage/refresh')).toHaveLength(1)
   })
 
   it('pins metrics across tools, switches pins, and unpins', () => {

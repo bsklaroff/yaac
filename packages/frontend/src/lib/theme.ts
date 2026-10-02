@@ -1,32 +1,11 @@
 /**
  * Light/dark theme preference. 'system' follows the OS appearance (via the
  * `prefers-color-scheme` media query in index.css); 'light'/'dark' force one.
- * The choice is set as a `data-theme` attribute on <html> for the CSS, and
- * saved in localStorage, where the inline script in index.html reads it
- * before first paint to avoid a flash.
+ * The choice is set as a `data-theme` attribute on <html> for the CSS. The
+ * store saves it (`themePref` in lib/store.ts), where the inline script in
+ * index.html reads it before first paint to avoid a flash.
  */
 export type ThemePref = 'system' | 'light' | 'dark'
-
-const THEME_LS_KEY = 'yaac.theme.v1'
-
-/** Persisted theme preference; defaults to 'system' when unset or unreadable. */
-export function loadThemePref(): ThemePref {
-  try {
-    if (typeof localStorage !== 'undefined') {
-      const raw = localStorage.getItem(THEME_LS_KEY)
-      if (raw === 'system' || raw === 'light' || raw === 'dark') return raw
-    }
-  } catch { /* fall through to the default */ }
-  return 'system'
-}
-
-/** Save the theme preference. Best-effort: on failure the default applies
- *  next launch. */
-export function persistThemePref(pref: ThemePref): void {
-  try {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(THEME_LS_KEY, pref)
-  } catch { /* quota/serialization failures are non-fatal */ }
-}
 
 /** Set <html data-theme> so the CSS palette switches. `root` is for tests. */
 export function applyThemeAttribute(pref: ThemePref, root?: HTMLElement): void {

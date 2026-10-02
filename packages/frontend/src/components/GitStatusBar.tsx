@@ -1,7 +1,7 @@
 import type { JSX } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { useUiStore } from '#lib/store'
-import { getWorkspaceGitStatus } from '#lib/changesApi'
+import { api } from '#lib/api'
 import { BranchIcon } from '#lib/icons'
 import { relativeAge } from '#lib/time'
 import type { WorkspaceGitStatus } from '@yaac/shared/types'
@@ -20,7 +20,10 @@ export function GitStatusBar({ workspaceId }: { workspaceId: string }): JSX.Elem
   // "fetched 5m ago" current.
   const { data, dataUpdatedAt: _polled } = useQuery({
     queryKey: ['git-status', workspaceId, pick ?? null],
-    queryFn: () => getWorkspaceGitStatus(workspaceId, pick),
+    queryFn: () => api.workspace[':id']['git-status'].$get({
+      param: { id: workspaceId },
+      query: pick ? { base: pick } : {},
+    }),
     refetchInterval: 10_000,
     staleTime: 5_000,
     // A new pick keeps the old line until its answer lands.

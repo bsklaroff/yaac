@@ -37,8 +37,8 @@ and the delete flow (`lib/stopWorkspaceFlow.ts`, which selects the row below a
 deleted open workspace). Calling one from a component is a lint error.
 
 A shared `?project=…&workspace=…` link is read straight into the initial
-state by `loadSelection`, bypassing `openWorkspace`. So `loadMobileScreen`
-starts on the screen the params point at, but only when nothing is persisted.
+state by `loadSelection`, bypassing `openWorkspace`. So `defaultMobileScreen`
+starts on the screen the params point at, but only when no screen is saved.
 Both conditions matter: `persistSelection` mirrors the selection into the URL
 on every change, so after any use the params are always there, and on their
 own they would send every reload to the pane.

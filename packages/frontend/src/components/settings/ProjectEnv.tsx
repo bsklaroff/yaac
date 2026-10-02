@@ -1,12 +1,9 @@
-import { useCallback, useEffect, useState, type FormEvent, type JSX } from 'react'
+import { useState, type FormEvent, type JSX } from 'react'
 import clsx from 'clsx'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { DeleteIcon } from '#lib/icons'
-import { deleteProjectEnvVar, getProjectEnv, setProjectEnvVar } from '#lib/projectApi'
+import { api } from '#lib/api'
 import type { ProjectEnvVar, SecretProxyRule } from '@yaac/shared/types'
-
-function errMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e)
-}
 
 /** One-line summary of where a secret is injected, for the row. */
 function ruleSummary(rule: SecretProxyRule | undefined): string {
@@ -70,65 +67,50 @@ export function ProjectEnv({ slug, mediatedEgress }: {
   slug: string
   mediatedEgress: boolean
 }): JSX.Element {
-  const [vars, setVars] = useState<ProjectEnvVar[] | null>(null)
   const [draft, setDraft] = useState<Draft>(EMPTY)
   const [editing, setEditing] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
+  const queryClient = useQueryClient()
+  const queryKey = ['project-env', slug]
+  const { data: vars, error: loadError } = useQuery({
+    queryKey,
+    queryFn: async () => (await api.project[':slug'].env.$get({ param: { slug } })).vars,
+    staleTime: 0,
+  })
 
-  const refresh = useCallback(async (): Promise<void> => {
-    try {
-      setVars(await getProjectEnv(slug))
-    } catch (e) {
-      setError(errMessage(e))
-    }
-  }, [slug])
-
-  useEffect(() => {
-    setVars(null)
-    setDraft(EMPTY)
-    setEditing(null)
-    setError(null)
-    void refresh()
-  }, [refresh])
-
-  const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault()
-    setBusy(true)
-    setError(null)
-    try {
-      await setProjectEnvVar(slug, {
+  const save = useMutation({
+    mutationFn: () => api.project[':slug'].env.$put({
+      param: { slug },
+      json: {
         name: draft.name.trim(),
         // Omit a blank secret value so the server keeps the stored one.
         ...(draft.secret && draft.value === '' ? {} : { value: draft.value }),
         secret: draft.secret,
         ...(draft.secret ? { rule: ruleFromDraft(draft) } : {}),
-      })
+      },
+    }),
+    onSuccess: () => {
       setDraft(EMPTY)
       setEditing(null)
-      await refresh()
-    } catch (e) {
-      setError(errMessage(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const remove = async (v: ProjectEnvVar): Promise<void> => {
-    setBusy(true)
-    setError(null)
-    try {
-      await deleteProjectEnvVar(slug, v.id)
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey }),
+  })
+  const remove = useMutation({
+    mutationFn: (v: ProjectEnvVar) => api.project[':slug'].env[':id'].$delete({ param: { slug, id: v.id } }),
+    onSuccess: (_, v) => {
       if (editing === v.id) {
         setEditing(null)
         setDraft(EMPTY)
       }
-      await refresh()
-    } catch (e) {
-      setError(errMessage(e))
-    } finally {
-      setBusy(false)
-    }
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey }),
+  })
+  const busy = save.isPending || remove.isPending
+  const error = save.error ?? remove.error ?? loadError
+
+  const submit = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault()
+    remove.reset()
+    save.mutate()
   }
 
   const inputClass = 'w-full rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono '
@@ -142,7 +124,7 @@ export function ProjectEnv({ slug, mediatedEgress }: {
         created after saving.
       </p>
 
-      {vars !== null && vars.length > 0 && (
+      {vars !== undefined && vars.length > 0 && (
         <div className="mt-3 space-y-1.5">
           {vars.map((v) => (
             <div
@@ -177,7 +159,7 @@ export function ProjectEnv({ slug, mediatedEgress }: {
                   Edit
                 </button>
                 <button
-                  onClick={() => void remove(v)}
+                  onClick={() => { save.reset(); remove.mutate(v) }}
                   disabled={busy}
                   aria-label={`Delete ${v.name}`}
                   className="rounded-md p-1 text-text-faint transition hover:text-text disabled:opacity-50"
@@ -190,7 +172,7 @@ export function ProjectEnv({ slug, mediatedEgress }: {
         </div>
       )}
 
-      <form onSubmit={(e) => void submit(e)} className="mt-3 space-y-2">
+      <form onSubmit={submit} className="mt-3 space-y-2">
         <div className="flex gap-2">
           <input
             value={draft.name}
@@ -287,7 +269,7 @@ export function ProjectEnv({ slug, mediatedEgress }: {
         </div>
       </form>
 
-      {error !== null && <p className="mt-2 text-xs text-red-400">{error}</p>}
+      {error && <p className="mt-2 text-xs text-red-400">{error.message}</p>}
     </div>
   )
 }

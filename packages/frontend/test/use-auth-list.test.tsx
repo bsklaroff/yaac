@@ -1,16 +1,12 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { renderHook, waitFor } from '@testing-library/react'
 import type { JSX, ReactNode } from 'react'
 import type { AuthListResult } from '@yaac/shared/types'
 
-vi.mock('#lib/settingsApi', () => ({
-  getAuthList: vi.fn(),
-}))
-
-import { getAuthList } from '#lib/settingsApi'
 import { configuredTools, useAuthList } from '#lib/useAuthList'
+import { mockFetch, testQueryClient } from './harness'
 
 const LIST: AuthListResult = {
   gitCredentials: [],
@@ -23,9 +19,7 @@ const LIST: AuthListResult = {
   ],
 }
 
-beforeEach(() => {
-  vi.clearAllMocks()
-})
+afterEach(() => vi.unstubAllGlobals())
 
 describe('configuredTools', () => {
   it('is empty while the list is still loading', () => {
@@ -42,17 +36,16 @@ describe('configuredTools', () => {
 
 describe('useAuthList', () => {
   it('fetches and exposes the masked credential list', async () => {
-    vi.mocked(getAuthList).mockResolvedValue(LIST)
+    const server = mockFetch({ 'GET /api/auth/list': LIST })
+    const client = testQueryClient()
     const wrapper = ({ children }: { children: ReactNode }): JSX.Element => (
-      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        {children}
-      </QueryClientProvider>
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
     )
 
     const { result } = renderHook(() => useAuthList(), { wrapper })
 
     expect(result.current).toBeUndefined()
     await waitFor(() => expect(result.current).toEqual(LIST))
-    expect(getAuthList).toHaveBeenCalledTimes(1)
+    expect(server.called('GET /api/auth/list')).toHaveLength(1)
   })
 })
