@@ -19,7 +19,7 @@ host-side veth (Calico's `cali*` interface). They DNAT the pod's outbound
 443/80/ssh-sentinel traffic to a node-local Envoy. Envoy writes the source
 pod IP into a PROXY-protocol v2 (PP2) preamble and forwards to the proxy's
 transparent listeners. The proxy (`resolveWorkspaceBySourceIp` in
-`k8s/proxy/proxy.ts`) requires that preamble and maps the source IP to a
+`k8s/proxy/main.ts`) requires that preamble and maps the source IP to a
 workspace through its pod-watch.
 
 ## Why Cilium defeats this

@@ -16,11 +16,7 @@ import {
   PortDetectorManager,
   stopAllWorkspaceForwarders,
 } from '#drivers/k8s/forwarders'
-import {
-  PROXY_CHANGE_SOURCES,
-  ProxyEventStream,
-  proxyClient,
-} from '#drivers/k8s/egress'
+import { proxyClient } from '#drivers/k8s/egress'
 import { runtimeHandleFromPod } from '#drivers/k8s/workspaces'
 import { notifyWorkspaceListChanged } from '#notify'
 import { serverLog } from '#log'
@@ -33,27 +29,25 @@ import {
 import {
   MEDIATOR_TRIGGERS,
   type DriverSinks,
-  type ReconcileTrigger,
 } from '#drivers/contract'
 
 /**
  * Start and stop for the k8s driver: cluster bootstrap, the informer
- * caches, the port detector and the proxy event stream. It reports upward
+ * caches and the port detector. It reports upward
  * only through `DriverSinks` (reconcile triggers and the workspace set), so
  * it never imports the layers above (docs/layered-server.md).
  */
 
 /**
- * Every trigger this driver can raise: the mediators' triggers, the proxy's
- * change sources, and `proxy-refreshed` (a credential rotation the proxy
- * captured, which the `credential-adopt` step waits on).
+ * Every trigger this driver can raise: the mediators' triggers and
+ * `proxy-refreshed` (a credential rotation the proxy captured, which the
+ * `credential-adopt` step waits on).
  *
  * `ReconcileTrigger` is an open string type, so a misspelled trigger would
  * silently never fire. Raise sites are typed against this list instead.
  */
 export const K8S_TRIGGERS = [
   ...MEDIATOR_TRIGGERS,
-  ...PROXY_CHANGE_SOURCES,
   'proxy-refreshed',
 ] as const
 
@@ -70,7 +64,6 @@ export function triggerFor(source: WorkspaceDeltaSource): K8sTrigger {
 
 let clusterCache: ClusterCache | null = null
 let portDetector: PortDetectorManager | null = null
-let proxyEvents: ProxyEventStream | null = null
 
 /**
  * Rewrite the per-project credential files with placeholders.
@@ -154,27 +147,24 @@ export async function startK8sDriver(sinks: DriverSinks): Promise<void> {
     }
     sinks.trigger(triggerFor(source))
   })
-  // The proxy's change stream (e.g. yaac-mama requests) triggers a pass.
-  const events = new ProxyEventStream((source: ReconcileTrigger) => sinks.trigger(source))
-  proxyEvents = events
   cache.start()
-  events.start()
   setActiveClusterCache(cache)
+  // In the background: it waits on a rollout, and nothing here needs it.
+  void proxyClient.rollIfStale()
+    .catch((err: unknown) => serverLog(`[server] proxy redeploy failed: ${String(err)}`))
 
   sinks.attached()
 }
 
 /** See `WorkspaceDriver.stop`. */
 export function stopK8sDriver(): void {
-  // The watches, the port detector's per-workspace execs and the proxy's
-  // held-open /events request would otherwise outlive the server.
+  // The watches and the port detector's per-workspace execs would
+  // otherwise outlive the server.
   setActiveClusterCache(null)
   clusterCache?.stop()
   clusterCache = null
   portDetector?.stopAll()
   portDetector = null
-  proxyEvents?.stop()
-  proxyEvents = null
 }
 
 /** See `WorkspaceDriver.release`. */

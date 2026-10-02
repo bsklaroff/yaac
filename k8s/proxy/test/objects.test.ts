@@ -46,15 +46,15 @@ describe('decodeCredentials', () => {
     const creds = decodeCredentials(secretOf({
       'claude.json': { kind: 'oauth', savedAt: 'x', claudeAiOauth: CLAUDE_BUNDLE },
       'codex.json': { kind: 'oauth', savedAt: 'x', codexOauth: CODEX_BUNDLE },
-      'opencode.json': { kind: 'api-key', savedAt: 'x', apiKey: 'sk-or', provider: 'openrouter' },
-      'pi.json': { kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant', provider: 'anthropic' },
+      'opencode.json': { kind: 'api-key', savedAt: 'x', apiKey: 'sk-or', provider: 'openrouter', apiHost: 'openrouter.ai' },
+      'pi.json': { kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant', provider: 'anthropic', apiHost: 'api.anthropic.com' },
       'git-tokens.json': [{ token: 'ghp', projects: ['acme', 'other'] }],
       'ssh-keys.json': [SSH_ENTRY],
     }))
     expect(creds.claude).toEqual({ kind: 'oauth', bundle: CLAUDE_BUNDLE })
     expect(creds.codex).toEqual({ kind: 'oauth', bundle: CODEX_BUNDLE })
-    expect(creds.opencode).toEqual({ kind: 'api-key', apiKey: 'sk-or', provider: 'openrouter' })
-    expect(creds.pi).toEqual({ kind: 'api-key', apiKey: 'sk-ant', provider: 'anthropic' })
+    expect(creds.opencode).toEqual({ kind: 'api-key', apiKey: 'sk-or', apiHost: 'openrouter.ai' })
+    expect(creds.pi).toEqual({ kind: 'api-key', apiKey: 'sk-ant', apiHost: 'api.anthropic.com' })
     expect(creds.git).toEqual([{ token: 'ghp', projects: ['acme', 'other'] }])
     expect(creds.ssh).toEqual([SSH_ENTRY])
   })
@@ -80,9 +80,9 @@ describe('decodeCredentials', () => {
       'codex.json': { kind: 'oauth', codexOauth: { ...CODEX_BUNDLE, idTokenRawJwt: '' } },
       // An empty api key is no key.
       'claude.json': { kind: 'api-key', apiKey: '' },
-      // An unknown (or prototype-chain) provider must not select a host.
-      'opencode.json': { kind: 'api-key', apiKey: 'k', provider: 'constructor' },
-      'pi.json': { kind: 'api-key', apiKey: 'k' },
+      // A key with no host has nowhere it may go.
+      'opencode.json': { kind: 'api-key', apiKey: 'k', provider: 'openrouter' },
+      'pi.json': { kind: 'api-key', apiKey: 'k', apiHost: '' },
       // A tokenless entry injects nothing, and one naming no project list
       // is not scoped at all; a non-slug in the list is dropped on its own.
       'git-tokens.json': [

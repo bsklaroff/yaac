@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
 
 // The auth secret is read from the cluster through kubectl.
@@ -9,7 +9,12 @@ vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
   kubectlGetJson: mockKubectlGetJson,
 }))
 
-import { ProxyClient, PROXY_CA_PATH, PROXY_CA_BUNDLE_PATH } from '#drivers/k8s/egress/proxy-client'
+import {
+  ProxyClient,
+  PROXY_CA_PATH,
+  PROXY_CA_BUNDLE_PATH,
+  isProxyAuthSecret,
+} from '#drivers/k8s/egress/proxy-client'
 
 describe('ProxyClient.getCaTrustEnv', () => {
   const env = new ProxyClient({ image: 'yaac-test-proxy' }).getCaTrustEnv()
@@ -43,39 +48,16 @@ describe('ProxyClient.getCaTrustEnv', () => {
   })
 })
 
-describe('ProxyClient.attachIfRunning', () => {
-  const realFetch = globalThis.fetch
-  afterEach(() => { globalThis.fetch = realFetch })
-
-  it('dials the proxy Service by name, with no tunnel in between', async () => {
-    // The server runs in the proxy's namespace, so this is a plain Service
-    // dial (docs/server-in-cluster.md).
-    mockKubectlGetJson.mockResolvedValue({ data: { secret: Buffer.from('s3').toString('base64') } })
-    const mock = vi.fn().mockResolvedValue({ ok: true })
-    globalThis.fetch = mock as unknown as typeof fetch
-    await expect(new ProxyClient({ image: 'yaac-test-proxy' }).attachIfRunning()).resolves.toBe(true)
-    expect(mock.mock.calls[0][0]).toBe('http://yaac-proxy.yaac.svc.cluster.local:10255/healthz')
+describe('isProxyAuthSecret', () => {
+  it('accepts only the secret stored in the install', async () => {
+    mockKubectlGetJson.mockResolvedValue({ data: { secret: Buffer.from('s3cret').toString('base64') } })
+    await expect(isProxyAuthSecret('s3cret')).resolves.toBe(true)
+    await expect(isProxyAuthSecret('s3cre')).resolves.toBe(false)
+    await expect(isProxyAuthSecret('')).resolves.toBe(false)
   })
 
-  it('takes a caller-supplied origin when it is handed one', async () => {
-    // The e2e harness runs this client on the host, where cluster DNS does
-    // not resolve, and passes `controlOrigin` instead.
-    mockKubectlGetJson.mockResolvedValue({ data: { secret: Buffer.from('s3').toString('base64') } })
-    const mock = vi.fn().mockResolvedValue({ ok: true })
-    globalThis.fetch = mock as unknown as typeof fetch
-    const client = new ProxyClient({
-      image: 'yaac-test-proxy',
-      controlOrigin: () => Promise.resolve('http://127.0.0.1:4444'),
-    })
-    await expect(client.attachIfRunning()).resolves.toBe(true)
-    expect(mock.mock.calls[0][0]).toBe('http://127.0.0.1:4444/healthz')
-  })
-
-  it('answers false, without dialing, when the install has no proxy secret yet', async () => {
+  it('accepts nothing when the install has no proxy secret yet', async () => {
     mockKubectlGetJson.mockResolvedValue(null)
-    const mock = vi.fn()
-    globalThis.fetch = mock as unknown as typeof fetch
-    await expect(new ProxyClient({ image: 'yaac-test-proxy' }).attachIfRunning()).resolves.toBe(false)
-    expect(mock).not.toHaveBeenCalled()
+    await expect(isProxyAuthSecret('')).resolves.toBe(false)
   })
 })

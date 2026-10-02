@@ -39,14 +39,9 @@ vi.mock('#drivers/k8s/forwarders', () => ({
   stopAllWorkspaceForwarders: vi.fn(() => { order.push('forwarders.released') }),
 }))
 vi.mock('#drivers/k8s/egress', () => ({
-  PROXY_CHANGE_SOURCES: ['mama-requests'],
-  ProxyEventStream: class {
-    constructor(readonly raise: (s: string) => void) {}
-    start = (): void => { order.push('proxy.start') }
-    stop = vi.fn()
-  },
   proxyClient: {
     disconnect: vi.fn(() => { order.push('proxy.disconnect') }),
+    rollIfStale: vi.fn(() => { order.push('proxy.roll'); return Promise.resolve() }),
   },
 }))
 vi.mock('#drivers/k8s/workspaces', () => ({
@@ -91,6 +86,8 @@ describe('startK8sDriver', () => {
     expect(order.indexOf('bootstrap')).toBeLessThan(order.indexOf('recover'))
     expect(order.indexOf('recover')).toBeLessThan(order.indexOf('cache.start'))
     expect(order.indexOf('cache.start')).toBeLessThan(order.indexOf('attached'))
+    // An upgrade rolls the proxy at once rather than at the next launch.
+    expect(order).toContain('proxy.roll')
   })
 
   it('re-renders the node half of the server wall from the live node list', async () => {

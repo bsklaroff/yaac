@@ -274,15 +274,14 @@ isolated. There is no polling: every source has an event, and the resync
 means a missed event costs latency, not correctness, the same bet an
 informer's relist makes. Besides the watch-cache events, the triggers are
 `live-agents` and `status-streams` (in-workspace facts from the driver
-connections), `mama-requests` (from the egress proxy's event stream,
-below), and `proxy-refreshed` (a change to the object the proxy saves
+connections) and `proxy-refreshed` (a change to the object the proxy saves
 OAuth rotations into).
 
 `domain/reconcile.ts` lists the steps in order: the stale reaper first (so
 the prewarm pool counts just-reaped workspaces), the queued-workspace
 backstop (a launch interrupted by a restart; `stopWorkspace` launches
-queued workspaces directly, so this only rides the resync), `yaac-mama`
-requests, the prewarm pool (k8s only), the conversation sweep, orphan-module
+queued workspaces directly, so this only rides the resync), the prewarm
+pool (k8s only), the conversation sweep, orphan-module
 GC, credential adoption (k8s) or sync (containerless), origin refresh, and
 title generation last so a just-captured opening message is eligible in the
 same pass.
@@ -307,23 +306,6 @@ only judges absence against a set from the same pass. A failed read skips
 every sweep, since reaping on a guess destroys uncommitted work. In-flight
 creates are exempt via the provisioning registry, which is filled
 synchronously before a create stages anything.
-
-## The proxy event stream
-
-One fact the server needs is visible only inside the egress proxy and must
-be answered promptly: an in-workspace `yaac-mama` request landing in the
-proxy's queue, with the caller's HTTP response held open until the server
-answers. Everything else the proxy observes (a workspace's blocked hosts, a
-git credential rejected upstream, a captured OAuth rotation) it writes as
-objects the `ClusterCache` watches (docs/workspace-egress.md "What the
-proxy is told, and how").
-
-The proxy cannot dial the server, so the signal rides a connection the
-server holds: one long-lived NDJSON `GET /events`, consumed by
-`ProxyEventStream` in `#drivers/k8s/egress`. Events carry no payload (the
-queue has its own claim protocol), so each one just means "drain now", and
-a reconnect fires one. A dropped stream costs latency, never a lost
-request.
 
 ## Naming
 

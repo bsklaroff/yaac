@@ -4,6 +4,8 @@ import path from 'node:path'
 import { git } from '@yaac/test-utils/git'
 import { cloneRepo } from '@yaac/server/domain/git'
 import { listWorkspacePods, type PodInfo } from '@yaac/server/drivers/k8s/substrate/pods'
+import { SERVER_MAMA_PORT, SERVER_MAMA_SERVICE_NAME } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
+import { k8sNamespace } from '@yaac/server/drivers/k8s/substrate/kubectl'
 import {
   createYaacTestEnv,
   spawnYaacServer,
@@ -34,8 +36,8 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 /**
  * The in-workspace command channel: a workspace pod runs `yaac-mama`, whose
- * request travels over HTTP egress to the proxy's magic host. The server
- * picks it up and runs it against the caller's project: creating a sibling
+ * request travels over HTTP egress to the proxy's magic host, which relays
+ * it to the server. The server runs it against the caller's project: creating a sibling
  * with a prompt, listing workspaces, managing groups, and stopping.
  */
 describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () => {
@@ -159,7 +161,7 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     const { stdout } = await execInJob(jobA, ['sh', '-c',
       `curl -sS -X POST -H 'Content-Type: application/json' \
         --data-binary '{"command":"delete","args":{},"body":"x"}' \
-        -w '\nHTTP:%{http_code}' http://yaac.internal/cmd 2>&1`,
+        -w '\nHTTP:%{http_code}' http://yaac.internal/api/workspace/mama 2>&1`,
     ], { timeout: 120_000 })
     expect(stdout).toContain('unknown command')
     expect(stdout).toContain('HTTP:422')
@@ -305,7 +307,7 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     expect(restored.output).toMatch(new RegExp(`${selfShortId!}[^\\n]*\\(you\\)`))
   }, 180_000)
 
-  it('renames itself over the proxy queue, with no workspace named', async () => {
+  it('renames itself through the proxy relay, with no workspace named', async () => {
     const { exitCode, output } = await runMama('rename "driving the mama e2e"')
     expect(exitCode).toBe(0)
     expect(output).toContain('driving the mama e2e')
@@ -315,17 +317,39 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     expect(listed.output).toContain('(you)')
   }, 120_000)
 
-  it('surfaces the proxy rejection for a model value outside the safe charset', async () => {
-    // `;` survives the script but fails the proxy's MODEL_RE check, so the
+  it('names the caller by its pod, whatever identity the request claims', async () => {
+    // The proxy drops a workspace's own Authorization and caller header, so
+    // claiming the sibling still renames the caller.
+    const { stdout } = await execInJob(jobA, ['sh', '-c',
+      `curl -sS -X POST -H 'Content-Type: application/json' \
+        -H 'x-yaac-workspace-id: ${spawnedWorkspaceId}' -H 'Authorization: Bearer forged' \
+        --data-binary '{"command":"rename","body":"forged caller"}' \
+        -w '\nHTTP:%{http_code}' http://yaac.internal/api/workspace/mama 2>&1`,
+    ], { timeout: 120_000 })
+    expect(stdout).toContain('HTTP:200')
+    const listed = await runMama('list')
+    expect(listed.output).toMatch(/\(you\)[^\n]*forged caller|forged caller[^\n]*\(you\)/)
+    expect(listed.output.match(/forged caller/g)).toHaveLength(1)
+
+    // And the server's mama listener is out of a pod's reach.
+    const direct = await execInJob(jobA, ['sh', '-c',
+      `curl -sS --max-time 10 -o /dev/null -w 'HTTP:%{http_code}' `
+        + `http://${SERVER_MAMA_SERVICE_NAME}.${k8sNamespace()}.svc.cluster.local:${SERVER_MAMA_PORT}`
+        + '/api/workspace/mama 2>&1; echo "EXIT:$?"',
+    ], { timeout: 120_000 })
+    expect(direct.stdout).not.toContain('EXIT:0')
+  }, 240_000)
+
+  it('surfaces the server rejection for a model value outside the safe charset', async () => {
+    // `;` survives the script but fails the server's MODEL_RE check, so the
     // error round trip is tested without provisioning anything.
     const { exitCode, output } = await runMama('create --model "opus;rm" "x"')
     expect(exitCode).toBe(1)
-    expect(output).toContain('invalid value for --model')
-    expect(output).toContain('HTTP 400')
+    expect(output).toContain('invalid model')
+    expect(output).toContain('HTTP 422')
   }, 120_000)
 
   it('surfaces the server rejection for an unknown tool', async () => {
-    // 'bogus' passes the proxy's charset check; the server rejects it.
     const { exitCode, output } = await runMama('create --tool bogus "x"')
     expect(exitCode).toBe(1)
     expect(output).toContain('bogus')

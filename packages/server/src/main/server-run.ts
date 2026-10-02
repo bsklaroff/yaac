@@ -2,7 +2,7 @@ import net from 'node:net'
 import { serve, type ServerType } from '@hono/node-server'
 import { createNodeWebSocket } from '@hono/node-ws'
 import type { MiddlewareHandler } from 'hono'
-import { buildApp } from '#main/server'
+import { buildApp, buildMamaRelayApp } from '#main/server'
 import {
   authAgentHub,
   pushCredentialsToRuntime,
@@ -496,6 +496,16 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // Set synchronously so it is true before any queued request runs.
   ready = true
 
+  // Sandboxed workspaces' yaac-mama calls, relayed by the egress proxy to a
+  // listener that serves nothing else (`WorkspaceDriver.mamaRelay`).
+  const relay = workspaceDriver().mamaRelay
+  const relayServer = relay && serve({
+    fetch: buildMamaRelayApp(relay.authenticate).fetch,
+    port: relay.port,
+    hostname: env.bindAddr,
+  })
+  relayServer?.on('error', (err: Error) => serverLog(`[server] yaac-mama relay listener failed: ${String(err)}`))
+
   const torPrefix = env.useTor ? '(using tor) ' : ''
   serverLog(`[server] ${torPrefix}listening on ${env.bindAddr}:${port} lock=${serverLockPath()}`)
   serverLog(`[server] open http://127.0.0.1:${port}/`)
@@ -541,7 +551,10 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     // close() drains in-flight requests. Bounded to 3s so a wedged request
     // cannot delay lock removal, which the CLI waits on.
     await Promise.race([
-      new Promise<void>((resolve) => server.close(() => resolve())),
+      Promise.all([server, relayServer].map((s) => new Promise<void>((resolve) => {
+        if (s) s.close(() => resolve())
+        else resolve()
+      }))),
       new Promise<void>((resolve) => setTimeout(resolve, 3000)),
     ])
     await stopGitSshAgent().catch((err: unknown) => serverLog(`[server] ssh-agent stop failed: ${String(err)}`))

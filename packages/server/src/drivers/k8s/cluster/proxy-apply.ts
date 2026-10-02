@@ -27,6 +27,7 @@ import {
   buildProxyRoleManifest,
   buildProxyServiceAccountManifest,
   buildProxyServiceManifest,
+  buildServerMamaServiceManifest,
   proxyProjectSecretsName,
 } from './proxy-manifests'
 import {
@@ -125,6 +126,7 @@ export async function ensureProxyResources(imageRef: string): Promise<void> {
   }
   await kubectlApply(buildProxyDeploymentManifest(imageRef))
   await kubectlApply(buildProxyServiceManifest())
+  await kubectlApply(buildServerMamaServiceManifest())
   // Policies go on with the proxy, before any workspace pod can exist.
   const nodeCidrs = await nodeIpBlocks()
   await kubectlApply(buildWorkspaceEgressNpManifest(nodeCidrs))

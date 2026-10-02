@@ -2,8 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { timingSafeStrEqual } from 'yaac-proxy-sidecar/secure-compare'
 
 /**
- * Tests for the constant-time bearer compare behind the proxy control API's
- * `checkAuth`. Only the boolean result is testable, including that a length
+ * Tests for the constant-time compare behind the stream relay's auth line. Only the boolean result is testable, including that a length
  * mismatch returns false instead of throwing from `timingSafeEqual`.
  */
 describe('timingSafeStrEqual', () => {

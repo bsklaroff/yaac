@@ -191,11 +191,17 @@ Kubernetes unions):
   node half. It is applied even when empty, so switching fronting replaces
   the old peer. Only install writes it.
 
-No pod in the install namespace and no pod CIDR is admitted. A workspace pod
-dialing the Service or the pod IP presents its own address (Calico enforces
-a workload's source) and matches nothing. Nothing in the cluster needs this
-port: a workspace's `yaac-mama` calls go to the egress proxy's queue, which
-the server drains.
+No pod in the install namespace and no pod CIDR is admitted to the API. A
+workspace pod dialing the Service or the pod IP presents its own address
+(Calico enforces a workload's source) and matches nothing.
+
+The node half has one more rule: the egress proxy may reach the server's
+second listener (`SERVER_MAMA_PORT`, behind the `yaac-server-mama` Service
+the proxy deploys with itself), which serves only the `yaac-mama` calls the
+proxy relays and authenticates the proxy's secret itself. The proxy is never
+admitted to the API port, because it forwards workspace traffic to whatever
+a workspace's allowlist names: a workspace could otherwise reach the API
+through it with a loopback `Host`.
 
 The node half has one gap. On kind the forwarder is a hostNetwork listener
 on a node port, which no pod policy covers, and its dial into the server
@@ -313,6 +319,10 @@ through the same shared helper.
 `yaac cluster install` is the one command that converges an install, and it
 is how you upgrade: `npm update`, then install. A new bundle means a new
 image tag, which means a `Recreate` rollout.
+The egress proxy follows: a server that starts beside a proxy from another
+build redeploys it (`rollIfStale`), so running workspaces get the new proxy
+without waiting for a launch. Where no proxy exists yet, the first launch
+deploys it.
 
 `yaac server start|stop|restart` act on the Deployment (scale to 1 and
 wait, scale to 0, `rollout restart`) instead of running a host process,

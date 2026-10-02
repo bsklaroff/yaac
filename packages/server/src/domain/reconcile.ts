@@ -2,7 +2,6 @@ import {
   gcOrphanEphemeralModuleDirs,
   reconcileAgentSessions,
   reconcilePrewarmPool,
-  reconcileMamaRequests,
   reconcileQueuedWorkspaces,
   reconcileStaleWorkspaces,
 } from '#domain/workspaces'
@@ -55,12 +54,6 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // restart, or a release lost before launching. `stopWorkspace` launches
     // directly, so the resync (including the first pass) is enough.
     { name: 'queued-workspaces', triggers: [], run: () => reconcileQueuedWorkspaces() },
-    // Serve `yaac-mama` requests queued at the egress proxy; the caller is
-    // identified from pod labels and `runMamaCommand` handles the command.
-    // The proxy holds the caller's response open and signals each enqueue,
-    // so this is edge-triggered rather than polled.
-    { name: 'mama-requests', triggers: ['mama-requests'],
-      run: (ctx) => reconcileMamaRequests({}, ctx.snapshot()) },
     // Runtime work that must precede the pool: a spare's create should join
     // image builds already running, and anything holding capacity should be
     // freed first.

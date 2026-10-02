@@ -5,8 +5,7 @@
  * egress proxy swaps in the real key on that provider's host.
  *
  * The provider data is generated into `tool-providers.generated.ts` by
- * `pnpm gen:providers` (scripts/gen-tool-providers.ts), which also writes
- * the proxy's copy.
+ * `pnpm gen:providers` (scripts/gen-tool-providers.ts).
  */
 import {
   OPENCODE_PROVIDERS,
@@ -71,16 +70,6 @@ export function opencodeProviderInfo(id: OpencodeProvider): ToolProviderInfo {
 /** Look up a pi provider's metadata; falls back to the default. */
 export function piProviderInfo(id: PiProvider): ToolProviderInfo {
   return infoOrDefault(PI_PROVIDERS, id, PI_DEFAULT_PROVIDER)
-}
-
-/** The API host the proxy swaps the placeholder key on for an opencode provider. */
-export function opencodeProviderHost(id: OpencodeProvider): string {
-  return opencodeProviderInfo(id).apiHost
-}
-
-/** The API host the proxy swaps the placeholder key on for a pi provider. */
-export function piProviderHost(id: PiProvider): string {
-  return piProviderInfo(id).apiHost
 }
 
 /** A raw string as an OpencodeProvider, or undefined if it isn't one. */

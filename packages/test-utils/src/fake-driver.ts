@@ -147,8 +147,7 @@ export function installFakeWorkspaceDriver(
     detachedTeardownCommand: (t) => current.detachedTeardownCommand(t),
     destroyProjectSubstrate: (s) => current.destroyProjectSubstrate(s),
     reapNodeLocal: (r) => current.reapNodeLocal(r),
-    pendingMamaRequests: () => current.pendingMamaRequests(),
-    resolveMamaRequests: (r) => current.resolveMamaRequests(r),
+    get mamaRelay() { return current.mamaRelay },
     override(next) { current = { ...current, ...next } },
   }
   setWorkspaceDriver(fake)
@@ -252,7 +251,6 @@ function defaultRuntime(): WorkspaceDriver {
     detachedTeardownCommand: () => 'true',
     destroyProjectSubstrate: () => Promise.resolve(),
     reapNodeLocal: () => Promise.resolve(),
-    pendingMamaRequests: () => Promise.resolve([]),
-    resolveMamaRequests: () => Promise.resolve(),
+    mamaRelay: null,
   }
 }

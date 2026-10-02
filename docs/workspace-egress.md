@@ -183,7 +183,7 @@ objects the server watches. All live in the install namespace, are labelled
 
 | object | kind | writer | reader | content |
 |---|---|---|---|---|
-| `yaac-proxy-credentials` | Secret | server | proxy informer | `claude.json`, `codex.json`, `opencode.json`, `pi.json` (each tool's host-store file verbatim; a signed-out tool has no key), `git-tokens.json` (`[{token, projects}]`) and `ssh-keys.json` (`[{privateKey, publicKey, projects: [{slug, host, knownHostsEntry}]}]`, the private key OpenSSH-encoded from the sealed seed). `projects` lists the project slugs a credential is assigned to: a token goes only to its project's https remote host (and, for github.com, `api.github.com`), and a workspace's agent connection sees only its project's keys |
+| `yaac-proxy-credentials` | Secret | server | proxy informer | `claude.json`, `codex.json`, `opencode.json`, `pi.json` (each tool's host-store file verbatim, plus `apiHost` for opencode and pi: the provider host the key is swapped in on; a signed-out tool has no key), `git-tokens.json` (`[{token, projects}]`) and `ssh-keys.json` (`[{privateKey, publicKey, projects: [{slug, host, knownHostsEntry}]}]`, the private key OpenSSH-encoded from the sealed seed). `projects` lists the project slugs a credential is assigned to: a token goes only to its project's https remote host (and, for github.com, `api.github.com`), and a workspace's agent connection sees only its project's keys |
 | `yaac-proxy-secrets-<project>` | Secret, one per project | server | proxy informer | `values.json`: `{ "<slug>/<NAME>": value }`, the secret values behind that project's `secretRef` rules |
 | `yaac-proxy-reg-<workspaceId>` | ConfigMap, one per workspace | server | proxy informer | `registration.json`: rules with `secretRef`s (never values), allowed hosts, repo URL, tool, project, test redirects |
 | `yaac-proxy-refreshed` | Secret | proxy | server informer | `claude.json`, `codex.json`: OAuth bundles the proxy captured from a workspace's token refresh, in the credentials-file shape |
@@ -258,9 +258,22 @@ refresh on every start.
 three outputs empty and the proxy's Role grants `update`/`patch` on exactly
 those names. Its reads are `get`/`list`/`watch` on Secrets and ConfigMaps
 namespace-wide, which is why the install namespace holds only yaac's own
-objects. The HTTP control API on the proxy's port carries only true
-request/response traffic: `/healthz`, the change stream (`/events`) and the
-`yaac-mama` command queue.
+objects. The HTTP control API on the proxy's port is only `/healthz`.
+
+## yaac-mama
+
+A workspace pod's `yaac-mama` calls POST to `http://yaac.internal/api/workspace/mama`
+over its transparent HTTP egress. The proxy routes on the Host header before
+the allowlist check, so the call always works, and relays it to the server's
+mama listener (`MAMA_RELAY_URL`, the `yaac-server-mama` Service). It names
+the caller in `x-yaac-workspace-id`, from the source pod IP as for any
+egress, and authenticates with its auth secret, which the server compares
+against the `yaac-proxy-auth` Secret. That listener serves nothing else, so
+the server's ingress policy can admit the proxy to it without admitting the
+proxy, and the workspace traffic it forwards, to the API
+(docs/server-in-cluster.md "The ingress policy is the wall"). The server
+alone decides what a command may do (`runMamaCommand`); the proxy checks
+nothing about it.
 
 ## Which pods are redirected
 

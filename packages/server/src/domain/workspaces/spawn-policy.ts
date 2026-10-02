@@ -48,7 +48,7 @@ export type SpawnDecision =
   | { ok: true; workspaceId: string }
   | { ok: false; error: string }
 
-/** Prompt character limit — mirrors the proxy's check. */
+/** Prompt character limit, as the `/workspace/mama` route enforces. */
 export const SPAWN_MAX_PROMPT_CHARS = 10_000
 /** Most spawned workspaces one caller may have provisioning at once. */
 export const SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE = 8

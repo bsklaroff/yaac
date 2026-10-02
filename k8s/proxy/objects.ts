@@ -12,8 +12,6 @@
  * proxy-constants.ts (the proxy cannot import server code).
  */
 
-import { OPENCODE_PROVIDER_HOSTS, PI_PROVIDER_HOSTS } from './tool-providers.generated'
-
 /** Label naming which input an object is: `credentials`, `secrets` or
  *  `registration`. The server stamps it; the three informers select on it. */
 export const LABEL_PROXY_INPUT = 'yaac.proxy-input'
@@ -56,9 +54,8 @@ export type CodexCreds =
   | { kind: 'oauth'; bundle: CodexOAuthBundle }
   | { kind: 'api-key'; apiKey: string }
 
-export type OpencodeCreds = { kind: 'api-key'; apiKey: string; provider: string }
-
-export type PiCreds = { kind: 'api-key'; apiKey: string; provider: string }
+/** opencode and pi keys, with the provider host the server resolved. */
+export type ApiKeyCreds = { kind: 'api-key'; apiKey: string; apiHost: string }
 
 /** One HTTPS token and the slugs of the projects it is assigned to — a
  *  workspace is handed it only when its registration names one of them. */
@@ -77,8 +74,8 @@ export type SshCredentialEntry = { privateKey: string; publicKey: string; projec
 export type ProxyCredentials = {
   claude: ClaudeCreds | null
   codex: CodexCreds | null
-  opencode: OpencodeCreds | null
-  pi: PiCreds | null
+  opencode: ApiKeyCreds | null
+  pi: ApiKeyCreds | null
   git: HttpsCredentialEntry[]
   ssh: SshCredentialEntry[]
 }
@@ -241,20 +238,14 @@ function decodeCodex(o: Record<string, unknown> | null): CodexCreds | null {
 }
 
 /**
- * Decode an API-key credential whose provider must be present in `hosts`,
- * since the provider picks the host the key is injected on. Like the server,
- * a credential without a known provider counts as unconfigured. `hasOwn`
- * keeps prototype keys like "constructor" from matching.
+ * Decode an opencode or pi key. Without a host the key has nowhere it may
+ * go, so it counts as unconfigured.
  */
-function decodeApiKeyTool(
-  o: Record<string, unknown> | null,
-  hosts: Record<string, string>,
-): { kind: 'api-key'; apiKey: string; provider: string } | null {
+function decodeApiKeyTool(o: Record<string, unknown> | null): ApiKeyCreds | null {
   if (!o) return null
   if (o.kind !== 'api-key' || typeof o.apiKey !== 'string' || !o.apiKey) return null
-  const provider = typeof o.provider === 'string' ? o.provider : ''
-  if (!Object.hasOwn(hosts, provider)) return null
-  return { kind: 'api-key', apiKey: o.apiKey, provider }
+  if (typeof o.apiHost !== 'string' || !o.apiHost) return null
+  return { kind: 'api-key', apiKey: o.apiKey, apiHost: o.apiHost }
 }
 
 /** The canonicalized base64 key blob (second field) of an OpenSSH public
@@ -325,8 +316,8 @@ export function decodeCredentials(secret: RawObject): ProxyCredentials {
   return {
     claude: decodeClaude(parseJson(secretString(secret, 'claude.json'))),
     codex: decodeCodex(parseJson(secretString(secret, 'codex.json'))),
-    opencode: decodeApiKeyTool(parseJson(secretString(secret, 'opencode.json')), OPENCODE_PROVIDER_HOSTS),
-    pi: decodeApiKeyTool(parseJson(secretString(secret, 'pi.json')), PI_PROVIDER_HOSTS),
+    opencode: decodeApiKeyTool(parseJson(secretString(secret, 'opencode.json'))),
+    pi: decodeApiKeyTool(parseJson(secretString(secret, 'pi.json'))),
     git: decodeGit(parseJsonArray(secretString(secret, 'git-tokens.json'))),
     ssh: decodeSsh(parseJsonArray(secretString(secret, 'ssh-keys.json'))),
   }

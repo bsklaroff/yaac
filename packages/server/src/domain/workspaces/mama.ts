@@ -1,7 +1,7 @@
 /**
- * Runs in-workspace `yaac-mama` commands. Both transports (the k8s proxy
- * queue and the containerless route) end here, so `MAMA_COMMANDS` is
- * enforced for both.
+ * Runs in-workspace `yaac-mama` commands. Both ways in (the k8s proxy relay
+ * and the containerless route) end here, so `MAMA_COMMANDS` is enforced for
+ * both.
  *
  * An agent may list the project's workspaces, create or queue one, edit what
  * it queued, retitle, group, and stop one (its own included). Stopping is

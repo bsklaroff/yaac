@@ -111,7 +111,7 @@ export const ROUTE_MATRIX: RouteCase[] = [
   // The in-workspace command channel. Containerless answers 401 because the
   // matrix sends no workspace bearer token.
   { method: 'POST', path: '/api/workspace/mama', body: { command: 'list' },
-    why: 'a pod reaches yaac-mama through the egress proxy, not the server',
+    why: 'the egress proxy relays a pod\'s yaac-mama calls to a listener of their own',
     k8s: UNSUPPORTED, containerless: 401 },
   { method: 'POST', path: '/api/workspace/queue/create', body: { project: 'nope', parent: 'nope', prompt: 'p' }, k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/queue/update', body: { id: 'nope', prompt: 'p' }, k8s: MISSING, containerless: MISSING },

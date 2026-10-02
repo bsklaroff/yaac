@@ -7,8 +7,6 @@
  * whose host is no longer allowed or whose admission differs is destroyed,
  * and the client reconnects. Unchanged admissions keep their connection, so
  * widening an allowlist drops nothing.
- *
- * Dependency-free so tests can import it; proxy.ts starts listeners at load.
  */
 
 import type { Readable, Writable } from 'node:stream'

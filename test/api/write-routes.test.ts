@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { buildApp } from '@yaac/server/main/server'
+import { buildApp, buildMamaRelayApp } from '@yaac/server/main/server'
 import { git } from '@yaac/test-utils/git'
 import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir, repoDir } from '@yaac/shared/project-paths'
 import { cloneRepo } from '@yaac/server/domain/git'
@@ -932,6 +932,40 @@ describe('write routes', () => {
       const res = await client.workspace.stop.$post({ json: { workspaceId: 'sess-x' } })
       expect(res.status).toBe(200)
       expect(mockDeleteSession).toHaveBeenCalledWith('sess-x')
+    })
+  })
+
+  describe('POST /workspace/mama on the relay listener', () => {
+    // What the egress proxy sends for a k8s workspace pod: its own secret,
+    // and the caller it resolved from the pod's source IP.
+    const relay = async (bearer: string, workspaceId: string, body: string): Promise<Response> =>
+      await buildMamaRelayApp((b) => Promise.resolve(b === 'proxy-secret')).request('/api/workspace/mama', {
+        method: 'POST',
+        headers: {
+          'authorization': `Bearer ${bearer}`,
+          'x-yaac-workspace-id': workspaceId,
+          'content-type': 'application/json',
+        },
+        body,
+      })
+
+    it('runs the command for the workspace the proxy names', async () => {
+      await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'sess-a' })
+      const res = await relay('proxy-secret', 'sess-a', JSON.stringify({ command: 'rename', body: 'Relayed' }))
+      expect(res.status).toBe(200)
+      expect((await getProjectWorkspaceRows('demo')).get('sess-a')?.title).toBe('Relayed')
+
+      // A refusal comes back as 422, like the containerless route's.
+      const refused = await relay('proxy-secret', 'sess-a', JSON.stringify({ command: 'delete' }))
+      expect(refused.status).toBe(422)
+    })
+
+    it('refuses a caller that is not the proxy, or a workspace that does not exist', async () => {
+      await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'sess-a' })
+      const body = JSON.stringify({ command: 'rename', body: 'Forged' })
+      expect((await relay('guess', 'sess-a', body)).status).toBe(401)
+      expect((await relay('proxy-secret', 'sess-gone', body)).status).toBe(401)
+      expect((await getProjectWorkspaceRows('demo')).get('sess-a')?.title).not.toBe('Forged')
     })
   })
 

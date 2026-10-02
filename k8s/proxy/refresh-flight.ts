@@ -12,8 +12,6 @@
  *
  * Sharing a reply is safe because an install holds one credential per tool,
  * so every workspace would get the same upstream fields back.
- *
- * Dependency-free so tests can import it; proxy.ts starts listeners at load.
  */
 
 /**

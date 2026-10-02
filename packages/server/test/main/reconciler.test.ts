@@ -10,7 +10,6 @@ import type * as titleGenerationModule from '#domain/titles/title-generation'
 // Each reconcile step is faked; these tests check which steps run and in
 // what order, not what they do.
 vi.mock('#domain/workspaces/stale-workspaces', () => ({ reconcileStaleWorkspaces: vi.fn() }))
-vi.mock('#domain/workspaces/mama-reconcile', () => ({ reconcileMamaRequests: vi.fn() }))
 vi.mock('#domain/workspaces/prewarm-reconcile', () => ({ reconcilePrewarmPool: vi.fn() }))
 vi.mock('#drivers/k8s/workspaces/salvage-reconcile', () => ({ reconcileImageSalvage: vi.fn() }))
 vi.mock('#domain/workspaces/agent-session-registry', () => ({ reconcileAgentSessions: vi.fn() }))
@@ -46,7 +45,6 @@ import { startReconciler } from '#main/reconciler'
 import { defaultReconcileSteps } from '#domain/reconcile'
 import type { PassContext, ReconcileStep, ReconcileTrigger } from '#drivers/contract'
 import { reconcileStaleWorkspaces } from '#domain/workspaces/stale-workspaces'
-import { reconcileMamaRequests } from '#domain/workspaces/mama-reconcile'
 import { reconcilePrewarmPool } from '#domain/workspaces/prewarm-reconcile'
 import { reconcileImageSalvage } from '#drivers/k8s/workspaces/salvage-reconcile'
 import { reconcileAgentSessions } from '#domain/workspaces/agent-session-registry'
@@ -62,7 +60,7 @@ import { reconcileProjectRegistryGc } from '#drivers/k8s/cluster/project-registr
 import { reconcileGeneratedTitles } from '#domain/titles/title-generation'
 
 const ALL_STEP_FNS = [
-  reconcileStaleWorkspaces, reconcileMamaRequests,
+  reconcileStaleWorkspaces,
   reconcileBuilderPodGc, reconcileImagePrewarm, reconcilePrewarmPool,
   reconcileImageSalvage, reconcileNodeImageStores, reconcileProjectRegistryGc,
   reconcileAgentSessions,
@@ -323,11 +321,6 @@ describe('defaultReconcileSteps', () => {
   // reaper's only trigger.
   it('runs only the reaper when a driver stream goes unhealthy', async () => {
     await expectOnly(['status-streams'], [reconcileStaleWorkspaces])
-  })
-
-  // The proxy holds the pod's HTTP request open until the drain answers.
-  it('runs only the spawn drain when the proxy reports a queued spawn', async () => {
-    await expectOnly(['mama-requests'], [reconcileMamaRequests])
   })
 
   // An `acp` conversation's id appears only in the live set, so without

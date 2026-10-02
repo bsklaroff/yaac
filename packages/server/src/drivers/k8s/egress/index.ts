@@ -13,11 +13,10 @@
 
 export {
   ProxyClient,
-  drainPendingMamaRequests,
+  isProxyAuthSecret,
   proxyClient,
   type ProxyClientConfig,
 } from './proxy-client'
-export { PROXY_CHANGE_SOURCES, ProxyEventStream, type ProxyChangeSource } from './proxy-events'
 export {
   allowWorkspaceHost,
   applyProxyRegistration,

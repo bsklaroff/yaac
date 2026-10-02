@@ -88,7 +88,7 @@ const output = async (
 describe('runMamaCommand', () => {
   it('refuses a command outside the allowlist, naming what is allowed', async () => {
     // This is the one place the allowed commands are enforced for both
-    // transports; the proxy queues requests without interpreting them.
+    // transports; the proxy relays requests without interpreting them.
     for (const forbidden of ['delete', 'restart', 'workspace-stop', 'config', '']) {
       const outcome = await run(forbidden)
       expect(outcome.ok, forbidden).toBe(false)

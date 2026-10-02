@@ -98,19 +98,12 @@ describe('ProxyClient.ensureRunning staleness gate', () => {
   })
 
   /**
-   * A client forced into the state attachIfRunning() leaves behind, with
-   * /healthz answering OK.
+   * A client that has seen the proxy running but not yet checked its
+   * version, with /healthz answering OK.
    */
   function attachedClient(): ProxyClient {
     const c = new ProxyClient({ image: 'yaac-test-proxy' })
-    const internal = c as unknown as {
-      running: boolean
-      authSecret: string
-      forward: { currentPort: number }
-    }
-    internal.running = true
-    internal.authSecret = 'secret'
-    internal.forward = { currentPort: 12345 }
+    ;(c as unknown as { running: boolean }).running = true
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }))
     return c
   }
@@ -126,6 +119,10 @@ describe('ProxyClient.ensureRunning staleness gate', () => {
     )
     await c.ensureRunning()
     expect(bootstrap).not.toHaveBeenCalled()
+    // A plain Service dial: the server runs in the proxy's namespace
+    // (docs/server-in-cluster.md).
+    expect(vi.mocked(fetch).mock.calls[0][0])
+      .toMatch(/^http:\/\/yaac-proxy\.[^/]+\.svc\.cluster\.local:10255\/healthz$/)
     vi.unstubAllGlobals()
   })
 
@@ -159,5 +156,27 @@ describe('ProxyClient.ensureRunning staleness gate', () => {
     await expect(c.ensureRunning()).rejects.toThrow('bootstrap reached')
     expect(bootstrap).toHaveBeenCalledOnce()
     vi.unstubAllGlobals()
+  })
+})
+
+describe('ProxyClient.rollIfStale', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockContextHash.mockResolvedValue('abc123')
+  })
+
+  async function rolled(deployment: object | null): Promise<boolean> {
+    const c = new ProxyClient({ image: 'yaac-test-proxy' })
+    const ensure = vi.spyOn(c, 'ensureRunning').mockResolvedValue()
+    mockKubectlGetJson.mockResolvedValue(deployment)
+    await c.rollIfStale()
+    return ensure.mock.calls.length > 0
+  }
+
+  it('redeploys only a proxy that exists and is from another build', async () => {
+    await expect(rolled(deployedProxy('localhost:5001/yaac-test-proxy:stale00'))).resolves.toBe(true)
+    await expect(rolled(deployedProxy('localhost:5001/yaac-test-proxy:abc123'))).resolves.toBe(false)
+    // No proxy yet: the first launch deploys it.
+    await expect(rolled(null)).resolves.toBe(false)
   })
 })

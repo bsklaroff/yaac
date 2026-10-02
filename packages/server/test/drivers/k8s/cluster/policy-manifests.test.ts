@@ -23,6 +23,7 @@ import {
   SERVER_FRONT_INGRESS_NP_NAME,
   SERVER_FRONT_PORT,
   SERVER_INGRESS_NP_NAME,
+  SERVER_MAMA_PORT,
   SERVER_POD_PORT,
   WORKSPACE_EGRESS_NP_NAME,
 } from '#drivers/k8s/substrate/proxy-constants'
@@ -121,9 +122,10 @@ interface IngressSpec {
 }
 
 describe('buildServerIngressNpManifest', () => {
-  it('admits exactly the node addresses it is given, and nothing pod-shaped', () => {
-    // No pod may reach the server, so the rule names only node addresses:
-    // the kubelet probe and, on kind, the forwarder's dial come from them.
+  it('admits the node addresses it is given to the API, and the proxy only to the mama port', () => {
+    // No pod may reach the API: the kubelet probe and, on kind, the
+    // forwarder's dial come from node addresses. The proxy forwards
+    // workspace traffic, so it reaches only the mama listener.
     const np = buildServerIngressNpManifest(['10.89.0.2/32', '10.244.93.192/32']) as unknown as {
       metadata: { name: string }
       spec: IngressSpec
@@ -134,6 +136,9 @@ describe('buildServerIngressNpManifest', () => {
     expect(np.spec.ingress).toEqual([{
       from: [{ ipBlock: { cidr: '10.89.0.2/32' } }, { ipBlock: { cidr: '10.244.93.192/32' } }],
       ports: [{ protocol: 'TCP', port: SERVER_POD_PORT }],
+    }, {
+      from: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }],
+      ports: [{ protocol: 'TCP', port: SERVER_MAMA_PORT }],
     }])
   })
 })

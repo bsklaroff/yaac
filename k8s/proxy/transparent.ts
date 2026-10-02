@@ -1,6 +1,5 @@
 /**
- * Pure helpers for the proxy's transparent egress listeners. Kept out of
- * proxy.ts, which starts listeners on import, so tests can import them.
+ * Pure helpers for the proxy's transparent egress listeners.
  */
 
 /**
