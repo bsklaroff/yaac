@@ -74,6 +74,8 @@ export {
   restartMainRegistry,
 } from './main-registry'
 export {
+  NGINX_MIRROR_TAG,
+  NGINX_UPSTREAM_IMAGE,
   VERDACCIO_MIRROR_TAG,
   VERDACCIO_UPSTREAM_IMAGE,
   ensureNpmCache,

@@ -184,7 +184,7 @@ export async function setup(project: TestProject): Promise<void> {
       await pushImageToRegistry(tag)
     }
     // Digest-pinned upstreams every install mirrors (registry:2, Envoy,
-    // podman, curl, Verdaccio). curl is unused by e2e today but mirrored so
+    // podman, curl, Verdaccio, nginx). curl is unused by e2e today but mirrored so
     // a future installer test does not fail on a missing image.
     await mirrorPinnedUpstreams()
     // The k8s tiers' server runs as a Deployment (docs/server-in-cluster.md).

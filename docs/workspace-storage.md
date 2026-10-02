@@ -508,6 +508,21 @@ per cluster, and installs keep working while npmjs is slow or down. The cache is
 read-only to workspaces, and pnpm checks every tarball against the lockfile's
 integrity hash regardless of source.
 
+Verdaccio sits behind an nginx sidecar that owns the cache port. Verdaccio is a
+single Node process that reads and parses a package's whole metadata document
+on every request, and some of those documents are tens of MB. When many
+workspaces install at once, that starves the event loop until requests and the
+readiness probe time out. nginx caches Verdaccio's metadata responses on
+pod-local disk, keyed by URL and `Accept`, because the abbreviated and full
+documents share a URL. Identical concurrent requests wait on one upstream
+fetch, so N workspaces cost one parse. nginx keeps metadata for five minutes,
+as npmjs's CDN does, and serves a stale copy while it refreshes. Tarballs pass
+straight through: Verdaccio streams them from its claim without parsing, so a
+second copy would cost node disk for little CPU. nginx evicts
+least-recently-used entries past 1 GB, or when the node's disk has under 2 GB
+free, because a cache write that hits a full disk sends the client a truncated
+body. Its cache is lost when the pod restarts.
+
 The cache is only ever the **default** registry. The init script writes it to
 the workspace's user-level `~/.npmrc` (from `YAAC_NPM_REGISTRY`). pnpm 10, 11
 and npm all read that below a project's own `.npmrc`, so a project that names a

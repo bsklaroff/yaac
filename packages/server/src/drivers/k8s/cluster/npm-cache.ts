@@ -7,6 +7,13 @@
  * Deployed like the main registry: one replica, `Recreate`, an RWO claim,
  * so there is never more than one writer to Verdaccio's plain-file storage.
  *
+ * An nginx sidecar owns the cache port and caches Verdaccio's metadata
+ * answers on pod-local disk. Verdaccio is one Node event loop that reads and
+ * parses a package's whole metadata document on every request, and some
+ * documents run to tens of MB, so many workspaces installing at once can
+ * starve it. nginx collapses concurrent identical requests into one, serves
+ * repeats from disk, and keeps serving a stale copy while it refreshes.
+ *
  * Workspaces cannot publish (the cache is shared across projects), and pnpm
  * verifies every tarball against the lockfile. It is only the default
  * registry: a project's own `.npmrc` wins, and those requests go through the
@@ -43,6 +50,22 @@ export const VERDACCIO_UPSTREAM_IMAGE = `docker.io/verdaccio/verdaccio@${VERDACC
 export const VERDACCIO_MIRROR_TAG =
   `verdaccio/verdaccio:${VERDACCIO_VERSION}-${VERDACCIO_PIN.slice('sha256:'.length, 'sha256:'.length + 12)}`
 
+/** The caching front. The unprivileged variant runs as a non-root user. */
+const NGINX_VERSION = '1.30.5'
+const NGINX_PIN = 'sha256:ed04ec1ff34502c339ee5c3ae3f855442398edc1d05591e2b98981dcbbd20b1e'
+export const NGINX_UPSTREAM_IMAGE = `docker.io/nginxinc/nginx-unprivileged@${NGINX_PIN}`
+export const NGINX_MIRROR_TAG =
+  `nginxinc/nginx-unprivileged:${NGINX_VERSION}-alpine-${NGINX_PIN.slice('sha256:'.length, 'sha256:'.length + 12)}`
+
+/** Where Verdaccio listens: loopback only, so nothing bypasses nginx. */
+const VERDACCIO_PORT = 4874
+
+/** Verdaccio's memory limit. The V8 heap is capped at three quarters of it,
+ *  so V8 collects harder before the cgroup limit and leaves room for the
+ *  off-heap Buffers holding response bodies. Hitting either limit still
+ *  restarts Verdaccio. */
+const VERDACCIO_MEMORY_MIB = 4096
+
 /** The group the image's `verdaccio` user runs as (uid 10001, `nogroup`). */
 const VERDACCIO_GID = 65533
 
@@ -65,6 +88,66 @@ const NPM_CACHE_STORAGE_SIZE = '20Gi'
  *  name (resolved via the proxy's DNS), with npm's trailing slash. */
 function npmCacheRegistryUrl(): string {
   return `http://${NPM_CACHE_APP_NAME}.${k8sNamespace()}.svc.cluster.local:${NPM_CACHE_PORT}/`
+}
+
+/**
+ * nginx's server block, included inside the image's `http {}`. Package
+ * metadata is cached. Tarballs are passed through: Verdaccio streams them
+ * from its claim without parsing, so a second copy here would cost disk for
+ * little CPU. Its `/-/` API (ping, search, audit) is passed through too, so
+ * the readiness probe reaches Verdaccio itself.
+ *
+ * The key includes Accept because npm and pnpm ask for the abbreviated
+ * document at the same URL as the full one. Metadata is kept five minutes,
+ * as npmjs's own CDN does, so new versions appear but no install outlasts
+ * it. Upstream gzip is cached as is and inflated only for a client that
+ * cannot take it.
+ *
+ * Pass-through responses stream through memory buffers rather than spool to
+ * the container's disk (`proxy_max_temp_file_size 0`; cached ones are not
+ * subject to it). Past `max_size`, or when the node's disk has under
+ * `min_free` left, nginx evicts least-recently-used entries. A cache write that hits a full disk
+ * sends the client a truncated body, so the cache sheds itself well before
+ * that.
+ */
+function buildNpmCacheNginxConf(): string {
+  return `proxy_cache_path /var/cache/npm levels=1:2 keys_zone=npm:10m max_size=1g min_free=2g inactive=1d use_temp_path=off;
+log_format npm_cache '$remote_addr "$request" $status $body_bytes_sent $upstream_cache_status $request_time';
+upstream verdaccio {
+  server 127.0.0.1:${VERDACCIO_PORT};
+  keepalive 16;
+}
+server {
+  listen ${NPM_CACHE_PORT};
+  access_log /dev/stdout npm_cache;
+  client_max_body_size 0;
+  proxy_max_temp_file_size 0;
+  proxy_http_version 1.1;
+  proxy_set_header Connection "";
+  proxy_set_header Accept-Encoding gzip;
+  gunzip on;
+  proxy_cache npm;
+  proxy_cache_key "$request_uri $http_accept";
+  proxy_ignore_headers Cache-Control Expires Set-Cookie Vary;
+  proxy_cache_valid 200 5m;
+  proxy_cache_lock on;
+  proxy_cache_lock_timeout 60s;
+  proxy_cache_lock_age 60s;
+  proxy_cache_use_stale updating error timeout http_502 http_503 http_504;
+  proxy_cache_background_update on;
+  location ^~ /-/ {
+    proxy_cache off;
+    proxy_pass http://verdaccio;
+  }
+  location ~ \\.tgz$ {
+    proxy_cache off;
+    proxy_pass http://verdaccio;
+  }
+  location / {
+    proxy_pass http://verdaccio;
+  }
+}
+`
 }
 
 /** Verdaccio's config. `max_users: -1` disables registration, so nobody
@@ -116,7 +199,7 @@ function buildNpmCacheConfigYaml(): string {
  *    netd does not redirect it (not a workspace pod).
  */
 function buildNpmCacheManifests(
-  imageRef: string,
+  images: { verdaccio: string; nginx: string },
   cidrs: { nodes: string[]; pods: string[] },
 ): { workload: Array<Record<string, unknown>>; service: Record<string, unknown> } {
   const ns = k8sNamespace()
@@ -132,7 +215,7 @@ function buildNpmCacheManifests(
       apiVersion: 'v1',
       kind: 'ConfigMap',
       metadata: metadata(CONFIG_MAP_NAME),
-      data: { 'config.yaml': buildNpmCacheConfigYaml() },
+      data: { 'config.yaml': buildNpmCacheConfigYaml(), 'npm-cache.conf': buildNpmCacheNginxConf() },
     },
     {
       apiVersion: 'v1',
@@ -154,10 +237,11 @@ function buildNpmCacheManifests(
         template: {
           metadata: {
             labels: npmCacheLabels(),
-            // A config edit must roll the pod: Verdaccio reads it once.
+            // A config edit must roll the pod: both read it once.
             annotations: {
               'yaac.config-hash': crypto.createHash('sha256')
-                .update(buildNpmCacheConfigYaml()).digest('hex').slice(0, 16),
+                .update(buildNpmCacheConfigYaml()).update(buildNpmCacheNginxConf())
+                .digest('hex').slice(0, 16),
             },
           },
           spec: {
@@ -171,28 +255,56 @@ function buildNpmCacheManifests(
             // tried against each search domain, and the node's can hang on a
             // host resolver (e.g. a VPN). The cache needs no short names.
             dnsConfig: { options: [{ name: 'ndots', value: '1' }] },
+            // Verdaccio first, so `kubectl logs` defaults to it.
             containers: [{
               name: 'verdaccio',
-              image: imageRef,
+              image: images.verdaccio,
               imagePullPolicy: 'IfNotPresent',
-              ports: [{ containerPort: NPM_CACHE_PORT }],
-              readinessProbe: {
-                httpGet: { path: '/-/ping', port: NPM_CACHE_PORT },
-                periodSeconds: 2,
-                failureThreshold: 30,
-              },
+              env: [
+                { name: 'VERDACCIO_ADDRESS', value: '127.0.0.1' },
+                { name: 'VERDACCIO_PORT', value: String(VERDACCIO_PORT) },
+                // Tarball URLs in metadata, fixed so nginx can share it.
+                { name: 'VERDACCIO_PUBLIC_URL', value: npmCacheRegistryUrl() },
+                { name: 'NODE_OPTIONS', value: `--max-old-space-size=${VERDACCIO_MEMORY_MIB * 3 / 4}` },
+              ],
+              // A full CPU's scheduling weight (four workspaces' requests), so
+              // a parse is not starved by the installs it serves; a starved
+              // parse is what times out the probe. It is reserved from every
+              // install's schedulable CPU (docs/cluster-setup.md).
               resources: {
-                requests: { cpu: '50m', memory: String(256 * 1024 ** 2) },
-                limits: { memory: String(2 * 1024 ** 3) },
+                requests: { cpu: '1', memory: String(256 * 1024 ** 2) },
+                limits: { memory: String(VERDACCIO_MEMORY_MIB * 1024 ** 2) },
               },
               volumeMounts: [
                 { name: 'config', mountPath: '/verdaccio/conf', readOnly: true },
                 { name: 'storage', mountPath: '/verdaccio/storage' },
               ],
+            }, {
+              name: 'nginx',
+              image: images.nginx,
+              imagePullPolicy: 'IfNotPresent',
+              ports: [{ containerPort: NPM_CACHE_PORT }],
+              // Through nginx to Verdaccio's uncached ping.
+              readinessProbe: {
+                httpGet: { path: '/-/ping', port: NPM_CACHE_PORT },
+                periodSeconds: 2,
+                timeoutSeconds: 5,
+                failureThreshold: 30,
+              },
+              resources: {
+                requests: { cpu: '100m', memory: String(32 * 1024 ** 2) },
+                limits: { memory: String(256 * 1024 ** 2) },
+              },
+              volumeMounts: [
+                { name: 'config', mountPath: '/etc/nginx/conf.d', readOnly: true },
+                { name: 'http-cache', mountPath: '/var/cache/npm' },
+              ],
             }],
             volumes: [
               { name: 'config', configMap: { name: CONFIG_MAP_NAME } },
               { name: 'storage', persistentVolumeClaim: { claimName: npmCachePvcName() } },
+              // Lost on restart; Verdaccio's claim still has every package.
+              { name: 'http-cache', emptyDir: {} },
             ],
           },
         },
@@ -260,12 +372,12 @@ const ROLLOUT_TIMEOUT_MS = 180_000
  * never came up has no Service.
  */
 export async function ensureNpmCache(): Promise<void> {
-  if (!await registryHasTag(VERDACCIO_MIRROR_TAG)) {
-    throw missingPrebuiltImage('Verdaccio', VERDACCIO_MIRROR_TAG)
+  for (const [name, tag] of [['Verdaccio', VERDACCIO_MIRROR_TAG], ['nginx', NGINX_MIRROR_TAG]]) {
+    if (!await registryHasTag(tag)) throw missingPrebuiltImage(name, tag)
   }
   await ensureNamespace()
   const { workload, service } = buildNpmCacheManifests(
-    registryRef(VERDACCIO_MIRROR_TAG),
+    { verdaccio: registryRef(VERDACCIO_MIRROR_TAG), nginx: registryRef(NGINX_MIRROR_TAG) },
     { nodes: await nodeIpBlocks(), pods: await clusterPodCidrs() },
   )
   for (const manifest of workload) await kubectlApply(manifest)
