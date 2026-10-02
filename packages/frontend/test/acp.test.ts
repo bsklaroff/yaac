@@ -66,6 +66,13 @@ describe('groupEvents', () => {
     expect(groups).toEqual([{ kind: 'agent', seq: 0, text: 'Hello, world!', images: [] }])
   })
 
+  it('starts a new message at a run the agent began itself', () => {
+    // No user message precedes it, so without the boundary the two replies
+    // would read as one ("startedfinished").
+    const groups = groupEvents([agent(0, 'started'), { type: 'agent-turn', seq: 1 }, agent(2, 'finished')])
+    expect(groups.map((g) => g.kind === 'agent' && g.text)).toEqual(['started', 'finished'])
+  })
+
   it('keeps a user turn separate from the reply it precedes', () => {
     const groups = groupEvents([user(0, 'do it'), agent(1, 'ok'), agent(2, '!')])
     expect(groups).toEqual([

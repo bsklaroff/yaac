@@ -18,9 +18,10 @@
  * window-close teardown and session GC work unchanged; the webapp just
  * renders a chat pane instead of attaching a PTY.
  *
- * Status is exact: `running` while a `session/prompt` is in flight,
- * `waiting` once the agent answers. Across reconnects acpd's record tells
- * whether the old connection's turn is still running.
+ * Status is `running` while a `session/prompt` is in flight or the adapter
+ * reports itself working (which covers turns it starts on its own, except
+ * under opencode), `waiting` otherwise. Across reconnects acpd's record tells whether the old
+ * connection's turn is still running.
  */
 
 import { StringDecoder } from 'node:string_decoder'
@@ -444,17 +445,7 @@ class AcpConnection implements AgentConnection {
         entry.modeId = modeId
         this.publishAgents()
       },
-      onBusy: (busy) => {
-        // Ask the conversation: a turn parked on a permission ask is busy
-        // but `waiting`. The fallback only covers construction.
-        this.sink({
-          kind: 'status',
-          handle,
-          status: entry.conversation?.status ?? (busy ? 'running' : 'waiting'),
-        })
-      },
-      onPermissionPending: () => {
-        // The agent went from working to waiting on the user (or back).
+      onStatus: () => {
         const status = entry.conversation?.status
         if (status !== undefined) this.sink({ kind: 'status', handle, status })
       },
@@ -515,7 +506,7 @@ class AcpConnection implements AgentConnection {
     // A newly attached conversation has had no turn boundary yet, so publish
     // its status. Skip unclassified ones (handshaking or recovering):
     // guessing `waiting` would mark a working agent as wanting attention.
-    // They publish through `onBusy` once known.
+    // They publish through `onStatus` once known.
     for (const e of this.attached.values()) {
       const status = e.conversation?.status
       if (status === undefined) continue

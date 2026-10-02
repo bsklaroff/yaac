@@ -4,9 +4,20 @@
  *
  * An `AcpConversation` holds what must survive a closed tab or a dropped
  * connection: the ACP session id (minted by `session/new`, reused on
- * reconnect) and whether a prompt turn is in flight (the running/waiting
+ * reconnect) and whether the agent is working (the running/waiting
  * status). Content lives in acpd's record, which panes tail. Reconnect
  * policy belongs to the caller (`acp-driver.ts`), as with the tmux watcher.
+ *
+ * ## Working
+ *
+ * Two facts make up "working". `busy` is exact but partial: one of our
+ * `session/prompt` requests is unanswered. The adapter's own state report
+ * (`agentRunningReport`; opencode sends none) also covers turns the agent
+ * starts by itself, such as a background task finishing, a scheduled
+ * wakeup, or a steer codex turns into a turn of its own. Status, the pane's
+ * turn boundaries and steering follow either; only `busy` holds back the
+ * queue, since most adapters take a prompt while running on their own
+ * (pi's is the exception, see `holdsPrompts`).
  *
  * ## Reconnect
  *
@@ -19,12 +30,12 @@
  *  2. ACP has no way to ask whether a turn is running (turn state is tied
  *     to your own unanswered `session/prompt`). A reattach rebuilds it from
  *     the record (`recoverInFlight`), which shows whether the last prompt
- *     was answered.
+ *     was answered and what state the adapter last reported.
  *
- * Recovery reads a file, so two newer signals can beat it: a prompt sent
- * after the reattach, or the old turn's reply arriving as an orphan
- * response. Whichever classifies first wins, so a stale `true` from the
- * scan cannot pin a finished conversation busy.
+ * Recovery reads a file, so newer signals can beat it: a prompt sent after
+ * the reattach, the old turn's reply arriving as an orphan response, or a
+ * live state report. Whichever classifies first wins, so a stale `true`
+ * from the scan cannot pin a finished conversation busy.
  */
 
 import { randomUUID } from 'node:crypto'
@@ -37,7 +48,8 @@ import {
   asRecord,
   chooseAllowOption,
   clientCapabilities,
-  codexThreadIdle,
+  agentRunningReport,
+  isWorkUpdate,
   permissionReply,
   sessionModeId,
   sessionModel,
@@ -50,8 +62,9 @@ import {
   type AcpSessionModes,
 } from './acp-protocol'
 import { acpPermissionModeFor, type AcpAdapterProfile } from './acp-adapters'
+import type { AcpInFlight } from './acp-log'
 import { serverLog } from '#log'
-import type { AcpEventInit, AcpImage, AcpQueuedPrompt } from '@yaac/shared/acp'
+import type { AcpEventInit, AcpImage, AcpQueuedPrompt, AcpStopReason } from '@yaac/shared/acp'
 import type { PermissionMode } from '@yaac/shared/types'
 
 export interface AcpConversationDeps {
@@ -70,18 +83,18 @@ export interface AcpConversationDeps {
    *  Not fired on a resume. */
   onSessionId: (agentSessionId: string) => void
   /**
-   * Running/waiting changed, or was resolved for the first time. The first
-   * call fires even for `false`, because it is what moves the conversation
-   * out of the unclassified state.
+   * `status` changed, including its first resolution out of undefined.
+   * Read the getter: a turn parked on a permission ask is working but
+   * `waiting`.
    */
-  onBusy: (busy: boolean) => void
+  onStatus: () => void
   /**
    * Whether a prompt turn was in flight when the record was last written
    * (`readAcpInFlight`). Used once on a reattach, the only case where a turn
    * this connection did not start can be running. Absent or throwing means
    * idle.
    */
-  recoverInFlight?: () => Promise<boolean>
+  recoverInFlight?: () => Promise<AcpInFlight>
   /**
    * Permission asks the agent was still blocked on per the record
    * (`readAcpPendingPermissions`). Used on a reattach, since the ask went to
@@ -100,18 +113,14 @@ export interface AcpConversationDeps {
    * protocol directly) means tell it nothing: no mode, no model, leaving the
    * adapter's strict default.
    */
-  profile?: Pick<AcpAdapterProfile, 'modeIds' | 'readsAs' | 'forwardAsksUnderBypass' | 'steers'>
+  profile?: Pick<AcpAdapterProfile, 'modeIds' | 'readsAs' | 'forwardAsksUnderBypass' | 'steers'
+    | 'sessionMeta' | 'infersRunStart' | 'refusesPromptMidRun'>
   /**
    * The model to send, for adapters that only accept one over the protocol.
    * Sent once after `session/new`, never after `session/load` (the user may
    * have changed the model since).
    */
   launchModel?: string
-  /**
-   * An ask started or stopped blocking the agent. Separate from `onBusy`:
-   * busy means a turn is running, this means it is waiting on a human.
-   */
-  onPermissionPending?: (pending: boolean) => void
   /**
    * The session's model changed or was first learned. Fires on the switch
    * (`config_option_update`), only when the value changes. `name` is the
@@ -153,7 +162,14 @@ export class AcpConversation {
   private delivered: Promise<unknown> = Promise.resolve()
   private readonly closeSubscribers = new Set<() => void>()
   private sessionId: string | undefined
+  /** One of our prompts is unanswered; see "Working" above. */
   private busy = false
+  /** The adapter's last report of its own state, undefined until one
+   *  arrives (or always, for adapters that send none). */
+  private agentRunning: boolean | undefined
+  /** How the work in progress ended, for its `turn-end`: the last prompt
+   *  reply's stop reason, which can precede the adapter going idle. */
+  private stopReason: AcpStopReason = 'end_turn'
   /**
    * Whether `busy` is known yet. A fresh attach may have landed on a working
    * agent, so status stays undefined until the handshake or recovery
@@ -174,8 +190,6 @@ export class AcpConversation {
   private intake: Promise<unknown> = Promise.resolve()
   /** Whether panes were last told of a non-empty queue. */
   private queueShown = false
-  /** A turn the agent started itself from a steer; see `steer`. */
-  private detachedTurn = false
   /** Woken on every status change; see `whenStatus`. */
   private statusWaiters: Array<() => void> = []
   private ready = false
@@ -251,8 +265,9 @@ export class AcpConversation {
     return this.sessionId
   }
 
+  /** Whether the agent is working, by either signal ("Working" above). */
   get isBusy(): boolean {
-    return this.busy
+    return this.busy || this.agentRunning === true
   }
 
   /**
@@ -267,7 +282,7 @@ export class AcpConversation {
     // which is exactly when the sidebar dot, chime and tray badge should
     // fire.
     if (this.isAwaitingPermission) return 'waiting'
-    return this.busy ? 'running' : 'waiting'
+    return this.isBusy ? 'running' : 'waiting'
   }
 
   /** Whether the agent is parked on an ask nobody has answered. */
@@ -333,21 +348,52 @@ export class AcpConversation {
   }
 
   /**
-   * Settle the status. The first call always publishes, even for the
-   * initial `false`, since "idle" and "not classified yet" differ.
+   * Settle `busy`. The first call always classifies the conversation, even
+   * for the initial `false`, since "idle" and "not classified yet" differ.
    */
   private setBusy(busy: boolean): void {
     if (this.statusKnown && this.busy === busy) return
-    // Only a turn beginning, not a status resolved as running, gets an event.
-    const started = busy && !this.busy
-    this.statusKnown = true
-    this.busy = busy
-    // This is the pane's only turn-start signal, including for recovered
-    // turns. Panes infer nothing from content: a replay's `user` messages
-    // have no closing boundary (docs/agent-modes.md).
-    if (started) this.emit({ type: 'turn-start' })
+    this.changeWork(() => {
+      this.statusKnown = true
+      this.busy = busy
+    })
+  }
+
+  private setAgentRunning(running: boolean | undefined): void {
+    if (running === this.agentRunning) return
+    this.changeWork(() => { this.agentRunning = running })
+  }
+
+  /**
+   * Apply a change to either working signal and publish its effects. The
+   * events here are the pane's only turn boundaries, including for recovered
+   * turns: panes infer nothing from content, since a replay's `user`
+   * messages have no closing boundary (docs/agent-modes.md).
+   */
+  private changeWork(change: () => void): void {
+    const wasWorking = this.isBusy
+    const wasStatus = this.status
+    change()
+    if (this.isBusy !== wasWorking) {
+      if (this.isBusy) {
+        this.stopReason = 'end_turn'
+        this.emit({ type: 'turn-start' })
+      } else {
+        this.emit({ type: 'turn-end', stopReason: this.stopReason })
+      }
+    }
+    if (this.status !== wasStatus) this.deps.onStatus()
     this.wakeStatusWaiters()
-    this.deps.onBusy(busy)
+  }
+
+  /**
+   * Whether the queue must wait: behind a turn of ours this connection did
+   * not start (a recovered one), or, for an adapter that cannot take a
+   * message mid-run (`AcpAdapterProfile.refusesPromptMidRun`), behind a run
+   * the agent started itself.
+   */
+  private get holdsPrompts(): boolean {
+    return this.busy || (this.deps.profile?.refusesPromptMidRun === true && this.agentRunning === true)
   }
 
   private wakeStatusWaiters(): void {
@@ -362,10 +408,11 @@ export class AcpConversation {
   }
 
   /**
-   * Resolve once no turn is known to be running. Own turns run one at a
-   * time in `drain`, so this waits out an unclassified conversation and a
-   * recovered turn, which ends via the orphan reply, the agent exiting, or
-   * the conversation closing.
+   * Resolve once nothing holds the queue (`holdsPrompts`). Own turns run
+   * one at a time in `drain`, so this waits out an unclassified
+   * conversation, a recovered turn, which ends via the orphan reply, the
+   * agent exiting, or the conversation closing, and a run the agent started
+   * that `holdsPrompts` waits for, which ends with its idle report or a Stop.
    *
    * A turn recovered from a torn record (its reply already lost) never
    * ends, so a queue behind it holds until the workspace restarts
@@ -373,15 +420,14 @@ export class AcpConversation {
    * tell that from a long-running turn.
    */
   private whenIdle(): Promise<void> {
-    return this.whenStatus(() => this.statusKnown && !this.busy)
+    return this.whenStatus(() => this.statusKnown && !this.holdsPrompts)
   }
 
   private endTurn(stopReason: Parameters<typeof toStopReason>[0]): void {
-    const wasBusy = this.busy
+    this.stopReason = toStopReason(stopReason)
     // Unconditional, so an orphan reply or agent exit classifies the
     // conversation even before recovery answers.
     this.setBusy(false)
-    if (wasBusy) this.emit({ type: 'turn-end', stopReason: toStopReason(stopReason) })
   }
 
   private onNotification(method: string, params: unknown): void {
@@ -398,8 +444,8 @@ export class AcpConversation {
         // The asking process is gone; release parked asks so the
         // conversation does not stay `waiting`.
         this.cancelPendingPermissions()
-        this.detachedTurn = false
         this.endTurn('cancelled')
+        this.setAgentRunning(undefined)
         this.emit({ type: 'error', message: `the agent process exited (code ${code ?? '?'})` })
         return
       }
@@ -411,14 +457,25 @@ export class AcpConversation {
         const update = asRecord(asRecord(params)?.update)
         if (update?.sessionUpdate === 'config_option_update') this.setModel(sessionModel(update))
         if (update !== undefined) this.setModeId(sessionModeId(update))
-        if (update !== undefined && this.detachedTurn && codexThreadIdle(update)) {
-          this.detachedTurn = false
-          this.endTurn('end_turn')
-        }
+        this.noteAgentState(method, params)
         return
       }
       default:
+        this.noteAgentState(method, params)
         return
+    }
+  }
+
+  /**
+   * Follow the adapter's report of its own state. Inferred starts wait for
+   * `ready`: `session/load` replays history as updates before then.
+   */
+  private noteAgentState(method: string, params: unknown): void {
+    const running = agentRunningReport(method, params)
+    if (running !== undefined) this.setAgentRunning(running)
+    else if (method === ACP.sessionUpdate && this.deps.profile?.infersRunStart === true
+      && this.ready && !this.isBusy && isWorkUpdate(params)) {
+      this.setAgentRunning(true)
     }
   }
 
@@ -522,7 +579,7 @@ export class AcpConversation {
   /** Republish status, since a pending ask changes it without a turn
    *  boundary. */
   private publishPermissionPending(): void {
-    this.deps.onPermissionPending?.(this.isAwaitingPermission)
+    this.deps.onStatus()
   }
 
   /**
@@ -645,6 +702,7 @@ export class AcpConversation {
           sessionId: this.sessionId,
           cwd: this.deps.cwd,
           mcpServers: [],
+          ...this.sessionMeta(),
         })
         this.sessionModes = loaded.modes
         this.sessionConfig = loaded.configOptions
@@ -656,6 +714,7 @@ export class AcpConversation {
         const created = await this.peer.request<AcpNewSessionResult>(ACP.sessionNew, {
           cwd: this.deps.cwd,
           mcpServers: [],
+          ...this.sessionMeta(),
         })
         if (typeof created.sessionId !== 'string' || created.sessionId === '') {
           throw new Error('session/new returned no session id')
@@ -677,6 +736,11 @@ export class AcpConversation {
       this.emit({ type: 'error', message: `ACP handshake failed: ${message}` })
       this.deps.onDown(`handshake failed: ${message}`)
     }
+  }
+
+  private sessionMeta(): { _meta?: Record<string, unknown> } {
+    const meta = this.deps.profile?.sessionMeta
+    return meta === undefined ? {} : { _meta: meta }
   }
 
   /**
@@ -814,7 +878,7 @@ export class AcpConversation {
    * the record, so a late scan result is discarded.
    */
   private async recover(): Promise<void> {
-    let inFlight = false
+    let inFlight: AcpInFlight = { prompt: false }
     if (this.deps.recoverInFlight !== undefined) {
       try {
         inFlight = await this.deps.recoverInFlight()
@@ -827,7 +891,8 @@ export class AcpConversation {
     }
     // Asks can only be outstanding inside a running turn.
     let awaiting: Array<string | number> = []
-    if (inFlight && this.deps.recoverPendingPermissions !== undefined) {
+    const running = inFlight.prompt || inFlight.agentRunning === true
+    if (running && this.deps.recoverPendingPermissions !== undefined) {
       try {
         awaiting = await this.deps.recoverPendingPermissions()
       } catch (err) {
@@ -835,7 +900,10 @@ export class AcpConversation {
           err instanceof Error ? err.message : String(err)}`)
       }
     }
-    if (this.closed || this.statusKnown) return
+    if (this.closed) return
+    // A report received live during the read is newer.
+    if (this.agentRunning === undefined) this.setAgentRunning(inFlight.agentRunning)
+    if (this.statusKnown) return
     // Record asks before publishing status, so the first classification
     // already includes them.
     for (const id of awaiting) {
@@ -846,7 +914,7 @@ export class AcpConversation {
     if (this.recoveredPermissions.size > 0) {
       this.log('[server] acp: reattached to a conversation blocked on a permission decision')
     }
-    this.setBusy(inFlight)
+    this.setBusy(inFlight.prompt)
     if (this.recoveredPermissions.size > 0) this.publishPermissionPending()
     // Last, so an early click settles the ask it was for.
     this.applyDeferredAnswers()
@@ -913,7 +981,7 @@ export class AcpConversation {
     const routed = this.intake.then(async () => {
       // On a reattach, steering depends on whether the recovered turn runs.
       await this.whenStatus(() => this.statusKnown)
-      if (this.busy && this.queue.length === 0 && this.deps.profile?.steers === true && await this.steer(blocks)) {
+      if (this.isBusy && this.queue.length === 0 && this.deps.profile?.steers === true && await this.steer(blocks)) {
         return { done: Promise.resolve() }
       }
       return { done: this.enqueue({ id: randomUUID(), text, images: images.length, blocks }) }
@@ -929,8 +997,8 @@ export class AcpConversation {
    *
    * codex-acp ignores `promptRequired`: a steer arriving as its turn ends
    * starts a new turn itself (`startedNewTurn`), which answers no
-   * `session/prompt` of ours. That turn is held as running until codex
-   * reports its thread idle (`codexThreadIdle`).
+   * `session/prompt` of ours. Like any turn the agent starts, it runs until
+   * codex reports its thread idle (`agentRunningReport`).
    */
   private async steer(prompt: Array<Record<string, string>>): Promise<boolean> {
     try {
@@ -939,10 +1007,7 @@ export class AcpConversation {
         prompt,
         _meta: { steering: { idleBehavior: 'promptRequired' } },
       })
-      if (result.outcome === 'startedNewTurn') {
-        this.detachedTurn = true
-        this.setBusy(true)
-      }
+      if (result.outcome === 'startedNewTurn') this.setAgentRunning(true)
       if (result.outcome === 'injected' || result.outcome === 'startedNewTurn') return true
       if (result.outcome !== 'promptRequired') this.log(`[server] acp: steer not taken (${String(result.outcome)}); queueing`)
       return false
@@ -958,7 +1023,7 @@ export class AcpConversation {
       this.queue.push({ ...entry, resolve, reject })
       // A message that starts at once was never waiting, so panes are not
       // shown it as queued.
-      if (this.busy || this.draining) this.publishQueue()
+      if (this.holdsPrompts || this.draining) this.publishQueue()
       void this.drain()
     })
   }
@@ -988,7 +1053,7 @@ export class AcpConversation {
     this.draining = true
     try {
       for (;;) {
-        // Wait out a recovered turn, which this connection did not start,
+        // Wait out a turn this connection did not start (`holdsPrompts`),
         // and on a reattach the read that says whether one is running.
         await this.whenIdle()
         await this.delivered
@@ -1015,20 +1080,33 @@ export class AcpConversation {
       this.endTurn(result.stopReason)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
+      // A refused prompt can mean the adapter lost its agent (claude's CLI
+      // exiting closes its query stream without an idle report), so its last
+      // report is no longer believed either.
+      this.setAgentRunning(undefined)
       this.setBusy(false)
       this.emit({ type: 'error', message })
       throw err
     }
   }
 
-  /** Interrupt the running turn. ACP's cancel is a notification; the agent
-   *  ends the turn with `cancelled` as the `session/prompt` reply. */
+  /**
+   * Interrupt the running turn. ACP's cancel is a notification; the agent
+   * ends the turn with `cancelled` as the `session/prompt` reply, or (for a
+   * turn it started itself) by reporting itself idle.
+   *
+   * With no prompt of ours running, the adapter's report is dropped at once
+   * rather than waiting for that idle report, which may never come: claude's
+   * adapter sends none once its CLI is gone, and a start pi-acp never
+   * reported has no end report either. A run that goes on reports again.
+   */
   cancel(): void {
-    if (this.sessionId === undefined || !this.busy) return
+    if (this.sessionId === undefined || !this.isBusy) return
     // ACP makes the cancelling client resolve outstanding permission
     // requests (see cancelPendingPermissions).
     this.cancelPendingPermissions()
     this.peer.notify(ACP.sessionCancel, { sessionId: this.sessionId })
+    if (!this.busy) this.setAgentRunning(undefined)
   }
 
   private onClose(reason: string): void {

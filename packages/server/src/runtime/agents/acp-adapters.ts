@@ -13,6 +13,7 @@ import { ACP_ADAPTERS, type AgentTool, type PermissionMode } from '@yaac/shared/
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import { envJsonAssignment } from '#lib/shell'
 import { opencodeConfigArg } from './agent-command'
+import { CLAUDE_SESSION_META } from './acp-protocol'
 import type { AgentLaunchSpec } from './drivers'
 
 export interface AcpAdapterProfile {
@@ -52,6 +53,20 @@ export interface AcpAdapterProfile {
    * it (dockerfiles/agent-patches/pi-acp.js).
    */
   steers: boolean
+  /** `_meta` sent with `session/new` and `session/load`. */
+  sessionMeta?: Record<string, unknown>
+  /**
+   * The adapter reports a run's end but not the start of one it began on its
+   * own (`agentRunningReport`), so a work update while idle stands in for
+   * that start. Only safe where an end report always follows.
+   */
+  infersRunStart?: boolean
+  /**
+   * A message cannot reach a run the agent started on its own: neither a
+   * steer nor a `session/prompt` is taken, so the conversation holds it
+   * until the run ends.
+   */
+  refusesPromptMidRun?: boolean
 }
 
 /** The model to name for an ACP conversation. For pi, the provider decides
@@ -73,6 +88,8 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    *
    * ACP's `default` mode is "Manual". `dontAsk` (deny anything not
    * pre-approved) is never selected by yaac and reads as `manual`.
+   *
+   * Its running/idle report must be asked for (`CLAUDE_SDK_MESSAGE`).
    */
   claude: {
     argv: [ACP_ADAPTERS.claude.binary],
@@ -88,6 +105,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
     modelVia: 'env',
     forwardAsksUnderBypass: false,
     steers: true,
+    sessionMeta: CLAUDE_SESSION_META,
   },
 
   /**
@@ -101,6 +119,9 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    * posture the TUI offers. Its default is `agent`, weaker than
    * `accept-edits`, which is why a failed `session/set_mode` is shown in the
    * pane rather than only logged.
+   *
+   * Reports its thread's running/idle state unasked (`agentRunningReport`),
+   * goal continuations included.
    */
   codex: {
     argv: [ACP_ADAPTERS.codex.binary],
@@ -153,6 +174,15 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    * Its `availableModes` are the model's thinking levels (`off`, `low`, …),
    * not postures, so pi is `bypass`-only. Its asks are extension questions, so they are
    * forwarded even under `bypass`.
+   *
+   * An extension can start a run (`sendMessage` with `triggerTurn`). pi-acp
+   * forwards it, and reports `running: false` when it settles but nothing
+   * when it starts, so its first thought or tool update stands in for the
+   * start (`isWorkUpdate`). A message cannot join such a run: the steering patch
+   * only steers into a turn pi-acp started, and a `session/prompt` fails
+   * with stop reason `error` (pi-acp sends it without pi's
+   * `streamingBehavior`), after which pi-acp reports `running: false` while
+   * the run goes on.
    */
   pi: {
     argv: [ACP_ADAPTERS.pi.binary],
@@ -161,6 +191,8 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
     modelVia: 'set_config_option',
     forwardAsksUnderBypass: true,
     steers: true,
+    infersRunStart: true,
+    refusesPromptMidRun: true,
   },
 }
 
