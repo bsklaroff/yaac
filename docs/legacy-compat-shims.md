@@ -43,3 +43,19 @@ code that needed it.
   (`buildServerClusterRoleManifest`). Nothing else the server runs needs
   them, but while the sweep exists, removing them makes it fail as
   Forbidden, and `ensureNetd` with it.
+
+## The proxy relays yaac-mama's old `/cmd` path
+
+`relayMamaRequest` in `k8s/proxy/main.ts` (`LEGACY_MAMA_PATH`) relays a POST
+to `http://yaac.internal/cmd` like one to `/api/workspace/mama`. That is
+where a workspace's `yaac-mama` script POSTed before the proxy relayed calls
+to the server (the body is the same envelope), and a workspace keeps the
+script it launched with until it is recreated.
+
+- **Reads:** the request path, nothing stored.
+- **Breaks silently if deleted too early:** every `yaac-mama` call in a
+  workspace launched before the relay gets a 404 naming the new path, until
+  the workspace is recreated.
+- **Safe to remove when:** no workspace launched before the relay can still
+  be running, i.e. once every install has been upgraded past it and its
+  older workspaces stopped.

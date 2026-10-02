@@ -240,7 +240,7 @@ real token either way.
 
 Every place where one user's action could change state another user's
 workspaces consume, and what to do about it. Findings come from a sweep of
-the HTTP/WS routes, the pod layer and `k8s/proxy/proxy.ts`.
+the HTTP/WS routes, the pod layer and the egress proxy (`k8s/proxy/`).
 
 Two facts frame all of it:
 
@@ -347,8 +347,7 @@ Two facts frame all of it:
 ### Stays shared by design
 
 - The one proxy pod: its MITM CA, DNS stub, leaf-cert cache, record
-  ConfigMap, the mama queue cap (`MAMA_MAX_PENDING_TOTAL`, beside
-  `MAMA_MAX_PENDING_PER_WORKSPACE`), and ssh-agent connection caps. A busy
+  ConfigMap, and ssh-agent connection caps. A busy
   workspace can starve siblings; that is a fairness knob, not a correctness
   hole. Attribution itself is sound: source IP maps to workspace through the
   pod watch, and netd identifies traffic by the veth it arrives on
@@ -367,9 +366,9 @@ Both reach `runMamaCommand`, and `spawn-policy.ts` stops a workspace
 spawning into another project. Gaps under tenancy:
 
 - `SpawnRequest` carries no owner. A spawned workspace inherits its
-  caller's owner, read from the caller's row the drain already resolves.
-- The caps are install-wide (`MAMA_MAX_PENDING_TOTAL`) and per-workspace
-  (`SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE`). Add a per-owner budget.
+  caller's owner, read from the caller's row the route already resolves.
+- The only cap is per-workspace (`SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE`). Add a
+  per-owner budget.
 - `decideSpawn` falls back request tool → caller's tool → project's last
   agent → `claude`. Resolve tool and credential from the inherited owner,
   and fail the spawn if that owner has no credential.

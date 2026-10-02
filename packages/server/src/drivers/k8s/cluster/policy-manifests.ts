@@ -16,6 +16,7 @@ import {
   SERVER_FRONT_INGRESS_NP_NAME,
   SERVER_FRONT_PORT,
   SERVER_INGRESS_NP_NAME,
+  SERVER_MAMA_PORT,
   SERVER_POD_PORT,
   WORKSPACE_EGRESS_NP_NAME,
   WORKSPACE_INGRESS_LOCK_NP_NAME,
@@ -190,13 +191,15 @@ export function buildProxyEgressNpManifest(nodeCidrs: string[]): Record<string, 
 
 /**
  * Server-pod ingress, node half: the API from node addresses (kubelet probe,
- * and on kind the fronting forwarder).
+ * and on kind the fronting forwarder), plus the mama-only listener from the
+ * egress proxy.
  *
  * Essential for security: the server binds `0.0.0.0` and treats a
  * loopback-Host request as its owner (docs/remote-hosting.md), so these
  * policies, with the workspace egress policy and `egressAllButServerFront`,
- * keep untrusted pods out. `yaac cluster check` verifies this. No pod
- * selector or pod CIDR appears here.
+ * keep untrusted pods out. `yaac cluster check` verifies this. The proxy is
+ * admitted only to SERVER_MAMA_PORT, never to the API: it forwards workspace
+ * traffic, so a workspace could otherwise reach the API through it.
  *
  * Separate from the fronting half because the server re-renders this one at
  * attach as nodes change, while fronting is fixed at install.
@@ -208,10 +211,13 @@ export function buildServerIngressNpManifest(nodeCidrs: string[]): Record<string
     {
       podSelector: { matchLabels: { app: SERVER_APP_NAME } },
       policyTypes: ['Ingress'],
-      ingress: [{
-        from: ipBlocks(nodeCidrs),
-        ports: [tcp(SERVER_POD_PORT)],
-      }],
+      ingress: [
+        { from: ipBlocks(nodeCidrs), ports: [tcp(SERVER_POD_PORT)] },
+        {
+          from: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }],
+          ports: [tcp(SERVER_MAMA_PORT)],
+        },
+      ],
     },
     { app: SERVER_APP_NAME },
   )

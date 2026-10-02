@@ -17,8 +17,7 @@ import {
 } from '#drivers/k8s/workspaces'
 import {
   allowWorkspaceHost,
-  drainPendingMamaRequests,
-  proxyClient,
+  isProxyAuthSecret,
   readBlockedHosts,
   readAllGitAuthFailures,
   refreshedCredentials,
@@ -44,6 +43,7 @@ import {
 } from '#drivers/k8s/forwarders'
 import {
   RelayExecError,
+  SERVER_MAMA_PORT,
   bootStreamd,
   dialCtrlStream,
   dialPtyStream,
@@ -152,7 +152,6 @@ export function createK8sDriver(): WorkspaceDriver {
     destroyProjectSubstrate: (project) => destroyProjectSubstrate(project),
     reapNodeLocal: (live) => reapNodeLocal(live),
 
-    pendingMamaRequests: () => drainPendingMamaRequests(),
-    resolveMamaRequests: (results) => proxyClient.postMamaResults(results),
+    mamaRelay: { port: SERVER_MAMA_PORT, authenticate: (bearer) => isProxyAuthSecret(bearer) },
   }
 }

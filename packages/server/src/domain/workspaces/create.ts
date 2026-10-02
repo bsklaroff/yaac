@@ -1070,7 +1070,7 @@ export async function createWorkspace(
   // API-key env vars for every tool (a spare may be retooled at claim), so
   // no tool prompts for login. With mediated egress these are placeholders
   // the proxy swaps by destination host, regardless of the workspace's tool
-  // (see k8s/proxy/proxy.ts); without it they are the real keys.
+  // (see k8s/proxy/injection.ts); without it they are the real keys.
   const apiKeyFor = (real: string): string => mediatedEgress ? PLACEHOLDER_API_KEY : real
   if (toolAuthByTool.claude?.kind === 'api-key') {
     env.push(`ANTHROPIC_API_KEY=${apiKeyFor(toolAuthByTool.claude.apiKey)}`)

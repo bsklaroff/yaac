@@ -1,7 +1,5 @@
 /**
- * Constant-time string comparison for the proxy's control-API bearer check.
- * Kept in its own dependency-free module so tests can import it; proxy.ts
- * starts listeners at load time.
+ * Constant-time string comparison for the stream relay's auth line.
  */
 
 import crypto from 'node:crypto'

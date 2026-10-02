@@ -1,6 +1,6 @@
 /**
  * DNS wire-format helpers for the proxy's UDP/53 stub. Workspace pods use the
- * proxy as their resolver, and proxy.ts answers split-horizon:
+ * proxy as their resolver, and main.ts answers split-horizon:
  *
  *   - External names get a fixed sinkhole IP. netd redirects egress by port
  *     and the proxy routes by SNI / Host, so the address never matters, and

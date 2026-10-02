@@ -1360,31 +1360,3 @@ export const MAMA_COMMANDS = [
   'edit-queued',
 ] as const
 export type MamaCommand = (typeof MAMA_COMMANDS)[number]
-
-/**
- * One queued in-workspace `yaac-mama` request, as drained from a runtime.
- * Mirrors `MamaRequest` in k8s/proxy/mama-queue.ts (minus enqueuedAtMs);
- * the proxy bundles separately, so keep them in sync. The server alone
- * interprets `command` and `args`.
- */
-export interface PendingMamaRequest {
-  requestId: string
-  /** The CALLING workspace (attributed by the runtime, never by the caller). */
-  workspaceId: string
-  /** A `MamaCommand`, unvalidated — an unknown one is refused server-side. */
-  command: string
-  /** Options as `--name value` pairs, e.g. `{ tool: 'claude' }`. */
-  args: Record<string, string>
-  /** The single free-text positional: a prompt, or a group name. */
-  body: string
-}
-
-/** Mirror of k8s/proxy/mama-queue.ts MamaResult — keep in sync. */
-export interface MamaResultWire {
-  requestId: string
-  ok: boolean
-  /** What the caller's stdout gets when ok — already rendered for a human
-   *  (or an agent) to read, since the caller is a shell script. */
-  output?: string
-  error?: string
-}

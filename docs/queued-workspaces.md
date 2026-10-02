@@ -12,8 +12,7 @@ The parent can be a workspace or another entry, so requests chain to any
 depth. An entry under an entry waits for its parent to launch and then stop
 naturally. Entries are not workspaces: they have no `workspaces` row,
 checkout or runtime until they launch, and the UI never calls them sessions
-(docs/naming.md). In code, "queue" already names the proxy's `yaac-mama`
-request queue, so this feature's modules and table are `queued-workspace*` /
+(docs/naming.md). This feature's modules and table are `queued-workspace*` /
 `queued_workspaces`.
 
 ## When an entry runs

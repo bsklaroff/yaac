@@ -22,4 +22,4 @@ rm -f "$HOME/agent.sock"
 eval "$(ssh-agent -a "$HOME/agent.sock")"
 export SSH_AUTH_SOCK="$HOME/agent.sock"
 
-exec ./node_modules/.bin/tsx proxy.ts
+exec ./node_modules/.bin/tsx main.ts

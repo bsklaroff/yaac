@@ -85,7 +85,7 @@ workspaceId)`, derived rather than stored, and passed to the pod as
 that leaks its own token gains nothing, because only its own streamd accepts
 it and only the proxy can reach any streamd.
 
-### Proxy relay listener (`k8s/proxy/proxy.ts`)
+### Proxy relay listener (`k8s/proxy/main.ts`)
 
 A minimal authenticated CONNECT on `:10260`, present in every proxy. For
 each connection it reads one JSON auth line (`{token: proxyAuthSecret,

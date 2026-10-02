@@ -139,8 +139,9 @@ export const SERVER_APP_NAME = 'yaac-server'
 export const SERVER_SA_NAME = 'yaac-server'
 /**
  * NetworkPolicy admitting the server pod's API from node addresses (the
- * kubelet's readiness probe and, on kind, the fronting forwarder). Both
- * install and server start apply it, since nodes can be added later.
+ * kubelet's readiness probe and, on kind, the fronting forwarder), and its
+ * mama listener from the proxy. Both install and server start apply it,
+ * since nodes can be added later.
  */
 export const SERVER_INGRESS_NP_NAME = 'yaac-server-ingress'
 /**
@@ -151,6 +152,14 @@ export const SERVER_INGRESS_NP_NAME = 'yaac-server-ingress'
 export const SERVER_FRONT_INGRESS_NP_NAME = 'yaac-server-ingress-front'
 /** Port the server listens on inside its pod (container + Service port). */
 export const SERVER_POD_PORT = 8787
+/**
+ * The server's second listener, which serves only the `yaac-mama` calls the
+ * egress proxy relays for workspace pods, and the Service the proxy reaches
+ * it at. A port of its own so the server's ingress policy can admit the
+ * proxy here without admitting it to the API (docs/workspace-egress.md).
+ */
+export const SERVER_MAMA_PORT = 8788
+export const SERVER_MAMA_SERVICE_NAME = 'yaac-server-mama'
 /**
  * Deployment/ConfigMap name and pod selector label of the kind fronting: a
  * hostNetwork Envoy on the control-plane node that forwards the port the

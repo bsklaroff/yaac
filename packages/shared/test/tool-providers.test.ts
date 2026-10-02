@@ -5,23 +5,22 @@ import {
   OPENCODE_PROVIDERS,
   PI_DEFAULT_PROVIDER,
   PI_PROVIDERS,
-  opencodeProviderHost,
   opencodeProviderInfo,
   parseOpencodeProvider,
   parsePiProvider,
-  piProviderHost,
   piProviderInfo,
   type OpencodeProvider,
   type PiProvider,
+  type ToolProviderInfo,
 } from '@yaac/shared/tool-providers'
 import { MODEL_NAMES, MODELS_BY_PROVIDER } from '@yaac/shared/tool-providers.generated'
 
 // Both registries are generated (scripts/gen-tool-providers.ts), so these
 // check invariants rather than a fixed list.
-const REGISTRIES = [
+const REGISTRIES: Array<{ name: string; list: readonly ToolProviderInfo[]; defaultId: string; hasModel: boolean }> = [
   { name: 'opencode', list: OPENCODE_PROVIDERS, defaultId: OPENCODE_DEFAULT_PROVIDER, hasModel: false },
   { name: 'pi', list: PI_PROVIDERS, defaultId: PI_DEFAULT_PROVIDER, hasModel: true },
-] as const
+]
 
 describe.each(REGISTRIES)('$name provider registry', ({ list, defaultId, hasModel }) => {
   it('is non-empty and includes the default provider', () => {
@@ -90,11 +89,6 @@ describe('provider info + host lookup', () => {
   it('falls back to the default entry for a stale/unknown id', () => {
     expect(piProviderInfo('nope' as PiProvider).id).toBe(PI_DEFAULT_PROVIDER)
     expect(opencodeProviderInfo('nope' as OpencodeProvider).id).toBe(OPENCODE_DEFAULT_PROVIDER)
-  })
-
-  it('host matches the provider row', () => {
-    expect(piProviderHost('anthropic')).toBe(piProviderInfo('anthropic').apiHost)
-    expect(opencodeProviderHost('openrouter')).toBe('openrouter.ai')
   })
 })
 

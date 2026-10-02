@@ -31,9 +31,7 @@ time:
     reaper probes it.
 
   A driver can also raise triggers of its own. The k8s driver raises
-  `proxy-refreshed` (the egress proxy captured a rotated credential) and
-  `mama-requests` (an in-workspace `yaac-mama` call is queued at the proxy,
-  reported over the proxy's `/events` stream).
+  `proxy-refreshed` (the egress proxy captured a rotated credential).
 - **Resync (every 60 s).** Runs every step. It catches any missed event, and
   it drives the hygiene steps that throttle themselves (image prewarm and GC,
   salvage, builder-pod GC). The first pass after start is a resync.

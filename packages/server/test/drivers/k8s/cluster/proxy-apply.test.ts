@@ -280,7 +280,8 @@ describe('ensureProxyResources', () => {
       // The proxy's three outputs, created empty before the Deployment so
       // its Role can name them.
       'Secret', 'Secret', 'ConfigMap',
-      'Deployment', 'Service',
+      // The proxy's Service, and the server's mama Service the proxy relays to.
+      'Deployment', 'Service', 'Service',
       // Workspace egress, workspace ingress lock, proxy ingress and egress,
       // world-deny.
       'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy',
@@ -410,6 +411,9 @@ describe('ensureProxyResources', () => {
     expect(c.securityContext?.capabilities?.add).toEqual(['NET_BIND_SERVICE'])
     expect(c.env).toContainEqual({ name: 'RELAY_PORT', value: String(RELAY_PORT) })
     expect(c.env).toContainEqual({ name: 'POD_STREAM_PORT', value: String(POD_STREAM_PORT) })
+    expect(c.env).toContainEqual({
+      name: 'MAMA_RELAY_URL', value: 'http://yaac-server-mama.test-ns.svc.cluster.local:8788/api/workspace/mama',
+    })
     expect(c.env).toContainEqual({
       name: 'PROXY_AUTH_SECRET',
       valueFrom: { secretKeyRef: { name: PROXY_AUTH_SECRET_NAME, key: 'secret' } },
@@ -698,6 +702,8 @@ describe('syncProxyCredentials', () => {
     // A signed-out tool has no key; the Secret is replaced whole.
     expect(Object.keys(secret.data!).sort()).toEqual(['claude.json', 'git-tokens.json', 'opencode.json', 'ssh-keys.json'])
     expect(JSON.parse(b64d(secret.data!['claude.json']))).toEqual({ kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant-secret' })
+    // The proxy sends an api key only to the provider host named here.
+    expect(JSON.parse(b64d(secret.data!['opencode.json']))).toMatchObject({ apiKey: 'sk-or-secret', apiHost: 'openrouter.ai' })
     expect(JSON.parse(b64d(secret.data!['git-tokens.json']))).toEqual([{ token: 'ghp-secret', projects: ['acme'] }])
     expect(JSON.parse(b64d(secret.data!['ssh-keys.json']))).toEqual([{
       privateKey: 'KEY-secret', publicKey: 'ssh-ed25519 AAAA yaac',

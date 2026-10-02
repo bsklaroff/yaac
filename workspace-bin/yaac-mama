@@ -20,26 +20,24 @@
 # survive it. Nothing here deletes, restarts or reconfigures anything; that
 # stays with the user.
 #
-# One request shape for both substrates — a JSON envelope {command, args,
-# body} — because they differ only in where it goes and how the caller is
-# identified:
+# One request, a JSON envelope {command, args, body} POSTed to the server's
+# /api/workspace/mama, which owns what the commands mean. The substrates
+# differ only in how it gets there and how the caller is identified:
 #
 #   - Containerless ($YAAC_MAMA_URL set): the workspace is a host process
-#     beside the server, so it POSTs to the server's own /workspace/mama and
-#     proves which workspace it is with $YAAC_MAMA_TOKEN.
-#   - Containers (no $YAAC_MAMA_URL): the pod cannot dial the host, so it
-#     POSTs to the egress proxy's magic host, which holds the request until
-#     the server drains it. Attribution is by source pod IP — no token and no
-#     config, which is why nothing is set for this case. Keep the host in
-#     sync with k8s/proxy/mama-queue.ts MAMA_MAGIC_HOST.
+#     beside the server, so it calls the server itself and proves which
+#     workspace it is with $YAAC_MAMA_TOKEN.
+#   - Containers (no $YAAC_MAMA_URL): the pod cannot dial the server, so it
+#     calls the egress proxy's magic host, which relays the call and names
+#     the workspace by its source pod IP. No token and no config, which is
+#     why nothing is set for this case. Keep the host in sync with
+#     MAMA_MAGIC_HOST in k8s/proxy/main.ts.
 #
-# Both end at the same server-side handler, which owns what the commands
-# mean; this script only shapes the request. --max-time outlives the proxy's
-# 120s queue TTL (MAMA_TTL_MS) so its self-describing 504 surfaces instead of
-# a curl timeout. Keep it above that constant whenever either moves.
+# --max-time bounds a call to a wedged server. It outlasts the proxy's own
+# deadline (MAMA_RELAY_TIMEOUT_MS), so a pod's caller sees that 504's message.
 set -u
 
-MAX_TIME=150
+URL=${YAAC_MAMA_URL:-http://yaac.internal}
 
 usage() {
   cat <<'EOF'
@@ -161,24 +159,14 @@ run() {
   done
   json="{\"command\":$(json_string "$cmd"),\"args\":{$args},\"body\":$(json_string "$body")}"
 
-  if [ -n "${YAAC_MAMA_URL:-}" ]; then
-    resp=$(printf '%s' "$json" | curl -sS --max-time "$MAX_TIME" \
-      -H 'Content-Type: application/json' \
-      -H "Authorization: Bearer ${YAAC_MAMA_TOKEN:-}" \
-      --data-binary @- -w '\n%{http_code}' \
-      "${YAAC_MAMA_URL}/api/workspace/mama") || {
-      echo "yaac-mama: cannot reach the yaac server at $YAAC_MAMA_URL" >&2
-      exit 1
-    }
-  else
-    resp=$(printf '%s' "$json" | curl -sS --max-time "$MAX_TIME" \
-      -H 'Content-Type: application/json' \
-      --data-binary @- -w '\n%{http_code}' \
-      'http://yaac.internal/cmd') || {
-      echo "yaac-mama: cannot reach the yaac proxy" >&2
-      exit 1
-    }
-  fi
+  resp=$(printf '%s' "$json" | curl -sS --max-time 300 \
+    -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer ${YAAC_MAMA_TOKEN:-}" \
+    --data-binary @- -w '\n%{http_code}' \
+    "$URL/api/workspace/mama") || {
+    echo "yaac-mama: cannot reach the yaac server at $URL" >&2
+    exit 1
+  }
 
   code=$(printf '%s\n' "$resp" | tail -n 1)
   payload=$(printf '%s\n' "$resp" | sed '$d')

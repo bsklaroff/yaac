@@ -339,9 +339,9 @@ ending is the confirmation.
 
 **Under k8s** a pod cannot dial the server: the server's ingress policy
 admits no workspace pod (docs/server-in-cluster.md), and the pod holds no
-credential for it. So the pod POSTs to the egress proxy, which holds the
-request until the server collects it on its reconcile pass, identifying the
-caller by pod IP.
+credential for it. So the pod POSTs to the egress proxy, which relays the
+call to the server, naming the caller by pod IP (docs/workspace-egress.md
+"yaac-mama").
 
 **Here** the workspace POSTs straight to `/workspace/mama` with a bearer
 token minted at create and passed in its environment (`YAAC_MAMA_TOKEN`,

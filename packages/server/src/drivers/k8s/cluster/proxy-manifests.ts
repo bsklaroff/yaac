@@ -23,6 +23,9 @@ import {
   RELAY_PORT,
   ROLE_BUILDER,
   RUNTIME_CLASS_GVISOR,
+  SERVER_APP_NAME,
+  SERVER_MAMA_PORT,
+  SERVER_MAMA_SERVICE_NAME,
   SERVER_SA_NAME,
   SSH_AGENT_PORT,
   TRANSPARENT_HTTPS_PORT,
@@ -33,6 +36,7 @@ import {
   k8sNamespace,
 } from '#drivers/k8s/substrate'
 import { env } from '@yaac/shared/env'
+import { OPENCODE_PROVIDERS, PI_PROVIDERS, type ToolProviderInfo } from '@yaac/shared/tool-providers'
 import type { CredentialBundle } from '#drivers/contract'
 
 /**
@@ -111,6 +115,12 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
                 // ssh-agent forwarding for entitled workspace pods, which expose
                 // it in-pod as SSH_AUTH_SOCK.
                 { name: 'SSH_AGENT_PORT', value: String(SSH_AGENT_PORT) },
+                // Where in-workspace yaac-mama calls are relayed to.
+                {
+                  name: 'MAMA_RELAY_URL',
+                  value: `http://${SERVER_MAMA_SERVICE_NAME}.${k8sNamespace()}.svc.cluster.local:`
+                    + `${String(SERVER_MAMA_PORT)}/api/workspace/mama`,
+                },
                 {
                   name: 'PROXY_AUTH_SECRET',
                   valueFrom: {
@@ -122,8 +132,6 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
                 // ignores $HOME, so the proxy passes the file with -H.
                 { name: 'HOME', value: '/home/proxy' },
                 ...(env.useTor ? [{ name: 'USE_TOR', value: '1' }] : []),
-                // Split-horizon DNS: `*.svc` names resolve via CoreDNS.
-                { name: 'DNS_FORWARD_INTERNAL', value: '1' },
               ],
               readinessProbe: {
                 httpGet: { path: '/healthz', port: PROXY_PORT },
@@ -274,13 +282,21 @@ function secretData(files: Record<string, string>): Record<string, string> {
  * The credentials Secret: each signed-in tool's credential file, plus
  * `git-tokens.json` (`[{token, projects}]`) and `ssh-keys.json`
  * (`[{privateKey, publicKey, projects: [{slug, host, knownHostsEntry}]}]`).
- * Replaced whole on every push, so a removed key disappears.
+ * The opencode and pi files also carry `apiHost`, the provider's host the
+ * proxy swaps the key in on; a provider with no known host gets no file, so
+ * the key goes nowhere. Replaced whole on every push, so a removed key
+ * disappears.
  */
 export function buildProxyCredentialsSecretManifest(bundle: CredentialBundle): Record<string, unknown> {
   const files: Record<string, string> = {}
-  for (const tool of ['claude', 'codex', 'opencode', 'pi'] as const) {
+  if (bundle.claude) files['claude.json'] = JSON.stringify(bundle.claude)
+  if (bundle.codex) files['codex.json'] = JSON.stringify(bundle.codex)
+  for (const [tool, providers] of [['opencode', OPENCODE_PROVIDERS], ['pi', PI_PROVIDERS]] as const) {
     const file = bundle[tool]
-    if (file) files[`${tool}.json`] = JSON.stringify(file)
+    // No fallback: a guessed host would send the key to a vendor the user
+    // never chose.
+    const apiHost = (providers as readonly ToolProviderInfo[]).find((p) => p.id === file?.provider)?.apiHost
+    if (file && apiHost) files[`${tool}.json`] = JSON.stringify({ ...file, apiHost })
   }
   files['git-tokens.json'] = JSON.stringify(bundle.git)
   files['ssh-keys.json'] = JSON.stringify(bundle.ssh)
@@ -433,6 +449,27 @@ export function buildProxyServiceManifest(): Record<string, unknown> {
         { name: 'ssh-agent', port: SSH_AGENT_PORT, targetPort: SSH_AGENT_PORT },
         { name: 'dns', port: DNS_STUB_PORT, targetPort: DNS_STUB_PORT, protocol: 'UDP' },
       ],
+    },
+  }
+}
+
+/**
+ * The Service the proxy relays yaac-mama calls to: the server pod's mama-only
+ * listener. Applied with the proxy, its only client.
+ */
+export function buildServerMamaServiceManifest(): Record<string, unknown> {
+  return {
+    apiVersion: 'v1',
+    kind: 'Service',
+    metadata: {
+      name: SERVER_MAMA_SERVICE_NAME,
+      namespace: k8sNamespace(),
+      labels: { app: SERVER_APP_NAME },
+    },
+    spec: {
+      type: 'ClusterIP',
+      selector: { app: SERVER_APP_NAME },
+      ports: [{ name: 'mama', port: SERVER_MAMA_PORT, targetPort: SERVER_MAMA_PORT }],
     },
   }
 }

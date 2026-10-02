@@ -92,56 +92,79 @@ async function dropDraft(id: string | undefined): Promise<void> {
   if (id !== undefined) await deleteDraftWorkspace(id)
 }
 
-/**
- * `yaac-mama` endpoint for containerless workspaces, which can reach the
- * server directly. (A k8s pod can't, so its requests queue at the egress
- * proxy and the reconcile drain collects them.) Both paths end in
- * `runMamaCommand`, which holds the command allowlist.
- *
- * Authenticated per workspace: the bearer token minted at create identifies
- * the caller, so a request cannot claim to be another workspace. This sits on
- * top of the normal identity gate, which sees a loopback caller.
- */
-const mamaApp = new Hono().post(
-  '/mama',
-  zv('json', z.object({
-    command: z.string().min(1).max(32),
-    args: z.record(z.string(), z.string()).optional(),
-    body: z.string().max(MAX_PROMPT_LENGTH).optional(),
-  })),
-  async (c) => {
-    // k8s workspaces use the proxy channel. Giving them a token would put a
-    // server credential inside the sandbox.
-    if (workspaceDriver().kind !== 'containerless') {
-      throw new ServerError(
-        'NOT_SUPPORTED',
-        'This server runs workspaces in containers, where yaac-mama speaks to the egress '
-        + 'proxy rather than to the server.',
-      )
-    }
-    const bearer = c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? ''
-    const caller = await findWorkspaceByMamaToken(bearer)
-    if (!caller) throw new ServerError('UNAUTHENTICATED', 'unknown or revoked yaac-mama token')
+/** The calling workspace a `yaac-mama` request is answered for. */
+type MamaCaller = { workspaceId: string; projectSlug: string }
 
-    const { command, args, body } = c.req.valid('json')
-    // Take the caller's tool from the runtime, not the request, which could
-    // claim any.
-    const handle = await workspaceDriver().find(caller.workspaceId).catch(() => null)
-    const outcome = await runMamaCommand(
-      {
-        workspaceId: caller.workspaceId,
-        projectSlug: caller.projectSlug,
-        ...(handle?.declaredTool !== undefined ? { tool: handle.declaredTool } : {}),
-      },
-      { command, args: args ?? {}, body: body ?? '' },
+/**
+ * The `yaac-mama` endpoint. Both ways in end in `runMamaCommand`, which holds
+ * the command allowlist; they differ only in how the caller is identified.
+ */
+function mamaRoute(identifyCaller: (bearer: string, header: (name: string) => string | undefined)
+  => Promise<MamaCaller | undefined>) {
+  return new Hono().post(
+    '/mama',
+    // Bounds what is parsed; the envelope below is far smaller.
+    bodyLimit({
+      maxSize: 64 * 1024,
+      onError: () => { throw new ServerError('TOO_LARGE', 'the yaac-mama request is too large') },
+    }),
+    zv('json', z.object({
+      command: z.string().min(1).max(32),
+      args: z.record(z.string(), z.string()).optional(),
+      body: z.string().max(MAX_PROMPT_LENGTH).optional(),
+    })),
+    async (c) => {
+      const bearer = c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? ''
+      const caller = await identifyCaller(bearer, (name) => c.req.header(name))
+      if (!caller) throw new ServerError('UNAUTHENTICATED', 'unknown or revoked yaac-mama credential')
+
+      const { command, args, body } = c.req.valid('json')
+      // Take the caller's tool from the runtime, not the request, which could
+      // claim any.
+      const handle = await workspaceDriver().find(caller.workspaceId).catch(() => null)
+      const outcome = await runMamaCommand(
+        {
+          workspaceId: caller.workspaceId,
+          projectSlug: caller.projectSlug,
+          ...(handle?.declaredTool !== undefined ? { tool: handle.declaredTool } : {}),
+        },
+        { command, args: args ?? {}, body: body ?? '' },
+      )
+      return outcome.ok
+        ? c.json({ output: outcome.output })
+        : c.json({ error: outcome.error }, 422)
+    },
+  )
+}
+
+/**
+ * Containerless workspaces call the API directly, identified by the bearer
+ * token minted at create, so a request cannot claim to be another workspace.
+ * This sits on top of the normal identity gate, which sees a loopback caller.
+ * k8s workspaces get no token, which would put a server credential inside
+ * the sandbox; their calls arrive through `mamaRelayApp`.
+ */
+const mamaApp = mamaRoute(async (bearer) => {
+  if (workspaceDriver().kind !== 'containerless') {
+    throw new ServerError(
+      'NOT_SUPPORTED',
+      'This server runs workspaces in containers, whose yaac-mama calls the egress '
+      + 'proxy relays to a listener of their own.',
     )
-    // 422 for a refusal, matching the proxy path so both transports report
-    // failure the same way.
-    return outcome.ok
-      ? c.json({ output: outcome.output })
-      : c.json({ error: outcome.error }, 422)
-  },
-)
+  }
+  return findWorkspaceByMamaToken(bearer)
+})
+
+/**
+ * The endpoint as the egress proxy relays it for a k8s workspace pod, on the
+ * driver's own listener (`WorkspaceDriver.mamaRelay`). The proxy names the
+ * caller it resolved from the pod's source IP in `x-yaac-workspace-id` and
+ * proves it is the proxy with `authenticate`.
+ */
+export function mamaRelayApp(authenticate: (bearer: string) => Promise<boolean>) {
+  return mamaRoute(async (bearer, header) =>
+    await authenticate(bearer) ? findWorkspaceRow(header('x-yaac-workspace-id') ?? '') : undefined)
+}
 
 export const workspaceApp = new Hono()
   .get(

@@ -136,9 +136,7 @@ export function createContainerlessDriver(): WorkspaceDriver {
     destroyProjectSubstrate: (project) => destroyProjectSubstrate(project),
     reapNodeLocal: (live) => reapNodeLocal(live),
 
-    // yaac-mama posts directly to `/workspace/mama` here; the queue is for
-    // pods.
-    pendingMamaRequests: () => Promise.resolve([]),
-    resolveMamaRequests: () => Promise.resolve(),
+    // yaac-mama posts directly to `/workspace/mama` here.
+    mamaRelay: null,
   }
 }

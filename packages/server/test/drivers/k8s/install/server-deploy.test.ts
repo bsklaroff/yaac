@@ -410,10 +410,11 @@ describe('deployServerWorkload', () => {
     const [nodeHalf, frontHalf] = applied('NetworkPolicy')
     expect(nodeHalf.spec?.podSelector).toEqual({ matchLabels: { app: SERVER_APP_NAME } })
     expect(nodeHalf.spec?.policyTypes).toEqual(['Ingress'])
-    expect(nodeHalf.spec?.ingress).toEqual([{
+    // (Its proxy rule, to the mama port only, is pinned in policy-manifests.)
+    expect(nodeHalf.spec?.ingress).toContainEqual({
       from: [{ ipBlock: { cidr: '10.89.0.2/32' } }],
       ports: [{ protocol: 'TCP', port: SERVER_POD_PORT }],
-    }])
+    })
     expect(frontHalf.spec?.podSelector).toEqual({ matchLabels: { app: SERVER_APP_NAME } })
     expect(frontHalf.spec?.ingress).toEqual([])
 
@@ -473,10 +474,10 @@ describe('deployServerWorkload', () => {
 
     // The fronting policy admits the operator's proxy pod for this Service.
     const [nodeHalf, frontHalf] = applied('NetworkPolicy')
-    expect(nodeHalf.spec?.ingress).toEqual([{
+    expect(nodeHalf.spec?.ingress).toContainEqual({
       from: [{ ipBlock: { cidr: '10.89.0.2/32' } }],
       ports: [{ protocol: 'TCP', port: SERVER_POD_PORT }],
-    }])
+    })
     expect(frontHalf.spec?.ingress).toEqual([{
       from: [{
         namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': TAILSCALE_OPERATOR_NAMESPACE } },

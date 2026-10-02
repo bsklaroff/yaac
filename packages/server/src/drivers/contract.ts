@@ -5,10 +5,8 @@ import type {
   DriverKind,
   GitAuthFailure,
   ImageBuildEntry,
-  PendingMamaRequest,
   PortForwardConfig,
   PortMapping,
-  MamaResultWire,
   RefreshedToolCredentials,
   SecretProxyRule,
   ToolCredentialBundle,
@@ -369,8 +367,8 @@ export interface StreamPty {
  * An event source that can mark a reconcile pass dirty. The named ones are
  * workspace/unit changes on the substrate, a change in a workspace's live
  * conversations, and an unhealthy agent connection (liveness must then be
- * probed). Any other string is a driver's own source (e.g. the egress
- * proxy's event stream). There is no polling; the periodic resync covers a
+ * probed). Any other string is a driver's own source (e.g. a credential
+ * rotation the egress proxy captured). There is no polling; the periodic resync covers a
  * missed event.
  */
 export const MEDIATOR_TRIGGERS = [
@@ -774,12 +772,16 @@ export interface WorkspaceDriver {
   reapNodeLocal(live: NodeLocalLiveSet): Promise<void>
 
   /**
-   * Take pending `yaac-mama` requests. Each is handed out once; a crash
-   * before `resolveMamaRequests` loses it (the workspace times out) rather
-   * than running it twice. Always empty under containerless, whose
-   * workspaces call the server directly.
+   * Where a sandboxed workspace's `yaac-mama` calls arrive, or null when
+   * workspaces call the API themselves (containerless). Under k8s the egress
+   * proxy relays them to a listener of their own on `port`, naming the
+   * calling workspace and presenting a bearer `authenticate` checks.
    */
-  pendingMamaRequests(): Promise<PendingMamaRequest[]>
-  /** Answer a drained batch, releasing the waiting workspaces. */
-  resolveMamaRequests(results: MamaResultWire[]): Promise<void>
+  mamaRelay: MamaRelay | null
+}
+
+/** See `WorkspaceDriver.mamaRelay`. */
+export interface MamaRelay {
+  port: number
+  authenticate: (bearer: string) => Promise<boolean>
 }

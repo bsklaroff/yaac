@@ -14,7 +14,7 @@ import {
   type IdentityEnv,
 } from '#http'
 import { projectApp } from '#routes/projects'
-import { workspaceApp } from '#routes/workspaces'
+import { mamaRelayApp, workspaceApp } from '#routes/workspaces'
 import { authApp } from '#routes/auth'
 import { shortcutsApp } from '#routes/shortcuts'
 import { configApp } from '#routes/config'
@@ -56,10 +56,7 @@ export function buildApp(deps: ServerAppDeps) {
   app.use('*', fetchSiteCheck())
   app.use('*', identify())
 
-  app.onError((err: Error, c: Context) => {
-    const { status, body } = toErrorBody(err)
-    return c.json(body, status as 400 | 401 | 404 | 409 | 500 | 503)
-  })
+  app.onError(errorResponse)
 
   app.notFound((c) => c.json(
     { error: { code: 'NOT_FOUND', message: `no route ${c.req.method} ${c.req.path}` } },
@@ -73,6 +70,24 @@ export function buildApp(deps: ServerAppDeps) {
   }
 
   app.route('/api', apiRoutes(isReady, deps.buildId))
+  return app
+}
+
+function errorResponse(err: Error, c: Context): Response {
+  const { status, body } = toErrorBody(err)
+  return c.json(body, status as 400 | 401 | 404 | 409 | 500 | 503)
+}
+
+/**
+ * The app on the k8s driver's yaac-mama relay listener: that one route,
+ * which authenticates the egress proxy itself, so none of the API's gates
+ * apply (docs/workspace-egress.md).
+ */
+export function buildMamaRelayApp(authenticate: (bearer: string) => Promise<boolean>) {
+  const app = new Hono()
+  app.use('*', requestLogger())
+  app.onError(errorResponse)
+  app.route('/api/workspace', mamaRelayApp(authenticate))
   return app
 }
 

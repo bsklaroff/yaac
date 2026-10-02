@@ -1,4 +1,4 @@
-import type { PendingMamaRequest, MamaResultWire } from '@yaac/shared/types'
+import crypto from 'node:crypto'
 import {
   ensureCaConfigMap,
   ensureNamespace,
@@ -21,13 +21,16 @@ import { serverLog } from '#log'
 import { testEnv } from '@yaac/shared/env'
 
 /**
- * Take whatever in-workspace `yaac-mama` requests the proxy is holding.
- * Never deploys the proxy: it deploys on the first workspace create, so no
- * proxy means no workspaces and an empty queue.
+ * Whether `bearer` is the proxy's auth secret, which the proxy presents when
+ * it relays a workspace's `yaac-mama` call. Read per call: calls are rare,
+ * and the Secret may be created after this server starts.
  */
-export async function drainPendingMamaRequests(): Promise<PendingMamaRequest[]> {
-  if (!await proxyClient.attachIfRunning()) return []
-  return proxyClient.fetchPendingMamaRequests()
+export async function isProxyAuthSecret(bearer: string): Promise<boolean> {
+  const secret = await readExistingProxyAuthSecret()
+  if (secret === null) return false
+  const a = Buffer.from(bearer)
+  const b = Buffer.from(secret)
+  return a.length === b.length && crypto.timingSafeEqual(a, b)
 }
 
 // --- ProxyClient ---
@@ -74,11 +77,9 @@ export class ProxyClient {
   /**
    * This process has confirmed the deployed proxy matches its own build
    * (`isDeployedProxyCurrent`). The expected image only changes with a
-   * server restart, so the check runs once per process. attachIfRunning()
-   * never sets it, so the first ensureRunning() still checks.
+   * server restart, so the check runs once per process.
    */
   private deployVerifiedCurrent = false
-  private authSecret: string | null = null
   /** In-flight ensureRunning(), shared so concurrent callers run one
    *  bootstrap. */
   private ensureInflight: Promise<void> | null = null
@@ -87,11 +88,6 @@ export class ProxyClient {
 
   private async controlBase(): Promise<string> {
     return this.config.controlOrigin?.() ?? proxyControlOrigin()
-  }
-
-  private requireAuthSecret(): string {
-    if (!this.authSecret) throw new Error('Proxy not started — call ensureRunning() first')
-    return this.authSecret
   }
 
   /**
@@ -118,75 +114,16 @@ export class ProxyClient {
   }
 
   /**
-   * Open the proxy's change stream (`GET /events`, NDJSON, held open). Uses
-   * the bare `fetch`, since `tunnelFetch`'s 15s timeout would kill a
-   * long-lived stream; `ProxyEventStream` aborts via `signal` when the
-   * proxy's pings stop.
+   * Redeploy a proxy an earlier server left behind when this build would
+   * deploy a different one, so an upgrade reaches running workspaces at
+   * once rather than at the next launch. Deploys nothing where there is no
+   * proxy yet.
    */
-  async openEvents(signal: AbortSignal): Promise<Response> {
-    return fetch(`${await this.controlBase()}/events`, {
-      signal,
-      headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
-    })
-  }
-
-  /**
-   * Claim the proxy's queued in-workspace `yaac-mama` requests. Each is
-   * handed out once; the proxy holds the workspace's HTTP response open
-   * until `postMamaResults` answers it or its TTL expires.
-   */
-  async fetchPendingMamaRequests(): Promise<PendingMamaRequest[]> {
-    const res = await tunnelFetch(`${await this.controlBase()}/cmd/pending`, {
-      headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
-    })
-    if (!res.ok) {
-      const text = await res.text()
-      throw new Error(`Failed to fetch pending yaac-mama requests: ${res.status} ${text}`)
-    }
-    return await res.json() as PendingMamaRequest[]
-  }
-
-  /** Complete drained requests — the proxy answers the waiting pods. */
-  async postMamaResults(results: MamaResultWire[]): Promise<void> {
-    if (results.length === 0) return
-    const res = await tunnelFetch(`${await this.controlBase()}/cmd/results`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.requireAuthSecret()}`,
-      },
-      body: JSON.stringify(results),
-    })
-    if (!res.ok) {
-      const text = await res.text()
-      throw new Error(`Failed to post yaac-mama results: ${res.status} ${text}`)
-    }
-  }
-
-  /**
-   * Attach to an already-deployed proxy without deploying anything.
-   * Returns true if its auth secret exists and it answers /healthz.
-   */
-  async attachIfRunning(): Promise<boolean> {
-    if (this.running) {
-      try {
-        const res = await tunnelFetch(`${await this.controlBase()}/healthz`)
-        if (res.ok) return true
-      } catch {
-        this.running = false
-      }
-    }
-    try {
-      const secret = await readExistingProxyAuthSecret()
-      if (!secret) return false
-      const res = await tunnelFetch(`${await this.controlBase()}/healthz`)
-      if (!res.ok) return false
-      this.authSecret = secret
-      this.running = true
-      return true
-    } catch {
-      return false
-    }
+  async rollIfStale(): Promise<void> {
+    const deployed = await kubectlGetJson<object>(['get', 'deployment', PROXY_APP_NAME, '-n', k8sNamespace()])
+    if (!deployed || await this.isDeployedProxyCurrent()) return
+    serverLog('[server] the deployed proxy is from another build; redeploying it')
+    await this.ensureRunning()
   }
 
   async ensureRunning(): Promise<void> {
@@ -198,9 +135,8 @@ export class ProxyClient {
   }
 
   private async ensureRunningImpl(): Promise<void> {
-    // Fast path when healthy and current. attachIfRunning() marks a proxy
-    // running without checking its version, so an outdated one falls
-    // through to the full bootstrap, which re-applies the Deployment.
+    // Fast path when healthy and current. An outdated proxy falls through
+    // to the full bootstrap, which re-applies the Deployment.
     if (this.running) {
       try {
         const res = await tunnelFetch(`${await this.controlBase()}/healthz`)
@@ -219,7 +155,7 @@ export class ProxyClient {
 
     this.deployVerifiedCurrent = false
     await ensureNamespace()
-    this.authSecret = await ensureProxyAuthSecret()
+    await ensureProxyAuthSecret()
 
     const imageRef = await this.ensureProxyImage()
     await ensureProxyResources(imageRef)
@@ -303,7 +239,6 @@ export class ProxyClient {
     }
     this.running = false
     this.deployVerifiedCurrent = false
-    this.authSecret = null
     // A recreated Service may get a new ClusterIP.
     resetProxyClusterIpCache()
   }
