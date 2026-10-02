@@ -110,16 +110,6 @@ export async function countWorkspaces(): Promise<Record<string, number>> {
   return counts
 }
 
-/** Workspaces one project is running, spares included (the project detail
- *  page's count). Zero when the substrate is unreachable. */
-export async function countProjectWorkspaces(projectSlug: string): Promise<number> {
-  try {
-    return (await listWorkspacePods(projectSlug)).length
-  } catch {
-    return 0
-  }
-}
-
 /** List pods, turning a failure into RUNTIME_UNAVAILABLE. Callers with a
  *  recorded row to fall back on catch it. */
 async function listPodsOrUnavailable(projectSlug?: string): Promise<PodInfo[]> {

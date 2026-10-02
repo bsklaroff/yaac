@@ -1,3 +1,9 @@
+import type {
+  AgentMode,
+  AgentTool,
+  PermissionMode,
+  WorkspaceDeathReason,
+} from '@yaac/shared/types'
 import { boolean, index, integer, jsonb, primaryKey, snakeCase, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
 
 /**
@@ -8,7 +14,10 @@ import { boolean, index, integer, jsonb, primaryKey, snakeCase, text, timestamp,
  * (`createdAt` → `created_at`) for both drizzle-kit and runtime queries.
  *
  * drizzle-kit loads this file with plain-Node resolution, so keep it free of
- * `#` and `@yaac/*` imports (drizzle-orm/pg-core and relative paths only).
+ * `#` and `@yaac/*` runtime imports (type-only imports are erased).
+ *
+ * `$type` narrows a text column to the union the server writes into it. Rows
+ * are read back unchecked, so only validated values may be written.
  */
 
 /** Single-value user preferences, keyed by name (the git identity workspaces
@@ -55,7 +64,7 @@ export const projects = snakeCase.table('projects', {
    * `claude`) until the first create. Stored server-side so every client
    * agrees.
    */
-  lastTool: text(),
+  lastTool: text().$type<AgentTool>(),
   /**
    * The branch the last create named, which the create form opens on. A
    * create naming no branch uses the remote's default.
@@ -86,10 +95,10 @@ export const projects = snakeCase.table('projects', {
 export const projectToolDefaults = snakeCase.table('project_tool_defaults', {
   id: uuid().primaryKey().defaultRandom(),
   projectSlug: text().notNull(),
-  tool: text().notNull(),
+  tool: text().$type<AgentTool>().notNull(),
   model: text(),
-  permissionMode: text(),
-  mode: text(),
+  permissionMode: text().$type<PermissionMode>(),
+  mode: text().$type<AgentMode>(),
 }, (t) => [uniqueIndex().on(t.projectSlug, t.tool)])
 
 /**
@@ -123,7 +132,7 @@ export const workspaces = snakeCase.table('workspaces', {
    *  stop and restart. */
   groupId: text(),
   stoppedAt: timestamp({ withTimezone: true }),
-  deathReason: text(),
+  deathReason: text().$type<WorkspaceDeathReason>(),
   deathDetail: text(),
   deathSeen: boolean().notNull().default(false),
   /**
@@ -147,18 +156,18 @@ export const workspaces = snakeCase.table('workspaces', {
    * (docs/permission-modes.md, "Following the agent"). Stored so a restart
    * relaunches in the last mode rather than today's default.
    *
-   * Defaults to `bypass`, what a sandboxed runtime resolves to. Read back with
-   * a cast; the launch path re-checks the value against the tool.
+   * Defaults to `bypass`, what a sandboxed runtime resolves to. The launch
+   * path re-checks the value against the tool.
    */
-  permissionMode: text().notNull().default('bypass'),
+  permissionMode: text().$type<PermissionMode>().notNull().default('bypass'),
   /**
    * The model and agent mode (`tui` / `acp`) its first agent launched with.
    * A spare claim matches a request against these: a match is handed over
-   * as-is, otherwise the agent is respawned or the spare skipped. Null only
-   * on rows older than these columns.
+   * as-is, otherwise the agent is respawned or the spare skipped. Null when
+   * the launch recorded none.
    */
   model: text(),
-  mode: text(),
+  mode: text().$type<AgentMode>(),
   /**
    * The IANA zone it launched with as `TZ`, null when none was set. A spare
    * warmed in another zone than the user's current one is never claimed.
@@ -211,7 +220,7 @@ export const workspaceGroups = snakeCase.table('workspace_groups', {
  */
 export const agentSessions = snakeCase.table('agent_sessions', {
   projectSlug: text().notNull(),
-  tool: text().notNull(),
+  tool: text().$type<AgentTool>().notNull(),
   agentSessionId: text().notNull(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   /**
@@ -219,7 +228,7 @@ export const agentSessions = snakeCase.table('agent_sessions', {
    * bring it back the same way, and nothing else records this; ACP messages
    * are read from the same transcript a TUI conversation writes.
    */
-  mode: text().notNull().default('tui'),
+  mode: text().$type<AgentMode>().notNull().default('tui'),
   /** The transcript path relative to the project directory, so it survives
    *  the data dir moving (see `toProjectRelative`). Null when the tool leaves
    *  no transcript or the path has no project-relative form. */
@@ -253,7 +262,7 @@ export const agentSessions = snakeCase.table('agent_sessions', {
 export const workspaceAgentSessions = snakeCase.table('workspace_agent_sessions', {
   projectSlug: text().notNull(),
   workspaceId: text().notNull(),
-  tool: text().notNull(),
+  tool: text().$type<AgentTool>().notNull(),
   agentSessionId: text().notNull(),
   active: boolean().notNull().default(true),
   ordinal: integer().notNull().default(0),
@@ -311,8 +320,7 @@ export const projectEnvVars = snakeCase.table('project_env_vars', {
 export const gitCredentials = snakeCase.table('git_credentials', {
   id: uuid().primaryKey().defaultRandom(),
   name: text().notNull(),
-  /** 'https' | 'ssh' */
-  kind: text().notNull(),
+  kind: text().$type<'https' | 'ssh'>().notNull(),
   /** The token, or the ssh key's 32-byte ed25519 seed as base64; encrypted. */
   sealedSecret: text().notNull(),
   /** ssh only: the public key as one OpenSSH line, unencrypted so listings
@@ -338,10 +346,10 @@ export const queuedWorkspaces = snakeCase.table('queued_workspaces', {
   parentQueuedId: uuid(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   prompt: text().notNull(),
-  tool: text().notNull(),
+  tool: text().$type<AgentTool>().notNull(),
   model: text().notNull(),
-  mode: text().notNull(),
-  permissionMode: text().notNull(),
+  mode: text().$type<AgentMode>().notNull(),
+  permissionMode: text().$type<PermissionMode>().notNull(),
   /** The branch to fork from (no `origin/` prefix), fetched at launch so the
    *  child starts from its latest tip. */
   branch: text().notNull(),
@@ -387,9 +395,9 @@ export const draftWorkspaces = snakeCase.table('draft_workspaces', {
   title: text(),
   /** Generated from the prompt; cleared when the prompt changes. */
   generatedTitle: text(),
-  tool: text().notNull(),
-  mode: text().notNull(),
-  permissionMode: text().notNull(),
+  tool: text().$type<AgentTool>().notNull(),
+  mode: text().$type<AgentMode>().notNull(),
+  permissionMode: text().$type<PermissionMode>().notNull(),
   /** Null when the dialog hadn't resolved one yet (still loading); reopening
    *  then uses the default. */
   model: text(),

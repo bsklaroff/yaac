@@ -11,15 +11,15 @@ import { recordProject } from '#db'
 import type { ProjectMeta } from '@yaac/shared/types'
 
 // The live workspace count comes from the driver, stubbed here. What it
-// includes is asserted in test/drivers/k8s/workspaces/locate.test.ts.
+// includes is asserted with each driver's `countWorkspaces`.
 const count = vi.fn()
 
 let tmpDir: string
 
 beforeEach(async () => {
-    installFakeWorkspaceDriver({ countForProject: count })
+  installFakeWorkspaceDriver({ count })
   tmpDir = await createTempDataDir()
-  count.mockReset().mockResolvedValue(0)
+  count.mockReset().mockResolvedValue({})
 })
 
 afterEach(async () => {
@@ -49,7 +49,7 @@ describe('getProjectDetail', () => {
       path.join(projectConfigDir('foo'), 'yaac-config.json'),
       JSON.stringify({ initCommands: ['pnpm build'] }),
     )
-    count.mockResolvedValue(2)
+    count.mockResolvedValue({ foo: 2, bar: 1 })
 
     expect(await getProjectDetail('foo')).toEqual({
       slug: 'foo',
@@ -58,7 +58,6 @@ describe('getProjectDetail', () => {
       workspaceCount: 2,
       config: { initCommands: ['pnpm build'] },
     })
-    expect(count).toHaveBeenCalledWith('foo')
   })
 
   // An unreachable substrate counts zero rather than throwing, so a project

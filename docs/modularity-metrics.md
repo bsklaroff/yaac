@@ -16,7 +16,12 @@ pnpm modularity --json                # machine-readable, incl. the module graph
 
 dependency-cruiser extracts the raw file graph (configured in
 `.dependency-cruiser.cjs`, which also works on its own for graph rendering and
-rule checks). `scripts/modularity.ts` computes the rest.
+rule checks). `scripts/modularity.ts` computes the rest. It runs
+dependency-cruiser through its JS API to add two resolver options the config
+file cannot hold: `importsFields`, to follow each package's `imports` map, and
+a `.js` extension alias, to map the `./src/*.js` targets back to `.ts`
+sources. The `depcruise` CLI lacks both, so on its own it misses most internal
+edges.
 
 ## What a module is
 
@@ -31,10 +36,6 @@ a module itself: in the server, `runtime/` has no files of its own, so
 `runtime/agents` and its siblings are the modules. `drivers/` holds
 `contract.ts` and `driver.ts`, so it is a module of its own beside the sealed
 driver folders under it.
-
-The script re-resolves imports that go through a package's `imports` map.
-dependency-cruiser cannot read an imports map, and cannot map the `./src/*.js`
-targets back to `.ts` sources, so on its own it misses most internal edges.
 
 ## Coupling and cycles
 
@@ -69,7 +70,10 @@ edges made only of type imports are tagged `[type-only]` either way.
 Interfaces are measured at the barrels. For each module the report gives the
 number of exported names, how many of them code outside the folder imports,
 how many have exactly one consumer, and `depth`: Ousterhout's ratio of
-implementation lines to exported names.
+implementation lines to exported names. Consumers are counted across the
+whole repo, tests and other packages included. Their imports resolve through
+TypeScript under the root tsconfig, because cruising every file would take
+minutes.
 
 A deep module hides a lot of behavior behind a small surface; a shallow one is
 mostly surface. An export nothing imports is width with no payoff, so delete or

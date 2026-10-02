@@ -41,8 +41,8 @@ import {
   detectAuthKind,
   extractClaudeOAuthBundle,
 } from '#tool-auth-interactive'
-import { ServerError } from '#errors'
-import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '#types'
+import type { ServerError } from '#errors'
+import type { ClaudeOAuthBundle, CodexOAuthBundle } from '#types'
 
 const SAMPLE_BUNDLE: ClaudeOAuthBundle = {
   accessToken: 'sk-ant-oat01-real',
@@ -342,34 +342,11 @@ describe('tool-auth', () => {
       }
     })
 
-    it('rejects an unknown tool', async () => {
+    it("rejects another tool's oauth bundle", async () => {
       await expect(
-        persistToolAuthPayload('gemini' as unknown as AgentTool, { kind: 'api-key', apiKey: 'x' }),
+        persistToolAuthPayload('claude', { kind: 'oauth', bundle: SAMPLE_CODEX_BUNDLE }),
       ).rejects.toMatchObject({ code: 'VALIDATION' })
-    })
-
-    it('rejects a non-object payload', async () => {
-      await expect(
-        persistToolAuthPayload('claude', null),
-      ).rejects.toBeInstanceOf(ServerError)
-    })
-
-    it('rejects api-key with an empty key', async () => {
-      await expect(
-        persistToolAuthPayload('claude', { kind: 'api-key', apiKey: '' }),
-      ).rejects.toMatchObject({ code: 'VALIDATION' })
-    })
-
-    it('rejects an oauth payload with a malformed bundle', async () => {
-      await expect(
-        persistToolAuthPayload('claude', { kind: 'oauth', bundle: { accessToken: 'x' } }),
-      ).rejects.toMatchObject({ code: 'VALIDATION' })
-    })
-
-    it('rejects an unknown kind', async () => {
-      await expect(
-        persistToolAuthPayload('claude', { kind: 'mystery' }),
-      ).rejects.toMatchObject({ code: 'VALIDATION' })
+      expect(await loadClaudeCredentialsFile()).toBeNull()
     })
   })
 

@@ -1,5 +1,6 @@
 /**
- * Pod and Service watches that feed netd's reconcile.
+ * The pod and Service watches that feed netd's reconcile, both scoped to
+ * the install namespace so netd needs only a namespaced Role.
  *
  * Built on `@kubernetes/client-node` informers, which handle list/watch,
  * relist on 410, and keep the object store; netd maps that store on each
@@ -7,32 +8,43 @@
  * the rotated ServiceAccount token, so a long-lived netd keeps its
  * credentials.
  *
- * An informer stops after any non-410 error (including a failed initial
- * list), so this module restarts it with backoff.
- *
- * Pods are watched in all namespaces; Services only in netd's own
- * namespace, where the proxy's ClusterIP lives. A delete missed while the
- * watch was down leaves a stale pod in the store, but it renders no rules
- * because it no longer has a veth in the node's route table.
+ * A delete missed while a watch was down leaves a stale pod in the store,
+ * but it renders no rules because it no longer has a veth in the node's
+ * route table.
  */
 
 import {
+  CoreV1Api,
   KubeConfig,
   makeInformer,
   type Informer,
   type KubernetesListObject,
   type KubernetesObject,
-  type ObjectCache,
 } from '@kubernetes/client-node'
-import type { NetdPod, NetdService } from 'yaac-netd/targets'
 
-interface RawPod {
-  metadata?: { name?: string; namespace?: string; labels?: Record<string, string> }
-  status?: { podIP?: string }
+/**
+ * The pods netd redirects: workspace pods, never the proxy itself (a
+ * self-redirect would loop). The workspace label must match the server's
+ * LABEL_WORKSPACE_ID (netd can't import src/).
+ */
+export const WORKSPACE_POD_SELECTOR = 'yaac.workspace-id,app!=yaac-proxy'
+
+/** The fields netd reads off a Pod. */
+export interface NetdPod {
+  name: string
+  namespace: string
+  podIp: string
 }
 
-interface RawService {
-  metadata?: { name?: string; namespace?: string; labels?: Record<string, string> }
+/** The fields netd reads off a Service. */
+export interface NetdService {
+  name: string
+  clusterIp: string
+}
+
+interface RawObject {
+  metadata?: { name?: string; namespace?: string }
+  status?: { podIP?: string }
   spec?: { clusterIP?: string }
 }
 
@@ -41,128 +53,98 @@ interface RawService {
  * namespace or IP, so a half-built pod produces no rules.
  */
 export function mapPod(raw: unknown): NetdPod | null {
-  const pod = raw as RawPod
-  const name = pod.metadata?.name
-  const namespace = pod.metadata?.namespace
-  const podIp = pod.status?.podIP
+  const { metadata, status } = raw as RawObject
+  const name = metadata?.name
+  const namespace = metadata?.namespace
+  const podIp = status?.podIP
   if (!name || !namespace || !podIp) return null
-  return { name, namespace, podIp, labels: pod.metadata?.labels ?? {} }
+  return { name, namespace, podIp }
 }
 
 /** Map one API Service object to netd's shape; null when unusable. */
 export function mapService(raw: unknown): NetdService | null {
-  const svc = raw as RawService
-  const name = svc.metadata?.name
-  const namespace = svc.metadata?.namespace
-  const clusterIp = svc.spec?.clusterIP
-  if (!name || !namespace || !clusterIp) return null
-  return { name, namespace, clusterIp, labels: svc.metadata?.labels ?? {} }
+  const { metadata, spec } = raw as RawObject
+  const name = metadata?.name
+  const clusterIp = spec?.clusterIP
+  if (!name || !clusterIp) return null
+  return { name, clusterIp }
 }
 
-/** The informer methods this module uses, so tests can inject a fake. */
-export type InformerLike =
-  Pick<Informer<KubernetesObject>, 'on' | 'start' | 'stop'>
-  & Pick<ObjectCache<KubernetesObject>, 'list'>
-
-export type MakeInformerFn = (
-  path: string,
-  listFn: () => Promise<KubernetesListObject<KubernetesObject>>,
-) => InformerLike
-
-/** The real informer factory, bound to an in-cluster kubeconfig. */
-export function clusterInformerFactory(kubeConfig: KubeConfig): MakeInformerFn {
-  return (path, listFn) => makeInformer(kubeConfig, path, listFn)
+/** An in-cluster API client for one namespace. */
+export interface WatchClient {
+  kubeConfig: KubeConfig
+  core: CoreV1Api
+  namespace: string
 }
 
-/** In-cluster config: ServiceAccount token (re-read), CA, and API host. */
-export function loadInClusterConfig(): KubeConfig {
+/** In-cluster client from the ServiceAccount mount (token re-read). */
+export function inClusterClient(namespace: string): WatchClient {
   const kubeConfig = new KubeConfig()
   kubeConfig.loadFromCluster()
-  return kubeConfig
+  return { kubeConfig, core: kubeConfig.makeApiClient(CoreV1Api), namespace }
 }
 
-export interface ResourceWatchDeps<T> {
-  /** Watch path, e.g. `/api/v1/pods` (all namespaces). */
-  path: string
-  /** Seed list; must cover the same scope as `path`. */
-  listFn: () => Promise<KubernetesListObject<KubernetesObject>>
-  map: (raw: unknown) => T | null
-  /** Called on every observed delta; netd debounces these into a reconcile. */
-  onChange: () => void
-  log: (message: string) => void
-  makeInformerFn: MakeInformerFn
-  /** First restart delay after an informer error; doubles to the max. */
-  restartDelayMs?: number
-  maxRestartDelayMs?: number
+/** Watch this namespace's workspace pods; returns a reader of the store. */
+export function watchPods(client: WatchClient, onChange: () => void): () => NetdPod[] {
+  const { core, namespace } = client
+  return watch(client, 'pods', WORKSPACE_POD_SELECTOR, mapPod, onChange,
+    () => core.listNamespacedPod({ namespace, labelSelector: WORKSPACE_POD_SELECTOR }))
 }
 
-export interface ResourceWatch<T> {
-  /** Everything currently known, mapped; unusable objects dropped. */
-  list(): T[]
-  start(): void
-  stop(): void
+/** Watch this namespace's Services, where the proxy's ClusterIP lives. */
+export function watchServices(client: WatchClient, onChange: () => void): () => NetdService[] {
+  const { core, namespace } = client
+  return watch(client, 'services', undefined, mapService, onChange,
+    () => core.listNamespacedService({ namespace }))
+}
+
+function watch<T>(
+  client: WatchClient,
+  resource: string,
+  labelSelector: string | undefined,
+  map: (raw: unknown) => T | null,
+  onChange: () => void,
+  // client-node applies the selector to the watch only; the list needs it too.
+  listFn: () => Promise<KubernetesListObject<KubernetesObject>>,
+): () => T[] {
+  const path = `/api/v1/namespaces/${client.namespace}/${resource}`
+  const informer = makeInformer(client.kubeConfig, path, listFn, labelSelector)
+  informer.on('add', onChange)
+  informer.on('update', onChange)
+  informer.on('delete', onChange)
+  superviseInformer(informer, resource)
+  return () => informer.list().map(map).filter((item): item is T => item !== null)
 }
 
 /**
- * Watch one resource kind forever, restarting the informer with backoff
- * when it stops. The backoff resets if the informer ran for a minute or
- * more before failing. `list()` reads the informer's store directly.
+ * Run an informer for the process's lifetime. On any error other than 410
+ * (including a failed initial list) client-node's informer emits `error` and
+ * stops, so this restarts it with backoff. Same pattern as the proxy's
+ * superviseInformer (k8s/proxy/pod-watch.ts).
  */
-export function startResourceWatch<T>(deps: ResourceWatchDeps<T>): ResourceWatch<T> {
-  const baseDelayMs = deps.restartDelayMs ?? 1_000
-  const maxDelayMs = deps.maxRestartDelayMs ?? 30_000
-  let backoffMs = baseDelayMs
+function superviseInformer(
+  informer: Pick<Informer<KubernetesObject>, 'on' | 'start'>,
+  label: string,
+): void {
+  let backoffMs = 1_000
   let startedAtMs = 0
   let restartTimer: NodeJS.Timeout | null = null
-  let stopped = true
-
+  const begin = (): void => {
+    startedAtMs = Date.now()
+    informer.start().catch((err: unknown) => { onError(err) })
+  }
   const onError = (err: unknown): void => {
-    if (stopped) return
-    if (Date.now() - startedAtMs >= 60_000) backoffMs = baseDelayMs
-    deps.log(`[netd] watch ${deps.path}: ${String(err)} — restart in ${backoffMs}ms`)
+    // Only rapid repeat failures back off.
+    if (Date.now() - startedAtMs >= 60_000) backoffMs = 1_000
+    console.error(`[netd] watch ${label}: ${String(err)} — restart in ${backoffMs}ms`)
+    // A failing start can both reject and emit 'error'; schedule one restart.
     if (restartTimer) return
     restartTimer = setTimeout(() => {
       restartTimer = null
       begin()
     }, backoffMs)
-    backoffMs = Math.min(backoffMs * 2, maxDelayMs)
+    backoffMs = Math.min(backoffMs * 2, 30_000)
   }
-
-  const informer = deps.makeInformerFn(deps.path, deps.listFn)
-  informer.on('add', () => { deps.onChange() })
-  informer.on('update', () => { deps.onChange() })
-  informer.on('delete', () => { deps.onChange() })
   informer.on('error', (err: unknown) => { onError(err) })
-
-  function begin(): void {
-    startedAtMs = Date.now()
-    // start() rejects only before the cycle begins; later failures arrive
-    // as `error`.
-    informer.start().catch((err: unknown) => { onError(err) })
-  }
-
-  return {
-    list: () => informer.list()
-      .map((obj) => deps.map(obj))
-      .filter((item): item is T => item !== null),
-    start: () => {
-      stopped = false
-      begin()
-    },
-    stop: () => {
-      stopped = true
-      if (restartTimer) clearTimeout(restartTimer)
-      restartTimer = null
-      void informer.stop()
-    },
-  }
+  begin()
 }
-
-/** Pods in all namespaces. */
-export const PODS_PATH = '/api/v1/pods'
-
-/** Namespaced Services watch path; must match the list function's scope. */
-export function namespacedServicesPath(namespace: string): string {
-  return `/api/v1/namespaces/${namespace}/services`
-}
-

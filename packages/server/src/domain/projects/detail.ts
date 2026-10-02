@@ -52,14 +52,14 @@ export async function resolveProjectConfigWithSource(slug: string): Promise<Proj
 export async function getProjectDetail(slug: string): Promise<ProjectDetail> {
   const meta = await loadProjectMeta(slug)
   const [workspaceCount, configResult] = await Promise.all([
-    workspaceDriver().countForProject(slug),
+    workspaceDriver().count(),
     resolveProjectConfigWithSource(slug),
   ])
   return {
     slug: meta.slug,
     remoteUrl: meta.remoteUrl,
     addedAt: meta.addedAt,
-    workspaceCount,
+    workspaceCount: workspaceCount[slug] ?? 0,
     config: configResult.config,
   }
 }

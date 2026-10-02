@@ -36,7 +36,7 @@ export async function getWorkspaceDetail(idOrPrefix: string): Promise<WorkspaceD
     ? await runtime.blockedHosts(match.workspaceId)
     : []
   const gitAuthFailures = match.projectSlug
-    ? await runtime.gitAuthFailures(match.projectSlug)
+    ? (await runtime.gitAuthFailures())[match.projectSlug] ?? []
     : []
   return {
     workspaceId: match.workspaceId,

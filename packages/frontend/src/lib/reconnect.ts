@@ -1,3 +1,5 @@
+import { wsUrl } from '@yaac/shared/api-core'
+
 /**
  * The SPA's WebSockets to the server's streams: `/events` (useEvents), an
  * ACP conversation (useAcpStream) and a terminal's `/pty/attach`
@@ -51,8 +53,7 @@ export function reconnectingSocket(path: () => string, on: {
   let timer: ReturnType<typeof setTimeout> | undefined
 
   const connect = (): void => {
-    const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const s = new WebSocket(`${scheme}://${window.location.host}${path()}`)
+    const s = new WebSocket(wsUrl(window.location.origin, path()))
     s.binaryType = 'arraybuffer'
     sock = s
     let opened = false

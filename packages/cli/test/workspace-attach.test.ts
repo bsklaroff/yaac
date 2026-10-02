@@ -16,20 +16,20 @@ describe('workspaceAttach', () => {
   })
 
   // The socket takes only an exact id, so the prefix is resolved first.
-  it('attaches over the server PTY WebSocket with the native target, by the id the server resolved', async () => {
-    await workspaceAttach('abc')
+  it.each(['native', 'shell'] as const)('attaches the %s target over the server PTY WebSocket, by the id the server resolved', async (target) => {
+    await workspaceAttach('abc', target)
     expect(getSpy).toHaveBeenCalledWith({ param: { id: 'abc' } })
-    expect(attachWorkspacePty).toHaveBeenCalledWith('abc123def456', 'native')
+    expect(attachWorkspacePty).toHaveBeenCalledWith('abc123def456', target)
   })
 
   it('opens no socket when the id does not resolve', async () => {
     getSpy.mockRejectedValue(new Error('Ambiguous workspace prefix: abc'))
-    await expect(workspaceAttach('abc')).rejects.toThrow(/Ambiguous/)
+    await expect(workspaceAttach('abc', 'native')).rejects.toThrow(/Ambiguous/)
     expect(attachWorkspacePty).not.toHaveBeenCalled()
   })
 
   it('propagates transport failures', async () => {
     vi.mocked(attachWorkspacePty).mockRejectedValue(new Error('terminal connection failed: nope'))
-    await expect(workspaceAttach('abc')).rejects.toThrow(/terminal connection failed/)
+    await expect(workspaceAttach('abc', 'shell')).rejects.toThrow(/terminal connection failed/)
   })
 })

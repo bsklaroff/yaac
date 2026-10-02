@@ -6,7 +6,6 @@ import fsp from 'node:fs/promises'
 import { setDataDir } from '@yaac/shared/paths'
 import {
   _resetRegistryForTests,
-  countForProject,
   countWorkspaces,
   createRuntimeSnapshot,
   findForTeardown,
@@ -92,14 +91,6 @@ describe('countWorkspaces', () => {
     rememberWorkspace(marker(A))
     rememberWorkspace(marker(B, { prewarm: true }))
     expect(countWorkspaces()).toEqual({ demo: 1 })
-  })
-})
-
-describe('countForProject', () => {
-  it('includes spares, unlike the per-project display counts', () => {
-    rememberWorkspace(marker(A))
-    rememberWorkspace(marker(B, { prewarm: true }))
-    expect(countForProject('demo')).toBe(2)
   })
 })
 

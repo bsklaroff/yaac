@@ -20,7 +20,7 @@ import {
   seedFakeAuth,
 } from '#domain/projects'
 import { persistToolAuthPayload } from '@yaac/shared/tool-auth'
-import { claudeOAuthBundleSchema, codexOAuthBundleSchema, FAKE_AUTH_KINDS } from '@yaac/shared/types'
+import { AGENT_TOOLS, FAKE_AUTH_KINDS, toolAuthPayloadSchema } from '@yaac/shared/types'
 
 /**
  * Push the credential set, and fail the request if the runtime could not take
@@ -50,7 +50,7 @@ export const authApp = new Hono()
   })
   .post(
     '/clear',
-    zv('json', z.object({ service: z.enum(['all', 'claude', 'codex', 'opencode', 'pi']) })),
+    zv('json', z.object({ service: z.enum(['all', ...AGENT_TOOLS]) })),
     async (c) => {
       const { service } = c.req.valid('json')
       await clearAuth(service)
@@ -151,20 +151,8 @@ export const authApp = new Hono()
   })
   .put(
     '/:tool',
-    zv('param', z.object({ tool: z.enum(['claude', 'codex', 'opencode', 'pi']) })),
-    zv('json', z.discriminatedUnion('kind', [
-      z.object({
-        kind: z.literal('api-key'),
-        apiKey: z.string().min(1),
-        // The backend the key is for. Required for opencode/pi (a missing or
-        // unknown id is a VALIDATION error); ignored for claude/codex.
-        provider: z.string().optional(),
-      }),
-      z.object({
-        kind: z.literal('oauth'),
-        bundle: z.union([claudeOAuthBundleSchema, codexOAuthBundleSchema]),
-      }),
-    ])),
+    zv('param', z.object({ tool: z.enum(AGENT_TOOLS) })),
+    zv('json', toolAuthPayloadSchema),
     async (c) => {
       const { tool } = c.req.valid('param')
       const body = c.req.valid('json')

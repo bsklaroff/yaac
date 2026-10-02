@@ -1,5 +1,9 @@
-import { createForwardSet, serverNeedsForwarder, type ForwardSet } from '@yaac/shared/port-tunnel-set'
-import type { ForwardSpec } from '@yaac/shared/port-tunnel'
+import {
+  createForwardSet,
+  serverNeedsForwarder,
+  snapshotForwards,
+  type ForwardSet,
+} from '@yaac/shared/port-tunnel-set'
 import type { ServerTarget } from '@yaac/shared/server-api'
 import type { ServerSnapshot } from '@yaac/shared/types'
 
@@ -14,22 +18,6 @@ import type { ServerSnapshot } from '@yaac/shared/types'
  * It binds loopback only. To publish forwards on the network, use
  * `yaac forward --bind`.
  */
-
-/**
- * Every forward the snapshot offers, across all workspaces. Empty for a
- * containerless server on this machine, whose workspace processes already
- * hold the ports themselves (`serverNeedsForwarder`).
- */
-export function snapshotForwards(snapshot: ServerSnapshot, baseUrl: string): ForwardSpec[] {
-  if (!serverNeedsForwarder(snapshot.driver, baseUrl)) return []
-  const specs: ForwardSpec[] = []
-  for (const w of snapshot.workspaces) {
-    for (const { containerPort, hostPort } of w.forwardedPorts) {
-      specs.push({ session: w.workspaceId, containerPort, hostPort })
-    }
-  }
-  return specs
-}
 
 export interface ForwarderDeps {
   /** Re-resolved on every snapshot, since the server may have changed. */
@@ -77,7 +65,9 @@ export function startForwarder(deps: ForwarderDeps): DesktopForwarder {
     try {
       const baseUrl = await rebuild()
       if (stopped) return
-      await set?.reconcile(snapshotForwards(snapshot, baseUrl))
+      // Nothing against a containerless server on this machine, whose
+      // workspace processes already hold the ports themselves.
+      await set?.reconcile(serverNeedsForwarder(snapshot.driver, baseUrl) ? snapshotForwards(snapshot) : [])
     } catch (err) {
       say(`forwarding paused: ${err instanceof Error ? err.message : String(err)}`)
     }

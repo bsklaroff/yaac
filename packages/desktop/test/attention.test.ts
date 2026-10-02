@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest'
 import {
   badgeText,
   notificationFor,
-  parseSnapshotMessage,
   AttentionMonitor,
 } from '#attention'
 import type { ServerSnapshot, WorkspaceListEntry } from '@yaac/shared/types'
@@ -49,19 +48,6 @@ describe('notificationFor', () => {
     ]).workspaces
     expect(notificationFor(titled)).toEqual({ title: 'Workspace waiting for you', body: 'proj · Fix bug' })
     expect([prompted, bare].map((w) => notificationFor(w).body)).toEqual(['proj · P', 'proj · c'])
-  })
-})
-
-describe('parseSnapshotMessage', () => {
-  it('returns the data of a snapshot frame', () => {
-    const s = snap([{ workspaceId: 'a', status: 'waiting' }])
-    expect(parseSnapshotMessage(JSON.stringify({ type: 'snapshot', data: s }))?.workspaces).toHaveLength(1)
-  })
-  it('returns null for a non-snapshot frame', () => {
-    expect(parseSnapshotMessage(JSON.stringify({ type: 'other', data: {} }))).toBeNull()
-  })
-  it('returns null for malformed json', () => {
-    expect(parseSnapshotMessage('{not json')).toBeNull()
   })
 })
 

@@ -262,28 +262,28 @@ objects. The HTTP control API on the proxy's port carries only true
 request/response traffic: `/healthz`, the change stream (`/events`) and the
 `yaac-mama` command queue.
 
-## Egress target selection
+## Which pods are redirected
 
 netd has exactly **one** rule, recomputed on every relevant watch event: a
-workspace pod (label `yaac.workspace-id`) in **this install's own namespace**
-is redirected to this install's proxy. Nothing else on the node is redirected.
+workspace pod (label `yaac.workspace-id`, never the proxy itself) in **this
+install's own namespace** is redirected to this install's proxy. Nothing else
+on the node is redirected.
 
-Scoping to netd's own namespace keeps installs that share a node out of each
-other's traffic. netd watches pods in all namespaces, but only pods of the
-install it serves produce a target.
+netd watches only its own namespace, by label selector, so installs that share
+a node stay out of each other's traffic and netd needs no cluster-wide access:
+a namespaced Role grants it `get`/`list`/`watch` on pods and Services there,
+where every object is created by yaac and no workspace can write one.
 
-The target address is the proxy **Service's ClusterIP**, read from netd's own
-namespace. That is the security line: netd reads **pods** cluster-wide (it
-programs their veths) but **Services** only in its own namespace, where every
-object is created by yaac and no workspace can write one.
+The redirect target is the proxy **Service's ClusterIP**, read from that same
+namespace. Until the Service exists netd redirects nothing.
 
-Envoy picks the target by matching the connection's source pod IP against a
-filter chain (`filter_chain_match.source_prefix_ranges`), not by which port the
-packet landed on. So all three listeners are shared by every target, and adding
-or removing a target never moves a port. That matters because conntrack pins a
-flow's DNAT destination on its first packet, and moving a port under a live
-flow would strand it. A source netd has not programmed matches no filter chain,
-and Envoy closes the connection, the same result as a missing DNAT rule.
+Envoy admits a connection by matching its source pod IP against the listener's
+filter chain (`filter_chain_match.source_prefix_ranges`). All three listeners
+are shared by every workspace pod, so pods come and go without moving a port.
+That matters because conntrack pins a flow's DNAT destination on its first
+packet, and moving a port under a live flow would strand it. A source netd has
+not programmed matches no filter chain, and Envoy closes the connection, the
+same result as a missing DNAT rule.
 
 netd chooses its trio once per netd pod. It probes ports in a hash-derived order
 over the reserved range, takes the first trio nothing else on the node holds,
@@ -395,7 +395,7 @@ CIDR resolved at apply time (`cluster-cidrs.ts`):
   chains in place and leaves it at the creation version, so it would stall on
   every later pod change. A rejected listener is reported with Envoy's
   `error_state` details.
-- **Triage.** `kubectl -n <ns> logs ds/yaac-netd -c netd` shows target
-  selection, rule application and the chain name. On the node,
+- **Triage.** `kubectl -n <ns> logs ds/yaac-netd -c netd` shows each
+  pass's changes, the chain name and watch errors. On the node,
   `iptables-legacy -t nat -S <chain>` shows what is actually programmed, and
   `-S PREROUTING` shows which chain this install jumps to.

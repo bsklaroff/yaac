@@ -1,9 +1,22 @@
 import { z } from 'zod'
-import type { OpencodeProvider, PiProvider } from '#tool-providers'
+import {
+  parseOpencodeProvider,
+  parsePiProvider,
+  type OpencodeProvider,
+  type PiProvider,
+} from '#tool-providers'
 
 export type AgentTool = 'claude' | 'codex' | 'opencode' | 'pi'
 
 export const AGENT_TOOLS: readonly AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
+
+/** Each tool's product name, for messages that name it in full. */
+export const TOOL_LABELS: Record<AgentTool, string> = {
+  claude: 'Claude Code',
+  codex: 'Codex',
+  opencode: 'OpenCode',
+  pi: 'Pi',
+}
 
 /**
  * The tools that choose their own conversation ids. claude and pi launch
@@ -313,22 +326,6 @@ export const claudeOAuthBundleSchema = z.object({
 export type ClaudeOAuthBundle = z.infer<typeof claudeOAuthBundleSchema>
 
 /**
- * Shape of the server's `.credentials/claude.json`: OAuth with a full bundle,
- * or a single sk-ant-api03-… API key.
- */
-export type ClaudeCredentialsFile =
-  | {
-    kind: 'oauth'
-    savedAt: string
-    claudeAiOauth: ClaudeOAuthBundle
-  }
-  | {
-    kind: 'api-key'
-    savedAt: string
-    apiKey: string
-  }
-
-/**
  * Codex's "Sign in with ChatGPT" OAuth bundle, under the "codexOauth" key in
  * yaac's `codex.json`. Holds the parts of Codex's `auth.json` the proxy needs
  * to swap placeholders and refresh.
@@ -351,45 +348,73 @@ export const codexOAuthBundleSchema = z.object({
 })
 export type CodexOAuthBundle = z.infer<typeof codexOAuthBundleSchema>
 
+/** A stored or submitted api key; the shape every tool accepts. */
+const apiKeyCredentialSchema = z.object({
+  kind: z.literal('api-key'),
+  apiKey: z.string().min(1),
+})
+
+const savedAt = z.string()
+
+/**
+ * Shape of the server's `.credentials/claude.json`: OAuth with a full bundle,
+ * or a single sk-ant-api03-… API key.
+ */
+export const claudeCredentialsFileSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('oauth'), savedAt, claudeAiOauth: claudeOAuthBundleSchema }),
+  apiKeyCredentialSchema.extend({ savedAt }),
+])
+export type ClaudeCredentialsFile = z.infer<typeof claudeCredentialsFileSchema>
+
 /**
  * Shape of the server's `.credentials/codex.json`: OAuth with a full bundle,
  * or an API key.
  */
-export type CodexCredentialsFile =
-  | {
-    kind: 'oauth'
-    savedAt: string
-    codexOauth: CodexOAuthBundle
-  }
-  | {
-    kind: 'api-key'
-    savedAt: string
-    apiKey: string
-  }
+export const codexCredentialsFileSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('oauth'), savedAt, codexOauth: codexOAuthBundleSchema }),
+  apiKeyCredentialSchema.extend({ savedAt }),
+])
+export type CodexCredentialsFile = z.infer<typeof codexCredentialsFileSchema>
 
 /**
  * Shape of the server's `.credentials/opencode.json`: an api key for one
  * provider in the generated registry (`tool-providers.ts`). `provider` picks
  * the env var and the host the proxy swaps the key on; a file whose provider
- * is missing or unknown loads as null.
+ * is missing or unknown fails to parse rather than defaulting, which could
+ * send the key to the wrong vendor.
  */
-export type OpencodeCredentialsFile = {
-  kind: 'api-key'
-  provider: OpencodeProvider
-  savedAt: string
-  apiKey: string
-}
+export const opencodeCredentialsFileSchema = apiKeyCredentialSchema.extend({
+  savedAt,
+  provider: z.custom<OpencodeProvider>(
+    (v) => typeof v === 'string' && parseOpencodeProvider(v) !== undefined,
+    'provider is missing or not in this build\'s registry',
+  ),
+})
+export type OpencodeCredentialsFile = z.infer<typeof opencodeCredentialsFileSchema>
+
+/** Shape of the server's `.credentials/pi.json`; like opencode's. */
+export const piCredentialsFileSchema = apiKeyCredentialSchema.extend({
+  savedAt,
+  provider: z.custom<PiProvider>(
+    (v) => typeof v === 'string' && parsePiProvider(v) !== undefined,
+    'provider is missing or not in this build\'s registry',
+  ),
+})
+export type PiCredentialsFile = z.infer<typeof piCredentialsFileSchema>
 
 /**
- * Shape of the server's `.credentials/pi.json`; like
- * `OpencodeCredentialsFile`.
+ * The `PUT /auth/:tool` body. The server checks it against the named tool:
+ * an OAuth bundle must be that tool's, and opencode/pi need a provider from
+ * their registry, rejected rather than defaulted when missing or unknown.
  */
-export type PiCredentialsFile = {
-  kind: 'api-key'
-  provider: PiProvider
-  savedAt: string
-  apiKey: string
-}
+export const toolAuthPayloadSchema = z.discriminatedUnion('kind', [
+  apiKeyCredentialSchema.extend({ provider: z.string().optional() }),
+  z.object({
+    kind: z.literal('oauth'),
+    bundle: z.union([claudeOAuthBundleSchema, codexOAuthBundleSchema]),
+  }),
+])
+export type ToolAuthPayload = z.infer<typeof toolAuthPayloadSchema>
 
 /**
  * The four tool credential files as one value, handed to a runtime whose
@@ -1116,22 +1141,42 @@ export interface QueuedWorkspaceEntry {
 }
 
 /**
+ * Cap on a prompt, both as a create or queue write takes it and as an opening
+ * message is recorded. Shared so routes, the store and the discovery sweeps
+ * apply the same bound.
+ */
+export const MAX_PROMPT_LENGTH = 10000
+
+/**
+ * A queued workspace's settings as a queue write takes them. A present field
+ * overrides what would otherwise be resolved at launch; blank `title` leaves
+ * the workspace to be auto-titled.
+ */
+export const queuedWorkspaceSettingsSchema = z.object({
+  prompt: z.string().min(1).max(MAX_PROMPT_LENGTH),
+  tool: z.enum(AGENT_TOOLS).optional(),
+  model: z.string().regex(MODEL_RE).max(100).optional(),
+  mode: z.enum(AGENT_MODES).optional(),
+  permissionMode: z.enum(PERMISSION_MODES).optional(),
+  branch: z.string().min(1).max(255).optional(),
+  title: z.string().max(500).optional(),
+})
+
+/**
  * The create dialog's fields as a draft keeps them
  * (docs/draft-workspaces.md). `model` and `branch` are absent if the dialog
  * hadn't resolved them; `startAfter` is the parent workspace or queued entry
  * id, absent for "Now"; `title` is absent if left blank.
  */
-export interface DraftWorkspaceSettings {
-  prompt: string
-  tool: AgentTool
-  mode: AgentMode
-  permissionMode: PermissionMode
-  model?: string
-  branch?: string
-  startAfter?: string
-  title?: string
-  groupId?: string
-}
+export const draftWorkspaceSettingsSchema = queuedWorkspaceSettingsSchema.extend({
+  tool: z.enum(AGENT_TOOLS),
+  mode: z.enum(AGENT_MODES),
+  permissionMode: z.enum(PERMISSION_MODES),
+  startAfter: z.string().min(1).optional(),
+  groupId: z.string().min(1).optional(),
+})
+
+export type DraftWorkspaceSettings = z.infer<typeof draftWorkspaceSettingsSchema>
 
 /** A create-dialog's contents the user kept instead of running. */
 export interface DraftWorkspaceEntry extends DraftWorkspaceSettings {
@@ -1284,12 +1329,6 @@ export type DesktopServerOutcome =
   | { ok: true }
   | { ok: false; error: string }
 
-/**
- * Cap on a recorded opening message, applied by whoever stores it. Larger
- * than a title because title generation reads the first ~1000 chars. Shared
- * so the store and the discovery sweeps apply the same bound.
- */
-export const MAX_PROMPT_LENGTH = 4000
 
 /**
  * Cap on a recorded model id. Model ids come from the agent (a tmux pane

@@ -18,7 +18,7 @@
 
 import { createHash } from 'node:crypto'
 import type { ListenerTrio } from 'yaac-netd/ports'
-import type { PodTarget } from 'yaac-netd/targets'
+import type { NetdPod } from 'yaac-netd/k8s-watch'
 
 /**
  * The install's own nat chain name. Each install (e.g. `yaac` and an e2e
@@ -43,7 +43,7 @@ function ruleComment(namespace: string, name: string): string {
 }
 
 export interface RuleRenderInput {
-  selected: PodTarget[]
+  pods: NetdPod[]
   /** podIP → host veth, from the Calico per-workload routes. */
   vethByPodIp: Map<string, string>
   /** This install's listener trio, shared by every pod (see ports.ts). */
@@ -63,7 +63,7 @@ export interface RuleRenderInput {
 /**
  * The redirect chain's rules, in order, as iptables argv fragments without
  * the `-A <chain>` prefix. Output is deterministic so unchanged passes can
- * be skipped. Every pod goes to the same trio; Envoy picks the target.
+ * be skipped. Every pod goes to the same trio.
  */
 export function renderRedirectRules(input: RuleRenderInput): string[][] {
   const rules: string[][] = []
@@ -71,7 +71,7 @@ export function renderRedirectRules(input: RuleRenderInput): string[][] {
   for (const cidr of input.podCidrs) {
     rules.push(['-d', cidr, '-j', 'RETURN'])
   }
-  for (const { pod } of input.selected) {
+  for (const pod of input.pods) {
     const iface = input.vethByPodIp.get(pod.podIp)
     // No veth yet, or the pod is on another node. Without a rule its
     // egress is denied by NetworkPolicy.

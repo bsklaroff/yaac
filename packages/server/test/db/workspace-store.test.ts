@@ -8,8 +8,6 @@ import {
   deleteWorkspaceRow,
   findWorkspaceRow,
   listLiveWorkspaceRows,
-  priorStopOf,
-  restoreWorkspaceStop,
   setWorkspaceBaseBranch,
   getProjectWorkspaceRows,
   getWorkspaceRow,
@@ -261,34 +259,6 @@ describe('session store', () => {
       const rows = await listLiveWorkspaceRows()
       expect(rows.map((r) => [r.workspaceId, r.ran]).sort())
         .toEqual([['has-prompt', true], ['has-transcript', true], ['never-ran', false]])
-    })
-  })
-
-  describe('restoreWorkspaceStop', () => {
-    it('puts a failed restart\'s row back, cause and seen flag intact', async () => {
-      await create('sid-1')
-      await recordWorkspaceStopped('proj', 'sid-1', { reason: 'oom', detail: 'exit code 137' })
-      await recordDeathSeen('proj', 'sid-1')
-      const before = (await getProjectWorkspaceRows('proj')).get('sid-1')
-      const prior = priorStopOf(before)
-      expect(prior).toBeDefined()
-
-      // The restart clears the deletion, then fails.
-      await clearWorkspaceStopped('proj', 'sid-1')
-      await restoreWorkspaceStop('proj', 'sid-1', prior!)
-
-      expect((await getProjectWorkspaceRows('proj')).get('sid-1')).toMatchObject({
-        stoppedAt: before?.stoppedAt,
-        deathReason: 'oom',
-        deathDetail: 'exit code 137',
-        deathSeen: true, // the user had already dismissed this death
-      })
-    })
-
-    it('priorStopOf ignores a row that was not deleted', async () => {
-      await clearWorkspaceStopped('proj', 'sid-1')
-      expect(priorStopOf((await getProjectWorkspaceRows('proj')).get('sid-1'))).toBeUndefined()
-      expect(priorStopOf(undefined)).toBeUndefined()
     })
   })
 

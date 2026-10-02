@@ -4,11 +4,10 @@
 //   pnpm depcruise packages/server/src --output-type dot | dot -Tsvg > g.svg
 //   pnpm depcruise packages/server/src --output-type err   # rule violations
 //
-// The `#…` subpath imports are not resolved here: dependency-cruiser's
-// enhanced-resolve setup cannot read an `imports` map or map the `./src/*.js`
-// targets back to `.ts`. scripts/modularity.ts re-resolves those edges from
-// each package.json; any other reader of the raw output must do the same, or
-// most internal edges will be missing.
+// This file's schema cannot set enhanced-resolve's `importsFields` or
+// `extensionAlias`, so the CLI alone leaves the `#…` subpath imports
+// unresolved and misses most internal edges. scripts/modularity.ts passes both
+// through dependency-cruiser's JS API.
 module.exports = {
   forbidden: [
     {

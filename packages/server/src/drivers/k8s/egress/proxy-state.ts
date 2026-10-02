@@ -20,11 +20,6 @@ export function readAllGitAuthFailures(): Record<string, GitAuthFailure[]> {
   return getActiveClusterCache()?.proxyRecords().gitAuthFailures ?? {}
 }
 
-/** The git auth failures the proxy has recorded for one project. */
-export function readGitAuthFailures(projectSlug: string): GitAuthFailure[] {
-  return readAllGitAuthFailures()[projectSlug] ?? []
-}
-
 /** The rotations the proxy captured that the host store may not hold yet. */
 export function refreshedCredentials(): RefreshedToolCredentials {
   return getActiveClusterCache()?.refreshedCredentials() ?? {}

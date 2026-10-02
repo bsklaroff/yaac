@@ -7,6 +7,7 @@ import {
   type ClaudeOAuthBundle,
   type CodexOAuthBundle,
   type ToolAuthKind,
+  type ToolAuthPayload,
 } from '#types'
 import {
   OPENCODE_DEFAULT_PROVIDER,
@@ -32,10 +33,6 @@ export function detectAuthKind(tool: AgentTool, token: string): ToolAuthKind {
   return 'api-key'
 }
 
-function isClaudeOAuthBundle(v: unknown): v is ClaudeOAuthBundle {
-  return claudeOAuthBundleSchema.safeParse(v).success
-}
-
 /**
  * Parse a raw blob of Claude Code's native `.credentials.json` (or the
  * equivalent macOS Keychain payload) into a full OAuth bundle.
@@ -48,16 +45,7 @@ export function extractClaudeOAuthBundle(raw: string): ClaudeOAuthBundle | null 
     return null
   }
   if (!parsed || typeof parsed !== 'object') return null
-  const o = parsed as Record<string, unknown>
-  const oauth = o.claudeAiOauth
-  if (!isClaudeOAuthBundle(oauth)) return null
-  return {
-    accessToken: oauth.accessToken,
-    refreshToken: oauth.refreshToken,
-    expiresAt: oauth.expiresAt,
-    scopes: oauth.scopes,
-    subscriptionType: oauth.subscriptionType,
-  }
+  return claudeOAuthBundleSchema.safeParse((parsed as Record<string, unknown>).claudeAiOauth).data ?? null
 }
 
 /** Keychain service name of a default (no CLAUDE_CONFIG_DIR) claude install. */
@@ -258,15 +246,6 @@ export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult | n
 
   return null
 }
-
-/**
- * The `PUT /auth/:tool` request body carrying captured credentials. For
- * opencode/pi, `provider` is validated by the server; a missing or unknown
- * id is rejected rather than defaulted.
- */
-export type ToolAuthPayload =
-  | { kind: 'api-key'; apiKey: string; provider?: string }
-  | { kind: 'oauth'; bundle: ClaudeOAuthBundle | CodexOAuthBundle }
 
 /** Shape a login result into the `PUT /auth/:tool` body. */
 export function buildAuthPayload(tool: AgentTool, result: ToolLoginResult): ToolAuthPayload {

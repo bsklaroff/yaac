@@ -13,7 +13,6 @@ WORKDIR /app
 COPY package.json /app/package.json
 RUN npm install --omit=dev
 COPY netd.ts /app/netd.ts
-COPY targets.ts /app/targets.ts
 COPY routes.ts /app/routes.ts
 COPY rules.ts /app/rules.ts
 COPY ports.ts /app/ports.ts

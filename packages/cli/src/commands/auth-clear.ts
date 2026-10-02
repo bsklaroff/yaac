@@ -1,5 +1,6 @@
 import readline from 'node:readline/promises'
 import { api } from '#commands/api'
+import { TOOL_LABELS } from '@yaac/shared/types'
 
 export async function authClear(): Promise<void> {
   const { toolAuth } = await api.auth.list.$get()
@@ -16,10 +17,7 @@ export async function authClear(): Promise<void> {
 
   const entries: Entry[] = []
   for (const entry of toolAuth) {
-    const label =
-      entry.tool === 'claude' ? 'Claude Code' :
-      entry.tool === 'codex' ? 'Codex' :
-      'OpenCode'
+    const label = TOOL_LABELS[entry.tool]
     entries.push({
       label: `${label} credentials (${entry.keyPreview})`,
       run: async () => {

@@ -6,12 +6,8 @@ import { agentSessions, workspaceAgentSessions, workspaces } from './schema'
 import { notifyWorkspaceListChanged } from '#notify'
 import { normalizeTitle } from '@yaac/shared/titles'
 import { ServerError } from '@yaac/shared/errors'
-import type {
-  AgentMode,
-  PermissionMode,
-  WorkspaceDeathCause,
-  WorkspaceDeathReason,
-} from '@yaac/shared/types'
+import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
+import type { AgentMode, PermissionMode, WorkspaceDeathCause } from '@yaac/shared/types'
 
 /**
  * One row per workspace yaac has created. The runtime is authoritative for
@@ -35,40 +31,9 @@ import type {
  *    is removed (`deleteProjectWorkspaces`) or a create that never came up
  *    rolls back (`deleteWorkspaceRow`).
  *
- * `recordWorkspaceCreated` throws on failure, since a create without a row
- * must not report success. Most other writes are best-effort: a lost title
- * or stop stamp degrades a listing but must never block a teardown. Reads
- * propagate errors.
+ * Every read and write propagates errors; a caller that must carry on (a
+ * teardown) catches them itself.
  */
-
-/** A workspace row as the display paths consume it. */
-export interface WorkspaceRow {
-  projectSlug: string
-  workspaceId: string
-  createdAt: Date
-  title?: string
-  baseBranch?: string
-  /** The sidebar group it is filed under; absent means ungrouped. */
-  groupId?: string
-  stoppedAt?: Date
-  deathReason?: WorkspaceDeathReason
-  deathDetail?: string
-  deathSeen: boolean
-  /** An unclaimed prewarmed spare. Only point reads return one; listings
-   *  filter them out. */
-  spare: boolean
-  /** When its current runtime came up, if it has one. */
-  lifeStartedAt?: Date
-  /** Its agents' last reported permission mode: what a restart relaunches in
-   *  and what `yaac-mama create` caps a sibling at. */
-  permissionMode: PermissionMode
-  /** The first agent's launch model and agent mode, which a spare claim
-   *  matches against. Absent on rows older than these columns. */
-  model?: string
-  mode?: AgentMode
-  /** The zone it launched with as `TZ`. */
-  timeZone?: string
-}
 
 /** Fields `recordWorkspaceCreated` stamps on a fresh workspace. */
 export interface WorkspaceCreatedInput {
@@ -90,25 +55,12 @@ export interface WorkspaceCreatedInput {
 
 type Row = typeof workspaces.$inferSelect
 
-function toRow(r: Row): WorkspaceRow {
-  return {
-    projectSlug: r.projectSlug,
-    workspaceId: r.workspaceId,
-    createdAt: r.createdAt,
-    ...(r.title !== null ? { title: r.title } : {}),
-    ...(r.baseBranch !== null ? { baseBranch: r.baseBranch } : {}),
-    ...(r.groupId !== null ? { groupId: r.groupId } : {}),
-    ...(r.stoppedAt !== null ? { stoppedAt: r.stoppedAt } : {}),
-    ...(r.deathReason !== null ? { deathReason: r.deathReason as WorkspaceDeathReason } : {}),
-    ...(r.deathDetail !== null ? { deathDetail: r.deathDetail } : {}),
-    deathSeen: r.deathSeen,
-    spare: r.spare,
-    ...(r.lifeStartedAt !== null ? { lifeStartedAt: r.lifeStartedAt } : {}),
-    permissionMode: r.permissionMode as PermissionMode,
-    ...(r.model !== null ? { model: r.model } : {}),
-    ...(r.mode !== null ? { mode: r.mode as AgentMode } : {}),
-    ...(r.timeZone !== null ? { timeZone: r.timeZone } : {}),
-  }
+/** A workspace row as the display paths consume it (columns documented in
+ *  schema.ts). Only point reads return a spare; listings filter them out. */
+export type WorkspaceRow = NullsToUndefined<Omit<Row, 'mamaTokenHash'>>
+
+function toRow({ mamaTokenHash: _, ...r }: Row): WorkspaceRow {
+  return nullsToUndefined(r)
 }
 
 /** Every read except point lookups excludes unclaimed spares, which are not
@@ -147,9 +99,10 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
 }
 
 /**
- * Record a stopped workspace as restarting: update the launch fields and
- * clear the stop and death. `createdAt`, title and group are kept, so the
- * workspace returns to its group.
+ * Record a stopped workspace as restarting: update the launch fields.
+ * `createdAt`, title and group are kept, so the workspace returns to its
+ * group. The stop stays until the restart succeeds (`clearWorkspaceStopped`),
+ * so a failed restart leaves the row as it found it.
  *
  * Never inserts. Stopped workspaces keep their rows, so a missing row (for
  * example after a DB reset) is `NOT_FOUND`.
@@ -162,10 +115,6 @@ export async function recordWorkspaceResumed(
 ): Promise<void> {
   const db = await getDb()
   const rows = await db.update(workspaces).set({
-    stoppedAt: null,
-    deathReason: null,
-    deathDetail: null,
-    deathSeen: false,
     ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode } : {}),
     ...(input.model !== undefined ? { model: input.model } : {}),
     ...(input.mode !== undefined ? { mode: input.mode } : {}),
@@ -185,8 +134,7 @@ export async function recordWorkspaceResumed(
  * match the request. (The base branch arrives separately, via
  * `base-branch-resolved`.)
  *
- * Unlike other spare writes, this throws on failure, including when no
- * unclaimed spare matched: the startup sweep deletes checkouts marked
+ * Throws when no unclaimed spare matched: the startup sweep deletes checkouts marked
  * `spare`, so a lost update would later delete the user's work. The claim
  * runs this before touching the spare, so a failure only costs a cold
  * create.
@@ -239,29 +187,20 @@ export async function deleteSpareWorkspaceRow(
  * for a different tool would inherit an active ordinal-0 conversation (where
  * the tool and founding prompt are read), and nothing else would prune it.
  *
- * Best-effort: the caller falls back to a cold create either way.
+ * Restores the flag first, since that is what makes the spare reapable.
  */
 export async function restoreSpareWorkspace(warmed: WorkspaceRow): Promise<void> {
   const { projectSlug, workspaceId } = warmed
-  try {
-    await deleteWorkspaceAgentSessions(projectSlug, workspaceId)
-  } catch {
-    // Caught separately so it can't skip restoring the flag, which is what
-    // makes the spare reapable.
-  }
-  try {
-    const db = await getDb()
-    await db.update(workspaces).set({
-      spare: true,
-      createdAt: warmed.createdAt,
-      baseBranch: warmed.baseBranch ?? null,
-      permissionMode: warmed.permissionMode,
-      model: warmed.model ?? null,
-      mode: warmed.mode ?? null,
-    }).where(key(projectSlug, workspaceId))
-  } catch {
-    // Non-fatal: the workspace dir sweep still collects a checkout with no pod.
-  }
+  const db = await getDb()
+  await db.update(workspaces).set({
+    spare: true,
+    createdAt: warmed.createdAt,
+    baseBranch: warmed.baseBranch ?? null,
+    permissionMode: warmed.permissionMode,
+    model: warmed.model ?? null,
+    mode: warmed.mode ?? null,
+  }).where(key(projectSlug, workspaceId))
+  await deleteWorkspaceAgentSessions(projectSlug, workspaceId)
 }
 
 /**
@@ -271,9 +210,6 @@ export async function restoreSpareWorkspace(warmed: WorkspaceRow): Promise<void>
  * handle would name something in the new life, and the ACP driver
  * re-addresses conversations by recorded handle
  * (`recordedConversationHandles`).
- *
- * Throws on failure, unlike most writes here: stale handles are the
- * corruption this prevents, so the create should fail instead.
  */
 export async function recordWorkspaceLife(
   projectSlug: string,
@@ -306,60 +242,13 @@ export async function recordWorkspaceStopped(
   workspaceId: string,
   cause?: WorkspaceDeathCause,
 ): Promise<void> {
-  try {
-    const db = await getDb()
-    await db.update(workspaces).set({
-      stoppedAt: new Date(),
-      deathReason: cause?.reason ?? null,
-      deathDetail: cause?.detail ?? null,
-      deathSeen: false,
-    }).where(key(projectSlug, workspaceId))
-  } catch {
-    // Non-fatal: the teardown itself is what matters.
-  }
-}
-
-/** A row's stop state before a restart cleared it, so a failed restart can
- *  restore it. */
-export interface PriorStop {
-  stoppedAt: Date
-  deathReason?: WorkspaceDeathReason
-  deathDetail?: string
-  deathSeen: boolean
-}
-
-/** The row's stop state, if it is stopped. */
-export function priorStopOf(row: WorkspaceRow | undefined): PriorStop | undefined {
-  if (row?.stoppedAt === undefined) return undefined
-  return {
-    stoppedAt: row.stoppedAt,
-    ...(row.deathReason !== undefined ? { deathReason: row.deathReason } : {}),
-    ...(row.deathDetail !== undefined ? { deathDetail: row.deathDetail } : {}),
-    deathSeen: row.deathSeen,
-  }
-}
-
-/**
- * Restore a row's stop as the restart found it. `recordWorkspaceStopped`
- * would instead drop the recorded cause (e.g. an OOM) and re-raise a
- * notification the user already dismissed.
- */
-export async function restoreWorkspaceStop(
-  projectSlug: string,
-  workspaceId: string,
-  prior: PriorStop,
-): Promise<void> {
-  try {
-    const db = await getDb()
-    await db.update(workspaces).set({
-      stoppedAt: prior.stoppedAt,
-      deathReason: prior.deathReason ?? null,
-      deathDetail: prior.deathDetail ?? null,
-      deathSeen: prior.deathSeen,
-    }).where(key(projectSlug, workspaceId))
-  } catch {
-    // Non-fatal: the reaper handles a row whose runtime never arrived.
-  }
+  const db = await getDb()
+  await db.update(workspaces).set({
+    stoppedAt: new Date(),
+    deathReason: cause?.reason ?? null,
+    deathDetail: cause?.detail ?? null,
+    deathSeen: false,
+  }).where(key(projectSlug, workspaceId))
 }
 
 /** Clear a workspace's stop (its id is live again after a restart). */
@@ -367,28 +256,19 @@ export async function clearWorkspaceStopped(
   projectSlug: string,
   workspaceId: string,
 ): Promise<void> {
-  try {
-    const db = await getDb()
-    await db.update(workspaces).set({
-      stoppedAt: null,
-      deathReason: null,
-      deathDetail: null,
-      deathSeen: false,
-    }).where(key(projectSlug, workspaceId))
-  } catch {
-    // Non-fatal: a running workspace is excluded from the stopped listing
-    // anyway.
-  }
+  const db = await getDb()
+  await db.update(workspaces).set({
+    stoppedAt: null,
+    deathReason: null,
+    deathDetail: null,
+    deathSeen: false,
+  }).where(key(projectSlug, workspaceId))
 }
 
 /** Mark an abnormal death as seen (the user opened its detail). */
 export async function recordDeathSeen(projectSlug: string, workspaceId: string): Promise<void> {
-  try {
-    const db = await getDb()
-    await db.update(workspaces).set({ deathSeen: true }).where(key(projectSlug, workspaceId))
-  } catch {
-    // Non-fatal: a lost write just re-shows the dot.
-  }
+  const db = await getDb()
+  await db.update(workspaces).set({ deathSeen: true }).where(key(projectSlug, workspaceId))
 }
 
 /**
@@ -396,15 +276,11 @@ export async function recordDeathSeen(projectSlug: string, workspaceId: string):
  * read"). Only rows that actually died are touched.
  */
 export async function recordAllDeathsSeen(projectSlug: string): Promise<void> {
-  try {
-    const db = await getDb()
-    await db.update(workspaces).set({ deathSeen: true }).where(and(
-      eq(workspaces.projectSlug, projectSlug),
-      isNotNull(workspaces.deathReason),
-    ))
-  } catch {
-    // Non-fatal: a lost write just re-shows the dot.
-  }
+  const db = await getDb()
+  await db.update(workspaces).set({ deathSeen: true }).where(and(
+    eq(workspaces.projectSlug, projectSlug),
+    isNotNull(workspaces.deathReason),
+  ))
 }
 
 /**
@@ -535,13 +411,8 @@ export async function setWorkspaceBaseBranch(
   workspaceId: string,
   baseBranch: string,
 ): Promise<void> {
-  try {
-    const db = await getDb()
-    await db.update(workspaces).set({ baseBranch }).where(key(projectSlug, workspaceId))
-  } catch {
-    // Non-fatal: the fork branch falls back to the checkout's upstream
-    // (workspaceForkBranch).
-  }
+  const db = await getDb()
+  await db.update(workspaces).set({ baseBranch }).where(key(projectSlug, workspaceId))
 }
 
 /** Record the permission mode the running agent moved to. */

@@ -3,7 +3,7 @@
  * `@yaac/shared`.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { snapshotForwards, startForwarder } from '#forwarder'
+import { startForwarder } from '#forwarder'
 import type { ForwardSpec } from '@yaac/shared/port-tunnel'
 import type { ServerTarget } from '@yaac/shared/server-api'
 import type { ServerSnapshot, WorkspaceListEntry } from '@yaac/shared/types'
@@ -72,37 +72,6 @@ beforeEach(() => {
   resolveTarget = vi.fn<() => Promise<ServerTarget>>().mockResolvedValue(LOCAL)
 })
 
-describe('snapshotForwards', () => {
-  it('flattens every workspace\'s offered mappings into one desired set', () => {
-    expect(snapshotForwards(snapshot([
-      workspace('a', [[3000, 3000], [5432, 15432]]),
-      workspace('b', [[3000, 3001]]),
-      workspace('c', []),
-    ]), LOCAL.baseUrl)).toEqual([
-      { session: 'a', containerPort: 3000, hostPort: 3000 },
-      { session: 'a', containerPort: 5432, hostPort: 15432 },
-      { session: 'b', containerPort: 3000, hostPort: 3001 },
-    ])
-  })
-
-  it('offers nothing against a containerless server on this machine', () => {
-    // The workspace processes already hold these ports on this machine
-    // (docs/port-forward-tunnel.md).
-    expect(snapshotForwards(snapshot([
-      workspace('a', [[3000, 3000]]),
-    ], 'containerless'), LOCAL.baseUrl)).toEqual([])
-  })
-
-  it('binds a remote containerless server\'s mappings, which is what makes the preview pane true', () => {
-    // A remote host's loopback is unreachable, so the ports are bound here.
-    expect(snapshotForwards(snapshot([
-      workspace('a', [[3000, 3000]]),
-    ], 'containerless'), OTHER.baseUrl)).toEqual([
-      { session: 'a', containerPort: 3000, hostPort: 3000 },
-    ])
-  })
-})
-
 describe('startForwarder', () => {
   it('reconciles the snapshot against the resolved server', async () => {
     const forwarder = startForwarder({ resolveTarget, createSet: set.create as never })
@@ -137,6 +106,16 @@ describe('startForwarder', () => {
 
     expect(set.targets).toEqual([LOCAL.baseUrl, OTHER.baseUrl])
     expect(set.closes).toBe(1)
+  })
+
+  it('binds nothing against a containerless server on this machine', async () => {
+    // The workspace processes already hold these ports on this machine
+    // (docs/port-forward-tunnel.md).
+    const f = startForwarder({ resolveTarget, createSet: set.create as never })
+    f.apply(snapshot([workspace('a', [[3000, 3000]])], 'containerless'))
+    await settle()
+    expect(set.reconciled).toEqual([[]])
+    f.stop()
   })
 
   it('decides what to bind from the origin it resolved, not the page', async () => {

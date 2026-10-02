@@ -6,7 +6,6 @@ export { runtimeHandleFromPod } from './handle'
 export { claimSpareWorkspace, registerWorkspace } from './claim'
 export { launchWorkspace, prepareWorkspaceSubstrate } from './launch'
 export {
-  countProjectWorkspaces,
   countWorkspaces,
   findWorkspace,
   findWorkspaceForTeardown,

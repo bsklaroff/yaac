@@ -22,9 +22,7 @@ export async function configGitIdentity(options: ConfigGitIdentityOptions): Prom
     return
   }
   if (name === undefined || email === undefined) {
-    console.error('Pass both --name and --email to set the git identity.')
-    process.exitCode = 1
-    return
+    throw new Error('Pass both --name and --email to set the git identity.')
   }
   const { identity } = await api.config['git-identity'].$put({ json: { name, email } })
   console.log(`Git identity: ${identity.name} <${identity.email}>`)

@@ -18,13 +18,11 @@ describe('clusterCheck (CLI)', () => {
     mockRun.mockReset()
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    process.exitCode = undefined
   })
 
   afterEach(() => {
     logSpy.mockRestore()
     errSpy.mockRestore()
-    process.exitCode = undefined
   })
 
   it('prints every formatted result and a ready message on success', async () => {
@@ -43,10 +41,9 @@ describe('clusterCheck (CLI)', () => {
     expect(logged).toContain('✓ cluster: reachable')
     expect(logged).toContain('\nCluster is ready for yaac workspaces.')
     expect(errSpy).not.toHaveBeenCalled()
-    expect(process.exitCode).toBeUndefined()
   })
 
-  it('prints the failure footer and sets exit code 1 when not ok', async () => {
+  it('prints every result, then throws the failure footer when not ok', async () => {
     mockRun.mockResolvedValue({
       ok: false,
       results: [
@@ -55,13 +52,11 @@ describe('clusterCheck (CLI)', () => {
       ],
     })
 
-    await clusterCheck()
+    await expect(clusterCheck()).rejects.toThrow(
+      '\nCluster is not ready for yaac workspaces. Fix the failures above and re-run.',
+    )
 
     const logged = logSpy.mock.calls.map((c) => c[0] as unknown)
     expect(logged).toContain('✗ registry: down\n    fix: start it')
-    expect(errSpy).toHaveBeenCalledWith(
-      '\nCluster is not ready for yaac workspaces. Fix the failures above and re-run.',
-    )
-    expect(process.exitCode).toBe(1)
   })
 })

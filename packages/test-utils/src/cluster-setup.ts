@@ -35,7 +35,7 @@ beforeAll(async () => {
  * compete with the files still running.
  *
  * Best-effort and non-blocking; `test/global-setup.ts` sweeps whatever an
- * interrupted file leaves, plus netd's cluster-scoped RBAC.
+ * interrupted file leaves, plus the cluster-scoped objects it owns.
  */
 afterAll(async () => {
   // Cluster-scoped objects don't go with the namespace, so delete the

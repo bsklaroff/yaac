@@ -539,8 +539,6 @@ export interface WorkspaceDriver {
   list(projectSlug?: string, opts?: { preferCache?: boolean }): Promise<RuntimeHandle[]>
   /** Live counts per project, spares excluded. Empty when unreachable. */
   count(): Promise<Record<string, number>>
-  /** How many one project is running, spares INCLUDED. 0 when unreachable. */
-  countForProject(projectSlug: string): Promise<number>
   /** A running workspace's diff, read inside it. Rejects with
    *  `WorkspaceExecError` on failure (`CHANGES_BASE_UNRESOLVED` when the
    *  base has no fork point). */
@@ -552,11 +550,9 @@ export interface WorkspaceDriver {
 
   /** Hosts this workspace was denied. Empty without mediated egress. */
   blockedHosts(workspaceId: string): Promise<string[]>
-  /** Git credentials the egress path saw rejected upstream for this
-   *  project. Empty without mediated egress. */
-  gitAuthFailures(projectSlug: string): Promise<GitAuthFailure[]>
-  /** `gitAuthFailures` for every project, for the display path. */
-  allGitAuthFailures(): Promise<Record<string, GitAuthFailure[]>>
+  /** Git credentials the egress path saw rejected upstream, per project.
+   *  Empty without mediated egress. */
+  gitAuthFailures(): Promise<Record<string, GitAuthFailure[]>>
   /** The host port each forwarded port is offered at (what a client binds
    *  and the webapp links to). In memory; the forwarder restore rebuilds it
    *  after a restart. */

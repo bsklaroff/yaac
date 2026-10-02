@@ -3,7 +3,8 @@ import { getDb } from './client'
 import { draftWorkspaces } from './schema'
 import { notifyWorkspaceListChanged } from '#notify'
 import { isUuid } from '#lib/uuid'
-import type { AgentMode, AgentTool, DraftWorkspaceSettings, PermissionMode } from '@yaac/shared/types'
+import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
+import type { DraftWorkspaceSettings } from '@yaac/shared/types'
 
 /**
  * Draft workspaces: create-dialog contents saved instead of run
@@ -11,34 +12,12 @@ import type { AgentMode, AgentTool, DraftWorkspaceSettings, PermissionMode } fro
  * notifies the snapshot hub itself.
  */
 
-export interface DraftWorkspaceRow extends DraftWorkspaceSettings {
-  id: string
-  projectSlug: string
-  generatedTitle?: string
-  createdAt: Date
-  updatedAt: Date
-}
-
 type Row = typeof draftWorkspaces.$inferSelect
 
-function toRow(r: Row): DraftWorkspaceRow {
-  return {
-    id: r.id,
-    projectSlug: r.projectSlug,
-    prompt: r.prompt,
-    tool: r.tool as AgentTool,
-    mode: r.mode as AgentMode,
-    permissionMode: r.permissionMode as PermissionMode,
-    ...(r.model !== null ? { model: r.model } : {}),
-    ...(r.branch !== null ? { branch: r.branch } : {}),
-    ...(r.startAfter !== null ? { startAfter: r.startAfter } : {}),
-    ...(r.title !== null ? { title: r.title } : {}),
-    ...(r.groupId !== null ? { groupId: r.groupId } : {}),
-    ...(r.generatedTitle !== null ? { generatedTitle: r.generatedTitle } : {}),
-    createdAt: r.createdAt,
-    updatedAt: r.updatedAt,
-  }
-}
+/** A draft (columns documented in schema.ts). */
+export type DraftWorkspaceRow = NullsToUndefined<Row>
+
+const toRow = (r: Row): DraftWorkspaceRow => nullsToUndefined(r)
 
 /** Every column a save writes: an absent optional is stored as null, so a
  *  save replaces the whole draft rather than merging into it. */

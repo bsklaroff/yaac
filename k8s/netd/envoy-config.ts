@@ -1,11 +1,11 @@
 /**
  * Renders the Envoy config netd hands to a co-located stock Envoy through
- * file-based xDS: an LDS and a CDS document that Envoy hot-reloads. All
- * functions here are pure; netd.ts writes the files.
+ * file-based xDS: the listeners and clusters of an LDS and a CDS document
+ * that Envoy hot-reloads. All functions here are pure; netd.ts writes the
+ * files.
  *
- * Each install has three listeners (https, http, tunnel) and one cluster
- * per egress target per leg. A connection's target is chosen by its
- * source pod IP, not by the port it arrived on. Key settings:
+ * Each install has three listeners (https, http, tunnel), each forwarding
+ * to one cluster aimed at the install's proxy. Key settings:
  *
  * - `original_dst` listener filter: recovers the pre-DNAT destination so
  *   the PROXY-protocol header can carry the host the workload dialed.
@@ -22,7 +22,6 @@
  * docs/workspace-egress.md.
  */
 
-import type { EgressTarget, PodTarget } from 'yaac-netd/targets'
 import type { ListenerTrio } from 'yaac-netd/ports'
 
 /** Which of the three legs a rendered resource serves. */
@@ -37,86 +36,37 @@ export interface TransparentPorts {
 
 export const LEGS: TrioLeg[] = ['https', 'http', 'tunnel']
 
-/** Sanitize to `[a-z0-9-]` so Envoy's stat sinks never see a mangled name. */
-function sanitize(raw: string): string {
-  return raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-}
-
-/** Envoy cluster name for one leg of one egress target. */
-export function resourceName(targetKey: string, leg: TrioLeg): string {
-  return `yaac-${sanitize(targetKey)}-${leg}`
-}
-
-/** Envoy listener name for one leg of this install's trio. */
-export function listenerName(installNamespace: string, leg: TrioLeg): string {
-  return `yaac-listener-${sanitize(installNamespace)}-${leg}`
-}
-
-/** One target's share of a listener: the pod IPs whose flows it serves. */
-export interface FilterChainSpec {
-  targetKey: string
-  /** Source pod IPs, sorted so the rendered document is stable. */
-  podIps: string[]
+/** A listener or cluster, as it goes into a DiscoveryResponse. */
+export interface EnvoyResource {
+  name: string
+  [key: string]: unknown
 }
 
 /**
- * Group a selection into one filter chain per egress target. Both levels
- * are sorted so an unchanged selection renders identical bytes, which the
- * no-op write check and the version stamp rely on.
+ * The name of one leg's listener and of the cluster it forwards to (Envoy
+ * keeps listener and cluster names apart). Sanitized to `[a-z0-9-]` so
+ * Envoy's stat sinks never see a mangled name.
  */
-export function groupChains(selected: PodTarget[]): FilterChainSpec[] {
-  const byKey = new Map<string, Set<string>>()
-  for (const { pod, target } of selected) {
-    const ips = byKey.get(target.key) ?? new Set<string>()
-    ips.add(pod.podIp)
-    byKey.set(target.key, ips)
-  }
-  return [...byKey.entries()]
-    .map(([targetKey, ips]) => ({ targetKey, podIps: [...ips].sort() }))
-    .sort((a, b) => (a.targetKey < b.targetKey ? -1 : a.targetKey > b.targetKey ? 1 : 0))
+export function resourceName(installNamespace: string, leg: TrioLeg): string {
+  const ns = installNamespace.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  return `yaac-${ns}-${leg}`
 }
 
 export interface LdsInput {
   installNamespace: string
   trio: ListenerTrio
-  chains: FilterChainSpec[]
-  /**
-   * Version stamp for the document. netd passes a hash of the rendered
-   * content; the listener gate waits for Envoy to report this version.
-   */
-  versionInfo: string
+  /** Source IPs of the pods to redirect. */
+  podIps: string[]
 }
 
 export interface CdsInput {
-  targets: EgressTarget[]
+  installNamespace: string
+  /** The proxy Service's ClusterIP, or null when it is not up yet. */
+  proxyIp: string | null
   transparentPorts: TransparentPorts
-  versionInfo: string
 }
 
-function filterChain(spec: FilterChainSpec, leg: TrioLeg): Record<string, unknown> {
-  const cluster = resourceName(spec.targetKey, leg)
-  return {
-    name: cluster,
-    filter_chain_match: {
-      source_prefix_ranges: spec.podIps.map((ip) => ({ address_prefix: ip, prefix_len: 32 })),
-    },
-    filters: [{
-      name: 'envoy.filters.network.tcp_proxy',
-      typed_config: {
-        '@type': 'type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy',
-        stat_prefix: cluster,
-        cluster,
-      },
-    }],
-  }
-}
-
-function listenerResource(
-  name: string,
-  port: number,
-  chains: FilterChainSpec[],
-  leg: TrioLeg,
-): Record<string, unknown> {
+function listenerResource(name: string, port: number, podIps: string[]): EnvoyResource {
   return {
     '@type': 'type.googleapis.com/envoy.config.listener.v3.Listener',
     name,
@@ -128,15 +78,23 @@ function listenerResource(
         '@type': 'type.googleapis.com/envoy.extensions.filters.listener.original_dst.v3.OriginalDst',
       },
     }],
-    filter_chains: chains.map((chain) => filterChain(chain, leg)),
+    filter_chains: [{
+      filter_chain_match: {
+        source_prefix_ranges: podIps.map((ip) => ({ address_prefix: ip, prefix_len: 32 })),
+      },
+      filters: [{
+        name: 'envoy.filters.network.tcp_proxy',
+        typed_config: {
+          '@type': 'type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy',
+          stat_prefix: name,
+          cluster: name,
+        },
+      }],
+    }],
   }
 }
 
-function clusterResource(
-  name: string,
-  ip: string,
-  port: number,
-): Record<string, unknown> {
+function clusterResource(name: string, ip: string, port: number): EnvoyResource {
   return {
     '@type': 'type.googleapis.com/envoy.config.cluster.v3.Cluster',
     name,
@@ -167,40 +125,26 @@ function clusterResource(
 }
 
 /**
- * The LDS document (a DiscoveryResponse) for the current selection. Empty
- * when no pod is programmed, since a listener with no filter chains is
- * invalid. The trio's ports stay reserved either way.
+ * The listeners for the given pods, one per leg. None when there is no
+ * pod, since a listener with no filter chains is invalid; the trio's ports
+ * stay reserved either way. IPs are deduplicated and sorted so an
+ * unchanged pod set renders identical bytes.
  */
-export function renderLds(input: LdsInput): Record<string, unknown> {
-  const chains = input.chains.filter((c) => c.podIps.length > 0)
-  const resources = chains.length === 0 ? [] : LEGS.map((leg) => listenerResource(
-    listenerName(input.installNamespace, leg),
-    input.trio[leg],
-    chains,
-    leg,
+export function renderLds(input: LdsInput): EnvoyResource[] {
+  const podIps = [...new Set(input.podIps)].sort()
+  if (podIps.length === 0) return []
+  return LEGS.map((leg) => listenerResource(
+    resourceName(input.installNamespace, leg), input.trio[leg], podIps,
   ))
-  return { version_info: input.versionInfo, resources }
 }
 
-/** Listener names renderLds declares, for the listener gate. */
-export function ldsListenerNames(input: Pick<LdsInput, 'installNamespace' | 'chains'>): string[] {
-  if (input.chains.every((c) => c.podIps.length === 0)) return []
-  return LEGS.map((leg) => listenerName(input.installNamespace, leg))
-}
-
-/** The CDS document (a DiscoveryResponse) for the current target set. */
-export function renderCds(input: CdsInput): Record<string, unknown> {
-  const resources: Record<string, unknown>[] = []
-  for (const target of input.targets) {
-    for (const leg of LEGS) {
-      resources.push(clusterResource(
-        resourceName(target.key, leg),
-        target.ip,
-        input.transparentPorts[leg],
-      ))
-    }
-  }
-  return { version_info: input.versionInfo, resources }
+/** The clusters aimed at the proxy, one per leg; none until it is up. */
+export function renderCds(input: CdsInput): EnvoyResource[] {
+  const { proxyIp } = input
+  if (!proxyIp) return []
+  return LEGS.map((leg) => clusterResource(
+    resourceName(input.installNamespace, leg), proxyIp, input.transparentPorts[leg],
+  ))
 }
 
 /**

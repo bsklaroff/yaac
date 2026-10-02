@@ -1,18 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { redirectChainName, renderNatRestore, renderRedirectRules } from 'yaac-netd/rules'
-import type { PodTarget } from 'yaac-netd/targets'
 import type { ListenerTrio } from 'yaac-netd/ports'
 
 const TRIO: ListenerTrio = { https: 15100, http: 15101, tunnel: 15102 }
 const CHAIN = redirectChainName('yaac')
 
 function input(overrides: Partial<Parameters<typeof renderRedirectRules>[0]> = {}) {
-  const selected: PodTarget[] = [{
-    pod: { name: 'sess-1', namespace: 'yaac', podIp: '10.244.0.9', labels: {} },
-    target: { key: 'outer/yaac', ip: '10.96.0.50' },
-  }]
   return {
-    selected,
+    pods: [{ name: 'sess-1', namespace: 'yaac', podIp: '10.244.0.9' }],
     vethByPodIp: new Map([['10.244.0.9', 'calia132c78e002']]),
     trio: TRIO,
     nodeIp: '10.89.0.7',
@@ -72,31 +67,24 @@ describe('renderRedirectRules', () => {
   it('truncates the tag under xt_comment\'s 256-byte cap', () => {
     // One over-long comment would make iptables-restore reject the whole
     // document.
-    const selected: PodTarget[] = [{
-      pod: {
-        name: `${'p'.repeat(240)}-x-yaac-x-vc-alpha`,
-        namespace: 'n'.repeat(63),
-        podIp: '10.244.0.9',
-        labels: {},
-      },
-      target: { key: 'outer/yaac', ip: '10.96.0.50' },
+    const pods = [{
+      name: `${'p'.repeat(240)}-x-yaac-x-vc-alpha`,
+      namespace: 'n'.repeat(63),
+      podIp: '10.244.0.9',
     }]
-    for (const rule of dnatRules({ selected })) {
+    for (const rule of dnatRules({ pods })) {
       const comment = rule[rule.indexOf('--comment') + 1]
       expect(comment.length).toBeLessThan(256)
       expect(comment.startsWith(`yaac:${'n'.repeat(63)}/`)).toBe(true)
     }
   })
 
-  it('aims every pod at the SAME trio — the target is chosen by Envoy', () => {
-    const selected: PodTarget[] = [
-      { pod: { name: 'a', namespace: 'yaac', podIp: '10.244.0.9', labels: {} },
-        target: { key: 'outer/yaac', ip: '10.96.0.50' } },
-      { pod: { name: 'b', namespace: 'yaac', podIp: '10.244.0.10', labels: {} },
-        target: { key: 'outer/yaac-test-r1', ip: '10.96.0.77' } },
-    ]
+  it('aims every pod at the SAME trio — Envoy matches the source', () => {
     const rules = dnatRules({
-      selected,
+      pods: [
+        { name: 'a', namespace: 'yaac', podIp: '10.244.0.9' },
+        { name: 'b', namespace: 'yaac', podIp: '10.244.0.10' },
+      ],
       vethByPodIp: new Map([['10.244.0.9', 'caliA'], ['10.244.0.10', 'caliB']]),
     })
     expect(rules).toHaveLength(6)

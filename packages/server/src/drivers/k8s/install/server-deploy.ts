@@ -181,8 +181,9 @@ export function buildServerClusterRoleManifest(): Record<string, unknown> {
       { apiGroups: ['batch'], resources: ['jobs'], verbs: ['*'] },
       { apiGroups: ['networking.k8s.io'], resources: ['networkpolicies'], verbs: ['*'] },
       {
-        // The server applies the proxy's Role and netd's ClusterRole on
-        // start. RBAC's escalation check still limits what it can grant.
+        // The server applies the proxy's and netd's Roles on start, and
+        // deletes netd's legacy cluster RBAC (docs/legacy-compat-shims.md).
+        // RBAC's escalation check still limits what it can grant.
         apiGroups: ['rbac.authorization.k8s.io'],
         resources: ['roles', 'rolebindings', 'clusterroles', 'clusterrolebindings'],
         verbs: ['*'],

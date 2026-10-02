@@ -62,17 +62,18 @@ and may import nothing else. It depends only on `ws` and `net`.
 `createForwardSet` keeps a set of forwards in line with a desired list,
 matched by identity: a new port does not disturb other forwards' open
 connections, and a forward that cannot bind is reported and retried next
-pass. Two clients use it:
+pass. Both clients take that list from the server's `/events` snapshots
+(`startEventsMonitor` and `snapshotForwards` in `@yaac/shared`):
 
-- **`yaac forward [workspace-id]`**, for headless machines. It polls the
-  workspace list every 3 seconds. `--port <container[:host]>` names ports
-  directly (one the server does not know, or a different local port), and
+- **`yaac forward [workspace-id]`**, for headless machines. It follows
+  every running workspace's ports, or the named one's.
+  `--port <container[:host]>` names ports directly (one the server does
+  not know, or a different local port), and
   `--bind <address>` listens somewhere other than loopback, for remote
   hosting (docs/remote-hosting.md) where the forwarder is not on the
   user's machine.
-- **The desktop app**, resident in the tray. Its main process already
-  follows `/events`, whose snapshots carry the mappings, so the stream that
-  drives the badge drives the forwards and the webapp's `127.0.0.1:<port>`
+- **The desktop app**, resident in the tray. The stream that drives its
+  badge drives the forwards too, so the webapp's `127.0.0.1:<port>`
   links work whenever the app runs. It binds loopback only, never exposing
   dev servers to the local network.
 
@@ -84,8 +85,8 @@ connect.
 **On the server's machine** the workspace's processes already hold the
 ports. A forwarder would fail to bind against the dev server, or bind first
 and steal the port from it. So both clients check (`serverNeedsForwarder` in
-`@yaac/shared`): `yaac forward` refuses with the reason, and the desktop's
-`snapshotForwards` returns nothing.
+`@yaac/shared`): `yaac forward` refuses with the reason, and the desktop
+binds nothing.
 
 **On any other machine** the ports are as unreachable as a pod's, and the
 tunnel works the same way: the client binds the identity mapping, and the

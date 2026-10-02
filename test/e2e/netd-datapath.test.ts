@@ -513,8 +513,8 @@ describe('netd datapath gates', () => {
   }, 600_000)
 
   it('never redirects a workspace pod belonging to another install', async () => {
-    // netd watches every namespace and several installs share a node. If
-    // it claimed another install's pods, whichever jump came first would
+    // Several installs share a node. If netd claimed another install's
+    // pods, whichever jump came first would
     // send them to a proxy that cannot resolve them. Our own pod's rules are
     // awaited first, so a reconcile has seen both pods.
     const foreignNs = `yaac-sibling-${suffix}`

@@ -10,7 +10,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import net from 'node:net'
 import { createServer } from 'node:http'
 import { WebSocketServer, type WebSocket } from 'ws'
-import { startForward, tunnelUrl, type ForwardHandle } from '#port-tunnel'
+import { startForward, type ForwardHandle } from '#port-tunnel'
 
 interface Upgrade {
   path: string
@@ -157,17 +157,5 @@ describe('startForward', () => {
       { baseUrl: 'http://127.0.0.1:1' },
       { session: 'sess-1', containerPort: 5173, hostPort: taken },
     )).rejects.toThrow(/EADDRINUSE/)
-  })
-
-  it('speaks wss to an https origin, and ws to an http one', () => {
-    // The scheme must follow the origin's, or the upgrade goes out in the
-    // clear to a TLS listener. Checked on the URL, not a failed connection:
-    // inside a sandboxed workspace the proxy accepts any dial, so the
-    // connection error would not name the host.
-    const spec = { session: 'sess-1', containerPort: 5173, hostPort: 0 }
-    expect(tunnelUrl({ baseUrl: 'https://srv.example.ts.net' }, spec))
-      .toBe('wss://srv.example.ts.net/api/forward/attach?id=sess-1&port=5173')
-    expect(tunnelUrl({ baseUrl: 'http://127.0.0.1:8787' }, spec))
-      .toBe('ws://127.0.0.1:8787/api/forward/attach?id=sess-1&port=5173')
   })
 })

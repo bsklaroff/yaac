@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import type * as QueuedWorkspaces from '#domain/workspaces/queued-workspaces'
 
 vi.mock('#domain/workspaces/list', () => ({
   listActiveWorkspaces: vi.fn().mockResolvedValue({ workspaces: [], stale: [], gitAuthFailures: {} }),
@@ -15,9 +16,15 @@ vi.mock('#domain/auth/plan-usage', () => ({
   codexPlanUsageForSnapshot: vi.fn().mockResolvedValue(null),
 }))
 
-import { EventHub, buildSnapshot, serializeEvent } from '#api/events'
+vi.mock('#domain/workspaces/queued-workspaces', async (importOriginal) => ({
+  ...await importOriginal<typeof QueuedWorkspaces>(),
+  listHeldWorkspaces: vi.fn().mockResolvedValue([]),
+}))
+
+import { EventHub, buildSnapshot } from '#api/events'
 import type { WsLike } from '#api/events'
 import { listActiveWorkspaces } from '#domain/workspaces/list'
+import { listHeldWorkspaces } from '#domain/workspaces/queued-workspaces'
 import {
   claimProvisioning, failProvisioning, registerProvisioning, removeProvisioning,
   clearAllProvisioningForTests,
@@ -56,17 +63,6 @@ class ThrowingWs implements WsLike {
     throw new Error('socket closed')
   }
 }
-
-describe('serializeEvent', () => {
-  it('serializes a snapshot event to JSON', () => {
-    const parsed = JSON.parse(serializeEvent({ type: 'snapshot', data: emptySnapshot() })) as {
-      type: string
-      data: ServerSnapshot
-    }
-    expect(parsed.type).toBe('snapshot')
-    expect(parsed.data.workspaces).toEqual([])
-  })
-})
 
 describe('EventHub', () => {
   it('tracks connection membership', () => {
@@ -252,6 +248,18 @@ describe('buildSnapshot provisioning', () => {
     const snap = await buildSnapshot()
     expect(snap.workspaces).toEqual([])
     expect(snap.provisioning.map((e) => e.workspaceId)).toEqual(['prov-2'])
+  })
+
+  it('hides a held workspace while it restarts', async () => {
+    // A restart keeps the row's stop until it succeeds, so the workspace is
+    // still held; the provisioning row stands in for it meanwhile.
+    vi.mocked(listHeldWorkspaces).mockResolvedValueOnce([{
+      workspaceId: 'held-1', projectSlug: 'p', tool: 'claude', stoppedAt: '2026-01-01 00:00:00',
+    }])
+    registerProvisioning({ workspaceId: 'held-1', projectSlug: 'p', tool: 'claude', kind: 'restart' })
+    const snap = await buildSnapshot()
+    expect(snap.heldWorkspaces).toEqual([])
+    expect(snap.provisioning.map((e) => e.workspaceId)).toEqual(['held-1'])
   })
 
   it('hides a claimed spare under the create row that claimed it', async () => {

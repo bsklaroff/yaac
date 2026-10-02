@@ -106,6 +106,7 @@ import {
   resolveToolCreateDefaults,
   SELF_NAMING_TOOLS,
   SUPPORTED_PERMISSION_MODES,
+  TOOL_LABELS,
   toolSupportsPermissionMode,
   type AgentMode,
   type AgentTool,
@@ -397,7 +398,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
       }),
     }
   })
-  emit(`Starting ${toolLabel(tool)}...`, options)
+  emit(`Starting ${TOOL_LABELS[tool]}...`, options)
   await runtime.exec(jobName, buildWindowsExec(initWindows, tool, agentCmds, paths))
 
   // Check the agents actually started: `respawn-window` succeeds even when
@@ -431,13 +432,6 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   return handle
 }
 
-function toolLabel(tool: AgentTool): string {
-  return tool === 'codex' ? 'Codex'
-    : tool === 'opencode' ? 'OpenCode'
-    : tool === 'pi' ? 'Pi'
-    : 'Claude Code'
-}
-
 /**
  * The last step of a create, cold or claimed: hand the agent over.
  *
@@ -460,7 +454,7 @@ export async function handOverAgent(input: {
   const window = agentWindowName(tool, 0)
   let conversationUp = true
   if (mode === 'acp') {
-    emit(`Connecting to ${toolLabel(tool)}...`)
+    emit(`Connecting to ${TOOL_LABELS[tool]}...`)
     conversationUp = await awaitConversationRow(projectSlug, workspaceId, jobName, window)
   }
   if (prompt === undefined) return

@@ -41,7 +41,8 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
   // instead. The workspace lists as running before its agent and init windows
   // exist; hiding it until the route drops the entry swaps the row for a ready
   // workspace in one snapshot, and no id appears in both lists. A spare
-  // claimed by a create is hidden the same way.
+  // claimed by a create is hidden the same way, and so is a held row for a
+  // workspace mid-restart, which keeps its stop until the restart succeeds.
   const provisioning = listProvisioning()
   const hidden = new Set(provisioning.flatMap((p) => [p.workspaceId, p.claimedId]))
   return {
@@ -49,10 +50,10 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
     workspaces: active.workspaces.filter((w) => !hidden.has(w.workspaceId)),
     workspaceGroups,
     stale: active.stale,
-    projects: projects.map(({ workspaceCount, ...p }) => ({ ...p, workspaceCount: workspaceCount })),
+    projects,
     provisioning,
     queuedWorkspaces,
-    heldWorkspaces,
+    heldWorkspaces: heldWorkspaces.filter((w) => !hidden.has(w.workspaceId)),
     draftWorkspaces,
     gitAuthFailures: active.gitAuthFailures,
     imageBuilds,
@@ -96,7 +97,7 @@ export class EventHub {
   /** Send the current snapshot to a single connection (on connect). */
   async sendSnapshotTo(ws: WsLike): Promise<void> {
     const snapshot = await this.build()
-    ws.send(serializeEvent({ type: 'snapshot', data: snapshot }))
+    ws.send(JSON.stringify({ type: 'snapshot', data: snapshot } satisfies ServerEvent))
   }
 
   /**
@@ -134,8 +135,7 @@ export class EventHub {
       serverLog(`[server] events: snapshot build failed: ${String(err)}`)
       return
     }
-    const event: ServerEvent = { type: 'snapshot', data: snapshot }
-    const serialized = serializeEvent(event)
+    const serialized = JSON.stringify({ type: 'snapshot', data: snapshot } satisfies ServerEvent)
     if (serialized === this.lastSerialized) return
     this.lastSerialized = serialized
     this.broadcast(serialized)
@@ -151,8 +151,4 @@ export class EventHub {
       }
     }
   }
-}
-
-export function serializeEvent(event: ServerEvent): string {
-  return JSON.stringify(event)
 }

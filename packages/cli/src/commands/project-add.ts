@@ -4,8 +4,7 @@ export async function projectAdd(input: string, credentialName: string): Promise
   const { gitCredentials } = await api.auth.list.$get()
   const gitCredentialId = gitCredentials.find((c) => c.name === credentialName)?.id
   if (gitCredentialId === undefined) {
-    console.error(`No git credential named "${credentialName}". Run \`yaac auth list\` to see them.`)
-    process.exit(1)
+    throw new Error(`No git credential named "${credentialName}". Run \`yaac auth list\` to see them.`)
   }
   console.log(`Adding project from ${input}...`)
   const result = await api.project.add.$post({ json: { remoteUrl: input, gitCredentialId } })
