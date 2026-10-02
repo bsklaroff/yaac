@@ -11,6 +11,7 @@ import {
 } from '@yaac/shared/server-lock-file'
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { serverLogPath } from '@yaac/shared/paths'
+import { waitFor } from '#lib/wait-for'
 import { preflightHostTor, torCoverageWarning } from '#main/server-run'
 import { env } from '@yaac/shared/env'
 import { assertHostServerAllowed } from '#main/driver-choice'
@@ -134,14 +135,13 @@ export async function stopServer(): Promise<void> {
 
   // Shutdown takes up to ~6s under load (3s loop drain + 3s server close),
   // so allow headroom before reporting a force-removal.
-  const deadline = Date.now() + 10_000
-  while (Date.now() < deadline) {
+  const released = await waitFor(async () => {
     const cur = await readLock()
-    if (!cur || cur.pid !== existing.pid) {
-      console.error(`[yaac] server stopped (pid ${existing.pid})`)
-      return
-    }
-    await new Promise((r) => setTimeout(r, 50))
+    return !cur || cur.pid !== existing.pid
+  }, { timeoutMs: 10_000, intervalMs: 50 })
+  if (released) {
+    console.error(`[yaac] server stopped (pid ${existing.pid})`)
+    return
   }
   // The old process is gone or wedged; remove its lock ourselves.
   const cur = await readLock()
@@ -158,9 +158,15 @@ export async function restartServer(): Promise<void> {
   await startServer()
 }
 
+/**
+ * Relaunch ourselves as `yaac server run`, detached. Under tsx (dev) the
+ * entry is the `.ts` source, so the child goes through tsx's CLI to set up
+ * the loader again.
+ */
 async function spawnServerDetached(): Promise<void> {
-  const { bin, args } = resolveServerInvocation()
-  const child = spawn(bin, args, {
+  const entry = process.argv[1] ?? ''
+  const loader = entry.endsWith('.ts') ? [createRequire(import.meta.url).resolve('tsx/cli')] : []
+  const child = spawn(process.execPath, [...loader, entry, 'server', 'run'], {
     detached: true,
     stdio: 'ignore',
     // eslint-disable-next-line no-process-env -- forward the full host env to the detached server subprocess
@@ -176,39 +182,12 @@ async function spawnServerDetached(): Promise<void> {
   })
 }
 
-/**
- * How to relaunch ourselves as `yaac server run`.
- *
- * - Production (`dist/cli.js`): reuse `process.execPath` and `argv[1]`.
- * - Dev (under tsx): `argv[1]` is the `.ts` entry, so respawn through tsx's
- *   CLI to set up the loader again.
- */
-function resolveServerInvocation(): { bin: string; args: string[] } {
-  const entry = process.argv[1] ?? ''
-  if (entry.endsWith('.ts')) {
-    const tsxCli = findTsxCli()
-    if (tsxCli) return { bin: process.execPath, args: [tsxCli, entry, 'server', 'run'] }
-    // Fallback: launch via node and hope NODE_OPTIONS carries the loader.
-    return { bin: process.execPath, args: [entry, 'server', 'run'] }
-  }
-  return { bin: process.execPath, args: [entry, 'server', 'run'] }
-}
-
-function findTsxCli(): string | null {
-  try {
-    return createRequire(import.meta.url).resolve('tsx/cli')
-  } catch {
-    return null // tsx not installed (production build) — caller falls back
-  }
-}
-
 async function waitForReadyLock(timeoutMs: number): Promise<ServerLock> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    const lock = await readLock()
-    if (lock && await isLockReady(lock)) return lock
-    await new Promise((r) => setTimeout(r, 100))
-  }
+  const lock = await waitFor(async () => {
+    const cur = await readLock()
+    return cur && await isLockReady(cur) ? cur : undefined
+  }, { timeoutMs, intervalMs: 100 })
+  if (lock) return lock
   throw new Error(`server did not become ready within ${Math.round(timeoutMs / 1000)}s`)
 }
 

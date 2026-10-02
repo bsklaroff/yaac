@@ -707,16 +707,6 @@ async function collectProjectRegistry(project: ProjectRef): Promise<void> {
  *  orphan. */
 export const ORPHAN_REGISTRY_MIN_AGE_MS = 10 * 60_000
 
-/** How often the orphan sweep runs per server life. */
-export const ORPHAN_REGISTRY_GC_INTERVAL_MS = 60 * 60_000
-
-let lastOrphanGcMs: number | undefined
-
-/** Test hook: forget the orphan sweep's throttle. */
-export function _resetOrphanRegistryGcForTests(): void {
-  lastOrphanGcMs = undefined
-}
-
 interface RawRegistryObjectList {
   items: Array<{
     metadata: { name: string; labels?: Record<string, string>; creationTimestamp?: string }
@@ -732,8 +722,6 @@ export async function gcOrphanProjectRegistries(
   liveProjectIds: ReadonlySet<string>,
   now = Date.now(),
 ): Promise<void> {
-  if (lastOrphanGcMs !== undefined && now - lastOrphanGcMs < ORPHAN_REGISTRY_GC_INTERVAL_MS) return
-  lastOrphanGcMs = now
   let list: RawRegistryObjectList | null
   try {
     list = await kubectlGetJson<RawRegistryObjectList>([

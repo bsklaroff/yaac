@@ -364,22 +364,19 @@ to it instead. The folder-name munging is claude's own rule
 
 Isolation is per workspace, not per conversation. Conversations in one
 workspace run in one pod as one uid, so one can delete another's transcript, as
-it can delete the checkout. Under containerless there is no isolation at all;
-the shared layout is what lets an install switch drivers.
+it can delete the checkout. Under containerless there is no isolation at all.
 
 ### Converging at create
 
-Running on either driver can leave files where the other expects them, so every
-create and restart runs `convergeAgentHistory` (`#domain/agent-history`)
-before launch. It:
-
-1. Creates every mount source and nested mountpoint, so the kubelet never
-   creates one owned by root.
-2. Moves every conversation the workspace has held out of the shared homes into
-   its history. That set is every id its rows name (active or not), every ACP
-   record in `acp/<id>/` (an ACP conversation fires no hook, but the SDK's
-   claude still writes a transcript), and the workspace id itself (used by the
-   pin before any row names it).
+Every create and restart runs `convergeAgentHistory` (`#domain/agent-history`)
+before launch. Under k8s it only creates every mount source and nested
+mountpoint, so the kubelet never creates one owned by root: a pod writes its
+history through those mounts and never into the shared homes. Under
+containerless, where a host run writes into the shared homes, it moves every
+conversation the workspace has held out of them into its history. That set
+is every id its rows name (active or not), every ACP record in `acp/<id>/` (an
+ACP conversation fires no hook, but claude still writes a transcript), and the
+workspace id itself (used by the pin before any row names it).
 
 A conversation that a sibling workspace's rows also name is excluded. It has no
 single owner, and moving it would orphan it in the other workspace. It stays in
@@ -397,7 +394,7 @@ overwrite and leave links alone. A row whose file is gone from the shared home
 and present in the history is repointed with a `sessions-discovered` event.
 This is decided from the disk, not from the moves just made, so a converge
 interrupted between a rename and the row write is repaired by the next one.
-Under containerless, create then plants the links above, first emptying a real
+Create then plants the links above, first emptying a real
 folder where the checkout's link belongs (a folder still holding a shared
 conversation stays as it is).
 

@@ -67,14 +67,6 @@ function key(slug: string, workspaceId: string): string {
 }
 
 /**
- * Announce a change to this store's snapshot inputs (aggregate status,
- * waiting spell, stream health) on `#notify` (docs/layered-server.md).
- */
-function notifyChanged(): void {
-  notifyWorkspaceListChanged()
-}
-
-/**
  * Register the handler fired when a driver connection goes from healthy to
  * unhealthy. `probeTmuxLiveness` infers "stream healthy ⇒ tmux alive", so
  * after this transition the reaper's real probes are needed. Fires only on
@@ -207,7 +199,7 @@ export function setAgentStatus(
     || prev.waitingSinceMs !== waitingSinceMs
   if (entryChanged || !hadEntry || !wasHealthy
     || readWorkspaceStatus(slug, workspaceId) !== before) {
-    notifyChanged()
+    notifyWorkspaceListChanged()
   }
 }
 
@@ -233,7 +225,7 @@ export function setLiveAgents(slug: string, workspaceId: string, agents: LiveAge
   // registry joins against them), so a new ACP conversation becomes a row
   // without waiting for the resync.
   if (changed) liveAgentsListener?.()
-  if (changed || readWorkspaceStatus(slug, workspaceId) !== before) notifyChanged()
+  if (changed || readWorkspaceStatus(slug, workspaceId) !== before) notifyWorkspaceListChanged()
 }
 
 /**
@@ -249,13 +241,13 @@ export function setWorkspaceStreamHealth(slug: string, workspaceId: string, heal
     const e = entry(k)
     e.streamHealthy = true
     e.attachedWaitingSinceMs = Date.now()
-    notifyChanged()
+    notifyWorkspaceListChanged()
     return
   }
   if (prev.streamHealthy === healthy) return
   prev.streamHealthy = healthy
   prev.updatedAtMs = Date.now()
-  notifyChanged()
+  notifyWorkspaceListChanged()
   // healthy → unhealthy: tmux liveness can no longer be inferred, so the
   // reaper needs a pass.
   if (!healthy) streamHealthLostListener?.()
@@ -267,7 +259,7 @@ export function setWorkspaceStreamHealth(slug: string, workspaceId: string, heal
  * the previous status.
  */
 export function evictWorkspaceStatus(slug: string, workspaceId: string): void {
-  if (store.delete(key(slug, workspaceId))) notifyChanged()
+  if (store.delete(key(slug, workspaceId))) notifyWorkspaceListChanged()
 }
 
 /** Test-only: drop every entry and the change listener. */

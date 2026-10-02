@@ -22,6 +22,7 @@ export function k8sReconcileSteps(): DriverReconcileSteps {
     prePool: [
       // Keep every project's image chain built. Runs before the
       // prewarm pool so a spare's create joins the builds already running.
+      // Every resync: a warm sweep is a registry HEAD per layer per project.
       { name: 'image-prewarm', triggers: [], run: async (ctx) => {
         reconcileImagePrewarm(await ctx.projects(), ctx.projectConfig)
       } },
@@ -42,14 +43,14 @@ export function k8sReconcileSteps(): DriverReconcileSteps {
       { name: 'registry-gc', triggers: [], run: async (ctx) =>
         reconcileProjectRegistryGc(new Set((await ctx.projects()).map((p) => p.id))) },
       // Delete registries that no live project owns.
-      { name: 'orphan-registry-gc', triggers: [], run: async (ctx) =>
+      { name: 'orphan-registry-gc', triggers: [], every: 60 * 60_000, run: async (ctx) =>
         gcOrphanProjectRegistries(new Set((await ctx.projects()).map((p) => p.id))) },
       // Egress registrations left behind by a teardown that never ran.
       { name: 'registration-gc', triggers: [], run: (ctx) => reconcileRegistrationGc(ctx) },
       // Main registry GC: retire unused step-cache tags and image
       // generations, collect their blobs, then drop the nodes' copies of
       // what the registry no longer holds. Skips while anything is pushing.
-      { name: 'main-registry-gc', triggers: [], run: async (ctx) =>
+      { name: 'main-registry-gc', triggers: [], every: 6 * 60 * 60_000, run: async (ctx) =>
         reconcileMainRegistryGc(await ctx.projects(), ctx.projectConfig) },
     ],
   }

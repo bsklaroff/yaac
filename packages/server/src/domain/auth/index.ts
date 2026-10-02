@@ -19,7 +19,7 @@ export {
   harvestToolCredentials,
   runtimeMediatesEgress,
   seedProjectToolHome,
-  syncToolCredentialsThrottled,
+  syncToolCredentials,
 } from './credential-sync'
 export { listAuth } from './list'
 export { catalogModel, defaultModelFor, modelDisplayName, modelsForTool } from './models'

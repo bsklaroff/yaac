@@ -209,15 +209,24 @@ export async function listHeldWorkspaces(): Promise<HeldWorkspaceEntry[]> {
 }
 
 /**
- * Recovery after a server restart:
- * - A claimed launch not running here is marked failed rather than guessed
- *   at (a live workspace does not prove the launch finished). The stale
- *   reaper handles any half-made workspace.
- * - A released entry that never launched is launched.
+ * Whether this process has put back every launch a previous server left
+ * claimed. Only then: a claimed launch seen later is this process's own.
+ */
+let restartLaunchesSwept = false
+
+/**
+ * The queue's backstop, run every resync:
+ * - A released entry that never launched is launched. A release can be left
+ *   so by a restart, or by a launch that threw while the server ran.
+ * - Until it has once succeeded, a claimed launch not running here is
+ *   marked failed rather than guessed at (a live workspace does not prove
+ *   the launch finished). The stale reaper handles any half-made workspace.
  */
 export async function reconcileQueuedWorkspaces(): Promise<void> {
-  const rows = (await listQueuedWorkspaceRows())
-    .filter((r) => r.launchWorkspaceId !== undefined || r.releasedAt !== undefined)
+  const rows = (await listQueuedWorkspaceRows()).filter((r) => r.launchWorkspaceId === undefined
+    ? r.releasedAt !== undefined
+    : !restartLaunchesSwept)
+  let swept = true
   for (const row of rows) {
     // Per row: a "Run now" may have started since the read.
     if (launching.has(row.id)) continue
@@ -230,9 +239,11 @@ export async function reconcileQueuedWorkspaces(): Promise<void> {
         )
       }
     } catch (err) {
+      if (row.launchWorkspaceId !== undefined) swept = false
       serverLog(`[queue] reconciling queued workspace ${row.id.slice(0, 8)}... failed: ${String(err)}`)
     }
   }
+  restartLaunchesSwept ||= swept
 }
 
 /**
@@ -492,4 +503,5 @@ async function toEntries(rows: QueuedWorkspaceRow[]): Promise<QueuedWorkspaceEnt
 /** Test helper: forget which launches this process is running. */
 export function clearQueuedLaunchesForTests(): void {
   launching.clear()
+  restartLaunchesSwept = false
 }

@@ -1,18 +1,15 @@
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-
-// serverLog writes files — silence it.
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 
 import {
   fanOutToolCredentials,
   harvestToolCredentials,
   runtimeMediatesEgress,
   seedProjectToolHome,
-  syncToolCredentialsThrottled,
+  syncToolCredentials,
 } from '#domain/auth'
-import { _resetCredentialSyncThrottleForTests } from '#domain/auth/credential-sync'
 import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { setDataDir } from '@yaac/shared/project-paths'
 import {
@@ -73,7 +70,6 @@ let dataDir: string
 beforeEach(async () => {
   dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-credsync-'))
   setDataDir(dataDir)
-  _resetCredentialSyncThrottleForTests()
   installFakeWorkspaceDriver({ kind: 'containerless' })
 })
 
@@ -147,7 +143,7 @@ describe('harvestToolCredentials', () => {
     }))
 
     await harvestToolCredentials()
-    await syncToolCredentialsThrottled()
+    await syncToolCredentials()
 
     expect(await loadClaudeCredentialsFile()).toMatchObject({ claudeAiOauth: { accessToken: 'claude-access-host' } })
     expect(await loadCodexCredentialsFile()).toMatchObject({ codexOauth: { accessToken: 'codex-access-host' } })
@@ -328,7 +324,7 @@ describe('seedProjectToolHome', () => {
   })
 })
 
-describe('syncToolCredentialsThrottled', () => {
+describe('syncToolCredentials', () => {
   it('heals a project left behind by another project rotating the shared credential', async () => {
     await saveClaudeOAuthBundle(claudeBundle())
     // `winner` refreshed; `loser` holds the old pair, whose next refresh
@@ -340,7 +336,7 @@ describe('syncToolCredentialsThrottled', () => {
     }))
     await seedProject('loser', claudeBundle())
 
-    await syncToolCredentialsThrottled()
+    await syncToolCredentials()
 
     expect(await loadClaudeCredentialsFile()).toMatchObject({
       claudeAiOauth: { accessToken: 'claude-access-fresh' },
@@ -357,36 +353,13 @@ describe('syncToolCredentialsThrottled', () => {
     await saveClaudeOAuthBundle(claudeBundle())
     await writeProjectClaudePlaceholder('alpha', claudeBundle())
 
-    await syncToolCredentialsThrottled()
+    await syncToolCredentials()
 
     // Still the placeholder: mediated egress exists to keep the real bundle
     // out of pod-mounted files.
     expect(await readProjectClaudeBundle('alpha')).toMatchObject({
       accessToken: PLACEHOLDER_ACCESS_TOKEN,
     })
-  })
-
-  it('runs once, then holds off until the floor elapses', async () => {
-    await saveClaudeOAuthBundle(claudeBundle())
-    await seedProject('alpha', claudeBundle({ accessToken: 'fresh-1', expiresAt: BASE_EXPIRY + HOUR }))
-
-    await syncToolCredentialsThrottled()
-    expect(await loadClaudeCredentialsFile()).toMatchObject({ claudeAiOauth: { accessToken: 'fresh-1' } })
-
-    // Within the minimum interval the sweep is skipped, which keeps a 60s
-    // resync from calling `security` on macOS.
-    await seedProject('alpha', claudeBundle({ accessToken: 'fresh-2', expiresAt: BASE_EXPIRY + 2 * HOUR }))
-    await syncToolCredentialsThrottled()
-    expect(await loadClaudeCredentialsFile()).toMatchObject({ claudeAiOauth: { accessToken: 'fresh-1' } })
-
-    // After the interval, the sweep runs and picks up the newer bundle.
-    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 6 * 60_000)
-    try {
-      await syncToolCredentialsThrottled()
-      expect(await loadClaudeCredentialsFile()).toMatchObject({ claudeAiOauth: { accessToken: 'fresh-2' } })
-    } finally {
-      nowSpy.mockRestore()
-    }
   })
 })
 

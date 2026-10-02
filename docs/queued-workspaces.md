@@ -116,13 +116,14 @@ normal provisioning row and delivers the prompt like any create.
   removes the provisioning row, so the error shows once on the queued row
   with the prompt intact.
 - **Server restart mid-launch.** The `queued-workspaces` reconcile step
-  handles it. An entry claimed by nothing in this process is put back with an
-  "interrupted" error, prompt and children intact, for the user to check and
-  rerun. The step does not guess whether the launch finished, because the
+  handles it. On its first successful pass, an entry claimed by nothing in
+  this process is put back with an "interrupted" error, prompt and children
+  intact, for the user to check and rerun. Later passes leave claims alone,
+  since any claim then is this process's own. The step does not guess whether the launch finished, because the
   workspace exists long before a create is done; any half-made workspace is
   the stale reaper's job. A released entry that never launched is launched.
   The step has no triggers: `stopWorkspace` launches directly, and the resync
-  (including the first pass after start) covers the rest.
+  retries a release whose launch threw.
 
 An entry mid-launch cannot be edited or discarded (`CONFLICT`), and the
 snapshot omits it while its provisioning row stands in for it.

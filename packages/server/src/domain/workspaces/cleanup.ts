@@ -28,8 +28,10 @@ import {
 import { openRoot } from '#lib/confined-fs'
 import { shellQuote } from '#lib/shell'
 import type { WorkspaceDeathCause } from '@yaac/shared/types'
-import type { TeardownTarget } from '#drivers/contract'
+import type { RuntimeSnapshot, TeardownTarget } from '#drivers/contract'
 import { serverLog } from '#log'
+import { ServerError } from '@yaac/shared/errors'
+import { waitFor } from '#lib/wait-for'
 
 /**
  * Record the stop. A teardown carries on if the write fails: a lost stop
@@ -124,17 +126,25 @@ export async function deleteWorkspaceState(
   return outcomes.every(Boolean)
 }
 
-/** Repackage a runtime-supplied `jobName` as a `TeardownTarget`. */
-function teardownTarget(params: {
+/**
+ * The workspace bookkeeping both teardowns start with. The terminating mark
+ * goes first, so the UI shows "terminating…" until the runtime reports the
+ * teardown; cached liveness and status are dropped so nothing stale
+ * outlives the stop.
+ */
+async function beginTeardown(params: {
   jobName: string
   projectSlug: string
   workspaceId: string
-}): TeardownTarget {
-  return {
-    projectSlug: params.projectSlug,
-    workspaceId: params.workspaceId,
-    unitName: params.jobName,
-  }
+  cause?: WorkspaceDeathCause
+  recordStop: boolean
+}): Promise<TeardownTarget> {
+  const { jobName, projectSlug, workspaceId, cause } = params
+  markWorkspaceTerminating(workspaceId)
+  if (params.recordStop) await recordStop(projectSlug, workspaceId, cause)
+  forgetLiveness(projectSlug, workspaceId)
+  evictWorkspaceStatus(projectSlug, workspaceId)
+  return { projectSlug, workspaceId, unitName: jobName }
 }
 
 /**
@@ -153,19 +163,9 @@ export async function cleanupWorkspace(params: {
    *  deleted-workspace view. */
   cause?: WorkspaceDeathCause
 }): Promise<boolean> {
-  const { projectSlug, workspaceId, cause } = params
-
-  // Mark before evicting status, so the UI shows "terminating…" until the
-  // runtime reports the teardown.
-  markWorkspaceTerminating(workspaceId)
-
-  await recordStop(projectSlug, workspaceId, cause)
-
-  // Drop cached liveness and status so nothing stale outlives the stop.
-  forgetLiveness(projectSlug, workspaceId)
-  evictWorkspaceStatus(projectSlug, workspaceId)
-
-  const runtimeGone = await workspaceDriver().destroy(teardownTarget(params))
+  const { projectSlug, workspaceId } = params
+  const target = await beginTeardown({ ...params, recordStop: true })
+  const runtimeGone = await workspaceDriver().destroy(target)
 
   // Remove the workspace's mount sources only if the runtime is confirmed
   // gone; otherwise it may still be using them (an unreachable runtime may
@@ -216,18 +216,8 @@ export async function cleanupWorkspaceDetached(params: {
       + (cause ? ` cause=${cause.reason}${cause.detail ? ` (${cause.detail})` : ''}` : ''),
     )
 
-    // Before evicting status (see cleanupWorkspace).
-    markWorkspaceTerminating(workspaceId)
-
-    if (!preserveDeletedRecord) {
-      await recordStop(projectSlug, workspaceId, cause)
-    }
-
-    forgetLiveness(projectSlug, workspaceId)
-    evictWorkspaceStatus(projectSlug, workspaceId)
-
+    const target = await beginTeardown({ ...params, recordStop: !preserveDeletedRecord })
     const runtime = workspaceDriver()
-    const target = teardownTarget(params)
 
     // Forwards and egress registration are in-process state a shell script
     // cannot reach.
@@ -315,53 +305,46 @@ async function gcOrphanSpares(
 }
 
 /**
- * Remove what workspaces that no longer exist left behind. The global tier
- * (dead spares' checkouts, `sessions/<id>` dirs) is swept here; the
- * node-local tier goes to the driver's `reapNodeLocal`, since those bytes
- * are on whichever node the workspace ran on. Runs every pass.
+ * Ids of every workspace the runtime holds, stray units included: one
+ * mid-recreate appears only as a stray. Both reads reject rather than
+ * resolve empty on failure, which a sweep would read as "nothing is live".
  */
-export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
+async function liveWorkspaceIds(view: RuntimeSnapshot): Promise<Set<string>> {
+  const [workspaces, strays] = await Promise.all([view.workspaces(), view.strayUnits()])
+  return new Set(
+    [...workspaces.map((w) => w.workspaceId), ...strays.map((s) => s.workspaceId)]
+      .filter((id) => !!id),
+  )
+}
+
+/**
+ * The node-local tier of the orphan sweep, handed to the driver's
+ * `reapNodeLocal` since those bytes are on whichever node the workspace ran
+ * on. Provisioning workspaces count as live.
+ */
+export async function reapOrphanNodeLocal(view: RuntimeSnapshot): Promise<void> {
+  const workspaceIds = await liveWorkspaceIds(view)
+  const projectIds = new Set((await listProjectRows()).map((r) => r.id))
+  for (const { workspaceId, error } of listProvisioning()) {
+    if (error === undefined) workspaceIds.add(workspaceId)
+  }
+  await workspaceDriver().reapNodeLocal({ projectIds, workspaceIds })
+}
+
+/**
+ * Remove what workspaces that no longer exist left behind in the global
+ * tier: dead spares' checkouts and `sessions/<id>` dirs. Runs every resync.
+ */
+export async function gcOrphanEphemeralModuleDirs(view: RuntimeSnapshot): Promise<void> {
   // A create that stages dirs before its unit exists looks like an orphan.
   // `inUseBySweep` guards against that.
   const sweepStartedAtMs = Date.now()
-  let liveWorkspaceIds: Set<string>
-  try {
-    // Include stray units: one mid-recreate appears only as a stray. Both
-    // reads reject rather than resolve empty on failure.
-    const view = workspaceDriver().snapshot()
-    const [workspaces, strays] = await Promise.all([view.workspaces(), view.strayUnits()])
-    liveWorkspaceIds = new Set(
-      [...workspaces.map((w) => w.workspaceId), ...strays.map((s) => s.workspaceId)]
-        .filter((id) => !!id),
-    )
-  } catch (err) {
-    console.warn(`Orphan modules GC: failed to list live sessions: ${(err as Error).message}`)
-    return
-  }
-
-  // Node-local half. Skipped if projects cannot be read (an empty set would
-  // delete every tree). Provisioning workspaces count as live.
-  const liveProjectIds = await listProjectRows()
-    .then((rows) => new Set(rows.map((r) => r.id)))
-    .catch((err: unknown) => {
-      console.warn(`Orphan node-local GC: failed to list projects: ${String(err)}`)
-      return null
-    })
-  if (liveProjectIds) {
-    const workspaceIds = new Set(liveWorkspaceIds)
-    for (const { workspaceId, error } of listProvisioning()) {
-      if (error === undefined) workspaceIds.add(workspaceId)
-    }
-    await workspaceDriver().reapNodeLocal({ projectIds: liveProjectIds, workspaceIds })
-      .catch((err: unknown) => {
-        console.warn(`Orphan node-local GC failed: ${String(err)}`)
-      })
-  }
+  const live = await liveWorkspaceIds(view)
 
   const projectSlugs = await fs.readdir(getProjectsDir()).catch((): string[] => [])
 
   for (const slug of projectSlugs) {
-    await gcOrphanSpares(slug, liveWorkspaceIds, sweepStartedAtMs)
+    await gcOrphanSpares(slug, live, sweepStartedAtMs)
 
     // Per-workspace staging dirs (skills, workspace bin), one per id.
     const workspacesRoot = globalProjectPath(slug, 'sessions')
@@ -370,7 +353,7 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
       workspaceEntries = await fs.readdir(workspacesRoot)
     } catch { /* missing sessions dir → nothing to sweep there */ }
     for (const sid of workspaceEntries) {
-      if (liveWorkspaceIds.has(sid)) continue
+      if (live.has(sid)) continue
       const dir = path.join(workspacesRoot, sid)
       if (await inUseBySweep(dir, sid, sweepStartedAtMs)) continue
       try {
@@ -383,14 +366,22 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
   }
 }
 
+/** How long a restart waits for a unit its teardown could not confirm gone:
+ *  longer than any grace period a driver gives a unit to stop. */
+const RESTART_TEARDOWN_WAIT_MS = 90_000
+
 /**
  * Tear down a workspace's runtime (awaited) so a restart can reuse its id.
  * `jobName: null` means nothing was running; only the terminating mark is
  * cleared, so the new workspace does not show as "stopping…".
  *
- * Ignores `cleanupWorkspace`'s verdict: a restart never removes the
- * checkout, and a launch against a unit still going away is handled by the
- * create's retry loop.
+ * A unit still going away (a pod's preStop may hold it for its whole grace
+ * period) is waited out for up to RESTART_TEARDOWN_WAIT_MS. Past that the
+ * restart is refused: a launch against it would fail in a less obvious way.
+ * This needs a `findForTeardown` that tracks the live unit, as k8s's does.
+ * The containerless driver forgets a workspace when its destroy returns, so
+ * there the wait passes at once and a tmux server that outlived the kill is
+ * relaunched against.
  */
 export async function teardownForRestart(params: {
   jobName: string | null
@@ -400,8 +391,12 @@ export async function teardownForRestart(params: {
   const { jobName, projectSlug, workspaceId } = params
   // A detached teardown may still be running even when `jobName` is null.
   await detachedTeardownSettled(workspaceId)
-  if (jobName) {
-    await cleanupWorkspace({ jobName, projectSlug, workspaceId: workspaceId })
+  const gone = !jobName || await cleanupWorkspace({ jobName, projectSlug, workspaceId })
+    || await waitFor(async () => await workspaceDriver().findForTeardown(workspaceId) === undefined,
+      { timeoutMs: RESTART_TEARDOWN_WAIT_MS, intervalMs: 1_000 })
+  if (!gone) {
+    throw new ServerError('CONFLICT', `the previous runtime of ${workspaceId} is still shutting down; `
+      + 'try the restart again in a moment')
   }
   clearWorkspaceTerminating(workspaceId)
 }

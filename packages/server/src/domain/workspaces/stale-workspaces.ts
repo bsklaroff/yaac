@@ -1,4 +1,3 @@
-import { workspaceDriver } from '#drivers/driver'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import {
   classifyWorkspaces,
@@ -32,22 +31,15 @@ export function _clearMissingPodTimersForTests(): void {
 /**
  * Reconcile step that tears down stale workspaces in every project: stopped
  * pods, dead tmux, agents that never started, stray units, and stuck
- * terminations. Also records long-podless rows as dead. Individual failures
- * are swallowed.
+ * terminations. Also records long-podless rows as dead. A failed workspace
+ * or desired-set read fails the step before anything is reaped; a failed
+ * teardown is logged and the next pass retries it.
  */
-export async function reconcileStaleWorkspaces(snapshot?: RuntimeSnapshot): Promise<void> {
-  const view = snapshot ?? workspaceDriver().snapshot()
-  // Read fresh each pass. If it fails, reap nothing: a stale set could miss
-  // a new create and destroy uncommitted work.
-  const desired = await desiredWorkspaces().catch(() => undefined)
-  if (desired === undefined) return
-
-  let pods
-  try {
-    pods = await view.workspaces()
-  } catch {
-    return
-  }
+export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<void> {
+  // Read fresh each pass. A stale set could miss a new create and destroy
+  // uncommitted work.
+  const desired = await desiredWorkspaces()
+  const pods = await view.workspaces()
   const nowMs = Date.now()
   const graceMs = testEnv.startingGraceMs
   const { running, stale: staleAll, indeterminate, terminating } =
@@ -86,17 +78,19 @@ export async function reconcileStaleWorkspaces(snapshot?: RuntimeSnapshot): Prom
 
   // Units with no workspace (evicted or deleted out-of-band), from the same
   // snapshot.
+  // A failed read stops only this sweep: the workspaces already read are
+  // still conclusive.
   const orphanTargets: Array<{ jobName: string; projectSlug: string; workspaceId: string }> = []
-  try {
-    for (const u of await view.strayUnits()) {
-      if (provisioningIds.has(u.workspaceId)) continue
-      if (nowMs - u.createdAtMs < graceMs) continue
-      orphanTargets.push({
-        jobName: u.unitName, projectSlug: u.projectSlug, workspaceId: u.workspaceId,
-      })
-    }
-  } catch {
-    // Unavailable; the other sweeps still run.
+  const strays = await view.strayUnits().catch((err: unknown) => {
+    serverLog(`[server] stale-reaper: skipping the orphan sweep: ${String(err)}`)
+    return []
+  })
+  for (const u of strays) {
+    if (provisioningIds.has(u.workspaceId)) continue
+    if (nowMs - u.createdAtMs < graceMs) continue
+    orphanTargets.push({
+      jobName: u.unitName, projectSlug: u.projectSlug, workspaceId: u.workspaceId,
+    })
   }
 
   // Pods terminating past the grace window with no in-memory mark: an
@@ -106,7 +100,7 @@ export async function reconcileStaleWorkspaces(snapshot?: RuntimeSnapshot): Prom
   for (const p of terminating) {
     if (!p.terminating || !p.projectSlug || !p.workspaceId) continue
     if (isWorkspaceTerminating(p.workspaceId)) continue
-    // Create's retry loop leaves exactly this shape between attempts.
+    // A failed create leaves this shape while it tears its launch down.
     if (provisioningIds.has(p.workspaceId)) continue
     const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
     if (ageMs < graceMs) continue
@@ -158,7 +152,9 @@ export async function reconcileStaleWorkspaces(snapshot?: RuntimeSnapshot): Prom
         projectSlug: row.projectSlug,
         workspaceId: row.workspaceId,
         cause,
-      }).catch(() => { /* best-effort; the next tick retries */ })
+      }).catch((err: unknown) => {
+        serverLog(`[server] stale-reaper: recording workspace=${row.workspaceId} failed: ${String(err)}`)
+      })
     }
     // Forget timers for rows no longer live.
     for (const rowKey of missingSince.keys()) {
@@ -210,6 +206,8 @@ export async function reconcileStaleWorkspaces(snapshot?: RuntimeSnapshot): Prom
   }
 
   await Promise.all(targets.map((t) =>
-    cleanupWorkspaceDetached(t).catch(() => { /* best-effort */ }),
+    cleanupWorkspaceDetached(t).catch((err: unknown) => {
+      serverLog(`[server] stale-reaper: teardown of session=${t.workspaceId} failed: ${String(err)}`)
+    }),
   ))
 }

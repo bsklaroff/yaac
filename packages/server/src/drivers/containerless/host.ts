@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { access as fsAccess } from 'node:fs/promises'
 import { WorkspaceExecError } from '#drivers/contract'
+import { waitFor } from '#lib/wait-for'
 
 /**
  * This driver's process boundary: every host process it runs goes through
@@ -152,22 +153,15 @@ export async function spawnSshAgent(sock: string): Promise<number> {
     throw spawnError ?? new Error('ssh-agent did not start')
   }
 
-  const deadline = Date.now() + 5_000
-  for (;;) {
+  const bound = await waitFor(async () => {
     if (spawnError) throw spawnError
-    try {
-      await fsAccess(sock)
-      return pid
-    } catch {
-      if (Date.now() >= deadline) {
-        try {
-          process.kill(pid, 'SIGKILL')
-        } catch { /* already gone */ }
-        throw new Error(`ssh-agent did not bind ${sock} within 5s`)
-      }
-      await new Promise((r) => setTimeout(r, 50))
-    }
-  }
+    return fsAccess(sock).then(() => true, () => false)
+  }, { timeoutMs: 5_000, intervalMs: 50 })
+  if (bound) return pid
+  try {
+    process.kill(pid, 'SIGKILL')
+  } catch { /* already gone */ }
+  throw new Error(`ssh-agent did not bind ${sock} within 5s`)
 }
 
 /**

@@ -3,11 +3,6 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-// Only the unreachable-cluster case runs without a snapshot.
-vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => ({
-  ...await importOriginal<typeof podsModule>(),
-  listWorkspacePods: vi.fn().mockResolvedValue([]),
-}))
 import { closeDb } from '#db/client'
 import { acpLogDir, claudeDir, codexDir } from '@yaac/shared/project-paths'
 import { _resetReportedModesForTests, reconcileAgentSessions } from '#domain/workspaces/agent-session-registry'
@@ -19,8 +14,6 @@ import { _resetCodexPosturesForTests } from '#runtime/agents/codex'
 import { handleFixture, installFakeWorkspaceDriver, snapshotFixture } from '@yaac/test-utils/fake-driver'
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
 import type { LiveAgent } from '#runtime/agents'
-import { listWorkspacePods } from '#drivers/k8s/substrate/pods'
-import type * as podsModule from '#drivers/k8s/substrate/pods'
 import {
   setLiveAgents,
   setWorkspaceStreamHealth,
@@ -281,9 +274,9 @@ describe('reconcileAgentSessions', () => {
     expect(link?.lastActiveAt).toBeInstanceOf(Date)
   })
 
-  it('survives an unreachable cluster without reporting anything', async () => {
-    vi.mocked(listWorkspacePods).mockRejectedValue(new Error('cluster down'))
-    await expect(reconcileAgentSessions()).resolves.toBeUndefined()
+  it('fails the step without reporting anything when the cluster is unreachable', async () => {
+    const view = { ...snapshotFixture(), workspaces: () => Promise.reject(new Error('cluster down')) }
+    await expect(reconcileAgentSessions(view)).rejects.toThrow('cluster down')
     expect(await rows()).toEqual([])
   })
 

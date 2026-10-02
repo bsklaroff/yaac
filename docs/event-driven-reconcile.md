@@ -33,13 +33,19 @@ time:
   A driver can also raise triggers of its own. The k8s driver raises
   `proxy-refreshed` (the egress proxy captured a rotated credential).
 - **Resync (every 60 s).** Runs every step. It catches any missed event, and
-  it drives the hygiene steps that throttle themselves (image prewarm and GC,
-  salvage). The first pass after start is a resync.
+  it is the clock for the timed steps. A step that sets `every` runs on a
+  resync at most that often after its last successful run (registry and
+  image GCs, the node-local sweep, the containerless credential sync), so a
+  failed run retries on the next resync. The reconciler keeps that clock,
+  with half a resync of slack, so no step throttles itself. The first
+  pass after start is a resync. The k8s informers do not depend on it: each
+  relists itself (below).
 
 There is no poll lane: every source has an event, and the resync makes a
 lost event cost latency rather than correctness. Passes never overlap,
-because steps share module state. Steps run in list order, and one step's
-error does not stop the others. Snapshots reach the
+because steps share module state. Steps run in list order. A step lets a
+failed read reject rather than catching it, and the reconciler logs the
+error and runs the remaining steps. Snapshots reach the
 browser separately: every store the snapshot reads calls
 `notifyWorkspaceListChanged()` when it changes, and `server-run.ts` rebuilds
 and pushes the snapshot, coalescing bursts over 150 ms.

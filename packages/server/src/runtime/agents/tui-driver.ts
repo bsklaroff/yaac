@@ -23,9 +23,15 @@
  */
 
 import { StringDecoder } from 'node:string_decoder'
-import { type StreamChild, type WorkspacePaths } from '#drivers/contract'
+import type { StreamChild } from '#drivers/contract'
 import { serverLog } from '#log'
-import { ControlModeClient, type ControlModeNotification } from './control-mode'
+import {
+  ControlModeClient,
+  PLACEHOLDER_FORMAT,
+  controlModeAttachArgv,
+  withTimeout,
+  type ControlModeNotification,
+} from './control-mode'
 import {
   PANE_SESSION_FORMAT,
   agentReportFormat,
@@ -60,13 +66,6 @@ const SESSION_SUBSCRIPTION_PREFIX = 'session-'
 const BOOT_SUBSCRIPTION_PREFIX = 'boot-'
 
 /**
- * `1` while a pane still runs the session's `sleep infinity` keepalive
- * (some tmux versions quote the start command). Published as an agent, it
- * would name no conversation and mark every recorded one inactive.
- */
-const PLACEHOLDER_FORMAT = '#{m/r:^"?sleep infinity"?$,#{pane_start_command}}'
-
-/**
  * The subscription name for one pane. Must be unique per pane:
  * `refresh-client -B` keys subscriptions by name, so reusing a name
  * replaces the earlier pane's subscription and that pane silently stops
@@ -74,32 +73,6 @@ const PLACEHOLDER_FORMAT = '#{m/r:^"?sleep infinity"?$,#{pane_start_command}}'
  */
 function subscriptionName(prefix: string, paneId: string): string {
   return `${prefix}${paneId.replace('%', '')}`
-}
-
-/**
- * attach-client flags for a status connection: `read-only` (never inject
- * input), `ignore-size` (never reshape the grid the content search reads),
- * `no-output` (status comes only from subscriptions).
- */
-export function attachClientFlags(): string {
-  return 'read-only,ignore-size,no-output'
-}
-
-/** The in-workspace control-mode attach argv, dialed as a ctrl stream. */
-function attachArgv(paths: WorkspacePaths): string[] {
-  return [
-    'tmux', '-S', paths.tmuxSock, '-C', 'attach-session', '-t', 'yaac', '-f', attachClientFlags(),
-  ]
-}
-
-function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms)
-    promise.then(
-      (v) => { clearTimeout(timer); resolve(v) },
-      (err: unknown) => { clearTimeout(timer); reject(err instanceof Error ? err : new Error(String(err))) },
-    )
-  })
 }
 
 class TuiConnection implements AgentConnection {
@@ -138,7 +111,7 @@ class TuiConnection implements AgentConnection {
     try {
       const paths = workspaceDriver().workspacePaths(session.jobName)
       child = (deps.dial ?? ((s, argv) => workspaceDriver().dialCtrl(s.jobName, argv)))(
-        session, attachArgv(paths),
+        session, controlModeAttachArgv(paths),
       )
     } catch (err) {
       this.down(`spawn failed: ${String(err)}`)

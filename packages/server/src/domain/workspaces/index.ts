@@ -15,6 +15,7 @@ export { toAgentSessionEntry } from './agent-session-entry'
 export {
   cleanupWorkspaceDetached,
   gcOrphanEphemeralModuleDirs,
+  reapOrphanNodeLocal,
   teardownForRestart,
 } from './cleanup'
 export {

@@ -4,7 +4,8 @@ import path from 'node:path'
 import { notifyWorkspaceListChanged } from '#notify'
 import { serverLog } from '#log'
 import { runHostCheck } from './check'
-import { isSshAgentFor, killPids, runHost } from './host'
+import { isSshAgentFor, killPids } from './host'
+import { tmuxAnswers } from './exec'
 import { containerlessJobName, containerlessWorkspacePaths, workspaceHome } from './paths'
 import {
   listWorkspaces,
@@ -81,18 +82,10 @@ async function sweepDeadWorkspaceSecrets(marker: WorkspaceMarker): Promise<void>
   }
 }
 
-async function socketAnswers(marker: WorkspaceMarker): Promise<boolean> {
-  const paths = containerlessWorkspacePaths(
+function socketAnswers(marker: WorkspaceMarker): Promise<boolean> {
+  return tmuxAnswers(containerlessWorkspacePaths(
     containerlessJobName(marker.projectSlug, marker.workspaceId),
-  )
-  try {
-    await runHost(['tmux', '-S', paths.tmuxSock, 'has-session', '-t', 'yaac'], {
-      timeoutMs: 5_000,
-    })
-    return true
-  } catch {
-    return false
-  }
+  ).tmuxSock)
 }
 
 /**
@@ -133,18 +126,12 @@ async function confirmDown(
   jobName: string,
   sinks: DriverSinks,
 ): Promise<void> {
-  const paths = containerlessWorkspacePaths(jobName)
-  try {
-    await runHost(['tmux', '-S', paths.tmuxSock, 'has-session', '-t', 'yaac'], {
-      timeoutMs: 5_000,
-    })
+  if (await tmuxAnswers(containerlessWorkspacePaths(jobName).tmuxSock)) {
     // Still alive. Re-arm after a delay so a failing spawn backs off.
     setTimeout(() => {
       if (activeSinks === sinks) watchWorkspace(workspaceId, jobName, sinks)
     }, WATCH_REARM_MS).unref?.()
     return
-  } catch {
-    // Gone.
   }
   forgetPorts(workspaceId)
   const changed = observeLiveness(workspaceId, false, {

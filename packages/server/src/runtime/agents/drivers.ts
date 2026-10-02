@@ -8,7 +8,8 @@
  * One implementation per `AgentMode`: `tui-driver` watches the terminal UI
  * through tmux control mode, `acp-driver` speaks JSON-RPC to an agent under
  * acpd. Both run the agent in a tmux window and connect over the workspace
- * driver's `ctrl` stream.
+ * driver's `ctrl` stream, and both track the workspace's windows through a
+ * tmux control-mode client.
  *
  * Content is not part of this interface: PTY bytes and ACP events have
  * nothing in common, and the webapp picks a renderer per pane. Retry policy
@@ -82,10 +83,10 @@ export type AgentObservation =
   | { kind: 'status'; handle: string; status: AgentPaneStatus }
   /**
    * A read-only command channel into the workspace, or null when it goes
-   * away. `tui` publishes its control-mode client so other read-only tmux
-   * queries (the terminal listing) reuse it; `acp` never emits this. Sent as
-   * an observation because the registry lives in `#runtime/status`, which
-   * imports this module.
+   * away. Both drivers publish their control-mode client so other read-only
+   * tmux queries (the terminal listing) reuse it. Sent as an observation
+   * because the registry lives in `#runtime/status`, which imports this
+   * module.
    */
   | { kind: 'command-channel'; send: ((cmd: string) => Promise<string>) | null }
 
@@ -103,7 +104,8 @@ export interface AgentConnectDeps {
    */
   recordedSessions?: () => Promise<Array<{ handle: string; agentSessionId: string }>>
   /**
-   * The workspace's permission posture. `acp` sends it to the adapter
+   * The workspace's permission posture, read once at connect and then
+   * followed through `setAcpPermissionMode`. `acp` sends it to the adapter
    * (`session/set_mode`) and uses it to decide who answers asks; a
    * connection is rebuilt apart from the launch, so it cannot come from
    * `AgentLaunchSpec`.

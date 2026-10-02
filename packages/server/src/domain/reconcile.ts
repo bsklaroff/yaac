@@ -1,5 +1,6 @@
 import {
   gcOrphanEphemeralModuleDirs,
+  reapOrphanNodeLocal,
   reconcileAgentSessions,
   reconcilePrewarmPool,
   reconcileQueuedWorkspaces,
@@ -7,7 +8,7 @@ import {
 } from '#domain/workspaces'
 import { reconcileGeneratedTitles } from '#domain/titles'
 import { refreshProjectOrigins } from '#domain/projects'
-import { adoptRefreshedToolCredentials, syncToolCredentialsThrottled } from '#domain/auth'
+import { adoptRefreshedToolCredentials, syncToolCredentials } from '#domain/auth'
 import { workspaceDriver } from '#drivers/driver'
 import type { ReconcileStep } from '#drivers/contract'
 
@@ -24,14 +25,16 @@ export function defaultReconcileSteps(): ReconcileStep[] {
   //  - containerless: `credential-sync` copies OAuth tokens a workspace
   //    refreshed into the host store (and back out to other projects). It is
   //    the only path that runs while the install is idle; create, attach,
-  //    stop and usage cycles cover their own moments. Resync-only.
+  //    stop and usage cycles cover their own moments. At most every five
+  //    minutes: on macOS each Claude read spawns `security`, and tokens
+  //    have hours of slack.
   //  - mediated (k8s): the proxy captures each refresh into an object the
   //    runtime watches, and `credential-adopt` stores it. Triggered by that
   //    object's changes.
   const credentialSync: ReconcileStep[] = driver.kind !== 'containerless'
     ? [{ name: 'credential-adopt', triggers: ['proxy-refreshed'],
       run: () => adoptRefreshedToolCredentials(driver.refreshedCredentials()) }]
-    : [{ name: 'credential-sync', triggers: [], run: () => syncToolCredentialsThrottled() }]
+    : [{ name: 'credential-sync', triggers: [], every: 5 * 60_000, run: () => syncToolCredentials() }]
   // A spare saves the image pull and pod boot a cold workspace pays. A
   // containerless workspace starts in milliseconds, so it has no pool.
   const pool: ReconcileStep[] = driver.kind === 'containerless' ? [] : [
@@ -50,9 +53,9 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // in-pod verdict, and a failed probe keeps the workspace.
     { name: 'stale-workspaces', triggers: ['workspaces', 'units', 'status-streams'],
       run: (ctx) => reconcileStaleWorkspaces(ctx.snapshot()) },
-    // Crash backstop for queued workspaces: a launch interrupted by a server
-    // restart, or a release lost before launching. `stopWorkspace` launches
-    // directly, so the resync (including the first pass) is enough.
+    // Backstop for queued workspaces: a launch interrupted by a server
+    // restart, or a release whose launch never happened. `stopWorkspace`
+    // launches directly, so the resync is enough.
     { name: 'queued-workspaces', triggers: [], run: () => reconcileQueuedWorkspaces() },
     // Runtime work that must precede the pool: a spare's create should join
     // image builds already running, and anything holding capacity should be
@@ -70,11 +73,13 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // pass.
     ...runtime.maintenance,
     // Delete module dirs left by workspaces whose runtime is gone (crashes,
-    // reboots; see gcOrphanEphemeralModuleDirs). In-flight creates are
-    // registered synchronously before staging, so their dirs are never
-    // swept. Resync-only; cheap, and the runtime throttles its node-local
-    // half.
-    { name: 'orphan-modules-gc', triggers: [], run: () => gcOrphanEphemeralModuleDirs() },
+    // reboots, a spare's pod dying; see gcOrphanEphemeralModuleDirs).
+    // In-flight creates are registered synchronously before staging, so
+    // their dirs are never swept. Resync-only, and cheap.
+    { name: 'orphan-modules-gc', triggers: [], run: (ctx) => gcOrphanEphemeralModuleDirs(ctx.snapshot()) },
+    // The same for node-local leftovers. Hourly, since under k8s it runs a
+    // pod per node.
+    { name: 'node-local-gc', triggers: [], every: 60 * 60_000, run: (ctx) => reapOrphanNodeLocal(ctx.snapshot()) },
     ...credentialSync,
     // Keep running workspaces' `origin/*` within minutes of origin
     // (docs/server-git.md); nothing else fetches a project with no new

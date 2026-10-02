@@ -12,6 +12,10 @@
 import type { AcpConversation, QueuedTurn } from './acp-client'
 
 const byName = new Map<string, AcpConversation>()
+/** Handle keys whose conversation has a session id. */
+const named = new Set<string>()
+/** Callers of `whenAcpConversation` waiting on a handle key. */
+const waiters = new Map<string, Set<(conversation: AcpConversation) => void>>()
 
 function sessionKey(slug: string, workspaceId: string, agentSessionId: string): string {
   return `${slug}/${workspaceId}/id:${agentSessionId}`
@@ -31,10 +35,13 @@ export function registerAcpConversation(
   names: { handle: string; agentSessionId?: string },
   conversation: AcpConversation,
 ): void {
-  byName.set(handleKey(slug, workspaceId, names.handle), conversation)
-  if (names.agentSessionId !== undefined) {
-    byName.set(sessionKey(slug, workspaceId, names.agentSessionId), conversation)
-  }
+  const handle = handleKey(slug, workspaceId, names.handle)
+  byName.set(handle, conversation)
+  if (names.agentSessionId === undefined) return
+  byName.set(sessionKey(slug, workspaceId, names.agentSessionId), conversation)
+  named.add(handle)
+  for (const wake of waiters.get(handle) ?? []) wake(conversation)
+  waiters.delete(handle)
 }
 
 export function unregisterAcpConversation(
@@ -43,6 +50,7 @@ export function unregisterAcpConversation(
   names: { handle: string; agentSessionId?: string },
 ): void {
   byName.delete(handleKey(slug, workspaceId, names.handle))
+  named.delete(handleKey(slug, workspaceId, names.handle))
   if (names.agentSessionId !== undefined) {
     byName.delete(sessionKey(slug, workspaceId, names.agentSessionId))
   }
@@ -58,7 +66,8 @@ export function acpConversation(
   return byName.get(sessionKey(slug, workspaceId, agentSessionId))
 }
 
-/** The same, by the driver's handle. */
+/** The live conversation by the driver's handle, which a fresh one has
+ *  before its handshake mints an id. */
 export function acpConversationByHandle(
   slug: string,
   workspaceId: string,
@@ -67,9 +76,39 @@ export function acpConversationByHandle(
   return byName.get(handleKey(slug, workspaceId, handle))
 }
 
+/**
+ * The conversation on `handle` once it has a session id: at once for a
+ * resumed one, after `session/new` for a fresh one. Resolves `undefined`
+ * if none is registered within `timeoutMs`.
+ */
+export function whenAcpConversation(
+  slug: string,
+  workspaceId: string,
+  handle: string,
+  timeoutMs: number,
+): Promise<AcpConversation | undefined> {
+  const key = handleKey(slug, workspaceId, handle)
+  const found = byName.get(key)
+  if (found !== undefined && named.has(key)) return Promise.resolve(found)
+  return new Promise((resolve) => {
+    const wake = (conversation: AcpConversation | undefined): void => {
+      clearTimeout(timer)
+      pending.delete(wake)
+      if (pending.size === 0 && waiters.get(key) === pending) waiters.delete(key)
+      resolve(conversation)
+    }
+    const pending = waiters.get(key) ?? new Set()
+    waiters.set(key, pending)
+    pending.add(wake)
+    const timer = setTimeout(() => wake(undefined), timeoutMs)
+  })
+}
+
 /** Test-only: drop every entry. */
 export function _resetAcpRegistryForTests(): void {
   byName.clear()
+  named.clear()
+  waiters.clear()
   launchModels.clear()
   parkedQueues.clear()
 }

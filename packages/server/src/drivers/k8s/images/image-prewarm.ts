@@ -26,14 +26,8 @@ import {
  *  dismissing the row does not. Workspace creates ignore it. */
 const FAILED_RETRY_MS = 10 * 60_000
 
-/** Min interval between sweeps. Even a warm sweep costs a registry HEAD per
- *  layer per project, so running it every reconcile tick wastes CPU. */
-export const PREWARM_SWEEP_INTERVAL_MS = 60_000
-
 /** Project ids with a prewarm task in flight. */
 const prewarming = new Set<string>()
-
-let lastSweepMs = 0
 
 /**
  * Ensure one project's chain is built. When all is
@@ -60,18 +54,14 @@ export async function prewarmProjectImage(
 
 /**
  * Start a background prewarm task per project. A failure is logged and its
- * failed build row holds off retries for FAILED_RETRY_MS. Throttled to
- * PREWARM_SWEEP_INTERVAL_MS.
+ * failed build row holds off retries for FAILED_RETRY_MS.
  */
 export function reconcileImagePrewarm(
   projects: ProjectRef[],
   projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
-  nowMs: number = Date.now(),
 ): void {
   if (!env.imagePrewarm) return
   if (testEnv.requirePrebuiltImages) return
-  if (nowMs - lastSweepMs < PREWARM_SWEEP_INTERVAL_MS) return
-  lastSweepMs = nowMs
 
   for (const project of projects) {
     if (prewarming.has(project.id)) continue
@@ -85,10 +75,9 @@ export function reconcileImagePrewarm(
   }
 }
 
-/** Test helper: forget in-flight prewarm marks and the sweep throttle. */
+/** Test helper: forget in-flight prewarm marks. */
 export function _resetImagePrewarmForTests(): void {
   prewarming.clear()
-  lastSweepMs = 0
 }
 
 /**

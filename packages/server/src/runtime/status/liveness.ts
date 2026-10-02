@@ -35,8 +35,8 @@ export type TmuxLiveness = 'alive' | 'dead' | 'unknown'
  *
  * Only a fallback: a healthy status-watcher stream short-circuits to
  * `alive`, so only watcher-less workspaces (spares, streams down or still
- * attaching) reach the exec. The TTL bounds their exec rate against the 5s
- * background tick, delaying a `dead` reap by at most the TTL.
+ * attaching) reach the exec. The TTL bounds their exec rate across
+ * reconcile passes, delaying a `dead` reap by at most the TTL.
  */
 const TMUX_ALIVE_TTL_MS = 15_000
 /** How long the reaper waits on a probe. A driver may raise it (k8s floors

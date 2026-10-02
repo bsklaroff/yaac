@@ -314,9 +314,19 @@ The row is written by the reconciler's conversation sweep, so the id
 appearing in the live agent set is itself a reconcile trigger (`live-agents`,
 docs/event-driven-reconcile.md). Until the row exists an ACP workspace has no
 chat pane, only the raw agent window (acpd's log). So a fresh ACP create waits
-for the row, and the webapp swaps its provisioning placeholder straight for
-the chat pane. A claimed spare waits the same way, and the placeholder hides
-the spare so it is never listed twice.
+for the handshake to name the conversation (`whenAcpConversation`, resolved
+when the connection registers the id) and runs that workspace's sweep itself,
+and the webapp swaps its provisioning placeholder straight for the chat pane.
+A claimed spare waits the same way, and the placeholder hides the spare so it
+is never listed twice.
+
+The connection finds conversations through a tmux control-mode client of its
+own, as the `tui` driver does: tmux pushes a window add or close, and a
+subscription on an agent window still running create's placeholder fires
+when acpd replaces it. Listing windows over that stream is the heartbeat.
+acpd binds its socket a moment after it starts, so a dial that finds nothing
+is retried every second, a bounded number of times, before it waits for the
+heartbeat.
 
 Under k8s an `acp` pod carries the label `yaac.mode=acp`, so the status
 watcher can pick a driver from an informer event without a database read. A

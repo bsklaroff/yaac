@@ -1,5 +1,6 @@
 import { CHANGES_BASE_UNRESOLVED } from '#drivers/contract'
 import { createKeyedMutex } from '#lib/keyed-mutex'
+import { waitFor } from '#lib/wait-for'
 import { buildChangesScript, parseChangesOutput } from '#drivers/shared'
 import { runHost } from './host'
 import { workspaceRunEnvironment } from './launch'
@@ -52,29 +53,21 @@ export function getWorkspaceChanges(
   })
 }
 
+/** Whether a workspace's tmux server, on socket `sock`, answers. */
+export function tmuxAnswers(sock: string): Promise<boolean> {
+  return runHost(['tmux', '-S', sock, 'has-session', '-t', 'yaac'], { timeoutMs: 5_000 })
+    .then(() => true, () => false)
+}
+
 /** See `WorkspaceDriver.awaitAgentTransport`. Polls until the workspace's
  *  tmux server answers, since there is no separate transport. */
 export async function awaitAgentTransport(
   jobName: string,
   opts?: { timeoutMs?: number },
 ): Promise<void> {
-  const paths = containerlessWorkspacePaths(jobName)
-  const deadline = Date.now() + (opts?.timeoutMs ?? 30_000)
-  let lastErr: unknown
-  for (;;) {
-    try {
-      await runHost(['tmux', '-S', paths.tmuxSock, 'has-session', '-t', 'yaac'], {
-        timeoutMs: 5_000,
-      })
-      return
-    } catch (err) {
-      lastErr = err
-      if (Date.now() >= deadline) break
-      await new Promise((r) => setTimeout(r, 200))
-    }
+  const { tmuxSock } = containerlessWorkspacePaths(jobName)
+  const timeoutMs = opts?.timeoutMs ?? 30_000
+  if (!await waitFor(() => tmuxAnswers(tmuxSock), { timeoutMs, intervalMs: 200 })) {
+    throw new Error(`containerless ${jobName}: tmux session did not answer within the deadline (${String(timeoutMs)}ms)`)
   }
-  throw new Error(
-    `containerless ${jobName}: tmux session did not answer within the deadline `
-    + `(${String(lastErr)})`,
-  )
 }

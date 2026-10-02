@@ -865,9 +865,10 @@ export class AcpConversation {
     this.readyWaiters = []
   }
 
-  /** Resolve once the session exists, so a prompt sent while the agent
-   *  starts waits rather than fails. */
-  private whenReady(timeoutMs: number): Promise<void> {
+  /** Resolve once the handshake has finished (session, launch model and
+   *  mode all applied), so a prompt sent while the agent starts waits
+   *  rather than fails. */
+  whenReady(timeoutMs: number): Promise<void> {
     if (this.ready) return Promise.resolve()
     if (this.closed) return Promise.reject(new Error('conversation is closed'))
     return new Promise((resolve, reject) => {

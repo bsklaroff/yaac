@@ -1,7 +1,6 @@
-import { workspaceDriver } from '#drivers/driver'
 import { catalogModel } from '#domain/auth'
 import type { RuntimeSnapshot } from '#drivers/contract'
-import { classifyWorkspaces, liveAgents, probeTmuxLiveness } from '#runtime/status'
+import { isWorkspaceTerminating, liveAgents } from '#runtime/status'
 import {
   acpRecord,
   getCodexPermissionMode,
@@ -9,11 +8,12 @@ import {
   readAcpFirstPrompt,
   resolveAgentPermissionMode,
   resolveProjectPath,
+  setAcpPermissionMode,
   transcriptLastActiveMs,
 } from '#runtime/agents'
 import { applyWorkspaceEvent, getWorkspaceRow, listWorkspaceAgentSessions } from '#db'
 import { captureFirstPrompt } from './prompt-capture'
-import { testEnv } from '@yaac/shared/env'
+import { serverLog } from '#log'
 import type { AgentSessionLinkRow, DiscoveredSession, WorkspaceRow } from '#db'
 import type { LiveAgent } from '#runtime/agents'
 import type { AgentMode } from '@yaac/shared/types'
@@ -30,34 +30,29 @@ import type { AgentMode } from '@yaac/shared/types'
  * cannot look live.
  *
  * Runs on the reconciler tick so `workspace list` and restart see the record
- * even with no client watching. Stopped workspaces are skipped: their active
- * set is frozen, and it is what restart resumes.
+ * even with no client watching. Stopped and stopping workspaces are skipped:
+ * their active set is frozen, and it is what restart resumes. So are spares:
+ * a spare's warm-time agent is not the claimant's conversation, and
+ * recording it would make a later restart resume the wrong one.
  */
-export async function reconcileAgentSessions(snapshot?: RuntimeSnapshot): Promise<void> {
-  let pods
-  try {
-    pods = await (snapshot ?? workspaceDriver().snapshot()).workspaces()
-  } catch {
-    return
-  }
-  const { running } = await classifyWorkspaces(
-    pods, Date.now(), probeTmuxLiveness, testEnv.startingGraceMs,
-  )
-
+export async function reconcileAgentSessions(view: RuntimeSnapshot): Promise<void> {
+  const running = (await view.workspaces()).filter((p) => p.running && !p.prewarmed
+    && !p.terminating && p.projectSlug && p.workspaceId && !isWorkspaceTerminating(p.workspaceId))
   await Promise.all(running.map(async (pod) => {
-    if (!pod.workspaceId || !pod.projectSlug) return
-    // A spare's warm-time agent is not the claimant's conversation; recording
-    // it would make a later restart resume the wrong one.
-    if (pod.prewarmed) return
     try {
       await reconcileWorkspaceAgentSessions(pod.projectSlug, pod.workspaceId, pod.mode, pod.jobName)
-    } catch {
-      // best-effort — next tick retries
+    } catch (err) {
+      serverLog(`[server] agent-sessions ${pod.workspaceId}: ${String(err)}`)
     }
   }))
 }
 
-async function reconcileWorkspaceAgentSessions(
+/**
+ * One workspace's pass of `reconcileAgentSessions`. Also run by an acp
+ * create as soon as its conversation is named, so the row (and with it the
+ * chat pane) exists when the create returns.
+ */
+export async function reconcileWorkspaceAgentSessions(
   projectSlug: string,
   workspaceId: string,
   mode: AgentMode,
@@ -183,6 +178,7 @@ async function followReportedModes(
     const posture = resolveAgentPermissionMode(mode, a.tool, a.reportedMode, row.permissionMode)
     if (posture === undefined || posture === row.permissionMode) continue
     await applyWorkspaceEvent({ type: 'permission-mode-changed', projectSlug, workspaceId, permissionMode: posture })
+    setAcpPermissionMode(projectSlug, workspaceId, posture)
   }
 }
 

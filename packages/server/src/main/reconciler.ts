@@ -21,9 +21,10 @@ import type { YaacConfig } from '@yaac/shared/types'
  * - changes: convergence signals (workspace pods/Jobs, namespaces and their
  *   pods/services, live conversations, driver-stream health, egress proxy
  *   events). A pass runs after a short debounce so bursts coalesce.
- * - resync: every 60s, run every step. This covers missed events and drives
- *   the self-throttled hygiene steps (image prewarm/GC, salvage, builder-pod
- *   GC).
+ * - resync: every 60s, run every step. This covers missed events and is the
+ *   clock for timed steps: a step with `every` runs on a resync at most that
+ *   often, counted from its last successful run, so a failed one retries on
+ *   the next resync.
  *
  * Passes never overlap (steps share module state) and run steps in order,
  * isolating each step's errors. Steps in a pass share one point-in-time
@@ -36,28 +37,12 @@ export interface ReconcilerDeps {
   /** Change subscription; defaults to the convergence watches. */
   onDelta?: (fn: (source: ChangeSource) => void) => void
   resyncIntervalMs?: number
-  debounceMs?: number
-  /** Injected for tests — replaces the timer-based debounce wait. */
-  sleep?: (ms: number, signal: AbortSignal) => Promise<void>
 }
 
-function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise<void>((resolve) => {
-    if (signal.aborted) {
-      resolve()
-      return
-    }
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort)
-      resolve()
-    }, ms)
-    const onAbort = (): void => {
-      clearTimeout(timer)
-      resolve()
-    }
-    signal.addEventListener('abort', onAbort, { once: true })
-  })
-}
+/** How long a pass waits after its first dirtying event, so a burst
+ *  becomes one pass. Not cut short by an abort, which it delays at most
+ *  this long. */
+const DEBOUNCE_MS = 250
 
 /**
  * Run the reconciler until `signal` aborts. Starts with an immediate full
@@ -66,8 +51,9 @@ function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
 export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
   const { signal } = deps
   const steps = deps.steps ?? defaultReconcileSteps()
-  const sleep = deps.sleep ?? defaultSleep
-  const debounceMs = deps.debounceMs ?? 250
+  const resyncIntervalMs = deps.resyncIntervalMs ?? 60_000
+  /** When each timed step last ran, by name. */
+  const lastRun = new Map<string, number>()
   const dirty = new Set<ReconcileTrigger | 'resync'>()
   let wake: (() => void) | null = null
   const mark = (source: ReconcileTrigger | 'resync'): void => {
@@ -75,7 +61,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
     wake?.()
   }
   ;(deps.onDelta ?? onConvergenceChange)(mark)
-  const resyncTimer = setInterval(() => mark('resync'), deps.resyncIntervalMs ?? 60_000)
+  const resyncTimer = setInterval(() => mark('resync'), resyncIntervalMs)
   const onAbort = (): void => wake?.()
   signal.addEventListener('abort', onAbort, { once: true })
   mark('resync') // immediate first pass covers every step
@@ -87,9 +73,9 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         wake = null
       }
       if (signal.aborted) break
-      // Debounce so a burst of events becomes one pass.
-      await sleep(debounceMs, signal)
+      await new Promise((resolve) => setTimeout(resolve, DEBOUNCE_MS))
       if (signal.aborted) break
+      const startedAt = Date.now()
       const taken = new Set(dirty)
       dirty.clear()
       const resync = taken.has('resync')
@@ -130,8 +116,14 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         // On shutdown, finish the in-flight step but start no more.
         if (signal.aborted) return
         if (!resync && !step.triggers.some((t) => triggers.has(t))) continue
+        // Half a resync of slack, so a resync pass that starts a little late
+        // never pushes a timed step to the following resync.
+        const last = lastRun.get(step.name)
+        if (step.every !== undefined && last !== undefined
+          && startedAt - last < step.every - resyncIntervalMs / 2) continue
         try {
           await step.run(ctx)
+          if (step.every !== undefined) lastRun.set(step.name, startedAt)
         } catch (err) {
           serverLog(`[server] reconcile step ${step.name} failed: ${String(err)}`)
         }

@@ -47,6 +47,7 @@ import {
  *  directly through `mockStrays`. */
 const mockWorkspaces = vi.fn<() => Promise<RuntimeHandle[]>>()
 const mockStrays = vi.fn<() => Promise<StrayUnit[]>>()
+const view = { resync: true, workspaces: mockWorkspaces, strayUnits: mockStrays }
 const mockProbe = vi.mocked(probeTmuxLiveness)
 const mockPaneProbe = vi.mocked(probeAgentPaneState)
 const mockCleanup = vi.mocked(cleanupWorkspaceDetached)
@@ -104,9 +105,7 @@ describe('reconcileStaleWorkspaces', () => {
   beforeEach(() => {
     mockWorkspaces.mockReset().mockResolvedValue([])
     mockStrays.mockReset().mockResolvedValue([])
-    installFakeWorkspaceDriver({
-      snapshot: () => ({ resync: true, workspaces: mockWorkspaces, strayUnits: mockStrays }),
-    })
+    installFakeWorkspaceDriver()
     mockProbe.mockReset()
     mockPaneProbe.mockReset().mockResolvedValue('started')
     mockCleanup.mockClear()
@@ -124,7 +123,7 @@ describe('reconcileStaleWorkspaces', () => {
     mockWorkspaces.mockResolvedValue([pod('zombie-1')])
     mockProbe.mockResolvedValue('dead' as TmuxLiveness)
 
-    await reconcileStaleWorkspaces()
+    await reconcileStaleWorkspaces(view)
 
     expect(mockCleanup).toHaveBeenCalledTimes(1)
     expect(mockCleanup).toHaveBeenCalledWith(
@@ -149,7 +148,7 @@ describe('reconcileStaleWorkspaces', () => {
       deathCause: { reason: 'oom', detail: 'exit code 137' },
     }])
 
-    await reconcileStaleWorkspaces()
+    await reconcileStaleWorkspaces(view)
 
     expect(mockCleanup).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -166,7 +165,7 @@ describe('reconcileStaleWorkspaces', () => {
     mockWorkspaces.mockResolvedValue([pod('starting-1', false)])
     setDesired({ provisioning: ['starting-1'] })
 
-    await reconcileStaleWorkspaces()
+    await reconcileStaleWorkspaces(view)
 
     expect(mockCleanup).not.toHaveBeenCalled()
   })
@@ -177,7 +176,7 @@ describe('reconcileStaleWorkspaces', () => {
     mockWorkspaces.mockResolvedValue([pod('failed-1', false)])
     setDesired({ provisioning: [] })
 
-    await reconcileStaleWorkspaces()
+    await reconcileStaleWorkspaces(view)
 
     expect(mockCleanup).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: 'failed-1', cause: { reason: 'pod-stopped' } }),
@@ -189,7 +188,7 @@ describe('reconcileStaleWorkspaces', () => {
     mockStrays.mockResolvedValue([stray('pending-1')])
     setDesired({ provisioning: ['pending-1'] })
 
-    await reconcileStaleWorkspaces()
+    await reconcileStaleWorkspaces(view)
 
     expect(mockCleanup).not.toHaveBeenCalled()
   })
@@ -198,7 +197,7 @@ describe('reconcileStaleWorkspaces', () => {
     mockWorkspaces.mockResolvedValue([pod('blip-1')])
     mockProbe.mockResolvedValue('unknown' as TmuxLiveness)
 
-    await reconcileStaleWorkspaces()
+    await reconcileStaleWorkspaces(view)
 
     expect(mockCleanup).not.toHaveBeenCalled()
     const log = loggedLines()
@@ -210,7 +209,7 @@ describe('reconcileStaleWorkspaces', () => {
     mockWorkspaces.mockResolvedValue([pod('healthy-1')])
     mockProbe.mockResolvedValue('alive' as TmuxLiveness)
 
-    await reconcileStaleWorkspaces()
+    await reconcileStaleWorkspaces(view)
 
     expect(mockCleanup).not.toHaveBeenCalled()
     expect(loggedLines()).toBe('')
@@ -221,7 +220,7 @@ describe('reconcileStaleWorkspaces', () => {
     // stuck past grace. Re-issue the teardown with the out-of-band cause.
     mockWorkspaces.mockResolvedValue([{ ...pod('term-1'), terminating: true }])
 
-    await reconcileStaleWorkspaces()
+    await reconcileStaleWorkspaces(view)
 
     expect(mockCleanup).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -234,24 +233,24 @@ describe('reconcileStaleWorkspaces', () => {
   })
 
   it('keeps a terminating pod past grace while its create is still provisioning', async () => {
-    // The create's retry loop deletes the Job between attempts; the pod must
-    // not be torn down under it.
-    mockWorkspaces.mockResolvedValue([{ ...pod('retrying-1'), terminating: true }])
-    setDesired({ provisioning: ['retrying-1'] })
+    // A failed create deletes its Job before giving up; the reaper must not
+    // race its teardown.
+    mockWorkspaces.mockResolvedValue([{ ...pod('failing-1'), terminating: true }])
+    setDesired({ provisioning: ['failing-1'] })
 
-    await reconcileStaleWorkspaces()
+    await reconcileStaleWorkspaces(view)
 
     expect(mockCleanup).not.toHaveBeenCalled()
   })
 
   // Every sweep needs the desired set; without it a user delete would be
   // labelled out-of-band and nothing would be exempt. Reaping on a guess
-  // destroys uncommitted work, so the pass does nothing and the next retries.
-  it('stands down entirely when the desired set cannot be read', async () => {
+  // destroys uncommitted work, so the step fails and the next pass retries.
+  it('fails without reaping when the desired set cannot be read', async () => {
     mockWorkspaces.mockResolvedValue([{ ...pod('term-unknown'), terminating: true }])
     vi.mocked(desiredWorkspaces).mockRejectedValue(new Error('db is gone'))
 
-    await reconcileStaleWorkspaces()
+    await expect(reconcileStaleWorkspaces(view)).rejects.toThrow('db is gone')
 
     expect(mockCleanup).not.toHaveBeenCalled()
     expect(stopsReported()).toEqual([])
@@ -264,7 +263,7 @@ describe('reconcileStaleWorkspaces', () => {
     mockWorkspaces.mockResolvedValue([{ ...pod('term-ours'), terminating: true }])
     setDesired({ stopped: ['proj/term-ours'] })
 
-    await reconcileStaleWorkspaces()
+    await reconcileStaleWorkspaces(view)
 
     expect(mockCleanup).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -285,7 +284,7 @@ describe('reconcileStaleWorkspaces', () => {
     markWorkspaceTerminating('term-2')
     mockWorkspaces.mockResolvedValue([{ ...pod('term-2'), terminating: true }])
 
-    await reconcileStaleWorkspaces()
+    await reconcileStaleWorkspaces(view)
 
     expect(mockCleanup).not.toHaveBeenCalled()
   })
@@ -295,7 +294,7 @@ describe('reconcileStaleWorkspaces', () => {
     mockProbe.mockResolvedValue('alive' as TmuxLiveness)
     mockPaneProbe.mockResolvedValue('placeholder')
 
-    await reconcileStaleWorkspaces()
+    await reconcileStaleWorkspaces(view)
 
     expect(mockCleanup).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: 'half-1', jobName: 'yaac-proj-half-1' }),
@@ -311,7 +310,7 @@ describe('reconcileStaleWorkspaces', () => {
     mockPaneProbe.mockResolvedValue('placeholder')
     setDesired({ provisioning: ['warming-1'] })
 
-    await reconcileStaleWorkspaces()
+    await reconcileStaleWorkspaces(view)
 
     expect(mockCleanup).not.toHaveBeenCalled()
   })
@@ -322,7 +321,7 @@ describe('reconcileStaleWorkspaces', () => {
     mockProbe.mockResolvedValue('alive' as TmuxLiveness)
     mockPaneProbe.mockResolvedValue('placeholder')
 
-    await reconcileStaleWorkspaces()
+    await reconcileStaleWorkspaces(view)
 
     expect(mockCleanup).not.toHaveBeenCalled()
   })
@@ -332,7 +331,7 @@ describe('reconcileStaleWorkspaces', () => {
     mockProbe.mockResolvedValue('alive' as TmuxLiveness)
     mockPaneProbe.mockResolvedValue('unknown')
 
-    await reconcileStaleWorkspaces()
+    await reconcileStaleWorkspaces(view)
 
     expect(mockCleanup).not.toHaveBeenCalled()
   })
@@ -341,7 +340,7 @@ describe('reconcileStaleWorkspaces', () => {
     mockWorkspaces.mockResolvedValue([])
     mockStrays.mockResolvedValue([stray('orphan-1')])
 
-    await reconcileStaleWorkspaces()
+    await reconcileStaleWorkspaces(view)
 
     expect(mockCleanup).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -353,10 +352,10 @@ describe('reconcileStaleWorkspaces', () => {
     expect(loggedLines()).toContain('orphan Job')
   })
 
-  it('returns quietly when pod listing fails (no throw, no reap)', async () => {
+  it('fails without reaping when pod listing fails', async () => {
     mockWorkspaces.mockRejectedValue(new Error('cluster offline'))
 
-    await expect(reconcileStaleWorkspaces()).resolves.toBeUndefined()
+    await expect(reconcileStaleWorkspaces(view)).rejects.toThrow('cluster offline')
     expect(mockCleanup).not.toHaveBeenCalled()
   })
 
@@ -369,31 +368,14 @@ describe('reconcileStaleWorkspaces', () => {
     mockStrays.mockRejectedValue(new Error('informer down'))
     mockProbe.mockResolvedValue('dead' as TmuxLiveness)
 
-    await expect(reconcileStaleWorkspaces()).resolves.toBeUndefined()
+    await expect(reconcileStaleWorkspaces(view)).resolves.toBeUndefined()
 
     expect(mockCleanup).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: 'zombie-1' }),
     )
     expect(mockCleanup).toHaveBeenCalledTimes(1)
     expect(loggedLines()).not.toContain('orphan Job')
-  })
-
-  it("reads the pass view it is handed, never taking the runtime's own", async () => {
-    const workspaces = vi.fn().mockResolvedValue([pod('zombie-1')])
-    const strayUnits = vi.fn().mockResolvedValue([])
-    mockProbe.mockResolvedValue('dead' as TmuxLiveness)
-
-    await reconcileStaleWorkspaces({ resync: true, workspaces, strayUnits })
-
-    // A second view mid-pass would judge absence against a different
-    // instant.
-    expect(mockWorkspaces).not.toHaveBeenCalled()
-    expect(mockStrays).not.toHaveBeenCalled()
-    expect(workspaces).toHaveBeenCalledTimes(1)
-    expect(strayUnits).toHaveBeenCalledTimes(1)
-    expect(mockCleanup).toHaveBeenCalledWith(
-      expect.objectContaining({ workspaceId: 'zombie-1' }),
-    )
+    expect(loggedLines()).toContain('skipping the orphan sweep')
   })
 
   describe('rows whose pod is missing', () => {
@@ -412,14 +394,14 @@ describe('reconcileStaleWorkspaces', () => {
     /** Advance the clock past the grace and tick again. */
     async function tickPastGrace(): Promise<void> {
       vi.setSystemTime(Date.now() + 31 * 60_000)
-      await reconcileStaleWorkspaces()
+      await reconcileStaleWorkspaces(view)
     }
 
     it('records nothing on the first tick a pod is missing', async () => {
       mockWorkspaces.mockResolvedValue([])
       setDesired({ live: [row('abandoned')] })
 
-      await reconcileStaleWorkspaces()
+      await reconcileStaleWorkspaces(view)
 
       expect(stopsReported()).toEqual([])
     })
@@ -428,7 +410,7 @@ describe('reconcileStaleWorkspaces', () => {
       mockWorkspaces.mockResolvedValue([])
       setDesired({ live: [row('abandoned')] })
 
-      await reconcileStaleWorkspaces()
+      await reconcileStaleWorkspaces(view)
       await tickPastGrace()
 
       expect(stopsReported()).toEqual([
@@ -442,7 +424,7 @@ describe('reconcileStaleWorkspaces', () => {
       mockWorkspaces.mockResolvedValue([])
       setDesired({ live: [row('had-history', true)] })
 
-      await reconcileStaleWorkspaces()
+      await reconcileStaleWorkspaces(view)
       await tickPastGrace()
 
       expect(stopsReported()).toEqual([
@@ -457,15 +439,15 @@ describe('reconcileStaleWorkspaces', () => {
       setDesired({ live: [row('old-1', true), row('old-2', true)] })
       mockWorkspaces.mockResolvedValue([pod('old-1'), pod('old-2')])
       mockProbe.mockResolvedValue('alive' as TmuxLiveness)
-      await reconcileStaleWorkspaces()
+      await reconcileStaleWorkspaces(view)
 
       mockWorkspaces.mockResolvedValue([]) // the bad listing
-      await reconcileStaleWorkspaces()
+      await reconcileStaleWorkspaces(view)
 
       // The pods are back on the next tick, well within the window.
       mockWorkspaces.mockResolvedValue([pod('old-1'), pod('old-2')])
       vi.setSystemTime(Date.now() + 31 * 60_000)
-      await reconcileStaleWorkspaces()
+      await reconcileStaleWorkspaces(view)
 
       expect(stopsReported()).toEqual([])
     })
@@ -474,7 +456,7 @@ describe('reconcileStaleWorkspaces', () => {
       mockWorkspaces.mockResolvedValue([])
       setDesired({ live: [row('slow-build')], provisioning: ['slow-build'] })
 
-      await reconcileStaleWorkspaces()
+      await reconcileStaleWorkspaces(view)
       await tickPastGrace()
 
       expect(stopsReported()).toEqual([])
@@ -484,7 +466,7 @@ describe('reconcileStaleWorkspaces', () => {
     it('stands down entirely until the server has published a set', async () => {
       mockWorkspaces.mockResolvedValue([])
 
-      await reconcileStaleWorkspaces()
+      await reconcileStaleWorkspaces(view)
       await tickPastGrace()
 
       expect(stopsReported()).toEqual([])
@@ -495,7 +477,7 @@ describe('reconcileStaleWorkspaces', () => {
       mockProbe.mockResolvedValue('alive' as TmuxLiveness)
       setDesired({ live: [row('healthy', true)] })
 
-      await reconcileStaleWorkspaces()
+      await reconcileStaleWorkspaces(view)
       await tickPastGrace()
 
       expect(stopsReported()).toEqual([])

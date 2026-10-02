@@ -78,10 +78,13 @@ export async function observeWorkspaces(projectFilter?: string): Promise<Runtime
     Date.now(),
   )
 
-  const workspaces = await Promise.all([
-    ...running.map((w) => observeRunning(w)),
-    ...terminating.map((w) => observeTerminating(w)),
-  ])
+  const workspaces = [
+    ...await Promise.all(running.map((w) => observeRunning(w))),
+    // Status is forced to `running` (by `emptyReport`): the evicted status
+    // store would default to `waiting` and show a spurious attention badge
+    // on a disappearing row.
+    ...terminating.map((w) => emptyReport(w, 'terminating')),
+  ]
 
   return {
     workspaces,
@@ -105,15 +108,6 @@ async function observeRunning(w: RuntimeHandle): Promise<WorkspaceRuntimeReport>
     forwardedPorts: await driver.forwardedPorts(w.workspaceId),
     unforwardedPorts: await driver.unforwardedPorts(w.workspaceId),
   }
-}
-
-/**
- * A workspace being torn down. Status is forced to `running`: the evicted
- * status store would default to `waiting` and show a spurious attention
- * badge on a disappearing row. No waiting stamp for the same reason.
- */
-function observeTerminating(w: RuntimeHandle): Promise<WorkspaceRuntimeReport> {
-  return Promise.resolve(emptyReport(w, 'terminating'))
 }
 
 function emptyReport(w: RuntimeHandle, phase: 'running' | 'terminating'): WorkspaceRuntimeReport {

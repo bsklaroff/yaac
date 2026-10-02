@@ -29,9 +29,6 @@ import { BUILD_CACHE_TTL } from './builder-pod'
 import { forgetVerifiedTags, imageWorkInFlight } from './build-coordinator'
 import { pruneNodeImages, registryGeneration } from './node-image-gc'
 
-/** Min interval between sweeps. */
-export const MAIN_REGISTRY_GC_INTERVAL_MS = 6 * 60 * 60 * 1000
-
 /**
  * Generations kept per repo beyond the live set. Lower than the project
  * registries' 8 because here the live set is known and always protected.
@@ -290,14 +287,11 @@ async function gcMainRegistry(live: LiveImages): Promise<MainRegistryGcResult> {
   return { retired, busy: false, collected: true }
 }
 
-let lastSweepMs = 0
-
 /** The pass running now, if any; passes never overlap. */
 let inFlightPass: Promise<void> | null = null
 
-/** Test hook: reset the sweep throttle and forget any in-flight pass. */
+/** Test hook: forget any in-flight pass. */
 export function _resetMainRegistryGcForTests(): void {
-  lastSweepMs = 0
   inFlightPass = null
 }
 
@@ -307,27 +301,18 @@ export function _mainRegistryGcSettledForTests(): Promise<void> {
 }
 
 /**
- * Only the default install collects: e2e servers share this registry, and
- * one collecting mid-run could delete a blob another run is pushing.
- */
-function sweepDue(nowMs: number): boolean {
-  if (testEnv.k8sNamespace !== 'yaac') return false
-  if (inFlightPass) return false
-  return nowMs - lastSweepMs >= MAIN_REGISTRY_GC_INTERVAL_MS
-}
-
-/**
  * Reconcile step: the registry pass, then the node prune (which runs even
  * when the registry pass stood down). Runs in the background, since a
  * collect takes minutes and would stall the serialized reconcile loop.
+ *
+ * Only the default install collects: e2e servers share this registry, and
+ * one collecting mid-run could delete a blob another run is pushing.
  */
 export function reconcileMainRegistryGc(
   projects: ProjectRef[],
   projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
-  nowMs: number = Date.now(),
 ): Promise<void> {
-  if (!sweepDue(nowMs)) return Promise.resolve()
-  lastSweepMs = nowMs
+  if (testEnv.k8sNamespace !== 'yaac' || inFlightPass) return Promise.resolve()
   inFlightPass = (async () => {
     const live = await readLiveImages(projects, projectConfig)
     const { retired, busy, collected } = await gcMainRegistry(live)

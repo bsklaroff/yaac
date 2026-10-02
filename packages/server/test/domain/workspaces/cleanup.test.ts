@@ -39,6 +39,7 @@ import {
   cleanupWorkspaceDetached,
   deleteWorkspaceState,
   gcOrphanEphemeralModuleDirs,
+  reapOrphanNodeLocal,
   teardownForRestart,
 } from '#domain/workspaces/cleanup'
 
@@ -53,7 +54,7 @@ import {
   workspaceStateDir,
 } from '@yaac/shared/project-paths'
 import type { WorkspaceEvent } from '#db'
-import type { NodeLocalLiveSet } from '#drivers/contract'
+import type { NodeLocalLiveSet, RuntimeSnapshot } from '#drivers/contract'
 import { applyWorkspaceEvent, closeDb, listProjectRows, listProjectWorkspaceIds } from '#db'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { recordProject } from '#db/project-store'
@@ -495,74 +496,177 @@ describe('teardownForRestart', () => {
     await teardownForRestart({ jobName: null, projectSlug: 'p', workspaceId: 's-idle' })
     expect(spawnMock).not.toHaveBeenCalled()
   })
+
+  // A pod's preStop can hold its unit past the inline teardown's wait, so
+  // the restart waits for the unit to go. Relaunching onto one that never
+  // does would fail obscurely, so that restart is refused and the workspace
+  // still reads as stopping.
+  it('waits out a unit still going away, and refuses one that stays', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    try {
+      let unitLeft = 3
+      installFakeWorkspaceDriver({
+        destroy: () => Promise.resolve(false),
+        findForTeardown: () => Promise.resolve(unitLeft-- > 0
+          ? { projectSlug: 'p', workspaceId: 's-slow', unitName: 'yaac-p-s-slow' }
+          : undefined),
+      })
+      const restart = teardownForRestart({ jobName: 'yaac-p-s-slow', projectSlug: 'p', workspaceId: 's-slow' })
+      await vi.advanceTimersByTimeAsync(5_000)
+      await expect(restart).resolves.toBeUndefined()
+      expect(isWorkspaceTerminating('s-slow')).toBe(false)
+
+      unitLeft = Infinity
+      const refused = teardownForRestart({ jobName: 'yaac-p-s-slow', projectSlug: 'p', workspaceId: 's-slow' })
+      const settled = expect(refused).rejects.toThrow('still shutting down')
+      await vi.advanceTimersByTimeAsync(100_000)
+      await settled
+      expect(isWorkspaceTerminating('s-slow')).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
+let gcDataDir: string
+
+/** Register ids as in-flight creates in the real registry. */
+function publishInFlight(provisioning: string[] = []): void {
+  clearAllProvisioningForTests()
+  for (const workspaceId of provisioning) {
+    registerProvisioning({ workspaceId, projectSlug: 'proj-a', tool: 'claude', kind: 'create' })
+  }
+}
+
+/** Live sets passed to the runtime's node-local reap. */
+let reaped: NodeLocalLiveSet[]
+/** The pass view the sweeps are handed. */
+let view: RuntimeSnapshot
+
+/** A pass view reporting these workspaces and stray units. */
+function seeRunning(workspaces: RuntimeHandle[], strays: StrayUnit[] = []): void {
+  view = snapshotFixture(workspaces, strays)
+}
+
+/** A pass view that cannot be read. */
+function seeNothing(): void {
+  view = {
+    resync: true,
+    workspaces: () => Promise.reject(new Error('cluster offline')),
+    strayUnits: () => Promise.reject(new Error('cluster offline')),
+  }
+}
+
+async function setUpSweep(): Promise<void> {
+  gcDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-gc-ephemeral-'))
+  setDataDir(gcDataDir)
+  reaped = []
+  installFakeWorkspaceDriver({
+    reapNodeLocal: (live) => { reaped.push(live); return Promise.resolve() },
+  })
+  seeRunning([])
+  publishInFlight()
+}
+
+async function tearDownSweep(): Promise<void> {
+  clearAllProvisioningForTests()
+  await closeDb()
+  await fs.rm(gcDataDir, { recursive: true, force: true })
+}
+
+// Backdated, since the sweep spares anything written around its own start
+// (a create staging into it).
+const STALE = new Date(Date.now() - 3_600_000)
+
+async function seedModulesDir(slug: string, sid: string): Promise<string> {
+  const dir = path.join(gcDataDir, 'node-local', 'projects', slug, '.cached-packages', 'modules', sid)
+  await fs.mkdir(dir, { recursive: true })
+  await fs.utimes(dir, STALE, STALE)
+  return dir
+}
+
+async function seedWorkspacesDir(slug: string, sid: string): Promise<string> {
+  const dir = path.join(gcDataDir, 'global', 'projects', slug, 'sessions', sid)
+  await fs.mkdir(dir, { recursive: true })
+  await fs.utimes(dir, STALE, STALE)
+  return dir
+}
+
 describe('gcOrphanEphemeralModuleDirs', () => {
-  let dataDir: string
+  beforeEach(setUpSweep)
+  afterEach(tearDownSweep)
 
-  /** Register ids as in-flight creates in the real registry. */
-  const publishInFlight = (provisioning: string[] = []): void => {
-    clearAllProvisioningForTests()
-    for (const workspaceId of provisioning) {
-      registerProvisioning({ workspaceId, projectSlug: 'proj-a', tool: 'claude', kind: 'create' })
-    }
-  }
+  it('removes orphan per-session dirs and leaves node-local ones to the runtime', async () => {
+    const liveTmux = await seedWorkspacesDir('proj-a', 'live-1')
+    const deadTmux = await seedWorkspacesDir('proj-a', 'dead-1')
+    const deadModules = await seedModulesDir('proj-a', 'dead-1')
 
-  /** Live sets passed to the runtime's node-local reap. */
-  let reaped: NodeLocalLiveSet[]
+    seeRunning([handleFixture({ workspaceId: 'live-1', projectSlug: 'proj-a' })])
 
-  /** Install a runtime reporting these workspaces and stray units. */
-  function seeRunning(workspaces: RuntimeHandle[], strays: StrayUnit[] = []): void {
-    installFakeWorkspaceDriver({
-      snapshot: () => snapshotFixture(workspaces, strays),
-      reapNodeLocal: (live) => { reaped.push(live); return Promise.resolve() },
-    })
-  }
+    await gcOrphanEphemeralModuleDirs(view)
 
-  /** Install a runtime whose view cannot be read. */
-  function seeNothing(): void {
-    installFakeWorkspaceDriver({
-      snapshot: () => {
-        return {
-          resync: true,
-          workspaces: () => Promise.reject(new Error('cluster offline')),
-          strayUnits: () => Promise.reject(new Error('cluster offline')),
-        }
-      },
-    })
-  }
-
-  beforeEach(async () => {
-    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-gc-ephemeral-'))
-    setDataDir(dataDir)
-    reaped = []
-    seeRunning([])
-    publishInFlight()
+    await expect(fs.access(liveTmux)).resolves.toBeUndefined()
+    await expect(fs.access(deadTmux)).rejects.toThrow()
+    await expect(fs.access(deadModules)).resolves.toBeUndefined()
+    expect(reaped).toHaveLength(0)
   })
 
-  afterEach(async () => {
-    clearAllProvisioningForTests()
-    await closeDb()
-    await fs.rm(dataDir, { recursive: true, force: true })
+  // Only a dead spare's checkout is disposable; a stopped workspace's is
+  // kept.
+  it('collects a dead spare, and keeps a stopped workspace', async () => {
+    await recordWorkspaceCreated({ projectSlug: 'proj-a', workspaceId: 'stopped-1' })
+    await recordWorkspaceCreated({ projectSlug: 'proj-a', workspaceId: 'spare-1', spare: true })
+    // Both checkouts are stale, so only the spare flag tells them apart.
+    const [spareCheckout, stoppedCheckout] = await Promise.all(['spare-1', 'stopped-1'].map(async (sid) => {
+      const dir = workspaceDir('proj-a', sid)
+      await fs.mkdir(dir, { recursive: true })
+      await fs.utimes(dir, STALE, STALE)
+      return dir
+    }))
+    seeRunning([handleFixture({ workspaceId: 'live-1', projectSlug: 'proj-a' })])
+
+    await gcOrphanEphemeralModuleDirs(view)
+
+    await expect(fs.access(stoppedCheckout)).resolves.toBeUndefined()
+    await expect(fs.access(spareCheckout)).rejects.toThrow()
+    expect([...(await listProjectWorkspaceIds('proj-a')).keys()]).toEqual(['stopped-1'])
   })
 
-  // Backdated, since the sweep spares anything written around its own start
-  // (a create staging into it).
-  const STALE = new Date(Date.now() - 3_600_000)
+  it('spares a session the process is still provisioning', async () => {
+    // The create records its row before anything is launched, so no
+    // listing shows it yet; sweeping would delete dirs it is about to mount.
+    const staging = await seedWorkspacesDir('proj-a', 'creating-1')
+    publishInFlight(['creating-1'])
 
-  async function seedModulesDir(slug: string, sid: string): Promise<string> {
-    const dir = path.join(dataDir, 'node-local', 'projects', slug, '.cached-packages', 'modules', sid)
-    await fs.mkdir(dir, { recursive: true })
-    await fs.utimes(dir, STALE, STALE)
-    return dir
-  }
+    await gcOrphanEphemeralModuleDirs(view)
 
-  async function seedWorkspacesDir(slug: string, sid: string): Promise<string> {
-    const dir = path.join(dataDir, 'global', 'projects', slug, 'sessions', sid)
-    await fs.mkdir(dir, { recursive: true })
-    await fs.utimes(dir, STALE, STALE)
-    return dir
-  }
+    await expect(fs.access(staging)).resolves.toBeUndefined()
+  })
+
+  it('spares a dir written since the sweep took its listing', async () => {
+    // The same race for a create with no provisioning row (a spare): a
+    // fresh dir is left for the next sweep.
+    const fresh = await seedWorkspacesDir('proj-a', 'staging-1')
+    await fs.utimes(fresh, new Date(), new Date())
+
+    await gcOrphanEphemeralModuleDirs(view)
+
+    await expect(fs.access(fresh)).resolves.toBeUndefined()
+  })
+
+  // An unreadable view must not read as empty.
+  it('fails without removing anything when the runtime view cannot be read', async () => {
+    const dead = await seedWorkspacesDir('proj-a', 'would-be-removed')
+    seeNothing()
+
+    await expect(gcOrphanEphemeralModuleDirs(view)).rejects.toThrow('cluster offline')
+    await expect(fs.access(dead)).resolves.toBeUndefined()
+  })
+})
+
+describe('reapOrphanNodeLocal', () => {
+  beforeEach(setUpSweep)
+  afterEach(tearDownSweep)
 
   // Node-local dirs may live on another node, so the runtime removes them.
   // This layer only hands over the live set: recorded project ids,
@@ -584,7 +688,7 @@ describe('gcOrphanEphemeralModuleDirs', () => {
       [{ workspaceId: 'job-only-1', unitName: 'yaac-proj-b-job-only-1', projectSlug: 'proj-b', createdAtMs: 0 }],
     )
 
-    await gcOrphanEphemeralModuleDirs()
+    await reapOrphanNodeLocal(view)
 
     expect(reaped).toEqual([{
       projectIds: new Set(ids),
@@ -595,92 +699,20 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     }
   })
 
-  // An empty list would make every project's tree look orphaned, so an
-  // unreadable list skips the node-local reap.
-  it('hands the runtime nothing when the projects cannot be listed', async () => {
-    vi.mocked(listProjectRows).mockRejectedValueOnce(new Error('db closed'))
-    const dead = await seedWorkspacesDir('proj-a', 'dead-1')
-
-    await gcOrphanEphemeralModuleDirs()
-
-    expect(reaped).toHaveLength(0)
-    // The global sweep does not depend on the list and still runs.
-    await expect(fs.access(dead)).rejects.toThrow()
-  })
-
-  it('also removes orphan per-session tmux dirs', async () => {
-    const liveTmux = await seedWorkspacesDir('proj-a', 'live-1')
-    const deadTmux = await seedWorkspacesDir('proj-a', 'dead-1')
-
-    seeRunning([handleFixture({ workspaceId: 'live-1', projectSlug: 'proj-a' })])
-
-    await gcOrphanEphemeralModuleDirs()
-
-    await expect(fs.access(liveTmux)).resolves.toBeUndefined()
-    await expect(fs.access(deadTmux)).rejects.toThrow()
-  })
-
-  // Only a dead spare's checkout is disposable; a stopped workspace's is
-  // kept.
-  it('collects a dead spare, and keeps a stopped workspace', async () => {
-    await recordWorkspaceCreated({ projectSlug: 'proj-a', workspaceId: 'stopped-1' })
-    await recordWorkspaceCreated({ projectSlug: 'proj-a', workspaceId: 'spare-1', spare: true })
-    // Both checkouts are stale, so only the spare flag tells them apart.
-    const [spareCheckout, stoppedCheckout] = await Promise.all(['spare-1', 'stopped-1'].map(async (sid) => {
-      const dir = workspaceDir('proj-a', sid)
-      await fs.mkdir(dir, { recursive: true })
-      await fs.utimes(dir, STALE, STALE)
-      return dir
-    }))
-    seeRunning([handleFixture({ workspaceId: 'live-1', projectSlug: 'proj-a' })])
-
-    try {
-      await gcOrphanEphemeralModuleDirs()
-
-      await expect(fs.access(stoppedCheckout)).resolves.toBeUndefined()
-      await expect(fs.access(spareCheckout)).rejects.toThrow()
-      expect([...(await listProjectWorkspaceIds('proj-a')).keys()]).toEqual(['stopped-1'])
-    } finally {
-      await closeDb()
-    }
-  })
-
   // No project is live, so every node-local tree is an orphan.
   it('with no projects, hands the runtime an empty live set', async () => {
-    await expect(gcOrphanEphemeralModuleDirs()).resolves.toBeUndefined()
+    await reapOrphanNodeLocal(view)
     expect(reaped).toEqual([{ projectIds: new Set(), workspaceIds: new Set() }])
   })
 
-  it('spares a session the process is still provisioning', async () => {
-    // The create records its row before anything is launched, so no
-    // listing shows it yet; sweeping would delete dirs it is about to mount.
-    const staging = await seedWorkspacesDir('proj-a', 'creating-1')
-    publishInFlight(['creating-1'])
+  // An empty list would make every tree look orphaned, so an unreadable
+  // projects list or view fails the step instead.
+  it('hands the runtime nothing when its records cannot be read', async () => {
+    vi.mocked(listProjectRows).mockRejectedValueOnce(new Error('db closed'))
+    await expect(reapOrphanNodeLocal(view)).rejects.toThrow('db closed')
 
-    await gcOrphanEphemeralModuleDirs()
-
-    await expect(fs.access(staging)).resolves.toBeUndefined()
-  })
-
-  it('spares a dir written since the sweep took its listing', async () => {
-    // The same race for a create with no provisioning row (a spare): a
-    // fresh dir is left for the next sweep.
-    const fresh = await seedWorkspacesDir('proj-a', 'staging-1')
-    await fs.utimes(fresh, new Date(), new Date())
-
-    await gcOrphanEphemeralModuleDirs()
-
-    await expect(fs.access(fresh)).resolves.toBeUndefined()
-  })
-
-  // An unreadable view must not read as empty: the sweep does nothing, and
-  // the runtime gets no live set to reap against.
-  it('returns quietly when the runtime view cannot be read', async () => {
-    const dead = await seedWorkspacesDir('proj-a', 'would-be-removed')
     seeNothing()
-
-    await expect(gcOrphanEphemeralModuleDirs()).resolves.toBeUndefined()
-    await expect(fs.access(dead)).resolves.toBeUndefined()
+    await expect(reapOrphanNodeLocal(view)).rejects.toThrow('cluster offline')
     expect(reaped).toHaveLength(0)
   })
 })
