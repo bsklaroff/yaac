@@ -90,12 +90,8 @@ describe('ensurePriorityClasses', () => {
     vi.mocked(kubectlApply).mockClear()
   })
 
-  it('applies every class, and stays idempotent on a re-run', async () => {
+  it('applies every class in one apply', async () => {
     await ensurePriorityClasses()
-    expect(vi.mocked(kubectlApply).mock.calls.map(([m]) => m)).toEqual(classes())
-
-    // Idempotent: a second run applies the same objects.
-    await ensurePriorityClasses()
-    expect(vi.mocked(kubectlApply)).toHaveBeenCalledTimes(classes().length * 2)
+    expect(vi.mocked(kubectlApply).mock.calls).toEqual([[{ apiVersion: 'v1', kind: 'List', items: classes() }]])
   })
 })

@@ -13,15 +13,10 @@
 // Each name exported here needs a unit test in
 // packages/server/test/drivers/k8s/install/.
 
-export {
-  ClusterDeleteError,
-  ClusterInstallError,
-  clusterArgError,
-  type ClusterInstallArgs,
-} from './arg-guards'
+export { ClusterInstallError, clusterArgError, type ClusterInstallArgs } from './arg-guards'
 export { buildBuiltinImages } from './builtin-images'
 export { runClusterCheck } from './check'
-export { runClusterDelete } from './delete'
+export { ClusterDeleteError, runClusterDelete } from './delete'
 export { ensureGvisorRuntime } from './gvisor-installer'
 export { runClusterInstall } from './install'
 export { foreignClusterRefusal } from './cluster-identity'

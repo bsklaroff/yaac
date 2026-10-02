@@ -39,13 +39,12 @@ import type { ProjectRef } from '#drivers/contract'
 export const CACHE_TAG_PREFIX = 'yaac-cache-'
 
 /**
- * What counts as a yaac content-hash generation: a `yaac-*` repo (the
- * `localhost` forms match repos pushed before canonicalization) with a
+ * What counts as a yaac content-hash generation: a `yaac-*` repo with a
  * 16-hex tag. Must match the registry retention pass
  * (buildRegistryRetentionScript). Shell fragments, since both uses are
  * shell.
  */
-const GENERATION_REPO_GLOBS = 'yaac-*|localhost/yaac-*|localhost:*/yaac-*'
+const GENERATION_REPO_GLOBS = 'yaac-*'
 const GENERATION_TAG_RE = '[0-9a-f]{16}'
 
 /**
@@ -57,7 +56,7 @@ const GENERATION_TAG_RE = '[0-9a-f]{16}'
 const PUSHED_LEDGER = '/var/lib/containers/.yaac-pushed-refs'
 
 /** Depth cap on one ancestor walk, against cyclic or absurd chains. */
-export const MAX_CHAIN_DEPTH = 64
+const MAX_CHAIN_DEPTH = 64
 
 /**
  * Newest content-hash generations per repo that the node image store
@@ -95,7 +94,7 @@ function canonicalRef(ref: string): string {
   return ref.startsWith(LOCAL_REGISTRY_PREFIX) ? ref.slice(LOCAL_REGISTRY_PREFIX.length) : ref
 }
 
-export interface EngineImage {
+interface EngineImage {
   id: string
   /** Parent image id, or null for a chain root. */
   parent: string | null
@@ -110,27 +109,27 @@ export interface EngineImage {
   readOnly: boolean
 }
 
-export interface SurveyReport {
+interface SurveyReport {
   images: EngineImage[]
   /** `<id> <dest>` pairs this pod already pushed or pulled (the ledger). */
   have: Set<string>
 }
 
 /** Stale chain slots to drop for one name: everything past `depth`. */
-export interface ChainRetire {
+interface ChainRetire {
   repo: string
   tag: string
   depth: number
 }
 
 /** What one salvage hands the workspace pod. */
-export interface SalvagePlan {
+interface SalvagePlan {
   pairs: PushPair[]
   retire: ChainRetire[]
 }
 
 /** One `podman push <id> <dest>` the push exec is asked to run. */
-export interface PushPair {
+interface PushPair {
   id: string
   dest: string
 }
@@ -146,7 +145,7 @@ function validRef(ref: string): boolean {
  * Malformed ids and refs are dropped here so nothing unvalidated reaches a
  * push command.
  */
-export function parseSurveyReport(stdout: string): SurveyReport {
+function parseSurveyReport(stdout: string): SurveyReport {
   const images: EngineImage[] = []
   const have = new Set<string>()
   // Collected first so line order does not matter.
@@ -188,7 +187,7 @@ export function parseSurveyReport(stdout: string): SurveyReport {
  * Prints the ledger, `ro <id>` for store-only images, and one row per
  * image with its id, parent and names.
  */
-export function buildSurveyScript(): string {
+function buildSurveyScript(): string {
   return [
     'set -u',
     `[ -f ${PUSHED_LEDGER} ] && sed 's/^/have /' ${PUSHED_LEDGER}`,
@@ -217,7 +216,7 @@ export function buildSurveyScript(): string {
  * ones, which only costs registry space.
  */
 export const SALVAGE_COMPRESSION = 'gzip'
-export const SALVAGE_COMPRESSION_LEVEL = 1
+const SALVAGE_COMPRESSION_LEVEL = 1
 
 /**
  * The push script. Validated `id dest` pairs arrive as argv, never in the
@@ -225,7 +224,7 @@ export const SALVAGE_COMPRESSION_LEVEL = 1
  * is plain HTTP (projectRegistryConfDropIn). `nice -n 19` so the agent's
  * work gets the CPU first.
  */
-export function buildPushScript(): string {
+function buildPushScript(): string {
   return [
     'set -u',
     'ok=0; fail=0',
@@ -262,7 +261,7 @@ const MANIFEST_ACCEPT = [
  * read-only window, and the caller only records the retire when nothing
  * failed, so it is retried next time.
  */
-export function buildRetireScript(registryHost: string): string {
+function buildRetireScript(registryHost: string): string {
   const curl = 'curl -fsS --max-time 20'
   return [
     'set -u',
@@ -357,7 +356,7 @@ export function rankedRegistryTagsScript(): string {
  * engine, and podman under sudo there would create a root-owned
  * `libpod/tmp` in the user's checkout.
  */
-export function sudoExecCommand(script: string, argv: string[] = []): string {
+function sudoExecCommand(script: string, argv: string[] = []): string {
   const args = argv.map((a) => ` ${shellQuote(a)}`).join('')
   const sudoRun = `exec sudo -n -H sh -c ${shellQuote(script)} --${args}`
   return `sh -c ${shellQuote(
@@ -384,7 +383,7 @@ export function sudoExecCommand(script: string, argv: string[] = []): string {
  * canonicalization. A workspace can overwrite a repo the server also
  * pushes (last push wins), but it could push there directly anyway.
  */
-export function planSalvagePushes(report: SurveyReport, registryHost: string): SalvagePlan {
+function planSalvagePushes(report: SurveyReport, registryHost: string): SalvagePlan {
   const byId = new Map(report.images.map((img) => [img.id, img]))
   const named = new Set(report.images.filter((img) => img.refs.length > 0).map((img) => img.id))
   const pairs: PushPair[] = []
@@ -432,13 +431,13 @@ export function planSalvagePushes(report: SurveyReport, registryHost: string): S
 }
 
 /** Parse the retire script's trailing `retired <n> failed <n>` line. */
-export function parseRetireReport(stdout: string): { retired: number; failed: number } {
+function parseRetireReport(stdout: string): { retired: number; failed: number } {
   const m = /retired (\d+) failed (\d+)/.exec(stdout)
   return { retired: Number(m?.[1] ?? 0), failed: Number(m?.[2] ?? 0) }
 }
 
 /** Parse the push script's trailing `pushed <n> failed <n>` line. */
-export function parsePushReport(stdout: string): { pushed: number; failed: number } {
+function parsePushReport(stdout: string): { pushed: number; failed: number } {
   const m = /pushed (\d+) failed (\d+)/.exec(stdout)
   return { pushed: Number(m?.[1] ?? 0), failed: Number(m?.[2] ?? 0) }
 }
@@ -454,15 +453,6 @@ export function _resetSalvageMemoForTests(): void {
   lastRetiredShape.clear()
 }
 
-export interface SalvageOptions {
-  /** Survey exec deadline. Default 120s (a busy engine can delay it). */
-  surveyTimeoutMs?: number
-  /** Push exec deadline. Default 600s. */
-  pushTimeoutMs?: number
-  /** Retire exec deadline. Default 120s. */
-  retireTimeoutMs?: number
-}
-
 /**
  * Salvage a workspace's images: survey in-pod, plan, push new images to the
  * project registry, retire stale chain slots. Best-effort, so teardown is
@@ -473,7 +463,6 @@ export async function salvageJobImages(params: {
   jobName: string
   project: ProjectRef
   workspaceId: string
-  opts?: SalvageOptions
 }): Promise<boolean> {
   const { workspaceId } = params
   const existing = salvageInflight.get(workspaceId)
@@ -489,15 +478,15 @@ async function salvageJobImagesUncoalesced(params: {
   jobName: string
   project: ProjectRef
   workspaceId: string
-  opts?: SalvageOptions
 }): Promise<boolean> {
-  const { jobName, project, workspaceId, opts } = params
+  const { jobName, project, workspaceId } = params
   const registryHost = projectRegistryHost(project.id)
 
   let report: SurveyReport
   try {
     const { stdout } = await containerExec(jobName, sudoExecCommand(buildSurveyScript()), {
-      timeout: opts?.surveyTimeoutMs ?? 120_000,
+      // A busy engine can delay the survey.
+      timeout: 120_000,
       maxAttempts: 1,
     })
     report = parseSurveyReport(stdout)
@@ -520,7 +509,7 @@ async function salvageJobImagesUncoalesced(params: {
       const { stdout } = await containerExec(
         jobName,
         sudoExecCommand(buildPushScript(), argv),
-        { timeout: opts?.pushTimeoutMs ?? 600_000, maxAttempts: 1 },
+        { timeout: 600_000, maxAttempts: 1 },
       )
       ;({ pushed, failed } = parsePushReport(stdout))
     } catch (err) {
@@ -535,7 +524,7 @@ async function salvageJobImagesUncoalesced(params: {
     const out = await containerExec(
       jobName,
       sudoExecCommand(buildRetireScript(registryHost), triples),
-      { timeout: opts?.retireTimeoutMs ?? 120_000, maxAttempts: 1 },
+      { timeout: 120_000, maxAttempts: 1 },
     ).catch((err: unknown) => {
       console.warn(`Chain retire for ${jobName} failed: ${(err as Error).message}`)
       return null

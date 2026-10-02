@@ -33,7 +33,7 @@ const KILL_DEADLINE_MS = 30_000
  *  hold them open) before reporting its exit code. */
 const PIPE_DRAIN_MS = 2_000
 
-export interface StreamingProcOptions {
+interface StreamingProcOptions {
   /** Piped to the child's stdin (a context tar); no stdin without it. */
   input?: NodeJS.ReadableStream
   onLog?: (line: string) => void

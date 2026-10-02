@@ -1,11 +1,7 @@
 /**
- * The image build coordinator: `ensureImage` and `pushImageShared`.
+ * The image build coordinator: `ensureImage`.
  *
- * `pushImageShared` is not on the images barrel, but it keeps a describe
- * here: its callers' tests mock this module, so its short-circuits and
- * coalescing are covered nowhere else.
- *
- * Nothing in the images folder is mocked. build-engine routing and the whole
+ * Nothing in the images folder is mocked. Trusted-layer routing and the whole
  * builder-pod flow (manifests, in-pod scripts, build argv, context tar) run
  * for real; the fakes are kubectl, spawn, podman and the registry.
  */
@@ -182,7 +178,7 @@ vi.mock('#log', () => ({
   },
 }))
 
-import { ensureImage, pushImageShared } from '#drivers/k8s/images/build-coordinator'
+import { ensureImage } from '#drivers/k8s/images/build-coordinator'
 import { _clearBuildCoordinatorForTests } from '#drivers/k8s/images/build-coordinator'
 import { buildImage, resolveImageChain, type ImageLayer } from '#drivers/k8s/image-engine/image-builder'
 import { imageExists } from '#drivers/k8s/container/runtime'
@@ -303,13 +299,16 @@ interface PodManifest {
   }
 }
 
-const appliedKinds = (): string[] =>
-  mockKubectlApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
+/** Each applied object, with a `List` apply's items in order. */
+const appliedObjects = (): Array<{ kind: string }> => mockKubectlApply.mock.calls.flatMap((c) => {
+  const m = c[0] as { kind: string; items?: Array<{ kind: string }> }
+  return m.kind === 'List' ? m.items ?? [] : [m]
+})
+
+const appliedKinds = (): string[] => appliedObjects().map((m) => m.kind)
 
 function appliedOfKind<T>(kind: string): T {
-  const found = mockKubectlApply.mock.calls
-    .map((c) => c[0] as { kind: string })
-    .find((m) => m.kind === kind)
+  const found = appliedObjects().find((m) => m.kind === kind)
   expect(found, `no ${kind} was applied`).toBeDefined()
   return found as T
 }
@@ -323,18 +322,6 @@ const deleteCalls = (): string[][] =>
   mockKubectlWithRetry.mock.calls
     .map((c) => c[0] as string[])
     .filter((args) => args[0] === 'delete')
-
-interface Deferred {
-  promise: Promise<void>
-  resolve: () => void
-  reject: (err: Error) => void
-}
-function deferred(): Deferred {
-  let resolve!: () => void
-  let reject!: (err: Error) => void
-  const promise = new Promise<void>((res, rej) => { resolve = res; reject = rej })
-  return { promise, resolve, reject }
-}
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 10; i++) await Promise.resolve()
@@ -833,63 +820,4 @@ describe('ensureImage', () => {
     }])
     await expect(ensureImage(PROJ)).rejects.toThrow(/\.containerignore/)
   })
-})
-
-describe('pushImageShared', () => {
-  it('returns the ref without pushing or registering when the tag is present', async () => {
-    mockHasTag.mockResolvedValue(true)
-    const ref = await pushImageShared('t:1', { project: PROJ_A, reason: 'prewarm' })
-    expect(ref).toBe(`${CLUSTER_HOST}/t:1`)
-    expect(mockPush).not.toHaveBeenCalled()
-    expect(listImageBuilds()).toEqual([])
-  })
-
-  it('caches a verified registry tag — the second push skips even the HEAD', async () => {
-    mockHasTag.mockResolvedValue(true)
-    await pushImageShared('t:1', { project: PROJ_A, reason: 'session' })
-    mockHasTag.mockClear()
-
-    const ref = await pushImageShared('t:1', { project: PROJ_A, reason: 'session' })
-    expect(ref).toBe(`${CLUSTER_HOST}/t:1`)
-    expect(mockHasTag).not.toHaveBeenCalled()
-  })
-
-  it('caches a completed push the same way', async () => {
-    mockHasTag.mockResolvedValue(false)
-    mockPush.mockResolvedValue(`${CLUSTER_HOST}/t:1`)
-    await pushImageShared('t:1', { project: PROJ_A, reason: 'session' })
-    mockHasTag.mockClear()
-    mockPush.mockClear()
-
-    await pushImageShared('t:1', { project: PROJ_A, reason: 'session' })
-    expect(mockHasTag).not.toHaveBeenCalled()
-    expect(mockPush).not.toHaveBeenCalled()
-  })
-
-  it('passes the compression format through to the push', async () => {
-    mockPush.mockResolvedValue(`${CLUSTER_HOST}/t:1`)
-    await pushImageShared('t:1', { project: PROJ_A, reason: 'session' }, { compressionFormat: 'zstd' })
-    expect(mockPush.mock.calls[0][1]).toMatchObject({ compressionFormat: 'zstd' })
-  })
-
-  it('coalesces concurrent pushes of the same tag', async () => {
-    const d = deferred()
-    mockPush.mockImplementation(() => d.promise.then(() => `${CLUSTER_HOST}/t:1`))
-    const a = pushImageShared('t:1', { project: PROJ_A, reason: 'session' })
-    const b = pushImageShared('t:1', { project: PROJ_B, reason: 'session' })
-    await flush()
-    expect(mockPush).toHaveBeenCalledTimes(1)
-    d.resolve()
-    expect(await a).toBe(`${CLUSTER_HOST}/t:1`)
-    expect(await b).toBe(`${CLUSTER_HOST}/t:1`)
-    expect(listImageBuilds()[0]).toMatchObject({ action: 'push', status: 'succeeded' })
-  })
-
-  it('marks the entry failed and rejects when the push fails', async () => {
-    mockPush.mockRejectedValue(new Error('registry down'))
-    await expect(pushImageShared('t:1', { project: PROJ_A, reason: 'session' }))
-      .rejects.toThrow('registry down')
-    expect(listImageBuilds()[0]).toMatchObject({ action: 'push', status: 'failed' })
-  })
-
 })

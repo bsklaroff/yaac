@@ -1,14 +1,13 @@
 import {
-  LABEL_DATA_DIR_HASH,
   LABEL_NPM_CACHE,
   LABEL_PREWARMED,
   LABEL_TOOL,
-  LABEL_WORKSPACE_ID,
-  dataDirHash,
+  findWorkspacePod,
+  isPrewarmed,
   k8sNamespace,
-  kubectlGetJson,
   kubectlWithRetry,
   NPM_CACHE_APP_NAME,
+  readWorkspacePods,
 } from '#drivers/k8s/substrate'
 import { servingNpmCacheUrl } from '#drivers/k8s/cluster'
 import { registerWorkspaceEgress } from '#drivers/k8s/egress'
@@ -52,27 +51,17 @@ export async function claimSpareWorkspace(
   workspaceId: string,
   tool: AgentTool,
 ): Promise<void> {
-  const selector = [
-    `${LABEL_DATA_DIR_HASH}=${dataDirHash()}`,
-    `${LABEL_WORKSPACE_ID}=${workspaceId}`,
-    `${LABEL_PREWARMED}=true`,
-  ].join(',')
-
-  const list = await kubectlGetJson<{
-    items?: Array<{ metadata?: { name?: string; labels?: Record<string, string> } }>
-  }>([
-    'get', 'pods', '-l', selector, '-n', k8sNamespace(),
-  ])
   // One pod per workspace id. A second match would be a Job mid-replacement,
   // which the pool planner reaps.
-  const podName = list?.items?.[0]?.metadata?.name
-  if (!podName) {
+  const pod = findWorkspacePod(await readWorkspacePods(), workspaceId, { spares: true })
+  if (!pod || !isPrewarmed(pod)) {
     throw new Error(
       `no prewarmed spare left to claim for ${workspaceId} `
       + '(already claimed, or its pod is gone)',
     )
   }
 
+  const { podName } = pod
   await kubectlWithRetry([
     'patch', 'pod', podName, '-n', k8sNamespace(), '--type=json', '-p',
     JSON.stringify([
@@ -87,7 +76,7 @@ export async function claimSpareWorkspace(
   // Re-decide the npm registry at claim time: the spare's init chose it
   // long ago, and pnpm has no fallback if the cache has since gone down
   // (`servingNpmCacheUrl`). Best-effort.
-  if (list?.items?.[0]?.metadata?.labels?.[LABEL_NPM_CACHE] === 'true') {
+  if (pod.labels[LABEL_NPM_CACHE] === 'true') {
     await servingNpmCacheUrl().then((url) => writeNpmRegistry(podName, url)).catch((err: unknown) => {
       serverLog(`[prewarm] could not re-decide the npm registry of ${podName}: ${String(err)}`)
     })
@@ -109,17 +98,10 @@ export async function claimSpareWorkspace(
 export async function registerWorkspace(reg: WorkspaceRegistration): Promise<void> {
   const registration = await registerWorkspaceEgress(reg)
   if (npmCacheApplies(reg.config, registration.allowedHosts, reg.proxySecretRules)) return
-  const list = await kubectlGetJson<{ items?: Array<{ metadata?: { name?: string } }> }>([
-    'get', 'pods', '-n', k8sNamespace(), '-l', [
-      `${LABEL_DATA_DIR_HASH}=${dataDirHash()}`,
-      `${LABEL_WORKSPACE_ID}=${reg.workspaceId}`,
-      `${LABEL_NPM_CACHE}=true`,
-    ].join(','),
-  ])
-  const podName = list?.items?.[0]?.metadata?.name
-  if (!podName) return
-  await writeNpmRegistry(podName, null)
-  await kubectlWithRetry(['label', 'pod', podName, '-n', k8sNamespace(), `${LABEL_NPM_CACHE}-`])
+  const pod = findWorkspacePod(await readWorkspacePods(), reg.workspaceId, { spares: true })
+  if (pod?.labels[LABEL_NPM_CACHE] !== 'true') return
+  await writeNpmRegistry(pod.podName, null)
+  await kubectlWithRetry(['label', 'pod', pod.podName, '-n', k8sNamespace(), `${LABEL_NPM_CACHE}-`])
 }
 
 /**

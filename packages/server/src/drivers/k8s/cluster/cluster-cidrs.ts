@@ -77,7 +77,7 @@ export async function nodeIpBlocks(): Promise<string[]> {
 }
 
 /** kind's default cluster CIDR, and the last resort when nothing answers. */
-export const FALLBACK_POD_CIDR = '10.244.0.0/16'
+const FALLBACK_POD_CIDR = '10.244.0.0/16'
 
 /**
  * A valid IPv4 CIDR. Range-checked because one bad line makes

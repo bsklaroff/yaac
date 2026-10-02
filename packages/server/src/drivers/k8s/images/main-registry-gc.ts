@@ -1,7 +1,7 @@
 /**
  * GC of the main registry: retires aged-out step-cache tags, old
  * content-hash generations and orphaned project repos, collects the
- * unreferenced blobs, restarts the registry, then prunes the nodes' copies
+ * unreferenced blobs, then prunes the nodes' copies
  * (node-image-gc.ts). docs/image-gc.md "The main registry" describes each
  * step.
  *
@@ -12,22 +12,13 @@
  * single-arch manifest; an untagged push or a manifest list would be
  * collected out from under its users.
  *
- * The collect runs without a read-only window, so two hazards are handled
- * here:
- *
- * - A push racing the collect could lose blobs. The collect is skipped
- *   while any upload is in progress, a link file was written recently, or
- *   this server is building or pushing, and those checks are repeated just
- *   before it runs.
- * - The registry caches blob descriptors in memory, so after a collect a
- *   re-pushed digest would 404. The restart that clears them always runs,
- *   and a marker file in storage makes the next pass redo a lost restart.
+ * The collect runs without a read-only window, so a push racing it could
+ * lose blobs. It is skipped while any upload is in progress, a link file
+ * was written recently, or this server is building, and those checks are
+ * repeated just before it runs. The registry keeps no blob-descriptor
+ * cache (main-registry.ts), so it needs no restart afterwards.
  */
-import {
-  buildRegistryRetentionScript,
-  mainRegistryExec,
-  restartMainRegistry,
-} from '#drivers/k8s/cluster'
+import { buildRegistryRetentionScript, mainRegistryExec } from '#drivers/k8s/cluster'
 import { kubectlGetJson } from '#drivers/k8s/substrate'
 import { resolveImageChain } from '#drivers/k8s/image-engine'
 import { testEnv } from '@yaac/shared/env'
@@ -58,7 +49,7 @@ const TEST_IMAGE_REPOS = 'yaac-test-*'
  * `--cache-ttl`, past which a tag is already a cache miss. Computed on call
  * because some tests mock builder-pod.
  */
-export function buildCacheRetainDays(): number {
+function buildCacheRetainDays(): number {
   return Math.max(1, Math.floor(Number.parseInt(BUILD_CACHE_TTL, 10) / 24))
 }
 
@@ -67,14 +58,14 @@ export function buildCacheRetainDays(): number {
  * progress. Each chunk rewrites the file, so a slow live upload stays
  * busy; the bound keeps abandoned uploads from blocking GC forever.
  */
-export const REGISTRY_UPLOAD_BUSY_MINUTES = 60
+const REGISTRY_UPLOAD_BUSY_MINUTES = 60
 
 /**
  * Minutes with no link file written before a collect may run. Covers
  * pushes with no upload in progress (a committed blob awaiting its
  * manifest, a cross-repo mount). Short, so a busy install still collects.
  */
-export const REGISTRY_QUIET_MINUTES = 5
+const REGISTRY_QUIET_MINUTES = 5
 
 /** Registry:2 storage root, binary, and config inside the container. */
 const REGISTRY_STORAGE_DIR = '/var/lib/registry'
@@ -82,20 +73,13 @@ const REGISTRY_REPOS_DIR = `${REGISTRY_STORAGE_DIR}/docker/registry/v2/repositor
 const REGISTRY_BINARY = '/bin/registry'
 const REGISTRY_CONFIG = '/etc/docker/registry/config.yml'
 
-/**
- * Marker meaning a collect started and no restart has succeeded since.
- * Stored in the registry so it survives the server dying mid-collect.
- */
-const COLLECT_MARKER = `${REGISTRY_STORAGE_DIR}/.yaac-collect-started`
-
 const PROBE_TIMEOUT_MS = 60_000
 const SWEEP_TIMEOUT_MS = 60_000
 const COLLECT_TIMEOUT_MS = 10 * 60_000
-const MARKER_TIMEOUT_MS = 30_000
 
 /**
  * In-container deadline for the collect, just under the exec's, so
- * `garbage-collect` is never left running unwatched during the restart.
+ * `garbage-collect` is never left running unwatched.
  */
 const COLLECT_KILL_SECONDS = Math.floor(COLLECT_TIMEOUT_MS / 1000) - 30
 
@@ -103,7 +87,7 @@ const COLLECT_KILL_SECONDS = Math.floor(COLLECT_TIMEOUT_MS / 1000) - 30
  * Busybox script printing BUSY if an upload is in progress or any link
  * file was written inside the quiet window.
  */
-export function registryQuietProbeScript(
+function registryQuietProbeScript(
   busyMinutes = REGISTRY_UPLOAD_BUSY_MINUTES,
   quietMinutes = REGISTRY_QUIET_MINUTES,
 ): string {
@@ -127,7 +111,7 @@ export function registryQuietProbeScript(
  * prints each as `RETIRED <key>`. A cache hit re-pushes the entry and
  * refreshes the link, so age means time since last use.
  */
-export function buildCacheSweepScript(days = buildCacheRetainDays()): string {
+function buildCacheSweepScript(days = buildCacheRetainDays()): string {
   return [
     'set -eu',
     `ROOT=${REGISTRY_REPOS_DIR}`,
@@ -144,7 +128,7 @@ export function buildCacheSweepScript(days = buildCacheRetainDays()): string {
 }
 
 /** Minimum repo directory age before the orphan sweep may remove it. */
-export const ORPHAN_REPO_MIN_AGE_MINUTES = 10
+const ORPHAN_REPO_MIN_AGE_MINUTES = 10
 
 /**
  * Busybox script that removes every `yaac-{proj,user,buildcache}-<x>` repo
@@ -152,7 +136,7 @@ export const ORPHAN_REPO_MIN_AGE_MINUTES = 10
  * (`keepRepos`). Prints `RETIRED <repo>` for each. `yaac-test-*` repos
  * never match.
  */
-export function orphanProjectRepoSweepScript(liveIds: string[], keepRepos: string[]): string {
+function orphanProjectRepoSweepScript(liveIds: string[], keepRepos: string[]): string {
   return [
     'set -eu',
     `ROOT=${REGISTRY_REPOS_DIR}`,
@@ -179,11 +163,6 @@ interface MainRegistryGcResult {
   busy: boolean
   /** True when the blob collect actually ran. */
   collected: boolean
-  /**
-   * False when a collect ran but the restart failed: the registry is
-   * serving stale blob descriptors until the next pass restarts it.
-   */
-  restored: boolean
 }
 
 /** True when the registry is serving a push right now, or just was. */
@@ -193,24 +172,6 @@ async function registryBusy(): Promise<boolean> {
     PROBE_TIMEOUT_MS,
   )
   return stdout.includes('BUSY')
-}
-
-/**
- * Restart the registry, then remove the collect marker. The marker goes
- * only after success, so a failed restart is retried by the next pass.
- */
-async function restartRegistry(): Promise<void> {
-  await restartMainRegistry()
-  await mainRegistryExec(['rm', '-f', COLLECT_MARKER], MARKER_TIMEOUT_MS)
-}
-
-/** Did a previous pass start a collect that no restart has followed? */
-async function collectMarkerPresent(): Promise<boolean> {
-  const stdout = await mainRegistryExec(
-    ['sh', '-c', `[ -f ${COLLECT_MARKER} ] && echo MARKED || true`],
-    MARKER_TIMEOUT_MS,
-  )
-  return stdout.includes('MARKED')
 }
 
 /** What the retention pass must not retire, gathered before it runs. */
@@ -274,8 +235,8 @@ async function readLiveImages(
   for (const project of projects) {
     try {
       const nested = (await projectConfig(project.slug))?.nestedContainers === true
-      const { layers, finalTag } = await resolveImageChain(project, prefix, nested)
-      for (const tag of [...layers.map((l) => l.tag), finalTag]) wanted.add(tag)
+      const { layers } = await resolveImageChain(project, prefix, nested)
+      for (const { tag } of layers) wanted.add(tag)
     } catch (err) {
       serverLog(`[main-registry-gc] ${project.slug}: cannot resolve its image chain, `
         + `so no image generation is retired this pass: ${String(err)}`)
@@ -287,20 +248,11 @@ async function readLiveImages(
 }
 
 /**
- * One GC pass over the registry: redo any lost restart, untag, and, if the
- * registry is still quiet, collect and restart.
+ * One GC pass over the registry: untag, and, if the registry is still
+ * quiet, collect.
  */
 async function gcMainRegistry(live: LiveImages): Promise<MainRegistryGcResult> {
-  // Before the busy check: stale descriptors are worse than interrupting
-  // a push, which never lands its manifest and is retried.
-  if (await collectMarkerPresent()) {
-    serverLog('[main-registry-gc] a previous collect went unfinished, restarting the registry')
-    await restartRegistry()
-  }
-
-  if (await registryBusy()) {
-    return { retired: [], busy: true, collected: false, restored: true }
-  }
+  if (await registryBusy()) return { retired: [], busy: true, collected: false }
 
   let stdout = await mainRegistryExec(['sh', '-c', buildCacheSweepScript()], SWEEP_TIMEOUT_MS)
   const inUseRepos = [...new Set([...live.inUse].map((ref) => ref.slice(0, ref.lastIndexOf(':'))))]
@@ -319,38 +271,23 @@ async function gcMainRegistry(live: LiveImages): Promise<MainRegistryGcResult> {
     .map((l) => l.trim())
     .filter((l) => l.startsWith('RETIRED '))
     .map((l) => l.slice('RETIRED '.length))
-  if (retired.length === 0) return { retired, busy: false, collected: false, restored: true }
+  if (retired.length === 0) return { retired, busy: false, collected: false }
   // A create that resolves back to a retired tag (a reverted Dockerfile
   // edit) must check the registry again rather than trust the cache.
   forgetVerifiedTags()
 
   // Re-check, since untagging took time. Skipping is cheap: the next pass
   // collects these.
-  if (imageWorkInFlight() || await registryBusy()) {
-    return { retired, busy: true, collected: false, restored: true }
-  }
+  if (imageWorkInFlight() || await registryBusy()) return { retired, busy: true, collected: false }
 
-  await mainRegistryExec(['touch', COLLECT_MARKER], MARKER_TIMEOUT_MS)
-  let restored = false
-  try {
-    await mainRegistryExec(
-      [
-        'timeout', String(COLLECT_KILL_SECONDS),
-        REGISTRY_BINARY, 'garbage-collect', '--delete-untagged', REGISTRY_CONFIG,
-      ],
-      COLLECT_TIMEOUT_MS,
-    )
-  } finally {
-    // Always restart, especially after a collect that failed part-way.
-    restored = await restartRegistry().then(() => true).catch((err: unknown) => {
-      serverLog(
-        '[main-registry-gc] the registry could not be restarted after a collect '
-        + `and may resolve re-pushed digests to missing blobs until it is: ${String(err)}`,
-      )
-      return false
-    })
-  }
-  return { retired, busy: false, collected: true, restored }
+  await mainRegistryExec(
+    [
+      'timeout', String(COLLECT_KILL_SECONDS),
+      REGISTRY_BINARY, 'garbage-collect', '--delete-untagged', REGISTRY_CONFIG,
+    ],
+    COLLECT_TIMEOUT_MS,
+  )
+  return { retired, busy: false, collected: true }
 }
 
 let lastSweepMs = 0
@@ -393,10 +330,10 @@ export function reconcileMainRegistryGc(
   lastSweepMs = nowMs
   inFlightPass = (async () => {
     const live = await readLiveImages(projects, projectConfig)
-    const { retired, busy, collected, restored } = await gcMainRegistry(live)
+    const { retired, busy, collected } = await gcMainRegistry(live)
     if (busy) {
       serverLog('[main-registry-gc] registry has pushes in flight, leaving the collect for later')
-    } else if (collected && restored) {
+    } else if (collected) {
       serverLog(`[main-registry-gc] retired ${retired.length} stale tag(s) and collected their blobs`)
     }
     // Re-read: the earlier snapshot may be minutes old.

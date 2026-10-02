@@ -6,15 +6,13 @@ import { useSnapshot } from '#lib/useSnapshot'
 /**
  * Sidebar-header pill for image builds: running, failed, or finished ones not
  * yet dismissed (shown muted). Clicking opens `ImageBuildsOverlay`. Shows the
- * active project's builds plus project-less ones such as the proxy sidecar.
+ * active project's builds.
  */
 export function ImageBuildIndicator({ projectSlug }: { projectSlug: string | null }): JSX.Element | null {
   const allBuilds = useSnapshot()?.imageBuilds ?? []
   const [open, setOpen] = useState(false)
 
-  const builds = allBuilds.filter(
-    (b) => b.projectSlugs.length === 0 || (projectSlug !== null && b.projectSlugs.includes(projectSlug)),
-  )
+  const builds = allBuilds.filter((b) => projectSlug !== null && b.projectSlugs.includes(projectSlug))
   const running = builds.filter((b) => b.status === 'running').length
   const failed = builds.filter((b) => b.status === 'failed').length
   // Stay mounted while the overlay is open, even if the list empties.

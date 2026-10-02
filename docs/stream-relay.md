@@ -110,8 +110,7 @@ while the server learned nothing.
 write. The address is the proxy's Service,
 `yaac-proxy.<namespace>.svc.cluster.local:10260`, dialed directly: the
 server is a pod in that namespace (docs/server-in-cluster.md), and the
-proxy's ingress policy admits the server's pods on the relay port. The
-Deployment sets it as `YAAC_RELAY_ADDR`, which is used as given.
+proxy's ingress policy admits the server's pods on the relay port.
 
 Streams share nothing. Each dial is its own TCP connection, so a failure
 affects only its own caller, not other terminals, status streams or
@@ -163,7 +162,7 @@ respawn, the frontend's WebSocket reconnect, and per-connection forward
 errors.
 
 Probe results are classified conservatively. Only a stream that reached the
-pod and saw the command exit nonzero (`RelayExecError`) counts as a real
+pod and saw the command exit nonzero (`WorkspaceExecError`) counts as a real
 answer. Any transport failure (`RelayDialError`) is `unknown`, and the
 stale reaper treats `unknown` as "do not reap". A proxy outage therefore
 degrades terminals but never ends workspaces.

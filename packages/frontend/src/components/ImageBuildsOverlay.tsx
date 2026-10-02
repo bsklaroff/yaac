@@ -16,13 +16,6 @@ function shortTag(tag: string): string {
   return `${tag.slice(0, idx)}:${tag.slice(idx + 1, idx + 7)}`
 }
 
-/** Row label: the layer name, "push", or the shared proxy sidecar. */
-function buildLabel(b: ImageBuildEntry): string {
-  if (b.action === 'push') return 'push'
-  if (b.layer === 'proxy') return 'proxy sidecar'
-  return `${b.layer} layer`
-}
-
 function StatusIcon({ status }: { status: ImageBuildEntry['status'] }): JSX.Element {
   if (status === 'running') return <LoadingIcon size={12} className="shrink-0 animate-spin text-text-dim" />
   if (status === 'failed') return <WarningIcon size={12} className="shrink-0 text-danger" />
@@ -110,7 +103,7 @@ export function ImageBuildsOverlay({
                   >
                     <span className="flex items-center gap-1.5 text-xs">
                       <StatusIcon status={b.status} />
-                      <span className="font-medium">{buildLabel(b)}</span>
+                      <span className="font-medium">{b.layer} layer</span>
                       <span className="truncate font-mono text-text-faint">{shortTag(b.tag)}</span>
                     </span>
                     <span className="truncate text-[11px] text-text-dim">

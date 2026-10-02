@@ -157,7 +157,11 @@ function stageClusterReads(): void {
   })
 }
 
-const applied = (): Manifest[] => mockApply.mock.calls.map((c) => c[0] as Manifest)
+/** Each applied object, with a `List` apply's items in order. */
+const applied = (): Manifest[] => mockApply.mock.calls.flatMap((c) => {
+  const m = c[0] as Manifest & { items?: Manifest[] }
+  return m.kind === 'List' ? m.items ?? [] : [m]
+})
 const kinds = (): string[] => applied().map((m) => m.kind)
 const byName = (name: string): Manifest | undefined =>
   applied().find((m) => m.metadata.name === name)
@@ -276,11 +280,12 @@ describe('ensureProxyResources', () => {
     await expect(fs.readdir(tmpDir)).resolves.not.toContain('.credentials')
 
     expect(kinds()).toEqual([
-      'ServiceAccount', 'Role', 'RoleBinding',
       // The proxy's three outputs, created empty before the Deployment so
       // its Role can name them.
       'Secret', 'Secret', 'ConfigMap',
-      // The proxy's Service, and the server's mama Service the proxy relays to.
+      // Then one apply: RBAC before the Deployment that uses it, then the
+      // proxy's Service and the server's mama Service the proxy relays to.
+      'ServiceAccount', 'Role', 'RoleBinding',
       'Deployment', 'Service', 'Service',
       // Workspace egress, workspace ingress lock, proxy ingress and egress,
       // world-deny.

@@ -16,7 +16,7 @@
  *   5. `podman build --isolation chroot` with the registry step cache,
  *   6. push the product (parent blobs are cross-repo mounted, not
  *      re-uploaded),
- *   7. delete the pod (the reap sweep catches leaks).
+ *   7. delete the pod (the next server's start deletes a leaked one).
  *
  * Parents, products and step-cache images all live in the registry; the
  * host store never sees these tags.
@@ -30,7 +30,6 @@ import { Readable } from 'node:stream'
 import { registryAuthFile, registryHost } from '#drivers/k8s/container'
 import { BUILDER_CONTEXT_MAX_BYTES, collectContextFiles, parseContainerIgnore } from '#lib/build-context'
 import {
-  EGRESS_WORLD_DENY_NAME,
   LABEL_DATA_DIR_HASH,
   LABEL_ROLE,
   NESTED_ENGINE_CAPS,
@@ -48,7 +47,6 @@ import {
   kubectlWithRetry,
 } from '#drivers/k8s/substrate'
 import {
-  buildEgressWorldDenyNpManifest,
   egressAllButServerFront,
   ensureBuilderImage,
   ensureBuilderRoleGuard,
@@ -56,9 +54,18 @@ import {
   nodeIpBlocks,
 } from '#drivers/k8s/cluster'
 import { runStreamingProcess } from '#drivers/k8s/container'
-import type { EngineBuildContext } from './build-engine'
 import { serverLog, pipeToServerLog } from '#log'
 import { stringHash, type ImageLayer } from '#drivers/k8s/image-engine'
+import type { ProjectRef } from '#drivers/contract'
+
+interface EngineBuildContext {
+  /** Project whose chain is being built (its id keys the step-cache repo). */
+  project: ProjectRef
+  onLog?: (line: string) => void
+  /** Builder pod shared by adjacent untrusted layers of one request, owned
+   *  and released by the coordinator. */
+  lease: BuilderPodLease
+}
 
 /**
  * Sentry tmpfs cap for the builder graphroot. Larger than a workspace
@@ -97,11 +104,11 @@ export const BUILDER_ACTIVE_DEADLINE_SECONDS = 4 * 3600
  * last printed; see container/streaming-proc.ts) except the readiness wait,
  * which is a total.
  */
-export const BUILDER_READY_TIMEOUT_MS = 60_000
-export const BUILDER_PULL_IDLE_TIMEOUT_MS = 180_000
+const BUILDER_READY_TIMEOUT_MS = 60_000
+const BUILDER_PULL_IDLE_TIMEOUT_MS = 180_000
 export const BUILDER_BUILD_IDLE_TIMEOUT_MS = 600_000
-export const BUILDER_PUSH_IDLE_TIMEOUT_MS = 120_000
-export const BUILDER_CONTEXT_IDLE_TIMEOUT_MS = 120_000
+const BUILDER_PUSH_IDLE_TIMEOUT_MS = 120_000
+const BUILDER_CONTEXT_IDLE_TIMEOUT_MS = 120_000
 
 /** Hard cap on any one exec: past the pod's own deadline. */
 const BUILDER_EXEC_TOTAL_TIMEOUT_MS = (BUILDER_ACTIVE_DEADLINE_SECONDS + 300) * 1000
@@ -122,7 +129,7 @@ export const BUILDER_CONTEXT_DIR = '/tmp/yaac-build-ctx'
  * controls. Named by project id, so a new project reusing a slug starts
  * with an empty cache.
  */
-export function buildCacheRepo(projectId: string): string {
+function buildCacheRepo(projectId: string): string {
   return `yaac-buildcache-${projectId}`
 }
 
@@ -139,7 +146,7 @@ function builderGrantRepos(layer: ImageLayer, projectId: string): string[] {
 }
 
 /** Builder pod name: a hash of the first layer tag plus random bytes. */
-export function builderPodName(seedTag: string): string {
+function builderPodName(seedTag: string): string {
   return `yaac-builder-${stringHash(seedTag).slice(0, 8)}-${crypto.randomBytes(2).toString('hex')}`
 }
 
@@ -149,7 +156,7 @@ export function builderPodName(seedTag: string): string {
  * the graphroot on a sentry-internal tmpfs. The container just sleeps; the
  * server drives it with `kubectl exec` and streams the build logs.
  */
-export function buildBuilderPodManifest(name: string, imageRef: string): Record<string, unknown> {
+function buildBuilderPodManifest(name: string, imageRef: string): Record<string, unknown> {
   return {
     apiVersion: 'v1',
     kind: 'Pod',
@@ -206,7 +213,7 @@ export function buildBuilderPodManifest(name: string, imageRef: string): Record<
  * runsc), with native overlay. `pull_options` keeps zstd:chunked partial
  * pulls enabled, as in the stock file.
  */
-export function builderStorageConfScript(): string {
+function builderStorageConfScript(): string {
   return [
     'set -eu',
     'mkdir -p /etc/containers',
@@ -227,7 +234,7 @@ export function builderStorageConfScript(): string {
  * `FROM ${BASE_IMAGE}` resolves locally. Skipped when the pod already has
  * it (a reused pod just built the previous layer).
  */
-export function builderParentPullScript(parentTag: string, clusterHost: string): string {
+function builderParentPullScript(parentTag: string, clusterHost: string): string {
   const remote = `${clusterHost}/${parentTag}`
   return [
     'set -eu',
@@ -242,7 +249,7 @@ export function builderParentPullScript(parentTag: string, clusterHost: string):
  * option: a layer only builds when its content-hash tag is missing, and the
  * step cache only matches unchanged steps.
  */
-export function builderBuildArgs(
+function builderBuildArgs(
   layer: ImageLayer,
   opts: {
     dockerfileRel: string
@@ -272,7 +279,7 @@ export function builderBuildArgs(
   return args
 }
 
-export interface BuildContextPlan {
+interface BuildContextPlan {
   /** Context-relative file paths, sorted; the exact `contextHash()` set. */
   files: string[]
   /** Dockerfile path relative to the context root. */
@@ -286,7 +293,7 @@ export interface BuildContextPlan {
  * itself even when ignored (podman reads `-f` outside the ignore rules).
  * Enforces BUILDER_CONTEXT_MAX_BYTES.
  */
-export async function planBuildContext(
+async function planBuildContext(
   contextDir: string,
   dockerfilePath: string,
 ): Promise<BuildContextPlan> {
@@ -418,18 +425,10 @@ function buildBuilderEgressNetworkPolicyManifest(nodeCidrs: string[]): Record<st
   }
 }
 
-/**
- * Apply the builder-role admission guard and egress policy. Also re-apply
- * the world-deny policy if it exists, since an older server may have
- * written it without the builder exclusion.
- */
+/** Apply the builder-role admission guard and egress policy. */
 async function ensureBuilderNetworkPolicies(): Promise<void> {
   await ensureBuilderRoleGuard()
   await kubectlApply(buildBuilderEgressNetworkPolicyManifest(await nodeIpBlocks()))
-  const existing = await kubectlGetJson<Record<string, unknown>>([
-    'get', 'networkpolicy', EGRESS_WORLD_DENY_NAME, '-n', k8sNamespace(),
-  ]).catch(() => null)
-  if (existing) await kubectlApply(buildEgressWorldDenyNpManifest())
 }
 
 /**
@@ -488,7 +487,8 @@ export class BuilderPodLease {
     return name
   }
 
-  /** Delete the pod (best-effort — the label sweep catches leaks). */
+  /** Delete the pod. Best-effort: activeDeadlineSeconds bounds a leak, and
+   *  the next server's start deletes it. */
   async release(): Promise<void> {
     const pending = this.acquiring
     this.acquiring = null
@@ -514,7 +514,7 @@ interface BuilderPodStatus {
  * `kubectl wait` only reports a timeout. Null when the status says nothing
  * useful.
  */
-export function builderPodBlockReason(pod: BuilderPodStatus | null): string | null {
+function builderPodBlockReason(pod: BuilderPodStatus | null): string | null {
   if (pod?.status?.reason === 'DeadlineExceeded') {
     return 'stopped at the whole-pod deadline '
       + `(activeDeadlineSeconds=${BUILDER_ACTIVE_DEADLINE_SECONDS}) — the build `
@@ -631,52 +631,19 @@ async function runLayerBuild(
   )
 }
 
-/** Age past which a builder pod is always a leak (above its deadline). */
-export const BUILDER_REAP_AGE_MS = 5 * 3600_000
-
-const BUILDER_REAP_INTERVAL_MS = 10 * 60_000
-let lastReapMs = 0
-
 /**
- * When this server process started. Only one server runs per install, so
- * a builder pod created earlier is a leak. Reaping it right away frees its
- * memory reservation, which could otherwise block every build after a
- * restart for hours.
+ * Delete every builder pod of this install, at server start. Only one
+ * server runs per install (its Deployment is `replicas: 1` with `Recreate`,
+ * so the old pod is gone before this one starts), so any builder pod then
+ * is a leak from the last one, and its memory reservation could block
+ * every build after a restart.
+ * During the server's life `release` deletes pods inline, and a leaked one
+ * is bounded by its activeDeadlineSeconds.
  */
-const SERVER_START_MS = Date.now()
-
-/** Test hook: reset the reap throttle. */
-export function _resetBuilderReapForTests(): void {
-  lastReapMs = 0
-}
-
-/**
- * Delete leaked builder pods: ones that are terminal, predate this server
- * process, or are older than any live build can be. Throttled. Normally
- * `release` deletes pods inline.
- */
-export async function reconcileBuilderPodGc(
-  now = Date.now(),
-  serverStartMs = SERVER_START_MS,
-): Promise<void> {
-  if (now - lastReapMs < BUILDER_REAP_INTERVAL_MS) return
-  lastReapMs = now
-  const selector = `${LABEL_ROLE}=${ROLE_BUILDER},${LABEL_DATA_DIR_HASH}=${dataDirHash()}`
-  const list = await kubectlGetJson<{
-    items?: Array<{
-      metadata?: { name?: string; creationTimestamp?: string }
-      status?: { phase?: string }
-    }>
-  }>(['get', 'pods', '-n', k8sNamespace(), '-l', selector]).catch(() => null)
-  for (const pod of list?.items ?? []) {
-    const name = pod.metadata?.name
-    if (!name) continue
-    const phase = pod.status?.phase ?? 'Unknown'
-    const created = Date.parse(pod.metadata?.creationTimestamp ?? '')
-    const expired = Number.isFinite(created) && now - created > BUILDER_REAP_AGE_MS
-    const orphaned = Number.isFinite(created) && created < serverStartMs
-    if (phase !== 'Succeeded' && phase !== 'Failed' && !expired && !orphaned) continue
-    serverLog(`[builder] reaping stale builder pod ${name} (phase ${phase})`)
-    await deleteBuilderPod(name)
-  }
+export async function deleteLeakedBuilderPods(): Promise<void> {
+  await kubectlWithRetry([
+    'delete', 'pods', '-n', k8sNamespace(),
+    '-l', `${LABEL_ROLE}=${ROLE_BUILDER},${LABEL_DATA_DIR_HASH}=${dataDirHash()}`,
+    '--ignore-not-found', '--wait=false',
+  ])
 }

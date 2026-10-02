@@ -1,9 +1,9 @@
 import {
   findWorkspacePod,
-  getActiveClusterCache,
   isPrewarmed,
   listWorkspaceJobs,
   listWorkspacePods,
+  readWorkspacePods,
   type PodInfo,
 } from '#drivers/k8s/substrate'
 import { runtimeHandleFromPod } from './handle'
@@ -29,36 +29,22 @@ export async function findWorkspace(
   workspaceId: string,
   opts: { preferCache?: boolean } = {},
 ): Promise<RuntimeHandle | undefined> {
-  if (opts.preferCache) {
-    const cache = getActiveClusterCache()
-    if (cache?.healthy('workspace-pods')) {
-      const hit = findWorkspacePod(cache.workspacePods(), workspaceId)
-      if (hit) return runtimeHandleFromPod(hit)
-    }
-  }
-  const pod = findWorkspacePod(await listPodsOrUnavailable(), workspaceId)
+  const pod = (opts.preferCache ? findWorkspacePod(await readPods(), workspaceId) : undefined)
+    ?? findWorkspacePod(await listPods(), workspaceId)
   return pod ? runtimeHandleFromPod(pod) : undefined
 }
 
 /**
- * Every workspace, optionally for one project.
- *
- * With `preferCache`, a healthy informer cache answers (the display path
- * uses this on every snapshot). An unhealthy cache is bypassed: unseeded,
- * it would read as an empty cluster, and with a dropped watch it would
- * serve a stale list.
+ * Every workspace, optionally for one project. With `preferCache`, a
+ * healthy informer cache answers (the display path uses this on every
+ * snapshot).
  */
 export async function listWorkspaces(
   projectSlug?: string,
   opts: { preferCache?: boolean } = {},
 ): Promise<RuntimeHandle[]> {
-  if (opts.preferCache) {
-    const cache = getActiveClusterCache()
-    if (cache?.healthy('workspace-pods')) {
-      return cache.workspacePods(projectSlug).map(runtimeHandleFromPod)
-    }
-  }
-  return (await listPodsOrUnavailable(projectSlug)).map(runtimeHandleFromPod)
+  const pods = opts.preferCache ? await readPods(projectSlug) : await listPods(projectSlug)
+  return pods.map(runtimeHandleFromPod)
 }
 
 /**
@@ -71,7 +57,7 @@ export async function findWorkspaceForTeardown(
   workspaceId: string,
   opts: { spares?: boolean } = {},
 ): Promise<TeardownTarget | undefined> {
-  const pods = await listPodsOrUnavailable()
+  const pods = await listPods()
   const pod = findWorkspacePod(pods, workspaceId, opts)
   if (pod) {
     return { projectSlug: pod.projectSlug, workspaceId: pod.workspaceId, unitName: pod.jobName }
@@ -80,13 +66,7 @@ export async function findWorkspaceForTeardown(
   // The pod exists but was skipped as a spare; don't match its Job instead.
   if (pods.some((p) => p.workspaceId === workspaceId)) return undefined
 
-  let jobs
-  try {
-    jobs = await listWorkspaceJobs()
-  } catch (err) {
-    throw new ServerError('RUNTIME_UNAVAILABLE', err instanceof Error ? err.message : String(err))
-  }
-  const job = jobs.find((j) => j.workspaceId === workspaceId)
+  const job = (await unavailableOnFailure(listWorkspaceJobs())).find((j) => j.workspaceId === workspaceId)
   return job
     ? { projectSlug: job.projectSlug, workspaceId: job.workspaceId, unitName: job.jobName }
     : undefined
@@ -100,7 +80,7 @@ export async function findWorkspaceForTeardown(
 export async function countWorkspaces(): Promise<Record<string, number>> {
   const counts: Record<string, number> = {}
   try {
-    for (const p of await listWorkspacePods()) {
+    for (const p of await readWorkspacePods()) {
       if (isPrewarmed(p)) continue
       if (p.projectSlug) counts[p.projectSlug] = (counts[p.projectSlug] ?? 0) + 1
     }
@@ -110,12 +90,20 @@ export async function countWorkspaces(): Promise<Record<string, number>> {
   return counts
 }
 
-/** List pods, turning a failure into RUNTIME_UNAVAILABLE. Callers with a
- *  recorded row to fall back on catch it. */
-async function listPodsOrUnavailable(projectSlug?: string): Promise<PodInfo[]> {
+/** A listing failure as RUNTIME_UNAVAILABLE. Callers with a recorded row
+ *  to fall back on catch it. */
+async function unavailableOnFailure<T>(listing: Promise<T>): Promise<T> {
   try {
-    return await listWorkspacePods(projectSlug)
+    return await listing
   } catch (err) {
     throw new ServerError('RUNTIME_UNAVAILABLE', err instanceof Error ? err.message : String(err))
   }
+}
+
+function listPods(projectSlug?: string): Promise<PodInfo[]> {
+  return unavailableOnFailure(listWorkspacePods(projectSlug))
+}
+
+function readPods(projectSlug?: string): Promise<PodInfo[]> {
+  return unavailableOnFailure(readWorkspacePods(projectSlug))
 }

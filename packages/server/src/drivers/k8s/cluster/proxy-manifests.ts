@@ -44,7 +44,7 @@ import type { CredentialBundle } from '#drivers/contract'
  * (`installSecurityContext`), so the two infra pods share one identity.
  * `fsGroup` makes its emptyDir volumes writable.
  */
-export function proxyRunAsSecurityContext(): Record<string, unknown> {
+function proxyRunAsSecurityContext(): Record<string, unknown> {
   const identity = installSecurityContext()
   return { securityContext: { ...identity, fsGroup: identity.runAsGroup } }
 }

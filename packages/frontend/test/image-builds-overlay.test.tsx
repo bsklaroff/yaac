@@ -49,7 +49,6 @@ function build(overrides: Partial<ImageBuildEntry> = {}): ImageBuildEntry {
     id: 'build-1',
     tag: 'yaac-base:abc123def',
     layer: 'base',
-    action: 'build',
     projectSlugs: ['proj'],
     reason: 'prewarm',
     status: 'running',
@@ -71,7 +70,7 @@ describe('ImageBuildsOverlay', () => {
   it('renders build rows with layer, projects, step, and error details', () => {
     const builds = [
       build({ stepCurrent: 3, stepTotal: 14, stepText: 'RUN apt-get update' }),
-      build({ id: 'build-2', tag: 'yaac-tools:def', layer: 'push', action: 'push', status: 'failed', error: 'registry down' }),
+      build({ id: 'build-2', tag: 'yaac-user-p:def', layer: 'user', status: 'failed', error: 'registry down' }),
     ]
     render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={builds} />)
 
@@ -80,7 +79,7 @@ describe('ImageBuildsOverlay', () => {
     expect(screen.getByText('yaac-base:abc123')).toBeTruthy()
     expect(screen.getByText(/step 3\/14/)).toBeTruthy()
     expect(screen.getByText('RUN apt-get update')).toBeTruthy()
-    expect(screen.getByText('push')).toBeTruthy()
+    expect(screen.getByText('user layer')).toBeTruthy()
     expect(screen.getByText('registry down')).toBeTruthy()
   })
 
@@ -120,12 +119,6 @@ describe('ImageBuildsOverlay', () => {
 
     fireEvent.click(screen.getByText('yaac-tools:def'))
     await waitFor(() => expect(logFetches()).toEqual(['running-build', 'old-failed']))
-  })
-
-  it('labels a proxy sidecar build', () => {
-    const builds = [build({ layer: 'proxy', projectSlugs: [], status: 'succeeded' })]
-    render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={builds} />)
-    expect(screen.getByText('proxy sidecar')).toBeTruthy()
   })
 
   it('dismisses a finished build and never offers dismiss on a running one', async () => {

@@ -64,6 +64,7 @@ function activePod(slug: string, workspaceId: string): podsModule.PodInfo {
     podName: `yaac-${slug}-${workspaceId}-x1`,
     workspaceId,
     projectSlug: slug,
+    projectId: '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
     tool: 'claude',
     phase: 'Running',
     running: true,

@@ -34,7 +34,7 @@ time:
   `proxy-refreshed` (the egress proxy captured a rotated credential).
 - **Resync (every 60 s).** Runs every step. It catches any missed event, and
   it drives the hygiene steps that throttle themselves (image prewarm and GC,
-  salvage, builder-pod GC). The first pass after start is a resync.
+  salvage). The first pass after start is a resync.
 
 There is no poll lane: every source has an event, and the resync makes a
 lost event cost latency rather than correctness. Passes never overlap,

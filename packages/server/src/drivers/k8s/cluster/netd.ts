@@ -13,12 +13,9 @@ import {
   kubectlApply,
   kubectlWithRetry,
   LABEL_INSTALL_NAMESPACE,
+  waitForRollout,
 } from '#drivers/k8s/substrate'
-import {
-  contextHash,
-  missingPrebuiltImage,
-} from '#drivers/k8s/image-engine'
-import { registryHasTag, registryRef } from '#drivers/k8s/container'
+import { contextHash, prebuiltRef } from '#drivers/k8s/image-engine'
 import { NETD_DIR } from '@yaac/shared/project-paths'
 import { env, testEnv } from '@yaac/shared/env'
 import { clusterPodCidrs } from './cluster-cidrs'
@@ -76,16 +73,13 @@ export async function resolveNetdImageTag(image = 'yaac-netd'): Promise<string> 
 
 /** The netd image's in-cluster ref. Lookup-only; `yaac cluster install`
  *  builds it. */
-export async function ensureNetdImage(): Promise<string> {
-  const localTag = await resolveNetdImageTag(testEnv.netdImage)
-  if (await registryHasTag(localTag)) return registryRef(localTag)
-  throw missingPrebuiltImage('netd', localTag)
+async function ensureNetdImage(): Promise<string> {
+  return prebuiltRef('netd', await resolveNetdImageTag(testEnv.netdImage))
 }
 
 /** The mirrored Envoy image's in-cluster ref. Lookup-only, like netd's. */
-export async function ensureEnvoyImage(): Promise<string> {
-  if (await registryHasTag(ENVOY_MIRROR_TAG)) return registryRef(ENVOY_MIRROR_TAG)
-  throw missingPrebuiltImage('Envoy', ENVOY_MIRROR_TAG)
+async function ensureEnvoyImage(): Promise<string> {
+  return prebuiltRef('Envoy', ENVOY_MIRROR_TAG)
 }
 
 function buildNetdServiceAccountManifest(): Record<string, unknown> {
@@ -259,16 +253,25 @@ export async function ensureNetd(): Promise<void> {
     ensureEnvoyImage(),
     clusterPodCidrs(),
   ])
-  await kubectlApply(buildNetdServiceAccountManifest())
-  await kubectlApply(buildNetdRoleManifest())
-  await kubectlApply(buildNetdRoleBindingManifest())
-  await kubectlApply(buildNetdDaemonSetManifest({
-    netdImage, envoyImage, podCidrs, vethPrefix: cniVethPrefix(),
-  }))
-  await kubectlWithRetry([
-    'rollout', 'status', `daemonset/${NETD_APP_NAME}`,
-    '-n', k8sNamespace(), '--timeout=180s',
-  ], { timeout: 190_000, maxAttempts: 2 })
+  await kubectlApply({
+    apiVersion: 'v1',
+    kind: 'List',
+    items: [
+      buildNetdServiceAccountManifest(),
+      buildNetdRoleManifest(),
+      buildNetdRoleBindingManifest(),
+      buildNetdDaemonSetManifest({ netdImage, envoyImage, podCidrs, vethPrefix: cniVethPrefix() }),
+    ],
+  })
+  await waitForRollout({
+    workload: `daemonset/${NETD_APP_NAME}`,
+    namespace: k8sNamespace(),
+    timeoutMs: 180_000,
+    hint: `Inspect with \`kubectl -n ${k8sNamespace()} get pods -l app=${NETD_APP_NAME} -o wide\` `
+      + 'and its logs: netd needs host networking, NET_ADMIN and the node\'s pod veths '
+      + '(docs/workspace-egress.md). If no pod exists, an admission or quota refusal is '
+      + `in \`kubectl -n ${k8sNamespace()} describe ds/${NETD_APP_NAME}\`.`,
+  })
   // After the rollout, so the netd pods being replaced keep their watch.
   await deleteLegacyNetdClusterRbac()
 }

@@ -25,7 +25,7 @@ export const HOST_PRUNE_UNTIL = '24h'
  *  suite's `yaac-test-*`. */
 const YAAC_IMAGE_REPO = /^(localhost(:\d+)?\/)?yaac-(?!test-)/
 
-export interface ImageLsRow {
+interface ImageLsRow {
   repo: string
   /** repo:tag */
   ref: string
@@ -33,7 +33,7 @@ export interface ImageLsRow {
 
 /** Parse `podman image ls --format '{{.Repository}}|{{.Repository}}:{{.Tag}}'`
  *  output, dropping dangling (`<none>`) and malformed rows. */
-export function parseImageLsRows(stdout: string): ImageLsRow[] {
+function parseImageLsRows(stdout: string): ImageLsRow[] {
   const rows: ImageLsRow[] = []
   for (const line of stdout.split('\n')) {
     const [repo, ref] = line.trim().split('|')
@@ -48,7 +48,7 @@ export function parseImageLsRows(stdout: string): ImageLsRow[] {
  * the newest `keep` (rows arrive newest first). Tags in `protect`, bare or
  * `localhost/`-qualified, are skipped and don't count toward `keep`.
  */
-export function selectStaleGenerationTags(
+function selectStaleGenerationTags(
   rows: ImageLsRow[],
   repoPattern: RegExp,
   keep: number,

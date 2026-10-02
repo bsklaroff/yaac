@@ -10,6 +10,7 @@ function pod(overrides: Partial<PodInfo> = {}): PodInfo {
     podName: 'yaac-proj-s1-abcde',
     workspaceId: 's1',
     projectSlug: 'proj',
+    projectId: '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
     tool: 'claude',
     phase: 'Running',
     running: true,

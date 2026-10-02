@@ -28,7 +28,7 @@ import { env } from '@yaac/shared/env'
  */
 
 /** Everything the gate reads about the cluster's CNI, in one shape. */
-export interface CniFacts {
+interface CniFacts {
   /** calico-node's rollout. `present` is null when the read failed. */
   calico: { present: boolean | null; ready: number; desired: number }
   felix: {
@@ -88,7 +88,7 @@ export interface CniFacts {
  * The verdict: any `refusals` block the adoption; `warnings` do not break
  * the datapath; `notes` record what was verified.
  */
-export interface CniAssessment {
+interface CniAssessment {
   refusals: string[]
   warnings: string[]
   notes: string[]
@@ -509,7 +509,7 @@ const WORKLOAD_ROUTE_RE =
  * prefixes of workload-looking routes that do not match, to suggest a
  * better `YAAC_CNI_VETH_PREFIX`.
  */
-export function assessWorkloadRoutes(
+function assessWorkloadRoutes(
   ipRouteOutput: string,
   prefix: string,
 ): { matched: number; suggestions: string[] } {
@@ -533,7 +533,7 @@ export function assessWorkloadRoutes(
 }
 
 /** One netd pod's answer about its own node's routing table. */
-export interface NodeVethOutcome {
+interface NodeVethOutcome {
   node: string
   matched: number
   suggestions: string[]

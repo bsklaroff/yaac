@@ -1,4 +1,4 @@
-import { isPrewarmed, listWorkspacePods, relayDial } from '#drivers/k8s/substrate'
+import { isPrewarmed, readWorkspacePods, relayDial } from '#drivers/k8s/substrate'
 import { addWorkspaceForwarder, getWorkspacePorts } from './port-forwarders'
 import { getUnforwardedPorts, isDetectedPort } from './port-detector'
 import { ServerError } from '@yaac/shared/errors'
@@ -33,7 +33,7 @@ export async function forwardWorkspacePort(
   )
 
   if (opts.fanOutToProject) {
-    const pods = await listWorkspacePods(target.projectSlug)
+    const pods = await readWorkspacePods(target.projectSlug)
     await Promise.all(
       pods
         .filter((p) => p.running && p.workspaceId && p.workspaceId !== target.workspaceId && !isPrewarmed(p))

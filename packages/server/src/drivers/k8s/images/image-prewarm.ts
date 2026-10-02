@@ -1,5 +1,5 @@
 /**
- * Reconcile step that keeps every project's image chain built and pushed,
+ * Reconcile step that keeps every project's image chain built,
  * so workspace create does not wait minutes for a build after a
  * Dockerfile.yaac edit.
  *
@@ -8,8 +8,7 @@
  * create joins the sweep's build instead of starting another. Skipped in
  * e2e, where the global setup prebuilds every image.
  */
-import { ensureImage, pushImageShared } from './build-coordinator'
-import { proxyClient } from '#drivers/k8s/egress'
+import { ensureImage } from './build-coordinator'
 import { serverLog } from '#log'
 import { env, testEnv } from '@yaac/shared/env'
 import type { YaacConfig } from '@yaac/shared/types'
@@ -37,7 +36,7 @@ const prewarming = new Set<string>()
 let lastSweepMs = 0
 
 /**
- * Ensure one project's chain is built and its final tag pushed. When all is
+ * Ensure one project's chain is built. When all is
  * warm this is a few registry HEADs, so a pruned image is rebuilt on the
  * next sweep (or, for a yaac-shipped layer, reports `yaac cluster install`).
  *
@@ -51,13 +50,12 @@ export async function prewarmProjectImage(
   const nestedContainers = config.nestedContainers === true
   const prefix = testEnv.imagePrefix ?? 'yaac'
 
-  const { layers, finalTag } = await resolveImageChain(project, prefix, nestedContainers)
-  if (hasBlockingFailure([...layers.map((l) => l.tag), finalTag], FAILED_RETRY_MS)) return
+  const { layers } = await resolveImageChain(project, prefix, nestedContainers)
+  if (hasBlockingFailure(layers.map((l) => l.tag), FAILED_RETRY_MS)) return
 
   await ensureImage(project, testEnv.imagePrefix, false, nestedContainers, {
     reason: 'prewarm',
   })
-  await pushImageShared(finalTag, { project, reason: 'prewarm' })
 }
 
 /**
@@ -95,10 +93,9 @@ export function _resetImagePrewarmForTests(): void {
 
 /**
  * The webapp's "Retry" for a finished image build. Forgets the build row
- * (so its failure stops blocking the sweep) and rebuilds in the background:
- * each owning project's chain, or, for a build with no project (the egress
- * proxy's image), `proxyClient.ensureRunning()`. Returns false when the id
- * is unknown or still running.
+ * (so its failure stops blocking the sweep) and rebuilds each owning
+ * project's chain in the background. Returns false when the id is unknown
+ * or still running.
  */
 export function retryImageBuild(
   id: string,
@@ -108,13 +105,6 @@ export function retryImageBuild(
   if (!entry || entry.status === 'running') return false
   const projects = imageBuildProjects(id)
   forgetImageBuild(id)
-
-  if (projects.length === 0) {
-    void proxyClient.ensureRunning().catch((err: unknown) =>
-      serverLog(`[image-retry] proxy: ${String(err)}`))
-    return true
-  }
-
   for (const project of projects) {
     void projectConfig(project.slug)
       .then((config) => prewarmProjectImage(project, config ?? {}))

@@ -6,6 +6,8 @@ import {
 } from './informer-cache'
 import { k8sNamespace } from './kubectl'
 import {
+  listWorkspaceJobs,
+  listWorkspacePods,
   mapJobObject,
   mapPodObject,
   workspaceJobSelector,
@@ -30,15 +32,13 @@ import type { RefreshedToolCredentials } from '@yaac/shared/types'
  */
 
 /** Informers over workspace pods and the Jobs that own them. */
-export const WORKSPACE_DELTA_SOURCES = ['workspace-pods', 'workspace-jobs'] as const
-
-export type WorkspaceDeltaSource = typeof WORKSPACE_DELTA_SOURCES[number]
+export type WorkspaceDeltaSource = 'workspace-pods' | 'workspace-jobs'
 /** The proxy's outputs: its record ConfigMap (a snapshot input) and the
  *  rotations it captured (which the host store has to adopt). */
-export type ProxyDeltaSource = 'proxy-state' | 'proxy-refreshed'
+type ProxyDeltaSource = 'proxy-state' | 'proxy-refreshed'
 export type DeltaSource = WorkspaceDeltaSource | ProxyDeltaSource
 
-export interface ClusterCacheDeps {
+interface ClusterCacheDeps {
   /** Threaded to every informer cache (tests inject fakes). */
   makeInformerFn?: MakeInformerFn
   relistIntervalMs?: number
@@ -163,8 +163,8 @@ export class ClusterCache {
 
 /**
  * The running server's cache, readable without threading it through every
- * call site. Null outside the server (unit tests, direct lib use), where
- * callers fall back to one-shot lists.
+ * call site. Null outside the server (the CLI, unit tests), where the
+ * readers below fall back to live lists.
  */
 let activeClusterCache: ClusterCache | null = null
 
@@ -174,4 +174,23 @@ export function setActiveClusterCache(cache: ClusterCache | null): void {
 
 export function getActiveClusterCache(): ClusterCache | null {
   return activeClusterCache
+}
+
+/**
+ * This install's workspace pods, optionally for one project: from the
+ * running server's cache while its watch is healthy, else a live list. An
+ * unhealthy cache is never read; unseeded it would look like an empty
+ * cluster, and with a dropped watch it would be stale.
+ */
+export async function readWorkspacePods(projectSlug?: string): Promise<PodInfo[]> {
+  const cache = activeClusterCache
+  return cache?.healthy('workspace-pods')
+    ? cache.workspacePods(projectSlug)
+    : listWorkspacePods(projectSlug)
+}
+
+/** This install's workspace Jobs, read as `readWorkspacePods` reads pods. */
+export async function readWorkspaceJobs(): Promise<JobInfo[]> {
+  const cache = activeClusterCache
+  return cache?.healthy('workspace-jobs') ? cache.workspaceJobs() : listWorkspaceJobs()
 }

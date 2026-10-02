@@ -33,7 +33,6 @@ function build(overrides: Partial<ImageBuildEntry> = {}): ImageBuildEntry {
     id: 'build-1',
     tag: 'yaac-base:abc123',
     layer: 'base',
-    action: 'build',
     projectSlugs: ['proj'],
     reason: 'prewarm',
     status: 'running',
@@ -117,16 +116,9 @@ describe('ImageBuildIndicator', () => {
     expect(screen.queryByRole('button')).toBeNull()
   })
 
-  it('always shows a project-less infra build (the proxy sidecar)', () => {
-    stubSnapshot([build({ layer: 'proxy', projectSlugs: [] })])
-    renderWithClient(<ImageBuildIndicator projectSlug="proj" />)
-    expect(screen.getByRole('button', { name: 'Show image build progress' })).toBeTruthy()
-  })
-
-  it('with no active project, shows only project-less infra builds', () => {
-    stubSnapshot([build(), build({ id: 'build-2', layer: 'proxy', projectSlugs: [] })])
+  it('shows nothing with no active project', () => {
+    stubSnapshot([build()])
     renderWithClient(<ImageBuildIndicator projectSlug={null} />)
-    // The 'proj' build is hidden; the proxy build keeps the pill visible.
-    expect(screen.getByRole('button', { name: 'Show image build progress' }).textContent).toBe('building')
+    expect(screen.queryByRole('button')).toBeNull()
   })
 })

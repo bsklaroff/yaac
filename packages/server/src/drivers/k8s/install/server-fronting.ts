@@ -33,7 +33,7 @@ export interface RemoteHosting {
 }
 
 /** A `kubectl delete` target: resource kind and name, in the install namespace. */
-export type FrontingObject = [kind: string, name: string]
+type FrontingObject = [kind: string, name: string]
 
 export interface ServerFronting {
   kind: 'kind' | 'tailnet'
@@ -274,7 +274,7 @@ const FRONT_CONFIG_DIR = '/etc/yaac-server-front'
  * domains first; those are forwarded upstream, and a hanging upstream DNS
  * (e.g. a VPN) would stop the name from ever resolving.
  */
-export function buildServerFrontConfigMapManifest(): Record<string, unknown> {
+function buildServerFrontConfigMapManifest(): Record<string, unknown> {
   const upstream = `${SERVER_APP_NAME}.${k8sNamespace()}.svc.cluster.local.`
   const bootstrap = [
     'static_resources:',
@@ -319,7 +319,7 @@ export function buildServerFrontConfigMapManifest(): Record<string, unknown> {
  * port, non-root with no capabilities. `--use-dynamic-base-id` lets several
  * hostNetwork Envoys share a node.
  */
-export function buildServerFrontDeploymentManifest(envoyImage: string): Record<string, unknown> {
+function buildServerFrontDeploymentManifest(envoyImage: string): Record<string, unknown> {
   return {
     apiVersion: 'apps/v1',
     kind: 'Deployment',

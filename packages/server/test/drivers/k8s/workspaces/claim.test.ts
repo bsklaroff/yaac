@@ -14,14 +14,36 @@ vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
 }))
 
 import { claimSpareWorkspace, registerWorkspace } from '#drivers/k8s/workspaces/claim'
-import { LABEL_PREWARMED, LABEL_TOOL, LABEL_WORKSPACE_ID } from '#drivers/k8s/substrate/pods'
+import { LABEL_PREWARMED, LABEL_TOOL } from '#drivers/k8s/substrate/pods'
 import { LABEL_NPM_CACHE } from '#drivers/k8s/substrate/proxy-constants'
 import type { WorkspaceRegistration } from '#drivers/contract'
-import { dataDirHash } from '#drivers/k8s/substrate/kubectl'
 
-/** The argv of the lookup a claim does before its write. */
-function getArgv(): string[] {
-  return mockGetJson.mock.calls[0][0] as string[]
+/** A workspace pod as the install-wide listing returns it. */
+function rawPod(workspaceId: string, labels: Record<string, string> = {}): unknown {
+  return {
+    metadata: {
+      name: `yaac-proj-${workspaceId}-abcde`,
+      labels: {
+        'batch.kubernetes.io/job-name': `yaac-proj-${workspaceId}`,
+        'yaac.workspace-id': workspaceId,
+        'yaac.project': 'proj',
+        'yaac.project-id': '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
+        'yaac.tool': 'claude',
+        ...labels,
+      },
+      creationTimestamp: '2026-06-01T00:00:00Z',
+    },
+    status: { phase: 'Running' },
+  }
+}
+
+/** Serve the workspace pods, and (for a claim) the npm cache's readiness. */
+function serve(pods: unknown[], cacheServing = true): void {
+  mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
+    args[1] === 'endpointslices'
+      ? { items: [{ endpoints: [{ conditions: { ready: cacheServing } }] }] }
+      : { items: pods },
+  ))
 }
 
 /** The argv of the write, if one was made. */
@@ -42,24 +64,22 @@ function patchOps(): Array<{ op: string; path: string; value?: string }> {
 
 beforeEach(() => {
   mockKubectl.mockReset().mockResolvedValue({ stdout: '', stderr: '' })
-  mockGetJson.mockReset().mockResolvedValue({ items: [{ metadata: { name: 'yaac-proj-s1-abcde' } }] })
+  mockGetJson.mockReset()
+  serve([rawPod('other', { [LABEL_PREWARMED]: 'true' }), rawPod('s1', { [LABEL_PREWARMED]: 'true' })])
   mockApply.mockReset().mockResolvedValue(undefined)
 })
 
 describe('claimSpareWorkspace', () => {
   it('finds the spare by workspace id, so the caller never needs a pod name', async () => {
     await claimSpareWorkspace('s1', 'codex')
-
-    const selector = flag(getArgv(), '-l').split(',')
-    expect(selector).toContain(`${LABEL_WORKSPACE_ID}=s1`)
-    expect(selector).toContain(`yaac.data-dir-hash=${dataDirHash()}`)
-    expect(selector).toContain(`${LABEL_PREWARMED}=true`)
-    // The pod name is looked up, not passed in.
     expect(patchArgv()).toContain('yaac-proj-s1-abcde')
   })
 
   it('refuses when no spare is left to claim, rather than reporting a claim', async () => {
-    mockGetJson.mockResolvedValue({ items: [] })
+    serve([])
+    await expect(claimSpareWorkspace('s1', 'codex')).rejects.toThrow(/no prewarmed spare/)
+    // A pod that is no longer a spare is not one to claim either.
+    serve([rawPod('s1')])
     await expect(claimSpareWorkspace('s1', 'codex')).rejects.toThrow(/no prewarmed spare/)
     expect(patchArgv()).toBeUndefined()
   })
@@ -113,20 +133,12 @@ describe('claimSpareWorkspace', () => {
 })
 
 describe('claimSpareWorkspace and the npm cache', () => {
-  /** Serve the spare's pod (labelled or not) and the cache's readiness. */
+  /** Serve the spare's pod (on the cache or not) and the cache's readiness. */
   function stage(opts: { admitted: boolean; serving: boolean }): void {
-    mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
-      args[1] === 'endpointslices'
-        ? { items: [{ endpoints: [{ conditions: { ready: opts.serving } }] }] }
-        : {
-          items: [{
-            metadata: {
-              name: 'yaac-proj-s1-abcde',
-              labels: opts.admitted ? { 'yaac.npm-cache': 'true' } : {},
-            },
-          }],
-        },
-    ))
+    serve([rawPod('s1', {
+      [LABEL_PREWARMED]: 'true',
+      ...(opts.admitted ? { 'yaac.npm-cache': 'true' } : {}),
+    })], opts.serving)
   }
   const execArgv = (): string[] | undefined =>
     mockKubectl.mock.calls.map(([a]) => a as string[]).find((a) => a[0] === 'exec')
@@ -189,12 +201,10 @@ describe('registerWorkspace', () => {
   // The cache fetches outside the proxy, so a pod keeps npm access through
   // it until its cache label is removed.
   it('takes a pod off the npm cache once its allowlist stops admitting npmjs', async () => {
+    serve([rawPod('other', { [LABEL_NPM_CACHE]: 'true' }), rawPod('s1', { [LABEL_NPM_CACHE]: 'true' })])
     await registerWorkspace(reg({ config: { setAllowedUrls: ['api.example.com'] } }))
 
     expect(registeredHosts()).toEqual(['api.example.com'])
-    const selector = flag(getArgv(), '-l').split(',')
-    expect(selector).toContain(`${LABEL_WORKSPACE_ID}=s1`)
-    expect(selector).toContain(`${LABEL_NPM_CACHE}=true`)
     // ~/.npmrc first, so installs never use a cache the pod cannot reach.
     expect(kubectlVerbs()).toEqual(['exec', 'label'])
     const [exec, label] = mockKubectl.mock.calls.map(([a]) => a as string[])
@@ -204,7 +214,7 @@ describe('registerWorkspace', () => {
   })
 
   it('revokes for a proxied npmjs secret too, and leaves a pod without the label alone', async () => {
-    mockGetJson.mockResolvedValue({ items: [] })
+    serve([rawPod('s1')])
     await registerWorkspace(reg({
       config: { setAllowedUrls: ['*'] },
       proxySecretRules: { NPM_TOKEN: { hosts: ['registry.npmjs.org'] } },
@@ -215,6 +225,7 @@ describe('registerWorkspace', () => {
   })
 
   it('propagates a failed revocation', async () => {
+    serve([rawPod('s1', { [LABEL_NPM_CACHE]: 'true' })])
     mockKubectl.mockImplementation((args: string[]) => args[0] === 'label'
       ? Promise.reject(new Error('apiserver down'))
       : Promise.resolve({ stdout: '', stderr: '' }))

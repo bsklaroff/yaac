@@ -30,7 +30,7 @@ vi.mock('#drivers/k8s/container/registry', () => ({
   invalidateRegistryEndpoint: vi.fn(),
 }))
 
-import { ensureMainRegistry, mainRegistryExec, restartMainRegistry } from '#drivers/k8s/cluster'
+import { ensureMainRegistry, mainRegistryExec } from '#drivers/k8s/cluster'
 // Setup values and label keys the assertions speak in, not units under test.
 import {
   LABEL_MAIN_REGISTRY_NODE_WRITE,
@@ -102,7 +102,7 @@ function serveCluster(opts: {
     if (args[1] === 'nodes') {
       return Promise.resolve({ items: nodes.map((name) => ({ metadata: { name } })) })
     }
-    // pod status poll
+    // the writer pod's status
     return Promise.resolve({ status: { phase: opts.podPhase ?? 'Succeeded' } })
   })
 }
@@ -317,7 +317,12 @@ describe('ensureMainRegistry', () => {
     }).template
     const [registry, gate] = template.spec.containers
     // registry:2 listens only on loopback; the Service port is the gate's.
-    expect(registry.env).toEqual([{ name: 'REGISTRY_HTTP_ADDR', value: '127.0.0.1:5001' }])
+    // Its blob-descriptor cache is off, so a collected blob is never
+    // answered from memory as present.
+    expect(registry.env).toEqual([
+      { name: 'REGISTRY_HTTP_ADDR', value: '127.0.0.1:5001' },
+      { name: 'REGISTRY_STORAGE_CACHE_BLOBDESCRIPTOR', value: '' },
+    ])
     expect(registry.ports).toBeUndefined()
     expect(gate.name).toBe('gate')
     expect(gate.ports).toEqual([{ containerPort: 5000 }])
@@ -493,9 +498,7 @@ describe('ensureMainRegistry', () => {
     // Writer pod names are unique per run, so leftovers are swept by label.
     // The node-write label keeps the sweep off the registry's own pod.
     const sweep = retryArgs().find((a) => a[0] === 'delete' && a[1] === 'pod')
-    expect(sweep?.join(' ')).toContain(
-      `app=${MAIN_REGISTRY_APP_LABEL},${LABEL_MAIN_REGISTRY_NODE_WRITE}`,
-    )
+    expect(sweep?.join(' ')).toContain(`${LABEL_MAIN_REGISTRY_NODE_WRITE}=hosts`)
   })
 
   it('applies everything again under `force`, even when the registry answers', async () => {
@@ -547,17 +550,5 @@ describe('mainRegistryExec', () => {
       ['exec', '-n', 'yaac', 'deploy/yaac-registry', '-c', 'registry', '--', 'sh', '-c', 'find /x'],
       { timeout: 5_000, maxAttempts: 1 },
     )
-  })
-})
-
-describe('restartMainRegistry', () => {
-  it('rolls the Deployment, waits for it, and drops the stale port-forward', async () => {
-    await restartMainRegistry()
-    expect(retryArgs()[0]).toEqual([
-      'rollout', 'restart', 'deployment/yaac-registry', '-n', 'yaac',
-    ])
-    expect(retryArgs()[1]).toEqual(expect.arrayContaining(['rollout', 'status']))
-    // The forward was bound to the pod that just went away.
-    expect(mockInvalidate).toHaveBeenCalledOnce()
   })
 })

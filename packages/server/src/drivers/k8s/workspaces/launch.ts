@@ -9,7 +9,6 @@ import {
   LABEL_TOOL,
   buildPodJobManifest,
   dataDirHash,
-  ensurePriorityClasses,
   k8sNamespace,
   k8sWorkspacePaths,
   kubectlApply,
@@ -307,10 +306,6 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
 
   spec.onProgress?.(`Creating session job ${jobName}...`)
 
-  // A pod whose PriorityClass is missing is rejected and never appears.
-  // Startup ensures the classes best-effort, so ensure them again here;
-  // it is idempotent and cheap.
-  await ensurePriorityClasses()
   // Idempotent, so a relaunch rewrites the same object.
   await applyProxyRegistration(spec.workspaceId, substrate.registration)
   await kubectlApply(manifest)

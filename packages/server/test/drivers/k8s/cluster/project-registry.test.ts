@@ -187,13 +187,10 @@ describe('ensureProjectRegistry', () => {
     const script = pod.spec.containers[0].command[2]
     expect(script).toContain(`http://10.96.0.50:${PROJECT_REGISTRY_PORT}`)
     expect(mockExec).not.toHaveBeenCalled()
-    // Leftover node-write pods are swept by label first. The node-write
-    // label keeps the sweep off the registry's own pod.
-    expect(mockRetry).toHaveBeenCalledWith([
-      'delete', 'pod',
-      '-l', `${REGISTRY_SELECTOR},${LABEL_NODE_WRITE}`,
-      '-n', 'test-ns', '--ignore-not-found',
-    ])
+    // Leftover writer pods are swept by label first. The node-write label
+    // keeps the sweep off the registry's own pod.
+    const sweep = mockRetry.mock.calls.map((c) => c[0]).find((a) => a[0] === 'delete' && a[2] === '-l')
+    expect(sweep?.[3]).toContain(`${LABEL_NODE_WRITE}=hosts`)
     // The uniquely named writer pod is deleted before and after it runs.
     const namedPodDeletes = mockRetry.mock.calls
       .map((c) => c[0])
@@ -448,66 +445,16 @@ describe('ensureProjectRegistry', () => {
 })
 
 describe('removeProjectRegistry', () => {
-  function mockClusterWithPodPhase(phase: string, hadRegistry = true): void {
-    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
-      const cidr = cidrRead(args)
-      if (cidr) return cidr
-      if (args[1] === 'deployment,service') {
-        return Promise.resolve({ items: hadRegistry ? [{}] : [] })
-      }
-      if (args[1] === 'nodes') return Promise.resolve(NODE_LIST)
-      if (args[1] === 'pod') return Promise.resolve({ status: { phase } })
-      return Promise.resolve(null)
-    })
-  }
-
-  it('deletes by label selector scoped to this install and cleans the node via a pod', async () => {
-    mockClusterWithPodPhase('Succeeded')
+  it('deletes by label selector scoped to this install', async () => {
     await removeProjectRegistry(ID)
     // Deleting the claim reclaims the blobs; `pod` sweeps leftover
-    // writer/cleanup pods.
+    // writer and collect pods.
     expect(mockRetry).toHaveBeenCalledWith([
       'delete', 'deployment,service,networkpolicy,persistentvolumeclaim,pod',
       '-l', REGISTRY_SELECTOR,
       '-n', 'test-ns', '--ignore-not-found',
     ])
-    const pod = mockApply.mock.calls
-      .map((c) => c[0] as {
-        kind: string
-        spec: {
-          nodeName: string
-          containers: Array<{ command: string[]; volumeMounts: unknown[] }>
-        }
-      })
-      .find((m) => m.kind === 'Pod')!
-    expect(pod.spec.nodeName).toBe('yaac-control-plane')
-    const script = pod.spec.containers[0].command[2]
-    expect(script).toContain(`/host-certs/${projectRegistryHost(ID)}`)
-    // The hosts.toml dir is the only thing on the node to clean, so the
-    // cleanup pod has no storage mount.
-    expect(script).not.toContain('/host-storage')
-    expect(pod.spec.containers[0].volumeMounts).toHaveLength(1)
-    expect(mockExec).not.toHaveBeenCalled()
-  })
-
-  it('swallows node-side cleanup failures (cluster recreate)', async () => {
-    mockClusterWithPodPhase('Failed')
-    await expect(removeProjectRegistry(ID)).resolves.toBeUndefined()
-  })
-
-  it('skips the node cleanup pods when the project never had a registry', async () => {
-    mockClusterWithPodPhase('Succeeded', false)
-    await removeProjectRegistry(ID)
-    // The selector delete still runs, to sweep leftover pods...
-    expect(mockRetry).toHaveBeenCalledWith([
-      'delete', 'deployment,service,networkpolicy,persistentvolumeclaim,pod',
-      '-l', REGISTRY_SELECTOR,
-      '-n', 'test-ns', '--ignore-not-found',
-    ])
-    // ...but no cleanup pod: one that cannot start would stall project
-    // removal for the full 60s pod deadline.
     expect(mockApply).not.toHaveBeenCalled()
-    expect(mockGetJson).not.toHaveBeenCalledWith(['get', 'nodes'])
   })
 })
 
@@ -544,8 +491,7 @@ describe('gcOrphanProjectRegistries', () => {
       // A live project's registry, in every kind it is made of.
       { kind: 'Service', metadata: { name: `yaac-reg-${LIVE}`, labels: labelled(LIVE, 'app'), creationTimestamp: OLD } },
       { kind: 'PersistentVolumeClaim', metadata: { name: `yaac-reg-${LIVE}-storage`, labels: labelled(LIVE, 'app'), creationTimestamp: OLD } },
-      // A removed project's. The claim is listed first, but the Deployment
-      // still earns it a node-side cleanup.
+      // A removed project's.
       { kind: 'PersistentVolumeClaim', metadata: { name: `yaac-reg-${GONE}-storage`, labels: labelled(GONE, 'app'), creationTimestamp: OLD } },
       { kind: 'Deployment', metadata: { name: `yaac-reg-${GONE}`, labels: labelled(GONE, 'app'), creationTimestamp: OLD } },
       // Too young: a project added after the live set was read may be
@@ -560,20 +506,6 @@ describe('gcOrphanProjectRegistries', () => {
     expect(objectDeletes()).toEqual([
       `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16,yaac.project-id=${GONE}`,
     ])
-    // Cleanup pods carry the project id, so a leftover pod falls inside that
-    // id's removal selector.
-    const cleanups = mockApply.mock.calls
-      .map((c) => c[0] as {
-        kind: string
-        metadata: { name: string; labels: Record<string, string> }
-        spec: { containers: Array<{ command: string[] }> }
-      })
-      .filter((m) => m.kind === 'Pod' && m.metadata.name.includes('-cleanup-'))
-      .map((m) => [m.spec.containers[0].command[2], m.metadata.labels['yaac.project-id']])
-    expect(cleanups).toEqual(expect.arrayContaining([
-      [expect.stringContaining(`/host-certs/yaac-reg-${GONE}.test-ns.svc.cluster.local:5000`), GONE],
-    ]))
-    expect(cleanups.every(([, id]) => id === GONE)).toBe(true)
     expect(mockGetJson).toHaveBeenCalledWith([
       'get', 'deployment,service,persistentvolumeclaim', '-n', 'test-ns',
       '-l', `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16`,
@@ -650,6 +582,11 @@ describe('reconcileProjectRegistryGc', () => {
     // Read-only mode rather than scaling to zero, so pulls keep working.
     expect(rollouts()).toEqual([true, false])
     expect(kubectlArgs().filter((a) => a[0] === 'scale')).toEqual([])
+    // A collect pod a crashed server left would hold the claim; it goes first.
+    expect(kubectlArgs()[0]).toEqual([
+      'delete', 'pod', '-l', `${REGISTRY_SELECTOR},${LABEL_NODE_WRITE}=gc`,
+      '-n', 'test-ns', '--ignore-not-found', '--wait=false',
+    ])
     const pod = mockApply.mock.calls.map((c) => c[0] as {
       kind: string
       metadata: { name: string; labels: Record<string, string> }

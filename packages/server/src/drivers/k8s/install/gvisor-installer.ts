@@ -5,12 +5,11 @@ import {
   gvisorInstallerHostMounts,
   k8sNamespace,
   kubectlApply,
-  kubectlWithRetry,
   LABEL_INSTALL_NAMESPACE,
+  waitForRollout,
 } from '#drivers/k8s/substrate'
-import type { PodToleration } from '#drivers/k8s/substrate'
-import { invalidateRegistryEndpoint, registryHasTag, registryRef } from '#drivers/k8s/container'
-import { missingPrebuiltImage } from '#drivers/k8s/image-engine'
+import { invalidateRegistryEndpoint } from '#drivers/k8s/container'
+import { prebuiltRef } from '#drivers/k8s/image-engine'
 
 /**
  * `yaac-gvisor-install`: the privileged DaemonSet that installs the gVisor
@@ -26,8 +25,7 @@ import { missingPrebuiltImage } from '#drivers/k8s/image-engine'
  * As a DaemonSet it reaches nodes yaac has no shell on (managed pools) and
  * covers new or replaced nodes automatically. It also applies node tuning
  * (substrate/node-tuning.ts), so a restarted node gets its settings back.
- * `nodeSelector` can limit it to a dedicated workspace pool. Infra pods
- * use no RuntimeClass and run on runc.
+ * Infra pods use no RuntimeClass and run on runc.
  */
 
 /** DaemonSet / ServiceAccount name, and the `app` label on every object. */
@@ -47,14 +45,11 @@ export const GVISOR_INSTALLER_MIRROR_TAG =
   `curlimages/curl:${CURL_VERSION}-${CURL_PIN.slice('sha256:'.length, 'sha256:'.length + 12)}`
 
 /** The mirrored installer image's ref; throws if it was never mirrored. */
-export async function ensureGvisorInstallerImage(): Promise<string> {
-  if (await registryHasTag(GVISOR_INSTALLER_MIRROR_TAG)) {
-    return registryRef(GVISOR_INSTALLER_MIRROR_TAG)
-  }
-  throw missingPrebuiltImage('gVisor installer', GVISOR_INSTALLER_MIRROR_TAG)
+async function ensureGvisorInstallerImage(): Promise<string> {
+  return prebuiltRef('gVisor installer', GVISOR_INSTALLER_MIRROR_TAG)
 }
 
-export function buildGvisorInstallerServiceAccountManifest(): Record<string, unknown> {
+function buildGvisorInstallerServiceAccountManifest(): Record<string, unknown> {
   return {
     apiVersion: 'v1',
     kind: 'ServiceAccount',
@@ -72,11 +67,11 @@ export function buildGvisorInstallerServiceAccountManifest(): Record<string, unk
  * label lets a sweep find an interrupted run's leftovers, since
  * cluster-scoped objects are not deleted with their namespace.
  */
-export function gvisorInstallerClusterScopedName(): string {
+function gvisorInstallerClusterScopedName(): string {
   return `${GVISOR_INSTALLER_APP_NAME}-${k8sNamespace()}`
 }
 
-export function gvisorInstallerClusterScopedLabels(): Record<string, string> {
+function gvisorInstallerClusterScopedLabels(): Record<string, string> {
   return { app: GVISOR_INSTALLER_APP_NAME, [LABEL_INSTALL_NAMESPACE]: k8sNamespace() }
 }
 
@@ -86,7 +81,7 @@ export function gvisorInstallerClusterScopedLabels(): Record<string, string> {
  * affects only scheduling: a pod sent to a node without runsc fails to
  * start rather than running unsandboxed.
  */
-export function buildGvisorInstallerClusterRoleManifest(): Record<string, unknown> {
+function buildGvisorInstallerClusterRoleManifest(): Record<string, unknown> {
   return {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: 'ClusterRole',
@@ -98,7 +93,7 @@ export function buildGvisorInstallerClusterRoleManifest(): Record<string, unknow
   }
 }
 
-export function buildGvisorInstallerClusterRoleBindingManifest(): Record<string, unknown> {
+function buildGvisorInstallerClusterRoleBindingManifest(): Record<string, unknown> {
   return {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: 'ClusterRoleBinding',
@@ -119,15 +114,6 @@ export function buildGvisorInstallerClusterRoleBindingManifest(): Record<string,
   }
 }
 
-export interface GvisorInstallerOptions {
-  image: string
-  /**
-   * Nodes to install on; empty means every node. A dedicated workspace pool
-   * sets its label here so infra nodes' containerd is never restarted.
-   */
-  nodeSelector?: Record<string, string>
-}
-
 /**
  * The installer DaemonSet:
  *
@@ -142,11 +128,8 @@ export interface GvisorInstallerOptions {
  * - Ready only once the script has made the runtime live, which the
  *   rollout wait in `ensureGvisorRuntime` depends on.
  */
-export function buildGvisorInstallerDaemonSetManifest(
-  opts: GvisorInstallerOptions,
-): Record<string, unknown> {
+function buildGvisorInstallerDaemonSetManifest(image: string): Record<string, unknown> {
   const { volumes, volumeMounts } = gvisorInstallerHostMounts()
-  const nodeSelector = opts.nodeSelector ?? {}
   return {
     apiVersion: 'apps/v1',
     kind: 'DaemonSet',
@@ -164,7 +147,6 @@ export function buildGvisorInstallerDaemonSetManifest(
           hostNetwork: true,
           hostPID: true,
           dnsPolicy: 'Default',
-          ...(Object.keys(nodeSelector).length > 0 ? { nodeSelector } : {}),
           serviceAccountName: GVISOR_INSTALLER_APP_NAME,
           automountServiceAccountToken: true,
           enableServiceLinks: false,
@@ -173,7 +155,7 @@ export function buildGvisorInstallerDaemonSetManifest(
           containers: [
             {
               name: 'install',
-              image: opts.image,
+              image,
               imagePullPolicy: 'IfNotPresent',
               securityContext: { privileged: true, runAsUser: 0 },
               command: ['sh', '-c', gvisorInstallScript()],
@@ -196,34 +178,26 @@ export function buildGvisorInstallerDaemonSetManifest(
 }
 
 /**
- * Set up gVisor on the cluster: the installer DaemonSet, then (after its
- * rollout, so labeled nodes exist) the RuntimeClasses. `nodeSelector`
- * limits where the runtime is installed. `tolerations` goes on the
- * RuntimeClasses, which add it to every sandboxed pod so they can run on a
- * tainted workspace pool (see buildRuntimeClassManifests).
+ * Set up gVisor on the cluster: the installer DaemonSet on every node, then
+ * (after its rollout, so labeled nodes exist) the RuntimeClasses.
  *
  * `yaac cluster install` runs this every time; a runsc version bump rolls
  * node by node.
  */
-export async function ensureGvisorRuntime(
-  opts: { nodeSelector?: Record<string, string>; tolerations?: PodToleration[] } = {},
-): Promise<void> {
+export async function ensureGvisorRuntime(): Promise<void> {
   const image = await ensureGvisorInstallerImage()
   await kubectlApply(buildGvisorInstallerServiceAccountManifest())
   await kubectlApply(buildGvisorInstallerClusterRoleManifest())
   await kubectlApply(buildGvisorInstallerClusterRoleBindingManifest())
-  await kubectlApply(buildGvisorInstallerDaemonSetManifest({
-    image, nodeSelector: opts.nodeSelector,
-  }))
-  await kubectlWithRetry([
-    'rollout', 'status', `daemonset/${GVISOR_INSTALLER_APP_NAME}`,
-    '-n', k8sNamespace(), '--timeout=300s',
-  ], { timeout: 310_000, maxAttempts: 2 })
+  await kubectlApply(buildGvisorInstallerDaemonSetManifest(image))
+  await waitForRollout({
+    workload: `daemonset/${GVISOR_INSTALLER_APP_NAME}`, namespace: k8sNamespace(), timeoutMs: 300_000,
+  })
   // A containerd restart kills port-forwards into the node, including the
   // cached registry forward. Drop it, or `registryHasTag` would read the
   // dead forward as a missing image.
   invalidateRegistryEndpoint()
-  for (const manifest of buildRuntimeClassManifests({ tolerations: opts.tolerations })) {
+  for (const manifest of buildRuntimeClassManifests()) {
     await kubectlApply(manifest)
   }
 }

@@ -258,7 +258,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     const shared = await createWorkspace('nested-shared')
     sharedJob = shared.jobName
     sharedSessionId = shared.workspaceId
-    sharedProjectId = shared.projectId!
+    sharedProjectId = shared.projectId
   }, 900_000)
 
   afterAll(async () => {
@@ -363,7 +363,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     ])
     const registryHost = /location = "([^"]+)"/.exec(regConf)?.[1] ?? ''
     // Named by project id, not slug.
-    expect(registryHost.startsWith(`yaac-reg-${session1.projectId!}.`), registryHost).toBe(true)
+    expect(registryHost.startsWith(`yaac-reg-${session1.projectId}.`), registryHost).toBe(true)
     expect(registryHost.endsWith(':5000'), registryHost).toBe(true)
     expect(regConf).toContain('insecure = true')
 
@@ -410,7 +410,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
 
     // The salvage triggers a store rebuild. Create never waits for it, so
     // the test does.
-    await waitForStoreGeneration(session1.projectId!, 600_000)
+    await waitForStoreGeneration(session1.projectId, 600_000)
 
     const session2 = await createWorkspace(slug)
     expect(session2.workspaceId).not.toBe(session1.workspaceId)
@@ -449,7 +449,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     const s2Id = await inspect(session2.jobName, 'yaac-cache-probe:v1', 'Id')
     if (!/^(sha256:)?[0-9a-f]{64}$/.test(s2Id)) {
       throw new Error(`session 2 cannot resolve yaac-cache-probe:v1 (${s2Id})\n`
-        + await storeDiagnosis([session1Placement], session2.jobName, session2.projectId!))
+        + await storeDiagnosis([session1Placement], session2.jobName, session2.projectId))
     }
     const s2Parent = await inspect(session2.jobName, 'yaac-cache-probe:v1', 'Parent')
     expect(await inspect(session2.jobName, 'yaac-cache-probe:v1', 'RootFS.Layers')).toBe(layers1)
@@ -769,13 +769,13 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     const readded = await createWorkspace(slug)
     expect(readded.projectId).toBeTruthy()
     expect(readded.projectId).not.toBe(sharedProjectId)
-    const newRegName = projectRegistryName(readded.projectId!)
+    const newRegName = projectRegistryName(readded.projectId)
     const newSvc = await kubectlGetJson<{ metadata?: { name?: string } }>([
       'get', 'service', newRegName, '-n', k8sNamespace(),
     ])
     expect(newSvc?.metadata?.name).toBe(newRegName)
     const { stdout: catalog } = await execInJob(readded.jobName, [
-      'sh', '-c', `curl -fsS --max-time 20 http://${projectRegistryHost(readded.projectId!)}/v2/_catalog`,
+      'sh', '-c', `curl -fsS --max-time 20 http://${projectRegistryHost(readded.projectId)}/v2/_catalog`,
     ], { timeout: 60_000 })
     expect((JSON.parse(catalog) as { repositories: string[] }).repositories).toEqual([])
     // The old registry was removed with the project.

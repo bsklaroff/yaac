@@ -229,7 +229,6 @@ describe('ImageBuildsOverlay on a phone', () => {
     id: 'build-1',
     tag: 'yaac-base:abc123def',
     layer: 'base',
-    action: 'build',
     projectSlugs: ['proj'],
     reason: 'prewarm',
     status: 'running',

@@ -110,9 +110,8 @@ machine image ships the vsock guest agent
 ([podman-machine-os#238](https://github.com/containers/podman-machine-os/pull/238)),
 so the VM clock survives Mac sleep
 ([podman#11541](https://github.com/containers/podman/issues/11541)). A
-machine created under podman 5.x lacks that guest setup and must be
-re-created (`podman machine rm` and re-init). Install detects this and
-prompts.
+machine created under podman 5.x lacks that guest setup; re-create it with
+`podman machine rm`, then re-run install.
 
 ## Linux: rootful podman
 
@@ -289,9 +288,6 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
    `preemptionPolicy: Never`. A preempted workspace Job (`backoffLimit: 0`)
    never comes back, so a build waits for room rather than evicting a
    workspace. netd stays on `system-node-critical`, like kube-proxy.
-
-   The server also re-applies the classes on every start, so an existing
-   cluster picks them up on upgrade.
 6. **Calico**: upstream's KDD/iptables manifest for the pinned version,
    verified against the checksum committed in `k8s/calico/` and cached at
    `<dataDir>-client/cache/calico-<version>.yaml` so a cluster re-create does
@@ -453,7 +449,6 @@ refusal, not a warning, because each fails silently when wrong:
 | kube-proxy running and not replaced (`bpfKubeProxyIptablesCleanupEnabled`) | netd's Envoy dials the yaac proxy by ClusterIP from the host network, and netd's rules sit below `KUBE-SERVICES` to keep ClusterIP traffic out of the redirect |
 | a non-empty, fully parseable pod-CIDR set | netd skips pod CIDRs before redirecting. With none, it would send pod-to-pod 443/80 into the proxy. kind falls back to its default; `--byo` refuses |
 | `system-node-critical` exists | netd uses it, and a pod naming a missing class is rejected, so netd would run on no node |
-| workload routes match the veth prefix, **on every node** | netd finds each pod's veth from host routes, read through each netd pod once it is up. A prefix that matches nothing gives a chain with no per-pod rules, which looks like a healthy netd |
 | every check actually ran | a read that failed (RBAC denied, timeout) is unknown, not "absent". Absence is meaningful here (no FelixConfiguration means iptables defaults), so a failed read must not wave an eBPF cluster through |
 
 Two things are recorded but not enforced. `chainInsertMode`: netd appends
@@ -462,9 +457,8 @@ so `Append` only warns. And per-node kube-proxy coverage: a node without
 kube-proxy loses egress while the rest work, which looks intermittent, so
 those nodes are named.
 
-The veth and kube-proxy checks run **per node**. On a mixed fleet (several
-node pools or AMIs, common on EKS) one node's routing table says nothing
-about another's.
+The kube-proxy check runs **per node**. On a mixed fleet (several node
+pools or AMIs, common on EKS) one node says nothing about another.
 
 **NetworkPolicy enforcement is tested, not assumed.** Policy-only Calico
 over a foreign IPAM is a supported setup, and a misconfigured one looks the
@@ -479,8 +473,11 @@ enforced), and the proxy allowlist covers only the ports the redirect steers
 (443, 80 and the ssh port). Install says so when that gate fails. **Do not
 start workspaces until a re-run passes.**
 
-The veth check also runs on every `yaac cluster check` (the `veth-source`
-gate), which catches a node pool added after install.
+Whether workload routes match the veth prefix on every node is the check's
+`veth-source` gate, which install's closing check runs: netd finds each
+pod's veth from host routes, and a prefix that matches nothing gives a chain
+with no per-pod rules, which looks like a healthy netd. Running it on every
+`yaac cluster check` also catches a node pool added after install.
 
 The install and registry namespaces are labelled for the `privileged` Pod
 Security Standard. This does nothing on kind, but matters on a byo cluster
@@ -589,8 +586,8 @@ not 1000 they are readable but not writable from the host, which is why the
 
 **Sysctls** are lost when a node or VM restarts. The installer
 DaemonSet's pod restarts with the node and its first pass puts them back.
-A node that stays untuned in the `node-tuning` gate is diagnosed from the
-installer's log (`kubectl -n yaac logs -l app=yaac-gvisor-install`).
+A node the `gvisor-installer` gate keeps reporting as not Ready is
+diagnosed from the installer's log (`kubectl -n yaac logs -l app=yaac-gvisor-install`).
 
 **The kind node fixups** are podman state and a kubelet flags file. Both
 survive a node container restart and are lost only when the container is,
@@ -671,8 +668,11 @@ order:
 - `gvisor`: the RuntimeClasses exist, at least one node has the
   `yaac.gvisor` label, and a `gvisor`-class pod really runs inside the
   sandbox.
-- `node-tuning` (warn): the sysctls and `DefaultTasksMax`, read through the
-  installer's pod on every node.
+- `gvisor-installer` (warn): the installer DaemonSet's current revision
+  is Ready on every node, naming any node where it is not. Its pod turns
+  Ready only after a pass has installed runsc and written the sysctls and
+  the `DefaultTasksMax` drop-in. A `DefaultTasksMax` that another drop-in
+  overrides does not hold readiness back; the installer's log says so.
 - `probe`: an end-to-end probe pod on the `gvisor` class that pulls from the
   registry, mounts `yaac-global`, and **writes** at the workspace uid. A
   peer pod on runc at the install uid, with the claim mounted whole (as the
@@ -694,7 +694,7 @@ order:
   and checks that workload routes match the configured veth prefix. A
   Ready netd does not imply this: netd is Ready once Envoy accepts its
   config, even with no pod-to-veth mappings.
-- The per-node sweep (multi-node only, below).
+- `per-node` (multi-node only, warn; below).
 - `nested-mount` (warn): a pod under the nested security context can mount
   a tmpfs, which the in-pod engine needs.
 - `storage-semantics`: runs `k8s/probes/fsprobe.py` (ownership, O_EXCL,
@@ -703,8 +703,6 @@ order:
   the same code on each.
 - `vap`: the ValidatingAdmissionPolicy API is available. Builder pods need
   it, so without it no workspace image can be built.
-- `runtime-stamp` (warn): no workspace-labelled pod runs without a gvisor
-  RuntimeClass.
 
 ### Which nodes count as workspace-eligible
 
@@ -733,24 +731,15 @@ RuntimeClasses with none, which removes a toleration added through
 `kubectl apply` but keeps one added with `kubectl edit`/`patch` (client-side
 apply only removes fields it set). Re-check after every install.
 
-On a multi-node cluster the check also pins one probe pod to each eligible
-node and reports three warn-level gates:
-
-- `runsc-nodes`: the node can run a sandboxed pod. A node the installer has
-  not labelled yet fails by definition. Otherwise the node is judged by
-  `status.runtimeHandlers` when its kubelet publishes it, or by whether its
-  probe pod ran (containerd refuses a pod whose handler it lacks). The
-  `gvisor` gate proves some node really runs the sandbox; this gate says
-  which ones can.
-- `registry-nodes`: the node's containerd can pull from the registry. The
-  probe pulls with `Always`, so a cached layer cannot hide a broken route.
-- `volume-nodes`: from that node, `yaac-global` has the same bytes the
-  server sees, and the workspace uid can write it.
-
-Each names its own fix. A probe pod that never ran is blamed on one gate
-using the kubelet's event and reported unverified on the others, so no gate
-passes on a node it could not check. Each gate also names the nodes it
-skipped and why (`not swept: yaac-worker3 (untolerated taint …)`).
+On a multi-node cluster the `per-node` gate pins one probe pod to each
+eligible node. Like a workspace pod, it pulls from the registry (with
+`Always`, so a cached layer cannot hide a broken route), runs on the
+`gvisor` class, and writes `yaac-global` at the workspace uid. A node whose
+pod does not succeed is reported with the kubelet's event for it, which
+says whether runsc, the registry or the volume is missing there. A node the
+installer has not labelled cannot host a sandboxed pod and is reported
+without a probe. The gate also names the nodes it skipped and why (`not
+swept: yaac-worker3 (untolerated taint …)`).
 
 `yaac-global` must be the same bytes on every node. Multi-node kind gets
 that by mounting `$HOME` into every node container; a cloud cluster gets it

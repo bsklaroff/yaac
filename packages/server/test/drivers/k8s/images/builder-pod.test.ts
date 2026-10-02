@@ -50,23 +50,10 @@ vi.mock('#drivers/k8s/container/registry', async (importOriginal) => ({
   pushImageToRegistry: vi.fn(),
 }))
 
-import { reconcileBuilderPodGc } from '#drivers/k8s/images'
-// Setup values and state reset, not units under test.
-import {
-  BUILDER_REAP_AGE_MS,
-  _resetBuilderReapForTests,
-} from '#drivers/k8s/images/builder-pod'
-
-
-const reaped = (): string[] =>
-  mockKubectlWithRetry.mock.calls
-    .map((c) => c[0] as string[])
-    .filter((args) => args[0] === 'delete')
-    .map((args) => args[2])
+import { deleteLeakedBuilderPods } from '#drivers/k8s/images'
 
 beforeEach(() => {
   vi.clearAllMocks()
-  _resetBuilderReapForTests()
   mockVapAvailable.mockResolvedValue(true)
   mockKubectlApply.mockResolvedValue(undefined)
   mockKubectlWithRetry.mockResolvedValue({ stdout: '', stderr: '' })
@@ -75,66 +62,13 @@ beforeEach(() => {
   mockImageExists.mockResolvedValue(false)
 })
 
-describe('reconcileBuilderPodGc', () => {
-  const NOW = 1_800_000_000_000
-  /** This server process started 10 minutes ago. */
-  const STARTED = NOW - 600_000
-
-  function podItem(name: string, phase: string, ageMs: number): unknown {
-    return {
-      metadata: { name, creationTimestamp: new Date(NOW - ageMs).toISOString() },
-      status: { phase },
-    }
-  }
-
-  it('reaps terminal pods and over-age runners, keeps live builds', async () => {
-    mockKubectlGetJson.mockResolvedValue({
-      items: [
-        podItem('yaac-builder-dead-0001', 'Failed', 60_000),
-        podItem('yaac-builder-done-0002', 'Succeeded', 60_000),
-        podItem('yaac-builder-leak-0003', 'Running', BUILDER_REAP_AGE_MS + 60_000),
-        podItem('yaac-builder-live-0004', 'Running', 60_000),
-      ],
-    })
-    await reconcileBuilderPodGc(NOW, STARTED)
-    expect(reaped()).toEqual([
-      'yaac-builder-dead-0001',
-      'yaac-builder-done-0002',
-      'yaac-builder-leak-0003',
+describe('deleteLeakedBuilderPods', () => {
+  it('deletes every builder pod of this install, without waiting', async () => {
+    await deleteLeakedBuilderPods()
+    expect(mockKubectlWithRetry).toHaveBeenCalledWith([
+      'delete', 'pods', '-n', 'test-ns',
+      '-l', 'yaac.role=builder,yaac.data-dir-hash=ddh0000000000000',
+      '--ignore-not-found', '--wait=false',
     ])
-  })
-
-  it('reaps a young pod that predates this server process', async () => {
-    // A restart orphans the running build's pod. Waiting for the age limit
-    // would hold its 8 GiB reservation and block the next build.
-    mockKubectlGetJson.mockResolvedValue({
-      items: [
-        podItem('yaac-builder-orph-0001', 'Running', 700_000),
-        podItem('yaac-builder-live-0002', 'Running', 60_000),
-      ],
-    })
-    await reconcileBuilderPodGc(NOW, STARTED)
-    expect(reaped()).toEqual(['yaac-builder-orph-0001'])
-  })
-
-  it('scopes the sweep to this install\'s builder pods', async () => {
-    mockKubectlGetJson.mockResolvedValue({ items: [] })
-    await reconcileBuilderPodGc(NOW, STARTED)
-    const args = mockKubectlGetJson.mock.calls[0][0] as string[]
-    expect(args).toContain('-l')
-    expect(args[args.indexOf('-l') + 1])
-      .toBe('yaac.role=builder,yaac.data-dir-hash=ddh0000000000000')
-  })
-
-  it('is throttled between sweeps', async () => {
-    mockKubectlGetJson.mockResolvedValue({ items: [] })
-    await reconcileBuilderPodGc(NOW, STARTED)
-    await reconcileBuilderPodGc(NOW + 1000, STARTED)
-    expect(mockKubectlGetJson).toHaveBeenCalledTimes(1)
-  })
-
-  it('survives an unreachable cluster', async () => {
-    mockKubectlGetJson.mockRejectedValue(new Error('down'))
-    await expect(reconcileBuilderPodGc(NOW, STARTED)).resolves.toBeUndefined()
   })
 })

@@ -16,13 +16,6 @@ vi.mock('#drivers/k8s/substrate/stream-relay', async (importOriginal) => ({
   podStreamToken: vi.fn().mockResolvedValue('stream-token'),
 }))
 
-// Only needs to run before the Job is applied.
-const mockEnsurePriorityClasses = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/substrate/priority-classes', async (importOriginal) => ({
-  ...(await importOriginal<typeof priorityClassesModule>()),
-  ensurePriorityClasses: mockEnsurePriorityClasses,
-}))
-
 // Mock the proxy rollout. The registration ConfigMap goes through the
 // kubectl mock like the Job.
 const mockEnsureRunning = vi.hoisted(() => vi.fn())
@@ -59,7 +52,6 @@ vi.mock('node:fs/promises', () => ({
   },
 }))
 
-import type * as priorityClassesModule from '#drivers/k8s/substrate/priority-classes'
 import type * as streamRelayModule from '#drivers/k8s/substrate/stream-relay'
 import type * as clusterModule from '#drivers/k8s/cluster'
 import { launchWorkspace, prepareWorkspaceSubstrate,
@@ -400,16 +392,6 @@ describe('launchWorkspace', () => {
 
     expect(second).toEqual(first)
     expect(second.filter((e) => e.name === 'YAAC_STREAM_TOKEN')).toHaveLength(1)
-  })
-
-  it('ensures the priority classes before applying the Job that names one', async () => {
-    // Otherwise the Job applies but its pod is rejected.
-    const substrate = await prepareWorkspaceSubstrate(INTENT)
-    await launchWorkspace(specOf(substrate))
-
-    expect(mockEnsurePriorityClasses).toHaveBeenCalled()
-    expect(mockEnsurePriorityClasses.mock.invocationCallOrder[0])
-      .toBeLessThan(mockApply.mock.invocationCallOrder[0])
   })
 
   it('resolves every mount from its tier: global subPaths, node paths, the init container, and no hostPath under the data dir', async () => {

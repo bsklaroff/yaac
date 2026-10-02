@@ -82,6 +82,7 @@ function pod(workspaceId: string, running = true): RuntimeHandle {
     podName: `yaac-proj-${workspaceId}-x1`,
     workspaceId,
     projectSlug: 'proj',
+    projectId: '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
     tool: 'claude',
     phase: running ? 'Running' : 'Failed',
     running,

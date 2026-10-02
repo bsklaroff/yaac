@@ -24,9 +24,9 @@ export const PRIORITY_CLASS_WORKSPACE = 'yaac-workspace'
  * spaced apart for future tiers. Workspaces sit above the default (0), so
  * unrelated pods on the cluster are evicted before a live workspace.
  */
-export const PRIORITY_VALUE_INFRA = 1_000_000
-export const PRIORITY_VALUE_BUILDER = 100_000
-export const PRIORITY_VALUE_WORKSPACE = 1_000
+const PRIORITY_VALUE_INFRA = 1_000_000
+const PRIORITY_VALUE_BUILDER = 100_000
+const PRIORITY_VALUE_WORKSPACE = 1_000
 
 /** Priority class for workspace pods. */
 export function priorityClassSpec(): { priorityClassName?: string } {
@@ -74,13 +74,10 @@ export function buildPriorityClassManifests(): Array<Record<string, unknown>> {
 }
 
 /**
- * Apply the PriorityClasses. Runs on every server start as well as from
- * `yaac cluster install`, so an older cluster gets them on upgrade. They
- * must exist before any pod naming them: the apiserver rejects such a pod
- * and its Job hangs instead of failing.
+ * Apply the PriorityClasses, from `yaac cluster install`. They must exist
+ * before any pod naming them: the apiserver rejects such a pod and its Job
+ * hangs instead of failing.
  */
 export async function ensurePriorityClasses(): Promise<void> {
-  for (const manifest of buildPriorityClassManifests()) await kubectlApply(manifest)
-  // The old `yaac-session` and `yaac-worktree` classes are not deleted:
-  // another install on the same cluster may still use them.
+  await kubectlApply({ apiVersion: 'v1', kind: 'List', items: buildPriorityClassManifests() })
 }

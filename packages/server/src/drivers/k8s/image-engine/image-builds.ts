@@ -21,8 +21,7 @@ export type ImageBuildReason = 'session' | 'prewarm'
 interface BuildRecord {
   id: string
   tag: string
-  layer: ImageLayerName | 'push' | 'proxy' | 'netd'
-  action: 'build' | 'push'
+  layer: ImageLayerName
   /** The projects waiting on it — what a retry rebuilds. */
   projects: ProjectRef[]
   reason: ImageBuildReason
@@ -52,7 +51,7 @@ const STEP_TEXT_MAX = 120
  * `STEP 3/14: RUN apt-get update`. Returns null for any other line; if the
  * format changes, the UI just shows status and the raw log.
  */
-export function parseBuildStep(line: string): { current: number; total: number; text: string } | null {
+function parseBuildStep(line: string): { current: number; total: number; text: string } | null {
   const m = /^STEP\s+(\d+)\/(\d+):\s*(.*)$/.exec(line)
   if (!m) return null
   return { current: Number(m[1]), total: Number(m[2]), text: m[3].slice(0, STEP_TEXT_MAX) }
@@ -73,19 +72,17 @@ function prune(): void {
 }
 
 /**
- * Track a new build or push, replacing any finished entry for the same tag
- * and action. Returns the entry id for log ingestion and completion.
+ * Track a new build, replacing any finished entry for the same tag.
+ * Returns the entry id for log ingestion and completion.
  */
 export function registerImageBuild(input: {
   tag: string
-  layer: ImageLayerName | 'push' | 'proxy' | 'netd'
-  action: 'build' | 'push'
-  /** Omitted for infrastructure builds that belong to no project. */
-  project?: ProjectRef
+  layer: ImageLayerName
+  project: ProjectRef
   reason: ImageBuildReason
 }): string {
   for (const [id, e] of entries) {
-    if (e.tag === input.tag && e.action === input.action && e.status !== 'running') {
+    if (e.tag === input.tag && e.status !== 'running') {
       entries.delete(id)
     }
   }
@@ -94,8 +91,7 @@ export function registerImageBuild(input: {
     id,
     tag: input.tag,
     layer: input.layer,
-    action: input.action,
-    projects: input.project ? [input.project] : [],
+    projects: [input.project],
     reason: input.reason,
     status: 'running',
     log: '',
@@ -181,7 +177,6 @@ function project(e: BuildRecord): ImageBuildEntry {
     id: e.id,
     tag: e.tag,
     layer: e.layer,
-    action: e.action,
     projectSlugs: e.projects.map((p) => p.slug),
     reason: e.reason,
     status: e.status,
@@ -210,7 +205,7 @@ export function getImageBuild(id: string): ImageBuildEntry | undefined {
 }
 
 /** The projects waiting on a build, which a retry rebuilds. Empty for
- *  infra builds and unknown ids. */
+ *  an unknown id. */
 export function imageBuildProjects(id: string): ProjectRef[] {
   return [...entries.get(id)?.projects ?? []]
 }

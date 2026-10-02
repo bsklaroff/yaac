@@ -22,7 +22,7 @@ import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/sub
  */
 
 /** Secret holding the grant key: one per cluster. */
-export const REGISTRY_GRANT_SECRET = 'yaac-registry-grant-key'
+const REGISTRY_GRANT_SECRET = 'yaac-registry-grant-key'
 
 /**
  * A namespace for the key alone. Not `yaac`, where the egress proxy (which
@@ -33,10 +33,10 @@ export const REGISTRY_GRANT_NAMESPACE = 'yaac-registry-keys'
 const SECRET_KEY_FIELD = 'key.pem'
 
 /** Username every grant is presented under; the gate ignores it. */
-export const REGISTRY_GRANT_USER = 'yaac'
+const REGISTRY_GRANT_USER = 'yaac'
 
 /** `*` is every repository, for the trusted writers (install, the e2e setup). */
-export type RegistryGrantScope = '*' | string[]
+type RegistryGrantScope = '*' | string[]
 
 let keyPromise: Promise<crypto.KeyObject> | null = null
 

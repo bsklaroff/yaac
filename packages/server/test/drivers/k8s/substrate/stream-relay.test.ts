@@ -5,6 +5,7 @@
 import net from 'node:net'
 import crypto from 'node:crypto'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import type * as netModule from 'node:net'
 
 // The socket is a real listener. The two kubectl reads (the proxy auth
 // secret and, when nested, the inner proxy's pod IP) are mocked below.
@@ -13,6 +14,18 @@ type ExecCallback = (err: unknown, res?: ExecResult) => void
 const execFileMock = vi.fn<(file: string, args: readonly string[]) => Promise<ExecResult>>()
 const execMock = vi.fn<(command: string) => Promise<ExecResult>>()
 const spawnMock = vi.fn<(file: string, args: readonly string[]) => unknown>()
+/** Where a dial to the proxy Service lands: the fake relay's `host:port`,
+ *  or (undefined) the Service's real cluster DNS name. */
+let relayHost: string | undefined
+vi.mock('node:net', async (importOriginal) => {
+  const real = await importOriginal<typeof netModule>()
+  const connect = (port: number, host: string): netModule.Socket => {
+    if (relayHost === undefined || !host.endsWith('.svc.cluster.local')) return real.connect(port, host)
+    const [h, p] = relayHost.split(':')
+    return real.connect(Number(p), h)
+  }
+  return { ...real, connect, default: { ...real, connect } }
+})
 vi.mock('node:child_process', () => ({
   execFile: (file: string, args: readonly string[], opts: unknown, cb?: ExecCallback) => {
     const actualCb = (typeof opts === 'function' ? opts : cb) as ExecCallback
@@ -33,13 +46,13 @@ vi.mock('node:child_process', () => ({
 }))
 
 import {
-  RelayExecError,
   bootStreamd,
   dialCtrlStream,
   dialPtyStream,
   relayDial,
   podExec,
   podStreamToken,
+  readProxyAuthSecret,
   waitForStreamd,
 } from '#drivers/k8s/substrate'
 // Internals, for setup and assertions only.
@@ -49,6 +62,7 @@ import {
   type WaitForStreamdDeps,
 } from '#drivers/k8s/substrate/stream-relay'
 import { FRAME_DATA, FRAME_EXIT, FRAME_RESIZE, FrameParser, encodeFrame } from '@yaac/shared/stream-frames'
+import { WorkspaceExecError } from '#drivers/contract'
 
 const SECRET = 'relay-secret-0123456789abcdef'
 const SID = '0f9b2c4d-1111-2222-3333-444455556666'
@@ -123,18 +137,29 @@ beforeEach(() => {
 afterEach(() => {
   relay?.close()
   relay = null
+  relayHost = undefined
   vi.unstubAllEnvs()
 })
 
 async function withRelay(serve: (r: Received) => void): Promise<void> {
   relay = await startFakeRelay(serve)
-  vi.stubEnv('YAAC_RELAY_ADDR', `127.0.0.1:${relay.port}`)
+  relayHost = `127.0.0.1:${relay.port}`
 }
 
 const okThen = (r: Received, body?: Buffer): void => {
   r.socket.write('{"ok":true}\n')
   if (body) r.socket.write(body)
 }
+
+describe('readProxyAuthSecret', () => {
+  it('decodes the Secret, and answers null before the proxy\'s first deploy creates it', async () => {
+    await expect(readProxyAuthSecret()).resolves.toBe(SECRET)
+    execFileMock.mockRejectedValue(Object.assign(new Error('kubectl failed'), {
+      stderr: 'Error from server (NotFound): secrets "yaac-proxy-auth" not found',
+    }))
+    await expect(readProxyAuthSecret()).resolves.toBeNull()
+  })
+})
 
 describe('podStreamToken', () => {
   it('derives a stable HMAC of the proxy secret and session id', async () => {
@@ -185,14 +210,14 @@ describe('relayDial', () => {
   })
 
   it('rejects with RelayDialError when nothing listens at the relay address', async () => {
-    vi.stubEnv('YAAC_RELAY_ADDR', '127.0.0.1:1') // nothing listens on port 1
+    relayHost = '127.0.0.1:1' // nothing listens on port 1
     await expect(relayDial(SID, { kind: 'tcp', port: 80 }, { timeoutMs: 2_000 }))
       .rejects.toBeInstanceOf(RelayDialError)
   })
 
-  it('dials the proxy Service when no explicit relay address is set', async () => {
+  it('dials the proxy Service', async () => {
     // The server pod shares the proxy's namespace, so it dials the Service.
-    vi.stubEnv('YAAC_RELAY_ADDR', '')
+    relayHost = undefined
     await expect(relayDial(SID, { kind: 'tcp', port: 80 }, { timeoutMs: 2_000 }))
       .rejects.toThrow(/yaac-proxy\.test-ns\.svc\.cluster\.local|ENOTFOUND|EAI_AGAIN/)
     expect(spawnMock).not.toHaveBeenCalled()
@@ -212,16 +237,16 @@ describe('podExec', () => {
     expect(handshake.cmd).toEqual(['sh', '-c', 'echo hi'])
   })
 
-  it('throws RelayExecError (code + stderr) on a nonzero exit, without retrying', async () => {
+  it('throws WorkspaceExecError (code + stderr) on a nonzero exit, without retrying', async () => {
     let dials = 0
     await withRelay((r) => {
       dials++
       r.socket.end('{"ok":true}\n' + JSON.stringify({ exitCode: 1, stdout: '', stderr: 'no such session' }) + '\n')
     })
     const err = await podExec(JOB, 'tmux has-session -t yaac').catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(RelayExecError)
-    expect((err as RelayExecError).code).toBe(1)
-    expect((err as RelayExecError).stderr).toBe('no such session')
+    expect(err).toBeInstanceOf(WorkspaceExecError)
+    expect((err as WorkspaceExecError).code).toBe(1)
+    expect((err as WorkspaceExecError).stderr).toBe('no such session')
     expect(dials).toBe(1)
   })
 
@@ -248,7 +273,7 @@ describe('podExec', () => {
     expect(result.stdout).toBe('late')
   })
 
-  // The stale reaper treats a RelayExecError as `dead` and tears the
+  // The stale reaper treats a WorkspaceExecError as `dead` and tears the
   // workspace down, so only a command that actually ran and exited may
   // produce one.
   it('reports a signal-killed command as transport, not a nonzero exit', async () => {
@@ -260,7 +285,7 @@ describe('podExec', () => {
     const err = await podExec(JOB, 'tmux has-session -t yaac', { maxAttempts: 1 })
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(RelayDialError)
-    expect(err).not.toBeInstanceOf(RelayExecError)
+    expect(err).not.toBeInstanceOf(WorkspaceExecError)
     expect((err as RelayDialError).afterDispatch).toBe(true)
   })
 
@@ -274,7 +299,7 @@ describe('podExec', () => {
     const err = await podExec(JOB, 'tmux has-session -t yaac', { maxAttempts: 1 })
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(RelayDialError)
-    expect(err).not.toBeInstanceOf(RelayExecError)
+    expect(err).not.toBeInstanceOf(WorkspaceExecError)
   })
 
   it('reports a result with no exit code as transport, not exit 1', async () => {
@@ -284,7 +309,7 @@ describe('podExec', () => {
     const err = await podExec(JOB, 'tmux has-session -t yaac', { maxAttempts: 1 })
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(RelayDialError)
-    expect(err).not.toBeInstanceOf(RelayExecError)
+    expect(err).not.toBeInstanceOf(WorkspaceExecError)
   })
 
   it('still reports a real command-not-found as a nonzero exit', async () => {
@@ -293,8 +318,8 @@ describe('podExec', () => {
         + JSON.stringify({ exitCode: 127, stdout: '', stderr: 'codex: not found' }) + '\n')
     })
     const err = await podExec(JOB, 'codex --version', { maxAttempts: 1 }).catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(RelayExecError)
-    expect((err as RelayExecError).code).toBe(127)
+    expect(err).toBeInstanceOf(WorkspaceExecError)
+    expect((err as WorkspaceExecError).code).toBe(127)
   })
 
   it('does not retry a transport failure past dispatch — the command may have run', async () => {
@@ -334,7 +359,7 @@ describe('dialCtrlStream', () => {
   })
 
   it('emits error when the dial fails', async () => {
-    vi.stubEnv('YAAC_RELAY_ADDR', '127.0.0.1:1')
+    relayHost = '127.0.0.1:1'
     const child = dialCtrlStream(SID, ['tmux'])
     const err = await new Promise<unknown>((resolve) => child.on('error', (e) => resolve(e)))
     expect(err).toBeInstanceOf(RelayDialError)
@@ -404,7 +429,7 @@ describe('dialPtyStream', () => {
   })
 
   it('emits exit(1) when the dial fails (the frontend reconnect owns retries)', async () => {
-    vi.stubEnv('YAAC_RELAY_ADDR', '127.0.0.1:1')
+    relayHost = '127.0.0.1:1'
     const pty = dialPtyStream(SID, ['sh'], {})
     const code = await new Promise<number>((resolve) => pty.onExit(({ exitCode }) => resolve(exitCode)))
     expect(code).toBe(1)
@@ -445,7 +470,7 @@ describe('waitForStreamd', () => {
   })
 
   it('rethrows a non-dial error immediately — the command ran, streamd is up', async () => {
-    const exec = vi.fn().mockRejectedValue(new RelayExecError('exit 1', 1, '', 'boom'))
+    const exec = vi.fn().mockRejectedValue(new WorkspaceExecError('exit 1', 1, '', 'boom'))
     const deps = makeDeps(exec)
     await expect(waitForStreamd(JOB, { timeoutMs: 10_000 }, deps)).rejects.toThrow('exit 1')
     expect(exec).toHaveBeenCalledTimes(1)

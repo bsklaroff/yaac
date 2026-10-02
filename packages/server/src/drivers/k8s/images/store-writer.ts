@@ -21,20 +21,17 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
   LABEL_PROJECT_ID,
-  PRIORITY_CLASS_INFRA,
   dataDirHash,
   k8sNamespace,
   kubectlGetJson,
-  kubectlWithRetry,
   nodeLocalHostPath,
-  nodeLocalNodePath,
-  runPodToCompletion,
+  runOnEachNode,
   type PodMount,
 } from '#drivers/k8s/substrate'
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import { PROJECT_REGISTRY_PORT, projectRegistryClusterIp } from '#drivers/k8s/cluster'
 import { ensureBuilderImage } from '#drivers/k8s/cluster'
-import { imageStoreDir, nodeLocalProjectPath } from '@yaac/shared/project-paths'
+import { imageStoreDir } from '@yaac/shared/project-paths'
 import { CACHE_TAG_PREFIX, rankedRegistryTagsScript } from './image-promoter'
 import { serverLog } from '#log'
 import type { ProjectRef } from '#drivers/contract'
@@ -51,19 +48,19 @@ export const STORE_POD_PATH = '/store'
  *  build leaves none, so it is never mounted and the next run drops it. */
 export const DONE_MARKER = '.yaac-store-done'
 
-/** `app` label of every store-writer and cleanup pod. */
-export const IMAGE_STORE_APP_LABEL = 'yaac-image-store'
+/** `app` label of every store-writer pod. */
+const IMAGE_STORE_APP_LABEL = 'yaac-image-store'
 
 /** Ties writer pods to this install without the workspace-id label the
  *  workspace reaper selects on. */
-export const LABEL_STORE_DATA_DIR_HASH = 'yaac.store-data-dir-hash'
+const LABEL_STORE_DATA_DIR_HASH = 'yaac.store-data-dir-hash'
 
 /** How often one project's store is refreshed. A salvage that pushed
  *  something forces an earlier refresh. */
 export const STORE_REFRESH_INTERVAL_MS = 30 * 60_000
 
 /** Deadline for one writer run (a cold store pulls everything). */
-export const STORE_REFRESH_TIMEOUT_MS = 30 * 60_000
+const STORE_REFRESH_TIMEOUT_MS = 30 * 60_000
 
 /**
  * Retry delay after a failed refresh. Failures are usually brief (e.g.
@@ -72,20 +69,12 @@ export const STORE_REFRESH_TIMEOUT_MS = 30 * 60_000
  */
 export const STORE_REFRESH_RETRY_MS = 5 * 60_000
 
-/** Deadline for the one-shot removal pod (an `rm -rf` of one directory). */
-export const STORE_REMOVE_TIMEOUT_MS = 60_000
-
 function storeLabels(projectId: string): Record<string, string> {
   return {
     app: IMAGE_STORE_APP_LABEL,
     [LABEL_PROJECT_ID]: projectId,
     [LABEL_STORE_DATA_DIR_HASH]: dataDirHash(),
   }
-}
-
-/** Selector matching this install's store-writer pods for one project. */
-function storeSelector(projectId: string): string {
-  return Object.entries(storeLabels(projectId)).map(([k, v]) => `${k}=${v}`).join(',')
 }
 
 /** Generation directory name. Lexical order is creation order, and the
@@ -102,7 +91,7 @@ const GENERATION_DIR = /^gen-\d{14}-[0-9a-f]{8}$/
  * server can check the DONE marker. Returns `[]` on any read error, which
  * means "mount nothing".
  */
-export async function listStoreGenerations(projectId: string): Promise<string[]> {
+async function listStoreGenerations(projectId: string): Promise<string[]> {
   const parent = imageStoreDir(projectId)
   const names = await fs.readdir(parent).catch(() => [] as string[])
   const complete: string[] = []
@@ -144,7 +133,7 @@ export async function nodeImageStoreMount(projectId: string): Promise<PodMount |
  *  4. Assert every layer has a recorded diff size.
  *  5. Write the DONE marker, then drop generations not kept.
  */
-export function buildStoreWriterScript(registryEndpoint: string, genName: string): string {
+function buildStoreWriterScript(registryEndpoint: string, genName: string): string {
   return [
     'set -eu',
     'STORE="$1"; shift',
@@ -344,119 +333,6 @@ const DIFF_SIZE_CHECK_PY = [
   "print('store-layers %d' % len(layers))",
 ].join('\n')
 
-/**
- * The writer pod: runc, root, pinned to one node, tolerating every taint
- * (`nodeName` skips the scheduler but not taint eviction).
- * docs/nested-containers.md explains hostNetwork and the default
- * capabilities.
- */
-export function buildStoreWriterPodManifest(params: {
-  projectId: string
-  imageRef: string
-  nodeName: string
-  registryEndpoint: string
-  genName: string
-  keep: string[]
-  runId: string
-  nodeIndex: number
-}): Record<string, unknown> {
-  const { projectId, imageRef, nodeName, registryEndpoint, genName, keep, runId } = params
-  return {
-    apiVersion: 'v1',
-    kind: 'Pod',
-    metadata: {
-      name: `yaac-store-${projectId}-${params.nodeIndex}-${runId}`,
-      namespace: k8sNamespace(),
-      labels: storeLabels(projectId),
-    },
-    spec: {
-      nodeName,
-      // The registry admits node addresses; the node has no cluster DNS,
-      // hence the ClusterIP endpoint.
-      hostNetwork: true,
-      restartPolicy: 'Never',
-      tolerations: [{ operator: 'Exists' }],
-      automountServiceAccountToken: false,
-      enableServiceLinks: false,
-      priorityClassName: PRIORITY_CLASS_INFRA,
-      containers: [{
-        name: 'write',
-        image: imageRef,
-        imagePullPolicy: 'IfNotPresent',
-        command: [
-          'sh', '-c', `${buildStoreWriterScript(registryEndpoint, genName)}\n`,
-          '--', STORE_POD_PATH, ...keep,
-        ],
-        securityContext: { runAsUser: 0 },
-        volumeMounts: [{ name: 'store', mountPath: STORE_POD_PATH }],
-      }],
-      volumes: [{
-        name: 'store',
-        hostPath: { path: nodeLocalHostPath(imageStoreDir(projectId)), type: 'DirectoryOrCreate' },
-      }],
-    },
-  }
-}
-
-/** Where the cleanup pod mounts the install's node-local tree. */
-const NODE_POD_PATH = '/node'
-
-/**
- * One-shot pod removing a project's node-local data from a node: its image
- * store and `projects/<id>`. The server cannot do it: the store is
- * root-owned, and other nodes' disks are out of its reach.
- */
-export function buildNodeLocalProjectCleanupPodManifest(params: {
-  projectId: string
-  imageRef: string
-  nodeName: string
-  runId: string
-  nodeIndex: number
-}): Record<string, unknown> {
-  const { projectId, imageRef, nodeName, runId } = params
-  const root = nodeLocalNodePath()
-  const targets = [imageStoreDir(projectId), nodeLocalProjectPath(projectId)]
-    .map((p) => `${NODE_POD_PATH}/${path.posix.relative(root, nodeLocalHostPath(p))}`)
-  return {
-    apiVersion: 'v1',
-    kind: 'Pod',
-    metadata: {
-      name: `yaac-store-rm-${projectId}-${params.nodeIndex}-${runId}`,
-      namespace: k8sNamespace(),
-      labels: storeLabels(projectId),
-    },
-    spec: {
-      nodeName,
-      restartPolicy: 'Never',
-      tolerations: [{ operator: 'Exists' }],
-      automountServiceAccountToken: false,
-      enableServiceLinks: false,
-      priorityClassName: PRIORITY_CLASS_INFRA,
-      containers: [{
-        name: 'remove',
-        image: imageRef,
-        imagePullPolicy: 'IfNotPresent',
-        command: ['sh', '-c', `rm -rf ${targets.map((t) => `"${t}"`).join(' ')}`],
-        securityContext: { runAsUser: 0 },
-        volumeMounts: [{ name: 'node', mountPath: NODE_POD_PATH }],
-      }],
-      volumes: [{
-        name: 'node',
-        hostPath: { path: root, type: 'DirectoryOrCreate' },
-      }],
-    },
-  }
-}
-
-interface RawNodeList {
-  items: Array<{ metadata: { name: string } }>
-}
-
-async function listNodeNames(): Promise<string[]> {
-  const list = await kubectlGetJson<RawNodeList>(['get', 'nodes'])
-  return (list?.items ?? []).map((n) => n.metadata.name)
-}
-
 interface RawPodList {
   items: Array<{
     spec?: { volumes?: Array<{ hostPath?: { path?: string } }> }
@@ -502,7 +378,7 @@ export function _resetImageStoreForTests(): void {
   refreshing.clear()
 }
 
-export interface EnsureStoreOptions {
+interface EnsureStoreOptions {
   /** Ignore the throttle, e.g. after a salvage pushed something. */
   force?: boolean
   nowMs?: number
@@ -538,51 +414,56 @@ export async function ensureNodeImageStore(
   }
 }
 
-/** Run one writer pod per node. False when nothing was published (no
- *  project registry, or every node failed). */
+/**
+ * Run one writer pod per node: root, with the project's store directory
+ * mounted. docs/nested-containers.md explains hostNetwork and the default
+ * capabilities. False when nothing was published (no project registry, or
+ * every node failed).
+ */
 async function writeOneStore(project: ProjectRef): Promise<boolean> {
   const { slug, id } = project
   const clusterIp = await projectRegistryClusterIp(id)
   if (!clusterIp) return false
   const imageRef = await ensureBuilderImage()
-  const runId = crypto.randomBytes(4).toString('hex')
   const keep = await generationsInUse(id)
   // Unknown live set: keep every complete generation.
   const keepNames = keep ?? await listStoreGenerations(id)
-
-  // Delete pods left by a server that died mid-run.
-  await kubectlWithRetry([
-    'delete', 'pod', '-l', storeSelector(id), '-n', k8sNamespace(), '--ignore-not-found',
-  ]).catch(() => { /* best effort */ })
-
   // Same name on every node, since the server picks the mount from its
   // own node's generations.
   const genName = generationName()
-  let published = 0
-  for (const [nodeIndex, nodeName] of (await listNodeNames()).entries()) {
-    const manifest = buildStoreWriterPodManifest({
-      projectId: id,
-      imageRef,
-      nodeName,
-      registryEndpoint: `${clusterIp}:${PROJECT_REGISTRY_PORT}`,
-      genName,
-      keep: keepNames,
-      runId,
-      nodeIndex,
-    })
-    const { phase, logs } = await runPodToCompletion(manifest, {
-      timeoutMs: STORE_REFRESH_TIMEOUT_MS,
-      pollMs: 2000,
-    })
+  const registryEndpoint = `${clusterIp}:${PROJECT_REGISTRY_PORT}`
+  const runs = await runOnEachNode({
+    name: `yaac-store-${id}`,
+    labels: storeLabels(id),
+    timeoutMs: STORE_REFRESH_TIMEOUT_MS,
+    pod: () => ({
+      image: imageRef,
+      command: [
+        'sh', '-c', `${buildStoreWriterScript(registryEndpoint, genName)}\n`,
+        '--', STORE_POD_PATH, ...keepNames,
+      ],
+      container: {
+        securityContext: { runAsUser: 0 },
+        volumeMounts: [{ name: 'store', mountPath: STORE_POD_PATH }],
+      },
+      spec: {
+        // The registry admits node addresses; the node has no cluster DNS,
+        // hence the ClusterIP endpoint.
+        hostNetwork: true,
+        volumes: [{
+          name: 'store',
+          hostPath: { path: nodeLocalHostPath(imageStoreDir(id)), type: 'DirectoryOrCreate' },
+        }],
+      },
+    }),
+  })
+  for (const { node, phase, logs } of runs) {
     const tail = logs.trim().split('\n').slice(-4).join(' | ')
-    if (phase !== 'Succeeded') {
-      serverLog(`[image-store] ${slug} on ${nodeName}: pod ${phase}${tail ? `; ${tail}` : ''}`)
-      continue
-    }
-    published += 1
-    serverLog(`[image-store] ${slug} on ${nodeName}: ${genName} ${tail}`)
+    serverLog(phase === 'Succeeded'
+      ? `[image-store] ${slug} on ${node}: ${genName} ${tail}`
+      : `[image-store] ${slug} on ${node}: pod ${phase}${tail ? `; ${tail}` : ''}`)
   }
-  return published > 0
+  return runs.some((r) => r.phase === 'Succeeded')
 }
 
 /**
@@ -592,22 +473,5 @@ async function writeOneStore(project: ProjectRef): Promise<boolean> {
 export function reconcileNodeImageStores(projects: ProjectRef[]): void {
   for (const project of projects) {
     void ensureNodeImageStore(project)
-  }
-}
-
-/**
- * Remove a project's node-local data from every node when the project is
- * removed. Best-effort; the node-local sweep reaps anything left.
- */
-export async function removeNodeLocalProject(projectId: string): Promise<void> {
-  const imageRef = await ensureBuilderImage().catch(() => null)
-  if (!imageRef) return
-  const runId = crypto.randomBytes(4).toString('hex')
-  const nodes = await listNodeNames().catch(() => [] as string[])
-  for (const [nodeIndex, nodeName] of nodes.entries()) {
-    await runPodToCompletion(
-      buildNodeLocalProjectCleanupPodManifest({ projectId, imageRef, nodeName, runId, nodeIndex }),
-      { timeoutMs: STORE_REMOVE_TIMEOUT_MS, pollMs: 500 },
-    ).catch(() => { /* node-side residue is harmless */ })
   }
 }

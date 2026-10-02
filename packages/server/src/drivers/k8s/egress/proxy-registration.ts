@@ -3,11 +3,11 @@ import {
   LABEL_PROXY_INPUT,
   LABEL_WORKSPACE_ID,
   PROXY_APP_NAME,
-  getActiveClusterCache,
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
+  readWorkspaceJobs,
 } from '#drivers/k8s/substrate'
 import { buildRegistrationConfigMapManifest, proxyRegistrationName } from '#drivers/k8s/cluster'
 import { NESTED_PULL_HOSTS, resolveAllowedHosts } from '#lib/allowed-hosts'
@@ -73,7 +73,7 @@ export interface ProxyRegistration {
 }
 
 /** The key a rule's `secretRef` names, scoped to its project. */
-export function proxySecretRef(projectSlug: string, name: string): string {
+function proxySecretRef(projectSlug: string, name: string): string {
   return `${projectSlug}/${name}`
 }
 
@@ -81,7 +81,7 @@ export function proxySecretRef(projectSlug: string, name: string): string {
  * Build proxy injection rules from a project's proxied secrets, keyed by
  * variable name. The caller passes only secrets that have a value.
  */
-export function buildRulesFromSecrets(
+function buildRulesFromSecrets(
   projectSlug: string,
   secretRules: Record<string, SecretProxyRule>,
 ): InjectionRule[] {
@@ -309,16 +309,13 @@ export function _resetRegistrationGcForTests(): void {
  * Delete registrations whose workspace is gone, e.g. when the server died
  * between deleting the Job and the ConfigMap. Workspace ids are never
  * reused, so a leaked one is harmless; this just keeps the namespace
- * clean. Throttled, and skipped until the workspace-job cache is healthy
- * so an unseeded cache isn't read as "no workspaces".
+ * clean. Throttled.
  */
 export async function reconcileRegistrationGc(ctx: PassContext): Promise<void> {
   if (Date.now() - lastRegistrationGcAt < REGISTRATION_GC_INTERVAL_MS) return
-  const cache = getActiveClusterCache()
-  if (!cache?.healthy('workspace-jobs')) return
   lastRegistrationGcAt = Date.now()
   const live = new Set((await ctx.snapshot().workspaces()).map((w) => w.workspaceId))
-  for (const job of cache.workspaceJobs()) live.add(job.workspaceId)
+  for (const job of await readWorkspaceJobs()) live.add(job.workspaceId)
   const cutoff = Date.now() - ORPHAN_REGISTRATION_GRACE_MS
   for (const obj of await listRegistrations()) {
     const workspaceId = obj.metadata.labels?.[LABEL_WORKSPACE_ID]

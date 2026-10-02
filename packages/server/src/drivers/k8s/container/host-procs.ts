@@ -52,7 +52,7 @@ function persist(): void {
   }
 }
 
-export interface TrackedPodmanOpts {
+interface TrackedPodmanOpts {
   /** Content-hash tag this invocation produces. */
   tag: string
   /** Prefix for the process's stdout/stderr lines, e.g. `[build <tag>] `. */

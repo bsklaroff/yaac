@@ -36,10 +36,9 @@ import {
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
-  kubectlWithRetry,
+  waitForRollout,
 } from '#drivers/k8s/substrate'
-import { missingPrebuiltImage } from '#drivers/k8s/image-engine'
-import { registryHasTag, registryRef } from '#drivers/k8s/container'
+import { prebuiltRef } from '#drivers/k8s/image-engine'
 import { clusterPodCidrs, nodeIpBlocks } from './cluster-cidrs'
 import { ensureNamespace } from './proxy-apply'
 
@@ -372,27 +371,21 @@ const ROLLOUT_TIMEOUT_MS = 180_000
  * never came up has no Service.
  */
 export async function ensureNpmCache(): Promise<void> {
-  for (const [name, tag] of [['Verdaccio', VERDACCIO_MIRROR_TAG], ['nginx', NGINX_MIRROR_TAG]]) {
-    if (!await registryHasTag(tag)) throw missingPrebuiltImage(name, tag)
-  }
+  const verdaccio = await prebuiltRef('Verdaccio', VERDACCIO_MIRROR_TAG)
+  const nginx = await prebuiltRef('nginx', NGINX_MIRROR_TAG)
   await ensureNamespace()
   const { workload, service } = buildNpmCacheManifests(
-    { verdaccio: registryRef(VERDACCIO_MIRROR_TAG), nginx: registryRef(NGINX_MIRROR_TAG) },
+    { verdaccio, nginx },
     { nodes: await nodeIpBlocks(), pods: await clusterPodCidrs() },
   )
   for (const manifest of workload) await kubectlApply(manifest)
-  try {
-    await kubectlWithRetry([
-      'rollout', 'status', `deployment/${NPM_CACHE_APP_NAME}`, '-n', k8sNamespace(),
-      `--timeout=${Math.floor(ROLLOUT_TIMEOUT_MS / 1000)}s`,
-    ], { timeout: ROLLOUT_TIMEOUT_MS + 10_000, maxAttempts: 2 })
-  } catch (err) {
-    throw new Error(
-      `${err instanceof Error ? err.message : String(err)}\n`
-      + `Inspect with \`kubectl -n ${k8sNamespace()} get pods,pvc -l app=${NPM_CACHE_APP_NAME}\` — `
+  await waitForRollout({
+    workload: `deployment/${NPM_CACHE_APP_NAME}`,
+    namespace: k8sNamespace(),
+    timeoutMs: ROLLOUT_TIMEOUT_MS,
+    hint: `Inspect with \`kubectl -n ${k8sNamespace()} get pods,pvc -l app=${NPM_CACHE_APP_NAME}\` — `
       + 'a Pending PVC means the cluster has no default StorageClass to bind it.',
-    )
-  }
+  })
   await kubectlApply(service)
 }
 

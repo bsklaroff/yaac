@@ -67,11 +67,11 @@ export function runtimeClassSpec(
 }
 
 /** containerd runtime handler names the RuntimeClasses map to. */
-export const RUNSC_HANDLER = 'runsc'
-export const RUNSC_NESTED_HANDLER = 'runsc-nested'
+const RUNSC_HANDLER = 'runsc'
+const RUNSC_NESTED_HANDLER = 'runsc-nested'
 
 /** Node directories the installer writes, and where its pod sees them. */
-export const INSTALLER_HOST_PREFIX = '/host'
+const INSTALLER_HOST_PREFIX = '/host'
 export const NODE_BIN_DIR = '/usr/local/bin'
 export const NODE_CONTAINERD_DIR = '/etc/containerd'
 /** Node-local cache of the verified release and the installed-version
@@ -85,7 +85,7 @@ export const NODE_CONTAINERD_CONFIG_PATH = `${NODE_CONTAINERD_DIR}/config.toml`
 
 /** Readiness marker in a pod-local emptyDir: written after a successful
  *  pass, removed when the installer exits. */
-export const GVISOR_INSTALLER_STATE_DIR = '/run/yaac-gvisor'
+const GVISOR_INSTALLER_STATE_DIR = '/run/yaac-gvisor'
 export const GVISOR_INSTALLER_READY_FILE = `${GVISOR_INSTALLER_STATE_DIR}/.ready`
 
 /** Idempotence marker for the containerd config.toml runtime block. */
@@ -101,7 +101,7 @@ export const REGISTRY_CONFIG_MARKER = '# yaac-registry-config-path'
 
 /** Seconds between installer passes. A pass only repairs a node that
  *  changed underneath it, so this is long. */
-export const GVISOR_INSTALLER_INTERVAL_S = 600
+const GVISOR_INSTALLER_INTERVAL_S = 600
 
 /** Age at which a waiter breaks the node's install lock. Longer than any
  *  real pass (a ~60 MB download plus a containerd restart). */
@@ -155,7 +155,7 @@ export function gvisorInstallerHostMounts(): {
  *    ephemeral too.
  *  - nested only: raw/packet sockets for the in-sandbox container engine.
  */
-export function runscShimConfigToml(handler: 'gvisor' | 'gvisor-nested'): string {
+function runscShimConfigToml(handler: 'gvisor' | 'gvisor-nested'): string {
   const lines = [
     `# Written by the yaac gVisor installer — runsc flags for the "${handler}"`,
     '# RuntimeClass handler. Managed; do not edit.',
@@ -186,7 +186,7 @@ export const CRI_IMAGES_KEY_V3 = 'io.containerd.cri.v1.images'
  * Registry block pointing containerd at `certs.d`, appended to a node
  * config that has no registry table.
  */
-export function registryConfigPathToml(pluginKey: string): string {
+function registryConfigPathToml(pluginKey: string): string {
   return [
     `${REGISTRY_CONFIG_MARKER} (written by the yaac gVisor installer; do not edit)`,
     `[plugins."${pluginKey}".registry]`,

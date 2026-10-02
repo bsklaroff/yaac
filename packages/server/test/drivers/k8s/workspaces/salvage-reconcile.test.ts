@@ -13,10 +13,6 @@ vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => ({
   listWorkspacePods: mockListPods,
 }))
 
-const mockGetCache = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/substrate/cluster-cache', () => ({
-  getActiveClusterCache: mockGetCache,
-}))
 
 import {
   reconcileImageSalvage,
@@ -28,6 +24,7 @@ import {
   markWorkspaceTerminating,
   _clearTerminatingForTests,
 } from '#runtime/status/terminating'
+import { setActiveClusterCache, type ClusterCache } from '#drivers/k8s/substrate/cluster-cache'
 
 const PROJECT_ID = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
 
@@ -53,7 +50,7 @@ function pod(workspaceId: string, over: Partial<PodInfo> = {}): PodInfo {
 beforeEach(() => {
   mockSalvage.mockReset().mockResolvedValue(true)
   mockListPods.mockReset().mockResolvedValue([])
-  mockGetCache.mockReset().mockReturnValue(null)
+  setActiveClusterCache(null)
   _resetSalvageReconcileForTests()
   _clearTerminatingForTests()
 })
@@ -81,8 +78,6 @@ describe('reconcileImageSalvage', () => {
       pod('s-term', { terminating: true }),
       pod('s-marked'),
       pod('s-stopped', { running: false }),
-      // No project id, so there is no registry to push to.
-      pod('s-legacy', { projectId: undefined }),
     ])
     await reconcileImageSalvage(isWorkspaceTerminating, 1_000)
     expect(mockSalvage).not.toHaveBeenCalled()
@@ -111,13 +106,13 @@ describe('reconcileImageSalvage', () => {
 
   it('prefers the pod watcher cache and survives a pod-list failure', async () => {
     const workspacePods = vi.fn().mockReturnValue([pod('s-watched')])
-    mockGetCache.mockReturnValue({ workspacePods })
+    setActiveClusterCache({ healthy: () => true, workspacePods } as unknown as ClusterCache)
     await reconcileImageSalvage(isWorkspaceTerminating, 1_000)
     expect(workspacePods).toHaveBeenCalled()
     expect(mockListPods).not.toHaveBeenCalled()
     expect(mockSalvage).toHaveBeenCalledTimes(1)
 
-    mockGetCache.mockReturnValue(null)
+    setActiveClusterCache(null)
     mockListPods.mockRejectedValue(new Error('cluster down'))
     await expect(reconcileImageSalvage(isWorkspaceTerminating, 2_000)).resolves.toBeUndefined()
   })

@@ -2,7 +2,6 @@ import { reconcileImageSalvage } from '#drivers/k8s/workspaces'
 import { reconcileRegistrationGc } from '#drivers/k8s/egress'
 import { gcOrphanProjectRegistries, reconcileProjectRegistryGc } from '#drivers/k8s/cluster'
 import {
-  reconcileBuilderPodGc,
   reconcileImagePrewarm,
   reconcileMainRegistryGc,
   reconcileNodeImageStores,
@@ -10,8 +9,8 @@ import {
 import type { DriverReconcileSteps } from '#drivers/contract'
 
 /**
- * The k8s driver's housekeeping steps for the reconcile pass: leaked
- * builder pods, image builds, image stores and registry GC. The order
+ * The k8s driver's housekeeping steps for the reconcile pass: image
+ * builds, image stores and registry GC. The order
  * within each group is set here; where the two groups run relative to the
  * domain's own steps is set by `defaultReconcileSteps`.
  *
@@ -21,11 +20,7 @@ import type { DriverReconcileSteps } from '#drivers/contract'
 export function k8sReconcileSteps(): DriverReconcileSteps {
   return {
     prePool: [
-      // Builder pods leaked by a server restart mid-build. Runs before
-      // image-prewarm because a leaked pod's memory reservation can stop
-      // the next build from scheduling.
-      { name: 'builder-pod-gc', triggers: [], run: () => reconcileBuilderPodGc() },
-      // Keep every project's image chain built and pushed. Runs before the
+      // Keep every project's image chain built. Runs before the
       // prewarm pool so a spare's create joins the builds already running.
       { name: 'image-prewarm', triggers: [], run: async (ctx) => {
         reconcileImagePrewarm(await ctx.projects(), ctx.projectConfig)

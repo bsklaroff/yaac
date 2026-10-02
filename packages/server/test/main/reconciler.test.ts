@@ -17,7 +17,6 @@ vi.mock('#domain/workspaces/cleanup', async (importOriginal) => ({
   ...(await importOriginal<typeof cleanupModule>()),
   gcOrphanEphemeralModuleDirs: vi.fn(),
 }))
-vi.mock('#drivers/k8s/images/builder-pod', () => ({ reconcileBuilderPodGc: vi.fn() }))
 vi.mock('#drivers/k8s/images/main-registry-gc', () => ({ reconcileMainRegistryGc: vi.fn() }))
 vi.mock('#drivers/k8s/images/store-writer', () => ({ reconcileNodeImageStores: vi.fn() }))
 vi.mock('#drivers/k8s/images/image-prewarm', async (importOriginal) => ({
@@ -49,7 +48,6 @@ import { reconcilePrewarmPool } from '#domain/workspaces/prewarm-reconcile'
 import { reconcileImageSalvage } from '#drivers/k8s/workspaces/salvage-reconcile'
 import { reconcileAgentSessions } from '#domain/workspaces/agent-session-registry'
 import { gcOrphanEphemeralModuleDirs } from '#domain/workspaces/cleanup'
-import { reconcileBuilderPodGc } from '#drivers/k8s/images/builder-pod'
 import { reconcileMainRegistryGc } from '#drivers/k8s/images/main-registry-gc'
 import { reconcileNodeImageStores } from '#drivers/k8s/images/store-writer'
 import { reconcileImagePrewarm } from '#drivers/k8s/images/image-prewarm'
@@ -61,7 +59,7 @@ import { reconcileGeneratedTitles } from '#domain/titles/title-generation'
 
 const ALL_STEP_FNS = [
   reconcileStaleWorkspaces,
-  reconcileBuilderPodGc, reconcileImagePrewarm, reconcilePrewarmPool,
+  reconcileImagePrewarm, reconcilePrewarmPool,
   reconcileImageSalvage, reconcileNodeImageStores, reconcileProjectRegistryGc,
   reconcileAgentSessions,
   reconcileRegistrationGc, reconcileMainRegistryGc,
@@ -341,13 +339,9 @@ describe('defaultReconcileSteps', () => {
     for (const fn of ALL_STEP_FNS) expect(fn).toHaveBeenCalledTimes(1)
   })
 
-  // GC frees leaked builders' memory before prewarm builds and spares need it.
-  it('keeps the GC → prewarm → pool order', async () => {
+  // A spare's create joins the builds the prewarm sweep started.
+  it('keeps the prewarm → pool order', async () => {
     const order: string[] = []
-    vi.mocked(reconcileBuilderPodGc).mockImplementation(() => {
-      order.push('gc')
-      return Promise.resolve()
-    })
     vi.mocked(reconcileImagePrewarm).mockImplementation(() => {
       order.push('prewarm')
     })
@@ -356,7 +350,7 @@ describe('defaultReconcileSteps', () => {
       return Promise.resolve()
     })
     await runPass([], { resync: true })
-    expect(order).toEqual(['gc', 'prewarm', 'pool'])
+    expect(order).toEqual(['prewarm', 'pool'])
   })
 
   // A trigger nothing raises would silently wait for the 60s resync. The

@@ -208,7 +208,6 @@ describe('buildSnapshot image builds', () => {
         id: 'b1',
         tag: 'yaac-base:abc',
         layer: 'base',
-        action: 'build',
         reason: 'prewarm',
         projectSlugs: ['p'],
         status: 'running',
