@@ -5,7 +5,7 @@ import os from 'node:os'
 import { setDataDir } from '@yaac/shared/paths'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { attachAcp } from '#runtime/agents/acp-bridge'
-import { AcpConversation } from '#runtime/agents/acp-client'
+import { AcpConversation, type AcpConversationDeps } from '#runtime/agents/acp-client'
 import { acpAdapterFor, type AcpAdapterProfile } from '#runtime/agents/acp-adapters'
 import { readAcpInFlight, readAcpPendingPermissions } from '#runtime/agents/acp-log'
 import {
@@ -89,7 +89,7 @@ const updateLine = (u: unknown): unknown => ({
  * so it recovers a running turn and pending asks. It reads the log when
  * constructed, so write the log first.
  */
-function liveConversation(profile?: AcpAdapterProfile): AcpConversation {
+function liveConversation(profile?: AcpAdapterProfile, extra: Partial<AcpConversationDeps> = {}): AcpConversation {
   transport = new FakeTransport()
   const record = { slug: 'demo', workspaceId: 'wt-1', agentSessionId: 'acp-1' }
   const c = new AcpConversation({
@@ -103,15 +103,16 @@ function liveConversation(profile?: AcpAdapterProfile): AcpConversation {
     onStatus: () => {},
     onDown: () => {},
     log: () => {},
+    ...extra,
   })
   transport.feed(`${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: false } })}\n`)
   return c
 }
 
 /** Recreate the conversation after the test has written its log. */
-function reattach(profile?: AcpAdapterProfile): void {
+function reattach(profile?: AcpAdapterProfile, extra: Partial<AcpConversationDeps> = {}): void {
   conversation.close()
-  conversation = liveConversation(profile)
+  conversation = liveConversation(profile, extra)
   registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, conversation)
 }
 
@@ -543,6 +544,52 @@ describe('attachAcp', () => {
       .find((m) => m.result !== undefined)!
     expect(reply.id).toBe(55)
     expect(reply.result).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
+  })
+
+  it('stops and reads only the background tasks the record announced, at their output files', async () => {
+    await record([
+      updateLine({
+        sessionUpdate: 'async_task_spawned', asyncTaskId: 'b1', name: 'npm run dev', taskType: 'shell',
+        description: 'npm run dev', outputFilePath: '/tmp/claude-1000/w/tasks/b1.output', canStop: true,
+      }),
+      updateLine({
+        sessionUpdate: 'async_task_spawned', asyncTaskId: 'b2', name: 'sneaky', taskType: 'shell',
+        description: '', outputFilePath: '/home/yaac/.ssh/id_ed25519',
+      }),
+    ])
+    const tailed: string[] = []
+    reattach(undefined, {
+      tailFile: (file) => {
+        tailed.push(file)
+        return Promise.resolve('listening on :3000\n')
+      },
+    })
+    const sock = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', sock)
+    await waitForHello(sock)
+
+    // The pane names a task; the path is the one the record gave, and only
+    // a task output file is read.
+    sock.clientSend({ type: 'task-output', taskId: 'b1' })
+    sock.clientSend({ type: 'task-output', taskId: 'b2' })
+    sock.clientSend({ type: 'task-output', taskId: 'never-announced' })
+    await waitFor(() => sock.sent.filter((m) => m.type === 'task-output').length === 3)
+    expect(tailed).toEqual(['/tmp/claude-1000/w/tasks/b1.output'])
+    expect(sock.sent.filter((m) => m.type === 'task-output')).toEqual(expect.arrayContaining([
+      { type: 'task-output', taskId: 'b1', text: 'listening on :3000\n' },
+      { type: 'task-output', taskId: 'b2', error: 'this task has no output file' },
+      { type: 'task-output', taskId: 'never-announced', error: 'this task has no output file' },
+    ]))
+
+    // Only a task the adapter said it can stop is sent a stop.
+    sock.clientSend({ type: 'stop-task', taskId: 'never-announced' })
+    sock.clientSend({ type: 'stop-task', taskId: 'b2' })
+    sock.clientSend({ type: 'stop-task', taskId: 'b1' })
+    await waitFor(() => transport.written.some((l) => l.includes('async_task/stop')))
+    const stops = transport.written
+      .map((l) => JSON.parse(l.trim()) as Record<string, unknown>)
+      .filter((m) => m.method === '_session/async_task/stop')
+    expect(stops.map((m) => m.params)).toEqual([{ sessionId: 'acp-1', asyncTaskId: 'b1' }])
   })
 
   it('lands a pane idle when the turn it is greeting ends underneath it', async () => {

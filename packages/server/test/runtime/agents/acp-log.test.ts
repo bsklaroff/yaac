@@ -422,6 +422,188 @@ describe('replayAcpLog', () => {
     expect(events[2]).toMatchObject({ content: [{ type: 'text', text: 'second ask' }] })
   })
 
+  it('gives each subagent its own thread and follows subagents and tasks to their latest state', () => {
+    // Shapes as claude's adapter sends them once yaac opts into its AIR
+    // extension: a subagent's updates arrive under its own session id.
+    const under = (sessionId: string, u: unknown): string =>
+      line({ jsonrpc: '2.0', method: 'session/update', params: { sessionId, update: u } })
+    const events = replayAcpLog([
+      prompt('look around'),
+      under('acp-1', {
+        sessionUpdate: 'subagent_spawned', subagentSessionId: 'sub-1', name: 'Explore', task: 'find the router',
+      }),
+      under('sub-1', { sessionUpdate: 'tool_call', toolCallId: 's1', title: 'grep router', kind: 'search', status: 'pending' }),
+      under('sub-1', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'found it' } }),
+      line({
+        jsonrpc: '2.0',
+        id: 9,
+        method: 'session/request_permission',
+        params: { sessionId: 'sub-1', toolCall: { toolCallId: 's2', title: 'rm x' }, options: [] },
+      }),
+      // The adapter hides the Agent call that spawned the subagent, but still
+      // sends it a bare update.
+      under('acp-1', { sessionUpdate: 'tool_call_update', toolCallId: 'toolu_hidden' }),
+      under('acp-1', { sessionUpdate: 'subagent_state_update', subagentSessionId: 'sub-1', state: 'completed' }),
+      under('acp-1', {
+        sessionUpdate: 'async_task_spawned', asyncTaskId: 'b1', name: 'npm run dev', taskType: 'shell',
+        description: 'npm run dev', toolCallId: 't9', canStop: true,
+      }),
+      under('acp-1', { sessionUpdate: 'async_task_progress', asyncTaskId: 'b1', outputFilePath: '/tmp/c/tasks/b1.output' }),
+      under('acp-1', { sessionUpdate: 'async_task_state_update', asyncTaskId: 'b1', state: 'stopped' }),
+      // An update for a task never announced has nothing to merge onto.
+      under('acp-1', { sessionUpdate: 'async_task_state_update', asyncTaskId: 'ghost', state: 'failed' }),
+      under('acp-1', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } }),
+    ].join('\n'))
+
+    expect(events.map((e) => [e.type, 'thread' in e ? e.thread : undefined])).toEqual([
+      ['user', undefined],
+      ['subagent', undefined],
+      ['tool', 'sub-1'],
+      ['agent', 'sub-1'],
+      ['permission-request', 'sub-1'],
+      ['subagent', undefined],
+      ['task', undefined],
+      ['task', undefined],
+      ['task', undefined],
+      ['agent', undefined],
+    ])
+    expect(events[5]).toMatchObject({
+      subagent: { id: 'sub-1', name: 'Explore', task: 'find the router', state: 'completed' },
+    })
+    expect(events[8]).toMatchObject({
+      task: {
+        id: 'b1', name: 'npm run dev', kind: 'shell', state: 'stopped', toolCallId: 't9',
+        outputFile: '/tmp/c/tasks/b1.output',
+      },
+    })
+  })
+
+  it('gives an opencode subagent its own thread from opencode\'s child-session notifications', () => {
+    // Shapes as opencode 2 sends them once yaac opts in.
+    const child = (params: Record<string, unknown>): string => line({
+      jsonrpc: '2.0',
+      method: 'opencode/session/child_update',
+      params: { rootSessionId: 'ses_root', childSessionId: 'ses_kid', parentSessionId: 'ses_root', depth: 1, title: 'list files', ...params },
+    })
+    const events = replayAcpLog([
+      child({ type: 'status', status: 'created' }),
+      child({ type: 'status', status: 'running' }),
+      child({
+        type: 'update',
+        update: { sessionUpdate: 'tool_call', toolCallId: 'ses_kid:call_2', title: 'list files: shell', kind: 'execute', status: 'pending' },
+      }),
+      child({ type: 'update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'two files' } } }),
+      child({ type: 'status', status: 'interrupted' }),
+    ].join('\n'))
+
+    expect(events.map((e) => [e.type, 'thread' in e ? e.thread : undefined])).toEqual([
+      ['subagent', undefined],
+      ['tool', 'ses_kid'],
+      ['agent', 'ses_kid'],
+      ['subagent', undefined],
+    ])
+    expect(events[0]).toMatchObject({ subagent: { id: 'ses_kid', name: 'list files', state: 'running' } })
+    expect(events[3]).toMatchObject({ subagent: { id: 'ses_kid', state: 'cancelled' } })
+  })
+
+  it('projects a command\'s streamed terminal output as deltas, so a replay grows with the output, not its square', () => {
+    // codex streams a command's output, a background shell's included, as
+    // `terminal_output_delta` chunks on its call.
+    const delta = (data: string): string => update({
+      sessionUpdate: 'tool_call_update', toolCallId: 'exec-1', _meta: { terminal_output_delta: { data, terminal_id: 'exec-1' } },
+    })
+    const record = (chunks: number): string => [
+      // The terminal content names a terminal yaac never created, so it adds nothing.
+      update({
+        sessionUpdate: 'tool_call', toolCallId: 'exec-1', title: 'tick', kind: 'execute', status: 'in_progress',
+        content: [{ type: 'terminal', terminalId: 'exec-1' }],
+      }),
+      ...Array.from({ length: chunks }, (_, i) => delta(`# tick ${String(i)}\n`)),
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 'exec-1', status: 'completed' }),
+    ].join('\n')
+
+    const events = replayAcpLog(record(2))
+    expect(events.map((e) => e.type)).toEqual(['tool', 'tool-output', 'tool-output', 'tool'])
+    expect(events[1]).toMatchObject({ toolCallId: 'exec-1', data: '# tick 0\n' })
+    // The output stays out of the call's content, which is rendered as Markdown.
+    expect(events[3]).toMatchObject({ call: { toolCallId: 'exec-1', status: 'completed' } })
+    expect(events[3]).not.toHaveProperty('call.content')
+
+    const size = (chunks: number): number => JSON.stringify(replayAcpLog(record(chunks))).length
+    expect(size(2000) / size(1000)).toBeLessThan(2.1)
+  })
+
+  it('builds claude\'s subagents and background shells from the Agent SDK messages it forwards', () => {
+    // Shapes as claude-agent-acp 0.84.0 sends them to a client that is not
+    // AIR, with the task messages asked for in the session's `_meta`.
+    const sdk = (message: Record<string, unknown>): string =>
+      line({ jsonrpc: '2.0', method: '_claude/sdkMessage', params: { sessionId: 'acp-1', message: { type: 'system', ...message } } })
+    const claudeUpdate = (u: Record<string, unknown>, claudeCode: Record<string, unknown>): string =>
+      update({ ...u, _meta: { claudeCode } })
+    const events = replayAcpLog([
+      claudeUpdate({ sessionUpdate: 'tool_call', toolCallId: 'toolu_bash', title: 'tick loop', kind: 'execute', status: 'pending' }, { toolName: 'Bash' }),
+      claudeUpdate({ sessionUpdate: 'tool_call', toolCallId: 'toolu_agent', title: 'count files', kind: 'think', status: 'pending' }, { toolName: 'Agent' }),
+      sdk({ subtype: 'background_tasks_changed', tasks: [{ task_id: 'b1', task_type: 'local_bash' }] }),
+      sdk({ subtype: 'task_started', task_id: 'b1', tool_use_id: 'toolu_bash', description: 'Print ticks', is_backgrounded: true, task_type: 'local_bash' }),
+      sdk({
+        subtype: 'task_started', task_id: 'a1', tool_use_id: 'toolu_agent', description: 'count files',
+        subagent_type: 'general-purpose', is_backgrounded: true, task_type: 'local_agent', prompt: 'Run ls',
+      }),
+      // A foreground command is a task too, but is not shown.
+      sdk({ subtype: 'task_started', task_id: 'f1', tool_use_id: 'toolu_fg', description: 'npm test', is_backgrounded: false, task_type: 'local_bash' }),
+      claudeUpdate({
+        sessionUpdate: 'tool_call_update', toolCallId: 'toolu_bash', status: 'completed',
+        content: [{ type: 'content', content: { type: 'text', text: 'Command running in background with ID: b1. Output is being written to: /tmp/c/tasks/b1.output. You will be notified when it completes.' } }],
+      }, { toolName: 'Bash' }),
+      claudeUpdate({ sessionUpdate: 'tool_call', toolCallId: 'toolu_ls', title: 'ls', kind: 'execute', status: 'pending' }, { toolName: 'Bash', parentToolUseId: 'toolu_agent' }),
+      sdk({ subtype: 'task_notification', task_id: 'a1', tool_use_id: 'toolu_agent', status: 'completed', summary: 'two files' }),
+      sdk({ subtype: 'task_notification', task_id: 'b1', tool_use_id: 'toolu_bash', status: 'completed', output_file: '/tmp/c/tasks/b1.output' }),
+    ].join('\n'))
+
+    expect(events.map((e) => [e.type, 'thread' in e ? e.thread : undefined])).toEqual([
+      ['tool', undefined],
+      ['tool', undefined],
+      ['task', undefined],
+      ['subagent', undefined],
+      ['tool', undefined],
+      ['task', undefined],
+      ['tool', 'toolu_agent'],
+      ['subagent', undefined],
+      ['task', undefined],
+    ])
+    // No Stop: claude stops a task only for an AIR client.
+    expect(events[2]).toEqual({
+      type: 'task',
+      seq: 2,
+      task: { id: 'b1', name: 'Print ticks', kind: 'shell', description: 'Print ticks', state: 'running', toolCallId: 'toolu_bash' },
+    })
+    expect(events[3]).toMatchObject({ subagent: { id: 'toolu_agent', name: 'count files', task: 'Run ls', state: 'running' } })
+    // The output file named in the call's result.
+    expect(events[5]).toMatchObject({ task: { id: 'b1', outputFile: '/tmp/c/tasks/b1.output', state: 'running' } })
+    expect(events[7]).toMatchObject({ subagent: { id: 'toolu_agent', state: 'completed', summary: 'two files' } })
+    expect(events[8]).toMatchObject({ task: { id: 'b1', state: 'completed' } })
+  })
+
+  it('stops a claude task the live set drops, though its end was never reported', () => {
+    const sdk = (message: Record<string, unknown>): string =>
+      line({ jsonrpc: '2.0', method: '_claude/sdkMessage', params: { sessionId: 'acp-1', message: { type: 'system', ...message } } })
+    const events = replayAcpLog([
+      sdk({ subtype: 'task_started', task_id: 'm1', description: 'watch logs', task_type: 'local_monitor' }),
+      sdk({ subtype: 'background_tasks_changed', tasks: [] }),
+    ].join('\n'))
+    expect(events.map((e) => (e.type === 'task' ? [e.task.kind, e.task.state] : e.type))).toEqual([
+      ['monitor', 'running'],
+      ['monitor', 'stopped'],
+    ])
+  })
+
+  it('renders a call whose first report is its completion, as codex sends one replayed from an earlier life', () => {
+    const events = replayAcpLog(update({
+      sessionUpdate: 'tool_call_update', toolCallId: 'call-9', name: 'exec_command', kind: 'execute', status: 'completed',
+    }))
+    expect(events).toMatchObject([{ type: 'tool', call: { toolCallId: 'call-9', status: 'completed' } }])
+  })
+
   it('numbers events from zero so an attach can continue past them', () => {
     const events = replayAcpLog([
       prompt('a'),

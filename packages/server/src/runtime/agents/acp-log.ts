@@ -18,7 +18,7 @@ import { StringDecoder } from 'node:string_decoder'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { agentSessionIdSchema } from '@yaac/shared/types'
 import {
-  ACP, ACPD, AcpProjection, agentRunningReport, asRecord, asString, sessionModeId, sessionModels,
+  ACP, ACPD, AcpProjection, CLAUDE_SDK_MESSAGE, agentRunningReport, asRecord, asString, sessionModeId, sessionModels,
   sessionStateModeId, toContentList,
 } from './acp-protocol'
 import { openSandboxFile, readSandboxFile, type SandboxFile } from './sandbox-fs'
@@ -299,10 +299,9 @@ function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
     if (id !== undefined) projection.openSteer(id, msg.params)
     return []
   }
-  if (msg.method === ACP.sessionUpdate) {
-    const event = projection.apply(msg.params)
-    return event === undefined ? [] : [event]
-  }
+  if (msg.method === ACP.sessionUpdate) return projection.apply(msg.params)
+  if (msg.method === ACP.opencodeChildUpdate) return projection.applyChildUpdate(msg.params)
+  if (msg.method === CLAUDE_SDK_MESSAGE) return projection.applyClaudeSdk(msg.params)
   // Permission asks and their answers come from the record because an ask
   // that arrived while the relay was down exists only here, and a
   // reattaching pane must see what the agent is blocked on.

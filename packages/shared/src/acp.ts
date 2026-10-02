@@ -85,6 +85,52 @@ export interface AcpCommand { name: string; description?: string; hint?: string 
 /** A model the session can switch to, by the adapter's own id. */
 export interface AcpModel { id: string; name?: string; description?: string }
 
+/** Where a subagent is in its life, as the adapter reports it. */
+export type AcpSubagentState = 'running' | 'completed' | 'failed' | 'cancelled' | 'disconnected'
+
+/**
+ * A subagent the agent delegated to. Its own messages and tool calls arrive
+ * as events whose `thread` is its `id`, so a pane can show it apart from
+ * the main conversation.
+ */
+export interface AcpSubagent {
+  /** The subagent's ACP session id, which its events carry as `thread`. */
+  id: string
+  /** The thread that spawned it; absent when the main conversation did. */
+  parent?: string
+  name: string
+  /** What it was asked to do. */
+  task: string
+  state: AcpSubagentState
+  /** Its final report, when the adapter sends one apart from its messages
+   *  (claude does). */
+  summary?: string
+}
+
+/** Where a background task is in its life, as the adapter reports it. */
+export type AcpTaskState = 'running' | 'paused' | 'completed' | 'failed' | 'stopped'
+
+/**
+ * Background work that outlives the tool call that started it: a shell run
+ * in the background, a monitor, a workflow.
+ */
+export interface AcpTask {
+  id: string
+  name: string
+  /** `shell`, `monitor`, `workflow`, or the adapter's own word. */
+  kind: string
+  description: string
+  state: AcpTaskState
+  /** The tool call that started it, when the adapter names one. */
+  toolCallId?: string
+  /** Where in the workspace its output is written; see `task-output`. */
+  outputFile?: string
+  /** The adapter's latest summary of what it did. */
+  summary?: string
+  /** The adapter can stop it (`stop-task`). */
+  canStop?: true
+}
+
 /** Why a prompt turn ended. Anything but `end_turn` is shown to the user. */
 export type AcpStopReason =
   | 'end_turn'
@@ -96,16 +142,27 @@ export type AcpStopReason =
 /**
  * One event in a conversation's stream. Text arrives in chunks as the agent
  * emits it; a pane joins consecutive `agent` events into one bubble.
+ *
+ * `thread` names the subagent (`AcpSubagent.id`) an event belongs to, and is
+ * absent for the main conversation.
  */
 export type AcpEvent =
   /** A user message, echoed back so live history matches a replay.
    *  `steered` marks one added to a running turn, which it does not end. */
-  | { type: 'user'; seq: number; content: AcpContent[]; steered?: true }
-  | { type: 'agent'; seq: number; content: AcpContent[] }
+  | { type: 'user'; seq: number; thread?: string; content: AcpContent[]; steered?: true }
+  | { type: 'agent'; seq: number; thread?: string; content: AcpContent[] }
   /** Extended thinking. Panes render it collapsed. */
-  | { type: 'thought'; seq: number; content: AcpContent[] }
-  | { type: 'tool'; seq: number; call: AcpToolCall }
-  | { type: 'plan'; seq: number; entries: AcpPlanEntry[] }
+  | { type: 'thought'; seq: number; thread?: string; content: AcpContent[] }
+  | { type: 'tool'; seq: number; thread?: string; call: AcpToolCall }
+  /** Terminal output a call streamed, to append to what it has shown. Kept
+   *  apart from `call.content`: it is raw text, not Markdown, and resending
+   *  the whole call per chunk would grow with the square of the output. */
+  | { type: 'tool-output'; seq: number; thread?: string; toolCallId: string; data: string }
+  | { type: 'plan'; seq: number; thread?: string; entries: AcpPlanEntry[] }
+  /** A subagent was spawned or changed state; carries its whole state. */
+  | { type: 'subagent'; seq: number; subagent: AcpSubagent }
+  /** A background task was started or changed; carries its whole state. */
+  | { type: 'task'; seq: number; task: AcpTask }
   /** The slash commands this session accepts, pushed on connect and whenever
    *  they change. */
   | { type: 'commands'; seq: number; commands: AcpCommand[] }
@@ -136,6 +193,7 @@ export type AcpEvent =
   | {
     type: 'permission-request'
     seq: number
+    thread?: string
     requestId: string
     /** The call being asked about, when the agent named one. */
     toolCall?: AcpToolCall
@@ -182,6 +240,9 @@ export type AcpServerMessage =
   /** The connection to the agent dropped or came back. acpd keeps the agent
    *  running meanwhile, so a reconnect resumes mid-turn. */
   | { type: 'health'; connected: boolean }
+  /** The answer to a `task-output` request: the end of the task's output
+   *  file, or why it could not be read. */
+  | { type: 'task-output'; taskId: string; text?: string; error?: string }
 
 /** Pane → server. */
 export type AcpClientMessage =
@@ -202,6 +263,11 @@ export type AcpClientMessage =
   /** Switch the session's model to one a `models` event offered. A refusal
    *  comes back as an `error` event. */
   | { type: 'model'; modelId: string }
+  /** Stop a background task the record announced with `canStop`. Its
+   *  `stopped` state comes back as a `task` event. */
+  | { type: 'stop-task'; taskId: string }
+  /** Read the end of a background task's output file. */
+  | { type: 'task-output'; taskId: string }
 
 /** The `/pty/attach`-style pane target that addresses one ACP conversation. */
 export const ACP_TARGET_PREFIX = 'acp:'

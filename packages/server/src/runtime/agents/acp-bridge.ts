@@ -18,7 +18,7 @@ import { acpConversation } from './acp-registry'
 import { tailAcpLog } from './acp-log'
 import { serverLog } from '#log'
 import { MAX_ATTACHMENT_BYTES, sniffImage } from '@yaac/shared/attachments'
-import type { AcpClientMessage, AcpEvent, AcpImage, AcpServerMessage } from '@yaac/shared/acp'
+import type { AcpClientMessage, AcpEvent, AcpImage, AcpServerMessage, AcpTask } from '@yaac/shared/acp'
 
 /** The socket this bridge needs; same shape as the PTY bridge's, kept
  *  separate so the features stay decoupled. */
@@ -59,6 +59,17 @@ function promptImages(raw: unknown): AcpImage[] | string {
 }
 
 /**
+ * Whether `file` is where claude writes a background task's output
+ * (`…/tasks/<id>.output`). The path comes from the agent and is read by a
+ * shell in the workspace, so the bridge reads nothing else.
+ */
+function isTaskOutputPath(file: string, taskId: string): boolean {
+  return file.startsWith('/')
+    && file.endsWith(`/tasks/${taskId}.output`)
+    && !file.split('/').includes('..')
+}
+
+/**
  * Attach `sock` to the conversation, or close it if none is live. That is
  * normal (the workspace may be booting or reconnecting); the pane retries,
  * like `WorkspaceTerminal` does on a dropped PTY.
@@ -93,14 +104,22 @@ export function attachAcp(
    *  only to one of them, so the id the session row may record is one the
    *  adapter named, never arbitrary browser input. */
   let offeredModels = new Set<string>()
+  /** The background tasks the record announced, by id. Like the models, a
+   *  pane may stop (when the adapter can) or read only these, and an output
+   *  path is never taken from the browser. */
+  let tasks = new Map<string, AcpTask>()
   const tail = tailAcpLog(
     { slug, workspaceId, agentSessionId },
     (events, reset) => {
       // A read already in progress still reports after close.
       if (detached) return
-      if (reset) offeredModels = new Set()
+      if (reset) {
+        offeredModels = new Set()
+        tasks = new Map()
+      }
       for (const event of events) {
         if (event.type === 'models') offeredModels = new Set(event.models.map((m) => m.id))
+        if (event.type === 'task') tasks.set(event.task.id, event.task)
       }
       if (reset) {
         // The first read, or a new agent life that truncated the record:
@@ -185,6 +204,28 @@ export function attachAcp(
       // The reply is recorded, so the pane learns the new model as a
       // `models` event from the tail.
       void conversation.switchModel(msg.modelId)
+      return
+    }
+    if (msg.type === 'stop-task' && typeof msg.taskId === 'string' && tasks.get(msg.taskId)?.canStop === true) {
+      void conversation.stopTask(msg.taskId).catch((err: unknown) => {
+        serverLog(`[server] acp attach ${workspaceId}/${agentSessionId}: stopping task ${msg.taskId} failed: ${String(err)}`)
+      })
+      return
+    }
+    if (msg.type === 'task-output' && typeof msg.taskId === 'string') {
+      const taskId = msg.taskId
+      const file = tasks.get(taskId)?.outputFile
+      const reply = (r: { text: string } | { error: string }): void => {
+        if (!detached) send({ type: 'task-output', taskId, ...r })
+      }
+      if (file === undefined || !isTaskOutputPath(file, taskId)) {
+        reply({ error: 'this task has no output file' })
+        return
+      }
+      conversation.readTaskOutput(file).then(
+        (text) => reply({ text }),
+        (err: unknown) => reply({ error: err instanceof Error ? err.message : String(err) }),
+      )
       return
     }
     if (msg.type === 'prompt' && typeof msg.text === 'string') {

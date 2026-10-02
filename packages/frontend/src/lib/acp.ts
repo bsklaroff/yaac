@@ -27,7 +27,12 @@ export interface AcpStream {
   /** False when the socket wasn't open, so the caller can keep the user's
    *  text rather than clearing an input whose message went nowhere. */
   send: (msg: AcpClientMessage) => boolean
+  /** The latest answer to each `task-output` request, by task id. */
+  taskOutputs: Record<string, TaskOutput>
 }
+
+/** The end of a background task's output, or why it could not be read. */
+export interface TaskOutput { text?: string; error?: string }
 
 /** Merge a batch of events into the list, keyed by `seq`, so a replayed
  *  event replaces its earlier copy instead of duplicating it. */
@@ -54,6 +59,7 @@ export function useAcpStream(
   const [busy, setBusy] = useState(false)
   const [queued, setQueued] = useState<AcpQueuedPrompt[]>([])
   const [connected, setConnected] = useState(false)
+  const [taskOutputs, setTaskOutputs] = useState<Record<string, TaskOutput>>({})
   const socketRef = useRef<ReconnectingSocket | null>(null)
 
   useEffect(() => {
@@ -93,6 +99,10 @@ export function useAcpStream(
           return false
         }
         if (msg.type === 'health') setConnected(msg.connected)
+        if (msg.type === 'task-output') {
+          const { taskId, ...output } = msg
+          setTaskOutputs((prev) => ({ ...prev, [taskId]: output }))
+        }
         return false
       },
       close: () => setConnected(false),
@@ -109,6 +119,7 @@ export function useAcpStream(
     busy,
     queued,
     connected,
+    taskOutputs,
     send: (msg) => socketRef.current?.send(JSON.stringify(msg)) ?? false,
   }
 }

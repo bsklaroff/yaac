@@ -100,6 +100,8 @@ export {
   SquareTerminal as ExecuteIcon,
   ArrowRightLeft as MoveIcon,
   CircleSlash as InterruptedIcon,
+  Bot as SubagentIcon,
+  Activity as MonitorIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool. */

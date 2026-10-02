@@ -1,10 +1,15 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { useAcpStream } from '#lib/acp'
-import { AcpTranscript, groupEvents } from '#components/AcpTranscript'
+import { AcpTranscript, active, groupEvents, taskIcon } from '#components/AcpTranscript'
+import {
+  ActivityBar, ActivityHeader, callOf, latestActivity, StopTaskButton, TaskView, type ActivityTarget,
+} from '#components/AcpActivity'
 import { useComposerMenu } from '#components/ComposerMenu'
 import { imageBytes, imageFiles, prepareImage, toAcpImage, useImageSrc } from '#lib/attachments'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
-import { AttachImageIcon, CloseIcon, LoadingIcon, NarrowIcon, SendIcon, StopIcon, WidenIcon } from '#lib/icons'
+import {
+  AttachImageIcon, CloseIcon, LoadingIcon, NarrowIcon, SendIcon, StopIcon, SubagentIcon, WidenIcon,
+} from '#lib/icons'
 import { chatDraftKey, useUiStore } from '#lib/store'
 import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
 import type { AcpContent, AcpImage, AcpQueuedPrompt } from '@yaac/shared/acp'
@@ -19,6 +24,11 @@ import type { AcpContent, AcpImage, AcpQueuedPrompt } from '@yaac/shared/acp'
  * Rendering is `AcpTranscript`'s job (shared with stopped workspaces). This
  * component owns the stream, the draft, the composer and scroll-follow; the
  * composer's completion menu is `useComposerMenu`'s.
+ *
+ * Like a TUI, the pane can switch from the conversation to one of the
+ * subagents or background tasks the agent started (`AcpActivity`), and Esc
+ * or Back returns. Those views have no composer, since the agent takes
+ * messages only on its main thread.
  */
 
 /** The text parts of a `user` event, for comparing against a draft. */
@@ -41,7 +51,7 @@ export function WorkspaceChat({
   agentSessionId: string
   visible?: boolean
 }): JSX.Element {
-  const { events, busy, queued, connected, send } = useAcpStream(workspaceId, agentSessionId)
+  const { events, busy, queued, connected, send, taskOutputs } = useAcpStream(workspaceId, agentSessionId)
   const setChatDraft = useUiStore((s) => s.setChatDraft)
   const setChatSent = useUiStore((s) => s.setChatSent)
   const fullWidth = useUiStore((s) => s.chatFullWidth)
@@ -79,6 +89,23 @@ export function WorkspaceChat({
   )
   const reconciledRef = useRef(false)
   const groups = useMemo(() => groupEvents(events), [events])
+  /** The subagent or task being viewed instead of the conversation. One
+   *  the stream no longer has (a restarted agent) falls back to it. */
+  const [opened, setOpened] = useState<ActivityTarget | undefined>()
+  const activity = useMemo(() => latestActivity(events), [events])
+  const subagent = opened?.kind === 'subagent' ? activity.subagents.get(opened.id) : undefined
+  const task = opened?.kind === 'task' ? activity.tasks.get(opened.id) : undefined
+  const view = subagent !== undefined || task !== undefined ? opened : undefined
+  const threadGroups = useMemo(
+    () => (subagent !== undefined ? groupEvents(events, subagent.id) : []),
+    [events, subagent?.id],
+  )
+  /** The call that started the task, and what it streamed. */
+  const taskCall = useMemo(
+    () => (task?.toolCallId === undefined ? { output: '' } : callOf(events, task.toolCallId)),
+    [events, task?.toolCallId],
+  )
+  const taskOutput = task === undefined ? undefined : taskOutputs[task.id]
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinnedRef = useRef(true)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -93,7 +120,25 @@ export function WorkspaceChat({
   useLayoutEffect(() => {
     const el = scrollRef.current
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight
-  }, [groups])
+  }, [groups, threadGroups, view, taskOutput])
+
+  /** Show a subagent or task, or the conversation again; each starts at
+   *  its tail. */
+  const open = (target: ActivityTarget | undefined): void => {
+    pinnedRef.current = true
+    setOpened(target)
+  }
+
+  useEffect(() => {
+    if (!visible || view === undefined) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape' || dialogHoldsFocus()) return
+      pinnedRef.current = true
+      setOpened(undefined)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [visible, view])
 
   // Grow the textarea to fit the draft, up to its CSS max-height. Reset to
   // `auto` first so scrollHeight measures the content. Growing shrinks the
@@ -122,7 +167,7 @@ export function WorkspaceChat({
   useEffect(() => {
     if (!visible || dialogHoldsFocus()) return
     inputRef.current?.focus()
-  }, [visible])
+  }, [visible, view])
 
   useEffect(() => {
     setChatDraft(workspaceId, agentSessionId, draft)
@@ -143,7 +188,7 @@ export function WorkspaceChat({
     setChatSent(workspaceId, agentSessionId, undefined)
     if (restoredRef.current.trim() !== sent) return
     let lastUser: string | undefined
-    for (const e of events) if (e.type === 'user') lastUser = promptText(e.content)
+    for (const e of events) if (e.type === 'user' && e.thread === undefined) lastUser = promptText(e.content)
     if (lastUser !== sent && !queued.some((q) => q.text === sent)) return
     // Keep anything typed while connecting.
     setDraft((cur) => (cur === restoredRef.current ? '' : cur))
@@ -153,7 +198,7 @@ export function WorkspaceChat({
   // message showing up in the queue.
   useEffect(() => {
     if (awaitingEcho === null) return
-    const echoed = events.some((e) => e.type === 'user'
+    const echoed = events.some((e) => e.type === 'user' && e.thread === undefined
       && echoKey(promptText(e.content), e.content.filter((c) => c.type === 'image').length) === awaitingEcho)
       || queued.some((q) => echoKey(q.text, q.images) === awaitingEcho)
     if (echoed) {
@@ -242,30 +287,92 @@ export function WorkspaceChat({
         attach(files)
       }}
     >
+      {subagent !== undefined && (
+        <ActivityHeader
+          icon={SubagentIcon}
+          label="Agent"
+          title={subagent.name}
+          state={subagent.state}
+          live
+          onBack={() => open(undefined)}
+        />
+      )}
+      {task !== undefined && (
+        <ActivityHeader
+          icon={taskIcon(task)}
+          label={task.kind}
+          title={task.name}
+          state={task.state}
+          live
+          onBack={() => open(undefined)}
+        >
+          {active(task) && task.canStop === true && (
+            <StopTaskButton onStop={() => send({ type: 'stop-task', taskId: task.id })} />
+          )}
+        </ActivityHeader>
+      )}
       <div
         ref={scrollRef}
         onScroll={onScroll}
         className="flex-1 overflow-y-auto px-4 py-4"
       >
-        {groups.length === 0 && (
+        {view === undefined && groups.length === 0 && (
           <div className="flex h-full items-center justify-center text-xs text-text-faint">
             {connected ? 'No messages yet — say something.' : 'Connecting to the agent…'}
           </div>
         )}
         <div className={column}>
-          <AcpTranscript groups={groups} busy={busy} onAnswerPermission={answerPermission} />
-          {busy && !awaitingPermission && (
-            <div className="mt-3 flex items-center gap-1.5 text-xs text-text-dim">
-              <LoadingIcon size={12} className="animate-spin" />
-              <span>
-                working
-                <span className="working-dots" aria-hidden="true"><i>.</i><i>.</i><i>.</i></span>
-              </span>
-            </div>
+          {subagent !== undefined ? (
+            <>
+              {subagent.task !== '' && (
+                <p className="mb-4 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-xl border border-hairline
+                  bg-surface px-3 py-2 text-xs text-text-dim">
+                  {subagent.task}
+                </p>
+              )}
+              <AcpTranscript
+                groups={threadGroups}
+                busy={subagent.state === 'running'}
+                live
+                onAnswerPermission={answerPermission}
+                onOpenSubagent={(id) => open({ kind: 'subagent', id })}
+              />
+            </>
+          ) : task !== undefined ? (
+            <TaskView
+              task={task}
+              {...(taskCall.call !== undefined ? { call: taskCall.call } : {})}
+              streamed={taskCall.output}
+              {...(taskOutput !== undefined ? { output: taskOutput } : {})}
+              live
+              {...(task.outputFile !== undefined
+                ? { onRefresh: () => send({ type: 'task-output', taskId: task.id }) }
+                : {})}
+            />
+          ) : (
+            <>
+              <AcpTranscript
+                groups={groups}
+                busy={busy}
+                live
+                onAnswerPermission={answerPermission}
+                onOpenSubagent={(id) => open({ kind: 'subagent', id })}
+                onOpenTask={(id) => open({ kind: 'task', id })}
+              />
+              {busy && !awaitingPermission && (
+                <div className="mt-3 flex items-center gap-1.5 text-xs text-text-dim">
+                  <LoadingIcon size={12} className="animate-spin" />
+                  <span>
+                    working
+                    <span className="working-dots" aria-hidden="true"><i>.</i><i>.</i><i>.</i></span>
+                  </span>
+                </div>
+              )}
+              {queued.map((q) => (
+                <QueuedMessage key={q.id} prompt={q} onRemove={() => send({ type: 'unqueue', id: q.id })} />
+              ))}
+            </>
           )}
-          {queued.map((q) => (
-            <QueuedMessage key={q.id} prompt={q} onRemove={() => send({ type: 'unqueue', id: q.id })} />
-          ))}
         </div>
       </div>
 
@@ -276,114 +383,124 @@ export function WorkspaceChat({
               Disconnected — the agent keeps working; this pane reattaches automatically.
             </div>
           )}
-          {imageError !== null && (
-            <div className="mb-1.5 px-1 text-xs text-error">Image not attached: {imageError}</div>
-          )}
-          {menu}
-          <div
-            onClick={(e) => {
-              if (e.target === e.currentTarget) inputRef.current?.focus()
-            }}
-            className="rounded-xl border border-border bg-surface shadow-sm transition-colors
-              focus-within:border-border-strong"
-          >
-            {images.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 px-3 pt-3">
-                {images.map((image, i) => (
-                  <DraftImage
-                    key={i}
-                    image={image}
-                    {...(awaitingEcho === null
-                      ? { onRemove: () => setImages((cur) => cur.filter((_, j) => j !== i)) }
-                      : {})}
-                  />
-                ))}
-              </div>
-            )}
-            <textarea
-              ref={inputRef}
-              {...menuInputProps}
-              rows={1}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onPaste={(e) => {
-                const files = imageFiles(e.clipboardData)
-                if (files.length === 0 || awaitingEcho !== null) return
-                e.preventDefault()
-                attach(files)
-              }}
-              onKeyDown={(e) => {
-                if (menuKeyDown(e)) return
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  submit()
-                }
-              }}
-              placeholder={connected ? 'Message the agent…' : 'Reconnecting…'}
-              readOnly={awaitingEcho !== null}
-              // index.css raises this to 16px on phones so iOS Safari does not
-              // zoom on focus.
-              className="block max-h-60 min-h-10 w-full resize-none bg-transparent px-3 pt-2.5 pb-1
-                text-sm text-text placeholder:text-text-faint focus:outline-none"
-            />
-            <div className="flex items-center justify-between px-2 pb-2">
-              <button
-                type="button"
-                aria-label="Attach image"
-                title="Attach image"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={awaitingEcho !== null}
-                className="rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text disabled:opacity-40"
-              >
-                <AttachImageIcon size={16} />
-              </button>
-              <button
-                type="button"
-                aria-label={fullWidth ? 'Center chat' : 'Full-width chat'}
-                title={fullWidth ? 'Center chat' : 'Full-width chat'}
-                onClick={() => setFullWidth(!fullWidth)}
-                className="mr-auto hidden rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text @min-[66rem]:block"
-              >
-                {fullWidth ? <NarrowIcon size={16} /> : <WidenIcon size={16} />}
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                hidden
-                onChange={(e) => {
-                  attach([...(e.target.files ?? [])])
-                  e.target.value = ''
+          <ActivityBar
+            subagents={activity.subagents}
+            tasks={activity.tasks}
+            {...(view !== undefined ? { current: view } : {})}
+            onOpen={open}
+          />
+          {view === undefined && (
+            <>
+              {imageError !== null && (
+                <div className="mb-1.5 px-1 text-xs text-error">Image not attached: {imageError}</div>
+              )}
+              {menu}
+              <div
+                onClick={(e) => {
+                  if (e.target === e.currentTarget) inputRef.current?.focus()
                 }}
-              />
-              {/* One group, so Stop stays beside Send however the row spreads. */}
-              <div className="flex items-center">
-                {busy && (
+                className="rounded-xl border border-border bg-surface shadow-sm transition-colors
+                  focus-within:border-border-strong"
+              >
+                {images.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 px-3 pt-3">
+                    {images.map((image, i) => (
+                      <DraftImage
+                        key={i}
+                        image={image}
+                        {...(awaitingEcho === null
+                          ? { onRemove: () => setImages((cur) => cur.filter((_, j) => j !== i)) }
+                          : {})}
+                      />
+                    ))}
+                  </div>
+                )}
+                <textarea
+                  ref={inputRef}
+                  {...menuInputProps}
+                  rows={1}
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onPaste={(e) => {
+                    const files = imageFiles(e.clipboardData)
+                    if (files.length === 0 || awaitingEcho !== null) return
+                    e.preventDefault()
+                    attach(files)
+                  }}
+                  onKeyDown={(e) => {
+                    if (menuKeyDown(e)) return
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      submit()
+                    }
+                  }}
+                  placeholder={connected ? 'Message the agent…' : 'Reconnecting…'}
+                  readOnly={awaitingEcho !== null}
+                  // index.css raises this to 16px on phones so iOS Safari does not
+                  // zoom on focus.
+                  className="block max-h-60 min-h-10 w-full resize-none bg-transparent px-3 pt-2.5 pb-1
+                    text-sm text-text placeholder:text-text-faint focus:outline-none"
+                />
+                <div className="flex items-center justify-between px-2 pb-2">
                   <button
                     type="button"
-                    aria-label="Stop turn"
-                    title="Stop"
-                    onClick={() => send({ type: 'cancel' })}
-                    className="mr-1.5 flex size-8 items-center justify-center rounded-full bg-text text-bg hover:opacity-90"
+                    aria-label="Attach image"
+                    title="Attach image"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={awaitingEcho !== null}
+                    className="rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text disabled:opacity-40"
                   >
-                    <StopIcon size={11} fill="currentColor" />
+                    <AttachImageIcon size={16} />
                   </button>
-                )}
-                <button
-                  type="button"
-                  aria-label="Send"
-                  title="Send (Enter)"
-                  onClick={() => submit()}
-                  disabled={(draft.trim() === '' && images.length === 0) || !connected || awaitingEcho !== null}
-                  className="flex size-8 items-center justify-center rounded-full bg-text text-bg
-                    hover:opacity-90 disabled:bg-surface-3 disabled:text-text-faint"
-                >
-                  <SendIcon size={15} strokeWidth={2.5} />
-                </button>
+                  <button
+                    type="button"
+                    aria-label={fullWidth ? 'Center chat' : 'Full-width chat'}
+                    title={fullWidth ? 'Center chat' : 'Full-width chat'}
+                    onClick={() => setFullWidth(!fullWidth)}
+                    className="mr-auto hidden rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text @min-[66rem]:block"
+                  >
+                    {fullWidth ? <NarrowIcon size={16} /> : <WidenIcon size={16} />}
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    hidden
+                    onChange={(e) => {
+                      attach([...(e.target.files ?? [])])
+                      e.target.value = ''
+                    }}
+                  />
+                  {/* One group, so Stop stays beside Send however the row spreads. */}
+                  <div className="flex items-center">
+                    {busy && (
+                      <button
+                        type="button"
+                        aria-label="Stop turn"
+                        title="Stop"
+                        onClick={() => send({ type: 'cancel' })}
+                        className="mr-1.5 flex size-8 items-center justify-center rounded-full bg-text text-bg hover:opacity-90"
+                      >
+                        <StopIcon size={11} fill="currentColor" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      aria-label="Send"
+                      title="Send (Enter)"
+                      onClick={() => submit()}
+                      disabled={(draft.trim() === '' && images.length === 0) || !connected || awaitingEcho !== null}
+                      className="flex size-8 items-center justify-center rounded-full bg-text text-bg
+                        hover:opacity-90 disabled:bg-surface-3 disabled:text-text-faint"
+                    >
+                      <SendIcon size={15} strokeWidth={2.5} />
+                    </button>
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
+            </>
+          )}
         </div>
       </div>
     </div>

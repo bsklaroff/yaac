@@ -34,6 +34,7 @@ const stream = {
   queued: [] as AcpQueuedPrompt[],
   connected: true,
   send: vi.fn((_msg: AcpClientMessage) => true),
+  taskOutputs: {} as Record<string, { text?: string; error?: string }>,
 }
 
 vi.mock('#lib/acp', () => ({ useAcpStream: () => stream }))
@@ -1022,5 +1023,152 @@ describe('WorkspaceChat focus', () => {
 
     show()
     expect(document.activeElement).toBe(prompt)
+  })
+})
+
+describe('WorkspaceChat subagents and background tasks', () => {
+  const agent = (seq: number, text: string, thread?: string): AcpEvent =>
+    ({ type: 'agent', seq, ...(thread !== undefined ? { thread } : {}), content: [{ type: 'text', text }] })
+  const subagent = (seq: number, state: 'running' | 'completed'): AcpEvent => ({
+    type: 'subagent', seq, subagent: { id: 'sub-1', name: 'Explore', task: 'find the router', state },
+  })
+  const shell = (seq: number, state: 'running' | 'stopped'): AcpEvent => ({
+    type: 'task',
+    seq,
+    task: {
+      id: 'b1', name: 'npm run dev', kind: 'shell', description: 'npm run dev', state, toolCallId: 't9',
+      outputFile: '/tmp/c/tasks/b1.output', canStop: true,
+    },
+  })
+
+  beforeEach(() => {
+    stream.events = [
+      agent(0, 'Delegating.'),
+      subagent(1, 'running'),
+      agent(2, 'Looked in src/router.ts.', 'sub-1'),
+      { type: 'tool', seq: 3, call: { toolCallId: 't9', title: 'npm run dev', kind: 'execute', status: 'completed' } },
+      shell(4, 'running'),
+    ]
+    stream.busy = true
+    stream.connected = true
+    stream.taskOutputs = {}
+    stream.send.mockClear()
+    useUiStore.setState({ chatDrafts: {} })
+  })
+
+  afterEach(() => {
+    cleanup()
+    flushChatDrafts()
+  })
+
+  it('keeps a subagent\'s work out of the conversation, and shows it, without a composer, once opened', () => {
+    show()
+    expect(screen.queryByText('Looked in src/router.ts.')).toBeNull()
+    // Running things are listed over the composer, as a TUI lists them.
+    const strip = screen.getByTitle('Explore')
+    fireEvent.click(strip)
+
+    expect(screen.getByText('Looked in src/router.ts.')).toBeTruthy()
+    expect(screen.getByText('find the router')).toBeTruthy()
+    expect(screen.queryByText('Delegating.')).toBeNull()
+    expect(screen.queryByRole('textbox')).toBeNull()
+
+    // Esc goes back to the conversation and its composer.
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.getByText('Delegating.')).toBeTruthy()
+    expect(box()).toBeTruthy()
+  })
+
+  it('opens a finished subagent from its card, though it has left the strip', () => {
+    stream.events = [...stream.events, subagent(5, 'completed')]
+    show()
+    expect(screen.queryByTitle('Explore')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Explore/ }))
+    expect(screen.getByText('Looked in src/router.ts.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /Back/ }))
+    expect(screen.getByText('Delegating.')).toBeTruthy()
+  })
+
+  it('reads a background shell\'s output, with the call that started it, and stops it', () => {
+    stream.taskOutputs = { b1: { text: '\u001b[32mready\u001b[0m on :3000' } }
+    show()
+    fireEvent.click(screen.getByTitle('npm run dev'))
+
+    expect(stream.send).toHaveBeenCalledWith({ type: 'task-output', taskId: 'b1' })
+    // Colors are stripped; the output is shown as text.
+    expect(screen.getByText('ready on :3000')).toBeTruthy()
+    expect(screen.getAllByText('npm run dev').length).toBeGreaterThan(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
+    expect(stream.send).toHaveBeenCalledWith({ type: 'stop-task', taskId: 'b1' })
+  })
+
+  it('shows a task with no output file the output streamed onto its call, verbatim, without reading a file', () => {
+    // codex has no output file; its shell's output arrives on the call.
+    stream.events = [
+      { type: 'tool', seq: 0, call: { toolCallId: 'exec-1', title: 'tick loop', kind: 'execute', status: 'in_progress' } },
+      { type: 'tool-output', seq: 1, toolCallId: 'exec-1', data: '# tick 1\n' },
+      { type: 'tool-output', seq: 2, toolCallId: 'exec-1', data: '__init__ 2' },
+      { type: 'task', seq: 3, task: { id: 'exec-1', name: 'tick loop', kind: 'shell', description: '', state: 'running', toolCallId: 'exec-1' } },
+    ]
+    show()
+    fireEvent.click(screen.getByRole('button', { name: /^shelltick loop/ }))
+    // Shown as text: `#` is no heading and `__init__` is not bold.
+    expect(screen.getByText(/# tick 1\s+__init__ 2/)).toBeTruthy()
+    expect(document.querySelector('h1, strong')).toBeNull()
+    expect(stream.send).not.toHaveBeenCalledWith({ type: 'task-output', taskId: 'exec-1' })
+    // Not every adapter can stop a task.
+    expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
+  })
+
+  it('shows a claude subagent\'s card in place of the Agent call that spawned it, and its report once it finishes', () => {
+    stream.events = [
+      { type: 'tool', seq: 0, call: { toolCallId: 'toolu_agent', title: 'count files', kind: 'think', status: 'pending' } },
+      { type: 'subagent', seq: 1, subagent: { id: 'toolu_agent', name: 'count files', task: 'Run ls', state: 'running' } },
+      { type: 'tool', seq: 2, thread: 'toolu_agent', call: { toolCallId: 'toolu_ls', title: 'ls docs', kind: 'execute', status: 'completed' } },
+      // A background Agent call completes at once, with launch metadata.
+      { type: 'tool', seq: 3, call: {
+        toolCallId: 'toolu_agent', title: 'count files', kind: 'think', status: 'completed',
+        content: [{ type: 'text', text: 'Async agent launched successfully.' }],
+      } },
+      {
+        type: 'subagent',
+        seq: 4,
+        subagent: { id: 'toolu_agent', name: 'count files', task: 'Run ls', state: 'completed', summary: 'Found two files.' },
+      },
+    ]
+    stream.busy = false
+    show()
+    // One card, no Agent row beside it.
+    expect(screen.getAllByText('count files')).toHaveLength(1)
+    expect(screen.queryByText('Found two files.')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^Agentcount files/ }))
+    expect(screen.getByText('ls docs')).toBeTruthy()
+    expect(screen.getByText('Found two files.')).toBeTruthy()
+    expect(screen.queryByText(/Async agent launched/)).toBeNull()
+  })
+
+  it('keeps a call that started a running task marked running after its turn ends, not interrupted', () => {
+    const call = { toolCallId: 'exec-1', title: 'tick loop', kind: 'execute' as const, status: 'in_progress' as const }
+    const task = (seq: number, state: 'running' | 'stopped'): AcpEvent => ({
+      type: 'task', seq, task: { id: 'exec-1', name: 'tick loop', kind: 'shell', description: '', state, toolCallId: 'exec-1' },
+    })
+    stream.events = [{ type: 'tool', seq: 0, call }, task(1, 'running'), { type: 'turn-end', seq: 2, stopReason: 'end_turn' }]
+    stream.busy = false
+    const { rerender } = show()
+    expect(screen.queryByText('interrupted')).toBeNull()
+    expect(screen.getAllByLabelText('running').length).toBeGreaterThan(0)
+
+    // Once the task is over, a call never reported finished reads as before.
+    stream.events = [...stream.events, task(3, 'stopped')]
+    rerender(<WorkspaceChat workspaceId="w1" agentSessionId="acp-1" />)
+    expect(screen.getByText('interrupted')).toBeTruthy()
+  })
+
+  it('offers no Stop for a task that has ended', () => {
+    stream.events = [...stream.events, shell(5, 'stopped')]
+    show()
+    fireEvent.click(screen.getByRole('button', { name: /^shellnpm run dev/ }))
+    expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
   })
 })
