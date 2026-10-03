@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { useAcpStream } from '#lib/acp'
-import { AcpTranscript, active, groupEvents, taskIcon } from '#components/AcpTranscript'
+import { AcpTranscript, active, groupEvents, SUBAGENT_CATEGORY, taskCategory } from '#components/AcpTranscript'
 import {
   ActivityBar, ActivityHeader, callOf, latestActivity, StopTaskButton, TaskView, type ActivityTarget,
 } from '#components/AcpActivity'
@@ -8,7 +8,7 @@ import { useComposerMenu } from '#components/ComposerMenu'
 import { imageBytes, imageFiles, prepareImage, toAcpImage, useImageSrc } from '#lib/attachments'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
 import {
-  AttachImageIcon, CloseIcon, LoadingIcon, NarrowIcon, SendIcon, StopIcon, SubagentIcon, WidenIcon,
+  AttachImageIcon, CloseIcon, LoadingIcon, NarrowIcon, SendIcon, StopIcon, WidenIcon,
 } from '#lib/icons'
 import { chatDraftKey, useUiStore } from '#lib/store'
 import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
@@ -289,8 +289,7 @@ export function WorkspaceChat({
     >
       {subagent !== undefined && (
         <ActivityHeader
-          icon={SubagentIcon}
-          label="Agent"
+          category={SUBAGENT_CATEGORY}
           title={subagent.name}
           state={subagent.state}
           live
@@ -299,8 +298,7 @@ export function WorkspaceChat({
       )}
       {task !== undefined && (
         <ActivityHeader
-          icon={taskIcon(task)}
-          label={task.kind}
+          category={taskCategory(task)}
           title={task.name}
           state={task.state}
           live

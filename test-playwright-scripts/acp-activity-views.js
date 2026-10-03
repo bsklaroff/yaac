@@ -6,7 +6,8 @@
  *  1. a read still expands to the file's text;
  *  2. shell output that looks like Markdown is shown verbatim (no heading,
  *     no bold);
- *  3. a running background shell has a chip in the strip over the composer;
+ *  3. a running background shell has a chip in the strip over the composer,
+ *     grouped under a "Shells" label with its count, apart from "Agents";
  *     opening it shows its output (read from its file) and no Stop, since
  *     claude stops a task only for an AIR client; Esc returns;
  *  4. the subagent's card opens its own transcript, with a Back header, and
@@ -47,11 +48,25 @@ try {
   await page.goto(`${origin}/?project=${workspace.projectSlug}&workspace=${workspace.workspaceId}`)
   await page.getByPlaceholder('Message the agent…').waitFor({ state: 'visible', timeout: 60_000 })
   const strip = page.getByRole('group', { name: 'Running in the background' })
-  // By kind: a running subagent is listed before the shell.
-  const chip = strip.getByRole('button', { name: /^shell: / }).first()
+  // By category: running subagents are listed before the shells.
+  const chip = strip.getByRole('group', { name: 'Shells' }).getByRole('button', { name: /^Shell: / }).first()
   await chip.waitFor({ state: 'visible', timeout: 180_000 })
   await until(page, () => document.body.innerText.includes('survey docs'), undefined, 180_000)
+  check('the strip labels the shells with their count',
+    /^SHELLS 1/i.test(await strip.getByRole('group', { name: 'Shells' }).innerText()))
+  // The subagent can finish before the strip is read; say so rather than
+  // pass a check that did not run.
+  if (await strip.getByRole('group', { name: 'Agents' }).waitFor({ timeout: 60_000 }).then(() => true, () => false)) {
+    check('the running subagent has its own Agents group',
+      /^AGENTS 1/i.test(await strip.getByRole('group', { name: 'Agents' }).innerText()))
+  } else {
+    console.log('SKIP  the running subagent has its own Agents group (it finished before the strip was read)')
+  }
   await page.screenshot({ path: path.join(SHOTS, 'activity-main.png') })
+  await strip.screenshot({ path: path.join(SHOTS, 'activity-strip.png') })
+  await page.emulateMedia({ colorScheme: 'dark' })
+  await strip.screenshot({ path: path.join(SHOTS, 'activity-strip-dark.png') })
+  await page.emulateMedia({ colorScheme: 'light' })
 
   // ---- 1. a read expands to its text ----
   const read = page.getByRole('button', { name: /README\.md/ }).first()
@@ -60,7 +75,12 @@ try {
     && await page.locator('.diff-hl').filter({ hasText: 'Agent Container' }).count() > 0)
 
   // ---- 2. Markdown-looking shell output stays text ----
-  await page.getByRole('button', { name: /not a heading/ }).first().click()
+  // The row shows the agent's description of the command when it gives one,
+  // so find it as the shell row (terminal icon) that is not the background
+  // loop.
+  await page.locator('button[aria-expanded]:has(svg.lucide-square-terminal)')
+    .filter({ hasNotText: /tick/ }).first().click()
+  await until(page, () => document.body.innerText.includes('not a heading'), undefined, 10_000)
   const heading = await page.evaluate(() => [...document.querySelectorAll('h1, h2, strong, b')]
     .some((h) => /not a heading|init/.test(h.textContent ?? '')))
   check('shell output is not rendered as Markdown', !heading)

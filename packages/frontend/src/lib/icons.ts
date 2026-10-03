@@ -102,6 +102,7 @@ export {
   CircleSlash as InterruptedIcon,
   Bot as SubagentIcon,
   Activity as MonitorIcon,
+  Workflow as WorkflowIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool. */

@@ -10,7 +10,7 @@ import { languageForFence, languageForPath } from '#lib/highlight'
 import {
   ChevronIcon, DeleteIcon, DoneIcon, ExecuteIcon, FailedIcon, FileTextIcon, InProgressIcon, LoadingIcon, MoveIcon,
   InterruptedIcon, MonitorIcon, PendingIcon, PlanIcon, PreviewIcon, RenameIcon, SearchIcon, SubagentIcon,
-  ThinkingIcon, ToolIcon, WarningIcon, type Icon,
+  ThinkingIcon, ToolIcon, WarningIcon, WorkflowIcon, type Icon,
 } from '#lib/icons'
 import { stripAnsi } from '@yaac/shared/ansi'
 import type {
@@ -674,11 +674,37 @@ function PlanRow({ entries }: { entries: AcpPlanEntry[] }): JSX.Element {
   )
 }
 
-/** The icon for a background task, by its kind. */
-export function taskIcon(task: AcpTask): Icon {
-  if (task.kind === 'shell') return ExecuteIcon
-  if (task.kind === 'monitor') return MonitorIcon
-  return ToolIcon
+/**
+ * What kind of background work a subagent or task is, named and drawn the
+ * same way wherever it appears (the running strip, its transcript card, the
+ * header of its own view). The tint tells the kinds apart at a glance; the
+ * label says it in words.
+ */
+export interface ActivityCategory {
+  icon: Icon
+  label: string
+  plural: string
+  tint: string
+}
+
+export const SUBAGENT_CATEGORY: ActivityCategory = {
+  icon: SubagentIcon, label: 'Agent', plural: 'Agents', tint: 'text-purple',
+}
+
+const TASK_CATEGORIES: Record<string, ActivityCategory> = {
+  shell: { icon: ExecuteIcon, label: 'Shell', plural: 'Shells', tint: 'text-link' },
+  monitor: { icon: MonitorIcon, label: 'Monitor', plural: 'Monitors', tint: 'text-warning' },
+  workflow: { icon: WorkflowIcon, label: 'Workflow', plural: 'Workflows', tint: 'text-accent' },
+}
+
+/** A task's category; an adapter's own kind word is shown as it gave it,
+ *  and an empty one as a plain task. */
+export function taskCategory(task: AcpTask): ActivityCategory {
+  const known = TASK_CATEGORIES[task.kind]
+  if (known !== undefined) return known
+  const kind = task.kind === '' ? 'task' : task.kind
+  const label = kind.charAt(0).toUpperCase() + kind.slice(1)
+  return { icon: ToolIcon, label, plural: `${label}s`, tint: 'text-text-faint' }
 }
 
 /**
@@ -703,16 +729,14 @@ export function StateMark({ state, live }: { state: (AcpSubagent | AcpTask)['sta
 /** A subagent or task in the transcript; opens its own view when the
  *  caller can show one. */
 function ActivityCard({
-  icon: Icon,
-  label,
+  category: { icon: Icon, label, tint },
   title,
   detail,
   state,
   live,
   onOpen,
 }: {
-  icon: Icon
-  label: string
+  category: ActivityCategory
   title: string
   detail?: string
   state: (AcpSubagent | AcpTask)['state']
@@ -727,7 +751,7 @@ function ActivityCard({
       className="group flex w-full items-center gap-2 rounded-lg border border-hairline bg-surface px-3 py-2 text-left
         text-xs enabled:hover:border-border enabled:hover:bg-surface-2 disabled:cursor-default"
     >
-      <Icon size={14} className="shrink-0 text-text-faint" />
+      <Icon size={14} className={clsx('shrink-0', tint)} />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="flex items-center gap-1.5">
           <span className="shrink-0 text-text-faint">{label}</span>
@@ -790,8 +814,7 @@ export function AcpTranscript({
         <div key={g.seq} className={clsx(i > 0 && (isStep(g) && isStep(groups[i - 1]) ? 'mt-0.5' : 'mt-4'))}>
           {g.kind === 'subagent' ? (
             <ActivityCard
-              icon={SubagentIcon}
-              label="Agent"
+              category={SUBAGENT_CATEGORY}
               title={g.subagent.name}
               detail={g.subagent.task}
               state={g.subagent.state}
@@ -800,8 +823,7 @@ export function AcpTranscript({
             />
           ) : g.kind === 'task' ? (
             <ActivityCard
-              icon={taskIcon(g.task)}
-              label={g.task.kind}
+              category={taskCategory(g.task)}
               title={g.task.name}
               {...(g.task.summary !== undefined ? { detail: g.task.summary } : {})}
               state={g.task.state}

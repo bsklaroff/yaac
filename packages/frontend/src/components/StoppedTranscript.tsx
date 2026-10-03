@@ -1,9 +1,9 @@
 import { useMemo, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
-import { AcpTranscript, groupEvents } from '#components/AcpTranscript'
+import { AcpTranscript, groupEvents, SUBAGENT_CATEGORY } from '#components/AcpTranscript'
 import { ActivityHeader, latestActivity } from '#components/AcpActivity'
-import { SubagentIcon, TOOL_LABEL } from '#lib/icons'
+import { TOOL_LABEL } from '#lib/icons'
 import { ServerError } from '@yaac/shared/errors'
 import {
   getSessionTranscript, transcriptViewable, TRANSCRIPT_UNAVAILABLE,
@@ -114,8 +114,7 @@ export function StoppedTranscript({
       )}
       {subagent !== undefined && (
         <ActivityHeader
-          icon={SubagentIcon}
-          label="Agent"
+          category={SUBAGENT_CATEGORY}
           title={subagent.name}
           state={subagent.state}
           live={false}
