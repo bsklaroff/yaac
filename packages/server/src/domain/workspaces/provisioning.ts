@@ -51,12 +51,12 @@ const entries = new Map<string, ProvisioningEntry>()
 let nextSeq = 0
 
 /**
- * Workspaces whose run finished after the user stopped it, so the stop tears
- * them down as they come up. The agent-alive probe then sees the agent gone,
- * which `reportAgentLaunchFailure` must not report as a failed create. Kept
- * until the id provisions again.
+ * Workspaces the user stopped while provisioning. One whose run finishes
+ * anyway is torn down as it comes up, and the agent-alive probe then sees
+ * the agent gone, which `reportAgentLaunchFailure` must not report as a
+ * failed create or restart. Kept until the id provisions again.
  */
-const lateStops = new Set<string>()
+const stoppedIds = new Set<string>()
 
 interface ProvisioningInput {
   workspaceId: string
@@ -76,7 +76,7 @@ interface ProvisioningInput {
  * failed entry (a retry); a live one is a `CONFLICT`.
  */
 export function registerProvisioning(input: ProvisioningInput): void {
-  lateStops.delete(input.workspaceId)
+  stoppedIds.delete(input.workspaceId)
   const existing = entries.get(input.workspaceId)
   if (existing !== undefined && existing.error === undefined) {
     throw new ServerError('CONFLICT', `workspace ${input.workspaceId} is already provisioning`)
@@ -172,7 +172,7 @@ export async function reportAgentLaunchFailure(input: {
   await settledRun(input.workspaceId)
   // An existing entry is either the create's own failure (the real cause)
   // or a newer provision on this id; leave it.
-  if (entries.has(input.workspaceId) || lateStops.has(input.workspaceId)) return
+  if (entries.has(input.workspaceId) || stoppedIds.has(input.workspaceId)) return
   registerProvisioning({
     workspaceId: input.workspaceId,
     projectSlug: input.projectSlug,
@@ -219,7 +219,11 @@ export function stopProvisioning(workspaceId: string): {
   e.stopping = true
   e.message = 'Stopping…'
   notifyWorkspaceListChanged()
-  return { projectSlug: e.projectSlug, ranAs: runs.get(workspaceId) ?? Promise.resolve(undefined) }
+  stoppedIds.add(workspaceId)
+  const ranAs = runs.get(workspaceId) ?? Promise.resolve(undefined)
+  // A claimed spare comes up under its own id.
+  void ranAs.then((id) => { if (id !== undefined) stoppedIds.add(id) })
+  return { projectSlug: e.projectSlug, ranAs }
 }
 
 /** Whether the user stopped this provision. */
@@ -267,10 +271,6 @@ export async function runProvisioned<T extends { workspaceId: string }>(
   try {
     const result = await run((message) => updateProvisioningMessage(workspaceId, message))
     ranAs = result.workspaceId
-    if (provisionStopped(workspaceId)) {
-      lateStops.add(workspaceId)
-      lateStops.add(ranAs)
-    }
     // Drop the row before returning, so the snapshot shows the workspace.
     removeProvisioning(workspaceId)
     notifyWorkspaceListChanged()
@@ -341,6 +341,6 @@ export function inFlightWorkspaceIds(): string[] {
 /** Test helper: drop all tracked entries. */
 export function clearAllProvisioningForTests(): void {
   entries.clear()
-  lateStops.clear()
+  stoppedIds.clear()
   runs.clear()
 }
