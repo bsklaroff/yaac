@@ -12,6 +12,9 @@ import { CloseIcon, LoadingIcon } from '#lib/icons'
 import { paneKey, registerPtyInput } from '#lib/ptyInput'
 import { patchClickForwarding, patchForcedSelection, patchKeepSelection } from '#lib/selection'
 import { patchTouchScroll } from '#lib/touch-scroll'
+import { swallowTerminalQueries } from '#lib/terminal-queries'
+import { installTerminalLinks } from '#lib/terminal-links'
+import { listWorkspaceFiles } from '#lib/files'
 import { patchWheelPacing } from '#lib/wheel-pacing'
 import { CYCLE_IDS, matchShortcut } from '#lib/shortcuts'
 import { createWebglController, type WebglController } from '#lib/webgl-renderer'
@@ -31,10 +34,16 @@ import { DISCONNECT_NOTICE_DELAY_MS, reconnectingSocket, type ReconnectingSocket
  *  leading edge, so a lone keypress is never delayed. */
 const INPUT_BATCH_MS = 4
 
+/** Lines of history the browser keeps; the server's snapshot carries up
+ *  to 5,000 of them and live output adds the rest. */
+const SCROLLBACK_LINES = 10_000
+
 /**
- * One terminal attached to a workspace's tmux over the server's /pty/attach
- * WebSocket. Binary frames carry raw PTY bytes both ways; text frames carry
- * control messages (resize, ping/pong).
+ * One terminal attached to a tmux pane in a workspace over the server's
+ * /pty/attach WebSocket (docs/terminal-mirror.md). Binary frames carry the
+ * pane's raw output and the user's input; text frames carry control
+ * messages (resize and ping from here, size and pong from the server).
+ * This xterm holds the scrollback, so scrolling history is local.
  */
 export function WorkspaceTerminal({
   workspaceId,
@@ -76,10 +85,8 @@ export function WorkspaceTerminal({
       fontSize: 13,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
       cursorBlink: true,
-      // Scrollback lives in tmux. An xterm scrollback would only flash the
-      // scrollbar as lines scroll into it.
-      scrollback: 0,
-      // Alt+click goes to tmux (see patchForcedSelection); don't also
+      scrollback: SCROLLBACK_LINES,
+      // Alt+click goes to the app (see patchForcedSelection); don't also
       // send arrow keys for it.
       altClickMovesCursor: false,
       theme: terminalTheme(resolveEffectiveTheme()),
@@ -129,10 +136,11 @@ export function WorkspaceTerminal({
     webglRef.current = webgl
     webgl.setVisible(visibleRef.current)
     // Mouse patches (see #lib/selection, #lib/wheel-pacing, #lib/touch-scroll):
-    // plain drag selects, Alt+drag and plain clicks go to tmux, selections
-    // survive mouse reports, and wheel and touch scrolling are paced.
+    // plain drag selects, Alt+drag and plain clicks go to a mouse-tracking
+    // app, selections survive mouse reports, and wheel and touch scrolling
+    // are paced for the app or scroll the local history.
     if (!patchForcedSelection(term)) {
-      console.warn('xterm internals changed: drag reports to tmux instead of selecting')
+      console.warn('xterm internals changed: drag reports to the app instead of selecting')
     }
     if (!patchKeepSelection(term)) {
       console.warn('xterm internals changed: selection clears eagerly again')
@@ -143,12 +151,18 @@ export function WorkspaceTerminal({
     }
     const disposeWheelPacing = patchWheelPacing(term)
     if (!disposeWheelPacing) {
-      console.warn('xterm internals changed: wheel reports reach tmux unpaced')
+      console.warn('xterm internals changed: wheel reports reach the app unpaced')
     }
     const disposeTouchScroll = patchTouchScroll(term)
     if (!disposeTouchScroll) {
       console.warn('xterm internals changed: touch no longer scrolls the pane')
     }
+    const disposeQueries = swallowTerminalQueries(term)
+    const disposeLinks = installTerminalLinks(term, {
+      isMac: IS_MAC,
+      listPaths: async () => (await listWorkspaceFiles(workspaceId)).paths,
+      openFile: (path) => useUiStore.getState().openFile(workspaceId, path),
+    })
     fit.fit()
     termRef.current = term
     // Expose mounted terminals to the Playwright scripts
@@ -186,13 +200,39 @@ export function WorkspaceTerminal({
     const sendPing = (): void => {
       sock?.send(JSON.stringify({ type: 'ping', t: performance.now() }))
     }
+    // The pane's output only renders at the size the app drew it for, so
+    // the server's `size` sets this xterm's grid. It is not echoed back as
+    // a resize: another device may be the one sizing the pane, and this one
+    // reclaims it by resizing its container or typing (the server re-applies
+    // its last requested size).
+    let applyingServerSize = false
+    const applyServerSize = (text: string): boolean => {
+      let msg: unknown
+      try {
+        msg = JSON.parse(text)
+      } catch {
+        return false
+      }
+      const m = msg as { type?: unknown; cols?: unknown; rows?: unknown }
+      if (m.type !== 'size' || typeof m.cols !== 'number' || typeof m.rows !== 'number') return false
+      if (m.cols !== term.cols || m.rows !== term.rows) {
+        applyingServerSize = true
+        try {
+          term.resize(m.cols, m.rows)
+        } finally {
+          applyingServerSize = false
+        }
+      }
+      return true
+    }
 
     const gate = createSettleGate(() => setSettled(true), { hasContent })
 
-    // (Re)attach to the workspace's tmux. tmux outlives client detaches, so
-    // reconnecting loses nothing. The fitted size goes in the URL so the PTY
-    // starts at the right dimensions and full-screen TUIs don't garble on a
-    // resize.
+    // (Re)attach to the workspace's pane. tmux outlives the connection, and
+    // each attach starts with a snapshot that resets this terminal, so
+    // reconnecting loses nothing. The fitted size goes in the URL so the
+    // pane is sized before its snapshot is taken and full-screen TUIs don't
+    // garble on a resize.
     const attachPath = (): string => {
       const params = new URLSearchParams({ id: workspaceId, target })
       if (term.cols > 0 && term.rows > 0) {
@@ -216,12 +256,12 @@ export function WorkspaceTerminal({
         },
         message: (data) => {
           if (typeof data === 'string') {
-            // Control frame: only a timed pong is used.
+            if (applyServerSize(data)) return false
             const rtt = parsePongRtt(data, performance.now())
             if (rtt !== null) recordRtt(rtt)
             return false
           }
-          // PTY bytes mean the attach succeeded; a failed one sends a text
+          // Pane bytes mean the attach succeeded; a failed one sends a text
           // error frame and closes.
           gate.onData()
           term.write(new Uint8Array(data as ArrayBuffer))
@@ -250,7 +290,9 @@ export function WorkspaceTerminal({
 
     // Subscribed on the terminal, so they follow reconnects to the new socket.
     const dataSub = term.onData((d: string): void => input.push(d))
-    const resizeSub = term.onResize((): void => sendResize())
+    const resizeSub = term.onResize((): void => {
+      if (!applyingServerSize) sendResize()
+    })
 
     // A pasted or dropped image is uploaded to the workspace and its path
     // pasted instead, which agent TUIs turn into an attachment
@@ -338,6 +380,8 @@ export function WorkspaceTerminal({
       testHooks.__xterms?.delete(term)
       disposeWheelPacing?.()
       disposeTouchScroll?.()
+      disposeQueries()
+      disposeLinks()
       disposeClickForwarding?.()
       sock?.close()
       // Before term.dispose(), so a late context-loss callback can't touch it.

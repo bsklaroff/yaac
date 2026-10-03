@@ -5,17 +5,20 @@ import type { Terminal } from '@xterm/xterm'
  *
  * xterm has no touch handling, and browsers don't turn a touch pan into
  * wheel events, so without this a phone can't see anything that scrolled
- * off. The swipe is turned into the same wheel reports the mouse sends:
- * tmux runs with `mouse on` and holds the scrollback, so reports are what
- * scroll it.
+ * off. Where the swipe goes depends on the app, as for the wheel: if it
+ * tracks the mouse (every agent's fullscreen TUI), the app holds
+ * the transcript and gets the same wheel reports the mouse sends; otherwise
+ * the history is in xterm's own scrollback, which scrolls locally, line by
+ * line.
  *
  * A drag tracks the finger; a flick keeps gliding after the finger lifts,
  * with decaying speed, like native scrolling. Touching the pane stops a
  * glide, and that touch is not also a tap.
  */
 
-/** Lines tmux scrolls per wheel report (its default copy-mode binding).
- *  Converting travel at this rate makes content follow the finger ~1:1. */
+/** Lines a TUI scrolls per wheel report, roughly (tmux's copy mode and
+ *  most apps use 3 to 5). Converting travel at this rate makes content
+ *  follow the finger about 1:1. */
 const LINES_PER_REPORT = 5
 
 /** Travel before a touch counts as a scroll. Below it the browser still
@@ -38,8 +41,9 @@ const VELOCITY_WINDOW_MS = 100
  *  ends the glide rather than emitting the rest of it in one frame. */
 const MAX_GLIDE_FRAME_GAP_MS = 100
 
-/** How many scroll reports a run of finger travel has earned, and the
- *  leftover travel to carry forward.
+/** How many scroll steps (wheel reports, or lines when scrolling locally)
+ *  a run of finger travel has earned, and the leftover travel to carry
+ *  forward.
  *
  *  Positive `travelPx` is a finger moving down, which scrolls back, so the
  *  reports are negative (the wheel path's sign for scrolling back). */
@@ -133,6 +137,9 @@ export function patchTouchScroll(term: Terminal): (() => void) | null {
   /** Measured when the gesture starts scrolling, since cell height changes
    *  with the font and fit. */
   let pxPerReport = 0
+  /** Whether this gesture scrolls xterm's own scrollback (the app does not
+   *  track the mouse) rather than reporting to the app. */
+  let local = false
   let warnedNoCellHeight = false
   /** Recent positions in the current direction, for the release velocity.
    *  Timed by the event's timeStamp, not by when it was handled. */
@@ -147,8 +154,10 @@ export function patchTouchScroll(term: Terminal): (() => void) | null {
   let caughtGlide = false
 
   const emit = (reports: number, at: { clientX: number; clientY: number }): void => {
-    // Without mouse reporting there is nothing to scroll: the terminal keeps
-    // no scrollback (history lives in tmux).
+    if (local) {
+      term.scrollLines(reports)
+      return
+    }
     if (!coreMouse.areMouseEventsActive) return
     // getMouseReportCoords reads only clientX/clientY, which a Touch has.
     const pos = getCoords(at as MouseEvent, screen)
@@ -224,8 +233,9 @@ export function patchTouchScroll(term: Terminal): (() => void) | null {
       scrolling = true
       // Travel within the slop doesn't scroll.
       lastY = t.clientY
+      local = !coreMouse.areMouseEventsActive
       const cell = render.dimensions?.css?.cell?.height ?? 0
-      pxPerReport = cell > 0 ? cell * LINES_PER_REPORT : 0
+      pxPerReport = cell > 0 ? cell * (local ? 1 : LINES_PER_REPORT) : 0
     }
     // No cell height: xterm's internals changed below what the install
     // check can see. Do nothing, but warn once.

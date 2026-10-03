@@ -154,7 +154,12 @@ fi
 #
 # `-c /workspace` pins the session's start directory (we cd'd to / above):
 # the respawned agent and every later window run in the workspace.
-env COLORTERM=truecolor $TMUX -u new-session -d -s yaac -n "$YAAC_TOOL" -x 500 -y 200 -c /workspace 'sleep infinity'
+#
+# history-limit is set before the session: tmux fixes a pane's limit when the
+# pane is created, and the agent keeps this first pane across respawns, so a
+# later setting would leave it tmux's 2000-line default.
+env COLORTERM=truecolor $TMUX -u start-server \; set-option -g history-limit 200000 \; \
+  new-session -d -s yaac -n "$YAAC_TOOL" -x 500 -y 200 -c /workspace 'sleep infinity'
 
 # Session UX options, one tmux invocation (command sequence via `\;`):
 #  - monitor-bell/bell-action: propagate terminal bells (\a) from any window
@@ -176,7 +181,6 @@ env COLORTERM=truecolor $TMUX -u new-session -d -s yaac -n "$YAAC_TOOL" -x 500 -
 #    a zombie) — guard the one-keystroke session killer with a confirm.
 $TMUX \
   set-option -s escape-time 10 \; \
-  set-option -g history-limit 200000 \; \
   set-option -g mouse on \; \
   set-option -g focus-events on \; \
   set-option -g monitor-bell on \; \

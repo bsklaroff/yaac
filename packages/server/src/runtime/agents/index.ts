@@ -14,7 +14,7 @@
 // Each export needs a unit test in packages/server/test/runtime/agents/.
 // Internal modules are covered through the exports: `jsonl.ts` via the
 // transcript readers, per-tool classifiers via `classifyAgentObservation`,
-// `control-mode.ts` and the `acp-*` modules via their drivers.
+// and the `acp-*` modules via their drivers.
 
 export {
   agentDriver,
@@ -24,6 +24,8 @@ export {
   type LiveAgent,
 } from './drivers'
 export { attachAcp } from './acp-bridge'
+// The webapp's terminals hold their own control-mode client.
+export { ControlModeClient, type ControlModeNotification } from './control-mode'
 export { parkAcpLaunchModel, setAcpPermissionMode } from './acp-driver'
 // The status watcher discards a stopped workspace's queued messages.
 export { acpConversation, dropAcpQueues, whenAcpConversation } from './acp-registry'

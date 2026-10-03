@@ -59,13 +59,15 @@ reading the relay socket when unACKed bytes pass a high-water mark (about
 128 KB) and resumes at a low-water mark (about 16 KB). `ws.bufferedAmount` is
 a second check on the send side.
 
-Today `bridge()` in `pty-bridge.ts` sends without limit and the client never
-ACKs. A pane printing a flood of output (`yes`, a big build) queues megabytes
-in the server's WebSocket buffer, and streamd's PTY pause never fires. Ctrl-C
-then takes a long time, because the prompt is queued behind all that output.
-This is the problem Mosh was built to solve. Connecting the chain bounds
-memory and keeps control messages timely. The bridge's output batcher is the
-place to add it.
+The webapp's terminals already collapse floods on the server's send buffer
+([terminal-mirror.md](../terminal-mirror.md)). The CLI's PTY path,
+`bridge()` in `pty-bridge.ts`, still sends without limit and the client
+never ACKs. A pane printing a flood of output (`yes`, a big build) queues
+megabytes in the server's WebSocket buffer, and streamd's PTY pause never
+fires. Ctrl-C then takes a long time, because the prompt is queued behind
+all that output. This is the problem Mosh was built to solve. Connecting the
+chain bounds memory and keeps control messages timely. The bridge's output
+batcher is the place to add it.
 
 Risk: a wrong watermark or a lost ACK stalls the stream forever. The ACK
 protocol needs a reset on reconnect and a test for the stall case.
@@ -85,6 +87,12 @@ always do the equivalent: show the user's own prompt locally on send instead
 of waiting for it to come back through the agent log.
 
 ## Plan E: server-side screen state
+
+Stages 1-2 shipped for the webapp's terminals in the pane mirror
+([terminal-mirror.md](../terminal-mirror.md)), with tmux as the screen state
+rather than an emulator on the server: each attach and reconnect is one
+snapshot captured from tmux, and a client that falls behind gets a fresh
+snapshot instead of the backlog. What follows is the rest.
 
 Run a headless terminal emulator per pane in the server (`xterm-headless`,
 which VS Code's server uses). It reads the pod stream at LAN speed, so the
@@ -112,9 +120,9 @@ boundaries, with raw bytes otherwise, limits that.
   blocking, but Safari support is partial, `tailscale serve` cannot front
   HTTP/3, and nothing shows packet loss is the main problem. Revisit only if
   lossy links still stutter after B-E.
-- **tmux control mode as the browser transport.** It would give `pause-after`
-  for free, but `%output` is escaped text, which costs bandwidth. B and C give
-  the same pausing on the raw-byte path.
+- **tmux control mode as the browser transport.** `%output` is escaped
+  text, which costs bandwidth. The pane mirror uses control mode only
+  between pod and server and unescapes before the browser.
 - **An edge or relay tier.** It helps shared sessions spread across the globe
   (sshx). For a single user on a tailnet, the server is already as close as it
   gets.

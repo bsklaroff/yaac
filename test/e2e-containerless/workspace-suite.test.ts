@@ -447,6 +447,9 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // A tmux server of its own on this host.
     const windows = await tmux(workspaceId, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')
     expect(windows).toContain('claude')
+    // The agent keeps the session's first pane, so its history limit must be
+    // set before the session exists: it is the scrollback the webapp seeds.
+    expect((await tmux(workspaceId, 'display', '-p', '-t', 'yaac:claude', '#{history_limit}')).trim()).toBe('200000')
 
     // Every create picks a model (the fallback here, nothing remembered
     // yet); the fake agent reports nothing, so this comes from the launch.
@@ -587,6 +590,58 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const windows = await tmux(workspaceId, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')
     expect(windows).toContain('shell')
   })
+
+  it('serves a webapp terminal from its pane: snapshot, raw output, input, paste and resize', async () => {
+    // A pane that floods numbered lines, then echoes its input visibly.
+    const window = (await tmux(workspaceId, 'new-window', '-d', '-P', '-F', '#{window_id}', '-t', 'yaac',
+      '-n', 'mirror', "sh -c 'seq 1 100000; stty raw -echo; exec cat -v'")).trim()
+    const ws = new WebSocket(
+      `ws://127.0.0.1:${String(server.lock.port)}/api/pty/attach?id=${workspaceId}&target=window:${window}&cols=100&rows=30`)
+    const frames: Array<string | Buffer> = []
+    ws.on('message', (data: Buffer, isBinary) => frames.push(isBinary ? data : data.toString('utf8')))
+    try {
+      const bytes = (): string => frames.filter((f): f is Buffer => typeof f !== 'string')
+        .map((f) => f.toString('latin1')).join('')
+      // Attached mid-flood: wait for the end of it.
+      await vi.waitFor(() => expect(bytes()).toContain('100000'), { timeout: 30_000, interval: 200 })
+
+      // The pane's size, then a snapshot that resets the client.
+      expect(JSON.parse(frames[0] as string)).toEqual({ type: 'size', cols: 100, rows: 30 })
+      expect((frames[1] as Buffer).subarray(0, 2).toString('latin1')).toBe('\x1bc')
+      // The snapshot and the output after it hold every line exactly once,
+      // in order: nothing the capture holds is sent again and nothing after
+      // it is lost.
+      const numbers = bytes()
+        .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\x1b[c=]/g, '')
+        .match(/\d+/g)?.map(Number) ?? []
+      expect(numbers.at(-1)).toBe(100000)
+      const gaps = numbers.filter((n, i) => i > 0 && n !== numbers[i - 1] + 1)
+      expect(gaps).toEqual([])
+      expect(numbers.length).toBeGreaterThan(4000)
+
+      // Keystrokes and a bracketed paste reach the pane through tmux; `cat`
+      // never asked for bracketed paste, so tmux delivers it bare.
+      ws.send(Buffer.from('ab'))
+      ws.send(Buffer.from('\x1b[200~x$y\x1b[201~'))
+      await vi.waitFor(async () => {
+        // -J rejoins a wrapped line: `stty raw` can take effect before all of
+        // `seq`'s output has gone through the tty, leaving the cursor anywhere.
+        expect(await tmux(workspaceId, 'capture-pane', '-p', '-J', '-t', window)).toContain('abx$y')
+        // And its echo comes back.
+        expect(bytes()).toContain('abx$y')
+      }, { timeout: 10_000, interval: 200 })
+
+      // A resize sizes the window, and the new size comes back as a frame.
+      ws.send(JSON.stringify({ type: 'resize', cols: 90, rows: 25 }))
+      await vi.waitFor(() => expect(frames.filter((f) => typeof f === 'string').map((f) => JSON.parse(f) as unknown))
+        .toContainEqual({ type: 'size', cols: 90, rows: 25 }), { timeout: 10_000, interval: 200 })
+      expect((await tmux(workspaceId, 'display', '-p', '-t', window, '#{window_width}x#{window_height}')).trim())
+        .toBe('90x25')
+    } finally {
+      ws.close()
+      await tmux(workspaceId, 'kill-window', '-t', window)
+    }
+  }, 60_000)
 
   // The CLI resolves a prefix to the exact id the terminal socket needs.
   it('attaches and opens a shell by a unique id prefix', async () => {

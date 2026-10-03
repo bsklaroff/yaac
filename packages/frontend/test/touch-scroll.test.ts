@@ -51,6 +51,8 @@ describe('patchTouchScroll', () => {
   ): {
     term: Terminal
     reports: Report[]
+    /** Lines passed to `term.scrollLines` (local scrolling). */
+    scrolled: number[]
     prevented: number
     setMouseActive: (a: boolean) => void
     swipe: (
@@ -61,6 +63,7 @@ describe('patchTouchScroll', () => {
     listeners: Map<string, (e: TouchEvent) => void>
   } {
     const reports: Report[] = []
+    const scrolled: number[] = []
     const listeners = new Map<string, (e: TouchEvent) => void>()
     let mouseActive = true
     let prevented = 0
@@ -91,6 +94,7 @@ describe('patchTouchScroll', () => {
         coreMouseService,
         _renderService: { dimensions },
       },
+      scrollLines: (n: number): void => { scrolled.push(n) },
     } as unknown as Terminal
 
     /** Drag `dy` pixels (positive = down the screen) in `steps` touchmoves,
@@ -129,6 +133,7 @@ describe('patchTouchScroll', () => {
     return {
       term,
       reports,
+      scrolled,
       get prevented(): number { return prevented },
       setMouseActive: (a) => { mouseActive = a },
       swipe,
@@ -187,12 +192,19 @@ describe('patchTouchScroll', () => {
     expect(f.reports).toHaveLength(0)
   })
 
-  it('sends nothing when nothing is reporting the mouse', () => {
+  it('scrolls the local history line by line when the app does not track the mouse', () => {
     const f = fakeTerm()
     patchTouchScroll(f.term)
     f.setMouseActive(false)
+    // The first 20px move only crosses the slop; the other 180px at a 17px
+    // cell are 10 lines back, followed 1:1, with no reports.
     f.swipe(200)
     expect(f.reports).toHaveLength(0)
+    expect(f.scrolled.reduce((a, b) => a + b, 0)).toBe(-10)
+    // And forward.
+    f.scrolled.length = 0
+    f.swipe(-100)
+    expect(f.scrolled.reduce((a, b) => a + b, 0)).toBe(5)
   })
 
   it('starts each gesture fresh rather than carrying travel between them', () => {

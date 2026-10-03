@@ -6,10 +6,10 @@ export type SelectionMouse = Pick<MouseEvent, 'altKey'>
 
 /**
  * Whether a mousedown should start a local xterm text selection instead of
- * being reported to tmux (which runs with `mouse on`).
+ * being reported to the app (when it tracks the mouse).
  *
  * A plain drag selects, so copy works without a modifier. Holding Alt
- * (Option on macOS) sends the gesture to tmux instead, for TUIs that want
+ * (Option on macOS) sends the gesture to the app instead, for TUIs that want
  * the mouse.
  */
 export function forceLocalSelection(e: SelectionMouse): boolean {
@@ -96,8 +96,9 @@ export function patchClickForwarding(term: Terminal): (() => void) | null {
   let pending: MouseEvent | null = null
 
   const onDown = (e: MouseEvent): void => {
-    // Only a plain primary press. xterm already reports Alt gestures itself.
-    pending = e.button === 0 && !e.altKey ? e : null
+    // Only a plain primary press. xterm already reports Alt gestures itself,
+    // and Cmd- or Ctrl-click opens a link (#lib/terminal-links).
+    pending = e.button === 0 && !e.altKey && !e.ctrlKey && !e.metaKey ? e : null
   }
 
   const onUp = (): void => {
@@ -127,7 +128,7 @@ export function patchClickForwarding(term: Terminal): (() => void) | null {
 /**
  * Replace xterm's forced-selection rule (Shift+drag, or Option+drag on
  * macOS) with forceLocalSelection: plain drag selects locally and Alt+drag
- * is reported to tmux. xterm has no public hook for this, so this patches the
+ * is reported to the app. xterm has no public hook for this, so this patches the
  * private selection service. xterm is pinned to an exact version and the
  * unit tests check the private names; if they change this returns false.
  *
@@ -142,8 +143,8 @@ export function patchForcedSelection(term: Terminal): boolean {
 
 /**
  * Keep the mouse selection until the user makes a new one (or the buffer
- * resizes or resets). Stock xterm clears it in two ways that misfire under
- * tmux:
+ * resizes or resets). Stock xterm clears it in two ways that misfire with
+ * mouse-tracking TUIs:
  *
  *  1. It clears on every byte sent to the pty. When the TUI tracks mouse
  *     motion (mode 1003), just moving the mouse sends reports and clears
@@ -151,7 +152,7 @@ export function patchForcedSelection(term: Terminal): boolean {
  *     made during coreService.triggerDataEvent (which all input passes
  *     through) are dropped.
  *
- *  2. Every mouse-protocol DECSET, even a redundant one that tmux and TUIs
+ *  2. Every mouse-protocol DECSET, even a redundant one that TUIs
  *     send on redraw, calls SelectionService.disable(), which clears. Its
  *     clear is dropped the same way.
  *

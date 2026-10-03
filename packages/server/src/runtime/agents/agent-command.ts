@@ -232,11 +232,13 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // `--model <provider>/<id>` picks the provider whose api-key env var
     // the proxy swaps; an override naming another provider shows as an auth
     // error. `--session-id` creates or resumes the session by id, so resume
-    // needs no branch.
+    // needs no branch. `--tui-mode fullscreen` because its regular mode
+    // leaves the mouse to the terminal, so a tool call cannot be clicked open
+    // there (docs/terminal-mirror.md).
     const piModel = model ?? piProviderInfo(piProvider ?? PI_DEFAULT_PROVIDER).defaultModel
     // Guard against a provider with no default model.
     const modelFlag = piModel ? ` --model ${piModel}` : ''
-    const pi = `pi --approve${modelFlag} --session-id ${workspaceId}`
+    const pi = `pi --approve --tui-mode fullscreen${modelFlag} --session-id ${workspaceId}`
     // On a fresh run pi warns on stderr that no session with this id exists
     // and it is creating one. The id is chosen by yaac on purpose (pi embeds
     // it in its JSONL filename; see transcripts.ts), so this always fires
@@ -301,8 +303,8 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
  * to resend it, so:
  *
  *  1. Wait for `#{alternate_on}`, the earliest tool-agnostic sign the TUI
- *     accepts input; give up waiting after 60s and paste anyway, since some
- *     TUIs (pi, codex) and claude's startup dialogs never set it.
+ *     accepts input; give up waiting after 60s and paste anyway, since
+ *     claude's startup dialogs never set it.
  *  2. Paste, then check `capture-pane` until the paste shows, re-pasting
  *     if it doesn't. It counts as shown when the pane holds the prompt's
  *     first or last 20 visible characters (an input box scrolls to its

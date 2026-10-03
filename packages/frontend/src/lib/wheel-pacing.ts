@@ -2,17 +2,20 @@ import type { Terminal } from '@xterm/xterm'
 
 /**
  * Wheel pacing: stop a scroll gesture from queueing more scroll reports
- * than tmux can answer.
+ * than a mouse-tracking app can answer.
  *
- * tmux runs with `mouse on`, so each wheel report round-trips to the
+ * When the app tracks the mouse (every agent's fullscreen TUI),
+ * it holds the transcript, so each wheel report round-trips to the
  * workspace and comes back as a redraw. A trackpad flick emits reports much
  * faster than that, so the pane would keep scrolling long after the gesture
  * ends. The pacer sends the same reports on animation frames, a few per
- * frame, and drops any backlog beyond a small cap.
+ * frame, and drops any backlog beyond a small cap. When the app does not
+ * track the mouse, the history is in xterm's own scrollback and the wheel
+ * gets stock, local handling.
  *
  * As in stock xterm, each wheel event that crosses the line threshold
  * (xterm's consumeWheelEvent) becomes a report, except that a mouse-wheel
- * notch becomes REPORTS_PER_NOTCH of them: tmux scrolls a fixed 5 lines per
+ * notch becomes REPORTS_PER_NOTCH of them: apps scroll a few lines per
  * report, which is too little for one click of a wheel. Only a notch
  * reported in line mode or as a large pixel delta is recognized (Chrome and
  * Edge on Windows and Linux, Firefox); wheels that report small pixel
