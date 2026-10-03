@@ -28,11 +28,13 @@ export interface SpawnRequest {
   /** The caller's permission mode: the default, and the most it may
    *  grant. */
   callerPermissionMode: PermissionMode
+  /** The caller's own agent mode, if recorded; the default `uiMode`. */
+  callerMode?: AgentMode
   prompt: string
   tool?: AgentTool
   model?: string
   permissionMode?: PermissionMode
-  /** `tui` or `acp`; unnamed is `tui`. */
+  /** `tui` or `acp`; unnamed is the caller's, else the create default. */
   uiMode?: AgentMode
   /** Reference branch on `origin`; unnamed is the project's default. */
   branch?: string
@@ -94,7 +96,7 @@ export async function decideSpawn(
     ?? request.callerTool
     ?? await (deps.lastToolFn ?? lastTool)(request.callerProjectSlug)
     ?? 'claude'
-  const uiMode = request.uiMode ?? 'tui'
+  const uiMode = request.uiMode ?? request.callerMode
   const posture = agentPermissionMode(tool, request.callerPermissionMode, request.permissionMode)
   if (!posture.ok) return posture
   // Last, so a refused spawn creates no group.
@@ -119,7 +121,7 @@ export async function decideSpawn(
     projectSlug,
     workspaceId: workspaceId,
     tool,
-    mode: uiMode,
+    ...(uiMode !== undefined ? { mode: uiMode } : {}),
     // Not the project's remembered mode, which could strand the agent at a
     // prompt nobody answers.
     permissionMode: posture.permissionMode,

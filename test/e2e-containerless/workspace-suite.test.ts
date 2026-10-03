@@ -318,7 +318,7 @@ async function createWorkspace(...extra: string[]): Promise<string> {
 async function createWorkspaceWith(tool: string, ...extra: string[]): Promise<string> {
   const before = new Set((await listWorkspaces()).map((w) => w.workspaceId))
   const { stdout, stderr, exitCode } = await runYaac(
-    cliEnv(), 'workspace', 'create', SLUG, '--tool', tool, ...extra,
+    cliEnv(), 'workspace', 'create', SLUG, '--tool', tool, '--mode', 'tui', ...extra,
   )
   if (exitCode !== 0) {
     throw new Error(`create failed (exit ${String(exitCode)})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
@@ -1219,7 +1219,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        project: SLUG, tool: 'claude', prompt: 'a founding ask', title: 'Dialog title', group: 'dialog-group',
+        project: SLUG, tool: 'claude', mode: 'tui', prompt: 'a founding ask', title: 'Dialog title',
+        group: 'dialog-group',
       }),
     })
     expect(res.status).toBe(200)
@@ -1823,7 +1824,7 @@ describe.skipIf(!CAN_RUN)('an agent that dies the moment it launches', () => {
       // The fake codex exits 127 with `--model sick`, so tmux closes the
       // window, though `respawn-window` reports success.
       const { exitCode } = await runYaac(
-        serverEnv, 'workspace', 'create', SLUG, '--tool', 'codex', '--model', 'sick',
+        serverEnv, 'workspace', 'create', SLUG, '--tool', 'codex', '--mode', 'tui', '--model', 'sick',
       )
       // Create succeeds: the launch check runs afterwards, so it never
       // slows a create down.

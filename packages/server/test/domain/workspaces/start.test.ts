@@ -54,6 +54,7 @@ describe('startWorkspace', () => {
       tool: 'claude',
       model: 'claude-opus-5-5',
       permissionMode: 'plan',
+      mode: 'tui',
       branch: 'dev',
       prompt: 'go',
       rememberDefaults: false,

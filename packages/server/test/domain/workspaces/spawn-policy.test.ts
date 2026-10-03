@@ -91,7 +91,7 @@ describe('decideSpawn', () => {
       workspaceId: 'minted-id',
       tool: 'codex', // the caller's tool, absent an explicit request
       initialPrompt: 'write the report',
-      mode: 'tui',
+      mode: 'acp',
       permissionMode: 'bypass', // the caller's permission mode, likewise
       model: FALLBACK_MODELS.codex,
     })
@@ -180,6 +180,18 @@ describe('decideSpawn', () => {
     expect((await decideSpawn(makeRequest({ uiMode: 'acp', branch: 'feature/x', title: 'Port the lexer' }))).ok).toBe(true)
     expect((await createdWith(create))[0]).toMatchObject({ mode: 'acp', branch: 'feature/x', title: 'Port the lexer' })
     await settle()
+  })
+
+  it('defaults the UI mode to the caller\'s, else chat', async () => {
+    const modeFor = async (over: Partial<SpawnRequest>): Promise<unknown> => {
+      const create = stubCreate()
+      expect((await decideSpawn(makeRequest(over))).ok).toBe(true)
+      await settle()
+      return (await createdWith(create))[0].mode
+    }
+    expect(await modeFor({ callerMode: 'tui' })).toBe('tui')
+    expect(await modeFor({ callerMode: 'tui', uiMode: 'acp' })).toBe('acp')
+    expect(await modeFor({})).toBe('acp')
   })
 
   it('inherits the caller\'s posture, stepping down to the most the tool has', async () => {

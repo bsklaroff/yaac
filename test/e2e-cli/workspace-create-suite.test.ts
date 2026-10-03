@@ -289,7 +289,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     ...extraArgs: string[]
   ): Promise<{ jobName: string; stdout: string }> {
     const { stdout, stderr, exitCode } = await runYaac(
-      serverEnv, 'workspace', 'create', slug, ...extraArgs,
+      serverEnv, 'workspace', 'create', slug, '--mode', 'tui', ...extraArgs,
     )
     if (exitCode !== 0) {
       throw new Error(`session create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
@@ -1331,7 +1331,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       const createDone = fetch(`${base}/api/workspace/create`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ project: 'no-ephemeral', tool: 'claude', workspaceId }),
+        body: JSON.stringify({ project: 'no-ephemeral', tool: 'claude', mode: 'tui', workspaceId }),
       }).then((r) => r.text())
 
       await vi.waitFor(() => expect(sub.latest()?.provisioning.find((p) => p.workspaceId === workspaceId))
