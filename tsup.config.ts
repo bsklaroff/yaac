@@ -19,4 +19,7 @@ export default defineConfig({
   // dist/, which keeps the server graph and the slow @kubernetes/client-node
   // load off fast commands like `yaac --version`.
   noExternal: [/^@yaac\//],
+  // Keep `node:` on builtin imports. tsup strips it by default, which breaks
+  // builtins that exist only under the prefix (`node:sqlite`).
+  removeNodeProtocol: false,
 })

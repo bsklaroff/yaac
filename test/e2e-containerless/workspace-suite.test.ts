@@ -5,6 +5,7 @@ import { promisify } from 'node:util'
 import WebSocket from 'ws'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import {
   TEST_CLI_ENTRY,
   createYaacTestEnv,
@@ -1035,7 +1036,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(await post('not-a-real-token', 'list')).toBe(401)
   })
 
-  it('stops a workspace it names, stops ITSELF when it names none, and the stopped one stays fetchable', async () => {
+  it('stops a workspace it names, stops ITSELF when it names none, and the stopped one stays fetchable and readable', async () => {
     // Its own subject: the self-stop takes down the tmux server the command
     // runs in.
     const doomed = await createWorkspace()
@@ -1081,6 +1082,24 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(stdout).toContain(`yaac/peers/${short}/HEAD`)
     const { stdout: subject } = await execFileAsync('git', ['-C', mine, 'log', '-1', '--format=%s', `yaac/peers/${short}/HEAD`])
     expect(subject.trim()).toBe('left behind')
+
+    // Its conversation history stays readable too. The founding claude
+    // conversation runs under the workspace id; give it a subagent.
+    const conversations = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'history', doomed, 'claude', '-workspace')
+    await fs.mkdir(path.join(conversations, doomed, 'subagents'), { recursive: true })
+    await fs.appendFile(path.join(conversations, `${doomed}.jsonl`), '{"left":"behind"}\n')
+    await fs.writeFile(path.join(conversations, doomed, 'subagents', 'agent-e2e.jsonl'), '{"sub":"agent"}\n')
+    const mama = (...args: string[]) => execFileAsync(path.join(process.cwd(), 'workspace-bin', 'yaac-mama'), args,
+      { cwd: mine, env: { ...process.env, YAAC_MAMA_URL: creds.YAAC_MAMA_URL, YAAC_MAMA_TOKEN: creds.YAAC_MAMA_TOKEN } })
+    expect((await mama('history', short)).stdout).toMatch(new RegExp(`${doomed}\\s+claude\\s+tui`))
+    const printed = (await mama('history', short, doomed.slice(0, 12))).stdout
+    expect(printed).toContain('{"left":"behind"}\n')
+    expect(printed.endsWith('{"sub":"agent"}\n')).toBe(true)
+    const saved = path.join(testEnv.scratchDir, `history-of-${short}`)
+    const written = (await mama('history', short, '-o', saved)).stdout
+    expect(written).toContain(`${saved}/${doomed}/${doomed}/subagents/agent-e2e.jsonl`)
+    expect(await fs.readFile(path.join(saved, doomed, doomed, 'subagents', 'agent-e2e.jsonl'), 'utf8'))
+      .toBe('{"sub":"agent"}\n')
   }, 180_000)
 
   it('offers yaac\'s builtin skills where the agent\'s own HOME looks for them', async () => {
@@ -1597,6 +1616,51 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
 
       await runYaac(serverEnv, 'workspace', 'stop', id)
     }, 180_000)
+
+  it('reads an opencode conversation out of its live database, its subagent\'s included', async () => {
+    // A host opencode's database is its working copy, here held open by a
+    // writer whose rows are still only in the WAL. The script reads it as
+    // JSONL, the subagent's session after its parent's.
+    const id = await createWorkspaceWith('opencode', '--mode', 'acp')
+    const short = id.slice(0, 8)
+    const db = new DatabaseSync(path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'opencode-data', id, 'opencode.db'))
+    try {
+      db.exec(`pragma journal_mode = wal; pragma wal_autocheckpoint = 0;
+        create table session_v2 (id text primary key, parent_id text, time_created integer);
+        create table session_message (id text primary key, session_id text, type text, seq integer,
+          time_created integer, data text);
+        insert into session_v2 values ('e2e-acp-opencode', null, 1), ('ses_child', 'e2e-acp-opencode', 2);
+        insert into session_message values ('m1', 'e2e-acp-opencode', 'user', 1, 1, '{"text":"parent ask"}'),
+          ('m2', 'ses_child', 'user', 1, 2, '{"text":"child ask"}')`)
+      const env = {
+        ...process.env,
+        YAAC_MAMA_URL: await workspaceEnvVar(id, 'YAAC_MAMA_URL'),
+        YAAC_MAMA_TOKEN: await workspaceEnvVar(id, 'YAAC_MAMA_TOKEN'),
+      }
+      const mama = (...args: string[]) =>
+        execFileAsync(path.join(process.cwd(), 'workspace-bin', 'yaac-mama'), args, { env })
+
+      expect((await mama('history', short)).stdout).toMatch(/e2e-acp-opencode\s+opencode\s+acp/)
+      const printed = (await mama('history', short, 'e2e-acp')).stdout.trim().split('\n')
+        .map((line) => JSON.parse(line) as { session: string; data: { text: string } })
+      expect(printed.map((l) => [l.session, l.data.text]))
+        .toEqual([['e2e-acp-opencode', 'parent ask'], ['ses_child', 'child ask']])
+
+      const saved = path.join(testEnv.scratchDir, `opencode-history-${short}`)
+      const written = (await mama('history', short, '-o', saved)).stdout.trim().split('\n')
+      const conversation = path.join(saved, 'e2e-acp-opencode')
+      expect(written).toEqual(expect.arrayContaining([
+        path.join(conversation, 'opencode.db'),
+        path.join(conversation, 'acpd.jsonl'),
+        path.join(conversation, 'e2e-acp-opencode.jsonl'),
+        path.join(conversation, 'subagents', 'ses_child.jsonl'),
+      ]))
+      expect(await fs.readFile(path.join(conversation, 'subagents', 'ses_child.jsonl'), 'utf8')).toContain('child ask')
+    } finally {
+      db.close()
+    }
+    await runYaac(serverEnv, 'workspace', 'stop', id)
+  }, 180_000)
 
   it('records a mode the agent moves itself to, and restarts the conversation in it', async () => {
     // The agent moves itself into plan mode mid-turn (as EnterPlanMode

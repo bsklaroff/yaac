@@ -1348,7 +1348,8 @@ export const MAX_MODEL_LENGTH = 128
  * `stop` is allowed because a stop is reversible: the checkout, row, title,
  * group and conversation are kept, so the user can restart it. Anything that
  * deletes, restarts or reconfigures stays the user's. `fetch` reads another
- * workspace's branches into the caller's checkout, never writing to theirs.
+ * workspace's branches into the caller's checkout, and `history` its
+ * conversations, never writing to theirs.
  */
 export const MAMA_COMMANDS = [
   'list',
@@ -1361,5 +1362,6 @@ export const MAMA_COMMANDS = [
   'queue',
   'edit-queued',
   'fetch',
+  'history',
 ] as const
 export type MamaCommand = (typeof MAMA_COMMANDS)[number]

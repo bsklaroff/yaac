@@ -4,10 +4,10 @@
  * both.
  *
  * An agent may list the project's workspaces, create or queue one, edit what
- * it queued, retitle, group, stop one (its own included), and fetch another's
- * branches. Stopping is allowed because it is reversible: the checkout, row
- * and conversations are kept. Deleting, restarting and reconfiguring stay the
- * user's.
+ * it queued, retitle, group, stop one (its own included), fetch another's
+ * branches and read another's conversation history. Stopping is allowed
+ * because it is reversible: the checkout, row and conversations are kept.
+ * Deleting, restarting and reconfiguring stay the user's.
  *
  * The caller's identity comes from the transport (pod IP under k8s, a
  * per-workspace token under containerless), never the request, and every
@@ -20,6 +20,7 @@ import {
   getProjectWorkspaceRows,
   getWorkspaceRow,
   listQueuedWorkspaceRows,
+  listWorkspaceAgentSessions,
   setWorkspaceGroup,
   setWorkspaceTitle,
   type QueuedWorkspaceRow,
@@ -45,6 +46,15 @@ import {
 import { modelsForTool } from '#domain/auth'
 import { bundleCheckout } from '#domain/git'
 import { repoDir, workspaceDir } from '@yaac/shared/project-paths'
+import {
+  formatSize,
+  historyFiles,
+  historyTranscripts,
+  MAX_HISTORY_FILE_BYTES,
+  oversized,
+  withFiles,
+  type HistoryConversation,
+} from './history-export'
 
 /** Who is asking — resolved by the transport, never taken from the request. */
 export interface MamaCaller {
@@ -66,8 +76,15 @@ export interface MamaRequestInput {
 
 export type MamaOutcome =
   | { ok: true; output: string }
-  /** `fetch`'s answer: a git bundle of `workspaceId`'s branches. */
-  | { ok: true; bundle: Buffer<ArrayBuffer>; workspaceId: string }
+  /** A file about `workspaceId` (and one of its conversations): `fetch`'s
+   *  git bundle, or `history`'s transcripts, database or one file. */
+  | {
+    ok: true
+    body: Buffer<ArrayBuffer> | ReadableStream<Uint8Array>
+    contentType: string
+    workspaceId: string
+    conversationId?: string
+  }
   | { ok: false; error: string }
 
 /**
@@ -95,6 +112,7 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   queue: ['parent-workspace', ...CREATE_ARGS],
   'edit-queued': ['queued', 'parent-workspace', ...CREATE_ARGS],
   fetch: ['workspace'],
+  history: ['workspace', 'conversation', 'files', 'file'],
 }
 
 /**
@@ -136,6 +154,7 @@ export async function runMamaCommand(
       case 'queue': return await runQueue(caller, request)
       case 'edit-queued': return await runEditQueued(caller, request)
       case 'fetch': return await runFetch(caller, request)
+      case 'history': return await runHistory(caller, request)
     }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -494,10 +513,120 @@ async function runFetch(caller: MamaCaller, request: MamaRequestInput): Promise<
   const { workspaceId } = found
   try {
     const bundle = await bundleCheckout(workspaceDir(caller.projectSlug, workspaceId), repoDir(caller.projectSlug))
-    return { ok: true, bundle, workspaceId }
+    return { ok: true, body: bundle, contentType: 'application/x-git-bundle', workspaceId }
   } catch (err) {
     return { ok: false, error: `cannot read ${workspaceId.slice(0, 8)}'s git: ${(err as Error).message}` }
   }
+}
+
+/**
+ * Another workspace's conversations, running or stopped: a listing; one
+ * conversation's transcripts as JSONL (an opencode one's database, which the
+ * script converts); with `files`, the names of every file of one
+ * conversation or all of them, one `<conversation>/<name>` per line; or with
+ * `file`, one of those files. Only reads, like `fetch`.
+ *
+ * Saving files is a file at a time rather than one archive because the
+ * workspace may not be able to unpack one: GNU tar extracts through
+ * `openat2`, which gVisor does not implement. The server never queries an
+ * opencode database, which a sandboxed workspace wrote; the caller's script
+ * does, in its own sandbox.
+ */
+async function runHistory(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const workspace = request.args.workspace?.trim() ?? ''
+  if (workspace === '') return { ok: false, error: 'history needs a workspace id' }
+  const found = await resolveWorkspace(workspace, { projectSlug: caller.projectSlug })
+  if (!found.ok) return { ok: false, error: workspaceError(caller.projectSlug, workspace, found.reason) }
+  const { workspaceId } = found
+  // Pick the conversation before gathering files, which reads every one's.
+  let rows = await listWorkspaceAgentSessions(caller.projectSlug, workspaceId)
+
+  const wanted = request.args.conversation?.trim() ?? ''
+  if (wanted !== '') {
+    const exact = rows.find((r) => r.agentSessionId === wanted)
+    const matches = exact !== undefined ? [exact] : rows.filter((r) => r.agentSessionId.startsWith(wanted))
+    if (matches.length !== 1) {
+      return {
+        ok: false,
+        error: matches.length === 0
+          ? `no conversation '${wanted}' in ${workspaceId.slice(0, 8)} (see: yaac-mama history ${workspaceId.slice(0, 8)})`
+          : `'${wanted}' matches more than one conversation in ${workspaceId.slice(0, 8)} — use a longer prefix`,
+      }
+    }
+    rows = matches
+  }
+  const conversations = await withFiles(caller.projectSlug, workspaceId, rows)
+
+  // A file over the cap is named on a `# ` line, which the script reports
+  // and skips.
+  if (request.args.files !== undefined) {
+    return {
+      ok: true,
+      output: conversations.flatMap((c) => c.files.map((f) => oversized(f)
+        ? `# skipped ${c.row.agentSessionId}/${f.name}: ${formatSize(f.size)}, past the `
+          + `${formatSize(MAX_HISTORY_FILE_BYTES)} a file is handed out at`
+        : `${c.row.agentSessionId}/${f.name}`)).join('\n'),
+    }
+  }
+  if (wanted === '') return { ok: true, output: renderHistory(workspaceId, conversations) }
+  const [{ row, files }] = conversations
+  const name = request.args.file
+  if (name !== undefined) {
+    const file = files.find((f) => f.name === name)
+    return file === undefined
+      ? { ok: false, error: `${row.agentSessionId} has no file '${name}'` }
+      : { ok: true, body: historyFiles([file]), contentType: 'application/octet-stream', workspaceId }
+  }
+  // opencode's history is its database, which the script turns into JSONL.
+  const database = files.find((f) => f.sqlite === true)
+  if (database !== undefined) {
+    return {
+      ok: true,
+      body: historyFiles([database]),
+      contentType: 'application/vnd.sqlite3',
+      workspaceId,
+      conversationId: row.agentSessionId,
+    }
+  }
+  if (!files.some((f) => f.name.endsWith('.jsonl'))) {
+    return { ok: false, error: `${row.agentSessionId} has no transcript on the host yet` }
+  }
+  return { ok: true, body: historyTranscripts(files), contentType: 'application/x-ndjson', workspaceId }
+}
+
+function renderHistory(workspaceId: string, conversations: HistoryConversation[]): string {
+  const short = workspaceId.slice(0, 8)
+  if (conversations.length === 0) return `${short} has no recorded conversations.`
+  const rows = conversations.map(({ row, files }) => {
+    const last = Math.max(0, row.lastActiveAt?.getTime() ?? 0, ...files.map((f) => f.mtimeMs))
+    return [
+      row.agentSessionId,
+      row.tool,
+      row.mode,
+      row.active ? 'yes' : 'no',
+      row.model ?? '',
+      last > 0 ? new Date(last).toISOString().slice(0, 16).replace('T', ' ') : '',
+      String(files.length),
+      formatSize(files.reduce((n, f) => n + f.size, 0)),
+      flatten(row.firstPrompt ?? '', 50),
+    ]
+  })
+  const header = ['CONVERSATION', 'TOOL', 'MODE', 'ACTIVE', 'MODEL', 'LAST ACTIVE (UTC)', 'FILES', 'SIZE', 'OPENING']
+  const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)))
+  const line = (cells: string[]): string =>
+    cells.map((c, i) => i === cells.length - 1 ? c : c.padEnd(widths[i])).join('  ').trimEnd()
+  return [
+    `Conversations of ${short}, first held first:`,
+    '',
+    line(header),
+    ...rows.map(line),
+    '',
+    `Print one's transcripts: yaac-mama history ${short} <conversation>`,
+    `Save every file:         yaac-mama history ${short} [<conversation>] -o <dir>`,
+    ...(conversations.some((c) => c.files.some(oversized))
+      ? [`Files over ${formatSize(MAX_HISTORY_FILE_BYTES)} are not handed out; -o names those it skips.`]
+      : []),
+  ].join('\n')
 }
 
 /**

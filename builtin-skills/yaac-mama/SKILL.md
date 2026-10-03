@@ -1,6 +1,6 @@
 ---
 name: yaac-mama
-description: Ask the yaac server running this workspace to list the project's workspaces, start a sibling workspace with a prompt (now, or queued to start when a workspace stops), edit a queued workspace's prompt or settings, retitle a workspace, stop a workspace (a sibling, or this one), file workspaces into named groups, or fetch another workspace's branches into this checkout — via the in-workspace `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac workspace (or "session"), queue a follow-up to run after this one (or change one already queued), farm a task out to a parallel one, see what else is running, rename/retitle a workspace, stop/shut down/wind down a workspace or this one when its work is done, organize workspaces into groups, or read what another workspace committed (its branches, log, diffs), running or stopped.
+description: Ask the yaac server running this workspace to list the project's workspaces, start a sibling workspace with a prompt (now, or queued to start when a workspace stops), edit a queued workspace's prompt or settings, retitle a workspace, stop a workspace (a sibling, or this one), file workspaces into named groups, or fetch another workspace's branches into this checkout — via the in-workspace `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac workspace (or "session"), queue a follow-up to run after this one (or change one already queued), farm a task out to a parallel one, see what else is running, rename/retitle a workspace, stop/shut down/wind down a workspace or this one when its work is done, organize workspaces into groups, read what another workspace committed (its branches, log, diffs), or read another workspace's agent conversations (full session transcripts, subagents included), running or stopped.
 ---
 
 You are running **inside a yaac workspace**. The `yaac-mama` command (already on
@@ -21,6 +21,9 @@ yaac-mama group create "<name>"
 yaac-mama group move <workspace> ["<group>"]       # omit the group to ungroup
 yaac-mama models                                  # tools/models available
 yaac-mama fetch <workspace>                       # its branches, into your git
+yaac-mama history <workspace>                     # its conversations
+yaac-mama history <workspace> <conversation>      # one's transcripts, to stdout
+yaac-mama history <workspace> [<conversation>] -o <dir>   # every file, into <dir>
 yaac-mama --help
 ```
 
@@ -149,6 +152,36 @@ pass — the server resolves who is calling and answers for that project only.
   its uncommitted changes, stash or config. Run it from inside this
   checkout. Fetching again replaces that workspace's refs; nothing is ever
   written to the other workspace.
+
+- **`history <workspace>`** — read another workspace's agent conversations,
+  running or stopped, as the tools themselves wrote them. Nothing is written
+  to the other workspace.
+  - With no conversation it **lists** them: the conversation id, tool, mode
+    (`tui` or `acp`), whether its agent is running (for a stopped workspace:
+    was, when it stopped), model, last activity, how many files it left and
+    their size, and its opening message.
+  - **`history <workspace> <conversation>`** prints its JSONL transcripts to
+    stdout, the main one first and then each subagent's (a claude subagent's
+    transcript, a codex `spawn_agent` child or fork). The conversation is its
+    id from the listing or a unique prefix. Pipe it to `jq`, `grep` or a file.
+    Lines are the tool's own format: claude, codex and pi each write
+    different JSON.
+  - **`-o <dir>`** saves every file instead, of the one conversation or of
+    all of them, as `<dir>/<conversation>/…`, and prints the paths written.
+    That adds what a transcript only points at (claude's saved tool results
+    under `<conversation>/tool-results/`) and, for an `acp` conversation,
+    yaac's verbatim record of it as `acpd.jsonl`.
+  - opencode keeps a workspace's history in one SQLite database. Each opencode
+    conversation hands out a copy of it as `opencode.db`, which `yaac-mama`
+    turns into JSONL with `python3`: one line per message
+    (`{"session", "type", "seq", "time", "data"}`), the conversation first,
+    then each subagent's session (under `subagents/` with `-o`). The copy
+    holds every opencode conversation of that workspace; query it with
+    Python's `sqlite3` module for anything else. On a containerized workspace it is
+    the checkpoint opencode's pod refreshes every five minutes and at stop,
+    so a running one's newest turns may be missing.
+  - A running agent may be mid-write, so the last line of a live transcript
+    can be cut short.
 
 ## What actually happens on `create`
 

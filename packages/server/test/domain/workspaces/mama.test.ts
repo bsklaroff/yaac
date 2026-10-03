@@ -35,7 +35,8 @@ import { _clearListActiveInflightForTests } from '#domain/workspaces/list'
 import { runMamaCommand, type MamaCaller } from '#domain/workspaces/mama'
 import { queueWorkspace } from '#domain/workspaces/queued-workspaces'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
-import { workspaceDir } from '@yaac/shared/project-paths'
+import { agentHistoryDir, opencodeCheckpointDir, workspaceDir } from '@yaac/shared/project-paths'
+import { recordAgentSessions } from '#db/agent-session-store'
 import { git } from '@yaac/test-utils/git'
 import { buildPeerReader } from '@yaac/test-utils/peer-reader'
 import { setPeerReaderEntry } from '#domain/git/peer-bundle'
@@ -88,7 +89,7 @@ const output = async (
 ): Promise<string> => {
   const outcome = await run(command, body, args)
   if (!outcome.ok) throw new Error(`expected ok, got: ${outcome.error}`)
-  if (!('output' in outcome)) throw new Error('expected text, got a bundle')
+  if (!('output' in outcome)) throw new Error('expected text, got a file')
   return outcome.output
 }
 
@@ -690,13 +691,82 @@ describe('runMamaCommand', () => {
       const tip = (await git(checkout, ['rev-parse', 'HEAD'])).trim()
 
       const outcome = await run('fetch', '', { workspace: 'sibling' })
-      if (!outcome.ok || !('bundle' in outcome)) throw new Error(`expected a bundle, got ${JSON.stringify(outcome)}`)
+      if (!outcome.ok || !('body' in outcome)) throw new Error(`expected a bundle, got ${JSON.stringify(outcome)}`)
       expect(outcome.workspaceId).toBe('sibling-workspace')
-      expect(outcome.bundle.toString('latin1')).toContain(`${tip} refs/heads/agent/sibling\n${tip} HEAD\n`)
+      expect(outcome.contentType).toBe('application/x-git-bundle')
+      expect(Buffer.from(await new Response(outcome.body).arrayBuffer()).toString('latin1')).toContain(`${tip} refs/heads/agent/sibling\n${tip} HEAD\n`)
 
       expect(await run('fetch', '', { workspace: 'foreign-workspace' }))
         .toEqual({ ok: false, error: 'no workspace \'foreign-workspace\' in proj' })
       expect(await run('fetch')).toEqual({ ok: false, error: 'fetch needs a workspace id' })
+    })
+  })
+
+  describe('history', () => {
+    /** The file an outcome carries. */
+    const file = async (outcome: Awaited<ReturnType<typeof run>>): Promise<Buffer> => {
+      if (!outcome.ok || !('body' in outcome)) throw new Error(`expected a file, got ${JSON.stringify(outcome)}`)
+      return Buffer.from(await new Response(outcome.body).arrayBuffer())
+    }
+
+    it('lists a stopped sibling\'s conversations, prints one\'s transcripts, and hands out each file', async () => {
+      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'sibling-workspace' })
+      await recordWorkspaceCreated({ projectSlug: 'other', workspaceId: 'foreign-workspace' })
+      await recordAgentSessions('proj', 'sibling-workspace', [
+        { tool: 'claude', agentSessionId: 'claude-conv', firstPrompt: 'write the report' },
+        { tool: 'opencode', agentSessionId: 'opencode-conv' },
+      ])
+      const conversations = path.join(agentHistoryDir('proj', 'sibling-workspace', 'claude'), '-workspace')
+      await fs.mkdir(path.join(conversations, 'claude-conv', 'subagents'), { recursive: true })
+      // The main transcript lacks its final newline, as a live one can.
+      await fs.writeFile(path.join(conversations, 'claude-conv.jsonl'), '{"main":1}')
+      await fs.writeFile(path.join(conversations, 'claude-conv', 'subagents', 'agent-a.jsonl'), '{"sub":1}\n')
+      await fs.mkdir(opencodeCheckpointDir('proj', 'sibling-workspace'), { recursive: true })
+      await fs.writeFile(path.join(opencodeCheckpointDir('proj', 'sibling-workspace'), 'opencode.db'), 'SQLite')
+
+      const listing = await output('history', '', { workspace: 'sibling' })
+      expect(listing).toContain('Conversations of sibling-')
+      expect(listing).toMatch(/claude-conv\s+claude\s+tui\s+yes\s+.*\s2\s+20 B\s+write the report/)
+      expect(listing).toMatch(/opencode-conv\s+opencode\s+tui\s+yes\s+.*\s1\s+6 B/)
+
+      // A prefix names a conversation; its transcripts print main first.
+      expect((await file(await run('history', '', { workspace: 'sibling', conversation: 'claude' }))).toString())
+        .toBe('{"main":1}\n{"sub":1}\n')
+
+      // Every file is named under its conversation, and handed out as is.
+      expect(await output('history', '', { workspace: 'sibling', files: '1' }))
+        .toBe('claude-conv/claude-conv.jsonl\nclaude-conv/claude-conv/subagents/agent-a.jsonl\nopencode-conv/opencode.db')
+      expect((await file(await run('history', '', {
+        workspace: 'sibling', conversation: 'claude-conv', file: 'claude-conv.jsonl',
+      }))).toString()).toBe('{"main":1}')
+      expect(await run('history', '', { workspace: 'sibling', conversation: 'claude-conv', file: '../secret' }))
+        .toEqual({ ok: false, error: 'claude-conv has no file \'../secret\'' })
+
+      // A file past the cap is never sent: a sparse one costs the workspace
+      // nothing, while the caller would write every byte.
+      const huge = path.join(conversations, 'claude-conv', 'subagents', 'agent-huge.jsonl')
+      await fs.writeFile(huge, '')
+      await fs.truncate(huge, 300 * 1024 * 1024)
+      const tooLarge = 'agent-huge.jsonl is 300.0 MB, past the 256.0 MB a file is handed out at'
+      expect(await output('history', '', { workspace: 'sibling' })).toContain('Files over 256.0 MB are not handed out')
+      expect(await output('history', '', { workspace: 'sibling', conversation: 'claude-conv', files: '1' }))
+        .toContain('# skipped claude-conv/claude-conv/subagents/agent-huge.jsonl: 300.0 MB, past the 256.0 MB')
+      expect(await run('history', '', { workspace: 'sibling', conversation: 'claude-conv' }))
+        .toEqual({ ok: false, error: `claude-conv/subagents/${tooLarge}` })
+      expect(await run('history', '', {
+        workspace: 'sibling', conversation: 'claude-conv', file: 'claude-conv/subagents/agent-huge.jsonl',
+      })).toEqual({ ok: false, error: `claude-conv/subagents/${tooLarge}` })
+
+      // An opencode conversation's history is the workspace's database, named
+      // as such for the script to convert, with the conversation's full id.
+      const opencode = await run('history', '', { workspace: 'sibling', conversation: 'opencode' })
+      expect(opencode).toMatchObject({ contentType: 'application/vnd.sqlite3', conversationId: 'opencode-conv' })
+      expect((await file(opencode)).toString()).toBe('SQLite')
+      expect(await run('history', '', { workspace: 'sibling', conversation: 'nope' }))
+        .toEqual({ ok: false, error: 'no conversation \'nope\' in sibling- (see: yaac-mama history sibling-)' })
+      expect(await run('history', '', { workspace: 'foreign-workspace' }))
+        .toEqual({ ok: false, error: 'no workspace \'foreign-workspace\' in proj' })
+      expect(await run('history')).toEqual({ ok: false, error: 'history needs a workspace id' })
     })
   })
 

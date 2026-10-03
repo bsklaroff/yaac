@@ -2,16 +2,22 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
+import { DatabaseSync } from 'node:sqlite'
+import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import {
   setDataDir,
+  acpLogDir,
   agentHistoryDir,
   claudeDir,
   codexDir,
+  opencodeCheckpointDir,
   projectDir,
 } from '@yaac/shared/project-paths'
 import {
   claudeProjectDirName,
+  conversationFiles,
   locateTranscript,
+  openConversationFile,
   resolveProjectPath,
   sessionIdFromPiLog,
   sessionTranscriptPath,
@@ -196,6 +202,188 @@ describe('transcripts', () => {
     it('refuses a path with no project-relative form', () => {
       expect(toProjectRelative({ slug, dir: '/tmp', rel: 'elsewhere.jsonl' })).toBeNull()
       expect(toProjectRelative({ slug, dir: claudeDir('other'), rel: 't.jsonl' })).toBeNull()
+    })
+  })
+
+  describe('conversationFiles', () => {
+    /** A codex rollout whose first line names its parent thread, if any. */
+    async function rollout(dir: string, thread: string, parent?: string): Promise<void> {
+      const source = parent === undefined ? 'cli' : { subagent: { thread_spawn: { parent_thread_id: parent } } }
+      await write(path.join(dir, '2026', '10', '03', `rollout-2026-10-03T12-00-00-${thread}.jsonl`),
+        `${JSON.stringify({ type: 'session_meta', payload: { id: thread, source } })}\n`)
+    }
+
+    it('gathers each tool\'s transcripts with their subagents, and acpd\'s record of a chat conversation', async () => {
+      // claude: the recorded path is stale (converge moved the file), so the
+      // conversation is found by id in the history, with its companion dir.
+      const claudeHistory = path.join(agentHistoryDir(slug, wt, 'claude'), '-workspace')
+      await write(path.join(claudeHistory, 'cl.jsonl'))
+      await write(path.join(claudeHistory, 'cl', 'subagents', 'agent-b.jsonl'))
+      await write(path.join(claudeHistory, 'cl', 'subagents', 'agent-a.jsonl'))
+      await write(path.join(claudeHistory, 'cl', 'tool-results', 'r1.txt'), 'out')
+      // A link the workspace planted is not handed out.
+      await fs.symlink(await write(path.join(tmpDir, 'secret')), path.join(claudeHistory, 'cl', 'subagents', 'agent-z.jsonl'))
+      await write(path.join(acpLogDir(slug, wt), 'cl.jsonl'))
+
+      // codex: a child and a grandchild in the history, a fork still in the
+      // shared home, and an unrelated thread.
+      const codexHistory = agentHistoryDir(slug, wt, 'codex')
+      await rollout(codexHistory, 'cx')
+      await rollout(codexHistory, 'cx-child', 'cx')
+      await rollout(codexHistory, 'cx-grandchild', 'cx-child')
+      await rollout(path.join(codexDir(slug), 'sessions'), 'cx-fork', 'cx')
+      await rollout(codexHistory, 'unrelated')
+
+      await write(path.join(agentHistoryDir(slug, wt, 'pi'), '100_pi.jsonl'))
+      await write(path.join(acpLogDir(slug, wt), 'oc.jsonl'))
+      // The workspace's opencode database, beside a backup the pod's stop
+      // cut short.
+      await write(path.join(opencodeCheckpointDir(slug, wt), 'opencode.db'))
+      await write(path.join(opencodeCheckpointDir(slug, wt), '.tmp-12.db'))
+
+      const files = await conversationFiles(slug, wt, [
+        { tool: 'claude', mode: 'acp', agentSessionId: 'cl', transcriptPath: 'claude/projects/-home-x/cl.jsonl' },
+        { tool: 'codex', mode: 'tui', agentSessionId: 'cx' },
+        { tool: 'pi', mode: 'tui', agentSessionId: 'pi' },
+        { tool: 'opencode', mode: 'acp', agentSessionId: 'oc' },
+        { tool: 'opencode', mode: 'tui', agentSessionId: 'oc-tui' },
+      ])
+      const names = (id: string): string[] => (files.get(id) ?? []).map((f) => f.name)
+
+      expect(names('cl')).toEqual([
+        'cl.jsonl', 'cl/subagents/agent-a.jsonl', 'cl/subagents/agent-b.jsonl', 'cl/tool-results/r1.txt', 'acpd.jsonl',
+      ])
+      expect(files.get('cl')?.[0].file).toEqual({ slug, dir: agentHistoryDir(slug, wt, 'claude'), rel: '-workspace/cl.jsonl' })
+      expect(names('cx')).toEqual([
+        'rollout-2026-10-03T12-00-00-cx.jsonl',
+        'rollout-2026-10-03T12-00-00-cx-child.jsonl',
+        'rollout-2026-10-03T12-00-00-cx-fork.jsonl',
+        'rollout-2026-10-03T12-00-00-cx-grandchild.jsonl',
+      ])
+      expect(names('pi')).toEqual(['100_pi.jsonl'])
+      // Every opencode conversation is in the one database.
+      expect(names('oc')).toEqual(['opencode.db', 'acpd.jsonl'])
+      expect(files.get('oc-tui')).toMatchObject([{
+        name: 'opencode.db',
+        file: { slug, dir: opencodeCheckpointDir(slug, wt), rel: 'opencode.db' },
+        sqlite: true,
+        size: 3,
+      }])
+    })
+
+    it('follows no link inside the history, even on a host where the project dir is fair game', async () => {
+      // Containerless reads are otherwise confined to the project dir, which
+      // holds siblings' checkouts.
+      installFakeWorkspaceDriver({ kind: 'containerless' })
+      try {
+        const sibling = path.join(projectDir(slug), 'workspaces', 'wt-b')
+        await write(path.join(sibling, '.git', 'config'))
+        const conversations = path.join(agentHistoryDir(slug, wt, 'claude'), '-workspace')
+        await write(path.join(conversations, 'cl.jsonl'))
+        await fs.symlink(sibling, path.join(conversations, 'cl'))
+        await write(path.join(conversations, 'cl2.jsonl'))
+        await fs.mkdir(path.join(conversations, 'cl2'))
+        await fs.symlink(sibling, path.join(conversations, 'cl2', 'subagents'))
+
+        const files = await conversationFiles(slug, wt, [
+          { tool: 'claude', mode: 'tui', agentSessionId: 'cl' },
+          { tool: 'claude', mode: 'tui', agentSessionId: 'cl2' },
+        ])
+        expect(files.get('cl')?.map((f) => f.name)).toEqual(['cl.jsonl'])
+        expect(files.get('cl2')?.map((f) => f.name)).toEqual(['cl2.jsonl'])
+      } finally {
+        resetWorkspaceDriver()
+      }
+    })
+  })
+
+  describe('openConversationFile', () => {
+    afterEach(() => { resetWorkspaceDriver() })
+
+    const dir = (): string => opencodeCheckpointDir(slug, wt)
+    const database = { name: 'opencode.db', file: { slug, dir: '', rel: 'opencode.db' }, sqlite: true, size: 0, mtimeMs: 0 }
+    const opened = async (): Promise<Buffer | null> => {
+      const fh = await openConversationFile({ ...database, file: { ...database.file, dir: dir() } })
+      try {
+        return fh === null ? null : await fh.readFile()
+      } finally {
+        await fh?.close()
+      }
+    }
+    /** The messages a database holds, read from a copy of its bytes. */
+    const messages = async (bytes: Buffer | null): Promise<string[]> => {
+      const copy = path.join(tmpDir, `copy-${String(Math.random())}.db`)
+      await fs.writeFile(copy, bytes ?? Buffer.alloc(0))
+      const db = new DatabaseSync(`file:${copy}?immutable=1`)
+      try {
+        return db.prepare('select text from message').all().map((r) => String(r.text))
+      } finally {
+        db.close()
+      }
+    }
+
+    it('copies a live host database through SQLite, and a sandboxed one byte for byte', async () => {
+      await fs.mkdir(dir(), { recursive: true })
+      // A writer still holds it, so its newest rows are only in the WAL.
+      const live = new DatabaseSync(path.join(dir(), 'opencode.db'))
+      try {
+        live.exec('pragma journal_mode = wal; pragma wal_autocheckpoint = 0')
+        live.exec('create table message (text text); insert into message values (\'hello\')')
+        const sidecars = (await fs.readdir(dir())).sort()
+        expect(sidecars).toEqual(['opencode.db', 'opencode.db-shm', 'opencode.db-wal'])
+        await expect(messages(await fs.readFile(path.join(dir(), 'opencode.db')))).rejects.toThrow(/no such table/)
+
+        installFakeWorkspaceDriver({ kind: 'containerless' })
+        expect(await messages(await opened())).toEqual(['hello'])
+        // Nothing is left beside the database.
+        expect((await fs.readdir(dir())).sort()).toEqual(sidecars)
+
+        // A sandboxed workspace's database is never opened with SQLite: its
+        // bytes are handed out as they are.
+        resetWorkspaceDriver()
+        expect(await opened()).toEqual(await fs.readFile(path.join(dir(), 'opencode.db')))
+      } finally {
+        live.close()
+      }
+
+      // Closed cleanly, a host database is its bytes too.
+      installFakeWorkspaceDriver({ kind: 'containerless' })
+      expect(await fs.readdir(dir())).toEqual(['opencode.db'])
+      expect(await messages(await opened())).toEqual(['hello'])
+      expect(await fs.readdir(dir())).toEqual(['opencode.db'])
+    })
+
+    it('opens no live database that is, or sits beside, a link', async () => {
+      // SQLite opens by path, so the path is checked first.
+      installFakeWorkspaceDriver({ kind: 'containerless' })
+      const elsewhere = path.join(tmpDir, 'elsewhere')
+      await fs.mkdir(elsewhere)
+      const other = new DatabaseSync(path.join(elsewhere, 'cookies.db'))
+      try {
+        other.exec('pragma journal_mode = wal; create table message (text text)')
+        await fs.mkdir(dir(), { recursive: true })
+        await fs.symlink(path.join(elsewhere, 'cookies.db'), path.join(dir(), 'opencode.db'))
+        await fs.symlink(path.join(elsewhere, 'cookies.db-wal'), path.join(dir(), 'opencode.db-wal'))
+        expect(await opened()).toBeNull()
+
+        // A real database with a linked sidecar is refused too.
+        await fs.rm(path.join(dir(), 'opencode.db'))
+        await fs.copyFile(path.join(elsewhere, 'cookies.db'), path.join(dir(), 'opencode.db'))
+        expect(await opened()).toBeNull()
+      } finally {
+        other.close()
+      }
+    })
+
+    it('opens any other file as it is, and none that is gone or reached through a link', async () => {
+      const plain = (rel: string) => ({ name: rel, file: { slug, dir: dir(), rel }, size: 0, mtimeMs: 0 })
+      await write(path.join(dir(), 'notes.txt'), 'plain')
+      const fh = await openConversationFile(plain('notes.txt'))
+      expect((await fh?.readFile())?.toString()).toBe('plain')
+      await fh?.close()
+      expect(await openConversationFile(plain('missing'))).toBeNull()
+      await fs.symlink(path.join(dir(), 'notes.txt'), path.join(dir(), 'linked.txt'))
+      expect(await openConversationFile(plain('linked.txt'))).toBeNull()
     })
   })
 
