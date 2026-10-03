@@ -34,7 +34,7 @@ beforeEach(async () => {
       return Promise.resolve(handleFixture({ workspaceId: spec.workspaceId, projectSlug: 'proj' }))
     },
   })
-  await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'parent', baseBranch: 'dev', permissionMode: 'auto' })
+  await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'parent', baseBranch: 'dev', permissionMode: 'auto', mode: 'tui' })
 })
 
 afterEach(async () => {
@@ -80,7 +80,7 @@ describe('stopWorkspace', () => {
     expect(deregistered).toEqual(['parent'])
 
     // Both direct children start from their stored settings: the parent's
-    // branch and posture.
+    // branch, posture and UI mode.
     await vi.waitFor(async () => {
       expect(await getQueuedWorkspaceRow(child.id)).toBeUndefined()
       expect(await getQueuedWorkspaceRow(sibling.id)).toBeUndefined()
@@ -88,7 +88,7 @@ describe('stopWorkspace', () => {
     expect(launched).toHaveLength(2)
     const becameId = await launchedWith('child')
     expect(await launchedWith('sibling')).toBeDefined()
-    expect(await getWorkspaceRow('proj', becameId!)).toMatchObject({ baseBranch: 'dev', permissionMode: 'auto' })
+    expect(await getWorkspaceRow('proj', becameId!)).toMatchObject({ baseBranch: 'dev', permissionMode: 'auto', mode: 'tui' })
     // The grandchild now waits for the child's new workspace to stop.
     const waiting = await getQueuedWorkspaceRow(grandchild.id)
     expect(waiting).toMatchObject({ parentWorkspaceId: becameId })

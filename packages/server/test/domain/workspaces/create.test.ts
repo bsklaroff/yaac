@@ -296,7 +296,7 @@ describe('createWorkspace', () => {
     await fs.mkdir(path.dirname(models), { recursive: true })
     await fs.writeFile(models, JSON.stringify({ providers: { ollama: { baseUrl: 'http://localhost:11434/v1' } } }))
 
-    await createWorkspace('demo', { tool: 'claude' })
+    await createWorkspace('demo', { mode: 'tui', tool: 'claude' })
 
     expect(env()).toEqual(expect.arrayContaining([
       'YAAC_OPENCODE_KEY_OPENROUTER=sk-or-oc', 'YAAC_PI_KEY_OPENROUTER=sk-or-pi',
@@ -316,12 +316,12 @@ describe('createWorkspace', () => {
     await setProjectEnvVar('demo', { name: 'TZ', value: 'Europe/Paris' })
     await setProjectEnvVar('demo', { name: 'OPENCODE_CONFIG', value: '/workspace/opencode.json' })
     await setProjectEnvVar('demo', { name: 'OPENCODE_DISABLE_AUTOUPDATE', value: '1' })
-    await createWorkspace('demo', {})
+    await createWorkspace('demo', { mode: 'tui' })
     expect(env().filter((e) => e.startsWith('TZ='))).toEqual(['TZ=Europe/Paris'])
     expect(env().filter((e) => e.startsWith('OPENCODE_CONFIG='))).toEqual(['OPENCODE_CONFIG=/workspace/opencode.json'])
 
     await setProjectEnvVar('demo', { name: 'PI_SKIP_VERSION_CHECK', value: '0' })
-    await expect(createWorkspace('demo', {})).rejects.toThrow(
+    await expect(createWorkspace('demo', { mode: 'tui' })).rejects.toThrow(
       "the project's environment variable PI_SKIP_VERSION_CHECK conflicts with the value yaac sets for it",
     )
     // Refused before anything launched.

@@ -137,9 +137,10 @@ describe('queueWorkspace', () => {
       prompt: 'follow up',
     })
 
-    // A different tool takes the create defaults for that tool instead.
+    // A different tool takes the create defaults for that tool instead,
+    // bar the UI mode, which is not tool-specific.
     const other = await queueWorkspace('proj', { parent: 'parent', prompt: 'x', tool: 'claude' }, 'user')
-    expect(other).toMatchObject({ tool: 'claude', model: FALLBACK_MODELS.claude, branch: 'develop' })
+    expect(other).toMatchObject({ tool: 'claude', model: FALLBACK_MODELS.claude, mode: 'tui', branch: 'develop' })
     // A prefix names the parent like an id does.
     expect(other.parentWorkspaceId).toBe('parent-1')
   })

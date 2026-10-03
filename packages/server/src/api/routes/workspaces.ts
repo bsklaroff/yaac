@@ -257,8 +257,8 @@ export const workspaceApp = new Hono()
     zv('json', z.object({
       // An id or its unique prefix.
       workspaceId: z.string().min(1),
-      // No `mode`: a workspace restarts in the mode it had, read from
-      // `agent_sessions`. No `gitUser`: the commit identity is a server
+      // No `mode`: a workspace restarts in the mode it had, read from its
+      // first conversation, else its row. No `gitUser`: the commit identity is a server
       // setting.
     })),
     async (c) => {

@@ -34,7 +34,8 @@ export interface WorkspaceCreateOptions {
 
 /**
  * `yaac workspace create`: ask the server to create the workspace, then
- * attach the terminal to its tmux session.
+ * attach the terminal to its tmux session, or for an `acp` workspace point
+ * at the web app.
  *
  * Options left unset are omitted so the server fills them from what the
  * project last used, matching the web app's form and the prewarmed spare.
