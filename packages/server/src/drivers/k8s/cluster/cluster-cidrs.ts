@@ -33,7 +33,11 @@ interface RawIpPool {
   spec?: { cidr?: string; disabled?: boolean }
 }
 
-/** Cached: node addresses change only when the cluster is rebuilt. */
+/**
+ * Cached. Node addresses change when nodes join or leave; node-sync re-reads
+ * them (`nodeIpBlocks({ fresh: true })`) each resync, which refreshes the
+ * cache for every other caller.
+ */
 let nodeCidrCache: string[] | null = null
 let podCidrCache: string[] | null = null
 
@@ -47,10 +51,11 @@ export function resetClusterCidrCache(): void {
  * Every node's InternalIP (and Calico tunnel address) as a `/32`: how the
  * policies admit traffic from the host netns (netd's Envoy, kubelet probes,
  * containerd pulls). Throws if none resolve, since an empty set would
- * silently cut off all workspace egress.
+ * silently cut off all workspace egress. Cached; `fresh` re-reads the
+ * nodes, which `reconcileNodeSet` does to notice a node joining.
  */
-export async function nodeIpBlocks(): Promise<string[]> {
-  if (nodeCidrCache) return nodeCidrCache
+export async function nodeIpBlocks(opts: { fresh?: boolean } = {}): Promise<string[]> {
+  if (nodeCidrCache && !opts.fresh) return nodeCidrCache
   const items = await listObjects<RawNode>('v1', 'Node')
   const cidrs = items
     .flatMap((n) => n.status?.addresses ?? [])

@@ -1,0 +1,20 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+
+region = "us-west-2"
+
+# Who may reach the EKS API's public endpoint: this machine's address.
+api_public_access_cidrs = ["203.0.113.7/32"]
+
+tailscale_oauth_client_id     = "k..."
+tailscale_oauth_client_secret = "tskey-client-..."
+
+# Optional: a one-off, user-owned (untagged) auth key that joins the install
+# host to your tailnet. Leave it out to run `sudo tailscale up` yourself.
+# tailscale_auth_key = "tskey-auth-..."
+
+# Cluster admins besides whoever runs tofu, e.g. so the EKS console can show
+# workloads to you. The account root is written arn:aws:iam::<account>:root.
+# admin_principal_arns = ["arn:aws:iam::123456789012:root"]
+
+# architecture = "arm64"      # Graviton nodes and host
+# yaac_ref     = "main"       # the branch the host builds

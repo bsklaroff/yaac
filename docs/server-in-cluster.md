@@ -179,11 +179,12 @@ Kubernetes unions):
   meaning every node's InternalIP plus its Calico tunnel address
   (`nodeIpBlocks()`, which the proxy's ingress policy uses too). Two flows
   arrive this way: the kubelet's readiness probe, and on kind the
-  forwarder. Install applies it, and **the server re-applies it on every
-  start** from the live node list, since nodes can be added to a running
-  install and a pod rescheduled onto a new node must admit that node's
-  kubelet or it never becomes Ready. This is the only policy the server
-  renders for itself; it never changes its own Deployment.
+  forwarder. Install applies it, and **the server re-applies it whenever
+  the node set changes** (and once after every start), along with the
+  other node-address policies, since nodes can be added to a running install
+  and a pod rescheduled onto a new node must admit that node's kubelet or
+  it never becomes Ready. This is the only policy the server renders for
+  itself; it never changes its own Deployment.
 - `yaac-server-ingress-front`, the **fronting half**: the fronting's peers.
   Under `--tailnet` that is the operator's proxy pod, selected by its
   namespace and its `tailscale.com/parent-resource*` labels. On kind it is

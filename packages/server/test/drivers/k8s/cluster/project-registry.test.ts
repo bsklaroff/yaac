@@ -53,6 +53,7 @@ import {
 import {
   LABEL_NODE_WRITE,
   LABEL_REGISTRY_DATA_DIR_HASH,
+  LABEL_REGISTRY_SERVES,
   PROJECT_REGISTRY_PORT,
   PROJECT_REGISTRY_STORAGE_SIZE,
   REGISTRY_APP_LABEL,
@@ -357,10 +358,21 @@ describe('ensureProjectRegistry', () => {
     }])
 
     const svc = appliedKind('Service') as {
-      spec: { ports: Array<{ port: number; targetPort: number }> }
+      spec: { selector: Record<string, string>; ports: Array<{ port: number; targetPort: number }> }
     }
     expect(svc.spec.ports[0].port).toBe(PROJECT_REGISTRY_PORT)
     expect(svc.spec.ports[0].targetPort).toBe(PROJECT_REGISTRY_PORT)
+    // Only the serving pod is an endpoint: the hosts writer and GC pods share
+    // the registry's other labels (so its policies cover them), and a dial
+    // routed to one would hang.
+    expect(svc.spec.selector)
+      .toEqual({ app: REGISTRY_APP_LABEL, 'yaac.project-id': ID, [LABEL_REGISTRY_SERVES]: 'true' })
+    const serving = (appliedKind('Deployment') as {
+      spec: { template: { metadata: { labels: Record<string, string> } } }
+    }).spec.template.metadata.labels
+    expect(serving).toMatchObject(svc.spec.selector)
+    const writer = appliedKind('Pod') as { metadata: { labels: Record<string, string> } }
+    expect(writer.metadata.labels).not.toHaveProperty(LABEL_REGISTRY_SERVES)
   })
 
   it('fences the registry to its own project: sessions in, nothing out', async () => {
@@ -596,6 +608,8 @@ describe('reconcileProjectRegistryGc', () => {
     expect(script).toContain(
       '/bin/registry garbage-collect --delete-untagged=true /etc/docker/registry/config.yml')
     expect(pod.metadata.labels['yaac.node-write']).toBe('gc')
+    // A minutes-long collect must not be a Service endpoint.
+    expect(pod.metadata.labels).not.toHaveProperty(LABEL_REGISTRY_SERVES)
 
     // Retention runs first, untagging old content-hash generations so the
     // GC can reclaim them.

@@ -29,6 +29,16 @@ export const LABEL_REGISTRY_DATA_DIR_HASH = 'yaac.registry-data-dir-hash'
 /** Label on the one-shot node-write pods (value: the pod's kind), so the
  *  stray sweep never selects the registry's own pod. */
 export const LABEL_NODE_WRITE = 'yaac.node-write'
+
+/**
+ * On a registry's serving pods only, and in its Service's selector. The
+ * one-shot pods (hosts.toml writers, the GC run) share the registry's other
+ * labels, so its policies cover them, but must never become Service
+ * endpoints: none listens on the port, so a share of every dial to the
+ * registry would land on one and hang.
+ */
+export const LABEL_REGISTRY_SERVES = 'yaac.registry-serves'
+const REGISTRY_SERVES = { [LABEL_REGISTRY_SERVES]: 'true' }
 /** In-cluster port. Not 443/80, which netd redirects to the proxy. */
 export const PROJECT_REGISTRY_PORT = 5000
 
@@ -171,7 +181,7 @@ function buildProjectRegistryDeploymentManifest(
       strategy: { type: 'Recreate' },
       selector: { matchLabels: registryPodSelector(project.id) },
       template: {
-        metadata: { labels: registryLabels(project) },
+        metadata: { labels: { ...registryLabels(project), ...REGISTRY_SERVES } },
         spec: {
           automountServiceAccountToken: false,
           enableServiceLinks: false,
@@ -231,7 +241,7 @@ function buildProjectRegistryServiceManifest(project: ProjectRef): Record<string
       type: 'ClusterIP',
       // Workspaces resolve the ClusterIP via the proxy's DNS; the node's
       // hosts.toml is rewritten with it on every ensure.
-      selector: registryPodSelector(project.id),
+      selector: { ...registryPodSelector(project.id), ...REGISTRY_SERVES },
       // port == targetPort, since the policies name the pod port.
       ports: [{
         name: 'registry',
@@ -490,6 +500,8 @@ export async function writeNodeHostsToml(opts: {
   name: string
   namespace: string
   labels: Record<string, string>
+  /** Write only on these nodes (by name); every node when absent. */
+  onNodes?: ReadonlySet<string>
 }): Promise<void> {
   const content = `[host."http://${opts.clusterIp}:${String(opts.port)}"]`
   const runs = await runOnEachNode({
@@ -497,7 +509,7 @@ export async function writeNodeHostsToml(opts: {
     namespace: opts.namespace,
     labels: opts.labels,
     timeoutMs: 120_000,
-    pod: () => ({
+    pod: (node) => opts.onNodes && !opts.onNodes.has(node.name) ? null : ({
       image: opts.image,
       command: ['sh', '-c', `printf '%s\\n' '${content}' > /host-certs/hosts.toml`],
       container: { volumeMounts: [{ name: 'certs', mountPath: '/host-certs' }] },
@@ -551,16 +563,50 @@ export async function ensureProjectRegistry(project: ProjectRef): Promise<void> 
     })
     const clusterIp = await projectRegistryClusterIp(project.id)
     if (!clusterIp) throw new Error(`project registry Service ${name} has no ClusterIP yet`)
-    await writeNodeHostsToml({
-      host: projectRegistryHost(project.id),
-      clusterIp,
-      port: PROJECT_REGISTRY_PORT,
-      image: imageRef,
-      name: `${name}-hosts`,
-      namespace: ns,
-      // The registry labels put the pods under its deny-all egress policy.
-      labels: { ...registryLabels(project), [LABEL_NODE_WRITE]: 'hosts' },
-    })
+    await writeRegistryHosts(project, clusterIp)
+  })
+}
+
+/**
+ * Re-render the project registry's node-address ingress, for a node set
+ * that changed after `ensureProjectRegistry` ran (`reconcileNodeSet`). A
+ * no-op for a project with no registry.
+ */
+export async function applyProjectRegistryIngress(project: ProjectRef, nodeCidrs: string[]): Promise<void> {
+  await registryEnsureMutex(project.id, async () => {
+    if (!await projectRegistryClusterIp(project.id)) return
+    await applyObject(buildRegistryIngressNetworkPolicyManifest(project, nodeCidrs))
+  })
+}
+
+/**
+ * Point these nodes' containerd at the project's registry, for nodes that
+ * joined after `ensureProjectRegistry` ran (`reconcileNodeSet`). A no-op for
+ * a project with no registry.
+ */
+export async function writeProjectRegistryHosts(project: ProjectRef, onNodes: ReadonlySet<string>): Promise<void> {
+  await registryEnsureMutex(project.id, async () => {
+    const clusterIp = await projectRegistryClusterIp(project.id)
+    if (clusterIp) await writeRegistryHosts(project, clusterIp, onNodes)
+  })
+}
+
+/** Point every node's (or these nodes') containerd at the project's registry. */
+async function writeRegistryHosts(
+  project: ProjectRef,
+  clusterIp: string,
+  onNodes?: ReadonlySet<string>,
+): Promise<void> {
+  await writeNodeHostsToml({
+    host: projectRegistryHost(project.id),
+    clusterIp,
+    port: PROJECT_REGISTRY_PORT,
+    image: await ensureRegistryImage(),
+    name: `${projectRegistryName(project.id)}-hosts`,
+    namespace: k8sNamespace(),
+    // The registry labels put the pods under its deny-all egress policy.
+    labels: { ...registryLabels(project), [LABEL_NODE_WRITE]: 'hosts' },
+    onNodes,
   })
 }
 

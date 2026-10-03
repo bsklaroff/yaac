@@ -40,7 +40,7 @@ import {
   mainRegistryPvcName,
 } from '#drivers/k8s/cluster/main-registry'
 import { ROLE_BUILDER } from '#drivers/k8s/substrate/proxy-constants'
-import { REGISTRY_UPSTREAM_IMAGE } from '#drivers/k8s/cluster/project-registry'
+import { LABEL_REGISTRY_SERVES, REGISTRY_UPSTREAM_IMAGE } from '#drivers/k8s/cluster/project-registry'
 import { ENVOY_UPSTREAM_IMAGE } from '#drivers/k8s/cluster/netd'
 import { registryAuthFile } from '#drivers/k8s/container'
 import { _resetRegistryGrantKeyForTests, mintRegistryGrant } from '#drivers/k8s/container/registry-grant'
@@ -264,9 +264,15 @@ describe('ensureMainRegistry', () => {
     expect(svc.metadata).toMatchObject({ name: 'yaac-registry', namespace: 'yaac' })
     expect(svc.spec).toMatchObject({
       type: 'ClusterIP',
-      selector: { app: MAIN_REGISTRY_APP_LABEL },
       ports: [{ name: 'registry', port: 5000, targetPort: 5000, protocol: 'TCP' }],
     })
+    // Only the serving pod is an endpoint: a writer pod shares the registry's
+    // other labels, and a dial routed to it would hang.
+    expect(svc.spec.selector).toEqual({ app: MAIN_REGISTRY_APP_LABEL, [LABEL_REGISTRY_SERVES]: 'true' })
+    const servingLabels = (appliedOfKind('Deployment').spec as {
+      template: { metadata: { labels: Record<string, string> } }
+    }).template.metadata.labels
+    expect(servingLabels).toMatchObject(svc.spec.selector as Record<string, string>)
 
     // Rolled out before the node write, so the writer pod's image is
     // already on the node.
@@ -285,6 +291,7 @@ describe('ensureMainRegistry', () => {
       volumes: Array<{ hostPath: { path: string } }>
     }
     expect(writer.metadata.labels?.[LABEL_MAIN_REGISTRY_NODE_WRITE]).toBe('hosts')
+    expect(writer.metadata.labels).not.toHaveProperty(LABEL_REGISTRY_SERVES)
     expect(podSpec.nodeName).toBe('yaac-control-plane')
     // nodeName skips the scheduler, but a NoExecute taint still evicts, so
     // without this a tainted node would never learn how to pull.

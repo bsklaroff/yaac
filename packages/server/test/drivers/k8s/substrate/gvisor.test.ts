@@ -22,6 +22,7 @@ import {
   GVISOR_INSTALLER_READY_FILE,
   GVISOR_INSTALL_LOCK_TIMEOUT_S,
   GVISOR_NODE_VERSION_LABEL,
+  GVISOR_PENDING_TAINT,
   GVISOR_RELEASE_BASE,
   GVISOR_VERSION,
   NODE_BIN_DIR,
@@ -248,6 +249,68 @@ describe('gvisorInstallScript', () => {
       `trap 'rm -f "$ready"; if [ "$held" = 1 ]; then rm -rf "$lock"; fi' EXIT`)
     expect(script).toMatch(
       /while :; do\n {2}take_lock\n {2}tune_pass\n {2}install_pass\n {2}drop_lock\n {2}: > "\$ready"/)
+  })
+
+  it('lifts the pending taint after labelling the node, removing only that taint', async () => {
+    // A pool that registers nodes with the taint keeps pods off them until
+    // the runtime is in, so the label must land before the taint goes.
+    const script = gvisorInstallScript()
+    expect(script).toContain('  label_node\n  untaint_node\n}')
+
+    // Run the real functions against a stub apiserver: curl with no -X reads
+    // the node, and a JSON patch succeeds only if its `test` names the index
+    // that really holds the taint.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-untaint-'))
+    try {
+      await fs.writeFile(path.join(dir, 'token'), 't')
+      const untaint = async (taints: string[], opts: { getFails?: boolean } = {}): Promise<string> => {
+        // Pretty-printed, as the apiserver answers curl.
+        const node = JSON.stringify({ spec: { taints: taints.map((key) => ({ key, effect: 'NoSchedule' })) } }, null, 2)
+        const program = [
+          'set -eu',
+          `sa='${dir}'`,
+          'curl() {',
+          '  case "$*" in',
+          '    *"-X PATCH"*) echo "PATCH $*" >> "$sa/patches"',
+          `      i=$(printf %s "$*" | sed -n 's|.*/spec/taints/\\([0-9]*\\)/key.*|\\1|p')`,
+          '      [ "$i" = "$TAINT_AT" ] || return 22 ;;',
+          `    *) [ -z "\${GET_FAILS:-}" ] || return 22; printf '%s' '${node}' ;;`,
+          '  esac',
+          '}',
+          shellFunction(script, 'node_api') + '\n}',
+          shellFunction(script, 'untaint_node') + '\n}',
+          'untaint_node',
+        ].join('\n')
+        const at = taints.indexOf(GVISOR_PENDING_TAINT)
+        await fs.rm(path.join(dir, 'patches'), { force: true })
+        const { stdout } = await runSh('sh', ['-c', program], {
+          env: {
+            ...process.env,
+            TAINT_AT: String(at),
+            GET_FAILS: opts.getFails ? '1' : '',
+            NODE_NAME: 'n1',
+            KUBERNETES_SERVICE_HOST: '10.96.0.1',
+            KUBERNETES_SERVICE_PORT: '443',
+          },
+        })
+        return stdout + await fs.readFile(path.join(dir, 'patches'), 'utf8').catch(() => '')
+      }
+
+      const lifted = await untaint(['node.kubernetes.io/not-ready', GVISOR_PENDING_TAINT])
+      expect(lifted).toContain(`removed the ${GVISOR_PENDING_TAINT} taint`)
+      expect(lifted.match(/^PATCH /gm)).toHaveLength(2)
+      expect(lifted).toContain(
+        `{"op":"test","path":"/spec/taints/1/key","value":"${GVISOR_PENDING_TAINT}"},{"op":"remove","path":"/spec/taints/1"}`)
+
+      // A node without it is left alone.
+      expect(await untaint(['node.kubernetes.io/not-ready'])).not.toContain('PATCH')
+
+      // A read that fails is not "no taint": the pass fails, so the pod
+      // restarts and retries rather than sleeping a whole interval.
+      await expect(untaint([GVISOR_PENDING_TAINT], { getFails: true })).rejects.toThrow()
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true })
+    }
   })
 
   it('tunes the node before installing the runtime, and never restarts containerd for it', () => {

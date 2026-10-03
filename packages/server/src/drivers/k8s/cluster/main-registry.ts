@@ -50,6 +50,7 @@ import {
 } from '#drivers/k8s/container'
 import {
   LABEL_REGISTRY_DATA_DIR_HASH,
+  LABEL_REGISTRY_SERVES,
   REGISTRY_UPSTREAM_IMAGE,
   writeNodeHostsToml,
 } from './project-registry'
@@ -162,7 +163,7 @@ function buildMainRegistryDeploymentManifest(publicKeyDer: Buffer): Record<strin
       selector: { matchLabels: selector },
       template: {
         metadata: {
-          labels: mainRegistryLabels(),
+          labels: { ...mainRegistryLabels(), [LABEL_REGISTRY_SERVES]: 'true' },
           annotations: { 'yaac.registry-gate-config': gateConfigHash },
         },
         spec: {
@@ -231,7 +232,7 @@ function buildMainRegistryServiceManifest(): Record<string, unknown> {
     },
     spec: {
       type: 'ClusterIP',
-      selector: { app: MAIN_REGISTRY_APP_LABEL },
+      selector: { app: MAIN_REGISTRY_APP_LABEL, [LABEL_REGISTRY_SERVES]: 'true' },
       ports: [{
         name: 'registry',
         port: REGISTRY_SERVICE_PORT,
@@ -253,10 +254,8 @@ function buildMainRegistryServiceManifest(): Record<string, unknown> {
  * Workspace pods are not allowed. What builders may write is limited by the
  * write gate, not this policy.
  *
- * Node addresses are rendered at ensure time, so a node address change
- * (e.g. VM restart) denies node pulls until `yaac cluster install` runs
- * again. The server's boot ensure does not catch this; `cluster check`
- * does.
+ * Node addresses are rendered at ensure time and again by
+ * `applyMainRegistryIngress` whenever the node set changes.
  */
 function buildMainRegistryIngressNetworkPolicyManifest(
   nodeCidrs: string[],
@@ -372,7 +371,9 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
   await applyObject(buildMainRegistryGateConfigMapManifest(publicKeyDer))
   await applyObject(buildMainRegistryDeploymentManifest(publicKeyDer))
   await applyObject(buildMainRegistryServiceManifest())
-  await applyObject(buildMainRegistryIngressNetworkPolicyManifest(await nodeIpBlocks()))
+  // Before the rollout, which needs the kubelet's probes admitted.
+  const nodeCidrs = await nodeIpBlocks()
+  await applyObject(buildMainRegistryIngressNetworkPolicyManifest(nodeCidrs))
   const rollout = { workload: `deployment/${REGISTRY_SERVICE_NAME}`, namespace: REGISTRY_NAMESPACE }
   const rolledOut = await waitForRollout({ ...rollout, timeoutMs: ROLLOUT_STALL_MS })
     .then(() => true, () => false)
@@ -388,8 +389,35 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
         + 'no default StorageClass to bind it.',
     })
   }
-  // Point every node's containerd at the registry's live ClusterIP. The
-  // writer pods run the upstream `registry:2` ref the rollout put there.
+  await writeMainRegistryHosts()
+
+  // Rolled out is not reachable: a cached port-forward may be stale, and
+  // after a node restart the pod can read Available before its network is
+  // up. So drop the cached endpoint and wait for an actual dial.
+  invalidateRegistryEndpoint()
+  const deadline = Date.now() + REACHABLE_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    if (await registryReachable()) return
+    await new Promise((r) => setTimeout(r, 1_000))
+  }
+  throw new Error(`In-cluster registry ${registryHost()} did not become reachable from the server`)
+}
+
+/**
+ * Re-render the registry's node-address ingress, for a node set that
+ * changed after `ensureMainRegistry` ran (`reconcileNodeSet`).
+ */
+export async function applyMainRegistryIngress(nodeCidrs: string[]): Promise<void> {
+  await applyObject(buildMainRegistryIngressNetworkPolicyManifest(nodeCidrs))
+}
+
+/**
+ * Point every node's (or these nodes') containerd at the registry's live
+ * ClusterIP, since nodes do not use cluster DNS. The writer pods run the
+ * upstream `registry:2` ref, which a node can pull before it can reach
+ * this registry. `reconcileNodeSet` calls it for nodes that joined later.
+ */
+export async function writeMainRegistryHosts(onNodes?: ReadonlySet<string>): Promise<void> {
   const svc = await readObject<{ spec?: { clusterIP?: string } }>({
     apiVersion: 'v1', kind: 'Service', name: REGISTRY_SERVICE_NAME, namespace: REGISTRY_NAMESPACE,
   })
@@ -405,18 +433,8 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
     name: `${REGISTRY_SERVICE_NAME}-hosts`,
     namespace: REGISTRY_NAMESPACE,
     labels: { ...mainRegistryLabels(), [LABEL_MAIN_REGISTRY_NODE_WRITE]: 'hosts' },
+    onNodes,
   })
-
-  // Rolled out is not reachable: a cached port-forward may be stale, and
-  // after a node restart the pod can read Available before its network is
-  // up. So drop the cached endpoint and wait for an actual dial.
-  invalidateRegistryEndpoint()
-  const deadline = Date.now() + REACHABLE_TIMEOUT_MS
-  while (Date.now() < deadline) {
-    if (await registryReachable()) return
-    await new Promise((r) => setTimeout(r, 1_000))
-  }
-  throw new Error(`In-cluster registry ${registryHost()} did not become reachable from the server`)
 }
 
 /**

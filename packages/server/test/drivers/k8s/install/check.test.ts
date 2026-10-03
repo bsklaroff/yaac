@@ -221,6 +221,8 @@ let serviceIps: Record<string, string> = {}
 let proxyEgressPolicy = true
 /** `ready/desired` for the two datapath DaemonSets; null for not deployed. */
 let datapathReady: Record<'calico-node' | 'yaac-netd', string | null> = { 'calico-node': '1/1', 'yaac-netd': '1/1' }
+/** Where calico-node runs: a manifest install's kube-system, or the Tigera operator's calico-system. */
+let calicoNamespace = 'kube-system'
 /** netd's pods' container statuses; a case edits. */
 let netdContainerStatuses: unknown[] = []
 /** Pod name -> what its log says, over the healthy defaults; a case edits. */
@@ -314,7 +316,7 @@ function seedCluster(): void {
     ...Object.entries(datapathReady).flatMap(([name, ratio]) => {
       if (ratio === null) return []
       const [ready, desired] = ratio.split('/').map(Number)
-      return [daemonSet(name, name === 'calico-node' ? 'kube-system' : NS, {
+      return [daemonSet(name, name === 'calico-node' ? calicoNamespace : NS, {
         numberReady: ready, desiredNumberScheduled: desired,
       })]
     }),
@@ -467,6 +469,7 @@ describe('runClusterCheck', () => {
     serviceIps = {}
     proxyEgressPolicy = true
     datapathReady = { 'calico-node': '1/1', 'yaac-netd': '1/1' }
+    calicoNamespace = 'kube-system'
     netdContainerStatuses = []
     podLogs = {}
     vi.spyOn(fakeCluster.podLogs, 'get').mockImplementation(logsFor)
@@ -1099,6 +1102,12 @@ describe('runClusterCheck', () => {
       status: 'pass',
       detail: expect.stringContaining('policy enforced, egress redirected') as string,
     })
+
+    // The Tigera operator (EKS, AKS) runs calico-node in calico-system.
+    calicoNamespace = 'calico-system'
+    stage()
+    const operator = await check()
+    expect(byName(operator.results, 'datapath')).toMatchObject({ status: 'pass' })
   })
 
   it('fails veth-source when the redirect resolves no workload veth, though netd is Ready', async () => {
@@ -1150,7 +1159,7 @@ describe('runClusterCheck', () => {
     expect(ok).toBe(false)
     const datapath = byName(results, 'datapath')
     expect(datapath).toMatchObject({ status: 'fail' })
-    expect(datapath?.detail).toContain('NetworkPolicy is not being enforced')
+    expect(datapath?.detail).toContain('calico-node is 0/1 ready — NetworkPolicy is not being enforced')
   })
 
   it('names the unhealthy netd container when the DaemonSet is not ready', async () => {

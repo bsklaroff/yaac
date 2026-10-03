@@ -23,16 +23,11 @@ const cacheStub = {
 vi.mock('#drivers/k8s/substrate', async (importOriginal) => ({
   ...await importOriginal<typeof substrateModule>(),
   ClusterCache: class { constructor() { return cacheStub } },
+  invalidateRelayAddr: vi.fn(),
   setActiveClusterCache: vi.fn((c: unknown) => { order.push(c ? 'cache.registered' : 'cache.cleared') }),
 }))
-const policy = (name: string, cidrs: string[]) => ({
-  apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', metadata: { name, namespace: 'yaac' }, cidrs,
-})
 vi.mock('#drivers/k8s/cluster', () => ({
-  buildServerIngressNpManifest: vi.fn((cidrs: string[]) => policy('server-ingress', cidrs)),
-  buildProxyEgressNpManifest: vi.fn((cidrs: string[]) => policy('proxy-egress', cidrs)),
   ensureMainRegistry: vi.fn().mockResolvedValue(undefined),
-  nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.2/32', '10.89.0.3/32']),
   gcOrphanProjectRegistries: vi.fn().mockResolvedValue(undefined),
 }))
 vi.mock('#drivers/k8s/images', () => ({
@@ -55,7 +50,6 @@ vi.mock('#drivers/k8s/workspaces', () => ({
 import { startK8sDriver, stopK8sDriver, releaseK8sDriver, triggerFor } from '#drivers/k8s/lifecycle'
 import { deleteLeakedBuilderPods } from '#drivers/k8s/images'
 import { ensureMainRegistry } from '#drivers/k8s/cluster'
-import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 import { _resetWorkspaceListChangedForTests, onWorkspaceListChanged } from '#notify'
 
 let reported: { triggers: string[]; workspaces: RuntimeHandle[][] }
@@ -73,7 +67,6 @@ beforeEach(() => {
   order.length = 0
   onDeltaHandlers.length = 0
   reported = { triggers: [], workspaces: [] }
-  fakeCluster.intercept((call) => { if (call.name === 'server-ingress') order.push('wall') })
 })
 
 afterEach(() => {
@@ -93,29 +86,6 @@ describe('startK8sDriver', () => {
     expect(order.indexOf('cache.start')).toBeLessThan(order.indexOf('attached'))
     // An upgrade rolls the proxy at once rather than at the next launch.
     expect(order).toContain('proxy.roll')
-  })
-
-  it('re-renders the node half of the server wall from the live node list', async () => {
-    await startK8sDriver(sinks())
-
-    // Install applies this policy too, but nodes can be added later: a server
-    // pod moved to a new node must admit that node's kubelet or never go
-    // Ready. It is part of the bootstrap, so before recovery.
-    expect(fakeCluster.get('NetworkPolicy', 'server-ingress')).toMatchObject({
-      cidrs: ['10.89.0.2/32', '10.89.0.3/32'],
-    })
-    expect(order.indexOf('wall')).toBeLessThan(order.indexOf('recover'))
-  })
-
-  it('applies the proxy\'s egress policy on every start, not only on a proxy bootstrap', async () => {
-    await startK8sDriver(sinks())
-
-    // The proxy bootstrap is skipped when the proxy is current, so this
-    // policy is applied here too; without it a `*` allowlist could reach the
-    // kind fronting's node port as the server's owner.
-    expect(fakeCluster.get('NetworkPolicy', 'proxy-egress')).toMatchObject({
-      cidrs: ['10.89.0.2/32', '10.89.0.3/32'],
-    })
   })
 
   it('reports the workspace set as handles, never as pods', async () => {
@@ -161,7 +131,6 @@ describe('startK8sDriver', () => {
     await startK8sDriver(sinks())
 
     expect(vi.mocked(ensureMainRegistry)).toHaveBeenCalled()
-    expect(order).toContain('wall')
   })
 })
 

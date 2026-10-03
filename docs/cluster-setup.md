@@ -325,8 +325,10 @@ host folder. The rest of the config (the containerd `config_path` patch,
 the kubelet swap patch, `disableDefaultCNI`) is cluster-wide.
 
 Host-side loops over the node list apply the kind node fixups and write
-both registries' `hosts.toml`. DaemonSets (the gVisor installer, Calico,
-netd) also cover nodes added later.
+both registries' `hosts.toml`. A node added later gets its `hosts.toml`
+and is admitted by the node-address policies through the server's
+node-sync (see "Bring your own cluster"); DaemonSets (the gVisor
+installer, Calico, netd) cover it on their own.
 
 Both registries store blobs on RWO PVCs. Under kind's default `standard`
 class (rancher local-path, `WaitForFirstConsumer`) the directory is on one
@@ -432,6 +434,32 @@ with them, then the runtime objects and `yaac.gvisor` node labels, which
 every install on the cluster shares. The two `Retain` volumes survive on
 purpose; it says how to remove them by install id.
 
+**A node that joins a running install is synced by the server.** Each
+node needs the registries' `hosts.toml` (or it cannot pull any yaac image,
+the gVisor installer's included) and its address in every policy that
+admits nodes (kubelet probes, containerd pulls, netd's Envoy). Install and
+the registries' ensures write both for the nodes that exist then. The
+reconcile pass's `node-sync` step re-reads the node list on every resync
+(60s). When the address set has changed it re-applies the node-address
+policies (all but the builder's egress policy, which every build re-applies
+anyway). Separately, it writes the main and project registries' `hosts.toml`
+once to each node, keyed by node name and uid, as soon as the node is
+Ready. Those writes run in the background and a failed node is retried on
+a later pass, so a node that cannot run pods never stalls the reconcile
+loop.
+
+**An autoscaled pool works with two hooks.** A node takes workspaces only
+once the gVisor installer has put the runtime on it and labelled it. So a
+pool that grows can register its nodes with the `yaac.gvisor/pending:NoSchedule`
+taint, which the installer removes after labelling the node. Declared to
+the cluster autoscaler as a startup taint (`--startup-taint`), it keeps the
+autoscaler from reading a node that is still installing as one that cannot
+fit the pending pod, and from scaling up again. Every workspace pod carries
+`cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, so scale-down
+removes only nodes with no running workspace. A pool that scales from zero
+also has to tell the autoscaler about the label and the node's ephemeral
+storage in its node template. `infra/aws-eks` does all of this.
+
 ### The CNI gate
 
 A byo cluster's Calico may be self-managed or provider-managed (GKE
@@ -505,8 +533,10 @@ Three environment variables cover what a foreign cluster does not expose:
   can override.
 
 All three are read at apply time, so changing one on a live cluster needs a
-re-run. kube-proxy pods are found by `k8s-app=kube-proxy` (kubeadm, EKS,
-kind) or `component=kube-proxy` (GKE, AKS).
+re-run. calico-node is found in `kube-system` (a manifest install) or
+`calico-system` (the Tigera operator, the usual install on EKS and AKS).
+kube-proxy pods are found by `k8s-app=kube-proxy` (kubeadm, EKS, kind) or
+`component=kube-proxy` (GKE, AKS).
 
 Out of scope: Cilium in any configuration, and policy for anyone else's
 workloads. Every yaac policy selects only yaac's own pods.
