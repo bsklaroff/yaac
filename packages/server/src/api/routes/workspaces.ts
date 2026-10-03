@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
-import { zv } from '#routes/validator'
+import { jsonBodyLimit, zv } from '#routes/validator'
 import { z } from 'zod'
 import {
   allowWorkspaceHost,
@@ -106,10 +106,7 @@ function mamaRoute(identifyCaller: (bearer: string, header: (name: string) => st
   return new Hono().post(
     '/mama',
     // Bounds what is parsed; the envelope below is far smaller.
-    bodyLimit({
-      maxSize: 64 * 1024,
-      onError: () => { throw new ServerError('TOO_LARGE', 'the yaac-mama request is too large') },
-    }),
+    jsonBodyLimit(64 * 1024, 'the yaac-mama request is too large'),
     zv('json', z.object({
       command: z.string().min(1).max(32),
       args: z.record(z.string(), z.string()).optional(),
@@ -579,10 +576,7 @@ export const workspaceApp = new Hono()
     '/:id/file',
     // Refuse oversized bodies before buffering. Twice the editable size
     // allows for JSON escaping; the domain enforces the exact limit.
-    bodyLimit({
-      maxSize: 2 * MAX_TEXT_FILE_BYTES + 64 * 1024,
-      onError: () => { throw new ServerError('TOO_LARGE', 'the file is over the editable size') },
-    }),
+    jsonBodyLimit(2 * MAX_TEXT_FILE_BYTES + 64 * 1024, 'the file is over the editable size'),
     zv('json', z.object({
       path: z.string().min(1),
       content: z.string(),

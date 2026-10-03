@@ -10,16 +10,23 @@ import type { StreamChild, StreamPty } from '#drivers/contract'
  * or tunnel is involved.
  */
 
-/** See `WorkspaceDriver.dialCtrl`. `spawn` already reports a failed start
- *  as an `error` event, as the contract requires. */
+/**
+ * See `WorkspaceDriver.dialCtrl`. `spawn` already reports a failed start
+ * as an `error` event, as the contract requires. A write that lands after
+ * the child died but before its `exit` is handled raises EPIPE on stdin,
+ * which would crash the server with no listener there; `exit` reports the
+ * closed stream.
+ */
 export function dialCtrlStream(jobName: string, argv: string[]): StreamChild {
   const paths = containerlessWorkspacePaths(jobName)
   const [cmd, ...args] = argv
-  return spawn(cmd, args, {
+  const child = spawn(cmd, args, {
     cwd: paths.workspaceDir,
     env: workspaceRunEnvironment(jobName),
     stdio: ['pipe', 'pipe', 'pipe'],
   })
+  child.stdin.on('error', () => { /* reported via exit */ })
+  return child
 }
 
 /** See `WorkspaceDriver.dialPty`. A local PTY. */

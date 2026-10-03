@@ -126,6 +126,9 @@ export function runHostWithInput(
         stderr,
       ))
     })
+    // A child that exits before reading raises EPIPE on stdin, which would
+    // crash the server with no listener; `close` reports the failure.
+    child.stdin?.on('error', () => { /* reported via close */ })
     child.stdin?.end(input)
   })
 }
