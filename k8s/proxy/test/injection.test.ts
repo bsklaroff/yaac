@@ -6,6 +6,8 @@ import {
   PLACEHOLDER_ACCESS_TOKEN as PH_ACCESS,
   PLACEHOLDER_API_KEY as PH_KEY,
   PLACEHOLDER_GH_TOKEN as PH_GH,
+  PLACEHOLDER_OPENCODE_API_KEY as PH_OC,
+  PLACEHOLDER_PI_API_KEY as PH_PI,
   PLACEHOLDER_REFRESH_TOKEN as PH_REFRESH,
   applyBodyInjections,
   applyInjections,
@@ -124,21 +126,41 @@ describe('buildDynamicRules', () => {
       .toBe(`token ${PH_GH}`)
   })
 
-  it('puts an opencode or pi key wherever its placeholder rides, on the host the server named', async () => {
+  it('puts an opencode or pi key wherever its own placeholder rides, on the host the server named', async () => {
     const objects = await load(
       {
-        'opencode.json': { kind: 'api-key', apiKey: 'sk-or', apiHost: 'openrouter.ai' },
-        'pi.json': { kind: 'api-key', apiKey: 'sk-ant', apiHost: 'api.anthropic.com' },
+        'opencode.json': { kind: 'api-key', apiKey: 'sk-or-oc', apiHost: 'openrouter.ai' },
+        'pi.json': { kind: 'api-key', apiKey: 'sk-or-pi', apiHost: 'openrouter.ai' },
       },
       { oc: { tool: 'opencode' }, pi: { tool: 'pi' } },
     )
-    expect(send(objects, 'openrouter.ai', { authorization: `Bearer ${PH_KEY}` }, 'oc').authorization).toBe('Bearer sk-or')
-    expect(send(objects, 'openrouter.ai', { authorization: PH_KEY }, 'oc').authorization).toBe(PH_KEY)
-    expect(send(objects, 'groq.com', { authorization: `Bearer ${PH_KEY}` }, 'oc').authorization).toBe(`Bearer ${PH_KEY}`)
+    // Both tools on one host with different keys: the placeholder picks the
+    // key, whichever tool the workspace was created for.
+    for (const ws of ['oc', 'pi']) {
+      expect(send(objects, 'openrouter.ai', { authorization: `Bearer ${PH_OC}` }, ws).authorization).toBe('Bearer sk-or-oc')
+      expect(send(objects, 'openrouter.ai', { authorization: `Bearer ${PH_PI}` }, ws).authorization).toBe('Bearer sk-or-pi')
+    }
+    expect(send(objects, 'openrouter.ai', { authorization: PH_OC }, 'oc').authorization).toBe(PH_OC)
+    expect(send(objects, 'groq.com', { authorization: `Bearer ${PH_OC}` }, 'oc').authorization).toBe(`Bearer ${PH_OC}`)
     // x-api-key wins when the placeholder is in both.
-    const both = send(objects, 'api.anthropic.com', { 'x-api-key': PH_KEY, authorization: `Bearer ${PH_KEY}` }, 'pi')
-    expect(both['x-api-key']).toBe('sk-ant')
-    expect(both.authorization).toBe(`Bearer ${PH_KEY}`)
+    const both = send(objects, 'openrouter.ai', { 'x-api-key': PH_PI, authorization: `Bearer ${PH_PI}` }, 'pi')
+    expect(both['x-api-key']).toBe('sk-or-pi')
+    expect(both.authorization).toBe(`Bearer ${PH_PI}`)
+    // A workspace launched before the per-tool placeholders sends the shared
+    // one; pi's swap is applied last, so it is the key that lands.
+    expect(send(objects, 'openrouter.ai', { authorization: `Bearer ${PH_KEY}` }, 'pi').authorization).toBe('Bearer sk-or-pi')
+  })
+
+  it('gives claude\'s shared placeholder claude\'s key on a host pi also uses', async () => {
+    const objects = await load(
+      {
+        'claude.json': { kind: 'api-key', apiKey: 'sk-ant-claude' },
+        'pi.json': { kind: 'api-key', apiKey: 'sk-ant-pi', apiHost: 'api.anthropic.com' },
+      },
+      { pi: { tool: 'pi' } },
+    )
+    expect(send(objects, 'api.anthropic.com', { 'x-api-key': PH_KEY }, 'pi')['x-api-key']).toBe('sk-ant-claude')
+    expect(send(objects, 'api.anthropic.com', { 'x-api-key': PH_PI }, 'pi')['x-api-key']).toBe('sk-ant-pi')
   })
 
   it('swaps nothing for a tool with no credential configured', async () => {
@@ -147,8 +169,9 @@ describe('buildDynamicRules', () => {
     expect(send(none, 'api.anthropic.com', { authorization: `Bearer ${PH_ACCESS}` }).authorization)
       .toBe(`Bearer ${PH_ACCESS}`)
     for (const ws of ['oc', 'pi']) {
-      expect(send(none, 'openrouter.ai', { authorization: `Bearer ${PH_KEY}` }, ws).authorization)
-        .toBe(`Bearer ${PH_KEY}`)
+      for (const ph of [PH_OC, PH_PI]) {
+        expect(send(none, 'openrouter.ai', { authorization: `Bearer ${ph}` }, ws).authorization).toBe(`Bearer ${ph}`)
+      }
     }
   })
 })

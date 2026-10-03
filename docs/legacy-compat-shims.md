@@ -102,3 +102,32 @@ script it launched with until it is recreated.
 - **Safe to remove when:** no workspace launched before the relay can still
   be running, i.e. once every install has been upgraded past it and its
   older workspaces stopped.
+
+## The shared api-key placeholder for opencode and pi
+
+opencode and pi each have their own api-key placeholder
+(`yaac-ph-opencode-api-key`, `yaac-ph-pi-api-key`), so the proxy can tell from
+the request whose key to swap in. Workspaces launched before that carry the
+shared `yaac-ph-api-key` in the provider's own variable (`OPENROUTER_API_KEY`
+and the like), and `yaac auth fake` used to store it as the fake opencode and
+pi key.
+
+- **What it reads.** `buildDynamicRules` in `k8s/proxy/injection.ts` still
+  swaps `PLACEHOLDER_API_KEY` for the opencode and pi keys on their provider
+  hosts. claude and codex send that same placeholder from every workspace,
+  so where opencode's or pi's provider host is `api.anthropic.com` or
+  `api.openai.com` the request is ambiguous; the claude and codex swaps run
+  after it and win. An old opencode or pi workspace on those hosts therefore
+  gets claude's or codex's key while either is signed in by api key.
+  `holdsRealCredential` in
+  `packages/server/src/domain/projects/fake-auth.ts` counts a stored
+  `yaac-ph-api-key` as a fake, so `yaac auth fake` re-seeds over it.
+- **What breaks silently if it goes too early.** opencode and pi in a k8s
+  workspace started before the change send a placeholder nothing swaps, and
+  every request gets a 401 until the workspace restarts. In yaac-in-yaac, an
+  inner install whose fakes predate the change gets the same 401 from the
+  outer proxy, and `yaac auth fake` refuses to re-seed, calling the old
+  fake a real credential.
+- **When it is safe to remove.** Once no workspace pod is older than the
+  change (`kubectl get pods -n yaac` ages, or every workspace restarted), and
+  every inner install has re-run `yaac auth fake` for opencode and pi.

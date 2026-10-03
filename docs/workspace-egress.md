@@ -255,6 +255,16 @@ The access-token swap covers `mcp-proxy.anthropic.com` as well as
 there, and a placeholder sent there would get a 401 that makes claude force a
 refresh on every start.
 
+**opencode and pi keys.** Each tool reads its key from a workspace variable of
+its own, `YAAC_<TOOL>_KEY_<PROVIDER>`, which its config in the project's tool
+home names (an `OPENCODE_CONFIG` file for opencode, a `models.json` entry for
+pi; `ensureToolApiKeyConfig`), ahead of the provider's own variable. So the
+key reaches the tool however it is started, and the two tools can hold
+different keys for one provider, unaffected by claude's or codex's
+`ANTHROPIC_API_KEY`/`OPENAI_API_KEY` or a project's own provider variable. Each
+carries its own placeholder too, so the proxy picks the key by which
+placeholder a request sends, not by the workspace's tool.
+
 **RBAC.** RBAC cannot scope `create` by name, so the server pre-creates the
 three outputs empty and the proxy's Role grants `update`/`patch` on exactly
 those names. Its reads are `get`/`list`/`watch` on Secrets and ConfigMaps

@@ -26,6 +26,8 @@ const CHATGPT_HOST = 'chatgpt.com'
 export const PLACEHOLDER_ACCESS_TOKEN = 'yaac-ph-access'
 export const PLACEHOLDER_REFRESH_TOKEN = 'yaac-ph-refresh'
 export const PLACEHOLDER_API_KEY = 'yaac-ph-api-key'
+export const PLACEHOLDER_OPENCODE_API_KEY = 'yaac-ph-opencode-api-key'
+export const PLACEHOLDER_PI_API_KEY = 'yaac-ph-pi-api-key'
 export const PLACEHOLDER_GH_TOKEN = 'yaac-ph-gh-token'
 
 export type Injection =
@@ -312,22 +314,25 @@ function headerValue(
 }
 
 /**
- * Swap the API-key placeholder for the real key on an opencode/pi request.
- * Providers differ on the header (`x-api-key` or `Authorization: Bearer`),
- * so the key goes wherever the placeholder is. A request without the
- * placeholder is left alone.
+ * Swap a tool's API-key placeholder for the real key on an opencode/pi
+ * request. Providers differ on the header (`x-api-key` or `Authorization:
+ * Bearer`), so the key goes wherever the placeholder is. A request without
+ * one of `placeholders` is left alone.
  */
 function swapApiKeyHeader(
   rules: InjectionRule[],
   reqHeaders: http.IncomingHttpHeaders,
+  placeholders: string[],
   apiKey: string,
 ): void {
-  if (headerValue(reqHeaders, 'x-api-key') === PLACEHOLDER_API_KEY) {
+  const apiKeyHeader = headerValue(reqHeaders, 'x-api-key')
+  const auth = headerValue(reqHeaders, 'authorization')
+  if (apiKeyHeader !== undefined && placeholders.includes(apiKeyHeader)) {
     rules.push({
       pathPattern: '*',
       injections: [{ action: 'set_header', name: 'x-api-key', value: apiKey }],
     })
-  } else if (headerValue(reqHeaders, 'authorization') === 'Bearer ' + PLACEHOLDER_API_KEY) {
+  } else if (auth !== undefined && placeholders.some((ph) => auth === 'Bearer ' + ph)) {
     rules.push({
       pathPattern: '*',
       injections: [{ action: 'set_header', name: 'Authorization', value: 'Bearer ' + apiKey }],
@@ -382,6 +387,24 @@ export function buildDynamicRules(
     }
   }
 
+  // opencode / pi: API key on the credential's provider host, chosen by the
+  // tool's own placeholder. The shared `PLACEHOLDER_API_KEY` is still
+  // accepted for workspaces launched before the per-tool ones
+  // (docs/legacy-compat-shims.md). Ahead of the claude and codex swaps, so
+  // where a provider host is theirs, their swap of that placeholder lands.
+  {
+    const creds = objects.credentials.opencode
+    if (creds && hostname === creds.apiHost) {
+      swapApiKeyHeader(rules, reqHeaders, [PLACEHOLDER_OPENCODE_API_KEY, PLACEHOLDER_API_KEY], creds.apiKey)
+    }
+  }
+  {
+    const creds = objects.credentials.pi
+    if (creds && hostname === creds.apiHost) {
+      swapApiKeyHeader(rules, reqHeaders, [PLACEHOLDER_PI_API_KEY, PLACEHOLDER_API_KEY], creds.apiKey)
+    }
+  }
+
   if (hostname === ANTHROPIC_API_HOST || hostname === CLAUDE_MCP_PROXY_HOST) {
     const creds = objects.credentials.claude
     const incomingApiKey = headerValue(reqHeaders, 'x-api-key')
@@ -432,20 +455,6 @@ export function buildDynamicRules(
           value: 'Bearer ' + (objects.codexOAuthBundle() ?? creds.bundle).accessToken,
         }],
       })
-    }
-  }
-
-  // opencode / pi: API key on the credential's provider host.
-  {
-    const creds = objects.credentials.opencode
-    if (creds && hostname === creds.apiHost) {
-      swapApiKeyHeader(rules, reqHeaders, creds.apiKey)
-    }
-  }
-  {
-    const creds = objects.credentials.pi
-    if (creds && hostname === creds.apiHost) {
-      swapApiKeyHeader(rules, reqHeaders, creds.apiKey)
     }
   }
 

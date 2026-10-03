@@ -408,13 +408,13 @@ ${header}
 
 /**
  * One api-key provider row for an api-key-only agent tool (opencode / pi).
- * Drives the credential picker (label), the pod env placeholder (envVar), the
+ * Drives the credential picker (label), pi's key fallback (envVar), the
  * proxy key swap (apiHost), and — pi only — the launch model (defaultModel).
  */
 export interface ToolProviderInfo {
   id: string
   label: string
-  /** Env var the tool reads the api key from; seeded with the placeholder. */
+  /** Env var the tool reads the api key from when its config names none. */
   envVar: string
   /** Bare hostname the egress proxy swaps the placeholder key on. */
   apiHost: string

@@ -68,6 +68,7 @@ export {
 // rollout names and lineage also group a workspace's history.
 export { codexRolloutParent, codexRolloutThreadId, getCodexPermissionMode } from './codex'
 export { ensureAgentReporters } from './agent-reporters'
+export { ensureToolApiKeyConfig } from './tool-api-keys'
 // How the server reads and writes the project dirs an agent can write too.
 export { openSandboxDir, readSandboxFile, type SandboxFile } from './sandbox-fs'
 export {

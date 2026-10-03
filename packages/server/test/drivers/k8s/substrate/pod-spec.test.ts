@@ -202,9 +202,11 @@ describe('buildPodJobManifest', () => {
     expect(build().spec.template.spec.priorityClassName).toBe('yaac-workspace')
   })
 
-  it('parses env entries, preserving equals signs inside values', () => {
+  it('parses env entries, preserving equals signs inside values and rendering each name once', () => {
     // Split at the first `=`; a bare name or trailing `=` is an empty value.
-    const c = build({ env: ['YAAC_SESSION_ID=abcd', 'X=a=b', 'BARE', 'EMPTY='] })
+    // A server-side apply refuses a repeated name, so an identical repeat is
+    // dropped and a conflicting one refused before it gets that far.
+    const c = build({ env: ['YAAC_SESSION_ID=abcd', 'X=a=b', 'BARE', 'EMPTY=', 'X=a=b'] })
       .spec.template.spec.containers[0]
     expect(c.env).toEqual([
       { name: 'YAAC_SESSION_ID', value: 'abcd' },
@@ -212,6 +214,8 @@ describe('buildPodJobManifest', () => {
       { name: 'BARE', value: '' },
       { name: 'EMPTY', value: '' },
     ])
+    expect(() => build({ env: ['OPENROUTER_API_KEY=a', 'OPENROUTER_API_KEY=b'] }))
+      .toThrow('environment variable OPENROUTER_API_KEY is set to two different values')
   })
 
   it('renders hostPath mounts with the Directory default, File, and "" types', () => {

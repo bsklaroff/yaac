@@ -11,6 +11,8 @@ import {
   PLACEHOLDER_REFRESH_TOKEN,
   PLACEHOLDER_API_KEY,
   PLACEHOLDER_GH_TOKEN,
+  PLACEHOLDER_OPENCODE_API_KEY,
+  PLACEHOLDER_PI_API_KEY,
 } from '@yaac/shared/tool-auth'
 import { getGitCredentialByName, insertGitCredential } from '#db'
 import { ServerError } from '@yaac/shared/errors'
@@ -74,16 +76,17 @@ async function seedFakeGithubCredential(): Promise<void> {
 }
 
 /**
- * Store a fake OpenCode OpenRouter api-key credential. The key is the proxy
- * placeholder (`yaac-ph-api-key`); the inner proxy's swap leaves it
- * unchanged, and the outer proxy swaps in the real key on `openrouter.ai`.
+ * Store a fake OpenCode OpenRouter api-key credential. The key is opencode's
+ * proxy placeholder (`yaac-ph-opencode-api-key`); the inner proxy's swap
+ * leaves it unchanged, and the outer proxy swaps in the real key on
+ * `openrouter.ai`.
  */
 async function seedFakeOpencodeOpenrouter(): Promise<void> {
   await saveOpencodeCredentialsFile({
     kind: 'api-key',
     provider: 'openrouter',
     savedAt: new Date().toISOString(),
-    apiKey: PLACEHOLDER_API_KEY,
+    apiKey: PLACEHOLDER_OPENCODE_API_KEY,
   })
 }
 
@@ -93,7 +96,7 @@ async function seedFakePiOpenrouter(): Promise<void> {
     kind: 'api-key',
     provider: 'openrouter',
     savedAt: new Date().toISOString(),
-    apiKey: PLACEHOLDER_API_KEY,
+    apiKey: PLACEHOLDER_PI_API_KEY,
   })
 }
 
@@ -110,13 +113,15 @@ async function holdsRealCredential(kind: FakeAuthKind): Promise<boolean> {
         ? !isPlaceholderClaudeBundle(creds.claudeAiOauth)
         : creds.apiKey !== PLACEHOLDER_API_KEY
     }
+    // The shared placeholder is what these fakes stored before each tool
+    // had its own (docs/legacy-compat-shims.md).
     case 'opencode-openrouter': {
       const creds = await loadOpencodeCredentialsFile()
-      return creds !== null && creds.apiKey !== PLACEHOLDER_API_KEY
+      return creds !== null && ![PLACEHOLDER_OPENCODE_API_KEY, PLACEHOLDER_API_KEY].includes(creds.apiKey)
     }
     case 'pi-openrouter': {
       const creds = await loadPiCredentialsFile()
-      return creds !== null && creds.apiKey !== PLACEHOLDER_API_KEY
+      return creds !== null && ![PLACEHOLDER_PI_API_KEY, PLACEHOLDER_API_KEY].includes(creds.apiKey)
     }
     case 'github':
       return false

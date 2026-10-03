@@ -242,9 +242,10 @@ JSON with `gh --jq` rather than piping to `jq` (`yaac-watch-prs` needs only
 Under k8s a workspace holds only a sentinel value, and the egress proxy
 swaps in the real token on the way out. Here there is no proxy, so
 containerless workspaces get real OAuth bundles in the per-project tool
-homes and real API keys and `GH_TOKEN` in the environment. Nothing separates
-the agent from this machine, so there is nothing to hide a secret from. A
-project that cannot accept that should use the k8s driver.
+homes and real API keys and `GH_TOKEN` in the environment (opencode's and
+pi's under variables of their own; see docs/workspace-egress.md). Nothing
+separates the agent from this machine, so there is nothing to hide a secret
+from. A project that cannot accept that should use the k8s driver.
 
 ### Keeping refreshed credentials in sync
 

@@ -3,6 +3,7 @@ import path from 'node:path'
 import crypto, { createHash } from 'node:crypto'
 import { hostMatchesPattern, resolveAllowedHosts } from '#lib/allowed-hosts'
 import { buildStatusRight } from '#lib/status-right'
+import { mergeEnvEntries } from '#lib/env-entries'
 import { testEnv } from '@yaac/shared/env'
 import { workspaceDriver } from '#drivers/driver'
 import type {
@@ -45,6 +46,8 @@ import {
   loadToolAuthEntry,
   PLACEHOLDER_API_KEY,
   PLACEHOLDER_GH_TOKEN,
+  PLACEHOLDER_OPENCODE_API_KEY,
+  PLACEHOLDER_PI_API_KEY,
 } from '@yaac/shared/tool-auth'
 import { defaultModelFor, seedProjectToolHome } from '#domain/auth'
 import {
@@ -64,6 +67,7 @@ import {
   buildCloneLinkExec,
   buildWindowsExec,
   ensureAgentReporters,
+  ensureToolApiKeyConfig,
   openSandboxDir,
   validateInitWindows,
   verifyAgentWindowAlive,
@@ -121,6 +125,7 @@ import {
 import {
   opencodeProviderInfo,
   piProviderInfo,
+  toolApiKeyEnvVar,
   type PiProvider,
 } from '@yaac/shared/tool-providers'
 
@@ -136,6 +141,9 @@ const CLAUDE_CONTAINER_HOME = '/home/yaac/.claude'
 const CACHED_PACKAGES_CONTAINER_DIR = '/home/yaac/.cached-packages'
 /** In-pod pi home, where the project's shared `piDir` is mounted. */
 const PI_CONTAINER_HOME = '/home/yaac/.pi'
+/** In-pod opencode config dir, where the project's `opencodeConfigDir` is
+ *  mounted. */
+const OPENCODE_CONFIG_CONTAINER_DIR = '/home/yaac/.config/opencode'
 /** Where pi writes its JSONL session logs (PI_CODING_AGENT_SESSION_DIR).
  *  Per-workspace history, kept outside the shared home so containerless can
  *  realize it as a plain link. */
@@ -892,6 +900,11 @@ export async function createWorkspace(
     const toolAuthByTool = {
       claude: claudeAuth, codex: codexAuth, opencode: opencodeAuth, pi: piAuth,
     }
+    // The api-key-only tools' providers (`#runtime/agents` tool-api-keys).
+    const keyProviders = {
+      ...(opencodeAuth?.kind === 'api-key' ? { opencode: opencodeProviderInfo(opencodeAuth.opencodeProvider) } : {}),
+      ...(piAuth?.kind === 'api-key' ? { pi: piProviderInfo(piAuth.piProvider) } : {}),
+    }
 
     const claude = claudeDir(projectSlug)
     const codex = codexDir(projectSlug)
@@ -950,14 +963,19 @@ export async function createWorkspace(
       mediatedEgress ? ['/workspace'] : await withResolved([wtDir]),
     )
     await seedClaudeSettings(claudeHome)
+    const piHome = await openSandboxDir(projectSlug, pi)
+    const opencodeConfigHome = await openSandboxDir(projectSlug, opencodeConfig)
     // Hook up the reporters that publish each agent's conversation, model and
     // mode on its pane. Best-effort: agents still run without them.
     await (async () => ensureAgentReporters({
       claude: claudeHome,
       codex: await openSandboxDir(projectSlug, codex),
-      pi: await openSandboxDir(projectSlug, pi),
-      opencodeConfig: await openSandboxDir(projectSlug, opencodeConfig),
+      pi: piHome,
+      opencodeConfig: opencodeConfigHome,
     }))().catch(() => {})
+    // Not best-effort: without it opencode and pi find no key.
+    const { opencodeConfigFile } = await ensureToolApiKeyConfig(
+      { opencodeConfig: opencodeConfigHome, pi: piHome }, keyProviders)
 
     // Pre-create cacheVolumes dirs so they are server-owned (and so writable
     // in-pod) rather than root-owned. None may overlap the main clone's
@@ -1004,7 +1022,7 @@ export async function createWorkspace(
     }
 
     return {
-      toolAuthByTool, sshKnownHostsFile, cacheVolumeEntries,
+      toolAuthByTool, keyProviders, opencodeConfigFile, sshKnownHostsFile, cacheVolumeEntries,
       builtinSkillsStaging, builtinSkillNames, workspaceBinStaging, workspaceBinNames,
       claude, codex, opencodeData, opencodeCheckpoint, opencodeConfig, pi,
       cachedPackages, acpLogs, attachments,
@@ -1013,7 +1031,7 @@ export async function createWorkspace(
 
   const [imageRef, substrate, prep] = await Promise.all([imageTask, substrateTask, prepTask])
   const {
-    toolAuthByTool, sshKnownHostsFile, cacheVolumeEntries,
+    toolAuthByTool, keyProviders, opencodeConfigFile, sshKnownHostsFile, cacheVolumeEntries,
     builtinSkillsStaging, builtinSkillNames, workspaceBinStaging, workspaceBinNames,
     claude, codex, opencodeData, opencodeCheckpoint, opencodeConfig, pi,
     cachedPackages, acpLogs, attachments,
@@ -1024,10 +1042,16 @@ export async function createWorkspace(
   // listed even when the value is a placeholder.
   const secretEnvKeys: string[] = []
 
+  // A project may override `YAAC_WORKSPACE_ID`, `TZ` and `OPENCODE_CONFIG`;
+  // any other name it shares with yaac's own variables fails the launch
+  // (`mergeEnvEntries`).
+  const projectSets = (name: string): boolean =>
+    name in projectEnv.plain || name in projectEnv.secrets
+
   // Read by the zsh prompt and by a yaac server started inside the
   // workspace, which then treats unproxied requests as local (`identify` in
-  // web-auth.ts). Project variables come after and can override it.
-  env.push(`YAAC_WORKSPACE_ID=${workspaceId}`)
+  // web-auth.ts).
+  if (!projectSets('YAAC_WORKSPACE_ID')) env.push(`YAAC_WORKSPACE_ID=${workspaceId}`)
 
   // Without a proxy (which identifies a pod by its IP), `yaac-mama` calls the
   // server directly and authenticates with a token minted here
@@ -1047,8 +1071,7 @@ export async function createWorkspace(
     if (lock) env.push(`YAAC_MAMA_URL=http://127.0.0.1:${lock.port}`)
   }
 
-  // Before the project's variables, so a project `TZ` wins.
-  if (timeZone !== null) env.push(`TZ=${timeZone}`)
+  if (timeZone !== null && !projectSets('TZ')) env.push(`TZ=${timeZone}`)
 
   for (const [name, value] of Object.entries(projectEnv.plain)) {
     env.push(`${name}=${value}`)
@@ -1062,30 +1085,37 @@ export async function createWorkspace(
 
   // API-key env vars for every tool (a spare may be retooled at claim), so
   // no tool prompts for login. With mediated egress these are placeholders
-  // the proxy swaps by destination host, regardless of the workspace's tool
-  // (see k8s/proxy/injection.ts); without it they are the real keys.
-  const apiKeyFor = (real: string): string => mediatedEgress ? PLACEHOLDER_API_KEY : real
+  // the proxy swaps by destination host and placeholder, regardless of the
+  // workspace's tool (see k8s/proxy/injection.ts); without it they are the
+  // real keys.
+  const apiKeyFor = (real: string, placeholder = PLACEHOLDER_API_KEY): string =>
+    mediatedEgress ? placeholder : real
   if (toolAuthByTool.claude?.kind === 'api-key') {
     env.push(`ANTHROPIC_API_KEY=${apiKeyFor(toolAuthByTool.claude.apiKey)}`)
     secretEnvKeys.push('ANTHROPIC_API_KEY')
   }
   // Claude OAuth: Claude Code reads the placeholder bundle from the mounted
   // .claude/.credentials.json, so no env var is needed.
-  if (toolAuthByTool.opencode?.kind === 'api-key') {
-    // opencode is api-key only and reads the provider's env var.
-    const info = opencodeProviderInfo(toolAuthByTool.opencode.opencodeProvider)
-    env.push(`${info.envVar}=${apiKeyFor(toolAuthByTool.opencode.apiKey)}`)
-    secretEnvKeys.push(info.envVar)
-  }
   if (toolAuthByTool.codex?.kind === 'api-key') {
     env.push(`OPENAI_API_KEY=${apiKeyFor(toolAuthByTool.codex.apiKey)}`)
     secretEnvKeys.push('OPENAI_API_KEY')
   }
-  if (toolAuthByTool.pi?.kind === 'api-key') {
-    // pi is api-key only and reads the provider's env var.
-    const info = piProviderInfo(toolAuthByTool.pi.piProvider)
-    env.push(`${info.envVar}=${apiKeyFor(toolAuthByTool.pi.apiKey)}`)
-    secretEnvKeys.push(info.envVar)
+  // opencode and pi are api-key only, and read their key from a variable of
+  // their own that their config names (`ensureToolApiKeyConfig` above).
+  if (toolAuthByTool.opencode?.kind === 'api-key' && keyProviders.opencode) {
+    const name = toolApiKeyEnvVar('opencode', keyProviders.opencode.id)
+    env.push(`${name}=${apiKeyFor(toolAuthByTool.opencode.apiKey, PLACEHOLDER_OPENCODE_API_KEY)}`)
+    // A project's own `OPENCODE_CONFIG` replaces this file, and with it the
+    // pointer to yaac's key.
+    if (!projectSets('OPENCODE_CONFIG')) {
+      env.push(`OPENCODE_CONFIG=${OPENCODE_CONFIG_CONTAINER_DIR}/${opencodeConfigFile}`)
+    }
+    secretEnvKeys.push(name)
+  }
+  if (toolAuthByTool.pi?.kind === 'api-key' && keyProviders.pi) {
+    const name = toolApiKeyEnvVar('pi', keyProviders.pi.id)
+    env.push(`${name}=${apiKeyFor(toolAuthByTool.pi.apiKey, PLACEHOLDER_PI_API_KEY)}`)
+    secretEnvKeys.push(name)
   }
   // Codex OAuth reads the mounted .codex/auth.json. Setting OPENAI_API_KEY
   // could switch codex to api-key mode.
@@ -1173,7 +1203,7 @@ export async function createWorkspace(
     { source: { kind: 'hostPath', path: attachments }, mountPath: CONTAINER_ATTACHMENTS_DIR, readOnly: true },
     ...codexHomeMounts(runtime.kind, codex),
     ...opencodeMounts,
-    { source: { kind: 'hostPath', path: opencodeConfig }, mountPath: '/home/yaac/.config/opencode' },
+    { source: { kind: 'hostPath', path: opencodeConfig }, mountPath: OPENCODE_CONFIG_CONTAINER_DIR },
     { source: { kind: 'hostPath', path: pi }, mountPath: PI_CONTAINER_HOME },
     // Per-workspace history. These two are outside every tool home, so both
     // drivers can mount them as-is.
@@ -1250,6 +1280,9 @@ export async function createWorkspace(
   let target: TeardownTarget | undefined
   let handle: RuntimeHandle
   try {
+    mergeEnvEntries(env, (name) => projectSets(name)
+      ? `the project's environment variable ${name} conflicts with the value yaac sets for it; rename or remove it`
+      : `environment variable ${name} is set to two different values`)
     handle = await launchWithSetup({
       spec, projectSlug, workspaceId, tool, mode, launching, initWindows, permissionMode,
       piProvider: toolAuthByTool.pi?.piProvider,

@@ -1538,15 +1538,17 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       ])
       expect(autoUpdOut.trim()).toBe('1')
 
-      // The env var follows the credential's provider (OpenRouter here).
+      // The key rides in opencode's own variable for the credential's
+      // provider (OpenRouter here), which the config named by
+      // OPENCODE_CONFIG points at; the provider's own variable stays unset.
       const { stdout: orKeyOut } = await execInJob(jobName, [
-        'sh', '-c', 'printenv OPENROUTER_API_KEY',
+        'sh', '-c', 'printenv YAAC_OPENCODE_KEY_OPENROUTER; cat "$OPENCODE_CONFIG"; printenv OPENROUTER_API_KEY || true',
       ])
-      expect(orKeyOut.trim()).toBe('yaac-ph-api-key')
-      const { stdout: nwKeyOut } = await execInJob(jobName, [
-        'sh', '-c', 'printenv NEURALWATT_API_KEY || true',
-      ])
-      expect(nwKeyOut.trim()).toBe('')
+      const [keyLine, ...rest] = orKeyOut.trim().split('\n')
+      expect(keyLine).toBe('yaac-ph-opencode-api-key')
+      expect(JSON.parse(rest.join('\n'))).toEqual({
+        provider: { openrouter: { env: ['YAAC_OPENCODE_KEY_OPENROUTER', 'OPENROUTER_API_KEY'] } },
+      })
 
       // A host write shows up in the pod, allowing for NFS attribute
       // caching (up to a second on the e2e-byo tier).

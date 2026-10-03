@@ -94,6 +94,13 @@ export const PLACEHOLDER_REFRESH_TOKEN = 'yaac-ph-refresh'
  */
 export const PLACEHOLDER_API_KEY = 'yaac-ph-api-key'
 /**
+ * opencode's and pi's api-key placeholders. One per tool, so the proxy can
+ * tell from the request alone whose key to swap in, even when both tools'
+ * providers share a host.
+ */
+export const PLACEHOLDER_OPENCODE_API_KEY = 'yaac-ph-opencode-api-key'
+export const PLACEHOLDER_PI_API_KEY = 'yaac-ph-pi-api-key'
+/**
  * Placeholder GH_TOKEN seeded into workspace containers so `gh` treats itself
  * as logged in. The proxy swaps it for the real HTTPS git token on
  * api.github.com; a user-supplied token passes through unchanged.
