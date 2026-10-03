@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { mergeEnvEntries } from '#lib/env-entries'
 import { runtimeClassSpec } from './gvisor'
 import { priorityClassSpec } from './priority-classes'
 
@@ -184,7 +185,8 @@ export interface PodJobParams {
   /** Applied to the Job and its pod template (project, workspace-id, …). */
   labels: Record<string, string>
   image: string
-  /** `NAME=VALUE` entries. */
+  /** `NAME=VALUE` entries. A name repeated with the same value is
+   *  rendered once; with a different value, the build throws. */
   env: string[]
   /** Workspace mounts in render order, each declaring its own source. */
   mounts: PodMount[]
@@ -255,13 +257,6 @@ export interface PodJobParams {
   nodeLocalRoot?: string
   /** Defaults to 5 seconds. */
   terminationGracePeriodSeconds?: number
-}
-
-/** Split a `NAME=VALUE` env entry at the first `=`. */
-function parseEnvEntry(entry: string): { name: string; value: string } {
-  const idx = entry.indexOf('=')
-  if (idx < 0) return { name: entry, value: '' }
-  return { name: entry.slice(0, idx), value: entry.slice(idx + 1) }
 }
 
 /**
@@ -375,7 +370,7 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
               // Tags are content hashes, so a cached tag is always correct.
               imagePullPolicy: 'IfNotPresent',
               workingDir: '/workspace',
-              env: p.env.map(parseEnvEntry),
+              env: mergeEnvEntries(p.env),
               volumeMounts,
               ...(p.postStartExec || p.preStopExec ? {
                 lifecycle: {

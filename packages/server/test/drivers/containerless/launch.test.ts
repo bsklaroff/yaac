@@ -530,8 +530,9 @@ describe('launchWorkspace', () => {
     const call = mockRunHost.mock.calls
       .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
     expect(call.env.XDG_CONFIG_HOME).toBe('/etc/xdg-they-asked-for')
-    // The notice lists only what was actually dropped.
-    expect(progress.some((m) => m.includes('XDG_CONFIG_HOME'))).toBe(false)
+    // The host's value is still not what the workspace sees, so the notice
+    // names it.
+    expect(progress.some((m) => m.startsWith('Ignoring') && m.includes('XDG_CONFIG_HOME'))).toBe(true)
   })
 
   it('survives a tmux that refuses its cosmetic options', async () => {

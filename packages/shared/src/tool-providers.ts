@@ -1,8 +1,9 @@
 /**
  * Provider registries and helpers for the api-key-only agent tools
  * (`opencode` and `pi`). The user stores an api key for one provider; yaac
- * seeds that provider's env var into the pod with a placeholder, and the
- * egress proxy swaps in the real key on that provider's host.
+ * seeds it into the workspace under `toolApiKeyEnvVar` (a placeholder the
+ * egress proxy swaps on that provider's host, when there is a proxy), and
+ * points the tool's own config at that variable.
  *
  * The provider data is generated into `tool-providers.generated.ts` by
  * `pnpm gen:providers` (scripts/gen-tool-providers.ts).
@@ -70,6 +71,17 @@ export function opencodeProviderInfo(id: OpencodeProvider): ToolProviderInfo {
 /** Look up a pi provider's metadata; falls back to the default. */
 export function piProviderInfo(id: PiProvider): ToolProviderInfo {
   return infoOrDefault(PI_PROVIDERS, id, PI_DEFAULT_PROVIDER)
+}
+
+/**
+ * The workspace variable holding a tool's key for a provider, e.g.
+ * `YAAC_PI_KEY_OPENROUTER`. Named per tool so opencode and pi can hold
+ * different keys for one provider without clashing, and per provider so a
+ * config entry left from a provider the user has since switched away from
+ * is never handed the new provider's key.
+ */
+export function toolApiKeyEnvVar(tool: 'opencode' | 'pi', provider: string): string {
+  return `YAAC_${tool.toUpperCase()}_KEY_${provider.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`
 }
 
 /** A raw string as an OpencodeProvider, or undefined if it isn't one. */

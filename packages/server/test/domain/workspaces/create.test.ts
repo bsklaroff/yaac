@@ -28,7 +28,9 @@ import {
   workspaceDir,
 } from '@yaac/shared/project-paths'
 import { CONTAINER_TMUX_DIR, projectConfigDir } from '@yaac/shared/paths'
-import { PLACEHOLDER_API_KEY, PLACEHOLDER_GH_TOKEN, saveCodexOAuthBundle, saveToolAuth } from '@yaac/shared/tool-auth'
+import {
+  PLACEHOLDER_API_KEY, PLACEHOLDER_GH_TOKEN, PLACEHOLDER_OPENCODE_API_KEY, PLACEHOLDER_PI_API_KEY, saveCodexOAuthBundle, saveToolAuth,
+} from '@yaac/shared/tool-auth'
 import { closeDb } from '#db/client'
 import {
   applyWorkspaceEvent,
@@ -259,16 +261,17 @@ describe('createWorkspace', () => {
   })
 
   // Every credentialed tool's key is seeded on any workspace (a spare may be
-  // retooled at claim), as a placeholder the proxy swaps.
-  it.each<{ name: string; tool: AgentTool; key: string; kind: 'api-key' | 'oauth'; provider?: string; want: string[]; not: string[] }>([
-    { name: 'claude api key', tool: 'claude', key: 'sk-ant', kind: 'api-key', want: ['ANTHROPIC_API_KEY'], not: [] },
-    { name: 'opencode on openrouter', tool: 'opencode', key: 'sk-or', kind: 'api-key', provider: 'openrouter', want: ['OPENROUTER_API_KEY'], not: ['NEURALWATT_API_KEY'] },
-    { name: 'opencode on neuralwatt', tool: 'opencode', key: 'nw', kind: 'api-key', provider: 'neuralwatt', want: ['NEURALWATT_API_KEY'], not: ['OPENROUTER_API_KEY'] },
-    { name: 'pi on anthropic', tool: 'pi', key: 'sk-ant', kind: 'api-key', provider: 'anthropic', want: ['ANTHROPIC_API_KEY'], not: [] },
-    { name: 'pi on openai', tool: 'pi', key: 'sk-oai', kind: 'api-key', provider: 'openai', want: ['OPENAI_API_KEY'], not: [] },
-    { name: 'codex api key', tool: 'codex', key: 'sk-oai', kind: 'api-key', want: ['OPENAI_API_KEY'], not: [] },
+  // retooled at claim), as a placeholder the proxy swaps. opencode and pi
+  // each read theirs from a variable of their own, so neither collides with
+  // claude's or codex's.
+  it.each<{ name: string; tool: AgentTool; key: string; kind: 'api-key' | 'oauth'; provider?: string; want: Record<string, string>; not: string[] }>([
+    { name: 'claude api key', tool: 'claude', key: 'sk-ant', kind: 'api-key', want: { ANTHROPIC_API_KEY: PLACEHOLDER_API_KEY }, not: [] },
+    { name: 'opencode on openrouter', tool: 'opencode', key: 'sk-or', kind: 'api-key', provider: 'openrouter', want: { YAAC_OPENCODE_KEY_OPENROUTER: PLACEHOLDER_OPENCODE_API_KEY, OPENCODE_CONFIG: '/home/yaac/.config/opencode/yaac-keys/openrouter.json' }, not: ['OPENROUTER_API_KEY'] },
+    { name: 'opencode on neuralwatt', tool: 'opencode', key: 'nw', kind: 'api-key', provider: 'neuralwatt', want: { YAAC_OPENCODE_KEY_NEURALWATT: PLACEHOLDER_OPENCODE_API_KEY }, not: ['NEURALWATT_API_KEY', 'YAAC_OPENCODE_KEY_OPENROUTER'] },
+    { name: 'pi on anthropic', tool: 'pi', key: 'sk-ant', kind: 'api-key', provider: 'anthropic', want: { YAAC_PI_KEY_ANTHROPIC: PLACEHOLDER_PI_API_KEY }, not: ['ANTHROPIC_API_KEY'] },
+    { name: 'codex api key', tool: 'codex', key: 'sk-oai', kind: 'api-key', want: { OPENAI_API_KEY: PLACEHOLDER_API_KEY }, not: [] },
     // Under codex OAuth this var would switch it into api-key mode.
-    { name: 'codex OAuth', tool: 'codex', key: 'access', kind: 'oauth', want: [], not: ['OPENAI_API_KEY'] },
+    { name: 'codex OAuth', tool: 'codex', key: 'access', kind: 'oauth', want: {}, not: ['OPENAI_API_KEY'] },
   ])('seeds the env a $name credential needs, on a workspace of any tool', async ({ tool, key, kind, provider, want, not }) => {
     if (kind === 'oauth') {
       await saveCodexOAuthBundle({
@@ -279,13 +282,54 @@ describe('createWorkspace', () => {
     }
     await createWorkspace('demo', { tool: 'claude' })
 
-    for (const name of want) expect(env()).toContain(`${name}=${PLACEHOLDER_API_KEY}`)
-    expect(specs[0].secretEnvKeys).toEqual(expect.arrayContaining(want))
+    expect(env()).toEqual(expect.arrayContaining(Object.entries(want).map(([name, value]) => `${name}=${value}`)))
+    expect(specs[0].secretEnvKeys).toEqual(expect.arrayContaining(Object.keys(want).filter((n) => n !== 'OPENCODE_CONFIG')))
     const names = env().map((e) => e.split('=')[0])
     for (const name of not) expect(names).not.toContain(name)
     expect(env()).toEqual(expect.arrayContaining([
       'OPENCODE_DISABLE_AUTOUPDATE=1', 'PI_CODING_AGENT_SESSION_DIR=/home/yaac/.yaac-pi-sessions', 'PI_SKIP_VERSION_CHECK=1',
     ]))
+  })
+
+  it('gives opencode and pi each their own key for one provider, in the config each tool reads', async () => {
+    installDriver({ kind: 'containerless' })
+    await saveToolAuth('opencode', 'sk-or-oc', 'api-key', 'openrouter')
+    await saveToolAuth('pi', 'sk-or-pi', 'api-key', 'openrouter')
+    // A user's own pi config is kept.
+    const models = path.join(piDir('demo'), 'agent', 'models.json')
+    await fs.mkdir(path.dirname(models), { recursive: true })
+    await fs.writeFile(models, JSON.stringify({ providers: { ollama: { baseUrl: 'http://localhost:11434/v1' } } }))
+
+    await createWorkspace('demo', { tool: 'claude' })
+
+    expect(env()).toEqual(expect.arrayContaining([
+      'YAAC_OPENCODE_KEY_OPENROUTER=sk-or-oc', 'YAAC_PI_KEY_OPENROUTER=sk-or-pi',
+    ]))
+    expect(env().map((e) => e.split('=')[0])).not.toContain('OPENROUTER_API_KEY')
+    expect(JSON.parse(await fs.readFile(path.join(opencodeConfigDir('demo'), 'yaac-keys', 'openrouter.json'), 'utf8')))
+      .toEqual({ provider: { openrouter: { env: ['YAAC_OPENCODE_KEY_OPENROUTER', 'OPENROUTER_API_KEY'] } } })
+    expect(JSON.parse(await fs.readFile(models, 'utf8'))).toEqual({ providers: {
+      ollama: { baseUrl: 'http://localhost:11434/v1' },
+      openrouter: { apiKey: '!printenv YAAC_PI_KEY_OPENROUTER || printenv OPENROUTER_API_KEY' },
+    } })
+  })
+
+  it('lets a project override TZ and OPENCODE_CONFIG, takes a variable matching yaac\'s, and refuses one that conflicts', async () => {
+    await setTimeZone('Asia/Tokyo', false)
+    await saveToolAuth('opencode', 'sk-or', 'api-key', 'openrouter')
+    await setProjectEnvVar('demo', { name: 'TZ', value: 'Europe/Paris' })
+    await setProjectEnvVar('demo', { name: 'OPENCODE_CONFIG', value: '/workspace/opencode.json' })
+    await setProjectEnvVar('demo', { name: 'OPENCODE_DISABLE_AUTOUPDATE', value: '1' })
+    await createWorkspace('demo', {})
+    expect(env().filter((e) => e.startsWith('TZ='))).toEqual(['TZ=Europe/Paris'])
+    expect(env().filter((e) => e.startsWith('OPENCODE_CONFIG='))).toEqual(['OPENCODE_CONFIG=/workspace/opencode.json'])
+
+    await setProjectEnvVar('demo', { name: 'PI_SKIP_VERSION_CHECK', value: '0' })
+    await expect(createWorkspace('demo', {})).rejects.toThrow(
+      "the project's environment variable PI_SKIP_VERSION_CHECK conflicts with the value yaac sets for it",
+    )
+    // Refused before anything launched.
+    expect(specs).toHaveLength(1)
   })
 
   // `gh` is logged in with the git token for a GitHub HTTPS remote, unless

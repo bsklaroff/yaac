@@ -7,12 +7,15 @@ import { buildFakeClaudeOAuthBundle } from '#domain/projects/fake-auth'
 import {
   saveClaudeOAuthBundle,
   saveOpencodeCredentialsFile,
+  savePiCredentialsFile,
   loadClaudeCredentialsFile,
   loadOpencodeCredentialsFile,
   loadPiCredentialsFile,
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_API_KEY,
   PLACEHOLDER_GH_TOKEN,
+  PLACEHOLDER_OPENCODE_API_KEY,
+  PLACEHOLDER_PI_API_KEY,
   PLACEHOLDER_REFRESH_TOKEN,
 } from '@yaac/shared/tool-auth'
 import { projectDir, claudeDir, projectClaudeCredentialsFile } from '@yaac/shared/project-paths'
@@ -57,13 +60,18 @@ describe('seedFakeAuth', () => {
     expect(parsed.claudeAiOauth.accessToken).toBe(PLACEHOLDER_ACCESS_TOKEN)
   })
 
-  it('seeds opencode and pi as placeholder OpenRouter api-keys', async () => {
+  it('seeds opencode and pi as OpenRouter api-keys holding their own placeholders, over an older fake', async () => {
+    // A fake from before each tool had its own placeholder is still a fake.
+    await savePiCredentialsFile({ kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: PLACEHOLDER_API_KEY })
     await seedFakeAuth(['opencode-openrouter', 'pi-openrouter'])
 
-    for (const creds of [await loadOpencodeCredentialsFile(), await loadPiCredentialsFile()]) {
+    for (const [creds, placeholder] of [
+      [await loadOpencodeCredentialsFile(), PLACEHOLDER_OPENCODE_API_KEY],
+      [await loadPiCredentialsFile(), PLACEHOLDER_PI_API_KEY],
+    ] as const) {
       expect(creds?.kind).toBe('api-key')
       expect(creds?.provider).toBe('openrouter')
-      expect(creds?.apiKey).toBe(PLACEHOLDER_API_KEY)
+      expect(creds?.apiKey).toBe(placeholder)
       expect(typeof creds?.savedAt).toBe('string')
     }
   })

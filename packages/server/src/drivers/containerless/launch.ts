@@ -337,9 +337,11 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   }
 
   const env = workspaceEnvironment(spec, home, paths)
-  // Tell the user which host tool-home variables were dropped (unless the
-  // project env set them again), since ignoring them is otherwise silent.
-  const overridden = overriddenToolHomeVars().filter((key) => env[key] === undefined)
+  // Tell the user which host tool-home variables were dropped or replaced
+  // (unless the project env set them to the same value), since ignoring
+  // them is otherwise silent.
+  const host = userEnvironment()
+  const overridden = overriddenToolHomeVars().filter((key) => env[key] !== host[key])
   if (overridden.length > 0) {
     const message = `Ignoring ${overridden.join(', ')} from this host's environment `
       + "— a workspace's agent reads this project's tool config, under its own HOME."

@@ -166,7 +166,7 @@ describe('yaac auth (real CLI + shared server)', () => {
       }
       expect(parsed.kind).toBe('api-key')
       expect(parsed.provider).toBe('openrouter')
-      expect(parsed.apiKey).toBe('yaac-ph-api-key')
+      expect(parsed.apiKey).toBe('yaac-ph-opencode-api-key')
     })
 
     it('auth fake pi-openrouter seeds a placeholder openrouter api-key', async () => {
@@ -180,7 +180,7 @@ describe('yaac auth (real CLI + shared server)', () => {
       }
       expect(parsed.kind).toBe('api-key')
       expect(parsed.provider).toBe('openrouter')
-      expect(parsed.apiKey).toBe('yaac-ph-api-key')
+      expect(parsed.apiKey).toBe('yaac-ph-pi-api-key')
     })
 
     it('seeds several kinds passed in one invocation (variadic)', async () => {
@@ -200,7 +200,7 @@ describe('yaac auth (real CLI + shared server)', () => {
       }
       expect(claude.claudeAiOauth.accessToken).toBe('yaac-ph-access')
       expect(opencode.provider).toBe('openrouter')
-      expect(opencode.apiKey).toBe('yaac-ph-api-key')
+      expect(opencode.apiKey).toBe('yaac-ph-opencode-api-key')
     })
 
     it('rejects an unknown kind', async () => {
