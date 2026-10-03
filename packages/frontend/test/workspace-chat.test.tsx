@@ -654,17 +654,27 @@ describe('WorkspaceChat rendering', () => {
     expect(screen.getByText('a.ts').closest('div')?.textContent).not.toContain('```')
   })
 
-  it('shows a command in full when its row is expanded', () => {
+  it('shows a command in full when its row is expanded, under its description', () => {
     const command = `git commit -m "${'long message '.repeat(20)}"`
     stream.events = [
       toolCall(0, { toolCallId: 't1', title: command, shell: true, kind: 'execute', status: 'completed' }),
       // codex files MCP calls under `execute` with no command: nothing to expand.
       toolCall(1, { toolCallId: 't2', title: 'mcp.github.get_issue', kind: 'execute', status: 'completed' }),
+      toolCall(2, {
+        toolCallId: 't3', title: 'git status', description: 'Show working tree status',
+        shell: true, kind: 'execute', status: 'completed',
+        // claude's adapter repeats the description as the call's content.
+        content: [{ type: 'text', text: 'Show working tree status' }],
+      }),
     ]
     show()
     fireEvent.click(screen.getByText(command))
     expect(screen.getAllByText(command).map((el) => el.tagName)).toEqual(['SPAN', 'PRE'])
     expect(screen.getByText('mcp.github.get_issue').closest('button')?.disabled).toBe(true)
+    expect(screen.queryByText('git status')).toBeNull()
+    fireEvent.click(screen.getByText('Show working tree status'))
+    expect(screen.getByText('git status').tagName).toBe('PRE')
+    expect(screen.getAllByText('Show working tree status')).toHaveLength(1)
   })
 
   it('shows a read as the file, highlighted for its path', () => {
@@ -846,7 +856,10 @@ describe('WorkspaceChat permission asks', () => {
     type: 'permission-request',
     seq,
     requestId,
-    toolCall: { toolCallId: 'c1', title: 'rm -rf build', kind: 'execute', status: 'pending' },
+    toolCall: {
+      toolCallId: 'c1', title: 'rm -rf build', description: 'Clean the build output',
+      shell: true, kind: 'execute', status: 'pending',
+    },
     options: [
       { optionId: 'no', name: 'Deny', kind: 'reject_once' },
       { optionId: 'allow', name: 'Allow Once', kind: 'allow_once' },
@@ -870,8 +883,10 @@ describe('WorkspaceChat permission asks', () => {
   it('offers one button per option, over the call being asked about', () => {
     stream.events = [ask(0)]
     show()
-    // Show the actual command so the user can decide.
+    // Show the actual command so the user can decide, not the model's
+    // description of it.
     expect(screen.getByText('rm -rf build')).toBeTruthy()
+    expect(screen.queryByText('Clean the build output')).toBeNull()
     expect(screen.getByRole('button', { name: 'Deny' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Allow Once' })).toBeTruthy()
   })

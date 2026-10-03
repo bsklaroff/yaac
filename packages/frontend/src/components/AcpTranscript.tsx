@@ -408,21 +408,31 @@ export function ToolRow({
   call,
   output = '',
   progress,
+  asked = false,
 }: {
   call: AcpToolCall
   /** Terminal output the call streamed, shown verbatim. */
   output?: string
   progress?: 'running' | 'interrupted'
+  /** The call is awaiting permission, so the row is labelled with the command
+   *  itself: a description is the model's own words, and approving on it
+   *  alone would trust them. */
+  asked?: boolean
 }): JSX.Element {
   const diffs = useMemo(
     () => (call.content ?? []).filter((c): c is AcpDiff => c.type === 'diff'),
     [call.content],
   )
   const edits = useMemo(() => groupDiffs(diffs), [diffs])
-  const body = toolTextOf(call.content)
+  const description = asked ? undefined : call.description
+  const text = toolTextOf(call.content)
+  /** claude's adapter also sends a shell call's description as its content,
+   *  which would repeat the row's label. */
+  const body = description !== undefined && text.trim() === description.trim() ? '' : text
   const isRead = call.kind === 'read'
-  /** The row truncates a command, so a call that runs one always expands to
-   *  show it in full above any output. */
+  /** The row shows a shell call's description, or its command truncated, so
+   *  a call that runs one always expands to show the command in full above
+   *  any output. */
   const hasContent = call.shell === true || body !== '' || output !== '' || edits.length > 0
   /** The user's expand/collapse choice, or `null` if they haven't made one.
    *  Edits default open. The default is derived each render because a call
@@ -448,9 +458,13 @@ export function ToolRow({
         icon={KIND_ICON[call.kind]}
         busy={unfinished(call) && progress === 'running'}
       >
-        <span className={clsx('truncate', call.kind === 'execute' && 'font-mono text-[11px]')}>
-          {call.title}
-        </span>
+        {description !== undefined
+          ? <span className="truncate">{description}</span>
+          : (
+            <span className={clsx('truncate', call.kind === 'execute' && 'font-mono text-[11px]')}>
+              {call.title}
+            </span>
+          )}
         {edits.length > 0 && (
           <span className="shrink-0 font-mono text-[10px]">
             {stats.additions > 0 && <span className="text-success">+{stats.additions}</span>}
@@ -584,7 +598,7 @@ function PermissionRow({
         <WarningIcon size={12} className="shrink-0" />
         {onAnswer === undefined ? 'Permission was never answered' : 'Permission needed'}
       </div>
-      {toolCall !== undefined && <ToolRow call={toolCall} />}
+      {toolCall !== undefined && <ToolRow call={toolCall} asked />}
       {onAnswer !== undefined && (
         <div className="flex flex-wrap gap-1.5 pt-0.5">
           {options.map((o) => (

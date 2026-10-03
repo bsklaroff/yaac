@@ -53,6 +53,10 @@ export interface AcpToolCall {
    *  command line. Adapters also file non-shell calls (codex's MCP tools)
    *  under `execute`, so the kind alone does not say this. */
   shell?: true
+  /** What a shell call's command does, in the agent's words. Only claude's
+   *  Bash tool asks the model for one; the other agents' shell tools take
+   *  just the command. */
+  description?: string
   kind: AcpToolKind
   status: AcpToolStatus
   /** Output produced so far — a diff, command output, or free text. */

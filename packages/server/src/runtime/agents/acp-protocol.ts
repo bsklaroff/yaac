@@ -318,6 +318,7 @@ export interface AcpToolCallPatch {
   toolCallId: string
   title?: string
   shell?: boolean
+  description?: string
   kind?: AcpToolKind
   status?: AcpToolStatus
   content?: AcpToolContent[]
@@ -350,11 +351,13 @@ function toToolCallPatch(update: Record<string, unknown>): AcpToolCallPatch | un
   const content = 'content' in update ? toToolContent(update.content) : undefined
   const locations = toLocations(update.locations)
   const shell = isShellCall(update, kind)
+  const description = asString(asRecord(update.rawInput)?.description)
   const output = asString(asRecord(asRecord(update._meta)?.terminal_output_delta)?.data)
   return {
     toolCallId,
     ...(asString(update.title) !== undefined ? { title: asString(update.title) as string } : {}),
     ...(shell !== undefined ? { shell } : {}),
+    ...(description !== undefined ? { description } : {}),
     ...(kind !== undefined && (TOOL_KINDS as readonly string[]).includes(kind)
       ? { kind: kind as AcpToolKind }
       : {}),
@@ -373,11 +376,14 @@ export function mergeToolCall(
   patch: AcpToolCallPatch,
 ): AcpToolCall {
   const kind = patch.kind ?? previous?.kind ?? 'other'
+  const shell = kind === 'execute' && (patch.shell ?? previous?.shell) === true
+  const description = patch.description ?? previous?.description
   return {
     toolCallId: patch.toolCallId,
     title: patch.title ?? previous?.title ?? patch.toolCallId,
     kind,
-    ...(kind === 'execute' && (patch.shell ?? previous?.shell) ? { shell: true as const } : {}),
+    ...(shell ? { shell: true as const } : {}),
+    ...(shell && description !== undefined ? { description } : {}),
     status: patch.status ?? previous?.status ?? 'pending',
     // Content is cumulative; an update without it is a status change.
     ...(patch.content !== undefined && patch.content.length > 0
