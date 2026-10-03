@@ -382,6 +382,7 @@ describe('WorkspaceList', () => {
       provisioning: [
         provisioning({ workspaceId: 'r', groupId: 'g1' }),
         provisioning({ workspaceId: 'loose', kind: 'create' }),
+        provisioning({ workspaceId: 'named', kind: 'create', title: 'Fix the parser' }),
         provisioning({ workspaceId: 'f', groupId: 'g1', error: 'boom' }),
       ],
     })
@@ -390,6 +391,9 @@ describe('WorkspaceList', () => {
     for (const row of screen.getAllByText('Restarting workspace')) expect(section.contains(row)).toBe(true)
     // The ungrouped provisioning row stays outside the group.
     expect(section.contains(screen.getByText('New workspace'))).toBe(false)
+    // A create given a title, or made from a titled draft or queued entry,
+    // is headed by it.
+    expect(screen.getByText('Fix the parser')).toBeTruthy()
     // Counted as active alongside the live row; a failed one is shown but has
     // nothing running.
     expect(screen.getByText('(2/3)')).toBeTruthy()

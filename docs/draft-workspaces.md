@@ -43,9 +43,13 @@ restores the screen.
   or queue makes it; the draft keeps the group picked before the box opened.
 
 Creating or queueing from a draft deletes it. The request names the draft
-(`draftId`). While the request runs the snapshot leaves the draft out, and the
+(`draftId`), which claims it (`claimDraft`): a second request naming a draft
+already claimed is refused with `CONFLICT`, and one naming a draft that is
+gone with `NOT_FOUND`, so two tabs or a retry cannot make two workspaces from
+one draft. While the request runs the snapshot leaves the draft out, and the
 server deletes it only after the workspace or queue entry exists, so a failed
-create shows the draft again.
+create shows the draft again. The claim is held in memory, so a server
+restart mid-create shows the draft again too.
 
 ## Titles
 

@@ -1227,6 +1227,9 @@ describe('write routes', () => {
       await vi.waitFor(() => expect(mockCreateWorkspace).toHaveBeenCalledTimes(2))
       expect(await ids()).toEqual([])
       expect(listProvisioning().filter((p) => p.error === undefined)).toEqual([expect.objectContaining({ title: 'Someday' })])
+      // A second run of the same draft is refused before it reserves a row.
+      expect((await client.workspace.create.$post({ json: { project: 'demo', draftId: failed } })).status).toBe(409)
+      expect(listProvisioning().filter((p) => p.error === undefined)).toHaveLength(1)
       finish()
       await created
       expect(await ids()).toEqual([])
