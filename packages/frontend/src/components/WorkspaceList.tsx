@@ -239,7 +239,7 @@ export function WorkspaceList({
     + layout.groups.reduce((n, s) => n + s.members.length + s.held.length + s.ghosts.length, 0)
   // Names of possible parents, for a queued row's discard dialog.
   const names = new Map<string, QueueParent>([
-    ...provisioning.map((p) => [p.workspaceId, { name: 'New workspace', kind: 'live' }] as const),
+    ...provisioning.map((p) => [p.workspaceId, { name: p.title ?? 'New workspace', kind: 'live' }] as const),
     ...workspaces.map((w) => [w.workspaceId, { name: w.title || w.prompt || 'New workspace', kind: 'live' }] as const),
     ...held.map((h) => [h.workspaceId, { name: h.title || h.prompt || 'New workspace', kind: 'held' }] as const),
     ...queued.map((e) => [e.id, { name: queuedTitle(e), kind: 'queued' }] as const),

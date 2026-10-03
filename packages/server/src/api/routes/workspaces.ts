@@ -40,6 +40,7 @@ import {
   discardQueuedWorkspace,
   draftGeneratedTitle,
   queueWorkspace,
+  runFromDraft,
   runQueuedWorkspace,
   saveDraftWorkspace,
   startWorkspace,
@@ -49,7 +50,6 @@ import {
 import { createShellWindow, killWindowTerminal } from '#runtime/terminals'
 import {
   createWorkspaceGroup,
-  deleteDraftWorkspace,
   deleteWorkspaceGroup,
   findWorkspaceByMamaToken,
   findWorkspaceRow,
@@ -85,12 +85,9 @@ const queuedSettings = queuedWorkspaceSettingsSchema.shape
 const queuedGroup = z.string().min(1).max(MAX_TITLE_LENGTH).nullable().optional()
 
 // The draft a create or queue was made from (docs/draft-workspaces.md). It is
-// deleted only after success, so a failure keeps the draft.
+// hidden while the request runs and deleted only after success, so a failure
+// keeps the draft.
 const draftId = z.string().min(1).optional()
-
-async function dropDraft(id: string | undefined): Promise<void> {
-  if (id !== undefined) await deleteDraftWorkspace(id)
-}
 
 /** The calling workspace a `yaac-mama` request is answered for. */
 type MamaCaller = { workspaceId: string; projectSlug: string }
@@ -213,6 +210,9 @@ export const workspaceApp = new Hono()
       if (body.workspaceId !== undefined && await findWorkspaceRow(workspaceId)) {
         throw new ServerError('CONFLICT', `workspace id ${workspaceId} is already in use`)
       }
+      // Without a title, keep the one its draft was shown under.
+      const title = normalizeTitle(body.title ?? '')
+        || await draftGeneratedTitle(body.project, body.draftId, body.prompt)
       // Reserve the id before streaming, so a second create on an id still
       // provisioning is refused. If the create fails before taking over the
       // reservation (bad group or model), it is dropped rather than left
@@ -222,17 +222,15 @@ export const workspaceApp = new Hono()
         projectSlug: body.project,
         tool: body.tool ?? 'claude',
         kind: 'create',
+        ...(title ? { title } : {}),
         reserved: true,
       })
-      return streamProvisioned(c, workspaceId, async (onProgress) => {
+      return streamProvisioned(c, workspaceId, (onProgress) => runFromDraft(body.draftId, async () => {
         // Resolve first so a typo'd group doesn't leave a half-built workspace.
         const groupId = body.group === undefined
           ? undefined
           : (await resolveGroup(body.project, body.group, { create: true })).groupId
-        // Without a title, keep the one its draft was shown under.
-        const title = normalizeTitle(body.title ?? '')
-          || await draftGeneratedTitle(body.project, body.draftId, body.prompt)
-        const created = await startWorkspace({
+        return await startWorkspace({
           projectSlug: body.project,
           workspaceId,
           ...(body.tool !== undefined ? { tool: body.tool } : {}),
@@ -247,9 +245,7 @@ export const workspaceApp = new Hono()
           rememberDefaults: true,
           claimSpare: true,
         }, onProgress)
-        await dropDraft(body.draftId)
-        return created
-      })
+      }))
     },
   )
   .post(
@@ -330,10 +326,8 @@ export const workspaceApp = new Hono()
     })),
     async (c) => {
       const { project, draftId: fromDraft, ...request } = c.req.valid('json')
-      const entry = await queueWorkspace(
-        project, request, 'user', await draftGeneratedTitle(project, fromDraft, request.prompt))
-      await dropDraft(fromDraft)
-      return c.json(entry)
+      return c.json(await runFromDraft(fromDraft, async () => await queueWorkspace(
+        project, request, 'user', await draftGeneratedTitle(project, fromDraft, request.prompt))))
     },
   )
   .post(

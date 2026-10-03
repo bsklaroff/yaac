@@ -88,6 +88,8 @@ export function useCreateWorkspace(): (
     modelName?: string
     prompt?: string
     title?: string
+    /** The row's label while it provisions, when `title` is unset. */
+    shownTitle?: string
     groupId?: string
     /** A group to create and file it under, by name. */
     newGroup?: string
@@ -97,7 +99,8 @@ export function useCreateWorkspace(): (
 ) => void {
   const provision = useProvisionWorkspace()
   return useCallback((projectSlug, tool, setup, branch) => {
-    const { model, modelName, permissionMode, mode, prompt, title, groupId, newGroup, draftId } = setup
+    const { model, modelName, permissionMode, mode, prompt, title, shownTitle, groupId, newGroup, draftId } = setup
+    const label = title || shownTitle
     provision(projectSlug, tool, 'create', randomUUID(),
       (sid, onProgress) =>
         createWorkspace(projectSlug, tool, onProgress, sid, {
@@ -112,6 +115,9 @@ export function useCreateWorkspace(): (
           ...(draftId !== undefined ? { draftId } : {}),
         }),
       groupId,
-      model !== '' ? { model, ...(modelName !== undefined ? { modelName } : {}) } : undefined)
+      {
+        ...(label ? { title: label } : {}),
+        ...(model !== '' ? { model, ...(modelName !== undefined ? { modelName } : {}) } : {}),
+      })
   }, [provision])
 }

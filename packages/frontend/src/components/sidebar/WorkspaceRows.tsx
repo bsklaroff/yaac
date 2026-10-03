@@ -79,7 +79,7 @@ export function ProvisioningRow({ entry }: { entry: ProvisioningWorkspaceEntry }
         {/* The dismiss × is always visible on touch, so leave room for it. */}
         <span className={clsx('flex items-center gap-2', entry.error && 'max-md:pr-9')}>
           <span className="truncate font-medium text-text-dim">
-            {entry.kind === 'restart' ? 'Restarting workspace' : 'New workspace'}
+            {entry.kind === 'restart' ? 'Restarting workspace' : entry.title ?? 'New workspace'}
           </span>
           <span className="ml-auto shrink-0 text-xs text-text-faint">{agentLabel(entry.tool, entry)}</span>
         </span>
