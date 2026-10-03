@@ -47,7 +47,13 @@ export { listWorkspaceGroups, resolveGroup } from './groups'
 export { dismissWorkspacePort, forwardWorkspacePort } from './forward-port'
 export { listActiveWorkspaces } from './list'
 export { purgeProjectBytes } from './project-purge'
-export { discardDraftWorkspace, draftGeneratedTitle, listDraftWorkspaces, saveDraftWorkspace } from './drafts'
+export {
+  discardDraftWorkspace,
+  draftGeneratedTitle,
+  listDraftWorkspaces,
+  runFromDraft,
+  saveDraftWorkspace,
+} from './drafts'
 export { removeProject } from './project-teardown'
 export { reconcilePrewarmPool } from './prewarm-reconcile'
 export {

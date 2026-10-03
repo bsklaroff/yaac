@@ -1090,6 +1090,9 @@ export interface ProvisioningWorkspaceEntry {
   projectSlug: string
   tool: AgentTool
   kind: 'create' | 'restart'
+  /** The title a create was given, or the one its draft or queued entry was
+   *  shown under. Absent on a restart. */
+  title?: string
   /** The model a create launches with, and its display name. Absent on a
    *  restart. */
   model?: string

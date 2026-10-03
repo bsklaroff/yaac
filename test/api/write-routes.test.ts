@@ -1214,13 +1214,21 @@ describe('write routes', () => {
 
       // An untitled create keeps the draft's generated title while the
       // prompt is unchanged.
+      // While it runs, the draft is hidden and its provisioning row is
+      // labelled with that title.
       await setDraftWorkspaceTitle(failed, 'someday', 'Someday')
-      mockCreateWorkspace.mockResolvedValueOnce({
-        workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
-      })
-      await (await client.workspace.create.$post({
+      let finish!: () => void
+      mockCreateWorkspace.mockImplementationOnce(() => new Promise((resolve) => {
+        finish = () => resolve({ workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' })
+      }))
+      const created = client.workspace.create.$post({
         json: { project: 'demo', prompt: 'someday', draftId: failed },
-      })).text()
+      }).then((res) => res.text())
+      await vi.waitFor(() => expect(mockCreateWorkspace).toHaveBeenCalledTimes(2))
+      expect(await ids()).toEqual([])
+      expect(listProvisioning().filter((p) => p.error === undefined)).toEqual([expect.objectContaining({ title: 'Someday' })])
+      finish()
+      await created
       expect(await ids()).toEqual([])
       expect(mockCreateWorkspace.mock.lastCall?.[1]).toMatchObject({ title: 'Someday' })
 

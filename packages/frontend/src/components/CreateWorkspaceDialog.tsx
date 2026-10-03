@@ -410,7 +410,8 @@ function CreateWorkspaceForm({
   // prompt until the prompt changes. It is read from the live row, since
   // the title can land while the dialog is open.
   const fromRow = editing ?? (snapshot?.draftWorkspaces ?? []).find((d) => d.id === opts.draftId)
-  const shownTitle = titleText || (text === from?.prompt ? fromRow?.generatedTitle : undefined) || 'New workspace'
+  const generatedTitle = text === from?.prompt ? fromRow?.generatedTitle : undefined
+  const shownTitle = titleText || generatedTitle || 'New workspace'
   const current: DraftWorkspaceSettings = {
     prompt: text,
     tool,
@@ -494,6 +495,7 @@ function CreateWorkspaceForm({
         mode,
         ...(text !== '' ? { prompt: text } : {}),
         ...(titleText !== '' ? { title: titleText } : {}),
+        ...(generatedTitle !== undefined ? { shownTitle: generatedTitle } : {}),
         ...(newGroup !== null ? { newGroup: newGroupName } : groupId !== null ? { groupId } : {}),
         ...(draft !== undefined ? { draftId: draft.id } : {}),
       }, branchValue !== '' ? branchValue : undefined)

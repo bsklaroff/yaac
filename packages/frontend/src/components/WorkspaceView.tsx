@@ -420,7 +420,7 @@ export function WorkspaceView({
         <header className={headerClass}>
           {leading}
           <span className="titlebar-drag min-w-0 flex-1 truncate font-medium text-text-dim">
-            {creatingHere.kind === 'restart' ? 'Restarting workspace' : 'New workspace'}
+            {creatingHere.kind === 'restart' ? 'Restarting workspace' : creatingHere.title ?? 'New workspace'}
           </span>
         </header>
       ) : workspace ? (

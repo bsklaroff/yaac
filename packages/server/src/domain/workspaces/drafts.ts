@@ -3,6 +3,7 @@
  * user chose to keep. Nothing runs from a draft; creating or queueing from
  * it discards it.
  */
+import { notifyWorkspaceListChanged } from '#notify'
 import {
   deleteDraftWorkspace,
   getProjectRow,
@@ -33,6 +34,26 @@ export async function saveDraftWorkspace(
   return toEntry(row)
 }
 
+/** Drafts a create or queue is being made from, left out of the snapshot
+ *  until it succeeds (deleting the draft) or fails (showing it again). */
+const launching = new Set<string>()
+
+/** Run a create or queue made from draft `id`, if any, then delete the
+ *  draft. A failure keeps the draft. */
+export async function runFromDraft<T>(id: string | undefined, run: () => Promise<T>): Promise<T> {
+  if (id === undefined) return await run()
+  launching.add(id)
+  notifyWorkspaceListChanged()
+  try {
+    const result = await run()
+    await deleteDraftWorkspace(id)
+    return result
+  } finally {
+    launching.delete(id)
+    notifyWorkspaceListChanged()
+  }
+}
+
 export async function discardDraftWorkspace(id: string): Promise<void> {
   if (!await deleteDraftWorkspace(id)) throw new ServerError('NOT_FOUND', `draft workspace ${id} not found`)
 }
@@ -49,9 +70,10 @@ export async function draftGeneratedTitle(
   return draft?.prompt === prompt ? draft.generatedTitle : undefined
 }
 
-/** The snapshot feed: every project's drafts, oldest first. */
+/** The snapshot feed: every project's drafts not being launched, oldest
+ *  first. */
 export async function listDraftWorkspaces(): Promise<DraftWorkspaceEntry[]> {
-  return (await listDraftWorkspaceRows()).map(toEntry)
+  return (await listDraftWorkspaceRows()).filter((d) => !launching.has(d.id)).map(toEntry)
 }
 
 function toEntry({ createdAt, updatedAt, ...rest }: DraftWorkspaceRow): DraftWorkspaceEntry {
