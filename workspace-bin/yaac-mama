@@ -13,12 +13,14 @@
 #   yaac-mama group create "<name>"
 #   yaac-mama group move <workspace> ["<group>"]
 #   yaac-mama models
+#   yaac-mama fetch <workspace>
 #
 # A strict subset of the `yaac` CLI: see what this project is running, start
 # another workspace, file workspaces into named groups, and stop one. Stopping is
 # in reach because it is reversible — the checkout and the conversation
 # survive it. Nothing here deletes, restarts or reconfigures anything; that
-# stays with the user.
+# stays with the user. `fetch` reads another workspace's branches into this
+# checkout and writes nothing to theirs.
 #
 # One request, a JSON envelope {command, args, body} POSTed to the server's
 # /api/workspace/mama, which owns what the commands mean. The substrates
@@ -55,6 +57,7 @@ Usage:
   yaac-mama group create "<name>"                  # make an empty group
   yaac-mama group move <workspace> ["<group>"]      # omit the group to ungroup
   yaac-mama models                                 # tools/models available
+  yaac-mama fetch <workspace>                      # read its branches into git
   yaac-mama --help
 
 Options for create, queue and edit-queued:
@@ -101,6 +104,11 @@ parent's reference branch.
 create prints the new workspace's id and queue the queued workspace's id;
 a create provisions in the background (watch it in the yaac webapp).
 Everything else prints a short report.
+
+fetch copies another workspace's branches and HEAD, running or stopped, into
+this checkout as refs/yaac/peers/<id>/<branch> and refs/yaac/peers/<id>/HEAD,
+where <id> is its first 8 characters (e.g. `git log yaac/peers/1a2b3c4d/HEAD`).
+Only committed work travels. Fetching again replaces those refs.
 
 stop ends a workspace's running container/tmux server and keeps its checkout,
 title, group and conversation, so the user can restart it. Stopping YOURSELF
@@ -179,6 +187,41 @@ run() {
   exit 0
 }
 
+# Fetch another workspace's branches. The answer is a git bundle rather than
+# JSON, so it lands in a file and the fetched workspace's id comes back in a
+# header. The receiving git checks every object (transfer.fsckObjects), since
+# another workspace wrote them.
+fetch_workspace() {
+  workdir=$(git rev-parse --show-toplevel 2>/dev/null) || {
+    echo 'yaac-mama: run fetch from inside your checkout' >&2
+    exit 2
+  }
+  tmp=$(mktemp -d) || exit 1
+  trap 'rm -rf "$tmp"' EXIT
+  code=$(printf '{"command":"fetch","args":{"workspace":%s},"body":""}' "$(json_string "$1")" \
+    | curl -sS --max-time 300 \
+      -H 'Content-Type: application/json' \
+      -H "Authorization: Bearer ${YAAC_MAMA_TOKEN:-}" \
+      --data-binary @- -D "$tmp/headers" -o "$tmp/bundle" -w '%{http_code}' \
+      "$URL/api/workspace/mama") || {
+    echo "yaac-mama: cannot reach the yaac server at $URL" >&2
+    exit 1
+  }
+  if [ "$code" != "200" ]; then
+    payload=$(cat "$tmp/bundle" 2>/dev/null)
+    msg=$(error_text "$payload")
+    echo "yaac-mama: ${msg:-${payload:-request failed}} (HTTP $code)" >&2
+    exit 1
+  fi
+  id=$(tr 'A-Z' 'a-z' < "$tmp/headers" | sed -n 's/^x-yaac-workspace-id: *\([0-9a-f-]*\).*/\1/p' | tail -n 1)
+  short=$(printf '%.8s' "$id")
+  [ -n "$short" ] || { echo 'yaac-mama: the server named no workspace' >&2; exit 1; }
+  git -C "$workdir" -c transfer.fsckObjects=true fetch --quiet --prune --no-tags "$tmp/bundle" \
+    "+refs/heads/*:refs/yaac/peers/$short/*" "+HEAD:refs/yaac/peers/$short/HEAD" || exit 1
+  git -C "$workdir" for-each-ref --format='%(refname:lstrip=1)' "refs/yaac/peers/$short/"
+  exit 0
+}
+
 [ $# -gt 0 ] || { usage >&2; exit 2; }
 
 case "$1" in
@@ -187,6 +230,15 @@ case "$1" in
   list) run list '' ;;
 
   models) run models '' ;;
+
+  fetch)
+    shift
+    if [ $# -ne 1 ] || [ -z "$1" ]; then
+      echo 'usage: yaac-mama fetch <workspace>' >&2
+      exit 2
+    fi
+    fetch_workspace "$1"
+    ;;
 
   create|queue|edit-queued)
     cmd=$1; shift
@@ -303,7 +355,7 @@ case "$1" in
     ;;
 
   *)
-    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, rename, stop, group, models)" >&2
+    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, rename, stop, group, models, fetch)" >&2
     echo 'run "yaac-mama --help" for usage' >&2
     exit 2
     ;;

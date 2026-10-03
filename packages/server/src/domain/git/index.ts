@@ -4,7 +4,9 @@
 //  - `agent.ts` is the ssh-agent that invocation signs through;
 //  - `repo.ts` operates on a project's main clone and creates the checkouts
 //    that borrow from it;
-//  - `run.ts` starts every git process, with hooks and transports pinned.
+//  - `run.ts` starts every git process, with hooks and transports pinned;
+//  - `peer-bundle.ts` reads a checkout's git without running git, through
+//    the `peer-reader.ts` child process.
 //
 // It lives in domain because nothing under `src/runtime` runs git (drivers
 // mount checkouts, they don't make them). Adding a name here widens the
@@ -33,3 +35,4 @@ export {
   remoteBranchExists,
   resolveRemoteRef,
 } from './repo'
+export { bundleCheckout } from './peer-bundle'

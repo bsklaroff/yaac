@@ -79,30 +79,33 @@ reviewer must use `gh pr checkout <n>`, not `git fetch origin <branch>`.
 
 Everything for this PR is filed under a group named **`PR <n>`**, so the user
 sees the author and its reviewer side by side in the sidebar. Find the author
-in git rather than by reading prompts: every yaac workspace commits on
-`agent/<workspace-id>` in the shared git dir, and `/push-pr` pushes that
-branch's tip to the PR head, so the authoring workspace is the local `agent/*`
-branch that holds the PR's head commit:
+in git rather than by reading prompts. Every yaac workspace commits on
+`agent/<workspace-id>` in its own clone, and `/push-pr` pushes that branch's
+tip to the PR head, so the authoring workspace is the one whose branch holds
+the PR's head commit. Its branches are not in your clone until you fetch
+them, so fetch every other workspace that `yaac-mama list` shows:
 
 ```
 git fetch origin <headRefName>
-git branch --list 'agent/*' --contains origin/<headRefName> --format='%(refname:short) %(objectname)'
+yaac-mama fetch <workspace>        # once per other workspace in the list
+git for-each-ref --contains origin/<headRefName> --format='%(refname:lstrip=1) %(objectname)' refs/yaac/peers/
 ```
 
-Take the branch whose tip **equals** the PR head SHA; if none does, take the
-one fewest commits ahead of it (`git rev-list --count origin/<headRefName>..<branch>`),
-since that workspace kept working after it pushed. The workspace id is the uuid
-after `agent/`, and `yaac-mama list` shows its first 8 characters — check the
-row is there and that its PROMPT column plausibly matches the PR, then:
+Each ref is `yaac/peers/<id8>/<branch>`, where `<id8>` is the workspace id
+`yaac-mama list` shows. Take the `agent/*` branch whose tip **equals** the PR
+head SHA; if none does, take the one fewest commits ahead of it
+(`git rev-list --count origin/<headRefName>..<ref>`), since that workspace
+kept working after it pushed. Check that its PROMPT column plausibly matches
+the PR, then:
 
 ```
 yaac-mama group move <author-workspace> "PR <n>"
 ```
 
-No branch contains it usually means the PR came from outside this yaac (a
-fork, a human, another host) — normal; say so and leave the reviewer alone in
-the group. It can also mean the author rebased after pushing, which changes
-the SHAs: only then fall back to matching `yaac-mama list`'s PROMPT and TITLE
+No ref contains it usually means the PR came from outside this yaac (a fork,
+a human, another host) — normal; say so and leave the reviewer alone in the
+group. It can also mean the author rebased after pushing, which changes the
+SHAs: only then fall back to matching `yaac-mama list`'s PROMPT and TITLE
 against the PR, and skip the move if that's still a guess.
 
 ### 3. Write a prompt aimed at *this* PR

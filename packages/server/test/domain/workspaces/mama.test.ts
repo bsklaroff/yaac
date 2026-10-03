@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { installRealWorkspaceDriver } from '@yaac/test-utils/real-driver'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
@@ -35,6 +35,12 @@ import { _clearListActiveInflightForTests } from '#domain/workspaces/list'
 import { runMamaCommand, type MamaCaller } from '#domain/workspaces/mama'
 import { queueWorkspace } from '#domain/workspaces/queued-workspaces'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
+import { workspaceDir } from '@yaac/shared/project-paths'
+import { git } from '@yaac/test-utils/git'
+import { buildPeerReader } from '@yaac/test-utils/peer-reader'
+import { setPeerReaderEntry } from '#domain/git/peer-bundle'
+import fs from 'node:fs/promises'
+import path from 'node:path'
 
 const CALLER: MamaCaller = {
   workspaceId: 'caller-workspace',
@@ -82,6 +88,7 @@ const output = async (
 ): Promise<string> => {
   const outcome = await run(command, body, args)
   if (!outcome.ok) throw new Error(`expected ok, got: ${outcome.error}`)
+  if (!('output' in outcome)) throw new Error('expected text, got a bundle')
   return outcome.output
 }
 
@@ -179,7 +186,7 @@ describe('runMamaCommand', () => {
       const outcome = await run('create', 'write the report')
       expect(outcome.ok).toBe(true)
       // Just the id, so `id=$(yaac-mama create "…")` works.
-      if (outcome.ok) expect(outcome.output).toMatch(/^[0-9a-f-]{36}$/)
+      if (outcome.ok && 'output' in outcome) expect(outcome.output).toMatch(/^[0-9a-f-]{36}$/)
       await created()
 
       expect(vi.mocked(createWorkspace)).toHaveBeenCalledTimes(1)
@@ -664,6 +671,32 @@ describe('runMamaCommand', () => {
     it('needs a workspace to move', async () => {
       const outcome = await run('group-move', 'release')
       expect(outcome).toEqual({ ok: false, error: 'group move needs a workspace id' })
+    })
+  })
+
+  describe('fetch', () => {
+    beforeAll(async () => { setPeerReaderEntry(await buildPeerReader()) })
+
+    it('bundles a stopped sibling\'s branches by short id, and nothing of another project\'s', async () => {
+      // A stopped workspace: a row and a checkout, no unit.
+      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'sibling-workspace' })
+      await recordWorkspaceCreated({ projectSlug: 'other', workspaceId: 'foreign-workspace' })
+      const checkout = workspaceDir('proj', 'sibling-workspace')
+      await fs.mkdir(checkout, { recursive: true })
+      await git(checkout, ['init', '-q', '-b', 'agent/sibling'])
+      await fs.writeFile(path.join(checkout, 'notes.txt'), 'work\n')
+      await git(checkout, ['add', '.'])
+      await git(checkout, ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-qm', 'work'])
+      const tip = (await git(checkout, ['rev-parse', 'HEAD'])).trim()
+
+      const outcome = await run('fetch', '', { workspace: 'sibling' })
+      if (!outcome.ok || !('bundle' in outcome)) throw new Error(`expected a bundle, got ${JSON.stringify(outcome)}`)
+      expect(outcome.workspaceId).toBe('sibling-workspace')
+      expect(outcome.bundle.toString('latin1')).toContain(`${tip} refs/heads/agent/sibling\n${tip} HEAD\n`)
+
+      expect(await run('fetch', '', { workspace: 'foreign-workspace' }))
+        .toEqual({ ok: false, error: 'no workspace \'foreign-workspace\' in proj' })
+      expect(await run('fetch')).toEqual({ ok: false, error: 'fetch needs a workspace id' })
     })
   })
 

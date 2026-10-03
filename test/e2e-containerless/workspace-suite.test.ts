@@ -1027,7 +1027,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(await post('not-a-real-token', 'list')).toBe(401)
   })
 
-  it('stops a workspace it names, and stops ITSELF when it names none', async () => {
+  it('stops a workspace it names, stops ITSELF when it names none, and the stopped one stays fetchable', async () => {
     // Its own subject: the self-stop takes down the tmux server the command
     // runs in.
     const doomed = await createWorkspace()
@@ -1057,9 +1057,22 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }
     expect(gone).toBe(true)
     // A stop keeps the checkout.
-    await expect(fs.stat(
-      path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', doomed),
-    )).resolves.toBeDefined()
+    const doomedCheckout = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', doomed)
+    await expect(fs.stat(doomedCheckout)).resolves.toBeDefined()
+
+    // ...and its committed work stays readable: this workspace fetches it
+    // into its own checkout, standing in that checkout as an agent does.
+    await execFileAsync('git', ['-C', doomedCheckout, '-c', 'user.email=t@t', '-c', 'user.name=T',
+      'commit', '--allow-empty', '-qm', 'left behind'])
+    const mine = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', workspaceId)
+    const creds = await mamaCreds()
+    const { stdout } = await execFileAsync(path.join(process.cwd(), 'workspace-bin', 'yaac-mama'),
+      ['fetch', doomed.slice(0, 8)],
+      { cwd: mine, env: { ...process.env, YAAC_MAMA_URL: creds.YAAC_MAMA_URL, YAAC_MAMA_TOKEN: creds.YAAC_MAMA_TOKEN } })
+    const short = doomed.slice(0, 8)
+    expect(stdout).toContain(`yaac/peers/${short}/HEAD`)
+    const { stdout: subject } = await execFileAsync('git', ['-C', mine, 'log', '-1', '--format=%s', `yaac/peers/${short}/HEAD`])
+    expect(subject.trim()).toBe('left behind')
   }, 180_000)
 
   it('offers yaac\'s builtin skills where the agent\'s own HOME looks for them', async () => {

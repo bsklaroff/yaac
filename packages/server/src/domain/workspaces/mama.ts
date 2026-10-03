@@ -4,9 +4,10 @@
  * both.
  *
  * An agent may list the project's workspaces, create or queue one, edit what
- * it queued, retitle, group, and stop one (its own included). Stopping is
- * allowed because it is reversible: the checkout, row and conversations are
- * kept. Deleting, restarting and reconfiguring stay the user's.
+ * it queued, retitle, group, stop one (its own included), and fetch another's
+ * branches. Stopping is allowed because it is reversible: the checkout, row
+ * and conversations are kept. Deleting, restarting and reconfiguring stay the
+ * user's.
  *
  * The caller's identity comes from the transport (pod IP under k8s, a
  * per-workspace token under containerless), never the request, and every
@@ -42,6 +43,8 @@ import {
   type WorkspaceListEntry,
 } from '@yaac/shared/types'
 import { modelsForTool } from '#domain/auth'
+import { bundleCheckout } from '#domain/git'
+import { repoDir, workspaceDir } from '@yaac/shared/project-paths'
 
 /** Who is asking — resolved by the transport, never taken from the request. */
 export interface MamaCaller {
@@ -63,6 +66,8 @@ export interface MamaRequestInput {
 
 export type MamaOutcome =
   | { ok: true; output: string }
+  /** `fetch`'s answer: a git bundle of `workspaceId`'s branches. */
+  | { ok: true; bundle: Buffer<ArrayBuffer>; workspaceId: string }
   | { ok: false; error: string }
 
 /**
@@ -89,6 +94,7 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   models: [],
   queue: ['parent-workspace', ...CREATE_ARGS],
   'edit-queued': ['queued', 'parent-workspace', ...CREATE_ARGS],
+  fetch: ['workspace'],
 }
 
 /**
@@ -129,6 +135,7 @@ export async function runMamaCommand(
       case 'models': return await runModels(caller)
       case 'queue': return await runQueue(caller, request)
       case 'edit-queued': return await runEditQueued(caller, request)
+      case 'fetch': return await runFetch(caller, request)
     }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -471,6 +478,25 @@ async function runGroupMove(caller: MamaCaller, request: MamaRequestInput): Prom
     output: resolved === null
       ? `Moved ${workspaceId.slice(0, 8)} out of its group.`
       : `Moved ${workspaceId.slice(0, 8)} into "${resolved.name}".`,
+  }
+}
+
+/**
+ * A git bundle of another workspace's branches and HEAD, running or stopped,
+ * for the caller to fetch into its own checkout. Its git dir is read as
+ * data, never run (`bundleCheckout`), and nothing is written to it.
+ */
+async function runFetch(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const workspace = request.args.workspace?.trim() ?? ''
+  if (workspace === '') return { ok: false, error: 'fetch needs a workspace id' }
+  const found = await resolveWorkspace(workspace, { projectSlug: caller.projectSlug })
+  if (!found.ok) return { ok: false, error: workspaceError(caller.projectSlug, workspace, found.reason) }
+  const { workspaceId } = found
+  try {
+    const bundle = await bundleCheckout(workspaceDir(caller.projectSlug, workspaceId), repoDir(caller.projectSlug))
+    return { ok: true, bundle, workspaceId }
+  } catch (err) {
+    return { ok: false, error: `cannot read ${workspaceId.slice(0, 8)}'s git: ${(err as Error).message}` }
   }
 }
 
