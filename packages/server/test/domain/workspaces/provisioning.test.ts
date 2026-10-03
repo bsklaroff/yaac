@@ -91,15 +91,26 @@ describe('runProvisioned', () => {
     expect(listProvisioning()).toEqual([])
   })
 
-  it('marks the row failed and rethrows, and a retry’s progress clears the error', async () => {
+  // A create can throw while a step it started keeps running (the checkout
+  // still fetching), so progress can arrive after the row failed. It must not
+  // clear the error, or the row looks in progress with nothing left to end it.
+  // A retry re-registers, which replaces the failed entry.
+  it('marks the row failed and rethrows, ignores late progress, and a retry starts clean', async () => {
     register('a')
-    await expect(
-      runProvisioned('a', () => Promise.reject(new ServerError('NOT_FOUND', 'missing'))),
-    ).rejects.toThrow('missing')
+    let lateProgress!: (message: string) => void
+    await expect(runProvisioned('a', (onProgress) => {
+      lateProgress = onProgress
+      return Promise.reject(new ServerError('NOT_FOUND', 'missing'))
+    })).rejects.toThrow('missing')
+    notify.mockClear()
+    lateProgress('Creating workspace from main...')
     expect(listProvisioning()[0]).toMatchObject({
-      workspaceId: 'a', error: 'missing',
+      workspaceId: 'a', error: 'missing', message: 'Starting…',
     })
+    expect(inFlightWorkspaceIds()).toEqual([])
+    expect(notify).not.toHaveBeenCalled()
 
+    register('a')
     let during: unknown
     await runProvisioned('a', (onProgress) => {
       onProgress('Pulling image…')
