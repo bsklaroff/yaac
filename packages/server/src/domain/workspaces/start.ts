@@ -1,6 +1,6 @@
 import { createWorkspace, resolveCreate, type WorkspaceCreateResult } from './create'
 import { saveDraftWorkspace } from './drafts'
-import { ensureProvisioning, provisionStopped, throwIfProvisionStopped } from './provisioning'
+import { ensureProvisioning, ProvisionStoppedError, throwIfProvisionStopped } from './provisioning'
 import { tryClaimPrewarmed } from './prewarm'
 import { modelDisplayName } from '#domain/auth'
 import { recordProjectCreate } from '#db'
@@ -40,9 +40,9 @@ export interface StartWorkspaceRequest {
  * claim a spare or create cold. Used by the create route, `yaac-mama create`
  * and queued launches.
  *
- * A create the user stops before its agent runs is rolled back. Its prompt
- * is all it had worth keeping, so with `draftOnStop` it becomes a draft
- * (docs/draft-workspaces.md).
+ * A create the user stops before its agent runs is rolled back at its next
+ * checkpoint. Its prompt is all it had worth keeping, so with `draftOnStop`
+ * it becomes a draft (docs/draft-workspaces.md).
  */
 export async function startWorkspace(
   request: StartWorkspaceRequest,
@@ -104,7 +104,10 @@ export async function startWorkspace(
     })
   } catch (err) {
     const { draftOnStop } = request
-    if (draftOnStop === undefined || prompt === undefined || !provisionStopped(workspaceId)) throw err
+    // Only a checkpoint's own error means the create rolled back. Anything
+    // else (a failed build) keeps its usual outcome, so a stop never leaves
+    // both a draft and a stopped workspace.
+    if (draftOnStop === undefined || prompt === undefined || !(err instanceof ProvisionStoppedError)) throw err
     const settings = {
       prompt,
       tool,

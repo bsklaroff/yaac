@@ -227,7 +227,7 @@ export function stopProvisioning(workspaceId: string): {
 }
 
 /** Whether the user stopped this provision. */
-export function provisionStopped(workspaceId: string): boolean {
+function provisionStopped(workspaceId: string): boolean {
   return entries.get(workspaceId)?.stopping === true
 }
 

@@ -35,7 +35,9 @@ Other exits keep the prompt too:
   before each step that would start something: recording the workspace row,
   launching the runtime, and starting the agents. A failure at a checkpoint
   takes the create's ordinary rollback, which deletes the row and checkout,
-  so the draft is the only thing left. A create already past its last
+  so the draft is the only thing left. A create that fails on its own
+  before reaching a checkpoint (a broken image build) ends as that failure
+  would, with no draft. A create already past its last
   checkpoint has a running agent, so it finishes and is then stopped like
   any running workspace, landing in stopped workspaces. Stopping a restart
   the same way leaves the workspace stopped.

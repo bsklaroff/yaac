@@ -111,6 +111,7 @@ describe('stopWorkspace', () => {
      *  as given, recording what it tears down. */
     function startCreate(driver: {
       assertCanLaunch?: () => Promise<void>
+      prepareImage?: () => Promise<string>
       awaitReady?: () => Promise<void>
       exec?: (cmd: string) => Promise<void>
     }, kind: 'create' | 'restart' = 'create'): {
@@ -124,6 +125,7 @@ describe('stopWorkspace', () => {
       installFakeWorkspaceDriver({
         deregisterWorkspace: (id) => { deregistered.push(id); return Promise.resolve() },
         ...(driver.assertCanLaunch !== undefined ? { assertCanLaunch: driver.assertCanLaunch } : {}),
+        ...(driver.prepareImage !== undefined ? { prepareImage: driver.prepareImage } : {}),
         launch: (spec) => {
           launched.push(spec.workspaceId)
           return Promise.resolve(handleFixture({ workspaceId: id, projectSlug: 'proj', jobName: `yaac-proj-${id}` }))
@@ -207,6 +209,26 @@ describe('stopWorkspace', () => {
       expect(launched).toEqual([])
       expect(await getWorkspaceRow('proj', 'new')).toBeUndefined()
       expect(await listDraftWorkspaces()).toEqual([expect.objectContaining({ prompt: 'build it' })])
+    })
+
+    // Stopped during an image build that then fails: the build's error is
+    // the outcome, not a rollback, so no draft joins whatever it left.
+    it('keeps the failure, and makes no draft, when the create fails on its own', async () => {
+      let fail!: (err: Error) => void
+      let building!: () => void
+      const started = new Promise<void>((resolve) => { building = resolve })
+      const { create } = startCreate({
+        prepareImage: () => new Promise((_, reject) => { fail = reject; building() }),
+      })
+      await started
+
+      expect(await stopWorkspace('new')).toMatchObject({ provisioning: true })
+      fail(new Error('image build failed'))
+
+      await expect(create).rejects.toThrow('image build failed')
+      expect(launched).toEqual([])
+      expect(listProvisioning()).toEqual([])
+      expect(await listDraftWorkspaces()).toEqual([])
     })
 
     // Stopped (twice) once its agent is starting: too late to roll back, so
