@@ -133,6 +133,9 @@ export interface AcpTask {
   summary?: string
   /** The adapter can stop it (`stop-task`). */
   canStop?: true
+  /** Not activity, by the adapter's account (claude's artifact watches,
+   *  requested or not), so it has a card but no chip in the running strip. */
+  ambient?: true
 }
 
 /** Why a prompt turn ended. Anything but `end_turn` is shown to the user. */
