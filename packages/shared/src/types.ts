@@ -777,6 +777,10 @@ export interface WorkspaceListEntry {
   title?: string
   /** Every conversation the workspace has hosted, in restore order. */
   agentSessions: AgentSessionEntry[]
+  /** Its tmux windows other than the agent's, which the webapp opens as
+   *  terminal panes. Absent until the server first lists them (unknown, not
+   *  none) and while the workspace is stopping. */
+  terminals?: WorkspaceTerminalEntry[]
   blockedHosts: string[]
   /** Live host→container forwards. Briefly empty after a server restart,
    *  until the restore pass runs. */

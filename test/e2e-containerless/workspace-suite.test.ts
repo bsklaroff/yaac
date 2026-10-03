@@ -28,7 +28,7 @@ import { AGENT_PACKAGES, agentPackagePrefix } from '@yaac/shared/tool-install'
 import { ACP_ADAPTERS, AGENT_TOOLS } from '@yaac/shared/types'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { FALLBACK_MODELS, PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
-import type { AgentSessionEntry, AgentTool, ServerSnapshot } from '@yaac/shared/types'
+import type { AgentSessionEntry, AgentTool, ServerSnapshot, WorkspaceTerminalEntry } from '@yaac/shared/types'
 
 const execFileAsync = promisify(execFile)
 
@@ -259,6 +259,7 @@ interface ListedWorkspace {
   groupId?: string
   forwardedPorts: Array<{ containerPort: number; hostPort: number }>
   agentSessions: AgentSessionEntry[]
+  terminals?: WorkspaceTerminalEntry[]
 }
 
 /** The workspaces the server currently reports, newest first. */
@@ -582,13 +583,26 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(filled).toContain(`password=${GIT_TOKEN}`)
   })
 
-  it('opens a shell window through the same exec transport the webapp uses', async () => {
+  it('opens and kills a shell window, and the listing follows both', async () => {
     const res = await fetch(`${origin()}/api/workspace/${workspaceId}/terminals`, {
       method: 'POST',
     })
     expect(res.ok).toBe(true)
+    const shell = await res.json() as WorkspaceTerminalEntry
     const windows = await tmux(workspaceId, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')
     expect(windows).toContain('shell')
+    // The status watcher sees tmux announce the window and re-lists.
+    const terminals = async (): Promise<WorkspaceTerminalEntry[] | undefined> =>
+      (await listWorkspaces()).find((w) => w.workspaceId === workspaceId)?.terminals
+    await vi.waitFor(async () => expect(await terminals()).toContainEqual(shell), { timeout: 10_000 })
+
+    const kill = await fetch(`${origin()}/api/workspace/${workspaceId}/terminals/close`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target: shell.target }),
+    })
+    expect(kill.status).toBe(204)
+    await vi.waitFor(async () => expect(await terminals()).not.toContainEqual(shell), { timeout: 10_000 })
   })
 
   it('serves a webapp terminal from its pane: snapshot, raw output, input, paste and resize', async () => {

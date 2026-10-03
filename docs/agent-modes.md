@@ -70,9 +70,11 @@ missing binary, so the path must be right.
 `agentDriver(mode)` in `#runtime/agents` returns an `AgentDriver` with
 `launchCmd(spec)` and `connect(workspace, sink, deps)`. `connect` produces a
 stream of `AgentObservation`s (`up`, `down`, `live-agents`, `status`,
-`command-channel`). `WorkspaceStatusWatcher` consumes it and owns what both
-modes need: respawn, backoff, and the streamd self-heal. There is one retry
-loop for both.
+`command-channel`, `windows-changed`). `WorkspaceStatusWatcher` consumes it
+and owns what both modes need: respawn, backoff, the streamd self-heal, and
+the workspace's terminal listing, which it re-reads over the command channel
+whenever tmux adds, closes or renames a window, so the snapshot carries it.
+There is one retry loop for both.
 
 Content is not part of the interface. PTY bytes and ACP events have nothing
 in common, and the webapp already picks a renderer from a pane's target

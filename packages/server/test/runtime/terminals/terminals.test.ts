@@ -1,140 +1,121 @@
 /**
- * `listWorkspaceTerminals`, `createShellWindow`, `killWindowTerminal`.
- * Nothing in runtime/terminals is mocked; the fakes are the driver's `exec`
- * and the control-stream registry.
+ * `listTerminals`, `createShellWindow`, `killWindowTerminal`. Nothing in
+ * runtime/terminals is mocked. A listing is handed a fake tmux channel; the
+ * driver's `exec` runs create and kill scripts in a real `sh`, with a stub
+ * `tmux` on its PATH that lists `windows` and records the mutations.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import {
-  registerWorkspaceControlStream,
-  _clearControlStreamRegistryForTests,
-} from '#runtime/status/control-stream-registry'
-import { createShellWindow, killWindowTerminal, listWorkspaceTerminals } from '#runtime/terminals'
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
+import { execFile } from 'node:child_process'
+import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { createShellWindow, killWindowTerminal, listTerminals } from '#runtime/terminals'
 import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
-import type { WorkspaceDriver } from '#drivers/contract'
-
-const exec = vi.fn<WorkspaceDriver['exec']>()
-const out = (stdout: string): Promise<{ stdout: string; stderr: string }> =>
-  Promise.resolve({ stdout, stderr: '' })
+import { WorkspaceExecError, type WorkspaceDriver } from '#drivers/contract'
 
 const LIST_FORMAT = "list-windows -t yaac -F '#{window_index}|#{window_id}|#{window_name}'"
 
-beforeEach(() => {
-  exec.mockReset()
-  installFakeWorkspaceDriver({ exec })
-  _clearControlStreamRegistryForTests()
+/** The stub's windows, as `<id> <name>` lines in index order. */
+let windows = ''
+/** The tmux commands the stub ran, other than listings. */
+let ran: string[] = []
+let bin = ''
+
+const exec = vi.fn<WorkspaceDriver['exec']>((_jobName, cmd) => new Promise((resolve, reject) => {
+  execFile('sh', ['-c', cmd], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WINDOWS: windows } },
+    (err, stdout, stderr) => {
+      const lines = stdout.split('\n')
+      ran.push(...lines.filter((l) => l.startsWith('RAN ')).map((l) => l.slice(4)))
+      const out = lines.filter((l) => !l.startsWith('RAN ')).join('\n')
+      if (err) reject(new WorkspaceExecError('exit', typeof err.code === 'number' ? err.code : 1, out, stderr))
+      else resolve({ stdout: out, stderr })
+    })
+}))
+
+beforeAll(() => {
+  bin = mkdtempSync(path.join(os.tmpdir(), 'yaac-tmux-stub-'))
+  writeFileSync(path.join(bin, 'tmux'), [
+    '#!/bin/sh',
+    'shift 2',
+    'case "$1:$*" in',
+    "  list-windows:*window_name*) printf '%s\\n' \"$WINDOWS\" | cut -d' ' -f2- ;;",
+    "  list-windows:*) printf '%s\\n' \"$WINDOWS\" | cut -d' ' -f1 ;;",
+    '  new-window:*) echo "RAN $*"; while [ $# -gt 0 ]; do [ "$1" = -n ] && n=$2; shift; done; echo "@7 $n" ;;',
+    '  *) echo "RAN $*" ;;',
+    'esac',
+  ].join('\n'))
+  chmodSync(path.join(bin, 'tmux'), 0o755)
 })
 
-describe('listWorkspaceTerminals', () => {
+beforeEach(() => {
+  exec.mockClear()
+  windows = ''
+  ran = []
+  installFakeWorkspaceDriver({ exec })
+})
+
+describe('listTerminals', () => {
   it('maps every window but the agent (lowest index), pipes in names and all', async () => {
-    exec.mockReturnValueOnce(out('0|@0|claude\n1|@3|dev-server\n2|@5|a|b|c\n'))
-    expect(await listWorkspaceTerminals('yaac-demo')).toEqual([
+    const tmux = vi.fn((_args: string) => Promise.resolve('0|@0|claude\n1|@3|dev-server\n2|@5|a|b|c\n'))
+    expect(await listTerminals(tmux)).toEqual([
       { target: 'window:@3', name: 'dev-server' },
       { target: 'window:@5', name: 'a|b|c' },
     ])
-    expect(exec.mock.calls[0][1]).toContain(LIST_FORMAT)
+    expect(tmux).toHaveBeenCalledWith(LIST_FORMAT)
   })
 
-  it('is empty for a lone agent window, for garbage, and for a failed probe', async () => {
-    exec.mockReturnValueOnce(out('0|@0|claude\n'))
-    expect(await listWorkspaceTerminals('yaac-demo')).toEqual([])
-
-    exec.mockReturnValueOnce(out('no pipes here\n???\n'))
-    expect(await listWorkspaceTerminals('yaac-demo')).toEqual([])
-
-    exec.mockRejectedValueOnce(new Error('pod gone'))
-    expect(await listWorkspaceTerminals('yaac-demo')).toEqual([])
-  })
-
-  it('rides a registered control stream, falling back to exec when it fails', async () => {
-    const sent: string[] = []
-    registerWorkspaceControlStream('yaac-demo', (cmd) => {
-      sent.push(cmd)
-      return Promise.resolve('0|@0|claude\n1|@1|init')
-    })
-    expect(await listWorkspaceTerminals('yaac-demo')).toEqual([
-      { target: 'window:@1', name: 'init' },
-    ])
-    expect(sent[0]).toContain(LIST_FORMAT)
-    expect(exec).not.toHaveBeenCalled()
-
-    // A dead control stream falls back to exec.
-    registerWorkspaceControlStream('yaac-demo', () => Promise.reject(new Error('stream died')))
-    exec.mockReturnValueOnce(out('0|@0|claude\n1|@1|init\n'))
-    expect(await listWorkspaceTerminals('yaac-demo')).toEqual([
-      { target: 'window:@1', name: 'init' },
-    ])
-    expect(exec).toHaveBeenCalledOnce()
+  it('is empty for a lone agent window and for garbage', async () => {
+    expect(await listTerminals(() => Promise.resolve('0|@0|claude\n'))).toEqual([])
+    expect(await listTerminals(() => Promise.resolve('no pipes here\n???\n'))).toEqual([])
   })
 })
 
 describe('createShellWindow', () => {
   it('fills the first free scratch-shell name: shell, shell-2, shell-3, …', async () => {
-    const create = async (windows: string): Promise<string> => {
-      exec.mockReturnValueOnce(out(windows))
-      exec.mockReturnValueOnce(out('@7\n'))
+    const create = async (listed: string): Promise<string> => {
+      windows = listed
       return (await createShellWindow('yaac-demo')).name
     }
-    expect(await create('0|@0|claude\n')).toBe('shell')
-    expect(await create('0|@0|claude\n1|@1|shell\n')).toBe('shell-2')
-    expect(await create('0|@0|claude\n1|@1|shell\n2|@2|shell-2\n')).toBe('shell-3')
-    expect(await create('0|@0|claude\n1|@1|shell\n2|@2|shell-3\n')).toBe('shell-2')
+    expect(await create('@0 claude')).toBe('shell')
+    expect(await create('@0 claude\n@1 shell')).toBe('shell-2')
+    expect(await create('@0 claude\n@1 shell\n@2 shell-2')).toBe('shell-3')
+    expect(await create('@0 claude\n@1 shell\n@2 shell-3')).toBe('shell-2')
     // Only scratch-shell windows reserve a name.
-    expect(await create('0|@0|claude\n1|@1|init\n2|@2|dev-server\n3|@3|shellfish\n')).toBe('shell')
+    expect(await create('@0 claude\n@1 init\n@2 dev-server\n@3 shellfish')).toBe('shell')
+    // One exec per create.
+    expect(exec).toHaveBeenCalledTimes(5)
   })
 
   it('returns the new window id the create printed', async () => {
-    exec.mockReturnValueOnce(out('0|@0|claude\n1|@1|shell\n'))
-    exec.mockReturnValueOnce(out('@7\n'))
+    windows = '@0 claude\n@1 shell'
     expect(await createShellWindow('yaac-demo')).toEqual({ target: 'window:@7', name: 'shell-2' })
-    expect(exec.mock.calls[1][1]).toContain(
-      "new-window -d -P -F '#{window_id}' -t yaac -n shell-2 -c /workspace",
-    )
+    expect(ran).toEqual(['new-window -d -P -F #{window_id} #{window_name} -t yaac -n shell-2 -c /workspace'])
   })
 
   it('throws when new-window returns no window id', async () => {
-    exec.mockReturnValueOnce(out('0|@0|claude\n'))
-    exec.mockReturnValueOnce(out('garbage'))
+    exec.mockResolvedValueOnce({ stdout: 'garbage', stderr: '' })
     await expect(createShellWindow('yaac-demo')).rejects.toThrow('no window id')
-  })
-
-  it('mutations never ride the (read-only) control stream — only the listing does', async () => {
-    const sent: string[] = []
-    registerWorkspaceControlStream('yaac-demo', (cmd) => {
-      sent.push(cmd)
-      return Promise.resolve('0|@0|claude\n1|@1|shell')
-    })
-    exec.mockReturnValueOnce(out('@7\n'))
-    expect(await createShellWindow('yaac-demo')).toEqual({ target: 'window:@7', name: 'shell-2' })
-    // The listing used the stream; creating the window used exec.
-    expect(sent).toHaveLength(1)
-    expect(exec).toHaveBeenCalledOnce()
-    expect(exec.mock.calls[0][1]).toContain('new-window')
-
-    exec.mockReturnValueOnce(out(''))
-    await killWindowTerminal('yaac-demo', 'window:@1')
-    expect(sent).toHaveLength(2)
-    expect(exec.mock.calls[1][1]).toContain('kill-window -t @1')
   })
 })
 
 describe('killWindowTerminal', () => {
-  it('kills a non-agent window', async () => {
-    exec.mockReturnValueOnce(out('0|@0|claude\n1|@1|shell\n'))
-    exec.mockReturnValueOnce(out(''))
+  it('kills a non-agent window in one exec', async () => {
+    windows = '@0 claude\n@1 shell'
     await killWindowTerminal('yaac-demo', 'window:@1')
-    expect(exec.mock.calls[1][1]).toContain('kill-window -t @1')
+    expect(ran).toEqual(['kill-window -t @1'])
+    expect(exec).toHaveBeenCalledOnce()
   })
 
   it('refuses the agent window, non-window targets, and blind kills', async () => {
-    exec.mockReturnValueOnce(out('0|@0|claude\n1|@1|shell\n'))
+    windows = '@0 claude\n@1 shell'
     await expect(killWindowTerminal('yaac-demo', 'window:@0')).rejects.toThrow('agent window')
 
     await expect(killWindowTerminal('yaac-demo', 'shell:shell')).rejects.toThrow('not a window target')
     await expect(killWindowTerminal('yaac-demo', "window:@1' \\; kill-server")).rejects.toThrow('not a window target')
 
-    exec.mockRejectedValueOnce(new Error('probe failed'))
+    windows = ''
     await expect(killWindowTerminal('yaac-demo', 'window:@1')).rejects.toThrow('refusing to kill blind')
     // No refusal ever ran a kill.
-    expect(exec.mock.calls.filter(([, cmd]) => cmd.includes('kill-window'))).toHaveLength(0)
+    expect(ran).toEqual([])
   })
 })

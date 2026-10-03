@@ -150,7 +150,6 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'GET', path: '/api/workspace/:id/prompt', request: '/api/workspace/nope/prompt', k8s: [200, 404], containerless: [200, 404] },
   // An image pasted into a terminal pane; needs a running workspace.
   { method: 'POST', path: '/api/workspace/:id/attachments', request: '/api/workspace/nope/attachments', k8s: [404, 503], containerless: MISSING },
-  { method: 'GET', path: '/api/workspace/:id/terminals', request: '/api/workspace/nope/terminals', k8s: [404, 409, 503], containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/terminals', request: '/api/workspace/nope/terminals', k8s: [404, 409, 503], containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/terminals/close', request: '/api/workspace/nope/terminals/close', body: { target: 'window:@1' }, k8s: [404, 409, 503], containerless: MISSING },
 

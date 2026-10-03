@@ -83,12 +83,12 @@ export type AgentObservation =
   | { kind: 'status'; handle: string; status: AgentPaneStatus }
   /**
    * A read-only command channel into the workspace, or null when it goes
-   * away. Both drivers publish their control-mode client so other read-only
-   * tmux queries (the terminal listing) reuse it. Sent as an observation
-   * because the registry lives in `#runtime/status`, which imports this
-   * module.
+   * away. Both drivers publish their control-mode client, which the status
+   * watcher lists the workspace's windows over.
    */
   | { kind: 'command-channel'; send: ((cmd: string) => Promise<string>) | null }
+  /** A tmux window was added, closed or renamed. */
+  | { kind: 'windows-changed' }
 
 export interface AgentConnection {
   close(): void

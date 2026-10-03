@@ -104,6 +104,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       status: w.status,
       ...(w.waitingSinceMs !== undefined ? { waitingSinceMs: w.waitingSinceMs } : {}),
       agentSessions: links.map((l) => toAgentSessionEntry(l, liveStatus(w.agents, l))),
+      ...(w.terminals !== undefined ? { terminals: w.terminals } : {}),
       blockedHosts: w.blockedHosts,
       forwardedPorts: w.forwardedPorts,
       unforwardedPorts: w.unforwardedPorts,

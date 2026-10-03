@@ -121,8 +121,8 @@ not make a slow but healthy dial look like a dead relay.
 Adapters give each consumer the interface it already used:
 `dialCtrlStream` (child-process-shaped, for the status watcher),
 `dialPtyStream` (PTY-shaped, for the terminal bridge), and `podExec` (the
-one-shot runner behind tmux probes, terminal listing, the changes diff and
-similar).
+one-shot runner behind tmux probes, shell create and kill, the changes diff
+and similar).
 
 ## The browser hop
 

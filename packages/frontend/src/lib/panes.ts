@@ -51,18 +51,21 @@ export function defaultPaneTarget(workspace: WorkspaceListEntry | undefined): st
 }
 
 /**
- * Whether a mounted pane still exists in this workspace. Only agent panes
- * are checked here (terminal windows are handled by the terminals poll):
+ * Whether a mounted pane still exists in this workspace:
  *
  *  - An ended conversation's pane is gone; otherwise it would keep retrying
  *    a socket the server refuses.
  *  - An `acp` workspace's `agent` pane (acpd's log) is only kept while no
  *    conversation exists yet.
+ *  - A terminal pane lasts while the snapshot lists its window, or while the
+ *    windows are not listed yet.
  */
 export function paneStillLive(workspace: WorkspaceListEntry, target: string): boolean {
   const acp = acpPaneTargets(workspace)
   if (target === 'agent') return acp.length === 0
-  return isAcpTarget(target) ? acp.includes(target) : true
+  if (isAcpTarget(target)) return acp.includes(target)
+  if (isSpecialPane(target)) return true
+  return workspace.terminals?.some((t) => t.target === target) ?? true
 }
 
 /**

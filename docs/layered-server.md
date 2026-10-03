@@ -163,7 +163,8 @@ happens a layer up, in `recordedTranscript`.
   - `status/`: the tmux control-mode watchers feeding the status store,
     liveness probes, workspace classification, and `observeWorkspaces`,
     which joins the driver's raw facts with what the watchers saw.
-  - `terminals/`: the PTY bridge.
+  - `terminals/`: the PTY bridge, and listing, creating and killing a
+    workspace's tmux windows.
   - `ports/`: the forwarder restore after a server restart, and the port
     tunnel (docs/port-forward-tunnel.md).
 

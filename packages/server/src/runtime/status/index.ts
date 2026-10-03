@@ -17,7 +17,6 @@
 
 export { classifyWorkspaces } from './classify'
 export { observeWorkspaces, type WorkspaceRuntimeReport } from './observe'
-export { workspaceControlStreamSend, type ControlStreamSend } from './control-stream-registry'
 export {
   forgetLiveness,
   isTmuxSessionAlive,

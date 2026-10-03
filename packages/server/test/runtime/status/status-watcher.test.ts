@@ -11,16 +11,14 @@ import { handleFixture } from '@yaac/test-utils/fake-driver'
 import type { AgentTool } from '@yaac/shared/types'
 import {
   readWorkspaceStatus,
+  readWorkspaceTerminals,
   isWorkspaceStreamHealthy,
   setAgentStatus,
+  setWorkspaceTerminals,
   _resetWorkspaceStatusStoreForTests,
 } from '#runtime/status/status-store'
 import { parkAcpQueue, takeAcpQueue } from '#runtime/agents/acp-registry'
 import type { QueuedTurn } from '#runtime/agents/acp-client'
-import {
-  workspaceControlStreamSend,
-  _clearControlStreamRegistryForTests,
-} from '#runtime/status/control-stream-registry'
 
 class FakeAttachChild implements StreamChild {
   writes: string[] = []
@@ -91,13 +89,15 @@ function makeWatcher(tool: WatchedWorkspace['tool'], deps: {
 }
 
 /**
- * Drive a watcher through the banner, the `list-panes` reply, and the
- * session, status and model subscriptions for each agent window.
+ * Drive a watcher through the banner, the `list-panes` reply, the session,
+ * status and model subscriptions for each agent window, and the window
+ * listing that follows the stream coming up.
  */
 async function connectWatcher(
   child: FakeAttachChild,
   paneId = '%7',
   tool = 'claude',
+  windows = `0|@0|${tool}`,
 ): Promise<void> {
   child.feedBanner()
   await vi.waitFor(() => expect(child.commandCount).toBe(1)) // list-panes
@@ -109,13 +109,16 @@ async function connectWatcher(
   await vi.waitFor(() => expect(child.commandCount).toBe(4)) // refresh-client -B model
   child.feedReply('')
   await vi.waitFor(() => expect(isWorkspaceStreamHealthy('demo', 's1')).toBe(true))
+  // list-windows; a short heartbeat may already follow it.
+  await vi.waitFor(() => expect(child.commandCount).toBeGreaterThanOrEqual(5))
+  child.feedReply(windows)
+  await vi.waitFor(() => expect(readWorkspaceTerminals('demo', 's1')).toBeDefined())
 }
 
 let watchers: WorkspaceStatusWatcher[] = []
 
 beforeEach(() => {
   _resetWorkspaceStatusStoreForTests()
-  _clearControlStreamRegistryForTests()
   // Supplies the workspace's tmux socket path for the attach command.
   installFakeWorkspaceDriver()
 })
@@ -140,26 +143,40 @@ describe('WorkspaceStatusWatcher (title tools)', () => {
     expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
   })
 
-  it('publishes the proven stream as the session command channel and retires it with the stream', async () => {
+  it('lists the terminals as the stream comes up and on each window event, and keeps them across a drop', async () => {
     const { watcher, children } = makeWatcher('claude')
     watchers.push(watcher)
     watcher.start()
     const child = children[0]
-    // Registered only after the stream answers.
-    expect(workspaceControlStreamSend('yaac-demo-s1')).toBeUndefined()
-    await connectWatcher(child)
-    const send = workspaceControlStreamSend('yaac-demo-s1')
-    expect(send).toBeDefined()
+    await connectWatcher(child, '%7', 'claude', '0|@0|claude\n1|@1|init')
+    // Every window but the agent's.
+    expect(readWorkspaceTerminals('demo', 's1')).toEqual([{ target: 'window:@1', name: 'init' }])
+    expect(child.writes.join('')).toContain("list-windows -t yaac -F '#{window_index}|#{window_id}|#{window_name}'")
 
-    const reply = send!('list-windows -t yaac')
-    await vi.waitFor(() => expect(child.commandCount).toBe(5))
-    expect(child.writes.join('')).toContain('list-windows -t yaac')
-    child.feedReply('0|@0|claude')
-    await expect(reply).resolves.toBe('0|@0|claude')
+    // Each event re-lists the windows over the stream, then the driver
+    // re-lists its panes.
+    const windowEvent = async (line: string, windows: string): Promise<void> => {
+      const n = child.commandCount
+      child.feed(`${line}\n`)
+      await vi.waitFor(() => expect(child.commandCount).toBe(n + 2))
+      child.feedReply(windows)
+      child.feedReply('%7\tclaude\t0\t')
+    }
+    await windowEvent('%window-add @2', '0|@0|claude\n1|@1|init\n2|@2|shell')
+    await vi.waitFor(() => expect(readWorkspaceTerminals('demo', 's1')).toEqual([
+      { target: 'window:@1', name: 'init' },
+      { target: 'window:@2', name: 'shell' },
+    ]))
+    await windowEvent('%window-renamed @2 build', '0|@0|claude\n1|@1|init\n2|@2|build')
+    await vi.waitFor(() => expect(readWorkspaceTerminals('demo', 's1')?.[1]?.name).toBe('build'))
+    await windowEvent('%window-close @1', '0|@0|claude\n2|@2|build')
+    await vi.waitFor(() => expect(readWorkspaceTerminals('demo', 's1')).toEqual([
+      { target: 'window:@2', name: 'build' },
+    ]))
 
-    // Stream death unregisters the channel.
+    // A dropped stream keeps the last listing.
     child.emitExit()
-    expect(workspaceControlStreamSend('yaac-demo-s1')).toBeUndefined()
+    expect(readWorkspaceTerminals('demo', 's1')).toEqual([{ target: 'window:@2', name: 'build' }])
   })
 
   it('classifies pushed title values from the subscription', async () => {
@@ -239,7 +256,7 @@ describe('WorkspaceStatusWatcher (title tools)', () => {
     watcher.start()
     const child = children[0]
     await connectWatcher(child)
-    await vi.waitFor(() => expect(child.commandCount).toBe(5)) // heartbeat sent
+    await vi.waitFor(() => expect(child.commandCount).toBeGreaterThanOrEqual(6)) // heartbeat sent
     child.feedReply('ok')
     await new Promise((r) => setTimeout(r, 30))
     expect(children.length).toBe(1)
@@ -329,7 +346,7 @@ describe('WorkspaceStatusWatcher (pane tools)', () => {
     await connectWatcher(child, '%2', 'opencode')
     child.feed('%output %2 leftover redraw bytes\n')
     await new Promise((r) => setTimeout(r, 25))
-    expect(child.commandCount).toBe(4) // no capture-pane issued
+    expect(child.commandCount).toBe(5) // no capture-pane issued
   })
 })
 
@@ -399,10 +416,12 @@ describe('StatusWatcherManager', () => {
     try {
       manager.sync([workspace({ workspaceId: 's1' })])
       setAgentStatus('demo', 's1', '%0', 'running')
+      setWorkspaceTerminals('demo', 's1', [{ target: 'window:@1', name: 'shell' }])
       manager.sync([])
       expect(manager.size).toBe(0)
       expect(children[0].killed).toBe(true)
       expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
+      expect(readWorkspaceTerminals('demo', 's1')).toBeUndefined()
     } finally {
       manager.stopAll()
     }

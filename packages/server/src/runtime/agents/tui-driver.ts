@@ -153,8 +153,6 @@ class TuiConnection implements AgentConnection {
     await this.syncPanes()
     if (this.done) return
     this.sink({ kind: 'up' })
-    // Publish the stream as the workspace's read-only command channel so
-    // queries like the terminal listing reuse it.
     this.sink({ kind: 'command-channel', send: (cmd) => withTimeout(client.send(cmd), this.commandTimeoutMs, `tmux ${cmd.split(' ')[0]}`) })
     this.heartbeatTimer = setInterval(() => void this.heartbeat(), this.heartbeatIntervalMs)
   }
@@ -302,6 +300,7 @@ class TuiConnection implements AgentConnection {
     }
     if (n.kind === 'windows-changed') {
       // A window opened or closed; re-list off the hot path.
+      this.sink({ kind: 'windows-changed' })
       void this.resync()
       return
     }

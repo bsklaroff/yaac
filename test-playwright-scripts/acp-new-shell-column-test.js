@@ -35,7 +35,7 @@ try {
   await page.goto(`${origin}/?project=${workspace.projectSlug}&workspace=${workspace.workspaceId}`)
   const box = page.getByPlaceholder('Message the agent…')
   await box.waitFor({ state: 'visible', timeout: 120_000 })
-  // Let the first terminals poll land, so the window sync has run.
+  // Let the snapshot list the windows, so the window sync has run.
   await page.waitForTimeout(3000)
   const visibleXterms = () => [...document.querySelectorAll('.xterm')]
     .filter((e) => e.getBoundingClientRect().width > 0).length

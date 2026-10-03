@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { POPUP } from '#components/ui/menu'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Menu } from '@base-ui/react/menu'
 import { layoutOf, useUiStore } from '#lib/store'
 import { WorkspaceTerminal } from '#components/WorkspaceTerminal'
@@ -41,7 +40,6 @@ import { usePressDrag } from '#lib/usePressDrag'
 import { useKeptPanes } from '#lib/useKeptPanes'
 import { usePaneShortcuts } from '#lib/usePaneShortcuts'
 import {
-  addColumn,
   computeColumns,
   dropTargetAt,
   focusPaneTarget,
@@ -134,7 +132,6 @@ export function WorkspaceView({
   const isMobile = useIsMobile()
   // A number, not a class: pane rects are computed below the tab strip.
   const headerH = isMobile ? MOBILE_HEADER_H : HEADER_H
-  const queryClient = useQueryClient()
   const workspaces = snapshot?.workspaces ?? []
   const workspace = workspaces.find((s) => s.workspaceId === selectedWorkspaceId)
   const sid = workspace?.workspaceId ?? null
@@ -155,14 +152,13 @@ export function WorkspaceView({
   const layout: PaneLayout = sid ? layoutOf(layouts, sid, defaultPaneTarget(workspace)) : []
 
   // The workspace's non-agent terminals, which decide which panes exist and
-  // their names.
-  const { data: terminals } = useQuery({
-    queryKey: ['terminals', sid],
-    queryFn: () => api.workspace[':id'].terminals.$get({ param: { id: sid ?? '' } }),
-    enabled: !!workspace,
-    refetchInterval: 10_000,
-    staleTime: 5_000,
-  })
+  // their names. The last listing names the tabs while the snapshot has none
+  // (after a server restart, or while the workspace stops).
+  const lastTerminals = useRef<Record<string, WorkspaceTerminalEntry[]>>({})
+  if (sid && workspace?.terminals) lastTerminals.current[sid] = workspace.terminals
+  const terminals = sid ? lastTerminals.current[sid] : undefined
+  // A shell just created, focused once the window sync has opened its pane.
+  const pendingFocus = useRef<{ sid: string; target: string } | null>(null)
 
   // Pane area size; columns are absolutely positioned from it.
   const wsRef = useRef<HTMLDivElement>(null)
@@ -180,10 +176,15 @@ export function WorkspaceView({
   // Keep the layout's panes in line with the workspace's windows and
   // conversations.
   useEffect(() => {
-    if (!sid || !workspace || !terminals) return
-    const next = syncPaneLayout(layout, workspace, terminals.map((t) => t.target))
+    if (!sid || !workspace?.terminals) return
+    const next = syncPaneLayout(layout, workspace, workspace.terminals.map((t) => t.target))
     if (next !== layout) setWorkspaceLayout(sid, next)
-  }, [sid, workspace, terminals, layout, setWorkspaceLayout])
+    const pending = pendingFocus.current
+    if (pending?.sid === sid && paneTargets(next).includes(pending.target)) {
+      pendingFocus.current = null
+      useUiStore.getState().focusTerminal(sid, pending.target)
+    }
+  }, [sid, workspace, layout, setWorkspaceLayout])
 
   // Tabs mode shows all panes as one tab strip; the column layout is kept so
   // switching back to tiles restores it.
@@ -224,23 +225,16 @@ export function WorkspaceView({
       : null,
   })
 
-  const refetchTerminals = (): void => {
-    void queryClient.invalidateQueries({ queryKey: ['terminals', sid] })
-  }
-
-  /** Create a scratch-shell window and open it as a new column, without
-   *  waiting for the next terminals poll. */
+  /** Create a scratch-shell window and focus it. Its pane opens when the
+   *  snapshot lists the window, which may be before or after this answer;
+   *  focusing a target with no pane would leave focus on another one. */
   const openShell = (): void => {
     if (!sid) return
     void api.workspace[':id'].terminals.$post({ param: { id: sid } })
       .then((entry) => {
-        queryClient.setQueryData<WorkspaceTerminalEntry[]>(
-          ['terminals', sid],
-          (old) => old ? [...old.filter((t) => t.target !== entry.target), entry] : [entry],
-        )
-        const state = useUiStore.getState()
-        state.setWorkspaceLayout(sid, addColumn(layoutOf(state.layouts, sid), entry.target))
-        state.focusTerminal(sid, entry.target)
+        const st = useUiStore.getState()
+        if (paneTargets(layoutOf(st.layouts, sid)).includes(entry.target)) st.focusTerminal(sid, entry.target)
+        else pendingFocus.current = { sid, target: entry.target }
       })
       .catch((e: unknown) => console.error('new shell failed', e))
   }
@@ -250,19 +244,12 @@ export function WorkspaceView({
   // A file pane whose unsaved text could not be saved on close.
   const [confirmDiscard, setConfirmDiscard] = useState<{ target: string; name: string } | null>(null)
 
+  /** Kill a tmux window. Its pane closes when the snapshot drops it, so a
+   *  failed kill leaves it open. */
   const killPane = (target: string): void => {
     if (!sid) return
-    // Remove the cached window too, so the layout sync doesn't re-add it
-    // mid-kill. If the kill fails, the next poll brings the pane back.
-    queryClient.setQueryData<WorkspaceTerminalEntry[]>(
-      ['terminals', sid],
-      (old) => old?.filter((t) => t.target !== target),
-    )
-    setWorkspaceLayout(sid, removeTarget(layout, target))
-    forget(`${sid}|${target}`)
     void api.workspace[':id'].terminals.close.$post({ param: { id: sid }, json: { target } })
       .catch((e: unknown) => console.error('kill terminal failed', e))
-      .finally(refetchTerminals)
   }
 
   // Close a special pane without confirmation. A file pane saves first and

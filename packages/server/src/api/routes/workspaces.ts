@@ -46,7 +46,7 @@ import {
   stopWorkspace,
   updateQueuedWorkspace,
 } from '#domain/workspaces'
-import { createShellWindow, killWindowTerminal, listWorkspaceTerminals } from '#runtime/terminals'
+import { createShellWindow, killWindowTerminal } from '#runtime/terminals'
 import {
   createWorkspaceGroup,
   deleteDraftWorkspace,
@@ -536,10 +536,6 @@ export const workspaceApp = new Hono()
     )
     return c.json({ events })
   })
-  .get('/:id/terminals', async (c) => {
-    const { jobName } = await resolveWorkspaceContainer(c.req.param('id'), { requireRunning: true })
-    return c.json(await listWorkspaceTerminals(jobName))
-  })
   // The review diff: everything changed since the workspace forked from its
   // base branch (committed, working and untracked). `base` overrides the
   // branch it is diffed against.
@@ -633,7 +629,8 @@ export const workspaceApp = new Hono()
     },
   )
   // Create a scratch-shell window in the session's `yaac` tmux session,
-  // returning its entry so the client can open a pane immediately.
+  // returning its entry so the client can focus the pane the snapshot
+  // brings.
   .post('/:id/terminals', async (c) => {
     const { jobName } = await resolveWorkspaceContainer(c.req.param('id'), { requireRunning: true })
     return c.json(await createShellWindow(jobName))
