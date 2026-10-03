@@ -201,8 +201,8 @@ export function buildProxyEgressNpManifest(nodeCidrs: string[]): Record<string, 
  * admitted only to SERVER_MAMA_PORT, never to the API: it forwards workspace
  * traffic, so a workspace could otherwise reach the API through it.
  *
- * Separate from the fronting half because the server re-renders this one at
- * attach as nodes change, while fronting is fixed at install.
+ * Separate from the fronting half because the server's node-sync re-renders
+ * this one when the node set changes, while fronting is fixed at install.
  */
 export function buildServerIngressNpManifest(nodeCidrs: string[]): Record<string, unknown> {
   return np(

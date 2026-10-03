@@ -428,6 +428,8 @@ const ADOPT_NODES = ['yaac-control-plane']
 interface AdoptFacts {
   /** calico-node DaemonSet; `null` means the cluster has none. */
   calico?: object | null
+  /** The namespace calico-node runs in (default `kube-system`). */
+  calicoNamespace?: string
   /** FelixConfiguration objects; omitted means none is served (Felix defaults). */
   felix?: object[]
   /** kube-proxy pods, keyed by the label that finds them (default `k8s-app`). */
@@ -482,7 +484,8 @@ function adoptRun(facts: AdoptFacts = {}): RunMock {
   const label = facts.kubeProxyLabel ?? 'k8s-app'
 
   replaceKind('DaemonSet', facts.calico === null ? [] : [{
-    apiVersion: 'apps/v1', kind: 'DaemonSet', metadata: { name: 'calico-node', namespace: 'kube-system' },
+    apiVersion: 'apps/v1', kind: 'DaemonSet',
+    metadata: { name: 'calico-node', namespace: facts.calicoNamespace ?? 'kube-system' },
     ...(facts.calico ?? HEALTHY_CALICO_DS),
   }])
   replaceKind('FelixConfiguration', (facts.felix ?? []).map((f, i) => ({
@@ -1632,7 +1635,7 @@ describe('runClusterInstall', () => {
 
     // No Calico, which is also how a Cilium cluster looks; Cilium cannot
     // support the veth redirect.
-    expect(await refuse({ calico: null })).toMatch(/no calico-node found/)
+    expect(await refuse({ calico: null })).toMatch(/no calico-node found in kube-system or calico-system/)
     expect(await refuse({ calico: null })).toMatch(/Cilium is not supported/)
 
     // Not fully rolled out: a node without Felix has no egress lockdown.
@@ -1673,14 +1676,18 @@ describe('runClusterInstall', () => {
   })
 
   it('--byo honors an explicit pod-CIDR and veth-prefix config', async () => {
-    // Policy-only Calico over another IPAM: pod IPs in no IPPool or podCIDR,
-    // and `eni*` veths. Whether the prefix matches the nodes' routes is the
-    // cluster check's veth-source gate.
+    // The EKS shape: operator-managed, policy-only Calico (in calico-system)
+    // over the VPC CNI, so pod IPs in no IPPool or podCIDR, and `eni*` veths.
+    // Whether the prefix matches the nodes' routes is the cluster check's
+    // veth-source gate.
     vi.stubEnv('YAAC_POD_CIDRS', '172.31.0.0/16')
     vi.stubEnv('YAAC_CNI_VETH_PREFIX', 'eni')
     stageAdoptCidrs({ pools: [], nodeCidrs: [] })
     const deps = makeDeps({
-      run: adoptRun({ routes: '10.0.3.41 dev enia7b3c9d1e2f4 scope link' }),
+      run: adoptRun({
+        calicoNamespace: 'calico-system',
+        routes: '10.0.3.41 dev enia7b3c9d1e2f4 scope link',
+      }),
     })
     await expect(runClusterInstall(BYO, deps)).resolves.toBeUndefined()
 

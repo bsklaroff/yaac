@@ -35,6 +35,7 @@ import {
   MAIN_REGISTRY_APP_LABEL,
   ensureMainRegistry,
 } from '@yaac/server/drivers/k8s/cluster/main-registry'
+import { LABEL_REGISTRY_SERVES } from '@yaac/server/drivers/k8s/cluster/project-registry'
 import { RUNTIME_CLASS_GVISOR } from '@yaac/server/drivers/k8s/substrate/gvisor'
 import { runPodToCompletion } from '@yaac/server/drivers/k8s/substrate/one-shot-pods'
 import { applyObject, deleteObject, k8sNamespace, listObjects, readObject } from '@yaac/server/drivers/k8s/substrate/api'
@@ -184,7 +185,8 @@ describe('trust-split builds', () => {
     const svc = await readObject<{ spec: { selector?: Record<string, string>; clusterIP?: string } }>({
       apiVersion: 'v1', kind: 'Service', name: REGISTRY_SERVICE_NAME, namespace: REGISTRY_NAMESPACE,
     })
-    expect(svc?.spec.selector).toEqual({ app: MAIN_REGISTRY_APP_LABEL })
+    // Only the serving pod: the one-shot writer pods share its app label.
+    expect(svc?.spec.selector).toEqual({ app: MAIN_REGISTRY_APP_LABEL, [LABEL_REGISTRY_SERVES]: 'true' })
     expect(svc?.spec.clusterIP).toBeTruthy()
 
     const deploy = await readObject<{ status?: { readyReplicas?: number } }>({

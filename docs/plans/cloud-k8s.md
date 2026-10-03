@@ -91,7 +91,9 @@ and `e2e-byo`, plus `e2e-byo-install` on kind-byo.
 
 ### 1. Real targets
 
-In this order: EKS on Amazon Linux, then AKS on Ubuntu. On each:
+In this order: EKS on Amazon Linux, then AKS on Ubuntu. `infra/aws-eks`
+stands the EKS target up, with the install host to run `--byo` from; its
+README is the runbook. On each:
 
 - The gVisor installer on the real node OS: sentry probe green, and it
   survives a node-pool upgrade.
@@ -99,6 +101,9 @@ In this order: EKS on Amazon Linux, then AKS on Ubuntu. On each:
   mode over VPC CNI on EKS, Microsoft's on AKS.
 - The storage gates over a real network. The spike numbers are single-host
   best cases, and `actimeo=1` is where staleness bugs would show.
+- `cluster check`'s NFS reachability probe on EFS. It dials the server the
+  global volume names, and an EFS volume names a file system ID instead, so
+  the probe is skipped. It should dial the mount targets.
 - Workspace `pnpm install` time with the npm cache
   (docs/workspace-storage.md "Package installs") from another node. Also a
   node drain that moves the cache: installs fail until its claim

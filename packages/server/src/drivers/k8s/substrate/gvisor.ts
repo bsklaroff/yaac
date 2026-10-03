@@ -45,6 +45,15 @@ export const RUNTIME_CLASS_GVISOR_NESTED = 'gvisor-nested'
 export const GVISOR_NODE_LABEL = 'yaac.gvisor'
 export const GVISOR_NODE_VERSION_LABEL = 'yaac.gvisor-version'
 
+/**
+ * A taint a node pool may register its nodes with, to keep every pod off a
+ * node until the runtime is installed. The installer removes it after
+ * labelling the node. A cluster autoscaler told it is a startup taint
+ * counts the node as still starting until then, rather than scaling up
+ * again for the pods it cannot yet take (infra/aws-eks).
+ */
+export const GVISOR_PENDING_TAINT = 'yaac.gvisor/pending'
+
 /** The labels the installer patches onto its node after a successful pass. */
 export function gvisorNodeLabels(): Record<string, string> {
   return {
@@ -385,15 +394,39 @@ export function gvisorInstallScript(): string {
     '',
     nodeTuningScript(),
     '',
-    '# Mark this node as carrying the runtime. The apiserver is reached by',
-    '# the injected service IP, so this works before cluster DNS does.',
-    'label_node() {',
-    '  curl -sS --fail-with-body -o /dev/null -X PATCH \\',
-    '    --cacert "$sa/ca.crt" \\',
-    '    -H "Authorization: Bearer $(cat "$sa/token")" \\',
-    `    -H 'Content-Type: application/merge-patch+json' \\`,
-    `    --data ${q(JSON.stringify({ metadata: { labels: gvisorNodeLabels() } }))} \\`,
+    '# This node\'s Node object, with curl\'s extra arguments. The apiserver is',
+    '# reached by the injected service IP, so this works before cluster DNS does.',
+    'node_api() {',
+    '  curl -sS --fail-with-body --cacert "$sa/ca.crt" \\',
+    '    -H "Authorization: Bearer $(cat "$sa/token")" "$@" \\',
     '    "https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT/api/v1/nodes/$NODE_NAME"',
+    '}',
+    '',
+    '# Mark this node as carrying the runtime.',
+    'label_node() {',
+    `  node_api -o /dev/null -X PATCH -H 'Content-Type: application/merge-patch+json' \\`,
+    `    --data ${q(JSON.stringify({ metadata: { labels: gvisorNodeLabels() } }))}`,
+    '}',
+    '',
+    '# Drop the pending taint, if the node has it (the apiserver pretty-prints',
+    '# for curl, so the match allows spacing). A failed read fails the pass',
+    '# rather than reading as "no taint". Each JSON patch tests the key at one',
+    '# index before removing that index, so a concurrent change to the node\'s',
+    '# taints fails the patch instead of removing another taint.',
+    'untaint_node() {',
+    '  node=$(node_api) || return 1',
+    `  printf '%s' "$node" | grep -qE ${q(`"key": *"${GVISOR_PENDING_TAINT.replace(/\./g, '\\.')}"`)} || return 0`,
+    '  i=0',
+    '  while [ "$i" -lt 64 ]; do',
+    `    if node_api -o /dev/null -X PATCH -H 'Content-Type: application/json-patch+json' \\`,
+    `      --data "[{\\"op\\":\\"test\\",\\"path\\":\\"/spec/taints/$i/key\\",\\"value\\":\\"${GVISOR_PENDING_TAINT}\\"},{\\"op\\":\\"remove\\",\\"path\\":\\"/spec/taints/$i\\"}]" 2>/dev/null; then`,
+    `      echo "yaac-gvisor: removed the ${GVISOR_PENDING_TAINT} taint"`,
+    '      return 0',
+    '    fi',
+    '    i=$((i + 1))',
+    '  done',
+    `  echo "yaac-gvisor: could not remove the ${GVISOR_PENDING_TAINT} taint" >&2`,
+    '  return 1',
     '}',
     '',
     'install_pass() {',
@@ -484,6 +517,7 @@ export function gvisorInstallScript(): string {
     '  fi',
     '',
     '  label_node',
+    '  untaint_node',
     '}',
     '',
     // Tuning first, so a node that cannot be tuned fails before

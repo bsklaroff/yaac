@@ -52,7 +52,7 @@ import {
   workspaceIdLabels,
 } from '#drivers/k8s/substrate'
 import type { InstallIdentity, NodeTaint, PodToleration } from '#drivers/k8s/substrate'
-import { assessVethSource, probeWorkloadVeths } from './cni-adopt'
+import { CALICO_NAMESPACES, assessVethSource, probeWorkloadVeths, readCalicoNode } from './cni-adopt'
 import { GVISOR_INSTALLER_APP_NAME } from './gvisor-installer'
 import { deployedInstallIdentity } from './server-deploy'
 import { isNfsFamily } from './storage'
@@ -365,7 +365,7 @@ function nodeInventoryResult(nodes: ClusterNode[]): CheckResult {
       name: 'nodes', status: 'warn',
       detail: `${nodes.length} node(s), NotReady: ${notReady.join(', ')}`,
       fix: 'A NotReady node runs nothing. Check the CNI on it '
-        + '(`kubectl -n kube-system get pods -o wide -l k8s-app=calico-node`).',
+        + '(`kubectl get pods -A -o wide -l k8s-app=calico-node`).',
     }
   }
   const eligible = nodes.filter((n) => n.schedulable)
@@ -1690,14 +1690,20 @@ async function daemonSetReadiness(name: string, namespace: string): Promise<{ ok
  */
 async function runDatapathCheck(): Promise<CheckResult> {
   try {
-    const calico = await daemonSetReadiness('calico-node', 'kube-system')
-    if (!calico?.ok) {
+    const calicoNode = await readCalicoNode()
+    if (calicoNode.kind === 'error') throw new Error(calicoNode.message)
+    const calicoStatus = calicoNode.kind === 'found' ? calicoNode.value.status : undefined
+    const calicoReady = calicoStatus?.numberReady ?? 0
+    const calicoWanted = calicoStatus?.desiredNumberScheduled ?? 0
+    if (!(calicoReady > 0) || calicoReady !== calicoWanted) {
       return {
         name: 'datapath', status: 'fail',
-        detail: `calico-node is ${calico?.ratio ?? 'not'} ready — NetworkPolicy is not being enforced`,
+        detail: calicoNode.kind === 'absent'
+          ? `no calico-node in ${CALICO_NAMESPACES.join(' or ')} — NetworkPolicy is not being enforced`
+          : `calico-node is ${calicoReady}/${calicoWanted} ready — NetworkPolicy is not being enforced`,
         fix: 'Calico is the CNI and policy engine. Re-run `yaac cluster install` '
           + '(on a byo cluster, whose Calico yaac did not install, `--byo`), '
-          + 'or inspect with `kubectl -n kube-system get pods -l k8s-app=calico-node`.',
+          + `or inspect with \`kubectl -n ${calicoNode.namespace} get pods -l k8s-app=calico-node\`.`,
       }
     }
 

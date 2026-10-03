@@ -31,8 +31,11 @@ import { env } from '@yaac/shared/env'
 
 /** Everything the gate reads about the cluster's CNI, in one shape. */
 interface CniFacts {
-  /** calico-node's rollout. `present` is null when the read failed. */
-  calico: { present: boolean | null; ready: number; desired: number }
+  /**
+   * calico-node's rollout, and the namespace it was found in. `present` is
+   * null when the read failed.
+   */
+  calico: { present: boolean | null; namespace: string; ready: number; desired: number }
   felix: {
     /**
      * `spec.bpfEnabled` across every FelixConfiguration, including per-node
@@ -109,7 +112,7 @@ export function assessCniAdoption(facts: CniFacts): CniAssessment {
     // Reported by the unevaluated refusal below.
   } else if (!facts.calico.present) {
     refusals.push(
-      'no calico-node found in kube-system. yaac\'s egress redirect is a nat DNAT at '
+      `no calico-node found in ${CALICO_NAMESPACES.join(' or ')}. yaac's egress redirect is a nat DNAT at `
       + 'each pod\'s host-side veth, so it needs a CNI whose pod egress traverses host '
       + 'netfilter and which leaves ClusterIP translation to kube-proxy — Calico in its '
       + 'iptables dataplane, self-managed or provider-managed. Cilium is not supported '
@@ -120,8 +123,8 @@ export function assessCniAdoption(facts: CniFacts): CniAssessment {
     refusals.push(
       `calico-node is ${facts.calico.ready}/${facts.calico.desired} ready — NetworkPolicy `
       + 'is not being enforced on every node, and session egress lockdown is the policy '
-      + 'plane, not netd. Wait for the rollout (`kubectl -n kube-system rollout status '
-      + 'daemonset/calico-node`) and re-run.',
+      + `plane, not netd. Wait for the rollout (\`kubectl -n ${facts.calico.namespace} rollout `
+      + 'status daemonset/calico-node`) and re-run.',
     )
   }
 
@@ -394,6 +397,25 @@ function felixBool(raw: string): boolean {
 }
 
 /**
+ * Where calico-node runs: `kube-system` for a manifest install, and
+ * `calico-system` for one the Tigera operator manages, which is how Calico
+ * is installed on EKS and AKS.
+ */
+export const CALICO_NAMESPACES = ['kube-system', 'calico-system']
+
+/** calico-node from the first namespace that has it; absent only when none does. */
+export async function readCalicoNode(): Promise<Read<RawDaemonSet> & { namespace: string }> {
+  let read: Read<RawDaemonSet> = { kind: 'absent' }
+  for (const namespace of CALICO_NAMESPACES) {
+    read = await settle(() => readObject<RawDaemonSet>({
+      apiVersion: 'apps/v1', kind: 'DaemonSet', name: 'calico-node', namespace,
+    }))
+    if (read.kind !== 'absent') return { ...read, namespace }
+  }
+  return { ...read, namespace: CALICO_NAMESPACES[0] }
+}
+
+/**
  * Read everything `assessCniAdoption` judges. An absent object is a fact,
  * not an error: a provider-managed Calico has no FelixConfiguration, which
  * means Felix runs its iptables defaults.
@@ -403,9 +425,7 @@ export async function gatherCniFacts(): Promise<CniFacts> {
     readList<RawPod>('v1', 'Pod', { namespace: 'kube-system', labelSelector })
   const [calicoRead, felixRead, kubeProxyRead, priorityRead, nodeRead, cidrs, tolerations] =
     await Promise.all([
-      settle(() => readObject<RawDaemonSet>({
-        apiVersion: 'apps/v1', kind: 'DaemonSet', name: 'calico-node', namespace: 'kube-system',
-      })),
+      readCalicoNode(),
       // All of them: per-node overrides count too.
       readList<RawFelixConfig>('crd.projectcalico.org/v1', 'FelixConfiguration'),
       // kubeadm/EKS/kind label `k8s-app`; GKE and AKS label `component`.
@@ -457,6 +477,7 @@ export async function gatherCniFacts(): Promise<CniFacts> {
   return {
     calico: {
       present: calicoRead.kind === 'error' ? null : calicoRead.kind === 'found',
+      namespace: calicoRead.namespace,
       ready: calicoDs?.status?.numberReady ?? 0,
       desired: calicoDs?.status?.desiredNumberScheduled ?? 0,
     },

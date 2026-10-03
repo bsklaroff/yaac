@@ -1,6 +1,10 @@
 import { reconcileImageSalvage } from '#drivers/k8s/workspaces'
 import { reconcileRegistrationGc } from '#drivers/k8s/egress'
-import { gcOrphanProjectRegistries, reconcileProjectRegistryGc } from '#drivers/k8s/cluster'
+import {
+  gcOrphanProjectRegistries,
+  reconcileNodeSet,
+  reconcileProjectRegistryGc,
+} from '#drivers/k8s/cluster'
 import {
   reconcileImagePrewarm,
   reconcileMainRegistryGc,
@@ -20,6 +24,11 @@ import type { DriverReconcileSteps } from '#drivers/contract'
 export function k8sReconcileSteps(): DriverReconcileSteps {
   return {
     prePool: [
+      // Per-node registry hosts.toml and node-address policies, for a node
+      // that joined since the last pass (an autoscaled one). Its first run
+      // after a server start always syncs. Before the pool and the builds,
+      // which may land on that node.
+      { name: 'node-sync', triggers: [], run: async (ctx) => reconcileNodeSet(await ctx.projects()) },
       // Keep every project's image chain built. Runs before the
       // prewarm pool so a spare's create joins the builds already running.
       // Every resync: a warm sweep is a registry HEAD per layer per project.

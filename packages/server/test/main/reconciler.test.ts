@@ -19,6 +19,7 @@ vi.mock('#domain/workspaces/cleanup', async (importOriginal) => ({
   reapOrphanNodeLocal: vi.fn(),
 }))
 vi.mock('#drivers/k8s/images/main-registry-gc', () => ({ reconcileMainRegistryGc: vi.fn() }))
+vi.mock('#drivers/k8s/cluster/node-sync', () => ({ reconcileNodeSet: vi.fn() }))
 vi.mock('#drivers/k8s/images/store-writer', () => ({ reconcileNodeImageStores: vi.fn() }))
 vi.mock('#drivers/k8s/images/image-prewarm', async (importOriginal) => ({
   ...(await importOriginal<typeof imagePrewarmModule>()),

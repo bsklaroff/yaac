@@ -56,6 +56,15 @@ export const NESTED_GRAPHROOT_TMPFS_BYTES = 12 * 1024 ** 3
  */
 export const NESTED_GRAPHROOT_SIZELIMIT_BYTES = NESTED_GRAPHROOT_TMPFS_BYTES + 1024 ** 3
 
+/**
+ * Every workspace pod's annotations: a workspace keeps live state in its
+ * sandbox, so a cluster autoscaler must never evict one to drain a node it
+ * thinks is underused. The node stays until the workspace stops.
+ */
+export const WORKSPACE_POD_ANNOTATIONS: Record<string, string> = {
+  'cluster-autoscaler.kubernetes.io/safe-to-evict': 'false',
+}
+
 /** Pod annotations making the graphroot a disk-backed sentry tmpfs. */
 export const NESTED_GRAPHROOT_ANNOTATIONS: Record<string, string> =
   sentryTmpfsAnnotations(NESTED_GRAPHROOT_VOLUME, NESTED_GRAPHROOT_TMPFS_BYTES)
@@ -307,7 +316,10 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
   // One volume per dir (see sentryTmpfsAnnotations). A tmpfs root is
   // world-writable, so the workspace user can install into it.
   const moduleDirs = p.moduleDirs ?? []
-  let annotations: Record<string, string> = p.nested ? { ...NESTED_GRAPHROOT_ANNOTATIONS } : {}
+  let annotations: Record<string, string> = {
+    ...WORKSPACE_POD_ANNOTATIONS,
+    ...(p.nested ? NESTED_GRAPHROOT_ANNOTATIONS : {}),
+  }
   moduleDirs.forEach((dir, i) => {
     const name = `${MODULES_VOLUME_PREFIX}-${i}`
     volumes.push({ name, emptyDir: { sizeLimit: String(MODULES_SIZELIMIT_BYTES) } })
@@ -331,10 +343,7 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
     spec: {
       backoffLimit: 0,
       template: {
-        metadata: {
-          labels: p.labels,
-          ...(Object.keys(annotations).length > 0 ? { annotations } : {}),
-        },
+        metadata: { labels: p.labels, annotations },
         spec: {
           restartPolicy: 'Never',
           terminationGracePeriodSeconds: p.terminationGracePeriodSeconds ?? 5,

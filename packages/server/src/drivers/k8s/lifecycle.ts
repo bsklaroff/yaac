@@ -1,15 +1,9 @@
 import {
   ClusterCache,
-  applyObject,
   setActiveClusterCache,
   type WorkspaceDeltaSource,
 } from '#drivers/k8s/substrate'
-import {
-  buildProxyEgressNpManifest,
-  buildServerIngressNpManifest,
-  ensureMainRegistry,
-  nodeIpBlocks,
-} from '#drivers/k8s/cluster'
+import { ensureMainRegistry } from '#drivers/k8s/cluster'
 import {
   PortDetectorManager,
   stopAllWorkspaceForwarders,
@@ -97,18 +91,9 @@ export async function startK8sDriver(sinks: DriverSinks): Promise<void> {
     // could keep from scheduling. Its failure must not skip the rest.
     await deleteLeakedBuilderPods().catch((err: unknown) =>
       serverLog(`[server] leaked builder pod delete failed: ${String(err)}`))
-    // A healthy registry costs one HTTP ping here.
+    // A healthy registry costs one HTTP ping here. The node-address
+    // policies are re-rendered by the reconcile pass's node-sync step.
     await ensureMainRegistry()
-    // Re-render the node part of the server's ingress policy from the
-    // live node list (docs/server-in-cluster.md). Install applies it too,
-    // but nodes can be added later, and a server pod rescheduled onto a
-    // new node must admit that node's kubelet or it never goes Ready.
-    const nodeCidrs = await nodeIpBlocks()
-    await applyObject(buildServerIngressNpManifest(nodeCidrs))
-    // The proxy's egress policy, from the same node list. The proxy's own
-    // bootstrap skips an already-current proxy, so this is also applied on
-    // every server start.
-    await applyObject(buildProxyEgressNpManifest(nodeCidrs))
   })().catch((err) => serverLog(`[server] cluster bootstrap failed: ${String(err)}`))
 
   // Let the caller restore state the last server left running (such as

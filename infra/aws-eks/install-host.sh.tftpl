@@ -1,0 +1,92 @@
+#!/bin/bash
+# Bootstraps the yaac install host (install-host.tf): rootful podman,
+# kubectl, the AWS CLI, Tailscale, and yaac built from source for the
+# ubuntu user, with a kubeconfig for the cluster and the CNI settings
+# `yaac cluster install --byo` needs on EKS. It runs while the cluster is
+# still being created, so the kubeconfig step waits for it. Output goes to
+# /var/log/yaac-install-host.log; the host is ready once
+# /var/lib/yaac-install-host.ready exists.
+set -euxo pipefail
+exec > >(tee -a /var/log/yaac-install-host.log) 2>&1
+
+export DEBIAN_FRONTEND=noninteractive
+apt="apt-get -y -o DPkg::Lock::Timeout=600"
+$apt update
+$apt install podman acl libgomp1 git curl unzip jq build-essential
+
+# yaac drives the rootful podman engine on Linux (docs/cluster-setup.md
+# "Linux: rootful podman"). The drop-in gives ubuntu the socket through a
+# group, which survives reboots where a setfacl on /run would not.
+groupadd -f podman
+usermod -aG podman ubuntu
+mkdir -p /etc/systemd/system/podman.socket.d
+cat > /etc/systemd/system/podman.socket.d/yaac.conf <<'EOF'
+[Socket]
+SocketMode=0660
+SocketGroup=podman
+ExecStartPost=/bin/sh -c 'chgrp podman /run/podman && chmod 0750 /run/podman'
+EOF
+systemctl daemon-reload
+systemctl enable podman.socket
+systemctl restart podman.socket
+
+arch=$(dpkg --print-architecture)
+kubectl_version=$(curl -fsSL "https://dl.k8s.io/release/stable-${kubernetes_version}.txt")
+curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/$kubectl_version/bin/linux/$arch/kubectl"
+chmod 755 /usr/local/bin/kubectl
+
+curl -fsSLo /tmp/awscli.zip "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip"
+unzip -q -o /tmp/awscli.zip -d /tmp
+/tmp/aws/install --update
+rm -rf /tmp/aws /tmp/awscli.zip
+
+curl -fsSL https://tailscale.com/install.sh | sh
+%{ if tailscale_key_parameter != "" ~}
+# The auth key is an SSM SecureString only this host's role can read, so it
+# is in neither the user data nor this log. A spent or expired key leaves
+# the host off the tailnet but still built; `sudo tailscale up` joins it later.
+set +x
+key=$(aws ssm get-parameter --region '${region}' --name '${tailscale_key_parameter}' \
+  --with-decryption --query Parameter.Value --output text) \
+  && tailscale up --auth-key="$key" --hostname='${host_name}' --ssh \
+  || echo "yaac: tailscale up failed; run 'sudo tailscale up --ssh' to join the tailnet" >&2
+unset key
+set -x
+%{ endif ~}
+
+# Node comes from nvm, not apt: Ubuntu's build lacks the TypeScript type
+# stripping the frontend build needs (README.md "Linux").
+sudo -iu ubuntu bash -exo pipefail <<'EOS'
+curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.6/install.sh | bash
+export NVM_DIR="$HOME/.nvm"
+. "$NVM_DIR/nvm.sh"
+git clone '${yaac_repo}' ~/yaac
+cd ~/yaac
+git checkout '${yaac_ref}'
+nvm install
+nvm alias default "$(cat .nvmrc)"
+# The exact pnpm package.json pins, so pnpm never fetches one itself: the
+# repo's minimumReleaseAge refuses a pin newer than its cutoff.
+npm install -g "pnpm@$(node -p 'require("./package.json").packageManager.split("@")[1]')"
+CI=true pnpm install --frozen-lockfile
+pnpm build
+npm install -g .
+EOS
+
+tries=0
+until sudo -iu ubuntu aws eks update-kubeconfig --region '${region}' --name '${cluster_name}'; do
+  tries=$((tries + 1))
+  [ "$tries" -lt 90 ] || { echo "the EKS cluster never became readable" >&2; exit 1; }
+  sleep 20
+done
+
+# EKS pods take VPC addresses on eni* veths, which no Calico IPPool or node
+# podCIDR describes (docs/cluster-setup.md "The CNI gate").
+cat > /home/ubuntu/.yaac-eks.env <<'EOF'
+export YAAC_CNI_VETH_PREFIX=eni
+export YAAC_POD_CIDRS=${pod_cidrs}
+EOF
+chown ubuntu:ubuntu /home/ubuntu/.yaac-eks.env
+echo '. ~/.yaac-eks.env' >> /home/ubuntu/.bashrc
+
+touch /var/lib/yaac-install-host.ready

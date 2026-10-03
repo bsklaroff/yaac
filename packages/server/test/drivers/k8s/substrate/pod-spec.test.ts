@@ -22,6 +22,7 @@ import {
   NESTED_GRAPHROOT_SIZELIMIT_BYTES,
   NESTED_GRAPHROOT_TMPFS_BYTES,
   SSH_AGENT_MOUNT,
+  WORKSPACE_POD_ANNOTATIONS,
   type PodJobParams,
 } from '#drivers/k8s/substrate/pod-spec'
 
@@ -473,7 +474,7 @@ describe('buildPodJobManifest', () => {
       })
       expect(spec.initContainers).toBeUndefined()
       expect(spec.volumes.some((v) => v.name === 'podman-graphroot')).toBe(false)
-      expect(build().spec.template.metadata.annotations).toBeUndefined()
+      expect(build().spec.template.metadata.annotations).toEqual(WORKSPACE_POD_ANNOTATIONS)
       expect(spec.containers[0].resources).toEqual({
         requests: {
           cpu: '250m',
@@ -540,6 +541,7 @@ describe('buildPodJobManifest', () => {
       // runsc annotations make it a disk-backed sentry tmpfs (see
       // NESTED_GRAPHROOT_ANNOTATIONS).
       expect(m.spec.template.metadata.annotations).toEqual({
+        ...WORKSPACE_POD_ANNOTATIONS,
         'dev.gvisor.spec.mount.podman-graphroot.type': 'bind',
         'dev.gvisor.spec.mount.podman-graphroot.share': 'container',
         'dev.gvisor.spec.mount.podman-graphroot.options': `rw,size=${cap}`,
@@ -602,6 +604,7 @@ describe('buildPodJobManifest', () => {
         name: 'pnpm-modules-1', mountPath: '/workspace/packages/web/node_modules',
       })
       expect(m.spec.template.metadata.annotations).toEqual({
+        ...WORKSPACE_POD_ANNOTATIONS,
         ...sentryTmpfsAnnotations('podman-graphroot', NESTED_GRAPHROOT_TMPFS_BYTES),
         ...sentryTmpfsAnnotations('pnpm-modules-0', MODULES_TMPFS_BYTES),
         ...sentryTmpfsAnnotations('pnpm-modules-1', MODULES_TMPFS_BYTES),
@@ -619,7 +622,7 @@ describe('buildPodJobManifest', () => {
 
     it('leaves a pod with none exactly as it was', () => {
       expect(build({ moduleDirs: [] })).toEqual(build())
-      expect(build().spec.template.metadata.annotations).toBeUndefined()
+      expect(build().spec.template.metadata.annotations).toEqual(WORKSPACE_POD_ANNOTATIONS)
     })
   })
 })

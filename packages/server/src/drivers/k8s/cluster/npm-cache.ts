@@ -214,6 +214,19 @@ function buildNpmCacheConfigYaml(): string {
   ].join('\n')
 }
 
+/** Metadata for one of the cache's objects. */
+function metadata(name: string): Record<string, unknown> {
+  return { name, namespace: k8sNamespace(), labels: npmCacheLabels() }
+}
+
+const port = { protocol: 'TCP', port: NPM_CACHE_PORT }
+
+/** The workspace pods the cache serves. */
+const admitted = {
+  matchLabels: { [LABEL_NPM_CACHE]: 'true' },
+  matchExpressions: [{ key: LABEL_WORKSPACE_ID, operator: 'Exists' }],
+}
+
 /**
  * The cache's objects, in apply order; the Service is separate and applied
  * last (see `ensureNpmCache`). Its policies:
@@ -227,14 +240,6 @@ function buildNpmCacheManifests(
   images: { verdaccio: string; nginx: string },
   cidrs: { nodes: string[]; pods: string[] },
 ): { workload: Array<Record<string, unknown>>; service: Record<string, unknown> } {
-  const ns = k8sNamespace()
-  const metadata = (name: string): Record<string, unknown> =>
-    ({ name, namespace: ns, labels: npmCacheLabels() })
-  const port = { protocol: 'TCP', port: NPM_CACHE_PORT }
-  const admitted = {
-    matchLabels: { [LABEL_NPM_CACHE]: 'true' },
-    matchExpressions: [{ key: LABEL_WORKSPACE_ID, operator: 'Exists' }],
-  }
   const workload = [
     {
       apiVersion: 'v1',
@@ -344,6 +349,39 @@ function buildNpmCacheManifests(
         },
       },
     },
+    ...buildNpmCacheNodePolicyManifests(cidrs),
+    {
+      apiVersion: 'networking.k8s.io/v1',
+      kind: 'NetworkPolicy',
+      metadata: metadata(`${NPM_CACHE_APP_NAME}-workspace-egress`),
+      spec: {
+        podSelector: admitted,
+        policyTypes: ['Egress'],
+        egress: [{ to: [{ podSelector: { matchLabels: npmCacheLabels() } }], ports: [port] }],
+      },
+    },
+  ]
+  const service = {
+    apiVersion: 'v1',
+    kind: 'Service',
+    metadata: metadata(NPM_CACHE_APP_NAME),
+    spec: {
+      type: 'ClusterIP',
+      selector: npmCacheLabels(),
+      ports: [{ name: 'npm', port: NPM_CACHE_PORT, targetPort: NPM_CACHE_PORT, protocol: 'TCP' }],
+    },
+  }
+  return { workload, service }
+}
+
+/**
+ * The cache's two policies that name node addresses: its ingress admits the
+ * node (kubelet probes), and its egress to the world excludes nodes and pods.
+ */
+function buildNpmCacheNodePolicyManifests(
+  cidrs: { nodes: string[]; pods: string[] },
+): Array<Record<string, unknown>> {
+  return [
     {
       apiVersion: 'networking.k8s.io/v1',
       kind: 'NetworkPolicy',
@@ -373,28 +411,14 @@ function buildNpmCacheManifests(
         ],
       },
     },
-    {
-      apiVersion: 'networking.k8s.io/v1',
-      kind: 'NetworkPolicy',
-      metadata: metadata(`${NPM_CACHE_APP_NAME}-workspace-egress`),
-      spec: {
-        podSelector: admitted,
-        policyTypes: ['Egress'],
-        egress: [{ to: [{ podSelector: { matchLabels: npmCacheLabels() } }], ports: [port] }],
-      },
-    },
   ]
-  const service = {
-    apiVersion: 'v1',
-    kind: 'Service',
-    metadata: metadata(NPM_CACHE_APP_NAME),
-    spec: {
-      type: 'ClusterIP',
-      selector: npmCacheLabels(),
-      ports: [{ name: 'npm', port: NPM_CACHE_PORT, targetPort: NPM_CACHE_PORT, protocol: 'TCP' }],
-    },
+}
+
+/** Re-render the cache's node-address policies, for `reconcileNodeSet`. */
+export async function syncNpmCacheNodes(nodeCidrs: string[]): Promise<void> {
+  for (const manifest of buildNpmCacheNodePolicyManifests({ nodes: nodeCidrs, pods: await clusterPodCidrs() })) {
+    await applyObject(manifest)
   }
-  return { workload, service }
 }
 
 /** How long a fresh rollout may take, including the claim binding. */
