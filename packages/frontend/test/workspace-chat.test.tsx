@@ -1118,6 +1118,21 @@ describe('WorkspaceChat subagents and background tasks', () => {
     expect(stream.send).toHaveBeenCalledWith({ type: 'stop-task', taskId: 'b1' })
   })
 
+  it('gives an ambient task a card that opens it, but no chip in the strip', () => {
+    stream.events = [{
+      type: 'task',
+      seq: 0,
+      task: {
+        id: 'ws1', name: 'artifact updates', kind: 'monitor', description: 'artifact updates', state: 'running',
+        ambient: true,
+      },
+    }]
+    show()
+    expect(screen.queryByRole('group', { name: 'Running in the background' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^monitorartifact updates/ }))
+    expect(screen.getByRole('button', { name: /Back/ })).toBeTruthy()
+  })
+
   it('shows a task with no output file the output streamed onto its call, verbatim, without reading a file', () => {
     // codex has no output file; its shell's output arrives on the call.
     stream.events = [

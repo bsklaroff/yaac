@@ -463,7 +463,15 @@ way, and the projection turns every answer into the same `subagent` and
   for a subagent) until a later report says how it ended. A foreground
   subagent is never in that list, so only one started or moved to the
   background is ended this way.
-  A background command names its output file in its call's result. claude
+  A background command names its output file in its call's result. A
+  Monitor tool watch reports itself as a backgrounded shell (`local_bash`),
+  so it is named a monitor by the Monitor call that started it, which always
+  arrives first. A plugin's monitor has no such call and still shows as a
+  shell. A monitor gets a card and a strip chip like any other task: it is
+  work the agent chose to start, and a persistent one runs for the whole
+  session. A task claude flags `ambient` (an artifact's live-update watch,
+  whether or not the agent was asked for it, which the wire does not say)
+  gets a card but no chip, as the SDK asks of activity indicators. claude
   stops a task only for an AIR client, so there is no Stop.
 - **codex (AIR)** announces a subagent with `subagent_spawned`, sends its
   updates under the subagent's own session id, and ends it with

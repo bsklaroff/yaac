@@ -59,7 +59,7 @@ export function ActivityBar({
     ...[...subagents.values()].filter(active).map((s) => (
       { kind: 'subagent' as const, id: s.id, label: 'Agent', name: s.name, icon: SubagentIcon, state: s.state }
     )),
-    ...[...tasks.values()].filter(active).map((t) => (
+    ...[...tasks.values()].filter((t) => active(t) && t.ambient !== true).map((t) => (
       { kind: 'task' as const, id: t.id, label: t.kind, name: t.name, icon: taskIcon(t), state: t.state }
     )),
   ]

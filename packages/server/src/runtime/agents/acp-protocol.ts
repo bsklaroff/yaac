@@ -159,12 +159,14 @@ const SUBAGENT_STATES: readonly AcpSubagentState[] = [
   'running', 'completed', 'failed', 'cancelled', 'disconnected',
 ]
 const TASK_STATES: readonly AcpTaskState[] = ['running', 'paused', 'completed', 'failed', 'stopped']
-/** claude's task types, as the kinds a pane names. */
+/** claude's task types, as the kinds a pane names. Its Monitor tool's
+ *  command watch is a `local_bash` task, told apart by the call that started
+ *  it (`AcpProjection.monitorCalls`). */
 const CLAUDE_TASK_KINDS: Record<string, string> = {
   local_bash: 'shell',
   local_workflow: 'workflow',
-  local_monitor: 'monitor',
-  mcp: 'monitor',
+  monitor_mcp: 'monitor',
+  monitor_ws: 'monitor',
 }
 /** claude's task statuses, as task and subagent states. */
 const CLAUDE_TASK_STATES: Record<string, AcpTaskState> = {
@@ -417,6 +419,9 @@ export class AcpProjection {
   /** Task ids of the subagents claude runs in the background. Only these
    *  appear in its live set, so only these may be ended for leaving it. */
   private readonly backgroundSubagents = new Set<string>()
+  /** claude's Monitor calls. The task one starts reports itself only as a
+   *  shell, and its call always arrives first. */
+  private readonly monitorCalls = new Set<string>()
   /**
    * Permission asks not yet answered. A reply line is just `{id, result}`,
    * so only a seen request identifies it as settling a permission ask.
@@ -498,7 +503,10 @@ export class AcpProjection {
    *  may be nothing. */
   apply(params: unknown): AcpEventInit[] {
     const update = asRecord(asRecord(params)?.update)
-    const parentToolUseId = asString(asRecord(asRecord(update?._meta)?.claudeCode)?.parentToolUseId)
+    const claudeCode = asRecord(asRecord(update?._meta)?.claudeCode)
+    const parentToolUseId = asString(claudeCode?.parentToolUseId)
+    const toolCallId = asString(update?.toolCallId)
+    if (claudeCode?.toolName === 'Monitor' && toolCallId !== undefined) this.monitorCalls.add(toolCallId)
     const out: AcpEventInit[] = []
     // claude's subagents run in the main session; their updates name the
     // Agent call that spawned them instead.
@@ -579,13 +587,15 @@ export class AcpProjection {
           state: 'running',
         })]
       }
+      const monitor = toolUseId !== undefined && this.monitorCalls.has(toolUseId)
       const started: AcpTask = {
         id: taskId,
         name: asString(m.workflow_name) ?? asString(m.description) ?? 'Background task',
-        kind: CLAUDE_TASK_KINDS[asString(m.task_type) ?? ''] ?? 'task',
+        kind: monitor ? 'monitor' : CLAUDE_TASK_KINDS[asString(m.task_type) ?? ''] ?? 'task',
         description: asString(m.description) ?? '',
         state: 'running',
         ...(toolUseId !== undefined ? { toolCallId: toolUseId } : {}),
+        ...(m.ambient === true ? { ambient: true as const } : {}),
       }
       // A command run in the foreground is a task too, but only one moved
       // to the background is shown; it may be moved later (`task_updated`).

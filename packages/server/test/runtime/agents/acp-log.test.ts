@@ -584,11 +584,68 @@ describe('replayAcpLog', () => {
     expect(events[8]).toMatchObject({ task: { id: 'b1', state: 'completed' } })
   })
 
+  it('shows a claude Monitor as a monitor, and marks an artifact watch ambient', () => {
+    // As claude-agent-acp 0.84.0 (claude 2.1.284) sends them: the Monitor
+    // call comes first, then its task, which claude reports as a backgrounded
+    // shell; the live set comes before each task's own start and end.
+    const sdk = (message: Record<string, unknown>): string =>
+      line({ jsonrpc: '2.0', method: '_claude/sdkMessage', params: { sessionId: 'acp-1', message: { type: 'system', ...message } } })
+    const claudeUpdate = (u: Record<string, unknown>, claudeCode: Record<string, unknown>): string =>
+      update({ ...u, _meta: { claudeCode } })
+    const command = 'yaac-watch-prs --pr 306 --events comment'
+    const events = replayAcpLog([
+      claudeUpdate({
+        sessionUpdate: 'tool_call', toolCallId: 'toolu_mon', name: 'Monitor', rawInput: {}, status: 'pending',
+        title: 'Monitor', kind: 'other', content: [],
+      }, { toolName: 'Monitor' }),
+      claudeUpdate({
+        sessionUpdate: 'tool_call_update', toolCallId: 'toolu_mon', rawInput: { command, description: 'PR 306 comments', persistent: true },
+      }, { toolName: 'Monitor' }),
+      sdk({ subtype: 'background_tasks_changed', tasks: [{ task_id: 'bmon', task_type: 'local_bash', description: 'PR 306 comments' }] }),
+      sdk({
+        subtype: 'task_started', task_id: 'bmon', tool_use_id: 'toolu_mon', description: 'PR 306 comments',
+        is_backgrounded: true, task_type: 'local_bash',
+      }),
+      claudeUpdate({
+        sessionUpdate: 'tool_call_update', toolCallId: 'toolu_mon', status: 'completed',
+        content: [{ type: 'content', content: { type: 'text', text: 'Monitor started (task bmon, persistent). You will be notified on each event.' } }],
+      }, { toolName: 'Monitor', toolResponse: { taskId: 'bmon', timeoutMs: 0, persistent: true } }),
+      sdk({
+        subtype: 'background_tasks_changed',
+        tasks: [
+          { task_id: 'bmon', task_type: 'local_bash', description: 'PR 306 comments' },
+          { task_id: 'ws1', task_type: 'monitor_ws', description: 'artifact updates', ambient: true },
+        ],
+      }),
+      sdk({ subtype: 'task_started', task_id: 'ws1', description: 'artifact updates', task_type: 'monitor_ws', ambient: true }),
+      sdk({ subtype: 'task_progress', task_id: 'bmon', tool_use_id: 'toolu_mon', description: 'PR 306 comments', usage: {} }),
+      sdk({ subtype: 'background_tasks_changed', tasks: [] }),
+      sdk({ subtype: 'task_updated', task_id: 'bmon', patch: { status: 'killed', end_time: 1 } }),
+      sdk({
+        subtype: 'task_notification', task_id: 'bmon', tool_use_id: 'toolu_mon', status: 'stopped',
+        output_file: '/tmp/c/tasks/bmon.output', summary: 'Monitor "PR 306 comments" stopped',
+      }),
+    ].join('\n'))
+
+    const all = events.flatMap((e) => (e.type === 'task' ? [e.task] : []))
+    // The artifact watch is shown, marked as no activity of the agent's.
+    expect(all.find((t) => t.id === 'ws1')).toMatchObject({ kind: 'monitor', ambient: true, state: 'running' })
+    const tasks = all.filter((t) => t.id === 'bmon')
+    expect(tasks[0]).toEqual({
+      id: 'bmon', name: 'PR 306 comments', kind: 'monitor', description: 'PR 306 comments', state: 'running', toolCallId: 'toolu_mon',
+    })
+    // A live set that lists it leaves it running; it ends once dropped.
+    expect(tasks.map((t) => t.state)).toEqual(['running', 'running', 'stopped', 'stopped', 'stopped'])
+    expect(tasks.at(-1)).toMatchObject({
+      kind: 'monitor', state: 'stopped', outputFile: '/tmp/c/tasks/bmon.output', summary: 'Monitor "PR 306 comments" stopped',
+    })
+  })
+
   it('stops a claude task the live set drops, though its end was never reported', () => {
     const sdk = (message: Record<string, unknown>): string =>
       line({ jsonrpc: '2.0', method: '_claude/sdkMessage', params: { sessionId: 'acp-1', message: { type: 'system', ...message } } })
     const events = replayAcpLog([
-      sdk({ subtype: 'task_started', task_id: 'm1', description: 'watch logs', task_type: 'local_monitor' }),
+      sdk({ subtype: 'task_started', task_id: 'm1', description: 'watch logs', task_type: 'monitor_mcp' }),
       sdk({ subtype: 'background_tasks_changed', tasks: [] }),
     ].join('\n'))
     expect(events.map((e) => (e.type === 'task' ? [e.task.kind, e.task.state] : e.type))).toEqual([
