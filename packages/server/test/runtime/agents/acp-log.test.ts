@@ -599,7 +599,13 @@ describe('replayAcpLog', () => {
         title: 'Monitor', kind: 'other', content: [],
       }, { toolName: 'Monitor' }),
       claudeUpdate({
-        sessionUpdate: 'tool_call_update', toolCallId: 'toolu_mon', rawInput: { command, description: 'PR 306 comments', persistent: true },
+        sessionUpdate: 'tool_call_update', toolCallId: 'toolu_mon', title: 'Monitor', kind: 'other',
+        rawInput: { command, description: 'PR 306 comments', persistent: true },
+        content: [{ type: 'content', content: { type: 'text', text: '```json\n{}\n```' } }],
+      }, { toolName: 'Monitor' }),
+      claudeUpdate({
+        sessionUpdate: 'tool_call_update', toolCallId: 'toolu_wsmon', title: 'Monitor', kind: 'other', status: 'completed',
+        rawInput: { ws: { url: 'wss://events.example.com' }, description: 'deploy events' },
       }, { toolName: 'Monitor' }),
       sdk({ subtype: 'background_tasks_changed', tasks: [{ task_id: 'bmon', task_type: 'local_bash', description: 'PR 306 comments' }] }),
       sdk({
@@ -627,6 +633,16 @@ describe('replayAcpLog', () => {
       }),
     ].join('\n'))
 
+    // The call is shown as the command it watches, once one arrives; a
+    // WebSocket Monitor has none and stays a "Monitor" call.
+    const calls = events.flatMap((e) => (e.type === 'tool' ? [e.call] : []))
+    expect(calls[0]).toMatchObject({ title: 'Monitor', kind: 'other', status: 'pending' })
+    const wsCall = calls.find((c) => c.toolCallId === 'toolu_wsmon')
+    expect(wsCall).toMatchObject({ title: 'Monitor', kind: 'other' })
+    expect(wsCall?.shell).toBeUndefined()
+    expect(calls.filter((c) => c.toolCallId === 'toolu_mon').at(-1)).toMatchObject({
+      title: command, shell: true, description: 'PR 306 comments', kind: 'execute', status: 'completed',
+    })
     const all = events.flatMap((e) => (e.type === 'task' ? [e.task] : []))
     // The artifact watch is shown, marked as no activity of the agent's.
     expect(all.find((t) => t.id === 'ws1')).toMatchObject({ kind: 'monitor', ambient: true, state: 'running' })

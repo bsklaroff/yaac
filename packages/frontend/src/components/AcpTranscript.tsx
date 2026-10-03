@@ -409,6 +409,7 @@ export function ToolRow({
   output = '',
   progress,
   asked = false,
+  defaultOpen = false,
 }: {
   call: AcpToolCall
   /** Terminal output the call streamed, shown verbatim. */
@@ -418,6 +419,8 @@ export function ToolRow({
    *  itself: a description is the model's own words, and approving on it
    *  alone would trust them. */
   asked?: boolean
+  /** Expanded until the user collapses it; edits always are. */
+  defaultOpen?: boolean
 }): JSX.Element {
   const diffs = useMemo(
     () => (call.content ?? []).filter((c): c is AcpDiff => c.type === 'diff'),
@@ -438,7 +441,7 @@ export function ToolRow({
    *  Edits default open. The default is derived each render because a call
    *  arrives empty and gains content in later updates. */
   const [choice, setChoice] = useState<boolean | null>(null)
-  const open = (choice ?? edits.length > 0) && hasContent
+  const open = (choice ?? (defaultOpen || edits.length > 0)) && hasContent
   const stats = useMemo(
     () => edits.flatMap((g) => g.hunks).reduce(
       (a, lines) => {
