@@ -70,4 +70,26 @@ describe('buildApp', () => {
     expect(body.error.code).toBe('INTERNAL')
     expect(body.error.message).toBe('kaboom')
   })
+
+  it('refuses an oversized upload that declares no length, by counting it', async () => {
+    // A chunked body takes bodyLimit's streaming branch; the e2e suite
+    // covers the declared-length one.
+    const app = buildApp({ buildId: 'test-build-id' })
+    const chunk = new TextEncoder().encode('x'.repeat(1024 * 1024))
+    let sent = 0
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent++ < 8) controller.enqueue(chunk)
+        else controller.close()
+      },
+    })
+    const res = await app.request('/api/workspace/00000000-0000-4000-8000-000000000001/file', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body,
+      duplex: 'half',
+    } as RequestInit)
+    expect(res.status).toBe(413)
+    expect(await res.json()).toMatchObject({ error: { code: 'TOO_LARGE' } })
+  })
 })

@@ -55,6 +55,11 @@ let workspaceId: string
 const SLUG = 'cl-demo'
 /** The project's git credential: an HTTPS token, assigned in beforeAll. */
 const GIT_TOKEN = 'ghp_containerless_test'
+/**
+ * The server's starting grace, shortened so the stale reaper takes a dead
+ * workspace on the pass its stream drop triggers rather than a minute later.
+ */
+const STARTING_GRACE_MS = 5_000
 
 /** Whether this host has the binaries `yaac host check` requires. */
 async function hostReady(): Promise<boolean> {
@@ -375,6 +380,7 @@ beforeAll(async () => {
     CLAUDE_CODE_CHILD_SESSION: '1',
     CLAUDE_CODE_SESSION_ID: 'parent',
     GIT_EDITOR: 'true',
+    YAAC_STARTING_GRACE_MS: String(STARTING_GRACE_MS),
     // A host zone the workspace must not inherit (checked by the time-zone
     // case below).
     TZ: 'UTC',
@@ -527,19 +533,21 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(await fs.readFile(path.join(checkout, 'notes', 'todo.md'), 'utf8')).toBe('theirs\n')
     expect((await put({ path: 'notes/todo.md', content: 'mine\n', baseVersion: current })).status).toBe(200)
     expect(await fs.readFile(path.join(checkout, 'notes', 'todo.md'), 'utf8')).toBe('mine\n')
-    // An oversized body is refused before it is buffered. Its own
-    // connection, since the server drops it mid-upload.
+    // An oversized body is refused before it is buffered: on its declared
+    // length alone, so only the headers are sent. Writing the body would race
+    // the server dropping the connection, failing the write with EPIPE.
     const huge = await new Promise<number>((resolve, reject) => {
       const req = http.request(`${origin()}/api/workspace/${workspaceId}/file`, {
         method: 'PUT',
         agent: false,
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', 'content-length': String(3 * 1024 * 1024) },
       }, (res) => {
         res.resume()
         resolve(res.statusCode ?? 0)
+        req.destroy()
       })
       req.on('error', reject)
-      req.end(JSON.stringify({ path: 'notes/todo.md', content: 'x'.repeat(3 * 1024 * 1024), baseVersion: current }))
+      req.flushHeaders()
     })
     expect(huge).toBe(413)
 
@@ -1944,15 +1952,17 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
       expect(res.status).toBe(200)
       const { id } = await res.json() as { id: string }
 
-      // Killing tmux directly is a death, not a stop. Wait out create's
-      // post-launch agent probe (buildAgentWindowCheck sleeps 1s) first, or
-      // it reports a failed launch, whose provisioning row hides the held one.
-      await new Promise((r) => setTimeout(r, 2_000))
+      // Killing tmux directly is a death, not a stop. Past the starting
+      // grace, the reaper takes it on the pass the dropped stream triggers.
+      // The wait also outlasts create's ~1s launch probe, which would report
+      // an earlier death as a failed launch whose provisioning row hides the
+      // held one.
+      await new Promise((r) => setTimeout(r, STARTING_GRACE_MS))
       await tmux(parent, 'kill-server').catch(() => undefined)
-      // The reaper can take a minute or more to notice.
       await vi.waitFor(() => {
         expect(latest().heldWorkspaces.map((h) => h.workspaceId)).toContain(parent)
-      }, { timeout: 180_000, interval: 500 })
+      }, { timeout: 20_000, interval: 250 })
+      expect(latest().heldWorkspaces.find((h) => h.workspaceId === parent)?.deathReason).toBe('agent-exited')
       expect(latest().queuedWorkspaces.map((q) => q.id)).toContain(id)
       expect(latest().workspaces.find((w) => w.prompt === 'never on a crash')).toBeUndefined()
 
@@ -1968,5 +1978,5 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
     } finally {
       watch.ws.close()
     }
-  }, 300_000)
+  }, 60_000)
 })

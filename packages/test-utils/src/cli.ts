@@ -180,6 +180,9 @@ export async function spawnYaacServer(env: NodeJS.ProcessEnv): Promise<SpawnedSe
   }
 }
 
+/** How much of a test server's stderr is kept for an unexpected exit. */
+const SERVER_LOG_TAIL_CHARS = 20_000
+
 /**
  * Spawn a `yaac server run` subprocess and wait (up to 60s) until it is
  * ready. The server leads its own process group, so `stop()` can signal it
@@ -193,12 +196,21 @@ async function spawnHostServer(env: NodeJS.ProcessEnv): Promise<SpawnedServer> {
     detached: true,
   })
 
-  // Useful when the server dies before the CLI can report a clear error.
-  if (process.env.YAAC_TEST_DEBUG_SERVER === '1') {
-    child.stderr?.on('data', (chunk: Buffer) => {
-      process.stderr.write(`[server] ${chunk.toString()}`)
-    })
-  }
+  // The tail of the server's log, printed if it exits without `stop()`:
+  // otherwise a mid-file crash shows only as refused connections, and its
+  // log goes with the data dir.
+  let tail = ''
+  let stopping = false
+  child.stderr?.on('data', (chunk: Buffer) => {
+    if (process.env.YAAC_TEST_DEBUG_SERVER === '1') process.stderr.write(`[server] ${chunk.toString()}`)
+    tail = (tail + chunk.toString()).slice(-SERVER_LOG_TAIL_CHARS)
+  })
+  child.once('exit', (code, signal) => {
+    if (stopping) return
+    process.stderr.write(
+      `[server] exited unexpectedly (code ${String(code)}, signal ${String(signal)}). Last output:\n${tail}\n`,
+    )
+  })
 
   let lock: ServerLock
   try {
@@ -221,6 +233,7 @@ async function spawnHostServer(env: NodeJS.ProcessEnv): Promise<SpawnedServer> {
   }
 
   const stop = async (): Promise<void> => {
+    stopping = true
     if (child.exitCode !== null) return
     // SIGTERM lets the server's shutdown handler remove its lock.
     killGroup(child, 'SIGTERM')

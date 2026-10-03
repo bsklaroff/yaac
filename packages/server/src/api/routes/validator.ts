@@ -1,5 +1,6 @@
 import { zValidator } from '@hono/zod-validator'
-import type { ValidationTargets } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
+import type { MiddlewareHandler, ValidationTargets } from 'hono'
 import type { z } from 'zod'
 import { ServerError } from '@yaac/shared/errors'
 
@@ -19,6 +20,25 @@ export const zv = <T extends z.ZodType, Target extends keyof ValidationTargets>(
       throw new ServerError('VALIDATION', firstIssueMessage(result.error))
     }
   })
+
+/**
+ * `bodyLimit` for a route that validates a JSON body with `zv`, refusing an
+ * oversized body as `TOO_LARGE` (413). The body is read here, inside the
+ * limit: a body that declares no length is counted as it streams, and the
+ * JSON validator would report the limit's error as malformed JSON (400).
+ * The validator then parses the text this read cached.
+ */
+export function jsonBodyLimit(maxSize: number, message: string): MiddlewareHandler {
+  const tooLarge = (): never => { throw new ServerError('TOO_LARGE', message) }
+  const limit = bodyLimit({ maxSize, onError: tooLarge })
+  return (c, next) => limit(c, async () => {
+    await c.req.text().catch((err: unknown) => {
+      if (err instanceof Error && err.name === 'BodyLimitError') tooLarge()
+      throw err
+    })
+    await next()
+  })
+}
 
 /** `path: message` for the first issue (path omitted for top-level issues). */
 function firstIssueMessage(error: { issues: Array<{ path: PropertyKey[]; message: string }> }): string {
