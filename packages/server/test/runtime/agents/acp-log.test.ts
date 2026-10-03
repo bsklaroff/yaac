@@ -597,6 +597,32 @@ describe('replayAcpLog', () => {
     ])
   })
 
+  it('ends a background claude subagent the live set drops, but not a foreground one', () => {
+    const sdk = (message: Record<string, unknown>): string =>
+      line({ jsonrpc: '2.0', method: '_claude/sdkMessage', params: { sessionId: 'acp-1', message: { type: 'system', ...message } } })
+    const start = (taskId: string, toolUseId: string, backgrounded: boolean): string => sdk({
+      subtype: 'task_started', task_id: taskId, tool_use_id: toolUseId, task_type: 'local_agent',
+      description: taskId, prompt: 'go', is_backgrounded: backgrounded,
+    })
+    const events = replayAcpLog([
+      start('bg', 'agent-bg', true),
+      start('fg', 'agent-fg', false),
+      start('moved', 'agent-moved', false),
+      sdk({ subtype: 'task_updated', task_id: 'moved', patch: { is_backgrounded: true } }),
+      sdk({ subtype: 'background_tasks_changed', tasks: [{ task_id: 'moved' }] }),
+      sdk({ subtype: 'background_tasks_changed', tasks: [] }),
+      sdk({ subtype: 'task_notification', task_id: 'bg', status: 'completed', summary: 'done' }),
+    ].join('\n'))
+    expect(events.map((e) => (e.type === 'subagent' ? [e.subagent.id, e.subagent.state] : e.type))).toEqual([
+      ['agent-bg', 'running'],
+      ['agent-fg', 'running'],
+      ['agent-moved', 'running'],
+      ['agent-bg', 'cancelled'],
+      ['agent-moved', 'cancelled'],
+      ['agent-bg', 'completed'],
+    ])
+  })
+
   it('renders a call whose first report is its completion, as codex sends one replayed from an earlier life', () => {
     const events = replayAcpLog(update({
       sessionUpdate: 'tool_call_update', toolCallId: 'call-9', name: 'exec_command', kind: 'execute', status: 'completed',

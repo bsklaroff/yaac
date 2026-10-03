@@ -414,6 +414,9 @@ export class AcpProjection {
   private readonly claudeTasks = new Map<string, AcpTask>()
   /** claude's task ids for subagents, mapped to the subagent's id. */
   private readonly subagentTasks = new Map<string, string>()
+  /** Task ids of the subagents claude runs in the background. Only these
+   *  appear in its live set, so only these may be ended for leaving it. */
+  private readonly backgroundSubagents = new Set<string>()
   /**
    * Permission asks not yet answered. A reply line is just `{id, result}`,
    * so only a seen request identifies it as settling a permission ask.
@@ -547,11 +550,16 @@ export class AcpProjection {
     if (m?.type !== 'system') return []
     if (m.subtype === 'background_tasks_changed') {
       const live = new Set((Array.isArray(m.tasks) ? m.tasks : []).map((t) => asString(asRecord(t)?.task_id)))
-      // The live set is authoritative: a task missing from it is gone, even
-      // if its own end was never reported.
-      return [...this.tasks.values()]
+      // The live set is authoritative: a task or background subagent missing
+      // from it is gone, even if its own end was never reported. A later
+      // notification of how it ended still corrects the state.
+      const subagents = [...this.backgroundSubagents].flatMap((id) => {
+        const s = this.subagents.get(this.subagentTasks.get(id) ?? '')
+        return s?.state === 'running' && !live.has(id) ? [this.setSubagent({ ...s, state: 'cancelled' })] : []
+      })
+      return subagents.concat([...this.tasks.values()]
         .filter((t) => this.claudeTasks.has(t.id) && t.state === 'running' && !live.has(t.id))
-        .map((t) => this.setTask({ ...t, state: 'stopped' }))
+        .map((t) => this.setTask({ ...t, state: 'stopped' })))
     }
     const taskId = asString(m.task_id)
     if (taskId === undefined) return []
@@ -561,6 +569,7 @@ export class AcpProjection {
       if (m.task_type === 'local_agent' || m.subagent_type !== undefined) {
         if (toolUseId === undefined) return []
         this.subagentTasks.set(taskId, toolUseId)
+        if (m.is_backgrounded === true) this.backgroundSubagents.add(taskId)
         const known = this.subagents.get(toolUseId)
         return [this.setSubagent({
           id: toolUseId,
@@ -587,6 +596,7 @@ export class AcpProjection {
     const subagentId = this.subagentTasks.get(taskId)
     const status = asString(patch?.status) ?? (m.subtype === 'task_notification' ? asString(m.status) : undefined)
     if (subagentId !== undefined) {
+      if (patch?.is_backgrounded === true) this.backgroundSubagents.add(taskId)
       const known = this.subagents.get(subagentId)
       const state = CLAUDE_SUBAGENT_STATES[status ?? '']
       const summary = m.subtype === 'task_notification' ? asString(m.summary) : undefined
