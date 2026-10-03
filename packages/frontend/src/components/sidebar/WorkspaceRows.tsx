@@ -9,7 +9,7 @@ import {
 import clsx from 'clsx'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Dialog } from '@base-ui/react/dialog'
-import { CloseIcon, GroupRemoveIcon, LoadingIcon, RestartIcon } from '#lib/icons'
+import { CloseIcon, GroupRemoveIcon, LoadingIcon, RestartIcon, StopIcon } from '#lib/icons'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { StopWorkspaceDialog } from '#components/StopWorkspaceDialog'
 import { RowMenu } from '#components/sidebar/RowMenu'
@@ -55,7 +55,7 @@ export interface SidebarDrag {
 }
 
 /** Row for a workspace still provisioning. Clicking it shows the progress in
- *  the main pane. Its × stops it, or dismisses it once it has failed. */
+ *  the main pane. Its ■ stops it; once failed, its × dismisses it. */
 export function ProvisioningRow({ entry }: { entry: ProvisioningWorkspaceEntry }): JSX.Element {
   const selectedWorkspaceId = useUiStore((s) => s.selectedWorkspaceId)
   const selectWorkspace = useUiStore((s) => s.selectWorkspace)
@@ -76,8 +76,8 @@ export function ProvisioningRow({ entry }: { entry: ProvisioningWorkspaceEntry }
           selectedWorkspaceId === entry.workspaceId && 'bg-surface-2 hover:bg-surface-2',
         )}
       >
-        {/* The × is always visible on touch, so leave room for it. */}
-        <span className={clsx('flex items-center gap-2', !entry.stopping && 'max-md:pr-9')}>
+        {/* Leave room for the button: on hover, and always on touch. */}
+        <span className={clsx('flex items-center gap-2', !entry.stopping && 'group-hover:pr-6 max-md:pr-9')}>
           <span className="truncate font-medium text-text-dim">
             {entry.kind === 'restart' ? 'Restarting workspace' : 'New workspace'}
           </span>
@@ -104,7 +104,7 @@ export function ProvisioningRow({ entry }: { entry: ProvisioningWorkspaceEntry }
             opacity-0 transition hover:bg-surface-3 hover:text-text group-hover:opacity-100
             max-md:h-7 max-md:w-7 max-md:opacity-100"
         >
-          <CloseIcon size={14} />
+          {entry.error ? <CloseIcon size={14} /> : <StopIcon size={11} />}
         </button>
       )}
     </div>

@@ -1,5 +1,6 @@
 import { workspaceDriver } from '#drivers/driver'
 import { findWorkspaceRow, listWorkspaceRows } from '#db'
+import { listProvisioning } from './provisioning'
 import type { RuntimeHandle } from '#drivers/contract'
 import { ServerError } from '@yaac/shared/errors'
 import type { AgentTool } from '@yaac/shared/types'
@@ -86,22 +87,29 @@ export type WorkspaceResolution =
  * place prefixes are expanded; drivers take exact ids. An exact id beats a
  * prefix match. Unclaimed spares never match. `projectSlug` limits the
  * search to one project (for `yaac-mama` and the group routes).
+ * `provisioning` also matches creates still in flight, whose row may not
+ * exist yet (for a stop).
  */
 export async function resolveWorkspace(
   idOrPrefix: string,
-  opts: { projectSlug?: string } = {},
+  opts: { projectSlug?: string; provisioning?: boolean } = {},
 ): Promise<WorkspaceResolution> {
   const trimmed = idOrPrefix.trim()
   if (trimmed === '') return { ok: false, reason: 'not-found' }
+  const inFlight = opts.provisioning !== true ? [] : listProvisioning()
+    .filter((p) => p.error === undefined
+      && (opts.projectSlug === undefined || p.projectSlug === opts.projectSlug))
+    .map((p) => p.workspaceId)
   // Exact ids are the common case and hit the primary key.
   const exact = await findWorkspaceRow(trimmed)
-  if (exact && (opts.projectSlug === undefined || exact.projectSlug === opts.projectSlug)) {
+  if (inFlight.includes(trimmed)
+    || (exact && (opts.projectSlug === undefined || exact.projectSlug === opts.projectSlug))) {
     return { ok: true, workspaceId: trimmed }
   }
-  const matches = (await listWorkspaceRows(opts.projectSlug))
-    .filter((r) => r.workspaceId.startsWith(trimmed))
-  if (matches.length === 1) return { ok: true, workspaceId: matches[0].workspaceId }
-  return { ok: false, reason: matches.length > 1 ? 'ambiguous' : 'not-found' }
+  const matches = new Set([...(await listWorkspaceRows(opts.projectSlug)).map((r) => r.workspaceId), ...inFlight]
+    .filter((id) => id.startsWith(trimmed)))
+  if (matches.size === 1) return { ok: true, workspaceId: [...matches][0] }
+  return { ok: false, reason: matches.size > 1 ? 'ambiguous' : 'not-found' }
 }
 
 /**
@@ -109,10 +117,13 @@ export async function resolveWorkspace(
  * Throws for empty or ambiguous input. Unknown input passes through, so a
  * unit with no row (e.g. after a DB reset) is still reachable by full id.
  */
-export async function resolveWorkspaceId(idOrPrefix: string): Promise<string> {
+export async function resolveWorkspaceId(
+  idOrPrefix: string,
+  opts: { provisioning?: boolean } = {},
+): Promise<string> {
   const trimmed = idOrPrefix.trim()
   if (trimmed === '') throw new ServerError('VALIDATION', 'a workspace id is required')
-  const resolved = await resolveWorkspace(trimmed)
+  const resolved = await resolveWorkspace(trimmed, opts)
   if (resolved.ok) return resolved.workspaceId
   if (resolved.reason === 'ambiguous') {
     throw new ServerError(

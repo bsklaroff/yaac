@@ -28,7 +28,7 @@ Other exits keep the prompt too:
 - While a prompt is unsaved, a page reload or tab close triggers the browser's
   leave-page prompt.
 - Stopping a workspace while it is still being created (the provisioning
-  row's ×, the Stop button under its progress, `yaac workspace stop`, or
+  row's ■, the Stop button under its progress, `yaac workspace stop`, or
   `yaac-mama stop`) rolls the create back and saves its prompt as a draft,
   updating the draft it was created from if there was one. `stopWorkspace`
   marks the provisioning row stopping, and `createWorkspace` checks for that

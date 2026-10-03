@@ -17,6 +17,7 @@ import { closeDb } from '#db/client'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { seedProject } from '@yaac/test-utils/project-fixture'
+import { WorkspaceExecError } from '#drivers/contract'
 
 // A stop runs the (fake) driver's teardown, then creates whatever was queued
 // after the stopped workspace. Both run for real, over a real project.
@@ -108,11 +109,15 @@ describe('stopWorkspace', () => {
      *  driver's `awaitReady` and `exec` as given, recording what it tears
      *  down. */
     function startCreate(driver: {
+      assertCanLaunch?: () => Promise<void>
       awaitReady?: () => Promise<void>
       exec?: (cmd: string) => Promise<void>
-    }): { create: Promise<unknown>; destroyed: string[] } {
+    }): { create: Promise<unknown>; destroyed: string[]; deregistered: string[] } {
       const destroyed: string[] = []
+      const deregistered: string[] = []
       installFakeWorkspaceDriver({
+        deregisterWorkspace: (id) => { deregistered.push(id); return Promise.resolve() },
+        ...(driver.assertCanLaunch !== undefined ? { assertCanLaunch: driver.assertCanLaunch } : {}),
         launch: (spec) => {
           launched.push(spec.workspaceId)
           return Promise.resolve(handleFixture({ workspaceId: 'new', projectSlug: 'proj', jobName: 'yaac-proj-new' }))
@@ -144,7 +149,7 @@ describe('stopWorkspace', () => {
         draftOnStop: {},
       }, onProgress))
       create.catch(() => { /* asserted by the test */ })
-      return { create, destroyed }
+      return { create, destroyed, deregistered }
     }
 
     // Stopped while its pod boots: the agent never starts, the create rolls
@@ -176,27 +181,61 @@ describe('stopWorkspace', () => {
       })])
     })
 
-    // Stopped once its agent is starting: too late to roll back, so the
-    // create finishes and is then stopped like any running workspace.
+    // Stopped before its row exists, by a prefix: nothing was made, so only
+    // the draft is left.
+    it('finds it by prefix before its row exists', async () => {
+      let allow!: () => void
+      const allowed = new Promise<void>((resolve) => { allow = resolve })
+      let asked!: () => void
+      const checking = new Promise<void>((resolve) => { asked = resolve })
+      const { create } = startCreate({ assertCanLaunch: () => { asked(); return allowed } })
+      await checking
+      expect(await getWorkspaceRow('proj', 'new')).toBeUndefined()
+
+      expect(await stopWorkspace('ne')).toEqual({ workspaceId: 'new', projectSlug: 'proj', provisioning: true })
+      allow()
+
+      await expect(create).rejects.toThrow('kept as a draft')
+      expect(launched).toEqual([])
+      expect(await getWorkspaceRow('proj', 'new')).toBeUndefined()
+      expect(await listDraftWorkspaces()).toEqual([expect.objectContaining({ prompt: 'build it' })])
+    })
+
+    // Stopped (twice) once its agent is starting: too late to roll back, so
+    // the create finishes and is then stopped, once, like any running
+    // workspace. The agent-alive probe then finds the agent gone, which is
+    // the stop's doing and not a failed create.
     it('stops it as a running workspace once a create past its last checkpoint is up', async () => {
       let agentStarting!: () => void
       const starting = new Promise<void>((resolve) => { agentStarting = resolve })
       let release!: () => void
       const released = new Promise<void>((resolve) => { release = resolve })
-      const { create, destroyed } = startCreate({
-        exec: (cmd) => {
-          if (!cmd.includes('respawn-window')) return Promise.resolve()
+      let probed!: () => void
+      const probeFailed = new Promise<void>((resolve) => { probed = resolve })
+      const { create, destroyed, deregistered } = startCreate({
+        exec: async (cmd) => {
+          if (cmd.includes('list-windows -t =yaac')) {
+            await vi.waitFor(() => expect(deregistered).toContain('new'), { timeout: 30_000 })
+            probed()
+            throw new WorkspaceExecError('probe', 1, '', 'no server running')
+          }
+          if (!cmd.includes('respawn-window')) return
           agentStarting()
-          return released
+          await released
         },
       })
       await starting
 
       expect(await stopWorkspace('new')).toMatchObject({ provisioning: true })
+      expect(await stopWorkspace('new')).toMatchObject({ provisioning: true })
       release()
 
       await expect(create).resolves.toMatchObject({ workspaceId: 'new' })
       await vi.waitFor(async () => expect((await getWorkspaceRow('proj', 'new'))?.stoppedAt).toBeDefined())
+      await probeFailed
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      expect(listProvisioning()).toEqual([])
+      expect(deregistered).toEqual(['new'])
       expect(destroyed).toEqual([])
       expect(await listDraftWorkspaces()).toEqual([])
     })

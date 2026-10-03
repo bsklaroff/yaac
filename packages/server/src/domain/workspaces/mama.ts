@@ -395,11 +395,12 @@ async function runRename(caller: MamaCaller, request: MamaRequestInput): Promise
 async function resolveTargetWorkspace(
   caller: MamaCaller,
   workspace: string | undefined,
+  opts: { provisioning?: boolean } = {},
 ): Promise<{ ok: true; workspaceId: string } | { ok: false; error: string }> {
   const target = workspace === undefined || workspace.trim() === ''
     ? caller.workspaceId
     : workspace.trim()
-  const resolved = await resolveWorkspace(target, { projectSlug: caller.projectSlug })
+  const resolved = await resolveWorkspace(target, { projectSlug: caller.projectSlug, ...opts })
   return resolved.ok
     ? resolved
     : { ok: false, error: workspaceError(caller.projectSlug, target, resolved.reason) }
@@ -423,7 +424,8 @@ function workspaceError(
  * best-effort, since the teardown removes the transport it travels on.
  */
 async function runStop(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
-  const target = await resolveTargetWorkspace(caller, request.args.workspace)
+  // A sibling still being created may have no row yet.
+  const target = await resolveTargetWorkspace(caller, request.args.workspace, { provisioning: true })
   if (!target.ok) return target
 
   let stopped: { provisioning?: true }

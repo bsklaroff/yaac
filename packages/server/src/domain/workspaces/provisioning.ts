@@ -50,6 +50,14 @@ interface ProvisioningEntry {
 const entries = new Map<string, ProvisioningEntry>()
 let nextSeq = 0
 
+/**
+ * Workspaces whose run finished after the user stopped it, so the stop tears
+ * them down as they come up. The agent-alive probe then sees the agent gone,
+ * which `reportAgentLaunchFailure` must not report as a failed create. Kept
+ * until the id provisions again.
+ */
+const lateStops = new Set<string>()
+
 interface ProvisioningInput {
   workspaceId: string
   projectSlug: string
@@ -68,6 +76,7 @@ interface ProvisioningInput {
  * failed entry (a retry); a live one is a `CONFLICT`.
  */
 export function registerProvisioning(input: ProvisioningInput): void {
+  lateStops.delete(input.workspaceId)
   const existing = entries.get(input.workspaceId)
   if (existing !== undefined && existing.error === undefined) {
     throw new ServerError('CONFLICT', `workspace ${input.workspaceId} is already provisioning`)
@@ -163,7 +172,7 @@ export async function reportAgentLaunchFailure(input: {
   await settledRun(input.workspaceId)
   // An existing entry is either the create's own failure (the real cause)
   // or a newer provision on this id; leave it.
-  if (entries.has(input.workspaceId)) return
+  if (entries.has(input.workspaceId) || lateStops.has(input.workspaceId)) return
   registerProvisioning({
     workspaceId: input.workspaceId,
     projectSlug: input.projectSlug,
@@ -205,6 +214,8 @@ export function stopProvisioning(workspaceId: string): {
 } | undefined {
   const e = entries.get(workspaceId)
   if (e === undefined || e.error !== undefined) return undefined
+  // A repeat stop: the first already waits on the run.
+  if (e.stopping === true) return { projectSlug: e.projectSlug, ranAs: Promise.resolve(undefined) }
   e.stopping = true
   e.message = 'Stopping…'
   notifyWorkspaceListChanged()
@@ -216,15 +227,20 @@ export function provisionStopped(workspaceId: string): boolean {
   return entries.get(workspaceId)?.stopping === true
 }
 
+/** What a create's checkpoint throws once the user has stopped it. */
+export class ProvisionStoppedError extends ServerError {
+  constructor() {
+    super('CONFLICT', 'stopped before its agent started')
+  }
+}
+
 /**
  * A create's checkpoint, placed before each step that would start something
  * new (the workspace row, the runtime, the agents), so a stopped provision
  * rolls back before its agent ever runs. No-op without an entry (a spare).
  */
 export function throwIfProvisionStopped(workspaceId: string): void {
-  if (provisionStopped(workspaceId)) {
-    throw new ServerError('CONFLICT', 'stopped before its agent started')
-  }
+  if (provisionStopped(workspaceId)) throw new ProvisionStoppedError()
 }
 
 /** Drop an entry (resolved or dismissed); notifies only if one was removed. */
@@ -251,6 +267,10 @@ export async function runProvisioned<T extends { workspaceId: string }>(
   try {
     const result = await run((message) => updateProvisioningMessage(workspaceId, message))
     ranAs = result.workspaceId
+    if (provisionStopped(workspaceId)) {
+      lateStops.add(workspaceId)
+      lateStops.add(ranAs)
+    }
     // Drop the row before returning, so the snapshot shows the workspace.
     removeProvisioning(workspaceId)
     notifyWorkspaceListChanged()
@@ -321,5 +341,6 @@ export function inFlightWorkspaceIds(): string[] {
 /** Test helper: drop all tracked entries. */
 export function clearAllProvisioningForTests(): void {
   entries.clear()
+  lateStops.clear()
   runs.clear()
 }

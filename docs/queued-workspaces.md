@@ -29,6 +29,14 @@ children launch together. An agent exiting (`/exit`) counts as a death, since
 the reaper records `agent-exited` and can't tell it from a crash, so an agent
 that is done should call `yaac-mama stop`.
 
+A stop that lands while the parent is still being created or restarted is
+not a natural stop and releases nothing, since the parent's agent never ran
+(docs/draft-workspaces.md). A stopped restart keeps its children waiting
+for its next natural stop. A stopped create is rolled back, so the children
+queued under it become orphaned; a stopped queued launch takes them back,
+as a failed one does. A create too far along to roll back finishes and is
+then stopped normally, which releases them.
+
 A stopped workspace with entries is **held**: the sidebar keeps it as a
 stopped row (with its death reason, if it died) and nests its entries under
 it until the last one has launched or been discarded. Restarting a held
@@ -43,7 +51,7 @@ released by a stop. The parent pointer moves down the chain as it runs:
   (`claimQueuedLaunch`) re-points its children to the workspace id the launch
   is creating. From then on they are ordinary children of that workspace: the
   sidebar nests them under its provisioning row, and its natural stop
-  releases them, even if that stop comes before the launch finishes.
+  releases them.
 - **On failure.** `failQueuedLaunch` moves every unreleased child of that
   workspace id back under the entry, including ones queued under the
   provisioning row mid-launch. A child already released keeps its pointer. If
@@ -115,8 +123,9 @@ normal provisioning row and delivers the prompt like any create.
 - **Failure** clears the claim and release, records `launchError`, and
   removes the provisioning row, so the error shows once on the queued row
   with the prompt intact.
-  Stopping the launching workspace before its agent starts is a failure
-  too, so the entry goes back on the queue rather than becoming a draft.
+  Stopping the launching workspace before its agent starts takes the same
+  path without an error, so the entry goes back on the queue rather than
+  becoming a draft.
 - **Server restart mid-launch.** The `queued-workspaces` reconcile step
   handles it. On its first successful pass, an entry claimed by nothing in
   this process is put back with an "interrupted" error, prompt and children

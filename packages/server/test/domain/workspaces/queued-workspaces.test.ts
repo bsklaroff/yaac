@@ -30,6 +30,7 @@ import { clearQueuedLaunchesForTests } from '#domain/workspaces/queued-workspace
 import {
   clearAllProvisioningForTests,
   listProvisioning,
+  ProvisionStoppedError,
   registerProvisioning,
 } from '#domain/workspaces/provisioning'
 import { applyWorkspaceEvent, createWorkspaceGroup, listWorkspaceGroupRows, setWorkspaceGroup } from '#db'
@@ -362,6 +363,14 @@ describe('runQueuedWorkspace', () => {
     expect((await getQueuedWorkspaceRow(child.id))?.parentQueuedId).toBe(entry.id)
     // The failure is not also shown as a provisioning row.
     expect(listProvisioning()).toEqual([])
+
+    // A stop takes the same path but is no failure: the entry waits again
+    // with no error to show.
+    mockCreate.mockRejectedValue(new ProvisionStoppedError())
+    await runQueuedWorkspace(entry.id)
+    await settled(entry.id, false)
+    expect((await getQueuedWorkspaceRow(entry.id))?.launchError).toBeUndefined()
+    expect((await getQueuedWorkspaceRow(child.id))?.parentQueuedId).toBe(entry.id)
   })
 })
 

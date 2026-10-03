@@ -27,7 +27,7 @@ export interface StoppedWorkspaceInfo {
  * here once it does.
  */
 export async function stopWorkspace(idOrPrefix: string): Promise<StoppedWorkspaceInfo> {
-  const workspaceId = await resolveWorkspaceId(idOrPrefix)
+  const workspaceId = await resolveWorkspaceId(idOrPrefix, { provisioning: true })
   const provisioning = stopProvisioning(workspaceId)
   if (provisioning !== undefined) {
     void provisioning.ranAs
