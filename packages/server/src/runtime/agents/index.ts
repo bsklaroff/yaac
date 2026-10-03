@@ -54,15 +54,20 @@ export {
 // Where each tool keeps its transcript, and the project-relative form it is
 // stored in.
 export {
+  ACP_RECORD_NAME,
   CLAUDE_POD_CWD,
   CLAUDE_POD_REPO,
   claudeProjectDirName,
+  conversationFiles,
   locateTranscript,
+  OPENCODE_DB_NAME,
+  openConversationFile,
   resolveProjectPath,
   sessionIdFromPiLog,
   sessionTranscriptPath,
   toProjectRelative,
   transcriptLastActiveMs,
+  type ConversationFile,
 } from './transcripts'
 // codex's posture is read from its rollout rather than pushed on its pane;
 // rollout names and lineage also group a workspace's history.

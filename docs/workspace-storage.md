@@ -366,6 +366,45 @@ Isolation is per workspace, not per conversation. Conversations in one
 workspace run in one pod as one uid, so one can delete another's transcript, as
 it can delete the checkout. Under containerless there is no isolation at all.
 
+### Reading another workspace's history
+
+`yaac-mama history` (`#domain/workspaces`, `history-export.ts`) hands a
+workspace's conversations to another workspace of the same project, running or
+stopped: a listing, one conversation's JSONL transcripts concatenated, or its
+files one at a time (a workspace cannot unpack an archive under gVisor, which
+lacks the `openat2` call GNU tar extracts with). So the isolation above keeps
+a workspace's files out of its siblings' pods, but not private within the
+project: any workspace can ask the server for any other's conversations, as
+`yaac-mama fetch` hands out its branches.
+
+Which files belong to a conversation is decided by `conversationFiles` in
+`#runtime/agents`, from the same places and rules the readers above use:
+claude's transcript and its companion `<id>/` dir (subagents, saved tool
+results), a codex rollout and every rollout descended from it (the lineage
+converge follows), pi's logs, opencode's database, and for an `acp`
+conversation acpd's record. On both drivers a file is listed and read only
+when no link lies on its path below its directory: yaac links nothing inside
+a workspace's history, so a link there was planted, and under containerless
+following one could hand out a sibling's checkout. Files are streamed one at
+a time, each cut at the length it had when opened, so a running agent's last
+line can be partial. A file over 256 MB is never sent, since a workspace can
+make one as large as it likes (a sparse file costs it nothing) and the caller
+would write every byte; `-o` skips it and says so.
+
+opencode's database is handed out as a consistent copy, but the server never
+queries it (`openConversationFile`). A sandboxed workspace wrote it, so it is
+never opened with SQLite there: its checkpoint is already a backup-API copy
+with no sidecars, at most five minutes behind while the pod runs. A host
+workspace's is the live working copy, so when a `-wal` beside it says a writer
+may be active, the server backs it up through a read-only connection
+(`node:sqlite`), once it has checked that the database is where it was listed
+and neither sidecar is a link; without one, the file is the whole database.
+SQLite opens by path, so a link swapped in after that check is followed,
+which is accepted because a host workspace has no sandbox: it could read
+what the link names itself. The caller's
+`yaac-mama` turns the copy into JSONL, its session and its subagents'
+sessions, with `python3` in its own sandbox.
+
 ### Converging at create
 
 Every create and restart runs `convergeAgentHistory` (`#domain/agent-history`)

@@ -14,13 +14,14 @@
 #   yaac-mama group move <workspace> ["<group>"]
 #   yaac-mama models
 #   yaac-mama fetch <workspace>
+#   yaac-mama history <workspace> [<conversation>] [-o <dir>]
 #
 # A strict subset of the `yaac` CLI: see what this project is running, start
 # another workspace, file workspaces into named groups, and stop one. Stopping is
 # in reach because it is reversible — the checkout and the conversation
 # survive it. Nothing here deletes, restarts or reconfigures anything; that
 # stays with the user. `fetch` reads another workspace's branches into this
-# checkout and writes nothing to theirs.
+# checkout and `history` its conversations; neither writes to theirs.
 #
 # One request, a JSON envelope {command, args, body} POSTed to the server's
 # /api/workspace/mama, which owns what the commands mean. The substrates
@@ -37,6 +38,7 @@
 #
 # --max-time bounds a call to a wedged server. It outlasts the proxy's own
 # deadline (MAMA_RELAY_TIMEOUT_MS), so a pod's caller sees that 504's message.
+# A download gets longer, since a large history takes a while to stream.
 set -u
 
 URL=${YAAC_MAMA_URL:-http://yaac.internal}
@@ -58,6 +60,10 @@ Usage:
   yaac-mama group move <workspace> ["<group>"]      # omit the group to ungroup
   yaac-mama models                                 # tools/models available
   yaac-mama fetch <workspace>                      # read its branches into git
+  yaac-mama history <workspace>                    # list its conversations
+  yaac-mama history <workspace> <conversation>     # print one's transcripts
+  yaac-mama history <workspace> [<conversation>] -o <dir>
+                                                   # save every file of one/all
   yaac-mama --help
 
 Options for create, queue and edit-queued:
@@ -110,6 +116,21 @@ this checkout as refs/yaac/peers/<id>/<branch> and refs/yaac/peers/<id>/HEAD,
 where <id> is its first 8 characters (e.g. `git log yaac/peers/1a2b3c4d/HEAD`).
 Only committed work travels. Fetching again replaces those refs.
 
+history reads another workspace's agent conversations, running or stopped.
+With no conversation it lists them (CONVERSATION is the id the other forms
+take, or a unique prefix of it). Naming one prints its JSONL transcripts to
+stdout, the main one first and then its subagents'. -o <dir> saves every
+file of that conversation, or of all of them, as <dir>/<conversation>/...
+(a file over 256 MB is skipped, and named on stderr),
+including what the transcripts point at (claude's saved tool results) and,
+for a chat-pane (acp) conversation, yaac's own record as acpd.jsonl.
+
+opencode keeps its history in one SQLite database per workspace. Each of its
+conversations is handed out as a copy of that database (opencode.db), which
+this script turns into the same JSONL shape with python3: one line per
+message, the conversation first and then the sessions its subagents ran,
+under subagents/ with -o.
+
 stop ends a workspace's running container/tmux server and keeps its checkout,
 title, group and conversation, so the user can restart it. Stopping YOURSELF
 tears down what this command's own reply travels over, so the confirmation
@@ -133,17 +154,13 @@ json_string() {
   }' "$1"
 }
 
-# Unwrap {"output":"…"} and undo the escaping above, so what the server
-# rendered is what lands on stdout.
-print_output() {
+# Unwrap {"output":"…"} into $text and undo the escaping above, so it is
+# what the server rendered.
+unwrap_output() {
   text=$(printf '%s' "$1" \
     | sed -n 's/^{"output":"\(.*\)"}$/\1/p' \
     | sed 's/\\n/\
 /g; s/\\t/	/g; s/\\r//g; s/\\"/"/g; s/\\\\/\\/g')
-  # Command substitution ate any trailing newlines, so exactly one goes back
-  # on — a caller doing `id=$(yaac-mama create …)` gets a clean value, and a
-  # caller reading a table gets it terminated.
-  printf '%s\n' "$text"
 }
 
 # Pull the message out of {"error":"…"}, for a refusal the server described.
@@ -151,10 +168,10 @@ error_text() {
   printf '%s' "$1" | sed -n 's/.*"error":"\(.*\)"}$/\1/p' | sed 's/\\"/"/g; s/\\\\/\\/g'
 }
 
-# Run one command. $1 command, $2 body, then alternating arg name/value pairs
-# (a pair with an empty value is omitted, so an unset option is absent rather
-# than blank).
-run() {
+# One command's JSON envelope. $1 command, $2 body, then alternating arg
+# name/value pairs (a pair with an empty value is omitted, so an unset option
+# is absent rather than blank).
+envelope() {
   cmd=$1; body=$2; shift 2
   args=""
   sep=""
@@ -165,9 +182,12 @@ run() {
     fi
     shift 2
   done
-  json="{\"command\":$(json_string "$cmd"),\"args\":{$args},\"body\":$(json_string "$body")}"
+  printf '%s' "{\"command\":$(json_string "$cmd"),\"args\":{$args},\"body\":$(json_string "$body")}"
+}
 
-  resp=$(printf '%s' "$json" | curl -sS --max-time 300 \
+# Run one command whose answer is text, into $text. Arguments as envelope.
+ask() {
+  resp=$(envelope "$@" | curl -sS --max-time 300 \
     -H 'Content-Type: application/json' \
     -H "Authorization: Bearer ${YAAC_MAMA_TOKEN:-}" \
     --data-binary @- -w '\n%{http_code}' \
@@ -183,40 +203,99 @@ run() {
     echo "yaac-mama: ${msg:-${payload:-request failed}} (HTTP $code)" >&2
     exit 1
   fi
-  print_output "$payload"
+  unwrap_output "$payload"
+}
+
+# Run one command whose answer is text, and print it. Command substitution
+# ate any trailing newlines, so exactly one goes back on — a caller doing
+# `id=$(yaac-mama create …)` gets a clean value, and a caller reading a table
+# gets it terminated.
+run() {
+  ask "$@"
+  printf '%s\n' "$text"
   exit 0
 }
 
-# Fetch another workspace's branches. The answer is a git bundle rather than
-# JSON, so it lands in a file and the fetched workspace's id comes back in a
-# header. The receiving git checks every object (transfer.fsckObjects), since
-# another workspace wrote them.
-fetch_workspace() {
-  workdir=$(git rev-parse --show-toplevel 2>/dev/null) || {
-    echo 'yaac-mama: run fetch from inside your checkout' >&2
-    exit 2
-  }
-  tmp=$(mktemp -d) || exit 1
-  trap 'rm -rf "$tmp"' EXIT
-  code=$(printf '{"command":"fetch","args":{"workspace":%s},"body":""}' "$(json_string "$1")" \
-    | curl -sS --max-time 300 \
+# Run one command whose answer is a file, into $tmp/body, with the id of the
+# workspace it is about in $id. Arguments as envelope. A partial download
+# fails (curl exits non-zero), so $tmp/body is only ever whole.
+download() {
+  if [ -z "${tmp:-}" ]; then
+    tmp=$(mktemp -d) || exit 1
+    trap 'rm -rf "$tmp"' EXIT
+  fi
+  code=$(envelope "$@" | curl -sS --max-time 3600 \
       -H 'Content-Type: application/json' \
       -H "Authorization: Bearer ${YAAC_MAMA_TOKEN:-}" \
-      --data-binary @- -D "$tmp/headers" -o "$tmp/bundle" -w '%{http_code}' \
+      --data-binary @- -D "$tmp/headers" -o "$tmp/body" -w '%{http_code}' \
       "$URL/api/workspace/mama") || {
-    echo "yaac-mama: cannot reach the yaac server at $URL" >&2
+    echo "yaac-mama: cannot reach the yaac server at $URL, or the download broke off" >&2
     exit 1
   }
   if [ "$code" != "200" ]; then
-    payload=$(cat "$tmp/bundle" 2>/dev/null)
+    payload=$(cat "$tmp/body" 2>/dev/null)
     msg=$(error_text "$payload")
     echo "yaac-mama: ${msg:-${payload:-request failed}} (HTTP $code)" >&2
     exit 1
   fi
   id=$(tr 'A-Z' 'a-z' < "$tmp/headers" | sed -n 's/^x-yaac-workspace-id: *\([0-9a-f-]*\).*/\1/p' | tail -n 1)
+}
+
+# Turn opencode database $1 into JSONL for session $2 and every session under
+# it (its subagents'): to stdout, or with $3 into $3/<session>.jsonl and
+# $3/subagents/<session>.jsonl, printing each path. One line per message, in
+# order. Read immutable, so nothing is written beside the copy. Another
+# workspace wrote the database, so session ids become file names only when
+# they look like opencode's own.
+opencode_jsonl() {
+  command -v python3 >/dev/null 2>&1 || {
+    echo "yaac-mama: python3 is needed to read opencode's database ($1)" >&2
+    return 1
+  }
+  python3 - "$@" <<'PY'
+import json, os, pathlib, re, sqlite3, sys
+db, root = sys.argv[1], sys.argv[2]
+out = sys.argv[3] if len(sys.argv) > 3 else None
+conn = sqlite3.connect(pathlib.Path(db).absolute().as_uri() + "?immutable=1", uri=True)
+sessions, seen = [root], {root}
+for sid in sessions:
+    for (child,) in conn.execute("select id from session_v2 where parent_id = ? order by time_created", (sid,)):
+        if child not in seen and re.fullmatch(r"ses_[A-Za-z0-9]+", child):
+            seen.add(child)
+            sessions.append(child)
+for sid in sessions:
+    if out is None:
+        f = sys.stdout
+    else:
+        path = os.path.join(out, f"{sid}.jsonl" if sid == root else os.path.join("subagents", f"{sid}.jsonl"))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        f = open(path, "w")
+    rows = conn.execute(
+        "select type, seq, time_created, data from session_message where session_id = ? order by seq", (sid,))
+    for (kind, seq, created, data) in rows:
+        try:
+            data = json.loads(data)
+        except ValueError:
+            pass
+        f.write(json.dumps({"session": sid, "type": kind, "seq": seq, "time": created, "data": data}) + "\n")
+    if out is not None:
+        f.close()
+        print(path)
+PY
+}
+
+# Fetch another workspace's branches. The answer is a git bundle. The
+# receiving git checks every object (transfer.fsckObjects), since another
+# workspace wrote them.
+fetch_workspace() {
+  workdir=$(git rev-parse --show-toplevel 2>/dev/null) || {
+    echo 'yaac-mama: run fetch from inside your checkout' >&2
+    exit 2
+  }
+  download fetch '' workspace "$1"
   short=$(printf '%.8s' "$id")
   [ -n "$short" ] || { echo 'yaac-mama: the server named no workspace' >&2; exit 1; }
-  git -C "$workdir" -c transfer.fsckObjects=true fetch --quiet --prune --no-tags "$tmp/bundle" \
+  git -C "$workdir" -c transfer.fsckObjects=true fetch --quiet --prune --no-tags "$tmp/body" \
     "+refs/heads/*:refs/yaac/peers/$short/*" "+HEAD:refs/yaac/peers/$short/HEAD" || exit 1
   git -C "$workdir" for-each-ref --format='%(refname:lstrip=1)' "refs/yaac/peers/$short/"
   exit 0
@@ -238,6 +317,67 @@ case "$1" in
       exit 2
     fi
     fetch_workspace "$1"
+    ;;
+
+  history)
+    shift
+    workspace=""; conversation=""; out=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -o|--out)
+          [ $# -ge 2 ] && [ -n "$2" ] || { echo "yaac-mama: $1 needs a directory" >&2; exit 2; }
+          out=$2; shift 2 ;;
+        *)
+          if [ -z "$workspace" ]; then workspace=$1
+          elif [ -z "$conversation" ]; then conversation=$1
+          else extra=1
+          fi
+          shift ;;
+      esac
+    done
+    if [ -z "$workspace" ] || [ -n "${extra:-}" ]; then
+      echo 'usage: yaac-mama history <workspace> [<conversation>] [-o <dir>]' >&2
+      exit 2
+    fi
+    if [ -n "$out" ]; then
+      # A file per request, not one archive: GNU tar cannot unpack under
+      # gVisor, which lacks the openat2 call it extracts with.
+      # Every opencode conversation of a workspace hands out the same
+      # database, so it is downloaded once.
+      ask history '' workspace "$workspace" conversation "$conversation" files 1
+      database=""
+      while IFS= read -r name; do
+        case "$name" in
+          '') continue ;;
+          '# '*) echo "yaac-mama: ${name#\# }" >&2; continue ;;
+        esac
+        conv=${name%%/*}
+        mkdir -p "$(dirname "$out/$name")" || exit 1
+        if [ "${name#*/}" = opencode.db ] && [ -n "$database" ]; then
+          cp "$database" "$out/$name" || exit 1
+        else
+          download history '' workspace "$workspace" conversation "$conv" file "${name#*/}"
+          mv "$tmp/body" "$out/$name" || exit 1
+        fi
+        printf '%s\n' "$out/$name"
+        if [ "${name#*/}" = opencode.db ]; then
+          database=$out/$name
+          opencode_jsonl "$out/$name" "$conv" "$out/$conv" || echo "yaac-mama: kept $out/$name as it is" >&2
+        fi
+      done <<EOF
+$text
+EOF
+      exit 0
+    fi
+    [ -n "$conversation" ] || run history '' workspace "$workspace"
+    download history '' workspace "$workspace" conversation "$conversation"
+    if grep -qi '^content-type: *application/vnd.sqlite3' "$tmp/headers"; then
+      conv=$(tr -d '\r' < "$tmp/headers" | sed -n 's/^[Xx]-[Yy]aac-[Cc]onversation-[Ii]d: *//p' | tail -n 1)
+      opencode_jsonl "$tmp/body" "$conv" || exit 1
+    else
+      cat "$tmp/body"
+    fi
+    exit 0
     ;;
 
   create|queue|edit-queued)
@@ -355,7 +495,7 @@ case "$1" in
     ;;
 
   *)
-    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, rename, stop, group, models, fetch)" >&2
+    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, rename, stop, group, models, fetch, history)" >&2
     echo 'run "yaac-mama --help" for usage' >&2
     exit 2
     ;;

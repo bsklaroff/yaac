@@ -1,15 +1,21 @@
-import fs from 'node:fs/promises'
+import { constants as C, type Stats } from 'node:fs'
+import fs, { type FileHandle } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import {
   agentHistoryDir,
   claudeDir,
   codexDir,
+  opencodeCheckpointDir,
   projectDir,
   type AgentHistoryPart,
 } from '@yaac/shared/project-paths'
-import { agentSessionIdSchema, type AgentTool } from '@yaac/shared/types'
+import { agentSessionIdSchema, type AgentMode, type AgentTool } from '@yaac/shared/types'
 import { serverLog } from '#log'
-import { openSandboxDir, type SandboxFile } from './sandbox-fs'
+import { openRoot } from '#lib/confined-fs'
+import { acpRecord } from './acp-log'
+import { codexRolloutParent, codexRolloutThreadId } from './codex'
+import { openSandboxDir, sandboxLinkPolicy, type SandboxFile } from './sandbox-fs'
 
 /**
  * Where each tool's transcripts live on the host; the only place that knows
@@ -293,4 +299,219 @@ export async function transcriptLastActiveMs(file: SandboxFile): Promise<number 
   const root = await openSandboxDir(file.slug, file.dir).catch(() => null)
   const st = await root?.stat(file.rel)
   return st?.isFile() ? st.mtimeMs : undefined
+}
+
+/** The conversation fields `conversationFiles` reads. */
+export interface ConversationRef {
+  tool: AgentTool
+  mode: AgentMode
+  agentSessionId: string
+  /** Project-relative, as stored. */
+  transcriptPath?: string
+}
+
+/** One file of a conversation's history, named as it is handed out. */
+export interface ConversationFile {
+  name: string
+  file: SandboxFile
+  /** As listed; a live file may since have grown. */
+  size: number
+  mtimeMs: number
+  /** An SQLite database, read through `openConversationFile`. */
+  sqlite?: boolean
+}
+
+/** A candidate file, before `conversationFiles` stats it. */
+type Candidate = Omit<ConversationFile, 'size' | 'mtimeMs'>
+
+/** The name acpd's record of an `acp` conversation is handed out under. */
+export const ACP_RECORD_NAME = 'acpd.jsonl'
+
+/** The name opencode's database is handed out under. */
+export const OPENCODE_DB_NAME = 'opencode.db'
+
+/**
+ * Every file each of a workspace's conversations left on the host, keyed by
+ * conversation id, the tool's own transcript first:
+ *
+ *  - claude: `<id>.jsonl`, then its companion `<id>/` dir (subagent
+ *    transcripts, saved tool results).
+ *  - codex: the conversation's rollout, then every rollout descended from it
+ *    (`spawn_agent` children and forks, which are threads of their own).
+ *  - pi: its session logs.
+ *  - opencode: the workspace's database (`OPENCODE_DB_NAME`), which holds
+ *    this conversation, its subagents' sessions and the workspace's other
+ *    opencode conversations.
+ *
+ * An `acp` conversation also has acpd's record (`ACP_RECORD_NAME`), the
+ * verbatim JSON-RPC stream.
+ *
+ * Only regular files reached with no link on the way are listed, on either
+ * driver: yaac links nothing inside a workspace's history, so a link there
+ * was planted, and following one could hand out a sibling's checkout.
+ */
+export async function conversationFiles(
+  slug: string,
+  workspaceId: string,
+  sessions: ConversationRef[],
+): Promise<Map<string, ConversationFile[]>> {
+  const rollouts = sessions.some((s) => s.tool === 'codex') ? await codexRollouts(slug, workspaceId) : []
+  const opencode = sessions.some((s) => s.tool === 'opencode') ? await opencodeDatabase(slug, workspaceId) : undefined
+  const out = new Map<string, ConversationFile[]>()
+  for (const s of sessions) {
+    const files: Candidate[] = s.tool === 'claude' ? await claudeFiles(slug, workspaceId, s)
+      : s.tool === 'codex' ? codexFiles(s.agentSessionId, rollouts)
+      : s.tool === 'pi' ? (await piSessionLogs(slug, workspaceId, s.agentSessionId))
+        .map((file) => ({ name: path.basename(file.rel), file }))
+      : opencode !== undefined ? [{ name: OPENCODE_DB_NAME, file: opencode, sqlite: true }]
+      : []
+    const record = s.mode === 'acp' ? acpRecord({ slug, workspaceId, agentSessionId: s.agentSessionId }) : undefined
+    if (record !== undefined) files.push({ name: ACP_RECORD_NAME, file: record })
+    out.set(s.agentSessionId, (await Promise.all(files.map(async (f) => {
+      const st = await (await openRoot(f.file.dir, 'no-links').catch(() => null))?.stat(f.file.rel)
+      return st?.isFile() === true ? [{ ...f, size: st.size, mtimeMs: st.mtimeMs }] : []
+    }))).flat())
+  }
+  return out
+}
+
+async function claudeFiles(slug: string, workspaceId: string, s: ConversationRef): Promise<Candidate[]> {
+  const recorded = s.transcriptPath === undefined ? undefined
+    : resolveProjectPath(slug, workspaceId, 'claude', s.transcriptPath)
+  const main = recorded !== undefined && await transcriptLastActiveMs(recorded) !== undefined
+    ? recorded
+    : await findClaudeTranscript(slug, workspaceId, s.agentSessionId)
+  if (main === undefined) return []
+  const companion = main.rel.replace(/\.jsonl$/, '')
+  const root = await openRoot(main.dir, 'no-links').catch(() => null)
+  if (root === null) return [{ name: path.basename(main.rel), file: main }]
+  const below: string[] = []
+  // Bounded, since the agent shapes this tree.
+  const walk = async (rel: string, depth: number): Promise<void> => {
+    for (const e of await root.readdir(rel)) {
+      const child = `${rel}/${e.name}`
+      if (e.isFile()) below.push(child)
+      else if (e.isDirectory() && depth > 0) await walk(child, depth - 1)
+    }
+  }
+  await walk(companion, 8)
+  const name = path.basename(companion)
+  return [
+    { name: path.basename(main.rel), file: main },
+    ...below.sort().map((rel) => ({ name: `${name}/${rel.slice(companion.length + 1)}`, file: { slug, dir: main.dir, rel } })),
+  ]
+}
+
+interface Rollout {
+  file: SandboxFile
+  thread: string
+  parent: string | undefined
+}
+
+/**
+ * Every codex rollout a workspace can read, history first, each thread once
+ * (a host's shared home links to the history's files, and links are not
+ * listed).
+ */
+async function codexRollouts(slug: string, workspaceId: string): Promise<Rollout[]> {
+  const found = new Map<string, SandboxFile>()
+  for (const { dir, sub } of transcriptRoots(slug, workspaceId, 'codex')) {
+    const home = await openSandboxDir(slug, dir).catch(() => null)
+    if (home === null) continue
+    const walk = async (rel: string, depth: number): Promise<void> => {
+      for (const e of await home.readdir(rel)) {
+        const child = under(rel, e.name)
+        const thread = e.isFile() ? codexRolloutThreadId(e.name) : undefined
+        if (thread !== undefined && !found.has(thread)) found.set(thread, { slug, dir, rel: child })
+        else if (e.isDirectory() && depth > 0) await walk(child, depth - 1)
+      }
+    }
+    // `<YYYY>/<MM>/<DD>/`.
+    await walk(sub, 3)
+  }
+  return Promise.all([...found].map(async ([thread, file]) => ({
+    file,
+    thread,
+    parent: file.rel.endsWith('.jsonl') ? await codexRolloutParent(file) : undefined,
+  })))
+}
+
+/** A codex conversation's rollout, then its descendants by name. */
+function codexFiles(thread: string, rollouts: Rollout[]): Candidate[] {
+  const threads = new Set([thread])
+  for (let grew = true; grew;) {
+    grew = false
+    for (const r of rollouts) {
+      if (threads.has(r.thread) || r.parent === undefined || !threads.has(r.parent)) continue
+      threads.add(r.thread)
+      grew = true
+    }
+  }
+  const named = (r: Rollout): Candidate => ({ name: path.basename(r.file.rel), file: r.file })
+  return [
+    ...rollouts.filter((r) => r.thread === thread).map(named),
+    ...rollouts.filter((r) => r.thread !== thread && threads.has(r.thread))
+      .map(named).sort((a, b) => a.name.localeCompare(b.name)),
+  ]
+}
+
+/**
+ * The workspace's opencode database, in its checkpoint dir
+ * (docs/workspace-storage.md, "opencode"): under k8s a backup-API copy the
+ * pod refreshes every few minutes and at stop, under containerless the live
+ * working copy.
+ */
+async function opencodeDatabase(slug: string, workspaceId: string): Promise<SandboxFile | undefined> {
+  const dir = opencodeCheckpointDir(slug, workspaceId)
+  const root = await openSandboxDir(slug, dir).catch(() => null)
+  const db = (await root?.readdir(''))?.find((e) => e.isFile() && e.name.endsWith('.db') && !e.name.startsWith('.'))
+  return db === undefined ? undefined : { slug, dir, rel: db.name }
+}
+
+/**
+ * Open a conversation file for reading, or null when it is gone. Like the
+ * listing, it refuses any link on the way.
+ *
+ * A database is opened as a consistent copy. A sandboxed workspace's is
+ * never opened with SQLite, since the workspace wrote it: its checkpoint is
+ * already a backup-API copy with no sidecars, so its bytes are the copy.
+ * A host workspace's is live. With no `-wal` beside it, it was closed
+ * cleanly and the file is the whole database; with one, an agent may be
+ * writing, so it is backed up through a read-only connection, into a temp
+ * file that is unlinked once open.
+ *
+ * SQLite opens by path, so that path is checked first: the database must
+ * really be where it was listed and neither sidecar a link. A link swapped
+ * in after the check would still be followed. That is accepted because only
+ * a host workspace reaches this, and it has no sandbox to escape: it could
+ * read whatever the link names itself.
+ */
+export async function openConversationFile(f: ConversationFile): Promise<FileHandle | null> {
+  const plain = (): Promise<FileHandle | null> =>
+    openRoot(f.file.dir, 'no-links').then((root) => root.open(f.file.rel, C.O_RDONLY)).catch(() => null)
+  if (f.sqlite !== true || sandboxLinkPolicy() !== 'inside') return plain()
+  const live = path.join(f.file.dir, f.file.rel)
+  const sidecar = (suffix: string): Promise<Stats | null> =>
+    fs.lstat(`${live}${suffix}`).catch(() => null)
+  const wal = await sidecar('-wal')
+  if (wal === null) return plain()
+  const listed = path.join(await fs.realpath(f.file.dir).catch(() => ''), f.file.rel)
+  if (await fs.realpath(live).catch(() => null) !== listed || wal.isSymbolicLink()
+    || (await sidecar('-shm'))?.isSymbolicLink() === true) return null
+  // Loaded only here, so the rest of the server never pays for it (an
+  // ExperimentalWarning on Node 22, no `backup` before 22.16).
+  /* eslint-disable-next-line no-restricted-syntax -- deferring it is the point; see above */
+  const { backup, DatabaseSync } = await import('node:sqlite')
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-sqlite-'))
+  try {
+    const db = new DatabaseSync(live, { readOnly: true })
+    try {
+      await backup(db, path.join(tmp, 'copy.db'))
+    } finally {
+      db.close()
+    }
+    return await fs.open(path.join(tmp, 'copy.db'), 'r')
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true })
+  }
 }
