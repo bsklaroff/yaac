@@ -1,6 +1,6 @@
 ---
 name: yaac-mama
-description: Ask the yaac server running this workspace to list the project's workspaces, start a sibling workspace with a prompt (now, or queued to start when a workspace stops), edit a queued workspace's prompt or settings, retitle a workspace, stop a workspace (a sibling, or this one), or file workspaces into named groups — via the in-workspace `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac workspace (or "session"), queue a follow-up to run after this one (or change one already queued), farm a task out to a parallel one, see what else is running, rename/retitle a workspace, stop/shut down/wind down a workspace or this one when its work is done, or organize workspaces into groups.
+description: Ask the yaac server running this workspace to list the project's workspaces, start a sibling workspace with a prompt (now, or queued to start when a workspace stops), edit a queued workspace's prompt or settings, retitle a workspace, stop a workspace (a sibling, or this one), file workspaces into named groups, or fetch another workspace's branches into this checkout — via the in-workspace `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac workspace (or "session"), queue a follow-up to run after this one (or change one already queued), farm a task out to a parallel one, see what else is running, rename/retitle a workspace, stop/shut down/wind down a workspace or this one when its work is done, organize workspaces into groups, or read what another workspace committed (its branches, log, diffs), running or stopped.
 ---
 
 You are running **inside a yaac workspace**. The `yaac-mama` command (already on
@@ -20,6 +20,7 @@ yaac-mama stop [<workspace>]                        # omit the workspace to stop
 yaac-mama group create "<name>"
 yaac-mama group move <workspace> ["<group>"]       # omit the group to ungroup
 yaac-mama models                                  # tools/models available
+yaac-mama fetch <workspace>                       # its branches, into your git
 yaac-mama --help
 ```
 
@@ -137,6 +138,17 @@ pass — the server resolves who is calling and answers for that project only.
 - **`models`** — which agent tools have host credentials (with kind and
   provider) and each one's accepted model ids. The workspace cannot see host
   credentials itself, so this is the only way to know what is usable.
+
+- **`fetch <workspace>`** — copy another workspace's branches and HEAD into
+  this checkout's git, as `refs/yaac/peers/<id8>/<branch>` and
+  `refs/yaac/peers/<id8>/HEAD`, and print the refs it wrote. Works on a
+  stopped workspace as well as a running one (the id comes from `list`, or
+  from whoever told you about it). After that, ordinary git reads it:
+  `git log yaac/peers/<id8>/HEAD`, `git diff HEAD...yaac/peers/<id8>/HEAD`,
+  `git for-each-ref --contains <sha> refs/yaac/peers/`. Only **committed** work travels — not
+  its uncommitted changes, stash or config. Run it from inside this
+  checkout. Fetching again replaces that workspace's refs; nothing is ever
+  written to the other workspace.
 
 ## What actually happens on `create`
 

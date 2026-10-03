@@ -13,6 +13,7 @@
   "dependencies": {
     "@yaac/server": "workspace:*",
     "@yaac/shared": "workspace:*",
+    "esbuild": "0.27.7",
     "tsx": "catalog:",
     "ws": "catalog:",
     "yaml": "catalog:"

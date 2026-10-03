@@ -98,6 +98,8 @@ type MamaCaller = { workspaceId: string; projectSlug: string }
 /**
  * The `yaac-mama` endpoint. Both ways in end in `runMamaCommand`, which holds
  * the command allowlist; they differ only in how the caller is identified.
+ * Answers are JSON, except `fetch`'s git bundle, sent as the body with the
+ * fetched workspace's id in `x-yaac-workspace-id`.
  */
 function mamaRoute(identifyCaller: (bearer: string, header: (name: string) => string | undefined)
   => Promise<MamaCaller | undefined>) {
@@ -130,9 +132,12 @@ function mamaRoute(identifyCaller: (bearer: string, header: (name: string) => st
         },
         { command, args: args ?? {}, body: body ?? '' },
       )
-      return outcome.ok
-        ? c.json({ output: outcome.output })
-        : c.json({ error: outcome.error }, 422)
+      if (!outcome.ok) return c.json({ error: outcome.error }, 422)
+      if ('output' in outcome) return c.json({ output: outcome.output })
+      return c.body(outcome.bundle, 200, {
+        'content-type': 'application/x-git-bundle',
+        'x-yaac-workspace-id': outcome.workspaceId,
+      })
     },
   )
 }
