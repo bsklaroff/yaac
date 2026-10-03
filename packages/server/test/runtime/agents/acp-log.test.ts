@@ -634,7 +634,7 @@ describe('replayAcpLog', () => {
     })
   })
 
-  it('marks shell calls by their rawInput, and pi\'s by having none', () => {
+  it('marks shell calls by their rawInput, and pi\'s by having none, keeping claude\'s description', () => {
     const events = replayAcpLog([
       // claude: the command arrives in rawInput, the title later.
       update({
@@ -666,10 +666,10 @@ describe('replayAcpLog', () => {
       }),
     ].join('\n'))
 
-    const calls = events.map((e) => (e as { call: { toolCallId: string; shell?: true } }).call)
-    expect(calls.map((c) => [c.toolCallId, c.shell])).toEqual([
-      ['claude', true], ['claude', true], ['pi', true], ['mcp', undefined], ['mcp', undefined],
-      ['claude-mcp', undefined],
+    const calls = events.map((e) => (e as { call: { toolCallId: string; shell?: true; description?: string } }).call)
+    expect(calls.map((c) => [c.toolCallId, c.shell, c.description])).toEqual([
+      ['claude', true, 'List files'], ['claude', true, 'List files'], ['pi', true, undefined],
+      ['mcp', undefined, undefined], ['mcp', undefined, undefined], ['claude-mcp', undefined, undefined],
     ])
   })
 
