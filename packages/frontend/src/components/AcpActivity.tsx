@@ -1,7 +1,9 @@
 import { useEffect, useRef, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
-import { active, MAX_TOOL_OUTPUT_CHARS, StateMark, taskIcon, ToolRow } from '#components/AcpTranscript'
-import { NavBackIcon, StopIcon, SubagentIcon, type Icon } from '#lib/icons'
+import {
+  active, MAX_TOOL_OUTPUT_CHARS, StateMark, SUBAGENT_CATEGORY, taskCategory, ToolRow, type ActivityCategory,
+} from '#components/AcpTranscript'
+import { NavBackIcon, StopIcon } from '#lib/icons'
 import type { TaskOutput } from '#lib/acp'
 import { stripAnsi } from '@yaac/shared/ansi'
 import type { AcpEvent, AcpSubagent, AcpTask, AcpToolCall } from '@yaac/shared/acp'
@@ -43,7 +45,12 @@ export function callOf(events: AcpEvent[], toolCallId: string): { call?: AcpTool
 /** One open view's id; the strip marks it. */
 export type ActivityTarget = { kind: 'subagent' | 'task'; id: string }
 
-/** Everything still running, one chip each; nothing when all is idle. */
+/**
+ * Everything still running, one chip each, grouped by category under a
+ * label and count ("Shells 2"), the way agent TUIs summarize what is left
+ * running; nothing when all is idle. On a phone the strip scrolls past a
+ * few rows rather than squeezing the transcript.
+ */
 export function ActivityBar({
   subagents,
   tasks,
@@ -57,50 +64,60 @@ export function ActivityBar({
 }): JSX.Element | null {
   const chips = [
     ...[...subagents.values()].filter(active).map((s) => (
-      { kind: 'subagent' as const, id: s.id, label: 'Agent', name: s.name, icon: SubagentIcon, state: s.state }
+      { kind: 'subagent' as const, id: s.id, name: s.name, category: SUBAGENT_CATEGORY, state: s.state }
     )),
     ...[...tasks.values()].filter((t) => active(t) && t.ambient !== true).map((t) => (
-      { kind: 'task' as const, id: t.id, label: t.kind, name: t.name, icon: taskIcon(t), state: t.state }
+      { kind: 'task' as const, id: t.id, name: t.name, category: taskCategory(t), state: t.state }
     )),
   ]
   if (chips.length === 0) return null
+  const groups = new Map<string, typeof chips>()
+  for (const c of chips) groups.set(c.category.label, [...groups.get(c.category.label) ?? [], c])
   return (
-    <div role="group" aria-label="Running in the background" className="mb-1.5 flex flex-wrap gap-1">
-      {chips.map(({ kind, id, label, name, icon: Icon, state }) => (
-        <button
-          key={`${kind}:${id}`}
-          type="button"
-          onClick={() => onOpen({ kind, id })}
-          title={name}
-          aria-label={`${label}: ${name}`}
-          className={clsx(
-            'flex max-w-60 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] max-md:py-1.5',
-            current?.kind === kind && current.id === id
-              ? 'border-border-strong bg-surface-3 text-text'
-              : 'border-hairline bg-surface text-text-dim hover:bg-surface-2 hover:text-text',
-          )}
-        >
-          <Icon size={12} className="shrink-0 text-text-faint" />
-          <span className="truncate">{name}</span>
-          <StateMark state={state} live />
-        </button>
-      ))}
+    <div role="group" aria-label="Running in the background" className="mb-1.5 flex flex-wrap gap-x-3 gap-y-1 max-md:max-h-24 max-md:overflow-y-auto">
+      {[...groups.values()].map((members) => {
+        const { plural, label } = members[0].category
+        return (
+          <div key={label} role="group" aria-label={plural} className="flex min-w-0 flex-wrap items-center gap-1">
+            <span className="px-0.5 text-[10px] font-medium uppercase tracking-wide text-text-faint">
+              {plural} <span className="tabular-nums text-text-dim">{members.length}</span>
+            </span>
+            {members.map(({ kind, id, name, category: { icon: Icon, tint }, state }) => (
+              <button
+                key={`${kind}:${id}`}
+                type="button"
+                onClick={() => onOpen({ kind, id })}
+                title={name}
+                aria-label={`${label}: ${name}`}
+                className={clsx(
+                  'flex max-w-60 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] max-md:py-1.5',
+                  current?.kind === kind && current.id === id
+                    ? 'border-border-strong bg-surface-3 text-text'
+                    : 'border-hairline bg-surface text-text-dim hover:bg-surface-2 hover:text-text',
+                )}
+              >
+                <Icon size={12} className={clsx('shrink-0', tint)} />
+                <span className="truncate">{name}</span>
+                <StateMark state={state} live />
+              </button>
+            ))}
+          </div>
+        )
+      })}
     </div>
   )
 }
 
 /** The bar over a subagent's or task's view, with the way back. */
 export function ActivityHeader({
-  icon: Icon,
-  label,
+  category: { icon: Icon, label, tint },
   title,
   state,
   live,
   onBack,
   children,
 }: {
-  icon: Icon
-  label: string
+  category: ActivityCategory
   title: string
   state: (AcpSubagent | AcpTask)['state']
   live: boolean
@@ -119,7 +136,7 @@ export function ActivityHeader({
         <NavBackIcon size={13} />
         Back
       </button>
-      <Icon size={14} className="shrink-0 text-text-faint" />
+      <Icon size={14} className={clsx('shrink-0', tint)} />
       <span className="shrink-0 text-text-faint">{label}</span>
       <span className="min-w-0 flex-1 truncate text-text">{title}</span>
       {children}

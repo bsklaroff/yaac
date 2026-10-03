@@ -1079,9 +1079,12 @@ describe('WorkspaceChat subagents and background tasks', () => {
   it('keeps a subagent\'s work out of the conversation, and shows it, without a composer, once opened', () => {
     show()
     expect(screen.queryByText('Looked in src/router.ts.')).toBeNull()
-    // Running things are listed over the composer, as a TUI lists them.
-    const strip = screen.getByTitle('Explore')
-    fireEvent.click(strip)
+    // Running things are listed over the composer by category, as a TUI
+    // lists them.
+    const strip = screen.getByRole('group', { name: 'Running in the background' })
+    expect(within(strip).getByRole('group', { name: 'Agents' }).textContent).toMatch(/^Agents 1/)
+    expect(within(strip).getByRole('group', { name: 'Shells' }).textContent).toMatch(/^Shells 1/)
+    fireEvent.click(within(strip).getByRole('button', { name: 'Agent: Explore' }))
 
     expect(screen.getByText('Looked in src/router.ts.')).toBeTruthy()
     expect(screen.getByText('find the router')).toBeTruthy()
@@ -1129,8 +1132,19 @@ describe('WorkspaceChat subagents and background tasks', () => {
     }]
     show()
     expect(screen.queryByRole('group', { name: 'Running in the background' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /^monitorartifact updates/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Monitorartifact updates/ }))
     expect(screen.getByRole('button', { name: /Back/ })).toBeTruthy()
+  })
+
+  it('groups an adapter\'s own task kind under its word, and an empty kind as a task', () => {
+    stream.events = [
+      { type: 'task', seq: 0, task: { id: 'k1', name: 'sync', kind: 'job', description: '', state: 'running' } },
+      { type: 'task', seq: 1, task: { id: 'k2', name: 'mystery', kind: '', description: '', state: 'running' } },
+    ]
+    show()
+    const strip = screen.getByRole('group', { name: 'Running in the background' })
+    expect(within(strip).getByRole('group', { name: 'Jobs' }).textContent).toMatch(/^Jobs 1/)
+    expect(within(strip).getByRole('button', { name: 'Task: mystery' })).toBeTruthy()
   })
 
   it('shows a task with no output file the output streamed onto its call, verbatim, without reading a file', () => {
@@ -1142,7 +1156,7 @@ describe('WorkspaceChat subagents and background tasks', () => {
       { type: 'task', seq: 3, task: { id: 'exec-1', name: 'tick loop', kind: 'shell', description: '', state: 'running', toolCallId: 'exec-1' } },
     ]
     show()
-    fireEvent.click(screen.getByRole('button', { name: /^shelltick loop/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Shelltick loop/ }))
     // Shown as text: `#` is no heading and `__init__` is not bold.
     expect(screen.getByText(/# tick 1\s+__init__ 2/)).toBeTruthy()
     expect(document.querySelector('h1, strong')).toBeNull()
@@ -1198,7 +1212,7 @@ describe('WorkspaceChat subagents and background tasks', () => {
   it('offers no Stop for a task that has ended', () => {
     stream.events = [...stream.events, shell(5, 'stopped')]
     show()
-    fireEvent.click(screen.getByRole('button', { name: /^shellnpm run dev/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Shellnpm run dev/ }))
     expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
   })
 })

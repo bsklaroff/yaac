@@ -426,8 +426,10 @@ the row through the same `onModel` path as a model the adapter reports itself
 
 A TUI lists the subagents and background shells its agent started, and lets
 you open one to read it. A chat pane does the same: a strip over the
-composer lists what is still running, the transcript holds a card where each
-one started, and opening either switches the pane to that subagent's own
+composer lists what is still running, grouped by category under a label
+and count (Agents, Shells, Monitors, Workflows, each with its own icon and
+tint, as claude's TUI footer counts "2 shells, 1 monitor"), the transcript
+holds a card where each one started, and opening either switches the pane to that subagent's own
 transcript or to the task's output. Esc or Back returns. Those views have no
 composer, since an agent takes messages only on its main thread.
 
