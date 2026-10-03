@@ -108,6 +108,7 @@ import { ServerError } from '@yaac/shared/errors'
 import { waitFor } from '#lib/wait-for'
 import {
   AGENT_CLIS,
+  DEFAULT_AGENT_MODE,
   defaultPermissionMode,
   launchablePermissionMode,
   resolveToolCreateDefaults,
@@ -182,11 +183,10 @@ export interface WorkspaceCreateOptions {
   /** Agent tool to run inside the container (default: 'claude'). */
   tool?: AgentTool
   /**
-   * Which protocol drives the agent (default: 'tui'). `acp` runs the tool's
-   * ACP adapter under acpd and the webapp renders a chat pane instead of a
-   * terminal. The create route checks the tool has an adapter.
+   * Which protocol drives the agent. `acp` runs the tool's ACP adapter under
+   * acpd and the webapp renders a chat pane instead of a terminal.
    */
-  mode?: AgentMode
+  mode: AgentMode
   /**
    * Reference branch for the fresh workspace (a branch on `origin`, no
    * `origin/` prefix); unset → the remote's default branch.
@@ -588,10 +588,6 @@ export interface CreateSetup {
  * valid, else `resolveToolCreateDefaults`. The tool itself defaults to the
  * project's last tool, else claude.
  *
- * Mode is not remembered by default, since CLI callers can only show a
- * terminal; the webapp sends its remembered mode itself. The prewarm pool
- * passes `modeFromMemory` because the webapp claims its spares.
- *
  * A requested permission mode the tool lacks is refused; a remembered one it
  * lacks falls back to the default. Restart skips this and calls
  * `createWorkspace` directly.
@@ -599,12 +595,11 @@ export interface CreateSetup {
 export async function resolveCreate(
   projectSlug: string,
   request: { tool?: AgentTool; model?: string; permissionMode?: PermissionMode; mode?: AgentMode },
-  opts: { modeFromMemory?: boolean } = {},
 ): Promise<CreateSetup> {
   const row = await getProjectRow(projectSlug)
   const tool = request.tool ?? row?.lastTool ?? 'claude'
   const remembered = row?.createDefaults[tool]
-  const mode = request.mode ?? (opts.modeFromMemory === true ? remembered?.mode : undefined) ?? 'tui'
+  const mode = request.mode ?? remembered?.mode ?? DEFAULT_AGENT_MODE
   const driver = workspaceDriver().kind
   const auth = await loadToolAuthEntry(tool)
   const provider = auth?.tool === 'opencode' ? auth.opencodeProvider
@@ -707,7 +702,7 @@ export async function createWorkspace(
   // Validate before provisioning anything.
   const initWindows = validateInitWindows(config)
 
-  const mode: AgentMode = options.mode ?? 'tui'
+  const { mode } = options
   // Check this runtime can run the tool in this mode (a host installs the
   // pinned version on first use). Otherwise the workspace would die seconds
   // after reporting success.

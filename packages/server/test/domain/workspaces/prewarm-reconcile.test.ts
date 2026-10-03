@@ -278,12 +278,10 @@ describe('reconcilePrewarmPool', () => {
     expect(mockCleanup).not.toHaveBeenCalled()
   })
 
-  // The webapp claims spares and sends the remembered agent mode, so spares
-  // are warmed in that mode.
   it('warms a spare as the project\'s untouched create, remembered mode included', async () => {
     mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-real', workspaceId: 'r1' })])
     await pass()
-    expect(mockResolveCreate).toHaveBeenCalledWith('p', {}, { modeFromMemory: true })
+    expect(mockResolveCreate).toHaveBeenCalledWith('p', {})
     expect(mockCreate).toHaveBeenCalledWith('p', WARM)
   })
 
@@ -325,7 +323,7 @@ describe('reconcilePrewarmPool', () => {
     vi.mocked(listProjectRows).mockResolvedValue([
       { slug: 'p', createDefaults: {} } as unknown as ProjectRow,
     ])
-    vi.mocked(getWorkspaceRow).mockResolvedValue({ mode: 'tui' } as WorkspaceRow)
+    vi.mocked(getWorkspaceRow).mockResolvedValue({ mode: 'acp' } as WorkspaceRow)
     mockWorkspaces.mockResolvedValue([
       pod({ jobName: 'yaac-p-real', workspaceId: 'r1' }),
       pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true }),

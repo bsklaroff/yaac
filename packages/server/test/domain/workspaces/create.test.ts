@@ -72,7 +72,7 @@ describe('resolveCreate', () => {
 
   it('falls back per field when nothing is remembered', async () => {
     expect(await resolveCreate('p', {})).toEqual({
-      tool: 'claude', model: FALLBACK_MODELS.claude, permissionMode: 'bypass', mode: 'tui',
+      tool: 'claude', model: FALLBACK_MODELS.claude, permissionMode: 'bypass', mode: 'acp',
     })
     // The permission-mode fallback comes from the driver.
     // In a container, prompting protects nothing. Containerless runs as the
@@ -89,17 +89,12 @@ describe('resolveCreate', () => {
     await recordProjectCreate('p', 'claude', { model: 'claude-sonnet-5' })
     await recordProjectCreate('p', 'codex', { model: 'gpt-5.5', permissionMode: 'plan', mode: 'acp' })
 
-    // The agent mode is not remembered for the route (the CLI can only show
-    // a terminal), so codex opens in `tui`, which lacks `plan`; the nearest
-    // stricter mode, `read-only`, is used.
+    // codex lacks `plan`, so the nearest stricter mode, `read-only`, is used.
     expect(await resolveCreate('p', {})).toEqual({
-      tool: 'codex', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'tui',
-    })
-    // The spare pool warms what the webapp would send, including the
-    // remembered agent mode.
-    expect(await resolveCreate('p', {}, { modeFromMemory: true })).toEqual({
       tool: 'codex', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'acp',
     })
+    await recordProjectCreate('p', 'codex', { mode: 'tui' })
+    expect((await resolveCreate('p', {})).mode).toBe('tui')
     // Each agent has its own remembered settings.
     expect(await resolveCreate('p', { tool: 'claude' })).toMatchObject({ model: 'claude-sonnet-5' })
   })
@@ -194,6 +189,7 @@ describe('createWorkspace', () => {
     })
     const progress: string[] = []
     const result = await createWorkspace('demo', {
+      mode: 'tui',
       tool: 'codex', branch: 'dev', model: 'gpt-6-sol', initialPrompt: 'ship it',
       onProgress: (m) => progress.push(m),
     })
@@ -280,7 +276,7 @@ describe('createWorkspace', () => {
     } else {
       await saveToolAuth(tool, key, kind, provider)
     }
-    await createWorkspace('demo', { tool: 'claude' })
+    await createWorkspace('demo', { mode: 'tui', tool: 'claude' })
 
     expect(env()).toEqual(expect.arrayContaining(Object.entries(want).map(([name, value]) => `${name}=${value}`)))
     expect(specs[0].secretEnvKeys).toEqual(expect.arrayContaining(Object.keys(want).filter((n) => n !== 'OPENCODE_CONFIG')))
@@ -346,7 +342,7 @@ describe('createWorkspace', () => {
       await setProjectEnvVar('demo', { name: secret, value: 'sekrit', secret: true, rule: { hosts: ['api.github.com'] } })
     }
 
-    await createWorkspace('demo', {})
+    await createWorkspace('demo', { mode: 'tui' })
 
     expect(env().find((e) => e.startsWith('GH_TOKEN='))?.slice('GH_TOKEN='.length)).toBe(want)
   })
@@ -356,7 +352,7 @@ describe('createWorkspace', () => {
   // could change it, and under k8s the server pod's `$HOME` is ephemeral.
   it('refuses without a git identity, naming where a client can set one', async () => {
     await setGitIdentity({ name: ' ', email: ' ' })
-    await expect(createWorkspace('demo', {})).rejects.toThrow(/No git identity is set on this server.*Settings/)
+    await expect(createWorkspace('demo', { mode: 'tui' })).rejects.toThrow(/No git identity is set on this server.*Settings/)
     expect(specs).toEqual([])
   })
 
@@ -375,7 +371,7 @@ describe('createWorkspace', () => {
     await fs.writeFile(target, 'not yours')
     await fs.symlink(target, path.join(home, 'settings.json'))
 
-    await createWorkspace('demo', {})
+    await createWorkspace('demo', { mode: 'tui' })
 
     const config = await readJson('.claude.json')
     expect(config).toMatchObject({
@@ -393,7 +389,7 @@ describe('createWorkspace', () => {
     // An unreadable config starts over; settings keep their own keys.
     await fs.writeFile(path.join(home, '.claude.json'), 'not json{')
     await fs.writeFile(path.join(home, 'settings.json'), JSON.stringify({ theme: 'dark', cleanupPeriodDays: 30 }))
-    await createWorkspace('demo', {})
+    await createWorkspace('demo', { mode: 'tui' })
     expect(await readJson('.claude.json')).toMatchObject({ hasCompletedOnboarding: true })
     expect(await readJson('settings.json')).toMatchObject({ theme: 'dark', cleanupPeriodDays: 36500 })
   })
@@ -403,7 +399,7 @@ describe('createWorkspace', () => {
     // entry would match nothing. The project's workspaces share one
     // claude.json, and a lost entry opens claude's trust dialog.
     installDriver({ kind: 'containerless' })
-    const created = await Promise.all([1, 2, 3].map(() => createWorkspace('demo', {})))
+    const created = await Promise.all([1, 2, 3].map(() => createWorkspace('demo', { mode: 'tui' })))
     const config = JSON.parse(await fs.readFile(path.join(claudeDir('demo'), '.claude.json'), 'utf8')) as {
       projects: Record<string, unknown>
     }
@@ -423,7 +419,7 @@ describe('createWorkspace', () => {
     const helpers = (): WorkspaceSpec['mounts'] =>
       specs.at(-1)!.mounts.filter((m) => m.mountPath.startsWith('/usr/local/bin/'))
 
-    await createWorkspace('demo', { workspaceId: 'wt-bin' })
+    await createWorkspace('demo', { mode: 'tui', workspaceId: 'wt-bin' })
 
     // Regular files only, executable.
     expect(helpers().map((m) => m.mountPath)).toEqual(['/usr/local/bin/a-tool', '/usr/local/bin/yaac-workspace-init'])
@@ -436,14 +432,14 @@ describe('createWorkspace', () => {
 
     // A relaunch restages from scratch, so a removed command is gone.
     await fs.rm(path.join(src, 'a-tool'))
-    await createWorkspace('demo', { workspaceId: 'wt-bin', resume: true })
+    await createWorkspace('demo', { mode: 'tui', workspaceId: 'wt-bin', resume: true })
     expect(helpers().map((m) => m.mountPath)).toEqual(['/usr/local/bin/yaac-workspace-init'])
     await expect(fs.access(staged)).rejects.toThrow()
 
     // Without the init script a pod would have no git identity, tmux or
     // streamd, so a stripped build refuses.
     setWorkspaceBinDir(path.join(tmpDir, 'missing'))
-    await expect(createWorkspace('demo', {})).rejects.toThrow(/missing yaac-workspace-init/)
+    await expect(createWorkspace('demo', { mode: 'tui' })).rejects.toThrow(/missing yaac-workspace-init/)
   })
 
   // The window probe is not awaited, so a dead agent's verdict can land
@@ -467,6 +463,7 @@ describe('createWorkspace', () => {
     registerProvisioning({ workspaceId: 'wt-dead', projectSlug: 'demo', tool: 'codex', kind: 'create' })
 
     const run = runProvisioned('wt-dead', () => createWorkspace('demo', {
+      mode: 'tui',
       workspaceId: 'wt-dead', tool: 'codex', initialPrompt: 'go',
     }))
     // Filed now, the verdict would be erased by the create's success.
@@ -492,7 +489,7 @@ describe('createWorkspace', () => {
       portForward: [{ containerPort: 3000, hostPortStart: 3000 }],
     })
 
-    const result = await createWorkspace('demo', { tool: 'claude', model: 'claude-opus-4-8' })
+    const result = await createWorkspace('demo', { mode: 'tui', tool: 'claude', model: 'claude-opus-4-8' })
 
     // Clients bind the ports (docs/port-forward-tunnel.md); the create only
     // declares them.
@@ -512,7 +509,7 @@ describe('createWorkspace', () => {
     // taken, not just the one launching.
     for (const name of ['claude', 'codex']) {
       await writeConfig({ initCommands: [{ name, commands: ['echo hi'] }] })
-      await expect(createWorkspace('demo', { tool: 'claude' })).rejects.toThrow(`"${name}" is reserved`)
+      await expect(createWorkspace('demo', { mode: 'tui', tool: 'claude' })).rejects.toThrow(`"${name}" is reserved`)
     }
     expect(specs).toEqual([])
   })
@@ -523,7 +520,7 @@ describe('createWorkspace', () => {
     await recordTestProject('demo', { remoteUrl: 'https://127.0.0.1/o/r.git' })
     await writeConfig({ addAllowedUrls: ['127.0.0.1'] })
 
-    await expect(createWorkspace('demo', { workspaceId: 'wt-nofetch' })).rejects.toThrow(/could not fetch from remote/)
+    await expect(createWorkspace('demo', { mode: 'tui', workspaceId: 'wt-nofetch' })).rejects.toThrow(/could not fetch from remote/)
 
     // A bad input is not retried.
     expect(specs).toHaveLength(1)
@@ -537,7 +534,7 @@ describe('createWorkspace', () => {
     const key = await insertGitCredential({ name: 'key', kind: 'ssh', secret: 'c2VlZA==', publicKey: 'ssh-ed25519 AAAA yaac' })
     await setProjectGitCredential('demo', key.id, 'github.com ssh-ed25519 AAAAC3')
 
-    await createWorkspace('demo', {})
+    await createWorkspace('demo', { mode: 'tui' })
 
     // How the key and tunnel reach the workspace is the driver's concern.
     expect(await fs.readFile(specs[0].ssh!.knownHostsFile, 'utf8')).toBe('github.com ssh-ed25519 AAAAC3\n')
@@ -545,22 +542,22 @@ describe('createWorkspace', () => {
   })
 
   it('refuses a branch missing from origin, tearing its launch down', async () => {
-    await expect(createWorkspace('demo', { branch: 'ghost', workspaceId: 'wt-ghost' }))
+    await expect(createWorkspace('demo', { mode: 'tui', branch: 'ghost', workspaceId: 'wt-ghost' }))
       .rejects.toThrow(/branch "ghost" not found on origin/)
     expect(specs).toHaveLength(1)
     expect(destroys).toEqual([false])
   })
 
   it('refuses a taken id before provisioning anything', async () => {
-    await createWorkspace('demo', { workspaceId: 'wt-taken' })
-    await expect(createWorkspace('demo', { workspaceId: 'wt-taken' })).rejects.toThrow()
+    await createWorkspace('demo', { mode: 'tui', workspaceId: 'wt-taken' })
+    await expect(createWorkspace('demo', { mode: 'tui', workspaceId: 'wt-taken' })).rejects.toThrow()
     expect(specs).toHaveLength(1)
   })
 
   it('fails on its first failed launch and rolls a fresh create back entirely', async () => {
     installDriver({ awaitReady: () => Promise.reject(new Error('pod never became ready')) })
 
-    await expect(createWorkspace('demo', { workspaceId: 'wt-fail' })).rejects.toThrow('pod never became ready')
+    await expect(createWorkspace('demo', { mode: 'tui', workspaceId: 'wt-fail' })).rejects.toThrow('pod never became ready')
 
     // One launch, and a fresh create drops its substrate too, since its row
     // is about to go.
@@ -576,16 +573,17 @@ describe('createWorkspace', () => {
 
   describe('resume', () => {
     it('requires a workspace id', async () => {
-      await expect(createWorkspace('demo', { resume: true })).rejects.toMatchObject({ code: 'VALIDATION' })
+      await expect(createWorkspace('demo', { mode: 'tui', resume: true })).rejects.toMatchObject({ code: 'VALIDATION' })
     })
 
     it('reuses the checkout and resumes every restored conversation, codex\'s workspace-id pin anew', async () => {
-      await createWorkspace('demo', { workspaceId: 'wt-r' })
+      await createWorkspace('demo', { mode: 'tui', workspaceId: 'wt-r' })
       await applyWorkspaceEvent({ type: 'workspace-stopped', projectSlug: 'demo', workspaceId: 'wt-r' })
       execs = []
       const progress: string[] = []
 
       await createWorkspace('demo', {
+        mode: 'tui',
         tool: 'codex',
         workspaceId: 'wt-r',
         resume: true,
@@ -607,10 +605,10 @@ describe('createWorkspace', () => {
     })
 
     it('recreates a missing checkout', async () => {
-      await createWorkspace('demo', { workspaceId: 'wt-gone' })
+      await createWorkspace('demo', { mode: 'tui', workspaceId: 'wt-gone' })
       await fs.rm(workspaceDir('demo', 'wt-gone'), { recursive: true })
 
-      await createWorkspace('demo', { workspaceId: 'wt-gone', resume: true })
+      await createWorkspace('demo', { mode: 'tui', workspaceId: 'wt-gone', resume: true })
 
       expect(await git(workspaceDir('demo', 'wt-gone'), ['rev-parse', '--abbrev-ref', 'HEAD']))
         .toBe('agent/wt-gone\n')
@@ -619,11 +617,11 @@ describe('createWorkspace', () => {
     it('leaves a failed restart stopped, with its checkout', async () => {
       // The user came back for this workspace, so a failed restart must not
       // erase it.
-      await createWorkspace('demo', { workspaceId: 'wt-fail' })
+      await createWorkspace('demo', { mode: 'tui', workspaceId: 'wt-fail' })
       await applyWorkspaceEvent({ type: 'workspace-stopped', projectSlug: 'demo', workspaceId: 'wt-fail' })
       installDriver({ awaitReady: () => Promise.reject(new Error('pod never became ready')) })
 
-      await expect(createWorkspace('demo', { workspaceId: 'wt-fail', resume: true })).rejects.toThrow()
+      await expect(createWorkspace('demo', { mode: 'tui', workspaceId: 'wt-fail', resume: true })).rejects.toThrow()
 
       expect((await getWorkspaceRow('demo', 'wt-fail'))?.stoppedAt).toBeInstanceOf(Date)
       await expect(fs.access(workspaceDir('demo', 'wt-fail'))).resolves.toBeUndefined()
@@ -638,9 +636,9 @@ describe('createWorkspace', () => {
     // could be looser (bypass), so it launches in the nearest mode the tool
     // has that is no looser, else the tool's strictest.
     it('launches a recorded posture the tool lacks in the nearest stricter one', async () => {
-      await createWorkspace('demo', { workspaceId: 'wt-mode' })
+      await createWorkspace('demo', { mode: 'tui', workspaceId: 'wt-mode' })
       const resumedAs = async (tool: AgentTool, permissionMode: PermissionMode): Promise<string | undefined> => {
-        await createWorkspace('demo', { workspaceId: 'wt-mode', resume: true, tool, permissionMode })
+        await createWorkspace('demo', { mode: 'tui', workspaceId: 'wt-mode', resume: true, tool, permissionMode })
         return (await getWorkspaceRow('demo', 'wt-mode'))?.permissionMode
       }
       expect(await resumedAs('claude', 'manual')).toBe('manual')
@@ -655,7 +653,7 @@ describe('createWorkspace', () => {
   })
 
   it('records a prewarmed spare flagged, with no conversation until it is claimed', async () => {
-    const { workspaceId } = await createWorkspace('demo', { prewarm: true })
+    const { workspaceId } = await createWorkspace('demo', { mode: 'tui', prewarm: true })
     expect(await getWorkspaceRow('demo', workspaceId)).toMatchObject({ spare: true })
     expect(await listWorkspaceAgentSessions('demo', workspaceId)).toEqual([])
     expect(specs[0].prewarm).toBe(true)
@@ -663,7 +661,7 @@ describe('createWorkspace', () => {
 
   it('leaves a failed spare, checkout and all, to the sweep that collects it on its flag', async () => {
     installDriver({ awaitReady: () => Promise.reject(new Error('pod never became ready')) })
-    await expect(createWorkspace('demo', { prewarm: true, workspaceId: 'wt-spare' })).rejects.toThrow()
+    await expect(createWorkspace('demo', { mode: 'tui', prewarm: true, workspaceId: 'wt-spare' })).rejects.toThrow()
     expect(await getWorkspaceRow('demo', 'wt-spare')).toMatchObject({ spare: true })
     await expect(fs.access(workspaceDir('demo', 'wt-spare'))).resolves.toBeUndefined()
     expect(destroys).toEqual([true])
@@ -681,7 +679,7 @@ describe('createWorkspace', () => {
           throw new Error('stop here')
         },
       })
-      await expect(createWorkspace('demo', { workspaceId, ...(branch !== undefined ? { branch } : {}) }))
+      await expect(createWorkspace('demo', { mode: 'tui', workspaceId, ...(branch !== undefined ? { branch } : {}) }))
         .rejects.toThrow('stop here')
       return row
     }
@@ -691,12 +689,12 @@ describe('createWorkspace', () => {
 
   it('launches in the time zone clients report, and records it', async () => {
     // A pod would otherwise run in UTC, whatever zone the user is in.
-    const before = await createWorkspace('demo', {})
+    const before = await createWorkspace('demo', { mode: 'tui' })
     expect(env().filter((e) => e.startsWith('TZ='))).toEqual([])
     expect((await getWorkspaceRow('demo', before.workspaceId))?.timeZone).toBeUndefined()
 
     await setTimeZone('Asia/Tokyo', false)
-    const after = await createWorkspace('demo', {})
+    const after = await createWorkspace('demo', { mode: 'tui' })
     expect(env()).toContain('TZ=Asia/Tokyo')
     // Recorded, so a spare claim can tell which zone it launched in.
     expect((await getWorkspaceRow('demo', after.workspaceId))?.timeZone).toBe('Asia/Tokyo')

@@ -178,7 +178,7 @@ describe('runMamaCommand', () => {
   describe('create', () => {
     beforeEach(async () => {
       await recordWorkspaceCreated({
-        projectSlug: 'proj', workspaceId: 'caller-workspace', permissionMode: 'auto',
+        projectSlug: 'proj', workspaceId: 'caller-workspace', permissionMode: 'auto', mode: 'tui',
       })
     })
 
@@ -192,8 +192,9 @@ describe('runMamaCommand', () => {
       expect(vi.mocked(createWorkspace)).toHaveBeenCalledTimes(1)
       const [slug, opts] = vi.mocked(createWorkspace).mock.calls[0]
       expect(slug).toBe('proj')
-      // The caller's tool and permission mode, unless others are requested.
-      expect(opts).toMatchObject({ initialPrompt: 'write the report', tool: 'codex', permissionMode: 'auto' })
+      // The caller's tool, permission mode and UI mode, unless others are
+      // requested.
+      expect(opts).toMatchObject({ initialPrompt: 'write the report', tool: 'codex', permissionMode: 'auto', mode: 'tui' })
     })
 
     it('takes every option the webapp\'s create form has, capped at the caller\'s own posture', async () => {

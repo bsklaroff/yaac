@@ -68,6 +68,10 @@ export type AgentMode = 'tui' | 'acp'
 
 export const AGENT_MODES: readonly AgentMode[] = ['tui', 'acp']
 
+/** The mode a create uses when neither the request nor the project's
+ *  remembered choice for the tool names one. */
+export const DEFAULT_AGENT_MODE: AgentMode = 'acp'
+
 /**
  * Each tool's agent CLI, pinned. `dockerfiles/Dockerfile.tools` installs the
  * same versions (a test checks) and so does a host install.

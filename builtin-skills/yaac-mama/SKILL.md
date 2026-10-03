@@ -62,8 +62,8 @@ pass — the server resolves who is calling and answers for that project only.
     permissive one is refused with an error, never quietly lowered. So is
     one the tool lacks (pi has only `bypass`; codex under `--ui-mode acp` has no
     `manual` or `plan`).
-  - **`--ui-mode`**: `tui` (the default — the agent's own terminal UI) or `acp`
-    (a chat pane in the yaac webapp).
+  - **`--ui-mode`**: `acp` (a chat pane in the yaac webapp) or `tui` (the
+    agent's own terminal UI). Omitted, it is this workspace's own.
   - **`--branch`**: the branch on origin the new workspace starts from.
     Omitted, origin's default branch. Push a branch first to hand a
     sibling work from here. A branch that is not on origin is not caught

@@ -130,7 +130,7 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     await assignTestGitCredential(server, 'repo-demo', 'fake-ghp-token')
 
     // 1. A cold create gives the project an open workspace.
-    const first = await runYaac(serverEnv, 'workspace', 'create', 'repo-demo', '--tool', 'claude')
+    const first = await runYaac(serverEnv, 'workspace', 'create', 'repo-demo', '--tool', 'claude', '--mode', 'tui')
     if (first.exitCode !== 0) console.error(first.stdout, first.stderr)
     expect(first.exitCode).toBe(0)
 
@@ -159,7 +159,7 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     //    claims the claude/main spare, switching its branch and tool. This
     //    also covers the plain same-tool, same-branch claim.
     const third = await runYaac(
-      serverEnv, 'workspace', 'create', 'repo-demo', '--tool', 'codex', '--branch', 'dev',
+      serverEnv, 'workspace', 'create', 'repo-demo', '--tool', 'codex', '--mode', 'tui', '--branch', 'dev',
     )
     if (third.exitCode !== 0) console.error(third.stdout, third.stderr)
     expect(third.exitCode).toBe(0)

@@ -19,7 +19,8 @@ export interface WorkspaceCreateOptions {
    * opencode/pi.
    */
   model?: string
-  /** How the agent is driven (default: tui). See docs/agent-modes.md. */
+  /** How the agent is driven; defaults to this project's last choice for
+   *  the tool, else acp. See docs/agent-modes.md. */
   mode?: AgentMode
   /**
    * How much the agent may do before it asks. Defaults to the project's last
