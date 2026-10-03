@@ -149,7 +149,8 @@ export function ActivityHeader({
 const OUTPUT_POLL_MS = 2000
 
 /**
- * A background task: what started it and the end of its output. Output is
+ * A background task: what started it, open so a shell's or monitor's
+ * command is in view, and the end of its output. Output is
  * read one of two ways, as adapters differ: from its output file through
  * `onRefresh` (re-read while it runs), or, for a task with no file (codex
  * streams a shell's output onto the call that started it), as `streamed`.
@@ -191,7 +192,7 @@ export function TaskView({
       {task.description !== '' && task.description !== task.name && (
         <p className="text-text-dim">{task.description}</p>
       )}
-      {call !== undefined && <ToolRow call={call} />}
+      {call !== undefined && <ToolRow call={call} defaultOpen />}
       {task.summary !== undefined && <p className="text-text-dim">{task.summary}</p>}
       {readable ? (
         output?.error !== undefined ? (

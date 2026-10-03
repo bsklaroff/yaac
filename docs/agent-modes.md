@@ -468,8 +468,12 @@ way, and the projection turns every answer into the same `subagent` and
   A background command names its output file in its call's result. A
   Monitor tool watch reports itself as a backgrounded shell (`local_bash`),
   so it is named a monitor by the Monitor call that started it, which always
-  arrives first. A plugin's monitor has no such call and still shows as a
-  shell. A monitor gets a card and a strip chip like any other task: it is
+  arrives first. That call is shown as a shell call titled by the command
+  it watches, since the adapter titles it just "Monitor", and a task's view
+  opens its starting call so the command is in view. A Monitor of a
+  WebSocket has no command, so its call keeps the "Monitor" title. A
+  plugin's monitor has no such call and still shows as a shell. A monitor
+  gets a card and a strip chip like any other task: it is
   work the agent chose to start, and a persistent one runs for the whole
   session. A task claude flags `ambient` (an artifact's live-update watch,
   whether or not the agent was asked for it, which the wire does not say)

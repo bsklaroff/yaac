@@ -345,19 +345,31 @@ function isShellCall(update: Record<string, unknown>, kind: string | undefined):
   return update.sessionUpdate === 'tool_call' && kind === 'execute' ? true : undefined
 }
 
+/**
+ * Project one tool call update. claude's Monitor tool runs a command and
+ * watches its output, but the adapter titles the call just "Monitor" and
+ * files it under `other` on every update, so the update that brings the
+ * command makes it the shell call it is: titled by its command, with the
+ * description the model gave it. A Monitor of a WebSocket has no command
+ * and stays an `other` call titled "Monitor".
+ */
 function toToolCallPatch(update: Record<string, unknown>): AcpToolCallPatch | undefined {
   const toolCallId = asString(update.toolCallId)
   if (toolCallId === undefined) return undefined
-  const kind = asString(update.kind)
+  const rawInput = asRecord(update.rawInput)
+  const monitor = asRecord(asRecord(update._meta)?.claudeCode)?.toolName === 'Monitor'
+  const monitorCommand = monitor ? asString(rawInput?.command) : undefined
+  const kind = !monitor ? asString(update.kind) : monitorCommand !== undefined ? 'execute' : undefined
   const status = asString(update.status)
   const content = 'content' in update ? toToolContent(update.content) : undefined
   const locations = toLocations(update.locations)
   const shell = isShellCall(update, kind)
-  const description = asString(asRecord(update.rawInput)?.description)
+  const description = asString(rawInput?.description)
+  const title = monitorCommand ?? asString(update.title)
   const output = asString(asRecord(asRecord(update._meta)?.terminal_output_delta)?.data)
   return {
     toolCallId,
-    ...(asString(update.title) !== undefined ? { title: asString(update.title) as string } : {}),
+    ...(title !== undefined ? { title } : {}),
     ...(shell !== undefined ? { shell } : {}),
     ...(description !== undefined ? { description } : {}),
     ...(kind !== undefined && (TOOL_KINDS as readonly string[]).includes(kind)

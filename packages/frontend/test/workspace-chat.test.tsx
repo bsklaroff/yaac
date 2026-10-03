@@ -1061,7 +1061,14 @@ describe('WorkspaceChat subagents and background tasks', () => {
       agent(0, 'Delegating.'),
       subagent(1, 'running'),
       agent(2, 'Looked in src/router.ts.', 'sub-1'),
-      { type: 'tool', seq: 3, call: { toolCallId: 't9', title: 'npm run dev', kind: 'execute', status: 'completed' } },
+      {
+        type: 'tool',
+        seq: 3,
+        call: {
+          toolCallId: 't9', title: 'npm run dev', shell: true, description: 'start the dev server', kind: 'execute',
+          status: 'completed',
+        },
+      },
       shell(4, 'running'),
     ]
     stream.busy = true
@@ -1107,7 +1114,7 @@ describe('WorkspaceChat subagents and background tasks', () => {
     expect(screen.getByText('Delegating.')).toBeTruthy()
   })
 
-  it('reads a background shell\'s output, with the call that started it, and stops it', () => {
+  it('reads a background shell\'s output, with the command that started it, and stops it', () => {
     stream.taskOutputs = { b1: { text: '\u001b[32mready\u001b[0m on :3000' } }
     show()
     fireEvent.click(screen.getByTitle('npm run dev'))
@@ -1115,7 +1122,9 @@ describe('WorkspaceChat subagents and background tasks', () => {
     expect(stream.send).toHaveBeenCalledWith({ type: 'task-output', taskId: 'b1' })
     // Colors are stripped; the output is shown as text.
     expect(screen.getByText('ready on :3000')).toBeTruthy()
-    expect(screen.getAllByText('npm run dev').length).toBeGreaterThan(1)
+    // The starting call is open, so its command is in view, not just its description.
+    expect(screen.getByText('start the dev server')).toBeTruthy()
+    expect(screen.getByText((_, el) => el?.tagName === 'PRE' && el.textContent === '$ npm run dev')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
     expect(stream.send).toHaveBeenCalledWith({ type: 'stop-task', taskId: 'b1' })
