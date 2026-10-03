@@ -84,9 +84,9 @@ describe('runProvisioned', () => {
     const result = await runProvisioned('a', (onProgress) => {
       onProgress('Creating job...')
       messageDuringRun = listProvisioning()[0]?.message
-      return Promise.resolve('done')
+      return Promise.resolve({ workspaceId: 'a' })
     })
-    expect(result).toBe('done')
+    expect(result).toEqual({ workspaceId: 'a' })
     expect(messageDuringRun).toBe('Creating job...')
     expect(listProvisioning()).toEqual([])
   })
@@ -104,7 +104,7 @@ describe('runProvisioned', () => {
     await runProvisioned('a', (onProgress) => {
       onProgress('Pulling image…')
       during = listProvisioning()[0]
-      return Promise.resolve()
+      return Promise.resolve({ workspaceId: 'a' })
     })
     expect(during).toMatchObject({ message: 'Pulling image…' })
     expect(during).not.toHaveProperty('error')
@@ -134,7 +134,7 @@ describe('runProvisioned', () => {
     notify.mockClear()
     await runProvisioned('unregistered', (onProgress) => {
       onProgress('step')
-      return Promise.resolve(1)
+      return Promise.resolve({ workspaceId: 'unregistered' })
     })
     expect(listProvisioning()).toEqual([])
     // Only the post-success snapshot push; registry no-ops don't notify.

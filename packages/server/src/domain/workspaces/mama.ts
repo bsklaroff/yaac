@@ -426,8 +426,9 @@ async function runStop(caller: MamaCaller, request: MamaRequestInput): Promise<M
   const target = await resolveTargetWorkspace(caller, request.args.workspace)
   if (!target.ok) return target
 
+  let stopped: { provisioning?: true }
   try {
-    await stopWorkspace(target.workspaceId)
+    stopped = await stopWorkspace(target.workspaceId)
   } catch (err) {
     // The id resolved against rows, so NOT_FOUND here means not running.
     if (err instanceof ServerError && err.code === 'NOT_FOUND') {
@@ -437,8 +438,10 @@ async function runStop(caller: MamaCaller, request: MamaRequestInput): Promise<M
   }
   return {
     ok: true,
-    output: `Stopped ${target.workspaceId.slice(0, 8)}. Its checkout is kept — `
-      + 'the user can restart it from the yaac webapp.',
+    output: stopped.provisioning === true
+      ? `Stopped ${target.workspaceId.slice(0, 8)} while it was starting.`
+      : `Stopped ${target.workspaceId.slice(0, 8)}. Its checkout is kept — `
+        + 'the user can restart it from the yaac webapp.',
   }
 }
 

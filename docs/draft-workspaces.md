@@ -27,6 +27,18 @@ Other exits keep the prompt too:
   and saves the typed prompt as a draft first without asking.
 - While a prompt is unsaved, a page reload or tab close triggers the browser's
   leave-page prompt.
+- Stopping a workspace while it is still being created (the provisioning
+  row's ×, the Stop button under its progress, `yaac workspace stop`, or
+  `yaac-mama stop`) rolls the create back and saves its prompt as a draft,
+  updating the draft it was created from if there was one. `stopWorkspace`
+  marks the provisioning row stopping, and `createWorkspace` checks for that
+  before each step that would start something: recording the workspace row,
+  launching the runtime, and starting the agents. A failure at a checkpoint
+  takes the create's ordinary rollback, which deletes the row and checkout,
+  so the draft is the only thing left. A create already past its last
+  checkpoint has a running agent, so it finishes and is then stopped like
+  any running workspace, landing in stopped workspaces. Stopping a restart
+  the same way leaves the workspace stopped.
 
 ## What a draft holds
 

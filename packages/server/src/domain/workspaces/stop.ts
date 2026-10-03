@@ -2,14 +2,17 @@ import { workspaceDriver } from '#drivers/driver'
 import { cleanupWorkspaceDetached } from './cleanup'
 import { resolveWorkspaceId } from './resolve'
 import { startQueuedChildren } from './queued-workspaces'
+import { stopProvisioning } from './provisioning'
 import { harvestToolCredentials } from '#domain/auth'
 import { serverLog } from '#log'
 import { ServerError } from '@yaac/shared/errors'
 
 export interface StoppedWorkspaceInfo {
   workspaceId: string
-  jobName: string
   projectSlug: string
+  /** Set when it was still being created or restarted, so there is nothing
+   *  to tear down yet: a create becomes a draft, a restart stays stopped. */
+  provisioning?: true
 }
 
 /**
@@ -18,9 +21,25 @@ export interface StoppedWorkspaceInfo {
  * stop`; deaths and restarts do not come here), so it also launches the
  * workspaces queued after this one (docs/queued-workspaces.md). Throws
  * `NOT_FOUND` or `RUNTIME_UNAVAILABLE`.
+ *
+ * A workspace still provisioning is stopped by rolling its create back
+ * (`stopProvisioning`); one that gets its agent running first is stopped
+ * here once it does.
  */
 export async function stopWorkspace(idOrPrefix: string): Promise<StoppedWorkspaceInfo> {
-  const target = await workspaceDriver().findForTeardown(await resolveWorkspaceId(idOrPrefix))
+  const workspaceId = await resolveWorkspaceId(idOrPrefix)
+  const provisioning = stopProvisioning(workspaceId)
+  if (provisioning !== undefined) {
+    void provisioning.ranAs
+      .then((ranAs) => (ranAs === undefined ? undefined : stopRunning(ranAs, ranAs)))
+      .catch((err: unknown) => serverLog(`[server] stopping ${workspaceId} once provisioned failed: ${String(err)}`))
+    return { workspaceId, projectSlug: provisioning.projectSlug, provisioning: true }
+  }
+  return await stopRunning(workspaceId, idOrPrefix)
+}
+
+async function stopRunning(workspaceId: string, idOrPrefix: string): Promise<StoppedWorkspaceInfo> {
+  const target = await workspaceDriver().findForTeardown(workspaceId)
   if (!target) {
     throw new ServerError(
       'NOT_FOUND',
@@ -43,7 +62,6 @@ export async function stopWorkspace(idOrPrefix: string): Promise<StoppedWorkspac
   await startQueuedChildren(target.projectSlug, target.workspaceId)
     .catch((err: unknown) => serverLog(`[server] starting queued workspaces on stop failed: ${String(err)}`))
   return {
-    jobName: target.unitName,
     workspaceId: target.workspaceId,
     projectSlug: target.projectSlug,
   }

@@ -926,7 +926,6 @@ describe('write routes', () => {
       mockDeleteSession.mockResolvedValue({
         workspaceId: 'sess-x',
         projectSlug: 'demo',
-        jobName: 'yaac-demo-sess-x',
       })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.workspace.stop.$post({ json: { workspaceId: 'sess-x' } })

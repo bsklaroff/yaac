@@ -6,6 +6,10 @@
  * While an entry exists, `buildSnapshot` hides the same-id workspace (its
  * pod lists before setup finishes), and also a claimed spare, which the entry
  * names as `claimedId` so clients know which workspace replaces the row.
+ *
+ * A provision the user stops (`stopProvisioning`) rolls back at the create's
+ * next checkpoint (`throwIfProvisionStopped`), and its row is then dropped
+ * rather than shown failed.
  */
 import { notifyWorkspaceListChanged } from '#notify'
 import { formatUtcTimestamp } from '@yaac/shared/time'
@@ -36,6 +40,8 @@ interface ProvisioningEntry {
    *  the entry is dropped rather than shown as failed; the caller already
    *  has the error. Cleared by `ensureProvisioning`. */
   reserved?: boolean
+  /** Set by `stopProvisioning`; the next checkpoint throws. */
+  stopping?: boolean
   startedAt: number
   /** Insertion order, to break `startedAt` ties. */
   seq: number
@@ -107,7 +113,7 @@ export function ensureProvisioning(input: ProvisioningInput): void {
  *  cannot resurrect a removed entry. */
 export function updateProvisioningMessage(workspaceId: string, message: string): void {
   const e = entries.get(workspaceId)
-  if (!e) return
+  if (!e || e.stopping === true) return
   e.message = message
   delete e.error
   notifyWorkspaceListChanged()
@@ -124,10 +130,16 @@ export function claimProvisioning(workspaceId: string, claimedId: string | undef
 }
 
 /** Mark an entry failed; kept until dismissed. Releases any claimed spare
- *  so the lingering row does not hide it. No-op if absent. */
+ *  so the lingering row does not hide it. A stopped or still-reserved entry
+ *  is dropped instead: the user asked for it to go, or the caller already
+ *  has the error. No-op if absent. */
 export function failProvisioning(workspaceId: string, error: string): void {
   const e = entries.get(workspaceId)
   if (!e) return
+  if (e.stopping === true || e.reserved === true) {
+    removeProvisioning(workspaceId)
+    return
+  }
   e.error = error
   delete e.claimedId
   notifyWorkspaceListChanged()
@@ -164,9 +176,11 @@ export async function reportAgentLaunchFailure(input: {
 
 /**
  * In-flight `runProvisioned` calls by workspace id, for
- * `reportAgentLaunchFailure` to wait on. The promises never reject.
+ * `reportAgentLaunchFailure` and `stopProvisioning` to wait on. Each
+ * resolves with the id the run left running (a claimed spare's, on success),
+ * or undefined if it failed; none rejects.
  */
-const runs = new Map<string, Promise<void>>()
+const runs = new Map<string, Promise<string | undefined>>()
 
 /** Resolves once no `runProvisioned` is in flight for this id. */
 async function settledRun(workspaceId: string): Promise<void> {
@@ -176,6 +190,40 @@ async function settledRun(workspaceId: string): Promise<void> {
     await run
     const next = runs.get(workspaceId)
     run = next === run ? undefined : next
+  }
+}
+
+/**
+ * Stop a create or restart still in flight. Returns undefined if nothing is
+ * provisioning under this id. Otherwise resolves once the run settles, with
+ * the id of the workspace it left running: one already past its last
+ * checkpoint finishes anyway, and the caller stops it as a running one.
+ */
+export function stopProvisioning(workspaceId: string): {
+  projectSlug: string
+  ranAs: Promise<string | undefined>
+} | undefined {
+  const e = entries.get(workspaceId)
+  if (e === undefined || e.error !== undefined) return undefined
+  e.stopping = true
+  e.message = 'Stopping…'
+  notifyWorkspaceListChanged()
+  return { projectSlug: e.projectSlug, ranAs: runs.get(workspaceId) ?? Promise.resolve(undefined) }
+}
+
+/** Whether the user stopped this provision. */
+export function provisionStopped(workspaceId: string): boolean {
+  return entries.get(workspaceId)?.stopping === true
+}
+
+/**
+ * A create's checkpoint, placed before each step that would start something
+ * new (the workspace row, the runtime, the agents), so a stopped provision
+ * rolls back before its agent ever runs. No-op without an entry (a spare).
+ */
+export function throwIfProvisionStopped(workspaceId: string): void {
+  if (provisionStopped(workspaceId)) {
+    throw new ServerError('CONFLICT', 'stopped before its agent started')
   }
 }
 
@@ -190,29 +238,30 @@ export function removeProvisioning(workspaceId: string): void {
  * rethrows. The caller registers the row; without one, the updates are
  * no-ops. Used by the HTTP create/restart routes and the spawn reconciler.
  */
-export async function runProvisioned<T>(
+export async function runProvisioned<T extends { workspaceId: string }>(
   workspaceId: string,
   run: (onProgress: (message: string) => void) => Promise<T>,
 ): Promise<T> {
   // Published before `run` starts, since the failure report is fired from
   // inside the run.
-  let settle!: () => void
-  const settled = new Promise<void>((resolve) => { settle = resolve })
+  let settle!: (ranAs: string | undefined) => void
+  const settled = new Promise<string | undefined>((resolve) => { settle = resolve })
   runs.set(workspaceId, settled)
+  let ranAs: string | undefined
   try {
     const result = await run((message) => updateProvisioningMessage(workspaceId, message))
+    ranAs = result.workspaceId
     // Drop the row before returning, so the snapshot shows the workspace.
     removeProvisioning(workspaceId)
     notifyWorkspaceListChanged()
     return result
   } catch (err) {
-    if (entries.get(workspaceId)?.reserved === true) removeProvisioning(workspaceId)
-    else failProvisioning(workspaceId, err instanceof Error ? err.message : String(err))
+    failProvisioning(workspaceId, err instanceof Error ? err.message : String(err))
     throw err
   } finally {
     // Only if not already replaced by a newer run on the same id.
     if (runs.get(workspaceId) === settled) runs.delete(workspaceId)
-    settle()
+    settle(ranAs)
   }
 }
 
@@ -256,6 +305,7 @@ export function listProvisioning(): ProvisioningWorkspaceEntry[] {
       ...(e.model !== undefined ? { model: e.model } : {}),
       ...(e.modelName !== undefined ? { modelName: e.modelName } : {}),
       ...(e.claimedId !== undefined ? { claimedId: e.claimedId } : {}),
+      ...(e.stopping === true ? { stopping: true } : {}),
       createdAt: formatUtcTimestamp(e.startedAt),
     }))
 }

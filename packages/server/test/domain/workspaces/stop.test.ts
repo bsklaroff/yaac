@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { queueWorkspace, stopWorkspace } from '#domain/workspaces'
+import {
+  listDraftWorkspaces,
+  listProvisioning,
+  queueWorkspace,
+  registerProvisioning,
+  runProvisioned,
+  startWorkspace,
+  stopWorkspace,
+} from '#domain/workspaces'
 import { clearQueuedLaunchesForTests } from '#domain/workspaces/queued-workspaces'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { getQueuedWorkspaceRow } from '#db/queued-workspace-store'
@@ -93,6 +101,105 @@ describe('stopWorkspace', () => {
     const waiting = await getQueuedWorkspaceRow(grandchild.id)
     expect(waiting).toMatchObject({ parentWorkspaceId: becameId })
     expect(waiting?.releasedAt).toBeUndefined()
+  })
+
+  describe('a workspace still being created', () => {
+    /** Start creating workspace `new` the way the create route does, with the
+     *  driver's `awaitReady` and `exec` as given, recording what it tears
+     *  down. */
+    function startCreate(driver: {
+      awaitReady?: () => Promise<void>
+      exec?: (cmd: string) => Promise<void>
+    }): { create: Promise<unknown>; destroyed: string[] } {
+      const destroyed: string[] = []
+      installFakeWorkspaceDriver({
+        launch: (spec) => {
+          launched.push(spec.workspaceId)
+          return Promise.resolve(handleFixture({ workspaceId: 'new', projectSlug: 'proj', jobName: 'yaac-proj-new' }))
+        },
+        ...(driver.awaitReady !== undefined ? { awaitReady: driver.awaitReady } : {}),
+        exec: async (_job, cmd) => {
+          await driver.exec?.(cmd)
+          return { stdout: '', stderr: '' }
+        },
+        findForTeardown: (id) => Promise.resolve(id === 'new'
+          ? { workspaceId: 'new', projectSlug: 'proj', unitName: 'yaac-proj-new' }
+          : undefined),
+        destroy: (target) => {
+          destroyed.push(target.unitName)
+          return Promise.resolve(true)
+        },
+      })
+      registerProvisioning({ workspaceId: 'new', projectSlug: 'proj', tool: 'claude', kind: 'create' })
+      const create = runProvisioned('new', (onProgress) => startWorkspace({
+        projectSlug: 'proj',
+        workspaceId: 'new',
+        tool: 'claude',
+        mode: 'tui',
+        permissionMode: 'plan',
+        prompt: 'build it',
+        title: 'Build',
+        rememberDefaults: false,
+        claimSpare: false,
+        draftOnStop: {},
+      }, onProgress))
+      create.catch(() => { /* asserted by the test */ })
+      return { create, destroyed }
+    }
+
+    // Stopped while its pod boots: the agent never starts, the create rolls
+    // back, and the prompt survives as a draft with the create's settings.
+    it('rolls it back before its agent starts and keeps its prompt as a draft', async () => {
+      let boot!: () => void
+      const booted = new Promise<void>((resolve) => { boot = resolve })
+      const execs: string[] = []
+      const { create, destroyed } = startCreate({
+        awaitReady: () => booted,
+        exec: (cmd) => { execs.push(cmd); return Promise.resolve() },
+      })
+      await vi.waitFor(() => expect(launched).toEqual(['new']), { timeout: 30_000 })
+
+      expect(await stopWorkspace('new')).toEqual({ workspaceId: 'new', projectSlug: 'proj', provisioning: true })
+      expect(listProvisioning()).toEqual([
+        expect.objectContaining({ workspaceId: 'new', stopping: true, message: 'Stopping…' }),
+      ])
+      boot()
+
+      await expect(create).rejects.toThrow('kept as a draft')
+      expect(execs.some((cmd) => cmd.includes('respawn-window'))).toBe(false)
+      expect(destroyed).toEqual(['yaac-proj-new'])
+      // Dropped, not left as a failed row.
+      expect(listProvisioning()).toEqual([])
+      await vi.waitFor(async () => expect(await getWorkspaceRow('proj', 'new')).toBeUndefined())
+      expect(await listDraftWorkspaces()).toEqual([expect.objectContaining({
+        projectSlug: 'proj', prompt: 'build it', title: 'Build', tool: 'claude', mode: 'tui', permissionMode: 'plan',
+      })])
+    })
+
+    // Stopped once its agent is starting: too late to roll back, so the
+    // create finishes and is then stopped like any running workspace.
+    it('stops it as a running workspace once a create past its last checkpoint is up', async () => {
+      let agentStarting!: () => void
+      const starting = new Promise<void>((resolve) => { agentStarting = resolve })
+      let release!: () => void
+      const released = new Promise<void>((resolve) => { release = resolve })
+      const { create, destroyed } = startCreate({
+        exec: (cmd) => {
+          if (!cmd.includes('respawn-window')) return Promise.resolve()
+          agentStarting()
+          return released
+        },
+      })
+      await starting
+
+      expect(await stopWorkspace('new')).toMatchObject({ provisioning: true })
+      release()
+
+      await expect(create).resolves.toMatchObject({ workspaceId: 'new' })
+      await vi.waitFor(async () => expect((await getWorkspaceRow('proj', 'new'))?.stoppedAt).toBeDefined())
+      expect(destroyed).toEqual([])
+      expect(await listDraftWorkspaces()).toEqual([])
+    })
   })
 
   it('refuses a workspace with nothing running', async () => {

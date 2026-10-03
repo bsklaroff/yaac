@@ -115,6 +115,8 @@ normal provisioning row and delivers the prompt like any create.
 - **Failure** clears the claim and release, records `launchError`, and
   removes the provisioning row, so the error shows once on the queued row
   with the prompt intact.
+  Stopping the launching workspace before its agent starts is a failure
+  too, so the entry goes back on the queue rather than becoming a draft.
 - **Server restart mid-launch.** The `queued-workspaces` reconcile step
   handles it. On its first successful pass, an entry claimed by nothing in
   this process is put back with an "interrupted" error, prompt and children
