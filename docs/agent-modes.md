@@ -456,7 +456,13 @@ way, and the projection turns every answer into the same `subagent` and
   running/idle report). A subagent is keyed by the Agent call that spawned
   it, which is what its own updates name (`_meta.claudeCode.parentToolUseId`),
   so its card stands in for that call; its final report arrives in its
-  `task_notification` and ends its view.
+  `task_notification` and ends its view. That notification can be skipped,
+  so a terminal `task_updated` ends a subagent too, and
+  `background_tasks_changed`, which lists every live background task, ends
+  a background task or subagent it no longer lists as stopped (cancelled,
+  for a subagent) until a later report says how it ended. A foreground
+  subagent is never in that list, so only one started or moved to the
+  background is ended this way.
   A background command names its output file in its call's result. claude
   stops a task only for an AIR client, so there is no Stop.
 - **codex (AIR)** announces a subagent with `subagent_spawned`, sends its
