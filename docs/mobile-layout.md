@@ -202,18 +202,18 @@ handling (its viewport uses transforms, not a native scroller), and browsers
 generate no wheel events from a touch pan, so the wheel path
 (`lib/wheel-pacing.ts`) never fires.
 
-Scrollback lives in tmux, which runs with `mouse on`. The handler turns finger
-travel into the same SGR wheel reports the mouse sends, one per five
-cell-heights (tmux scrolls 5 lines per report), which keeps content roughly
-under the finger. When mouse reporting is off (the pane's app disabled it, or
-a clean detach reset it), the travel scrolls xterm's own viewport instead. On
-a dropped socket reporting stays nominally on and the reports are discarded,
-which is fine: the pane is in the alternate screen and has no local scrollback.
+Where the swipe goes follows the wheel (docs/terminal-mirror.md). If the
+pane's app tracks the mouse (every agent's fullscreen TUI), the
+app holds the transcript, and the handler turns finger travel into the same
+SGR wheel reports the mouse sends, one per five cell-heights, which keeps
+content roughly under the finger. Otherwise the history is in xterm's own
+scrollback, and the travel scrolls it locally, one line per cell height. The
+mode is read when the gesture starts.
 
 A flick keeps gliding after the finger lifts. The release velocity comes from
 the last 100ms of event timestamps (so queued moves on a busy thread do not
 read as fast) and decays with iOS's 500ms time constant. The glide starts at
-most at about one report per frame, so it cannot outrun tmux. A frame more
+most at about one report per frame, so it cannot outrun the app. A frame more
 than 100ms late (backgrounded tab, locked phone) ends it. Touching the pane
 stops a glide, and that touch's touchend is canceled so it is not also a tap.
 

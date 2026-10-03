@@ -387,9 +387,13 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   //
   // `update-environment` is emptied before any client attaches; otherwise
   // the liveness watch (attaching with the server's env) would give the
-  // panes the host's SSH_AUTH_SOCK.
+  // panes the host's SSH_AUTH_SOCK. `history-limit` is set before the
+  // session, since tmux fixes a pane's limit when it is created and the
+  // agent keeps this first pane across respawns.
   await runHost([
     'tmux', '-S', paths.tmuxSock, '-u',
+    'start-server', ';',
+    'set-option', '-g', 'history-limit', '200000', ';',
     'new-session', '-d', '-s', 'yaac', '-n', spec.tool,
     '-x', '500', '-y', '200', '-c', paths.workspaceDir,
     'sleep infinity', ';',
@@ -401,7 +405,6 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     'tmux', '-S', paths.tmuxSock,
     'set-option', '-g', 'default-shell', shell, ';',
     'set-option', '-s', 'escape-time', '10', ';',
-    'set-option', '-g', 'history-limit', '200000', ';',
     'set-option', '-g', 'mouse', 'on', ';',
     'set-option', '-g', 'focus-events', 'on', ';',
     'set-option', '-g', 'monitor-bell', 'on', ';',

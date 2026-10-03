@@ -120,22 +120,22 @@ describe('buildAgentCmd', () => {
 
     it('uses --approve, the default provider model, and --session-id when none is given', () => {
       const cmd = buildAgentCmd({ tool: 'pi', workspaceId: 'sess-1', permissionMode: 'bypass' })
-      expect(cmd).toBe(wrapped(`pi --approve --model ${defaultModel} --session-id sess-1`))
+      expect(cmd).toBe(wrapped(`pi --approve --tui-mode fullscreen --model ${defaultModel} --session-id sess-1`))
     })
 
     it('uses the given provider default model', () => {
       const cmd = buildAgentCmd({ tool: 'pi', workspaceId: 'sess-1', resume: false, piProvider: 'anthropic', permissionMode: 'bypass' })
-      expect(cmd).toBe(wrapped(`pi --approve --model ${anthropicModel} --session-id sess-1`))
+      expect(cmd).toBe(wrapped(`pi --approve --tui-mode fullscreen --model ${anthropicModel} --session-id sess-1`))
     })
 
     it('addresses the session by id when resuming (same command as create)', () => {
       const cmd = buildAgentCmd({ tool: 'pi', workspaceId: 'sess-1', resume: true, piProvider: 'anthropic', permissionMode: 'bypass' })
-      expect(cmd).toBe(wrapped(`pi --approve --model ${anthropicModel} --session-id sess-1`))
+      expect(cmd).toBe(wrapped(`pi --approve --tui-mode fullscreen --model ${anthropicModel} --session-id sess-1`))
     })
 
     it('prefers an explicit model override over the provider default', () => {
       const cmd = buildAgentCmd({ tool: 'pi', workspaceId: 'sess-1', resume: false, piProvider: 'anthropic', model: 'openai/gpt-5.2', permissionMode: 'bypass' })
-      expect(cmd).toBe(wrapped('pi --approve --model openai/gpt-5.2 --session-id sess-1'))
+      expect(cmd).toBe(wrapped('pi --approve --tui-mode fullscreen --model openai/gpt-5.2 --session-id sess-1'))
     })
 
     it('filters the fresh-run warning without single quotes (survives respawn wrapper)', () => {

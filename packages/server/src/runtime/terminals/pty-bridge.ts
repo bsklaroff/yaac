@@ -2,6 +2,8 @@ import { randomBytes } from 'node:crypto'
 import { workspaceDriver } from '#drivers/driver'
 import { tmuxCmd } from '#runtime/agents'
 import { createOutputBatcher } from '@yaac/shared/batcher'
+import { attachMirroredPane } from './pane-mirror'
+import { parseControl, pongFor, type SocketLike } from './socket'
 import type { WorkspacePaths } from '#drivers/contract'
 
 const DEFAULT_COLS = 80
@@ -9,10 +11,10 @@ const DEFAULT_ROWS = 24
 
 /**
  * What a terminal attaches to inside the workspace:
- *  - 'agent'          the agent window of the `yaac` tmux session.
+ *  - 'agent'          the agent window of the `yaac` tmux session, and
  *  - 'window:@<id>'   any other window (an initCommands dev server, a
- *    scratch shell, …), via a per-client grouped session so other viewers'
- *    active window is never changed.
+ *    scratch shell, …): the webapp's terminals, served by the pane mirror
+ *    (`pane-mirror.ts`).
  *  - 'native'         the CLI's full attach: a per-client grouped session
  *    with tmux chrome intact (status bar, prefix keys, `C-b d`). Grouped so
  *    each client keeps its own size and current window, and
@@ -40,68 +42,27 @@ function newViewName(): string {
 }
 
 /**
- * In-workspace argv for a tab's PTY, spawned under a real PTY by the driver
- * (the same transport the CLI's `workspace attach` uses via /pty/attach).
+ * In-workspace argv for the CLI's native attach, spawned under a real PTY
+ * by the driver: a per-client view session grouped with `yaac`, keeping
+ * the tmux chrome and the group's current window. Only
+ * `destroy-unattached` differs from `attach-session -t yaac`; it is set
+ * after the attach so nothing reaps the view in between.
  *
- * Each target attaches through a per-client grouped view session pinned to
- * one window, so a webapp tab is a tmux window:
- *  - `destroy-unattached on`: the view dies on detach; the windows live on.
- *  - `status off`: no tmux status bar; the webapp tab strip is the window
- *    list.
- *  - `prefix None`: no tmux key bindings, so C-b reaches the agent. Mouse
- *    bindings (root key table) still work.
- *
- * The view is created detached, already sized and `status off`, then
- * attached. `destroy-unattached` is set after the attach so nothing reaps
- * the view in between.
- *
- * Window sizing uses tmux's `window-size latest`: a shared window takes the
- * size of the client that most recently attached, resized or typed. tmux
- * (3.1+) applies it during the resize itself, before redrawing; a separate
- * `resize-window` would lag and show overflow dots. The window is selected
- * before the attach so the attach makes this client the latest. A ghost
- * client from a dropped exec never resizes or types, so it only regains a
- * window briefly, and the attach-time ghost sweep reaps it. `window-size`
- * is set explicitly so a user's tmux config cannot freeze the size.
+ * The has-session guard matters: before setup has created the `yaac`
+ * session, `new-session -t yaac` silently creates a new group named `yaac`
+ * holding a bare shell, and every later view would resolve to it. Failing
+ * lets the client's reconnect loop retry until setup finishes.
  */
-function attachArgs(
-  target: PtyTarget,
+function nativeAttachArgs(
   viewName: string,
   size: { cols?: number; rows?: number },
   paths: WorkspacePaths,
 ): string[] {
   const tmux = tmuxCmd(paths)
-  const cols = size.cols ?? DEFAULT_COLS
-  const rows = size.rows ?? DEFAULT_ROWS
-  // The has-session guard matters: before setup has created the `yaac`
-  // session, `new-session -t yaac` silently creates a new group named
-  // `yaac` holding a bare shell, and every later view would resolve to it.
-  // Failing lets the client's reconnect loop retry until setup finishes.
-  const create = `${tmux} has-session -t =yaac 2>/dev/null`
-    + ` && ${tmux} new-session -d -t yaac -s ${viewName} -x ${cols} -y ${rows}`
-
-  // Native (CLI) attach keeps the tmux chrome and the group's current
-  // window; only destroy-unattached differs from `attach-session -t yaac`.
-  // It switches windows live, so it sets no window's size policy.
-  if (target === 'native') {
-    return [
-      'sh', '-c',
-      create
-      + ` && exec ${tmux} attach-session -t ${viewName}`
-      + ' \\; set-option destroy-unattached on',
-    ]
-  }
-
-  // The agent is the lowest-index window (`^`): it is created first and
-  // others are appended, as in the terminals listing.
-  const window = `${viewName}:${target.startsWith('window:') ? target.slice('window:'.length) : '^'}`
   return [
     'sh', '-c',
-    create
-    + ` \\; set-option -t ${viewName} status off`
-    + ` \\; set-option -t ${viewName} prefix None`
-    + ` \\; select-window -t '${window}'`
-    + ` \\; set-option -w -t '${window}' window-size latest`
+    `${tmux} has-session -t =yaac 2>/dev/null`
+    + ` && ${tmux} new-session -d -t yaac -s ${viewName} -x ${size.cols ?? DEFAULT_COLS} -y ${size.rows ?? DEFAULT_ROWS}`
     + ` && exec ${tmux} attach-session -t ${viewName}`
     + ' \\; set-option destroy-unattached on',
   ]
@@ -130,7 +91,7 @@ function killViewsCmd(views: string[], paths: WorkspacePaths): string {
  * connection (kill-session on close, destroy-unattached as backstop), but
  * an ungraceful end (server crash, a dropped exec after a laptop sleep)
  * leaves a tmux client pinning its view "attached" forever; dozens have
- * been seen. Swept on every fresh attach. `live` is read after the listing,
+ * been seen. Swept on every native attach. `live` is read after the listing,
  * so views attached mid-sweep are never treated as ghosts.
  */
 async function sweepGhostViews(
@@ -155,10 +116,9 @@ async function sweepGhostViews(
 }
 
 /**
- * Detach a client by killing its view session. With `prefix None` there is
- * no detach keystroke, and dropping the PTY stream does not always stop the
- * in-workspace tmux client first. Best-effort: a missing session or a gone
- * workspace is fine.
+ * Detach a client by killing its view session. Dropping the PTY stream does
+ * not always stop the in-workspace tmux client first. Best-effort: a missing
+ * session or a gone workspace is fine.
  */
 async function killViewSession(
   jobName: string,
@@ -176,30 +136,6 @@ async function killViewSession(
   }
 }
 
-interface ControlMessage {
-  type: 'resize' | 'signal' | 'ping'
-  cols?: number
-  rows?: number
-  name?: string
-  /** Ping only: an opaque client stamp echoed in the pong so the client can
-   *  time the round trip. */
-  t?: number
-}
-
-/** Parse a text control frame. Returns null for anything unrecognized. */
-function parseControl(text: string): ControlMessage | null {
-  let obj: unknown
-  try {
-    obj = JSON.parse(text)
-  } catch {
-    return null
-  }
-  if (!obj || typeof obj !== 'object') return null
-  const t = (obj as { type?: unknown }).type
-  if (t !== 'resize' && t !== 'signal' && t !== 'ping') return null
-  return obj as ControlMessage
-}
-
 /** The PTY surface the bridge needs (in production, the driver's `pty`
  *  stream). */
 interface PtyLike {
@@ -208,14 +144,6 @@ interface PtyLike {
   write(data: string): void
   resize(cols: number, rows: number): void
   kill(signal?: string): void
-}
-
-/** The socket surface (in production, the `ws` WebSocket via WSContext.raw). */
-export interface SocketLike {
-  send(data: string | Uint8Array): void
-  close(code?: number, reason?: string): void
-  onMessage(cb: (data: string | Buffer | ArrayBuffer, isBinary: boolean) => void): void
-  onClose(cb: () => void): void
 }
 
 function toText(data: string | Buffer | ArrayBuffer): string {
@@ -280,12 +208,7 @@ function bridge(
     } else if (ctrl.type === 'signal' && ctrl.name) {
       ptyProc.kill(ctrl.name)
     } else if (ctrl.type === 'ping') {
-      // Echo the client's stamp so it can time the round trip (the
-      // frontend's link-quality store). A bare ping (the CLI's keepalive)
-      // gets a bare pong.
-      sock.send(typeof ctrl.t === 'number' && Number.isFinite(ctrl.t)
-        ? JSON.stringify({ type: 'pong', t: ctrl.t })
-        : '{"type":"pong"}')
+      sock.send(pongFor(ctrl))
     }
   })
 
@@ -328,11 +251,11 @@ function parsePtySize(
 const liveViews = new Map<string, Set<string>>()
 
 /**
- * Attach one webapp/CLI terminal connection to a workspace: open the PTY
- * stream for the requested target and wire it to `socket`. `query` is the
- * raw /pty/attach query (target and grid size), validated here. Everything
- * the connection creates in the workspace (its view session) is reclaimed
- * here on close.
+ * Attach one terminal connection to a workspace. The webapp's targets go to
+ * the pane mirror; the CLI's `native` and `shell` targets get a PTY stream
+ * wired to `socket`. `query` is the raw /pty/attach query (target and grid
+ * size), validated here. Everything the connection creates in the workspace
+ * (a native view session) is reclaimed here on close.
  */
 export function attachPty(
   jobName: string,
@@ -343,6 +266,10 @@ export function attachPty(
   const size = parsePtySize(query.cols, query.rows)
   const paths = workspaceDriver().workspacePaths(jobName)
 
+  if (target !== 'native' && target !== 'shell') {
+    attachMirroredPane(jobName, socket, target, size)
+    return
+  }
   // 'shell' has no tmux, so no view session to register, sweep, resize or
   // kill. `$SHELL` because zsh is only guaranteed in the image, not on a
   // containerless host.
@@ -360,7 +287,7 @@ export function attachPty(
   void sweepGhostViews(jobName, views, paths)
 
   const ptyProc = workspaceDriver()
-    .dialPty(jobName, attachArgs(target, viewName, size, paths), size)
+    .dialPty(jobName, nativeAttachArgs(viewName, size, paths), size)
   bridge(ptyProc, socket, () => {
     views.delete(viewName)
     // Only remove the entry if it is still ours: detach runs twice (again at

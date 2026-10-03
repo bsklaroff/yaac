@@ -56,6 +56,7 @@ interface RawWebSocket {
   ping(): void
   terminate(): void
   readonly readyState: number
+  readonly bufferedAmount: number
   on(event: 'message', cb: (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => void): void
   on(event: 'close', cb: () => void): void
   on(event: 'pong', cb: () => void): void
@@ -79,6 +80,7 @@ function socketOf(ws: { raw?: unknown }): SocketLike {
     onMessage: (cb) => raw.on('message', (data, isBinary) =>
       cb(Array.isArray(data) ? Buffer.concat(data) : data, isBinary)),
     onClose: (cb) => raw.on('close', () => cb()),
+    bufferedAmount: () => raw.bufferedAmount,
   }
 }
 

@@ -1,17 +1,23 @@
 /**
- * Minimal tmux control-mode (`tmux -C`) client. The status watchers hold one
- * persistent stream per workspace (in both agent modes), used both ways:
- * - notifications push state (`%subscription-changed` carries the
- *   subscribed format's value; `%output` is parsed but unused, since the
- *   watchers attach `no-output`);
- * - commands go over the same connection (`send()` resolves with the
- *   `%begin`/`%end` reply body), so the heartbeat needs no extra exec.
+ * Minimal tmux control-mode (`tmux -C`) client. Two kinds of stream use it,
+ * one of each per workspace:
+ * - the status watcher's, in both agent modes: notifications push state
+ *   (`%subscription-changed` carries the subscribed format's value; the
+ *   watchers attach `no-output`), and commands go over the same connection
+ *   (`send()` resolves with the `%begin`/`%end` reply body), so the
+ *   heartbeat needs no extra exec;
+ * - the webapp terminals' pane mirror (`#runtime/terminals`), which reads
+ *   `%output` and `%layout-change` and seeds from command replies. It feeds
+ *   the stream as latin1, one char per byte, since a pane's output can split
+ *   a UTF-8 character across two `%output` lines.
  *
  * Protocol facts (tmux 3.4, as in the workspace image):
  * - On attach tmux emits one unsolicited reply block, consumed as a banner
  *   so FIFO reply matching stays aligned.
- * - Replies are `%begin <ts> <num> <flags>` … body … `%end|%error`;
- *   notifications never appear inside a block.
+ * - Replies are `%begin <ts> <num> <flags>` … body … `%end|%error` with
+ *   the same `<ts> <num> <flags>`, which is what ends a block: a body line
+ *   (captured pane text) can itself start with `%end`. Notifications never
+ *   appear inside a block.
  * - `%subscription-changed name $sid @wid widx %pane … : value`: the value
  *   follows the first ` : ` and may contain colons; header tokens have no
  *   spaces.
@@ -55,10 +61,15 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, what: string): P
 
 export type ControlModeNotification =
   | { kind: 'subscription'; name: string; paneId: string; value: string }
-  | { kind: 'output'; paneId: string }
-  /** A window was added or closed; the driver re-lists agents, since a new
-   *  conversation arrives as a new window. */
-  | { kind: 'windows-changed' }
+  /** Pane output, still escaped as tmux sends it (control bytes and `\` as
+   *  three-digit octal). */
+  | { kind: 'output'; paneId: string; data: string }
+  /** A window's layout, and so its panes' sizes, changed. */
+  | { kind: 'layout'; windowId: string; layout: string }
+  /** A window was added or closed (`closedWindowId` names a closed one);
+   *  the driver re-lists agents, since a new conversation arrives as a new
+   *  window. */
+  | { kind: 'windows-changed'; closedWindowId?: string }
   | { kind: 'exit' }
 
 /**
@@ -77,17 +88,23 @@ export function parseControlModeNotification(line: string): ControlModeNotificat
     return { kind: 'subscription', name, paneId, value: rest.slice(sep + 3) }
   }
   if (line.startsWith('%output ')) {
-    const paneId = line.slice('%output '.length).split(' ')[0]
-    if (!paneId?.startsWith('%')) return null
-    return { kind: 'output', paneId }
+    const rest = line.slice('%output '.length)
+    const sep = rest.indexOf(' ')
+    const paneId = sep === -1 ? rest : rest.slice(0, sep)
+    if (!paneId.startsWith('%')) return null
+    return { kind: 'output', paneId, data: sep === -1 ? '' : rest.slice(sep + 1) }
+  }
+  if (line.startsWith('%layout-change ')) {
+    const [windowId, layout] = line.slice('%layout-change '.length).split(' ')
+    if (!windowId?.startsWith('@') || !layout) return null
+    return { kind: 'layout', windowId, layout }
   }
   if (line === '%exit' || line.startsWith('%exit ')) return { kind: 'exit' }
+  if (line.startsWith('%window-add')) return { kind: 'windows-changed' }
   // `%unlinked-window-close` is for a window in no session this client is
   // attached to; either close may mean an agent window went away.
-  if (line.startsWith('%window-add')
-    || line.startsWith('%window-close')
-    || line.startsWith('%unlinked-window-close')) {
-    return { kind: 'windows-changed' }
+  if (line.startsWith('%window-close ') || line.startsWith('%unlinked-window-close ')) {
+    return { kind: 'windows-changed', closedWindowId: line.split(' ')[1] }
   }
   return null
 }
@@ -95,15 +112,27 @@ export function parseControlModeNotification(line: string): ControlModeNotificat
 interface PendingReply {
   resolve: (body: string) => void
   reject: (err: Error) => void
+  /** Commands after this one on the same line, which tmux skips if this
+   *  one fails. */
+  groupRest: number
 }
 
 export class ControlModeClient {
   private buffer = ''
-  private inReply = false
+  /** The open reply block's `<ts> <num> <flags>`, or null outside one. */
+  private replyTag: string | null = null
   private replyLines: string[] = []
   private bannerSeen = false
   private failed: Error | null = null
   private readonly pending: PendingReply[] = []
+  /** Replies to sent commands finished so far. Counted as each `%end`
+   *  is read, before any later line, so a notification handler can tell
+   *  which replies preceded it (a `send()` promise settles a microtask
+   *  later). */
+  repliesSeen = 0
+  /** Commands written so far; the reply to the next one is number
+   *  `commandsSent + 1`. */
+  commandsSent = 0
 
   constructor(
     private readonly write: (data: string) => void,
@@ -117,16 +146,31 @@ export class ControlModeClient {
    * a reply with nothing pending (tmux-initiated) is dropped.
    */
   send(command: string): Promise<string> {
+    return this.sendGroup([command]).then(([body]) => body)
+  }
+
+  /**
+   * Write several commands as one line, which tmux runs back to back with
+   * no pane output read in between, and resolve with each reply body. tmux
+   * replies to each command separately, and skips the rest of the line
+   * after a failing one, so a failure rejects the group.
+   */
+  sendGroup(commands: string[]): Promise<string[]> {
     if (this.failed) return Promise.reject(this.failed)
-    return new Promise<string>((resolve, reject) => {
-      this.pending.push({ resolve, reject })
-      try {
-        this.write(`${command}\n`)
-      } catch (err) {
-        this.pending.pop()
-        reject(err instanceof Error ? err : new Error(String(err)))
-      }
-    })
+    const replies = commands.map((_, i) => new Promise<string>((resolve, reject) => {
+      this.pending.push({ resolve, reject, groupRest: commands.length - 1 - i })
+    }))
+    try {
+      this.write(`${commands.join(' ; ')}\n`)
+      this.commandsSent += commands.length
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err))
+      for (const p of this.pending.splice(this.pending.length - commands.length)) p.reject(e)
+    }
+    // Members after a failing one reject too; only the first rejection is
+    // reported.
+    for (const r of replies) r.catch(() => {})
+    return Promise.all(replies)
   }
 
   /** Feed raw stream chunks; drives replies and notifications. */
@@ -150,10 +194,10 @@ export class ControlModeClient {
   }
 
   private handleLine(line: string): void {
-    if (this.inReply) {
-      if (line.startsWith('%end ') || line === '%end') {
+    if (this.replyTag !== null) {
+      if (line === `%end${this.replyTag}`) {
         this.finishReply(null)
-      } else if (line.startsWith('%error ') || line === '%error') {
+      } else if (line === `%error${this.replyTag}`) {
         this.finishReply(new Error(this.replyLines.join('\n') || 'tmux command failed'))
       } else {
         this.replyLines.push(line)
@@ -161,7 +205,7 @@ export class ControlModeClient {
       return
     }
     if (line.startsWith('%begin ') || line === '%begin') {
-      this.inReply = true
+      this.replyTag = line.slice('%begin'.length)
       this.replyLines = []
       return
     }
@@ -170,7 +214,7 @@ export class ControlModeClient {
   }
 
   private finishReply(err: Error | null): void {
-    this.inReply = false
+    this.replyTag = null
     const body = this.replyLines.join('\n')
     this.replyLines = []
     // The implicit attach reply predates any command we sent.
@@ -180,7 +224,16 @@ export class ControlModeClient {
     }
     const p = this.pending.shift()
     if (!p) return
-    if (err) p.reject(err)
-    else p.resolve(body)
+    this.repliesSeen++
+    if (!err) {
+      p.resolve(body)
+      return
+    }
+    p.reject(err)
+    // tmux sends no reply for the skipped rest of the line.
+    for (const skipped of this.pending.splice(0, p.groupRest)) {
+      this.repliesSeen++
+      skipped.reject(err)
+    }
   }
 }

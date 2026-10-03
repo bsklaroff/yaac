@@ -3,9 +3,10 @@
  * visible.
  *
  * The tmux window is created larger than any real terminal, so on attach
- * tmux shrinks it to the browser's size. That produces a frame of rewrapped
- * garbage before the agent repaints. The terminal stays hidden until this
- * burst of output settles, so the user sees only the final frame.
+ * tmux shrinks it to the browser's size. The first snapshot then shows
+ * tmux's rewrapped grid, a frame of garbage before the agent repaints. The
+ * terminal stays hidden until this burst of output settles, so the user sees
+ * only the final frame.
  *
  * The gate settles once, on the earliest of:
  *  - quiet: `quietMs` with no output after some output arrived;
@@ -16,9 +17,9 @@
  * A close before open stays hidden while the reconnect loop retries.
  *
  * Quiet and cap also require `hasContent()` when given: on a cold workspace
- * the first burst may be only tmux's attach preamble, and revealing a blank
- * screen would make the agent's first paint pop. The next output re-arms
- * the quiet timer, and the fallback reveals regardless.
+ * the first burst may be a snapshot of a still-blank pane, and revealing a
+ * blank screen would make the agent's first paint pop. The next output
+ * re-arms the quiet timer, and the fallback reveals regardless.
  */
 
 export const SETTLE_QUIET_MS = 200
