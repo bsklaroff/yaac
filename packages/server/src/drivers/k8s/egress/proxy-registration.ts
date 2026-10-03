@@ -4,10 +4,12 @@ import {
   LABEL_WORKSPACE_ID,
   PROXY_APP_NAME,
   k8sNamespace,
-  kubectlApply,
-  kubectlGetJson,
-  kubectlWithRetry,
+  applyObject,
+  deleteObject,
+  listObjects,
+  readObject,
   readWorkspaceJobs,
+  type ObjectRef,
 } from '#drivers/k8s/substrate'
 import { buildRegistrationConfigMapManifest, proxyRegistrationName } from '#drivers/k8s/cluster'
 import { NESTED_PULL_HOSTS, resolveAllowedHosts } from '#lib/allowed-hosts'
@@ -178,7 +180,7 @@ export async function applyProxyRegistration(
   workspaceId: string,
   registration: ProxyRegistration,
 ): Promise<void> {
-  await kubectlApply(
+  await applyObject(
     buildRegistrationConfigMapManifest(workspaceId, registration.projectSlug, registration),
   )
 }
@@ -209,10 +211,7 @@ export async function registerWorkspaceEgress(
  */
 export async function deregisterWorkspaceEgress(workspaceId: string): Promise<void> {
   try {
-    await kubectlWithRetry([
-      'delete', 'configmap', proxyRegistrationName(workspaceId),
-      '-n', k8sNamespace(), '--ignore-not-found',
-    ])
+    await deleteObject(registrationRef(workspaceId))
   } catch (err) {
     serverLog(`[server] failed to deregister ${workspaceId} from the egress proxy: ${String(err)}`)
   }
@@ -231,11 +230,14 @@ function registrationSelector(projectSlug?: string): string {
   ].join(',')
 }
 
+function registrationRef(workspaceId: string): ObjectRef {
+  return { apiVersion: 'v1', kind: 'ConfigMap', name: proxyRegistrationName(workspaceId), namespace: k8sNamespace() }
+}
+
 async function listRegistrations(projectSlug?: string): Promise<RegistrationObject[]> {
-  const list = await kubectlGetJson<{ items?: RegistrationObject[] }>([
-    'get', 'configmap', '-n', k8sNamespace(), '-l', registrationSelector(projectSlug),
-  ])
-  return list?.items ?? []
+  return listObjects<RegistrationObject>('v1', 'ConfigMap', {
+    namespace: k8sNamespace(), labelSelector: registrationSelector(projectSlug),
+  })
 }
 
 function decode(obj: RegistrationObject): ProxyRegistration | null {
@@ -277,9 +279,7 @@ export async function allowWorkspaceHost(
   opts: { fanOutToProject: boolean },
 ): Promise<void> {
   if (!opts.fanOutToProject) {
-    const obj = await kubectlGetJson<RegistrationObject>([
-      'get', 'configmap', proxyRegistrationName(target.workspaceId), '-n', k8sNamespace(),
-    ])
+    const obj = await readObject<RegistrationObject>(registrationRef(target.workspaceId))
     if (!obj || !await widen(obj, host)) {
       throw new ServerError(
         'CONFLICT',

@@ -5,7 +5,7 @@ import { git } from '@yaac/test-utils/git'
 import { cloneRepo } from '@yaac/server/domain/git'
 import { listWorkspacePods, type PodInfo } from '@yaac/server/drivers/k8s/substrate/pods'
 import { SERVER_MAMA_PORT, SERVER_MAMA_SERVICE_NAME } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
-import { k8sNamespace } from '@yaac/server/drivers/k8s/substrate/kubectl'
+import { k8sNamespace } from '@yaac/server/drivers/k8s/substrate/api'
 import {
   createYaacTestEnv,
   spawnYaacServer,
@@ -419,12 +419,9 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     expect(listedQueue.output).toContain('follow-up from queue e2e')
 
     // A self-stop tears down the pod its reply travels through, so assert
-    // that the workspace went away, not what printed. Not via `runMama`, so
-    // the dying exec is not retried.
-    await execInJob(jobA, ['sh', '-c', 'yaac-mama stop 2>&1'], {
-      timeout: 60_000,
-      maxAttempts: 1,
-    }).catch(() => undefined)
+    // that the workspace went away, not what printed. Not via `runMama`,
+    // which needs an exit marker the dying exec never prints.
+    await execInJob(jobA, ['sh', '-c', 'yaac-mama stop 2>&1'], { timeout: 60_000 }).catch(() => undefined)
 
     let gone = false
     for (let i = 0; i < 120 && !gone; i++) {

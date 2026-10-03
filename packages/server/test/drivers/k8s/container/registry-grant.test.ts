@@ -1,65 +1,25 @@
 import crypto from 'node:crypto'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 
-type ExecResult = { stdout: string; stderr: string }
-type ExecCallback = (err: unknown, res?: ExecResult) => void
+import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
-/** The cluster's Secret store, as `kubectl get` / `kubectl create` see it. */
-let secretPem: string | null = null
-/** A key another client creates between our read and our create. */
-let racedPem: string | null = null
-const kubectlCalls: string[][] = []
+const SECRET = { name: 'yaac-registry-grant-key', namespace: 'yaac-registry-keys' }
 
-function notFound(): Error {
-  return Object.assign(new Error('kubectl failed'), {
-    stderr: 'Error from server (NotFound): secrets "yaac-registry-grant-key" not found',
+/** Put the cluster's grant key Secret in place. */
+function seedKey(pem: string): void {
+  fakeCluster.seed({
+    apiVersion: 'v1', kind: 'Secret', metadata: SECRET,
+    data: { 'key.pem': Buffer.from(pem).toString('base64') },
   })
 }
 
-function secretJson(pem: string): string {
-  return JSON.stringify({ data: { 'key.pem': Buffer.from(pem).toString('base64') } })
+/** The PEM the cluster's grant key Secret holds. */
+function storedPem(): string {
+  const secret = fakeCluster.get<{ data: Record<string, string> }>('Secret', SECRET.name, SECRET.namespace)
+  return Buffer.from(secret?.data['key.pem'] ?? '', 'base64').toString('utf8')
 }
 
-// Every read and write of the key is a kubectl child process.
-vi.mock('node:child_process', () => ({
-  exec: vi.fn(),
-  execFile: (file: string, args: string[], opts: unknown, cb?: ExecCallback) => {
-    const done = (typeof opts === 'function' ? opts : cb) as ExecCallback
-    kubectlCalls.push(args)
-    let input = ''
-    const answer = (): void => {
-      if (args[0] === 'apply') {
-        done(null, { stdout: '', stderr: '' })
-        return
-      }
-      if (args[0] === 'get') {
-        if (secretPem) done(null, { stdout: secretJson(secretPem), stderr: '' })
-        else done(notFound())
-        return
-      }
-      if (racedPem) {
-        secretPem = racedPem
-        done(Object.assign(new Error('exists'), { stderr: 'Error from server (AlreadyExists)' }))
-        return
-      }
-      const manifest = JSON.parse(input) as { data: Record<string, string> }
-      secretPem = Buffer.from(manifest.data['key.pem'], 'base64').toString('utf8')
-      done(null, { stdout: '', stderr: '' })
-    }
-    if (args[0] === 'get') process.nextTick(answer)
-    return {
-      stdin: {
-        on: vi.fn(),
-        end: (data: string) => {
-          input = data
-          process.nextTick(answer)
-        },
-      },
-    }
-  },
-  spawn: vi.fn(),
-}))
-
+const verbs = (): string[] => fakeCluster.calls.map((c) => `${c.verb} ${c.kind}`)
 
 import { registryAuthFile, registryGrantPublicKey } from '#drivers/k8s/container'
 import { _resetRegistryGrantKeyForTests } from '#drivers/k8s/container/registry-grant'
@@ -90,15 +50,12 @@ function verify(password: string, publicKeyDer: Buffer): { expiry: number; scope
 }
 
 beforeEach(() => {
-  secretPem = null
-  racedPem = null
-  kubectlCalls.length = 0
   _resetRegistryGrantKeyForTests()
 })
 
 describe('registryAuthFile', () => {
   it('grants exactly the named repos until the ttl, signed by the cluster key', async () => {
-    secretPem = newPem()
+    seedKey(newPem())
     const before = Math.floor(Date.now() / 1000)
     const authFile = await registryAuthFile(HOST, ['yaac-proj-p1', 'yaac-buildcache-p1'], 600)
 
@@ -111,8 +68,8 @@ describe('registryAuthFile', () => {
     expect(grant?.expiry).toBeLessThanOrEqual(Math.floor(Date.now() / 1000) + 600)
     // Read once, from its own namespace: the egress proxy can read the
     // install namespace's Secrets.
-    expect(kubectlCalls).toEqual([
-      ['get', 'secret', 'yaac-registry-grant-key', '-n', 'yaac-registry-keys', '-o', 'json'],
+    expect(fakeCluster.calls).toEqual([
+      { verb: 'read', apiVersion: 'v1', kind: 'Secret', ...SECRET },
     ])
 
     // A grant from any other key does not verify.
@@ -123,14 +80,15 @@ describe('registryAuthFile', () => {
   it('creates the cluster key on first use, and adopts a racing creator\'s', async () => {
     const authFile = await registryAuthFile(HOST, ['yaac-user-p1'], 60)
     // The namespace is ensured before the Secret is created into it.
-    expect(kubectlCalls.map((a) => a[0])).toEqual(['get', 'apply', 'create'])
-    const created = crypto.createPublicKey(secretPem!).export({ type: 'spki', format: 'der' })
+    expect(verbs()).toEqual(['read Secret', 'apply Namespace', 'create Secret'])
+    const created = crypto.createPublicKey(storedPem()).export({ type: 'spki', format: 'der' })
     expect(verify(passwordOf(authFile), created)?.scope).toBe('yaac-user-p1')
 
     // Racing first callers converge on one key: the loser adopts the
     // winner's.
-    secretPem = null
-    racedPem = newPem()
+    fakeCluster.reset()
+    const racedPem = newPem()
+    fakeCluster.intercept((c) => { if (c.verb === 'create') seedKey(racedPem) })
     _resetRegistryGrantKeyForTests()
     const raced = await registryAuthFile(HOST, ['yaac-user-p1'], 60)
     const winner = crypto.createPublicKey(racedPem).export({ type: 'spki', format: 'der' })
@@ -140,19 +98,20 @@ describe('registryAuthFile', () => {
 
 describe('registryGrantPublicKey', () => {
   it('is the SPKI DER public half of the cluster key, and never the private half', async () => {
-    secretPem = newPem()
+    const pem = newPem()
+    seedKey(pem)
     const der = await registryGrantPublicKey()
-    expect(der.equals(crypto.createPublicKey(secretPem).export({ type: 'spki', format: 'der' }))).toBe(true)
+    expect(der.equals(crypto.createPublicKey(pem).export({ type: 'spki', format: 'der' }))).toBe(true)
     expect(der.toString('latin1')).not.toContain('PRIVATE')
     expect(crypto.createPublicKey({ key: der, format: 'der', type: 'spki' }).asymmetricKeyType).toBe('rsa')
   })
 
   it('fails on a corrupt Secret rather than minting a second key, and retries next call', async () => {
-    secretPem = 'not a pem'
+    seedKey('not a pem')
     await expect(registryGrantPublicKey()).rejects.toThrow()
-    expect(kubectlCalls.map((a) => a[0])).toEqual(['get'])
+    expect(verbs()).toEqual(['read Secret'])
 
-    secretPem = newPem()
+    seedKey(newPem())
     await expect(registryGrantPublicKey()).resolves.toBeInstanceOf(Buffer)
   })
 })

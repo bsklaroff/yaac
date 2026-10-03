@@ -38,13 +38,15 @@ import {
   PRIORITY_CLASS_BUILDER,
   ROLE_BUILDER,
   RUNTIME_CLASS_GVISOR,
+  applyObject,
   dataDirHash,
+  deleteObject,
+  deleteObjects,
   ensureKubernetes,
+  execFileAsync,
   sentryTmpfsAnnotations,
   k8sNamespace,
-  kubectlApply,
-  kubectlGetJson,
-  kubectlWithRetry,
+  readObject,
 } from '#drivers/k8s/substrate'
 import {
   egressAllButServerFront,
@@ -428,7 +430,7 @@ function buildBuilderEgressNetworkPolicyManifest(nodeCidrs: string[]): Record<st
 /** Apply the builder-role admission guard and egress policy. */
 async function ensureBuilderNetworkPolicies(): Promise<void> {
   await ensureBuilderRoleGuard()
-  await kubectlApply(buildBuilderEgressNetworkPolicyManifest(await nodeIpBlocks()))
+  await applyObject(buildBuilderEgressNetworkPolicyManifest(await nodeIpBlocks()))
 }
 
 /**
@@ -467,12 +469,13 @@ export class BuilderPodLease {
 
     const name = builderPodName(seedTag)
     serverLog(`[builder] creating builder pod ${name}`)
-    await kubectlApply(buildBuilderPodManifest(name, imageRef))
+    await applyObject(buildBuilderPodManifest(name, imageRef))
     try {
-      await kubectlWithRetry([
+      // `kubectl wait`: the substrate's watch-based wait is for Job pods.
+      await execFileAsync('kubectl', [
         'wait', '--for=condition=Ready', `pod/${name}`, '-n', k8sNamespace(),
         `--timeout=${Math.floor(BUILDER_READY_TIMEOUT_MS / 1000)}s`,
-      ], { timeout: BUILDER_READY_TIMEOUT_MS + 15_000, maxAttempts: 1 })
+      ], { timeout: BUILDER_READY_TIMEOUT_MS + 15_000 })
       await execInBuilderPod(name, ['sh', '-c', builderStorageConfScript()], {
         logPrefix: `[builder ${name}] `,
         idleTimeoutMs: 30_000,
@@ -537,18 +540,15 @@ function builderPodBlockReason(pod: BuilderPodStatus | null): string | null {
 
 /** Live-status wrapper around `builderPodBlockReason` (best effort). */
 async function builderPodBlockDetail(name: string): Promise<string | null> {
-  const pod = await kubectlGetJson<BuilderPodStatus>([
-    'get', 'pod', name, '-n', k8sNamespace(),
-  ]).catch(() => null)
+  const pod = await readObject<BuilderPodStatus>({
+    apiVersion: 'v1', kind: 'Pod', name, namespace: k8sNamespace(),
+  }).catch(() => null)
   const reason = builderPodBlockReason(pod)
   return reason ? `builder pod ${name}: ${reason}` : null
 }
 
 async function deleteBuilderPod(name: string): Promise<void> {
-  await kubectlWithRetry([
-    'delete', 'pod', name, '-n', k8sNamespace(),
-    '--ignore-not-found', '--wait=false',
-  ], { maxAttempts: 2 }).catch((err: unknown) => {
+  await deleteObject({ apiVersion: 'v1', kind: 'Pod', name, namespace: k8sNamespace() }).catch((err: unknown) => {
     serverLog(`[builder] failed to delete pod ${name}: ${String(err)}`)
   })
 }
@@ -641,9 +641,8 @@ async function runLayerBuild(
  * is bounded by its activeDeadlineSeconds.
  */
 export async function deleteLeakedBuilderPods(): Promise<void> {
-  await kubectlWithRetry([
-    'delete', 'pods', '-n', k8sNamespace(),
-    '-l', `${LABEL_ROLE}=${ROLE_BUILDER},${LABEL_DATA_DIR_HASH}=${dataDirHash()}`,
-    '--ignore-not-found', '--wait=false',
-  ])
+  await deleteObjects('v1', 'Pod', {
+    namespace: k8sNamespace(),
+    labelSelector: `${LABEL_ROLE}=${ROLE_BUILDER},${LABEL_DATA_DIR_HASH}=${dataDirHash()}`,
+  })
 }

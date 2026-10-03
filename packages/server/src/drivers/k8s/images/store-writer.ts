@@ -23,7 +23,7 @@ import {
   LABEL_PROJECT_ID,
   dataDirHash,
   k8sNamespace,
-  kubectlGetJson,
+  listObjects,
   nodeLocalHostPath,
   runOnEachNode,
   type PodMount,
@@ -333,10 +333,8 @@ const DIFF_SIZE_CHECK_PY = [
   "print('store-layers %d' % len(layers))",
 ].join('\n')
 
-interface RawPodList {
-  items: Array<{
-    spec?: { volumes?: Array<{ hostPath?: { path?: string } }> }
-  }>
+interface RawPod {
+  spec?: { volumes?: Array<{ hostPath?: { path?: string } }> }
 }
 
 /**
@@ -346,12 +344,12 @@ interface RawPodList {
  */
 async function generationsInUse(projectId: string): Promise<string[] | null> {
   const suffix = `/shared-images/${projectId}/`
-  const pods = await kubectlGetJson<RawPodList>([
-    'get', 'pods', '-n', k8sNamespace(), '-l', `${LABEL_PROJECT_ID}=${projectId}`,
-  ]).catch(() => null)
+  const pods = await listObjects<RawPod>('v1', 'Pod', {
+    namespace: k8sNamespace(), labelSelector: `${LABEL_PROJECT_ID}=${projectId}`,
+  }).catch(() => null)
   if (!pods) return null
   const names = new Set<string>()
-  for (const pod of pods.items ?? []) {
+  for (const pod of pods) {
     for (const vol of pod.spec?.volumes ?? []) {
       const p = vol.hostPath?.path
       const at = p?.lastIndexOf(suffix) ?? -1

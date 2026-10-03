@@ -1,14 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { fakeCluster } from '@yaac/test-utils/k8s-stub'
+import type * as apiModule from '#drivers/k8s/substrate/api'
 
-vi.mock('#drivers/k8s/substrate/kubectl', () => ({
-  isKubectlAbsentError: vi.fn(() => false),
-  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
-  k8sNamespace: vi.fn(() => 'test-ns'),
-  dataDirHash: vi.fn(() => 'ddh16'),
-  kubectlApply: vi.fn().mockResolvedValue(undefined),
-  kubectlGetJson: vi.fn(),
-  kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-  execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+// The rollout wait is the one kubectl process this path runs.
+vi.mock('#drivers/k8s/substrate/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof apiModule>()),
+  execFileAsync: vi.fn(),
 }))
 
 vi.mock('#drivers/k8s/container/registry', () => ({
@@ -35,7 +32,7 @@ import {
   RUNTIME_CLASS_GVISOR,
   RUNTIME_CLASS_GVISOR_NESTED,
 } from '#drivers/k8s/substrate'
-import { execFileAsync, kubectlApply, kubectlWithRetry } from '#drivers/k8s/substrate/kubectl'
+import { execFileAsync } from '#drivers/k8s/substrate/api'
 import { imageExists } from '#drivers/k8s/container/runtime'
 import {
   invalidateRegistryEndpoint,
@@ -43,8 +40,6 @@ import {
   registryHasTag,
 } from '#drivers/k8s/container/registry'
 
-const mockApply = vi.mocked(kubectlApply)
-const mockRetry = vi.mocked(kubectlWithRetry)
 const mockExec = vi.mocked(execFileAsync)
 const mockHasTag = vi.mocked(registryHasTag)
 const mockImageExists = vi.mocked(imageExists)
@@ -59,8 +54,11 @@ interface Applied {
 
 /** Every manifest this ensure applied, in order. */
 function applied(): Applied[] {
-  return mockApply.mock.calls.map(([m]) => m as unknown as Applied)
+  return fakeCluster.callsOf('apply').map((c) => c.body as unknown as Applied)
 }
+
+/** How many API calls had been made when the rollout wait ran. */
+let callsBeforeRollout = -1
 
 function ofKind(kind: string): Applied[] {
   return applied().filter((m) => m.kind === kind)
@@ -70,7 +68,11 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockHasTag.mockResolvedValue(true)
   mockImageExists.mockResolvedValue(false)
-  mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
+  vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
+  mockExec.mockImplementation((() => {
+    callsBeforeRollout = fakeCluster.calls.length
+    return Promise.resolve({ stdout: '', stderr: '' })
+  }) as never)
 })
 
 afterEach(() => {
@@ -175,22 +177,19 @@ describe('ensureGvisorRuntime', () => {
 
     // RuntimeClasses select on the label the DaemonSet adds, so they are
     // applied after the rollout; otherwise gVisor pods would sit Pending.
-    expect(mockRetry).toHaveBeenCalledWith(
+    expect(mockExec).toHaveBeenCalledWith(
+      'kubectl',
       ['rollout', 'status', `daemonset/${GVISOR_INSTALLER_APP_NAME}`, '-n', 'test-ns', '--timeout=300s'],
-      expect.objectContaining({ maxAttempts: 2 }),
+      expect.anything(),
     )
-    const rolloutOrder = mockRetry.mock.invocationCallOrder[0]
-    const classApplies = mockApply.mock.calls
-      .map((c, i) => ({ kind: (c[0] as unknown as Applied).kind, order: mockApply.mock.invocationCallOrder[i] }))
-    expect(classApplies.filter((c) => c.kind === 'RuntimeClass').every((c) => c.order > rolloutOrder))
-      .toBe(true)
-    expect(classApplies.find((c) => c.kind === 'DaemonSet')!.order).toBeLessThan(rolloutOrder)
+    expect(fakeCluster.calls.slice(0, callsBeforeRollout).map((c) => c.kind))
+      .toEqual(['ServiceAccount', 'ClusterRole', 'ClusterRoleBinding', 'DaemonSet'])
 
     // Restarting containerd kills port-forwards. The registry forward is
     // dropped after the rollout so the next lookup reconnects instead of
     // reading a dead connection as a missing image.
     expect(mockInvalidate).toHaveBeenCalledTimes(1)
-    expect(mockInvalidate.mock.invocationCallOrder[0]).toBeGreaterThan(rolloutOrder)
+    expect(mockInvalidate.mock.invocationCallOrder[0]).toBeGreaterThan(mockExec.mock.invocationCallOrder[0])
 
     const classes = ofKind('RuntimeClass') as unknown as Array<{
       metadata: { name: string }
@@ -217,9 +216,9 @@ describe('ensureGvisorRuntime', () => {
     // only looks it up, so applying the DaemonSet needs no container engine.
     await ensureGvisorRuntime()
     expect(GVISOR_INSTALLER_UPSTREAM_IMAGE).toMatch(/^docker\.io\/curlimages\/curl@sha256:[0-9a-f]{64}$/)
-    expect(mockExec).not.toHaveBeenCalled()
+    expect(mockExec.mock.calls.every(([, args]) => args[0] === 'rollout')).toBe(true)
     expect(mockPush).not.toHaveBeenCalled()
-    expect(mockApply).toHaveBeenCalled()
+    expect(applied()).not.toHaveLength(0)
   })
 
   it('refuses, naming the command that mirrors it, when the registry lacks the tag', async () => {
@@ -227,6 +226,6 @@ describe('ensureGvisorRuntime', () => {
     mockImageExists.mockResolvedValue(false)
     await expect(ensureGvisorRuntime()).rejects.toThrow(/missing.*yaac cluster install/s)
     expect(mockExec).not.toHaveBeenCalled()
-    expect(mockApply).not.toHaveBeenCalled()
+    expect(applied()).toHaveLength(0)
   })
 })

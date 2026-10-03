@@ -1,13 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
+import type * as childProcessModule from 'node:child_process'
+import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 
-// Mock kubectl, the only way this reaches the cluster.
-const mockKubectl = vi.hoisted(() => vi.fn())
-const mockGetJson = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
-  ...(await importOriginal<typeof kubectlModule>()),
-  kubectlWithRetry: mockKubectl,
-  kubectlGetJson: mockGetJson,
+/** Every step that reaches outside, in order. */
+const order: string[] = []
+
+// The Job delete is a `kubectl delete` child process; everything else
+// reaches the fake cluster.
+type ExecCallback = (err: unknown, res?: { stdout: string; stderr: string }) => void
+const kubectlArgs: string[][] = []
+const kubectlFailure = vi.hoisted(() => ({ error: null as Error | null }))
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...await importOriginal<typeof childProcessModule>(),
+  execFile: (_file: string, args: string[], _opts: unknown, cb: ExecCallback) => {
+    kubectlArgs.push(args)
+    order.push(`kubectl ${args.slice(0, 2).join(' ')}`)
+    process.nextTick(() => { cb(kubectlFailure.error, { stdout: '', stderr: '' }) })
+  },
 }))
 
 // Mock the forwarder registry, which holds live sockets.
@@ -29,6 +38,7 @@ vi.mock('#drivers/k8s/cluster', async (importOriginal) => ({
 }))
 
 import type * as clusterModule from '#drivers/k8s/cluster'
+import { LABEL_DATA_DIR_HASH, dataDirHash, k8sNamespace } from '#drivers/k8s/substrate'
 import {
   deregisterWorkspace,
   destroyProjectSubstrate,
@@ -43,44 +53,52 @@ const TARGET: TeardownTarget = {
 }
 const PROJECT = { slug: 'proj', id: '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c' }
 
-/** The workspace's pod as the cluster lists it, labelled with `labels`. */
-function podList(labels: Record<string, string>): unknown {
-  return {
-    items: [{
-      metadata: {
-        name: 'yaac-proj-s1-abcde',
-        labels: {
-          'batch.kubernetes.io/job-name': 'yaac-proj-s1',
+/** Put the workspace's pod in the cluster, labelled with `labels`. */
+function seedPod(labels: Record<string, string>): void {
+  fakeCluster.seed({
+    apiVersion: 'v1',
+    kind: 'Pod',
+    metadata: {
+      name: 'yaac-proj-s1-abcde',
+      namespace: k8sNamespace(),
+      labels: {
+        [LABEL_DATA_DIR_HASH]: dataDirHash(),
+        'batch.kubernetes.io/job-name': 'yaac-proj-s1',
           'yaac.workspace-id': 's1',
           'yaac.project': 'proj',
-          'yaac.tool': 'claude',
-          ...labels,
-        },
-        creationTimestamp: '2026-09-29T00:00:00Z',
+        'yaac.tool': 'claude',
+        ...labels,
       },
-      status: { phase: 'Running' },
-    }],
-  }
+      creationTimestamp: '2026-09-29T00:00:00Z',
+    },
+    status: { phase: 'Running' },
+  })
 }
 
-/** The index of the `kubectl delete <kind>` call, if one was made. */
-function deleteCallIndex(kind: string): number {
-  return mockKubectl.mock.calls
-    .map(([args]) => args as string[])
-    .findIndex((args) => args[0] === 'delete' && args[1] === kind)
+/** Put the workspace's egress registration in the cluster. */
+function seedRegistration(): void {
+  fakeCluster.seed({
+    apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'yaac-proxy-reg-s1', namespace: k8sNamespace() },
+  })
 }
 
-/** The `kubectl delete job` call, if one was made. */
+/** The `kubectl delete job` argv, if one was run. */
 function jobDelete(): string[] | undefined {
-  const i = deleteCallIndex('job')
-  return i < 0 ? undefined : mockKubectl.mock.calls[i][0] as string[]
+  return kubectlArgs.find((args) => args[0] === 'delete' && args[1] === 'job')
 }
 
 beforeEach(() => {
-  mockKubectl.mockReset().mockResolvedValue({ stdout: '', stderr: '' })
-  mockGetJson.mockReset().mockResolvedValue(podList({ 'yaac.project-id': PROJECT.id }))
-  mockStopForwarders.mockReset()
-  mockSalvage.mockReset().mockResolvedValue(true)
+  order.length = 0
+  kubectlArgs.length = 0
+  kubectlFailure.error = null
+  seedPod({ 'yaac.project-id': PROJECT.id })
+  seedRegistration()
+  fakeCluster.intercept((c) => { if (c.verb === 'delete') order.push(`delete ${c.kind}`) })
+  mockStopForwarders.mockReset().mockImplementation(() => { order.push('stop forwarders') })
+  mockSalvage.mockReset().mockImplementation(() => {
+    order.push('salvage')
+    return Promise.resolve(true)
+  })
   mockRemoveRegistry.mockReset().mockResolvedValue(undefined)
   mockRemoveSecrets.mockReset().mockResolvedValue(undefined)
 })
@@ -91,15 +109,12 @@ describe('deregisterWorkspace', () => {
 
     expect(mockStopForwarders).toHaveBeenCalledWith('s1')
     // Deleting the ConfigMap the proxy watches is the whole deregistration.
-    expect(mockKubectl).toHaveBeenCalledWith(
-      ['delete', 'configmap', 'yaac-proxy-reg-s1', '-n', 'yaac', '--ignore-not-found'],
-    )
-    expect(mockStopForwarders.mock.invocationCallOrder[0])
-      .toBeLessThan(mockKubectl.mock.invocationCallOrder[0])
+    expect(order).toEqual(['stop forwarders', 'delete ConfigMap'])
+    expect(fakeCluster.get('ConfigMap', 'yaac-proxy-reg-s1')).toBeUndefined()
   })
 
   it('survives a cluster that fails the removal', async () => {
-    mockKubectl.mockRejectedValue(new Error('apiserver down'))
+    fakeCluster.intercept(() => { throw apiError(503, 'apiserver down') })
     await expect(deregisterWorkspace('s1')).resolves.toBeUndefined()
     expect(mockStopForwarders).toHaveBeenCalledWith('s1')
   })
@@ -114,7 +129,7 @@ describe('salvageWorkspaceImages', () => {
   })
 
   it('skips a workspace whose pod is gone', async () => {
-    mockGetJson.mockResolvedValue({ items: [] })
+    fakeCluster.reset()
     await salvageWorkspaceImages(TARGET)
     expect(mockSalvage).not.toHaveBeenCalled()
   })
@@ -131,11 +146,7 @@ describe('destroyWorkspace', () => {
     await expect(destroyWorkspace(TARGET)).resolves.toBe(true)
 
     // Salvage execs into the pod, so it must precede the delete.
-    expect(mockStopForwarders.mock.invocationCallOrder[0])
-      .toBeLessThan(mockSalvage.mock.invocationCallOrder[0])
-    expect(jobDelete()).toBeDefined()
-    expect(mockSalvage.mock.invocationCallOrder[0])
-      .toBeLessThan(mockKubectl.mock.invocationCallOrder[deleteCallIndex('job')])
+    expect(order).toEqual(['stop forwarders', 'delete ConfigMap', 'salvage', 'kubectl delete job'])
   })
 
   // Callers delete the checkout next, so the pod must be gone. Only a
@@ -150,7 +161,7 @@ describe('destroyWorkspace', () => {
   })
 
   it('reports the unit NOT gone when the delete times out', async () => {
-    mockKubectl.mockRejectedValue(new Error('timed out waiting for the condition'))
+    kubectlFailure.error = new Error('timed out waiting for the condition')
     await expect(destroyWorkspace(TARGET)).resolves.toBe(false)
   })
 
@@ -171,12 +182,12 @@ describe('destroyWorkspace', () => {
       ).resolves.toBe(true)
 
       expect(jobDelete()).toEqual(expect.arrayContaining(['--cascade=foreground']))
-      expect(deleteCallIndex('configmap')).toBe(-1)
+      expect(fakeCluster.get('ConfigMap', 'yaac-proxy-reg-s1')).toBeDefined()
       expect(mockStopForwarders).not.toHaveBeenCalled()
     })
 
     it('still reports a unit it could not confirm gone', async () => {
-      mockKubectl.mockRejectedValue(new Error('timed out'))
+      kubectlFailure.error = new Error('timed out')
 
       await expect(
         destroyWorkspace(TARGET, { salvageImages: false, unitOnly: true }),
@@ -203,7 +214,7 @@ describe('detachedTeardownCommand', () => {
 
   it('runs nothing itself — it only composes', () => {
     detachedTeardownCommand(TARGET)
-    expect(mockKubectl).not.toHaveBeenCalled()
+    expect(order).toEqual([])
   })
 })
 

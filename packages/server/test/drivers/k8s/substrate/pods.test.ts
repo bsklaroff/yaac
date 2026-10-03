@@ -1,14 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-
-vi.mock('#drivers/k8s/substrate/kubectl', () => ({
-  isKubectlAbsentError: vi.fn(() => false),
-  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
-  dataDirHash: vi.fn(() => 'ddh0123456789abc'),
-  k8sNamespace: vi.fn(() => 'test-ns'),
-  kubectlApply: vi.fn().mockResolvedValue(undefined),
-  kubectlGetJson: vi.fn(),
-  kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-}))
+import { describe, it, expect, vi } from 'vitest'
+import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 const mockLog = vi.hoisted(() => vi.fn())
 vi.mock('#log', () => ({ serverLog: mockLog }))
@@ -31,9 +22,12 @@ import {
 } from '#drivers/k8s/substrate'
 // Internal, for fixtures only.
 import { JOB_NAME_LABEL } from '#drivers/k8s/substrate/pods'
-import { kubectlGetJson } from '#drivers/k8s/substrate/kubectl'
+import { dataDirHash, k8sNamespace } from '#drivers/k8s/substrate'
 
-const mockGetJson = vi.mocked(kubectlGetJson)
+/** Answer every list with `items`, which may be malformed on purpose. */
+function serve(items: unknown[]): void {
+  fakeCluster.intercept((call) => (call.verb === 'list' ? { items } : undefined))
+}
 
 describe('workspaceJobName', () => {
   const SID = '01234567-89ab-cdef-0123-456789abcdef'
@@ -107,7 +101,7 @@ function rawPod(overrides: {
         [LABEL_PROJECT]: 'demo',
         [LABEL_PROJECT_ID]: 'id-demo',
         [LABEL_TOOL]: 'codex',
-        [LABEL_DATA_DIR_HASH]: 'ddh0123456789abc',
+        [LABEL_DATA_DIR_HASH]: dataDirHash(),
       },
       creationTimestamp: overrides.creationTimestamp ?? '2026-06-01T00:00:00Z',
       ...(overrides.deletionTimestamp ? { deletionTimestamp: overrides.deletionTimestamp } : {}),
@@ -120,30 +114,21 @@ function rawPod(overrides: {
 }
 
 describe('listWorkspacePods', () => {
-  beforeEach(() => {
-    mockGetJson.mockReset()
-  })
-
-  it('queries pods in the namespace scoped by data-dir-hash + workspace-id labels', async () => {
-    mockGetJson.mockResolvedValue({ items: [] })
-    await listWorkspacePods()
-    expect(mockGetJson).toHaveBeenCalledWith([
-      'get', 'pods', '-n', 'test-ns',
-      '-l', 'yaac.data-dir-hash=ddh0123456789abc,yaac.workspace-id',
-    ])
-  })
-
-  it('appends the project label to the selector when filtering', async () => {
-    mockGetJson.mockResolvedValue({ items: [] })
-    await listWorkspacePods('proj-a')
-    expect(mockGetJson).toHaveBeenCalledWith([
-      'get', 'pods', '-n', 'test-ns',
-      '-l', 'yaac.data-dir-hash=ddh0123456789abc,yaac.workspace-id,yaac.project=proj-a',
-    ])
+  it('lists this install\'s workspace pods, optionally for one project, and maps them', async () => {
+    const pod = (name: string, project: string) => {
+      const raw = rawPod({ name }) as unknown as RawPod
+      raw.metadata.labels[LABEL_PROJECT] = project
+      return { apiVersion: 'v1', kind: 'Pod', ...raw, metadata: { ...raw.metadata, name, namespace: k8sNamespace() } }
+    }
+    const foreign = pod('other-install', 'demo')
+    foreign.metadata.labels[LABEL_DATA_DIR_HASH] = 'someone-else'
+    fakeCluster.seed(pod('a', 'demo'), pod('b', 'proj-a'), foreign as never)
+    expect((await listWorkspacePods()).map((p) => p.podName).sort()).toEqual(['a', 'b'])
+    expect((await listWorkspacePods('proj-a')).map((p) => p.podName)).toEqual(['b'])
   })
 
   it('maps raw pods into PodInfo rows', async () => {
-    mockGetJson.mockResolvedValue({ items: [rawPod()] })
+    serve([rawPod()])
     const pods = await listWorkspacePods()
     expect(pods).toEqual([{
       jobName: 'yaac-demo-s1',
@@ -171,7 +156,7 @@ describe('listWorkspacePods', () => {
   ])('skips a pod missing %s', async (_field, strip) => {
     const bad = rawPod() as unknown as RawPod
     strip(bad)
-    mockGetJson.mockResolvedValue({ items: [bad, rawPod()] })
+    serve([bad, rawPod()])
     expect((await listWorkspacePods()).map((p) => p.podName)).toEqual(['yaac-demo-s1-x1y2z'])
   })
 
@@ -180,7 +165,7 @@ describe('listWorkspacePods', () => {
   it('names a skipped pod and what it lacks, once', async () => {
     const bad = rawPod({ name: 'yaac-demo-old-abcde' }) as unknown as RawPod
     delete bad.metadata.labels[LABEL_PROJECT_ID]
-    mockGetJson.mockResolvedValue({ items: [bad] })
+    serve([bad])
     mockLog.mockClear()
     await listWorkspacePods()
     await listWorkspacePods()
@@ -190,12 +175,10 @@ describe('listWorkspacePods', () => {
   })
 
   it('marks non-Running phases and terminating pods as not running', async () => {
-    mockGetJson.mockResolvedValue({
-      items: [
-        rawPod({ phase: 'Pending' }),
-        rawPod({ deletionTimestamp: '2026-06-01T01:00:00Z' }),
-      ],
-    })
+    serve([
+      rawPod({ phase: 'Pending' }),
+      rawPod({ deletionTimestamp: '2026-06-01T01:00:00Z' }),
+    ])
     const pods = await listWorkspacePods()
     expect(pods[0].running).toBe(false)
     expect(pods[0].phase).toBe('Pending')
@@ -207,22 +190,20 @@ describe('listWorkspacePods', () => {
   })
 
   it('captures the session container terminated state as terminal', async () => {
-    mockGetJson.mockResolvedValue({
-      items: [rawPod({
-        phase: 'Failed',
-        status: {
-          containerStatuses: [{
-            state: {
-              terminated: {
-                exitCode: 137,
-                reason: 'OOMKilled',
-                finishedAt: '2026-06-01T02:00:00Z',
-              },
+    serve([rawPod({
+      phase: 'Failed',
+      status: {
+        containerStatuses: [{
+          state: {
+            terminated: {
+              exitCode: 137,
+              reason: 'OOMKilled',
+              finishedAt: '2026-06-01T02:00:00Z',
             },
-          }],
-        },
-      })],
-    })
+          },
+        }],
+      },
+    })])
     const pods = await listWorkspacePods()
     expect(pods[0].terminal).toEqual({
       podReason: undefined,
@@ -234,12 +215,10 @@ describe('listWorkspacePods', () => {
   })
 
   it('captures pod-level eviction reason/message as terminal', async () => {
-    mockGetJson.mockResolvedValue({
-      items: [rawPod({
-        phase: 'Failed',
-        status: { reason: 'Evicted', message: 'The node was low on resource: memory.' },
-      })],
-    })
+    serve([rawPod({
+      phase: 'Failed',
+      status: { reason: 'Evicted', message: 'The node was low on resource: memory.' },
+    })])
     const pods = await listWorkspacePods()
     expect(pods[0].terminal).toEqual({
       podReason: 'Evicted',
@@ -251,24 +230,18 @@ describe('listWorkspacePods', () => {
   })
 
   it('leaves terminal unset on healthy pods and on non-terminated containers', async () => {
-    mockGetJson.mockResolvedValue({
-      items: [
-        rawPod(),
-        rawPod({
-          phase: 'Pending',
-          status: { containerStatuses: [{ state: { waiting: { reason: 'ContainerCreating' } } }] },
-        }),
-      ],
-    })
+    serve([
+      rawPod(),
+      rawPod({
+        phase: 'Pending',
+        status: { containerStatuses: [{ state: { waiting: { reason: 'ContainerCreating' } } }] },
+      }),
+    ])
     const pods = await listWorkspacePods()
     expect(pods[0].terminal).toBeUndefined()
     expect(pods[1].terminal).toBeUndefined()
   })
 
-  it('returns [] when the list call yields null (namespace absent)', async () => {
-    mockGetJson.mockResolvedValue(null)
-    await expect(listWorkspacePods()).resolves.toEqual([])
-  })
 })
 
 describe('findWorkspacePod', () => {
@@ -313,25 +286,18 @@ describe('findWorkspacePod', () => {
 })
 
 describe('listWorkspaceJobs', () => {
-  beforeEach(() => {
-    mockGetJson.mockReset()
-  })
-
   it('queries jobs scoped by data-dir-hash + session-id labels and maps rows', async () => {
-    mockGetJson.mockResolvedValue({
-      items: [{
-        metadata: {
-          name: 'yaac-demo-s1',
-          labels: { ...workspaceIdLabels('s1'), [LABEL_PROJECT]: 'demo' },
-          creationTimestamp: '2026-06-01T00:00:00Z',
-        },
-      }],
-    })
+    serve([{
+      metadata: {
+        name: 'yaac-demo-s1',
+        labels: { ...workspaceIdLabels('s1'), [LABEL_PROJECT]: 'demo' },
+        creationTimestamp: '2026-06-01T00:00:00Z',
+      },
+    }])
     const jobs = await listWorkspaceJobs()
-    expect(mockGetJson).toHaveBeenCalledWith([
-      'get', 'jobs', '-n', 'test-ns',
-      '-l', 'yaac.data-dir-hash=ddh0123456789abc,yaac.workspace-id',
-    ])
+    expect(fakeCluster.callsOf('list', 'Job')).toEqual([expect.objectContaining({
+      namespace: k8sNamespace(), labelSelector: `yaac.data-dir-hash=${dataDirHash()},yaac.workspace-id`,
+    })])
     expect(jobs).toEqual([{
       jobName: 'yaac-demo-s1',
       workspaceId: 's1',
@@ -343,20 +309,14 @@ describe('listWorkspaceJobs', () => {
   // The orphan-Job sweep must not act on a Job with no workspace id.
   it('skips a job missing its name, workspace-id or project label', async () => {
     const meta = { creationTimestamp: '2026-06-01T00:00:00Z' }
-    mockGetJson.mockResolvedValue({
-      items: [
-        {},
-        { metadata: { ...meta, name: 'a', labels: { [LABEL_PROJECT]: 'demo' } } },
-        { metadata: { ...meta, name: 'b', labels: workspaceIdLabels('s1') } },
-      ],
-    })
+    serve([
+      {},
+      { metadata: { ...meta, name: 'a', labels: { [LABEL_PROJECT]: 'demo' } } },
+      { metadata: { ...meta, name: 'b', labels: workspaceIdLabels('s1') } },
+    ])
     await expect(listWorkspaceJobs()).resolves.toEqual([])
   })
 
-  it('returns [] when the list call yields null', async () => {
-    mockGetJson.mockResolvedValue(null)
-    await expect(listWorkspaceJobs()).resolves.toEqual([])
-  })
 })
 
 describe('isPrewarmed', () => {

@@ -1,23 +1,34 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import type * as childProcess from 'node:child_process'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 
-/** Runs a real shell; the mocked kubectl module's execFileAsync cannot. */
+/** Runs a real shell, which the child-process fake passes through. */
 const runSh = promisify(execFile)
 
-vi.mock('#drivers/k8s/substrate/kubectl', () => ({
-  isKubectlAbsentError: vi.fn(() => false),
-  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
-  k8sNamespace: vi.fn(() => 'test-ns'),
-  dataDirHash: vi.fn(() => 'ddh16'),
-  kubectlApply: vi.fn().mockResolvedValue(undefined),
-  kubectlGetJson: vi.fn(),
-  kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-  execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-}))
+// The cluster (the fake behind client-node) and child processes are the
+// boundaries. `sh` runs for real; anything else (kubectl, podman) is
+// recorded and answers from `mockChild`.
+type ExecResult = { stdout: string; stderr: string }
+const mockChild = vi.hoisted(() => vi.fn<(file: string, args: string[]) => Promise<ExecResult>>())
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof childProcess>()
+  return {
+    ...actual,
+    execFile: (file: string, args: string[], ...rest: unknown[]) => {
+      const cb = rest.at(-1) as (err: unknown, res?: ExecResult) => void
+      if (file === 'sh') {
+        actual.execFile(file, args, (err, stdout, stderr) => { cb(err, { stdout, stderr }) })
+        return
+      }
+      mockChild(file, args).then((res) => { cb(null, res) }, cb)
+    },
+  }
+})
 
 vi.mock('#drivers/k8s/container/registry', () => ({
   registryHasTag: vi.fn().mockResolvedValue(false),
@@ -56,48 +67,40 @@ import {
   projectRegistryPvcName,
 } from '#drivers/k8s/cluster/project-registry'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
-import {
-  execFileAsync,
-  kubectlApply,
-  kubectlGetJson,
-  kubectlWithRetry,
-} from '#drivers/k8s/substrate/kubectl'
+import { dataDirHash } from '#drivers/k8s/substrate'
 import { pushImageToRegistry, registryHasTag } from '#drivers/k8s/container/registry'
 import { imageExists } from '#drivers/k8s/container/runtime'
 
-const mockApply = vi.mocked(kubectlApply)
-const mockGetJson = vi.mocked(kubectlGetJson)
-const mockRetry = vi.mocked(kubectlWithRetry)
-const mockExec = vi.mocked(execFileAsync)
 const mockHasTag = vi.mocked(registryHasTag)
 const mockPush = vi.mocked(pushImageToRegistry)
 const mockImageExists = vi.mocked(imageExists)
 
 const ID = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
 const PROJECT = { slug: 'demo', id: ID }
-const REGISTRY_SELECTOR = `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16,yaac.project-id=${ID}`
+const registrySelector = (id: string): string =>
+  `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=${dataDirHash()},yaac.project-id=${id}`
+/** The labels every registry object of project `id` carries. */
+const registryLabels = (id: string, slug = 'demo'): Record<string, string> => ({
+  app: REGISTRY_APP_LABEL, [LABEL_REGISTRY_DATA_DIR_HASH]: dataDirHash(), 'yaac.project': slug, 'yaac.project-id': id,
+})
 
 const NODE_IP = '10.89.0.7'
 // Serves both the writer pod's node name and the InternalIP the real
 // cluster-cidrs probe turns into the ingress policy's ipBlock.
-const NODE_LIST = {
-  items: [{
-    metadata: { name: 'yaac-control-plane' },
-    status: {
-      addresses: [{ type: 'InternalIP', address: NODE_IP }],
-      conditions: [{ type: 'Ready', status: 'True' }],
-    },
-  }],
+const NODE = {
+  apiVersion: 'v1',
+  kind: 'Node',
+  metadata: { name: 'yaac-control-plane' },
+  status: {
+    addresses: [{ type: 'InternalIP', address: NODE_IP }],
+    conditions: [{ type: 'Ready', status: 'True' }],
+  },
 }
 
 beforeEach(() => {
-  mockApply.mockReset()
-  mockApply.mockResolvedValue(undefined)
-  mockGetJson.mockReset()
-  mockRetry.mockReset()
-  mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
-  mockExec.mockReset()
-  mockExec.mockResolvedValue({ stdout: '', stderr: '' })
+  vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
+  mockChild.mockReset()
+  mockChild.mockResolvedValue({ stdout: '', stderr: '' })
   mockHasTag.mockReset()
   mockHasTag.mockResolvedValue(false)
   mockPush.mockReset()
@@ -106,26 +109,34 @@ beforeEach(() => {
   mockImageExists.mockResolvedValue(false)
 })
 
-const appliedAllKind = (kind: string): unknown[] =>
-  mockApply.mock.calls.map((c) => c[0] as { kind: string }).filter((m) => m.kind === kind)
+/** Every object applied, in order. */
+const applied = <T = { kind: string }>(): T[] => fakeCluster.callsOf('apply').map((c) => c.body as T)
+const appliedAllKind = (kind: string): unknown[] => applied().filter((m) => m.kind === kind)
 const appliedKind = (kind: string): unknown => appliedAllKind(kind)[0]
+const kubectlArgs = (): string[][] => mockChild.mock.calls.filter((c) => c[0] === 'kubectl').map((c) => c[1])
+/** Child processes other than kubectl, e.g. a podman pull. */
+const otherChildren = (): string[] => mockChild.mock.calls.filter((c) => c[0] !== 'kubectl').map((c) => c[0])
 
 /**
- * A live cluster for an ensure: the Service has a ClusterIP, one node is
- * listed, and the writer pod completes.
+ * A live cluster: one node is listed, and on read the API server fills in
+ * what it owns: a Service's ClusterIP, and each one-shot pod's terminal
+ * phase and logs.
  */
-function stageLiveCluster(): void {
+function stageLiveCluster(podPhase = 'Succeeded', podLogs = ''): void {
   resetClusterCidrCache()
-  mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
-    if (args[1] === 'service') return Promise.resolve({ spec: { clusterIP: '10.96.0.50' } })
-    if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
-    return cidrRead(args) ?? Promise.resolve(null)
+  fakeCluster.seed(NODE)
+  fakeCluster.intercept((call) => {
+    if (call.verb !== 'read' || !call.name) return
+    const stored = fakeCluster.get<Record<string, unknown>>(call.kind, call.name, call.namespace)
+    if (!stored) return
+    if (call.kind === 'Service') {
+      fakeCluster.seed({ ...stored, spec: { ...stored.spec as object, clusterIP: '10.96.0.50' } } as never)
+    }
+    if (call.kind === 'Pod') {
+      fakeCluster.seed({ ...stored, status: { phase: podPhase } } as never)
+      fakeCluster.podLogs.set(call.name, podLogs)
+    }
   })
-}
-
-/** Answers the node list the real cluster-cidrs probe reads. */
-function cidrRead(args: string[]): Promise<unknown> | null {
-  return args[1] === 'nodes' ? Promise.resolve(NODE_LIST) : null
 }
 
 describe('projectRegistryHost', () => {
@@ -158,24 +169,19 @@ describe('ensureProjectRegistry', () => {
   it('applies PVC, Deployment, Service, and all network policies, then waits and runs the hosts-writer pod', async () => {
     await ensureProjectRegistry(PROJECT)
 
-    const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
+    const kinds = applied().map((m) => m.kind)
     // The claim first, so the rollout wait never sees a pod Pending on a
     // missing volume.
     expect(kinds).toEqual([
       'PersistentVolumeClaim', 'Deployment', 'Service',
       'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy', 'Pod',
     ])
-    expect(mockRetry).toHaveBeenCalledWith(
-      [
-        'rollout', 'status', `deployment/${projectRegistryName(ID)}`,
-        '-n', 'test-ns', '--timeout=120s',
-      ],
-      expect.objectContaining({ maxAttempts: 2 }),
-    )
+    expect(kubectlArgs()).toContainEqual([
+      'rollout', 'status', `deployment/${projectRegistryName(ID)}`, '-n', 'test-ns', '--timeout=120s',
+    ])
     // hosts.toml is written by a one-shot pod pinned to the node, not by
     // podman exec, since the server's engine need not host the node.
-    const pod = mockApply.mock.calls
-      .map((c) => c[0] as { kind: string; spec: { nodeName: string; containers: Array<{ command: string[] }> } })
+    const pod = applied<{ kind: string; spec: { nodeName: string; containers: Array<{ command: string[] }> } }>()
       .find((m) => m.kind === 'Pod')!
     expect(pod.spec.nodeName).toBe('yaac-control-plane')
     // nodeName skips the scheduler, but a NoExecute taint still evicts, so
@@ -184,28 +190,24 @@ describe('ensureProjectRegistry', () => {
       .toEqual([{ operator: 'Exists' }])
     const script = pod.spec.containers[0].command[2]
     expect(script).toContain(`http://10.96.0.50:${PROJECT_REGISTRY_PORT}`)
-    expect(mockExec).not.toHaveBeenCalled()
+    expect(otherChildren()).toEqual([])
     // Leftover writer pods are swept by label first. The node-write label
     // keeps the sweep off the registry's own pod.
-    const sweep = mockRetry.mock.calls.map((c) => c[0]).find((a) => a[0] === 'delete' && a[2] === '-l')
-    expect(sweep?.[3]).toContain(`${LABEL_NODE_WRITE}=hosts`)
+    expect(fakeCluster.callsOf('list', 'Pod')[0].labelSelector).toContain(`${LABEL_NODE_WRITE}=hosts`)
     // The uniquely named writer pod is deleted before and after it runs.
-    const namedPodDeletes = mockRetry.mock.calls
-      .map((c) => c[0])
-      .filter((a) => a[0] === 'delete' && a[1] === 'pod' && a[2] !== '-l')
-    expect(namedPodDeletes).toHaveLength(2)
-    for (const args of namedPodDeletes) {
-      expect(args[2]).toMatch(
-        new RegExp(`^${projectRegistryName(ID)}-hosts-0-[0-9a-f]{8}$`))
+    const podDeletes = fakeCluster.callsOf('delete', 'Pod')
+    expect(podDeletes).toHaveLength(2)
+    for (const { name } of podDeletes) {
+      expect(name).toMatch(new RegExp(`^${projectRegistryName(ID)}-hosts-0-[0-9a-f]{8}$`))
     }
+    expect(fakeCluster.objects('Pod')).toEqual([])
     // The Service (and so its ClusterIP) is never deleted.
-    expect(mockRetry).not.toHaveBeenCalledWith(expect.arrayContaining(['delete', 'service']))
+    expect(fakeCluster.callsOf('delete', 'Service')).toEqual([])
   })
 
   it('names every object after the project id, within the DNS-label cap', async () => {
     await ensureProjectRegistry(PROJECT)
-    const objects = mockApply.mock.calls
-      .map((c) => c[0] as { kind: string; metadata: { name: string; labels: Record<string, string> } })
+    const objects = applied<{ kind: string; metadata: { name: string; labels: Record<string, string> } }>()
       .filter((m) => m.kind !== 'Pod')
     expect(objects.map((m) => m.kind).sort()).toEqual([
       'Deployment', 'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy',
@@ -225,8 +227,7 @@ describe('ensureProjectRegistry', () => {
     // only contradict it.
     await ensureProjectRegistry(PROJECT)
 
-    const deploy = mockApply.mock.calls
-      .map((c) => c[0] as {
+    const deploy = applied<{
         kind: string
         metadata: { annotations?: unknown }
         spec: { template: { spec: {
@@ -236,7 +237,7 @@ describe('ensureProjectRegistry', () => {
           tolerations?: unknown
           volumes: Array<{ persistentVolumeClaim?: { claimName: string } }>
         } } }
-      })
+      }>()
       .find((m) => m.kind === 'Deployment')!
     expect(deploy.metadata.annotations).toBeUndefined()
     expect(deploy.spec.template.spec.affinity).toBeUndefined()
@@ -277,7 +278,7 @@ describe('ensureProjectRegistry', () => {
     let releaseRollout!: () => void
     const gate = new Promise<void>((r) => { releaseRollout = r })
     let rollouts = 0
-    mockRetry.mockImplementation((args: string[]) => {
+    mockChild.mockImplementation((_file, args) => {
       if (args[0] === 'rollout' && ++rollouts === 1) {
         return gate.then(() => ({ stdout: '', stderr: '' }))
       }
@@ -289,24 +290,16 @@ describe('ensureProjectRegistry', () => {
     await new Promise((r) => setTimeout(r, 10))
     // While the first ensure waits on its rollout, only its six object
     // applies have happened; the second has not started.
-    expect(mockApply).toHaveBeenCalledTimes(6)
+    expect(applied()).toHaveLength(6)
 
     releaseRollout()
     await Promise.all([first, second])
-    expect(mockApply).toHaveBeenCalledTimes(14)
+    expect(applied()).toHaveLength(14)
   })
 
   it('surfaces a failed writer pod with its logs (session create must not proceed)', async () => {
-    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
-      const cidr = cidrRead(args)
-      if (cidr) return cidr
-      if (args[1] === 'service') return Promise.resolve({ spec: { clusterIP: '10.96.0.50' } })
-      if (args[1] === 'nodes') return Promise.resolve(NODE_LIST)
-      if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Failed' } })
-      return Promise.resolve(null)
-    })
-    mockRetry.mockImplementation((args: string[]) =>
-      Promise.resolve({ stdout: args[0] === 'logs' ? 'read-only file system\n' : '', stderr: '' }))
+    fakeCluster.reset()
+    stageLiveCluster('Failed', 'read-only file system\n')
 
     await expect(ensureProjectRegistry(PROJECT))
       .rejects.toThrow(/did not complete \(phase Failed\); logs: read-only file system/)
@@ -408,22 +401,23 @@ describe('ensureProjectRegistry', () => {
     mockHasTag.mockResolvedValue(true)
     await ensureProjectRegistry(PROJECT)
     expect(REGISTRY_UPSTREAM_IMAGE).toBe(`docker.io/library/registry@${REGISTRY_IMAGE_DIGEST}`)
-    expect(mockExec).not.toHaveBeenCalled()
+    expect(otherChildren()).toEqual([])
     expect(mockPush).not.toHaveBeenCalled()
 
     vi.clearAllMocks()
+    fakeCluster.reset()
     stageLiveCluster()
     mockHasTag.mockResolvedValue(false)
     mockImageExists.mockResolvedValue(false)
     await expect(ensureProjectRegistry(PROJECT))
       .rejects.toThrow(/Registry image .* is missing.*yaac cluster install/s)
-    expect(mockExec).not.toHaveBeenCalled()
+    expect(otherChildren()).toEqual([])
   })
 
   it('names the PVC when the rollout times out', async () => {
     // Workspace create is where a storage misconfiguration shows up first,
     // and kubectl's timeout text does not mention the unbindable claim.
-    mockRetry.mockImplementation((args: string[]) => (
+    mockChild.mockImplementation((_file, args) => (
       args[0] === 'rollout' && args[1] === 'status'
         ? Promise.reject(new Error('timed out waiting for the condition'))
         : Promise.resolve({ stdout: '', stderr: '' })
@@ -437,22 +431,27 @@ describe('ensureProjectRegistry', () => {
     mockHasTag.mockResolvedValue(false)
     mockImageExists.mockResolvedValue(false)
     await expect(ensureProjectRegistry(PROJECT)).rejects.toThrow(/missing/)
-    expect(mockExec).not.toHaveBeenCalled()
+    expect(otherChildren()).toEqual([])
     vi.unstubAllEnvs()
   })
 })
 
 describe('removeProjectRegistry', () => {
-  it('deletes by label selector scoped to this install', async () => {
+  it('deletes every object of the project\'s registry in this install, and nothing else', async () => {
+    const OTHER = '7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d'
+    const objects = (id: string) => ([
+      ['apps/v1', 'Deployment'], ['v1', 'Service'], ['networking.k8s.io/v1', 'NetworkPolicy'],
+      ['v1', 'PersistentVolumeClaim'], ['v1', 'Pod'],
+    ] as const).map(([apiVersion, kind]) => ({
+      apiVersion, kind, metadata: { name: `yaac-reg-${id}`, namespace: 'test-ns', labels: registryLabels(id) },
+    }))
+    fakeCluster.seed(...objects(ID), ...objects(OTHER))
     await removeProjectRegistry(ID)
-    // Deleting the claim reclaims the blobs; `pod` sweeps leftover
-    // writer and collect pods.
-    expect(mockRetry).toHaveBeenCalledWith([
-      'delete', 'deployment,service,networkpolicy,persistentvolumeclaim,pod',
-      '-l', REGISTRY_SELECTOR,
-      '-n', 'test-ns', '--ignore-not-found',
-    ])
-    expect(mockApply).not.toHaveBeenCalled()
+    // Deleting the claim reclaims the blobs; `Pod` sweeps leftover writer
+    // and collect pods.
+    expect(fakeCluster.objects().map((o) => o.metadata.labels?.['yaac.project-id'])).toEqual(Array(5).fill(OTHER))
+    expect(fakeCluster.callsOf('list').every((c) => c.labelSelector === registrySelector(ID))).toBe(true)
+    expect(applied()).toEqual([])
   })
 })
 
@@ -462,25 +461,19 @@ describe('gcOrphanProjectRegistries', () => {
   const NOW = Date.parse('2026-09-29T12:00:00Z')
   const OLD = new Date(NOW - ORPHAN_REGISTRY_MIN_AGE_MS - 1).toISOString()
 
-  const objectDeletes = (): string[] => mockRetry.mock.calls
-    .map((c) => c[0])
-    .filter((args) => args[0] === 'delete'
-      && args[1] === 'deployment,service,networkpolicy,persistentvolumeclaim,pod')
-    .map((args) => args[3])
+  /** The project ids whose registry objects remain. */
+  const remaining = (): string[] =>
+    [...new Set(fakeCluster.objects().map((o) => o.metadata.labels?.['yaac.project-id'] ?? ''))].sort()
 
-  function stageRegistries(items: unknown[]): void {
-    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
-      const cidr = cidrRead(args)
-      if (cidr) return cidr
-      if (args[1] === 'deployment,service,persistentvolumeclaim') return Promise.resolve({ items })
-      if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
-      return Promise.resolve(null)
-    })
+  const API_VERSION: Record<string, string> = { Deployment: 'apps/v1', Service: 'v1', PersistentVolumeClaim: 'v1' }
+  function stageRegistries(items: Array<{ kind: string; metadata: Record<string, unknown> }>): void {
+    fakeCluster.seed(...items.map((item) => ({
+      apiVersion: API_VERSION[item.kind], ...item, metadata: { namespace: 'test-ns', ...item.metadata },
+    })) as never[])
   }
 
   it('removes registries no live project id owns, keeping the rest', async () => {
-    const labelled = (id: string, slug: string): Record<string, string> =>
-      ({ app: REGISTRY_APP_LABEL, 'yaac.project': slug, 'yaac.project-id': id })
+    const labelled = (id: string, slug: string): Record<string, string> => registryLabels(id, slug)
     stageRegistries([
       // A live project's registry, in every kind it is made of.
       { kind: 'Service', metadata: { name: `yaac-reg-${LIVE}`, labels: labelled(LIVE, 'app'), creationTimestamp: OLD } },
@@ -492,50 +485,42 @@ describe('gcOrphanProjectRegistries', () => {
       // creating it right now.
       { kind: 'Service', metadata: { name: 'yaac-reg-new', labels: labelled('5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9', 'new'), creationTimestamp: new Date(NOW - 1000).toISOString() } },
       // An unreadable age is never old enough to delete.
-      { kind: 'Service', metadata: { name: 'yaac-reg-ageless', labels: labelled('6f7a8b9c-0d1e-4f2a-b3c4-d5e6f7a8b9c0', 'ageless') } },
+      { kind: 'Service', metadata: { name: 'yaac-reg-ageless', labels: labelled('6f7a8b9c-0d1e-4f2a-b3c4-d5e6f7a8b9c0', 'ageless'), creationTimestamp: '' } },
     ])
 
     await gcOrphanProjectRegistries(new Set([LIVE]), NOW)
 
-    expect(objectDeletes()).toEqual([
-      `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16,yaac.project-id=${GONE}`,
-    ])
-    expect(mockGetJson).toHaveBeenCalledWith([
-      'get', 'deployment,service,persistentvolumeclaim', '-n', 'test-ns',
-      '-l', `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16`,
-    ])
+    expect(remaining()).toEqual([LIVE, '5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9', '6f7a8b9c-0d1e-4f2a-b3c4-d5e6f7a8b9c0'].sort())
+    // Only this install's registries are listed.
+    const installSelector = `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=${dataDirHash()}`
+    expect(fakeCluster.callsOf('list').filter((c) => c.kind !== 'Pod' && c.labelSelector === installSelector)
+      .map((c) => c.kind).sort()).toEqual(['Deployment', 'PersistentVolumeClaim', 'Service'])
   })
 
   it('tolerates an unreachable cluster', async () => {
-    mockGetJson.mockRejectedValue(new Error('connection refused'))
+    fakeCluster.intercept(() => { throw new Error('connection refused') })
     await expect(gcOrphanProjectRegistries(new Set(), NOW)).resolves.toBeUndefined()
-    expect(objectDeletes()).toEqual([])
+    expect(fakeCluster.callsOf('delete')).toEqual([])
   })
 })
 
 describe('reconcileProjectRegistryGc', () => {
-  /** One registry Service created at `createdMs`, and a GC pod that succeeds. */
-  function oneRegistry(createdMs = 0): void {
-    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
-      const cidr = cidrRead(args)
-      if (cidr) return cidr
-      if (args[1] === 'services') {
-        return Promise.resolve({ items: [{ metadata: {
-          labels: { 'yaac.project': 'demo', 'yaac.project-id': ID },
-          creationTimestamp: new Date(createdMs).toISOString(),
-        } }] })
-      }
-      if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
-      return Promise.resolve(null)
+  /** One registry Service created at `createdMs`, and a GC pod ending in `podPhase`. */
+  function oneRegistry(createdMs: number | null = 0, podPhase = 'Succeeded'): void {
+    stageLiveCluster(podPhase)
+    fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Service',
+      metadata: {
+        name: projectRegistryName(ID), namespace: 'test-ns', labels: registryLabels(ID),
+        creationTimestamp: createdMs === null ? '' : new Date(createdMs).toISOString(),
+      },
     })
   }
   /** A `now` at which the epoch-created registry above is collectable. */
   const DUE = REGISTRY_GC_INTERVAL_MS + 1_000
-  const kubectlArgs = (): string[][] => mockRetry.mock.calls.map((c) => c[0])
   /** Whether each applied registry Deployment was the read-only one. */
-  const rollouts = (): boolean[] => mockApply.mock.calls
-    .map((c) => c[0] as { kind: string; spec?: { template?: { spec?: { containers?: Array<
-      { env?: Array<{ name: string }> }> } } } })
+  const rollouts = (): boolean[] => applied<{ kind: string; spec?: { template?: { spec?: { containers?: Array<
+      { env?: Array<{ name: string }> }> } } } }>()
     .filter((m) => m.kind === 'Deployment')
     .map((m) => (m.spec?.template?.spec?.containers?.[0]?.env ?? [])
       .some((e) => e.name === 'REGISTRY_STORAGE_MAINTENANCE_READONLY'))
@@ -557,7 +542,7 @@ describe('reconcileProjectRegistryGc', () => {
     oneRegistry()
     await reconcileProjectRegistryGc(new Set(), DUE)
     await _registryGcSettledForTests()
-    expect(mockApply).not.toHaveBeenCalled()
+    expect(applied()).toEqual([])
   })
 
   it('collects behind a read-only window, then restores serving mode', async () => {
@@ -567,12 +552,13 @@ describe('reconcileProjectRegistryGc', () => {
     // Read-only mode rather than scaling to zero, so pulls keep working.
     expect(rollouts()).toEqual([true, false])
     expect(kubectlArgs().filter((a) => a[0] === 'scale')).toEqual([])
-    // A collect pod a crashed server left would hold the claim; it goes first.
-    expect(kubectlArgs()[0]).toEqual([
-      'delete', 'pod', '-l', `${REGISTRY_SELECTOR},${LABEL_NODE_WRITE}=gc`,
-      '-n', 'test-ns', '--ignore-not-found', '--wait=false',
-    ])
-    const pod = mockApply.mock.calls.map((c) => c[0] as {
+    // A collect pod a crashed server left would hold the claim; it goes
+    // before the read-only roll.
+    const sweep = fakeCluster.calls.findIndex((c) =>
+      c.verb === 'list' && c.labelSelector === `${registrySelector(ID)},${LABEL_NODE_WRITE}=gc`)
+    expect(sweep).toBeGreaterThanOrEqual(0)
+    expect(sweep).toBeLessThan(fakeCluster.calls.findIndex((c) => c.verb === 'apply' && c.kind === 'Deployment'))
+    const pod = applied<{
       kind: string
       metadata: { name: string; labels: Record<string, string> }
       spec: {
@@ -581,7 +567,7 @@ describe('reconcileProjectRegistryGc', () => {
         containers: Array<{ image: string; command: string[] }>
         volumes: Array<{ persistentVolumeClaim?: { claimName: string } }>
       }
-    }).find((m) => m.kind === 'Pod' && m.metadata.name.includes('-gc-'))!
+    }>().find((m) => m.kind === 'Pod' && m.metadata.name.includes('-gc-'))!
     expect(pod.spec.volumes[0].persistentVolumeClaim)
       .toEqual({ claimName: projectRegistryPvcName(ID) })
     // RWO is per node, so the GC pod must share the registry pod's node.
@@ -597,7 +583,7 @@ describe('reconcileProjectRegistryGc', () => {
               app: REGISTRY_APP_LABEL,
               'yaac.project': 'demo',
               'yaac.project-id': ID,
-              [LABEL_REGISTRY_DATA_DIR_HASH]: 'ddh16',
+              [LABEL_REGISTRY_DATA_DIR_HASH]: dataDirHash(),
             },
             // Excludes one-shot pods, whose node says nothing about the volume.
             matchExpressions: [{ key: LABEL_NODE_WRITE, operator: 'DoesNotExist' }],
@@ -620,10 +606,10 @@ describe('reconcileProjectRegistryGc', () => {
   it('sends valid POSIX shell into the collect pod', async () => {
     oneRegistry()
     await gcPass(DUE)
-    const script = (mockApply.mock.calls.map((c) => c[0] as {
+    const script = (applied<{
       kind: string; metadata: { name: string }
       spec: { containers: Array<{ command: string[] }> }
-    }).find((m) => m.kind === 'Pod' && m.metadata.name.includes('-gc-'))!)
+    }>().find((m) => m.kind === 'Pod' && m.metadata.name.includes('-gc-'))!)
       .spec.containers[0].command[2]
     await expect(runSh('sh', ['-n', '-c', script])).resolves.toBeTruthy()
   })
@@ -639,7 +625,7 @@ describe('reconcileProjectRegistryGc', () => {
   it('throttles to one collect per project per interval', async () => {
     oneRegistry()
     await gcPass(DUE)
-    mockApply.mockClear()
+    fakeCluster.calls = []
     await gcPass(DUE + REGISTRY_GC_INTERVAL_MS - 1)
     expect(rollouts()).toEqual([])
     await gcPass(DUE + REGISTRY_GC_INTERVAL_MS)
@@ -660,16 +646,7 @@ describe('reconcileProjectRegistryGc', () => {
   })
 
   it('restores serving mode when the collect fails', async () => {
-    oneRegistry()
-    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
-      const cidr = cidrRead(args)
-      if (cidr) return cidr
-      if (args[1] === 'services') {
-        return Promise.resolve({ items: [{ metadata: { labels: { 'yaac.project': 'demo', 'yaac.project-id': ID } } }] })
-      }
-      if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Failed' } })
-      return Promise.resolve(null)
-    })
+    oneRegistry(null, 'Failed')
     await gcPass(DUE)
     // A failed GC must not leave the registry read-only.
     expect(rollouts()).toEqual([true, false])
@@ -683,7 +660,7 @@ describe('reconcileProjectRegistryGc', () => {
     const held = new Promise<{ stdout: string; stderr: string }>((r) => {
       release = () => r({ stdout: '', stderr: '' })
     })
-    mockRetry.mockImplementation((args: string[]) =>
+    mockChild.mockImplementation((_file, args) =>
       args[0] === 'rollout' ? held : Promise.resolve({ stdout: '', stderr: '' }))
 
     await reconcileProjectRegistryGc(LIVE, DUE)
@@ -694,7 +671,7 @@ describe('reconcileProjectRegistryGc', () => {
   })
 
   it('tolerates an unreachable cluster', async () => {
-    mockGetJson.mockRejectedValue(new Error('connection refused'))
+    fakeCluster.intercept(() => { throw apiError(503) })
     await expect(reconcileProjectRegistryGc(LIVE, DUE)).resolves.toBeUndefined()
   })
 })

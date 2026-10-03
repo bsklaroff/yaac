@@ -38,6 +38,7 @@
     "test:api": "vitest run --project 'api-*'",
     "test:api-k8s": "vitest run --project api-k8s",
     "test:api-containerless": "vitest run --project api-containerless",
+    "test:apiserver": "vitest run --project apiserver",
     "test:failures": "tsx scripts/test-failures.ts",
     "test:watch": "vitest",
     "frontend:dev": "pnpm --filter @yaac/frontend dev",

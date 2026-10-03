@@ -20,7 +20,8 @@ import {
   TAILSCALE_PARENT_RESOURCE_LABEL,
   dataDirHash,
   k8sNamespace,
-  kubectlGetJson,
+  readObject,
+  type ObjectRef,
 } from '#drivers/k8s/substrate'
 import { ENVOY_MIRROR_TAG } from '#drivers/k8s/cluster'
 import { execFileAsync, registryRef } from '#drivers/k8s/container'
@@ -32,8 +33,8 @@ export interface RemoteHosting {
   allowedHosts: string[]
 }
 
-/** A `kubectl delete` target: resource kind and name, in the install namespace. */
-type FrontingObject = [kind: string, name: string]
+/** An object a fronting owns, in the install namespace. */
+type FrontingObject = Omit<ObjectRef, 'namespace'>
 
 export interface ServerFronting {
   kind: 'kind' | 'tailnet'
@@ -99,7 +100,7 @@ export function kindFronting(): ServerFronting {
       buildServerFrontConfigMapManifest(),
       buildServerFrontDeploymentManifest(registryRef(ENVOY_MIRROR_TAG)),
     ],
-    retired: () => [['ingress', SERVER_APP_NAME]],
+    retired: () => [{ apiVersion: 'networking.k8s.io/v1', kind: 'Ingress', name: SERVER_APP_NAME }],
     ingressPeers: () => [],
     resolveOrigin: async () => `http://127.0.0.1:${String(await kindPublishedPort())}`,
     remoteHosting: () => ({ allowedHosts: [] }),
@@ -161,7 +162,7 @@ const TAILSCALE_INGRESS_CLASS = 'tailscale'
 /** The device name a yaac server publishes as. */
 export const TAILNET_HOSTNAME = 'yaac'
 
-/** What `kubectl get ingress -o json` answers, as far as a fronting reads it. */
+/** The server Ingress, as far as a fronting reads it. */
 interface RawIngress {
   spec?: { ingressClassName?: string; tls?: Array<{ hosts?: string[] }> }
   status?: { loadBalancer?: { ingress?: Array<{ hostname?: string }> } }
@@ -198,7 +199,10 @@ export function tailnetFronting(opts: { hostname: string }): ServerFronting {
         tls: [{ hosts: [opts.hostname] }],
       },
     }],
-    retired: () => [['deployment', SERVER_FRONT_APP_NAME], ['configmap', SERVER_FRONT_APP_NAME]],
+    retired: () => [
+      { apiVersion: 'apps/v1', kind: 'Deployment', name: SERVER_FRONT_APP_NAME },
+      { apiVersion: 'v1', kind: 'ConfigMap', name: SERVER_FRONT_APP_NAME },
+    ],
     ingressPeers: () => [{
       namespaceSelector: {
         matchLabels: { 'kubernetes.io/metadata.name': TAILSCALE_OPERATOR_NAMESPACE },
@@ -213,9 +217,9 @@ export function tailnetFronting(opts: { hostname: string }): ServerFronting {
     resolveOrigin: async () => {
       const deadline = Date.now() + TAILNET_PUBLISH_TIMEOUT_MS
       for (;;) {
-        const ing = await kubectlGetJson<RawIngress>([
-          'get', 'ingress', SERVER_APP_NAME, '-n', k8sNamespace(),
-        ])
+        const ing = await readObject<RawIngress>({
+          apiVersion: 'networking.k8s.io/v1', kind: 'Ingress', name: SERVER_APP_NAME, namespace: k8sNamespace(),
+        })
         const hostname = ing?.status?.loadBalancer?.ingress?.find((i) => i.hostname)?.hostname
         if (hostname) return `https://${hostname}`
         if (Date.now() >= deadline) {

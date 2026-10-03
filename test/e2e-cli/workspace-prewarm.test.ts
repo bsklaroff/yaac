@@ -100,7 +100,7 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     await execInJob(
       jobName,
       ['tmux', '-S', CONTAINER_TMUX_SOCK, 'has-session', '-t', 'yaac'],
-      { maxAttempts: 1, timeout: 15_000 },
+      { timeout: 15_000 },
     )
     return true
   } catch {

@@ -1,11 +1,8 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('#drivers/k8s/substrate/kubectl', () => ({
-  isKubectlAbsentError: vi.fn(() => false),
-  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
-  k8sNamespace: vi.fn(() => 'test-ns'),
-  dataDirHash: vi.fn(() => 'ddh0123456789abc'),
-}))
+// Manifests are rendered for a known namespace.
+beforeEach(() => { vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns') })
+
 
 import {
   buildBuilderRoleGuardBindingManifest,

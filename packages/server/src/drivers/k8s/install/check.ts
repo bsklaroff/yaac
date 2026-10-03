@@ -34,18 +34,20 @@ import {
   RUNTIME_CLASS_GVISOR,
   RUNTIME_CLASS_GVISOR_NESTED,
   TRANSPARENT_HTTPS_PORT,
+  applyObject,
   buildPriorityClassManifests,
   dataDirHash,
+  deleteObject,
+  ensureKubernetes,
   execFileAsync,
   formatTaint,
+  k8sErrorSummary,
   k8sNamespace,
-  kubectlApply,
-  kubectlGetJson,
-  kubectlWithRetry,
+  listObjects,
+  readObject,
   runPodToCompletion,
   runtimeClassSpec,
   installSecurityContext,
-  kubectlErrorSummary,
   untoleratedTaints,
   workspaceIdLabels,
 } from '#drivers/k8s/substrate'
@@ -108,8 +110,8 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  * Run the full preflight suite for the Kubernetes backend. Returns every
  * result, and `ok: false` when any check failed. Roughly in order:
  *
- * - kubectl present and the API server reachable (either failing stops the
- *   run).
+ * - kubectl present (for `kubectl exec` and port-forwards) and the API
+ *   server reachable (either failing stops the run).
  * - nodes: how many can take a workspace, whether all are Ready, and the
  *   `architecture` and `node-os` gates `--byo` installs on.
  * - podman present; the in-cluster registry answering; the namespace.
@@ -137,22 +139,23 @@ export async function runClusterCheck(
 
   try {
     await execFileAsync('kubectl', ['version', '--client', '--output', 'json'])
-    add({ name: 'kubectl', status: 'pass', detail: 'installed' })
+    add({ name: 'kubectl', status: 'pass', detail: 'installed (for exec and port-forward streams)' })
   } catch {
     add({
-      name: 'kubectl', status: 'fail', detail: 'not found on PATH',
+      name: 'kubectl', status: 'fail', detail: 'not found on PATH — yaac streams into pods with `kubectl exec`',
       fix: 'Install kubectl: https://kubernetes.io/docs/tasks/tools/',
     })
     return { ok: false, results }
   }
 
   try {
-    await execFileAsync('kubectl', ['version', '--output', 'json'], { timeout: 10_000 })
+    await ensureKubernetes()
     add({ name: 'cluster', status: 'pass', detail: 'API server reachable' })
   } catch (err) {
     add({
       name: 'cluster', status: 'fail',
-      detail: `API server unreachable (${truncate(err)})`,
+      // ensureKubernetes puts the cause on its last line.
+      detail: `API server unreachable (${(err as Error).message.split('\n').pop() ?? ''})`,
       fix: KIND_SETUP_FIX,
     })
     return { ok: false, results }
@@ -165,12 +168,11 @@ export async function runClusterCheck(
   const gvisorScheduling = await gvisorRuntimeClass()
   let rawNodes: RawNodeItem[] | null = null
   try {
-    const { stdout } = await execFileAsync('kubectl', ['get', 'nodes', '-o', 'json'])
-    rawNodes = (JSON.parse(stdout) as { items?: RawNodeItem[] }).items ?? []
+    rawNodes = await listObjects<RawNodeItem>('v1', 'Node')
   } catch (err) {
-    add({ name: 'nodes', status: 'warn', detail: `could not list nodes (${truncate(err)})` })
+    add({ name: 'nodes', status: 'warn', detail: `could not list nodes (${k8sErrorSummary(err)})` })
     for (const name of ['architecture', 'node-os']) {
-      add({ name, status: 'warn', detail: `could not read the nodes (${truncate(err)})` })
+      add({ name, status: 'warn', detail: `could not read the nodes (${k8sErrorSummary(err)})` })
     }
   }
   const nodes = (rawNodes ?? []).map((n) => clusterNode(n, gvisorScheduling.tolerations))
@@ -211,7 +213,7 @@ export async function runClusterCheck(
   } catch (err) {
     add({
       name: 'namespace', status: 'fail',
-      detail: `cannot create namespace "${k8sNamespace()}" (${truncate(err)})`,
+      detail: `cannot create namespace "${k8sNamespace()}" (${k8sErrorSummary(err)})`,
       fix: 'Check your kubeconfig context has admin rights on the cluster.',
     })
   }
@@ -252,7 +254,7 @@ export async function runClusterCheck(
     add({
       name: 'probe', status: 'fail',
       detail: `could not read the install identity off the ${SERVER_APP_NAME} Deployment: `
-        + `${kubectlErrorSummary(err)}`,
+        + `${k8sErrorSummary(err)}`,
     })
     skipFrom('egress', 'skipped — fix the failures above first')
     return { ok: false, results }
@@ -449,7 +451,7 @@ async function runNodeFixupsCheck(nodes: string[]): Promise<CheckResult> {
   } catch (err) {
     return {
       name: 'node-fixups', status: 'warn',
-      detail: `could not verify node fixups (${truncate(err)})`,
+      detail: `could not verify node fixups (${k8sErrorSummary(err)})`,
       fix: NODE_FIXUPS_FIX,
     }
   }
@@ -502,7 +504,7 @@ async function runStorageCheck(): Promise<CheckResult> {
     const problems: string[] = []
     const bound: string[] = []
     for (const name of [GLOBAL_CLAIM_NAME, SERVER_LOCAL_CLAIM_NAME]) {
-      const pvc = await kubectlGetJson<RawPvcRead>(['get', 'pvc', name, '-n', ns])
+      const pvc = await readObject<RawPvcRead>({ apiVersion: 'v1', kind: 'PersistentVolumeClaim', name, namespace: ns })
       if (!pvc) {
         problems.push(`${name}: no such claim in "${ns}"`)
         continue
@@ -513,7 +515,7 @@ async function runStorageCheck(): Promise<CheckResult> {
         continue
       }
       const volumeName = pvc.spec?.volumeName ?? ''
-      const pv = await kubectlGetJson<RawPvRead>(['get', 'pv', volumeName])
+      const pv = await readPv(volumeName)
       const reclaim = pv?.spec?.persistentVolumeReclaimPolicy
       if (reclaim !== 'Retain') {
         problems.push(`${name}: volume ${volumeName} reclaims by ${reclaim ?? 'an unknown policy'}, not Retain`)
@@ -545,10 +547,14 @@ async function runStorageCheck(): Promise<CheckResult> {
   } catch (err) {
     return {
       name: 'storage', status: 'fail',
-      detail: `could not read the storage claims (${truncate(err)})`,
+      detail: `could not read the storage claims (${k8sErrorSummary(err)})`,
       fix: STORAGE_FIX,
     }
   }
+}
+
+function readPv(name: string): Promise<RawPvRead | null> {
+  return readObject<RawPvRead>({ apiVersion: 'v1', kind: 'PersistentVolume', name })
 }
 
 /** What a provisioned global volume must be, beyond Bound and Retain. */
@@ -556,9 +562,9 @@ async function sharedVolumeProblems(volumeName: string, pv: RawPvRead | null): P
   const problems: string[] = []
   const className = pv?.spec?.storageClassName ?? ''
   const sc = className
-    ? await kubectlGetJson<{ provisioner?: string; parameters?: Record<string, string> }>([
-      'get', 'storageclass', className,
-    ])
+    ? await readObject<{ provisioner?: string; parameters?: Record<string, string> }>({
+      apiVersion: 'storage.k8s.io/v1', kind: 'StorageClass', name: className,
+    })
     : null
   const nfs = sc
     ? isNfsFamily(sc.provisioner ?? '', sc.parameters)
@@ -620,9 +626,9 @@ function installerFix(): string {
 async function runInstallerReadinessCheck(): Promise<CheckResult> {
   const ns = k8sNamespace()
   try {
-    const ds = await kubectlGetJson<{
+    const ds = await readObject<{
       status?: { desiredNumberScheduled?: number; numberReady?: number; updatedNumberScheduled?: number }
-    }>(['get', 'daemonset', GVISOR_INSTALLER_APP_NAME, '-n', ns])
+    }>({ apiVersion: 'apps/v1', kind: 'DaemonSet', name: GVISOR_INSTALLER_APP_NAME, namespace: ns })
     if (!ds) {
       return {
         name: 'gvisor-installer', status: 'warn',
@@ -638,10 +644,10 @@ async function runInstallerReadinessCheck(): Promise<CheckResult> {
         detail: `Ready on all ${desired} node(s): runsc installed and node tuning written`,
       }
     }
-    const pods = await kubectlGetJson<{
-      items?: Array<{ spec?: { nodeName?: string }; status?: { containerStatuses?: Array<{ ready?: boolean }> } }>
-    }>(['get', 'pods', '-n', ns, '-l', `app=${GVISOR_INSTALLER_APP_NAME}`])
-    const notReady = (pods?.items ?? [])
+    const pods = await listObjects<
+      { spec?: { nodeName?: string }; status?: { containerStatuses?: Array<{ ready?: boolean }> } }
+    >('v1', 'Pod', { namespace: ns, labelSelector: `app=${GVISOR_INSTALLER_APP_NAME}` })
+    const notReady = pods
       .filter((p) => !p.status?.containerStatuses?.[0]?.ready)
       .map((p) => p.spec?.nodeName ?? '<unscheduled>')
     return {
@@ -653,7 +659,7 @@ async function runInstallerReadinessCheck(): Promise<CheckResult> {
   } catch (err) {
     return {
       name: 'gvisor-installer', status: 'warn',
-      detail: `could not read the installer DaemonSet (${truncate(err)})`, fix: installerFix(),
+      detail: `could not read the installer DaemonSet (${k8sErrorSummary(err)})`, fix: installerFix(),
     }
   }
 }
@@ -723,11 +729,7 @@ function runProbePod(name: string, opts: {
       ...opts.spec,
       containers: [{ name: 'probe', ...opts.container }],
     },
-  }, {
-    timeoutMs: opts.timeoutMs,
-    kubectl: (args) => execFileAsync('kubectl', args),
-    apply: kubectlApply,
-  })
+  }, { timeoutMs: opts.timeoutMs })
 }
 
 /** A workspace pod's pod-level securityContext, at the install identity. */
@@ -768,10 +770,9 @@ async function runPriorityClassCheck(): Promise<CheckResult> {
     preemptionPolicy?: string
   }>
   try {
-    const { stdout } = await execFileAsync('kubectl', ['get', 'priorityclass', '-o', 'json'])
-    const live = new Map((JSON.parse(stdout) as {
-      items: Array<{ metadata?: { name?: string }; value?: number; preemptionPolicy?: string }>
-    }).items.map((c) => [c.metadata?.name ?? '', c]))
+    const live = new Map((await listObjects<
+      { metadata?: { name?: string }; value?: number; preemptionPolicy?: string }
+    >('scheduling.k8s.io/v1', 'PriorityClass')).map((c) => [c.metadata?.name ?? '', c]))
 
     const missing = expected.filter((e) => !live.has(e.metadata.name))
     if (missing.length > 0) {
@@ -801,7 +802,7 @@ async function runPriorityClassCheck(): Promise<CheckResult> {
   } catch (err) {
     return {
       name: 'priority-classes', status: 'fail',
-      detail: `could not read PriorityClasses (${truncate(err)})`,
+      detail: `could not read PriorityClasses (${k8sErrorSummary(err)})`,
       fix: PRIORITY_CLASS_FIX,
     }
   }
@@ -820,10 +821,8 @@ async function runPriorityClassCheck(): Promise<CheckResult> {
  */
 async function runGvisorRuntimeCheck(nodes: RawNodeItem[] | null): Promise<CheckResult> {
   try {
-    const { stdout } = await execFileAsync('kubectl', [
-      'get', 'runtimeclass', '-o', 'jsonpath={.items[*].metadata.name}',
-    ])
-    const present = new Set(stdout.trim().split(/\s+/).filter(Boolean))
+    const present = new Set((await listObjects('node.k8s.io/v1', 'RuntimeClass'))
+      .map((rc) => rc.metadata?.name))
     const missing = [RUNTIME_CLASS_GVISOR, RUNTIME_CLASS_GVISOR_NESTED]
       .filter((n) => !present.has(n))
     if (missing.length > 0) {
@@ -877,7 +876,7 @@ async function runGvisorRuntimeCheck(nodes: RawNodeItem[] | null): Promise<Check
   } catch (err) {
     return {
       name: 'gvisor', status: 'fail',
-      detail: `gvisor probe errored (${truncate(err)})`,
+      detail: `gvisor probe errored (${k8sErrorSummary(err)})`,
       fix: gvisorFix(),
     }
   }
@@ -955,9 +954,8 @@ function reported(logs: string, key: string): string | undefined {
 
 /** Best-effort delete of a probe's peer pod. */
 async function releasePeer(name: string): Promise<void> {
-  await execFileAsync('kubectl', [
-    'delete', 'pod', name, '-n', k8sNamespace(), '--ignore-not-found', '--wait=false',
-  ]).catch(() => { /* its own run deletes it anyway */ })
+  await deleteObject({ apiVersion: 'v1', kind: 'Pod', name, namespace: k8sNamespace() })
+    .catch(() => { /* its own run deletes it anyway */ })
 }
 
 const PEER_POD_NAME = 'yaac-cluster-check-peer'
@@ -1101,7 +1099,7 @@ async function runEndToEndProbe(identity: InstallIdentity): Promise<CheckResult>
   } catch (err) {
     return {
       name: 'probe', status: 'fail',
-      detail: `probe errored (${truncate(err)})`,
+      detail: `probe errored (${k8sErrorSummary(err)})`,
       fix: KIND_SETUP_FIX,
     }
   }
@@ -1138,7 +1136,7 @@ async function runStorageSemanticsProbe(identity: InstallIdentity): Promise<Chec
   const ns = k8sNamespace()
   try {
     const script = await fs.readFile(path.join(PACKAGE_ROOT, 'k8s', 'probes', 'fsprobe.py'), 'utf8')
-    await kubectlApply({
+    await applyObject({
       apiVersion: 'v1',
       kind: 'ConfigMap',
       metadata: { name: FSPROBE_CONFIGMAP_NAME, namespace: ns },
@@ -1200,13 +1198,12 @@ async function runStorageSemanticsProbe(identity: InstallIdentity): Promise<Chec
   } catch (err) {
     return {
       name: 'storage-semantics', status: 'fail',
-      detail: `fsprobe errored (${truncate(err)})`,
+      detail: `fsprobe errored (${k8sErrorSummary(err)})`,
       fix: STORAGE_SEMANTICS_FIX,
     }
   } finally {
-    await kubectlWithRetry([
-      'delete', 'configmap', FSPROBE_CONFIGMAP_NAME, '-n', ns, '--ignore-not-found',
-    ], { maxAttempts: 1 }).catch(() => { /* best-effort */ })
+    await deleteObject({ apiVersion: 'v1', kind: 'ConfigMap', name: FSPROBE_CONFIGMAP_NAME, namespace: ns })
+      .catch(() => { /* best-effort */ })
   }
 }
 
@@ -1226,15 +1223,12 @@ interface GvisorScheduling {
 
 async function gvisorRuntimeClass(): Promise<GvisorScheduling> {
   try {
-    const { stdout } = await execFileAsync('kubectl', [
-      'get', 'runtimeclass', RUNTIME_CLASS_GVISOR, '-o', 'json',
-    ])
-    const rc = JSON.parse(stdout) as {
+    const rc = await readObject<{
       scheduling?: { nodeSelector?: Record<string, string>; tolerations?: PodToleration[] }
-    }
+    }>({ apiVersion: 'node.k8s.io/v1', kind: 'RuntimeClass', name: RUNTIME_CLASS_GVISOR })
     return {
-      nodeSelector: rc.scheduling?.nodeSelector ?? {},
-      tolerations: rc.scheduling?.tolerations ?? [],
+      nodeSelector: rc?.scheduling?.nodeSelector ?? {},
+      tolerations: rc?.scheduling?.tolerations ?? [],
     }
   } catch {
     return { nodeSelector: {}, tolerations: [] }
@@ -1250,13 +1244,9 @@ async function gvisorRuntimeClass(): Promise<GvisorScheduling> {
 async function podFailureEvent(uid: string | undefined): Promise<string> {
   if (!uid) return ''
   try {
-    const { stdout } = await execFileAsync('kubectl', [
-      'get', 'events', '-n', k8sNamespace(),
-      '--field-selector', `involvedObject.uid=${uid}`, '-o', 'json',
-    ])
-    const items = (JSON.parse(stdout) as {
-      items?: Array<{ type?: string; reason?: string; message?: string }>
-    }).items ?? []
+    const items = await listObjects<{ type?: string; reason?: string; message?: string }>('v1', 'Event', {
+      namespace: k8sNamespace(), fieldSelector: `involvedObject.uid=${uid}`,
+    })
     const warning = items.filter((e) => e.type === 'Warning').pop()
     if (!warning) return ''
     return `${warning.reason ?? 'Warning'}: ${(warning.message ?? '').trim()}`
@@ -1351,7 +1341,7 @@ async function runPerNodeProbe(
     return result('pass', `a session pod pulled, ran sandboxed and wrote the ${GLOBAL_CLAIM_NAME} `
       + `claim at uid ${identity.uid} on all ${eligible.length} session-capable nodes${skippedTail}`)
   } catch (err) {
-    return result('warn', `per-node readiness sweep errored (${truncate(err)})`)
+    return result('warn', `per-node readiness sweep errored (${k8sErrorSummary(err)})`)
   }
 }
 
@@ -1375,10 +1365,10 @@ interface EgressTarget {
 
 /** A Service's ClusterIP, or null when it does not exist. */
 async function serviceIp(name: string, namespace: string): Promise<string | null> {
-  const { stdout } = await execFileAsync('kubectl', [
-    'get', 'svc', name, '-n', namespace, '-o', 'jsonpath={.spec.clusterIP}',
-  ]).catch(() => ({ stdout: '' }))
-  return stdout.trim() || null
+  const svc = await readObject<{ spec?: { clusterIP?: string } }>({
+    apiVersion: 'v1', kind: 'Service', name, namespace,
+  }).catch(() => null)
+  return svc?.spec?.clusterIP || null
 }
 
 /**
@@ -1388,18 +1378,17 @@ async function serviceIp(name: string, namespace: string): Promise<string | null
  * cannot be resolved.
  */
 async function sharedVolumeNfsServer(): Promise<{ server: string; ip?: string } | null> {
-  const pvc = await kubectlGetJson<RawPvcRead>(['get', 'pvc', GLOBAL_CLAIM_NAME, '-n', k8sNamespace()])
+  const pvc = await readObject<RawPvcRead>({
+    apiVersion: 'v1', kind: 'PersistentVolumeClaim', name: GLOBAL_CLAIM_NAME, namespace: k8sNamespace(),
+  })
   const volume = pvc?.spec?.volumeName
-  const pv = volume ? await kubectlGetJson<RawPvRead>(['get', 'pv', volume]) : null
+  const pv = volume ? await readPv(volume) : null
   const server = pv?.spec?.csi?.volumeAttributes?.server
   if (!server) return null
   if (isIP(server)) return { server, ip: server }
   const svc = /^([a-z0-9-]+)\.([a-z0-9-]+)\.svc(\.|$)/.exec(server)
   if (svc) {
-    const ip = (await execFileAsync('kubectl', [
-      'get', 'svc', svc[1], '-n', svc[2], '-o', 'jsonpath={.spec.clusterIP}',
-    ]).then((r) => r.stdout.trim(), () => '')) || undefined
-    return { server, ip }
+    return { server, ip: await serviceIp(svc[1], svc[2]) ?? undefined }
   }
   const ip = await dns.lookup(server).then((r) => r.address, () => undefined)
   return { server, ip }
@@ -1419,8 +1408,8 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
     // Workspace egress is allowed only to netd's listener range, and the
     // proxy's transparent ports admit only node addresses (netd's Envoy).
     const nodeCidrs = await nodeIpBlocks()
-    await kubectlApply(buildWorkspaceEgressNpManifest(nodeCidrs))
-    await kubectlApply(buildProxyIngressNpManifest(nodeCidrs))
+    await applyObject(buildWorkspaceEgressNpManifest(nodeCidrs))
+    await applyObject(buildProxyIngressNpManifest(nodeCidrs))
     const apiserverIp = await serviceIp('kubernetes', 'default')
     if (!apiserverIp) {
       return {
@@ -1551,7 +1540,9 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
     // allowlist reach the server's node port as its owner. No pod probe can
     // test that path, so check the policy exists.
     const proxyDeployed = targets.some((t) => t.key === 'PROXY' && t.ip)
-    if (proxyDeployed && !await kubectlGetJson(['get', 'networkpolicy', PROXY_EGRESS_NP_NAME, '-n', ns])) {
+    if (proxyDeployed && !await readObject({
+      apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', name: PROXY_EGRESS_NP_NAME, namespace: ns,
+    })) {
       return {
         name: 'egress', status: 'fail',
         detail: `the egress proxy has no ${PROXY_EGRESS_NP_NAME} NetworkPolicy — a session whose `
@@ -1577,7 +1568,7 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
   } catch (err) {
     return {
       name: 'egress', status: 'fail',
-      detail: `egress probe errored (${truncate(err)})`,
+      detail: `egress probe errored (${k8sErrorSummary(err)})`,
       fix: KIND_SETUP_FIX,
     }
   }
@@ -1609,10 +1600,7 @@ function npmCacheFix(): string {
 async function runNpmCacheProbe(): Promise<CheckResult> {
   const ns = k8sNamespace()
   try {
-    const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
-      'get', 'service', NPM_CACHE_APP_NAME, '-n', ns,
-    ])
-    const ip = svc?.spec?.clusterIP
+    const ip = await serviceIp(NPM_CACHE_APP_NAME, ns)
     if (!ip || await servingNpmCacheUrl() === null) {
       return {
         name: 'npm-cache', status: 'warn',
@@ -1649,36 +1637,29 @@ async function runNpmCacheProbe(): Promise<CheckResult> {
   } catch (err) {
     return {
       name: 'npm-cache', status: 'fail',
-      detail: `npm cache probe errored (${truncate(err)})`,
+      detail: `npm cache probe errored (${k8sErrorSummary(err)})`,
       fix: npmCacheFix(),
     }
   }
 }
 
-/**
- * `container: reason` for every not-ready netd container, from
- * `kubectl get pods -o json`. Returns nothing on unparseable input; it only
- * adds detail to a failure already reported.
- */
-function netdNotReadyContainers(podsJson: string): string[] {
-  let parsed: {
-    items?: Array<{
-      status?: {
-        containerStatuses?: Array<{
-          name?: string
-          ready?: boolean
-          state?: Record<string, { reason?: string } | undefined>
-        }>
-      }
+interface RawContainerPod {
+  status?: {
+    containerStatuses?: Array<{
+      name?: string
+      ready?: boolean
+      state?: Record<string, { reason?: string } | undefined>
     }>
   }
-  try {
-    parsed = JSON.parse(podsJson || '{}') as typeof parsed
-  } catch {
-    return []
-  }
+}
+
+/**
+ * `container: reason` for every not-ready netd container. It only adds
+ * detail to a failure already reported.
+ */
+function netdNotReadyContainers(pods: RawContainerPod[]): string[] {
   const out: string[] = []
-  for (const pod of parsed.items ?? []) {
+  for (const pod of pods) {
     for (const c of pod.status?.containerStatuses ?? []) {
       if (c.ready !== false || !c.name) continue
       const reason = Object.values(c.state ?? {})[0]?.reason ?? 'not ready'
@@ -1689,43 +1670,49 @@ function netdNotReadyContainers(podsJson: string): string[] {
 }
 
 /**
+ * A DaemonSet's `ready/desired` count, `ok` when every scheduled pod is
+ * Ready and there is at least one; null when the DaemonSet is absent.
+ */
+async function daemonSetReadiness(name: string, namespace: string): Promise<{ ok: boolean; ratio: string } | null> {
+  const ds = await readObject<{ status?: { numberReady?: number; desiredNumberScheduled?: number } }>({
+    apiVersion: 'apps/v1', kind: 'DaemonSet', name, namespace,
+  })
+  if (!ds) return null
+  const ready = ds.status?.numberReady ?? 0
+  const wanted = ds.status?.desiredNumberScheduled ?? 0
+  return { ok: ready > 0 && ready === wanted, ratio: `${String(ready)}/${String(wanted)}` }
+}
+
+/**
  * The datapath gate: calico-node and netd must both be Ready. Without
  * Calico, egress policy is not enforced (fails open); without netd,
  * workspaces have no redirect and lose egress (fails closed).
  */
 async function runDatapathCheck(): Promise<CheckResult> {
   try {
-    const { stdout: calico } = await execFileAsync('kubectl', [
-      'get', 'daemonset', 'calico-node', '-n', 'kube-system',
-      '-o', 'jsonpath={.status.numberReady}/{.status.desiredNumberScheduled}',
-    ])
-    const [calicoReady, calicoWanted] = calico.trim().split('/').map(Number)
-    if (!(calicoReady > 0) || calicoReady !== calicoWanted) {
+    const calico = await daemonSetReadiness('calico-node', 'kube-system')
+    if (!calico?.ok) {
       return {
         name: 'datapath', status: 'fail',
-        detail: `calico-node is ${calico.trim()} ready — NetworkPolicy is not being enforced`,
+        detail: `calico-node is ${calico?.ratio ?? 'not'} ready — NetworkPolicy is not being enforced`,
         fix: 'Calico is the CNI and policy engine. Re-run `yaac cluster install` '
           + '(on a byo cluster, whose Calico yaac did not install, `--byo`), '
           + 'or inspect with `kubectl -n kube-system get pods -l k8s-app=calico-node`.',
       }
     }
 
-    const { stdout: netd } = await execFileAsync('kubectl', [
-      'get', 'daemonset', NETD_APP_NAME, '-n', k8sNamespace(),
-      '-o', 'jsonpath={.status.numberReady}/{.status.desiredNumberScheduled}',
-    ]).catch(() => ({ stdout: '' }))
-    const [netdReady, netdWanted] = netd.trim().split('/').map(Number)
-    if (!netd.trim() || !(netdReady > 0) || netdReady !== netdWanted) {
-      const { stdout: pods } = await execFileAsync('kubectl', [
-        'get', 'pods', '-n', k8sNamespace(), '-l', `app=${NETD_APP_NAME}`, '-o', 'json',
-      ]).catch(() => ({ stdout: '' }))
+    const netd = await daemonSetReadiness(NETD_APP_NAME, k8sNamespace()).catch(() => null)
+    if (!netd?.ok) {
+      const pods = await listObjects<RawContainerPod>('v1', 'Pod', {
+        namespace: k8sNamespace(), labelSelector: `app=${NETD_APP_NAME}`,
+      }).catch(() => [])
       // Name the unhealthy container: netd's readiness is Envoy's config
       // ack, so the DaemonSet counts cannot tell netd and Envoy apart.
       const blocked = netdNotReadyContainers(pods)
       return {
         name: 'datapath', status: 'fail',
-        detail: netd.trim()
-          ? `${NETD_APP_NAME} is ${netd.trim()} ready — session egress has no redirect`
+        detail: netd
+          ? `${NETD_APP_NAME} is ${netd.ratio} ready — session egress has no redirect`
             + (blocked.length ? ` (${blocked.join(', ')})` : '')
           : `${NETD_APP_NAME} is not deployed — session egress has no redirect`,
         fix: 'netd steers session egress into the proxy. `yaac cluster install` '
@@ -1742,7 +1729,7 @@ async function runDatapathCheck(): Promise<CheckResult> {
   } catch (err) {
     return {
       name: 'datapath', status: 'fail',
-      detail: `could not query the datapath components (${truncate(err)})`,
+      detail: `could not query the datapath components (${k8sErrorSummary(err)})`,
       fix: KIND_SETUP_FIX,
     }
   }
@@ -1761,7 +1748,7 @@ async function runVethSourceCheck(): Promise<CheckResult> {
   } catch (err) {
     return {
       name: 'veth-source', status: 'warn',
-      detail: `could not read the node routing tables (${truncate(err)}) — the pod → veth `
+      detail: `could not read the node routing tables (${k8sErrorSummary(err)}) — the pod → veth `
         + `source for ${prefix}* is unverified`,
     }
   }
@@ -1815,7 +1802,7 @@ async function runNestedMountProbe(): Promise<CheckResult> {
   } catch (err) {
     return {
       name: 'nested-mount', status: 'warn',
-      detail: `nested sentry-mount probe errored (${truncate(err)})`,
+      detail: `nested sentry-mount probe errored (${k8sErrorSummary(err)})`,
       fix: NESTED_MOUNT_FIX,
     }
   }
@@ -1834,7 +1821,16 @@ const NESTED_MOUNT_FIX =
  * can be built. Uses the same `vapAvailable` test as the guard.
  */
 async function runVapAvailabilityCheck(): Promise<CheckResult> {
-  if (await vapAvailable()) {
+  let available: boolean
+  try {
+    available = await vapAvailable()
+  } catch (err) {
+    return {
+      name: 'vap', status: 'fail',
+      detail: `could not query the ValidatingAdmissionPolicy API (${k8sErrorSummary(err)})`,
+    }
+  }
+  if (available) {
     return {
       name: 'vap', status: 'pass',
       detail: 'ValidatingAdmissionPolicy API available (builder-pod guard)',
@@ -1849,9 +1845,4 @@ async function runVapAvailabilityCheck(): Promise<CheckResult> {
       + 'be built. This needs a newer cluster: `yaac cluster delete`, '
       + 'then `yaac cluster install`.',
   }
-}
-
-function truncate(err: unknown): string {
-  const msg = err instanceof Error ? err.message : String(err)
-  return msg.length > 120 ? `${msg.slice(0, 120)}…` : msg.split('\n')[0]
 }

@@ -4,23 +4,9 @@
  * build-coordinator.test.ts.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
 import type * as registryModule from '#drivers/k8s/container/registry'
 import type * as runtimeModule from '#drivers/k8s/container/runtime'
 
-
-const mockKubectlApply = vi.hoisted(() => vi.fn())
-const mockKubectlWithRetry = vi.hoisted(() => vi.fn())
-const mockKubectlGetJson = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
-  ...(await importOriginal<typeof kubectlModule>()),
-  k8sNamespace: () => 'test-ns',
-  dataDirHash: () => 'ddh0000000000000',
-  kubectlApply: mockKubectlApply,
-  kubectlWithRetry: mockKubectlWithRetry,
-  kubectlGetJson: mockKubectlGetJson,
-  ensureKubernetes: vi.fn(),
-}))
 
 vi.mock('#drivers/k8s/cluster/cluster-cidrs', () => ({
   nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
@@ -50,24 +36,26 @@ vi.mock('#drivers/k8s/container/registry', async (importOriginal) => ({
 }))
 
 import { deleteLeakedBuilderPods } from '#drivers/k8s/images'
+import { dataDirHash, k8sNamespace } from '#drivers/k8s/substrate'
+import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 beforeEach(() => {
   vi.clearAllMocks()
   mockVapAvailable.mockResolvedValue(true)
-  mockKubectlApply.mockResolvedValue(undefined)
-  mockKubectlWithRetry.mockResolvedValue({ stdout: '', stderr: '' })
-  mockKubectlGetJson.mockResolvedValue(null)
   mockRegistryHasTag.mockResolvedValue(true)
   mockImageExists.mockResolvedValue(false)
 })
 
 describe('deleteLeakedBuilderPods', () => {
-  it('deletes every builder pod of this install, without waiting', async () => {
+  it('deletes every builder pod of this install and nothing else', async () => {
+    const pod = (name: string, labels: Record<string, string>) =>
+      ({ apiVersion: 'v1', kind: 'Pod', metadata: { name, namespace: k8sNamespace(), labels } })
+    fakeCluster.seed(
+      pod('leaked', { 'yaac.role': 'builder', 'yaac.data-dir-hash': dataDirHash() }),
+      pod('other-install', { 'yaac.role': 'builder', 'yaac.data-dir-hash': 'x' }),
+      pod('workspace', { 'yaac.data-dir-hash': dataDirHash() }),
+    )
     await deleteLeakedBuilderPods()
-    expect(mockKubectlWithRetry).toHaveBeenCalledWith([
-      'delete', 'pods', '-n', 'test-ns',
-      '-l', 'yaac.role=builder,yaac.data-dir-hash=ddh0000000000000',
-      '--ignore-not-found', '--wait=false',
-    ])
+    expect(fakeCluster.objects('Pod').map((p) => p.metadata.name).sort()).toEqual(['other-install', 'workspace'])
   })
 })

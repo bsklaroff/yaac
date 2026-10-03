@@ -2,16 +2,18 @@
  * The server as a workload in its own cluster: what `yaac cluster install`
  * applies, and what `yaac server start|stop|restart` do afterwards.
  *
- * Only kubectl, the registry client and the host `fetch` (which probes the
- * published origin) are faked, so the real manifests are built.
+ * Only the cluster (the shared fake, plus the kubectl processes for rollout
+ * waits and log tails), the registry client and the host `fetch` (which
+ * probes the published origin) are faked, so the real manifests are built.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import os from 'node:os'
 import { PassThrough } from 'node:stream'
 import path from 'node:path'
+import { fakeCluster, type FakeCall } from '@yaac/test-utils/k8s-stub'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
+import type * as apiModule from '#drivers/k8s/substrate/api'
 import type * as registryModule from '#drivers/k8s/container/registry'
 import type * as runtimeModule from '#drivers/k8s/container/runtime'
 import type * as imageEngineModule from '#drivers/k8s/image-engine'
@@ -25,16 +27,13 @@ vi.mock('node:child_process', async (importOriginal) => ({
   spawn: mockSpawn,
 }))
 
-const mockApply = vi.hoisted(() => vi.fn())
-const mockGetJson = vi.hoisted(() => vi.fn())
-const mockWithRetry = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
-  ...(await importOriginal<typeof kubectlModule>()),
+// The rollout waits are the kubectl processes this path runs.
+const mockKubectl = vi.hoisted(() => vi.fn())
+vi.mock('#drivers/k8s/substrate/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof apiModule>()),
   k8sNamespace: () => 'test-ns',
   dataDirHash: () => 'ddh16',
-  kubectlApply: mockApply,
-  kubectlGetJson: mockGetJson,
-  kubectlWithRetry: mockWithRetry,
+  execFileAsync: mockKubectl,
 }))
 
 // The bundle is a build artifact, so hashing it for real would require
@@ -136,32 +135,52 @@ interface PodSpec {
 }
 
 /**
- * The tailnet Ingress as the apiserver reports it; the hostname appears
- * after `publishedAfter` reads.
+ * Every API call and kubectl process, in order, as one line each: the
+ * verb, kind and name (a patch adds its body), or `kubectl <argv>`.
  */
-function tailnetIngress(hostname: string, publishedAfter = 0): (args: string[]) => unknown {
-  let reads = 0
-  return (args: string[]) => {
-    if (!args.includes('ingress')) return null
-    reads += 1
-    return {
-      spec: { ingressClassName: 'tailscale', tls: [{ hosts: ['yaac'] }] },
-      status: reads > publishedAfter ? { loadBalancer: { ingress: [{ hostname, ports: [{ port: 443 }] }] } } : {},
-    }
-  }
+let actions: string[]
+
+function describeCall(c: FakeCall): string {
+  return [c.verb, c.kind, c.name ?? '', ...(c.verb === 'patch' ? [JSON.stringify(c.body)] : [])].join(' ')
 }
 
 /**
- * Storage claim reads: absent on the first read (so the pair is applied),
- * then Bound to its volume.
+ * The tailnet Ingress, published by the operator: its hostname appears in
+ * the status after `publishedAfter` reads.
  */
-const claimReads = new Map<string, number>()
-function claimRead(args: string[]): unknown {
-  if (args[1] !== 'pvc') return null
-  const n = (claimReads.get(args[2]) ?? 0) + 1
-  claimReads.set(args[2], n)
-  if (n === 1) return null
-  return { spec: { volumeName: `${args[2]}-ddh16` }, status: { phase: 'Bound' } }
+function publishIngress(hostname: string, publishedAfter = 0): void {
+  let reads = 0
+  fakeCluster.intercept((c) => {
+    if (c.verb !== 'read' || c.kind !== 'Ingress') return
+    const ing = fakeCluster.get('Ingress', SERVER_APP_NAME, 'test-ns')
+    if (!ing || (reads += 1) <= publishedAfter) return
+    fakeCluster.seed({
+      ...ing,
+      status: { loadBalancer: { ingress: [{ hostname, ports: [{ port: 443 }] }] } },
+    })
+  })
+}
+
+/** A live tailnet Ingress, as a previous install left it. */
+function liveTailnetIngress(hostname: string): void {
+  fakeCluster.seed({
+    apiVersion: 'networking.k8s.io/v1', kind: 'Ingress',
+    metadata: { name: SERVER_APP_NAME, namespace: 'test-ns' },
+    spec: { ingressClassName: 'tailscale', tls: [{ hosts: ['yaac'] }] },
+    status: { loadBalancer: { ingress: [{ hostname }] } },
+  })
+}
+
+/** The live server Deployment, with the identity and image it runs. */
+function liveDeployment(uid = 1000): void {
+  fakeCluster.seed({
+    apiVersion: 'apps/v1', kind: 'Deployment',
+    metadata: { name: SERVER_APP_NAME, namespace: 'test-ns' },
+    spec: { template: { spec: {
+      securityContext: { runAsUser: uid, runAsGroup: uid, supplementalGroups: [0] },
+      containers: [{ name: 'server', image: 'reg.local:5000/yaac-server:abc' }],
+    } } },
+  })
 }
 
 /** Deploy with the kind fronting unless another is given. */
@@ -178,9 +197,7 @@ function deploy(
 }
 
 function applied(kind: string): Manifest[] {
-  return (mockApply.mock.calls as Array<[Manifest]>)
-    .map(([m]) => m)
-    .filter((m) => m.kind === kind)
+  return fakeCluster.callsOf('apply', kind).map((c) => c.body as unknown as Manifest)
 }
 
 /** The pod spec of an applied Deployment (the server's by default). */
@@ -191,33 +208,36 @@ function deployedPodSpec(name = SERVER_APP_NAME): PodSpec {
   return template.spec
 }
 
-/** The kubectl argv of every retrying call, joined for substring matching. */
-function retried(): string[] {
-  return (mockWithRetry.mock.calls as Array<[string[]]>).map(([args]) => args.join(' '))
-}
-
 let tmpDir: string
 
 beforeEach(async () => {
   vi.clearAllMocks()
-  claimReads.clear()
   resetClusterCidrCache()
   tmpDir = await createTempDataDir()
-  mockApply.mockResolvedValue(undefined)
-  mockWithRetry.mockResolvedValue({ stdout: '', stderr: '' })
+  actions = []
+  fakeCluster.intercept((c) => { actions.push(describeCall(c)) })
+  mockKubectl.mockImplementation((_file: string, args: string[]) => {
+    actions.push(`kubectl ${args.join(' ')}`)
+    return Promise.resolve({ stdout: '', stderr: '' })
+  })
+  // A claim binds to its static volume, and a pod goes Ready, once read.
+  fakeCluster.intercept((c) => {
+    if (c.verb !== 'read' || !c.name) return
+    const obj = fakeCluster.get(c.kind, c.name, c.namespace)
+    if (!obj || obj.status) return
+    if (c.kind === 'PersistentVolumeClaim') {
+      fakeCluster.seed({ ...obj, status: { phase: 'Bound' } })
+    } else if (c.kind === 'Pod') {
+      fakeCluster.seed({ ...obj, status: { conditions: [{ type: 'Ready', status: 'True' }] } })
+    }
+  })
   // The kind node publishes the default server port.
   mockPodmanPort.mockResolvedValue({ stdout: '127.0.0.1:8787\n', stderr: '' })
   // One node with an InternalIP for the ingress policy to admit.
-  mockGetJson.mockImplementation((args: string[]) => {
-    if (args.includes('nodes')) {
-      return Promise.resolve({
-        items: [{
-          spec: { podCIDR: '10.244.0.0/24' },
-          status: { addresses: [{ type: 'InternalIP', address: '10.89.0.2' }] },
-        }],
-      })
-    }
-    return Promise.resolve(claimRead(args))
+  fakeCluster.seed({
+    apiVersion: 'v1', kind: 'Node', metadata: { name: 'node-1' },
+    spec: { podCIDR: '10.244.0.0/24' },
+    status: { addresses: [{ type: 'InternalIP', address: '10.89.0.2' }] },
   })
   // The image is already in the registry, so nothing is built.
   mockContextHash.mockResolvedValue('bundlehash')
@@ -239,8 +259,8 @@ describe('deployServerWorkload', () => {
 
     // RBAC before the pod that mounts the token, and the ingress policy
     // before the Service, so the API is never briefly reachable from pods.
-    const order = (kind: string): number =>
-      (mockApply.mock.calls as Array<[Manifest]>).findIndex(([m]) => m.kind === kind)
+    const applies = fakeCluster.callsOf('apply')
+    const order = (kind: string): number => applies.findIndex((c) => c.kind === kind)
     expect(order('ServiceAccount')).toBeLessThan(order('Deployment'))
     expect(order('ClusterRole')).toBeLessThan(order('Deployment'))
     expect(order('ClusterRoleBinding')).toBeLessThan(order('Deployment'))
@@ -248,8 +268,7 @@ describe('deployServerWorkload', () => {
     // The Service before the Deployment, whose env uses its origin. The
     // forwarder after the Service, which frees an old NodePort first.
     expect(order('Service')).toBeLessThan(order('Deployment'))
-    const frontOrder = (mockApply.mock.calls as Array<[Manifest]>)
-      .findIndex(([m]) => m.kind === 'Deployment' && (m.metadata as { name: string }).name === SERVER_FRONT_APP_NAME)
+    const frontOrder = applies.findIndex((c) => c.kind === 'Deployment' && c.name === SERVER_FRONT_APP_NAME)
     expect(frontOrder).toBeGreaterThan(order('Service'))
 
     // Cluster-scoped names include the namespace, since several installs
@@ -422,7 +441,7 @@ describe('deployServerWorkload', () => {
     expect(svc.spec?.ports?.[0]?.nodePort).toBeUndefined()
     // A previous tailnet Ingress is deleted, or `server start` would wait
     // on it.
-    expect(retried()).toContain(`delete ingress ${SERVER_APP_NAME} -n test-ns --ignore-not-found`)
+    expect(actions).toContain(`delete Ingress ${SERVER_APP_NAME}`)
 
     // The forwarder: a host-network Envoy on the control-plane node (where
     // kind's port mapping lands) that dials the Service, so traffic reaches
@@ -441,16 +460,11 @@ describe('deployServerWorkload', () => {
     expect(config.data?.['bootstrap.yaml']).toContain(`port_value: ${String(SERVER_FRONT_PORT)}`)
     // A trailing dot, so the node's search domains are never tried.
     expect(config.data?.['bootstrap.yaml']).toContain(`address: ${SERVER_APP_NAME}.test-ns.svc.cluster.local.,`)
-    expect(retried().some((c) => c.includes(`rollout status deployment/${SERVER_FRONT_APP_NAME}`))).toBe(true)
+    expect(actions.some((c) => c.includes(`rollout status deployment/${SERVER_FRONT_APP_NAME}`))).toBe(true)
   })
 
   it('publishes through the tailnet when told to', async () => {
-    const ingress = tailnetIngress('yaac.tail1234.ts.net', 1)
-    mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
-      args.includes('nodes')
-        ? { items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.2' }] } }] }
-        : claimRead(args) ?? ingress(args),
-    ))
+    publishIngress('yaac.tail1234.ts.net', 1)
     const log = vi.fn()
 
     const origin = await deploy({ fronting: tailnetFronting({ hostname: 'yaac' }), log })
@@ -467,7 +481,7 @@ describe('deployServerWorkload', () => {
       tls: [{ hosts: ['yaac'] }],
     })
     expect(applied('ConfigMap')).toHaveLength(0)
-    expect(retried()).toContain(`delete deployment ${SERVER_FRONT_APP_NAME} -n test-ns --ignore-not-found`)
+    expect(actions).toContain(`delete Deployment ${SERVER_FRONT_APP_NAME}`)
 
     // The fronting policy admits the operator's proxy pod for this Service.
     const [nodeHalf, frontHalf] = applied('NetworkPolicy')
@@ -499,11 +513,7 @@ describe('deployServerWorkload', () => {
     // A host-side `tailscale serve` still works (docs/remote-hosting.md),
     // so shell-set hosts are added to the fronting's.
     vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
-    mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
-      args.includes('nodes')
-        ? { items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.2' }] } }] }
-        : claimRead(args) ?? tailnetIngress('yaac.tail1234.ts.net')(args),
-    ))
+    publishIngress('yaac.tail1234.ts.net')
 
     await deploy({ fronting: tailnetFronting({ hostname: 'yaac' }), log: vi.fn() })
 
@@ -515,11 +525,7 @@ describe('deployServerWorkload', () => {
     // Only the clock is faked; the deploy's lock read is real disk I/O.
     vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] })
     try {
-      mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
-        args.includes('nodes')
-          ? { items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.2' }] } }] }
-          : claimRead(args) ?? tailnetIngress('never', Number.MAX_SAFE_INTEGER)(args),
-      ))
+      publishIngress('never', Number.MAX_SAFE_INTEGER)
       let settled = false
       const pending = deploy({ fronting: tailnetFronting({ hostname: 'yaac' }), log: vi.fn() })
         .finally(() => { settled = true })
@@ -571,31 +577,20 @@ describe('deployServerWorkload', () => {
   })
 
   it('stops the pod that is there before it deploys', async () => {
-    mockGetJson.mockImplementation((args: string[]) => {
-      if (args.includes('nodes')) {
-        return Promise.resolve({
-          items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.2' }] } }],
-        })
-      }
-      if (args[1] === 'deployment') return Promise.resolve({ metadata: { name: SERVER_APP_NAME } })
-      return Promise.resolve(claimRead(args))
-    })
+    liveDeployment()
 
     await deploy({ log: vi.fn() })
 
-    const calls = retried()
-    const stopAt = calls.findIndex((c) => c.includes('scale') && c.includes('--replicas=0'))
+    const stopAt = actions.indexOf(`patch Deployment ${SERVER_APP_NAME} {"spec":{"replicas":0}}`)
     expect(stopAt).toBeGreaterThanOrEqual(0)
     // Waits for the pod's deletion, not just the scale.
-    expect(calls[stopAt + 1]).toMatch(/wait pod .*--for=delete/)
-    const deployOrder = mockApply.mock.invocationCallOrder[
-      (mockApply.mock.calls as Array<[Manifest]>).findIndex(([m]) => m.kind === 'Deployment')]
-    expect(mockWithRetry.mock.invocationCallOrder[stopAt]).toBeLessThan(deployOrder)
+    expect(actions[stopAt + 1]).toBe('list Pod ')
+    expect(stopAt).toBeLessThan(actions.indexOf(`apply Deployment ${SERVER_APP_NAME}`))
   })
 
   it('skips the stop when there is no Deployment yet', async () => {
     await deploy({ log: vi.fn() })
-    expect(retried().some((c) => c.includes('--replicas=0'))).toBe(false)
+    expect(actions.some((c) => c.includes('"replicas":0'))).toBe(false)
   })
 
   it('refuses to deploy beside a host server that still holds the data dir', async () => {
@@ -613,7 +608,7 @@ describe('deployServerWorkload', () => {
     await expect(deploy({ log: vi.fn() }))
       .rejects.toThrow(/already running.*host process[\s\S]*yaac server stop/)
     // Refused before any manifest is applied.
-    expect(mockApply).not.toHaveBeenCalled()
+    expect(fakeCluster.callsOf('apply')).toEqual([])
   })
 
   it('rolls its own pod without complaint — an off-host lock is what a re-install replaces', async () => {
@@ -648,18 +643,15 @@ describe('deployServerWorkload', () => {
 })
 
 describe('serverDeploymentExists', () => {
-  it('is how the CLI tells a deployed server from a host process', async () => {
-    mockGetJson.mockResolvedValueOnce({ metadata: { name: SERVER_APP_NAME } })
-    expect(await serverDeploymentExists()).toBe(true)
-    mockGetJson.mockResolvedValueOnce(null)
+  it('is how the CLI tells a deployed server from a host process, and never guesses', async () => {
     expect(await serverDeploymentExists()).toBe(false)
-  })
+    liveDeployment()
+    expect(await serverDeploymentExists()).toBe(true)
 
-  it('raises a could-not-ask rather than answering "no Deployment"', async () => {
     // An unreachable cluster must throw, not answer false, or the CLI
     // would treat a k8s install as a host server and act on its data dir.
-    mockGetJson.mockRejectedValueOnce(new Error('The connection to the server was refused'))
-    await expect(serverDeploymentExists()).rejects.toThrow(/connection to the server/)
+    fakeCluster.intercept(() => { throw new Error('connect ECONNREFUSED 127.0.0.1:6443') })
+    await expect(serverDeploymentExists()).rejects.toThrow(/ECONNREFUSED/)
   })
 })
 
@@ -667,17 +659,17 @@ describe('startClusterServer', () => {
   it('scales the Deployment back up rather than spawning anything, and answers the origin', async () => {
     vi.stubEnv('YAAC_SERVER_PORT', '9123')
     // No Ingress means the kind fronting and a loopback origin.
-    mockGetJson.mockResolvedValue(null)
+    liveDeployment()
     await expect(startClusterServer()).resolves.toBe('http://127.0.0.1:9123')
     // An explicit port, so the node's mapping is not read.
     expect(mockPodmanPort).not.toHaveBeenCalled()
-    const calls = retried()
-    expect(calls.some((c) => c.includes('scale') && c.includes('--replicas=1'))).toBe(true)
-    expect(calls.some((c) => c.includes('rollout status'))).toBe(true)
+    const scaleAt = actions.indexOf(`patch Deployment ${SERVER_APP_NAME} {"spec":{"replicas":1}}`)
+    expect(scaleAt).toBeGreaterThanOrEqual(0)
+    expect(actions.some((c) => c.includes('rollout status'))).toBe(true)
     // A leftover log reader holding an RWO claim would pin the server to
     // its node, so it is deleted first.
-    expect(calls.findIndex((c) => c.includes('delete pod yaac-server-log-reader')))
-      .toBeLessThan(calls.findIndex((c) => c.includes('scale')))
+    expect(actions.indexOf('delete Pod yaac-server-log-reader')).toBeGreaterThanOrEqual(0)
+    expect(actions.indexOf('delete Pod yaac-server-log-reader')).toBeLessThan(scaleAt)
   })
 
   it('waits on the port the cluster was created with, not this shell\'s default', async () => {
@@ -685,7 +677,7 @@ describe('startClusterServer', () => {
     // YAAC_SERVER_PORT the port is read from the node's mapping, not
     // assumed to be 8787.
     vi.stubEnv('YAAC_SERVER_PORT', '')
-    mockGetJson.mockResolvedValue(null)
+    liveDeployment()
     mockPodmanPort.mockResolvedValue({ stdout: '127.0.0.1:8866\n', stderr: '' })
     await expect(startClusterServer()).resolves.toBe('http://127.0.0.1:8866')
     expect(mockPodmanPort).toHaveBeenCalledWith(['port', 'yaac-control-plane', `${String(SERVER_FRONT_PORT)}/tcp`])
@@ -697,7 +689,7 @@ describe('startClusterServer', () => {
     // A node with no mapping gets the recreate advice at once, rather than
     // a guessed port.
     vi.stubEnv('YAAC_SERVER_PORT', '')
-    mockGetJson.mockResolvedValue(null)
+    liveDeployment()
     mockPodmanPort.mockRejectedValueOnce(Object.assign(new Error('exit 125'), {
       stderr: 'Error: failed to find published port "30787/tcp"\n',
     }))
@@ -713,8 +705,8 @@ describe('startClusterServer', () => {
   })
 
   it('waits on the tailnet origin when that is what the live Ingress records', async () => {
-    mockGetJson.mockImplementation((args: string[]) =>
-      Promise.resolve(tailnetIngress('yaac.tail1234.ts.net')(args)))
+    liveDeployment()
+    liveTailnetIngress('yaac.tail1234.ts.net')
     await expect(startClusterServer()).resolves.toBe('https://yaac.tail1234.ts.net')
     expect(vi.mocked(globalThis.fetch).mock.calls.every(([u]) =>
       (u as string).startsWith('https://yaac.tail1234.ts.net'))).toBe(true)
@@ -724,6 +716,7 @@ describe('startClusterServer', () => {
     // Available but refused on 127.0.0.1 means the cluster lacks the port
     // mapping, which kind sets only at create. The fronting says to
     // recreate it.
+    liveDeployment()
     vi.useFakeTimers()
     try {
       vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('ECONNREFUSED'))))
@@ -739,6 +732,7 @@ describe('startClusterServer', () => {
   it('reports an origin that answers but never readies, without the unreachable diagnosis', async () => {
     // Recreating the cluster (which loses workspaces) is no fix for a
     // server that answers.
+    liveDeployment()
     vi.useFakeTimers()
     try {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('{}', { status: 404 }))))
@@ -753,6 +747,7 @@ describe('startClusterServer', () => {
 
   it('waits out an answering-but-still-initializing server', async () => {
     // /health answers before the DB is open, so wait for `ready`.
+    liveDeployment()
     let calls = 0
     vi.stubGlobal('fetch', vi.fn(() => {
       calls += 1
@@ -767,42 +762,45 @@ describe('startClusterServer', () => {
 })
 
 describe('stopClusterServer', () => {
-  it('scales to zero, keeping the RBAC and Service a later start needs', async () => {
+  it('scales to zero, keeping what a later start needs, and waits on the pod rather than a count', async () => {
+    liveDeployment()
     await stopClusterServer()
-    const calls = retried()
-    expect(calls.some((c) => c.includes('scale') && c.includes('--replicas=0'))).toBe(true)
     // Stop scales to zero rather than deleting, so start can undo it.
-    expect(calls.some((c) => c.startsWith('delete '))).toBe(false)
-  })
-
-  it('waits on the pod going away, not on a replica count that disappears', async () => {
-    await stopClusterServer()
-    const calls = retried()
-    // `status.replicas` is omitted at zero, so a jsonpath wait for `=0`
-    // would never match.
-    expect(calls.some((c) => c.includes('jsonpath'))).toBe(false)
-    expect(calls.some((c) => c.includes('wait pod') && c.includes('--for=delete'))).toBe(true)
+    expect(actions[0]).toBe(`patch Deployment ${SERVER_APP_NAME} {"spec":{"replicas":0}}`)
+    expect(actions.some((c) => c.startsWith('delete '))).toBe(false)
+    // `status.replicas` is omitted at zero, so the wait is on the pods.
+    expect(actions[1]).toBe('list Pod ')
   })
 
   it('does not fail the stop when the drain outlives the wait', async () => {
-    // The scale is recorded either way; a successor waits for the lease
-    // to go stale.
-    mockWithRetry.mockImplementation((args: string[]) =>
-      args[0] === 'wait'
-        ? Promise.reject(new Error('timed out'))
-        : Promise.resolve({ stdout: '', stderr: '' }))
-    await expect(stopClusterServer()).resolves.toBeUndefined()
+    // A successor waits for the lease to go stale.
+    liveDeployment()
+    fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Pod', metadata: { name: 'yaac-server-abc', namespace: 'test-ns', labels: { app: SERVER_APP_NAME } },
+    })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] })
+    try {
+      const stop = stopClusterServer()
+      await vi.advanceTimersByTimeAsync(61_000)
+      await expect(stop).resolves.toBeUndefined()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
 describe('restartClusterServer', () => {
   it('rolls the pod and waits for the published origin to answer again', async () => {
+    liveDeployment()
     await expect(restartClusterServer()).resolves.toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
-    const calls = retried()
-    expect(calls.findIndex((c) => c.includes('delete pod yaac-server-log-reader')))
-      .toBeLessThan(calls.findIndex((c) => c.includes('rollout restart')))
-    expect(calls.findIndex((c) => c.includes('delete pod yaac-server-log-reader'))).toBeGreaterThanOrEqual(0)
-    expect(calls.some((c) => c.includes('rollout status'))).toBe(true)
+    const restartAt = actions.findIndex((c) => c.startsWith(`patch Deployment ${SERVER_APP_NAME}`))
+    expect(actions.indexOf('delete Pod yaac-server-log-reader')).toBeGreaterThanOrEqual(0)
+    expect(actions.indexOf('delete Pod yaac-server-log-reader')).toBeLessThan(restartAt)
+    // A pod-template change is what rolls the pod.
+    const template = fakeCluster.get<{ spec: { template: { metadata: { annotations: Record<string, string> } } } }>(
+      'Deployment', SERVER_APP_NAME, 'test-ns')!.spec.template
+    expect(template.metadata.annotations['kubectl.kubernetes.io/restartedAt']).toMatch(/^\d{4}-/)
+    expect(actions.slice(restartAt).some((c) => c.includes('rollout status'))).toBe(true)
     expect(vi.mocked(globalThis.fetch)).toHaveBeenCalled()
   })
 })
@@ -811,20 +809,15 @@ describe('deployedInstallIdentity', () => {
   it('reads the identity back off the live Deployment, which is its record', async () => {
     // The uid `cluster check` and the e2e harness run pods as; on a byo
     // install it differs from the local uid.
-    mockGetJson.mockResolvedValueOnce({
-      spec: { template: { spec: { securityContext: { runAsUser: 1234, runAsGroup: 1234 } } } },
-    })
+    liveDeployment(1234)
     await expect(deployedInstallIdentity(false)).resolves.toEqual({ uid: 1234, gid: 1234 })
-    expect(mockGetJson).toHaveBeenLastCalledWith(['get', 'deployment', SERVER_APP_NAME, '-n', 'test-ns'])
   })
 
   it('with no Deployment, is what install would deploy — never a guess past a failed read', async () => {
-    mockGetJson.mockResolvedValueOnce(null)
     await expect(deployedInstallIdentity(false)).resolves.toEqual(processIdentity())
-    mockGetJson.mockResolvedValueOnce(null)
     await expect(deployedInstallIdentity(true)).resolves.toEqual({ uid: 1000, gid: 1000 })
-    mockGetJson.mockRejectedValueOnce(new Error('Unable to connect to the server'))
-    await expect(deployedInstallIdentity(true)).rejects.toThrow(/Unable to connect/)
+    fakeCluster.intercept(() => { throw new Error('connect ECONNREFUSED 127.0.0.1:6443') })
+    await expect(deployedInstallIdentity(true)).rejects.toThrow(/ECONNREFUSED/)
   })
 })
 
@@ -848,22 +841,17 @@ describe('clusterServerLogs', () => {
 
   /** The server pods the apiserver lists, and the Deployment it holds. */
   function cluster(pods: Array<{ name: string; node?: string; running: boolean }>): void {
-    mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
-      args[1] === 'pods'
-        ? {
-          items: pods.map((p) => ({
-            metadata: { name: p.name },
-            spec: { nodeName: p.node },
-            status: { containerStatuses: [{ name: 'server', state: p.running ? { running: {} } : { waiting: {} } }] },
-          })),
-        }
-        : {
-          spec: { template: { spec: {
-            securityContext: { runAsUser: 1000, runAsGroup: 1000, supplementalGroups: [0] },
-            containers: [{ name: 'server', image: 'reg.local:5000/yaac-server:abc' }],
-          } } },
-        },
-    ))
+    for (const pod of fakeCluster.objects('Pod')) {
+      fakeCluster.request({ verb: 'delete', apiVersion: 'v1', kind: 'Pod', name: pod.metadata.name, namespace: 'test-ns' })
+    }
+    liveDeployment()
+    fakeCluster.seed(...pods.map((p) => ({
+      apiVersion: 'v1', kind: 'Pod',
+      metadata: { name: p.name, namespace: 'test-ns', labels: { app: SERVER_APP_NAME } },
+      spec: { nodeName: p.node },
+      status: { containerStatuses: [{ name: 'server', state: p.running ? { running: {} } : { waiting: {} } }] },
+    })))
+    actions = []
   }
 
   let written: string[]
@@ -885,7 +873,7 @@ describe('clusterServerLogs', () => {
       '--', 'tail', '-n', '+1', '/yaac/server-local/server.log',
     ], expect.anything())
     expect(written.join('')).toContain('listening on 0.0.0.0:7777')
-    expect(mockApply).not.toHaveBeenCalled()
+    expect(fakeCluster.callsOf('apply')).toEqual([])
 
     fakeKubectl('', 0)
     await clusterServerLogs({ follow: true, lines: 5 })
@@ -920,32 +908,37 @@ describe('clusterServerLogs', () => {
     expect(reader.spec.activeDeadlineSeconds).toBeGreaterThan(0)
     expect((mockSpawn.mock.lastCall?.[1] as string[]).slice(0, 6)).toEqual(['exec', 'yaac-server-log-reader', '-n', 'test-ns', '-c', 'reader'])
     expect(written.join('')).toContain('fatal: boom')
-    const deletes = (mockWithRetry.mock.calls as Array<[string[]]>).map(([a]) => a.join(' '))
-      .filter((a) => a.startsWith('delete pod yaac-server-log-reader'))
-    expect(deletes).toHaveLength(2)
+    expect(actions.filter((a) => a === 'delete Pod yaac-server-log-reader')).toHaveLength(2)
     // Exec only once Ready; kubectl exec does not wait on a named pod.
-    const calls = retried()
-    const ready = calls.findIndex((c) => c.startsWith('wait --for=condition=Ready pod/yaac-server-log-reader'))
-    expect(ready).toBeGreaterThan(calls.findIndex((c) => c.startsWith('delete pod yaac-server-log-reader')))
+    expect(actions.lastIndexOf('read Pod yaac-server-log-reader'))
+      .toBeGreaterThan(actions.indexOf('apply Pod yaac-server-log-reader'))
+    expect(fakeCluster.get('Pod', 'yaac-server-log-reader', 'test-ns')).toBeUndefined()
 
     // Scaled to zero: no pod, so no node to pin to.
-    mockApply.mockClear()
     cluster([])
+    fakeCluster.calls = []
     fakeKubectl('', 1, 'error: unable to upgrade connection\n')
     await expect(clusterServerLogs()).rejects.toThrow(/could not read the server log in pod yaac-server-log-reader: error: unable to upgrade/)
     expect((applied('Pod')[0] as unknown as { spec: { nodeName?: string } }).spec.nodeName).toBeUndefined()
     // The reader is removed on failure too.
-    expect((mockWithRetry.mock.lastCall as [string[]])[0].slice(0, 3)).toEqual(['delete', 'pod', 'yaac-server-log-reader'])
+    expect(actions.at(-1)).toBe('delete Pod yaac-server-log-reader')
 
     // A reader that never starts is reported as such, with no exec.
     const execs = mockSpawn.mock.calls.length
-    const base = mockWithRetry.getMockImplementation()
-    mockWithRetry.mockImplementation((args: string[]) => args[0] === 'wait'
-      ? Promise.reject(new Error('timed out waiting for the condition'))
-      : ((base?.(args) as Promise<{ stdout: string; stderr: string }> | undefined) ?? Promise.resolve({ stdout: '', stderr: '' })))
-    await expect(clusterServerLogs()).rejects.toThrow(/log reader pod did not become Ready within 120s \(timed out/)
+    fakeCluster.intercept((c) => {
+      const pod = c.verb === 'read' && fakeCluster.get('Pod', 'yaac-server-log-reader', 'test-ns')
+      if (pod) fakeCluster.seed({ ...pod, status: { phase: 'Pending' } })
+    })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] })
+    try {
+      const read = clusterServerLogs()
+      const verdict = expect(read).rejects.toThrow(/log reader pod did not become Ready within 120s/)
+      await vi.advanceTimersByTimeAsync(121_000)
+      await verdict
+    } finally {
+      vi.useRealTimers()
+    }
     expect(mockSpawn.mock.calls.length).toBe(execs)
-    expect((mockWithRetry.mock.lastCall as [string[]])[0].slice(0, 3)).toEqual(['delete', 'pod', 'yaac-server-log-reader'])
-    mockWithRetry.mockImplementation(base ?? (() => Promise.resolve({ stdout: '', stderr: '' })))
+    expect(actions.at(-1)).toBe('delete Pod yaac-server-log-reader')
   })
 })

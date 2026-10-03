@@ -1,6 +1,6 @@
 /**
- * Node requirements for a bring-your-own cluster, checked against
- * `kubectl get nodes -o json`. `yaac cluster install --byo` refuses before
+ * Node requirements for a bring-your-own cluster, checked against the
+ * cluster's Node objects. `yaac cluster install --byo` refuses before
  * doing anything if one fails, and `yaac cluster check` repeats them so a
  * node added later is reported (docs/cluster-setup.md "Bring your own
  * cluster").

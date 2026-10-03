@@ -13,9 +13,10 @@ import {
   PROXY_PORT,
   proxyServiceHost,
   k8sNamespace,
-  kubectlGetJson,
-  kubectlWithRetry,
+  deleteObject,
+  readObject,
   readProxyAuthSecret,
+  type ObjectRef,
 } from '#drivers/k8s/substrate'
 import { registryRef } from '#drivers/k8s/container'
 import { serverLog } from '#log'
@@ -121,7 +122,7 @@ export class ProxyClient {
    * proxy yet.
    */
   async rollIfStale(): Promise<void> {
-    const deployed = await kubectlGetJson<object>(['get', 'deployment', PROXY_APP_NAME, '-n', k8sNamespace()])
+    const deployed = await readObject(proxyRef('Deployment'))
     if (!deployed || await this.isDeployedProxyCurrent()) return
     serverLog('[server] the deployed proxy is from another build; redeploying it')
     await this.ensureRunning()
@@ -175,18 +176,18 @@ export class ProxyClient {
    * pod sets no RuntimeClass (the proxy is trusted infra and runs on runc;
    * see cluster/proxy-manifests.ts). The image can be unchanged across a
    * manifest-only change, hence the second check. A missing Deployment is
-   * stale. kubectl errors count as current: the proxy just answered
-   * /healthz, and a bootstrap would fail on the same kubectl error.
+   * stale. A failed read counts as current: the proxy just answered
+   * /healthz, and a bootstrap would fail on the same API error.
    */
   async isDeployedProxyCurrent(): Promise<boolean> {
     try {
       const expected = registryRef(await resolveProxyImageTag(this.config.image))
-      const deployment = await kubectlGetJson<{
+      const deployment = await readObject<{
         spec?: { template?: { spec?: {
           runtimeClassName?: string
           containers?: Array<{ image?: string }>
         } } }
-      }>(['get', 'deployment', PROXY_APP_NAME, '-n', k8sNamespace()])
+      }>(proxyRef('Deployment'))
       const podSpec = deployment?.spec?.template?.spec
       return podSpec?.containers?.[0]?.image === expected
         && podSpec?.runtimeClassName === undefined
@@ -227,14 +228,8 @@ export class ProxyClient {
     console.log('Stopping proxy...')
     this.running = false
     try {
-      await kubectlWithRetry([
-        'delete', 'deployment', PROXY_APP_NAME,
-        '-n', k8sNamespace(), '--ignore-not-found', '--wait=false',
-      ])
-      await kubectlWithRetry([
-        'delete', 'service', PROXY_APP_NAME,
-        '-n', k8sNamespace(), '--ignore-not-found',
-      ])
+      await deleteObject(proxyRef('Deployment'))
+      await deleteObject(proxyRef('Service'), { wait: true })
     } catch {
       // cluster unreachable — nothing to stop
     }
@@ -243,6 +238,10 @@ export class ProxyClient {
     // A recreated Service may get a new ClusterIP.
     resetProxyClusterIpCache()
   }
+}
+
+function proxyRef(kind: 'Deployment' | 'Service'): ObjectRef {
+  return { apiVersion: kind === 'Deployment' ? 'apps/v1' : 'v1', kind, name: PROXY_APP_NAME, namespace: k8sNamespace() }
 }
 
 /** Default singleton. The image name comes from YAAC_PROXY_IMAGE, which

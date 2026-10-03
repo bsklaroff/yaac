@@ -2,8 +2,8 @@
 
 The server's reconcile loop runs when something changes, not on a polling
 clock. Under the k8s driver, cluster state comes from watch-fed informer
-caches. Reads and watches use `@kubernetes/client-node`. Writes
-(`kubectlApply`, deletes) and bounded provisioning execs use `kubectl`.
+caches. Every read, watch and write uses `@kubernetes/client-node`; `kubectl`
+is left for what is not an object call (see "What stays on kubectl" below).
 Steady-state streams into a workspace pod (PTYs, status, port forwards,
 one-shot commands) use the stream relay instead; see
 [stream-relay.md](stream-relay.md).
@@ -53,8 +53,9 @@ and pushes the snapshot, coalescing bursts over 150 ms.
 ## k8s informer layer (`drivers/k8s/substrate/`)
 
 `client.ts` loads the kubeconfig with `loadFromDefault()`, which reads the
-same file kubectl does (including `KUBECONFIG`), so both talk to the same
-cluster.
+same file kubectl does (including `KUBECONFIG`, or the service account
+in-cluster), so the library and the remaining `kubectl exec` calls talk to
+the same cluster.
 
 `informer-cache.ts` wraps one client-node informer in an `InformerCache<T>`,
 an in-memory map of mapped objects. `onChange` fires only when a mapped object
@@ -86,33 +87,65 @@ captured credential rotations (`proxy-refreshed`). The k8s driver's
 `workspaces` and `units` triggers. A `proxy-state` delta only refreshes the
 snapshot. The cache is also a process-wide singleton
 (`setActiveClusterCache`) that the display path and steps read. It is null in
-unit tests, which fall back to one-shot kubectl lists.
+unit tests, which fall back to one-shot live lists.
 
 `tick-snapshot.ts` gives each pass one point-in-time view. Each getter is
 memoized per pass. It answers from the cache when that informer is healthy,
-and otherwise does a live kubectl list. That fallback is what keeps
+and otherwise does a live list. That fallback is what keeps
 destructive steps safe: the stale reaper never acts on a cache known to be
 behind, and its slower sweeps wait far longer than any watch lag.
 
-## Why writes and exec stay on kubectl
+## Object reads and writes (`substrate/api.ts`)
 
-- `kubectl` runs API discovery fresh on every call. client-node caches it,
-  which causes "no matches for kind" errors when a CRD and its first object
-  are applied close together.
-- Deletes use features only kubectl has: multi-kind deletes by label
-  selector, `--ignore-not-found`, and its cascade defaults.
-- Exec, PTY and port-forward streams are not library calls at all.
+Every object call goes through `ObjectClient` (`substrate/client.ts`), which
+reuses client-node's discovery, auth and HTTP layer but sends and returns raw
+JSON. client-node's own object methods serialize a body through its typed
+models, which keep only the fields a model declares: a NetworkPolicy rule's
+`from` is `_from` there, so it would never reach the server and the rule would
+admit every source. A field newer than the models would be dropped the same
+way.
 
-The retry layer for transient failures (`retryTransient` in
-`substrate/kubectl.ts`) matches kubectl stderr text, so it only covers kubectl
-calls. A read moved to the typed client needs its own retry on typed HTTP
-errors.
+Writes are server-side apply under the field manager `yaac` with `force`. A
+field yaac stops sending is removed only if yaac's apply owns it: a field set
+by a merge patch (an Update, such as the spare claim's labels) stays, and an
+atomic list (a NetworkPolicy's `spec.ingress`) is replaced whole. Objects an
+older install wrote with client-side `kubectl apply` are adopted on their
+first apply (docs/legacy-compat-shims.md). A read returns `null` for an absent
+object or resource type, and `isAbsent`/`apiStatus` classify failures by the
+API server's HTTP status rather than by message text.
+
+Transient failures are retried a few times with backoff inside the client: a
+dropped or refused connection, 429 (honoring `Retry-After`), 503/504, and a
+500 that reports an etcd hiccup. Workspace create and image builds make many
+calls in a row and have no next pass to fall back on. Anything else fails
+loudly. Replaying any verb is safe: a replayed create or conditional patch
+gets a 409, and a replayed delete a 404, which callers already handle.
+
+client-node caches API discovery per group, which would break applying a CRD
+and then its first object in one process. yaac only writes built-in kinds, so
+this does not arise.
+
+Unit tests fake the cluster at client-node's transport
+(`packages/test-utils/src/k8s-stub.ts`). The `apiserver` test project
+(`test/apiserver/`) checks the same calls against a real kube-apiserver and
+etcd from pinned envtest binaries, with no cluster, so it runs in a yaac
+workspace too.
+
+## What stays on kubectl
+
+- `kubectl exec` (booting streamd, the teardown image survey) and
+  `kubectl port-forward`: streams into a pod, not object calls.
+- `kubectl rollout status`, which already encodes each workload kind's notion
+  of a finished rollout.
+- Install-time steps that act on the kubeconfig itself or on raw upstream
+  manifests; each names its reason in the code.
 
 ## Client version
 
 `@kubernetes/client-node` is pinned to `1.4.0` in the workspace catalog. It is
 generated from Kubernetes 1.34, while `k8s/kind-config.yaml` pins the node
-image to 1.37. That gap is safe here because the informers only list and watch
-core/v1 and batch/v1, which have been stable for many releases. When
+image to 1.37. That gap is safe: informers list and watch core/v1 and
+batch/v1, which have been stable for many releases, and object calls bypass
+the generated models (see above). When
 upgrading, prefer a stable release with the `undici` transport and newer
 generated models over the 2.0 release candidate.

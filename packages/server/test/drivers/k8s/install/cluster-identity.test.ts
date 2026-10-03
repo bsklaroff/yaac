@@ -1,28 +1,33 @@
 /**
  * Compares the recorded cluster with the kubeconfig's current context.
- * kubectl is faked; `server.json` is written for real.
+ * `kubectl config` and the API server are faked; `server.json` is written
+ * for real.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
-import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
+import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
+import type * as apiModule from '#drivers/k8s/substrate/api'
 
-vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
-  ...(await importOriginal<typeof kubectlModule>()),
+vi.mock('#drivers/k8s/substrate/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof apiModule>()),
   execFileAsync: vi.fn(),
 }))
 
 import { foreignClusterRefusal } from '#drivers/k8s/install'
-import { execFileAsync } from '#drivers/k8s/substrate/kubectl'
+import { execFileAsync } from '#drivers/k8s/substrate/api'
 import { serverConfigPath, writeServerConfig } from '@yaac/shared/server-config'
 
 const mockRun = vi.mocked(execFileAsync)
 
-/** Stage the current context name and kube-system uid; an Error makes the read fail. */
-function current(context: string | Error, uid: string | Error): void {
-  mockRun.mockImplementation(((_file: string, args: string[]) => {
-    const v = args[0] === 'config' ? context : uid
-    return v instanceof Error ? Promise.reject(v) : Promise.resolve({ stdout: `${v}\n`, stderr: '' })
-  }) as never)
+/** Stage the current context name and kube-system uid; an Error makes the uid read fail. */
+function current(context: string, uid: string | Error): void {
+  mockRun.mockResolvedValue({ stdout: `${context}\n`, stderr: '' })
+  fakeCluster.reset()
+  if (uid instanceof Error) {
+    fakeCluster.intercept(() => { throw uid })
+  } else {
+    fakeCluster.seed({ apiVersion: 'v1', kind: 'Namespace', metadata: { name: 'kube-system', uid } })
+  }
 }
 
 const RECORD = {
@@ -68,15 +73,13 @@ describe('foreignClusterRefusal', () => {
     // Namespace-scoped RBAC makes kube-system Forbidden, which means the
     // cluster is not this install's.
     await writeServerConfig(RECORD)
-    current('dev', Object.assign(new Error('exit 1'), {
-      stderr: 'Error from server (Forbidden): namespaces "kube-system" is forbidden: User "me" cannot get resource',
-    }))
+    current('dev', apiError(403, 'namespaces "kube-system" is forbidden: User "me" cannot get resource'))
     expect(await foreignClusterRefusal())
-      .toMatch(/current context "dev" points at cannot be identified \(.*Forbidden[\s\S]*kubectl config use-context prod/)
+      .toMatch(/current context "dev" points at cannot be identified \(.*403: .*forbidden[\s\S]*kubectl config use-context prod/)
 
     // Through the install's own context, the cluster is down, so no
     // use-context hint.
-    current('prod', Object.assign(new Error('exit 1'), { stderr: 'The connection to the server 127.0.0.1:41234 was refused' }))
+    current('prod', new Error('connect ECONNREFUSED 127.0.0.1:41234'))
     const down = await foreignClusterRefusal()
     expect(down).toMatch(/"prod" is the one this install was made through, but its cluster cannot be reached[\s\S]*yaac cluster install/)
     expect(down).not.toContain('use-context')

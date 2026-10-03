@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-// Only the kubectl child process is faked, so the shell runner and its
-// retries run for real.
+// Only the kubectl child process is faked, so the shell runner runs for
+// real.
 type ExecResult = { stdout: string; stderr: string }
 type ExecCallback = (err: unknown, res?: ExecResult) => void
 const execMock = vi.fn<(command: string, opts: unknown) => Promise<ExecResult>>()
@@ -39,26 +39,10 @@ describe('containerExec', () => {
     )
   })
 
-  it('retries transient exec failures — a pod being replaced 404s the subresource', async () => {
-    execMock
-      .mockRejectedValueOnce(stderrError('unable to upgrade connection: pod does not exist'))
-      .mockResolvedValue({ stdout: 'finally', stderr: '' })
-    const result = await containerExec('yaac-demo-abc', 'true', { baseDelay: 1, maxAttempts: 3 })
-    expect(result.stdout).toBe('finally')
-    expect(execMock).toHaveBeenCalledTimes(2)
-  })
-
-  it('propagates a permanent failure on the first attempt', async () => {
-    execMock.mockRejectedValue(stderrError('permission denied'))
-    await expect(containerExec('yaac-demo-abc', 'false', { baseDelay: 1, maxAttempts: 3 }))
-      .rejects.toThrow('kubectl failed')
+  it('fails on the first error, forwarding the caller timeout', async () => {
+    execMock.mockRejectedValue(stderrError('unable to upgrade connection: pod does not exist'))
+    await expect(containerExec('yaac-demo-abc', 'true', { timeout: 3000 })).rejects.toThrow('kubectl failed')
     expect(execMock).toHaveBeenCalledTimes(1)
-  })
-
-  it('gives up after maxAttempts, and forwards the caller timeout', async () => {
-    execMock.mockRejectedValue(new Error('net dial: i/o timeout'))
-    await expect(containerExec('yaac-demo-abc', 'true', { maxAttempts: 2, baseDelay: 1, timeout: 3000 }))
-      .rejects.toThrow(/i\/o timeout/)
-    expect(execMock).toHaveBeenCalledTimes(2)
+    expect(execMock).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ timeout: 3000 }))
   })
 })

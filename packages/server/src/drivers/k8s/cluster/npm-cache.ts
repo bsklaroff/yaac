@@ -34,8 +34,8 @@ import {
   PRIORITY_CLASS_INFRA,
   dataDirHash,
   k8sNamespace,
-  kubectlApply,
-  kubectlGetJson,
+  applyObject,
+  listObjects,
   waitForRollout,
 } from '#drivers/k8s/substrate'
 import { prebuiltRef } from '#drivers/k8s/image-engine'
@@ -413,7 +413,7 @@ export async function ensureNpmCache(): Promise<void> {
     { verdaccio, nginx },
     { nodes: await nodeIpBlocks(), pods: await clusterPodCidrs() },
   )
-  for (const manifest of workload) await kubectlApply(manifest)
+  for (const manifest of workload) await applyObject(manifest)
   await waitForRollout({
     workload: `deployment/${NPM_CACHE_APP_NAME}`,
     namespace: k8sNamespace(),
@@ -421,7 +421,7 @@ export async function ensureNpmCache(): Promise<void> {
     hint: `Inspect with \`kubectl -n ${k8sNamespace()} get pods,pvc -l app=${NPM_CACHE_APP_NAME}\` — `
       + 'a Pending PVC means the cluster has no default StorageClass to bind it.',
   })
-  await kubectlApply(service)
+  await applyObject(service)
 }
 
 /**
@@ -430,13 +430,11 @@ export async function ensureNpmCache(): Promise<void> {
  * down cache fails every install, while npmjs is merely slower.
  */
 export async function servingNpmCacheUrl(): Promise<string | null> {
-  const slices = await kubectlGetJson<{
-    items?: Array<{ endpoints?: Array<{ conditions?: { ready?: boolean } }> }>
-  }>([
-    'get', 'endpointslices', '-n', k8sNamespace(),
-    '-l', `kubernetes.io/service-name=${NPM_CACHE_APP_NAME}`,
-  ])
-  const ready = (slices?.items ?? [])
+  const slices = await listObjects<{ endpoints?: Array<{ conditions?: { ready?: boolean } }> }>(
+    'discovery.k8s.io/v1', 'EndpointSlice',
+    { namespace: k8sNamespace(), labelSelector: `kubernetes.io/service-name=${NPM_CACHE_APP_NAME}` },
+  )
+  const ready = slices
     .some((slice) => (slice.endpoints ?? []).some((e) => e.conditions?.ready === true))
   return ready ? npmCacheRegistryUrl() : null
 }

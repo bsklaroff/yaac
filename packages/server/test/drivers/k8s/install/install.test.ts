@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
+import type * as apiModule from '#drivers/k8s/substrate/api'
 import type * as clusterBarrel from '#drivers/k8s/cluster'
 import type * as substrateBarrel from '#drivers/k8s/substrate'
 import type * as containerBarrel from '#drivers/k8s/container'
@@ -11,9 +12,10 @@ import type * as imageEngineBarrel from '#drivers/k8s/image-engine'
  * are fatal, and what it hands each step. The layers from other folders
  * (cluster, substrate) are faked at their barrels. Install's own steps
  * (built-in images, the gVisor installer, the server deploy) run for real
- * against faked process boundaries: kubectl, the registry, the image
- * engine, host podman and `fetch`. Each records itself in `events` when it
- * reaches the cluster, which is what the order assertions read.
+ * against faked process boundaries: the cluster (the shared fake), kubectl,
+ * the registry, the image engine, host podman and `fetch`. Each records
+ * itself in `events` when it reaches the cluster, which is what the order
+ * assertions read.
  */
 type Step =
   | 'ensurePriorityClasses' | 'ensureMainRegistry' | 'ensureBuilderRoleGuard'
@@ -75,20 +77,11 @@ vi.mock('#drivers/k8s/image-engine', async (importOriginal) => ({
   }),
 }))
 
-vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
-  // The real predicate: these tests rely on telling "absent" apart from
-  // "could not evaluate".
-  isKubectlAbsentError: (await importOriginal<
-    { isKubectlAbsentError: (err: unknown) => boolean }
-  >()).isKubectlAbsentError,
-  kubectlErrorSummary: (await importOriginal<
-    { kubectlErrorSummary: (err: unknown) => string }
-  >()).kubectlErrorSummary,
+vi.mock('#drivers/k8s/substrate/api', async (importOriginal) => ({
+  ...await importOriginal<typeof apiModule>(),
   k8sNamespace: vi.fn(() => 'test-ns'),
   dataDirHash: vi.fn(() => 'ddh16'),
-  kubectlApply: vi.fn(),
-  kubectlGetJson: vi.fn(),
-  kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+  // The rollout waits: every workload rolls out at once.
   execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
@@ -100,61 +93,127 @@ interface Applied {
 }
 
 /**
- * The cluster install's own steps talk to: it keeps what was applied and
- * binds every claim it was given. `nodes` and `pools` are what the
- * pod-CIDR and node-address reads answer.
+ * What the cluster holds beyond what install applies: `nodes` and `pools`
+ * are what the node and pod-CIDR reads answer (`pools: null` is a cluster
+ * without Calico's CRDs, and `poolsDenied` an RBAC denial on them), and
+ * `adopt` is the `--byo` cluster `adoptRun` describes. `applied` keeps
+ * every manifest an apply delivered.
  */
 const cluster = {
   applied: [] as Applied[],
-  nodes: [{ podCIDR: '10.244.0.0/24', address: '10.89.0.2' }] as Array<{ podCIDR?: string; address?: string }>,
+  nodes: [] as Array<{ podCIDR?: string; address?: string; annotations?: Record<string, string> }>,
   pools: null as string[] | null,
+  poolsDenied: false,
+  adopt: null as AdoptFacts | null,
 }
 
 function appliedOf(kind: string, name?: string): Applied[] {
   return cluster.applied.filter((m) => m.kind === kind && (name === undefined || m.metadata.name === name))
 }
 
-function applyToCluster(manifest: object): Promise<void> {
-  const m = manifest as Applied
-  if (m.kind === 'DaemonSet' && m.metadata.name === GVISOR_INSTALLER_APP_NAME) reach('ensureGvisorRuntime')
-  if (m.kind === 'Deployment' && m.metadata.name === SERVER_APP_NAME) reach('deployServerWorkload')
-  cluster.applied.push(m)
-  return Promise.resolve()
+/** Set while the fixtures rewrite the fake, so their own calls pass untouched. */
+let staging = false
+
+/** Make `objects` the only ones of `kind` in the fake cluster. */
+function replaceKind(kind: string, objects: FakeObject[]): void {
+  staging = true
+  try {
+    for (const o of fakeCluster.objects(kind)) {
+      fakeCluster.request({ verb: 'delete', apiVersion: o.apiVersion, kind, name: o.metadata.name, namespace: o.metadata.namespace })
+    }
+  } finally {
+    staging = false
+  }
+  fakeCluster.seed(...objects)
 }
 
-function readCluster(args: string[]): Promise<unknown> {
-  const [, kind, name] = args
-  if (kind?.startsWith('ippools')) {
-    return Promise.resolve(cluster.pools && { items: cluster.pools.map((cidr) => ({ spec: { cidr } })) })
-  }
-  if (kind === 'nodes') {
-    return Promise.resolve({
-      items: cluster.nodes.map((n) => ({
-        spec: n.podCIDR ? { podCIDR: n.podCIDR } : {},
-        status: { addresses: n.address ? [{ type: 'InternalIP', address: n.address }] : [] },
-      })),
-    })
-  }
-  if (kind === 'pvc') {
-    const claim = appliedOf('PersistentVolumeClaim', name).at(-1)
-    return Promise.resolve(claim && {
+/** The Node objects, from `cluster.nodes` merged with the byo facts. */
+function nodeObjects(): FakeObject[] {
+  const facts = cluster.adopt
+  const adopted = facts ? facts.nodes ?? ADOPT_NODES.map((name) => ({ name })) : []
+  return Array.from({ length: Math.max(adopted.length, cluster.nodes.length) }, (_, i) => {
+    const n = adopted[i] as NonNullable<AdoptFacts['nodes']>[number] | undefined
+    const net = cluster.nodes[i] ?? {}
+    return {
+      apiVersion: 'v1', kind: 'Node',
+      metadata: { name: n?.name ?? `node-${String(i)}`, ...(net.annotations ? { annotations: net.annotations } : {}) },
       spec: {
-        storageClassName: claim.spec?.storageClassName,
-        volumeName: (claim.spec?.volumeName as string | undefined) || `${name}-pv`,
+        ...(net.podCIDR ? { podCIDR: net.podCIDR } : {}),
+        ...(n?.taint
+          ? { taints: [{ key: n.taint, effect: 'NoSchedule' }] }
+          : n?.schedulable === false
+            ? { taints: [{ key: 'node.kubernetes.io/unschedulable', effect: 'NoSchedule' }] }
+            : {}),
       },
-      status: { phase: 'Bound' },
-    })
+      status: {
+        addresses: net.address ? [{ type: 'InternalIP', address: net.address }] : [],
+        nodeInfo: {
+          architecture: HOST_ARCH,
+          osImage: 'Ubuntu 24.04 LTS',
+          containerRuntimeVersion: 'containerd://2.1.0',
+          kubeletVersion: 'v1.37.0',
+          ...facts?.nodeInfo,
+        },
+      },
+    }
+  })
+}
+
+const forbidden = (what: string): ApiException =>
+  apiError(403, `${what} is forbidden: User "x" cannot list resource`)
+
+/**
+ * The cluster's controllers and operators, as install's own steps meet
+ * them: a claim binds to a volume once read, the storage binder pod
+ * succeeds, the tailnet operator publishes the server Ingress at once, and
+ * an apply of the gVisor installer or the server Deployment marks its step.
+ */
+function world(c: FakeCall): void {
+  if (staging) return
+  if (c.kind === 'Node') {
+    if (cluster.adopt?.denied === 'nodes') throw forbidden('nodes')
+    replaceKind('Node', nodeObjects())
   }
-  // The byo storage binder pod.
-  if (kind === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
-  // The tailnet operator publishes the server Ingress at once.
-  if (kind === 'ingress' && appliedOf('Ingress').length > 0) {
-    return Promise.resolve({
-      spec: { ingressClassName: 'tailscale', tls: [{ hosts: ['yaac'] }] },
+  if (c.kind === 'IPPool') {
+    if (cluster.poolsDenied) throw forbidden('ippools.crd.projectcalico.org')
+    if (cluster.pools === null) throw apiError(404, 'the server could not find the requested resource')
+    replaceKind('IPPool', cluster.pools.map((cidr, i) => ({
+      apiVersion: 'crd.projectcalico.org/v1', kind: 'IPPool', metadata: { name: `pool-${String(i)}` }, spec: { cidr },
+    })))
+  }
+  const denied = cluster.adopt?.denied
+  if (denied === 'felix' && c.kind === 'FelixConfiguration') throw forbidden('felixconfigurations.crd.projectcalico.org')
+  if (denied === 'calico' && c.kind === 'DaemonSet' && c.name === 'calico-node') throw forbidden('daemonsets.apps')
+  if (denied === 'kube-proxy' && c.labelSelector?.includes('kube-proxy')) throw forbidden('pods')
+
+  if (c.verb === 'apply') {
+    const m = c.body as unknown as Applied
+    if (m.kind === 'DaemonSet' && m.metadata.name === GVISOR_INSTALLER_APP_NAME) reach('ensureGvisorRuntime')
+    if (m.kind === 'Deployment' && m.metadata.name === SERVER_APP_NAME) reach('deployServerWorkload')
+    cluster.applied.push(m)
+  }
+  if (c.verb !== 'read' || !c.name) return
+  const obj = fakeCluster.get(c.kind, c.name, c.namespace)
+  if (!obj || obj.status) return
+  if (c.kind === 'PersistentVolumeClaim') {
+    const volumeName = (obj.spec as { volumeName?: string }).volumeName || `${c.name}-pv`
+    fakeCluster.seed(
+      { ...obj, spec: { ...obj.spec as object, volumeName }, status: { phase: 'Bound' } },
+      { apiVersion: 'v1', kind: 'PersistentVolume', metadata: { name: volumeName }, spec: {} },
+    )
+  } else if (c.kind === 'Pod') {
+    fakeCluster.seed({ ...obj, status: { phase: 'Succeeded' } })
+  } else if (c.kind === 'Ingress') {
+    fakeCluster.seed({
+      ...obj,
       status: { loadBalancer: { ingress: [{ hostname: 'yaac.tail.ts.net', ports: [{ port: 443 }] }] } },
     })
   }
-  return Promise.resolve(null)
+}
+
+/** The kind cluster's kube-system namespace, which identifies it. */
+function kubeSystem(uid: string): FakeObject {
+  return { apiVersion: 'v1', kind: 'Namespace', metadata: { name: 'kube-system', uid } }
 }
 
 /** The server Deployment's pod spec as applied. */
@@ -177,9 +236,11 @@ beforeEach(() => {
   cluster.applied = []
   cluster.nodes = [{ podCIDR: '10.244.0.0/24', address: '10.89.0.2' }]
   cluster.pools = null
+  cluster.poolsDenied = false
+  cluster.adopt = null
   resetClusterCidrCache()
-  vi.mocked(kubectlApply).mockReset().mockImplementation(applyToCluster)
-  vi.mocked(kubectlGetJson).mockReset().mockImplementation(readCluster as never)
+  fakeCluster.intercept(world)
+  fakeCluster.seed(kubeSystem('uid-kind'))
   // The published server answers ready.
   vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(
     new Response(JSON.stringify({ ok: true, ready: true }), { status: 200 }),
@@ -190,12 +251,18 @@ import { ClusterInstallError, runClusterInstall } from '#drivers/k8s/install'
 // Setup value and the deps type runClusterInstall takes.
 import { CALICO_VERSION, type ClusterInstallDeps } from '#drivers/k8s/install/install'
 import { nodeIpBlocks, resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
-import { kubectlApply, kubectlGetJson } from '#drivers/k8s/substrate/kubectl'
+import { apiError, fakeCluster, type ApiException, type FakeCall, type FakeObject } from '@yaac/test-utils/k8s-stub'
 import { NODE_KUBELET_HOUSEKEEPING_INTERVAL } from '#drivers/k8s/install/check'
 // Setup values: the installer DaemonSet's name, the server's names and
 // node port (which the kind config reserves).
 import { GVISOR_INSTALLER_APP_NAME } from '#drivers/k8s/install/gvisor-installer'
-import { SERVER_APP_NAME, SERVER_FRONT_PORT, nodeLocalNodePath } from '#drivers/k8s/substrate'
+import {
+  RUNTIME_CLASS_GVISOR,
+  SERVER_APP_NAME,
+  SERVER_FRONT_PORT,
+  TAILSCALE_OPERATOR_NAMESPACE,
+  nodeLocalNodePath,
+} from '#drivers/k8s/substrate'
 import { nodeLocalRoot } from '@yaac/shared/paths'
 import { readServerConfig, serverConfigPath, writeServerConfig } from '@yaac/shared/server-config'
 
@@ -242,9 +309,6 @@ function happyRun(file: string, args: string[]): Promise<{ stdout: string; stder
   if ((file === 'kubectl' && args[0] === 'config' && args[1] === 'view')
     || (file === 'kind' && args[0] === 'get' && args[1] === 'kubeconfig')) {
     return Promise.resolve({ stdout: 'clusters:\n- cluster:\n    server: https://127.0.0.1:41234\n', stderr: '' })
-  }
-  if (file === 'kubectl' && args[0] === 'get' && args[1] === 'namespace' && args[2] === 'kube-system') {
-    return Promise.resolve({ stdout: 'uid-kind', stderr: '' })
   }
   return Promise.resolve({ stdout: '', stderr: '' })
 }
@@ -396,95 +460,75 @@ interface AdoptFacts {
   context?: string
 }
 
+/** The Tailscale operator's objects, which `--tailnet` and `--byo` look for. */
+const OPERATOR: FakeObject[] = [
+  { apiVersion: 'apiextensions.k8s.io/v1', kind: 'CustomResourceDefinition', metadata: { name: 'proxyclasses.tailscale.com' } },
+  { apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name: 'operator', namespace: TAILSCALE_OPERATOR_NAMESPACE } },
+  { apiVersion: 'networking.k8s.io/v1', kind: 'IngressClass', metadata: { name: 'tailscale' } },
+]
+
 /**
- * deps.run answering every kubectl read the `--byo` checks make, on top of
- * the healthy-host responses. Absence uses kubectl's NotFound wording, which
- * the checks must tell apart from a read that failed.
+ * Stage the `--byo` cluster `facts` describe in the fake cluster (with the
+ * Tailscale operator installed), and return deps.run answering the host
+ * side: the kubeconfig's context and the netd route reads. Absence is a
+ * missing object, which the checks must tell apart from a denied read.
  */
 function adoptRun(facts: AdoptFacts = {}): RunMock {
-  const json = (v: unknown): Promise<{ stdout: string; stderr: string }> =>
-    Promise.resolve({ stdout: JSON.stringify(v), stderr: '' })
-  const absent = (): Promise<never> => Promise.reject(new Error('Error from server (NotFound)'))
-  const denied = (): Promise<never> => Promise.reject(Object.assign(new Error('exit 1'), {
-    stderr: 'Error from server (Forbidden): pods is forbidden: User "x" cannot list resource',
-  }))
+  cluster.adopt = facts
   const nodes: NonNullable<AdoptFacts['nodes']> =
     facts.nodes ?? ADOPT_NODES.map((name) => ({ name }))
   const netdPods: NonNullable<AdoptFacts['netdPods']> = facts.netdPods
-    ?? nodes.map((n, i) => ({ name: `yaac-netd-${i}`, node: n.name }))
+    ?? nodes.map((n, i) => ({ name: `yaac-netd-${String(i)}`, node: n.name }))
+  const label = facts.kubeProxyLabel ?? 'k8s-app'
+
+  replaceKind('DaemonSet', facts.calico === null ? [] : [{
+    apiVersion: 'apps/v1', kind: 'DaemonSet', metadata: { name: 'calico-node', namespace: 'kube-system' },
+    ...(facts.calico ?? HEALTHY_CALICO_DS),
+  }])
+  replaceKind('FelixConfiguration', (facts.felix ?? []).map((f, i) => ({
+    apiVersion: 'crd.projectcalico.org/v1', kind: 'FelixConfiguration', metadata: { name: `felix-${String(i)}` }, ...f,
+  })))
+  replaceKind('Pod', [
+    ...(facts.kubeProxyPods ?? nodes.map((n) => ({ spec: { nodeName: n.name }, status: { phase: 'Running' } })))
+      .map((pod, i) => ({
+        apiVersion: 'v1', kind: 'Pod',
+        metadata: { name: `kube-proxy-${String(i)}`, namespace: 'kube-system', labels: { [label]: 'kube-proxy' } },
+        ...pod,
+      })),
+    ...netdPods.map((pod) => ({
+      apiVersion: 'v1', kind: 'Pod',
+      metadata: { name: pod.name, namespace: 'test-ns', labels: { app: 'yaac-netd' } },
+      spec: { nodeName: pod.node },
+      status: { phase: pod.phase ?? 'Running' },
+    })),
+  ])
+  replaceKind('PriorityClass', facts.systemNodeCritical === false ? [] : [
+    { apiVersion: 'scheduling.k8s.io/v1', kind: 'PriorityClass', metadata: { name: 'system-node-critical' } },
+  ])
+  replaceKind('RuntimeClass', [{
+    apiVersion: 'node.k8s.io/v1', kind: 'RuntimeClass', metadata: { name: RUNTIME_CLASS_GVISOR },
+    scheduling: { tolerations: facts.tolerations ?? [] },
+  }])
+  replaceKind('StorageClass', (facts.classes ?? BYO_CLASSES).map((c) => ({
+    apiVersion: 'storage.k8s.io/v1', kind: 'StorageClass', ...c as { metadata: { name: string } },
+  })))
+  replaceKind('Deployment', [
+    ...OPERATOR.filter((o) => o.kind === 'Deployment'),
+    ...facts.deployed === undefined ? [] : [{
+      apiVersion: 'apps/v1', kind: 'Deployment',
+      metadata: {
+        name: SERVER_APP_NAME, namespace: 'test-ns',
+        labels: facts.deployed.installId ? { 'yaac.install-id': facts.deployed.installId } : {},
+      },
+      spec: { template: { spec: { containers: [{
+        name: 'server', env: [{ name: 'YAAC_DATA_DIR', value: facts.deployed.dataDir }],
+      }] } } },
+    }],
+  ])
+  fakeCluster.seed(...OPERATOR, kubeSystem(facts.clusterUid ?? 'uid-byo'))
 
   return vi.fn((file: string, args: string[]) => {
     if (file === 'kind' && facts.kind === false) return Promise.reject(new Error('ENOENT'))
-    if (file === 'kubectl' && args[0] === 'get') {
-      if (args[1] === 'daemonset' && args[2] === 'calico-node') {
-        if (facts.denied === 'calico') return denied()
-        return facts.calico === null ? absent() : json(facts.calico ?? HEALTHY_CALICO_DS)
-      }
-      if (args[1]?.startsWith('felixconfigurations')) {
-        if (facts.denied === 'felix') return denied()
-        return facts.felix === undefined ? absent() : json({ items: facts.felix })
-      }
-      if (args[1] === 'pods' && args.some((a) => a.includes('kube-proxy'))) {
-        if (facts.denied === 'kube-proxy') return denied()
-        const label = facts.kubeProxyLabel ?? 'k8s-app'
-        const asked = args.includes(`${label}=kube-proxy`)
-        return json({
-          items: asked
-            ? facts.kubeProxyPods
-              ?? nodes.map((n) => ({ spec: { nodeName: n.name }, status: { phase: 'Running' } }))
-            : [],
-        })
-      }
-      if (args[1] === 'pods' && args.includes('app=yaac-netd')) {
-        return json({
-          items: netdPods.map((p) => ({
-            metadata: { name: p.name },
-            spec: { nodeName: p.node },
-            status: { phase: p.phase ?? 'Running' },
-          })),
-        })
-      }
-      if (args[1] === 'storageclass') return json({ items: facts.classes ?? BYO_CLASSES })
-      if (args[1] === 'deployment' && args[2] === 'yaac-server') {
-        return facts.deployed === undefined ? absent() : json({
-          metadata: { labels: facts.deployed.installId ? { 'yaac.install-id': facts.deployed.installId } : {} },
-          spec: { template: { spec: { containers: [{
-            name: 'server', env: [{ name: 'YAAC_DATA_DIR', value: facts.deployed.dataDir }],
-          }] } } },
-        })
-      }
-      if (args[1] === 'namespace' && args[2] === 'kube-system') {
-        return Promise.resolve({ stdout: facts.clusterUid ?? 'uid-byo', stderr: '' })
-      }
-      if (args[1] === 'nodes') {
-        if (facts.denied === 'nodes') return denied()
-        return json({
-          items: nodes.map((n) => ({
-            metadata: { name: n.name },
-            status: {
-              nodeInfo: {
-                architecture: HOST_ARCH,
-                osImage: 'Ubuntu 24.04 LTS',
-                containerRuntimeVersion: 'containerd://2.1.0',
-                kubeletVersion: 'v1.37.0',
-                ...facts.nodeInfo,
-              },
-            },
-            spec: n.taint
-              ? { taints: [{ key: n.taint, effect: 'NoSchedule' }] }
-              : n.schedulable === false
-                ? { taints: [{ key: 'node.kubernetes.io/unschedulable', effect: 'NoSchedule' }] }
-                : {},
-          })),
-        })
-      }
-      if (args[1] === 'runtimeclass') {
-        return json({ scheduling: { tolerations: facts.tolerations ?? [] } })
-      }
-      if (args[1] === 'priorityclass') {
-        return facts.systemNodeCritical === false ? absent() : json({ metadata: { name: args[2] } })
-      }
-    }
     if (file === 'kubectl' && args[0] === 'config' && args[1] === 'current-context') {
       return Promise.resolve({ stdout: `${facts.context ?? 'byo-context'}\n`, stderr: '' })
     }
@@ -501,42 +545,32 @@ function adoptRun(facts: AdoptFacts = {}): RunMock {
   }) as RunMock
 }
 
-/**
- * Stage the pod-CIDR reads, which go through `kubectlGetJson` rather than
- * deps.run.
- */
+/** Stage the pod-CIDR sources: Calico's IPPools and the nodes' podCIDRs. */
 function stageAdoptCidrs(opts: { pools?: string[]; nodeCidrs?: string[] } = {}): void {
   resetClusterCidrCache()
   cluster.pools = opts.pools ?? ['192.168.0.0/16']
+  cluster.poolsDenied = false
   const podCidrs = opts.nodeCidrs ?? ['10.244.0.0/24']
   // A node without a podCIDR still has an address.
   cluster.nodes = podCidrs.length === 0
     ? [{ address: '10.89.0.2' }]
     : podCidrs.map((podCIDR, i) => ({ podCIDR, address: `10.89.0.${String(i + 2)}` }))
-  vi.mocked(kubectlGetJson).mockImplementation(readCluster as never)
 }
 
 /**
  * deps.run for an existing cluster with the Tailscale operator present,
- * absent (NotFound), or unknown (apiserver not answering).
+ * absent, or unknown (the apiserver not answering).
  */
 function tailnetRun(operator: 'present' | 'absent' | 'unreachable'): RunMock {
-  return vi.fn((file: string, args: string[]) => {
-    const operatorRead = file === 'kubectl' && args[0] === 'get'
-      && (args[1] === 'crd' || args[1] === 'ingressclass' || (args[1] === 'deployment' && args[2] === 'operator'))
-    if (!operatorRead) return happyRun(file, args)
-    if (operator === 'absent') {
-      return Promise.reject(Object.assign(new Error('exit 1'), {
-        stderr: 'Error from server (NotFound): customresourcedefinitions.apiextensions.k8s.io "proxyclasses.tailscale.com" not found',
-      }))
-    }
-    if (operator === 'unreachable') {
-      return Promise.reject(Object.assign(new Error('exit 1'), {
-        stderr: 'The connection to the server 127.0.0.1:6443 was refused - did you specify the right host or port?',
-      }))
-    }
-    return Promise.resolve({ stdout: 'proxyclasses.tailscale.com\n', stderr: '' })
-  }) as RunMock
+  if (operator === 'present') fakeCluster.seed(...OPERATOR)
+  if (operator === 'unreachable') {
+    fakeCluster.intercept((c) => {
+      if (OPERATOR.some((o) => o.kind === c.kind && o.metadata.name === c.name)) {
+        throw new Error('connect ECONNREFUSED 127.0.0.1:6443')
+      }
+    })
+  }
+  return vi.fn(happyRun) as RunMock
 }
 
 /** Everything install logged, joined. */
@@ -894,20 +928,12 @@ describe('runClusterInstall', () => {
     // address, not its InternalIP, so a policy naming only InternalIPs drops
     // netd's Envoy on cross-node hops. This never shows on a single node.
     resetClusterCidrCache()
-    vi.mocked(kubectlGetJson).mockResolvedValue({
-      items: [
-        {
-          metadata: { annotations: { 'projectcalico.org/IPv4IPIPTunnelAddr': '10.244.93.192' } },
-          status: { addresses: [{ type: 'InternalIP', address: '10.89.0.21' }] },
-        },
-        {
-          metadata: { annotations: { 'projectcalico.org/IPv4VXLANTunnelAddr': '10.244.86.128' } },
-          status: { addresses: [{ type: 'InternalIP', address: '10.89.0.20' }] },
-        },
-        // A node without a tunnel address yet still contributes its InternalIP.
-        { status: { addresses: [{ type: 'InternalIP', address: '10.89.0.19' }] } },
-      ],
-    })
+    cluster.nodes = [
+      { address: '10.89.0.21', annotations: { 'projectcalico.org/IPv4IPIPTunnelAddr': '10.244.93.192' } },
+      { address: '10.89.0.20', annotations: { 'projectcalico.org/IPv4VXLANTunnelAddr': '10.244.86.128' } },
+      // A node without a tunnel address yet still contributes its InternalIP.
+      { address: '10.89.0.19' },
+    ]
 
     expect(await nodeIpBlocks()).toEqual([
       '10.244.86.128/32', '10.244.93.192/32',
@@ -1500,11 +1526,8 @@ describe('runClusterInstall', () => {
   it('--byo refuses without the Tailscale operator, the fronting it implies', async () => {
     stageAdoptCidrs()
     const run = adoptRun()
-    const absent = tailnetRun('absent')
-    run.mockImplementation((file: string, args: string[]) =>
-      file === 'kubectl' && args[0] === 'get' && ['crd', 'ingressclass'].includes(args[1])
-        ? absent(file, args)
-        : adoptRun()(file, args))
+    replaceKind('CustomResourceDefinition', [])
+    replaceKind('IngressClass', [])
     const deps = makeDeps({ run })
     const err = await runClusterInstall(BYO, deps).catch((e: unknown) => e)
     expect((err as Error).message).toMatch(/--byo needs the Tailscale Kubernetes operator/)
@@ -1676,7 +1699,7 @@ describe('runClusterInstall', () => {
       const err = await runClusterInstall(BYO, deps).catch((e: unknown) => e)
       expect(err).toBeInstanceOf(ClusterInstallError)
       expect((err as Error).message).toMatch(/could not be evaluated/)
-      expect((err as Error).message).toMatch(/Forbidden/)
+      expect((err as Error).message).toMatch(/403: .*forbidden/)
       expect(ran('ensureMainRegistry')).toBe(0)
       // A failed read must not also be reported as an absence, which would
       // point at the wrong fix.
@@ -1694,14 +1717,8 @@ describe('runClusterInstall', () => {
     // An RBAC denial on `ippools` alone must not look like "no pools" and
     // narrow the exclusion set.
     resetClusterCidrCache()
-    vi.mocked(kubectlGetJson).mockImplementation(((args: string[]) => {
-      if (args[1]?.startsWith('ippools')) {
-        return Promise.reject(Object.assign(new Error('exit 1'), {
-          stderr: 'Error from server (Forbidden): ippools.crd.projectcalico.org is forbidden',
-        }))
-      }
-      return Promise.resolve({ items: [{ spec: { podCIDR: '10.244.0.0/24' } }] })
-    }) as never)
+    cluster.poolsDenied = true
+    cluster.nodes = [{ podCIDR: '10.244.0.0/24' }]
     const cidrDeps = makeDeps({ run: adoptRun() })
     const cidrErr = await runClusterInstall(BYO, cidrDeps).catch((e: unknown) => e)
     expect(cidrErr).toBeInstanceOf(ClusterInstallError)

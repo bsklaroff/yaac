@@ -6,13 +6,14 @@
 import { execFile } from 'node:child_process'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { k8sNamespace, kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/drivers/k8s/substrate/kubectl'
+import { applyObject, k8sNamespace, readObject } from '@yaac/server/drivers/k8s/substrate/api'
 import { runtimeClassSpec } from '@yaac/server/drivers/k8s/substrate/gvisor'
 import { CA_CONFIGMAP_NAME } from '@yaac/server/drivers/k8s/substrate/pod-spec'
 import { workspaceIdLabels } from '@yaac/server/drivers/k8s/substrate/pods'
 import { baseImageHash } from '@yaac/server/drivers/k8s/image-engine/image-builder'
 import { registryHasTag, registryRef } from '@yaac/server/drivers/k8s/container/registry'
 import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
+import { kubectl } from '#kubectl'
 
 const execFileAsync = promisify(execFile)
 
@@ -54,7 +55,7 @@ export async function waitForPod(
       .then(() => { throw new Error(`reached terminal phase ${phase}`) }, () => new Promise<never>(() => {}))
   try {
     await Promise.race([
-      kubectlWithRetry(
+      kubectl(
         waitArgs(opts.ready ? 'condition=Ready' : 'jsonpath={.status.phase}=Running'),
         { timeout: timeoutMs + 30_000 },
       ),
@@ -63,9 +64,9 @@ export async function waitForPod(
     ])
   } catch (err) {
     interface RawPod { status?: { phase?: string; containerStatuses?: Array<{ name: string; state?: unknown }> } }
-    const pod = await kubectlGetJson<RawPod>(['get', 'pod', name, '-n', namespace]).catch(() => null)
+    const pod = await readObject<RawPod>({ apiVersion: 'v1', kind: 'Pod', name, namespace }).catch(() => null)
     const states = (pod?.status?.containerStatuses ?? []).map((c) => `${c.name}: ${JSON.stringify(c.state)}`)
-    const events = await kubectlWithRetry(
+    const events = await kubectl(
       ['get', 'events', '-n', namespace, '--field-selector', `involvedObject.name=${name}`],
       { timeout: 30_000 },
     ).catch((e: Error) => ({ stdout: `events failed: ${e.message}` }))
@@ -95,7 +96,7 @@ export async function startWorkspacePod(
   } = {},
 ): Promise<void> {
   const emptyDirs = Object.entries(opts.emptyDirs ?? {})
-  await kubectlApply({
+  await applyObject({
     apiVersion: 'v1',
     kind: 'Pod',
     metadata: {

@@ -11,16 +11,6 @@ import path from 'node:path'
 
 const execFileAsync = promisify(execFile)
 
-vi.mock('#drivers/k8s/substrate/kubectl', () => ({
-  isKubectlAbsentError: vi.fn(() => false),
-  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
-  k8sNamespace: vi.fn(() => 'test-ns'),
-  dataDirHash: vi.fn(() => 'ddh16'),
-  kubectlApply: vi.fn().mockResolvedValue(undefined),
-  kubectlGetJson: vi.fn(),
-  kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-  execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-}))
 vi.mock('#drivers/k8s/container/registry', () => ({
   registryHasTag: vi.fn().mockResolvedValue(true),
   registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
@@ -29,11 +19,8 @@ vi.mock('#drivers/k8s/container/registry', () => ({
 
 import { reapNodeLocal } from '#drivers/k8s/images'
 import { buildNodeLocalSweepScript } from '#drivers/k8s/images/node-local-sweep'
-import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/substrate/kubectl'
-
-const mockApply = vi.mocked(kubectlApply)
-const mockGetJson = vi.mocked(kubectlGetJson)
-const mockWithRetry = vi.mocked(kubectlWithRetry)
+import { LABEL_DATA_DIR_HASH, LABEL_WORKSPACE_ID, dataDirHash, k8sNamespace } from '#drivers/k8s/substrate'
+import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 interface PodManifest {
   metadata: { name: string; namespace: string; labels: Record<string, string> }
@@ -45,27 +32,39 @@ interface PodManifest {
     containers: Array<{ command: string[]; securityContext: unknown; volumeMounts: Array<{ mountPath: string }> }>
   }
 }
-const appliedPods = (): PodManifest[] => mockApply.mock.calls.map((c) => c[0] as unknown as PodManifest)
+const appliedPods = (): PodManifest[] =>
+  fakeCluster.callsOf('apply', 'Pod').map((c) => c.body as unknown as PodManifest)
+
+/** Every sweep pod the code applies reaches `phase` at once. */
+function podsFinish(phase: string): void {
+  fakeCluster.intercept((c) => {
+    if (c.verb === 'apply' && c.kind === 'Pod') c.body = { ...c.body, status: { phase } }
+  })
+}
 
 const LIVE = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
 const GONE = 'c9d8e7f6-a5b4-4c3d-8e2f-1a0b9c8d7e6f'
 const NOTHING = { projectIds: new Set<string>(), workspaceIds: new Set<string>() }
 
-/** Nodes, and the hostPath volumes this install's workspace pods mount. */
+/** Nodes, and the hostPath volumes this install's workspace pod mounts. */
 function stageNodes(names: string[], podHostPaths: string[] = []): void {
-  mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
-    if (args[1] === 'nodes') return Promise.resolve({ items: names.map((name) => ({ metadata: { name } })) })
-    if (args[1] === 'pods') {
-      return Promise.resolve({ items: [{ spec: { volumes: podHostPaths.map((p) => ({ hostPath: { path: p } })) } }] })
-    }
-    return Promise.resolve({ status: { phase: 'Succeeded' } })
+  fakeCluster.seed(...names.map((name) => ({ apiVersion: 'v1', kind: 'Node', metadata: { name } })))
+  fakeCluster.seed({
+    apiVersion: 'v1',
+    kind: 'Pod',
+    metadata: {
+      name: 'workspace-pod',
+      namespace: k8sNamespace(),
+      labels: { [LABEL_DATA_DIR_HASH]: dataDirHash(), [LABEL_WORKSPACE_ID]: 'w1' },
+    },
+    spec: { volumes: podHostPaths.map((p) => ({ hostPath: { path: p } })) },
   })
 }
 
+const NODE_TREE = `/var/lib/yaac/node/${dataDirHash()}`
+
 beforeEach(() => {
-  mockApply.mockReset().mockResolvedValue(undefined)
-  mockGetJson.mockReset()
-  mockWithRetry.mockReset().mockResolvedValue({ stdout: '', stderr: '' })
+  podsFinish('Succeeded')
 })
 
 describe('reapNodeLocal', () => {
@@ -73,20 +72,20 @@ describe('reapNodeLocal', () => {
     // A pod mounting the slug-named `projects/demo` keeps that tree alive;
     // a volume outside the node-local tree is ignored.
     stageNodes(['n1', 'n2'], [
-      '/var/lib/yaac/node/ddh16/projects/demo/.cached-packages',
-      `/var/lib/yaac/node/ddh16/shared-images/${LIVE}/gen-1`,
-      '/var/lib/yaac/global/ddh16/projects/elsewhere',
+      `${NODE_TREE}/projects/demo/.cached-packages`,
+      `${NODE_TREE}/shared-images/${LIVE}/gen-1`,
+      `/var/lib/yaac/global/${dataDirHash()}/projects/elsewhere`,
     ])
     await reapNodeLocal({ projectIds: new Set([LIVE]), workspaceIds: new Set(['a', 'b']) })
 
     const pods = appliedPods()
     expect(pods.map((p) => p.spec.nodeName)).toEqual(['n1', 'n2'])
     for (const pod of pods) {
-      expect(pod.metadata.namespace).toBe('test-ns')
+      expect(pod.metadata.namespace).toBe(k8sNamespace())
       expect(pod.spec.runtimeClassName).toBeUndefined()
       expect(pod.spec.tolerations).toEqual([{ operator: 'Exists' }])
       expect(pod.spec.containers[0].securityContext).toEqual({ runAsUser: 0 })
-      expect(pod.spec.volumes[0].hostPath?.path).toBe('/var/lib/yaac/node/ddh16')
+      expect(pod.spec.volumes[0].hostPath?.path).toBe(NODE_TREE)
       expect(pod.spec.containers[0].volumeMounts).toEqual([{ name: 'node', mountPath: '/node' }])
       const argv = pod.spec.containers[0].command.slice(4)
       expect(argv).toHaveLength(3)
@@ -98,9 +97,8 @@ describe('reapNodeLocal', () => {
   })
 
   it('stands down when the pods holding the tree cannot be read', async () => {
-    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => (args[1] === 'pods'
-      ? Promise.reject(new Error('connection refused'))
-      : Promise.resolve({ items: [{ metadata: { name: 'n1' } }] })))
+    stageNodes(['n1'])
+    fakeCluster.intercept((c) => { if (c.verb === 'list' && c.kind === 'Pod') throw apiError(503) })
     await expect(reapNodeLocal(NOTHING)).resolves.toBeUndefined()
     // An unknown mount set must not read as "nothing is mounted".
     expect(appliedPods()).toHaveLength(0)
@@ -108,21 +106,22 @@ describe('reapNodeLocal', () => {
 
   it('first deletes the sweep pods a previous server life left behind, by this install\'s labels', async () => {
     stageNodes(['n1'])
+    const labels = { app: 'yaac-node-local-sweep', 'yaac.sweep-data-dir-hash': dataDirHash() }
+    fakeCluster.seed(
+      { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'stray', namespace: k8sNamespace(), labels } },
+      { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'other-install', namespace: k8sNamespace(), labels: { ...labels, 'yaac.sweep-data-dir-hash': 'x' } } },
+    )
     await reapNodeLocal(NOTHING)
     // The label delete sweeps leftover pods before any pod is applied.
-    const strays = mockWithRetry.mock.calls
-      .map(([args], i) => ({ args, order: mockWithRetry.mock.invocationCallOrder[i] }))
-      .filter(({ args }) => args[0] === 'delete' && args.includes('-l'))
-    expect(strays).toHaveLength(1)
-    expect(strays[0].args).toContain('app=yaac-node-local-sweep,yaac.sweep-data-dir-hash=ddh16')
-    expect(strays[0].order).toBeLessThan(mockApply.mock.invocationCallOrder[0])
+    const verbs = fakeCluster.calls.map((c) => `${c.verb} ${c.name ?? ''}`)
+    expect(verbs.indexOf('delete stray')).toBeGreaterThan(-1)
+    expect(verbs.indexOf('delete stray')).toBeLessThan(verbs.findIndex((v) => v.startsWith('apply')))
+    expect(fakeCluster.get('Pod', 'other-install')).toBeDefined()
   })
 
   it('never rejects: a node whose pod fails is logged and the next one still runs', async () => {
-    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
-      if (args[1] === 'nodes') return Promise.resolve({ items: [{ metadata: { name: 'n1' } }, { metadata: { name: 'n2' } }] })
-      return Promise.resolve({ status: { phase: 'Failed' } })
-    })
+    stageNodes(['n1', 'n2'])
+    podsFinish('Failed')
     await expect(reapNodeLocal(NOTHING)).resolves.toBeUndefined()
     expect(appliedPods()).toHaveLength(2)
   })

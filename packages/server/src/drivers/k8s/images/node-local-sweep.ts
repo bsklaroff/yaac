@@ -17,7 +17,7 @@ import path from 'node:path'
 import {
   dataDirHash,
   k8sNamespace,
-  kubectlGetJson,
+  listObjects,
   nodeLocalNodePath,
   runOnEachNode,
   workspacePodSelector,
@@ -89,8 +89,8 @@ export function buildNodeLocalSweepScript(): string {
   ].join('\n')
 }
 
-interface RawPodList {
-  items: Array<{ spec?: { volumes?: Array<{ hostPath?: { path?: string } }> } }>
+interface RawPod {
+  spec?: { volumes?: Array<{ hostPath?: { path?: string } }> }
 }
 
 /**
@@ -99,11 +99,11 @@ interface RawPodList {
  * returning an empty set.
  */
 async function mountedProjectNames(): Promise<Set<string>> {
-  const pods = await kubectlGetJson<RawPodList>([
-    'get', 'pods', '-n', k8sNamespace(), '-l', workspacePodSelector(),
-  ])
+  const pods = await listObjects<RawPod>('v1', 'Pod', {
+    namespace: k8sNamespace(), labelSelector: workspacePodSelector(),
+  })
   const names = new Set<string>()
-  for (const pod of pods?.items ?? []) {
+  for (const pod of pods) {
     for (const vol of pod.spec?.volumes ?? []) {
       const p = vol.hostPath?.path
       if (!p) continue

@@ -3,21 +3,21 @@
  * nginx, and the URL a
  * workspace create reads to decide whether pnpm installs through it.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import type * as childProcess from 'node:child_process'
+import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 import type * as registryModule from '#drivers/k8s/container/registry'
 
-// kubectl is the process boundary; everything behind it runs for real.
-const mockKubectlApply = vi.hoisted(() => vi.fn())
-const mockKubectlWithRetry = vi.hoisted(() => vi.fn())
-const mockKubectlGetJson = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
-  ...(await importOriginal<typeof kubectlModule>()),
-  k8sNamespace: () => 'test-ns',
-  dataDirHash: () => 'ddh16',
-  kubectlApply: mockKubectlApply,
-  kubectlWithRetry: mockKubectlWithRetry,
-  kubectlGetJson: mockKubectlGetJson,
+// The cluster and `kubectl rollout status` are the boundaries; everything
+// behind them runs for real. `events` records their order.
+const events = vi.hoisted((): string[] => [])
+const mockRollout = vi.hoisted(() => vi.fn())
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...await importOriginal<typeof childProcess>(),
+  execFile: (_file: string, args: string[], _opts: unknown, cb: (err: unknown, res?: object) => void) => {
+    events.push(args.slice(0, 3).join(' '))
+    ;(mockRollout() as Promise<void>).then(() => { cb(null, { stdout: '', stderr: '' }) }, cb)
+  },
 }))
 
 // The node-CIDR probe behind the network policies reads the live cluster.
@@ -39,6 +39,8 @@ import {
   ensureNpmCache,
   servingNpmCacheUrl,
 } from '#drivers/k8s/cluster'
+// A setup value: the claim name carries it.
+import { dataDirHash } from '#drivers/k8s/substrate'
 
 interface Manifest {
   kind: string
@@ -47,15 +49,21 @@ interface Manifest {
   data?: Record<string, string>
 }
 
-const applied = (): Manifest[] => mockKubectlApply.mock.calls.map((c) => c[0] as Manifest)
+const applied = (): Manifest[] => fakeCluster.callsOf('apply').map((c) => c.body as unknown as Manifest)
 const appliedNamed = (kind: string, name: string): Manifest | undefined =>
   applied().find((m) => m.kind === kind && m.metadata.name === name)
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
+  events.length = 0
   mockRegistryHasTag.mockResolvedValue(true)
-  mockKubectlApply.mockResolvedValue(undefined)
-  mockKubectlWithRetry.mockResolvedValue({ stdout: '', stderr: '' })
+  mockRollout.mockResolvedValue(undefined)
+  fakeCluster.intercept((call) => { events.push(`${call.verb} ${call.kind}`) })
+})
+
+afterEach(() => {
+  vi.unstubAllEnvs()
 })
 
 describe('ensureNpmCache', () => {
@@ -105,7 +113,7 @@ describe('ensureNpmCache', () => {
             },
           ],
           volumes: expect.arrayContaining([
-            { name: 'storage', persistentVolumeClaim: { claimName: 'yaac-npm-cache-storage-ddh16' } },
+            { name: 'storage', persistentVolumeClaim: { claimName: `yaac-npm-cache-storage-${dataDirHash()}` } },
           ]) as unknown,
         },
       },
@@ -134,7 +142,7 @@ describe('ensureNpmCache', () => {
     expect(nginxConf).toContain('set $npmjs registry.npmjs.org;')
     expect(nginxConf).toContain('proxy_ssl_verify on;')
     // No storageClassName: binds through the cluster's default class.
-    expect(appliedNamed('PersistentVolumeClaim', 'yaac-npm-cache-storage-ddh16')?.spec).toEqual({
+    expect(appliedNamed('PersistentVolumeClaim', `yaac-npm-cache-storage-${dataDirHash()}`)?.spec).toEqual({
       accessModes: ['ReadWriteOnce'],
       resources: { requests: { storage: '20Gi' } },
     })
@@ -175,17 +183,11 @@ describe('ensureNpmCache', () => {
 
     // The Service is applied last, after the rollout, so a cache that
     // never came up has no Service.
-    const kinds = applied().map((m) => m.kind)
-    expect(kinds.at(-1)).toBe('Service')
-    const rollout = mockKubectlWithRetry.mock.calls.findIndex(([args]) =>
-      (args as string[]).join(' ').startsWith('rollout status deployment/yaac-npm-cache'))
-    expect(rollout).toBeGreaterThanOrEqual(0)
-    expect(mockKubectlWithRetry.mock.invocationCallOrder[rollout])
-      .toBeLessThan(mockKubectlApply.mock.invocationCallOrder.at(-1)!)
+    expect(events.slice(-2)).toEqual(['rollout status deployment/yaac-npm-cache', 'apply Service'])
   })
 
   it('publishes no Service for a cache that never rolled out', async () => {
-    mockKubectlWithRetry.mockRejectedValue(new Error('timed out waiting for the condition'))
+    mockRollout.mockRejectedValue(new Error('timed out waiting for the condition'))
 
     await expect(ensureNpmCache()).rejects.toThrow(/no default StorageClass/)
     expect(applied().some((m) => m.kind === 'Service')).toBe(false)
@@ -197,7 +199,7 @@ describe('ensureNpmCache', () => {
 
     mockRegistryHasTag.mockImplementation((tag: string) => Promise.resolve(tag !== NGINX_MIRROR_TAG))
     await expect(ensureNpmCache()).rejects.toThrow(/nginx/)
-    expect(mockKubectlApply).not.toHaveBeenCalled()
+    expect(applied()).toEqual([])
   })
 })
 
@@ -206,24 +208,21 @@ describe('servingNpmCacheUrl', () => {
   // fails every install. The URL is given only while a pod is ready, and
   // is checked on every call.
   it('names the Service only while a cache pod is ready behind it', async () => {
-    const slices = (ready?: boolean): unknown => ({
-      items: ready === undefined ? [] : [{ endpoints: [{ conditions: { ready } }] }],
+    const slice = (name: string, service: string, ready: boolean) => ({
+      apiVersion: 'discovery.k8s.io/v1',
+      kind: 'EndpointSlice',
+      metadata: { name, namespace: 'test-ns', labels: { 'kubernetes.io/service-name': service } },
+      endpoints: [{ conditions: { ready } }],
     })
     const url = 'http://yaac-npm-cache.test-ns.svc.cluster.local:4873/'
-    mockKubectlGetJson
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(slices())
-      .mockResolvedValueOnce(slices(false))
-      .mockResolvedValueOnce(slices(true))
-      .mockResolvedValueOnce(slices(false))
 
     await expect(servingNpmCacheUrl()).resolves.toBeNull()
+    // Another Service's ready endpoint says nothing about the cache.
+    fakeCluster.seed(slice('other', 'yaac-proxy', true), slice('cache-a', 'yaac-npm-cache', false))
     await expect(servingNpmCacheUrl()).resolves.toBeNull()
-    await expect(servingNpmCacheUrl()).resolves.toBeNull()
+    fakeCluster.seed(slice('cache-a', 'yaac-npm-cache', true))
     await expect(servingNpmCacheUrl()).resolves.toBe(url)
+    fakeCluster.seed(slice('cache-a', 'yaac-npm-cache', false))
     await expect(servingNpmCacheUrl()).resolves.toBeNull()
-    expect(mockKubectlGetJson).toHaveBeenLastCalledWith([
-      'get', 'endpointslices', '-n', 'test-ns', '-l', 'kubernetes.io/service-name=yaac-npm-cache',
-    ])
   })
 })

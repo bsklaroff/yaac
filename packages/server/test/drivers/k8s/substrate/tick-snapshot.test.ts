@@ -1,24 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-
-// Mock the kubectl child process that fallback listings use; the object
-// layer above it runs for real.
-type ExecResult = { stdout: string; stderr: string }
-type ExecCallback = (err: unknown, res?: ExecResult) => void
-const execFileMock = vi.fn<(file: string, args: readonly string[]) => Promise<ExecResult>>()
-vi.mock('node:child_process', () => ({
-  execFile: (file: string, args: readonly string[], opts: unknown, cb?: ExecCallback) => {
-    const actualCb = (typeof opts === 'function' ? opts : cb) as ExecCallback
-    void execFileMock(file, args).then(
-      (res) => actualCb(null, res),
-      (err: unknown) => actualCb(err),
-    )
-    return { stdin: { end: vi.fn() } }
-  },
-  exec: vi.fn(),
-}))
+import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 import {
   createTickSnapshot,
+  dataDirHash,
   setActiveClusterCache,
   type ClusterCache,
   type PodInfo,
@@ -26,19 +11,20 @@ import {
 
 const SID = '0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9'
 
-/** Raw kubectl payloads, keyed by the resource in the argv. */
-const payloads: Record<string, unknown> = {}
-
-function rawPod(name: string): unknown {
+function rawPod(name: string) {
   return {
+    apiVersion: 'v1',
+    kind: 'Pod',
     metadata: {
       name,
+      namespace: 'test-ns',
       labels: {
         'batch.kubernetes.io/job-name': `yaac-demo-${SID}`,
         'yaac.workspace-id': SID,
         'yaac.project': 'demo',
         'yaac.project-id': '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
         'yaac.tool': 'claude',
+        'yaac.data-dir-hash': dataDirHash(),
       },
       creationTimestamp: '2026-06-01T00:00:00Z',
     },
@@ -55,16 +41,9 @@ function healthyCache(): ClusterCache {
   } as unknown as ClusterCache
 }
 
-/** kubectl argv → the resource it lists (`get <kind> -n <ns> …`). */
-const kindOf = (args: readonly string[]): string => args[1]
-
 beforeEach(() => {
   vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
-  execFileMock.mockReset()
-  execFileMock.mockImplementation((_file, args) =>
-    Promise.resolve({ stdout: JSON.stringify(payloads[kindOf(args)] ?? { items: [] }), stderr: '' }))
-  payloads['pods'] = { items: [rawPod('yaac-demo-p1')] }
-  payloads['jobs'] = { items: [] }
+  fakeCluster.seed(rawPod('yaac-demo-p1'))
 })
 
 afterEach(() => {
@@ -75,7 +54,7 @@ afterEach(() => {
 describe('createTickSnapshot', () => {
   it('is lazy — creating a snapshot lists nothing', () => {
     createTickSnapshot()
-    expect(execFileMock).not.toHaveBeenCalled()
+    expect(fakeCluster.calls).toEqual([])
   })
 
   it('defaults to resync=true for direct invocations', () => {
@@ -91,42 +70,33 @@ describe('createTickSnapshot', () => {
     expect(await snap.pods()).toBe(pods)
     await snap.jobs()
     await snap.jobs()
-    expect(execFileMock).toHaveBeenCalledTimes(2)
+    expect(fakeCluster.callsOf('list')).toHaveLength(2)
     // Each fallback is scoped install-wide by data-dir hash.
-    const argv = execFileMock.mock.calls.map(([, args]) => args.join(' '))
-    expect(argv.find((c) => c.startsWith('get pods -n test-ns')))
-      .toMatch(/-l yaac\.data-dir-hash=[0-9a-f]{16},yaac\.workspace-id/)
+    expect(fakeCluster.callsOf('list', 'Pod')[0]).toMatchObject({
+      namespace: 'test-ns',
+      labelSelector: expect.stringMatching(/^yaac\.data-dir-hash=[0-9a-f]{16},yaac\.workspace-id$/) as unknown,
+    })
   })
 
   it('separate snapshots list independently', async () => {
     await createTickSnapshot().pods()
     await createTickSnapshot().pods()
-    expect(execFileMock).toHaveBeenCalledTimes(2)
-  })
-
-  it('reads an absent namespace as empty rather than an error', async () => {
-    // The namespace was deleted mid-pass and kubectl returns 404.
-    execFileMock.mockRejectedValue(
-      Object.assign(new Error('kubectl failed'), { stderr: 'Error from server (NotFound)' }),
-    )
-    const snap = createTickSnapshot()
-    expect(await snap.pods()).toEqual([])
-    expect(await snap.jobs()).toEqual([])
+    expect(fakeCluster.callsOf('list')).toHaveLength(2)
   })
 
   it('a failed listing stays failed for the whole snapshot (no per-consumer retry)', async () => {
-    execFileMock.mockRejectedValue(Object.assign(new Error('kubectl failed'), { stderr: 'forbidden' }))
+    fakeCluster.intercept(() => { throw apiError(403, 'forbidden') })
     const snap = createTickSnapshot()
-    await expect(snap.pods()).rejects.toThrow('kubectl failed')
-    await expect(snap.pods()).rejects.toThrow('kubectl failed')
-    expect(execFileMock).toHaveBeenCalledTimes(1)
+    await expect(snap.pods()).rejects.toThrow('403')
+    await expect(snap.pods()).rejects.toThrow('403')
+    expect(fakeCluster.callsOf('list')).toHaveLength(1)
   })
 
   it('answers from a healthy active cluster cache without listing', async () => {
     setActiveClusterCache(healthyCache())
     const snap = createTickSnapshot()
     expect((await snap.pods()).map((p) => p.podName)).toEqual(['cached'])
-    expect(execFileMock).not.toHaveBeenCalled()
+    expect(fakeCluster.calls).toEqual([])
   })
 
   it('falls back to a live list when the cache source is unhealthy', async () => {
@@ -137,6 +107,6 @@ describe('createTickSnapshot', () => {
     const snap = createTickSnapshot()
     expect((await snap.pods()).map((p) => p.podName)).toEqual(['yaac-demo-p1'])
     await snap.jobs()
-    expect(execFileMock).toHaveBeenCalledTimes(2)
+    expect(fakeCluster.callsOf('list')).toHaveLength(2)
   })
 })

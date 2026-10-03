@@ -1,8 +1,8 @@
 import {
   PRE_STOP_GRACE_SECONDS,
   findWorkspacePod,
+  execFileAsync,
   k8sNamespace,
-  kubectlWithRetry,
   readWorkspacePods,
 } from '#drivers/k8s/substrate'
 import { deregisterWorkspaceEgress } from '#drivers/k8s/egress'
@@ -66,10 +66,11 @@ const DETACHED_DELETE_TIMEOUT = `${String(PRE_STOP_GRACE_SECONDS + 30)}s`
  *
  * 1. Deregister, so nothing routes to or holds ports for the dying pod.
  * 2. Salvage images, which execs into the pod that step 3 deletes.
- * 3. Delete the Job with `--cascade=foreground --wait`. Both flags are
- *    needed: with the default background cascade, `--wait` returns once the
- *    Job is gone while the pod keeps running (and writing to /workspace)
- *    through its grace period.
+ * 3. Delete the Job with `kubectl delete --cascade=foreground --wait`. Both
+ *    flags are needed: with the default background cascade, `--wait`
+ *    returns once the Job is gone while the pod keeps running (and writing
+ *    to /workspace) through its grace period. It stays kubectl so it is the
+ *    same command `detachedTeardownCommand` hands to a shell.
  *
  * Resolves `false` if step 3 could not confirm the pod is gone. Callers
  * about to remove the workspace's files check this; the stale reaper later
@@ -89,7 +90,7 @@ export async function destroyWorkspace(
 
   let unitGone = true
   try {
-    await kubectlWithRetry([
+    await execFileAsync('kubectl', [
       'delete', 'job', target.unitName, '-n', k8sNamespace(),
       '--ignore-not-found', '--cascade=foreground', '--wait=true',
       `--timeout=${UNIT_DELETE_TIMEOUT}`,

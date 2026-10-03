@@ -4,14 +4,14 @@
 // (docs/stream-relay.md).
 import net from 'node:net'
 import crypto from 'node:crypto'
+import type * as childProcess from 'node:child_process'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type * as netModule from 'node:net'
 
-// The socket is a real listener. The two kubectl reads (the proxy auth
-// secret and, when nested, the inner proxy's pod IP) are mocked below.
+// The socket is a real listener. The proxy auth Secret is read from the
+// fake cluster, and the kubectl exec boot is a mocked child process.
 type ExecResult = { stdout: string; stderr: string }
 type ExecCallback = (err: unknown, res?: ExecResult) => void
-const execFileMock = vi.fn<(file: string, args: readonly string[]) => Promise<ExecResult>>()
 const execMock = vi.fn<(command: string) => Promise<ExecResult>>()
 const spawnMock = vi.fn<(file: string, args: readonly string[]) => unknown>()
 /** Where a dial to the proxy Service lands: the fake relay's `host:port`,
@@ -26,15 +26,8 @@ vi.mock('node:net', async (importOriginal) => {
   }
   return { ...real, connect, default: { ...real, connect } }
 })
-vi.mock('node:child_process', () => ({
-  execFile: (file: string, args: readonly string[], opts: unknown, cb?: ExecCallback) => {
-    const actualCb = (typeof opts === 'function' ? opts : cb) as ExecCallback
-    void execFileMock(file, args).then(
-      (res) => actualCb(null, res),
-      (err: unknown) => actualCb(err),
-    )
-    return { stdin: { end: vi.fn() } }
-  },
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...await importOriginal<typeof childProcess>(),
   exec: (command: string, opts: unknown, cb?: ExecCallback) => {
     const actualCb = (typeof opts === 'function' ? opts : cb) as ExecCallback
     void execMock(command).then(
@@ -63,20 +56,20 @@ import {
 } from '#drivers/k8s/substrate/stream-relay'
 import { FRAME_DATA, FRAME_EXIT, FRAME_RESIZE, FrameParser, encodeFrame } from '@yaac/shared/stream-frames'
 import { WorkspaceExecError } from '#drivers/contract'
+import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 const SECRET = 'relay-secret-0123456789abcdef'
 const SID = '0f9b2c4d-1111-2222-3333-444455556666'
 const JOB = `yaac-demo-${SID}`
 
-/** Serve the two kubectl reads: the proxy auth Secret and the pods list. */
-let podsPayload: unknown = { items: [] }
-function serveKubectl(): void {
-  execFileMock.mockImplementation((_file, args) => Promise.resolve({
-    stdout: JSON.stringify(args[1] === 'secret'
-      ? { data: { secret: Buffer.from(SECRET).toString('base64') } }
-      : podsPayload),
-    stderr: '',
-  }))
+/** The proxy auth Secret, as the proxy's first deploy creates it. */
+function seedSecret(): void {
+  fakeCluster.seed({
+    apiVersion: 'v1',
+    kind: 'Secret',
+    metadata: { name: 'yaac-proxy-auth', namespace: 'test-ns' },
+    data: { secret: Buffer.from(SECRET).toString('base64') },
+  })
 }
 
 interface Received {
@@ -126,12 +119,10 @@ let relay: { port: number; close: () => void } | null = null
 
 beforeEach(() => {
   _resetRelayCacheForTests()
-  execFileMock.mockReset()
   execMock.mockReset()
   spawnMock.mockReset()
-  podsPayload = { items: [] }
   vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
-  serveKubectl()
+  seedSecret()
 })
 
 afterEach(() => {
@@ -154,9 +145,7 @@ const okThen = (r: Received, body?: Buffer): void => {
 describe('readProxyAuthSecret', () => {
   it('decodes the Secret, and answers null before the proxy\'s first deploy creates it', async () => {
     await expect(readProxyAuthSecret()).resolves.toBe(SECRET)
-    execFileMock.mockRejectedValue(Object.assign(new Error('kubectl failed'), {
-      stderr: 'Error from server (NotFound): secrets "yaac-proxy-auth" not found',
-    }))
+    fakeCluster.reset()
     await expect(readProxyAuthSecret()).resolves.toBeNull()
   })
 })

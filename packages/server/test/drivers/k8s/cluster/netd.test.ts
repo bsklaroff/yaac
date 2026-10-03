@@ -6,20 +6,19 @@
  * `ensureProxyResources`, which is what applies it in production.
  */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
-import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
+import type * as childProcess from 'node:child_process'
+import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 import type * as registryModule from '#drivers/k8s/container/registry'
 import type * as imageEngineModule from '#drivers/k8s/image-engine'
 
-
-const mockKubectlApply = vi.hoisted(() => vi.fn())
-const mockKubectlWithRetry = vi.hoisted(() => vi.fn())
-const mockKubectlGetJson = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
-  ...(await importOriginal<typeof kubectlModule>()),
-  k8sNamespace: () => 'test-ns',
-  kubectlApply: mockKubectlApply,
-  kubectlWithRetry: mockKubectlWithRetry,
-  kubectlGetJson: mockKubectlGetJson,
+// `kubectl rollout status` is the one child process; it records its argv.
+const mockExecFile = vi.hoisted(() => vi.fn())
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...await importOriginal<typeof childProcess>(),
+  execFile: (file: string, args: string[], _opts: unknown, cb: (err: unknown, res: object) => void) => {
+    mockExecFile(file, args)
+    cb(null, { stdout: '', stderr: '' })
+  },
 }))
 
 const mockRegistryHasTag = vi.hoisted(() => vi.fn())
@@ -40,23 +39,15 @@ import { cniVethPrefix, ensureNetd, resolveNetdImageTag } from '#drivers/k8s/clu
 import { DEFAULT_VETH_PREFIX, ENVOY_MIRROR_TAG } from '#drivers/k8s/cluster/netd'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster'
 
-/** Each applied object, with a `List` apply's items in order. */
-const applied = (kind: string): Record<string, unknown> | undefined =>
-  mockKubectlApply.mock.calls
-    .flatMap((c) => {
-      const m = c[0] as { kind: string; items?: Array<{ kind: string }> }
-      return m.kind === 'List' ? m.items ?? [] : [m]
-    })
-    .find((m) => m.kind === kind) as Record<string, unknown> | undefined
+const applied = (kind: string): Record<string, unknown> | undefined => fakeCluster.get(kind, 'yaac-netd')
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
   resetClusterCidrCache()
   mockContextHash.mockResolvedValue('abc123def4567890')
   mockRegistryHasTag.mockResolvedValue(true)
-  mockKubectlApply.mockResolvedValue(undefined)
-  mockKubectlWithRetry.mockResolvedValue({ stdout: '', stderr: '' })
-  mockKubectlGetJson.mockResolvedValue({ items: [{ spec: { podCIDR: '10.244.0.0/24' } }] })
+  fakeCluster.seed({ apiVersion: 'v1', kind: 'Node', metadata: { name: 'n1' }, spec: { podCIDR: '10.244.0.0/24' } })
 })
 
 afterEach(() => {
@@ -88,32 +79,37 @@ describe('ensureNetd', () => {
   it('applies namespaced RBAC and the DaemonSet, waits for the rollout, then drops the old cluster RBAC', async () => {
     await ensureNetd()
 
-    // One apply, RBAC before the DaemonSet that uses it. netd reads only
-    // its own namespace, so nothing it is granted is cluster-wide.
-    expect(mockKubectlApply).toHaveBeenCalledOnce()
-    const list = mockKubectlApply.mock.calls[0][0] as { kind: string; items: Array<{ kind: string }> }
-    expect(list.kind).toBe('List')
-    expect(list.items.map((m) => m.kind)).toEqual(['ServiceAccount', 'Role', 'RoleBinding', 'DaemonSet'])
+    // RBAC before the DaemonSet that uses it. netd reads only its own
+    // namespace, so nothing it is granted is cluster-wide.
+    expect(fakeCluster.callsOf('apply').map((c) => c.kind)).toEqual(['ServiceAccount', 'Role', 'RoleBinding', 'DaemonSet'])
     const role = applied('Role') as { metadata: { namespace: string }; rules: Array<{ resources: string[]; verbs: string[] }> }
     expect(role.metadata.namespace).toBe('test-ns')
     expect(role.rules).toEqual([
       { apiGroups: [''], resources: ['pods', 'services'], verbs: ['get', 'list', 'watch'] },
     ])
 
-    // The legacy sweep runs after the rollout, so the pods being replaced
-    // keep their watch until then.
-    expect(mockKubectlWithRetry.mock.calls.map((c) => (c[0] as string[]).slice(0, 2))).toEqual([
-      ['rollout', 'status'],
-      ['delete', 'clusterrolebinding,clusterrole'],
-    ])
-    expect(mockKubectlWithRetry).toHaveBeenCalledWith(
-      ['rollout', 'status', 'daemonset/yaac-netd', '-n', 'test-ns', '--timeout=180s'],
-      expect.objectContaining({ maxAttempts: 2 }),
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'kubectl', ['rollout', 'status', 'daemonset/yaac-netd', '-n', 'test-ns', '--timeout=180s'],
     )
-    expect(mockKubectlWithRetry).toHaveBeenCalledWith([
-      'delete', 'clusterrolebinding,clusterrole', '--ignore-not-found',
-      '-l', 'app=yaac-netd,yaac.install-namespace=test-ns',
-    ])
+  })
+
+  it('drops the cluster RBAC an older netd of this install left, after the rollout', async () => {
+    const legacy = (kind: string, ns: string) => ({
+      apiVersion: 'rbac.authorization.k8s.io/v1',
+      kind,
+      metadata: { name: `yaac-netd-${ns}`, labels: { app: 'yaac-netd', 'yaac.install-namespace': ns } },
+    })
+    fakeCluster.seed(
+      legacy('ClusterRole', 'test-ns'), legacy('ClusterRoleBinding', 'test-ns'), legacy('ClusterRole', 'other-ns'),
+    )
+    // The pods being replaced keep their watch until the rollout is done.
+    fakeCluster.intercept((call) => {
+      if (call.verb === 'delete') expect(mockExecFile).toHaveBeenCalled()
+    })
+    await ensureNetd()
+
+    expect(fakeCluster.objects('ClusterRole').map((o) => o.metadata.name)).toEqual(['yaac-netd-other-ns'])
+    expect(fakeCluster.objects('ClusterRoleBinding')).toEqual([])
   })
 
   it('resolves both images from the registry and never builds one', async () => {

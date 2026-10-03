@@ -1,4 +1,4 @@
-import { isKubectlAbsentError, kubectlErrorSummary, kubectlGetJson } from '#drivers/k8s/substrate'
+import { isAbsent, k8sErrorSummary, listObjects } from '#drivers/k8s/substrate'
 import { env } from '@yaac/shared/env'
 import { serverLog } from '#log'
 
@@ -10,11 +10,9 @@ import { serverLog } from '#log'
  * including the registry container on the local podman network.
  */
 
-interface RawNodeList {
-  items?: Array<{
-    metadata?: { annotations?: Record<string, string> }
-    status?: { addresses?: Array<{ type?: string; address?: string }> }
-  }>
+interface RawNode {
+  metadata?: { annotations?: Record<string, string> }
+  status?: { addresses?: Array<{ type?: string; address?: string }> }
 }
 
 /**
@@ -27,12 +25,12 @@ const CALICO_TUNNEL_ANNOTATIONS = [
   'projectcalico.org/IPv4WireguardInterfaceAddr',
 ] as const
 
-interface RawPodCidrNodeList {
-  items?: Array<{ spec?: { podCIDR?: string; podCIDRs?: string[] } }>
+interface RawPodCidrNode {
+  spec?: { podCIDR?: string; podCIDRs?: string[] }
 }
 
-interface RawIpPoolList {
-  items?: Array<{ spec?: { cidr?: string; disabled?: boolean } }>
+interface RawIpPool {
+  spec?: { cidr?: string; disabled?: boolean }
 }
 
 /** Cached: node addresses change only when the cluster is rebuilt. */
@@ -53,8 +51,7 @@ export function resetClusterCidrCache(): void {
  */
 export async function nodeIpBlocks(): Promise<string[]> {
   if (nodeCidrCache) return nodeCidrCache
-  const list = await kubectlGetJson<RawNodeList>(['get', 'nodes'])
-  const items = list?.items ?? []
+  const items = await listObjects<RawNode>('v1', 'Node')
   const cidrs = items
     .flatMap((n) => n.status?.addresses ?? [])
     .filter((a) => a.type === 'InternalIP' && a.address)
@@ -151,26 +148,24 @@ export async function podCidrSources(): Promise<{
   const unreadable: Array<{ source: string; cause: string }> = []
 
   /** Read a source, telling "not served" from "could not read". */
-  const read = async <T>(source: string, args: string[]): Promise<T | null> => {
+  const read = async <T>(source: string, apiVersion: string, kind: string): Promise<T[]> => {
     try {
-      return await kubectlGetJson<T>(args)
+      return await listObjects<T>(apiVersion, kind)
     } catch (err) {
-      if (!isKubectlAbsentError(err)) {
-        unreadable.push({ source, cause: kubectlErrorSummary(err) })
+      if (!isAbsent(err)) {
+        unreadable.push({ source, cause: k8sErrorSummary(err) })
       }
-      return null
+      return []
     }
   }
 
   // Not served at all on a cluster without Calico.
-  const pools = await read<RawIpPoolList>(
-    'Calico IPPools', ['get', 'ippools.crd.projectcalico.org'],
-  )
+  const pools = await read<RawIpPool>('Calico IPPools', 'crd.projectcalico.org/v1', 'IPPool')
   // Disabled pools included: existing pods keep their addresses.
-  const poolCidrs = normalize((pools?.items ?? []).map((p) => p.spec?.cidr ?? ''))
+  const poolCidrs = normalize(pools.map((p) => p.spec?.cidr ?? ''))
 
-  const nodes = await read<RawPodCidrNodeList>('node spec.podCIDR', ['get', 'nodes'])
-  const nodeCidrs = normalize((nodes?.items ?? [])
+  const nodes = await read<RawPodCidrNode>('node spec.podCIDR', 'v1', 'Node')
+  const nodeCidrs = normalize(nodes
     .flatMap((n) => [n.spec?.podCIDR ?? '', ...(n.spec?.podCIDRs ?? [])]))
 
   return { configured, pools: poolCidrs, nodes: nodeCidrs, droppedConfigured, unreadable }

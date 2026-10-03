@@ -1,13 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import type * as apiModule from '#drivers/k8s/substrate/api'
 
 // Only the kind/podman subprocess and the TTY prompt are faked; the
 // confirmation logic runs for real.
-vi.mock('#drivers/k8s/substrate/kubectl', () => ({
-  isKubectlAbsentError: vi.fn(() => false),
-  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
+vi.mock('#drivers/k8s/substrate/api', async (importOriginal) => ({
+  ...await importOriginal<typeof apiModule>(),
   execFileAsync: vi.fn(),
-  k8sNamespace: () => 'yaac',
-  dataDirHash: () => 'ddh16',
 }))
 
 const mockQuestion = vi.fn<(q: string) => Promise<string>>()
@@ -21,7 +19,7 @@ vi.mock('node:readline/promises', () => ({
 }))
 
 import { ClusterDeleteError, runClusterDelete } from '#drivers/k8s/install'
-import { execFileAsync } from '#drivers/k8s/substrate/kubectl'
+import { execFileAsync } from '#drivers/k8s/substrate/api'
 import { serverConfigPath, writeServerConfig } from '@yaac/shared/server-config'
 import fs from 'node:fs/promises'
 

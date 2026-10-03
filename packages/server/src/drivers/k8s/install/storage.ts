@@ -24,11 +24,13 @@ import {
   LABEL_INSTALL_NAMESPACE,
   SERVER_APP_NAME,
   SERVER_LOCAL_CLAIM_NAME,
+  applyObject,
   dataDirHash,
+  deleteObjects,
   k8sNamespace,
-  kubectlApply,
-  kubectlGetJson,
-  kubectlWithRetry,
+  listObjects,
+  patchObject,
+  readObject,
   runPodToCompletion,
   type InstallIdentity,
 } from '#drivers/k8s/substrate'
@@ -196,10 +198,10 @@ async function ensureStaticClaims(
       }
       continue
     }
-    await kubectlApply(buildStaticPvManifest(claim, hostPath))
-    const pv = await kubectlGetJson<RawPv>(['get', 'pv', wanted])
+    await applyObject(buildStaticPvManifest(claim, hostPath))
+    const pv = await readVolume(wanted)
     if (pv?.status?.phase === 'Released') await clearStaleClaimRef(wanted, claim, log)
-    await kubectlApply(buildPvcManifest(claim, {
+    await applyObject(buildPvcManifest(claim, {
       storageClassName: '', volumeName: wanted, storage: NOMINAL_CAPACITY,
     }))
   }
@@ -231,7 +233,7 @@ async function ensureClassClaims(
       continue
     }
     const adopted = await readoptVolume(claim, className, shape.installId, log)
-    await kubectlApply(buildPvcManifest(claim, adopted
+    await applyObject(buildPvcManifest(claim, adopted
       ? { storageClassName: adopted.storageClassName, volumeName: adopted.name, storage: adopted.storage }
       : { storageClassName: className, storage: CLASS_CAPACITY[claim.accessMode] }))
   }
@@ -256,10 +258,10 @@ async function readoptVolume(
   installId: string,
   log: (message: string) => void,
 ): Promise<{ name: string; storageClassName: string; storage: string } | undefined> {
-  const list = await kubectlGetJson<{ items?: RawPv[] }>([
-    'get', 'pv', '-l', `${LABEL_CLAIM}=${claim.claimName},${LABEL_INSTALL_NAMESPACE}=${k8sNamespace()}`,
-  ])
-  const loose = (list?.items ?? []).filter((v) =>
+  const volumes = await listObjects<RawPv>('v1', 'PersistentVolume', {
+    labelSelector: `${LABEL_CLAIM}=${claim.claimName},${LABEL_INSTALL_NAMESPACE}=${k8sNamespace()}`,
+  })
+  const loose = volumes.filter((v) =>
     v.status?.phase === 'Released' || v.status?.phase === 'Available')
   const pv = loose.find((v) => v.metadata?.labels?.[LABEL_INSTALL_ID] === installId)
   const name = pv?.metadata?.name
@@ -303,14 +305,11 @@ async function clearStaleClaimRef(
   claim: ClaimShape,
   log: (message: string) => void,
 ): Promise<void> {
-  await kubectlWithRetry([
-    'patch', 'pv', volume, '--type=merge',
-    '-p', JSON.stringify({
-      spec: {
-        claimRef: { namespace: k8sNamespace(), name: claim.claimName, uid: null, resourceVersion: null },
-      },
-    }),
-  ])
+  await patchObject(volumeRef(volume), {
+    spec: {
+      claimRef: { namespace: k8sNamespace(), name: claim.claimName, uid: null, resourceVersion: null },
+    },
+  })
   log(`Storage volume ${volume} was Released; cleared its stale claim reference.`)
 }
 
@@ -423,13 +422,15 @@ async function runBinder(
 
 /** Wait for every claim to bind, then log the volume each bound to. */
 async function waitForBound(claims: ClaimShape[], log: (message: string) => void): Promise<void> {
-  // A failed wait is judged by the claims' phases below.
-  await kubectlWithRetry([
-    'wait', ...claims.map((c) => `pvc/${c.claimName}`), '-n', k8sNamespace(),
-    '--for=jsonpath={.status.phase}=Bound', `--timeout=${String(BIND_TIMEOUT_MS / 1000)}s`,
-  ], { timeout: BIND_TIMEOUT_MS + 10_000, maxAttempts: 1 }).catch(() => undefined)
+  const deadline = Date.now() + BIND_TIMEOUT_MS
+  // A failed read counts as not bound yet; the deadline judges.
+  const read = (name: string) => readClaim(name).catch(() => null)
   for (const claim of claims) {
-    const bound = await readClaim(claim.claimName)
+    let bound = await read(claim.claimName)
+    while (bound?.status?.phase !== 'Bound' && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1_000))
+      bound = await read(claim.claimName)
+    }
     if (bound?.status?.phase !== 'Bound') {
       throw new Error(
         `the ${claim.claimName} claim did not bind within ${String(BIND_TIMEOUT_MS / 1000)}s `
@@ -450,19 +451,16 @@ async function pinVolume(claim: ClaimShape, installId: string): Promise<void> {
   const pvc = await readClaim(claim.claimName)
   const volume = pvc?.spec?.volumeName
   if (!volume) return
-  const pv = await kubectlGetJson<RawPv>(['get', 'pv', volume])
-  await kubectlWithRetry([
-    'patch', 'pv', volume, '--type=merge',
-    '-p', JSON.stringify({
-      metadata: { labels: storageLabels(claim.claimName, installId) },
-      spec: {
-        persistentVolumeReclaimPolicy: 'Retain',
-        ...(claim.accessMode === 'ReadWriteMany'
-          ? { mountOptions: withNfsCoherence(pv?.spec?.mountOptions ?? []) }
-          : {}),
-      },
-    }),
-  ])
+  const pv = await readVolume(volume)
+  await patchObject(volumeRef(volume), {
+    metadata: { labels: storageLabels(claim.claimName, installId) },
+    spec: {
+      persistentVolumeReclaimPolicy: 'Retain',
+      ...(claim.accessMode === 'ReadWriteMany'
+        ? { mountOptions: withNfsCoherence(pv?.spec?.mountOptions ?? []) }
+        : {}),
+    },
+  })
 }
 
 /**
@@ -489,7 +487,15 @@ export function isNfsFamily(provisioner: string, parameters: Record<string, stri
 }
 
 async function readClaim(name: string): Promise<RawPvc | null> {
-  return kubectlGetJson<RawPvc>(['get', 'pvc', name, '-n', k8sNamespace()])
+  return readObject<RawPvc>({ apiVersion: 'v1', kind: 'PersistentVolumeClaim', name, namespace: k8sNamespace() })
+}
+
+function volumeRef(name: string): { apiVersion: string; kind: string; name: string } {
+  return { apiVersion: 'v1', kind: 'PersistentVolume', name }
+}
+
+async function readVolume(name: string): Promise<RawPv | null> {
+  return readObject<RawPv>(volumeRef(name))
 }
 
 /**
@@ -497,8 +503,7 @@ async function readClaim(name: string): Promise<RawPvc | null> {
  * by the e2e harness. The data is kept (`Retain`).
  */
 export async function deleteStorageVolumes(installNamespace: string): Promise<void> {
-  await kubectlWithRetry([
-    'delete', 'pv', '-l', `${LABEL_INSTALL_NAMESPACE}=${installNamespace}`,
-    '--ignore-not-found', '--wait=false',
-  ], { timeout: 30_000, maxAttempts: 1 }).catch(() => { /* cluster gone — nothing to sweep */ })
+  await deleteObjects('v1', 'PersistentVolume', {
+    labelSelector: `${LABEL_INSTALL_NAMESPACE}=${installNamespace}`,
+  }).catch(() => { /* cluster gone — nothing to sweep */ })
 }

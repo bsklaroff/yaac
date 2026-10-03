@@ -1,24 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import type * as childProcess from 'node:child_process'
 import fs from 'node:fs/promises'
 
-// Only process boundaries and other folders' barrels are faked: kubectl,
-// podman, the registry client and the image engine. Nothing in the cluster
-// folder is mocked, so `ensureProxyResources` runs the real manifests,
-// policies, CIDR probes and netd.
-vi.mock('#drivers/k8s/substrate/kubectl', () => ({
-  isKubectlAbsentError: vi.fn(() => false),
-  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
-  dataDirHash: vi.fn(() => 'ddh0123456789abc'),
-  k8sNamespace: vi.fn(() => 'test-ns'),
-  kubectlApply: vi.fn().mockResolvedValue(undefined),
-  kubectlGetJson: vi.fn(),
-  kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-  execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-}))
+// Only process boundaries and other folders' barrels are faked: the cluster
+// (the fake behind client-node), child processes, the registry client and
+// the image engine. Nothing in the cluster folder is mocked, so
+// `ensureProxyResources` runs the real manifests, policies, CIDR probes and
+// netd.
 
-// podman is faked at node:child_process so a test can assert nothing was
-// pulled.
-vi.mock('node:child_process', () => ({
+// Child processes (podman, `kubectl rollout status`) are faked at
+// node:child_process so a test can assert nothing was pulled.
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...await importOriginal<typeof childProcess>(),
   execFile: vi.fn((...allArgs: unknown[]) => {
     const args = allArgs[1] as string[]
     const cb = allArgs[allArgs.length - 1] as (...cbArgs: unknown[]) => void
@@ -88,7 +81,8 @@ import {
   TRANSPARENT_TUNNEL_PORT,
 } from '#drivers/k8s/substrate/proxy-constants'
 import { LABEL_DATA_DIR_HASH, LABEL_WORKSPACE_ID } from '#drivers/k8s/substrate/pods'
-import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/substrate/kubectl'
+import { dataDirHash } from '#drivers/k8s/substrate'
+import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 import { imageExists } from '#drivers/k8s/container/runtime'
 import { registryHasTag } from '#drivers/k8s/container/registry'
 import { buildImage, registerImageBuild } from '#drivers/k8s/image-engine'
@@ -97,16 +91,13 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { execFile } from 'node:child_process'
 
 
-const mockApply = vi.mocked(kubectlApply)
-const mockGetJson = vi.mocked(kubectlGetJson)
-const mockRetry = vi.mocked(kubectlWithRetry)
 const mockPodman = vi.mocked(execFile)
 /** podman's arch string for this host, as assertMirrorArch expects it. */
 function hostArch(): string {
   return process.arch === 'x64' ? 'amd64' : process.arch === 'arm64' ? 'arm64' : process.arch
 }
-/** The argv of every podman invocation recorded by the child_process fake. */
-const podmanArgs = (): string[][] =>
+/** The argv of every child process recorded by the child_process fake. */
+const childArgs = (): string[][] =>
   mockPodman.mock.calls.map((c) => c[1] as string[])
 const mockImageExists = vi.mocked(imageExists)
 const mockHasTag = vi.mocked(registryHasTag)
@@ -131,36 +122,28 @@ interface Rule {
 
 let tmpDir: string
 
+/** A node with an address (for policy ipBlocks) and, optionally, pod CIDRs. */
+const node = (spec: Record<string, unknown> = {}) => ({
+  apiVersion: 'v1', kind: 'Node', metadata: { name: 'n1' },
+  status: { addresses: [{ type: 'InternalIP', address: NODE_IP }] },
+  spec,
+})
+
 /**
- * Serve every cluster read `ensureProxyResources` makes: node and apiserver
- * addresses (for policy ipBlocks), the Calico pool list (netd's exclusion
- * set), and no existing proxy objects.
+ * Stage the cluster `ensureProxyResources` reads: the node and the Calico
+ * pool (netd's exclusion set), with no proxy objects yet.
  */
 function stageClusterReads(): void {
-  mockGetJson.mockImplementation((args: string[]) => {
-    if (args[1] === 'nodes') {
-      return Promise.resolve({
-        items: [{
-          status: { addresses: [{ type: 'InternalIP', address: NODE_IP }] },
-          spec: { podCIDR: '10.244.0.0/24' },
-        }],
-      })
-    }
-    if (args[1] === 'endpoints') {
-      return Promise.resolve({ subsets: [{ addresses: [{ ip: NODE_IP }] }] })
-    }
-    if (args[1]?.startsWith('ippools')) {
-      return Promise.resolve({ items: [{ spec: { cidr: '192.168.0.0/16' } }] })
-    }
-    return Promise.resolve(null)
-  })
+  fakeCluster.seed(
+    node({ podCIDR: '10.244.0.0/24' }),
+    { apiVersion: 'crd.projectcalico.org/v1', kind: 'IPPool', metadata: { name: 'default' }, spec: { cidr: '192.168.0.0/16' } },
+  )
 }
 
-/** Each applied object, with a `List` apply's items in order. */
-const applied = (): Manifest[] => mockApply.mock.calls.flatMap((c) => {
-  const m = c[0] as Manifest & { items?: Manifest[] }
-  return m.kind === 'List' ? m.items ?? [] : [m]
-})
+/** Each object written (applied or created), in order. */
+const applied = (): Manifest[] => fakeCluster.calls
+  .filter((c) => c.verb === 'apply' || c.verb === 'create')
+  .map((c) => c.body as unknown as Manifest)
 const kinds = (): string[] => applied().map((m) => m.kind)
 const byName = (name: string): Manifest | undefined =>
   applied().find((m) => m.metadata.name === name)
@@ -170,8 +153,7 @@ const specOf = (m: Manifest | undefined): Record<string, unknown> =>
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
   vi.clearAllMocks()
-  mockApply.mockResolvedValue(undefined)
-  mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
+  vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
   mockImageExists.mockResolvedValue(true)
   mockHasTag.mockResolvedValue(true)
   resetClusterCidrCache()
@@ -189,7 +171,7 @@ describe('ensureNamespace', () => {
     // kind enforces no Pod Security, but an adopted cluster often defaults
     // to baseline, which would block netd (hostNetwork, NET_ADMIN) entirely.
     await ensureNamespace()
-    expect(mockApply).toHaveBeenCalledWith({
+    expect(applied()).toEqual([{
       apiVersion: 'v1',
       kind: 'Namespace',
       metadata: {
@@ -200,26 +182,26 @@ describe('ensureNamespace', () => {
           'pod-security.kubernetes.io/warn': 'privileged',
         },
       },
-    })
+    }])
   })
 })
 
 describe('ensureProxyAuthSecret', () => {
   it('returns the decoded existing secret without re-applying', async () => {
-    mockGetJson.mockResolvedValue({
+    fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Secret', metadata: { name: PROXY_AUTH_SECRET_NAME, namespace: 'test-ns' },
       data: { secret: Buffer.from('existing-secret').toString('base64') },
     })
     await expect(ensureProxyAuthSecret()).resolves.toBe('existing-secret')
-    expect(mockApply).not.toHaveBeenCalled()
+    expect(applied()).toEqual([])
   })
 
   it('generates, applies, and returns a fresh secret when none exists', async () => {
-    mockGetJson.mockResolvedValue(null)
     const secret = await ensureProxyAuthSecret()
     // 32 random bytes hex-encoded.
     expect(secret).toMatch(/^[0-9a-f]{64}$/)
-    expect(mockApply).toHaveBeenCalledTimes(1)
-    const manifest = mockApply.mock.calls[0][0] as {
+    expect(applied()).toHaveLength(1)
+    const manifest = applied()[0] as unknown as {
       kind: string
       metadata: { name: string; namespace: string }
       data: { secret: string }
@@ -230,41 +212,34 @@ describe('ensureProxyAuthSecret', () => {
   })
 })
 
+/** The proxy Service as the API server holds it. */
+const proxyService = (clusterIP?: string) => ({
+  apiVersion: 'v1', kind: 'Service', metadata: { name: PROXY_APP_NAME, namespace: 'test-ns' },
+  spec: clusterIP ? { clusterIP } : {},
+})
+
 describe('proxyServiceClusterIp', () => {
-  it('returns the live (allocator-assigned) ClusterIP of the proxy Service', async () => {
-    mockGetJson.mockResolvedValue({ spec: { clusterIP: '10.96.92.236' } })
-    expect(await proxyServiceClusterIp()).toBe('10.96.92.236')
-  })
-
-  it('throws if the Service has no ClusterIP yet', async () => {
-    mockGetJson.mockResolvedValue({ spec: {} })
+  it('returns the live ClusterIP, caching it but never a failed read', async () => {
     await expect(proxyServiceClusterIp()).rejects.toThrow(/ClusterIP/)
-  })
-
-  it('caches the first read for the process (the Service is never recreated)', async () => {
-    mockGetJson.mockResolvedValue({ spec: { clusterIP: '10.96.92.236' } })
-    await proxyServiceClusterIp()
-    mockGetJson.mockClear()
-
-    expect(await proxyServiceClusterIp()).toBe('10.96.92.236')
-    expect(mockGetJson).not.toHaveBeenCalled()
-  })
-
-  it('does not cache a failed read', async () => {
-    mockGetJson.mockResolvedValueOnce({ spec: {} })
+    fakeCluster.seed(proxyService())
     await expect(proxyServiceClusterIp()).rejects.toThrow(/ClusterIP/)
-    mockGetJson.mockResolvedValueOnce({ spec: { clusterIP: '10.96.0.7' } })
-    expect(await proxyServiceClusterIp()).toBe('10.96.0.7')
+    fakeCluster.seed(proxyService('10.96.92.236'))
+    expect(await proxyServiceClusterIp()).toBe('10.96.92.236')
+
+    // The Service is never recreated while in use, so later calls are free.
+    const reads = fakeCluster.callsOf('read', 'Service').length
+    expect(await proxyServiceClusterIp()).toBe('10.96.92.236')
+    expect(fakeCluster.callsOf('read', 'Service')).toHaveLength(reads)
   })
 })
 
 describe('resetProxyClusterIpCache', () => {
   it('forces the next call to re-read the Service', async () => {
-    mockGetJson.mockResolvedValue({ spec: { clusterIP: '10.96.0.1' } })
+    fakeCluster.seed(proxyService('10.96.0.1'))
     await proxyServiceClusterIp()
 
     resetProxyClusterIpCache()
-    mockGetJson.mockResolvedValue({ spec: { clusterIP: '10.96.0.2' } })
+    fakeCluster.seed(proxyService('10.96.0.2'))
     expect(await proxyServiceClusterIp()).toBe('10.96.0.2')
   })
 })
@@ -282,7 +257,7 @@ describe('ensureProxyResources', () => {
       // The proxy's three outputs, created empty before the Deployment so
       // its Role can name them.
       'Secret', 'Secret', 'ConfigMap',
-      // Then one apply: RBAC before the Deployment that uses it, then the
+      // Then RBAC before the Deployment that uses it, then the
       // proxy's Service and the server's mama Service the proxy relays to.
       'ServiceAccount', 'Role', 'RoleBinding',
       'Deployment', 'Service', 'Service',
@@ -296,14 +271,12 @@ describe('ensureProxyResources', () => {
     expect(byName('yaac-proxy-ca')?.metadata.labels).toEqual({ app: 'yaac-proxy', 'yaac.proxy-output': 'ca' })
     expect(byName('yaac-proxy-state')?.metadata.labels).toEqual({ app: 'yaac-proxy', 'yaac.proxy-output': 'state' })
     // The proxy Service (and so its ClusterIP) is never deleted.
-    expect(mockRetry).not.toHaveBeenCalledWith(expect.arrayContaining(['delete', 'service']))
-    expect(mockRetry).toHaveBeenCalledWith(
+    expect(fakeCluster.callsOf('delete', 'Service')).toEqual([])
+    expect(childArgs()).toContainEqual(
       ['rollout', 'status', `daemonset/${NETD_APP_NAME}`, '-n', 'test-ns', '--timeout=180s'],
-      expect.objectContaining({ maxAttempts: 2 }),
     )
-    expect(mockRetry).toHaveBeenCalledWith(
+    expect(childArgs()).toContainEqual(
       ['rollout', 'status', `deployment/${PROXY_APP_NAME}`, '-n', 'test-ns', '--timeout=180s'],
-      expect.objectContaining({ maxAttempts: 2 }),
     )
   })
 
@@ -311,16 +284,15 @@ describe('ensureProxyResources', () => {
     // Re-applying the empty object would wipe what the proxy wrote, such as
     // the CA.
     stageClusterReads()
-    mockGetJson.mockImplementation((args: string[]) => {
-      if (args[1] === 'secret' || args[1] === 'configmap') return Promise.resolve({ data: { 'ca.pem': 'x' } })
-      if (args[1] === 'nodes') {
-        return Promise.resolve({ items: [{ status: { addresses: [{ type: 'InternalIP', address: NODE_IP }] } }] })
-      }
-      if (args[1] === 'endpoints') return Promise.resolve({ subsets: [{ addresses: [{ ip: NODE_IP }] }] })
-      return Promise.resolve(null)
+    const written = (kind: string, name: string) => ({
+      apiVersion: 'v1', kind, metadata: { name, namespace: 'test-ns' }, data: { 'ca.pem': 'x' },
     })
+    fakeCluster.seed(
+      written('Secret', 'yaac-proxy-refreshed'), written('Secret', 'yaac-proxy-ca'), written('ConfigMap', 'yaac-proxy-state'),
+    )
     await ensureProxyResources('img')
-    expect(kinds().filter((k) => k === 'Secret' || k === 'ConfigMap')).toEqual([])
+    expect(fakeCluster.callsOf('apply').filter((c) => c.kind === 'Secret' || c.kind === 'ConfigMap')).toEqual([])
+    expect(fakeCluster.get('Secret', 'yaac-proxy-ca', 'test-ns')).toMatchObject({ data: { 'ca.pem': 'x' } })
   })
 
   it('gives the proxy read on its inputs and write on exactly its three outputs', async () => {
@@ -376,7 +348,7 @@ describe('ensureProxyResources', () => {
     expect(dep.spec.selector.matchLabels).toEqual({ app: PROXY_APP_NAME })
     // Install identity on every proxy pod.
     expect(dep.spec.template.metadata.labels).toEqual({
-      app: PROXY_APP_NAME, [LABEL_DATA_DIR_HASH]: 'ddh0123456789abc',
+      app: PROXY_APP_NAME, [LABEL_DATA_DIR_HASH]: dataDirHash(),
     })
 
     const pod = dep.spec.template.spec
@@ -567,60 +539,32 @@ describe('ensureProxyResources', () => {
     await expect(ensureProxyResources('img'))
       .rejects.toThrow(/Envoy image .* is missing.*yaac cluster install/s)
 
-    expect(podmanArgs().some((a) => a[0] === 'pull')).toBe(false)
+    expect(childArgs().some((a) => a[0] === 'pull')).toBe(false)
     expect(vi.mocked(buildImage)).not.toHaveBeenCalled()
     expect(vi.mocked(registerImageBuild)).not.toHaveBeenCalled()
   })
 
   it('resolves netd\'s pod-CIDR exclusions from every source, and falls back when none answer', async () => {
-    // Without Calico the ippools read fails; node podCIDRs still count.
-    mockGetJson.mockImplementation((args: string[]) => {
-      if (args[1]?.startsWith('ippools')) return Promise.reject(new Error('no such resource'))
-      if (args[1] === 'nodes') {
-        return Promise.resolve({
-          items: [{
-            status: { addresses: [{ type: 'InternalIP', address: NODE_IP }] },
-            spec: { podCIDRs: ['10.244.0.0/24'] },
-          }],
-        })
-      }
-      if (args[1] === 'endpoints') {
-        return Promise.resolve({ subsets: [{ addresses: [{ ip: NODE_IP }] }] })
-      }
-      return Promise.resolve(null)
-    })
+    // Without Calico there are no IPPools; node podCIDRs still count.
+    fakeCluster.removeKind('IPPool')
+    fakeCluster.seed(node({ podCIDRs: ['10.244.0.0/24'] }))
     await ensureProxyResources('img')
     expect(JSON.stringify(applied().find((m) => m.kind === 'DaemonSet')))
       .toContain('10.244.0.0/24')
 
     // No source answers: fall back to kind's default rather than an empty
     // set, which would redirect pod-to-pod traffic into the proxy.
-    vi.clearAllMocks()
     resetClusterCidrCache()
-    mockApply.mockResolvedValue(undefined)
-    mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
-    mockHasTag.mockResolvedValue(true)
-    mockImageExists.mockResolvedValue(true)
-    mockGetJson.mockImplementation((args: string[]) => {
-      if (args[1] === 'nodes') {
-        return Promise.resolve({
-          items: [{ status: { addresses: [{ type: 'InternalIP', address: NODE_IP }] } }],
-        })
-      }
-      if (args[1] === 'endpoints') {
-        return Promise.resolve({ subsets: [{ addresses: [{ ip: NODE_IP }] }] })
-      }
-      return Promise.resolve(null)
-    })
+    fakeCluster.reset()
+    fakeCluster.seed(node())
     await ensureProxyResources('img')
     expect(JSON.stringify(applied().find((m) => m.kind === 'DaemonSet')))
       .toContain('10.244.0.0/16')
 
     // The pod CIDRs are cached for the process.
-    mockGetJson.mockClear()
+    const poolReads = fakeCluster.callsOf('list', 'IPPool').length
     await ensureProxyResources('img')
-    expect(mockGetJson.mock.calls.some((c) => (c[0])[1]?.startsWith('ippools')))
-      .toBe(false)
+    expect(fakeCluster.callsOf('list', 'IPPool')).toHaveLength(poolReads)
   })
 
 })
@@ -629,55 +573,56 @@ describe('ensureCaConfigMap', () => {
   const b64 = (s: string): string => Buffer.from(s).toString('base64')
   /** The CA Secret the proxy wrote, and the ConfigMap as it stands. */
   function stage(secret: Record<string, string> | null, configMap: Record<string, string> | null): void {
-    mockGetJson.mockImplementation((args: string[]) => {
-      if (args[1] === 'secret') return Promise.resolve(secret ? { data: secret } : null)
-      return Promise.resolve(configMap ? { data: configMap } : null)
+    fakeCluster.reset()
+    const obj = (kind: string, data: Record<string, string>) => ({
+      apiVersion: 'v1', kind, metadata: { name: 'yaac-proxy-ca', namespace: 'test-ns' }, data,
     })
+    if (secret) fakeCluster.seed(obj('Secret', secret))
+    if (configMap) fakeCluster.seed(obj('ConfigMap', configMap))
   }
 
   it('skips the apply only when both the CA and the bundle already match', async () => {
     stage({ 'ca.pem': b64('PEM-CONTENT'), 'ca-bundle.pem': b64('BUNDLE') },
       { 'proxy-ca.pem': 'PEM-CONTENT', 'ca-bundle.pem': 'BUNDLE' })
     await ensureCaConfigMap()
-    expect(mockApply).not.toHaveBeenCalled()
+    expect(applied()).toEqual([])
   })
 
   it('applies the ConfigMap with both keys, from the proxy’s Secret, when absent or stale', async () => {
     stage({ 'ca.pem': b64('NEW-PEM'), 'ca-bundle.pem': b64('NEW-BUNDLE') }, null)
     await ensureCaConfigMap()
-    expect(mockApply).toHaveBeenCalledWith({
+    expect(applied()).toEqual([{
       apiVersion: 'v1',
       kind: 'ConfigMap',
       metadata: { name: 'yaac-proxy-ca', namespace: 'test-ns' },
       data: { 'proxy-ca.pem': 'NEW-PEM', 'ca-bundle.pem': 'NEW-BUNDLE' },
-    })
+    }])
 
-    mockApply.mockClear()
     stage({ 'ca.pem': b64('NEW-PEM'), 'ca-bundle.pem': b64('NEW-BUNDLE') }, { 'proxy-ca.pem': 'OLD-PEM' })
     await ensureCaConfigMap()
-    expect(mockApply).toHaveBeenCalledTimes(1)
+    expect(applied()).toHaveLength(1)
   })
 
   it('re-applies when the CA matches but the bundle drifted (e.g. roots refresh)', async () => {
     stage({ 'ca.pem': b64('SAME'), 'ca-bundle.pem': b64('NEW-BUNDLE') },
       { 'proxy-ca.pem': 'SAME', 'ca-bundle.pem': 'OLD-BUNDLE' })
     await ensureCaConfigMap()
-    expect(mockApply).toHaveBeenCalledTimes(1)
+    expect(applied()).toHaveLength(1)
   })
 
   it('waits for a freshly rolled proxy to have written its CA', async () => {
     vi.useFakeTimers()
     try {
-      let reads = 0
-      mockGetJson.mockImplementation((args: string[]) => {
-        if (args[1] !== 'secret') return Promise.resolve(null)
-        reads++
-        return Promise.resolve(reads < 3 ? { data: {} } : { data: { 'ca.pem': b64('P'), 'ca-bundle.pem': b64('B') } })
+      stage({}, null)
+      fakeCluster.intercept((call) => {
+        if (call.verb === 'read' && call.kind === 'Secret' && fakeCluster.callsOf('read', 'Secret').length === 3) {
+          stage({ 'ca.pem': b64('P'), 'ca-bundle.pem': b64('B') }, null)
+        }
       })
       const done = ensureCaConfigMap()
       await vi.advanceTimersByTimeAsync(2_000)
       await done
-      expect(mockApply).toHaveBeenCalledTimes(1)
+      expect(applied()).toHaveLength(1)
     } finally {
       vi.useRealTimers()
     }
@@ -731,9 +676,8 @@ describe('syncProjectSecrets', () => {
     expect(JSON.parse(b64d(secret.data!['values.json']))).toEqual({ 'My Project/1/KEY': 'v1', 'My Project/1/OTHER': '' })
 
     // An emptied set is applied as such, so a deleted secret stops being injected.
-    mockApply.mockClear()
     await syncProjectSecrets('My Project/1', {})
-    expect(JSON.parse(b64d(applied()[0].data!['values.json']))).toEqual({})
+    expect(JSON.parse(b64d(applied()[1].data!['values.json']))).toEqual({})
   })
 })
 
@@ -742,23 +686,22 @@ describe('removeProjectSecrets', () => {
     await syncProjectSecrets('demo', { A: '1' })
     const name = applied()[0].metadata.name
     await removeProjectSecrets('demo')
-    expect(mockRetry).toHaveBeenCalledWith(['delete', 'secret', name, '-n', 'test-ns', '--ignore-not-found'])
+    expect(fakeCluster.get('Secret', name, 'test-ns')).toBeUndefined()
+    // Already gone is success.
+    await removeProjectSecrets('demo')
   })
 })
 
 describe('vapAvailable', () => {
-  it('answers by asking the apiserver, and false is the fail-closed case', async () => {
-    // Used by `cluster check` and the builder guard. An apiserver without
-    // the resource type errors, which reads as false rather than throwing.
-    stageClusterReads()
-    mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
+  it('answers by asking the apiserver: absent is false, a failure to ask throws', async () => {
+    // Used by `cluster check` and the builder guard.
     await expect(vapAvailable()).resolves.toBe(true)
-    expect(mockRetry).toHaveBeenCalledWith(
-      ['get', 'validatingadmissionpolicies', '-o', 'name'],
-      expect.objectContaining({ maxAttempts: 1 }),
-    )
 
-    mockRetry.mockRejectedValue(new Error("the server doesn't have a resource type"))
+    fakeCluster.intercept(() => { throw apiError(403) })
+    await expect(vapAvailable()).rejects.toThrow('403')
+
+    fakeCluster.reset()
+    fakeCluster.removeKind('ValidatingAdmissionPolicy')
     await expect(vapAvailable()).resolves.toBe(false)
   })
 })
@@ -771,11 +714,8 @@ describe('ensureBuilderRoleGuard', () => {
   })
 
   it('throws with a setup pointer when the VAP API is missing', async () => {
-    mockRetry.mockImplementation((args: string[]) =>
-      args.includes('validatingadmissionpolicies')
-        ? Promise.reject(new Error("the server doesn't have a resource type"))
-        : Promise.resolve({ stdout: '', stderr: '' }))
+    fakeCluster.removeKind('ValidatingAdmissionPolicy')
     await expect(ensureBuilderRoleGuard()).rejects.toThrow(/yaac cluster install/)
-    expect(mockApply).not.toHaveBeenCalled()
+    expect(applied()).toEqual([])
   })
 })

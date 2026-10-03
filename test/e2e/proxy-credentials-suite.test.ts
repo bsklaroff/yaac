@@ -28,12 +28,8 @@ import {
   PROXY_REFRESHED_SECRET_NAME,
   PROXY_STATE_CONFIGMAP_NAME,
 } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
-import {
-  k8sNamespace,
-  kubectlApply,
-  kubectlGetJson,
-  kubectlWithRetry,
-} from '@yaac/server/drivers/k8s/substrate/kubectl'
+import { applyObject, deleteObject, deleteObjects, k8sNamespace, readObject } from '@yaac/server/drivers/k8s/substrate/api'
+import { kubectl } from '@yaac/test-utils/kubectl'
 import { encodeOpenSshPrivateKey, generateSshKey } from '@yaac/server/lib/ssh-key'
 import type { CredentialBundle } from '@yaac/server/drivers/contract'
 
@@ -111,13 +107,10 @@ async function makeTestKey(dir: string, host: string, name: string): Promise<Tes
 }
 
 async function deleteTestPod(name: string): Promise<void> {
-  await kubectlWithRetry([
-    'delete', 'pod', name, '-n', k8sNamespace(),
-    '--ignore-not-found', '--wait=false', '--grace-period=1',
-  ]).catch(() => { /* ok */ })
-  await kubectlWithRetry([
-    'delete', 'service', name, '-n', k8sNamespace(), '--ignore-not-found',
-  ]).catch(() => { /* ok */ })
+  await deleteObject({ apiVersion: 'v1', kind: 'Pod', name, namespace: k8sNamespace() }, { gracePeriodSeconds: 1 })
+    .catch(() => { /* ok */ })
+  await deleteObject({ apiVersion: 'v1', kind: 'Service', name, namespace: k8sNamespace() }, { wait: true })
+    .catch(() => { /* ok */ })
 }
 
 /**
@@ -151,7 +144,7 @@ async function startEchoPod(name: string): Promise<{ host: string }> {
   `
   const ns = k8sNamespace()
   const image = await resolveTestBaseImageRef()
-  await kubectlApply({
+  await applyObject({
     apiVersion: 'v1',
     kind: 'Pod',
     metadata: { name, namespace: ns, labels: { 'app': name, 'yaac.test': 'true' } },
@@ -166,7 +159,7 @@ async function startEchoPod(name: string): Promise<{ host: string }> {
       }],
     },
   })
-  await kubectlApply({
+  await applyObject({
     apiVersion: 'v1',
     kind: 'Service',
     metadata: { name, namespace: ns, labels: { 'yaac.test': 'true' } },
@@ -182,7 +175,7 @@ async function startEchoPod(name: string): Promise<{ host: string }> {
 
 /** Run curl in a pod, never failing the exec: emits `EXIT:<code>` last. */
 async function curlInPod(pod: string, curlArgs: string): Promise<{ exit: number; out: string }> {
-  const { stdout } = await kubectlWithRetry([
+  const { stdout } = await kubectl([
     'exec', '-n', k8sNamespace(), pod, '--',
     'sh', '-c', `curl -sS --max-time 20 ${curlArgs} 2>&1; printf '\\nEXIT:%s\\n' "$?"`,
   ], { timeout: 40_000 })
@@ -235,7 +228,7 @@ const gitProbe = `--cacert ${CA_PATH} --resolve ${GIT_HOST}:443:${FAKE_IP} https
 
 /** What the proxy's agent holds, read in its own pod. */
 async function agentFingerprints(): Promise<string[]> {
-  const { stdout } = await kubectlWithRetry([
+  const { stdout } = await kubectl([
     'exec', '-n', k8sNamespace(), `deployment/${PROXY_APP_NAME}`, '--',
     'sh', '-c', 'SSH_AUTH_SOCK=$HOME/agent.sock ssh-add -l || true',
   ], { timeout: 30_000 })
@@ -248,12 +241,14 @@ async function agentFingerprints(): Promise<string[]> {
 
 interface RawObject { data?: Record<string, string> }
 const readSecretKey = async (name: string, key: string): Promise<string | undefined> => {
-  const obj = await kubectlGetJson<RawObject>(['get', 'secret', name, '-n', k8sNamespace()])
+  const obj = await readObject<RawObject>({ apiVersion: 'v1', kind: 'Secret', name, namespace: k8sNamespace() })
   const encoded = obj?.data?.[key]
   return encoded === undefined ? undefined : Buffer.from(encoded, 'base64').toString('utf8')
 }
 const readState = async (): Promise<{ blockedHosts: Record<string, string[]> }> => {
-  const obj = await kubectlGetJson<RawObject>(['get', 'configmap', PROXY_STATE_CONFIGMAP_NAME, '-n', k8sNamespace()])
+  const obj = await readObject<RawObject>({
+    apiVersion: 'v1', kind: 'ConfigMap', name: PROXY_STATE_CONFIGMAP_NAME, namespace: k8sNamespace(),
+  })
   return { blockedHosts: JSON.parse(obj?.data?.['blocked-hosts.json'] ?? '{}') as Record<string, string[]> }
 }
 
@@ -344,7 +339,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
       'c.verify_flags |= ssl.VERIFY_X509_STRICT',
       `c.wrap_socket(socket.create_connection(('${FAKE_IP}', 443), timeout=20), server_hostname='${MITM_HOST}').close()`,
     ].join('\n')
-    await kubectlWithRetry(['exec', '-n', k8sNamespace(), podName, '--', 'python3', '-c', script], { timeout: 40_000 })
+    await kubectl(['exec', '-n', k8sNamespace(), podName, '--', 'python3', '-c', script], { timeout: 40_000 })
   }, 60_000)
 
   it('signs a running workspace out when the Secret is rewritten without the tool', async () => {
@@ -403,7 +398,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     // refresh token once and hands every caller that rotation as
     // placeholders; a second spend would get invalid_grant, which makes
     // claude wipe its shared credentials file.
-    const { stdout } = await kubectlWithRetry([
+    const { stdout } = await kubectl([
       'exec', '-n', k8sNamespace(), podName, '--', 'sh', '-c',
       `curl -sS --max-time 20 ${refreshArgs} > /tmp/r1 & curl -sS --max-time 20 ${refreshArgs} > /tmp/r2 & wait; `
       + `curl -sS --max-time 20 ${refreshArgs} > /tmp/r3; `
@@ -487,10 +482,8 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     await curlUntil(podName, probeArgs(`-H 'x-api-key: ${PLACEHOLDER_API_KEY}'`),
       (r) => r.exit === 0 && echoedOf(r.out).headers['x-api-key'] === 'sk-ant-survives')
 
-    await kubectlWithRetry([
-      'delete', 'pod', '-l', `app=${PROXY_APP_NAME}`, '-n', k8sNamespace(), '--wait=false',
-    ])
-    await kubectlWithRetry([
+    await deleteObjects('v1', 'Pod', { namespace: k8sNamespace(), labelSelector: `app=${PROXY_APP_NAME}` })
+    await kubectl([
       'rollout', 'status', `deployment/${PROXY_APP_NAME}`, '-n', k8sNamespace(), '--timeout=180s',
     ], { timeout: 190_000 })
 

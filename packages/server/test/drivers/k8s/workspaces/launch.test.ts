@@ -1,23 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { PRE_STOP_GRACE_SECONDS } from '#drivers/k8s/substrate'
-import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
-
-// Mock kubectl, so the manifests are built for real and asserted on.
-const mockApply = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
-  ...(await importOriginal<typeof kubectlModule>()),
-  kubectlApply: mockApply,
-  dataDirHash: vi.fn(() => 'ddh0123456789abc'),
-  k8sNamespace: vi.fn(() => 'yaac'),
-}))
+import { fakeCluster } from '@yaac/test-utils/k8s-stub'
+import { PRE_STOP_GRACE_SECONDS, dataDirHash } from '#drivers/k8s/substrate'
 
 vi.mock('#drivers/k8s/substrate/stream-relay', async (importOriginal) => ({
   ...(await importOriginal<typeof streamRelayModule>()),
   podStreamToken: vi.fn().mockResolvedValue('stream-token'),
 }))
 
-// Mock the proxy rollout. The registration ConfigMap goes through the
-// kubectl mock like the Job.
+// Mock the proxy rollout. The registration ConfigMap lands in the fake
+// cluster like the Job, so the manifests are built for real and asserted on.
 const mockEnsureRunning = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/egress/proxy-client', () => ({
   proxyClient: {
@@ -70,7 +61,7 @@ import {
 
 // Mount sources depend on each path's tier, so paths must be real tier paths.
 setDataDir('/data/yaac')
-const NODE_ROOT = '/var/lib/yaac/node/ddh0123456789abc'
+const NODE_ROOT = `/var/lib/yaac/node/${dataDirHash()}`
 
 const PROJECT_ID = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
 const INTENT = {
@@ -136,10 +127,14 @@ interface JobManifest {
   }
 }
 
+/** The manifests applied, in order. */
+const applied = (): Array<{ kind: string }> =>
+  fakeCluster.callsOf('apply').map((c) => c.body as unknown as { kind: string })
+
 function appliedJob(): JobManifest {
-  const call = mockApply.mock.calls.find((c) => (c[0] as { kind?: string }).kind === 'Job')
-  expect(call).toBeDefined()
-  return call![0] as JobManifest
+  const job = applied().find((m) => m.kind === 'Job')
+  expect(job).toBeDefined()
+  return job as unknown as JobManifest
 }
 
 function containerEnv(): Record<string, string> {
@@ -158,8 +153,8 @@ beforeEach(() => {
 
 /** The registration ConfigMap a prepare applied, decoded. */
 function appliedRegistration(): { name: string; labels: Record<string, string>; payload: Record<string, unknown> } | undefined {
-  const cm = mockApply.mock.calls
-    .map(([m]) => m as { kind: string; metadata: { name: string; labels: Record<string, string> }; data: Record<string, string> })
+  const cm = applied()
+    .map((m) => m as { kind: string; metadata: { name: string; labels: Record<string, string> }; data: Record<string, string> })
     .find((m) => m.kind === 'ConfigMap')
   return cm && {
     name: cm.metadata.name,
@@ -177,12 +172,11 @@ describe('prepareWorkspaceSubstrate', () => {
       proxySecretRules: { TOKEN: { hosts: ['api.example.com'], header: 'Authorization' } },
     })
     expect(mockEnsureRunning).toHaveBeenCalled()
-    expect(mockApply).not.toHaveBeenCalled()
+    expect(applied()).toEqual([])
 
     // Applied right before the Job.
-    mockApply.mockImplementation(() => Promise.resolve())
     await launchWorkspace(specOf(substrate))
-    expect(mockApply.mock.calls.map(([m]) => (m as { kind: string }).kind)).toEqual(['ConfigMap', 'Job'])
+    expect(applied().map((m) => m.kind)).toEqual(['ConfigMap', 'Job'])
     const reg = appliedRegistration()
     expect(reg?.name).toBe('yaac-proxy-reg-s1')
     expect(reg?.labels).toMatchObject({
@@ -250,7 +244,7 @@ describe('launchWorkspace', () => {
       // Selected by the project registry's network policies.
       'yaac.project-id': PROJECT_ID,
       'yaac.workspace-id': 's1',
-      'yaac.data-dir-hash': 'ddh0123456789abc',
+      'yaac.data-dir-hash': dataDirHash(),
       'yaac.tool': 'claude',
     })
     // Absent means tui.
@@ -315,7 +309,7 @@ describe('launchWorkspace', () => {
     })
 
     // Without a root module dir the store stays off the checkout.
-    mockApply.mockClear()
+    fakeCluster.calls = []
     await launchWorkspace(specOf(plain, { moduleDirs: ['/workspace/packages/web/node_modules'] }))
     expect(containerEnv()).toMatchObject({
       pnpm_config_store_dir: '/home/yaac/.local/share/pnpm/store',
@@ -334,7 +328,7 @@ describe('launchWorkspace', () => {
     expect(appliedJob().spec.template.metadata.labels['yaac.npm-cache']).toBe('true')
 
     mockNpmCacheUrl.mockResolvedValue(url)
-    mockApply.mockClear()
+    fakeCluster.calls = []
     await launchWorkspace(specOf(await prepareWorkspaceSubstrate(INTENT)))
     expect(containerEnv().YAAC_NPM_REGISTRY).toBe(url)
     for (const key of ['pnpm_config_registry', 'npm_config_registry']) {
@@ -353,7 +347,7 @@ describe('launchWorkspace', () => {
         proxySecretRules: { NPM_TOKEN: { hosts: ['registry.npmjs.org'], header: 'Authorization' } },
       },
     ]) {
-      mockApply.mockClear()
+      fakeCluster.calls = []
       await launchWorkspace(specOf(await prepareWorkspaceSubstrate(intent)))
       expect(containerEnv()).not.toHaveProperty('YAAC_NPM_REGISTRY')
       expect(appliedJob().spec.template.metadata.labels).not.toHaveProperty('yaac.npm-cache')
@@ -386,7 +380,7 @@ describe('launchWorkspace', () => {
 
     await launchWorkspace(spec)
     const first = appliedJob().spec.template.spec.containers[0].env
-    mockApply.mockClear()
+    fakeCluster.calls = []
     await launchWorkspace(spec)
     const second = appliedJob().spec.template.spec.containers[0].env
 
@@ -444,11 +438,11 @@ describe('launchWorkspace', () => {
 
   it('rejects a server-local mount before anything is applied', async () => {
     const substrate = await prepareWorkspaceSubstrate(INTENT)
-    mockApply.mockClear()
+    fakeCluster.calls = []
     await expect(launchWorkspace(specOf(substrate, {
       mounts: [{ source: { kind: 'hostPath', path: secretKeyPath() }, mountPath: '/x' }],
     }))).rejects.toThrow(/SERVER-LOCAL/)
-    expect(mockApply).not.toHaveBeenCalled()
+    expect(applied()).toEqual([])
   })
 
   it('passes the caller\'s resources and post-start entry through untouched', async () => {
