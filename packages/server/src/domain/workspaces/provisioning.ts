@@ -103,13 +103,14 @@ export function ensureProvisioning(input: ProvisioningInput): void {
   notifyWorkspaceListChanged()
 }
 
-/** Update an entry's progress message. No-op if absent, so a late callback
- *  cannot resurrect a removed entry. */
+/** Update an entry's progress message. No-op if absent or failed, so a late
+ *  callback from a run that already threw (e.g. a background checkout still
+ *  fetching) can neither resurrect a removed entry nor clear its error. A
+ *  retry re-registers, which replaces the failed entry. */
 export function updateProvisioningMessage(workspaceId: string, message: string): void {
   const e = entries.get(workspaceId)
-  if (!e) return
+  if (!e || e.error !== undefined) return
   e.message = message
-  delete e.error
   notifyWorkspaceListChanged()
 }
 
