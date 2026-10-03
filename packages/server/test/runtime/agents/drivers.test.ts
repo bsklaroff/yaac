@@ -1822,9 +1822,10 @@ describe('agentDriver', () => {
   // boot subscription, so neither waits for the heartbeat or costs an exec.
   it('dials a new window and a respawned placeholder as tmux announces them', async () => {
     const dialed: string[] = []
+    const seen: AgentObservation[] = []
     tmuxWindows = 'claude\n'
     placeholders.add('claude')
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
       heartbeatIntervalMs: 600_000,
       log: () => {},
       dial: acpDial((_s, argv) => {
@@ -1845,6 +1846,8 @@ describe('agentDriver', () => {
     lastTmux!.feed('%window-add @1\n')
     await vi.waitFor(() => expect(dialed).toHaveLength(2))
     expect(dialed[1]).toContain('claude-2.sock')
+    // Passed up too, for the status watcher's terminal listing.
+    expect(seen).toContainEqual({ kind: 'windows-changed' })
     expect(podExec).not.toHaveBeenCalled()
   })
 

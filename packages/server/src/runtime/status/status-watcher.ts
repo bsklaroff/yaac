@@ -7,17 +7,14 @@ import {
   type AgentObservation,
   type DrivenWorkspace,
 } from '#runtime/agents'
+import { listTerminals } from '#runtime/terminals'
 import {
   evictWorkspaceStatus,
   setAgentStatus,
   setLiveAgents,
   setWorkspaceStreamHealth,
+  setWorkspaceTerminals,
 } from './status-store'
-import {
-  registerWorkspaceControlStream,
-  unregisterWorkspaceControlStream,
-  type ControlStreamSend,
-} from './control-stream-registry'
 import { serverLog } from '#log'
 import type { AgentMode, PermissionMode } from '@yaac/shared/types'
 
@@ -28,8 +25,10 @@ import type { AgentMode, PermissionMode } from '@yaac/shared/types'
  *
  * The watcher does not know how a connection observes an agent. It picks a
  * driver from the workspace's mode (`#runtime/agents`), feeds observations
- * into the status store, and owns what both modes share: respawn, backoff
- * and the stream self-heal.
+ * into the status store, and owns what both modes share: respawn, backoff,
+ * the stream self-heal, and the terminal listing, refreshed over the
+ * driver's read-only channel when the stream comes up and on every tmux
+ * window add, close or rename.
  *
  * A dropped connection only flips the store's health bit: status stays
  * sticky, and nothing here feeds the stale reaper.
@@ -71,7 +70,10 @@ export interface StatusWatcherDeps {
 
 export class WorkspaceStatusWatcher {
   private connection: { close(): void } | null = null
-  private registeredSend: ControlStreamSend | null = null
+  /** The driver's read-only tmux channel while its stream is up. */
+  private send: ((cmd: string) => Promise<string>) | null = null
+  /** Bumped per terminal listing, so only the newest one is stored. */
+  private listing = 0
   private stopped = false
   /** Bumped on each teardown so late observations from a dead connection
    *  are ignored. */
@@ -153,7 +155,11 @@ export class WorkspaceStatusWatcher {
         setLiveAgents(slug, workspaceId, obs.agents)
         return
       case 'command-channel':
-        this.setCommandChannel(obs.send)
+        this.send = obs.send
+        this.refreshTerminals()
+        return
+      case 'windows-changed':
+        this.refreshTerminals()
         return
       case 'down':
         this.onConnectionDown(generation, obs.reason)
@@ -161,19 +167,16 @@ export class WorkspaceStatusWatcher {
     }
   }
 
-  /**
-   * Publish (or retract) the driver's read-only command channel so other
-   * read-only tmux queries (the terminal listing) reuse the connection.
-   */
-  private setCommandChannel(send: ControlStreamSend | null): void {
-    if (this.registeredSend) {
-      unregisterWorkspaceControlStream(this.session.jobName, this.registeredSend)
-      this.registeredSend = null
-    }
-    if (send) {
-      this.registeredSend = send
-      registerWorkspaceControlStream(this.session.jobName, send)
-    }
+  /** Best-effort: a failed listing keeps the last one, and the next window
+   *  event or reconnect lists again. */
+  private refreshTerminals(): void {
+    const send = this.send
+    if (!send) return
+    const listing = ++this.listing
+    const { slug, workspaceId } = this.session
+    void listTerminals(send).then((entries) => {
+      if (listing === this.listing && send === this.send) setWorkspaceTerminals(slug, workspaceId, entries)
+    }, () => { /* see above */ })
   }
 
   /** Idempotent per generation; flips health, never status. */
@@ -188,7 +191,7 @@ export class WorkspaceStatusWatcher {
   }
 
   private teardown(): void {
-    this.setCommandChannel(null)
+    this.send = null
     this.connection?.close()
     this.connection = null
   }

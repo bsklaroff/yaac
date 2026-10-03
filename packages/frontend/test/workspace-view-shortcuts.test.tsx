@@ -29,15 +29,15 @@ const workspace: WorkspaceListEntry = {
   blockedHosts: [],
   forwardedPorts: [],
   unforwardedPorts: [],
+  terminals: [],
 }
 const snapshot = { workspaces: [workspace] } as unknown as ServerSnapshot
 
 const initial = useUiStore.getState()
 beforeEach(() => {
   useUiStore.setState({ ...initial, selectedWorkspaceId: 's1', layouts: {}, activeTabs: {}, filesFindPending: false })
-  // No shell terminals, and a one-file listing for the explorer.
+  // A one-file listing for the explorer.
   mockFetch({
-    'GET /api/workspace/s1/terminals': [],
     'GET /api/workspace/s1/files': {
       paths: ['a.ts'], symlinks: {}, ignored: [], emptyDirs: [], status: {}, truncated: false,
     },

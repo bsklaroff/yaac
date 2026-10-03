@@ -1,7 +1,13 @@
 import { workspaceDriver } from '#drivers/driver'
 import { testEnv } from '@yaac/shared/env'
 import { classifyWorkspaces, watcherDisplayLiveness } from './classify'
-import { liveAgents, readAgentStatus, readWorkspaceStatus, readWorkspaceWaitingSince } from './status-store'
+import {
+  liveAgents,
+  readAgentStatus,
+  readWorkspaceStatus,
+  readWorkspaceTerminals,
+  readWorkspaceWaitingSince,
+} from './status-store'
 import { pruneTerminating } from './terminating'
 import type { AgentLiveness, RuntimeHandle } from '#drivers/contract'
 import type {
@@ -9,6 +15,7 @@ import type {
   GitAuthFailure,
   PortMapping,
   StaleWorkspaceInfo,
+  WorkspaceTerminalEntry,
 } from '@yaac/shared/types'
 
 /**
@@ -42,6 +49,8 @@ export interface WorkspaceRuntimeReport {
    *  `tui`, acpd window name under `acp`). The join attaches conversations by
    *  the handle each was last seen on. */
   agents: AgentLiveness[]
+  /** Its non-agent tmux windows; absent until the watcher first lists them. */
+  terminals?: WorkspaceTerminalEntry[]
   blockedHosts: string[]
   forwardedPorts: PortMapping[]
   unforwardedPorts: number[]
@@ -98,12 +107,14 @@ async function observeRunning(w: RuntimeHandle): Promise<WorkspaceRuntimeReport>
   if (!w.workspaceId || !w.projectSlug) return base
   const driver = workspaceDriver()
   const waitingSinceMs = readWorkspaceWaitingSince(w.projectSlug, w.workspaceId)
+  const terminals = readWorkspaceTerminals(w.projectSlug, w.workspaceId)
   return {
     ...base,
     // Aggregate over the workspace's live agents (see status-store).
     status: readWorkspaceStatus(w.projectSlug, w.workspaceId),
     ...(waitingSinceMs !== undefined ? { waitingSinceMs } : {}),
     agents: agentLiveness(w.projectSlug, w.workspaceId),
+    ...(terminals !== undefined ? { terminals } : {}),
     blockedHosts: await driver.blockedHosts(w.workspaceId),
     forwardedPorts: await driver.forwardedPorts(w.workspaceId),
     unforwardedPorts: await driver.unforwardedPorts(w.workspaceId),

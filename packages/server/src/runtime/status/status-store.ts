@@ -25,6 +25,7 @@
 
 import { notifyWorkspaceListChanged } from '#notify'
 import type { LiveAgent, AgentPaneStatus } from '#runtime/agents'
+import type { WorkspaceTerminalEntry } from '@yaac/shared/types'
 
 export type { AgentPaneStatus }
 
@@ -58,6 +59,9 @@ export interface WorkspaceStatusEntry {
 }
 
 const store = new Map<string, WorkspaceStatusEntry>()
+/** Each workspace's non-agent tmux windows, as its watcher last listed them.
+ *  Kept apart from `store`, whose entry creation marks an attach. */
+const terminals = new Map<string, WorkspaceTerminalEntry[]>()
 
 let liveAgentsListener: (() => void) | null = null
 let streamHealthLostListener: (() => void) | null = null
@@ -253,18 +257,39 @@ export function setWorkspaceStreamHealth(slug: string, workspaceId: string, heal
   if (!healthy) streamHealthLostListener?.()
 }
 
+/** Record the workspace's terminals, notifying only on a change. */
+export function setWorkspaceTerminals(
+  slug: string,
+  workspaceId: string,
+  entries: WorkspaceTerminalEntry[],
+): void {
+  const k = key(slug, workspaceId)
+  if (JSON.stringify(terminals.get(k)) === JSON.stringify(entries)) return
+  terminals.set(k, entries)
+  notifyWorkspaceListChanged()
+}
+
+/** The workspace's terminals, or undefined before its watcher first listed
+ *  them (unknown, not none). */
+export function readWorkspaceTerminals(slug: string, workspaceId: string): WorkspaceTerminalEntry[] | undefined {
+  return terminals.get(key(slug, workspaceId))
+}
+
 /**
- * Drop a workspace's entry, on teardown (`#domain/workspaces` cleanup) and
+ * Drop a workspace's entry and terminals, on teardown (`#domain/workspaces` cleanup) and
  * when the watcher manager retires a workspace, so a reused id never sees
  * the previous status.
  */
 export function evictWorkspaceStatus(slug: string, workspaceId: string): void {
-  if (store.delete(key(slug, workspaceId))) notifyWorkspaceListChanged()
+  const k = key(slug, workspaceId)
+  const hadTerminals = terminals.delete(k)
+  if (store.delete(k) || hadTerminals) notifyWorkspaceListChanged()
 }
 
 /** Test-only: drop every entry and the change listener. */
 export function _resetWorkspaceStatusStoreForTests(): void {
   store.clear()
+  terminals.clear()
   liveAgentsListener = null
   streamHealthLostListener = null
 }

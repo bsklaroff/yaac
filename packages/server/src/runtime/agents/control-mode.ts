@@ -66,9 +66,9 @@ export type ControlModeNotification =
   | { kind: 'output'; paneId: string; data: string }
   /** A window's layout, and so its panes' sizes, changed. */
   | { kind: 'layout'; windowId: string; layout: string }
-  /** A window was added or closed (`closedWindowId` names a closed one);
-   *  the driver re-lists agents, since a new conversation arrives as a new
-   *  window. */
+  /** A window was added, closed or renamed (`closedWindowId` names a
+   *  closed one); the driver re-lists agents, since a new conversation
+   *  arrives as a new window. */
   | { kind: 'windows-changed'; closedWindowId?: string }
   | { kind: 'exit' }
 
@@ -100,7 +100,7 @@ export function parseControlModeNotification(line: string): ControlModeNotificat
     return { kind: 'layout', windowId, layout }
   }
   if (line === '%exit' || line.startsWith('%exit ')) return { kind: 'exit' }
-  if (line.startsWith('%window-add')) return { kind: 'windows-changed' }
+  if (line.startsWith('%window-add') || line.startsWith('%window-renamed')) return { kind: 'windows-changed' }
   // `%unlinked-window-close` is for a window in no session this client is
   // attached to; either close may mean an agent window went away.
   if (line.startsWith('%window-close ') || line.startsWith('%unlinked-window-close ')) {

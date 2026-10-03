@@ -255,6 +255,7 @@ class AcpConnection implements AgentConnection {
   private onNotification(n: ControlModeNotification): void {
     if (this.done) return
     if (n.kind === 'windows-changed') {
+      this.sink({ kind: 'windows-changed' })
       void this.resync()
     } else if (n.kind === 'subscription' && n.name.startsWith(BOOT_SUBSCRIPTION_PREFIX) && n.value === '0') {
       // acpd replaced the placeholder.

@@ -92,12 +92,15 @@ describe('paneStillLive', () => {
     expect(paneStillLive(tui, 'agent')).toBe(true)
   })
 
-  it('leaves every pane it does not own alone', () => {
-    // Other panes are managed elsewhere and always count as live here.
+  it('keeps a terminal pane while its window is listed, and special panes always', () => {
+    const shell = { target: 'window:@3', name: 'shell' }
     for (const wt of [acp, tui, booting]) {
-      expect(paneStillLive(wt, '%12')).toBe(true)
-      expect(paneStillLive(wt, PREVIEW_TARGET)).toBe(true)
-      expect(paneStillLive(wt, CHANGES_TARGET)).toBe(true)
+      // Windows not listed yet: nothing is known to be gone.
+      expect(paneStillLive(wt, 'window:@3')).toBe(true)
+      expect(paneStillLive({ ...wt, terminals: [shell] }, 'window:@3')).toBe(true)
+      expect(paneStillLive({ ...wt, terminals: [] }, 'window:@3')).toBe(false)
+      expect(paneStillLive({ ...wt, terminals: [] }, PREVIEW_TARGET)).toBe(true)
+      expect(paneStillLive({ ...wt, terminals: [] }, CHANGES_TARGET)).toBe(true)
     }
   })
 })
