@@ -1,19 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
+import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 
-// kubectl is this module's only route to the cluster. The manifest builders
-// in #drivers/k8s/cluster run for real.
-const mockApply = vi.hoisted(() => vi.fn())
-const mockGetJson = vi.hoisted(() => vi.fn())
-const mockRetry = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
-  ...(await importOriginal<typeof kubectlModule>()),
-  dataDirHash: () => 'ddh0123456789abc',
-  k8sNamespace: () => 'test-ns',
-  kubectlApply: mockApply,
-  kubectlGetJson: mockGetJson,
-  kubectlWithRetry: mockRetry,
-}))
+// The cluster is the fake behind client-node. The manifest builders in
+// #drivers/k8s/cluster run for real.
 
 import {
   _resetRegistrationGcForTests,
@@ -26,7 +15,13 @@ import {
   type ProxyRegistration,
 } from '#drivers/k8s/egress/proxy-registration'
 import { DEFAULT_ALLOWED_HOSTS, NESTED_PULL_HOSTS } from '#lib/allowed-hosts'
-import { setActiveClusterCache, type ClusterCache } from '#drivers/k8s/substrate'
+import {
+  LABEL_DATA_DIR_HASH,
+  dataDirHash,
+  k8sNamespace,
+  setActiveClusterCache,
+  type ClusterCache,
+} from '#drivers/k8s/substrate'
 import { _resetWorkspaceListChangedForTests, onWorkspaceListChanged } from '#notify'
 import type { PassContext } from '#drivers/contract'
 
@@ -37,26 +32,28 @@ interface AppliedRegistration {
 }
 
 const applied = (): AppliedRegistration[] =>
-  mockApply.mock.calls.map(([m]) => m as AppliedRegistration)
+  fakeCluster.callsOf('apply', 'ConfigMap').map((c) => c.body as unknown as AppliedRegistration)
+const deleted = (): Array<string | undefined> => fakeCluster.callsOf('delete').map((c) => c.name)
 const payloadOf = (m: AppliedRegistration): ProxyRegistration =>
   JSON.parse(m.data['registration.json']) as ProxyRegistration
 
-/** A registration object as `kubectl get` returns it. */
-function registrationObject(
+/** Put a registration object in the cluster. */
+function seedRegistration(
   workspaceId: string,
   registration: ProxyRegistration,
   creationTimestamp = '2026-09-01T00:00:00Z',
-): AppliedRegistration & { metadata: { creationTimestamp: string } } {
-  return {
+): void {
+  fakeCluster.seed({
+    apiVersion: 'v1',
     kind: 'ConfigMap',
     metadata: {
       name: `yaac-proxy-reg-${workspaceId}`,
-      namespace: 'test-ns',
+      namespace: k8sNamespace(),
       labels: { 'app': 'yaac-proxy', 'yaac.proxy-input': 'registration', 'yaac.workspace-id': workspaceId, 'yaac.project': registration.projectSlug },
       creationTimestamp,
     },
     data: { 'registration.json': JSON.stringify(registration) },
-  }
+  })
 }
 
 const REG: ProxyRegistration = {
@@ -64,9 +61,6 @@ const REG: ProxyRegistration = {
 }
 
 beforeEach(() => {
-  mockApply.mockReset().mockResolvedValue(undefined)
-  mockGetJson.mockReset().mockResolvedValue(null)
-  mockRetry.mockReset().mockResolvedValue({ stdout: '', stderr: '' })
   _resetWorkspaceListChangedForTests()
   _resetRegistrationGcForTests()
 })
@@ -227,7 +221,7 @@ describe('applyProxyRegistration', () => {
     expect(cm.kind).toBe('ConfigMap')
     expect(cm.metadata).toEqual({
       name: 'yaac-proxy-reg-w1',
-      namespace: 'test-ns',
+      namespace: k8sNamespace(),
       labels: { 'app': 'yaac-proxy', 'yaac.proxy-input': 'registration', 'yaac.workspace-id': 'w1', 'yaac.project': 'demo' },
     })
     expect(payloadOf(cm)).toEqual({ ...REG, upstreamRedirects: { 'h': { host: 'mock', port: 1 } } })
@@ -247,7 +241,7 @@ describe('registerWorkspaceEgress', () => {
       proxySecretRules: {},
     })
 
-    expect(mockApply).toHaveBeenCalledTimes(1)
+    expect(applied()).toHaveLength(1)
     const [cm] = applied()
     expect(cm.metadata.labels['yaac.workspace-id']).toBe('w1')
     const state = payloadOf(cm)
@@ -264,7 +258,7 @@ describe('registerWorkspaceEgress', () => {
   // A claimed spare re-registers, and a failed registration must fail the
   // claim.
   it('propagates a failed registration', async () => {
-    mockApply.mockRejectedValue(new Error('apiserver down'))
+    fakeCluster.intercept(() => { throw apiError(503, 'apiserver down') })
     await expect(registerWorkspaceEgress({
       workspaceId: 'w1',
       projectSlug: 'demo',
@@ -278,15 +272,16 @@ describe('registerWorkspaceEgress', () => {
 
 describe('deregisterWorkspaceEgress', () => {
   it('deletes the workspace’s object, tolerating its absence', async () => {
+    seedRegistration('w1', REG)
     await deregisterWorkspaceEgress('w1')
-    expect(mockRetry).toHaveBeenCalledWith(
-      ['delete', 'configmap', 'yaac-proxy-reg-w1', '-n', 'test-ns', '--ignore-not-found'],
-    )
+    await deregisterWorkspaceEgress('w1')
+    expect(deleted()).toEqual(['yaac-proxy-reg-w1', 'yaac-proxy-reg-w1'])
+    expect(fakeCluster.objects('ConfigMap')).toEqual([])
   })
 
   // Removing a workspace must not be blocked by the proxy.
   it('swallows a failed delete', async () => {
-    mockRetry.mockRejectedValue(new Error('apiserver down'))
+    fakeCluster.intercept(() => { throw apiError(503, 'apiserver down') })
     await expect(deregisterWorkspaceEgress('w1')).resolves.toBeUndefined()
   })
 })
@@ -299,10 +294,9 @@ describe('allowWorkspaceHost', () => {
   })
 
   it('appends the host to the named workspace’s registration and pushes a snapshot', async () => {
-    mockGetJson.mockResolvedValue(registrationObject('w1', REG))
+    seedRegistration('w1', REG)
     await allowWorkspaceHost({ workspaceId: 'w1', projectSlug: 'demo' }, 'new.example.com', { fanOutToProject: false })
 
-    expect(mockGetJson).toHaveBeenCalledWith(['get', 'configmap', 'yaac-proxy-reg-w1', '-n', 'test-ns'])
     const [cm] = applied()
     expect(cm.metadata.name).toBe('yaac-proxy-reg-w1')
     expect(payloadOf(cm).allowedHosts).toEqual(['api.example.com', 'new.example.com'])
@@ -312,32 +306,26 @@ describe('allowWorkspaceHost', () => {
   })
 
   it('rewrites nothing for a host already allowed', async () => {
-    mockGetJson.mockResolvedValue(registrationObject('w1', REG))
+    seedRegistration('w1', REG)
     await allowWorkspaceHost({ workspaceId: 'w1', projectSlug: 'demo' }, 'api.example.com', { fanOutToProject: false })
-    expect(mockApply).not.toHaveBeenCalled()
+    expect(applied()).toEqual([])
   })
 
   it('surfaces a missing registration on the named target as an error', async () => {
     // The user asked for this, so a miss is reported to them.
-    mockGetJson.mockResolvedValue(null)
     await expect(allowWorkspaceHost({ workspaceId: 'w1', projectSlug: 'demo' }, 'h.com', { fanOutToProject: false }))
       .rejects.toThrow('not registered with the egress proxy')
   })
 
   it('fans out over every registration of the project, by label', async () => {
-    mockGetJson.mockResolvedValue({ items: [
-      registrationObject('w1', REG),
-      registrationObject('w2', { ...REG, allowedHosts: ['h.com'] }),
-    ] })
+    seedRegistration('w1', REG)
+    seedRegistration('w2', { ...REG, allowedHosts: ['h.com'] })
+    seedRegistration('w3', { ...REG, projectSlug: 'other' })
     await allowWorkspaceHost({ workspaceId: 'w1', projectSlug: 'demo' }, 'h.com', { fanOutToProject: true })
 
     // Listed by project label, not via pods: each registration is a
     // workspace, and the proxy prunes its blocked record once widened.
-    expect(mockGetJson).toHaveBeenCalledWith([
-      'get', 'configmap', '-n', 'test-ns',
-      '-l', 'app=yaac-proxy,yaac.proxy-input=registration,yaac.project=demo',
-    ])
-    // w2 already allowed it: only w1 is rewritten.
+    // w2 already allowed it and w3 is another project: only w1 is rewritten.
     expect(applied().map((m) => m.metadata.name)).toEqual(['yaac-proxy-reg-w1'])
     expect(notified).toBe(1)
   })
@@ -369,34 +357,36 @@ describe('reconcileRegistrationGc', () => {
 
   it('collects registrations whose workspace is gone, past a grace period', async () => {
     setActiveClusterCache(cacheOf({ healthy: true, jobs: ['job-only'] }))
-    mockGetJson.mockResolvedValue({ items: [
-      registrationObject('live', REG, OLD),
-      registrationObject('job-only', REG, OLD),
-      registrationObject('terminating', REG, OLD),
-      registrationObject('fresh-orphan', REG, new Date().toISOString()),
-      registrationObject('orphan', REG, OLD),
-    ] })
+    seedRegistration('live', REG, OLD)
+    seedRegistration('job-only', REG, OLD)
+    seedRegistration('terminating', REG, OLD)
+    seedRegistration('fresh-orphan', REG, new Date().toISOString())
+    seedRegistration('orphan', REG, OLD)
     await reconcileRegistrationGc(ctxOf(['live'], ['terminating']))
 
     // Kept: named by a handle or a Job, mid-teardown, or too young to judge.
-    expect(mockRetry.mock.calls.map(([args]) => (args as string[])[2]))
-      .toEqual(['yaac-proxy-reg-orphan'])
+    expect(deleted()).toEqual(['yaac-proxy-reg-orphan'])
   })
 
   it('lists Jobs live past an untrusted cache, and throttles itself', async () => {
     // An unseeded cache would look like every workspace is gone.
     setActiveClusterCache(cacheOf({ healthy: false }))
-    mockGetJson.mockImplementation((args: string[]) => Promise.resolve(args[1] === 'jobs'
-      ? { items: [{ metadata: {
+    fakeCluster.seed({
+      apiVersion: 'batch/v1',
+      kind: 'Job',
+      metadata: {
         name: 'yaac-demo-job-only',
-        labels: { 'yaac.workspace-id': 'job-only', 'yaac.project': 'demo' },
+        namespace: k8sNamespace(),
+        labels: { [LABEL_DATA_DIR_HASH]: dataDirHash(), 'yaac.workspace-id': 'job-only', 'yaac.project': 'demo' },
         creationTimestamp: OLD,
-      } }] }
-      : { items: [registrationObject('job-only', REG, OLD), registrationObject('orphan', REG, OLD)] }))
+      },
+    })
+    seedRegistration('job-only', REG, OLD)
+    seedRegistration('orphan', REG, OLD)
     await reconcileRegistrationGc(ctxOf([]))
-    expect(mockRetry.mock.calls.map(([args]) => (args as string[])[2])).toEqual(['yaac-proxy-reg-orphan'])
+    expect(deleted()).toEqual(['yaac-proxy-reg-orphan'])
 
     await reconcileRegistrationGc(ctxOf([]))
-    expect(mockRetry).toHaveBeenCalledTimes(1)
+    expect(deleted()).toHaveLength(1)
   })
 })

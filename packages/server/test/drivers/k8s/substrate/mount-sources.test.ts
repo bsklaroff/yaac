@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import path from 'node:path'
-import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
+import type * as apiModule from '#drivers/k8s/substrate/api'
 
-vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
-  ...(await importOriginal<typeof kubectlModule>()),
+vi.mock('#drivers/k8s/substrate/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof apiModule>()),
   dataDirHash: () => 'ddh0123456789abc',
 }))
 

@@ -3,7 +3,7 @@ import crypto from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { WorkspaceExecError, type StreamChild } from '#drivers/contract'
 import { FRAME_DATA, FRAME_EXIT, FRAME_RESIZE, FRAME_SIGNAL, FrameParser, encodeFrame } from '@yaac/shared/stream-frames'
-import { k8sNamespace, kubectlGetJson } from './kubectl'
+import { k8sNamespace, readObject } from './api'
 import { workspaceIdFromJobName } from './pods'
 import { containerExec } from './exec'
 import {
@@ -69,9 +69,9 @@ function resolveRelayAddr(): RelayAddr {
  * before the proxy's first deploy creates it.
  */
 export async function readProxyAuthSecret(): Promise<string | null> {
-  const secret = await kubectlGetJson<{ data?: Record<string, string> }>([
-    'get', 'secret', PROXY_AUTH_SECRET_NAME, '-n', k8sNamespace(),
-  ])
+  const secret = await readObject<{ data?: Record<string, string> }>({
+    apiVersion: 'v1', kind: 'Secret', name: PROXY_AUTH_SECRET_NAME, namespace: k8sNamespace(),
+  })
   const encoded = secret?.data?.secret
   return encoded ? Buffer.from(encoded, 'base64').toString('utf8') : null
 }
@@ -488,7 +488,7 @@ export async function bootStreamd(
   await containerExec(
     jobName,
     `sh -c 'setsid node /opt/yaac/streamd/main.js >>/tmp/streamd.log 2>&1 </dev/null &'`,
-    { maxAttempts: 1, timeout: opts.timeout ?? 15_000 },
+    { timeout: opts.timeout ?? 15_000 },
   )
 }
 

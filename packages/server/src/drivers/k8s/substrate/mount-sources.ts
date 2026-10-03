@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { globalRoot, nodeLocalRoot, serverLocalRoot } from '@yaac/shared/paths'
-import { dataDirHash } from './kubectl'
+import { dataDirHash } from './api'
 import type { PodMount } from './pod-spec'
 import { GLOBAL_CLAIM_NAME, NODE_LOCAL_NODE_ROOT } from './storage-constants'
 

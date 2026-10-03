@@ -122,9 +122,9 @@ In this order: EKS on Amazon Linux, then AKS on Ubuntu. On each:
   fence is still worth adding.
 - A dedicated workspace node pool: a `--workspace-pool-taint` option for
   `--byo` that puts a `nodeSelector` on the installer DaemonSet and
-  `tolerations` on the RuntimeClasses, and persists across re-installs. Today install's re-apply removes a
-  toleration added with `kubectl apply` (docs/cluster-setup.md "Which nodes
-  count as workspace-eligible").
+  `tolerations` on the RuntimeClasses. Today a hand-added toleration
+  survives re-install but nothing records it (docs/cluster-setup.md "Which
+  nodes count as workspace-eligible").
 
 ### 3. Node-local checkouts (performance, separable)
 

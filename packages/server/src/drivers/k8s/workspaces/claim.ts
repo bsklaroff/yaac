@@ -4,9 +4,11 @@ import {
   LABEL_TOOL,
   findWorkspacePod,
   isPrewarmed,
+  execFileAsync,
   k8sNamespace,
-  kubectlWithRetry,
   NPM_CACHE_APP_NAME,
+  patchObject,
+  readObject,
   readWorkspacePods,
 } from '#drivers/k8s/substrate'
 import { servingNpmCacheUrl } from '#drivers/k8s/cluster'
@@ -19,29 +21,23 @@ import { npmCacheApplies } from './launch'
 /**
  * The commit point of a prewarm claim, where a spare becomes the user's
  * workspace (docs/layered-server.md). Everything before it is reversible,
- * so it is a single call that either takes the spare or refuses.
+ * so it is one conditional write that either takes the spare or refuses.
  */
-
-/** A label key as a JSON Pointer segment (RFC 6901 escaping). */
-function pointerSegment(key: string): string {
-  return key.replace(/~/g, '~0').replace(/\//g, '~1')
-}
 
 /**
  * Claim the spare holding `workspaceId` for `tool`.
  *
- * The write is a compare-and-swap: a JSON-patch `test` op makes the API
- * server reject a second concurrent claim with a 422 (not retried). A
- * label-selector bulk update would not do this, because it lists and then
- * patches unconditionally. The loser throws, which sends its claim down the
- * cold-create path. The prewarm mediator also reserves spares in-process,
- * but this keeps the verb safe for any caller.
+ * The write is a compare-and-swap: the pod is read fresh, and the patch
+ * carries the resourceVersion that read saw, so the API server rejects a
+ * second concurrent claim with a 409. A label-selector bulk update would
+ * not do this, because it lists and then patches unconditionally. The
+ * loser throws, which sends its claim down the cold-create path. The
+ * prewarm mediator also reserves spares in-process, but this keeps the
+ * verb safe for any caller.
  *
- * Known gap: if the patch lands but its response is lost and retried, the
- * retry fails its own `test` and a winning claim reports a loss. The caller
- * then rolls back a spare that is already claimed; it stays hidden until
- * its agent dies. Fixing this would need a per-claim mark written in the
- * patch, and the window is a lost response on one round trip.
+ * Known gap: if the patch lands but its response is lost, a winning claim
+ * reports a loss. The caller then rolls back a spare that is already
+ * claimed; it stays hidden until its agent dies.
  *
  * The tool label is always written, even when unchanged, so afterwards every
  * handle reports `declaredTool === tool` (read by `yaac-mama create` from
@@ -62,16 +58,17 @@ export async function claimSpareWorkspace(
   }
 
   const { podName } = pod
-  await kubectlWithRetry([
-    'patch', 'pod', podName, '-n', k8sNamespace(), '--type=json', '-p',
-    JSON.stringify([
-      // Checked at write time, not just at list time.
-      { op: 'test', path: `/metadata/labels/${pointerSegment(LABEL_PREWARMED)}`, value: 'true' },
-      { op: 'remove', path: `/metadata/labels/${pointerSegment(LABEL_PREWARMED)}` },
-      // `add` sets the label whether or not it already exists.
-      { op: 'add', path: `/metadata/labels/${pointerSegment(LABEL_TOOL)}`, value: tool },
-    ]),
-  ])
+  const ref = { apiVersion: 'v1', kind: 'Pod', name: podName, namespace: k8sNamespace() }
+  const live = await readObject<{ metadata: { resourceVersion?: string; labels?: Record<string, string> } }>(ref)
+  if (live?.metadata.labels?.[LABEL_PREWARMED] !== 'true') {
+    throw new Error(`spare ${podName} for ${workspaceId} was claimed by another caller`)
+  }
+  await patchObject(ref, {
+    metadata: {
+      resourceVersion: live.metadata.resourceVersion,
+      labels: { [LABEL_PREWARMED]: null, [LABEL_TOOL]: tool },
+    },
+  })
 
   // Re-decide the npm registry at claim time: the spare's init chose it
   // long ago, and pnpm has no fallback if the cache has since gone down
@@ -101,7 +98,10 @@ export async function registerWorkspace(reg: WorkspaceRegistration): Promise<voi
   const pod = findWorkspacePod(await readWorkspacePods(), reg.workspaceId, { spares: true })
   if (pod?.labels[LABEL_NPM_CACHE] !== 'true') return
   await writeNpmRegistry(pod.podName, null)
-  await kubectlWithRetry(['label', 'pod', pod.podName, '-n', k8sNamespace(), `${LABEL_NPM_CACHE}-`])
+  await patchObject(
+    { apiVersion: 'v1', kind: 'Pod', name: pod.podName, namespace: k8sNamespace() },
+    { metadata: { labels: { [LABEL_NPM_CACHE]: null } } },
+  )
 }
 
 /**
@@ -115,8 +115,8 @@ async function writeNpmRegistry(podName: string, url: string | null): Promise<vo
     `sed -i '\\#^registry=http://${NPM_CACHE_APP_NAME}\\.#d' "$f" 2>/dev/null || true`,
     'if [ -n "$1" ] && ! grep -qs "^registry=" "$f"; then printf "registry=%s\\n" "$1" >> "$f"; fi',
   ].join('\n')
-  await kubectlWithRetry([
+  await execFileAsync('kubectl', [
     'exec', '-n', k8sNamespace(), podName, '--',
     'sh', '-c', script, '--', url ?? '',
-  ], { maxAttempts: 2 })
+  ])
 }

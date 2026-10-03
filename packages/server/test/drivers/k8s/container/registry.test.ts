@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import { EventEmitter } from 'node:events'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 type ExecResult = { stdout: string; stderr: string }
 type ExecCallback = (err: unknown, res?: ExecResult) => void
@@ -98,11 +99,8 @@ import {
 import { _resetPortForwardsForTests } from '#drivers/k8s/substrate/port-forward'
 import { _resetRegistryGrantKeyForTests } from '#drivers/k8s/container/registry-grant'
 
-/** The cluster's grant key, as the `kubectl get secret` below serves it. */
+/** The cluster's grant key, seeded into the fake cluster before each test. */
 const GRANT_KEY = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey
-const GRANT_SECRET = JSON.stringify({
-  data: { 'key.pem': Buffer.from(GRANT_KEY.export({ type: 'pkcs8', format: 'pem' })).toString('base64') },
-})
 
 /**
  * Check a push's `--authfile` the way the registry's write gate checks a
@@ -164,9 +162,12 @@ function forwardArgs(): string[][] {
 
 beforeEach(() => {
   execFileMock.mockReset()
-  execFileMock.mockImplementation((file, args) => (args[0] === 'get' && args[1] === 'secret'
-    ? Promise.resolve({ stdout: GRANT_SECRET, stderr: '' })
-    : Promise.reject(new Error(`unexpected ${file} ${args.join(' ')}`))))
+  execFileMock.mockImplementation((file, args) => Promise.reject(new Error(`unexpected ${file} ${args.join(' ')}`)))
+  fakeCluster.seed({
+    apiVersion: 'v1', kind: 'Secret',
+    metadata: { name: 'yaac-registry-grant-key', namespace: 'yaac-registry-keys' },
+    data: { 'key.pem': Buffer.from(GRANT_KEY.export({ type: 'pkcs8', format: 'pem' })).toString('base64') },
+  })
   _resetRegistryGrantKeyForTests()
   fetchMock.mockReset()
   spawnedChildren.length = 0

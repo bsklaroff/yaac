@@ -24,11 +24,8 @@ import {
   NESTED_GRAPHROOT_SIZELIMIT_BYTES,
   NESTED_GRAPHROOT_VOLUME,
 } from '@yaac/server/drivers/k8s/substrate/pod-spec'
-import {
-  k8sNamespace,
-  kubectlApply,
-  kubectlWithRetry,
-} from '@yaac/server/drivers/k8s/substrate/kubectl'
+import { applyObject, deleteObject, k8sNamespace } from '@yaac/server/drivers/k8s/substrate/api'
+import { kubectl } from '@yaac/test-utils/kubectl'
 
 /**
  * Arbitrary-uid images end to end (docs/arbitrary-uid-images.md): a
@@ -57,7 +54,7 @@ let restoreNamespace: (() => void) | null = null
 
 /** Run a shell command in the pod, returning its exit code with its output. */
 async function sh(script: string, timeout = 60_000): Promise<{ exit: number; out: string }> {
-  const { stdout } = await kubectlWithRetry([
+  const { stdout } = await kubectl([
     'exec', '-n', k8sNamespace(), POD, '--',
     'sh', '-c', `${script} 2>&1; printf '\nEXIT:%s\n' "$?"`,
   ], { timeout })
@@ -98,7 +95,7 @@ beforeAll(async () => {
   const staged = await stageWorkspaceBin(workspaceBinDir(), binDir)
   expect(staged).toContain(WORKSPACE_INIT_SCRIPT)
 
-  await kubectlApply({
+  await applyObject({
     apiVersion: 'v1',
     kind: 'Pod',
     metadata: {
@@ -161,10 +158,8 @@ beforeAll(async () => {
 }, 600_000)
 
 afterAll(async () => {
-  await kubectlWithRetry(
-    ['delete', 'pod', POD, '-n', k8sNamespace(), '--ignore-not-found', '--wait=false'],
-    { timeout: 60_000 },
-  ).catch(() => undefined)
+  await deleteObject({ apiVersion: 'v1', kind: 'Pod', name: POD, namespace: k8sNamespace() })
+    .catch(() => undefined)
   restoreNamespace?.()
 })
 

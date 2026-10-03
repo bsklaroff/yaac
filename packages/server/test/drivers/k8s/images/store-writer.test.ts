@@ -18,17 +18,6 @@ import path from 'node:path'
 
 const execFileAsync = promisify(execFile)
 
-vi.mock('#drivers/k8s/substrate/kubectl', () => ({
-  isKubectlAbsentError: vi.fn(() => false),
-  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
-  k8sNamespace: vi.fn(() => 'test-ns'),
-  dataDirHash: vi.fn(() => 'ddh16'),
-  kubectlApply: vi.fn().mockResolvedValue(undefined),
-  kubectlGetJson: vi.fn(),
-  kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-  execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-}))
-
 vi.mock('#drivers/k8s/container/registry', () => ({
   registryHasTag: vi.fn().mockResolvedValue(true),
   registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
@@ -53,13 +42,9 @@ import {
 } from '#drivers/k8s/images/store-writer'
 import { CACHED_GENERATIONS_KEPT, CACHE_TAG_PREFIX } from '#drivers/k8s/images/image-promoter'
 import { imageStoreDir } from '@yaac/shared/project-paths'
-import { nodeLocalHostPath, nodeLocalNodePath } from '#drivers/k8s/substrate'
-import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/substrate/kubectl'
+import { dataDirHash, k8sNamespace, nodeLocalHostPath, nodeLocalNodePath } from '#drivers/k8s/substrate'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-
-const mockApply = vi.mocked(kubectlApply)
-const mockGetJson = vi.mocked(kubectlGetJson)
-const mockRetry = vi.mocked(kubectlWithRetry)
+import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 const ID = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
 const PROJECT = { slug: 'demo', id: ID }
@@ -69,11 +54,10 @@ const CLUSTER_IP = '10.96.0.50'
 let tmpDataDir: string
 
 beforeEach(async () => {
-  mockApply.mockReset()
-  mockApply.mockResolvedValue(undefined)
-  mockRetry.mockReset()
-  mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
-  mockGetJson.mockReset()
+  // Every pod the code runs succeeds at once.
+  fakeCluster.intercept((c) => {
+    if (c.verb === 'apply' && c.kind === 'Pod') c.body = { ...c.body, status: { phase: 'Succeeded' } }
+  })
   _resetImageStoreForTests()
   tmpDataDir = await createTempDataDir()
 })
@@ -87,15 +71,20 @@ afterEach(async () => {
  * answers, no workspace pod is holding a generation, and every pod run
  * succeeds.
  */
-function stageLiveCluster(opts: { podVolumes?: unknown[] } = {}): void {
-  mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
-    if (args[1] === 'service') return Promise.resolve({ spec: { clusterIP: CLUSTER_IP } })
-    if (args[1] === 'nodes') return Promise.resolve({ items: [{ metadata: { name: NODE } }] })
-    if (args[1] === 'pods' && args.includes('-l')) {
-      return Promise.resolve({ items: [{ spec: { volumes: opts.podVolumes ?? [] } }] })
-    }
-    return Promise.resolve({ status: { phase: 'Succeeded' } })
-  })
+function stageLiveCluster(opts: { podVolumes?: unknown[]; nodes?: string[] } = {}): void {
+  fakeCluster.seed(
+    {
+      apiVersion: 'v1', kind: 'Service',
+      metadata: { name: `yaac-reg-${ID}`, namespace: k8sNamespace() },
+      spec: { clusterIP: CLUSTER_IP },
+    },
+    {
+      apiVersion: 'v1', kind: 'Pod',
+      metadata: { name: 'workspace-pod', namespace: k8sNamespace(), labels: { 'yaac.project-id': ID } },
+      spec: { volumes: opts.podVolumes ?? [] },
+    },
+    ...(opts.nodes ?? [NODE]).map((name) => ({ apiVersion: 'v1', kind: 'Node', metadata: { name } })),
+  )
 }
 
 /** Just the parts of a pod manifest these assertions read. */
@@ -118,7 +107,7 @@ interface PodManifest {
 
 /** The pod manifests handed to the cluster, in order. */
 const appliedPods = (): PodManifest[] =>
-  mockApply.mock.calls.map((c) => c[0] as unknown as PodManifest)
+  fakeCluster.callsOf('apply', 'Pod').map((c) => c.body as unknown as PodManifest)
 
 /** The `sh -c` script of the first applied pod, and its argv. */
 function podCommand(i = 0): { script: string; argv: string[] } {
@@ -340,11 +329,7 @@ describe('ensureNodeImageStore', () => {
   })
 
   it('writes ONE generation name on every node, so the name the server picks exists everywhere', async () => {
-    stageLiveCluster()
-    const base = mockGetJson.getMockImplementation()!
-    mockGetJson.mockImplementation((args: string[]) => args[1] === 'nodes'
-      ? Promise.resolve({ items: [{ metadata: { name: 'n1' } }, { metadata: { name: 'n2' } }] })
-      : base(args))
+    stageLiveCluster({ nodes: ['n1', 'n2'] })
     await expect(ensureNodeImageStore(PROJECT)).resolves.toBe(true)
 
     const pods = appliedPods()
@@ -451,7 +436,7 @@ describe('ensureNodeImageStore', () => {
     // A layer without a recorded diff size makes `podman images` decompress
     // it (very slow under gVisor), so the build fails before the marker.
     _resetImageStoreForTests()
-    mockApply.mockClear()
+    fakeCluster.calls = []
     await ensureNodeImageStore(PROJECT)
     const storeRoot2 = await fs.mkdtemp(path.join(tmpDataDir, 'store2-'))
     await expect(runStoreWriterScript(podCommand().script, storeRoot2, [], {
@@ -482,19 +467,15 @@ describe('ensureNodeImageStore', () => {
   // Leftover pods from a crashed run are swept before every build.
   it('sweeps strays from a crashed run before building', async () => {
     stageLiveCluster()
+    const labels = { app: 'yaac-image-store', 'yaac.project-id': ID, 'yaac.store-data-dir-hash': dataDirHash() }
+    fakeCluster.seed({ apiVersion: 'v1', kind: 'Pod', metadata: { name: 'stray', namespace: k8sNamespace(), labels } })
     await ensureNodeImageStore(PROJECT)
-    const deletes = mockRetry.mock.calls.map((c) => c[0].join(' '))
-    expect(deletes.some((d) =>
-      d.includes('delete pod') && d.includes('app=yaac-image-store')
-      && d.includes(`yaac.project-id=${ID}`),
-    )).toBe(true)
+    const verbs = fakeCluster.calls.map((c) => `${c.verb} ${c.name ?? ''}`)
+    expect(verbs.indexOf('delete stray')).toBeGreaterThan(-1)
+    expect(verbs.indexOf('delete stray')).toBeLessThan(verbs.findIndex((v) => v.startsWith('apply')))
   })
 
   it('is a no-op when the project has no registry to build from', async () => {
-    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
-      if (args[1] === 'service') return Promise.resolve(null)
-      return Promise.resolve({ items: [] })
-    })
     await expect(ensureNodeImageStore(PROJECT)).resolves.toBe(false)
     expect(appliedPods()).toHaveLength(0)
   })
@@ -502,7 +483,6 @@ describe('ensureNodeImageStore', () => {
   it('retries a failed build on the short backoff, not the full interval', async () => {
     // A failed build is usually transient (often a registry rollout), so
     // it retries soon rather than after a full interval.
-    mockGetJson.mockImplementation(() => Promise.resolve(null))
     const t0 = 1_000_000
     await expect(ensureNodeImageStore(PROJECT, { nowMs: t0 })).resolves.toBe(false)
     stageLiveCluster()
@@ -541,6 +521,11 @@ describe('reconcileNodeImageStores', () => {
   it('fires one detached build per project', async () => {
     stageLiveCluster()
     const other = { slug: 'other', id: '0b1c2d3e-4f50-4617-8293-a4b5c6d7e8f9' }
+    fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Service',
+      metadata: { name: `yaac-reg-${other.id}`, namespace: k8sNamespace() },
+      spec: { clusterIP: CLUSTER_IP },
+    })
     reconcileNodeImageStores([PROJECT, other])
     // Not awaited: it returns before any pod is applied.
     expect(appliedPods()).toHaveLength(0)

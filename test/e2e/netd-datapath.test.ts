@@ -18,12 +18,8 @@ import {
 import { proxyServiceClusterIp } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { NETD_APP_NAME } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
 import { workspaceIdLabels } from '@yaac/server/drivers/k8s/substrate/pods'
-import {
-  k8sNamespace,
-  kubectlApply,
-  kubectlGetJson,
-  kubectlWithRetry,
-} from '@yaac/server/drivers/k8s/substrate/kubectl'
+import { applyObject, deleteObject, deleteObjects, k8sNamespace, listObjects, patchObject, readObject } from '@yaac/server/drivers/k8s/substrate/api'
+import { kubectl } from '@yaac/test-utils/kubectl'
 
 /**
  * Safety properties of the netd egress redirect: what happens when the
@@ -55,10 +51,8 @@ const MITM_HOST = 'api.anthropic.com'
 const CA_PATH = '/etc/yaac/certs/proxy-ca.pem'
 
 async function deleteTestPod(name: string): Promise<void> {
-  await kubectlWithRetry([
-    'delete', 'pod', name, '-n', k8sNamespace(),
-    '--ignore-not-found', '--wait=false', '--grace-period=1',
-  ]).catch(() => { /* ok */ })
+  await deleteObject({ apiVersion: 'v1', kind: 'Pod', name, namespace: k8sNamespace() }, { gracePeriodSeconds: 1 })
+    .catch(() => { /* ok */ })
 }
 
 /**
@@ -72,7 +66,7 @@ let netdTargetNode: string | null = null
 /** Point the netd probes at the node hosting `pod`. */
 async function focusNetdOnPod(name: string, namespace = k8sNamespace()): Promise<void> {
   interface RawPod { spec?: { nodeName?: string } }
-  const pod = await kubectlGetJson<RawPod>(['get', 'pod', name, '-n', namespace])
+  const pod = await readObject<RawPod>({ apiVersion: 'v1', kind: 'Pod', name, namespace })
     .catch(() => null)
   netdTargetNode = pod?.spec?.nodeName ?? netdTargetNode
 }
@@ -83,20 +77,17 @@ async function focusNetdOnPod(name: string, namespace = k8sNamespace()): Promise
  * `phase: Running`), as the netd-restart test leaves behind.
  */
 async function netdPodName(timeoutMs = 120_000): Promise<string> {
-  interface RawPodList {
-    items?: Array<{
-      metadata?: { name?: string; deletionTimestamp?: string }
-      spec?: { nodeName?: string }
-      status?: { conditions?: Array<{ type?: string; status?: string }> }
-    }>
+  interface RawPod {
+    metadata?: { name?: string; deletionTimestamp?: string }
+    spec?: { nodeName?: string }
+    status?: { conditions?: Array<{ type?: string; status?: string }> }
   }
   const deadline = Date.now() + timeoutMs
   for (;;) {
-    const list = await kubectlGetJson<RawPodList>([
-      'get', 'pods', '-n', k8sNamespace(), '-l', `app=${NETD_APP_NAME}`,
-      '--field-selector=status.phase=Running',
-    ])
-    const name = (list?.items ?? []).find((pod) =>
+    const list = await listObjects<RawPod>('v1', 'Pod', {
+      namespace: k8sNamespace(), labelSelector: `app=${NETD_APP_NAME}`, fieldSelector: 'status.phase=Running',
+    })
+    const name = list.find((pod) =>
       !pod.metadata?.deletionTimestamp
       && (netdTargetNode === null || pod.spec?.nodeName === netdTargetNode)
       // Ready means netd has programmed its chain and logged it; Running
@@ -119,7 +110,7 @@ let lastNetdLogsError = 'never attempted'
 /** The `netd` container's logs from a ready pod; '' if it vanished mid-read. */
 async function netdLogs(): Promise<string> {
   try {
-    const { stdout } = await kubectlWithRetry([
+    const { stdout } = await kubectl([
       'logs', await netdPodName(), '-c', 'netd', '-n', k8sNamespace(),
     ], { timeout: 60_000 })
     return stdout
@@ -133,21 +124,19 @@ async function netdLogs(): Promise<string> {
 
 /** DaemonSet + pod state, for a timeout that needs to explain itself. */
 async function netdDiagnostics(): Promise<string> {
-  interface RawPodList {
-    items?: Array<{
-      metadata?: { name?: string; deletionTimestamp?: string }
-      status?: {
-        phase?: string
-        conditions?: Array<{ type?: string; status?: string; message?: string }>
-        containerStatuses?: Array<{ name?: string; ready?: boolean; restartCount?: number
-          state?: Record<string, unknown> }>
-      }
-    }>
+  interface RawPod {
+    metadata?: { name?: string; deletionTimestamp?: string }
+    status?: {
+      phase?: string
+      conditions?: Array<{ type?: string; status?: string; message?: string }>
+      containerStatuses?: Array<{ name?: string; ready?: boolean; restartCount?: number
+        state?: Record<string, unknown> }>
+    }
   }
-  const list = await kubectlGetJson<RawPodList>([
-    'get', 'pods', '-n', k8sNamespace(), '-l', `app=${NETD_APP_NAME}`,
-  ]).catch(() => null)
-  return JSON.stringify((list?.items ?? []).map((pod) => ({
+  const list = await listObjects<RawPod>('v1', 'Pod', {
+    namespace: k8sNamespace(), labelSelector: `app=${NETD_APP_NAME}`,
+  }).catch(() => [])
+  return JSON.stringify(list.map((pod) => ({
     name: pod.metadata?.name,
     deleting: !!pod.metadata?.deletionTimestamp,
     phase: pod.status?.phase,
@@ -162,7 +151,7 @@ async function netdDiagnostics(): Promise<string> {
 async function netdExec(args: string[]): Promise<string> {
   for (let attempt = 0; ; attempt++) {
     try {
-      const { stdout } = await kubectlWithRetry([
+      const { stdout } = await kubectl([
         'exec', '-n', k8sNamespace(), await netdPodName(), '-c', 'netd', '--', ...args,
       ], { timeout: 60_000 })
       return stdout
@@ -232,7 +221,7 @@ async function waitForTrioPorts(
 async function shInPod(
   pod: string, script: string, timeout = 40_000,
 ): Promise<{ exit: number; out: string }> {
-  const { stdout } = await kubectlWithRetry([
+  const { stdout } = await kubectl([
     'exec', '-n', k8sNamespace(), pod, '--',
     'sh', '-c', `${script} 2>&1; printf '\nEXIT:%s\n' "$?"`,
   ], { timeout })
@@ -260,10 +249,7 @@ async function setNetdScheduled(scheduled: boolean): Promise<void> {
   const patch = scheduled
     ? { spec: { template: { spec: { nodeSelector: null } } } }
     : { spec: { template: { spec: { nodeSelector: { 'yaac.e2e/absent': 'true' } } } } }
-  await kubectlWithRetry([
-    'patch', 'daemonset', NETD_APP_NAME, '-n', k8sNamespace(),
-    '--type', 'merge', '-p', JSON.stringify(patch),
-  ])
+  await patchObject({ apiVersion: 'apps/v1', kind: 'DaemonSet', name: NETD_APP_NAME, namespace: k8sNamespace() }, patch)
 }
 
 /**
@@ -276,9 +262,9 @@ async function waitForNetdReady(want: 0 | 'all', timeoutMs = 180_000): Promise<v
   const deadline = Date.now() + timeoutMs
   let last = ''
   for (;;) {
-    const ds = await kubectlGetJson<RawDs>([
-      'get', 'daemonset', NETD_APP_NAME, '-n', k8sNamespace(),
-    ])
+    const ds = await readObject<RawDs>({
+      apiVersion: 'apps/v1', kind: 'DaemonSet', name: NETD_APP_NAME, namespace: k8sNamespace(),
+    })
     const ready = ds?.status?.numberReady ?? 0
     const desired = ds?.status?.desiredNumberScheduled ?? 0
     last = `ready=${ready} desired=${desired}`
@@ -334,7 +320,7 @@ describe('netd datapath gates', () => {
     expect(await egressWorks(podA)).toBe(true)
 
     interface RawPod { status?: { podIP?: string } }
-    const pod = await kubectlGetJson<RawPod>(['get', 'pod', podA, '-n', k8sNamespace()])
+    const pod = await readObject<RawPod>({ apiVersion: 'v1', kind: 'Pod', name: podA, namespace: k8sNamespace() })
     const podIp = pod?.status?.podIP
     expect(podIp).toBeTruthy()
 
@@ -383,10 +369,8 @@ describe('netd datapath gates', () => {
     // Felix re-inserts its jumps at the top of every chain it manages.
     // netd's jump is appended, so a Felix restart must change nothing.
     expect(await egressWorks(podA)).toBe(true)
-    await kubectlWithRetry([
-      'delete', 'pod', '-n', 'kube-system', '-l', 'k8s-app=calico-node', '--wait=false',
-    ])
-    await kubectlWithRetry([
+    await deleteObjects('v1', 'Pod', { namespace: 'kube-system', labelSelector: 'k8s-app=calico-node' })
+    await kubectl([
       'rollout', 'status', 'daemonset/calico-node', '-n', 'kube-system', '--timeout=240s',
     ], { timeout: 250_000 })
     expect(await egressWorks(podA)).toBe(true)
@@ -418,9 +402,7 @@ describe('netd datapath gates', () => {
     const before = await rulesFor()
     expect(before).toContain('-j DNAT')
 
-    await kubectlWithRetry([
-      'delete', 'pod', '-n', k8sNamespace(), '-l', `app=${NETD_APP_NAME}`, '--wait=false',
-    ])
+    await deleteObjects('v1', 'Pod', { namespace: k8sNamespace(), labelSelector: `app=${NETD_APP_NAME}` })
     await waitForNetdReady('all')
 
     // netd rebuilds its rules from cluster state; it persists nothing.
@@ -465,11 +447,11 @@ describe('netd datapath gates', () => {
       (await redirectChainRules()).filter((l) => l.includes(comment))
 
     try {
-      await kubectlApply({
+      await applyObject({
         apiVersion: 'v1', kind: 'Namespace',
         metadata: { name: foreignNs, labels: { 'yaac.test': 'true' } },
       })
-      await kubectlApply({
+      await applyObject({
         apiVersion: 'v1',
         kind: 'Pod',
         metadata: {
@@ -502,9 +484,7 @@ describe('netd datapath gates', () => {
         'netd claimed a sibling install\'s workspace pod',
       ).toEqual([])
     } finally {
-      await kubectlWithRetry([
-        'delete', 'namespace', foreignNs, '--ignore-not-found', '--wait=false',
-      ]).catch(() => { /* ok */ })
+      await deleteObject({ apiVersion: 'v1', kind: 'Namespace', name: foreignNs }).catch(() => { /* ok */ })
     }
   }, 600_000)
 
@@ -520,7 +500,7 @@ describe('netd datapath gates', () => {
     expect((await shInPod(podRaw, egressProbe)).exit).not.toBe(0)
 
     interface RawPod { status?: { podIP?: string } }
-    const victim = await kubectlGetJson<RawPod>(['get', 'pod', podA, '-n', k8sNamespace()])
+    const victim = await readObject<RawPod>({ apiVersion: 'v1', kind: 'Pod', name: podA, namespace: k8sNamespace() })
     const victimIp = victim?.status?.podIP
     expect(victimIp).toBeTruthy()
 

@@ -1,8 +1,8 @@
 // Public interface of the k8s substrate: the low-level cluster primitives
-// the other `#drivers/k8s` folders use (run kubectl, name a Job, list pods,
-// exec, open a stream, wait for readiness), plus the proxy datapath's names
-// and ports. Nothing here makes decisions about workspaces, images or
-// projects.
+// the other `#drivers/k8s` folders use (read, apply and delete objects,
+// name a Job, list pods, exec, open a stream, wait for readiness), plus
+// the proxy datapath's names and ports. Nothing here makes decisions
+// about workspaces, images or projects.
 //
 // Each name exported here needs a unit test in
 // packages/server/test/drivers/k8s/substrate/. The client-node API handles
@@ -31,16 +31,22 @@ export {
 } from './gvisor'
 export { NODE_TASKSMAX_LIVE, NODE_TUNING_SYSCTLS } from './node-tuning'
 export {
+  apiStatus,
+  applyObject,
+  createObject,
   dataDirHash,
+  deleteObject,
+  deleteObjects,
   ensureKubernetes,
   execFileAsync,
-  isKubectlAbsentError,
+  isAbsent,
+  k8sErrorSummary,
   k8sNamespace,
-  kubectlApply,
-  kubectlErrorSummary,
-  kubectlGetJson,
-  kubectlWithRetry,
-} from './kubectl'
+  listObjects,
+  patchObject,
+  readObject,
+} from './api'
+export type { ObjectRef } from './api'
 export {
   nodeLocalDirsOf,
   nodeLocalHostPath,

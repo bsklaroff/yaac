@@ -27,12 +27,8 @@ import {
   TRANSPARENT_HTTPS_PORT,
   TUNNEL_INGRESS_PORT,
 } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
-import {
-  k8sNamespace,
-  kubectlApply,
-  kubectlGetJson,
-  kubectlWithRetry,
-} from '@yaac/server/drivers/k8s/substrate/kubectl'
+import { applyObject, deleteObject, k8sNamespace, readObject } from '@yaac/server/drivers/k8s/substrate/api'
+import { kubectl } from '@yaac/test-utils/kubectl'
 
 const execFileAsync = promisify(execFile)
 
@@ -75,13 +71,10 @@ const BLOCKED_HOST = 'blocked.example.com'
 const CA_PATH = '/etc/yaac/certs/proxy-ca.pem'
 
 async function deleteTestPod(name: string): Promise<void> {
-  await kubectlWithRetry([
-    'delete', 'pod', name, '-n', k8sNamespace(),
-    '--ignore-not-found', '--wait=false', '--grace-period=1',
-  ]).catch(() => { /* ok */ })
-  await kubectlWithRetry([
-    'delete', 'service', name, '-n', k8sNamespace(), '--ignore-not-found',
-  ]).catch(() => { /* ok */ })
+  await deleteObject({ apiVersion: 'v1', kind: 'Pod', name, namespace: k8sNamespace() }, { gracePeriodSeconds: 1 })
+    .catch(() => { /* ok */ })
+  await deleteObject({ apiVersion: 'v1', kind: 'Service', name, namespace: k8sNamespace() }, { wait: true })
+    .catch(() => { /* ok */ })
 }
 
 async function execInPod(
@@ -89,7 +82,7 @@ async function execInPod(
   args: string[],
   opts: { timeout?: number } = {},
 ): Promise<{ stdout: string; stderr: string }> {
-  return kubectlWithRetry(['exec', '-n', k8sNamespace(), podName, '--', ...args], opts)
+  return kubectl(['exec', '-n', k8sNamespace(), podName, '--', ...args], opts)
 }
 
 /** HTTP echo (request mirror as JSON) — Pod + Service, ports 8080 and 80. */
@@ -110,7 +103,7 @@ async function startEchoPod(name: string): Promise<{ host: string }> {
   `
   const ns = k8sNamespace()
   const image = await resolveTestBaseImageRef()
-  await kubectlApply({
+  await applyObject({
     apiVersion: 'v1',
     kind: 'Pod',
     metadata: { name, namespace: ns, labels: { 'app': name, 'yaac.test': 'true' } },
@@ -125,7 +118,7 @@ async function startEchoPod(name: string): Promise<{ host: string }> {
       }],
     },
   })
-  await kubectlApply({
+  await applyObject({
     apiVersion: 'v1',
     kind: 'Service',
     metadata: { name, namespace: ns, labels: { 'yaac.test': 'true' } },
@@ -170,7 +163,7 @@ async function startTlsEchoPod(name: string): Promise<{ host: string }> {
       sock.end('HTTP/1.1 200 OK\\r\\nContent-Length: ${body.length}\\r\\nConnection: close\\r\\n\\r\\n${body}');
     }).listen(${TLS_ECHO_PORT}, '0.0.0.0', () => console.log('tls echo ready'));
   `
-  await kubectlApply({
+  await applyObject({
     apiVersion: 'v1',
     kind: 'Pod',
     metadata: { name, namespace: ns, labels: { 'app': name, 'yaac.test': 'true' } },
@@ -186,7 +179,7 @@ async function startTlsEchoPod(name: string): Promise<{ host: string }> {
       }],
     },
   })
-  await kubectlApply({
+  await applyObject({
     apiVersion: 'v1',
     kind: 'Service',
     metadata: { name, namespace: ns, labels: { 'yaac.test': 'true' } },
@@ -369,9 +362,9 @@ describe('node-level transparent egress (source-IP identity)', () => {
 
     // `*.cluster.local` is forwarded to cluster DNS, so the pod gets the
     // echo Service's real ClusterIP.
-    const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
-      'get', 'service', echoName, '-n', k8sNamespace(),
-    ])
+    const svc = await readObject<{ spec?: { clusterIP?: string } }>({
+      apiVersion: 'v1', kind: 'Service', name: echoName, namespace: k8sNamespace(),
+    })
     const echoClusterIp = svc?.spec?.clusterIP
     expect(echoClusterIp, 'echo Service should have a ClusterIP').toBeTruthy()
     const internal = await execInPod(podA, [

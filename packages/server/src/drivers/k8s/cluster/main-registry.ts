@@ -27,10 +27,10 @@
  */
 import crypto from 'node:crypto'
 import {
+  applyObject,
   dataDirHash,
-  kubectlApply,
-  kubectlGetJson,
-  kubectlWithRetry,
+  execFileAsync,
+  readObject,
   LABEL_ROLE,
   PRIORITY_CLASS_INFRA,
   PRIVILEGED_PSS_LABELS,
@@ -359,20 +359,20 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
   if (!opts.force && await registryReachable()) return
 
   serverLog(`[registry] ensuring the in-cluster registry ${registryHost()}`)
-  await kubectlApply({
+  await applyObject({
     apiVersion: 'v1',
     kind: 'Namespace',
     // Privileged PSS for the node-write pods' hostPath mounts.
     metadata: { name: REGISTRY_NAMESPACE, labels: { ...PRIVILEGED_PSS_LABELS } },
   })
   // Before the Deployment that mounts it.
-  await kubectlApply(buildMainRegistryPvcManifest())
+  await applyObject(buildMainRegistryPvcManifest())
   // Creates the grant key on first use; the gate gets the public half.
   const publicKeyDer = await registryGrantPublicKey()
-  await kubectlApply(buildMainRegistryGateConfigMapManifest(publicKeyDer))
-  await kubectlApply(buildMainRegistryDeploymentManifest(publicKeyDer))
-  await kubectlApply(buildMainRegistryServiceManifest())
-  await kubectlApply(buildMainRegistryIngressNetworkPolicyManifest(await nodeIpBlocks()))
+  await applyObject(buildMainRegistryGateConfigMapManifest(publicKeyDer))
+  await applyObject(buildMainRegistryDeploymentManifest(publicKeyDer))
+  await applyObject(buildMainRegistryServiceManifest())
+  await applyObject(buildMainRegistryIngressNetworkPolicyManifest(await nodeIpBlocks()))
   const rollout = { workload: `deployment/${REGISTRY_SERVICE_NAME}`, namespace: REGISTRY_NAMESPACE }
   const rolledOut = await waitForRollout({ ...rollout, timeoutMs: ROLLOUT_STALL_MS })
     .then(() => true, () => false)
@@ -390,9 +390,9 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
   }
   // Point every node's containerd at the registry's live ClusterIP. The
   // writer pods run the upstream `registry:2` ref the rollout put there.
-  const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
-    'get', 'service', REGISTRY_SERVICE_NAME, '-n', REGISTRY_NAMESPACE,
-  ])
+  const svc = await readObject<{ spec?: { clusterIP?: string } }>({
+    apiVersion: 'v1', kind: 'Service', name: REGISTRY_SERVICE_NAME, namespace: REGISTRY_NAMESPACE,
+  })
   const clusterIp = svc?.spec?.clusterIP
   if (!clusterIp) {
     throw new Error(`registry Service ${REGISTRY_SERVICE_NAME} has no ClusterIP yet`)
@@ -425,9 +425,10 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
  * pick the pod.
  */
 export async function mainRegistryExec(argv: string[], timeoutMs: number): Promise<string> {
-  const { stdout } = await kubectlWithRetry(
+  const { stdout } = await execFileAsync(
+    'kubectl',
     ['exec', '-n', REGISTRY_NAMESPACE, `deploy/${REGISTRY_SERVICE_NAME}`, '-c', 'registry', '--', ...argv],
-    { timeout: timeoutMs, maxAttempts: 1 },
+    { timeout: timeoutMs },
   )
   return stdout
 }

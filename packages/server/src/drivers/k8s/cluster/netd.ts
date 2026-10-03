@@ -10,8 +10,8 @@ import {
   TRANSPARENT_TUNNEL_PORT,
   TUNNEL_INGRESS_PORT,
   k8sNamespace,
-  kubectlApply,
-  kubectlWithRetry,
+  applyObject,
+  deleteObjects,
   LABEL_INSTALL_NAMESPACE,
   waitForRollout,
 } from '#drivers/k8s/substrate'
@@ -126,10 +126,9 @@ function buildNetdRoleBindingManifest(): Record<string, unknown> {
  * shim: see docs/legacy-compat-shims.md.
  */
 async function deleteLegacyNetdClusterRbac(): Promise<void> {
-  await kubectlWithRetry([
-    'delete', 'clusterrolebinding,clusterrole', '--ignore-not-found',
-    '-l', `app=${NETD_APP_NAME},${LABEL_INSTALL_NAMESPACE}=${k8sNamespace()}`,
-  ])
+  const labelSelector = `app=${NETD_APP_NAME},${LABEL_INSTALL_NAMESPACE}=${k8sNamespace()}`
+  await deleteObjects('rbac.authorization.k8s.io/v1', 'ClusterRoleBinding', { labelSelector })
+  await deleteObjects('rbac.authorization.k8s.io/v1', 'ClusterRole', { labelSelector })
 }
 
 interface NetdDaemonSetOptions {
@@ -253,16 +252,12 @@ export async function ensureNetd(): Promise<void> {
     ensureEnvoyImage(),
     clusterPodCidrs(),
   ])
-  await kubectlApply({
-    apiVersion: 'v1',
-    kind: 'List',
-    items: [
-      buildNetdServiceAccountManifest(),
-      buildNetdRoleManifest(),
-      buildNetdRoleBindingManifest(),
-      buildNetdDaemonSetManifest({ netdImage, envoyImage, podCidrs, vethPrefix: cniVethPrefix() }),
-    ],
-  })
+  for (const manifest of [
+    buildNetdServiceAccountManifest(),
+    buildNetdRoleManifest(),
+    buildNetdRoleBindingManifest(),
+    buildNetdDaemonSetManifest({ netdImage, envoyImage, podCidrs, vethPrefix: cniVethPrefix() }),
+  ]) await applyObject(manifest)
   await waitForRollout({
     workload: `daemonset/${NETD_APP_NAME}`,
     namespace: k8sNamespace(),

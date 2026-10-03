@@ -3,7 +3,7 @@
  *
  * Nothing in the images folder is mocked. Trusted-layer routing and the whole
  * builder-pod flow (manifests, in-pod scripts, build argv, context tar) run
- * for real; the fakes are kubectl, spawn, podman and the registry.
+ * for real; the fakes are the cluster, kubectl, spawn, podman and the registry.
  */
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
@@ -12,7 +12,6 @@ import path from 'node:path'
 import { EventEmitter } from 'node:events'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type * as childProcessModule from 'node:child_process'
-import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
 import type * as imageBuilderModule from '#drivers/k8s/image-engine/image-builder'
 import type * as mainRegistryModule from '#drivers/k8s/cluster/main-registry'
 
@@ -62,6 +61,8 @@ const spawnState = vi.hoisted(() => ({
   onHold: null as null | (() => void),
 }))
 const tarLists = vi.hoisted(() => [] as string[][])
+/** `execFile` children (the builder's `kubectl wait`), and a failure to answer with. */
+const execState = vi.hoisted(() => ({ calls: [] as string[][], error: null as Error | null }))
 const readListFile = vi.hoisted(() => (listFile: string): string[] => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const nodeFs = require('node:fs') as { readFileSync: (p: string, enc: string) => string }
@@ -75,6 +76,10 @@ vi.mock('node:child_process', async (importOriginal) => {
   })
   return {
     ...actual,
+    execFile: (_file: string, args: string[], _opts: unknown, cb: (err: unknown, res?: object) => void) => {
+      execState.calls.push(args)
+      process.nextTick(() => { cb(execState.error, { stdout: '', stderr: '' }) })
+    },
     spawn: (file: string, args: string[]) => {
       const child = new EventEmitter() as FakeChild
       child.stdout = fakeStream()
@@ -129,20 +134,6 @@ vi.mock('#drivers/k8s/container/registry', () => ({
   registryHasTag: vi.fn().mockResolvedValue(false),
   registryHost: vi.fn(() => 'yaac-registry.yaac.svc.cluster.local:5000'),
   registryRef: vi.fn((tag: string) => `yaac-registry.yaac.svc.cluster.local:5000/${tag}`),
-}))
-
-const mockKubectlApply = vi.hoisted(() => vi.fn())
-const mockKubectlWithRetry = vi.hoisted(() => vi.fn())
-const mockKubectlGetJson = vi.hoisted(() => vi.fn())
-const mockEnsureKubernetes = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
-  ...(await importOriginal<typeof kubectlModule>()),
-  k8sNamespace: () => 'test-ns',
-  dataDirHash: () => 'ddh0000000000000',
-  kubectlApply: mockKubectlApply,
-  kubectlWithRetry: mockKubectlWithRetry,
-  kubectlGetJson: mockKubectlGetJson,
-  ensureKubernetes: mockEnsureKubernetes,
 }))
 
 vi.mock('#drivers/k8s/cluster/cluster-cidrs', () => ({
@@ -200,6 +191,8 @@ import { BUILDER_LOCAL_TAG } from '#drivers/k8s/cluster/builder-image'
 import { egressAllButServerFront } from '#drivers/k8s/cluster/policy-manifests'
 import { BUILDER_CONTEXT_MAX_BYTES } from '#lib/build-context'
 import { _resetRegistryGrantKeyForTests } from '#drivers/k8s/container/registry-grant'
+import { dataDirHash, k8sNamespace } from '#drivers/k8s/substrate'
+import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 import type { ImageLayerName } from '@yaac/shared/types'
 
 const mockBuildImage = vi.mocked(buildImage)
@@ -210,11 +203,8 @@ const mockHasTag = vi.mocked(registryHasTag)
 
 const CLUSTER_HOST = 'yaac-registry.yaac.svc.cluster.local:5000'
 
-/** The cluster's registry grant key, served as its Secret. */
+/** The cluster's registry grant key, seeded as its Secret. */
 const GRANT_KEY = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey
-const GRANT_SECRET = {
-  data: { 'key.pem': Buffer.from(GRANT_KEY.export({ type: 'pkcs8', format: 'pem' })).toString('base64') },
-}
 
 /**
  * Verify a builder pod's authfile grant as the registry's write gate does.
@@ -299,11 +289,9 @@ interface PodManifest {
   }
 }
 
-/** Each applied object, with a `List` apply's items in order. */
-const appliedObjects = (): Array<{ kind: string }> => mockKubectlApply.mock.calls.flatMap((c) => {
-  const m = c[0] as { kind: string; items?: Array<{ kind: string }> }
-  return m.kind === 'List' ? m.items ?? [] : [m]
-})
+/** Each applied object, in order. */
+const appliedObjects = (): Array<{ kind: string }> =>
+  fakeCluster.callsOf('apply').map((c) => c.body as unknown as { kind: string })
 
 const appliedKinds = (): string[] => appliedObjects().map((m) => m.kind)
 
@@ -318,10 +306,15 @@ const remoteCommands = (): string[][] =>
   spawned.filter((s) => s.file === 'kubectl')
     .map((s) => s.args.slice(s.args.indexOf('--') + 1))
 
-const deleteCalls = (): string[][] =>
-  mockKubectlWithRetry.mock.calls
-    .map((c) => c[0] as string[])
-    .filter((args) => args[0] === 'delete')
+/** The builder pods deleted, by name. */
+const deleteCalls = (): Array<string | undefined> => fakeCluster.callsOf('delete', 'Pod').map((c) => c.name)
+
+/** Every builder pod applied from here on reports `status`. */
+function podStatus(status: object): void {
+  fakeCluster.intercept((c) => {
+    if (c.verb === 'apply' && c.kind === 'Pod') c.body = { ...c.body, status }
+  })
+}
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 10; i++) await Promise.resolve()
@@ -350,13 +343,14 @@ beforeEach(() => {
   // Only the pinned podman-stable mirror is in the registry, so
   // `ensureBuilderImage` resolves without pulling or pushing.
   mockHasTag.mockImplementation((tag: string) => Promise.resolve(tag === BUILDER_LOCAL_TAG))
-  mockEnsureKubernetes.mockResolvedValue(undefined)
   mockEnsureMainRegistry.mockResolvedValue(undefined)
-  mockKubectlApply.mockResolvedValue(undefined)
-  mockKubectlWithRetry.mockResolvedValue({ stdout: '', stderr: '' })
-  mockKubectlGetJson.mockResolvedValue(null)
-  mockKubectlGetJson.mockImplementation((args: string[]) =>
-    Promise.resolve(args[1] === 'secret' ? GRANT_SECRET : null))
+  execState.calls.length = 0
+  execState.error = null
+  fakeCluster.seed({
+    apiVersion: 'v1', kind: 'Secret',
+    metadata: { name: 'yaac-registry-grant-key', namespace: 'yaac-registry-keys' },
+    data: { 'key.pem': Buffer.from(GRANT_KEY.export({ type: 'pkcs8', format: 'pem' })).toString('base64') },
+  })
   _resetRegistryGrantKeyForTests()
 })
 
@@ -470,7 +464,7 @@ describe('ensureImage', () => {
 
     // Content-hash tags never change, so neither tag is re-checked.
     mockHasTag.mockClear()
-    mockKubectlApply.mockClear()
+    fakeCluster.calls = []
     await ensureImage(PROJ)
     expect(mockHasTag.mock.calls.filter(([tag]) => tag === 't:1' || tag === 't:2')).toEqual([])
     expect(appliedKinds()).not.toContain('Pod')
@@ -527,7 +521,6 @@ describe('ensureImage', () => {
     expect(mockBuildImage).not.toHaveBeenCalled()
     expect(mockPush).not.toHaveBeenCalled()
 
-    expect(mockEnsureKubernetes).toHaveBeenCalled()
     expect(mockEnsureMainRegistry).toHaveBeenCalled()
     expect(appliedKinds()).toEqual(expect.arrayContaining([
       'ValidatingAdmissionPolicy', 'ValidatingAdmissionPolicyBinding', 'NetworkPolicy', 'Pod',
@@ -535,9 +528,9 @@ describe('ensureImage', () => {
 
     const pod = appliedOfKind<PodManifest>('Pod')
     expect(pod.metadata.name).toMatch(/^yaac-builder-[0-9a-f]{8}-[0-9a-f]{4}$/)
-    expect(pod.metadata.namespace).toBe('test-ns')
+    expect(pod.metadata.namespace).toBe(k8sNamespace())
     expect(pod.metadata.labels).toEqual({
-      'yaac.data-dir-hash': 'ddh0000000000000',
+      'yaac.data-dir-hash': dataDirHash(),
       'yaac.role': 'builder',
     })
     expect(pod.spec.runtimeClassName).toBe('gvisor')
@@ -623,8 +616,7 @@ describe('ensureImage', () => {
     expect(tarLists[0].some((f) => f.startsWith('skipped/'))).toBe(false)
 
     // ensureImage owns the lease, so the pod is deleted after the chain.
-    expect(deleteCalls()).toHaveLength(1)
-    expect(deleteCalls()[0]).toContain(pod.metadata.name)
+    expect(deleteCalls()).toEqual([pod.metadata.name])
   })
 
   it('ships a parentless layer without a pull, and its dockerfile even when ignored', async () => {
@@ -661,8 +653,7 @@ describe('ensureImage', () => {
 
     await ensureImage(PROJ)
 
-    expect(mockKubectlApply.mock.calls
-      .filter((c) => (c[0] as { kind: string }).kind === 'Pod')).toHaveLength(1)
+    expect(appliedKinds().filter((k) => k === 'Pod')).toHaveLength(1)
     expect(deleteCalls()).toHaveLength(1)
     // A shared pod gets a fresh grant per layer, for that layer's repo only.
     const grants = spawned
@@ -696,10 +687,7 @@ describe('ensureImage', () => {
   })
 
   it('fails closed when the ValidatingAdmissionPolicy API is unavailable', async () => {
-    mockKubectlWithRetry.mockImplementation((args: string[]) =>
-      args.includes('validatingadmissionpolicies')
-        ? Promise.reject(new Error("the server doesn't have a resource type"))
-        : Promise.resolve({ stdout: '', stderr: '' }))
+    fakeCluster.removeKind('ValidatingAdmissionPolicy')
     chain([await podLayer({ buildArgs: undefined })])
     await expect(ensureImage(PROJ)).rejects.toThrow(/ValidatingAdmissionPolicy/)
     // Without the guard the builder label could be forged, so no pod.
@@ -707,7 +695,7 @@ describe('ensureImage', () => {
   })
 
   it('maps an unreachable cluster to a `yaac cluster check` pointer', async () => {
-    mockEnsureKubernetes.mockRejectedValue(new Error('no cluster'))
+    fakeCluster.unreachable = new Error('no cluster')
     chain([await podLayer({ buildArgs: undefined })])
     await expect(ensureImage(PROJ)).rejects.toThrow(/yaac cluster check/)
   })
@@ -715,20 +703,13 @@ describe('ensureImage', () => {
   it('explains a Ready timeout with whatever the pod status accounts for', async () => {
     // A bare `kubectl wait` timeout looks like a broken build, but an
     // unschedulable pod is far more likely.
-    mockKubectlWithRetry.mockImplementation((args: string[]) =>
-      args[0] === 'wait'
-        ? Promise.reject(new Error('timed out'))
-        : Promise.resolve({ stdout: '', stderr: '' }))
-    const unschedulable = {
-      status: {
-        conditions: [{
-          type: 'PodScheduled', status: 'False', reason: 'Unschedulable',
-          message: '0/1 nodes are available: 1 Insufficient memory.',
-        }],
-      },
-    }
-    mockKubectlGetJson.mockImplementation((args: string[]) =>
-      Promise.resolve(args[1] === 'pod' ? unschedulable : null))
+    execState.error = new Error('timed out')
+    podStatus({
+      conditions: [{
+        type: 'PodScheduled', status: 'False', reason: 'Unschedulable',
+        message: '0/1 nodes are available: 1 Insufficient memory.',
+      }],
+    })
     chain([await podLayer({ buildArgs: undefined })])
     await expect(ensureImage(PROJ))
       .rejects.toThrow(/not scheduled \(Unschedulable\): 0\/1 nodes are available/)
@@ -737,21 +718,16 @@ describe('ensureImage', () => {
 
     // A container stuck pulling is named the same way.
     _clearBuildCoordinatorForTests()
-    mockKubectlGetJson.mockImplementation((args: string[]) => Promise.resolve(
-      args[1] === 'pod'
-        ? {
-          status: {
-            conditions: [{ type: 'PodScheduled', status: 'True' }],
-            containerStatuses: [{ state: { waiting: { reason: 'ImagePullBackOff' } } }],
-          },
-        }
-        : null))
+    podStatus({
+      conditions: [{ type: 'PodScheduled', status: 'True' }],
+      containerStatuses: [{ state: { waiting: { reason: 'ImagePullBackOff' } } }],
+    })
     chain([await podLayer({ tag: 'yaac-base:p2', buildArgs: undefined })])
     await expect(ensureImage(PROJ)).rejects.toThrow(/container waiting \(ImagePullBackOff\)/)
 
     // An uninformative status leaves the bare timeout.
     _clearBuildCoordinatorForTests()
-    mockKubectlGetJson.mockResolvedValue({ status: {} })
+    podStatus({})
     chain([await podLayer({ tag: 'yaac-base:p3', buildArgs: undefined })])
     await expect(ensureImage(PROJ)).rejects.toThrow('timed out')
   })
@@ -791,9 +767,7 @@ describe('ensureImage', () => {
     // only a signal, so the reason comes from the pod's status.
     spawnState.codeFor = (file, args) =>
       (file === 'kubectl' && args.includes('build') ? 137 : undefined)
-    mockKubectlGetJson.mockImplementation((args: string[]) => Promise.resolve(
-      args[1] === 'pod' ? { status: { phase: 'Failed', reason: 'DeadlineExceeded' } } : null,
-    ))
+    podStatus({ phase: 'Failed', reason: 'DeadlineExceeded' })
     chain([await podLayer({ buildArgs: undefined })])
 
     await expect(ensureImage(PROJ)).rejects.toThrow(

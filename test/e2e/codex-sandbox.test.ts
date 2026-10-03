@@ -11,11 +11,8 @@ import { registryHasTag, registryRef } from '@yaac/server/drivers/k8s/container/
 import { buildPodJobManifest, k8sWorkspacePaths } from '@yaac/server/drivers/k8s/substrate'
 import { CODEX_CONTAINER_HOME, codexHomeMounts } from '@yaac/server/domain/workspaces/codex-home'
 import { e2eMkdtemp } from '@yaac/test-utils/tmp'
-import {
-  k8sNamespace,
-  kubectlApply,
-  kubectlWithRetry,
-} from '@yaac/server/drivers/k8s/substrate/kubectl'
+import { applyObject, deleteObject, k8sNamespace } from '@yaac/server/drivers/k8s/substrate/api'
+import { kubectl } from '@yaac/test-utils/kubectl'
 
 /**
  * codex's sandbox inside a workspace pod (docs/permission-modes.md). Every
@@ -46,7 +43,7 @@ let codexDir = ''
 
 /** Run a shell command in a pod, returning its exit code with its output. */
 async function sh(pod: string, script: string): Promise<{ exit: number; out: string }> {
-  const { stdout } = await kubectlWithRetry([
+  const { stdout } = await kubectl([
     'exec', '-n', k8sNamespace(), pod, '--',
     'sh', '-c', `${script} 2>&1; printf '\nEXIT:%s\n' "$?"`,
   ], { timeout: 60_000 })
@@ -136,8 +133,8 @@ beforeAll(async () => {
 
   const probe = Buffer.from(PROBE).toString('base64')
   await Promise.all(TIERS.map(async ({ pod, nested }) => {
-    await kubectlApply(await workspacePod(pod, nested))
-    await kubectlWithRetry(
+    await applyObject(await workspacePod(pod, nested))
+    await kubectl(
       ['wait', '--for=condition=Ready', `pod/${pod}`, '-n', k8sNamespace(), '--timeout=300s'],
       { timeout: 320_000 },
     )
@@ -147,10 +144,8 @@ beforeAll(async () => {
 }, 600_000)
 
 afterAll(async () => {
-  await Promise.all(TIERS.map(({ pod }) => kubectlWithRetry(
-    ['delete', 'pod', pod, '-n', k8sNamespace(), '--ignore-not-found', '--wait=false'],
-    { timeout: 60_000 },
-  ).catch(() => undefined)))
+  await Promise.all(TIERS.map(({ pod }) =>
+    deleteObject({ apiVersion: 'v1', kind: 'Pod', name: pod, namespace: k8sNamespace() }).catch(() => undefined)))
   restoreNamespace?.()
 })
 

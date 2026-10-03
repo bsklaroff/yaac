@@ -1,6 +1,6 @@
 import {
   ClusterCache,
-  kubectlApply,
+  applyObject,
   setActiveClusterCache,
   type WorkspaceDeltaSource,
 } from '#drivers/k8s/substrate'
@@ -104,11 +104,11 @@ export async function startK8sDriver(sinks: DriverSinks): Promise<void> {
     // but nodes can be added later, and a server pod rescheduled onto a
     // new node must admit that node's kubelet or it never goes Ready.
     const nodeCidrs = await nodeIpBlocks()
-    await kubectlApply(buildServerIngressNpManifest(nodeCidrs))
+    await applyObject(buildServerIngressNpManifest(nodeCidrs))
     // The proxy's egress policy, from the same node list. The proxy's own
     // bootstrap skips an already-current proxy, so this is also applied on
     // every server start.
-    await kubectlApply(buildProxyEgressNpManifest(nodeCidrs))
+    await applyObject(buildProxyEgressNpManifest(nodeCidrs))
   })().catch((err) => serverLog(`[server] cluster bootstrap failed: ${String(err)}`))
 
   // Let the caller restore state the last server left running (such as

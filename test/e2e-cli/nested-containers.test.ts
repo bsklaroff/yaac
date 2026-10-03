@@ -7,11 +7,8 @@ import path from 'node:path'
 import { git } from '@yaac/test-utils/git'
 import { cloneRepo } from '@yaac/server/domain/git'
 import { listWorkspacePods, type PodInfo } from '@yaac/server/drivers/k8s/substrate/pods'
-import {
-  k8sNamespace,
-  kubectlGetJson,
-  kubectlWithRetry,
-} from '@yaac/server/drivers/k8s/substrate/kubectl'
+import { deleteObject, k8sNamespace, listObjects, readObject } from '@yaac/server/drivers/k8s/substrate/api'
+import { kubectl } from '@yaac/test-utils/kubectl'
 import {
   ORPHAN_REGISTRY_MIN_AGE_MS,
   ensureProjectRegistry,
@@ -217,9 +214,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
   async function waitForJobGone(jobName: string, timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
-      const job = await kubectlGetJson<{ metadata?: { name?: string } }>([
-        'get', 'job', jobName, '-n', k8sNamespace(),
-      ])
+      const job = await readObject({ apiVersion: 'batch/v1', kind: 'Job', name: jobName, namespace: k8sNamespace() })
       if (!job) return
       await new Promise((r) => setTimeout(r, 1000))
     }
@@ -287,8 +282,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
    */
   async function waitForStoreGeneration(projectId: string, timeoutMs: number): Promise<void> {
     const parent = nodeLocalHostPath(imageStoreDir(projectId))
-    const nodes = (await kubectlGetJson<{ items: Array<{ metadata: { name: string } }> }>(['get', 'nodes']))
-      ?.items.map((n) => n.metadata.name) ?? []
+    const nodes = (await listObjects<{ metadata: { name: string } }>('v1', 'Node')).map((n) => n.metadata.name)
     const deadline = Date.now() + timeoutMs
     for (;;) {
       const pending: string[] = []
@@ -313,10 +307,10 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
    * mounts, and the server's store and prewarm log lines.
    */
   async function podPlacement(job: string): Promise<string> {
-    const pods = await kubectlGetJson<{
-      items?: Array<{ metadata: { name: string; labels?: Record<string, string> }; spec: { nodeName?: string } }>
-    }>(['get', 'pods', '-n', k8sNamespace(), '-l', `job-name=${job}`]).catch(() => null)
-    const pod = pods?.items?.[0]
+    const pods = await listObjects<{ metadata: { name: string; labels?: Record<string, string> }; spec: { nodeName?: string } }>(
+      'v1', 'Pod', { namespace: k8sNamespace(), labelSelector: `job-name=${job}` },
+    ).catch(() => [])
+    const pod = pods.at(0)
     const prewarm = Object.entries(pod?.metadata.labels ?? {}).filter(([k]) => /prewarm|spare/.test(k))
     return `${job}: pod ${pod?.metadata.name ?? '?'} on ${pod?.spec.nodeName ?? '?'}`
       + `${prewarm.length ? ` (${prewarm.map(([k, v]) => `${k}=${v}`).join(', ')})` : ''}`
@@ -325,8 +319,8 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
   async function storeDiagnosis(placements: string[], last: string, projectId: string): Promise<string> {
     const lines = [...placements, await podPlacement(last)]
     const parent = nodeLocalHostPath(imageStoreDir(projectId))
-    const nodes = (await kubectlGetJson<{ items: Array<{ metadata: { name: string } }> }>(['get', 'nodes']).catch(() => null))
-      ?.items.map((n) => n.metadata.name) ?? []
+    const nodes = (await listObjects<{ metadata: { name: string } }>('v1', 'Node').catch(() => []))
+      .map((n) => n.metadata.name)
     for (const node of nodes) {
       const { stdout } = await execFileAsync('podman', ['exec', node, 'sh', '-c', `ls -la --time-style=+%T ${parent}/ ${parent}/*/ 2>&1`])
         .catch((err: unknown) => ({ stdout: String(err) }))
@@ -484,7 +478,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
         try {
           const { stdout } = await execInJob(name, [
             'sh', '-c', `curl -fsS --max-time 2 ${url}`,
-          ], { timeout: 10_000, maxAttempts: 1 })
+          ], { timeout: 10_000 })
           return stdout
         } catch {
           await new Promise((r) => setTimeout(r, 500))
@@ -567,7 +561,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     try {
       await execInJob(name, [
         'sh', '-c', 'docker pull example.com/some/image:latest',
-      ], { timeout: 90_000, maxAttempts: 1 })
+      ], { timeout: 90_000 })
     } catch {
       blockedFailed = true
     }
@@ -580,9 +574,9 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     const regName = projectRegistryName(sharedProjectId)
     const regHost = projectRegistryHost(sharedProjectId)
 
-    const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
-      'get', 'service', regName, '-n', k8sNamespace(),
-    ])
+    const svc = await readObject<{ spec?: { clusterIP?: string } }>({
+      apiVersion: 'v1', kind: 'Service', name: regName, namespace: k8sNamespace(),
+    })
     const regVip = svc?.spec?.clusterIP
     expect(regVip).toBeTruthy()
 
@@ -631,7 +625,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     // entrypoint, so a successful pull ends in a container-create error;
     // only ErrImagePull counts as failure.
     const podName = `reg-pull-probe-${crypto.randomBytes(3).toString('hex')}`
-    await kubectlWithRetry([
+    await kubectl([
       'run', podName, `--image=${regHost}/probe:v1`,
       '--restart=Never', '-n', k8sNamespace(),
     ])
@@ -649,9 +643,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
       const deadline = Date.now() + 120_000
       let verdict = ''
       while (Date.now() < deadline && !verdict) {
-        const pod = await kubectlGetJson<PodStatus>([
-          'get', 'pod', podName, '-n', k8sNamespace(),
-        ])
+        const pod = await readObject<PodStatus>({ apiVersion: 'v1', kind: 'Pod', name: podName, namespace: k8sNamespace() })
         const state = pod?.status?.containerStatuses?.[0]?.state
         const waiting = state?.waiting?.reason ?? ''
         if (waiting === 'ErrImagePull' || waiting === 'ImagePullBackOff') {
@@ -667,9 +659,10 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
       }
       expect(verdict).toBe('PULLED')
     } finally {
-      await kubectlWithRetry([
-        'delete', 'pod', podName, '-n', k8sNamespace(), '--ignore-not-found', '--grace-period=1',
-      ]).catch(() => { /* best-effort */ })
+      await deleteObject(
+        { apiVersion: 'v1', kind: 'Pod', name: podName, namespace: k8sNamespace() },
+        { wait: true, gracePeriodSeconds: 1 },
+      ).catch(() => { /* best-effort */ })
     }
   }, 900_000)
 
@@ -689,7 +682,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
         const { stdout } = await execInJob(name, [
           'sh', '-c',
           'curl -sS -o /dev/null -w "%{http_code}" --max-time 8 https://github.com/',
-        ], { timeout: 15_000, maxAttempts: 1 })
+        ], { timeout: 15_000 })
         httpCode = stdout.trim()
         if (/^[1-9]\d{2}$/.test(httpCode)) break
       } catch { /* warmup: DNS stub / redirect not ready yet */ }
@@ -743,7 +736,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
       'mkdir -p /tmp/curlbuild && cd /tmp/curlbuild && '
       + `printf '${dockerfile}' > Dockerfile && `
       + 'docker build --no-cache -t yaac-curl-trust:v1 .',
-    ], { timeout: 180_000, maxAttempts: 1 })
+    ], { timeout: 180_000 })
   }, 900_000)
 
   // Runs last: it stops the shared workspace and removes the project.
@@ -756,9 +749,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     sharedSessionId = ''
 
     // The registry is per project, so it outlives the workspace.
-    const depAfterDelete = await kubectlGetJson<{ metadata?: { name?: string } }>([
-      'get', 'deployment', regName, '-n', k8sNamespace(),
-    ])
+    const depAfterDelete = await readObject({ apiVersion: 'apps/v1', kind: 'Deployment', name: regName, namespace: k8sNamespace() })
     expect(depAfterDelete?.metadata?.name).toBe(regName)
 
     // Remove the project (API only; no CLI verb) and re-add the same
@@ -770,16 +761,14 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     expect(readded.projectId).toBeTruthy()
     expect(readded.projectId).not.toBe(sharedProjectId)
     const newRegName = projectRegistryName(readded.projectId)
-    const newSvc = await kubectlGetJson<{ metadata?: { name?: string } }>([
-      'get', 'service', newRegName, '-n', k8sNamespace(),
-    ])
+    const newSvc = await readObject({ apiVersion: 'v1', kind: 'Service', name: newRegName, namespace: k8sNamespace() })
     expect(newSvc?.metadata?.name).toBe(newRegName)
     const { stdout: catalog } = await execInJob(readded.jobName, [
       'sh', '-c', `curl -fsS --max-time 20 http://${projectRegistryHost(readded.projectId)}/v2/_catalog`,
     ], { timeout: 60_000 })
     expect((JSON.parse(catalog) as { repositories: string[] }).repositories).toEqual([])
     // The old registry was removed with the project.
-    expect(await kubectlGetJson(['get', 'service', regName, '-n', k8sNamespace()])).toBeNull()
+    expect(await readObject({ apiVersion: 'v1', kind: 'Service', name: regName, namespace: k8sNamespace() })).toBeNull()
 
     // A registry whose id no project holds is swept. `now` is pushed past
     // the sweep's minimum age.
@@ -788,9 +777,9 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
       new Set(createdRegistries.filter((id) => id !== orphanRegistryId && id !== sharedProjectId)),
       Date.now() + ORPHAN_REGISTRY_MIN_AGE_MS,
     )
-    expect(await kubectlGetJson(['get', 'service', otherName, '-n', k8sNamespace()])).toBeNull()
-    expect(await kubectlGetJson(['get', 'deployment', otherName, '-n', k8sNamespace()])).toBeNull()
-    expect(await kubectlGetJson(['get', 'service', newRegName, '-n', k8sNamespace()]))
+    expect(await readObject({ apiVersion: 'v1', kind: 'Service', name: otherName, namespace: k8sNamespace() })).toBeNull()
+    expect(await readObject({ apiVersion: 'apps/v1', kind: 'Deployment', name: otherName, namespace: k8sNamespace() })).toBeNull()
+    expect(await readObject({ apiVersion: 'v1', kind: 'Service', name: newRegName, namespace: k8sNamespace() }))
       .toMatchObject({ metadata: { name: newRegName } })
     await runYaac(serverEnv, 'workspace', 'stop', readded.workspaceId).catch(() => { /* best-effort */ })
   }, 900_000)

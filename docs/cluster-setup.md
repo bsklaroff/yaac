@@ -727,9 +727,9 @@ check lists each node and the taint that excluded it, and suggests adding
 the toleration to the RuntimeClass rather than removing the taint.
 
 There is no config setting for the toleration yet. Install re-applies the
-RuntimeClasses with none, which removes a toleration added through
-`kubectl apply` but keeps one added with `kubectl edit`/`patch` (client-side
-apply only removes fields it set). Re-check after every install.
+RuntimeClasses without one, and server-side apply removes only fields yaac
+itself set, so a toleration added by hand (`kubectl apply`, `edit` or
+`patch`) survives a re-install.
 
 On a multi-node cluster the `per-node` gate pins one probe pod to each
 eligible node. Like a workspace pod, it pulls from the registry (with

@@ -5,9 +5,11 @@ import {
 import {
   NETD_APP_NAME,
   RUNTIME_CLASS_GVISOR,
-  isKubectlAbsentError,
+  isAbsent,
+  k8sErrorSummary,
   k8sNamespace,
-  kubectlErrorSummary,
+  listObjects,
+  readObject,
   untoleratedTaints,
 } from '#drivers/k8s/substrate'
 import type { NodeTaint, PodToleration } from '#drivers/k8s/substrate'
@@ -315,26 +317,23 @@ interface RawDaemonSet {
   }
 }
 
-interface RawFelixConfigList {
-  items?: Array<{
-    metadata?: { name?: string }
-    spec?: {
-      bpfEnabled?: boolean
-      chainInsertMode?: string
-      bpfKubeProxyIptablesCleanupEnabled?: boolean
-    }
-  }>
+interface RawFelixConfig {
+  metadata?: { name?: string }
+  spec?: {
+    bpfEnabled?: boolean
+    chainInsertMode?: string
+    bpfKubeProxyIptablesCleanupEnabled?: boolean
+  }
 }
 
-interface RawPodList {
-  items?: Array<{ spec?: { nodeName?: string }; status?: { phase?: string } }>
+interface RawPod {
+  spec?: { nodeName?: string }
+  status?: { phase?: string }
 }
 
-interface RawSchedulableNodeList {
-  items?: Array<{
-    metadata?: { name?: string }
-    spec?: { unschedulable?: boolean; taints?: NodeTaint[] }
-  }>
+interface RawSchedulableNode {
+  metadata?: { name?: string }
+  spec?: { unschedulable?: boolean; taints?: NodeTaint[] }
 }
 
 /**
@@ -342,10 +341,10 @@ interface RawSchedulableNodeList {
  * merges its tolerations into every pod naming it). Empty when the class
  * does not exist yet.
  */
-async function workspaceTolerations(run: typeof execFileAsync): Promise<PodToleration[]> {
-  const rc = valueOf(await readJson<{
-    scheduling?: { tolerations?: PodToleration[] }
-  }>(run, ['get', 'runtimeclass', RUNTIME_CLASS_GVISOR, '-o', 'json']))
+async function workspaceTolerations(): Promise<PodToleration[]> {
+  const rc = valueOf(await settle(() => readObject<{ scheduling?: { tolerations?: PodToleration[] } }>({
+    apiVersion: 'node.k8s.io/v1', kind: 'RuntimeClass', name: RUNTIME_CLASS_GVISOR,
+  })))
   return rc?.scheduling?.tolerations ?? []
 }
 
@@ -359,20 +358,23 @@ type Read<T> =
   | { kind: 'absent' }
   | { kind: 'error'; message: string }
 
-async function readJson<T>(run: typeof execFileAsync, args: string[]): Promise<Read<T>> {
-  let stdout: string
+async function settle<T>(read: () => Promise<T | null>): Promise<Read<T>> {
   try {
-    ({ stdout } = await run('kubectl', args))
+    const value = await read()
+    return value === null ? { kind: 'absent' } : { kind: 'found', value }
   } catch (err) {
-    if (isKubectlAbsentError(err)) return { kind: 'absent' }
-    return { kind: 'error', message: kubectlErrorSummary(err) }
+    if (isAbsent(err)) return { kind: 'absent' }
+    return { kind: 'error', message: k8sErrorSummary(err) }
   }
-  try {
-    return { kind: 'found', value: JSON.parse(stdout) as T }
-  } catch {
-    // Output that is not JSON is an unknown.
-    return { kind: 'error', message: 'kubectl returned unparseable JSON' }
-  }
+}
+
+/** A list read as `{ items }`; a resource type the cluster lacks is absent. */
+function readList<T>(
+  apiVersion: string,
+  kind: string,
+  opts: Parameters<typeof listObjects>[2] = {},
+): Promise<Read<{ items?: T[] }>> {
+  return settle(async () => ({ items: await listObjects<T>(apiVersion, kind, opts) }))
 }
 
 /** The value if found, else null — for reads whose absence is meaningful. */
@@ -396,30 +398,28 @@ function felixBool(raw: string): boolean {
  * not an error: a provider-managed Calico has no FelixConfiguration, which
  * means Felix runs its iptables defaults.
  */
-export async function gatherCniFacts(run: typeof execFileAsync): Promise<CniFacts> {
+export async function gatherCniFacts(): Promise<CniFacts> {
+  const kubeProxyPods = (labelSelector: string) =>
+    readList<RawPod>('v1', 'Pod', { namespace: 'kube-system', labelSelector })
   const [calicoRead, felixRead, kubeProxyRead, priorityRead, nodeRead, cidrs, tolerations] =
     await Promise.all([
-      readJson<RawDaemonSet>(run, [
-        'get', 'daemonset', 'calico-node', '-n', 'kube-system', '-o', 'json',
-      ]),
+      settle(() => readObject<RawDaemonSet>({
+        apiVersion: 'apps/v1', kind: 'DaemonSet', name: 'calico-node', namespace: 'kube-system',
+      })),
       // All of them: per-node overrides count too.
-      readJson<RawFelixConfigList>(run, [
-        'get', 'felixconfigurations.crd.projectcalico.org', '-o', 'json',
-      ]),
+      readList<RawFelixConfig>('crd.projectcalico.org/v1', 'FelixConfiguration'),
       // kubeadm/EKS/kind label `k8s-app`; GKE and AKS label `component`.
-      readJson<RawPodList>(run, [
-        'get', 'pods', '-n', 'kube-system', '-l', 'k8s-app=kube-proxy', '-o', 'json',
-      ]).then(async (byK8sApp) => {
+      kubeProxyPods('k8s-app=kube-proxy').then(async (byK8sApp) => {
         if (byK8sApp.kind === 'error') return byK8sApp
         if ((valueOf(byK8sApp)?.items ?? []).length > 0) return byK8sApp
-        return readJson<RawPodList>(run, [
-          'get', 'pods', '-n', 'kube-system', '-l', 'component=kube-proxy', '-o', 'json',
-        ])
+        return kubeProxyPods('component=kube-proxy')
       }),
-      readJson<unknown>(run, ['get', 'priorityclass', 'system-node-critical', '-o', 'json']),
-      readJson<RawSchedulableNodeList>(run, ['get', 'nodes', '-o', 'json']),
+      settle(() => readObject({
+        apiVersion: 'scheduling.k8s.io/v1', kind: 'PriorityClass', name: 'system-node-critical',
+      })),
+      readList<RawSchedulableNode>('v1', 'Node'),
       podCidrSources(),
-      workspaceTolerations(run),
+      workspaceTolerations(),
     ])
 
   // Errors become unevaluated checks, named so the refusal says which.
@@ -432,7 +432,7 @@ export async function gatherCniFacts(run: typeof execFileAsync): Promise<CniFact
   note('kube-proxy pods', kubeProxyRead)
   note('system-node-critical PriorityClass', priorityRead)
   note('node list', nodeRead)
-  // The pod-CIDR reads use a different runner; surface their failures too,
+  // The pod-CIDR reads report their own failures; surface them too,
   // or a denied `ippools` read would silently narrow the exclusion set.
   unevaluated.push(...cidrs.unreadable.map((u) => ({
     check: `pod-CIDR source: ${u.source}`, cause: u.cause,
@@ -451,7 +451,7 @@ export async function gatherCniFacts(run: typeof execFileAsync): Promise<CniFact
     // Sourced from a ConfigMap/fieldRef, so the value is unknown.
     : bpfEntry.value === undefined ? 'unevaluable' as const : felixBool(bpfEntry.value)
 
-  const anyFelix = <T>(pick: (spec: NonNullable<RawFelixConfigList['items']>[number]['spec']) => T | undefined): T | null =>
+  const anyFelix = <T>(pick: (spec: RawFelixConfig['spec']) => T | undefined): T | null =>
     felixItems.map((f) => pick(f.spec)).find((v) => v !== undefined) ?? null
 
   return {
@@ -550,15 +550,11 @@ export async function probeWorkloadVeths(
   run: typeof execFileAsync,
   prefix: string,
 ): Promise<NodeVethOutcome[]> {
-  const pods = valueOf(await readJson<{
-    items?: Array<{
-      metadata?: { name?: string }
-      spec?: { nodeName?: string }
-      status?: { phase?: string }
-    }>
-  }>(run, [
-    'get', 'pods', '-n', k8sNamespace(), '-l', `app=${NETD_APP_NAME}`, '-o', 'json',
-  ]))?.items ?? []
+  const pods = await listObjects<{
+    metadata?: { name?: string }
+    spec?: { nodeName?: string }
+    status?: { phase?: string }
+  }>('v1', 'Pod', { namespace: k8sNamespace(), labelSelector: `app=${NETD_APP_NAME}` })
 
   const running = pods.filter((p) => p.status?.phase === 'Running' && p.metadata?.name)
   return Promise.all(running.map(async (p): Promise<NodeVethOutcome> => {

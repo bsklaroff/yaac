@@ -3,8 +3,8 @@ import {
   buildRuntimeClassManifests,
   gvisorInstallScript,
   gvisorInstallerHostMounts,
+  applyObject,
   k8sNamespace,
-  kubectlApply,
   LABEL_INSTALL_NAMESPACE,
   waitForRollout,
 } from '#drivers/k8s/substrate'
@@ -186,10 +186,10 @@ function buildGvisorInstallerDaemonSetManifest(image: string): Record<string, un
  */
 export async function ensureGvisorRuntime(): Promise<void> {
   const image = await ensureGvisorInstallerImage()
-  await kubectlApply(buildGvisorInstallerServiceAccountManifest())
-  await kubectlApply(buildGvisorInstallerClusterRoleManifest())
-  await kubectlApply(buildGvisorInstallerClusterRoleBindingManifest())
-  await kubectlApply(buildGvisorInstallerDaemonSetManifest(image))
+  await applyObject(buildGvisorInstallerServiceAccountManifest())
+  await applyObject(buildGvisorInstallerClusterRoleManifest())
+  await applyObject(buildGvisorInstallerClusterRoleBindingManifest())
+  await applyObject(buildGvisorInstallerDaemonSetManifest(image))
   await waitForRollout({
     workload: `daemonset/${GVISOR_INSTALLER_APP_NAME}`, namespace: k8sNamespace(), timeoutMs: 300_000,
   })
@@ -198,6 +198,6 @@ export async function ensureGvisorRuntime(): Promise<void> {
   // dead forward as a missing image.
   invalidateRegistryEndpoint()
   for (const manifest of buildRuntimeClassManifests()) {
-    await kubectlApply(manifest)
+    await applyObject(manifest)
   }
 }

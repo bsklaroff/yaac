@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/substrate'
+import { applyObject, createObject, readObject } from '#drivers/k8s/substrate'
 
 /**
  * Write grants for the main registry (docs/trust-split-builds.md, "The
@@ -53,9 +53,9 @@ async function registryGrantKey(): Promise<crypto.KeyObject> {
 }
 
 async function readKey(): Promise<crypto.KeyObject | null> {
-  const secret = await kubectlGetJson<{ data?: Record<string, string> }>([
-    'get', 'secret', REGISTRY_GRANT_SECRET, '-n', REGISTRY_GRANT_NAMESPACE,
-  ])
+  const secret = await readObject<{ data?: Record<string, string> }>({
+    apiVersion: 'v1', kind: 'Secret', name: REGISTRY_GRANT_SECRET, namespace: REGISTRY_GRANT_NAMESPACE,
+  })
   const pem = secret?.data?.[SECRET_KEY_FIELD]
   return pem ? crypto.createPrivateKey(Buffer.from(pem, 'base64').toString('utf8')) : null
 }
@@ -63,7 +63,7 @@ async function readKey(): Promise<crypto.KeyObject | null> {
 async function loadOrCreateKey(): Promise<crypto.KeyObject> {
   const existing = await readKey()
   if (existing) return existing
-  await kubectlApply({ apiVersion: 'v1', kind: 'Namespace', metadata: { name: REGISTRY_GRANT_NAMESPACE } })
+  await applyObject({ apiVersion: 'v1', kind: 'Namespace', metadata: { name: REGISTRY_GRANT_NAMESPACE } })
   const { privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 })
   const pem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
   const manifest = {
@@ -74,7 +74,7 @@ async function loadOrCreateKey(): Promise<crypto.KeyObject> {
     data: { [SECRET_KEY_FIELD]: Buffer.from(pem).toString('base64') },
   }
   try {
-    await kubectlWithRetry(['create', '-f', '-'], { input: JSON.stringify(manifest) })
+    await createObject(manifest)
     return privateKey
   } catch (err) {
     const raced = await readKey().catch(() => null)

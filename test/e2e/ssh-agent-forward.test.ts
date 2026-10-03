@@ -24,11 +24,8 @@ import { syncProxyCredentials } from '@yaac/server/drivers/k8s/cluster/proxy-app
 import { proxyServiceClusterIp } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { SSH_AGENT_MOUNT, SSH_AGENT_SOCKET_PATH } from '@yaac/server/drivers/k8s/substrate/pod-spec'
 import { PROXY_APP_NAME, SSH_AGENT_PORT } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
-import {
-  k8sNamespace,
-  kubectlApply,
-  kubectlWithRetry,
-} from '@yaac/server/drivers/k8s/substrate/kubectl'
+import { applyObject, deleteObject, k8sNamespace } from '@yaac/server/drivers/k8s/substrate/api'
+import { kubectl } from '@yaac/test-utils/kubectl'
 
 /**
  * ssh-agent forwarding over the network: a workspace pod's `ssh-add -l`
@@ -84,7 +81,7 @@ async function makeTestKey(dir: string): Promise<{
 
 /** A pod with no workspace identity, which should reach nothing. */
 async function startStrayPod(name: string): Promise<void> {
-  await kubectlApply({
+  await applyObject({
     apiVersion: 'v1',
     kind: 'Pod',
     metadata: { name, namespace: k8sNamespace(), labels: { 'yaac.test': 'true' } },
@@ -105,7 +102,7 @@ async function startStrayPod(name: string): Promise<void> {
 async function shInPod(
   pod: string, script: string, timeout = 60_000,
 ): Promise<{ exit: number; out: string }> {
-  const { stdout } = await kubectlWithRetry([
+  const { stdout } = await kubectl([
     'exec', '-n', k8sNamespace(), pod, '--',
     'sh', '-c', `${script} 2>&1; printf '\nEXIT:%s\n' "$?"`,
   ], { timeout })
@@ -115,7 +112,7 @@ async function shInPod(
 
 /** Run a shell command in the proxy pod (diagnostics only). */
 async function shInProxy(script: string): Promise<string> {
-  const { stdout } = await kubectlWithRetry([
+  const { stdout } = await kubectl([
     'exec', '-n', k8sNamespace(), `deployment/${PROXY_APP_NAME}`, '--',
     'sh', '-c', `${script} 2>&1; printf '\nEXIT:%s\n' "$?"`,
   ], { timeout: 60_000 }).catch((err: Error) => ({ stdout: `exec failed: ${err.message}` }))
@@ -127,7 +124,7 @@ async function shInProxy(script: string): Promise<string> {
  * pod-to-proxy TCP hop (NetworkPolicy), then the proxy's log.
  */
 async function proxyAgentLog(): Promise<string> {
-  const log = await kubectlWithRetry([
+  const log = await kubectl([
     'logs', '-n', k8sNamespace(), `deployment/${PROXY_APP_NAME}`, '--tail=200',
   ], { timeout: 60_000 }).catch((err: Error) => ({ stdout: `logs failed: ${err.message}` }))
   return log.stdout.split('\n').filter((l) => l.includes('ssh-agent')).join('\n')
@@ -206,10 +203,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   for (const pod of [sshPod, httpsPod, strayPod]) {
-    await kubectlWithRetry([
-      'delete', 'pod', pod, '-n', k8sNamespace(),
-      '--ignore-not-found', '--wait=false', '--grace-period=1',
-    ]).catch(() => { /* ok */ })
+    await deleteObject({ apiVersion: 'v1', kind: 'Pod', name: pod, namespace: k8sNamespace() }, { gracePeriodSeconds: 1 })
+      .catch(() => { /* ok */ })
   }
   await deregisterWorkspaceEgress(sshSession)
   await deregisterWorkspaceEgress(httpsSession)

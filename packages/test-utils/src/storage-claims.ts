@@ -3,10 +3,10 @@ import path from 'node:path'
 import { deleteStorageVolumes, ensureStorageClaims } from '@yaac/server/drivers/k8s/install/storage'
 import {
   LABEL_INSTALL_NAMESPACE,
+  applyObject,
   dataDirHash,
+  deleteObjects,
   k8sNamespace,
-  kubectlApply,
-  kubectlWithRetry,
   processIdentity,
 } from '@yaac/server/drivers/k8s/substrate'
 import { globalRoot, nodeLocalRoot, serverLocalRoot } from '@yaac/shared/paths'
@@ -46,8 +46,8 @@ export async function ensureTestStorageClaims(binderImage: string): Promise<void
     ...cls,
     metadata: { ...(cls.metadata as object), labels: testClassLabels() },
   })
-  await kubectlApply(labelled(nfsClass(rwx, path.relative(root, globalRoot()))))
-  await kubectlApply(labelled(localPathClass(rwo, root, path.relative(root, serverLocalRoot()), false)))
+  await applyObject(labelled(nfsClass(rwx, path.relative(root, globalRoot()))))
+  await applyObject(labelled(localPathClass(rwo, root, path.relative(root, serverLocalRoot()), false)))
   const installId = `test-${dataDirHash()}`
   // The volume roots are this host's tiers, which already hold files (e.g.
   // the host log). Mark them as this install's, or the binder would refuse
@@ -72,8 +72,7 @@ function testClassLabels(): Record<string, string> {
  */
 export async function deleteTestStorage(installNamespace: string): Promise<void> {
   await deleteStorageVolumes(installNamespace)
-  await kubectlWithRetry([
-    'delete', 'storageclass', '-l', `${LABEL_INSTALL_NAMESPACE}=${installNamespace}`,
-    '--ignore-not-found', '--wait=false',
-  ], { timeout: 30_000, maxAttempts: 1 }).catch(() => { /* cluster gone — nothing to sweep */ })
+  await deleteObjects('storage.k8s.io/v1', 'StorageClass', {
+    labelSelector: `${LABEL_INSTALL_NAMESPACE}=${installNamespace}`,
+  }).catch(() => { /* cluster gone — nothing to sweep */ })
 }

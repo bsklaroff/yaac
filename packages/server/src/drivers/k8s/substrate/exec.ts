@@ -1,13 +1,12 @@
-import { k8sNamespace, shellKubectlWithRetry, type KubectlExecOptions } from './kubectl'
+import { exec } from 'node:child_process'
+import { promisify } from 'node:util'
+import { k8sNamespace } from './api'
 
-/** kubectl target for a workspace Job; kubectl resolves its pod. */
-function execTarget(jobName: string): string {
-  return `job/${jobName}`
-}
+const execAsync = promisify(exec)
 
 /**
- * Run a command in a workspace container via `kubectl exec`, retrying
- * transient API errors. `cmd` is already shell-quoted by the caller.
+ * Run a command in a workspace container via `kubectl exec`; kubectl
+ * resolves the Job's pod. `cmd` is already shell-quoted by the caller.
  *
  * Only for commands that cannot wait for streamd: booting streamd itself
  * (`bootStreamd`) and the teardown-time image salvage survey. Everything
@@ -16,10 +15,11 @@ function execTarget(jobName: string): string {
 export async function containerExec(
   jobName: string,
   cmd: string,
-  opts: KubectlExecOptions = {},
+  opts: { timeout?: number } = {},
 ): Promise<{ stdout: string; stderr: string }> {
-  return shellKubectlWithRetry(
-    `kubectl exec -n ${k8sNamespace()} ${execTarget(jobName)} -- ${cmd}`,
-    opts,
+  const res = await execAsync(
+    `kubectl exec -n ${k8sNamespace()} job/${jobName} -- ${cmd}`,
+    { maxBuffer: 64 << 20, timeout: opts.timeout },
   )
+  return { stdout: res.stdout.toString(), stderr: res.stderr.toString() }
 }

@@ -29,16 +29,20 @@ import {
   SERVER_POD_PORT,
   SERVER_SA_NAME,
   dataDirHash,
+  applyObject,
+  deleteObject,
   k8sNamespace,
-  kubectlApply,
-  kubectlGetJson,
-  kubectlWithRetry,
+  listObjects,
+  patchObject,
+  readObject,
   waitForRollout,
   installSecurityContext,
   nodeLocalNodePath,
   processIdentity,
   type InstallIdentity,
+  type ObjectRef,
 } from '#drivers/k8s/substrate'
+import { waitFor } from '#lib/wait-for'
 import { ensureStorageClaims, type StorageShape } from './storage'
 import {
   buildServerFrontIngressNpManifest,
@@ -405,18 +409,20 @@ async function ensureServerDeployment(
   identity: InstallIdentity,
   envOpts: ServerEnvOptions & { installId?: string } = {},
 ): Promise<string> {
-  await kubectlApply(buildServerServiceAccountManifest())
-  await kubectlApply(buildServerClusterRoleManifest())
-  await kubectlApply(buildServerClusterRoleBindingManifest())
-  await kubectlApply(buildServerIngressNpManifest(await nodeIpBlocks()))
-  await kubectlApply(buildServerFrontIngressNpManifest(fronting.ingressPeers()))
-  for (const [kind, name] of fronting.retired()) {
-    await kubectlWithRetry(['delete', kind, name, '-n', k8sNamespace(), '--ignore-not-found'])
+  await applyObject(buildServerServiceAccountManifest())
+  await applyObject(buildServerClusterRoleManifest())
+  await applyObject(buildServerClusterRoleBindingManifest())
+  await applyObject(buildServerIngressNpManifest(await nodeIpBlocks()))
+  await applyObject(buildServerFrontIngressNpManifest(fronting.ingressPeers()))
+  // Wait, so `installedFronting` never reads a retired Ingress that is
+  // still terminating behind the tailnet operator's finalizer.
+  for (const retired of fronting.retired()) {
+    await deleteObject({ ...retired, namespace: k8sNamespace() }, { wait: true, timeoutMs: 60_000 })
   }
   const manifests = fronting.manifests()
-  for (const manifest of manifests) await kubectlApply(manifest)
+  for (const manifest of manifests) await applyObject(manifest)
   const origin = await fronting.resolveOrigin()
-  await kubectlApply(buildServerDeploymentManifest(imageRef, identity, {
+  await applyObject(buildServerDeploymentManifest(imageRef, identity, {
     ...envOpts,
     remoteHosting: fronting.remoteHosting(origin),
   }))
@@ -435,12 +441,13 @@ function waitForDeployment(name: string, timeoutSeconds = 300): Promise<void> {
   })
 }
 
-/** Scale the Deployment to `replicas` and wait for the change to settle. */
+function serverDeploymentRef(): ObjectRef {
+  return { apiVersion: 'apps/v1', kind: 'Deployment', name: SERVER_APP_NAME, namespace: k8sNamespace() }
+}
+
+/** Set the Deployment's replica count; the caller waits for it to settle. */
 async function scaleServerDeployment(replicas: number): Promise<void> {
-  await kubectlWithRetry([
-    'scale', `deployment/${SERVER_APP_NAME}`,
-    '-n', k8sNamespace(), `--replicas=${String(replicas)}`,
-  ], { timeout: 60_000 })
+  await patchObject(serverDeploymentRef(), { spec: { replicas } })
 }
 
 interface RawServerDeployment {
@@ -468,9 +475,7 @@ export const BYO_INSTALL_IDENTITY: InstallIdentity = { uid: 1000, gid: 1000 }
  * constant, or this machine's uid on kind. A failed read throws.
  */
 export async function deployedInstallIdentity(byo: boolean): Promise<InstallIdentity> {
-  const dep = await kubectlGetJson<RawServerDeployment>([
-    'get', 'deployment', SERVER_APP_NAME, '-n', k8sNamespace(),
-  ])
+  const dep = await readObject<RawServerDeployment>(serverDeploymentRef())
   const sc = dep?.spec?.template?.spec?.securityContext
   if (typeof sc?.runAsUser === 'number' && typeof sc.runAsGroup === 'number') {
     return { uid: sc.runAsUser, gid: sc.runAsGroup }
@@ -480,10 +485,7 @@ export async function deployedInstallIdentity(byo: boolean): Promise<InstallIden
 
 /** Whether the cluster carries a server Deployment at all. */
 export async function serverDeploymentExists(): Promise<boolean> {
-  const dep = await kubectlGetJson<{ metadata?: { name?: string } }>([
-    'get', 'deployment', SERVER_APP_NAME, '-n', k8sNamespace(),
-  ])
-  return dep !== null
+  return await readObject(serverDeploymentRef()) !== null
 }
 
 /**
@@ -589,9 +591,9 @@ async function waitForPublishedServer(origin: string, fronting: ServerFronting):
 
 /** The installed fronting, read from the live cluster (see frontingOfIngress). */
 async function installedFronting(): Promise<ServerFronting> {
-  const ingress = await kubectlGetJson<Record<string, unknown>>([
-    'get', 'ingress', SERVER_APP_NAME, '-n', k8sNamespace(),
-  ])
+  const ingress = await readObject<Record<string, unknown>>({
+    apiVersion: 'networking.k8s.io/v1', kind: 'Ingress', name: SERVER_APP_NAME, namespace: k8sNamespace(),
+  })
   return frontingOfIngress(ingress)
 }
 
@@ -621,13 +623,13 @@ export async function startClusterServer(): Promise<string> {
 export async function stopClusterServer(): Promise<void> {
   await scaleServerDeployment(0)
   // Wait for the pod to go: a Deployment at zero replicas omits
-  // `status.replicas`, so waiting on the count would always time out.
-  await kubectlWithRetry([
-    'wait', 'pod', '-n', k8sNamespace(), '-l', `app=${SERVER_APP_NAME}`,
-    '--for=delete', '--timeout=60s',
-  ], { timeout: 70_000, maxAttempts: 1 }).catch(() => {
-    // A slow drain is not a failed stop; a successor waits on the lease.
-  })
+  // `status.replicas`, so waiting on the count would always time out. A
+  // slow drain, or a failed read while draining, is not a failed stop; a
+  // successor waits on the lease.
+  await waitFor(
+    async () => (await serverPods().catch(() => null))?.length === 0,
+    { timeoutMs: 60_000, intervalMs: 1_000 },
+  )
 }
 
 /**
@@ -636,9 +638,10 @@ export async function stopClusterServer(): Promise<void> {
  */
 export async function restartClusterServer(): Promise<string> {
   await deleteLogReader()
-  await kubectlWithRetry([
-    'rollout', 'restart', `deployment/${SERVER_APP_NAME}`, '-n', k8sNamespace(),
-  ], { timeout: 60_000 })
+  // What `kubectl rollout restart` does: a template change rolls the pod.
+  await patchObject(serverDeploymentRef(), {
+    spec: { template: { metadata: { annotations: { 'kubectl.kubernetes.io/restartedAt': new Date().toISOString() } } } },
+  })
   await waitForDeployment(SERVER_APP_NAME)
   return waitForInstalledServer()
 }
@@ -651,9 +654,7 @@ export async function restartClusterServer(): Promise<string> {
  * it has one. `tail`'s stderr is shown only on failure.
  */
 export async function clusterServerLogs(opts: { follow?: boolean; lines?: number } = {}): Promise<void> {
-  const pods = (await kubectlGetJson<{ items?: RawServerPod[] }>([
-    'get', 'pods', '-n', k8sNamespace(), '-l', `app=${SERVER_APP_NAME}`,
-  ]))?.items ?? []
+  const pods = await serverPods()
   const running = pods.find((p) => p.status?.containerStatuses
     ?.some((c) => c.name === 'server' && c.state?.running))?.metadata?.name
   if (running) {
@@ -661,19 +662,19 @@ export async function clusterServerLogs(opts: { follow?: boolean; lines?: number
     return
   }
   await deleteLogReader(true)
-  await kubectlApply(await buildLogReaderManifest(pods.find((p) => p.spec?.nodeName)?.spec?.nodeName))
+  await applyObject(await buildLogReaderManifest(pods.find((p) => p.spec?.nodeName)?.spec?.nodeName))
   try {
     // `kubectl exec` by pod name does not wait for the container to start.
-    await kubectlWithRetry([
-      'wait', '--for=condition=Ready', `pod/${LOG_READER_POD_NAME}`, '-n', k8sNamespace(),
-      `--timeout=${String(LOG_READER_START_S)}s`,
-    ], { timeout: (LOG_READER_START_S + 10) * 1000, maxAttempts: 1 }).catch((err: unknown) => {
+    // A failed read counts as not Ready yet.
+    const ready = await waitFor(async () => (await readObject<RawServerPod>(logReaderRef()).catch(() => null))
+      ?.status?.conditions?.some((c) => c.type === 'Ready' && c.status === 'True'),
+    { timeoutMs: LOG_READER_START_S * 1000, intervalMs: 1_000 })
+    if (!ready) {
       throw new Error(
-        `the log reader pod did not become Ready within ${String(LOG_READER_START_S)}s `
-        + `(${err instanceof Error ? err.message : String(err)}). Inspect it with `
+        `the log reader pod did not become Ready within ${String(LOG_READER_START_S)}s. Inspect it with `
         + `\`kubectl -n ${k8sNamespace()} describe pod ${LOG_READER_POD_NAME}\`.`,
       )
-    })
+    }
     await tailServerLog(LOG_READER_POD_NAME, 'reader', opts)
   } finally {
     await deleteLogReader().catch(() => { /* bounded by its own deadline */ })
@@ -683,7 +684,14 @@ export async function clusterServerLogs(opts: { follow?: boolean; lines?: number
 interface RawServerPod {
   metadata?: { name?: string }
   spec?: { nodeName?: string }
-  status?: { containerStatuses?: Array<{ name?: string; state?: { running?: unknown } }> }
+  status?: {
+    containerStatuses?: Array<{ name?: string; state?: { running?: unknown } }>
+    conditions?: Array<{ type?: string; status?: string }>
+  }
+}
+
+function serverPods(): Promise<RawServerPod[]> {
+  return listObjects<RawServerPod>('v1', 'Pod', { namespace: k8sNamespace(), labelSelector: `app=${SERVER_APP_NAME}` })
 }
 
 const LOG_READER_POD_NAME = 'yaac-server-log-reader'
@@ -696,9 +704,11 @@ const LOG_READER_START_S = 120
  * needs on another node.
  */
 async function deleteLogReader(wait = false): Promise<void> {
-  await kubectlWithRetry([
-    'delete', 'pod', LOG_READER_POD_NAME, '-n', k8sNamespace(), '--ignore-not-found', `--wait=${String(wait)}`,
-  ])
+  await deleteObject(logReaderRef(), { wait })
+}
+
+function logReaderRef(): ObjectRef {
+  return { apiVersion: 'v1', kind: 'Pod', name: LOG_READER_POD_NAME, namespace: k8sNamespace() }
 }
 /** A reader outlives a CLI killed hard by at most this long. */
 const LOG_READER_DEADLINE_S = 3600
@@ -709,9 +719,7 @@ const LOG_READER_DEADLINE_S = 3600
  * until exec'd into.
  */
 async function buildLogReaderManifest(nodeName: string | undefined): Promise<Record<string, unknown>> {
-  const dep = await kubectlGetJson<RawServerDeployment>([
-    'get', 'deployment', SERVER_APP_NAME, '-n', k8sNamespace(),
-  ])
+  const dep = await readObject<RawServerDeployment>(serverDeploymentRef())
   const podSpec = dep?.spec?.template?.spec
   const image = podSpec?.containers?.find((c) => c.name === 'server')?.image
   if (!image) throw new Error(`the ${SERVER_APP_NAME} Deployment names no server image to read the log with`)
@@ -754,6 +762,7 @@ async function tailServerLog(
     '-n', opts.lines !== undefined ? String(Math.max(0, opts.lines)) : '+1',
     logFile,
   ]
+  // kubectl exec: a stream into the pod, and `-F` follows it until Ctrl-C.
   const child = spawn('kubectl', args, { stdio: ['ignore', 'pipe', 'pipe'] })
   child.stdout.pipe(process.stdout, { end: false })
   let stderr = ''

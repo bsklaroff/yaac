@@ -153,6 +153,19 @@ export default defineConfig({
           sequence: { groupOrder: 0 },
         },
       },
+      // The k8s driver's object calls against a real kube-apiserver and
+      // etcd from pinned release binaries: no cluster, so it runs anywhere,
+      // including a yaac workspace.
+      {
+        extends: true,
+        test: {
+          name: 'apiserver',
+          include: ['test/apiserver/**/*.test.ts'],
+          setupFiles: SETUP,
+          globalSetup: ['test/apiserver/global-setup.ts'],
+          sequence: { groupOrder: 0 },
+        },
+      },
       // The containerless tier: the CLI against a server that runs
       // workspaces as tmux sessions on this host. No cluster or images, so
       // the global setup only builds the CLI.

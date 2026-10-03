@@ -1,31 +1,29 @@
 /**
- * The two storage claims, bound through both storage shapes. kubectl is
- * backed by a small fake of the apiserver's claims and volumes, with a
- * provisioner that binds only once a pod uses the claim (like a
- * `WaitForFirstConsumer` class). The static shape uses a real data dir.
+ * The two storage claims, bound through both storage shapes, against the
+ * shared fake cluster. A reconcile hook run before every read plays the
+ * apiserver's binding controllers: a claim naming an Available volume
+ * binds at once, and a claim naming only a class stays Pending until the
+ * binder pod has run (like a `WaitForFirstConsumer` class). The static
+ * shape uses a real data dir.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
+import { fakeCluster, type FakeCall } from '@yaac/test-utils/k8s-stub'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
+import type * as apiModule from '#drivers/k8s/substrate/api'
 
-const mockApply = vi.hoisted(() => vi.fn())
-const mockGetJson = vi.hoisted(() => vi.fn())
-const mockWithRetry = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
-  ...(await importOriginal<typeof kubectlModule>()),
+vi.mock('#drivers/k8s/substrate/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof apiModule>()),
   k8sNamespace: () => 'test-ns',
   dataDirHash: () => 'ddh16',
-  kubectlApply: mockApply,
-  kubectlGetJson: mockGetJson,
-  kubectlWithRetry: mockWithRetry,
 }))
 
 import { deleteStorageVolumes, ensureStorageClaims, type StorageShape } from '#drivers/k8s/install'
 
 interface Obj {
+  apiVersion?: string
   kind: string
   metadata: { name: string; namespace?: string; labels?: Record<string, string> }
   spec: {
@@ -45,112 +43,91 @@ interface Obj {
   status?: { phase: string }
 }
 
-/**
- * The fake apiserver's storage. A claim naming a volume binds at once; a
- * claim naming only a class stays Pending until the binder pod uses it, then
- * gets a volume with the class's settings (`Delete`, its mount options).
- */
-let claims: Map<string, Obj>
-let volumes: Map<string, Obj>
 let classOptions: string[]
-/** What the binder pod prints; a test may change it. */
+/** What the binder pod prints and how it ends; a test may change them. */
 let binderLogs: string
 let binderPhase: string
+/** Whether claims bind at all; off stands in for a stuck provisioner. */
+let binding: boolean
 
-function provision(claim: Obj): void {
-  const name = `pvc-${claim.metadata.name}-provisioned`
-  volumes.set(name, {
+const volume = (name: string): Obj | undefined => fakeCluster.get<Obj>('PersistentVolume', name)
+const claim = (name: string): Obj | undefined => fakeCluster.get<Obj>('PersistentVolumeClaim', name, 'test-ns')
+const put = (obj: Obj): void => { fakeCluster.seed({ apiVersion: 'v1', ...obj }) }
+
+function provision(pvc: Obj): void {
+  const name = `pvc-${pvc.metadata.name}-provisioned`
+  put({
     kind: 'PersistentVolume',
     metadata: { name, labels: {} },
     spec: {
-      storageClassName: claim.spec.storageClassName,
+      storageClassName: pvc.spec.storageClassName,
       persistentVolumeReclaimPolicy: 'Delete',
-      csi: { driver: claim.spec.accessModes?.[0] === 'ReadWriteMany' ? 'nfs.csi.k8s.io' : 'rancher.io/local-path' },
-      mountOptions: claim.spec.accessModes?.[0] === 'ReadWriteMany' ? [...classOptions] : [],
-      claimRef: { namespace: 'test-ns', name: claim.metadata.name },
-      capacity: { storage: claim.spec.resources?.requests.storage ?? '' },
+      csi: { driver: pvc.spec.accessModes?.[0] === 'ReadWriteMany' ? 'nfs.csi.k8s.io' : 'rancher.io/local-path' },
+      mountOptions: pvc.spec.accessModes?.[0] === 'ReadWriteMany' ? [...classOptions] : [],
+      claimRef: { namespace: 'test-ns', name: pvc.metadata.name },
+      capacity: { storage: pvc.spec.resources?.requests.storage ?? '' },
     },
     status: { phase: 'Bound' },
   })
-  claim.spec.volumeName = name
-  claim.status = { phase: 'Bound' }
+  put({ ...pvc, spec: { ...pvc.spec, volumeName: name }, status: { phase: 'Bound' } })
 }
 
-function fakeApply(manifest: Obj): Promise<void> {
-  if (manifest.kind === 'PersistentVolume') {
-    const existing = volumes.get(manifest.metadata.name)
-    volumes.set(manifest.metadata.name, { ...manifest, status: existing?.status ?? { phase: 'Available' } })
-  } else if (manifest.kind === 'PersistentVolumeClaim') {
-    const claim: Obj = structuredClone(manifest)
-    claim.status = { phase: 'Pending' }
-    const volume = claim.spec.volumeName ? volumes.get(claim.spec.volumeName) : undefined
-    if (volume && volume.status?.phase === 'Available') {
-      claim.status = { phase: 'Bound' }
-      volume.status = { phase: 'Bound' }
-    }
-    claims.set(manifest.metadata.name, claim)
-  } else if (manifest.kind === 'Pod' && binderPhase === 'Succeeded') {
-    for (const claim of claims.values()) if (claim.status?.phase === 'Pending') provision(claim)
+/** The binding controllers, run before every read. */
+function reconcile(call: FakeCall): void {
+  if (call.verb !== 'read' && call.verb !== 'list') return
+  for (const pv of fakeCluster.objects<Obj>('PersistentVolume')) {
+    // A cleared claimRef uid frees a Released volume.
+    const freed = pv.status?.phase === 'Released' && pv.spec.claimRef && !pv.spec.claimRef.uid
+    if (!pv.status || freed) put({ ...pv, status: { phase: 'Available' } })
   }
-  return Promise.resolve()
-}
-
-function fakeGetJson(args: string[]): Promise<unknown> {
-  const [, kind, name] = args
-  if (kind === 'pvc') return Promise.resolve(claims.get(name) ?? null)
-  if (kind === 'pv' && name === '-l') {
-    const wanted = args[3].split(',').map((kv) => kv.split('=') as [string, string])
-    return Promise.resolve({
-      items: [...volumes.values()].filter((v) =>
-        wanted.every(([k, val]) => v.metadata.labels?.[k] === val)),
-    })
-  }
-  if (kind === 'pv') return Promise.resolve(volumes.get(name) ?? null)
-  if (kind === 'pod') return Promise.resolve({ status: { phase: binderPhase } })
-  return Promise.resolve(null)
-}
-
-function fakeRetry(args: string[]): Promise<{ stdout: string; stderr: string }> {
-  if (args[0] === 'patch' && args[1] === 'pv') {
-    const volume = volumes.get(args[2])
-    const patch = JSON.parse(args[args.length - 1]) as Partial<Obj>
-    if (volume) {
-      volume.metadata.labels = { ...volume.metadata.labels, ...patch.metadata?.labels }
-      volume.spec = { ...volume.spec, ...patch.spec, claimRef: { ...volume.spec.claimRef, ...patch.spec?.claimRef } }
-      if (patch.spec?.claimRef && volume.status?.phase === 'Released') volume.status = { phase: 'Available' }
+  for (const pvc of fakeCluster.objects<Obj>('PersistentVolumeClaim')) {
+    if (pvc.status?.phase === 'Bound') continue
+    const pv = pvc.spec.volumeName ? volume(pvc.spec.volumeName) : undefined
+    if (binding && pv?.status?.phase === 'Available') {
+      put({ ...pv, status: { phase: 'Bound' } })
+      put({ ...pvc, status: { phase: 'Bound' } })
+    } else if (!pvc.status) {
+      put({ ...pvc, status: { phase: 'Pending' } })
     }
   }
-  if (args[0] === 'logs') return Promise.resolve({ stdout: binderLogs, stderr: '' })
-  if (args[0] === 'wait') {
-    const pending = args.filter((a) => a.startsWith('pvc/'))
-      .filter((a) => claims.get(a.slice(4))?.status?.phase !== 'Bound')
-    if (pending.length > 0) return Promise.reject(new Error('timed out waiting for the condition'))
+  const binder = fakeCluster.get<Obj>('Pod', 'yaac-storage-bind', 'test-ns')
+  if (binder && !binder.status) {
+    put({ ...binder, status: { phase: binderPhase } })
+    if (binding && binderPhase === 'Succeeded') {
+      for (const pvc of fakeCluster.objects<Obj>('PersistentVolumeClaim')) {
+        if (pvc.status?.phase === 'Pending') provision(pvc)
+      }
+    }
   }
-  return Promise.resolve({ stdout: '', stderr: '' })
 }
 
 let tmpDir: string
 
 beforeEach(async () => {
-  vi.clearAllMocks()
   tmpDir = await createTempDataDir()
-  claims = new Map()
-  volumes = new Map()
   classOptions = ['nfsvers=4.1']
   binderLogs = ''
   binderPhase = 'Succeeded'
-  mockApply.mockImplementation(fakeApply)
-  mockGetJson.mockImplementation(fakeGetJson)
-  mockWithRetry.mockImplementation(fakeRetry)
+  binding = true
+  wipe()
 })
 
+/** An empty cluster with the binding controllers running. */
+function wipe(): void {
+  fakeCluster.reset()
+  fakeCluster.intercept(reconcile)
+  fakeCluster.intercept((call) => {
+    if (call.verb === 'read' && call.kind === 'Pod') fakeCluster.podLogs.set('yaac-storage-bind', binderLogs)
+  })
+}
+
 afterEach(async () => {
+  vi.useRealTimers()
   await cleanupTempDir(tmpDir)
 })
 
-const applied = (): Obj[] => (mockApply.mock.calls as Array<[Obj]>).map(([m]) => m)
-const patches = (): string[][] => (mockWithRetry.mock.calls as Array<[string[]]>)
-  .map(([args]) => args).filter((args) => args[0] === 'patch')
+const applied = (): Obj[] => fakeCluster.callsOf('apply').map((c) => c.body as unknown as Obj)
+const patches = (): FakeCall[] => fakeCluster.callsOf('patch', 'PersistentVolume')
 
 describe('ensureStorageClaims', () => {
   const staticShape = (): StorageShape => ({
@@ -208,49 +185,53 @@ describe('ensureStorageClaims', () => {
   })
 
   it('static: clears the stale claim reference of a Released volume before binding', async () => {
-    volumes.set('yaac-global-ddh16', {
-      kind: 'PersistentVolume', metadata: { name: 'yaac-global-ddh16' },
-      spec: { claimRef: { namespace: 'test-ns', name: 'yaac-global', uid: 'old' } },
-      status: { phase: 'Released' },
+    // A server-side apply keeps the status and the claimRef uid the
+    // controllers own, which the fake's apply drops; restore them until the
+    // patch clears the uid.
+    fakeCluster.intercept((call) => {
+      const pv = volume('yaac-global-ddh16')
+      if (call.verb === 'read' && call.name === 'yaac-global-ddh16' && pv && patches().length === 0) {
+        put({ ...pv, spec: { ...pv.spec, claimRef: { ...pv.spec.claimRef, uid: 'old' } }, status: { phase: 'Released' } })
+      }
     })
     const log = vi.fn()
     await ensureStorageClaims({ shape: staticShape(), log })
 
     expect(patches()).toHaveLength(1)
-    expect(patches()[0].slice(0, 3)).toEqual(['patch', 'pv', 'yaac-global-ddh16'])
-    expect(JSON.parse(patches()[0].at(-1)!)).toEqual({
-      spec: { claimRef: { namespace: 'test-ns', name: 'yaac-global', uid: null, resourceVersion: null } },
+    expect(patches()[0]).toMatchObject({
+      name: 'yaac-global-ddh16',
+      body: { spec: { claimRef: { namespace: 'test-ns', name: 'yaac-global', uid: null, resourceVersion: null } } },
     })
-    expect(claims.get('yaac-global')?.status?.phase).toBe('Bound')
+    expect(claim('yaac-global')?.status?.phase).toBe('Bound')
   })
 
   it('static: leaves a bound claim alone, and refuses one bound to another volume', async () => {
-    claims.set('yaac-global', {
-      kind: 'PersistentVolumeClaim', metadata: { name: 'yaac-global' },
-      spec: { volumeName: 'yaac-global-ddh16' }, status: { phase: 'Bound' },
+    const boundClaim = (name: string, volumeName: string): void => put({
+      kind: 'PersistentVolumeClaim', metadata: { name, namespace: 'test-ns' },
+      spec: { volumeName }, status: { phase: 'Bound' },
     })
-    claims.set('yaac-server-local', {
-      kind: 'PersistentVolumeClaim', metadata: { name: 'yaac-server-local' },
-      spec: { volumeName: 'yaac-server-local-ddh16' }, status: { phase: 'Bound' },
-    })
+    boundClaim('yaac-global', 'yaac-global-ddh16')
+    boundClaim('yaac-server-local', 'yaac-server-local-ddh16')
     await ensureStorageClaims({ shape: staticShape() })
-    expect(mockApply).not.toHaveBeenCalled()
+    expect(applied()).toEqual([])
 
-    claims.get('yaac-global')!.spec.volumeName = 'yaac-global-elsewhere'
+    boundClaim('yaac-global', 'yaac-global-elsewhere')
     await expect(ensureStorageClaims({ shape: staticShape() }))
       .rejects.toThrow(/yaac-global claim .* bound to yaac-global-elsewhere, not to yaac-global-ddh16/)
   })
 
   it('static: fails with the claim named when it never binds', async () => {
-    mockApply.mockResolvedValue(undefined)
-    claims.set('yaac-global', {
-      kind: 'PersistentVolumeClaim', metadata: { name: 'yaac-global' }, spec: {}, status: { phase: 'Pending' },
-    })
-    await expect(ensureStorageClaims({ shape: staticShape() }))
-      .rejects.toThrow(/yaac-global claim did not bind within 60s \(phase Pending\)/)
-    expect(mockWithRetry).toHaveBeenCalledWith(expect.arrayContaining([
-      'wait', 'pvc/yaac-global', 'pvc/yaac-server-local', '--for=jsonpath={.status.phase}=Bound',
-    ]), expect.anything())
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] })
+    binding = false
+    let settled = false
+    const run = ensureStorageClaims({ shape: staticShape() }).finally(() => { settled = true })
+    const failed = expect(run).rejects.toThrow(/yaac-global claim did not bind within 60s \(phase Pending\)/)
+    // Tick until settled, letting the real disk I/O run between ticks.
+    for (let i = 0; i < 1_000 && !settled; i += 1) {
+      await new Promise((r) => setImmediate(r))
+      await vi.advanceTimersByTimeAsync(1_000)
+    }
+    await failed
   })
 
   it('classes: provisions through the named classes, binds by consuming, and pins what bound', async () => {
@@ -276,8 +257,8 @@ describe('ensureStorageClaims', () => {
     expect(binder.spec.containers?.[0].command.slice(-3)).toEqual(['1000', '1000', 'install-1'])
     expect(log.mock.calls.flat().join('\n')).toMatch(/\/claims\/global now belongs to uid 1000/)
 
-    const globalPv = volumes.get('pvc-yaac-global-provisioned')!
-    const localPv = volumes.get('pvc-yaac-server-local-provisioned')!
+    const globalPv = volume('pvc-yaac-global-provisioned')!
+    const localPv = volume('pvc-yaac-server-local-provisioned')!
     // Retain regardless of class, so a namespace delete keeps the data.
     expect(globalPv.spec.persistentVolumeReclaimPolicy).toBe('Retain')
     expect(localPv.spec.persistentVolumeReclaimPolicy).toBe('Retain')
@@ -292,7 +273,7 @@ describe('ensureStorageClaims', () => {
 
   /** A volume that outlived its claim. */
   const looseVolume = (name: string, labels: Record<string, string>, over: Partial<Obj['spec']> = {}, phase = 'Released'): void => {
-    volumes.set(name, {
+    put({
       kind: 'PersistentVolume',
       metadata: { name, labels: { 'yaac.install-namespace': 'test-ns', 'yaac.claim': 'yaac-global', ...labels } },
       spec: {
@@ -316,11 +297,10 @@ describe('ensureStorageClaims', () => {
 
     const globalPvc = applied().find((m) => m.kind === 'PersistentVolumeClaim' && m.metadata.name === 'yaac-global')!
     expect(globalPvc.spec).toMatchObject({ volumeName: 'pvc-old-global', storageClassName: 'nfs-class' })
-    expect(JSON.parse(patches()[0].at(-1)!)).toMatchObject({ spec: { claimRef: { uid: null } } })
-    expect(patches()[0][2]).toBe('pvc-old-global')
-    expect(claims.get('yaac-global')?.spec.volumeName).toBe('pvc-old-global')
-    expect(volumes.has('pvc-yaac-server-local-provisioned')).toBe(true)
-    expect(volumes.has('pvc-yaac-global-provisioned')).toBe(false)
+    expect(patches()[0]).toMatchObject({ name: 'pvc-old-global', body: { spec: { claimRef: { uid: null } } } })
+    expect(claim('yaac-global')?.spec.volumeName).toBe('pvc-old-global')
+    expect(volume('pvc-yaac-server-local-provisioned')).toBeDefined()
+    expect(volume('pvc-yaac-global-provisioned')).toBeUndefined()
     expect(log.mock.calls.flat().join('\n')).toMatch(/Re-adopting yaac-global's volume pvc-old-global/)
   })
 
@@ -336,13 +316,14 @@ describe('ensureStorageClaims', () => {
 
     // With the hash label removed it no longer matches, and a new volume
     // is provisioned.
-    delete volumes.get('pvc-theirs')!.metadata.labels!['yaac.data-dir-hash']
+    const theirs = volume('pvc-theirs')!
+    delete theirs.metadata.labels!['yaac.data-dir-hash']
+    put(theirs)
     await ensureStorageClaims({ shape: classShape })
-    expect(claims.get('yaac-global')?.spec.volumeName).toBe('pvc-yaac-global-provisioned')
+    expect(claim('yaac-global')?.spec.volumeName).toBe('pvc-yaac-global-provisioned')
 
     // This install's volume under a different class is refused too.
-    claims.clear()
-    volumes.clear()
+    wipe()
     looseVolume('pvc-mine', { 'yaac.install-id': 'install-1' }, { storageClassName: 'old-class' })
     await expect(ensureStorageClaims({ shape: classShape }))
       .rejects.toThrow(/volume pvc-mine is in class "old-class", not "nfs-class"/)
@@ -350,13 +331,14 @@ describe('ensureStorageClaims', () => {
 
   it('classes: leaves bound claims alone but still re-pins them, and refuses a class change', async () => {
     await ensureStorageClaims({ shape: classShape })
-    mockApply.mockClear()
-    volumes.get('pvc-yaac-global-provisioned')!.spec.persistentVolumeReclaimPolicy = 'Delete'
+    const pv = volume('pvc-yaac-global-provisioned')!
+    put({ ...pv, spec: { ...pv.spec, persistentVolumeReclaimPolicy: 'Delete' } })
+    fakeCluster.calls = []
 
     await ensureStorageClaims({ shape: classShape })
     expect(applied().filter((m) => m.kind === 'PersistentVolumeClaim')).toEqual([])
     // A re-install restores a policy someone changed back.
-    expect(volumes.get('pvc-yaac-global-provisioned')!.spec.persistentVolumeReclaimPolicy).toBe('Retain')
+    expect(volume('pvc-yaac-global-provisioned')!.spec.persistentVolumeReclaimPolicy).toBe('Retain')
 
     await expect(ensureStorageClaims({ shape: { ...classShape, rwx: 'other-class' } }))
       .rejects.toThrow(/provisioned through class "nfs-class", not "other-class"/)
@@ -395,8 +377,7 @@ describe('ensureStorageClaims', () => {
     expect((await bind('install-2')).out).toContain(`BIND_FOREIGN=${claimsDir}/global=`)
 
     // Install reports it naming both installs and the fix.
-    claims.clear()
-    volumes.clear()
+    wipe()
     binderLogs = 'BIND_FOREIGN=/claims/global=install-9\n'
     binderPhase = 'Failed'
     await expect(ensureStorageClaims({ shape: classShape }))
@@ -412,10 +393,13 @@ describe('ensureStorageClaims', () => {
 })
 
 describe('deleteStorageVolumes', () => {
-  it('deletes the cluster-scoped volumes by install namespace, never waiting on them', async () => {
+  it('deletes the cluster-scoped volumes by install namespace, and only those', async () => {
+    const pv = (name: string, ns: string): void => put({
+      kind: 'PersistentVolume', metadata: { name, labels: { 'yaac.install-namespace': ns } }, spec: {},
+    })
+    pv('mine', 'yaac-test-run')
+    pv('theirs', 'yaac')
     await deleteStorageVolumes('yaac-test-run')
-    expect(mockWithRetry.mock.calls[0][0]).toEqual([
-      'delete', 'pv', '-l', 'yaac.install-namespace=yaac-test-run', '--ignore-not-found', '--wait=false',
-    ])
+    expect(fakeCluster.objects('PersistentVolume').map((o) => o.metadata.name)).toEqual(['theirs'])
   })
 })

@@ -341,7 +341,7 @@ the MITM proxy, not this registry.
 ### Service addressing
 
 The proxy and project registry Services keep their allocator-assigned
-ClusterIPs because they are never deleted (`kubectl apply` updates them in
+ClusterIPs because they are never deleted (server-side apply updates them in
 place). Workspace pods reach them by service-DNS name through the proxy's
 DNS, which forwards `*.cluster.local` to CoreDNS and blocks bare `.svc`
 names so DNS cannot carry data out. The node does not use cluster DNS, so

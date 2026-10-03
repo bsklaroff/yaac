@@ -4,7 +4,7 @@ import {
   type InformerCacheDeps,
   type MakeInformerFn,
 } from './informer-cache'
-import { k8sNamespace } from './kubectl'
+import { k8sNamespace } from './api'
 import {
   listWorkspaceJobs,
   listWorkspacePods,

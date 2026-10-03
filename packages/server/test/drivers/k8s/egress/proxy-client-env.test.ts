@@ -1,14 +1,6 @@
-import { describe, it, expect, vi } from 'vitest'
-import type * as kubectlModule from '#drivers/k8s/substrate/kubectl'
-
-// The auth secret is read from the cluster through kubectl.
-const mockKubectlGetJson = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
-  ...(await importOriginal<typeof kubectlModule>()),
-  k8sNamespace: () => 'yaac',
-  kubectlGetJson: mockKubectlGetJson,
-}))
-
+import { describe, it, expect } from 'vitest'
+import { fakeCluster } from '@yaac/test-utils/k8s-stub'
+import { PROXY_AUTH_SECRET_NAME, k8sNamespace } from '#drivers/k8s/substrate'
 import {
   ProxyClient,
   PROXY_CA_PATH,
@@ -50,14 +42,17 @@ describe('ProxyClient.getCaTrustEnv', () => {
 
 describe('isProxyAuthSecret', () => {
   it('accepts only the secret stored in the install', async () => {
-    mockKubectlGetJson.mockResolvedValue({ data: { secret: Buffer.from('s3cret').toString('base64') } })
+    fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Secret',
+      metadata: { name: PROXY_AUTH_SECRET_NAME, namespace: k8sNamespace() },
+      data: { secret: Buffer.from('s3cret').toString('base64') },
+    })
     await expect(isProxyAuthSecret('s3cret')).resolves.toBe(true)
     await expect(isProxyAuthSecret('s3cre')).resolves.toBe(false)
     await expect(isProxyAuthSecret('')).resolves.toBe(false)
   })
 
   it('accepts nothing when the install has no proxy secret yet', async () => {
-    mockKubectlGetJson.mockResolvedValue(null)
     await expect(isProxyAuthSecret('')).resolves.toBe(false)
   })
 })

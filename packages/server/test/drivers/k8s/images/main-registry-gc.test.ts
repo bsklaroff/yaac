@@ -5,6 +5,7 @@
  * the tests assert which tags survive.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import type * as childProcessModule from 'node:child_process'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import fs from 'node:fs/promises'
@@ -13,16 +14,24 @@ import path from 'node:path'
 
 const run = promisify(execFile)
 
-vi.mock('#drivers/k8s/substrate/kubectl', () => ({
-  isKubectlAbsentError: vi.fn(() => false),
-  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
-  k8sNamespace: vi.fn(() => 'yaac'),
-  dataDirHash: vi.fn(() => 'ddh16'),
-  kubectlApply: vi.fn().mockResolvedValue(undefined),
-  kubectlGetJson: vi.fn(),
-  kubectlWithRetry: vi.fn(),
-  execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-}))
+type ExecCallback = (err: unknown, res?: { stdout: string; stderr: string }) => void
+/** Answers `kubectl` children; any other binary runs for real. */
+const kubectl = vi.hoisted(() => ({ handler: null as null | ((args: string[]) => Promise<string>) }))
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof childProcessModule>()
+  return {
+    ...actual,
+    execFile: (file: string, args: string[], opts: unknown, cb?: ExecCallback) => {
+      const done = (typeof opts === 'function' ? opts : cb) as ExecCallback
+      if (file !== 'kubectl') {
+        actual.execFile(file, args, (err, stdout, stderr) => { done(err, { stdout, stderr }) })
+        return
+      }
+      if (!kubectl.handler) throw new Error(`unexpected kubectl ${args.join(' ')}`)
+      kubectl.handler(args).then((stdout) => { done(null, { stdout, stderr: '' }) }, (err: unknown) => { done(err) })
+    },
+  }
+})
 vi.mock('#drivers/k8s/container/registry', async (importOriginal) => ({
   ...(await importOriginal<typeof registryModule>()),
   registryTagState: vi.fn(),
@@ -40,13 +49,9 @@ import { resolveImageChain } from '#drivers/k8s/image-engine'
 import { registryHost, registryTagState } from '#drivers/k8s/container/registry'
 import { REGISTRY_UPSTREAM_IMAGE } from '#drivers/k8s/cluster'
 import { USER_DOCKERFILE, userBuildDir } from '#lib/build-dirs'
-import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/substrate/kubectl'
 import type * as registryModule from '#drivers/k8s/container/registry'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-
-const mockApply = vi.mocked(kubectlApply)
-const mockGetJson = vi.mocked(kubectlGetJson)
-const mockKubectl = vi.mocked(kubectlWithRetry)
+import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 const DAY_MS = 24 * 60 * 60_000
 const DEMO = { slug: 'demo', id: '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f' }
@@ -113,8 +118,8 @@ interface PodManifest {
     containers: Array<{ image: string; command: string[]; securityContext: unknown }>
   }
 }
-const prunePods = (): PodManifest[] => mockApply.mock.calls
-  .map((c) => c[0] as unknown as PodManifest)
+const prunePods = (): PodManifest[] => fakeCluster.callsOf('apply', 'Pod')
+  .map((c) => c.body as unknown as PodManifest)
   .filter((m) => m.metadata.name.startsWith('yaac-node-image-gc-'))
 const prunedRefs = (pod: PodManifest): string[] => {
   const command = pod.spec.containers[0].command
@@ -122,43 +127,38 @@ const prunedRefs = (pod: PodManifest): string[] => {
 }
 
 function stage(f: Fixture = {}): void {
-  const templ = (image: string): unknown => ({ metadata: {}, spec: { template: { spec: { containers: [{ image }] } } } })
-  mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
-    if (args[1] === 'pods,deployments,replicasets,daemonsets,jobs') {
-      return Promise.resolve({ items: [
-        ...(f.pods ?? []).map((image) => ({ metadata: { namespace: 'other' }, spec: { containers: [{ image }] } })),
-        ...(f.scaledToZero ?? []).map(templ),
-      ] })
-    }
-    if (args[1] === 'nodes') {
-      return Promise.resolve({ items: (f.nodes ?? []).map(({ name, images }) => ({
-        metadata: { name },
-        status: { images: images.map((names) => ({ names })) },
-      })) })
-    }
-    if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
-    return Promise.resolve(null)
+  fakeCluster.seed(
+    ...(f.pods ?? []).map((image, i) => ({
+      apiVersion: 'v1', kind: 'Pod', metadata: { name: `p${String(i)}`, namespace: 'other' }, spec: { containers: [{ image }] },
+    })),
+    ...(f.scaledToZero ?? []).map((image, i) => ({
+      apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name: `d${String(i)}`, namespace: 'other' },
+      spec: { replicas: 0, template: { spec: { containers: [{ image }] } } },
+    })),
+    ...(f.nodes ?? []).map(({ name, images }) => ({
+      apiVersion: 'v1', kind: 'Node', metadata: { name }, status: { images: images.map((names) => ({ names })) },
+    })),
+  )
+  // Each prune pod succeeds at once and logs what it removed, as the
+  // node's crictl prints it.
+  fakeCluster.intercept((c) => {
+    if (c.verb !== 'apply' || c.kind !== 'Pod') return
+    c.body = { ...c.body, status: { phase: 'Succeeded' } }
+    const pod = c.body as unknown as PodManifest
+    fakeCluster.podLogs.set(pod.metadata.name, prunedRefs(pod).map((r) => `removed ${r}\n`).join(''))
   })
-  mockKubectl.mockImplementation(async (args: string[]) => {
-    if (args[0] === 'exec') {
-      const argv = args.slice(args.indexOf('--') + 1)
-      execs.push(argv)
-      await f.beforeExec?.(argv)
-      if (argv.includes('garbage-collect')) {
-        await f.collect?.()
-        return { stdout: '', stderr: '' }
-      }
-      const real = argv.map((a) => a.replaceAll('/var/lib/registry', storage))
-      const { stdout } = await run(real[0], real.slice(1))
-      return { stdout, stderr: '' }
+  kubectl.handler = async (args) => {
+    if (args[0] !== 'exec') throw new Error(`unexpected kubectl ${args.join(' ')}`)
+    const argv = args.slice(args.indexOf('--') + 1)
+    execs.push(argv)
+    await f.beforeExec?.(argv)
+    if (argv.includes('garbage-collect')) {
+      await f.collect?.()
+      return ''
     }
-    // The prune pod's log, as the node's crictl prints it.
-    if (args[0] === 'logs') {
-      const pod = prunePods().find((p) => p.metadata.name === args[1])
-      return { stdout: (pod ? prunedRefs(pod) : []).map((r) => `removed ${r}\n`).join(''), stderr: '' }
-    }
-    return { stdout: '', stderr: '' }
-  })
+    const real = argv.map((a) => a.replaceAll('/var/lib/registry', storage))
+    return (await run(real[0], real.slice(1))).stdout
+  }
 }
 
 /** Drive one reconcile and wait out the detached pass it starts. */
@@ -171,9 +171,7 @@ beforeEach(async () => {
   dataDir = await createTempDataDir()
   storage = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-registry-'))
   execs = []
-  mockApply.mockReset().mockResolvedValue(undefined)
-  mockGetJson.mockReset()
-  mockKubectl.mockReset()
+  kubectl.handler = null
   mockServerLog.mockReset()
   // The registry answers from the fake tree.
   vi.mocked(registryTagState).mockReset().mockImplementation(async (repoTag: string) => {
@@ -429,13 +427,13 @@ describe('reconcileMainRegistryGc', () => {
     vi.stubEnv('YAAC_K8S_NAMESPACE', 'yaac-test-abc123')
     stage()
     await runPass()
-    expect(mockKubectl).not.toHaveBeenCalled()
-    expect(mockGetJson).not.toHaveBeenCalled()
+    expect(execs).toEqual([])
+    expect(fakeCluster.calls).toEqual([])
   })
 
   it('logs and moves on when there is no registry to sweep', async () => {
     stage()
-    mockKubectl.mockRejectedValue(new Error('deployments.apps "yaac-registry" not found'))
+    kubectl.handler = () => Promise.reject(new Error('deployments.apps "yaac-registry" not found'))
 
     await expect(runPass()).resolves.toBeUndefined()
 

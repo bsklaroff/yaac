@@ -9,6 +9,7 @@ import path from 'node:path'
 import WebSocket from 'ws'
 import { git } from '@yaac/test-utils/git'
 import { freeLocalPort } from '@yaac/test-utils/kubectl-forward'
+import { kubectl } from '@yaac/test-utils/kubectl'
 import { cloneRepo } from '@yaac/server/domain/git'
 import { ensureNpmCache } from '@yaac/server/drivers/k8s/cluster'
 import { reapNodeLocal } from '@yaac/server/drivers/k8s/images'
@@ -29,7 +30,7 @@ import {
   execInJob,
   cleanupWorkspaceJobs,
 } from '@yaac/test-utils/setup'
-import { k8sNamespace, kubectlWithRetry } from '@yaac/server/drivers/k8s/substrate/kubectl'
+import { k8sNamespace, readObject } from '@yaac/server/drivers/k8s/substrate/api'
 import { nodeLocalNodePath } from '@yaac/server/drivers/k8s/substrate/mount-sources'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import { AGENT_CLIS } from '@yaac/shared/types'
@@ -266,7 +267,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
   /** The kind node (a podman container) a workspace's pod runs on. */
   async function podNode(workspaceId: string): Promise<string> {
-    const { stdout } = await kubectlWithRetry([
+    const { stdout } = await kubectl([
       'get', 'pods', '-n', k8sNamespace(), '-l', `yaac.workspace-id=${workspaceId}`,
       '-o', 'jsonpath={.items[0].spec.nodeName}',
     ])
@@ -515,15 +516,12 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       // Every volume is the global claim, the node-local tree, an emptyDir or
       // the CA ConfigMap; nothing is a hostPath into the data dir
       // (docs/server-in-cluster.md, "Storage is two claims").
-      const { stdout: jobJson } = await kubectlWithRetry([
-        'get', 'job', jobName, '-n', k8sNamespace(), '-o', 'json',
-      ])
-      const volumes = (JSON.parse(jobJson) as {
+      const volumes = (await readObject<{
         spec: { template: { spec: {
           initContainers?: Array<{ name: string }>
           volumes: Array<{ name: string; hostPath?: { path: string }; persistentVolumeClaim?: { claimName: string }; emptyDir?: unknown; configMap?: unknown }>
         } } }
-      }).spec.template.spec
+      }>({ apiVersion: 'batch/v1', kind: 'Job', name: jobName, namespace: k8sNamespace() }))!.spec.template.spec
       for (const v of volumes.volumes) {
         const ok = v.persistentVolumeClaim?.claimName === 'yaac-global'
           || v.hostPath?.path.startsWith(nodeLocalNodePath()) === true
@@ -1121,7 +1119,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       // port-forward`: it dials Services directly
       // (docs/server-in-cluster.md). Read from /proc since the image has no
       // procps.
-      const { stdout } = await kubectlWithRetry([
+      const { stdout } = await kubectl([
         'exec', '-n', k8sNamespace(), 'deployment/yaac-server', '--',
         'sh', '-c', 'for p in /proc/[0-9]*; do tr "\\0" " " < "$p/cmdline" 2>/dev/null; echo; done',
       ], { timeout: 60_000 })
@@ -1134,7 +1132,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
     it('locks streamd ingress to the proxy (session ingress lock policy)', async () => {
       const ns = k8sNamespace()
-      const { stdout: ipOut } = await kubectlWithRetry([
+      const { stdout: ipOut } = await kubectl([
         'get', 'pods', '-n', ns, '-l', `yaac.workspace-id=${workspaceId}`,
         '-o', 'jsonpath={.items[0].status.podIP}',
       ])
@@ -1148,20 +1146,20 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         + "s.on('connect',()=>{console.log('CONNECTED');process.exit(0)});"
         + "s.on('error',(e)=>{console.log('ERR:'+e.code);process.exit(1)});"
         + "setTimeout(()=>{console.log('TIMEOUT');process.exit(1)},5000);"
-      const { stdout: fromProxy } = await kubectlWithRetry([
+      const { stdout: fromProxy } = await kubectl([
         'exec', '-n', ns, 'deploy/yaac-proxy', '--', 'node', '-e', dialScript,
       ], { timeout: 30_000 })
       expect(fromProxy).toContain('CONNECTED')
 
       // Any other pod is dropped (nc times out). The probe uses the
       // workspace image, which is on the node and has nc.
-      const { stdout: imgOut } = await kubectlWithRetry([
+      const { stdout: imgOut } = await kubectl([
         'get', 'pods', '-n', ns, '-l', `yaac.workspace-id=${workspaceId}`,
         '-o', 'jsonpath={.items[0].spec.containers[0].image}',
       ])
       const probeName = `streamd-lock-probe-${randomUUID().slice(0, 8)}`
       try {
-        const { stdout: probeOut } = await kubectlWithRetry([
+        const { stdout: probeOut } = await kubectl([
           'run', probeName, '-n', ns, `--image=${imgOut.trim()}`,
           '--restart=Never', '--attach', '--rm', '--command', '--',
           'sh', '-c', `nc -w 5 ${podIp} 10300 </dev/null && echo STREAMD_OPEN || echo STREAMD_BLOCKED`,
@@ -1169,7 +1167,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         expect(probeOut).toContain('STREAMD_BLOCKED')
         expect(probeOut).not.toContain('STREAMD_OPEN')
       } finally {
-        await kubectlWithRetry([
+        await kubectl([
           'delete', 'pod', probeName, '-n', ns, '--ignore-not-found', '--wait=false',
         ]).catch(() => { /* --rm usually got it */ })
       }
@@ -1275,7 +1273,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         expect(stdout).toContain(`registry=http://yaac-npm-cache.${k8sNamespace()}.svc.cluster.local:4873/`)
       }
       // The fetch went through the cache.
-      const { stdout: cacheLog } = await kubectlWithRetry([
+      const { stdout: cacheLog } = await kubectl([
         'logs', '-n', k8sNamespace(), 'deployment/yaac-npm-cache',
       ])
       expect(cacheLog).toContain('is-number')

@@ -8,6 +8,7 @@
  * reapers are mocked at their barrels so the sequencing runs for real.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import type * as substrateModule from '#drivers/k8s/substrate'
 import type { DriverSinks, RuntimeHandle } from '#drivers/contract'
 
 const order: string[] = []
@@ -19,15 +20,17 @@ const cacheStub = {
   workspacePods: () => [{ workspaceId: 'w1', projectSlug: 'demo', jobName: 'yaac-demo-w1' }],
 }
 
-vi.mock('#drivers/k8s/substrate', () => ({
+vi.mock('#drivers/k8s/substrate', async (importOriginal) => ({
+  ...await importOriginal<typeof substrateModule>(),
   ClusterCache: class { constructor() { return cacheStub } },
-  kubectlApply: vi.fn(() => { order.push('wall'); return Promise.resolve() }),
-  invalidateRelayAddr: vi.fn(),
   setActiveClusterCache: vi.fn((c: unknown) => { order.push(c ? 'cache.registered' : 'cache.cleared') }),
 }))
+const policy = (name: string, cidrs: string[]) => ({
+  apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', metadata: { name, namespace: 'yaac' }, cidrs,
+})
 vi.mock('#drivers/k8s/cluster', () => ({
-  buildServerIngressNpManifest: vi.fn((cidrs: string[]) => ({ kind: 'NetworkPolicy', cidrs })),
-  buildProxyEgressNpManifest: vi.fn((cidrs: string[]) => ({ kind: 'NetworkPolicy', proxyEgress: cidrs })),
+  buildServerIngressNpManifest: vi.fn((cidrs: string[]) => policy('server-ingress', cidrs)),
+  buildProxyEgressNpManifest: vi.fn((cidrs: string[]) => policy('proxy-egress', cidrs)),
   ensureMainRegistry: vi.fn().mockResolvedValue(undefined),
   nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.2/32', '10.89.0.3/32']),
   gcOrphanProjectRegistries: vi.fn().mockResolvedValue(undefined),
@@ -52,7 +55,7 @@ vi.mock('#drivers/k8s/workspaces', () => ({
 import { startK8sDriver, stopK8sDriver, releaseK8sDriver, triggerFor } from '#drivers/k8s/lifecycle'
 import { deleteLeakedBuilderPods } from '#drivers/k8s/images'
 import { ensureMainRegistry } from '#drivers/k8s/cluster'
-import { kubectlApply } from '#drivers/k8s/substrate'
+import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 import { _resetWorkspaceListChangedForTests, onWorkspaceListChanged } from '#notify'
 
 let reported: { triggers: string[]; workspaces: RuntimeHandle[][] }
@@ -70,6 +73,7 @@ beforeEach(() => {
   order.length = 0
   onDeltaHandlers.length = 0
   reported = { triggers: [], workspaces: [] }
+  fakeCluster.intercept((call) => { if (call.name === 'server-ingress') order.push('wall') })
 })
 
 afterEach(() => {
@@ -97,8 +101,8 @@ describe('startK8sDriver', () => {
     // Install applies this policy too, but nodes can be added later: a server
     // pod moved to a new node must admit that node's kubelet or never go
     // Ready. It is part of the bootstrap, so before recovery.
-    expect(vi.mocked(kubectlApply)).toHaveBeenCalledWith({
-      kind: 'NetworkPolicy', cidrs: ['10.89.0.2/32', '10.89.0.3/32'],
+    expect(fakeCluster.get('NetworkPolicy', 'server-ingress')).toMatchObject({
+      cidrs: ['10.89.0.2/32', '10.89.0.3/32'],
     })
     expect(order.indexOf('wall')).toBeLessThan(order.indexOf('recover'))
   })
@@ -109,8 +113,8 @@ describe('startK8sDriver', () => {
     // The proxy bootstrap is skipped when the proxy is current, so this
     // policy is applied here too; without it a `*` allowlist could reach the
     // kind fronting's node port as the server's owner.
-    expect(vi.mocked(kubectlApply)).toHaveBeenCalledWith({
-      kind: 'NetworkPolicy', proxyEgress: ['10.89.0.2/32', '10.89.0.3/32'],
+    expect(fakeCluster.get('NetworkPolicy', 'proxy-egress')).toMatchObject({
+      cidrs: ['10.89.0.2/32', '10.89.0.3/32'],
     })
   })
 

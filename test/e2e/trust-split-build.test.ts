@@ -37,12 +37,9 @@ import {
 } from '@yaac/server/drivers/k8s/cluster/main-registry'
 import { RUNTIME_CLASS_GVISOR } from '@yaac/server/drivers/k8s/substrate/gvisor'
 import { runPodToCompletion } from '@yaac/server/drivers/k8s/substrate/one-shot-pods'
-import {
-  k8sNamespace,
-  kubectlApply,
-  kubectlGetJson,
-  kubectlWithRetry,
-} from '@yaac/server/drivers/k8s/substrate/kubectl'
+import { applyObject, deleteObject, k8sNamespace, listObjects, readObject } from '@yaac/server/drivers/k8s/substrate/api'
+import { _resetK8sClientForTests } from '@yaac/server/drivers/k8s/substrate/client'
+import { kubectl } from '@yaac/test-utils/kubectl'
 import { getImageBuildLog, listImageBuilds } from '@yaac/server/drivers/k8s/image-engine/image-builds'
 import {
   buildServerClusterRoleBindingManifest,
@@ -109,7 +106,7 @@ function serverUsername(): string {
  * authorized as the SA, so beforeAll applies the server's RBAC.
  */
 async function writeServerImpersonationKubeconfig(dir: string): Promise<string> {
-  const { stdout } = await kubectlWithRetry(
+  const { stdout } = await kubectl(
     ['config', 'view', '--flatten', '--minify', '-o', 'json'],
   )
   const cfg = JSON.parse(stdout) as { users?: Array<{ user?: Record<string, unknown> }> }
@@ -119,15 +116,21 @@ async function writeServerImpersonationKubeconfig(dir: string): Promise<string> 
   return file
 }
 
-/** Run `fn` with every kubectl subprocess acting as the server's SA. */
+/**
+ * Run `fn` acting as the server's SA, both in kubectl subprocesses and in
+ * the API client, whose kubeconfig is loaded once and cached, so it is
+ * dropped on the way in and out.
+ */
 async function asServerIdentity<T>(fn: () => Promise<T>): Promise<T> {
   const prev = process.env.KUBECONFIG
   process.env.KUBECONFIG = serverKubeconfigPath!
+  _resetK8sClientForTests()
   try {
     return await fn()
   } finally {
     if (prev === undefined) delete process.env.KUBECONFIG
     else process.env.KUBECONFIG = prev
+    _resetK8sClientForTests()
   }
 }
 
@@ -155,18 +158,15 @@ describe('trust-split builds', () => {
     // The server's SA and RBAC, as `deployTestServer` applies them, for the
     // impersonated builds. The cluster-scoped objects are swept by
     // cluster-setup's afterAll.
-    await kubectlApply(buildServerServiceAccountManifest())
-    await kubectlApply(buildServerClusterRoleManifest())
-    await kubectlApply(buildServerClusterRoleBindingManifest())
+    await applyObject(buildServerServiceAccountManifest())
+    await applyObject(buildServerClusterRoleManifest())
+    await applyObject(buildServerClusterRoleBindingManifest())
     tempDataDir = await createTempDataDir()
     serverKubeconfigPath = await writeServerImpersonationKubeconfig(tempDataDir)
   })
 
   afterAll(async () => {
-    await kubectlWithRetry(
-      ['delete', 'namespace', k8sNamespace(), '--ignore-not-found', '--wait=false'],
-      { maxAttempts: 2 },
-    ).catch(() => {})
+    await deleteObject({ apiVersion: 'v1', kind: 'Namespace', name: k8sNamespace() }).catch(() => {})
     restoreNamespace?.()
     restoreNamespace = null
     if (tempDataDir) await cleanupTempDir(tempDataDir)
@@ -181,15 +181,15 @@ describe('trust-split builds', () => {
     expect(registryHost())
       .toBe(`${REGISTRY_SERVICE_NAME}.${REGISTRY_NAMESPACE}.svc.cluster.local:5000`)
 
-    const svc = await kubectlGetJson<{ spec: { selector?: Record<string, string>; clusterIP?: string } }>([
-      'get', 'service', REGISTRY_SERVICE_NAME, '-n', REGISTRY_NAMESPACE,
-    ])
+    const svc = await readObject<{ spec: { selector?: Record<string, string>; clusterIP?: string } }>({
+      apiVersion: 'v1', kind: 'Service', name: REGISTRY_SERVICE_NAME, namespace: REGISTRY_NAMESPACE,
+    })
     expect(svc?.spec.selector).toEqual({ app: MAIN_REGISTRY_APP_LABEL })
     expect(svc?.spec.clusterIP).toBeTruthy()
 
-    const deploy = await kubectlGetJson<{ status?: { readyReplicas?: number } }>([
-      'get', 'deployment', REGISTRY_SERVICE_NAME, '-n', REGISTRY_NAMESPACE,
-    ])
+    const deploy = await readObject<{ status?: { readyReplicas?: number } }>({
+      apiVersion: 'apps/v1', kind: 'Deployment', name: REGISTRY_SERVICE_NAME, namespace: REGISTRY_NAMESPACE,
+    })
     expect(deploy?.status?.readyReplicas).toBeGreaterThan(0)
     await expect(registryReachable()).resolves.toBe(true)
   }, 120_000)
@@ -266,13 +266,13 @@ describe('trust-split builds', () => {
     // This SA has pod-create RBAC, so only the guard can block it.
     const ns = k8sNamespace()
     const faker = `system:serviceaccount:${ns}:faker`
-    await kubectlApply({
+    await applyObject({
       apiVersion: 'rbac.authorization.k8s.io/v1',
       kind: 'Role',
       metadata: { name: 'faker-pod-create', namespace: ns },
       rules: [{ apiGroups: [''], resources: ['pods'], verbs: ['create', 'get', 'delete'] }],
     })
-    await kubectlApply({
+    await applyObject({
       apiVersion: 'rbac.authorization.k8s.io/v1',
       kind: 'RoleBinding',
       metadata: { name: 'faker-pod-create', namespace: ns },
@@ -295,9 +295,9 @@ describe('trust-split builds', () => {
       },
     })
     const applyAs = (manifest: object, as?: string): Promise<{ stdout: string }> =>
-      kubectlWithRetry(
+      kubectl(
         ['apply', ...(as ? ['--as', as] : []), '-f', '-'],
-        { input: JSON.stringify(manifest), maxAttempts: 1 },
+        { input: JSON.stringify(manifest) },
       )
 
     // Only the server SA is admitted, so a cluster admin is denied too.
@@ -309,7 +309,7 @@ describe('trust-split builds', () => {
       try {
         await applyAs(podManifest('admin-builder', true))
         // Not propagated yet: remove the pod and retry.
-        await kubectlWithRetry(['delete', 'pod', 'admin-builder', '-n', ns, '--ignore-not-found'])
+        await deleteObject({ apiVersion: 'v1', kind: 'Pod', name: 'admin-builder', namespace: ns }, { wait: true })
         await new Promise((r) => setTimeout(r, 500))
       } catch (err) {
         adminDenial = (err as { stderr?: string }).stderr ?? String(err)
@@ -331,7 +331,7 @@ describe('trust-split builds', () => {
     // denied everything would pass.
     const server = serverUsername()
     await applyAs(podManifest('server-builder', true), server)
-    await kubectlWithRetry(['delete', 'pod', 'server-builder', '-n', ns, '--ignore-not-found'])
+    await deleteObject({ apiVersion: 'v1', kind: 'Pod', name: 'server-builder', namespace: ns }, { wait: true })
 
     // Even the server may not put the label on a non-gVisor pod. Only the
     // gvisor check may fail here; 'reserved' would mean the identity check
@@ -342,7 +342,7 @@ describe('trust-split builds', () => {
     expect(runcDenial).toContain('gvisor')
     expect(runcDenial).not.toContain('reserved')
 
-    await kubectlWithRetry(['delete', 'pod', 'faker-control', '-n', ns, '--ignore-not-found'])
+    await deleteObject({ apiVersion: 'v1', kind: 'Pod', name: 'faker-control', namespace: ns }, { wait: true })
   }, 120_000)
 
   it('builds untrusted layers in builder pods with cross-pod step cache', async () => {
@@ -417,10 +417,10 @@ describe('trust-split builds', () => {
     expect(userTag3).not.toBe(userTag)
 
     // No builder pods are left behind.
-    const leftover = await kubectlGetJson<{
-      items: Array<{ metadata: { name: string; deletionTimestamp?: string } }>
-    }>(['get', 'pods', '-n', k8sNamespace(), '-l', 'yaac.role=builder'])
-    const alive = (leftover?.items ?? []).filter((p) => !p.metadata.deletionTimestamp)
+    const leftover = await listObjects<{ metadata: { name: string; deletionTimestamp?: string } }>(
+      'v1', 'Pod', { namespace: k8sNamespace(), labelSelector: 'yaac.role=builder' },
+    )
+    const alive = leftover.filter((p) => !p.metadata.deletionTimestamp)
     expect(alive).toEqual([])
   }, 900_000)
 })

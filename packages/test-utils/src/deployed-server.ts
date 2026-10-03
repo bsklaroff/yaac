@@ -4,10 +4,11 @@ import {
   SERVER_APP_NAME,
   SERVER_POD_PORT,
   SERVER_SA_NAME,
+  applyObject,
+  deleteObject,
   k8sNamespace,
-  kubectlApply,
-  kubectlWithRetry,
   processIdentity,
+  waitForRollout,
 } from '@yaac/server/drivers/k8s/substrate'
 import { buildServerIngressNpManifest, ensureNamespace, nodeIpBlocks } from '@yaac/server/drivers/k8s/cluster'
 import { registryHasTag, registryRef } from '@yaac/server/drivers/k8s/container'
@@ -27,6 +28,7 @@ import { ensureTestStorageClaims } from '#storage-claims'
 import { testTmpBase } from '#tmp'
 import { TEST_CLI_DIR } from '#cli-bundle'
 import { TEST_IMAGE_PREFIX } from '#setup'
+import { kubectl } from '#kubectl'
 
 const execFileAsync = promisify(execFile)
 
@@ -84,18 +86,15 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
 
   await ensureNamespace()
   await ensureTestStorageClaims(imageRef)
-  await kubectlApply(buildServerServiceAccountManifest())
-  await kubectlApply(buildServerClusterRoleManifest())
-  await kubectlApply(buildServerClusterRoleBindingManifest())
+  await applyObject(buildServerServiceAccountManifest())
+  await applyObject(buildServerClusterRoleManifest())
+  await applyObject(buildServerClusterRoleBindingManifest())
   // Only the node-side ingress rule, which admits the kubelet's readiness
   // probe. `kubectl port-forward` bypasses network policy.
-  await kubectlApply(buildServerIngressNpManifest(await nodeIpBlocks()))
-  await kubectlApply(testServerDeploymentManifest(imageRef, opts.env))
+  await applyObject(buildServerIngressNpManifest(await nodeIpBlocks()))
+  await applyObject(testServerDeploymentManifest(imageRef, opts.env))
   try {
-    await kubectlWithRetry([
-      'rollout', 'status', `deployment/${SERVER_APP_NAME}`,
-      '-n', k8sNamespace(), '--timeout=300s',
-    ], { timeout: 310_000, maxAttempts: 2 })
+    await waitForRollout({ workload: `deployment/${SERVER_APP_NAME}`, namespace: k8sNamespace(), timeoutMs: 300_000 })
   } catch (err) {
     // A timed-out rollout says nothing about why, and the namespace is
     // swept when the file ends, so collect the evidence now.
@@ -216,22 +215,21 @@ function mergeEnv(
 }
 
 /**
- * Delete this file's server and wait for the pod to be gone.
- * `kubectl delete deployment --wait` returns while the pod still runs, and
- * a file that then writes to the database would race the old server's
- * PGlite.
+ * Delete this file's server and wait for the pod to be gone. The
+ * Deployment's own delete returns while the pod still runs, and a file that
+ * then writes to the database would race the old server's PGlite.
  */
 async function deleteDeployment(): Promise<void> {
-  await kubectlWithRetry([
-    'delete', 'deployment', SERVER_APP_NAME, '-n', k8sNamespace(),
-    '--ignore-not-found', '--wait=true', '--timeout=120s',
-  ], { timeout: 130_000, maxAttempts: 1 }).catch(() => {
+  await deleteObject(
+    { apiVersion: 'apps/v1', kind: 'Deployment', name: SERVER_APP_NAME, namespace: k8sNamespace() },
+    { wait: true, timeoutMs: 120_000 },
+  ).catch(() => {
     // The namespace delete in cluster-setup is the backstop.
   })
-  await kubectlWithRetry([
+  await kubectl([
     'wait', 'pod', '-n', k8sNamespace(), '-l', `app=${SERVER_APP_NAME}`,
     '--for=delete', '--timeout=120s',
-  ], { timeout: 130_000, maxAttempts: 1 }).catch(() => {
+  ], { timeout: 130_000 }).catch(() => {
   })
 }
 

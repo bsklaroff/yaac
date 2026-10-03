@@ -1,6 +1,6 @@
 import { Watch, type V1Pod } from '@kubernetes/client-node'
 import { getCoreApi, getKubeConfig } from './client'
-import { k8sNamespace } from './kubectl'
+import { k8sNamespace } from './api'
 import { JOB_NAME_LABEL } from './pods'
 
 /**

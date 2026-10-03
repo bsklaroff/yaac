@@ -1,4 +1,4 @@
-import { kubectlApply } from './kubectl'
+import { applyObject } from './api'
 
 /**
  * Scheduling priority tiers for yaac pods. Infra pods (the egress proxy and
@@ -79,5 +79,5 @@ export function buildPriorityClassManifests(): Array<Record<string, unknown>> {
  * hangs instead of failing.
  */
 export async function ensurePriorityClasses(): Promise<void> {
-  await kubectlApply({ apiVersion: 'v1', kind: 'List', items: buildPriorityClassManifests() })
+  for (const manifest of buildPriorityClassManifests()) await applyObject(manifest)
 }

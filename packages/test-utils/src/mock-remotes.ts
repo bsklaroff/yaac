@@ -5,14 +5,9 @@ import os from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { ensureNamespace } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
-import {
-  k8sNamespace,
-  kubectlApply,
-  kubectlGetJson,
-  kubectlWithRetry,
-  type KubectlExecOptions,
-} from '@yaac/server/drivers/k8s/substrate/kubectl'
+import { applyObject, deleteObject, k8sNamespace, readObject } from '@yaac/server/drivers/k8s/substrate/api'
 import { e2eMkdtemp } from '#tmp'
+import { kubectl } from '#kubectl'
 import { resolveTestBaseImageRef, waitForPod } from '#test-pods'
 
 const execFileAsync = promisify(execFile)
@@ -61,12 +56,9 @@ export interface MockGit {
 async function execInPod(
   podName: string,
   args: string[],
-  opts: KubectlExecOptions = {},
+  opts: { timeout?: number } = {},
 ): Promise<{ stdout: string; stderr: string }> {
-  return kubectlWithRetry(
-    ['exec', '-n', k8sNamespace(), podName, '--', ...args],
-    opts,
-  )
+  return kubectl(['exec', '-n', k8sNamespace(), podName, '--', ...args], opts)
 }
 
 interface MockPodOpts {
@@ -89,7 +81,7 @@ async function startMockPod(
   await ensureNamespace()
   const image = await resolveTestBaseImageRef()
 
-  await kubectlApply({
+  await applyObject({
     apiVersion: 'v1',
     kind: 'Pod',
     metadata: {
@@ -129,7 +121,7 @@ async function startMockPod(
         : {}),
     },
   })
-  await kubectlApply({
+  await applyObject({
     apiVersion: 'v1',
     kind: 'Service',
     metadata: {
@@ -143,9 +135,9 @@ async function startMockPod(
       ports: [{ port, targetPort: port }],
     },
   })
-  const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
-    'get', 'service', name, '-n', ns,
-  ])
+  const svc = await readObject<{ spec?: { clusterIP?: string } }>({
+    apiVersion: 'v1', kind: 'Service', name, namespace: ns,
+  })
   const clusterIp = svc?.spec?.clusterIP
   if (!clusterIp || clusterIp === 'None') {
     throw new Error(`mock service ${name} has no ClusterIP`)
@@ -159,13 +151,10 @@ async function startMockPod(
 /** Delete a mock's Pod + Service, swallowing every error. */
 async function deleteMockPod(name: string): Promise<void> {
   const ns = k8sNamespace()
-  await kubectlWithRetry([
-    'delete', 'pod', name, '-n', ns,
-    '--ignore-not-found', '--wait=false', '--grace-period=1',
-  ]).catch(() => { /* already gone */ })
-  await kubectlWithRetry([
-    'delete', 'service', name, '-n', ns, '--ignore-not-found',
-  ]).catch(() => { /* already gone */ })
+  await deleteObject({ apiVersion: 'v1', kind: 'Pod', name, namespace: ns }, { gracePeriodSeconds: 1 })
+    .catch(() => { /* already gone */ })
+  await deleteObject({ apiVersion: 'v1', kind: 'Service', name, namespace: ns }, { wait: true })
+    .catch(() => { /* already gone */ })
 }
 
 const MOCK_LLM_SCRIPT = `

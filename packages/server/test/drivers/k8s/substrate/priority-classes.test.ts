@@ -1,22 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-
-// Mock kubectl. The whole module is stubbed because other barrel modules
-// import the rest of it.
-vi.mock('#drivers/k8s/substrate/kubectl', () => ({
-  isKubectlAbsentError: vi.fn(() => false),
-  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
-  execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-  k8sNamespace: vi.fn(() => 'test-ns'),
-  dataDirHash: vi.fn(() => 'ddh0123456789abc'),
-  isTransientKubectlError: vi.fn(() => false),
-  isNotFoundKubectlError: vi.fn(() => false),
-  retryTransient: vi.fn(),
-  kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-  shellKubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-  kubectlGetJson: vi.fn().mockResolvedValue(null),
-  kubectlApply: vi.fn().mockResolvedValue(undefined),
-  ensureKubernetes: vi.fn().mockResolvedValue(undefined),
-}))
+import { describe, it, expect } from 'vitest'
+import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 import {
   PRIORITY_CLASS_BUILDER,
@@ -26,7 +9,6 @@ import {
 } from '#drivers/k8s/substrate'
 // Internal, for the name only.
 import { PRIORITY_CLASS_WORKSPACE } from '#drivers/k8s/substrate/priority-classes'
-import { kubectlApply } from '#drivers/k8s/substrate/kubectl'
 
 interface PriorityClass {
   apiVersion: string
@@ -86,12 +68,8 @@ describe('buildPriorityClassManifests', () => {
 })
 
 describe('ensurePriorityClasses', () => {
-  beforeEach(() => {
-    vi.mocked(kubectlApply).mockClear()
-  })
-
-  it('applies every class in one apply', async () => {
+  it('applies every class', async () => {
     await ensurePriorityClasses()
-    expect(vi.mocked(kubectlApply).mock.calls).toEqual([[{ apiVersion: 'v1', kind: 'List', items: classes() }]])
+    expect(fakeCluster.callsOf('apply').map((c) => c.body)).toEqual(classes())
   })
 })

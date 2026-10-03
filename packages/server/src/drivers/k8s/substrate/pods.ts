@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { dataDirHash, k8sNamespace, kubectlGetJson } from './kubectl'
+import { dataDirHash, k8sNamespace, listObjects } from './api'
 import { serverLog } from '#log'
 
 /** Label keys attached to every workspace Job and its Pod. */
@@ -259,10 +259,10 @@ export function mapJobObject(obj: unknown): JobInfo | null {
  * `readWorkspacePods`, which answers from the watch when it can.
  */
 export async function listWorkspacePods(projectFilter?: string): Promise<PodInfo[]> {
-  const list = await kubectlGetJson<{ items: unknown[] }>([
-    'get', 'pods', '-n', k8sNamespace(), '-l', workspacePodSelector(projectFilter),
-  ])
-  return (list?.items ?? []).flatMap((item) => mapPodObject(item) ?? [])
+  const items = await listObjects<unknown>('v1', 'Pod', {
+    namespace: k8sNamespace(), labelSelector: workspacePodSelector(projectFilter),
+  })
+  return items.flatMap((item) => mapPodObject(item) ?? [])
 }
 
 /** The label selector `listWorkspacePods` and the pod watcher share. */
@@ -299,10 +299,10 @@ export interface JobInfo {
  * this too.
  */
 export async function listWorkspaceJobs(): Promise<JobInfo[]> {
-  const list = await kubectlGetJson<{ items: unknown[] }>([
-    'get', 'jobs', '-n', k8sNamespace(), '-l', workspaceJobSelector(),
-  ])
-  return (list?.items ?? []).flatMap((item) => mapJobObject(item) ?? [])
+  const items = await listObjects<unknown>('batch/v1', 'Job', {
+    namespace: k8sNamespace(), labelSelector: workspaceJobSelector(),
+  })
+  return items.flatMap((item) => mapJobObject(item) ?? [])
 }
 
 /** The label selector `listWorkspaceJobs` and the Jobs informer share. */

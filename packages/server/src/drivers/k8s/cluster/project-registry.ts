@@ -5,10 +5,11 @@ import {
   LABEL_WORKSPACE_ID,
   PRIORITY_CLASS_INFRA,
   dataDirHash,
+  applyObject,
+  deleteObjects,
   k8sNamespace,
-  kubectlApply,
-  kubectlGetJson,
-  kubectlWithRetry,
+  listObjects,
+  readObject,
   runOnEachNode,
   runPodToCompletion,
   waitForRollout,
@@ -111,7 +112,7 @@ function registryPodSelector(projectId: string): Record<string, string> {
   return { app: REGISTRY_APP_LABEL, [LABEL_PROJECT_ID]: projectId }
 }
 
-/** kubectl label selector matching every registry object of this install. */
+/** Label selector matching every registry object of this install. */
 function installRegistrySelector(): string {
   return `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=${dataDirHash()}`
 }
@@ -466,9 +467,9 @@ async function ensureRegistryImage(): Promise<string> {
  * builder) must read it fresh.
  */
 export async function projectRegistryClusterIp(projectId: string): Promise<string | null> {
-  const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
-    'get', 'service', projectRegistryName(projectId), '-n', k8sNamespace(),
-  ]).catch(() => null)
+  const svc = await readObject<{ spec?: { clusterIP?: string } }>({
+    apiVersion: 'v1', kind: 'Service', name: projectRegistryName(projectId), namespace: k8sNamespace(),
+  }).catch(() => null)
   return svc?.spec?.clusterIP ?? null
 }
 
@@ -534,12 +535,12 @@ export async function ensureProjectRegistry(project: ProjectRef): Promise<void> 
     const imageRef = await ensureRegistryImage()
 
     // The claim before the Deployment that mounts it.
-    await kubectlApply(buildProjectRegistryPvcManifest(project))
-    await kubectlApply(buildProjectRegistryDeploymentManifest(project, imageRef))
-    await kubectlApply(buildProjectRegistryServiceManifest(project))
-    await kubectlApply(buildRegistryWorkspacesNetworkPolicyManifest(project))
-    await kubectlApply(buildRegistryIngressNetworkPolicyManifest(project, await nodeIpBlocks()))
-    await kubectlApply(buildRegistryEgressNetworkPolicyManifest(project))
+    await applyObject(buildProjectRegistryPvcManifest(project))
+    await applyObject(buildProjectRegistryDeploymentManifest(project, imageRef))
+    await applyObject(buildProjectRegistryServiceManifest(project))
+    await applyObject(buildRegistryWorkspacesNetworkPolicyManifest(project))
+    await applyObject(buildRegistryIngressNetworkPolicyManifest(project, await nodeIpBlocks()))
+    await applyObject(buildRegistryEgressNetworkPolicyManifest(project))
     await waitForRollout({
       workload: `deployment/${name}`,
       namespace: ns,
@@ -569,15 +570,23 @@ export async function ensureProjectRegistry(project: ProjectRef): Promise<void> 
  * host no image ref uses again, since project ids are never reused.
  */
 export async function removeProjectRegistry(projectId: string): Promise<void> {
-  // Deleting the PVC while mounted is fine; it waits for the pod to go.
-  await kubectlWithRetry([
-    'delete', 'deployment,service,networkpolicy,persistentvolumeclaim,pod', '-l', registrySelector(projectId),
-    '-n', k8sNamespace(), '--ignore-not-found',
-  ])
+  // Deleting the PVC while mounted is fine; its finalizer holds it until
+  // the pod is gone.
+  const opts = { namespace: k8sNamespace(), labelSelector: registrySelector(projectId) }
+  for (const [apiVersion, kind] of REGISTRY_OBJECT_KINDS) await deleteObjects(apiVersion, kind, opts)
 }
 
-interface RawServiceList {
-  items: Array<{ metadata: { labels?: Record<string, string>; creationTimestamp?: string } }>
+/** Every kind a project registry is made of. */
+const REGISTRY_OBJECT_KINDS = [
+  ['apps/v1', 'Deployment'],
+  ['v1', 'Service'],
+  ['networking.k8s.io/v1', 'NetworkPolicy'],
+  ['v1', 'PersistentVolumeClaim'],
+  ['v1', 'Pod'],
+] as const
+
+interface RawRegistryObject {
+  metadata: { name: string; labels?: Record<string, string>; creationTimestamp?: string }
 }
 
 /** How often a project's registry is collected. Each pass restarts the
@@ -636,16 +645,16 @@ export async function reconcileProjectRegistryGc(
   now = Date.now(),
 ): Promise<void> {
   if (inFlightCollect) return
-  let services: RawServiceList | null
+  let services: RawRegistryObject[]
   try {
-    services = await kubectlGetJson<RawServiceList>([
-      'get', 'services', '-n', k8sNamespace(), '-l', installRegistrySelector(),
-    ])
+    services = await listObjects<RawRegistryObject>('v1', 'Service', {
+      namespace: k8sNamespace(), labelSelector: installRegistrySelector(),
+    })
   } catch (err) {
     console.warn(`Registry GC: failed to list registries: ${(err as Error).message}`)
     return
   }
-  for (const item of services?.items ?? []) {
+  for (const item of services) {
     const labels = item.metadata.labels ?? {}
     const id = labels[LABEL_PROJECT_ID]
     if (!id || !liveProjectIds.has(id)) continue
@@ -670,16 +679,14 @@ async function collectProjectRegistry(project: ProjectRef): Promise<void> {
     const ns = k8sNamespace()
     const imageRef = registryRef(REGISTRY_MIRROR_TAG)
     const roll = async (readOnly: boolean): Promise<void> => {
-      await kubectlApply(
-        buildProjectRegistryDeploymentManifest(project, imageRef, { readOnly }))
+      await applyObject(buildProjectRegistryDeploymentManifest(project, imageRef, { readOnly }))
       await waitForRollout({ workload: `deployment/${name}`, namespace: ns, timeoutMs: 120_000 })
     }
 
     // A collect pod a crashed server left behind would hold the claim.
-    await kubectlWithRetry([
-      'delete', 'pod', '-l', `${registrySelector(project.id)},${LABEL_NODE_WRITE}=gc`,
-      '-n', ns, '--ignore-not-found', '--wait=false',
-    ])
+    await deleteObjects('v1', 'Pod', {
+      namespace: ns, labelSelector: `${registrySelector(project.id)},${LABEL_NODE_WRITE}=gc`,
+    })
     await roll(true)
     try {
       // Scheduled beside the registry pod by its podAffinity.
@@ -707,12 +714,6 @@ async function collectProjectRegistry(project: ProjectRef): Promise<void> {
  *  orphan. */
 export const ORPHAN_REGISTRY_MIN_AGE_MS = 10 * 60_000
 
-interface RawRegistryObjectList {
-  items: Array<{
-    metadata: { name: string; labels?: Record<string, string>; creationTimestamp?: string }
-  }>
-}
-
 /**
  * Remove this install's registries whose project id is not in
  * `liveProjectIds`. Keyed on ids, so it also catches failed removals. Lists
@@ -722,18 +723,20 @@ export async function gcOrphanProjectRegistries(
   liveProjectIds: ReadonlySet<string>,
   now = Date.now(),
 ): Promise<void> {
-  let list: RawRegistryObjectList | null
+  const opts = { namespace: k8sNamespace(), labelSelector: installRegistrySelector() }
+  let list: RawRegistryObject[]
   try {
-    list = await kubectlGetJson<RawRegistryObjectList>([
-      'get', 'deployment,service,persistentvolumeclaim', '-n', k8sNamespace(),
-      '-l', installRegistrySelector(),
-    ])
+    list = (await Promise.all([
+      listObjects<RawRegistryObject>('apps/v1', 'Deployment', opts),
+      listObjects<RawRegistryObject>('v1', 'Service', opts),
+      listObjects<RawRegistryObject>('v1', 'PersistentVolumeClaim', opts),
+    ])).flat()
   } catch (err) {
     console.warn(`Orphan registry GC: failed to list registries: ${(err as Error).message}`)
     return
   }
   const orphans = new Set<string>()
-  for (const { metadata } of list?.items ?? []) {
+  for (const { metadata } of list) {
     const id = metadata.labels?.[LABEL_PROJECT_ID]
     if (id === undefined || liveProjectIds.has(id)) continue
     // An unreadable age is never old enough.

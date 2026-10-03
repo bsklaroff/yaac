@@ -487,7 +487,6 @@ async function salvageJobImagesUncoalesced(params: {
     const { stdout } = await containerExec(jobName, sudoExecCommand(buildSurveyScript()), {
       // A busy engine can delay the survey.
       timeout: 120_000,
-      maxAttempts: 1,
     })
     report = parseSurveyReport(stdout)
   } catch (err) {
@@ -509,7 +508,7 @@ async function salvageJobImagesUncoalesced(params: {
       const { stdout } = await containerExec(
         jobName,
         sudoExecCommand(buildPushScript(), argv),
-        { timeout: 600_000, maxAttempts: 1 },
+        { timeout: 600_000 },
       )
       ;({ pushed, failed } = parsePushReport(stdout))
     } catch (err) {
@@ -524,7 +523,7 @@ async function salvageJobImagesUncoalesced(params: {
     const out = await containerExec(
       jobName,
       sudoExecCommand(buildRetireScript(registryHost), triples),
-      { timeout: 120_000, maxAttempts: 1 },
+      { timeout: 120_000 },
     ).catch((err: unknown) => {
       console.warn(`Chain retire for ${jobName} failed: ${(err as Error).message}`)
       return null

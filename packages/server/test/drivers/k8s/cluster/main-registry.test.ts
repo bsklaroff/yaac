@@ -1,17 +1,18 @@
 import crypto from 'node:crypto'
 import fengari from 'fengari'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type * as childProcess from 'node:child_process'
 
-// kubectl is the process boundary. The cluster folder runs for real behind
-// it, including `runPodToCompletion`, which drives the hosts.toml writer pods.
-vi.mock('#drivers/k8s/substrate/kubectl', () => ({
-  isKubectlAbsentError: vi.fn(() => false),
-  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
-  k8sNamespace: vi.fn(() => 'test-ns'),
-  dataDirHash: vi.fn(() => 'ddh16'),
-  kubectlApply: vi.fn().mockResolvedValue(undefined),
-  kubectlGetJson: vi.fn(),
-  kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+// The cluster (the fake behind client-node) and the kubectl child process
+// (`rollout status`, `exec`) are the boundaries. The cluster folder runs for
+// real behind them, including `runPodToCompletion`, which drives the
+// hosts.toml writer pods.
+const mockKubectl = vi.hoisted(() => vi.fn<(args: string[]) => Promise<{ stdout: string; stderr: string }>>())
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...await importOriginal<typeof childProcess>(),
+  execFile: (_file: string, args: string[], _opts: unknown, cb: (err: unknown, res?: object) => void) => {
+    mockKubectl(args).then((res) => { cb(null, res) }, cb)
+  },
 }))
 
 // The node-CIDR probe behind the ingress policy reads the live cluster.
@@ -43,12 +44,10 @@ import { REGISTRY_UPSTREAM_IMAGE } from '#drivers/k8s/cluster/project-registry'
 import { ENVOY_UPSTREAM_IMAGE } from '#drivers/k8s/cluster/netd'
 import { registryAuthFile } from '#drivers/k8s/container'
 import { _resetRegistryGrantKeyForTests, mintRegistryGrant } from '#drivers/k8s/container/registry-grant'
-import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/substrate/kubectl'
+import { dataDirHash } from '#drivers/k8s/substrate'
 import { invalidateRegistryEndpoint, registryReachable } from '#drivers/k8s/container/registry'
+import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
-const mockApply = vi.mocked(kubectlApply)
-const mockGetJson = vi.mocked(kubectlGetJson)
-const mockRetry = vi.mocked(kubectlWithRetry)
 const mockReachable = vi.mocked(registryReachable)
 const mockInvalidate = vi.mocked(invalidateRegistryEndpoint)
 const CLUSTER_IP = '10.96.12.34'
@@ -68,7 +67,7 @@ interface Manifest {
 }
 
 function applied(): Manifest[] {
-  return mockApply.mock.calls.map((c) => c[0] as unknown as Manifest)
+  return fakeCluster.callsOf('apply').map((c) => c.body as unknown as Manifest)
 }
 
 function appliedOfKind(kind: string): Manifest {
@@ -77,33 +76,36 @@ function appliedOfKind(kind: string): Manifest {
   return found
 }
 
-function retryArgs(): string[][] {
-  return mockRetry.mock.calls.map((c) => c[0])
+function kubectlArgs(): string[][] {
+  return mockKubectl.mock.calls.map((c) => c[0])
 }
 
 /**
- * Serve the cluster reads an ensure makes: the grant-key Secret, the
- * Service's ClusterIP, the node list, and the writer pod's status.
+ * Stage the cluster an ensure meets: the grant-key Secret and the nodes,
+ * plus what the API server fills in on read: the Service's allocated
+ * ClusterIP and each writer pod's terminal phase.
  */
 function serveCluster(opts: {
   clusterIp?: string | null
   nodes?: string[]
   podPhase?: string
 } = {}): void {
-  const nodes = opts.nodes ?? ['yaac-control-plane']
-  mockGetJson.mockImplementation((args: string[]) => {
-    if (args[1] === 'secret') {
-      return Promise.resolve({ data: { 'key.pem': Buffer.from(grantKeyPem).toString('base64') } })
-    }
-    if (args[1] === 'service') {
-      const ip = opts.clusterIp === undefined ? CLUSTER_IP : opts.clusterIp
-      return Promise.resolve(ip === null ? { spec: {} } : { spec: { clusterIP: ip } })
-    }
-    if (args[1] === 'nodes') {
-      return Promise.resolve({ items: nodes.map((name) => ({ metadata: { name } })) })
-    }
-    // the writer pod's status
-    return Promise.resolve({ status: { phase: opts.podPhase ?? 'Succeeded' } })
+  fakeCluster.reset()
+  fakeCluster.seed(
+    {
+      apiVersion: 'v1', kind: 'Secret',
+      metadata: { name: 'yaac-registry-grant-key', namespace: 'yaac-registry-keys' },
+      data: { 'key.pem': Buffer.from(grantKeyPem).toString('base64') },
+    },
+    ...(opts.nodes ?? ['yaac-control-plane']).map((name) => ({ apiVersion: 'v1', kind: 'Node', metadata: { name } })),
+  )
+  const ip = opts.clusterIp === undefined ? CLUSTER_IP : opts.clusterIp
+  fakeCluster.intercept((call) => {
+    if (call.verb !== 'read' || !call.name) return
+    const stored = fakeCluster.get<Record<string, unknown>>(call.kind, call.name, call.namespace)
+    if (!stored) return
+    if (call.kind === 'Service' && ip) fakeCluster.seed({ ...stored, spec: { ...stored.spec as object, clusterIP: ip } } as never)
+    if (call.kind === 'Pod') fakeCluster.seed({ ...stored, status: { phase: opts.podPhase ?? 'Succeeded' } } as never)
   })
 }
 
@@ -178,7 +180,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   grantKeyPem = FIRST_GRANT_KEY_PEM
   _resetRegistryGrantKeyForTests()
-  mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
+  mockKubectl.mockResolvedValue({ stdout: '', stderr: '' })
   mockReachable.mockResolvedValue(false)
   serveCluster()
 })
@@ -188,9 +190,8 @@ describe('ensureMainRegistry', () => {
     mockReachable.mockResolvedValue(true)
     await ensureMainRegistry()
     // On a healthy install the boot check is one ping.
-    expect(mockApply).not.toHaveBeenCalled()
-    expect(mockRetry).not.toHaveBeenCalled()
-    expect(mockGetJson).not.toHaveBeenCalled()
+    expect(fakeCluster.calls).toEqual([])
+    expect(mockKubectl).not.toHaveBeenCalled()
   })
 
   it('applies namespace, PVC, Deployment and Service, then wires every node up', async () => {
@@ -248,7 +249,7 @@ describe('ensureMainRegistry', () => {
     const pvc = appliedOfKind('PersistentVolumeClaim')
     expect(pvc.metadata).toMatchObject({ name: mainRegistryPvcName(), namespace: 'yaac' })
     // Keyed by install, so coexisting installs never share a blob store.
-    expect(pvc.metadata.name).toContain('ddh16')
+    expect(pvc.metadata.name).toContain(dataDirHash())
     expect(pvc.spec).toEqual({
       // One replica + Recreate means one mounter; RWX needs a file-backed
       // storage class most clusters lack.
@@ -269,7 +270,7 @@ describe('ensureMainRegistry', () => {
 
     // Rolled out before the node write, so the writer pod's image is
     // already on the node.
-    const rollout = retryArgs().find((a) => a[0] === 'rollout')
+    const rollout = kubectlArgs().find((a) => a[0] === 'rollout')
     expect(rollout).toEqual(expect.arrayContaining([
       'rollout', 'status', 'deployment/yaac-registry', '-n', 'yaac',
     ]))
@@ -350,9 +351,9 @@ describe('ensureMainRegistry', () => {
 
     // Envoy reads its bootstrap once, so a changed key must roll the pod.
     const hash = template.metadata.annotations['yaac.registry-gate-config']
-    mockApply.mockClear()
     grantKeyPem = newGrantKeyPem()
     _resetRegistryGrantKeyForTests()
+    serveCluster()
     mockReachable.mockResolvedValueOnce(false).mockResolvedValue(true)
     await ensureMainRegistry()
     const rolled = (appliedOfKind('Deployment').spec as { template: typeof template })
@@ -441,7 +442,7 @@ describe('ensureMainRegistry', () => {
   })
 
   it('annotates a rollout failure with the command that diagnoses it', async () => {
-    mockRetry.mockImplementation((args: string[]) => (
+    mockKubectl.mockImplementation((args: string[]) => (
       args[0] === 'rollout' && args[1] === 'status'
         ? Promise.reject(new Error('timed out waiting for the condition'))
         : Promise.resolve({ stdout: '', stderr: '' })
@@ -454,7 +455,7 @@ describe('ensureMainRegistry', () => {
   })
 
   it('refuses a stalled rollout whose pod netns ignores the node\'s ARP', async () => {
-    mockRetry.mockImplementation((args: string[]) => {
+    mockKubectl.mockImplementation((args: string[]) => {
       if (args[0] === 'rollout') return Promise.reject(new Error('timed out waiting for the condition'))
       if (args[0] === 'exec') return Promise.resolve({ stdout: '2\n0\n', stderr: '' })
       return Promise.resolve({ stdout: '', stderr: '' })
@@ -467,8 +468,8 @@ describe('ensureMainRegistry', () => {
     expect(err?.message).toMatch(/yaac cluster delete\n\s+yaac cluster install/)
     expect(err?.message).not.toMatch(/get pods,pvc/)
     // Refused at the stall check, not after sitting out the full timeout.
-    expect(retryArgs().filter((a) => a[0] === 'rollout')).toHaveLength(1)
-    expect(retryArgs().find((a) => a[0] === 'exec')).toEqual([
+    expect(kubectlArgs().filter((a) => a[0] === 'rollout')).toHaveLength(1)
+    expect(kubectlArgs().find((a) => a[0] === 'exec')).toEqual([
       'exec', '-n', 'yaac', 'deploy/yaac-registry', '-c', 'registry', '--',
       'cat', '/proc/sys/net/ipv4/conf/all/arp_ignore', '/proc/sys/net/ipv4/conf/eth0/arp_ignore',
     ])
@@ -477,14 +478,14 @@ describe('ensureMainRegistry', () => {
   it('keeps waiting out a slow rollout whose pod netns answers ARP', async () => {
     mockReachable.mockResolvedValueOnce(false).mockResolvedValue(true)
     let rollouts = 0
-    mockRetry.mockImplementation((args: string[]) => {
+    mockKubectl.mockImplementation((args: string[]) => {
       if (args[0] === 'rollout' && rollouts++ === 0) return Promise.reject(new Error('timed out'))
       if (args[0] === 'exec') return Promise.resolve({ stdout: '0\n0\n', stderr: '' })
       return Promise.resolve({ stdout: '', stderr: '' })
     })
     await ensureMainRegistry()
     // A slow upstream pull is not a stall: the rest of the budget is spent.
-    expect(retryArgs().filter((a) => a[0] === 'rollout').map((a) => a.at(-1)))
+    expect(kubectlArgs().filter((a) => a[0] === 'rollout').map((a) => a.at(-1)))
       .toEqual(['--timeout=60s', '--timeout=240s'])
   })
 
@@ -497,8 +498,10 @@ describe('ensureMainRegistry', () => {
     expect(writers.map((p) => (p.spec as { nodeName: string }).nodeName)).toEqual(['node-a', 'node-b'])
     // Writer pod names are unique per run, so leftovers are swept by label.
     // The node-write label keeps the sweep off the registry's own pod.
-    const sweep = retryArgs().find((a) => a[0] === 'delete' && a[1] === 'pod')
-    expect(sweep?.join(' ')).toContain(`${LABEL_MAIN_REGISTRY_NODE_WRITE}=hosts`)
+    const sweep = fakeCluster.callsOf('list', 'Pod')[0]
+    expect(sweep.labelSelector).toContain(`${LABEL_MAIN_REGISTRY_NODE_WRITE}=hosts`)
+    // Each writer is deleted once it finishes.
+    expect(fakeCluster.objects('Pod')).toEqual([])
   })
 
   it('applies everything again under `force`, even when the registry answers', async () => {
@@ -542,13 +545,12 @@ describe('ensureMainRegistry', () => {
 
 describe('mainRegistryExec', () => {
   it('execs into the registry Deployment and returns stdout', async () => {
-    mockRetry.mockResolvedValue({ stdout: 'BUSY\n', stderr: '' })
+    mockKubectl.mockResolvedValue({ stdout: 'BUSY\n', stderr: '' })
     await expect(mainRegistryExec(['sh', '-c', 'find /x'], 5_000)).resolves.toBe('BUSY\n')
-    // The container is named because the gate shares the pod. One attempt
-    // only, so a garbage collect never runs twice.
-    expect(mockRetry).toHaveBeenCalledWith(
+    // The container is named because the gate shares the pod. Called once,
+    // so a garbage collect never runs twice.
+    expect(kubectlArgs()).toEqual([
       ['exec', '-n', 'yaac', 'deploy/yaac-registry', '-c', 'registry', '--', 'sh', '-c', 'find /x'],
-      { timeout: 5_000, maxAttempts: 1 },
-    )
+    ])
   })
 })

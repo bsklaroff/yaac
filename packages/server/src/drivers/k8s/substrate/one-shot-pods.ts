@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 import type { V1Pod } from '@kubernetes/client-node'
-import { k8sNamespace, kubectlApply, kubectlGetJson, kubectlWithRetry } from './kubectl'
+import { applyObject, deleteObject, deleteObjects, k8sNamespace, listObjects, readObject } from './api'
+import { getCoreApi } from './client'
 import { followPod, watchPodsBy } from './pod-wait'
 import { PRIORITY_CLASS_INFRA } from './priority-classes'
 
@@ -12,10 +13,6 @@ import { PRIORITY_CLASS_INFRA } from './priority-classes'
 interface RunPodOptions {
   /** Deadline for the pod to reach a terminal phase. */
   timeoutMs: number
-  /** kubectl argv runner for the delete/logs calls; injectable for tests. */
-  kubectl?: (args: string[]) => Promise<{ stdout: string }>
-  /** Manifest apply; injectable for tests. */
-  apply?: (manifest: object) => Promise<void>
 }
 
 interface PodRunResult {
@@ -42,16 +39,15 @@ export async function runPodToCompletion(
   opts: RunPodOptions,
 ): Promise<PodRunResult> {
   const { name, namespace } = (manifest as { metadata: { name: string; namespace: string } }).metadata
-  const kubectl = opts.kubectl ?? ((args: string[]) => kubectlWithRetry(args))
-  const apply = opts.apply ?? kubectlApply
-  await kubectl(['delete', 'pod', name, '-n', namespace, '--ignore-not-found'])
+  const ref = { apiVersion: 'v1', kind: 'Pod', name, namespace }
+  await deleteObject(ref, { wait: true })
   try {
-    await apply(manifest)
+    await applyObject(manifest)
     let phase = 'Pending'
     let uid: string | undefined
     await followPod({
       listPods: async () => {
-        const pod = await kubectlGetJson<V1Pod>(['get', 'pod', name, '-n', namespace])
+        const pod = await readObject<V1Pod>(ref)
         return { resourceVersion: pod?.metadata?.resourceVersion, pods: pod ? [pod] : [] }
       },
       watchPods: watchPodsBy(namespace, { fieldSelector: `metadata.name=${name}` }),
@@ -62,13 +58,10 @@ export async function runPodToCompletion(
       phase = pod.status?.phase ?? 'Unknown'
       return phase === 'Succeeded' || phase === 'Failed' ? phase : undefined
     }, opts.timeoutMs)
-    const logs = await kubectl(['logs', name, '-n', namespace])
-      .then((r) => r.stdout)
-      .catch(() => '')
+    const logs = await getCoreApi().readNamespacedPodLog({ name, namespace }).catch(() => '')
     return { phase, logs, ...(uid ? { uid } : {}) }
   } finally {
-    await kubectl(['delete', 'pod', name, '-n', namespace, '--ignore-not-found'])
-      .catch(() => { /* best-effort cleanup */ })
+    await deleteObject(ref).catch(() => { /* best-effort cleanup */ })
   }
 }
 
@@ -116,15 +109,13 @@ export async function runOnEachNode(opts: {
   const selector = Object.entries(opts.labels).map(([k, v]) => `${k}=${v}`).join(',')
   // No wait: a leftover stuck Terminating on a NotReady node would block
   // here forever, and run ids keep the new pods' names apart anyway.
-  await kubectlWithRetry([
-    'delete', 'pod', '-l', selector, '-n', namespace, '--ignore-not-found', '--wait=false',
-  ])
-  const list = await kubectlGetJson<{
-    items: Array<{ metadata: { name: string }; status?: { images?: Array<{ names?: string[] }> } }>
-  }>(['get', 'nodes'])
+  await deleteObjects('v1', 'Pod', { namespace, labelSelector: selector })
+  const nodes = await listObjects<
+    { metadata: { name: string }; status?: { images?: Array<{ names?: string[] }> } }
+  >('v1', 'Node')
   const runId = crypto.randomBytes(4).toString('hex')
   const runs: NodePodRun[] = []
-  for (const [i, item] of (list?.items ?? []).entries()) {
+  for (const [i, item] of nodes.entries()) {
     const node = {
       name: item.metadata.name,
       images: (item.status?.images ?? []).map((img) => img.names ?? []),

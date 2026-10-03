@@ -1,6 +1,6 @@
 /**
- * Refuse host-side cluster commands when kubectl's current context points
- * at a different cluster than the one this install is in.
+ * Refuse host-side cluster commands when the kubeconfig's current context
+ * points at a different cluster than the one this install is in.
  *
  * Every cluster call uses the current context, so a shell pointed at
  * another cluster would otherwise act on the wrong one. Install records the
@@ -13,7 +13,7 @@
  * `default` collide across kubeconfigs. The name is recorded only for the
  * `use-context` hint.
  */
-import { execFileAsync, kubectlErrorSummary } from '#drivers/k8s/substrate'
+import { execFileAsync, k8sErrorSummary, readObject } from '#drivers/k8s/substrate'
 import { readServerConfig, type InstallRecord } from '@yaac/shared/server-config'
 
 type Run = (file: string, args: string[]) => Promise<{ stdout: string }>
@@ -26,7 +26,11 @@ export interface CurrentCluster {
   unreadable?: string
 }
 
-/** The kubeconfig's current context, or undefined when it names none. */
+/**
+ * The kubeconfig's current context, or undefined when it names none. A
+ * question about the kubeconfig rather than the cluster, so it asks
+ * kubectl, which resolves the kubeconfig as client-node does.
+ */
 async function currentKubeContext(run: Run = execFileAsync): Promise<string | undefined> {
   try {
     return (await run('kubectl', ['config', 'current-context'])).stdout.trim() || undefined
@@ -42,12 +46,13 @@ async function currentKubeContext(run: Run = execFileAsync): Promise<string | un
 export async function currentCluster(run: Run = execFileAsync): Promise<CurrentCluster> {
   const context = await currentKubeContext(run)
   try {
-    const uid = (await run('kubectl', [
-      'get', 'namespace', 'kube-system', '--request-timeout=10s', '-o', 'jsonpath={.metadata.uid}',
-    ])).stdout.trim()
-    return uid ? { context, uid } : { context, unreadable: 'it has no uid' }
+    const ns = await readObject<{ metadata?: { uid?: string } }>({
+      apiVersion: 'v1', kind: 'Namespace', name: 'kube-system',
+    })
+    const uid = ns?.metadata?.uid
+    return uid ? { context, uid } : { context, unreadable: ns ? 'it has no uid' : 'it does not exist' }
   } catch (err) {
-    return { context, unreadable: kubectlErrorSummary(err) }
+    return { context, unreadable: k8sErrorSummary(err) }
   }
 }
 

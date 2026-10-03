@@ -21,9 +21,9 @@ about them. That is why this is a list and not a check.
 
 netd watches pods only in its install namespace, through a namespaced Role.
 Older installs granted it a ClusterRole and ClusterRoleBinding named
-`yaac-netd-<namespace>` for a pod watch across every namespace. `kubectl
-apply` never prunes, so on an upgraded install that grant would outlive the
-code that needed it.
+`yaac-netd-<namespace>` for a pod watch across every namespace. Applying
+manifests never deletes an object yaac stops sending, so on an upgraded
+install that grant would outlive the code that needed it.
 
 - **What it reads.** `deleteLegacyNetdClusterRbac` in
   `packages/server/src/drivers/k8s/cluster/netd.ts` deletes the ClusterRole
@@ -43,6 +43,49 @@ code that needed it.
   (`buildServerClusterRoleManifest`). Nothing else the server runs needs
   them, but while the sweep exists, removing them makes it fail as
   Forbidden, and `ensureNetd` with it.
+
+## Adopting fields owned by client-side `kubectl apply`
+
+Installs set up before the k8s driver used server-side apply wrote every
+object with client-side `kubectl apply`, so each field is owned by the
+`kubectl-client-side-apply` manager and the object carries a
+`kubectl.kubernetes.io/last-applied-configuration` annotation. yaac's apply
+co-owns a field whose value it sends unchanged, so later omitting that field
+would never remove it.
+
+- **What it reads.** `adoptClientSideFields` in
+  `packages/server/src/drivers/k8s/substrate/api.ts`, run on every
+  `applyObject` response. When the response lists a
+  `kubectl-client-side-apply` entry in `managedFields`, it merges that
+  entry's fields into yaac's Apply entry, removes the last-applied
+  annotation, and applies again so omitted fields are pruned at once. An
+  object already adopted costs nothing extra. `test/apiserver` covers it
+  against a real API server.
+- **What breaks silently if it goes too early.** A key yaac stops sending
+  stays on an upgraded install. Examples are a signed-out credential in
+  `yaac-proxy-credentials` or a project secret, which the proxy keeps
+  injecting, or an install env var such as `YAAC_USE_TOR` that is unset on
+  re-install. The last-applied annotation also keeps a frozen copy of old
+  Secret data.
+- **When it is safe to remove.** Once every object yaac still re-applies
+  has been adopted. An object is adopted the first time yaac applies it
+  after the upgrade, so one `yaac cluster install` plus a workspace create
+  covers the install-time and proxy objects. Objects yaac writes once or
+  only when absent never get adopted, and don't need to be, because the
+  shim only matters to a later apply. These are the PVs and PVCs, the
+  proxy auth Secret and CA, the proxy's own output objects, and the
+  `yaac-registry-keys` Namespace. Leave Calico's and kind's objects out of
+  the check: `installCalico` applies the upstream manifest with
+  client-side `kubectl apply`, so they always carry the old manager. This
+  lists the yaac objects still carrying it:
+  `kubectl get "$(kubectl api-resources --verbs=list -o name | paste -sd,)"
+  -A --show-managed-fields -o json | jq -r '.items[] | select(.metadata.name
+  | startswith("yaac")) | select(any(.metadata.managedFields[]?;
+  .manager == "kubectl-client-side-apply")) | "\(.kind)/\(.metadata.name)"'`.
+  It is safe once that list holds only objects yaac never re-applies. A
+  project's secrets Secret is re-applied on that project's next sync, so it
+  stays on the list, and the shim stays needed, until every project has
+  synced since the upgrade.
 
 ## The proxy relays yaac-mama's old `/cmd` path
 

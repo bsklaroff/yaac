@@ -11,7 +11,7 @@ import {
   dataDirHash,
   k8sNamespace,
   k8sWorkspacePaths,
-  kubectlApply,
+  applyObject,
   nodeLocalDirsOf,
   nodeLocalNodePath,
   podStreamToken,
@@ -308,7 +308,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
 
   // Idempotent, so a relaunch rewrites the same object.
   await applyProxyRegistration(spec.workspaceId, substrate.registration)
-  await kubectlApply(manifest)
+  await applyObject(manifest)
 
   return {
     workspaceId: spec.workspaceId,

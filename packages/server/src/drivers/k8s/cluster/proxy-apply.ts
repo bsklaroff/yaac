@@ -3,10 +3,14 @@ import {
   CA_BUNDLE_KEY,
   CA_CONFIGMAP_KEY,
   CA_CONFIGMAP_NAME,
+  apiStatus,
+  applyObject,
+  createObject,
+  deleteObject,
+  isAbsent,
   k8sNamespace,
-  kubectlApply,
-  kubectlGetJson,
-  kubectlWithRetry,
+  listObjects,
+  readObject,
   LABEL_ROLE,
   PRIVILEGED_PSS_LABELS,
   PROXY_APP_NAME,
@@ -42,16 +46,17 @@ import {
 import { nodeIpBlocks } from './cluster-cidrs'
 import { ensureNetd } from './netd'
 
-/** True when the cluster serves the ValidatingAdmissionPolicy API. */
+/**
+ * True when the cluster serves the ValidatingAdmissionPolicy API. A failure
+ * other than absence (e.g. an RBAC denial) is thrown, not read as "no".
+ */
 export async function vapAvailable(): Promise<boolean> {
   try {
-    await kubectlWithRetry(
-      ['get', 'validatingadmissionpolicies', '-o', 'name'],
-      { maxAttempts: 1, timeout: 15_000 },
-    )
+    await listObjects('admissionregistration.k8s.io/v1', 'ValidatingAdmissionPolicy')
     return true
-  } catch {
-    return false
+  } catch (err) {
+    if (isAbsent(err)) return false
+    throw err
   }
 }
 
@@ -60,7 +65,7 @@ export async function vapAvailable(): Promise<boolean> {
  * Standard (see PRIVILEGED_PSS_LABELS for what that admits and why).
  */
 export async function ensureNamespace(): Promise<void> {
-  await kubectlApply({
+  await applyObject({
     apiVersion: 'v1',
     kind: 'Namespace',
     metadata: { name: k8sNamespace(), labels: { ...PRIVILEGED_PSS_LABELS } },
@@ -74,7 +79,7 @@ export async function ensureProxyAuthSecret(): Promise<string> {
   if (existing) return existing
 
   const secret = crypto.randomBytes(32).toString('hex')
-  await kubectlApply({
+  await applyObject({
     apiVersion: 'v1',
     kind: 'Secret',
     metadata: { name: PROXY_AUTH_SECRET_NAME, namespace: k8sNamespace() },
@@ -92,9 +97,9 @@ let cachedProxyClusterIp: string | null = null
  */
 export async function proxyServiceClusterIp(): Promise<string> {
   if (cachedProxyClusterIp) return cachedProxyClusterIp
-  const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
-    'get', 'service', PROXY_APP_NAME, '-n', k8sNamespace(),
-  ])
+  const svc = await readObject<{ spec?: { clusterIP?: string } }>({
+    apiVersion: 'v1', kind: 'Service', name: PROXY_APP_NAME, namespace: k8sNamespace(),
+  })
   const ip = svc?.spec?.clusterIP
   if (!ip) throw new Error('proxy Service has no ClusterIP yet')
   cachedProxyClusterIp = ip
@@ -111,30 +116,26 @@ export async function ensureProxyResources(imageRef: string): Promise<void> {
   // The objects the proxy writes, created empty (so its Role can name them)
   // only if absent, since applying over them would wipe its output.
   for (const manifest of buildProxyOutputManifests()) {
-    const { kind, metadata } = manifest as { kind: string; metadata: { name: string } }
-    const existing = await kubectlGetJson<object>(['get', kind.toLowerCase(), metadata.name, '-n', k8sNamespace()])
-    if (!existing) await kubectlApply(manifest)
+    await createObject(manifest).catch((err: unknown) => {
+      if (apiStatus(err) !== 409) throw err
+    })
   }
   const nodeCidrs = await nodeIpBlocks()
-  // One apply, in order: RBAC before the Deployment that uses it, and the
-  // policies with the proxy, before any workspace pod can exist.
-  await kubectlApply({
-    apiVersion: 'v1',
-    kind: 'List',
-    items: [
-      buildProxyServiceAccountManifest(),
-      buildProxyRoleManifest(),
-      buildProxyRoleBindingManifest(),
-      buildProxyDeploymentManifest(imageRef),
-      buildProxyServiceManifest(),
-      buildServerMamaServiceManifest(),
-      buildWorkspaceEgressNpManifest(nodeCidrs),
-      buildWorkspaceIngressLockNpManifest(),
-      buildProxyIngressNpManifest(nodeCidrs),
-      buildProxyEgressNpManifest(nodeCidrs),
-      buildEgressWorldDenyNpManifest(),
-    ],
-  })
+  // In order: RBAC before the Deployment that uses it, and the policies
+  // with the proxy, before any workspace pod can exist.
+  for (const manifest of [
+    buildProxyServiceAccountManifest(),
+    buildProxyRoleManifest(),
+    buildProxyRoleBindingManifest(),
+    buildProxyDeploymentManifest(imageRef),
+    buildProxyServiceManifest(),
+    buildServerMamaServiceManifest(),
+    buildWorkspaceEgressNpManifest(nodeCidrs),
+    buildWorkspaceIngressLockNpManifest(),
+    buildProxyIngressNpManifest(nodeCidrs),
+    buildProxyEgressNpManifest(nodeCidrs),
+    buildEgressWorldDenyNpManifest(),
+  ]) await applyObject(manifest)
   await ensureNetd()
   await waitForRollout({
     workload: `deployment/${PROXY_APP_NAME}`, namespace: k8sNamespace(), timeoutMs: 180_000,
@@ -160,9 +161,9 @@ export async function ensureCaConfigMap(): Promise<void> {
   let caPem: string | undefined
   let caBundlePem: string | undefined
   for (;;) {
-    const secret = await kubectlGetJson<RawObject>([
-      'get', 'secret', PROXY_CA_SECRET_NAME, '-n', k8sNamespace(),
-    ])
+    const secret = await readObject<RawObject>({
+      apiVersion: 'v1', kind: 'Secret', name: PROXY_CA_SECRET_NAME, namespace: k8sNamespace(),
+    })
     const decode = (key: string): string | undefined => {
       const encoded = secret?.data?.[key]
       return encoded ? Buffer.from(encoded, 'base64').toString('utf8') : undefined
@@ -175,14 +176,14 @@ export async function ensureCaConfigMap(): Promise<void> {
     }
     await new Promise((r) => setTimeout(r, 500))
   }
-  const existing = await kubectlGetJson<RawObject>([
-    'get', 'configmap', CA_CONFIGMAP_NAME, '-n', k8sNamespace(),
-  ])
+  const existing = await readObject<RawObject>({
+    apiVersion: 'v1', kind: 'ConfigMap', name: CA_CONFIGMAP_NAME, namespace: k8sNamespace(),
+  })
   if (
     existing?.data?.[CA_CONFIGMAP_KEY] === caPem &&
     existing?.data?.[CA_BUNDLE_KEY] === caBundlePem
   ) return
-  await kubectlApply({
+  await applyObject({
     apiVersion: 'v1',
     kind: 'ConfigMap',
     metadata: { name: CA_CONFIGMAP_NAME, namespace: k8sNamespace() },
@@ -196,7 +197,7 @@ export async function ensureCaConfigMap(): Promise<void> {
  * values.
  */
 export async function syncProxyCredentials(bundle: CredentialBundle): Promise<void> {
-  await kubectlApply(buildProxyCredentialsSecretManifest(bundle))
+  await applyObject(buildProxyCredentialsSecretManifest(bundle))
   const signedIn = (['claude', 'codex', 'opencode', 'pi'] as const).filter((t) => bundle[t] !== null)
   serverLog(`[server] proxy credentials: ${signedIn.length ? signedIn.join(', ') : 'no tools'} signed in, `
     + `${String(bundle.git.length)} git token(s), ${String(bundle.ssh.length)} ssh key(s)`)
@@ -208,15 +209,14 @@ export async function syncProjectSecrets(
   projectSlug: string,
   values: Record<string, string>,
 ): Promise<void> {
-  await kubectlApply(buildProjectSecretsManifest(projectSlug, values))
+  await applyObject(buildProjectSecretsManifest(projectSlug, values))
 }
 
 /** Delete a project's secret values object. */
 export async function removeProjectSecrets(projectSlug: string): Promise<void> {
-  await kubectlWithRetry([
-    'delete', 'secret', proxyProjectSecretsName(projectSlug),
-    '-n', k8sNamespace(), '--ignore-not-found',
-  ])
+  await deleteObject({
+    apiVersion: 'v1', kind: 'Secret', name: proxyProjectSecretsName(projectSlug), namespace: k8sNamespace(),
+  })
 }
 
 /**
@@ -235,9 +235,6 @@ export async function ensureBuilderRoleGuard(): Promise<void> {
       + 'cluster yaac created, run `yaac cluster delete`, then `yaac cluster install`.',
     )
   }
-  await kubectlApply({
-    apiVersion: 'v1',
-    kind: 'List',
-    items: [buildBuilderRoleGuardPolicyManifest(), buildBuilderRoleGuardBindingManifest()],
-  })
+  await applyObject(buildBuilderRoleGuardPolicyManifest())
+  await applyObject(buildBuilderRoleGuardBindingManifest())
 }

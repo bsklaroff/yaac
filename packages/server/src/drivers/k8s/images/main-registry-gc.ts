@@ -19,7 +19,7 @@
  * cache (main-registry.ts), so it needs no restart afterwards.
  */
 import { buildRegistryRetentionScript, mainRegistryExec } from '#drivers/k8s/cluster'
-import { kubectlGetJson } from '#drivers/k8s/substrate'
+import { listObjects } from '#drivers/k8s/substrate'
 import { resolveImageChain } from '#drivers/k8s/image-engine'
 import { testEnv } from '@yaac/shared/env'
 import type { YaacConfig } from '@yaac/shared/types'
@@ -185,9 +185,18 @@ interface LiveImages {
   wanted: Set<string> | null
 }
 
-interface RawWorkloadList {
-  items: Array<{ spec?: PodSpecImages & { template?: { spec?: PodSpecImages } } }>
+interface RawWorkload {
+  spec?: PodSpecImages & { template?: { spec?: PodSpecImages } }
 }
+
+/** Every kind whose spec or pod template names an image. */
+const WORKLOAD_KINDS: Array<[apiVersion: string, kind: string]> = [
+  ['v1', 'Pod'],
+  ['apps/v1', 'Deployment'],
+  ['apps/v1', 'ReplicaSet'],
+  ['apps/v1', 'DaemonSet'],
+  ['batch/v1', 'Job'],
+]
 interface PodSpecImages {
   containers?: Array<{ image?: string }>
   initContainers?: Array<{ image?: string }>
@@ -196,15 +205,15 @@ interface PodSpecImages {
 /**
  * Every generation a pod or workload template names, in any namespace.
  * Templates count because a Deployment scaled to zero still needs its
- * image, and ReplicaSets because `kubectl rollout undo` restores them.
+ * image, and ReplicaSets because a rollback restores them.
  * Throws if the list cannot be read, stopping the pass.
  */
 async function readInUse(): Promise<Set<string>> {
-  const workloads = await kubectlGetJson<RawWorkloadList>([
-    'get', 'pods,deployments,replicasets,daemonsets,jobs', '--all-namespaces',
-  ])
+  const workloads = (await Promise.all(
+    WORKLOAD_KINDS.map(([apiVersion, kind]) => listObjects<RawWorkload>(apiVersion, kind)),
+  )).flat()
   const inUse = new Set<string>()
-  for (const { spec } of workloads?.items ?? []) {
+  for (const { spec } of workloads) {
     for (const s of [spec, spec?.template?.spec]) {
       for (const { image } of [...s?.containers ?? [], ...s?.initContainers ?? []]) {
         const generation = image ? registryGeneration(image) : null

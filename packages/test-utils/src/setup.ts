@@ -9,12 +9,7 @@ import { promisify } from 'node:util'
 import { setDataDir, getDataDir, clientLocalRoot, ensureDataDir, projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
 import { cloneRepo } from '@yaac/server/domain/git'
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
-import {
-  dataDirHash,
-  k8sNamespace,
-  kubectlWithRetry,
-  type KubectlExecOptions,
-} from '@yaac/server/drivers/k8s/substrate/kubectl'
+import { dataDirHash, deleteObjects, k8sNamespace } from '@yaac/server/drivers/k8s/substrate/api'
 import { LABEL_DATA_DIR_HASH, LABEL_WORKSPACE_ID } from '@yaac/server/drivers/k8s/substrate/pods'
 import type { SpawnedServer } from '#cli'
 import { registerTestProject } from '#api'
@@ -23,6 +18,7 @@ import type { ProxyClientConfig } from '@yaac/server/drivers/k8s/egress/proxy-cl
 import { startKubectlForward, type KubectlForward } from '#kubectl-forward'
 import { e2eMkdtemp, removeScratchTree, testTmpBase } from '#tmp'
 import { git } from '#git'
+import { kubectl } from '#kubectl'
 
 const execFileAsync = promisify(execFile)
 
@@ -102,12 +98,9 @@ async function testProxyControlOrigin(): Promise<string> {
 export async function execInJob(
   jobName: string,
   args: string[],
-  opts: KubectlExecOptions = {},
+  opts: { timeout?: number } = {},
 ): Promise<{ stdout: string; stderr: string }> {
-  return kubectlWithRetry(
-    ['exec', '-n', k8sNamespace(), `job/${jobName}`, '--', ...args],
-    opts,
-  )
+  return kubectl(['exec', '-n', k8sNamespace(), `job/${jobName}`, '--', ...args], opts)
 }
 
 /**
@@ -123,14 +116,10 @@ export async function cleanupWorkspaceJobs(timeoutMs = 120_000): Promise<void> {
   const selector = `${LABEL_DATA_DIR_HASH}=${dataDirHash()},${LABEL_WORKSPACE_ID}`
   try {
     // Delete without waiting, then wait for them all, so terminations
-    // overlap (`kubectl delete --wait` blocks per object).
-    await kubectlWithRetry([
-      'delete', 'jobs,pods',
-      '-n', k8sNamespace(),
-      // Only workspace pods: the proxy pod has the same data-dir-hash.
-      '-l', selector,
-      '--ignore-not-found', '--wait=false',
-    ])
+    // overlap. The selector keeps the proxy pod, which has the same
+    // data-dir-hash, out.
+    await deleteObjects('batch/v1', 'Job', { namespace: k8sNamespace(), labelSelector: selector })
+    await deleteObjects('v1', 'Pod', { namespace: k8sNamespace(), labelSelector: selector })
   } catch {
     return // cluster unreachable — nothing to clean, and nothing to wait for
   }
@@ -227,7 +216,7 @@ let _clusterAlive = false
 
 /**
  * Throw if no k8s cluster is reachable, so tests fail with a clear message
- * instead of timing out in kubectl retries.
+ * instead of timing out in their first cluster call.
  */
 export async function requireCluster(): Promise<void> {
   if (_clusterAlive) return

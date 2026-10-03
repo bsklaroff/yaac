@@ -20,11 +20,14 @@ import {
   TAILSCALE_OPERATOR_NAMESPACE,
   ensurePriorityClasses,
   execFileAsync,
-  isKubectlAbsentError,
+  isAbsent,
+  k8sErrorSummary,
   k8sNamespace,
-  kubectlErrorSummary,
+  listObjects,
   nodeLocalNodePath,
   processIdentity,
+  readObject,
+  type ObjectRef,
 } from '#drivers/k8s/substrate'
 import { registryHost } from '#drivers/k8s/container'
 import { GVISOR_INSTALLER_APP_NAME, ensureGvisorRuntime } from './gvisor-installer'
@@ -447,7 +450,7 @@ async function requireBinaries(
   try {
     await deps.run('kubectl', ['version', '--client', '--output', 'json'])
   } catch {
-    missing.push('kubectl — all cluster access goes through it.\n'
+    missing.push('kubectl — yaac streams into pods (exec, port-forward) through it.\n'
       + '  Install: https://kubernetes.io/docs/tasks/tools/')
   }
   if (missing.length > 0) {
@@ -541,7 +544,9 @@ const API_SERVER_TIMEOUT_MS = 120_000
 
 /**
  * Wait until the API server answers /readyz. After a node start it takes a
- * few seconds to come up.
+ * few seconds to come up. This and the Calico steps run kubectl against the
+ * kind context by name, since install has not yet checked that it is the
+ * current context the API client uses (`verifyKindContext`).
  */
 async function waitForApiServer(deps: ClusterInstallDeps, cluster: string): Promise<void> {
   const context = `kind-${cluster}`
@@ -622,6 +627,8 @@ async function installCalico(deps: ClusterInstallDeps, cluster: string): Promise
   const context = `kind-${cluster}`
   deps.log(`Installing Calico ${CALICO_VERSION} (CNI + NetworkPolicy)...`)
   try {
+    // Calico's release manifest is upstream multi-document YAML (CRDs and
+    // all), applied as published, which is what `kubectl apply` is for.
     await deps.runStreaming('kubectl', ['--context', context, 'apply', '-f', '-'], { input: raw })
     // Nodes go Ready only once calico-node has started, so wait on it first.
     await deps.run('kubectl', [
@@ -649,7 +656,7 @@ async function installCalico(deps: ClusterInstallDeps, cluster: string): Promise
  */
 async function verifyAdoptedCni(deps: ClusterInstallDeps): Promise<void> {
   deps.log('Verifying the CNI this cluster already runs...')
-  const facts = await gatherCniFacts(deps.run)
+  const facts = await gatherCniFacts()
   const { refusals, warnings, notes } = assessCniAdoption(facts)
   for (const note of notes) deps.log(`  recorded: ${note}`)
   for (const warning of warnings) deps.log(`  ! ${warning}`)
@@ -668,33 +675,37 @@ async function verifyAdoptedCni(deps: ClusterInstallDeps): Promise<void> {
  */
 async function verifyTailnetOperator(deps: ClusterInstallDeps, flag = '--tailnet'): Promise<void> {
   deps.log(`Verifying the Tailscale Kubernetes operator (${flag})...`)
-  const reads: Array<[string, string[]]> = [
-    ['the ProxyClass CRD (proxyclasses.tailscale.com)', ['get', 'crd', 'proxyclasses.tailscale.com']],
-    [
-      `the operator Deployment (${TAILSCALE_OPERATOR_NAMESPACE}/operator)`,
-      ['get', 'deployment', 'operator', '-n', TAILSCALE_OPERATOR_NAMESPACE],
-    ],
-    ['the operator\'s IngressClass (tailscale)', ['get', 'ingressclass', 'tailscale']],
+  const reads: Array<[string, ObjectRef]> = [
+    ['the ProxyClass CRD (proxyclasses.tailscale.com)', {
+      apiVersion: 'apiextensions.k8s.io/v1', kind: 'CustomResourceDefinition', name: 'proxyclasses.tailscale.com',
+    }],
+    [`the operator Deployment (${TAILSCALE_OPERATOR_NAMESPACE}/operator)`, {
+      apiVersion: 'apps/v1', kind: 'Deployment', name: 'operator', namespace: TAILSCALE_OPERATOR_NAMESPACE,
+    }],
+    ['the operator\'s IngressClass (tailscale)', {
+      apiVersion: 'networking.k8s.io/v1', kind: 'IngressClass', name: 'tailscale',
+    }],
   ]
-  for (const [what, args] of reads) {
+  for (const [what, ref] of reads) {
+    let found: unknown
     try {
-      await deps.run('kubectl', args)
+      found = await readObject(ref)
     } catch (err) {
-      if (isKubectlAbsentError(err)) {
-        throw new ClusterInstallError(
-          `${flag} needs the Tailscale Kubernetes operator, and ${what} is not in this cluster.\n`
-          + '    Install it (an OAuth client with the tag its proxies use — see '
-          + 'https://tailscale.com/kb/1236/kubernetes-operator), then re-run:\n'
-          + '      helm repo add tailscale https://pkgs.tailscale.com/helmcharts\n'
-          + '      helm upgrade --install tailscale-operator tailscale/tailscale-operator \\\n'
-          + `        --namespace=${TAILSCALE_OPERATOR_NAMESPACE} --create-namespace \\\n`
-          + '        --set-string oauth.clientId=<id> --set-string oauth.clientSecret=<secret> --wait',
-        )
-      }
       throw new ClusterInstallError(
         `${flag} needs the Tailscale Kubernetes operator, and whether it is installed could not `
-        + `be evaluated: reading ${what} failed (${kubectlErrorSummary(err)}).\n`
-        + '    Fix the cluster access (kubeconfig, kubectl, apiserver) and re-run.',
+        + `be evaluated: reading ${what} failed (${k8sErrorSummary(err)}).\n`
+        + '    Fix the cluster access (kubeconfig, apiserver) and re-run.',
+      )
+    }
+    if (!found) {
+      throw new ClusterInstallError(
+        `${flag} needs the Tailscale Kubernetes operator, and ${what} is not in this cluster.\n`
+        + '    Install it (an OAuth client with the tag its proxies use — see '
+        + 'https://tailscale.com/kb/1236/kubernetes-operator), then re-run:\n'
+        + '      helm repo add tailscale https://pkgs.tailscale.com/helmcharts\n'
+        + '      helm upgrade --install tailscale-operator tailscale/tailscale-operator \\\n'
+        + `        --namespace=${TAILSCALE_OPERATOR_NAMESPACE} --create-namespace \\\n`
+        + '        --set-string oauth.clientId=<id> --set-string oauth.clientSecret=<secret> --wait',
       )
     }
   }
@@ -713,9 +724,7 @@ async function verifyByoCluster(
   installId: string,
 ): Promise<{ rwx: string; rwo: string }> {
   deps.log('Verifying the cluster the kubeconfig points at (--byo)...')
-  const nodes = (await readKubectlJson<{ items?: PlatformNode[] }>(
-    deps, ['get', 'nodes', '-o', 'json'], 'the cluster\'s nodes',
-  ))?.items ?? []
+  const nodes = await readForByo(() => listObjects<PlatformNode>('v1', 'Node'), 'the cluster\'s nodes') ?? []
   refuseIfAny('This cluster\'s nodes cannot run what yaac installs',
     nodeArchitectureProblems(nodes, hostNodeArchitecture()))
   refuseIfAny('This cluster\'s nodes cannot take the gVisor runtime', nodeOsProblems(nodes))
@@ -723,7 +732,7 @@ async function verifyByoCluster(
   await verifyAdoptedCni(deps)
   await verifyTailnetOperator(deps, '--byo')
   const storage = await verifyStorageClasses(deps, opts)
-  await verifyInstallIdentity(deps, installId)
+  await verifyInstallIdentity(installId)
   const current = await currentCluster(deps.run)
   const refusal = clusterRefusal((await readServerConfig()) ?? {}, current)
   if (refusal) throw new ClusterInstallError(refusal)
@@ -752,18 +761,18 @@ function refuseIfAny(heading: string, problems: string[]): void {
 }
 
 /**
- * A kubectl read as JSON: null when the object is absent; throws a refusal
- * naming `what` when the read itself failed.
+ * A cluster read for the byo gates: null when the object is absent; throws
+ * a refusal naming `what` when the read itself failed.
  */
-async function readKubectlJson<T>(deps: ClusterInstallDeps, args: string[], what: string): Promise<T | null> {
+async function readForByo<T>(read: () => Promise<T | null>, what: string): Promise<T | null> {
   try {
-    return JSON.parse((await deps.run('kubectl', args)).stdout) as T
+    return await read()
   } catch (err) {
-    if (isKubectlAbsentError(err)) return null
+    if (isAbsent(err)) return null
     throw new ClusterInstallError(
       `Whether this cluster can take a byo install could not be evaluated: reading ${what} `
-      + `failed (${kubectlErrorSummary(err)}).\n`
-      + '    Fix the cluster access (kubeconfig, kubectl, apiserver) and re-run.',
+      + `failed (${k8sErrorSummary(err)}).\n`
+      + '    Fix the cluster access (kubeconfig, apiserver) and re-run.',
     )
   }
 }
@@ -783,9 +792,9 @@ async function verifyStorageClasses(
   deps: ClusterInstallDeps,
   opts: ClusterInstallOptions,
 ): Promise<{ rwx: string; rwo: string }> {
-  const classes = (await readKubectlJson<{ items?: RawStorageClass[] }>(
-    deps, ['get', 'storageclass', '-o', 'json'], 'the StorageClasses',
-  ))?.items ?? []
+  const classes = await readForByo(
+    () => listObjects<RawStorageClass>('storage.k8s.io/v1', 'StorageClass'), 'the StorageClasses',
+  ) ?? []
   const named = new Map(classes.map((c) => [c.metadata?.name ?? '', c]))
   const known = [...named.keys()].sort().join(', ') || 'none'
   const isDefault = (c: RawStorageClass): boolean =>
@@ -825,17 +834,16 @@ interface RawServerDeployment {
  * as containerless, and a namespace whose server Deployment carries
  * another install's id (installing over it would take over its storage).
  */
-async function verifyInstallIdentity(deps: ClusterInstallDeps, installId: string): Promise<void> {
+async function verifyInstallIdentity(installId: string): Promise<void> {
   if ((await readServerConfig())?.driver === 'containerless') {
     throw new ClusterInstallError(
       `The data dir ${getDataDir()} is a containerless install, and one data dir is one install. `
       + 'Point YAAC_DATA_DIR at a data dir of its own for this cluster.',
     )
   }
-  const dep = await readKubectlJson<RawServerDeployment>(
-    deps, ['get', 'deployment', SERVER_APP_NAME, '-n', k8sNamespace(), '-o', 'json'],
-    `the ${SERVER_APP_NAME} Deployment`,
-  )
+  const dep = await readForByo(() => readObject<RawServerDeployment>({
+    apiVersion: 'apps/v1', kind: 'Deployment', name: SERVER_APP_NAME, namespace: k8sNamespace(),
+  }), `the ${SERVER_APP_NAME} Deployment`)
   const owner = dep?.metadata?.labels?.[LABEL_INSTALL_ID]
   if (dep && owner !== installId) {
     const dataDir = dep.spec?.template?.spec?.containers
@@ -864,9 +872,11 @@ function refuseByoSwitch(recorded: InstallRecord | null, opts: ClusterInstallOpt
 }
 
 /**
- * Check that kubectl's current context is this machine's kind cluster, by
- * name and by API server address. The cluster uid is not compared, since a
- * recreated kind cluster is still the same install. Returns the cluster.
+ * Check that the kubeconfig's current context is this machine's kind
+ * cluster, by name and by API server address. Both are kubeconfig
+ * questions, which kubectl answers as the API client resolves them. The
+ * cluster uid is not compared, since a recreated kind cluster is still the
+ * same install. Returns the cluster.
  */
 async function verifyKindContext(deps: ClusterInstallDeps, cluster: string): Promise<CurrentCluster> {
   const expected = `kind-${cluster}`
