@@ -417,10 +417,11 @@ async function resolveSettings(
 ): Promise<QueuedWorkspaceSettings> {
   const tool = request.tool ?? parent.tool ?? (await getProjectRow(projectSlug))?.lastTool ?? 'claude'
   const sameTool = tool === parent.tool
-  // With the parent's tool unknown, borrow mode and permission mode (checked
+  // The UI mode is not tool-specific, so it is borrowed whatever the tool.
+  // With the parent's tool unknown, borrow the permission mode (checked
   // below) but not the model.
   const compatible = sameTool || parent.tool === undefined
-  const mode = request.mode ?? (compatible ? parent.mode : undefined)
+  const mode = request.mode ?? parent.mode
   const inherited = compatible ? parent.permissionMode : undefined
 
   // An agent's permission mode is capped at its own (`agentPermissionMode`).

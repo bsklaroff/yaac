@@ -19,7 +19,8 @@ export interface WorkspaceCreateOptions {
    * opencode/pi.
    */
   model?: string
-  /** How the agent is driven (default: tui). See docs/agent-modes.md. */
+  /** How the agent is driven; defaults to this project's last choice for
+   *  the tool, else acp. See docs/agent-modes.md. */
   mode?: AgentMode
   /**
    * How much the agent may do before it asks. Defaults to the project's last
@@ -33,7 +34,8 @@ export interface WorkspaceCreateOptions {
 
 /**
  * `yaac workspace create`: ask the server to create the workspace, then
- * attach the terminal to its tmux session.
+ * attach the terminal to its tmux session, or for an `acp` workspace point
+ * at the web app.
  *
  * Options left unset are omitted so the server fills them from what the
  * project last used, matching the web app's form and the prewarmed spare.

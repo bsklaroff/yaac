@@ -199,7 +199,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
 
   async function createWorkspace(slug: string): Promise<PodInfo> {
     const { stdout, stderr, exitCode } = await runYaac(
-      serverEnv, 'workspace', 'create', slug, '--tool', 'claude',
+      serverEnv, 'workspace', 'create', slug, '--tool', 'claude', '--mode', 'tui',
     )
     if (exitCode !== 0) {
       throw new Error(`session create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)

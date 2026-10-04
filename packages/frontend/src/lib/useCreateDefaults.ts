@@ -5,6 +5,7 @@ import { useProvisionWorkspace } from '#lib/useProvisionWorkspace'
 import { useSnapshot } from '#lib/useSnapshot'
 import { randomUUID } from '#lib/uuid'
 import {
+  DEFAULT_AGENT_MODE,
   resolveToolCreateDefaults,
   type AgentMode,
   type AgentTool,
@@ -60,7 +61,7 @@ export function useCreateDefaults(projectSlug: string | null): CreateDefaults {
     forTool: (tool) => {
       const summary = auth?.toolAuth.find((t) => t.tool === tool)
       const remembered = project?.createDefaults[tool]
-      const mode = remembered?.mode ?? 'tui'
+      const mode = remembered?.mode ?? DEFAULT_AGENT_MODE
       const provider = summary?.opencodeProvider ?? summary?.piProvider
       const defaultModel = summary?.defaultModel ?? ''
       const resolved = resolveToolCreateDefaults({

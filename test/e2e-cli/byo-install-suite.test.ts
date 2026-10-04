@@ -203,7 +203,7 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     // this machine's disk, as it would for a kind install. A byo user comes
     // in over https and never hits that check, so fake the directory.
     await fs.mkdir(path.join(scratch, 'user', 'global', 'projects', SLUG), { recursive: true })
-    const created = await runYaac(userEnv, 'workspace', 'create', SLUG, '--tool', 'claude')
+    const created = await runYaac(userEnv, 'workspace', 'create', SLUG, '--tool', 'claude', '--mode', 'tui')
     expect(created.exitCode, created.stderr).toBe(0)
     workspaceId = (await kubectl('get', 'pods', '-n', 'yaac', '-l', `yaac.project=${SLUG}`,
       '-o', 'jsonpath={.items[0].metadata.labels.yaac\\.workspace-id}')).trim()

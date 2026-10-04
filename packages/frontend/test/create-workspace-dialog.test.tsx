@@ -231,13 +231,13 @@ describe('CreateWorkspaceDialog', () => {
     // Shown by name, sent by id.
     expect(modelInput().value).toBe('GPT-5.5')
     expect(select('Permissions').value).toBe('read-only')
-    expect(select('UI').value).toBe('tui')
+    expect(select('UI').value).toBe('acp')
 
     fireEvent.click(createButton())
     // Every field is sent, so every field becomes the next default.
     expect(sent(CREATE)).toEqual([{
       project: 'proj', tool: 'codex', workspaceId: expect.any(String) as string,
-      branch: 'dev', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'tui',
+      branch: 'dev', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'acp',
     }])
     // The provisioning row names the model from its first frame.
     expect(provision.mock.calls[0][6]).toEqual({ model: 'gpt-5.5', modelName: 'GPT-5.5' })
@@ -259,7 +259,7 @@ describe('CreateWorkspaceDialog', () => {
     expect(select('Agent').value).toBe('claude')
     expect(modelInput().value).toBe('Opus 5.5')
     expect(select('Permissions').value).toBe('accept-edits')
-    expect(select('UI').value).toBe('tui')
+    expect(select('UI').value).toBe('acp')
     // Bypass can still be picked there, with a warning.
     fireEvent.change(select('Permissions'), { target: { value: 'bypass' } })
     expect(screen.getByText('no sandbox — acts as you')).toBeTruthy()
@@ -280,7 +280,7 @@ describe('CreateWorkspaceDialog', () => {
     fireEvent.change(select('Agent'), { target: { value: 'codex' } })
     expect(modelInput().value).toBe('GPT-5.5')
     expect(select('Permissions').value).toBe('bypass')
-    expect(select('UI').value).toBe('tui')
+    expect(select('UI').value).toBe('acp')
 
     // pi has no permission system, so bypass is all it offers.
     fireEvent.change(select('Agent'), { target: { value: 'pi' } })
@@ -364,7 +364,7 @@ describe('CreateWorkspaceDialog', () => {
 
     fireEvent.keyDown(promptInput(), { key: 'Enter' })
     expect(sent(CREATE).at(-1)).toMatchObject({
-      project: 'proj', tool: 'claude', branch: 'dev', model: 'claude-opus-5-5', permissionMode: 'bypass', mode: 'tui',
+      project: 'proj', tool: 'claude', branch: 'dev', model: 'claude-opus-5-5', permissionMode: 'bypass', mode: 'acp',
     })
   })
 
