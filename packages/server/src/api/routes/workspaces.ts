@@ -253,6 +253,7 @@ export const workspaceApp = new Hono()
           // A user request, so its settings become the project's defaults.
           rememberDefaults: true,
           claimSpare: true,
+          draftOnStop: body.draftId !== undefined ? { id: body.draftId } : {},
         }, onProgress)
       }))
     },

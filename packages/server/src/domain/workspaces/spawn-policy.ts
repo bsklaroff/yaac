@@ -133,6 +133,7 @@ export async function decideSpawn(
     rememberDefaults: false,
     // The caller already has this id; a spare has its own.
     claimSpare: false,
+    draftOnStop: {},
   }, onProgress)).then(
     (created) => serverLog(`[spawn] ${request.callerWorkspaceId.slice(0, 8)}... spawned workspace ${created.workspaceId.slice(0, 8)}... in ${projectSlug}`),
     (err: unknown) => serverLog(`[spawn] workspace create for ${request.callerWorkspaceId.slice(0, 8)}... failed: ${String(err)}`),

@@ -84,7 +84,7 @@ import {
   setWorkspaceMamaTokenHash,
   setWorkspaceTitle,
 } from '#db'
-import { reportAgentLaunchFailure } from './provisioning'
+import { reportAgentLaunchFailure, throwIfProvisionStopped } from './provisioning'
 import { CODEX_CONTAINER_HOME, codexHomeMounts } from './codex-home'
 import {
   prepareModuleDirs,
@@ -388,6 +388,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
       }),
     }
   })
+  throwIfProvisionStopped(workspaceId)
   emit(`Starting ${TOOL_LABELS[tool]}...`, options)
   await runtime.exec(jobName, buildWindowsExec(initWindows, tool, agentCmds, paths))
 
@@ -752,6 +753,7 @@ export async function createWorkspace(
   // a containerless server's host need not be where the user is. Recorded so
   // a spare warmed in another zone is never claimed.
   const { timeZone } = await getTimeZone()
+  throwIfProvisionStopped(workspaceId)
   await applyWorkspaceEvent({
     type: 'workspace-created',
     projectSlug,
@@ -1278,6 +1280,7 @@ export async function createWorkspace(
     mergeEnvEntries(env, (name) => projectSets(name)
       ? `the project's environment variable ${name} conflicts with the value yaac sets for it; rename or remove it`
       : `environment variable ${name} is set to two different values`)
+    throwIfProvisionStopped(workspaceId)
     handle = await launchWithSetup({
       spec, projectSlug, workspaceId, tool, mode, launching, initWindows, permissionMode,
       piProvider: toolAuthByTool.pi?.piProvider,
