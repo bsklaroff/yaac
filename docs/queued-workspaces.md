@@ -102,7 +102,8 @@ attempt. The launched workspace uses that title.
 
 A launch goes through `startWorkspace`, the same path as the create route and
 `yaac-mama create`, with `rememberDefaults` and `claimSpare` off. It shows a
-normal provisioning row and delivers the prompt like any create.
+normal provisioning row, headed by the entry's title (or its generated one),
+and delivers the prompt like any create.
 
 - **Claim.** A compare-and-set on `launchWorkspaceId` before anything is
   provisioned. A double-clicked Run now, or a stop racing the reconcile step,

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { discardDraftWorkspace, draftGeneratedTitle, listDraftWorkspaces, saveDraftWorkspace } from '#domain/workspaces'
+import { claimDraft, discardDraftWorkspace, listDraftWorkspaces, saveDraftWorkspace } from '#domain/workspaces'
 import { setDraftWorkspaceTitle } from '#db'
 import { recordProject } from '#db/project-store'
 import { closeDb } from '#db/client'
@@ -50,16 +50,53 @@ describe('discardDraftWorkspace', () => {
   })
 })
 
-describe('draftGeneratedTitle', () => {
-  it('answers a draft\'s generated title only for the prompt it describes', async () => {
+describe('claimDraft', () => {
+  const ids = async (): Promise<string[]> => (await listDraftWorkspaces()).map((d) => d.id)
+
+  it('hides a draft while one request runs from it, deleting it on success and showing it again on failure', async () => {
     const { id } = await saveDraftWorkspace('proj', SETTINGS)
-    expect(await draftGeneratedTitle('proj', id, 'an idea')).toBeUndefined()
+    const failing = await claimDraft('proj', id)
+    expect(await ids()).toEqual([])
+    // A second tab, a retry or a double click is refused while it runs.
+    await expect(claimDraft('proj', id)).rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(failing.run(() => Promise.reject(new Error('no token')))).rejects.toThrow('no token')
+    expect(await ids()).toEqual([id])
+
+    // A request refused before it ran gives the draft back too.
+    ;(await claimDraft('proj', id)).release()
+    expect(await ids()).toEqual([id])
+
+    let finish!: (v: string) => void
+    const running = (await claimDraft('proj', id)).run(() => new Promise<string>((resolve) => { finish = resolve }))
+    expect(await ids()).toEqual([])
+    finish('created')
+    expect(await running).toBe('created')
+    expect(await ids()).toEqual([])
+    // Once used, the draft is gone, so a late duplicate is refused as well.
+    await expect(claimDraft('proj', id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await expect(claimDraft('proj', 'gone')).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+
+  it('refuses a draft of another project, and claims nothing without an id', async () => {
+    const { id } = await saveDraftWorkspace('proj', SETTINGS)
+    await expect(claimDraft('other', id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    const none = await claimDraft('proj', undefined)
+    expect(none.generatedTitle('an idea')).toBeUndefined()
+    expect(await none.run(() => Promise.resolve(1))).toBe(1)
+    expect(await ids()).toEqual([id])
+  })
+
+  it('answers the draft\'s generated title only for the prompt it describes', async () => {
+    const { id } = await saveDraftWorkspace('proj', SETTINGS)
+    const untitled = await claimDraft('proj', id)
+    expect(untitled.generatedTitle('an idea')).toBeUndefined()
+    untitled.release()
     await setDraftWorkspaceTitle(id, 'an idea', 'An idea')
-    expect(await draftGeneratedTitle('proj', id, 'an idea')).toBe('An idea')
-    expect(await draftGeneratedTitle('proj', id, 'an edited idea')).toBeUndefined()
-    expect(await draftGeneratedTitle('proj', id, undefined)).toBeUndefined()
-    expect(await draftGeneratedTitle('other', id, 'an idea')).toBeUndefined()
-    expect(await draftGeneratedTitle('proj', undefined, 'an idea')).toBeUndefined()
+    const titled = await claimDraft('proj', id)
+    expect(titled.generatedTitle('an idea')).toBe('An idea')
+    expect(titled.generatedTitle('an edited idea')).toBeUndefined()
+    expect(titled.generatedTitle(undefined)).toBeUndefined()
+    titled.release()
   })
 })
 

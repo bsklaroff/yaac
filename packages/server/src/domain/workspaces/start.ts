@@ -63,6 +63,7 @@ export async function startWorkspace(
     tool,
     kind: 'create',
     ...(groupId !== undefined ? { groupId } : {}),
+    ...(title !== undefined ? { title } : {}),
     ...(setup.model !== undefined ? { model: setup.model } : {}),
     ...(modelName !== undefined ? { modelName } : {}),
     ...(request.branch !== undefined ? { branch: request.branch } : {}),

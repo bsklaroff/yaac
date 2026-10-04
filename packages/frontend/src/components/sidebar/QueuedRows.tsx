@@ -8,6 +8,7 @@ import { agentLabel } from '#lib/agentLabel'
 import { api } from '#lib/api'
 import { queuedTitle, clip } from '#lib/queued'
 import { useUiStore } from '#lib/store'
+import { useCreateWorkspace } from '#lib/useCreateDefaults'
 import { relativeAge } from '#lib/time'
 import type { DraftWorkspaceEntry, QueuedWorkspaceEntry } from '@yaac/shared/types'
 
@@ -198,12 +199,24 @@ export function DraftsSection({ drafts }: { drafts: DraftWorkspaceEntry[] }): JS
 }
 
 /** A saved draft: clicking it reopens the create dialog; its menu can also
- *  discard it. Not selectable. */
+ *  create from it right away, ignoring its Start, or discard it. Not
+ *  selectable. */
 function DraftWorkspaceRow({ draft }: { draft: DraftWorkspaceEntry }): JSX.Element {
   const openCreateWorkspace = useUiStore((s) => s.openCreateWorkspace)
+  const createWorkspace = useCreateWorkspace()
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const name = queuedTitle(draft)
   const open = (): void => openCreateWorkspace({ projectSlug: draft.projectSlug, draftId: draft.id, focus: 'prompt' })
+  const run = (): void => createWorkspace(draft.projectSlug, draft.tool, {
+    model: draft.model ?? '',
+    permissionMode: draft.permissionMode,
+    mode: draft.mode,
+    prompt: draft.prompt,
+    ...(draft.title !== undefined ? { title: draft.title } : {}),
+    ...(draft.generatedTitle !== undefined ? { shownTitle: draft.generatedTitle } : {}),
+    ...(draft.groupId !== undefined ? { groupId: draft.groupId } : {}),
+    draftId: draft.id,
+  }, draft.branch)
 
   return (
     <div className="group relative mx-2">
@@ -227,6 +240,7 @@ function DraftWorkspaceRow({ draft }: { draft: DraftWorkspaceEntry }): JSX.Eleme
       <RowMenu
         label="Draft actions"
         items={[
+          { label: 'Run now', onSelect: run },
           { label: 'Open…', onSelect: open },
           'separator',
           { label: 'Discard…', onSelect: () => setConfirmDiscard(true) },
