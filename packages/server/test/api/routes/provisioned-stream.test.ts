@@ -56,7 +56,7 @@ describe('streamProvisioned', () => {
     await request('sid-1', (onProgress) => {
       onProgress('Creating job...')
       messageDuringRun = listProvisioning().find((p) => p.workspaceId === 'sid-1')?.message
-      return Promise.resolve({ ok: true })
+      return Promise.resolve({ workspaceId: 'sid-1' })
     })
     expect(messageDuringRun).toBe('Creating job...')
     expect(listProvisioning()).toEqual([])

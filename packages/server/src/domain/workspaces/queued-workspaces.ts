@@ -12,7 +12,13 @@
 import crypto from 'node:crypto'
 import { resolveCreate } from './create'
 import { resolveGroup } from './groups'
-import { inFlightCreate, listProvisioning, removeProvisioning, runProvisioned } from './provisioning'
+import {
+  inFlightCreate,
+  listProvisioning,
+  ProvisionStoppedError,
+  removeProvisioning,
+  runProvisioned,
+} from './provisioning'
 import { resolveWorkspace } from './resolve'
 import { startWorkspace } from './start'
 import { agentPermissionMode } from './spawn-policy'
@@ -283,8 +289,11 @@ async function launch(row: QueuedWorkspaceRow): Promise<string | undefined> {
       }, onProgress))
       await finishQueuedLaunch(row.id, workspaceId)
     } catch (err) {
-      // Show the error on the queued row only, not as a provisioning row.
-      await failQueuedLaunch(row.id, workspaceId, err instanceof Error ? err.message : String(err))
+      // Show the error on the queued row only, not as a provisioning row. A
+      // stop is no error: the entry just goes back to waiting.
+      const error = err instanceof ProvisionStoppedError ? null
+        : err instanceof Error ? err.message : String(err)
+      await failQueuedLaunch(row.id, workspaceId, error)
         .catch((e: unknown) => serverLog(`[queue] recording a failed launch failed: ${String(e)}`))
       removeProvisioning(workspaceId)
     } finally {

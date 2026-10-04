@@ -54,3 +54,14 @@ export function stopWorkspaceOptimistic(workspace: WorkspaceListEntry, rowIds: s
     s.removeOptimisticStopped(id)
   })
 }
+
+/**
+ * Stop a workspace still being created or restarted. Nothing is lost (a
+ * create's prompt is kept as a draft, a restart stays stopped), so there is
+ * no confirm; the row reads "Stopping…" until the server has rolled it back.
+ */
+export function stopProvisioning(workspaceId: string): void {
+  const state = useUiStore.getState()
+  if (state.selectedWorkspaceId === workspaceId) state.selectWorkspace(null)
+  void stopWorkspace(workspaceId).catch((e: unknown) => console.error('stop failed', e))
+}

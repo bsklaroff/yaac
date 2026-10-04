@@ -1104,6 +1104,8 @@ export interface ProvisioningWorkspaceEntry {
   /** The id of the prewarmed spare a create claimed. Once ready, the
    *  workspace lists under this id rather than the row's. */
   claimedId?: string
+  /** The user stopped it; the row goes once the create has rolled back. */
+  stopping?: boolean
   /** When provisioning started, 'YYYY-MM-DD HH:MM:SS' (UTC). */
   createdAt: string
 }
