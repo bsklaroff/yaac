@@ -218,8 +218,10 @@ pi's default for the same provider if opencode lists it, else the provider's
 newest). A remembered `provider/model` whose provider the stored credential
 no longer names is dropped.
 
-An omitted agent mode is `tui`, because the CLI can only show a terminal. The
-webapp sends the remembered mode itself. `resolveToolCreateDefaults` in
+An omitted agent mode is the remembered one, else `acp` (`DEFAULT_AGENT_MODE`),
+for the CLI as for the webapp. A `yaac-mama create` naming none takes its
+caller's mode, as a queued entry takes its parent's, whatever tool either
+names; a restart keeps the workspace's own. `resolveToolCreateDefaults` in
 `@yaac/shared/types` is the one function the form and server both use for
 "what would an untouched create run", so the form always shows what will
 launch.

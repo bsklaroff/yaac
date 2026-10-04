@@ -315,12 +315,15 @@ async function createWorkspace(...extra: string[]): Promise<string> {
   return createWorkspaceWith('claude', ...extra)
 }
 
-/** `createWorkspace` for a given tool. */
+/** `createWorkspace` for a given tool, in `tui` unless `extra` names a mode. */
 async function createWorkspaceWith(tool: string, ...extra: string[]): Promise<string> {
+  return (await createWorkspaceFrom('--tool', tool, '--mode', 'tui', ...extra)).workspaceId
+}
+
+/** Run `yaac workspace create` with exactly `args`; the new id and stdout. */
+async function createWorkspaceFrom(...args: string[]): Promise<{ workspaceId: string; stdout: string }> {
   const before = new Set((await listWorkspaces()).map((w) => w.workspaceId))
-  const { stdout, stderr, exitCode } = await runYaac(
-    cliEnv(), 'workspace', 'create', SLUG, '--tool', tool, ...extra,
-  )
+  const { stdout, stderr, exitCode } = await runYaac(cliEnv(), 'workspace', 'create', SLUG, ...args)
   if (exitCode !== 0) {
     throw new Error(`create failed (exit ${String(exitCode)})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
   }
@@ -332,7 +335,7 @@ async function createWorkspaceWith(tool: string, ...extra: string[]): Promise<st
       + `listed: ${JSON.stringify(after)}`,
     )
   }
-  return fresh.workspaceId
+  return { workspaceId: fresh.workspaceId, stdout }
 }
 
 /** The zone the CLI reports at create, unlike the server's own `TZ`. */
@@ -1238,7 +1241,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        project: SLUG, tool: 'claude', prompt: 'a founding ask', title: 'Dialog title', group: 'dialog-group',
+        project: SLUG, tool: 'claude', mode: 'tui', prompt: 'a founding ask', title: 'Dialog title',
+        group: 'dialog-group',
       }),
     })
     expect(res.status).toBe(200)
@@ -1505,6 +1509,8 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     launch: string[]
     /** The model the row should show: the handshake's, unless changed after. */
     model: string | undefined
+    /** Created with no `--mode`, so it is chat only by default. */
+    bare?: true
   }> = [
     {
       // The adapter takes no flags, so the model goes in its environment.
@@ -1540,16 +1546,23 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     {
       // pi takes no model at launch; the provider default is sent as the
       // `model` config option after the handshake, and the row shows it.
+      // Nothing in this file creates pi otherwise, so no mode is remembered
+      // for it and a create naming none is chat.
       tool: 'pi',
       posture: 'bypass',
       launch: ['-- pi-acp'],
       model: piProviderInfo(PI_DEFAULT_PROVIDER).defaultModel,
+      bare: true,
     },
   ]
 
   it.each(CASES)('supervises $tool\'s adapter under acpd and handshakes a conversation',
-    async ({ tool, posture, modeId, launch, model }) => {
-      const id = await createWorkspaceWith(tool, '--mode', 'acp', '--permission-mode', posture)
+    async ({ tool, posture, modeId, launch, model, bare }) => {
+      const { workspaceId: id, stdout } = await createWorkspaceFrom(
+        '--tool', tool, ...(bare ? [] : ['--mode', 'acp']), '--permission-mode', posture,
+      )
+      // The CLI cannot show a chat, so it points at the web app instead.
+      expect(stdout).toContain(`Workspace ${id} is running in ACP mode — open it in the web app`)
 
       // No pod events exist here, so the create itself must register the
       // conversation. Checked right after create without polling: create
@@ -1887,7 +1900,7 @@ describe.skipIf(!CAN_RUN)('an agent that dies the moment it launches', () => {
       // The fake codex exits 127 with `--model sick`, so tmux closes the
       // window, though `respawn-window` reports success.
       const { exitCode } = await runYaac(
-        serverEnv, 'workspace', 'create', SLUG, '--tool', 'codex', '--model', 'sick',
+        serverEnv, 'workspace', 'create', SLUG, '--tool', 'codex', '--mode', 'tui', '--model', 'sick',
       )
       // Create succeeds: the launch check runs afterwards, so it never
       // slows a create down.

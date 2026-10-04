@@ -18,17 +18,17 @@ import {
 } from './prewarm'
 import { deleteSpareWorkspaceRow, getTimeZone, getWorkspaceRow, listProjectRows } from '#db'
 import { serverLog } from '#log'
+import { DEFAULT_AGENT_MODE } from '@yaac/shared/types'
 import { env } from '@yaac/shared/env'
 import type { RuntimeHandle } from '#drivers/contract'
 
 /**
  * Spawn a spare under `workspaceId` with what the create form would submit
- * by default (including the remembered agent mode, since the webapp claims
- * spares), then drop it from `inFlight`.
+ * by default, then drop it from `inFlight`.
  */
 async function spawnSpare(projectSlug: string, workspaceId: string): Promise<void> {
   try {
-    const setup = await resolveCreate(projectSlug, {}, { modeFromMemory: true })
+    const setup = await resolveCreate(projectSlug, {})
     await createWorkspace(projectSlug, { ...setup, prewarm: true, workspaceId })
   } catch (err) {
     serverLog(`[prewarm] spawn for ${projectSlug} failed: ${String(err)}`)
@@ -93,7 +93,7 @@ async function staleSpares(pods: RuntimeHandle[]): Promise<Set<string>> {
   const projects = await listProjectRows()
   const timeZone = (await getTimeZone()).timeZone ?? undefined
   const wanted = new Map(projects.map((p) =>
-    [p.slug, p.createDefaults[p.lastTool ?? 'claude']?.mode ?? 'tui']))
+    [p.slug, p.createDefaults[p.lastTool ?? 'claude']?.mode ?? DEFAULT_AGENT_MODE]))
   const stale = new Set<string>()
   await Promise.all(spares.map(async (p) => {
     const row = await getWorkspaceRow(p.projectSlug, p.workspaceId).catch((err: unknown) => {

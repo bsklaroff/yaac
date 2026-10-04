@@ -16,7 +16,7 @@ import {
 } from '#db'
 import { ServerError } from '@yaac/shared/errors'
 import type { WorkspaceCreateResult } from './create'
-import type { AgentTool } from '@yaac/shared/types'
+import { DEFAULT_AGENT_MODE, type AgentTool } from '@yaac/shared/types'
 
 export interface RestartResolution {
   projectSlug: string
@@ -115,14 +115,15 @@ export async function restartWorkspace(
 
     // Relaunch in the recorded permission mode (e.g. `plan` must not come
     // back as `bypass`), and in the first conversation's agent mode (one per
-    // workspace; `tui` if none was recorded).
+    // workspace), else the mode the workspace launched in. An `acp` launch
+    // whose handshake failed records no conversation.
     const recorded = await findWorkspaceRow(workspaceId).catch(() => undefined)
 
     const result = await createWorkspace(projectSlug, {
       resume: true,
       workspaceId,
       tool,
-      mode: active[0]?.mode ?? 'tui',
+      mode: active[0]?.mode ?? recorded?.mode ?? DEFAULT_AGENT_MODE,
       resumeAgentSessions: active,
       ...(recorded !== undefined ? { permissionMode: recorded.permissionMode } : {}),
       onProgress,

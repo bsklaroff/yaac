@@ -653,15 +653,18 @@ describe('write routes', () => {
         },
       })
 
-      // A bare create reuses the last agent and its settings, except the
-      // mode, which only the webapp sends.
+      // A bare create reuses the agent's remembered settings, mode included;
+      // with no mode remembered, it is chat.
       await create({ tool: 'claude' })
       expect(mockCreateWorkspace.mock.calls.at(-1)?.[1]).toMatchObject({
-        tool: 'claude', model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'tui',
+        tool: 'claude', model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp',
       })
+      await create({ tool: 'pi' })
+      expect(mockCreateWorkspace.mock.calls.at(-1)?.[1]).toMatchObject({ tool: 'pi', mode: 'acp' })
       // ...and records only the agent.
       expect((await getProjectRow('demo'))?.createDefaults.claude)
         .toEqual({ model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp' })
+      expect((await getProjectRow('demo'))?.createDefaults.pi).toEqual({ permissionMode: 'bypass' })
     })
 
     it('names the launch model on the provisioning row', async () => {

@@ -271,6 +271,7 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
     callerProjectSlug: caller.projectSlug,
     ...(caller.tool !== undefined ? { callerTool: caller.tool } : {}),
     callerPermissionMode: callerRow.permissionMode,
+    ...(callerRow.mode !== undefined ? { callerMode: callerRow.mode } : {}),
     prompt: request.body,
     ...settings.settings,
   })

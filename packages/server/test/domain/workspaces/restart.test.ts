@@ -56,7 +56,7 @@ function installDriver(overrides: Partial<WorkspaceDriver> = {}): void {
 
 /** A workspace created and then stopped, with its unit gone. */
 async function stoppedWorkspace(workspaceId: string): Promise<void> {
-  await createWorkspace('demo', { workspaceId })
+  await createWorkspace('demo', { mode: 'tui', workspaceId })
   await applyWorkspaceEvent({ type: 'workspace-stopped', projectSlug: 'demo', workspaceId })
   calls = []
 }
@@ -121,7 +121,7 @@ describe('restartWorkspace', () => {
   })
 
   it('relaunches a stopped workspace with no unit to tear down, in its recorded posture', async () => {
-    await createWorkspace('demo', { workspaceId: 'wt-2', permissionMode: 'plan' })
+    await createWorkspace('demo', { mode: 'tui', workspaceId: 'wt-2', permissionMode: 'plan' })
     await applyWorkspaceEvent({ type: 'workspace-stopped', projectSlug: 'demo', workspaceId: 'wt-2' })
     calls = []
 
@@ -202,7 +202,7 @@ describe('resolveRestartTarget', () => {
 
   it('answers a stopped workspace from its row: the first conversation\'s tool, and its group', async () => {
     // opencode leaves no transcript to read the tool back from.
-    await createWorkspace('demo', { workspaceId: 'oc-1', tool: 'opencode' })
+    await createWorkspace('demo', { mode: 'tui', workspaceId: 'oc-1', tool: 'opencode' })
     const group = await createWorkspaceGroup('demo', 'Reviews', 'oc-1')
     expect(await resolveRestartTarget('oc-1')).toEqual({
       projectSlug: 'demo', workspaceId: 'oc-1', tool: 'opencode', jobName: null, groupId: group.groupId,
