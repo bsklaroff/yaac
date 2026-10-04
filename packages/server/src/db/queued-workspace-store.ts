@@ -284,13 +284,13 @@ export async function finishQueuedLaunch(id: string, workspaceId: string): Promi
 }
 
 /**
- * The launch under `workspaceId` failed. The entry returns to the queue,
- * unreleased and with the error, and the workspace's unreleased children
+ * The launch under `workspaceId` failed, or was stopped (no error). The
+ * entry returns to the queue, unreleased and with the error, and the workspace's unreleased children
  * (including any queued during the launch) move back under it. Already
  * released children stay put. A no-op unless the entry is still claimed by
  * this launch.
  */
-export async function failQueuedLaunch(id: string, workspaceId: string, error: string): Promise<void> {
+export async function failQueuedLaunch(id: string, workspaceId: string, error: string | null): Promise<void> {
   const db = await getDb()
   await db.transaction(async (tx) => {
     const [row] = await tx.update(queuedWorkspaces)

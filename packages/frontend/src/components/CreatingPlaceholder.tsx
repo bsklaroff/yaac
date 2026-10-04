@@ -3,10 +3,11 @@ import { LoadingIcon } from '#lib/icons'
 import { agentLabel } from '#lib/agentLabel'
 import { dismissProvisioning } from '#lib/createWorkspace'
 import { useUiStore } from '#lib/store'
+import { stopProvisioning } from '#lib/stopWorkspaceFlow'
 import type { ProvisioningWorkspaceEntry } from '@yaac/shared/types'
 
 /** Main-pane placeholder while the selected workspace provisions. Shows
- *  progress, or the error with a Dismiss button. */
+ *  progress with a Stop button, or the error with a Dismiss button. */
 export function CreatingPlaceholder({ creating }: { creating: ProvisioningWorkspaceEntry }): JSX.Element {
   const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
   const selectWorkspace = useUiStore((s) => s.selectWorkspace)
@@ -41,6 +42,15 @@ export function CreatingPlaceholder({ creating }: { creating: ProvisioningWorksp
             in {creating.projectSlug}
           </div>
           <p className="text-xs text-text-faint">{creating.message}</p>
+          {!creating.stopping && (
+            <button
+              onClick={() => stopProvisioning(creating.workspaceId)}
+              className="mt-1 rounded-md bg-surface-2 px-3 py-1.5 text-xs text-text-dim transition
+                hover:bg-surface-3 hover:text-text"
+            >
+              Stop
+            </button>
+          )}
         </>
       )}
     </div>

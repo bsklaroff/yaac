@@ -17,7 +17,7 @@ import { toErrorBody } from '#http'
 export function streamProvisioned(
   c: Context,
   workspaceId: string,
-  run: (onProgress: (message: string) => void) => Promise<unknown>,
+  run: (onProgress: (message: string) => void) => Promise<{ workspaceId: string }>,
 ): Response {
   c.header('Content-Type', 'application/x-ndjson')
   return stream(c, async (s) => {
