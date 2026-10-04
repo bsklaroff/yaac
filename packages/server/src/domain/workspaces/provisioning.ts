@@ -23,6 +23,7 @@ interface ProvisioningEntry {
   error?: string
   /** Sidebar group, so the row shows in its section while provisioning. */
   groupId?: string
+  title?: string
   /** The launch model and its display name. */
   model?: string
   modelName?: string
@@ -51,6 +52,7 @@ interface ProvisioningInput {
   kind: ProvisioningKind
   message?: string
   groupId?: string
+  title?: string
   model?: string
   modelName?: string
   branch?: string
@@ -73,6 +75,7 @@ export function registerProvisioning(input: ProvisioningInput): void {
     kind: input.kind,
     message: input.message ?? 'Starting…',
     ...(input.groupId !== undefined ? { groupId: input.groupId } : {}),
+    ...(input.title !== undefined ? { title: input.title } : {}),
     ...(input.model !== undefined ? { model: input.model } : {}),
     ...(input.modelName !== undefined ? { modelName: input.modelName } : {}),
     ...(input.branch !== undefined ? { branch: input.branch } : {}),
@@ -84,7 +87,7 @@ export function registerProvisioning(input: ProvisioningInput): void {
 }
 
 /**
- * Register, or update an existing entry's tool, group, model and branch
+ * Register, or update an existing entry's tool, group, title, model and branch
  * without changing its order, message or error (for callers the route may
  * already have registered).
  */
@@ -97,6 +100,7 @@ export function ensureProvisioning(input: ProvisioningInput): void {
   e.tool = input.tool
   delete e.reserved
   if (input.groupId !== undefined) e.groupId = input.groupId
+  if (input.title !== undefined) e.title = input.title
   if (input.model !== undefined) e.model = input.model
   if (input.modelName !== undefined) e.modelName = input.modelName
   if (input.branch !== undefined) e.branch = input.branch
@@ -254,6 +258,7 @@ export function listProvisioning(): ProvisioningWorkspaceEntry[] {
       message: e.message,
       ...(e.error !== undefined ? { error: e.error } : {}),
       ...(e.groupId !== undefined ? { groupId: e.groupId } : {}),
+      ...(e.title !== undefined ? { title: e.title } : {}),
       ...(e.model !== undefined ? { model: e.model } : {}),
       ...(e.modelName !== undefined ? { modelName: e.modelName } : {}),
       ...(e.claimedId !== undefined ? { claimedId: e.claimedId } : {}),

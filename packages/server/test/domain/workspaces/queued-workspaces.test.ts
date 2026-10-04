@@ -342,12 +342,20 @@ describe('runQueuedWorkspace', () => {
     // Its chain now waits on the new workspace; the parent keeps running.
     expect((await getQueuedWorkspaceRow(child.id))?.parentWorkspaceId).toBe(workspaceId)
 
-    // With no user title, an entry launches with its generated title.
+    // With no user title, an entry launches with its generated title, which
+    // also heads its provisioning row.
     await setQueuedWorkspaceTitle(child.id, 'after', 'Generated')
     expect((await listQueuedWorkspaces()).find((e) => e.id === child.id)?.generatedTitle).toBe('Generated')
+    const create = mockCreate.getMockImplementation()!
+    let rows: unknown[] = []
+    mockCreate.mockImplementationOnce((slug, opts) => {
+      rows = listProvisioning()
+      return create(slug, opts)
+    })
     await runQueuedWorkspace(child.id)
     await launched(2)
     expect(mockCreate.mock.calls[1][1]).toMatchObject({ initialPrompt: 'after', title: 'Generated' })
+    expect(rows).toEqual([expect.objectContaining({ title: 'Generated' })])
   })
 
   it('keeps the prompt when the launch fails, and shows the error once, on the entry', async () => {

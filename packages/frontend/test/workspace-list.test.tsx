@@ -14,18 +14,20 @@ import type {
 } from '@yaac/shared/types'
 
 vi.mock('#lib/createWorkspace', () => ({
+  createWorkspace: vi.fn(() => Promise.resolve({ workspaceId: 'w-new' })),
   dismissProvisioning: vi.fn(),
   restartWorkspace: vi.fn(),
   renameWorkspace: vi.fn(() => Promise.resolve()),
 }))
 vi.mock('#lib/stopWorkspaceFlow', () => ({ stopWorkspaceOptimistic: vi.fn() }))
-vi.mock('#lib/useProvisionWorkspace', () => ({ useProvisionWorkspace: () => vi.fn() }))
+const provision = vi.hoisted(() => vi.fn())
+vi.mock('#lib/useProvisionWorkspace', () => ({ useProvisionWorkspace: () => provision }))
 // The stop dialog lists what is queued, off the snapshot.
 const snapshot = vi.hoisted(() => vi.fn())
 vi.mock('#lib/useSnapshot', () => ({ useSnapshot: snapshot }))
 
 import { WorkspaceList } from '#components/WorkspaceList'
-import { renameWorkspace } from '#lib/createWorkspace'
+import { createWorkspace, renameWorkspace } from '#lib/createWorkspace'
 import { useUiStore } from '#lib/store'
 import { mockFetch, testQueryClient, type FetchMock } from './harness'
 
@@ -380,6 +382,7 @@ describe('WorkspaceList', () => {
       provisioning: [
         provisioning({ workspaceId: 'r', groupId: 'g1' }),
         provisioning({ workspaceId: 'loose', kind: 'create' }),
+        provisioning({ workspaceId: 'named', kind: 'create', title: 'Fix the parser' }),
         provisioning({ workspaceId: 'f', groupId: 'g1', error: 'boom' }),
       ],
     })
@@ -388,6 +391,9 @@ describe('WorkspaceList', () => {
     for (const row of screen.getAllByText('Restarting workspace')) expect(section.contains(row)).toBe(true)
     // The ungrouped provisioning row stays outside the group.
     expect(section.contains(screen.getByText('New workspace'))).toBe(false)
+    // A create given a title, or made from a titled draft or queued entry,
+    // is headed by it.
+    expect(screen.getByText('Fix the parser')).toBeTruthy()
     // Counted as active alongside the live row; a failed one is shown but has
     // nothing running.
     expect(screen.getByText('(2/3)')).toBeTruthy()
@@ -619,6 +625,22 @@ describe('WorkspaceList', () => {
       await pickAction('Discard…', 'Draft actions')
       fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
       await waitFor(() => expect(posted(DRAFT_DISCARD)).toEqual([{ id: 'd1' }]))
+    })
+
+    // Its Start is ignored, and the row is headed by the generated title
+    // until the server reports it.
+    it('runs a draft now from its menu', async () => {
+      renderList([], {
+        drafts: [draft('d1', { generatedTitle: 'Idea one', branch: 'dev', startAfter: 's1', groupId: 'g1' })],
+      })
+      await pickAction('Run now', 'Draft actions')
+      expect(provision).toHaveBeenCalledWith(
+        'proj', 'codex', 'create', expect.any(String), expect.any(Function), 'g1', { title: 'Idea one' })
+      const op = provision.mock.calls[0][4] as (id: string, onProgress: () => void) => Promise<unknown>
+      await op('w-new', () => {})
+      expect(createWorkspace).toHaveBeenCalledWith('proj', 'codex', expect.any(Function), 'w-new', {
+        branch: 'dev', permissionMode: 'manual', mode: 'tui', prompt: 'Idea d1\nmore detail', group: 'g1', draftId: 'd1',
+      })
     })
   })
 

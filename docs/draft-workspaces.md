@@ -43,13 +43,19 @@ restores the screen.
   or queue makes it; the draft keeps the group picked before the box opened.
 
 Creating or queueing from a draft deletes it. The request names the draft
-(`draftId`) and the server deletes it only after the workspace or queue entry
-exists, so a failed create keeps the draft.
+(`draftId`), which claims it (`claimDraft`): a second request naming a draft
+already claimed is refused with `CONFLICT`, and one naming a draft that is
+gone with `NOT_FOUND`, so two tabs or a retry cannot make two workspaces from
+one draft. While the request runs the snapshot leaves the draft out, and the
+server deletes it only after the workspace or queue entry exists, so a failed
+create shows the draft again. The claim is held in memory, so a server
+restart mid-create shows the draft again too.
 
 ## Titles
 
 A title typed in the dialog's heading is the draft's `title`, and whatever is
-created from the draft keeps it.
+created from the draft keeps it. The new workspace's provisioning row is
+headed by that title, or by the generated one below.
 
 Without one, the title sweep (`reconcileGeneratedTitles`) handles drafts as it
 does live workspaces. A prompt long enough to need summarizing gets one model
@@ -76,5 +82,6 @@ its generated title until the prompt is changed.
 - **Snapshot.** `draftWorkspaces`, for every project, oldest first.
 - **Webapp.** A collapsible **Drafts** section at the top of the sidebar,
   newest first, hidden when the project has none. Clicking a draft reopens
-  the dialog on it; its `…` menu can discard it.
+  the dialog on it. Its `…` menu can **Run now**, which creates from the draft
+  straight away with its saved settings (ignoring Start), or discard it.
 - Removing a project deletes its drafts.

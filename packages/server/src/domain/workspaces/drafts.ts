@@ -3,6 +3,8 @@
  * user chose to keep. Nothing runs from a draft; creating or queueing from
  * it discards it.
  */
+import { notifyWorkspaceListChanged } from '#notify'
+import { serverLog } from '#log'
 import {
   deleteDraftWorkspace,
   getProjectRow,
@@ -33,25 +35,69 @@ export async function saveDraftWorkspace(
   return toEntry(row)
 }
 
+/** Drafts a create or queue is being made from, left out of the snapshot
+ *  until it succeeds (deleting the draft) or fails (showing it again). */
+const launching = new Set<string>()
+
+/** A create or queue's hold on the draft it is made from. */
+export interface DraftClaim {
+  /** The draft's generated title, if its prompt is still `prompt`. Reused
+   *  by what is made from it instead of titling again. */
+  generatedTitle: (prompt: string | undefined) => string | undefined
+  /** Run the create or queue, then delete the draft. A failure keeps it.
+   *  Either way the claim is released. */
+  run: <T>(fn: () => Promise<T>) => Promise<T>
+  /** Release without running, for a request refused before it starts. */
+  release: () => void
+}
+
+const NO_DRAFT: DraftClaim = { generatedTitle: () => undefined, run: (fn) => fn(), release: () => {} }
+
+/**
+ * Claim draft `id` (none if undefined) for one create or queue. A draft
+ * already claimed is a `CONFLICT` and one that is gone is `NOT_FOUND`, so
+ * a second tab, a retry or a double click cannot make two workspaces from
+ * one draft.
+ */
+export async function claimDraft(projectSlug: string, id: string | undefined): Promise<DraftClaim> {
+  if (id === undefined) return NO_DRAFT
+  if (launching.has(id)) throw new ServerError('CONFLICT', `draft workspace ${id} is already being created from`)
+  launching.add(id)
+  const draft = (await listDraftWorkspaceRows()).find((d) => d.id === id && d.projectSlug === projectSlug)
+  if (!draft) {
+    launching.delete(id)
+    throw new ServerError('NOT_FOUND', `project ${projectSlug} has no draft workspace ${id}`)
+  }
+  notifyWorkspaceListChanged()
+  const release = (): void => {
+    if (launching.delete(id)) notifyWorkspaceListChanged()
+  }
+  return {
+    generatedTitle: (prompt) => draft.prompt === prompt ? draft.generatedTitle : undefined,
+    release,
+    run: async (fn) => {
+      try {
+        const result = await fn()
+        // The workspace or entry exists, so a left-over draft is the lesser
+        // problem than reporting the request failed.
+        await deleteDraftWorkspace(id).catch((err: unknown) =>
+          serverLog(`[drafts] deleting draft ${id.slice(0, 8)}... once used failed: ${String(err)}`))
+        return result
+      } finally {
+        release()
+      }
+    },
+  }
+}
+
 export async function discardDraftWorkspace(id: string): Promise<void> {
   if (!await deleteDraftWorkspace(id)) throw new ServerError('NOT_FOUND', `draft workspace ${id} not found`)
 }
 
-/** Draft `id`'s generated title, if the draft's prompt is still `prompt`.
- *  Reused by a workspace created from the draft instead of titling again. */
-export async function draftGeneratedTitle(
-  projectSlug: string,
-  id: string | undefined,
-  prompt: string | undefined,
-): Promise<string | undefined> {
-  if (id === undefined || prompt === undefined) return undefined
-  const draft = (await listDraftWorkspaceRows()).find((d) => d.id === id && d.projectSlug === projectSlug)
-  return draft?.prompt === prompt ? draft.generatedTitle : undefined
-}
-
-/** The snapshot feed: every project's drafts, oldest first. */
+/** The snapshot feed: every project's drafts not being launched, oldest
+ *  first. */
 export async function listDraftWorkspaces(): Promise<DraftWorkspaceEntry[]> {
-  return (await listDraftWorkspaceRows()).map(toEntry)
+  return (await listDraftWorkspaceRows()).filter((d) => !launching.has(d.id)).map(toEntry)
 }
 
 function toEntry({ createdAt, updatedAt, ...rest }: DraftWorkspaceRow): DraftWorkspaceEntry {
