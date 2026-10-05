@@ -122,7 +122,7 @@ describe('listWorkspacePods', () => {
     }
     const foreign = pod('other-install', 'demo')
     foreign.metadata.labels[LABEL_DATA_DIR_HASH] = 'someone-else'
-    fakeCluster.seed(pod('a', 'demo'), pod('b', 'proj-a'), foreign as never)
+    fakeCluster.seed(pod('a', 'demo'), pod('b', 'proj-a'), foreign)
     expect((await listWorkspacePods()).map((p) => p.podName).sort()).toEqual(['a', 'b'])
     expect((await listWorkspacePods('proj-a')).map((p) => p.podName)).toEqual(['b'])
   })

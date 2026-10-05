@@ -160,7 +160,7 @@ export function handleMitm(
   const { ca, objects } = ctx
   const leaf = leafCert(ca, hostname)
 
-  const tlsSocket = new tls.TLSSocket(clientSocket as net.Socket, {
+  const tlsSocket = new tls.TLSSocket(clientSocket, {
     isServer: true,
     key: leaf.key,
     cert: leaf.cert + ca.pem,

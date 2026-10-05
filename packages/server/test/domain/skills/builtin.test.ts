@@ -214,7 +214,7 @@ describe('reconcileSharedSkillRoots', () => {
 
     const realRename = fs.rename.bind(fs)
     const spy = vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
-      await fs.rm(from as string, { force: true }) // the other create's prune
+      await fs.rm(from, { force: true }) // the other create's prune
       return realRename(from, to)
     })
     try {

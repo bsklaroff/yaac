@@ -4,8 +4,8 @@ import type { KubernetesObject } from '@kubernetes/client-node'
 import { inClusterClient, mapPod, mapService, watchPods, watchServices } from 'yaac-netd/k8s-watch'
 
 /**
- * Fake client-node informer, driven by the test. `makeInformer` is the
- * API boundary, so it is the only thing mocked.
+ * Fake client-node informer, driven by the test. `ListWatch` is the API
+ * boundary, so it is the only thing mocked.
  */
 class FakeInformer {
   readonly handlers = new Map<string, Array<(arg?: unknown) => void>>()
@@ -40,7 +40,7 @@ class FakeInformer {
 const informers = vi.hoisted(() => [] as FakeInformer[])
 vi.mock('@kubernetes/client-node', async (importOriginal) => ({
   ...(await importOriginal<typeof clientNode>()),
-  makeInformer: (_kc: unknown, path: string, listFn: () => Promise<unknown>, labelSelector?: string) => {
+  ListWatch: function (path: string, _watch: unknown, listFn: () => Promise<unknown>, _autoStart: boolean, labelSelector?: string) {
     const informer = new FakeInformer(path, listFn, labelSelector)
     informers.push(informer)
     return informer

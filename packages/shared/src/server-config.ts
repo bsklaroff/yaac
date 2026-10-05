@@ -56,7 +56,7 @@ export type InstallRecord = Pick<ServerConfig, typeof INSTALL_KEYS[number]>
 function installFields(cfg: InstallRecord | null): InstallRecord {
   const out: Record<string, unknown> = {}
   for (const key of INSTALL_KEYS) if (cfg?.[key]) out[key] = cfg[key]
-  return out as InstallRecord
+  return out
 }
 
 /** CLIENT-LOCAL: read only by clients, never by the server. */

@@ -96,6 +96,8 @@ export default tseslint.config(
         { patterns: [RELATIVE_PARENT] },
       ],
       'no-restricted-syntax': ['error', 'ImportExpression'],
+      // A caught error is unknown; passing it on to reject() is as fine as rethrowing it.
+      '@typescript-eslint/prefer-promise-reject-errors': ['error', { allowThrowingUnknown: true }],
       '@stylistic/quotes': ['error', 'single', { avoidEscape: true, allowTemplateLiterals: 'avoidEscape' }],
       '@stylistic/semi': ['error', 'never'],
       '@stylistic/comma-dangle': ['error', 'always-multiline'],

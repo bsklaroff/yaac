@@ -54,8 +54,7 @@ const text = (body: string, init: ResponseInit = {}): Reply =>
 const httpStatus = (status: number): Reply =>
   () => Promise.resolve(new Response('', { status }))
 /** A fetch that rejects with `err` as is. fetch can reject with a non-Error
- *  (e.g. an AbortSignal reason), which the lint rule below forbids. */
-// eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+ *  (e.g. an AbortSignal reason). */
 const throws = (err: unknown): Reply => () => Promise.reject(err)
 
 function fakeUpstream(): {

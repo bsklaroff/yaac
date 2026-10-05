@@ -149,7 +149,7 @@ export function SettingsButton(
               >
                 <RadioGroup
                   value={themePref}
-                  onValueChange={(value) => setThemePref(value as ThemePref)}
+                  onValueChange={(value) => setThemePref(value)}
                   className="flex flex-col gap-1"
                 >
                   {THEMES.map((t) => (

@@ -19,8 +19,8 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "electron": "43.0.0",
-    "electron-builder": "26.15.3",
+    "electron": "44.4.5",
+    "electron-builder": "26.16.1",
     "tsup": "catalog:",
     "tsx": "catalog:"
   }

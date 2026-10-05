@@ -89,7 +89,7 @@ export async function saveWorkspaceFile(
     const body = await res.json().catch(() => null) as { error?: { code: never; message: string } } | null
     throw new ServerError(body?.error?.code ?? 'INTERNAL', body?.error?.message ?? `server returned ${res.status}`)
   }
-  return await res.json() as WorkspaceFileSaved
+  return await res.json()
 }
 
 export function createWorkspaceFolder(workspaceId: string, path: string): Promise<{ path: string }> {

@@ -135,7 +135,7 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
   const card = (key: string, group: Extract<Group, { kind: 'subagent' | 'task' }>): void => {
     const at = cardIndex.get(key)
     if (at !== undefined) {
-      groups[at] = { ...group, seq: groups[at].seq, ...(groups[at].turn ? { turn: true } : {}) } as Group
+      groups[at] = { ...group, seq: groups[at].seq, ...(groups[at].turn ? { turn: true } : {}) }
       return
     }
     cardIndex.set(key, groups.length)

@@ -49,7 +49,7 @@ current-context: test-context
 `
 
 function pod(status: V1Pod['status']): V1Pod {
-  return { status } as V1Pod
+  return { status }
 }
 
 const READY = pod({ phase: 'Running', containerStatuses: [{ ready: true } as never] })
@@ -104,7 +104,7 @@ describe('waitForJobPodReady', () => {
   it('lists and watches the Job\'s pod through the typed client when given no deps', async () => {
     listNamespacedPodMock.mockResolvedValueOnce({
       metadata: { resourceVersion: '77' }, items: [CREATING],
-    } as unknown as KubernetesListObject<V1Pod>)
+    })
     const abort = vi.fn()
     watchMock.mockImplementation((_p, _q, onEvent) => {
       onEvent('MODIFIED', READY)
@@ -129,7 +129,7 @@ describe('waitForJobPodReady', () => {
   it('retries a failed list inside the deadline instead of giving up', async () => {
     listNamespacedPodMock
       .mockRejectedValueOnce(new Error('apiserver restarting'))
-      .mockResolvedValue({ metadata: {}, items: [READY] } as unknown as KubernetesListObject<V1Pod>)
+      .mockResolvedValue({ metadata: {}, items: [READY] })
     await expect(waitForJobPodReady('job-a', 5_000)).resolves.toBeUndefined()
     expect(listNamespacedPodMock).toHaveBeenCalledTimes(2)
     expect(watchMock).not.toHaveBeenCalled()

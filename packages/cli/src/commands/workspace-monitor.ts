@@ -31,7 +31,7 @@ export async function workspaceMonitor(projectSlug?: string, options: WorkspaceM
         str = str.replaceAll('\n', '\x1B[K\n')
       }
       return origWrite(str, ...rest)
-    } as typeof origWrite
+    }
 
     try {
       const now = new Date().toLocaleTimeString()

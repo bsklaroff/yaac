@@ -18,7 +18,7 @@ import { acpConversation } from './acp-registry'
 import { tailAcpLog } from './acp-log'
 import { serverLog } from '#log'
 import { MAX_ATTACHMENT_BYTES, sniffImage } from '@yaac/shared/attachments'
-import type { AcpClientMessage, AcpEvent, AcpImage, AcpServerMessage, AcpTask } from '@yaac/shared/acp'
+import type { AcpClientMessage, AcpImage, AcpServerMessage, AcpTask } from '@yaac/shared/acp'
 
 /** The socket this bridge needs; same shape as the PTY bridge's, kept
  *  separate so the features stay decoupled. */
@@ -130,17 +130,17 @@ export function attachAcp(
           agentSessionId,
           busy: conversation.isBusy,
           queued: conversation.queuedPrompts,
-          events: events.map((event) => ({ ...event, seq: seq++ }) as AcpEvent),
+          events: events.map((event) => ({ ...event, seq: seq++ })),
         })
         // Standing notices from the handshake (e.g. the adapter running in a
         // looser mode than requested) predate any pane, so replay them after
         // every `hello`.
         for (const notice of conversation.standingNotices) {
-          send({ type: 'event', event: { ...notice, seq: seq++ } as AcpEvent })
+          send({ type: 'event', event: { ...notice, seq: seq++ } })
         }
         return
       }
-      for (const event of events) send({ type: 'event', event: { ...event, seq: seq++ } as AcpEvent })
+      for (const event of events) send({ type: 'event', event: { ...event, seq: seq++ } })
     },
   )
 
@@ -154,7 +154,7 @@ export function attachAcp(
       .then(() => {
         // The pane may have left during the flush.
         if (detached) return
-        send({ type: 'event', event: { ...event, seq: seq++ } as AcpEvent })
+        send({ type: 'event', event: { ...event, seq: seq++ } })
       }),
   )
   // Flushed like turn boundaries, so a message leaving the queue to start a

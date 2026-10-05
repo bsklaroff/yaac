@@ -10,6 +10,7 @@ import { WorkspaceTerminal } from '#components/WorkspaceTerminal'
  */
 beforeAll(() => {
   globalThis.ResizeObserver ??= class { observe(): void {} unobserve(): void {} disconnect(): void {} }
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- only checked for presence
   window.matchMedia ??= (() => ({
     matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
   })) as never

@@ -60,9 +60,9 @@ the same cluster.
 `informer-cache.ts` wraps one client-node informer in an `InformerCache<T>`,
 an in-memory map of mapped objects. `onChange` fires only when a mapped object
 changes, since most resourceVersion bumps touch fields the mapping drops.
-client-node's `makeInformer` handles the watch stream, resourceVersion
+client-node's informer (`ListWatch`) handles the watch stream, resourceVersion
 tracking and relisting after a 410 (Gone). The cache adds what the library
-leaves out (checked against client-node 1.4.0):
+leaves out (checked against client-node 2.0.0):
 
 - On any other error, including a failed list, the informer emits `error`
   and stops. The cache restarts it with exponential backoff from 1 s to
@@ -73,8 +73,13 @@ leaves out (checked against client-node 1.4.0):
 - The list path returns class instances with `Date` timestamps. The watch
   path returns raw JSON with ISO strings. Every `mapItem` schema accepts
   both (`z.union([z.string(), z.date()])`).
-- `makeInformer`'s label selector applies only to the watch. Each `listFn`
+- The informer's label selector applies only to the watch. Each `listFn`
   must apply the same selector itself.
+- The watch request times out every 30 s, and while no events arrive the
+  library waits a growing delay (up to 30 s) before reconnecting, which
+  would hold back the next event as long. The cache builds its informer
+  with a `delayFn` that reconnects at once; the watch resumes from the last
+  resourceVersion. The proxy's and netd's informers do the same.
 
 `healthy()` means the cache is seeded and its watch is connected. Only then
 may a caller treat "not in the cache" as "not in the cluster".
@@ -142,10 +147,10 @@ workspace too.
 
 ## Client version
 
-`@kubernetes/client-node` is pinned to `1.4.0` in the workspace catalog. It is
-generated from Kubernetes 1.34, while `k8s/kind-config.yaml` pins the node
+`@kubernetes/client-node` is pinned to `2.0.0` in the workspace catalog. It is
+generated from Kubernetes 1.36, while `k8s/kind-config.yaml` pins the node
 image to 1.37. That gap is safe: informers list and watch core/v1 and
 batch/v1, which have been stable for many releases, and object calls bypass
-the generated models (see above). When
-upgrading, prefer a stable release with the `undici` transport and newer
-generated models over the 2.0 release candidate.
+the generated models (see above). Its transport is undici, which reports a
+network failure as a `fetch failed` TypeError with the socket error on
+`cause`; `transientDelayMs` and `k8sErrorSummary` read it there.

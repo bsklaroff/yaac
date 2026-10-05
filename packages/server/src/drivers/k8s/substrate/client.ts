@@ -59,7 +59,10 @@ const MAX_ATTEMPTS = 5
  * dropped or refused connection (an apiserver restart), throttling (429,
  * honoring Retry-After), or an unavailable or etcd-hiccup answer. Replaying
  * any verb is safe: a replayed create or conditional patch gets a 409 and a
- * replayed delete a 404, which callers already handle.
+ * replayed delete a 404, which callers already handle. client-node's
+ * transport (undici) reports a network failure as a `fetch failed`
+ * TypeError whose cause carries the error code; a peer closing the socket
+ * mid-request is undici's own `UND_ERR_SOCKET`, not `ECONNRESET`.
  */
 function transientDelayMs(err: unknown, attempt: number): number | null {
   const backoff = Math.min(200 * 2 ** (attempt - 1), 3200)
@@ -72,8 +75,8 @@ function transientDelayMs(err: unknown, attempt: number): number | null {
     if (err.code === 503 || err.code === 504) return backoff
     return err.code === 500 && /etcdserver|timeout|unable to handle/i.test(message) ? backoff : null
   }
-  const code = (err as { code?: unknown } | undefined)?.code
-  return typeof code === 'string' && /^(ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE)$/.test(code) ? backoff : null
+  const code = (err as { cause?: { code?: unknown } } | undefined)?.cause?.code
+  return typeof code === 'string' && /^(ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|UND_ERR_SOCKET|UND_ERR_CONNECT_TIMEOUT)$/.test(code) ? backoff : null
 }
 
 /**

@@ -13,7 +13,7 @@ beforeAll(() => {
   globalThis.ResizeObserver ??= class {
     private readonly fire: () => void
     constructor(cb: ResizeObserverCallback) {
-      this.fire = () => cb([], this as unknown as ResizeObserver)
+      this.fire = () => cb([], this)
     }
     observe(): void { paneResized.add(this.fire) }
     unobserve(): void { paneResized.delete(this.fire) }

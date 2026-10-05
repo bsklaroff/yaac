@@ -16,8 +16,10 @@
 import {
   CoreV1Api,
   KubeConfig,
-  makeInformer,
+  ListWatch,
+  Watch,
   type Informer,
+  type KubernetesListObject,
   type KubernetesObject,
 } from '@kubernetes/client-node'
 /**
@@ -145,12 +147,31 @@ export function startPodWatch(index: PodWorkspaceIndex, client = inClusterClient
   const informer = makeInformer(client.kubeConfig, path, listFn, WORKSPACE_POD_SELECTOR)
 
   const feed = (type: string) => (obj: KubernetesObject): void => {
-    index.apply({ type, object: obj as WatchedPod })
+    index.apply({ type, object: obj })
   }
   informer.on('add', feed('ADDED'))
   informer.on('update', feed('MODIFIED'))
   informer.on('delete', feed('DELETED'))
   superviseInformer(informer, 'pod-watch')
+}
+
+/**
+ * A client-node informer that reconnects its watch at once. The watch
+ * request times out every 30s, and client-node's own informer waits a
+ * growing delay (up to 30s) before reconnecting while no events arrive,
+ * which would hold back a new workspace's objects as long. The watch
+ * resumes from the last resourceVersion, and a real failure is an `error`
+ * that superviseInformer restarts with backoff.
+ */
+export function makeInformer<T extends KubernetesObject>(
+  kubeConfig: KubeConfig,
+  path: string,
+  listFn: () => Promise<KubernetesListObject<T>>,
+  labelSelector?: string,
+): Informer<T> {
+  return new ListWatch(path, new Watch(kubeConfig), listFn, false, labelSelector, undefined, {
+    delayFn: () => Promise.resolve(),
+  })
 }
 
 /**
@@ -204,7 +225,7 @@ export async function fetchPodIpByWorkspaceId(
   })
   for (const pod of list.items) {
     const ip = pod.status?.podIP
-    if (ip && podWorkspaceId(pod as WatchedPod) === workspaceId) {
+    if (ip && podWorkspaceId(pod) === workspaceId) {
       index.set(ip, workspaceId)
       return ip
     }
@@ -228,7 +249,7 @@ export async function fetchWorkspaceByPodIp(
     fieldSelector: `status.podIP=${ip}`,
   })
   for (const pod of list.items) {
-    const sid = podWorkspaceId(pod as WatchedPod)
+    const sid = podWorkspaceId(pod)
     if (sid && pod.status?.podIP === ip) {
       index.set(ip, sid)
       return sid

@@ -1,5 +1,6 @@
 import {
-  makeInformer,
+  ListWatch,
+  Watch,
   type Informer,
   type KubernetesListObject,
   type KubernetesObject,
@@ -10,7 +11,7 @@ import { serverLog } from '#log'
 /**
  * Watch-fed cache of one resource kind, mapped to a yaac type. client-node's
  * informer handles the watch stream, resourceVersion and relist on 410.
- * This class covers what it does not (checked against client-node 1.4.0):
+ * This class covers what it does not (checked against client-node 2.0.0):
  *
  * - On any other error, including a failed list, the informer emits
  *   `error` and stops. We restart it with backoff.
@@ -18,6 +19,11 @@ import { serverLog } from '#log'
  *   would leave a stale entry forever. A periodic relist bounds that.
  * - The list path yields class instances (Date timestamps) and the watch
  *   path raw JSON (string timestamps). `mapItem` must accept both.
+ * - Its watch request times out every 30s, and while no events arrive it
+ *   waits a growing delay (up to 30s) before reconnecting, which would
+ *   hold back the next event as long. We reconnect at once: the watch
+ *   resumes from the last resourceVersion, and a real failure is an
+ *   `error` we restart with our own backoff.
  */
 
 /** Informer surface the cache drives — lets tests inject a fake. */
@@ -56,7 +62,9 @@ function realMakeInformer(
   listFn: () => Promise<KubernetesListObject<KubernetesObject>>,
   labelSelector?: string,
 ): InformerLike {
-  return makeInformer(getKubeConfig(), path, listFn, labelSelector)
+  return new ListWatch(path, new Watch(getKubeConfig()), listFn, false, labelSelector, undefined, {
+    delayFn: () => Promise.resolve(),
+  })
 }
 
 export class InformerCache<T> {

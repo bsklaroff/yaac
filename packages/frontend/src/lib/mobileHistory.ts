@@ -19,7 +19,7 @@ const PARENT: Record<MobileScreen, MobileScreen> = {
 }
 
 function stampOf(state: unknown): ScreenState {
-  return (state ?? {}) as ScreenState
+  return (state ?? {})
 }
 
 /** How many of our entries are below the current one. Zero (or no stamp)

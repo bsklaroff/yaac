@@ -75,12 +75,12 @@ function header(ref: ObjectRef): KubernetesObject {
  * `spec.ingress`) is replaced whole.
  */
 export async function applyObject(manifest: object): Promise<void> {
-  const apply = async () => await getObjectApi().send(HttpMethod.PATCH, manifest as KubernetesObject, 'read', {
+  const apply = async () => await getObjectApi().send(HttpMethod.PATCH, manifest, 'read', {
     query: { fieldManager: FIELD_MANAGER, force: 'true' },
     body: manifest,
     contentType: PatchStrategy.ServerSideApply,
   }) as AppliedObject
-  if (await adoptClientSideFields(manifest as KubernetesObject, await apply())) await apply()
+  if (await adoptClientSideFields(manifest, await apply())) await apply()
 }
 
 /** The parts of an applied object `adoptClientSideFields` reads. */
@@ -130,7 +130,7 @@ function mergeFields(a: object, b: object): object {
 
 /** Create `manifest`; fails with 409 if the object exists. */
 export async function createObject(manifest: object): Promise<void> {
-  await getObjectApi().send(HttpMethod.POST, manifest as KubernetesObject, 'create', {
+  await getObjectApi().send(HttpMethod.POST, manifest, 'create', {
     query: { fieldManager: FIELD_MANAGER },
     body: manifest,
   })
@@ -236,9 +236,15 @@ export function isAbsent(err: unknown): boolean {
     || (err instanceof Error && err.message.startsWith('Unrecognized API version and kind'))
 }
 
-/** The one line of an API failure worth showing a user. */
+/** The one line of an API failure worth showing a user. A network failure
+ *  is a bare `fetch failed` whose cause says what went wrong; a refused
+ *  connection to every address of a hostname is an AggregateError with an
+ *  empty message, so its code stands in. */
 export function k8sErrorSummary(err: unknown): string {
   let line = err instanceof Error ? err.message : String(err)
+  if (err instanceof Error && err.cause instanceof Error) {
+    line += `: ${err.cause.message || String((err.cause as { code?: unknown }).code)}`
+  }
   if (err instanceof ApiException) {
     const body = (typeof err.body === 'string' ? safeJson(err.body) : err.body) as { message?: string } | undefined
     line = `${String(err.code)}: ${body?.message ?? 'no message'}`

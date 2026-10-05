@@ -1,6 +1,5 @@
 import readline from 'node:readline/promises'
 import { api } from '#commands/api'
-import type { ToolLoginView } from '@yaac/shared/types'
 
 /**
  * Drive a relayed browser sign-in from the terminal. The auth daemon on this
@@ -16,7 +15,7 @@ const POLL_MS = 700
 export type RelayedLoginOutcome = 'success' | 'cli-missing' | 'error'
 
 export async function runRelayedToolLogin(tool: 'claude' | 'codex'): Promise<RelayedLoginOutcome> {
-  let view = await api.auth[':tool'].login.start.$post({ param: { tool } }) as ToolLoginView
+  let view = await api.auth[':tool'].login.start.$post({ param: { tool } })
   const id = view.id
 
   console.log('Complete the sign-in in your browser — vendor CLI output follows.')
@@ -52,7 +51,7 @@ export async function runRelayedToolLogin(tool: 'claude' | 'codex'): Promise<Rel
           }
         }
       }
-      view = await api.auth.login[':id'].$get({ param: { id } }) as ToolLoginView
+      view = await api.auth.login[':id'].$get({ param: { id } })
       printNew(view.output)
     }
   } finally {

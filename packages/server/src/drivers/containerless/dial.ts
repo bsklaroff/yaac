@@ -42,7 +42,7 @@ export function dialPtyStream(
     cols: size.cols ?? 80,
     rows: size.rows ?? 24,
     cwd: paths.workspaceDir,
-    env: workspaceRunEnvironment(jobName) as Record<string, string>,
+    env: workspaceRunEnvironment(jobName),
   })
   return {
     onData: (cb) => { proc.onData(cb) },

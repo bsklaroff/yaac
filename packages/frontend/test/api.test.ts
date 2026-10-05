@@ -22,7 +22,7 @@ function stubFetch(over: {
     clone() { return this },
   }
   const fetchMock = vi.fn().mockResolvedValue(res)
-  globalThis.fetch = fetchMock as unknown as typeof fetch
+  globalThis.fetch = fetchMock
   return fetchMock
 }
 

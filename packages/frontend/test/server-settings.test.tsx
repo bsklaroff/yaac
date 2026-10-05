@@ -21,7 +21,7 @@ afterEach(() => {
   delete (window as unknown as { yaacServer?: unknown }).yaacServer
 })
 
-function installBridge(targets: DesktopServerTargets): YaacServerBridge & {
+function installBridge(targets: DesktopServerTargets): Omit<YaacServerBridge, 'switchTo' | 'addRemote'> & {
   switchTo: ReturnType<typeof vi.fn>
   addRemote: ReturnType<typeof vi.fn>
 } {

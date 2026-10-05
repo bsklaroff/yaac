@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { QueryClient } from '@tanstack/react-query'
 import { act, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
-import type { AuthListResult, GitCredentialSummary, ServerSnapshot } from '@yaac/shared/types'
+import type { AuthListResult, GitCredentialSummary } from '@yaac/shared/types'
 import { NewProjectButton } from '#components/NewProjectButton'
 import { useUiStore } from '#lib/store'
 import { SNAPSHOT_KEY } from '#lib/useEvents'
@@ -38,7 +38,7 @@ let client: QueryClient
  */
 async function snapshotLists(...slugs: string[]): Promise<void> {
   await act(async () => {
-    client.setQueryData(SNAPSHOT_KEY, { projects: slugs.map((slug) => ({ slug })) } as unknown as ServerSnapshot)
+    client.setQueryData(SNAPSHOT_KEY, { projects: slugs.map((slug) => ({ slug })) })
     await new Promise((r) => setTimeout(r, 0))
   })
 }

@@ -1,6 +1,5 @@
 import type { execFile } from 'node:child_process'
 import { describe, expect, it, vi } from 'vitest'
-import type { ensureAuthDaemonSpawned } from '@yaac/shared/auth-daemon'
 import type { ServerTarget } from '@yaac/shared/server-api'
 import {
   ensureAuthDaemonRunning, loginShellPath, resolveYaacCommand,
@@ -22,7 +21,7 @@ describe('ensureAuthDaemonRunning', () => {
   const TARGET: ServerTarget = { baseUrl: 'http://127.0.0.1:8787' }
   const CMD = resolveYaacCommand('/App/Resources', ['auth', 'server', 'run'])
   const fakeEnsure = () => vi.fn(
-    (() => Promise.resolve({ baseUrl: TARGET.baseUrl })) as typeof ensureAuthDaemonSpawned,
+    (() => Promise.resolve({ baseUrl: TARGET.baseUrl })),
   )
 
   it('forwards the target and invocation with the inherited env (dev)', async () => {
@@ -53,7 +52,7 @@ describe('ensureAuthDaemonRunning', () => {
   })
   it('propagates ensure failures (the swallow lives in the flow)', async () => {
     const ensureImpl = vi.fn(
-      (() => Promise.reject(new Error('spawn yaac ENOENT'))) as typeof ensureAuthDaemonSpawned,
+      (() => Promise.reject(new Error('spawn yaac ENOENT'))),
     )
     await expect(ensureAuthDaemonRunning({ target: TARGET, command: CMD, ensureImpl }))
       .rejects.toThrow('ENOENT')

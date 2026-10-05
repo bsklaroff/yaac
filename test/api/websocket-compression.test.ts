@@ -10,12 +10,8 @@ import {
 
 /**
  * Every WebSocket the webapp holds open must negotiate permessage-deflate.
- *
- * @hono/node-ws builds its WebSocketServer without passing options through,
- * so the server sets compression on the returned `wss` afterwards. That
- * works only because `ws` reads the option on each upgrade, which a `ws`
- * upgrade could change without breaking anything visible. This test catches
- * that.
+ * Nothing visible breaks if a dependency bump stops the server's
+ * compression setting from reaching `ws`, so this test catches that.
  *
  * The handshake is done by hand because a WebSocket client hides the
  * upgrade response headers.
