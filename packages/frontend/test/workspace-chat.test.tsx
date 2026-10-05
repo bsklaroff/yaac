@@ -454,6 +454,55 @@ describe('WorkspaceChat composer menu', () => {
     expect(stream.send).not.toHaveBeenCalled()
   })
 
+  it('completes a command typed mid-message at the caret, without running it', () => {
+    show()
+    type('please /co')
+    expect(labels()).toEqual(['/compact', '/context', '/pr-comments'])
+    key('ArrowDown')
+    key('Enter')
+    expect(box().value).toBe('please /context ')
+    expect(stream.send).not.toHaveBeenCalled()
+
+    // The model picker is offered only at the start; a path offers nothing.
+    type('use /mod')
+    expect(rows()).toEqual([])
+    type('see src/co')
+    expect(rows()).toEqual([])
+    type('open /tmp/co')
+    expect(rows()).toEqual([])
+
+    // A caret moved back into the text completes the word it ends.
+    type('fix /cont then $rev it')
+    box().setSelectionRange(9, 9)
+    fireEvent.select(box())
+    expect(labels()).toEqual(['/context'])
+    key('Tab')
+    expect(box().value).toBe('fix /context then $rev it')
+    expect(box().selectionStart).toBe(13)
+    box().setSelectionRange(22, 22)
+    fireEvent.select(box())
+    key('Tab')
+    expect(box().value).toBe('fix /context then $review-pr it')
+    expect(stream.send).not.toHaveBeenCalled()
+
+    // Completing a word that is already complete still moves the caret past
+    // its space, so the next keystroke lands there.
+    type('fix /context then')
+    box().setSelectionRange(12, 12)
+    fireEvent.select(box())
+    key('Tab')
+    expect(box().value).toBe('fix /context then')
+    expect(box().selectionStart).toBe(13)
+  })
+
+  it('sends a message that merely ends in a matching slash-word on Enter', () => {
+    show()
+    type('look at /co')
+    expect(labels()).toEqual(['/compact', '/context', '/pr-comments'])
+    key('Enter')
+    expect(stream.send).toHaveBeenCalledWith({ type: 'prompt', text: 'look at /co' })
+  })
+
   it('closes on Escape until the draft changes, leaving Enter to send what was typed', () => {
     show()
     type('/co')
