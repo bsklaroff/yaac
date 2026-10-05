@@ -212,6 +212,7 @@ const PERSISTED: { [K in keyof UiState]?: Persisted<UiState[K]> } = {
   sidebarWidth: number('yaac.sidebarwidth.v1', clampSidebarWidth),
   editorFontSize: number('yaac.editorfontsize.v1', clampEditorFontSize),
   chatFullWidth: flag('yaac.chatfullwidth.v1'),
+  chatCondensed: flag('yaac.chatcondensed.v1'),
   // index.html reads this key before first paint, to avoid a theme flash.
   themePref: oneOf('yaac.theme.v1', ['system', 'light', 'dark']),
 }
@@ -448,6 +449,10 @@ interface UiState {
    *  column. Saved; off by default. */
   chatFullWidth: boolean
   setChatFullWidth: (full: boolean) => void
+  /** Whether chat panes fold away the steps between the user's prompts
+   *  (`condense` in AcpTranscript). Saved; off by default. */
+  chatCondensed: boolean
+  setChatCondensed: (condensed: boolean) => void
   /** Tiles or tabs. Saved; small screens default to tabs. */
   viewMode: ViewMode
   /** Plan-usage metric pinned to the sidebar pill (a UsageBadge
@@ -650,6 +655,7 @@ export const useUiStore = create<UiState>((set) => ({
   soundEnabled: true,
   editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
   chatFullWidth: false,
+  chatCondensed: false,
   viewMode: defaultViewMode(),
   pinnedUsageMetric: null,
   chatDrafts: {},
@@ -818,6 +824,7 @@ export const useUiStore = create<UiState>((set) => ({
   },
   setSoundEnabled: (enabled) => set({ soundEnabled: enabled }),
   setChatFullWidth: (full) => set({ chatFullWidth: full }),
+  setChatCondensed: (condensed) => set({ chatCondensed: condensed }),
   setEditorFontSize: (px) => set({ editorFontSize: clampEditorFontSize(px) }),
   setViewMode: (mode) => set({ viewMode: mode }),
   setPinnedUsageMetric: (key) => set({ pinnedUsageMetric: key }),

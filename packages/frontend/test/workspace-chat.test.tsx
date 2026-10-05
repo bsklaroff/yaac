@@ -250,6 +250,97 @@ describe('WorkspaceChat width', () => {
   })
 })
 
+describe('WorkspaceChat condensed view', () => {
+  const agent = (seq: number, text: string): AcpEvent =>
+    ({ type: 'agent', seq, content: [{ type: 'text', text }] })
+  const tool = (seq: number, title: string, status: AcpToolCall['status'] = 'completed'): AcpEvent =>
+    ({ type: 'tool', seq, call: { toolCallId: title, title, kind: 'other', status } })
+
+  beforeEach(() => {
+    stream.events = [
+      user(0, 'first ask'),
+      agent(1, 'looking around'),
+      tool(2, 'ls'),
+      tool(3, 'cat a'),
+      agent(4, 'first answer'),
+      user(5, 'second ask'),
+      { type: 'thought', seq: 6, content: [{ type: 'text', text: 'hmm' }] },
+      tool(7, 'grep b'),
+      agent(8, 'now editing'),
+      tool(9, 'edit c'),
+      tool(10, 'run tests', 'in_progress'),
+    ]
+    stream.busy = true
+    useUiStore.setState({ chatDrafts: {} })
+  })
+
+  afterEach(() => {
+    cleanup()
+    useUiStore.getState().setChatCondensed(false)
+  })
+
+  it('folds all but the prompts, each turn’s last message and the live activity, and remembers the choice', () => {
+    show()
+    fireEvent.click(screen.getByRole('button', { name: 'Show key messages only' }))
+    expect(localStorage.getItem('yaac.chatcondensed.v1')).toBe('1')
+    for (const shown of ['first ask', 'first answer', 'second ask', 'now editing', 'edit c', 'run tests']) {
+      expect(screen.getByText(shown)).toBeTruthy()
+    }
+    for (const hidden of ['looking around', 'ls', 'grep b']) expect(screen.queryByText(hidden)).toBeNull()
+
+    // Each hidden run says what it holds, and opens in place.
+    expect(screen.getByRole('button', { name: '1 tool call, 1 thought' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '1 message, 2 tool calls' }))
+    expect(screen.getByText('looking around')).toBeTruthy()
+    expect(screen.getByText('cat a')).toBeTruthy()
+
+    // Once the turn ends, only its last message stays out.
+    stream.busy = false
+    cleanup()
+    show()
+    expect(screen.queryByText('edit c')).toBeNull()
+    expect(screen.getByRole('button', { name: '2 tool calls' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show every step' }))
+    expect(screen.getByText('grep b')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /tool call/ })).toBeNull()
+  })
+
+  it('ends a turn where the agent starts one itself, spans a steer, and never folds what needs the user', () => {
+    stream.events = [
+      user(0, 'q1'),
+      agent(1, 'answer A'),
+      { type: 'turn-end', seq: 2, stopReason: 'end_turn' },
+      { type: 'agent-turn', seq: 3 },
+      tool(4, 'bg check'),
+      agent(5, 'message B'),
+      user(6, 'q2'),
+      tool(7, 't1'),
+      {
+        type: 'permission-request', seq: 8, thread: 'sub1', requestId: '1',
+        toolCall: { toolCallId: 'p1', title: 'rm -rf build', kind: 'execute', status: 'pending' },
+        options: [{ optionId: 'allow', name: 'Allow Once', kind: 'allow_once' }],
+      },
+      { type: 'error', seq: 9, message: 'adapter crashed' },
+      tool(10, 't2'),
+      agent(11, 'reply two'),
+      { type: 'turn-end', seq: 12, stopReason: 'cancelled' },
+      user(13, 'q3'),
+      agent(14, 'working on it'),
+      tool(15, 'long bash', 'in_progress'),
+      { type: 'user', seq: 16, content: [{ type: 'text', text: 'also do X' }], steered: true },
+      tool(17, 't3'),
+    ]
+    useUiStore.getState().setChatCondensed(true)
+    show()
+    for (const shown of [
+      'answer A', 'message B', 'Permission needed', 'adapter crashed', 'turn ended: cancelled',
+      'reply two', 'working on it', 'long bash', 'also do X', 't3',
+    ]) expect(screen.getByText(shown)).toBeTruthy()
+    for (const hidden of ['bg check', 't1', 't2']) expect(screen.queryByText(hidden)).toBeNull()
+  })
+})
+
 /**
  * Images are sent inline in a message. jsdom decodes no images, so the
  * downscale's bitmap is faked; an image this small is sent unchanged.

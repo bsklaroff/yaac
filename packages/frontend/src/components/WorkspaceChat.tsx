@@ -8,7 +8,7 @@ import { useComposerMenu } from '#components/ComposerMenu'
 import { imageBytes, imageFiles, prepareImage, toAcpImage, useImageSrc } from '#lib/attachments'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
 import {
-  AttachImageIcon, CloseIcon, LoadingIcon, NarrowIcon, SendIcon, StopIcon, WidenIcon,
+  AttachImageIcon, CloseIcon, CondenseIcon, LoadingIcon, NarrowIcon, SendIcon, StopIcon, UncondenseIcon, WidenIcon,
 } from '#lib/icons'
 import { chatDraftKey, useUiStore } from '#lib/store'
 import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
@@ -56,6 +56,8 @@ export function WorkspaceChat({
   const setChatSent = useUiStore((s) => s.setChatSent)
   const fullWidth = useUiStore((s) => s.chatFullWidth)
   const setFullWidth = useUiStore((s) => s.setChatFullWidth)
+  const condensed = useUiStore((s) => s.chatCondensed)
+  const setCondensed = useUiStore((s) => s.setChatCondensed)
   const column = fullWidth ? 'w-full' : COLUMN
   /**
    * The draft is local state mirrored into the store, so typing needs no
@@ -120,7 +122,7 @@ export function WorkspaceChat({
   useLayoutEffect(() => {
     const el = scrollRef.current
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight
-  }, [groups, threadGroups, view, taskOutput])
+  }, [groups, threadGroups, view, taskOutput, condensed])
 
   /** Show a subagent or task, or the conversation again; each starts at
    *  its tail. */
@@ -354,6 +356,7 @@ export function WorkspaceChat({
                 groups={groups}
                 busy={busy}
                 live
+                condensed={condensed}
                 onAnswerPermission={answerPermission}
                 onOpenSubagent={(id) => open({ kind: 'subagent', id })}
                 onOpenTask={(id) => open({ kind: 'task', id })}
@@ -456,9 +459,18 @@ export function WorkspaceChat({
                     aria-label={fullWidth ? 'Center chat' : 'Full-width chat'}
                     title={fullWidth ? 'Center chat' : 'Full-width chat'}
                     onClick={() => setFullWidth(!fullWidth)}
-                    className="mr-auto hidden rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text @min-[66rem]:block"
+                    className="hidden rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text @min-[66rem]:block"
                   >
                     {fullWidth ? <NarrowIcon size={16} /> : <WidenIcon size={16} />}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={condensed ? 'Show every step' : 'Show key messages only'}
+                    title={condensed ? 'Show every step' : 'Show key messages only'}
+                    onClick={() => setCondensed(!condensed)}
+                    className="mr-auto rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text"
+                  >
+                    {condensed ? <UncondenseIcon size={16} /> : <CondenseIcon size={16} />}
                   </button>
                   <input
                     ref={fileInputRef}

@@ -9,7 +9,7 @@ import { diffStats, diffTextPair, type DiffLine } from '#lib/diff'
 import { languageForFence, languageForPath } from '#lib/highlight'
 import {
   ChevronIcon, DeleteIcon, DoneIcon, ExecuteIcon, FailedIcon, FileTextIcon, InProgressIcon, LoadingIcon, MoveIcon,
-  InterruptedIcon, MonitorIcon, PendingIcon, PlanIcon, PreviewIcon, RenameIcon, SearchIcon, SubagentIcon,
+  InterruptedIcon, MonitorIcon, MoreIcon, PendingIcon, PlanIcon, PreviewIcon, RenameIcon, SearchIcon, SubagentIcon,
   ThinkingIcon, ToolIcon, WarningIcon, WorkflowIcon, type Icon,
 } from '#lib/icons'
 import { stripAnsi } from '@yaac/shared/ansi'
@@ -31,9 +31,11 @@ import type {
  */
 
 /** One rendered unit of a conversation. Text groups keep images separate so
- *  they can be drawn rather than named. */
-export type Group =
-  | { kind: 'user'; seq: number; text: string; images: AcpImage[] }
+ *  they can be drawn rather than named. `turn` marks the first group of a run
+ *  the agent started by itself (`agent-turn`), which ends the turn before it. */
+export type Group = ({ turn?: true } & (
+  /** `steered` marks a message added to a running turn, which it does not end. */
+  | { kind: 'user'; seq: number; text: string; images: AcpImage[]; steered?: true }
   | { kind: 'agent'; seq: number; text: string; images: AcpImage[] }
   | { kind: 'thought'; seq: number; text: string; images: AcpImage[] }
   /** `interrupted` marks a call whose turn is over though it never finished;
@@ -55,6 +57,7 @@ export type Group =
     options: AcpPermissionOption[]
     decided?: { outcome: 'selected' | 'cancelled'; optionId?: string }
   }
+))
 
 function textOf(content: AcpContent[]): string {
   return content.map((c) => (c.type === 'text' ? c.text : `[${c.mimeType} image]`)).join('')
@@ -112,13 +115,16 @@ export function active(item: AcpSubagent | AcpTask): boolean {
  * - `turn-end` is kept only for an unusual stop reason, and `turn-start`
  *   and the session's `commands` and `models` are dropped;
  * - `agent-turn` (a run the agent may have started itself) keeps the text
- *   after it from joining the text before.
+ *   after it from joining the text before, and marks the group after it as
+ *   a turn's first.
  */
 export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
   const groups: Group[] = []
   const toolIndex = new Map<string, number>()
   const permissionIndex = new Map<string, number>()
   let split = false
+  /** Where the run an `agent-turn` reported begins, until a group lands there. */
+  let turnAt: number | undefined
   const cardIndex = new Map<string, number>()
   /** Calls a subagent's card stands in for. */
   const absorbed = new Set<string>()
@@ -129,7 +135,7 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
   const card = (key: string, group: Extract<Group, { kind: 'subagent' | 'task' }>): void => {
     const at = cardIndex.get(key)
     if (at !== undefined) {
-      groups[at] = { ...group, seq: groups[at].seq } as Group
+      groups[at] = { ...group, seq: groups[at].seq, ...(groups[at].turn ? { turn: true } : {}) } as Group
       return
     }
     cardIndex.set(key, groups.length)
@@ -142,6 +148,10 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
     }
   }
   for (const e of events) {
+    if (turnAt !== undefined && groups.length > turnAt) {
+      groups[turnAt] = { ...groups[turnAt], turn: true }
+      turnAt = undefined
+    }
     if (e.type === 'subagent' && e.subagent.id === thread) self = e.subagent
     if (e.type === 'subagent') {
       if (e.subagent.parent !== thread) continue
@@ -162,7 +172,10 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
     if (isThreaded(e) && e.thread !== thread && !(main && e.type === 'permission-request')) continue
     if (!main && (e.type === 'turn-end' || e.type === 'error')) continue
     if (e.type === 'turn-start' || (e.type === 'user' && e.steered !== true)) interruptOpenCalls()
-    if (e.type === 'agent-turn') split = true
+    if (e.type === 'agent-turn') {
+      split = true
+      turnAt = groups.length
+    }
     if (e.type === 'commands' || e.type === 'models' || e.type === 'turn-start' || e.type === 'agent-turn') continue
     if (e.type === 'permission-request') {
       permissionIndex.set(e.requestId, groups.length)
@@ -227,13 +240,16 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
     const images = e.content.filter((c) => c.type === 'image')
     if (last !== undefined && last.kind === e.type && !split) {
       groups[groups.length - 1] = {
-        kind: e.type, seq: last.seq, text: last.text + text, images: [...last.images, ...images],
+        ...last, kind: e.type, text: last.text + text, images: [...last.images, ...images],
       }
       continue
     }
     split = false
-    groups.push({ kind: e.type, seq: e.seq, text, images })
+    groups.push({
+      kind: e.type, seq: e.seq, text, images, ...(e.type === 'user' && e.steered === true ? { steered: true } : {}),
+    })
   }
+  if (turnAt !== undefined && groups.length > turnAt) groups[turnAt] = { ...groups[turnAt], turn: true }
   const tasks = new Map<string, AcpTask>()
   for (const e of events) if (e.type === 'task') tasks.set(e.task.id, e.task)
   for (const task of tasks.values()) {
@@ -245,6 +261,79 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
     groups.push({ kind: 'agent', seq: (events[events.length - 1]?.seq ?? 0) + 1, text: self.summary, images: [] })
   }
   return groups
+}
+
+/** A run of groups the condensed view hides behind one row. Keyed by its
+ *  first group's seq, which stays put as a live run grows, so the row keeps
+ *  its open state. */
+interface Folded {
+  kind: 'folded'
+  seq: number
+  groups: Group[]
+}
+
+/** Groups the condensed view never hides: the user's prompts, and what the
+ *  user must see or answer. */
+function alwaysShown(g: Group): boolean {
+  return g.kind === 'user' || g.kind === 'error' || g.kind === 'turn-end'
+    || (g.kind === 'permission' && g.decided === undefined)
+}
+
+/**
+ * The condensed view of a conversation: each user prompt and the last agent
+ * message of each turn. A turn starts at a prompt that is not steered into a
+ * running one, or where the agent started a run itself. While the last turn
+ * is running (`busy`), its latest message and every step after it stay shown
+ * too, or all of the turn if the agent has not written yet. Each run of
+ * hidden groups becomes one `Folded`.
+ */
+function condense(groups: Group[], busy: boolean): (Group | Folded)[] {
+  const shown = new Set<number>()
+  let start = 0
+  const endTurn = (end: number): void => {
+    let lastAgent = -1
+    for (let i = start; i < end; i++) if (groups[i].kind === 'agent') lastAgent = i
+    if (busy && end === groups.length) {
+      for (let i = Math.max(lastAgent, start); i < end; i++) shown.add(i)
+    } else if (lastAgent !== -1) {
+      shown.add(lastAgent)
+    }
+    start = end
+  }
+  groups.forEach((g, i) => {
+    if ((g.kind === 'user' && g.steered === undefined) || g.turn !== undefined) endTurn(i)
+  })
+  endTurn(groups.length)
+  const out: (Group | Folded)[] = []
+  groups.forEach((g, i) => {
+    if (shown.has(i) || alwaysShown(g)) {
+      out.push(g)
+      return
+    }
+    const last = out[out.length - 1]
+    if (last?.kind === 'folded') last.groups.push(g)
+    else out.push({ kind: 'folded', seq: g.seq, groups: [g] })
+  })
+  return out
+}
+
+/** How a folded run's groups are counted, in the order they are listed. */
+const FOLDED_NOUNS: [Group['kind'], string, string][] = [
+  ['agent', 'message', 'messages'],
+  ['tool', 'tool call', 'tool calls'],
+  ['thought', 'thought', 'thoughts'],
+  ['plan', 'plan update', 'plan updates'],
+  ['subagent', 'subagent', 'subagents'],
+  ['task', 'task', 'tasks'],
+  ['permission', 'answered ask', 'answered asks'],
+]
+
+/** What a folded run hides, e.g. "5 messages, 20 tool calls". */
+function foldedLabel(groups: Group[]): string {
+  return FOLDED_NOUNS.flatMap(([kind, one, many]) => {
+    const n = groups.filter((g) => g.kind === kind).length
+    return n === 0 ? [] : [`${String(n)} ${n === 1 ? one : many}`]
+  }).join(', ')
 }
 
 /** A message's images, each a thumbnail that opens to the column's width. */
@@ -786,9 +875,12 @@ export function AcpTranscript({
   onAnswerPermission,
   onOpenSubagent,
   onOpenTask,
+  condensed = false,
 }: {
   groups: Group[]
   className?: string
+  /** Hide all but the key messages behind expandable rows (see `condense`). */
+  condensed?: boolean
   /** Whether a turn is in flight. Only then can an unfinished call of the
    *  current turn be running; otherwise it reads as interrupted, which also
    *  covers a record cut off before its turn ended. */
@@ -802,6 +894,15 @@ export function AcpTranscript({
   onOpenSubagent?: (id: string) => void
   onOpenTask?: (id: string) => void
 }): JSX.Element {
+  /** The folded runs the reader opened, by seq. */
+  const [unfolded, setUnfolded] = useState<ReadonlySet<number>>(new Set())
+  const toggle = (seq: number): void => setUnfolded((cur) => {
+    const next = new Set(cur)
+    if (!next.delete(seq)) next.add(seq)
+    return next
+  })
+  const rows = (condensed ? condense(groups, busy) : groups)
+    .flatMap((g) => (g.kind === 'folded' && unfolded.has(g.seq) ? [g, ...g.groups] : [g]))
   /** Calls waiting on an unanswered ask: not running, and not interrupted. */
   const asking = new Set(groups.flatMap((g) => (
     g.kind === 'permission' && g.decided === undefined && g.toolCall !== undefined ? [g.toolCall.toolCallId] : []
@@ -813,9 +914,16 @@ export function AcpTranscript({
   }
   return (
     <div className={clsx('break-words text-sm', className)}>
-      {groups.map((g, i) => (
-        <div key={g.seq} className={clsx(i > 0 && (isStep(g) && isStep(groups[i - 1]) ? 'mt-0.5' : 'mt-4'))}>
-          {g.kind === 'subagent' ? (
+      {rows.map((g, i) => (
+        <div
+          key={g.kind === 'folded' ? `f${String(g.seq)}` : g.seq}
+          className={clsx(i > 0 && (isStep(g) && isStep(rows[i - 1]) ? 'mt-0.5' : 'mt-4'))}
+        >
+          {g.kind === 'folded' ? (
+            <DisclosureRow open={unfolded.has(g.seq)} onToggle={() => toggle(g.seq)} expandable icon={MoreIcon}>
+              {foldedLabel(g.groups)}
+            </DisclosureRow>
+          ) : g.kind === 'subagent' ? (
             <ActivityCard
               category={SUBAGENT_CATEGORY}
               title={g.subagent.name}
@@ -846,10 +954,10 @@ export function AcpTranscript({
   )
 }
 
-/** Tool calls and thinking: one-line rows that stack tightly into a run of
- *  steps, set apart from the messages around them. */
-function isStep(g: Group): boolean {
-  return g.kind === 'tool' || g.kind === 'thought'
+/** Tool calls, thinking and folded runs: one-line rows that stack tightly
+ *  into a run of steps, set apart from the messages around them. */
+function isStep(g: Group | Folded): boolean {
+  return g.kind === 'tool' || g.kind === 'thought' || g.kind === 'folded'
 }
 
 function GroupView({
