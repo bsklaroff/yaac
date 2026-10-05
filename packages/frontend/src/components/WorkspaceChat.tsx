@@ -258,6 +258,7 @@ export function WorkspaceChat({
   }
 
   const { menu, inputProps: menuInputProps, onKeyDown: menuKeyDown } = useComposerMenu({
+    inputRef,
     draft,
     events,
     disabled: awaitingEcho !== null,
