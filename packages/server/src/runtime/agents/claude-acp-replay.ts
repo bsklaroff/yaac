@@ -88,7 +88,7 @@ async function synthesizeAcpRecord(raw: string, agentSessionId: string): Promise
     if (role === 'assistant' && isSyntheticLoginMessage(api)) continue
     let content = api?.content
     if (role === 'user') {
-      content = stripLocalCommandMetadata(content as never)
+      content = stripLocalCommandMetadata(content)
       // Slash-command bookkeeping (caveat preamble, invocation, stdout).
       if (content === null) continue
     }

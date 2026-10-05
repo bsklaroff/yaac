@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, type Mock } from 'vitest'
 import {
   addServerRemote,
   applyServerSwitch,
@@ -17,9 +17,9 @@ const CFG: ServerConfig = {
   ],
 }
 
-function makeDeps(cfg: ServerConfig | null): ServerSwitchDeps & {
-  writeServerConfig: ReturnType<typeof vi.fn>
-  probeServer: ReturnType<typeof vi.fn>
+function makeDeps(cfg: ServerConfig | null): Omit<ServerSwitchDeps, 'writeServerConfig' | 'probeServer'> & {
+  writeServerConfig: Mock<ServerSwitchDeps['writeServerConfig']>
+  probeServer: Mock<ServerSwitchDeps['probeServer']>
 } {
   return {
     readServerConfig: vi.fn().mockResolvedValue(cfg),
@@ -83,7 +83,7 @@ describe('applyServerSwitch', () => {
     const deps = makeDeps({ ...CFG, enabled: false })
     expect(await applyServerSwitch({ url: 'https://b.ts.net' }, deps)).toEqual({ ok: true })
     expect(deps.probeServer).toHaveBeenCalledWith('https://b.ts.net')
-    const written = deps.writeServerConfig.mock.calls[0][0] as ServerConfig
+    const written = deps.writeServerConfig.mock.calls[0][0]
     expect(written).toMatchObject({ url: 'https://b.ts.net', enabled: true })
     expect(written.saved).toContainEqual({ url: 'https://a.ts.net' })
   })

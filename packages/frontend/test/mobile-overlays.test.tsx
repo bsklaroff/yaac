@@ -27,6 +27,7 @@ beforeAll(() => {
   }
 })
 
+// eslint-disable-next-line @typescript-eslint/unbound-method -- only ever restored onto window
 const realMatchMedia = window.matchMedia
 
 /**

@@ -103,10 +103,10 @@ export default defineConfig({
     projects: [
       // Co-located per-package unit tests. Names are `unit:<pkg>`.
       unitProject('packages/cli'),
-      // esbuild transforms JSX, so no react plugin is needed; jsdom is
+      // Oxc transforms JSX, so no react plugin is needed; jsdom is
       // selected per file via `// @vitest-environment jsdom`.
       unitProject('packages/frontend', {
-        esbuild: { jsx: 'automatic' },
+        oxc: { jsx: { runtime: 'automatic' } },
       }),
       unitProject('packages/desktop'),
       unitProject('packages/server'),

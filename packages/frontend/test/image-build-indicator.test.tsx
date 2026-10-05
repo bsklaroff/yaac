@@ -6,7 +6,7 @@ vi.mock('#lib/useSnapshot', () => ({ useSnapshot: vi.fn() }))
 
 import { ImageBuildIndicator } from '#components/ImageBuildIndicator'
 import { useSnapshot } from '#lib/useSnapshot'
-import type { ServerSnapshot, ImageBuildEntry } from '@yaac/shared/types'
+import type { ImageBuildEntry } from '@yaac/shared/types'
 import { mockFetch, renderWithClient } from './harness'
 
 // jsdom has no ResizeObserver; Base UI needs one to exist.
@@ -49,7 +49,7 @@ function stubSnapshot(imageBuilds: ImageBuildEntry[]): void {
     planUsage: null,
     codexPlanUsage: null,
     forwardBindHost: '127.0.0.1',
-  } as ServerSnapshot)
+  })
 }
 
 describe('ImageBuildIndicator', () => {

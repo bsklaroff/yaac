@@ -16,7 +16,8 @@
 import {
   CoreV1Api,
   KubeConfig,
-  makeInformer,
+  ListWatch,
+  Watch,
   type Informer,
   type KubernetesListObject,
   type KubernetesObject,
@@ -108,7 +109,12 @@ function watch<T>(
   listFn: () => Promise<KubernetesListObject<KubernetesObject>>,
 ): () => T[] {
   const path = `/api/v1/namespaces/${client.namespace}/${resource}`
-  const informer = makeInformer(client.kubeConfig, path, listFn, labelSelector)
+  // Reconnect at once: the watch request times out every 30s, and
+  // client-node's informer otherwise waits a growing delay (up to 30s)
+  // before reconnecting while nothing changes, holding back the next event.
+  const informer = new ListWatch(path, new Watch(client.kubeConfig), listFn, false, labelSelector, undefined, {
+    delayFn: () => Promise.resolve(),
+  })
   informer.on('add', onChange)
   informer.on('update', onChange)
   informer.on('delete', onChange)

@@ -15,7 +15,7 @@ vi.mock('@yaac/shared/tool-auth', async (importOriginal) => {
   return { ...actual, loadToolAuthEntry: vi.fn(actual.loadToolAuthEntry) }
 })
 
-import { createWorkspace, type WorkspaceCreateResult } from '#domain/workspaces/create'
+import { createWorkspace } from '#domain/workspaces/create'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import {
   discardQueuedWorkspace,
@@ -67,7 +67,7 @@ beforeEach(async () => {
     await recordWorkspaceCreated({ projectSlug: slug, workspaceId: opts.workspaceId ?? 'minted' })
     return {
       workspaceId: opts.workspaceId ?? 'minted', jobName: 'j', forwardedPorts: [], tool: opts.tool ?? 'claude', mode: 'tui',
-    } as WorkspaceCreateResult
+    }
   })
 })
 

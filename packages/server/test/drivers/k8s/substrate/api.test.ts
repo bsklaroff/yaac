@@ -34,6 +34,10 @@ const cm = (name: string, labels: Record<string, string> = {}, data: Record<stri
   apiVersion: 'v1', kind: 'ConfigMap', metadata: { name, namespace: 'yaac', labels }, data,
 })
 const ref = (name: string) => ({ apiVersion: 'v1', kind: 'ConfigMap', name, namespace: 'yaac' })
+/** A network failure as client-node's transport (undici) reports it. */
+const fetchFailed = (cause: Error, code: string) =>
+  new TypeError('fetch failed', { cause: Object.assign(cause, { code }) })
+const refused = () => fetchFailed(new Error('connect ECONNREFUSED 127.0.0.1:6443'), 'ECONNREFUSED')
 
 describe('k8sNamespace', () => {
   afterEach(() => {
@@ -110,13 +114,19 @@ describe('readObject', () => {
 
   it('retries a transient failure, but fails at once on a denial', async () => {
     fakeCluster.seed(cm('a'))
-    let unavailable = 1
+    const failures = [
+      apiError(503, 'the server is currently unable to handle the request'),
+      refused(),
+      // An apiserver restart closing the socket mid-request.
+      fetchFailed(new Error('other side closed'), 'UND_ERR_SOCKET'),
+    ]
     fakeCluster.intercept(() => {
-      if (unavailable-- > 0) throw apiError(503, 'the server is currently unable to handle the request')
+      const failure = failures.shift()
+      if (failure) throw failure
       return undefined
     })
     await expect(readObject(ref('a'))).resolves.toMatchObject({ metadata: { name: 'a' } })
-    expect(fakeCluster.callsOf('read')).toHaveLength(2)
+    expect(fakeCluster.callsOf('read')).toHaveLength(4)
 
     fakeCluster.reset()
     fakeCluster.intercept(() => { throw apiError(403, 'forbidden') })
@@ -183,6 +193,8 @@ describe('k8sErrorSummary', () => {
   it('shows the status and the API server\'s message on one capped line', () => {
     expect(k8sErrorSummary(apiError(403, 'nodes is forbidden'))).toBe('403: nodes is forbidden')
     expect(k8sErrorSummary(new Error('connect ECONNREFUSED\nstack'))).toBe('connect ECONNREFUSED')
+    expect(k8sErrorSummary(refused())).toBe('fetch failed: connect ECONNREFUSED 127.0.0.1:6443')
+    expect(k8sErrorSummary(fetchFailed(new AggregateError([]), 'ECONNREFUSED'))).toBe('fetch failed: ECONNREFUSED')
     expect(k8sErrorSummary(new Error('x'.repeat(300)))).toHaveLength(141)
   })
 })
@@ -190,7 +202,7 @@ describe('k8sErrorSummary', () => {
 describe('ensureKubernetes', () => {
   it('resolves when the API server answers and points at setup when it does not', async () => {
     await expect(ensureKubernetes()).resolves.toBeUndefined()
-    fakeCluster.unreachable = new Error('connect ECONNREFUSED 127.0.0.1:6443')
+    fakeCluster.unreachable = refused()
     await expect(ensureKubernetes()).rejects.toThrow(/not reachable[\s\S]*yaac cluster check[\s\S]*ECONNREFUSED/)
   })
 })

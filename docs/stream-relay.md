@@ -133,10 +133,9 @@ browser↔server WebSocket is the whole WAN path. Four things keep it cheap:
 - **Compression.** Every WebSocket negotiates `permessage-deflate`
   (`server-run.ts`) with a 512-byte threshold, so small latency-critical
   frames (a keystroke, its echo, a control frame) skip compression. Large
-  ANSI repaints and snapshot/ACP JSON benefit. `@hono/node-ws` does not
-  pass options through, so the setting is applied to the `wss` it returns;
-  `ws` reads it on each upgrade. `test/api/websocket-compression.test.ts`
-  checks the negotiation so a dependency bump cannot silently drop it. The
+  ANSI repaints and snapshot/ACP JSON benefit.
+  `test/api/websocket-compression.test.ts` checks the negotiation so a
+  dependency bump cannot silently drop it. The
   `/events` hub sends on the raw `ws` socket rather than Hono's
   `WSContext`, because the context passes `compress: undefined`, which
   overrides ws's default and would leave the largest payload uncompressed.

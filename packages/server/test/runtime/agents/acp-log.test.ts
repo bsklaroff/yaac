@@ -108,7 +108,7 @@ describe('tailAcpLog', () => {
     const { file, ref } = await scratch()
     await fs.writeFile(file, update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'one' } }) + '\n')
     const batches: Array<{ events: Array<{ type: string }>; reset: boolean }> = []
-    tails.push(tailAcpLog(ref, (events, reset) => batches.push({ events: events as Array<{ type: string }>, reset }), { intervalMs: 20 }))
+    tails.push(tailAcpLog(ref, (events, reset) => batches.push({ events: events, reset }), { intervalMs: 20 }))
     await until(() => batches.length > 0)
     expect(batches[0].reset).toBe(true)
     expect(batches[0].events).toHaveLength(1)

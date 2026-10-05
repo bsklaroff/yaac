@@ -16,7 +16,7 @@ import {
   UsageBadge,
 } from '#components/UsageBadge'
 import { useUiStore } from '#lib/store'
-import type { ServerSnapshot, PlanUsageLimit, PlanUsageResult } from '@yaac/shared/types'
+import type { PlanUsageLimit, PlanUsageResult } from '@yaac/shared/types'
 
 // jsdom has no ResizeObserver; Base UI needs one to exist.
 beforeAll(() => {
@@ -94,7 +94,7 @@ function stubSnapshot(
     planUsage,
     codexPlanUsage,
     forwardBindHost: '127.0.0.1',
-  } as ServerSnapshot)
+  })
 }
 
 function pill(): HTMLElement {

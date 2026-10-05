@@ -72,7 +72,6 @@
     "@anthropic-ai/claude-agent-sdk": "catalog:",
     "@electric-sql/pglite": "catalog:",
     "@hono/node-server": "catalog:",
-    "@hono/node-ws": "catalog:",
     "@hono/zod-validator": "catalog:",
     "@kubernetes/client-node": "catalog:",
     "@lydell/node-pty": "catalog:",
@@ -82,11 +81,13 @@
     "hono": "catalog:",
     "isomorphic-git": "1.42.2",
     "smol-toml": "catalog:",
+    "ws": "catalog:",
     "yaml": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "@types/ws": "catalog:",
     "@yaac/test-utils": "workspace:*",
     "drizzle-kit": "1.0.0-rc.4",
     "fengari": "0.1.5"

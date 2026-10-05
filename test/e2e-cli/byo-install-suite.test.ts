@@ -88,7 +88,7 @@ async function claimVolumes(): Promise<Record<string, string>> {
   const out = await kubectl('get', 'pvc', '-n', 'yaac', '-o',
     'jsonpath={range .items[*]}{.metadata.name}={.spec.volumeName}{"\\n"}{end}')
   return Object.fromEntries(out.trim().split('\n').filter(Boolean)
-    .map((l) => l.split('=') as [string, string])) as Record<string, string>
+    .map((l) => l.split('=') as [string, string]))
 }
 
 beforeAll(async () => {

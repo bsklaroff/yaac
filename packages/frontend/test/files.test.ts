@@ -160,7 +160,7 @@ describe('saveWorkspaceFile', () => {
       headers: new Headers({ 'content-type': 'application/json' }),
       json: () => Promise.resolve(json),
     })
-    globalThis.fetch = fetchMock as unknown as typeof fetch
+    globalThis.fetch = fetchMock
     return fetchMock
   }
 

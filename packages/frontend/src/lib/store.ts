@@ -183,7 +183,7 @@ const jsonRecord = <V>(key: string, keep: (v: unknown) => v is V): Persisted<Rec
   parse: (raw) => {
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
-    return Object.fromEntries(Object.entries(parsed).filter(([, v]) => keep(v))) as Record<string, V>
+    return Object.fromEntries(Object.entries(parsed).filter(([, v]) => keep(v)))
   },
   serialize: JSON.stringify,
 })
@@ -230,7 +230,7 @@ export function loadPersisted(): Partial<UiState> {
       if (value !== undefined) out[field] = value
     } catch { /* no or unreadable storage: keep the default */ }
   }
-  return out as Partial<UiState>
+  return out
 }
 
 function savePersisted(field: keyof UiState, value: unknown): void {

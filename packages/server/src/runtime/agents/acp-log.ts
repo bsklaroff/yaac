@@ -77,7 +77,7 @@ export function replayAcpLog(raw: string): AcpEvent[] {
   return raw
     .split('\n')
     .flatMap((line) => projectLine(line, projection))
-    .map((event, seq) => ({ ...event, seq }) as AcpEvent)
+    .map((event, seq) => ({ ...event, seq }))
 }
 
 /** Tail poll interval: short enough for streaming to look live, cheap when

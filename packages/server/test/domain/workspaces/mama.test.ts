@@ -23,7 +23,6 @@ import { listWorkspacePods } from '#drivers/k8s/substrate/pods'
 import type * as podsModule from '#drivers/k8s/substrate/pods'
 import type * as createModule from '#domain/workspaces/create'
 import { createWorkspace } from '#domain/workspaces/create'
-import type { WorkspaceCreateResult } from '#domain/workspaces/create'
 import { cleanupWorkspaceDetached } from '#domain/workspaces/cleanup'
 import { closeDb } from '#db/client'
 import { createWorkspaceGroup, listWorkspaceGroupRows } from '#db/group-store'
@@ -63,7 +62,7 @@ beforeEach(async () => {
   vi.mocked(cleanupWorkspaceDetached).mockReset().mockResolvedValue()
   vi.mocked(createWorkspace).mockReset().mockResolvedValue({
     workspaceId: 'spawned', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
-  } as WorkspaceCreateResult)
+  })
 })
 
 afterEach(async () => {

@@ -142,7 +142,7 @@ export async function followPod<T>(
             const value = decide(pod)
             if (value !== undefined) settle(() => resolve({ value }))
           } catch (err) {
-            settle(() => reject(err as Error))
+            settle(() => reject(err))
           }
         },
         () => settle(() => resolve('pause')),

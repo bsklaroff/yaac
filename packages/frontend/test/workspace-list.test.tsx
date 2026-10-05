@@ -725,7 +725,7 @@ describe('WorkspaceList', () => {
     function stubZones(): void {
       const rect = (top: number, bottom: number): DOMRect =>
         ({ top, bottom, left: 0, right: 200, x: 0, y: top, width: 200, height: bottom - top,
-          toJSON: () => ({}) }) as DOMRect
+          toJSON: () => ({}) })
       screen.getByRole('group', { name: 'Ungrouped workspaces' }).getBoundingClientRect =
         () => rect(0, 100)
       screen.getByRole('group', { name: 'Release' }).getBoundingClientRect = () => rect(100, 200)

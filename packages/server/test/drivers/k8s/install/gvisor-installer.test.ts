@@ -72,7 +72,7 @@ beforeEach(() => {
   mockExec.mockImplementation((() => {
     callsBeforeRollout = fakeCluster.calls.length
     return Promise.resolve({ stdout: '', stderr: '' })
-  }) as never)
+  }))
 })
 
 afterEach(() => {

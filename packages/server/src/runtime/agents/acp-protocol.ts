@@ -404,7 +404,7 @@ export function mergeToolCall(
       ? { content: patch.content }
       : previous?.content !== undefined ? { content: previous.content } : {}),
     ...(patch.locations ?? previous?.locations
-      ? { locations: patch.locations ?? previous?.locations as Array<{ path: string; line?: number }> }
+      ? { locations: patch.locations ?? previous?.locations }
       : {}),
   }
 }
@@ -539,7 +539,7 @@ export class AcpProjection {
     const translated = translateSessionUpdate(params)
     if (!translated) return out
     const tag = thread !== undefined ? { thread } : {}
-    if (translated.kind === 'event') return [...out, { ...translated.event, ...tag } as AcpEventInit]
+    if (translated.kind === 'event') return [...out, { ...translated.event, ...tag }]
     const { output, ...patch } = translated.patch
     const known = this.toolCalls.get(patch.toolCallId)
     // An update naming nothing about a call never shown (an adapter

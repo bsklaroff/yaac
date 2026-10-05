@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { runtimeHandleFromPod } from '#drivers/k8s/workspaces'
-import type { PodInfo, PodTerminalState } from '#drivers/k8s/substrate/pods'
+import type { PodInfo } from '#drivers/k8s/substrate/pods'
 
 const NOW = 1_800_000_000_000
 
@@ -109,7 +109,7 @@ describe('runtimeHandleFromPod', () => {
   ])('derives the death cause from %s', (_what, terminal, expected) => {
     const p = pod({
       running: false,
-      ...(terminal ? { terminal: terminal as PodTerminalState } : {}),
+      ...(terminal ? { terminal: terminal } : {}),
     })
     expect(runtimeHandleFromPod(p).deathCause).toEqual(expected)
   })

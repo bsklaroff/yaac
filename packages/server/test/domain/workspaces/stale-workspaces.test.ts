@@ -3,7 +3,6 @@ import type * as podsModule from '#drivers/k8s/substrate/pods'
 import { runtimeHandleFromPod } from '#drivers/k8s/workspaces'
 import type { RuntimeHandle, StrayUnit } from '#drivers/contract'
 import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
-import type { TmuxLiveness } from '#runtime/status/liveness'
 
 vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
@@ -121,7 +120,7 @@ describe('reconcileStaleWorkspaces', () => {
 
   it('reaps a running pod whose tmux is conclusively dead, and audits it', async () => {
     mockWorkspaces.mockResolvedValue([pod('zombie-1')])
-    mockProbe.mockResolvedValue('dead' as TmuxLiveness)
+    mockProbe.mockResolvedValue('dead')
 
     await reconcileStaleWorkspaces(view)
 
@@ -195,7 +194,7 @@ describe('reconcileStaleWorkspaces', () => {
 
   it('does NOT reap on an inconclusive probe, and logs the near-miss', async () => {
     mockWorkspaces.mockResolvedValue([pod('blip-1')])
-    mockProbe.mockResolvedValue('unknown' as TmuxLiveness)
+    mockProbe.mockResolvedValue('unknown')
 
     await reconcileStaleWorkspaces(view)
 
@@ -207,7 +206,7 @@ describe('reconcileStaleWorkspaces', () => {
 
   it('keeps a pod with a live tmux untouched and unlogged', async () => {
     mockWorkspaces.mockResolvedValue([pod('healthy-1')])
-    mockProbe.mockResolvedValue('alive' as TmuxLiveness)
+    mockProbe.mockResolvedValue('alive')
 
     await reconcileStaleWorkspaces(view)
 
@@ -291,7 +290,7 @@ describe('reconcileStaleWorkspaces', () => {
 
   it('reaps a live-tmux pod whose agent pane is still the placeholder past grace', async () => {
     mockWorkspaces.mockResolvedValue([pod('half-1')])
-    mockProbe.mockResolvedValue('alive' as TmuxLiveness)
+    mockProbe.mockResolvedValue('alive')
     mockPaneProbe.mockResolvedValue('placeholder')
 
     await reconcileStaleWorkspaces(view)
@@ -306,7 +305,7 @@ describe('reconcileStaleWorkspaces', () => {
 
   it('keeps a placeholder pane past grace while its create is still provisioning', async () => {
     mockWorkspaces.mockResolvedValue([pod('warming-1')])
-    mockProbe.mockResolvedValue('alive' as TmuxLiveness)
+    mockProbe.mockResolvedValue('alive')
     mockPaneProbe.mockResolvedValue('placeholder')
     setDesired({ provisioning: ['warming-1'] })
 
@@ -318,7 +317,7 @@ describe('reconcileStaleWorkspaces', () => {
   it('keeps a placeholder pane while the pod is inside the grace window', async () => {
     const fresh = { ...pod('fresh-1'), createdAtMs: Date.now() }
     mockWorkspaces.mockResolvedValue([fresh])
-    mockProbe.mockResolvedValue('alive' as TmuxLiveness)
+    mockProbe.mockResolvedValue('alive')
     mockPaneProbe.mockResolvedValue('placeholder')
 
     await reconcileStaleWorkspaces(view)
@@ -328,7 +327,7 @@ describe('reconcileStaleWorkspaces', () => {
 
   it('does NOT reap on an inconclusive agent-pane probe', async () => {
     mockWorkspaces.mockResolvedValue([pod('pane-blip-1')])
-    mockProbe.mockResolvedValue('alive' as TmuxLiveness)
+    mockProbe.mockResolvedValue('alive')
     mockPaneProbe.mockResolvedValue('unknown')
 
     await reconcileStaleWorkspaces(view)
@@ -366,7 +365,7 @@ describe('reconcileStaleWorkspaces', () => {
   it('stands only the orphan sweep down when the stray-unit read fails', async () => {
     mockWorkspaces.mockResolvedValue([pod('zombie-1')])
     mockStrays.mockRejectedValue(new Error('informer down'))
-    mockProbe.mockResolvedValue('dead' as TmuxLiveness)
+    mockProbe.mockResolvedValue('dead')
 
     await expect(reconcileStaleWorkspaces(view)).resolves.toBeUndefined()
 
@@ -438,7 +437,7 @@ describe('reconcileStaleWorkspaces', () => {
       // death cannot be undone.
       setDesired({ live: [row('old-1', true), row('old-2', true)] })
       mockWorkspaces.mockResolvedValue([pod('old-1'), pod('old-2')])
-      mockProbe.mockResolvedValue('alive' as TmuxLiveness)
+      mockProbe.mockResolvedValue('alive')
       await reconcileStaleWorkspaces(view)
 
       mockWorkspaces.mockResolvedValue([]) // the bad listing
@@ -474,7 +473,7 @@ describe('reconcileStaleWorkspaces', () => {
 
     it('leaves a row alone while its pod is running', async () => {
       mockWorkspaces.mockResolvedValue([pod('healthy')])
-      mockProbe.mockResolvedValue('alive' as TmuxLiveness)
+      mockProbe.mockResolvedValue('alive')
       setDesired({ live: [row('healthy', true)] })
 
       await reconcileStaleWorkspaces(view)

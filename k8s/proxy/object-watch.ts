@@ -10,8 +10,8 @@
  * the pod out of its Service.
  */
 
-import { makeInformer, PatchStrategy, setHeaderOptions, type KubernetesObject } from '@kubernetes/client-node'
-import { inClusterClient, superviseInformer } from './pod-watch'
+import { PatchStrategy, setHeaderOptions, type KubernetesObject } from '@kubernetes/client-node'
+import { inClusterClient, makeInformer, superviseInformer } from './pod-watch'
 import { agentIdentities, type AgentIdentity } from './agent-keys'
 import {
   CA_SECRET_NAME,
@@ -237,28 +237,28 @@ export function startObjectWatch(objects: ProxyObjects, client: Client = inClust
     () => client.core.listNamespacedSecret({ namespace: ns, labelSelector: selector('credentials') }),
     selector('credentials'),
   )
-  const feedCredentials = (obj: KubernetesObject): void => { void objects.applyCredentials(obj as RawObject) }
+  const feedCredentials = (obj: KubernetesObject): void => { void objects.applyCredentials(obj) }
   credentials.on('add', feedCredentials)
   credentials.on('update', feedCredentials)
-  credentials.on('delete', (obj) => { void objects.applyCredentials(obj as RawObject, true) })
+  credentials.on('delete', (obj) => { void objects.applyCredentials(obj, true) })
 
   const secrets = makeInformer(
     client.kubeConfig, secretsPath,
     () => client.core.listNamespacedSecret({ namespace: ns, labelSelector: selector('secrets') }),
     selector('secrets'),
   )
-  secrets.on('add', (obj) => { objects.applyProjectSecrets(obj as RawObject) })
-  secrets.on('update', (obj) => { objects.applyProjectSecrets(obj as RawObject) })
-  secrets.on('delete', (obj) => { objects.applyProjectSecrets(obj as RawObject, true) })
+  secrets.on('add', (obj) => { objects.applyProjectSecrets(obj) })
+  secrets.on('update', (obj) => { objects.applyProjectSecrets(obj) })
+  secrets.on('delete', (obj) => { objects.applyProjectSecrets(obj, true) })
 
   const registrations = makeInformer(
     client.kubeConfig, configMapsPath,
     () => client.core.listNamespacedConfigMap({ namespace: ns, labelSelector: selector('registration') }),
     selector('registration'),
   )
-  registrations.on('add', (obj) => { objects.applyRegistration(obj as RawObject) })
-  registrations.on('update', (obj) => { objects.applyRegistration(obj as RawObject) })
-  registrations.on('delete', (obj) => { objects.applyRegistration(obj as RawObject, true) })
+  registrations.on('add', (obj) => { objects.applyRegistration(obj) })
+  registrations.on('update', (obj) => { objects.applyRegistration(obj) })
+  registrations.on('delete', (obj) => { objects.applyRegistration(obj, true) })
 
   superviseInformer(credentials, 'credentials', () => objects.markSeeded('credentials'))
   superviseInformer(secrets, 'secrets', () => objects.markSeeded('secrets'))
@@ -285,7 +285,7 @@ export async function fetchRegistration(
     namespace: client.namespace,
     labelSelector: `${selector('registration')},${LABEL_WORKSPACE_ID}=${workspaceId}`,
   })
-  for (const cm of list.items) objects.applyRegistration(cm as RawObject)
+  for (const cm of list.items) objects.applyRegistration(cm)
   const found = objects.registration(workspaceId)
   if (!found) registrationMisses.set(workspaceId, Date.now())
   return found
@@ -328,5 +328,5 @@ export async function readOutputObject(
   const obj = kind === 'secret'
     ? await client.core.readNamespacedSecret(req)
     : await client.core.readNamespacedConfigMap(req)
-  return obj as RawObject
+  return obj
 }

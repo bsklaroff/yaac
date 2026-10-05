@@ -287,7 +287,7 @@ describe('decideSpawn', () => {
       await gate
       return {
         workspaceId: 'x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
-      } as WorkspaceCreateResult
+      }
     })
     for (let i = 0; i < SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE; i++) {
       expect((await decideSpawn(makeRequest({ callerWorkspaceId, requestId: `r${i}` }))).ok).toBe(true)

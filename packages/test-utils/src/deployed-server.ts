@@ -186,7 +186,7 @@ function testServerDeploymentManifest(
   const base = testTmpBase()
   container.volumeMounts.push({ name: 'scratch', mountPath: base })
   podSpec.volumes.push({ name: 'scratch', hostPath: { path: base, type: 'DirectoryOrCreate' } })
-  return manifest as unknown as Record<string, unknown>
+  return manifest
 }
 
 /**

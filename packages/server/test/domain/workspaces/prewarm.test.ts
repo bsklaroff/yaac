@@ -213,7 +213,7 @@ describe('tryClaimPrewarmed', () => {
     vi.mocked(resolveProjectEnv).mockResolvedValue({
       plain: {},
       secrets: { API_KEY: { value: 'v', rule: { hosts: ['api.example.com'] } } },
-    } as unknown as Awaited<ReturnType<typeof resolveProjectEnv>>)
+    })
 
     await tryClaimPrewarmed('p', 'req', setup('claude'), emit)
 

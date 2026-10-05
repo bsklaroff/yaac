@@ -24,6 +24,7 @@ function stubMatchMedia(initial: boolean): { set: (matches: boolean) => void; qu
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/unbound-method -- only ever restored onto window
 const realMatchMedia = window.matchMedia
 
 afterEach(() => {

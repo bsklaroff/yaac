@@ -1,6 +1,6 @@
 import net from 'node:net'
-import { serve, type ServerType } from '@hono/node-server'
-import { createNodeWebSocket } from '@hono/node-ws'
+import { serve, upgradeWebSocket, type ServerType } from '@hono/node-server'
+import { WebSocketServer } from 'ws'
 import type { MiddlewareHandler } from 'hono'
 import { buildApp, buildMamaRelayApp } from '#main/server'
 import {
@@ -65,7 +65,7 @@ interface RawWebSocket {
 /** `WebSocket.OPEN` (the `ws` class constant is not importable here). */
 const WS_OPEN = 1
 
-/** The raw socket behind a Hono WebSocket context, which @hono/node-ws
+/** The raw socket behind a Hono WebSocket context, which @hono/node-server
  *  always sets. */
 function rawOf(ws: { raw?: unknown }): RawWebSocket {
   return ws.raw as RawWebSocket
@@ -143,6 +143,18 @@ type ServeFetch = Parameters<typeof serve>[0]['fetch']
  * at `startPort` and moving up past ports in use. The bound port is
  * returned and recorded in the lock file. `startPort` 0 asks the OS for an
  * ephemeral port.
+ *
+ * Each attempt gets its own WebSocketServer, because node-server closes it
+ * along with the HTTP server it was given to.
+ *
+ * WebSockets are compressed: terminal repaints and snapshot/ACP JSON
+ * deflate well, which matters over a slow tailnet link. Frames under 512
+ * bytes (keystrokes, echoes, control) are not worth compressing; this only
+ * affects our side, as browsers still deflate their own tiny frames.
+ * Context takeover stays on (ws's default): about 300KB of zlib state per
+ * socket, but successive repaints share history and compress far better.
+ * To cap memory, set `zlibDeflateOptions: { memLevel, windowBits }` or
+ * `serverNoContextTakeover: true`.
  */
 function bindServer(
   fetch: ServeFetch,
@@ -151,7 +163,11 @@ function bindServer(
   const hostname = env.bindAddr
   return bindWithAutoIncrement(startPort, (port) =>
     new Promise<{ server: ServerType; port: number }>((resolve, reject) => {
-      const s = serve({ fetch, port, hostname }, (info) => {
+      const wss = new WebSocketServer({
+        noServer: true,
+        perMessageDeflate: { threshold: 512, zlibDeflateOptions: { level: 6 } },
+      })
+      const s = serve({ fetch, port, hostname, websocket: { server: wss } }, (info) => {
         resolve({ server: s, port: info.port })
       })
       s.once('error', reject)
@@ -237,27 +253,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
 
   // WebSocket routes are registered here, not in buildApp, so buildApp's
   // return type stays the plain Hono app the CLI's RPC client infers from.
-  // Keep `nodeWs` whole: injectWebSocket relies on `this`.
-  const nodeWs = createNodeWebSocket({ app })
-  // Compress WebSockets: terminal repaints and snapshot/ACP JSON deflate
-  // well, which matters over a slow tailnet link.
-  //
-  // Set after construction because @hono/node-ws passes no options to its
-  // WebSocketServer; `ws` reads this per upgrade, and it must be an object.
-  // An api test asserts the extension is negotiated.
-  //
-  // Context takeover stays on (ws's default): about 300KB of zlib state per
-  // socket, but successive repaints share history and compress far better.
-  // To cap memory, set `zlibDeflateOptions: { memLevel, windowBits }` or
-  // `serverNoContextTakeover: true`.
-  nodeWs.wss.options.perMessageDeflate = {
-    // Small frames (keystrokes, echoes, control) are not worth compressing.
-    // This only affects our side; browsers still deflate their own tiny
-    // frames.
-    threshold: 512,
-    zlibDeflateOptions: { level: 6 },
-  }
-  app.get('/api/events', nodeWs.upgradeWebSocket(() => {
+  app.get('/api/events', upgradeWebSocket(() => {
     // Send through the raw `ws` socket: WSContext.send passes
     // `compress: undefined`, which overrides ws's `compress: true` default
     // and would leave snapshots uncompressed.
@@ -282,7 +278,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
 
   // Auth-daemon relay: the login broker on the user's machine keeps one
   // outbound socket here; sign-in routes forward ops over it.
-  app.get('/api/agent/auth', nodeWs.upgradeWebSocket(() => ({
+  app.get('/api/agent/auth', upgradeWebSocket(() => ({
     onOpen: (_evt, ws) => {
       const raw = rawOf(ws)
       const sock = {
@@ -331,7 +327,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
 
   // PTY bridge: one terminal per connection, attached to the workspace's
   // tmux. Not under /workspace/ to avoid colliding with GET /workspace/:id.
-  app.get('/api/pty/attach', attachQuery(), nodeWs.upgradeWebSocket((c) => {
+  app.get('/api/pty/attach', attachQuery(), upgradeWebSocket((c) => {
     const id = c.req.query('id') ?? ''
     // attachPty validates these and spawns the PTY at the browser's size, so
     // tmux and the client grid match from the first frame.
@@ -365,7 +361,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // server binds no host port on either driver; `yaac forward` or the
   // desktop app listens on the user's machine and opens one of these per
   // connection (docs/port-forward-tunnel.md).
-  app.get('/api/forward/attach', attachQuery(), nodeWs.upgradeWebSocket((c) => {
+  app.get('/api/forward/attach', attachQuery(), upgradeWebSocket((c) => {
     const id = c.req.query('id') ?? ''
     const port = Number(c.req.query('port'))
     return {
@@ -396,7 +392,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // ACP bridge: one chat pane per connection, attached to the live
   // `AcpConversation` held by the status watcher's driver. Frames are JSON
   // events.
-  app.get('/api/acp/attach', attachQuery({ session: true }), nodeWs.upgradeWebSocket((c) => {
+  app.get('/api/acp/attach', attachQuery({ session: true }), upgradeWebSocket((c) => {
     const id = c.req.query('id') ?? ''
     const agentSessionId = c.req.query('session') ?? ''
     return {
@@ -428,7 +424,6 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   if (startPort !== 0 && port !== startPort) {
     serverLog(`[server] preferred port ${startPort} in use; bound ${port} instead`)
   }
-  nodeWs.injectWebSocket(server)
 
   // Race-safe acquire (O_EXCL). A loser closes its server and returns,
   // leaving the existing server in charge.

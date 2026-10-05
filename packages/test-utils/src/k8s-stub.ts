@@ -117,7 +117,7 @@ function matchesFields(obj: FakeObject, selector: string): boolean {
     const [, path, op, want] = /^([^!=]+)(!=|==?)(.*)$/.exec(term.trim()) ?? []
     let v: unknown = obj
     for (const part of path.split('.')) v = (v as Record<string, unknown> | undefined)?.[part]
-    const got = v === undefined ? '' : String(v as string)
+    const got = typeof v === 'string' ? v : JSON.stringify(v) ?? ''
     return op === '!=' ? got !== want : got === want
   })
 }

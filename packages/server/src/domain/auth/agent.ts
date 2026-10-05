@@ -158,8 +158,8 @@ function createAuthAgentHub(): {
 
     connected: () => socket !== null,
 
-    startLogin: (tool) => start('login', tool).view as ToolLoginView,
-    getLogin: (id) => get('login', id, 'sign-in session').view as ToolLoginView,
+    startLogin: (tool) => start('login', tool).view,
+    getLogin: (id) => get('login', id, 'sign-in session').view,
 
     sendLoginInput: (id, text) => {
       const entry = get('login', id, 'sign-in session')
@@ -175,13 +175,13 @@ function createAuthAgentHub(): {
         )
       }
       send({ op: 'input', id, text: cleaned })
-      return entry.view as ToolLoginView
+      return entry.view
     },
 
     cancelLogin: (id) => cancel('login', id),
 
-    startInstall: (tool) => start('install', tool).view as ToolInstallView,
-    getInstall: (id) => get('install', id, 'install session').view as ToolInstallView,
+    startInstall: (tool) => start('install', tool).view,
+    getInstall: (id) => get('install', id, 'install session').view,
     cancelInstall: (id) => cancel('install', id),
 
     clearForTests: () => {

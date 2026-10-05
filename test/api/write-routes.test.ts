@@ -406,17 +406,12 @@ describe('write routes', () => {
       return sourceRepo
     }
 
-    interface BranchesBody {
-      branches: string[]
-      defaultBranch: string
-    }
-
     it('GET /project/:slug/branches lists branches with the default branch', async () => {
       await writeProjectWithRepo('demo')
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.project[':slug'].branches.$get({ param: { slug: 'demo' }, query: {} })
       expect(res.status).toBe(200)
-      const body = await res.json() as BranchesBody
+      const body = await res.json()
       expect(body.branches).toContain('main')
       expect(body.branches).toContain('develop')
       expect(body.defaultBranch).toBe('main')
@@ -431,7 +426,7 @@ describe('write routes', () => {
         query: { refresh: '1' },
       })
       expect(res.status).toBe(200)
-      expect((await res.json() as BranchesBody).branches).toContain('feature/late')
+      expect((await res.json()).branches).toContain('feature/late')
     })
 
     it('GET returns 404 for an unknown project', async () => {

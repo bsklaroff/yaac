@@ -179,7 +179,7 @@ describe('reapOrphanedPodmanProcs', () => {
       // no SIGKILL.
       if (sig === 0) throw new Error('ESRCH')
       return true
-    }) as typeof process.kill)
+    }))
 
     await reapOrphanedPodmanProcs()
 
@@ -198,7 +198,7 @@ describe('reapOrphanedPodmanProcs', () => {
       { pid: NaN, tag: 'c:3', verb: 'build' },
       { pid: 1.5, tag: 'd:4', verb: 'build' },
     ] as Array<{ pid: number; tag: string; verb: string }>)
-    const kill = vi.spyOn(process, 'kill').mockImplementation((() => true) as typeof process.kill)
+    const kill = vi.spyOn(process, 'kill').mockImplementation((() => true))
 
     await reapOrphanedPodmanProcs()
 
@@ -217,7 +217,7 @@ describe('reapOrphanedPodmanProcs', () => {
       if (args[1] === '9001') return Promise.resolve({ stdout: 'vim notes.md\n', stderr: '' })
       return Promise.reject(new Error('ps: no such process'))
     })
-    const kill = vi.spyOn(process, 'kill').mockImplementation((() => true) as typeof process.kill)
+    const kill = vi.spyOn(process, 'kill').mockImplementation((() => true))
 
     await reapOrphanedPodmanProcs()
 
@@ -229,7 +229,7 @@ describe('reapOrphanedPodmanProcs', () => {
     vi.useFakeTimers()
     writeState([{ pid: 9001, tag: 'yaac-tools:abc', verb: 'build' }])
     execFileMock.mockResolvedValue({ stdout: 'podman build -t yaac-tools:abc .\n', stderr: '' })
-    const kill = vi.spyOn(process, 'kill').mockImplementation((() => true) as typeof process.kill)
+    const kill = vi.spyOn(process, 'kill').mockImplementation((() => true))
 
     const done = reapOrphanedPodmanProcs()
     // The record stays on disk through the grace period, so a server that
@@ -253,7 +253,7 @@ describe('reapOrphanedPodmanProcs', () => {
     execFileMock
       .mockResolvedValueOnce({ stdout: 'podman build -t yaac-tools:abc .\n', stderr: '' })
       .mockResolvedValue({ stdout: 'psql -h localhost\n', stderr: '' })
-    const kill = vi.spyOn(process, 'kill').mockImplementation((() => true) as typeof process.kill)
+    const kill = vi.spyOn(process, 'kill').mockImplementation((() => true))
 
     const done = reapOrphanedPodmanProcs()
     await vi.advanceTimersByTimeAsync(6000)
@@ -264,7 +264,7 @@ describe('reapOrphanedPodmanProcs', () => {
   })
 
   it('no-ops without a state file, and clears a torn one', async () => {
-    const kill = vi.spyOn(process, 'kill').mockImplementation((() => true) as typeof process.kill)
+    const kill = vi.spyOn(process, 'kill').mockImplementation((() => true))
     await reapOrphanedPodmanProcs()
     expect(execFileMock).not.toHaveBeenCalled()
     // No file is created when there was none.

@@ -376,7 +376,7 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
       className="flex h-full flex-col bg-bg"
       onKeyDown={onKeyDown}
       onBlur={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) void saver.flush()
+        if (!e.currentTarget.contains(e.relatedTarget)) void saver.flush()
       }}
     >
       <div className="flex h-7 shrink-0 items-center gap-2 border-b border-hairline bg-surface px-2 text-[11px]">

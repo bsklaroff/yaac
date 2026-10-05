@@ -328,7 +328,7 @@ function freshRun(): RunMock {
         : Promise.resolve({ stdout: 'yaac-control-plane\n', stderr: '' })
     }
     return happyRun(file, args)
-  }) as RunMock
+  })
 }
 
 /** Stand-in Calico manifest and its real checksum, so the pin verifies. */
@@ -368,9 +368,9 @@ function makeDeps(
     runStreaming?: StreamMock
   } = {},
 ): ClusterInstallDeps & { run: RunMock; runStreaming: StreamMock } {
-  const run = overrides.run ?? (vi.fn(happyRun) as RunMock)
+  const run = overrides.run ?? (vi.fn(happyRun))
   const runStreaming = overrides.runStreaming
-    ?? (vi.fn(() => Promise.resolve()) as StreamMock)
+    ?? (vi.fn(() => Promise.resolve()))
   return {
     run: run as unknown as ClusterInstallDeps['run'],
     runStreaming,
@@ -545,7 +545,7 @@ function adoptRun(facts: AdoptFacts = {}): RunMock {
         : Promise.resolve({ stdout: routes ?? ADOPT_ROUTES, stderr: '' })
     }
     return happyRun(file, args)
-  }) as RunMock
+  })
 }
 
 /** Stage the pod-CIDR sources: Calico's IPPools and the nodes' podCIDRs. */
@@ -573,7 +573,7 @@ function tailnetRun(operator: 'present' | 'absent' | 'unreachable'): RunMock {
       }
     })
   }
-  return vi.fn(happyRun) as RunMock
+  return vi.fn(happyRun)
 }
 
 /** Everything install logged, joined. */
@@ -734,7 +734,7 @@ describe('runClusterInstall', () => {
         file === 'podman' && args[0] === 'network' && args[1] === 'inspect'
           ? Promise.resolve({ stdout: 'fd00:4:3:2::1 10.89.0.1 \n', stderr: '' })
           : happyRun(file, args)
-      )) as RunMock,
+      )),
     })
 
     await runClusterInstall({}, deps)
@@ -752,7 +752,7 @@ describe('runClusterInstall', () => {
         file === 'podman' && args[0] === 'network' && args[1] === 'inspect'
           ? Promise.resolve({ stdout: 'fd00:4:3:2::1 \n', stderr: '' })
           : happyRun(file, args)
-      )) as RunMock,
+      )),
     })
 
     await runClusterInstall({}, deps)
@@ -991,7 +991,7 @@ describe('runClusterInstall', () => {
             return Promise.reject(new Error('connection refused'))
           }
           return happyRun(file, args)
-        }) as RunMock,
+        }),
       })
       const install = runClusterInstall({}, deps)
       // Install first reads its record from disk (real I/O), so advance the
@@ -1023,7 +1023,7 @@ describe('runClusterInstall', () => {
           file === 'kubectl' && args.includes('/readyz')
             ? Promise.reject(new Error('connection refused'))
             : happyRun(file, args)
-        )) as RunMock,
+        )),
       })
       const refused = expect(runClusterInstall({}, deps)).rejects.toThrow(ClusterInstallError)
       await vi.waitFor(() => {
@@ -1046,7 +1046,7 @@ describe('runClusterInstall', () => {
           if (file === 'kubectl' && args[1] === 'current-context') return Promise.resolve({ stdout: `${context}\n`, stderr: '' })
           if (file === 'kubectl' && args[1] === 'view') return Promise.resolve({ stdout: `server: ${server}\n`, stderr: '' })
           return happyRun(file, args)
-        }) as RunMock,
+        }),
       })
       const err = await runClusterInstall({}, deps).catch((e: unknown) => e)
       expect((err as Error).message).toMatch(/every layer would go to the wrong cluster[\s\S]*kind export kubeconfig --name yaac/)
@@ -1081,7 +1081,7 @@ describe('runClusterInstall', () => {
           return Promise.resolve({ stdout: kindOut, stderr: '' })
         }
         return happyRun(file, args)
-      }) as RunMock,
+      }),
     })
     await expect(runClusterInstall({}, deps)).resolves.toBeUndefined()
   })
@@ -1202,7 +1202,7 @@ describe('runClusterInstall', () => {
       const handled = extra?.(file, args)
       if (handled) return handled
       return happyRun(file, args)
-    }) as RunMock
+    })
   }
 
   it('writes the libkrun drop-in and inits a rootful machine when none exists', async () => {
