@@ -43,6 +43,8 @@ export {
   Minimize2 as CollapseIcon,
   UnfoldHorizontal as WidenIcon,
   FoldHorizontal as NarrowIcon,
+  ListChevronsDownUp as CondenseIcon,
+  ListChevronsUpDown as UncondenseIcon,
   GitBranch as BranchIcon,
   Globe as PreviewIcon,
   ArrowLeft as NavBackIcon,
