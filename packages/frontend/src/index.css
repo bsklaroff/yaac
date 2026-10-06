@@ -104,6 +104,27 @@
 }
 
 /*
+ * The sidebar's "background" indicator: the agent's turn is over but work it
+ * started (a background shell, a monitor, a subagent) is still live. Same
+ * six-dot grid as the spinner, so it reads as "still going", but the dots
+ * breathe slowly in a smooth top-to-bottom swell instead of clicking around.
+ */
+.braille-breathe > i:nth-child(-n+2) { animation: braille-breathe 2400ms ease-in-out infinite; }
+.braille-breathe > i:nth-child(n+3):nth-child(-n+4) { animation: braille-breathe 2400ms ease-in-out 300ms infinite; }
+.braille-breathe > i:nth-child(n+5) { animation: braille-breathe 2400ms ease-in-out 600ms infinite; }
+
+@keyframes braille-breathe {
+  0%, 100% { opacity: .2 } 50% { opacity: 1 }
+}
+
+/* Without motion both indicators hold still, told apart by colour and by the
+ * background grid's dimmer dots. */
+@media (prefers-reduced-motion: reduce) {
+  .braille-spinner > i { animation: none !important; }
+  .braille-breathe > i { opacity: .5; }
+}
+
+/*
  * Cycling ellipsis for the chat pane's "working" label — the dots run
  * (none) → . → .. → ... so the pane keeps moving while a turn is in flight.
  *

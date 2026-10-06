@@ -19,6 +19,9 @@
  * queue, since most adapters take a prompt while running on their own
  * (pi's is the exception, see `holdsPrompts`).
  *
+ * Between turns, background work the agent started (`backgroundWorkReport`,
+ * claude only) makes the status `background` rather than `waiting`.
+ *
  * ## Reconnect
  *
  * acpd keeps the agent alive across detaches, so a reconnect may land
@@ -49,6 +52,7 @@ import {
   chooseAllowOption,
   clientCapabilities,
   agentRunningReport,
+  backgroundWorkReport,
   isWorkUpdate,
   permissionReply,
   sessionModeId,
@@ -65,7 +69,15 @@ import { acpPermissionModeFor, type AcpAdapterProfile } from './acp-adapters'
 import type { AcpInFlight } from './acp-log'
 import { serverLog } from '#log'
 import type { AcpEventInit, AcpImage, AcpQueuedPrompt, AcpStopReason } from '@yaac/shared/acp'
-import type { PermissionMode } from '@yaac/shared/types'
+import type { AgentStatus, PermissionMode } from '@yaac/shared/types'
+
+/**
+ * How long the end of background work waits before the status drops to
+ * `waiting`. claude reports a finished task gone just before its
+ * notification wakes the agent, and without this grace the moment between
+ * would start a waiting spell, which chimes.
+ */
+const BACKGROUND_SETTLE_MS = 3000
 
 export interface AcpConversationDeps {
   /** The pod-side transport, already dialed. */
@@ -85,7 +97,7 @@ export interface AcpConversationDeps {
   /**
    * `status` changed, including its first resolution out of undefined.
    * Read the getter: a turn parked on a permission ask is working but
-   * `waiting`.
+   * `asking`.
    */
   onStatus: () => void
   /**
@@ -176,6 +188,11 @@ export class AcpConversation {
   /** The adapter's last report of its own state, undefined until one
    *  arrives (or always, for adapters that send none). */
   private agentRunning: boolean | undefined
+  /** The adapter's last report of live background work
+   *  (`backgroundWorkReport`), undefined until one arrives. */
+  private backgroundWork: boolean | undefined
+  /** Pending drop of `backgroundWork` to false; see `setBackgroundWork`. */
+  private backgroundSettle: NodeJS.Timeout | undefined
   /** How the work in progress ended, for its `turn-end`: the last prompt
    *  reply's stop reason, which can precede the adapter going idle. */
   private stopReason: AcpStopReason = 'end_turn'
@@ -285,13 +302,13 @@ export class AcpConversation {
    * undefined rather than default it: reporting `waiting` for a working
    * agent is the bug recovery exists to prevent.
    */
-  get status(): 'running' | 'waiting' | undefined {
+  get status(): AgentStatus | undefined {
     if (!this.statusKnown) return undefined
-    // A turn blocked on a permission ask is busy but is waiting on the user,
-    // which is exactly when the sidebar dot, chime and tray badge should
-    // fire.
-    if (this.isAwaitingPermission) return 'waiting'
-    return this.isBusy ? 'running' : 'waiting'
+    // A turn blocked on an ask is busy but stopped on the user, which is
+    // exactly when the sidebar, chime and tray badge should say so.
+    if (this.isAwaitingPermission) return 'asking'
+    if (this.isBusy) return 'running'
+    return this.backgroundWork === true ? 'background' : 'waiting'
   }
 
   /** Whether the agent is parked on an ask nobody has answered. */
@@ -374,6 +391,22 @@ export class AcpConversation {
   }
 
   /**
+   * Follow a report of background work. Its end settles late while idle
+   * (`BACKGROUND_SETTLE_MS`), or at once if the agent wakes first
+   * (`changeWork`).
+   */
+  private setBackgroundWork(live: boolean | undefined, { settle = true } = {}): void {
+    clearTimeout(this.backgroundSettle)
+    this.backgroundSettle = undefined
+    if (live === this.backgroundWork) return
+    if (settle && live === false && !this.isBusy && !this.closed) {
+      this.backgroundSettle = setTimeout(() => this.setBackgroundWork(false, { settle: false }), BACKGROUND_SETTLE_MS)
+      return
+    }
+    this.changeWork(() => { this.backgroundWork = live })
+  }
+
+  /**
    * Apply a change to either working signal and publish its effects. The
    * events here are the pane's only turn boundaries, including for recovered
    * turns: panes infer nothing from content, since a replay's `user`
@@ -383,6 +416,11 @@ export class AcpConversation {
     const wasWorking = this.isBusy
     const wasStatus = this.status
     change()
+    if (this.isBusy && this.backgroundSettle !== undefined) {
+      clearTimeout(this.backgroundSettle)
+      this.backgroundSettle = undefined
+      this.backgroundWork = false
+    }
     if (this.isBusy !== wasWorking) {
       if (this.isBusy) {
         this.stopReason = 'end_turn'
@@ -455,6 +493,7 @@ export class AcpConversation {
         this.cancelPendingPermissions()
         this.endTurn('cancelled')
         this.setAgentRunning(undefined)
+        this.setBackgroundWork(undefined, { settle: false })
         this.emit({ type: 'error', message: `the agent process exited (code ${code ?? '?'})` })
         return
       }
@@ -480,6 +519,8 @@ export class AcpConversation {
    * `ready`: `session/load` replays history as updates before then.
    */
   private noteAgentState(method: string, params: unknown): void {
+    const background = backgroundWorkReport(method, params)
+    if (background !== undefined) this.setBackgroundWork(background)
     const running = agentRunningReport(method, params)
     if (running !== undefined) this.setAgentRunning(running)
     else if (method === ACP.sessionUpdate && this.deps.profile?.infersRunStart === true
@@ -912,6 +953,9 @@ export class AcpConversation {
     if (this.closed) return
     // A report received live during the read is newer.
     if (this.agentRunning === undefined) this.setAgentRunning(inFlight.agentRunning)
+    if (this.backgroundWork === undefined && this.backgroundSettle === undefined) {
+      this.setBackgroundWork(inFlight.backgroundWork, { settle: false })
+    }
     if (this.statusKnown) return
     // Record asks before publishing status, so the first classification
     // already includes them.
@@ -1143,6 +1187,7 @@ export class AcpConversation {
   close(): void {
     if (this.closed) return
     this.closed = true
+    clearTimeout(this.backgroundSettle)
     // Settle parked asks so their requests are not left pending. The
     // replies are microtasks that run after `peer.close()` below, so none
     // reaches the agent: a detach is not the user declining, and the next

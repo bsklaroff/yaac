@@ -45,7 +45,7 @@ export async function workspaceList(
 }
 
 function renderRunning(workspaces: WorkspaceListEntry[], groupNames: Map<string, string>): void {
-  const statusOrder: Record<string, number> = { waiting: 0, running: 1 }
+  const statusOrder: Record<string, number> = { waiting: 0, background: 1, running: 2 }
   const sorted = [...workspaces].sort((a, b) =>
     (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9)
       || a.createdAt.localeCompare(b.createdAt),

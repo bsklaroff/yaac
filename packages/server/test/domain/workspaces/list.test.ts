@@ -142,6 +142,19 @@ describe('listActiveWorkspaces', () => {
     vi.setSystemTime(2_000)
     setAgentStatus('demo', 's1', '%0', 'waiting')
     expect(await stamp()).toEqual(['waiting', 2_000])
+
+    // An ask lists as waiting with a flag, so a client that predates the
+    // flag still alerts on it; background lists as itself.
+    setAgentStatus('demo', 's1', '%0', 'running')
+    vi.setSystemTime(3_000)
+    setAgentStatus('demo', 's1', '%0', 'asking')
+    _clearListActiveInflightForTests()
+    expect((await listActiveWorkspaces()).workspaces[0]).toMatchObject({ status: 'waiting', asking: true, waitingSinceMs: 3_000 })
+    setAgentStatus('demo', 's1', '%0', 'background')
+    _clearListActiveInflightForTests()
+    const [quiet] = (await listActiveWorkspaces()).workspaces
+    expect(quiet.status).toBe('background')
+    expect(quiet.asking).toBeUndefined()
   })
 
   it('shares one listing between overlapping calls with the same filter, and only those', async () => {

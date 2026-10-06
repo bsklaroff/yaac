@@ -13,8 +13,11 @@
  *
  * Semantics:
  * - No entry → `waiting` (booting, or not yet reachable).
- * - The aggregate is `waiting` if any agent waits: an agent that needs you
- *   needs you regardless of its siblings.
+ * - The aggregate is the most pressing agent's status: `asking`, then
+ *   `waiting` (an agent that needs you needs you regardless of its
+ *   siblings), then `running`, then `background`.
+ * - A waiting spell covers both statuses that need the user (`needsUser`),
+ *   since listings send an ask as `waiting` (`ListedAgentStatus`).
  * - Status is sticky across watcher respawns: a dropped stream flips
  *   `streamHealthy` but keeps the last status, so blips do not flap the UI.
  * - `streamHealthy` is the display path's tmux-liveness signal (both
@@ -24,15 +27,13 @@
  */
 
 import { notifyWorkspaceListChanged } from '#notify'
-import type { LiveAgent, AgentPaneStatus } from '#runtime/agents'
-import type { WorkspaceTerminalEntry } from '@yaac/shared/types'
-
-export type { AgentPaneStatus }
+import type { LiveAgent } from '#runtime/agents'
+import type { AgentStatus, WorkspaceTerminalEntry } from '@yaac/shared/types'
 
 export interface AgentStatusEntry {
-  status: AgentPaneStatus
-  /** Epoch ms when the current waiting spell began; set only while
-   *  waiting. */
+  status: AgentStatus
+  /** Epoch ms when the current waiting spell began; set only while it
+   *  needs the user. */
   waitingSinceMs?: number
   updatedAtMs: number
 }
@@ -107,28 +108,35 @@ function entry(k: string): WorkspaceStatusEntry {
   return fresh
 }
 
+/** Whether a status needs the user: a finished turn or an open ask. */
+function needsUser(status: AgentStatus | undefined): boolean {
+  return status === 'waiting' || status === 'asking'
+}
+
+/** Statuses from most to least pressing; the aggregate takes the first. */
+const STATUS_PRECEDENCE: readonly AgentStatus[] = ['asking', 'waiting', 'running', 'background']
+
 /**
- * The workspace's status: `waiting` if any of its agents is waiting, else
- * `running` if any is running, else `waiting` (nothing classified yet).
+ * The workspace's status: its most pressing agent's (`STATUS_PRECEDENCE`),
+ * or `waiting` when nothing is classified yet.
  */
-export function readWorkspaceStatus(slug: string, workspaceId: string): AgentPaneStatus {
-  const agents = store.get(key(slug, workspaceId))?.agents
-  if (!agents || agents.size === 0) return 'waiting'
-  for (const a of agents.values()) if (a.status === 'waiting') return 'waiting'
-  return 'running'
+export function readWorkspaceStatus(slug: string, workspaceId: string): AgentStatus {
+  const statuses = new Set([...store.get(key(slug, workspaceId))?.agents.values() ?? []].map((a) => a.status))
+  return STATUS_PRECEDENCE.find((s) => statuses.has(s)) ?? 'waiting'
 }
 
 /**
  * Start of the workspace's current waiting spell (epoch ms), or undefined
- * while nothing waits. The earliest waiting conversation wins, so a second
- * agent going idle does not reset a client's per-spell read mark.
+ * while nothing needs the user. The earliest such conversation wins, so a
+ * second agent going idle or asking does not reset a client's per-spell
+ * read mark, and answering it does not bring back a spell already seen.
  */
 export function readWorkspaceWaitingSince(slug: string, workspaceId: string): number | undefined {
   const e = store.get(key(slug, workspaceId))
   if (!e) return undefined
   let earliest: number | undefined
   for (const a of e.agents.values()) {
-    if (a.status !== 'waiting' || a.waitingSinceMs === undefined) continue
+    if (!needsUser(a.status) || a.waitingSinceMs === undefined) continue
     if (earliest === undefined || a.waitingSinceMs < earliest) earliest = a.waitingSinceMs
   }
   // Nothing classified yet: the spell started when the connection attached.
@@ -172,7 +180,7 @@ export function setAgentStatus(
   slug: string,
   workspaceId: string,
   handle: string,
-  status: AgentPaneStatus,
+  status: AgentStatus,
 ): void {
   const k = key(slug, workspaceId)
   const before = readWorkspaceStatus(slug, workspaceId)
@@ -180,10 +188,10 @@ export function setAgentStatus(
   const wasHealthy = store.get(k)?.streamHealthy ?? false
   const e = entry(k)
   const prev = e.agents.get(handle)
-  // A spell keeps its stamp while waiting continues, restarts on entering
-  // waiting, and clears on running.
-  const waitingSinceMs = status === 'waiting'
-    ? (prev?.status === 'waiting' && prev.waitingSinceMs !== undefined
+  // A spell keeps its stamp while the agent needs the user, restarts on
+  // entering that, and clears on leaving it.
+  const waitingSinceMs = needsUser(status)
+    ? (needsUser(prev?.status) && prev?.waitingSinceMs !== undefined
       ? prev.waitingSinceMs
       : Date.now())
     : undefined

@@ -192,6 +192,26 @@ describe('WorkspaceList', () => {
     expect(screen.getByText('stopping…')).toBeTruthy()
   })
 
+  it('marks each row by its status: asking, running, background work, or unread', () => {
+    renderList([
+      entry({ workspaceId: 'a', title: 'Working', status: 'running' }),
+      entry({ workspaceId: 'b', title: 'Watching', status: 'background' }),
+      entry({ workspaceId: 'c', title: 'Done', status: 'waiting', waitingSinceMs: 1 }),
+      entry({ workspaceId: 'd', title: 'Blocked', status: 'waiting', asking: true, waitingSinceMs: 1 }),
+    ])
+
+    const marker = (title: string, selector: string): Element | null =>
+      screen.getByText(title).closest('button')!.querySelector(selector)
+    expect(marker('Working', '.braille-spinner:not(.braille-breathe)')).toBeTruthy()
+    expect(marker('Watching', '.braille-breathe')).toBeTruthy()
+    expect(marker('Watching', '.bg-amber-500')).toBeNull()
+    expect(marker('Done', '.braille-spinner')).toBeNull()
+    expect(marker('Done', '.bg-amber-500')).toBeTruthy()
+    expect(marker('Done', '[aria-label="Waiting for your answer"]')).toBeNull()
+    expect(marker('Blocked', '[aria-label="Waiting for your answer"]')).toBeTruthy()
+    expect(marker('Blocked', '.bg-amber-500, .braille-spinner')).toBeNull()
+  })
+
   it('names each row\'s tool and the model it is answering as', () => {
     // The model comes from the live conversation, not the launch settings. A
     // workspace whose agent has not replied yet, and every opencode one (no

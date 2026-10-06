@@ -818,6 +818,59 @@ describe('agentDriver', () => {
     expect(events.map((e) => e.type)).toEqual(['turn-start', 'turn-end'])
   })
 
+  it("reads claude's live background work between turns as background, not waiting", async () => {
+    const sdk = (message: Record<string, unknown>): Record<string, unknown> => ({
+      jsonrpc: '2.0',
+      method: '_claude/sdkMessage',
+      params: { sessionId: 'acp-bg', message: { type: 'system', ...message } },
+    })
+    const state = (s: string): Record<string, unknown> => sdk({ subtype: 'session_state_changed', state: s })
+    const tasks = (...list: Array<Record<string, unknown>>): Record<string, unknown> =>
+      sdk({ subtype: 'background_tasks_changed', tasks: list })
+    const shell = { task_id: 'b1', task_type: 'local_bash', description: 'sleep 60' }
+    const feed = (stream: FakeStream, msg: Record<string, unknown>): void => stream.feed(`${JSON.stringify(msg)}\n`)
+    // The turn ended with a background shell still going: recovered from the
+    // record on a reattach.
+    await record('acp-bg', [lifeLine, state('running'), tasks(shell), state('idle')])
+    const stream = new FakeStream()
+    tmuxWindows = 'claude\n'
+    const seen: AgentObservation[] = []
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+      dial: acpDial(() => stream),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-bg' }]),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-bg')).toBeDefined())
+    stream.feed(helloLine(false))
+    await vi.waitFor(() => expect(statuses(seen)).toEqual(['background']))
+
+    // The shell finishing is reported just before its notification wakes the
+    // agent, which goes straight to running with no waiting spell between.
+    feed(stream, tasks())
+    feed(stream, state('running'))
+    await vi.waitFor(() => expect(statuses(seen)).toEqual(['background', 'running']))
+    feed(stream, state('idle'))
+    await vi.waitFor(() => expect(statuses(seen)).toEqual(['background', 'running', 'waiting']))
+
+    // An ambient watch is not the agent's work.
+    feed(stream, tasks({ task_id: 'w1', task_type: 'local_bash', description: 'artifact', ambient: true }))
+    feed(stream, tasks({ task_id: 'w1', ambient: true }, shell))
+    await vi.waitFor(() => expect(statuses(seen).at(-1)).toBe('background'))
+    expect(statuses(seen)).toHaveLength(4)
+
+    // Work that ends without waking the agent settles to waiting.
+    vi.useFakeTimers()
+    try {
+      feed(stream, tasks())
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(statuses(seen).at(-1)).toBe('background')
+      await vi.advanceTimersByTimeAsync(3000)
+      expect(statuses(seen).at(-1)).toBe('waiting')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('declares each adapter its own opt-ins for reporting subagents and background work', async () => {
     const streams = new Map([['codex', new FakeStream()], ['opencode', new FakeStream()]])
     tmuxWindows = 'codex\nopencode\n'
@@ -1141,9 +1194,9 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
     expect(stream.sent().some((m) => m.id === 99)).toBe(false)
 
-    // Busy at the protocol level, but shown as waiting everywhere.
-    await vi.waitFor(() => expect(conversation.status).toBe('waiting'))
-    expect(statuses(seen).at(-1)).toBe('waiting')
+    // Busy at the protocol level, but shown as asking the user everywhere.
+    await vi.waitFor(() => expect(conversation.status).toBe('asking'))
+    expect(statuses(seen).at(-1)).toBe('asking')
 
     conversation.answerPermission('99', 'no')
     await vi.waitFor(() => expect(stream.sent().some((m) => m.id === 99)).toBe(true))
@@ -1367,7 +1420,7 @@ describe('agentDriver', () => {
 
     // Recovered from the log.
     await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
-    await vi.waitFor(() => expect(statuses(seen).at(-1)).toBe('waiting'))
+    await vi.waitFor(() => expect(statuses(seen).at(-1)).toBe('asking'))
 
     conversation.answerPermission('42', 'yes-always')
     await vi.waitFor(() => expect(stream.sent().some((m) => m.id === 42)).toBe(true))
@@ -1607,7 +1660,7 @@ describe('agentDriver', () => {
     // Held open for the user.
     await vi.waitFor(() => expect(
       acpConversationByHandle('demo', 'wt-1', 'pi')!.status,
-    ).toBe('waiting'))
+    ).toBe('asking'))
     expect(stream.sent().some((m) => m.id === 501)).toBe(false)
   })
 

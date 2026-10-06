@@ -5,12 +5,12 @@ import {
   type AgentSessionLinkRow,
   type WorkspaceRow,
 } from '#db'
-import { toAgentSessionEntry } from './agent-session-entry'
+import { listedStatus, toAgentSessionEntry } from './agent-session-entry'
 import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import { observeWorkspaces, type WorkspaceRuntimeReport } from '#runtime/status'
 import type { AgentLiveness } from '#drivers/contract'
-import type { ActiveWorkspacesResult, WorkspaceListEntry } from '@yaac/shared/types'
+import type { ActiveWorkspacesResult, AgentStatus, WorkspaceListEntry } from '@yaac/shared/types'
 
 export async function ensureProjectExists(slug: string): Promise<void> {
   if (!await getProjectRow(slug)) {
@@ -101,7 +101,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
     }
     return {
       ...base,
-      status: w.status,
+      ...listedStatus(w.status),
       ...(w.waitingSinceMs !== undefined ? { waitingSinceMs: w.waitingSinceMs } : {}),
       agentSessions: links.map((l) => toAgentSessionEntry(l, liveStatus(w.agents, l))),
       ...(w.terminals !== undefined ? { terminals: w.terminals } : {}),
@@ -123,7 +123,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
 }
 
 /**
- * A conversation's running/waiting status, matched by the handle it was last
+ * A conversation's status, matched by the handle it was last
  * seen on (tmux pane id under `tui`, acpd window name under `acp`).
  * Undefined for inactive conversations, which lets clients tell "open" from
  * "was open".
@@ -131,7 +131,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
 function liveStatus(
   agents: AgentLiveness[],
   l: AgentSessionLinkRow,
-): { status: 'running' | 'waiting'; waitingSinceMs?: number } | undefined {
+): { status: AgentStatus; waitingSinceMs?: number } | undefined {
   if (!l.active || l.paneId === undefined) return undefined
   const agent = agents.find((a) => a.handle === l.paneId)
   if (agent === undefined) return undefined

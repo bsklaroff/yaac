@@ -18,8 +18,8 @@ import { StringDecoder } from 'node:string_decoder'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { agentSessionIdSchema } from '@yaac/shared/types'
 import {
-  ACP, ACPD, AcpProjection, CLAUDE_SDK_MESSAGE, agentRunningReport, asRecord, asString, sessionModeId, sessionModels,
-  sessionStateModeId, toContentList,
+  ACP, ACPD, AcpProjection, CLAUDE_SDK_MESSAGE, agentRunningReport, asRecord, asString, backgroundWorkReport,
+  sessionModeId, sessionModels, sessionStateModeId, toContentList,
 } from './acp-protocol'
 import { openSandboxFile, readSandboxFile, type SandboxFile } from './sandbox-fs'
 import { serverLog } from '#log'
@@ -333,6 +333,9 @@ export interface AcpInFlight {
   /** The agent's last own report of its state (`agentRunningReport`), if
    *  its adapter sends one. */
   agentRunning?: boolean
+  /** The agent's last report of live background work
+   *  (`backgroundWorkReport`), if it sent one. */
+  backgroundWork?: boolean
 }
 
 /**
@@ -353,6 +356,7 @@ export async function readAcpInFlight(record: AcpRecordRef): Promise<AcpInFlight
   let pending: string | number | undefined
   const steers = new Set<string | number>()
   let agentRunning: boolean | undefined
+  let backgroundWork: boolean | undefined
   for (const line of raw.split('\n')) {
     const msg = parseLine(line)
     if (msg === undefined) continue
@@ -376,9 +380,11 @@ export async function readAcpInFlight(record: AcpRecordRef): Promise<AcpInFlight
       // The agent exited; acpd starts a fresh record for the next life.
       pending = undefined
       agentRunning = undefined
+      backgroundWork = undefined
       continue
     }
     agentRunning = agentRunningReport(msg.method, msg.params) ?? agentRunning
+    backgroundWork = backgroundWorkReport(msg.method, msg.params) ?? backgroundWork
     // Only a reply (no method) can close a turn.
     if (msg.method !== undefined || id === undefined) continue
     if (id === pending) {
@@ -389,7 +395,11 @@ export async function readAcpInFlight(record: AcpRecordRef): Promise<AcpInFlight
     }
     if (steers.delete(id) && asRecord(msg.result)?.outcome === 'startedNewTurn') agentRunning = true
   }
-  return { prompt: pending !== undefined, ...(agentRunning !== undefined ? { agentRunning } : {}) }
+  return {
+    prompt: pending !== undefined,
+    ...(agentRunning !== undefined ? { agentRunning } : {}),
+    ...(backgroundWork !== undefined ? { backgroundWork } : {}),
+  }
 }
 
 /**

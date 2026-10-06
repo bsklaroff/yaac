@@ -331,6 +331,31 @@ notification that arrives mid-run joins that run and wakes nothing. The
 notification text the agent itself received is not available: the CLI
 replays it only when it joins a running turn.
 
+**Background work is its own status.** Between turns, a claude conversation
+whose background shells, monitors or background subagents are still live
+reports `background` rather than `waiting`: that work will usually wake the
+agent, so nothing needs a person yet, and the sidebar shows a slow-breathing
+marker instead of the unread dot (the chime and tray badge stay quiet too).
+The source is claude's `background_tasks_changed`, which lists every live
+background task; ambient tasks are not counted, as the SDK asks of activity
+indicators. claude reports a finished task gone just before its
+notification wakes the agent, so the drop back to `waiting` waits a few
+seconds, and an agent waking in that time skips the waiting spell (and its
+chime) entirely. While the adapter holds a turn open for a background
+subagent, the conversation stays `running`. Other adapters, and `tui`
+conversations, report no background work, so they never show this status.
+The workspace's status is its most pressing conversation's: `asking`, then
+`waiting`, then `running`, then `background`. A client that predates
+`background` reads it as quiet, like `running`.
+
+`background` has no time limit: it lasts as long as claude lists the work.
+A task that never ends by itself (a dev server or `pnpm watch` run in the
+background, a `tail -f` monitor, or the persistent `yaac-watch-prs` monitor
+that the `push-pr` and `review-pr` skills arm) therefore keeps its workspace
+in `background` for the task's whole life. That holds even when the agent
+ends a turn with a question, so such a workspace never shows the unread dot
+or chimes. The sidebar's marker still shows that its turn is over.
+
 **Busy state is recovered from the record.** The protocol has no status
 query. A connection taking over a live agent reads the record, which shows
 whether the last prompt was answered and what state the adapter last
@@ -562,9 +587,17 @@ forwarded to the chat pane for the user to answer. The adapter is also told
 the posture over `session/set_mode`, so it only asks about what that mode
 leaves open.
 
-While a request is held, the conversation reports `waiting`. That makes the
-sidebar dot, chime and tray badge fire exactly when the agent needs a person;
-otherwise a blocked agent would look busiest exactly when it is stuck.
+While a request is held, the conversation reports `asking`, which outranks
+every other status in the workspace's aggregate; otherwise a blocked agent
+would look busiest exactly when it is stuck. Listings send it as `waiting`
+with an `asking` flag (`ListedAgentStatus`), so every client alerts on it as
+on any wait, a desktop app built before the flag existed included, and an
+ask shares the workspace's waiting spell rather than starting its own: an
+ask arriving while a sibling already waits does not alert again, and
+answering it does not bring back a spell the user already saw. The sidebar
+shows its own marker for the flag, read or not, until the ask is answered. A `tui` agent's dialogs cannot be told apart from
+its idle prompt (claude's title shows the same glyph for both), so `tui`
+conversations never report `asking`.
 
 An ask survives the connection dropping. In the record an unanswered ask is a
 request with no reply after it, which is how a reattaching connection and a

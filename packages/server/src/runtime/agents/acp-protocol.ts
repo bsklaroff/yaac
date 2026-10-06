@@ -1186,6 +1186,21 @@ export function agentRunningReport(method: unknown, params: unknown): boolean | 
 }
 
 /**
+ * Whether a notification is claude reporting background work it started
+ * still live (`true`) or none (`false`); undefined for anything else. Its
+ * `background_tasks_changed` lists every live background task, background
+ * subagents included. Ambient tasks (an artifact's live-update watch) are
+ * left out, as the SDK asks of activity indicators.
+ */
+export function backgroundWorkReport(method: unknown, params: unknown): boolean | undefined {
+  if (method !== CLAUDE_SDK_MESSAGE) return undefined
+  const message = asRecord(asRecord(params)?.message)
+  if (message?.subtype !== 'background_tasks_changed') return undefined
+  const tasks = Array.isArray(message.tasks) ? message.tasks : []
+  return tasks.some((t) => asRecord(t)?.ambient !== true)
+}
+
+/**
  * Update variants only a run produces; see `AcpAdapterProfile.infersRunStart`.
  * Plain text is not one: pi-acp also sends `agent_message_chunk` outside any
  * run (an extension's `notify`, a UI request it cannot serve, its startup

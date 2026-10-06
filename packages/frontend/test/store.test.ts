@@ -3,7 +3,7 @@ import {
   isUnreadWaiting, isUnseenDeath, defaultViewMode, mergeProvisioning, paneViewKey,
   resolveVacantSelection, unreadWaitingBySlug, useUiStore,
 } from '#lib/store'
-import type { ProvisioningWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/types'
+import type { ListedAgentStatus, ProvisioningWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/types'
 import { PREVIEW_TARGET } from '#lib/preview'
 import { CHANGES_TARGET } from '#lib/panes'
 
@@ -120,7 +120,7 @@ describe('isUnreadWaiting', () => {
 })
 
 describe('unreadWaitingBySlug', () => {
-  const s = (workspaceId: string, projectSlug: string, status: 'running' | 'waiting', waitingSinceMs?: number) =>
+  const s = (workspaceId: string, projectSlug: string, status: ListedAgentStatus, waitingSinceMs?: number) =>
     ({ workspaceId, projectSlug, status, waitingSinceMs })
 
   it('counts only unread waiting sessions, grouped by project', () => {
@@ -131,6 +131,11 @@ describe('unreadWaitingBySlug', () => {
       s('w3', 'p2', 'waiting', 300),
     ]
     expect(unreadWaitingBySlug(sessions, { w2: 200 })).toEqual({ p1: 1, p2: 1 })
+  })
+
+  it('counts an asking session even once viewed, and no background one', () => {
+    const sessions = [{ ...s('a1', 'p1', 'waiting', 100), asking: true as const }, s('b1', 'p1', 'background')]
+    expect(unreadWaitingBySlug(sessions, { a1: 100 })).toEqual({ p1: 1 })
   })
 
   it('re-counts a session whose mark is from an earlier spell', () => {

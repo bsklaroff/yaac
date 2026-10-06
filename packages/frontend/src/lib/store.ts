@@ -314,18 +314,20 @@ export function isUnseenDeath(
 }
 
 /**
- * Per-project count of unread waiting workspaces, for the rail's badge.
- * Stopping workspaces (per the server or `pendingDeleteIds`) don't count.
+ * Per-project count of workspaces that need the user, for the rail's badge:
+ * unread waiting ones, and asking ones whether viewed or not, since an ask
+ * stays open until answered. Stopping workspaces (per the server or
+ * `pendingDeleteIds`) don't count.
  */
 export function unreadWaitingBySlug(
-  workspaces: Pick<WorkspaceListEntry, 'workspaceId' | 'projectSlug' | 'status' | 'waitingSinceMs' | 'stopping'>[],
+  workspaces: Pick<WorkspaceListEntry, 'workspaceId' | 'projectSlug' | 'status' | 'waitingSinceMs' | 'stopping' | 'asking'>[],
   readWaiting: Record<string, number>,
   pendingDeleteIds: string[] = [],
 ): Record<string, number> {
   const out: Record<string, number> = {}
   for (const s of workspaces) {
     if (s.stopping || pendingDeleteIds.includes(s.workspaceId)) continue
-    if (isUnreadWaiting(s, readWaiting)) {
+    if (s.asking || isUnreadWaiting(s, readWaiting)) {
       out[s.projectSlug] = (out[s.projectSlug] ?? 0) + 1
     }
   }
