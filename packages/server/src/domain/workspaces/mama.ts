@@ -152,7 +152,7 @@ export async function runMamaCommand(
   }
   try {
     switch (command) {
-      case 'list': return await runList(caller)
+      case 'list': return await runList(caller, request)
       case 'create': return await runCreate(caller, request)
       case 'rename': return await runRename(caller, request)
       case 'stop': return await runStop(caller, request)
@@ -170,30 +170,60 @@ export async function runMamaCommand(
   }
 }
 
-/** The caller's project, as it would look in the sidebar. */
-async function runList(caller: MamaCaller): Promise<MamaOutcome> {
-  const [{ workspaces }, groups, queued] = await Promise.all([
+/**
+ * The caller's project, as it would look in the sidebar. Ids (or unique
+ * prefixes) in the body, whitespace-separated, narrow it to those running or
+ * queued workspaces and add each one's full prompt, which the table cuts
+ * short, indented under a header.
+ */
+async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const [active, groups, allQueued] = await Promise.all([
     listActiveWorkspaces(caller.projectSlug),
     listWorkspaceGroups(caller.projectSlug),
     listQueuedWorkspaceRows(caller.projectSlug),
   ])
+  let workspaces = active.workspaces
+  let queued = allQueued
   const names = new Map(groups.map((g) => [g.groupId, g.name]))
+
+  const wanted = request.body.split(/\s+/).filter((t) => t !== '')
+  const prompts: Array<{ id: string; prompt: string }> = []
+  if (wanted.length > 0) {
+    const entries = [
+      ...workspaces.map((w) => ({ id: w.workspaceId, prompt: w.prompt ?? '' })),
+      ...queued.map((r) => ({ id: r.id, prompt: r.prompt })),
+    ]
+    for (const token of wanted) {
+      const picked = pickOne(entries, token, 'running or queued workspace', caller.projectSlug)
+      if (!picked.ok) return picked
+      if (!prompts.some((p) => p.id === picked.entry.id)) prompts.push(picked.entry)
+    }
+    const ids = new Set(prompts.map((p) => p.id))
+    workspaces = workspaces.filter((w) => ids.has(w.workspaceId))
+    queued = queued.filter((r) => ids.has(r.id))
+  }
 
   const lines: string[] = []
   if (workspaces.length === 0) {
-    lines.push(`No running workspaces in ${caller.projectSlug}.`)
+    if (wanted.length === 0) lines.push(`No running workspaces in ${caller.projectSlug}.`)
   } else {
     lines.push(`Running workspaces in ${caller.projectSlug}:`, '')
     lines.push(...renderWorkspaces(workspaces, names, caller.workspaceId))
   }
   if (queued.length > 0) {
-    lines.push('', 'Queued workspaces (each starts when what it is under is stopped):', '')
+    if (lines.length > 0) lines.push('')
+    lines.push('Queued workspaces (each starts when what it is under is stopped):', '')
     lines.push(...renderQueued(queued, caller.workspaceId))
   }
   lines.push('')
   lines.push(groups.length === 0
     ? 'No groups yet. Make one with: yaac-mama group create "<name>"'
     : `Groups: ${groups.map((g) => g.name).join(', ')}`)
+  // Every prompt line is indented, so a prompt cannot fake another's header.
+  for (const p of prompts) {
+    const body = p.prompt === '' ? ['(none yet)'] : p.prompt.split('\n')
+    lines.push('', `Prompt of ${p.id.slice(0, 8)}:`, ...body.map((l) => `  ${l}`))
+  }
   return { ok: true, output: lines.join('\n') }
 }
 
@@ -256,6 +286,24 @@ function renderQueued(rows: QueuedWorkspaceRow[], callerId: string): string[] {
     walk(parent, 0)
   }
   return lines
+}
+
+/** The one entry whose id is `token`, or else the only one it prefixes. */
+function pickOne<T extends { id: string }>(
+  entries: T[],
+  token: string,
+  what: string,
+  projectSlug: string,
+): { ok: true; entry: T } | { ok: false; error: string } {
+  const exact = entries.find((e) => e.id === token)
+  const matches = exact !== undefined ? [exact] : entries.filter((e) => e.id.startsWith(token))
+  if (matches.length === 1) return { ok: true, entry: matches[0] }
+  return {
+    ok: false,
+    error: matches.length === 0
+      ? `no ${what} '${token}' in ${projectSlug}`
+      : `'${token}' matches more than one ${what} in ${projectSlug} — use a longer prefix`,
+  }
 }
 
 function flatten(text: string, max: number): string {
@@ -322,17 +370,8 @@ async function runEditQueued(caller: MamaCaller, request: MamaRequestInput): Pro
   if (!callerRow) return { ok: false, error: 'this workspace has no recorded permission mode' }
   const target = request.args.queued?.trim() ?? ''
   if (target === '') return { ok: false, error: 'edit-queued needs a queued workspace id' }
-  const rows = await listQueuedWorkspaceRows(caller.projectSlug)
-  const exact = rows.find((r) => r.id === target)
-  const matches = exact !== undefined ? [exact] : rows.filter((r) => r.id.startsWith(target))
-  if (matches.length !== 1) {
-    return {
-      ok: false,
-      error: matches.length === 0
-        ? `no queued workspace '${target}' in ${caller.projectSlug}`
-        : `'${target}' matches more than one queued workspace in ${caller.projectSlug} — use a longer prefix`,
-    }
-  }
+  const picked = pickOne(await listQueuedWorkspaceRows(caller.projectSlug), target, 'queued workspace', caller.projectSlug)
+  if (!picked.ok) return picked
   const settings = createSettings(request.args)
   if (!settings.ok) return settings
   const parent = request.args['parent-workspace']?.trim()
@@ -344,7 +383,7 @@ async function runEditQueued(caller: MamaCaller, request: MamaRequestInput): Pro
   if (Object.keys(patch).length === 0) {
     return { ok: false, error: 'edit-queued needs a new prompt or an option to change' }
   }
-  const entry = await updateQueuedWorkspace(matches[0].id, patch, { ceiling: callerRow.permissionMode })
+  const entry = await updateQueuedWorkspace(picked.entry.id, patch, { ceiling: callerRow.permissionMode })
   return {
     ok: true,
     output: `Updated queued workspace ${entry.id.slice(0, 8)}: ${entry.tool} ${entry.model}, `

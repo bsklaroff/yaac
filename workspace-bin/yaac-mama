@@ -2,7 +2,7 @@
 # yaac-mama — ask the yaac server that runs this workspace to do something.
 #
 # Usage:
-#   yaac-mama list
+#   yaac-mama list [<workspace>...]
 #   yaac-mama create [opts] "<prompt>"
 #   yaac-mama queue --parent-workspace W [opts] "<prompt>"
 #   yaac-mama edit-queued [--parent-workspace W] [opts] <queued> ["<prompt>"]
@@ -51,6 +51,7 @@ yaac-mama — ask the yaac server running this workspace to do something.
 
 Usage:
   yaac-mama list                                   # workspaces + groups here
+  yaac-mama list <workspace>...                    # just those, full prompts
   yaac-mama create [opts] "<prompt>"               # start another workspace
   yaac-mama queue --parent-workspace <id> [opts] "<prompt>"
                                                    # start one when <id> stops
@@ -111,6 +112,10 @@ queue saves a workspace to start when its parent is STOPPED — by
 start it; it waits for the user. It forks from the latest origin tip of the
 parent's reference branch.
 
+list with ids (running or queued, or unique prefixes) shows only those, then
+each one's full prompt, which the table cuts short: a "Prompt of <id>:" line,
+then the prompt with every line indented two spaces.
+
 create prints the new workspace's id and queue the queued workspace's id;
 a create provisions in the background (watch it in the yaac webapp).
 Everything else prints a short report.
@@ -168,18 +173,35 @@ json_string() {
   }' "$1"
 }
 
-# Unwrap {"output":"…"} into $text and undo the escaping above, so it is
-# what the server rendered.
+# Undo JSON string escaping on stdin in one left-to-right pass, so `\\n` (an
+# escaped backslash, then n) stays a backslash and an n. \r and \uXXXX are
+# dropped: the server only emits \u for control characters, which json_string
+# drops on the way in for the same reason.
+json_unescape() {
+  awk '{
+    s = $0; out = ""
+    while ((i = index(s, "\\")) > 0) {
+      out = out substr(s, 1, i - 1)
+      c = substr(s, i + 1, 1)
+      if (c == "n") out = out "\n"
+      else if (c == "t") out = out "\t"
+      else if (c != "u" && c != "r" && c != "b" && c != "f") out = out c
+      s = substr(s, i + (c == "u" ? 6 : 2))
+    }
+    printf "%s%s", (NR > 1 ? "\n" : ""), out s
+  }'
+}
+
+# Unwrap {"output":"…"} into $text, unescaped, so it is what the server
+# rendered. Server text is printed with printf '%s', never echo, whose dash
+# build expands backslashes.
 unwrap_output() {
-  text=$(printf '%s' "$1" \
-    | sed -n 's/^{"output":"\(.*\)"}$/\1/p' \
-    | sed 's/\\n/\
-/g; s/\\t/	/g; s/\\r//g; s/\\"/"/g; s/\\\\/\\/g')
+  text=$(printf '%s' "$1" | sed -n 's/^{"output":"\(.*\)"}$/\1/p' | json_unescape)
 }
 
 # Pull the message out of {"error":"…"}, for a refusal the server described.
 error_text() {
-  printf '%s' "$1" | sed -n 's/.*"error":"\(.*\)"}$/\1/p' | sed 's/\\"/"/g; s/\\\\/\\/g'
+  printf '%s' "$1" | sed -n 's/.*"error":"\(.*\)"}$/\1/p' | json_unescape
 }
 
 # One command's JSON envelope. $1 command, $2 body, then alternating arg
@@ -214,7 +236,7 @@ ask() {
   payload=$(printf '%s\n' "$resp" | sed '$d')
   if [ "$code" != "200" ]; then
     msg=$(error_text "$payload")
-    echo "yaac-mama: ${msg:-${payload:-request failed}} (HTTP $code)" >&2
+    printf 'yaac-mama: %s (HTTP %s)\n' "${msg:-${payload:-request failed}}" "$code" >&2
     exit 1
   fi
   unwrap_output "$payload"
@@ -249,7 +271,7 @@ download() {
   if [ "$code" != "200" ]; then
     payload=$(cat "$tmp/body" 2>/dev/null)
     msg=$(error_text "$payload")
-    echo "yaac-mama: ${msg:-${payload:-request failed}} (HTTP $code)" >&2
+    printf 'yaac-mama: %s (HTTP %s)\n' "${msg:-${payload:-request failed}}" "$code" >&2
     exit 1
   fi
   id=$(tr 'A-Z' 'a-z' < "$tmp/headers" | sed -n 's/^x-yaac-workspace-id: *\([0-9a-f-]*\).*/\1/p' | tail -n 1)
@@ -320,7 +342,7 @@ fetch_workspace() {
 case "$1" in
   -h|--help) usage; exit 0 ;;
 
-  list) run list '' ;;
+  list) shift; run list "$*" ;;
 
   models) run models '' ;;
 
@@ -363,7 +385,7 @@ case "$1" in
       while IFS= read -r name; do
         case "$name" in
           '') continue ;;
-          '# '*) echo "yaac-mama: ${name#\# }" >&2; continue ;;
+          '# '*) printf 'yaac-mama: %s\n' "${name#\# }" >&2; continue ;;
         esac
         conv=${name%%/*}
         mkdir -p "$(dirname "$out/$name")" || exit 1
