@@ -117,13 +117,6 @@
   0%, 100% { opacity: .2 } 50% { opacity: 1 }
 }
 
-/* Without motion both indicators hold still, told apart by colour and by the
- * background grid's dimmer dots. */
-@media (prefers-reduced-motion: reduce) {
-  .braille-spinner > i { animation: none !important; }
-  .braille-breathe > i { opacity: .5; }
-}
-
 /*
  * Cycling ellipsis for the chat pane's "working" label — the dots run
  * (none) → . → .. → ... so the pane keeps moving while a turn is in flight.
