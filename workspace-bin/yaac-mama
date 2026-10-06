@@ -8,6 +8,7 @@
 #   yaac-mama edit-queued [--parent-workspace W] [opts] <queued> ["<prompt>"]
 #     where opts: [--tool T] [--model M] [--permission-mode P] [--ui-mode U]
 #                 [--branch B] [--group G] [--title T]
+#   yaac-mama send [--conversation C] <workspace> "<message>"
 #   yaac-mama rename [<workspace>] "<title>"
 #   yaac-mama stop [<workspace>]
 #   yaac-mama group create "<name>"
@@ -17,7 +18,8 @@
 #   yaac-mama history <workspace> [<conversation>] [-o <dir>]
 #
 # A strict subset of the `yaac` CLI: see what this project is running, start
-# another workspace, file workspaces into named groups, and stop one. Stopping is
+# another workspace, message a running one's agent, file workspaces into named
+# groups, and stop one. Stopping is
 # in reach because it is reversible — the checkout and the conversation
 # survive it. Nothing here deletes, restarts or reconfigures anything; that
 # stays with the user. `fetch` reads another workspace's branches into this
@@ -54,6 +56,8 @@ Usage:
                                                    # start one when <id> stops
   yaac-mama edit-queued [opts] <queued> ["<prompt>"]
                                                    # change a queued one
+  yaac-mama send [--conversation <c>] <workspace> "<message>"
+                                                   # message its running agent
   yaac-mama rename [<workspace>] "<title>"          # retitle (default: yourself)
   yaac-mama stop [<workspace>]                      # stop it (default: yourself)
   yaac-mama group create "<name>"                  # make an empty group
@@ -131,6 +135,13 @@ this script turns into the same JSONL shape with python3: one line per
 message, the conversation first and then the sessions its subagents ran,
 under subagents/ with -o.
 
+send hands a message to another running workspace's agent, as if the user
+typed it, headed "Sent from <this workspace's id> via yaac-mama:": its first
+conversation, or the one --conversation names (an id or
+unique prefix from `yaac-mama history <workspace>`). An agent mid-turn takes
+it when its turn allows, or queues it. Read its answer with `yaac-mama
+history`. The workspace may not run in a more permissive mode than this one.
+
 stop ends a workspace's running container/tmux server and keeps its checkout,
 title, group and conversation, so the user can restart it. Stopping YOURSELF
 tears down what this command's own reply travels over, so the confirmation
@@ -140,11 +151,14 @@ EOF
 }
 
 # JSON-encode one string as a quoted scalar. Byte-oriented and locale-proof:
-# the shell hands awk raw bytes, and only the seven characters JSON requires
-# are rewritten, so any UTF-8 in a prompt or group name passes through whole.
+# the shell hands awk raw bytes, and only the characters JSON requires are
+# rewritten, so any UTF-8 in a prompt or group name passes through whole.
+# Control characters JSON has no short escape for are dropped, as a message
+# would lose them anyway (pasted terminal output carries escape sequences).
 json_string() {
   awk 'BEGIN{
     s = ARGV[1]
+    gsub(/[\001-\010\013\014\016-\037\177]/, "", s)
     gsub(/\\/, "\\\\", s)
     gsub(/"/, "\\\"", s)
     gsub(/\n/, "\\n", s)
@@ -433,6 +447,20 @@ EOF
       permission-mode "$perm" ui-mode "$ui_mode" branch "$branch" group "$group" title "$title"
     ;;
 
+  send)
+    shift
+    conversation=""
+    if [ "${1:-}" = --conversation ]; then
+      [ $# -ge 2 ] && [ -n "$2" ] || { echo 'yaac-mama: --conversation needs a value' >&2; exit 2; }
+      conversation=$2; shift 2
+    fi
+    if [ $# -ne 2 ] || [ -z "$1" ] || [ -z "$2" ]; then
+      echo 'usage: yaac-mama send [--conversation C] <workspace> "<message>"' >&2
+      exit 2
+    fi
+    run send "$2" workspace "$1" conversation "$conversation"
+    ;;
+
   rename)
     shift
     # One argument retitles the caller, two retitle the workspace named first.
@@ -495,7 +523,7 @@ EOF
     ;;
 
   *)
-    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, rename, stop, group, models, fetch, history)" >&2
+    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, send, rename, stop, group, models, fetch, history)" >&2
     echo 'run "yaac-mama --help" for usage' >&2
     exit 2
     ;;

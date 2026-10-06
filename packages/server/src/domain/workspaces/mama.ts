@@ -4,10 +4,11 @@
  * both.
  *
  * An agent may list the project's workspaces, create or queue one, edit what
- * it queued, retitle, group, stop one (its own included), fetch another's
- * branches and read another's conversation history. Stopping is allowed
- * because it is reversible: the checkout, row and conversations are kept.
- * Deleting, restarting and reconfiguring stay the user's.
+ * it queued, send a running one a message, retitle, group, stop one (its own
+ * included), fetch another's branches and read another's conversation
+ * history. Stopping is allowed because it is reversible: the checkout, row
+ * and conversations are kept. Deleting, restarting and reconfiguring stay
+ * the user's.
  *
  * The caller's identity comes from the transport (pod IP under k8s, a
  * per-workspace token under containerless), never the request, and every
@@ -19,16 +20,18 @@ import { listWorkspaceGroups, resolveGroup } from './groups'
 import {
   getProjectWorkspaceRows,
   getWorkspaceRow,
+  listActiveAgentSessions,
   listQueuedWorkspaceRows,
   listWorkspaceAgentSessions,
   setWorkspaceGroup,
   setWorkspaceTitle,
   type QueuedWorkspaceRow,
 } from '#db'
-import { resolveWorkspace } from './resolve'
+import { resolveWorkspace, resolveWorkspaceContainer } from './resolve'
 import { stopWorkspace } from './stop'
 import { queueWorkspace, updateQueuedWorkspace, type QueueRequest } from './queued-workspaces'
 import { ServerError } from '@yaac/shared/errors'
+import { stripControlChars } from '@yaac/shared/ansi'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { MAX_TITLE_LENGTH, normalizeTitle } from '@yaac/shared/titles'
 import {
@@ -37,6 +40,8 @@ import {
   MAMA_COMMANDS,
   MODEL_RE,
   PERMISSION_MODES,
+  isRankedPermissionMode,
+  morePermissive,
   type AgentMode,
   type AgentTool,
   type PermissionMode,
@@ -44,6 +49,8 @@ import {
   type WorkspaceListEntry,
 } from '@yaac/shared/types'
 import { modelsForTool } from '#domain/auth'
+import { agentDriver, resolveAgentPermissionMode } from '#runtime/agents'
+import { liveAgents } from '#runtime/status'
 import { bundleCheckout } from '#domain/git'
 import { repoDir, workspaceDir } from '@yaac/shared/project-paths'
 import {
@@ -113,6 +120,7 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   'edit-queued': ['queued', 'parent-workspace', ...CREATE_ARGS],
   fetch: ['workspace'],
   history: ['workspace', 'conversation', 'files', 'file'],
+  send: ['workspace', 'conversation'],
 }
 
 /**
@@ -155,6 +163,7 @@ export async function runMamaCommand(
       case 'edit-queued': return await runEditQueued(caller, request)
       case 'fetch': return await runFetch(caller, request)
       case 'history': return await runHistory(caller, request)
+      case 'send': return await runSend(caller, request)
     }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -340,6 +349,121 @@ async function runEditQueued(caller: MamaCaller, request: MamaRequestInput): Pro
     ok: true,
     output: `Updated queued workspace ${entry.id.slice(0, 8)}: ${entry.tool} ${entry.model}, `
       + `${entry.permissionMode} — ${flatten(entry.prompt, 60)}`,
+  }
+}
+
+/** Deliveries under way, by sender and by target conversation. */
+const sending = new Set<string>()
+
+/**
+ * Send a message to a running sibling's agent, as if the user typed it: its
+ * first live conversation, or the one `--conversation` names. The message is
+ * headed with the caller's id, so the agent can tell a peer's words from its
+ * user's and knows where to answer. Only that first line is the server's:
+ * the body may claim anything. A busy acp agent takes it mid-turn or queues
+ * it. A tui agent gets it submitted on its own, around any draft its user
+ * left in the input box, and its own UI queues it if a turn is running
+ * (`buildMessageCmd`); the reply waits until it is.
+ *
+ * Neither the target's row nor the conversation's own reported mode may be
+ * more permissive than the caller, or a message would let the caller act
+ * through a grant it was never given. The caller itself is refused, since
+ * the paste would land in its own running turn. One delivery at a time per
+ * caller and per target conversation, so pastes never interleave and a pair
+ * of agents cannot pile deliveries onto one pane.
+ */
+async function runSend(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const workspace = request.args.workspace?.trim() ?? ''
+  if (workspace === '') return { ok: false, error: 'send needs a workspace id' }
+  // Bound for a terminal whatever the agent's mode, so stripped here once.
+  const body = stripControlChars(request.body)
+  if (body.trim() === '') return { ok: false, error: 'send needs a message' }
+  const found = await resolveWorkspace(workspace, { projectSlug: caller.projectSlug })
+  if (!found.ok) return { ok: false, error: workspaceError(caller.projectSlug, workspace, found.reason) }
+  const { workspaceId } = found
+  const short = workspaceId.slice(0, 8)
+  if (workspaceId === caller.workspaceId) return { ok: false, error: 'send cannot message this workspace itself' }
+
+  const [callerRow, targetRow] = await Promise.all([
+    getWorkspaceRow(caller.projectSlug, caller.workspaceId),
+    getWorkspaceRow(caller.projectSlug, workspaceId),
+  ])
+  const ceiling = callerRow?.permissionMode
+  if (ceiling === undefined || !isRankedPermissionMode(ceiling)) {
+    return { ok: false, error: 'this workspace has no recorded permission mode' }
+  }
+
+  const running = await resolveWorkspaceContainer(workspaceId, { requireRunning: true, exact: true })
+    .catch((err: unknown) => {
+      if (err instanceof ServerError && (err.code === 'NOT_FOUND' || err.code === 'CONFLICT')) return undefined
+      throw err
+    })
+  if (!running) return { ok: false, error: `workspace ${short} is not running` }
+
+  const live = (await listActiveAgentSessions(caller.projectSlug, workspaceId))
+    .flatMap((r) => r.paneId === undefined ? [] : [{ ...r, handle: r.paneId }])
+  const wanted = request.args.conversation?.trim() ?? ''
+  const exact = live.find((r) => r.agentSessionId === wanted)
+  const matches = wanted === '' ? live.slice(0, 1)
+    : exact !== undefined ? [exact]
+    : live.filter((r) => r.agentSessionId.startsWith(wanted))
+  if (matches.length !== 1) {
+    return {
+      ok: false,
+      error: wanted === '' ? `${short} has no running conversation yet`
+        : matches.length === 0 ? `no running conversation '${wanted}' in ${short} (see: yaac-mama history ${short})`
+        : `'${wanted}' matches more than one running conversation in ${short} — use a longer prefix`,
+    }
+  }
+  const [conversation] = matches
+  const label = `${short}'s ${conversation.tool} conversation ${conversation.agentSessionId.slice(0, 8)}`
+
+  // A conversation that never reported a mode runs in the one it launched
+  // in, which the row recorded.
+  const recorded = targetRow?.permissionMode
+  const reported = liveAgents(caller.projectSlug, workspaceId)
+    ?.find((a) => a.handle === conversation.handle)?.reportedMode
+  const postures = [
+    recorded,
+    reported === undefined || recorded === undefined
+      ? recorded
+      : resolveAgentPermissionMode(conversation.mode, conversation.tool, reported, recorded),
+  ]
+  for (const posture of postures) {
+    if (posture === undefined || !isRankedPermissionMode(posture)) {
+      return { ok: false, error: `cannot tell which permission mode ${label} runs in, so it cannot be sent a message` }
+    }
+    if (morePermissive(posture, ceiling)) {
+      return {
+        ok: false,
+        error: `${label} runs in permission mode '${posture}', more than this workspace's own `
+          + `('${ceiling}'); only one at or below it can be sent a message`,
+      }
+    }
+  }
+
+  const from = `from:${caller.workspaceId}`
+  const to = `to:${workspaceId}/${conversation.handle}`
+  if (sending.has(from)) return { ok: false, error: 'your previous send is still being delivered; send again once it returns' }
+  if (sending.has(to)) return { ok: false, error: `another message to ${label} is still being delivered; try again shortly` }
+  sending.add(from).add(to)
+  try {
+    await agentDriver(conversation.mode).deliverPrompt(
+      { slug: caller.projectSlug, workspaceId, jobName: running.jobName, tool: conversation.tool },
+      conversation.handle,
+      `Sent from ${caller.workspaceId} via yaac-mama:\n\n${body}`,
+      { running: { agentSessionId: conversation.agentSessionId } },
+    )
+  } catch (err) {
+    return { ok: false, error: `not delivered to ${label}: ${err instanceof Error ? err.message : String(err)}` }
+  } finally {
+    sending.delete(from)
+    sending.delete(to)
+  }
+  return {
+    ok: true,
+    output: `Sent to ${label}. A busy agent takes it once its current turn allows; `
+      + 'read its reply with yaac-mama history.',
   }
 }
 

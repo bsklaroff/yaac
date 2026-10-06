@@ -1,4 +1,5 @@
 import type { ConfinedRoot } from '#lib/confined-fs'
+import { PI_MESSAGE_KEY } from './agent-command'
 
 /**
  * The in-tool half of agent reporting: what each tool runs so it writes its
@@ -72,9 +73,16 @@ const CODEX_HOOKS: Hooks = [
  * `session_start` (startup, resume, `/new`) gives the session id, log and
  * model; `model_select` fires on any model change; `session_shutdown` fires
  * as a session ends.
+ *
+ * It also takes `yaac-mama send` messages (`buildMessageCmd`): on
+ * `PI_MESSAGE_KEY` it submits the file left for its conversation, queued
+ * as a follow-up mid-turn, without touching what the user has in the editor.
  */
 const PI_EXTENSION = `// Written by yaac: reports the conversation and model to the pane
-// (see yaac-agent-links and yaac-agent-report).
+// (see yaac-agent-links and yaac-agent-report), and submits messages that
+// other workspaces send it (see yaac-mama send).
+import { readFileSync, unlinkSync } from 'node:fs'
+
 export default function (pi) {
   let reported = Promise.resolve()
   const run = (cmd, args) => {
@@ -92,6 +100,20 @@ export default function (pi) {
   })
   pi.on('model_select', (event) => report(event.model))
   pi.on('session_shutdown', () => run('yaac-agent-links', ['', 'pi', session, '--end']))
+  pi.registerShortcut('${PI_MESSAGE_KEY}', {
+    description: 'yaac: submit a message another workspace sent',
+    handler: async (ctx) => {
+      const file = process.env.PI_CODING_AGENT_DIR + '/yaac-messages/' + session + '.txt'
+      let text
+      try {
+        text = readFileSync(file, 'utf8')
+        unlinkSync(file)
+      } catch {
+        return
+      }
+      pi.sendUserMessage(text, ctx.isIdle() ? undefined : { deliverAs: 'followUp' })
+    },
+  })
 }
 `
 

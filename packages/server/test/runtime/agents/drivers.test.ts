@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { setDataDir } from '@yaac/shared/paths'
 import { acpLogDir, codexDir } from '@yaac/shared/project-paths'
@@ -28,7 +28,7 @@ import {
   SUPPORTED_PERMISSION_MODES,
 } from '@yaac/shared/types'
 import { _ACP_PROFILES } from '#runtime/agents/acp-adapters'
-import type { PermissionMode } from '@yaac/shared/types'
+import type { AgentTool, PermissionMode } from '@yaac/shared/types'
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 
 /** A pi conversation's model when none is named: the provider's default. */
@@ -2057,13 +2057,14 @@ describe('agentDriver', () => {
     }
     const submitted = { status: 0, calls: ['paste', 'send-keys Enter', 'send-keys Enter'] }
 
-    it('carries any text to the pane intact, as a bracketed paste', async () => {
+    it('carries any text to the pane intact as a bracketed paste, but no control sequence', async () => {
       const nasty = 'say "hi" && don\'t eval `$HOME`\nsecond line — ünïcode'
-      const script = await deliveredScript(nasty)
+      // An escape could end the bracketed paste and type the rest as keys.
+      const script = await deliveredScript(`${nasty}\x1b[201~\x1b[Z\x07\r\u009b`)
       expect(script).not.toContain('$HOME')
       const b64 = /printf %s ([A-Za-z0-9+/=]+) \| base64 -d \| tmux[^|]*load-buffer/.exec(script)?.[1]
-      expect(Buffer.from(b64!, 'base64').toString('utf8')).toBe(nasty)
-      expect(script).toContain('paste-buffer -p -d -b yaac-prompt -t %3')
+      expect(Buffer.from(b64!, 'base64').toString('utf8')).toBe(`${nasty}[201~[Z`)
+      expect(script).toContain('paste-buffer -p -d -b yaac-prompt-$$ -t %3')
       expect(script).toContain('send-keys -t %3 Enter')
     })
 
@@ -2088,7 +2089,206 @@ describe('agentDriver', () => {
     it('pastes a whitespace-only prompt once, blind', async () => {
       const script = await deliveredScript(' \n ')
       expect(script).not.toContain('head=')
-      expect(script).toContain('paste-buffer -p -d -b yaac-prompt -t %3')
+      expect(script).toContain('paste-buffer -p -d -b yaac-prompt-$$ -t %3')
+    })
+  })
+
+  /**
+   * A message to a running agent (`running`) runs in the foreground, against
+   * a stub `tmux` that plays a small TUI per `$TOOL`: a transcript of what
+   * was submitted, an input box holding `$STUB/input`, and each tool's way of
+   * setting a draft aside (claude's one-slot stash and kill ring, codex's history,
+   * opencode's stash stack, pi's message key). `$STUB/dialog` replaces the
+   * input box with a dialog that takes no keys (and hides codex's cursor),
+   * and `$ENTER_DIALOG` is one the submit raises.
+   */
+  describe('messages to a running agent', () => {
+    let bin: string
+    beforeEach(() => {
+      bin = mkdtempSync(path.join(os.tmpdir(), 'yaac-message-'))
+      writeFileSync(path.join(bin, 'sleep'), '#!/bin/sh\n', { mode: 0o755 })
+      writeFileSync(path.join(bin, 'tmux'), [
+        '#!/bin/sh',
+        'shift 2',
+        'S=$STUB; touch "$S/input" "$S/transcript" "$S/history" "$S/stack"',
+        'enc() { base64 | tr -d "\\n"; }',
+        'submit() { [ -s "$S/input" ] && { cat "$S/input"; echo; } >> "$S/transcript"; : > "$S/input"; }',
+        '# The input box, its first line prefixed $1 and the rest $2.',
+        'lines() { awk -v a="$1" -v b="$2" \'{ print (NR == 1 ? a : b) $0 }\' "$S/input"; }',
+        'render() {',
+        '  [ "$TOOL" = opencode ] && echo "${LABEL:-   } New session"',
+        '  cat "$S/transcript"',
+        '  if [ -s "$S/dialog" ]; then cat "$S/dialog"; return; fi',
+        '  case "$TOOL" in',
+        '    claude) [ -s "$S/stash" ] && echo "                    › stashed"; echo "────────"',
+        '      if [ -s "$S/input" ]; then lines "❯\\302\\240" "  "; else printf "❯\\302\\240\\n"; fi',
+        '      echo "────────"; echo "  ⏸ manual mode on" ;;',
+        '    codex) if [ -s "$S/input" ]; then lines "› " "  "; else echo "› "; fi',
+        '      echo; [ -s "$S/input" ] && echo "  tab to queue message" || echo "  ? for shortcuts" ;;',
+        '    opencode) echo "┃"; [ -s "$S/input" ] && lines "┃  " "┃  "; echo "┃"; echo "┃  Build · M Mock" ;;',
+        '  esac',
+        '}',
+        'case "$1" in',
+        '  display) case "$*" in',
+        '    *cursor_y*) n=$(render | grep -n "^›" | tail -n 1 | cut -d: -f1); [ -s "$S/dialog" ] && echo "0 0" || echo "1 $((n - 1))" ;;',
+        '    *cursor_flag*) [ -s "$S/dialog" ] && echo 0 || echo 1 ;;',
+        '    *) echo "$TITLE" ;;',
+        '  esac ;;',
+        '  capture-pane) render ;;',
+        '  load-buffer) cat > "$S/buffer" ;;',
+        '  paste-buffer)',
+        '    echo paste >> "$S/calls"',
+        '    [ -z "$RAISE" ] || printf %s "$RAISE" > "$CLAUDE_CONFIG_DIR/sessions/1.json"',
+        '    [ -s "$S/dialog" ] || cat "$S/buffer" >> "$S/input" ;;',
+        '  send-keys) shift 3; for k in "$@"; do echo "send-keys $k" >> "$S/calls"; case "$TOOL $k" in',
+        '    *Enter) submit; echo 0 > "$S/ups"; printf %s "$ENTER_DIALOG" > "$S/dialog"',
+        '      [ "$TOOL" = claude ] && [ -s "$S/stash" ] && { mv "$S/stash" "$S/input"; } ;;',
+        '    "claude C-s") if [ -s "$S/input" ]; then mv "$S/input" "$S/stash"; elif [ -s "$S/stash" ]; then mv "$S/stash" "$S/input"; fi ;;',
+        '    "claude C-u") [ -s "$S/input" ] && mv "$S/input" "$S/kill"; touch "$S/input" ;;',
+        '    "claude C-y") cat "$S/kill" >> "$S/input" ;;',
+        '    "codex C-c") [ -s "$S/input" ] && { enc < "$S/input"; echo; } >> "$S/history"; : > "$S/input" ;;',
+        '    "codex Up") n=$(($(cat "$S/ups" 2>/dev/null || echo 0) + 1)); echo $n > "$S/ups"',
+        '      tail -n $n "$S/history" | head -n 1 | base64 -d > "$S/input" ;;',
+        '    "opencode f9") [ -s "$S/input" ] && { enc < "$S/input"; echo; } | tee -a "$S/stack" >> "$XDG_STATE_HOME/opencode/prompt-stash.jsonl"; : > "$S/input" ;;',
+        '    "opencode f10") tail -n 1 "$S/stack" | base64 -d > "$S/input"; sed -i "\\$d" "$S/stack" ;;',
+        '    "pi f9") f="$PI_CODING_AGENT_DIR/yaac-messages/conv-1.txt"; { cat "$f"; echo; } >> "$S/transcript"; rm -f "$f" ;;',
+        '  esac; done ;;',
+        'esac',
+        'exit 0',
+        '',
+      ].join('\n'), { mode: 0o755 })
+    })
+    afterEach(() => { rmSync(bin, { recursive: true, force: true }) })
+
+    const MESSAGE = 'Sent from peer via yaac-mama:\n\nhello there'
+
+    /**
+     * Deliver `MESSAGE` to `tool`'s conversation `conv-1`, whose input box
+     * holds `opts.draft`; for claude, its presence file says `opts.claude`
+     * (`idle` by default, none when null) and `opts.raise` once pasted into,
+     * and `opts.stash` is a stash its user made. Returns the exit status, the
+     * keys sent, and what was submitted and left in the box.
+     */
+    async function send(tool: AgentTool, opts: {
+      draft?: string; stash?: string; claude?: string | null; raise?: string; title?: string; dialog?: string
+      enterDialog?: string; label?: string
+    } = {}) {
+      await agentDriver('tui').deliverPrompt({ ...session, tool }, '%3', MESSAGE, { running: { agentSessionId: 'conv-1' } })
+      const [, cmd, execOpts] = podExec.mock.calls.at(-1)!
+      expect(execOpts).toEqual({ maxAttempts: 1, timeout: 30_000 })
+      const file = (name: string): string => path.join(bin, name)
+      for (const name of ['calls', 'input', 'transcript', 'history', 'stack', 'stash', 'kill', 'ups']) rmSync(file(name), { force: true })
+      writeFileSync(file('input'), opts.draft ?? '')
+      writeFileSync(file('dialog'), opts.dialog ?? '')
+      if (opts.stash !== undefined) writeFileSync(file('stash'), opts.stash)
+      const sessions = file('claude/sessions')
+      mkdirSync(sessions, { recursive: true })
+      rmSync(path.join(sessions, '1.json'), { force: true })
+      const presence = (status: string): string => JSON.stringify({ pid: 1, sessionId: 'conv-1', status })
+      if (opts.claude !== null) writeFileSync(path.join(sessions, '1.json'), presence(opts.claude ?? 'idle'))
+      mkdirSync(file('state/opencode'), { recursive: true })
+      writeFileSync(file('state/opencode/prompt-stash.jsonl'), '')
+      mkdirSync(file('pi'), { recursive: true })
+      const res = spawnSync('sh', ['-c', cmd], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          STUB: bin,
+          TOOL: tool,
+          TITLE: opts.title ?? '',
+          ENTER_DIALOG: opts.enterDialog ?? '',
+          LABEL: opts.label ?? '',
+          RAISE: opts.raise === undefined ? '' : presence(opts.raise),
+          CLAUDE_CONFIG_DIR: file('claude'),
+          XDG_STATE_HOME: file('state'),
+          PI_CODING_AGENT_DIR: file('pi'),
+        },
+      })
+      const read = (name: string): string => (existsSync(file(name)) ? readFileSync(file(name), 'utf8') : '')
+      return {
+        status: res.status ?? -1,
+        calls: read('calls').trim().split('\n').filter(Boolean),
+        submitted: read('transcript'),
+        input: read('input'),
+        stash: read('stash'),
+        history: read('history').trim().split('\n').filter(Boolean).map((l) => Buffer.from(l, 'base64').toString('utf8')),
+        stack: read('stack').trim().split('\n').filter(Boolean).map((l) => Buffer.from(l, 'base64').toString('utf8')),
+      }
+    }
+
+    it('submits the message on its own and puts the user\'s draft back, per tool', async () => {
+      const draft = 'my draft\nsecond line'
+      const delivered = `${MESSAGE}\n`
+      // An empty box: one paste, one Enter.
+      expect(await send('claude')).toMatchObject({
+        status: 0, calls: ['paste', 'send-keys Enter'], submitted: delivered, input: '',
+      })
+      // claude stashes the draft and restores it itself on the submit.
+      expect(await send('claude', { draft })).toMatchObject({
+        status: 0, calls: ['send-keys C-s', 'paste', 'send-keys Enter'], submitted: delivered, input: draft,
+      })
+      // codex clears it into its history and recalls it past the message.
+      expect(await send('codex', { draft })).toMatchObject({
+        status: 0, submitted: delivered, input: draft,
+      })
+      // opencode pushes it onto its stash stack and pops it.
+      expect(await send('opencode', { draft })).toMatchObject({
+        status: 0, calls: ['send-keys f9', 'paste', 'send-keys Enter', 'send-keys f10'], submitted: delivered, input: draft,
+      })
+      // pi's extension submits the message without touching the editor.
+      expect(await send('pi', { draft })).toMatchObject({
+        status: 0, calls: ['send-keys f9'], submitted: delivered, input: draft,
+      })
+    })
+
+    it('keeps a claude user\'s own stash, cutting a draft beside it instead', async () => {
+      // Our submit restores their stash into the empty box; it goes back.
+      expect(await send('claude', { stash: 'their stash' })).toMatchObject({
+        status: 0, submitted: `${MESSAGE}\n`, input: '', stash: 'their stash',
+      })
+      // claude keeps one stash, so a draft beside it is cut from its end,
+      // then yanked back once their stash is back in place.
+      expect(await send('claude', { stash: 'their stash', draft: 'their draft\nline two' })).toMatchObject({
+        status: 0, submitted: `${MESSAGE}\n`, input: 'their draft\nline two', stash: 'their stash',
+      })
+      // The kill ring keeps a paste's placeholder but not the paste.
+      expect(await send('claude', { stash: 'their stash', draft: 'see [Pasted text #1 +30 lines]' })).toMatchObject({
+        status: 5, calls: [], submitted: '', input: 'see [Pasted text #1 +30 lines]', stash: 'their stash',
+      })
+    })
+
+    it('types nothing into an agent showing a dialog, and never submits into one', async () => {
+      const refused = { status: 3, calls: [], submitted: '' }
+      // claude reports `waiting` under a permission prompt or a question,
+      // and has no presence file before its startup dialogs are through.
+      expect(await send('claude', { claude: 'waiting' })).toMatchObject(refused)
+      expect(await send('claude', { claude: null })).toMatchObject(refused)
+      // A dialog that opens once the text is in gets no Enter.
+      expect(await send('claude', { raise: 'waiting' })).toMatchObject({ status: 4, calls: ['paste'], submitted: '' })
+      // codex titles approvals, and hides its cursor under every dialog, its
+      // plan prompt included, whose options look like a composer holding
+      // text. Nothing is sent to it, so no C-c either.
+      expect(await send('codex', { title: '[ ! ] Action Required | cxt', draft: 'mine' })).toMatchObject({ ...refused, input: 'mine' })
+      expect(await send('codex', { dialog: '› 1. Yes, implement this plan\n  enter select · esc back' }))
+        .toMatchObject(refused)
+      // opencode marks its tab label.
+      expect(await send('opencode', { label: ' ! ' })).toMatchObject(refused)
+      expect(await send('opencode', { label: ' ? ' })).toMatchObject(refused)
+    })
+
+    it('leaves a draft set aside, sending no more keys, when the message raises a dialog', async () => {
+      const draft = 'my draft'
+      const approval = '› 1. Yes, proceed (y)\n  Press enter to confirm or esc to cancel'
+      // The draft stays in codex's history, where Up brings it back once
+      // the dialog is answered; Up now would move the approval's choice.
+      expect(await send('codex', { draft, enterDialog: approval })).toMatchObject({
+        status: 0, calls: ['send-keys C-c', 'paste', 'send-keys Enter'], submitted: `${MESSAGE}\n`, history: [draft],
+      })
+      // And on opencode's stash stack, where its pop key brings it back.
+      expect(await send('opencode', { draft, enterDialog: '△ Permission required' })).toMatchObject({
+        status: 0, calls: ['send-keys f9', 'paste', 'send-keys Enter'], stack: [draft],
+      })
     })
   })
 })

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { PI_MESSAGE_KEY } from '#runtime/agents/agent-command'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -136,23 +137,36 @@ describe('ensureAgentReporters', () => {
   })
 
   // Against the extension API of pi 0.99.2.
-  it("reports pi's conversation and model, and ends each conversation as pi does", async () => {
+  it("reports pi's conversation and model, ends each conversation as pi does, and submits messages sent to it", async () => {
     await ensureAgentReporters(await roots())
+    const messages = path.join(dir, 'pi-agent', 'yaac-messages')
+    await fs.mkdir(messages, { recursive: true })
+    await fs.writeFile(path.join(messages, 'pi-1.txt'), 'Sent from w via yaac-mama:\n\nhi')
     expect(await runModule(path.join(homes.piAgentDir, 'extensions', 'yaac-report.ts'), [
       "const { execFile } = await import('node:child_process')",
+      "const { appendFileSync } = await import('node:fs')",
+      `process.env.PI_CODING_AGENT_DIR = ${JSON.stringify(path.join(dir, 'pi-agent'))}`,
       'const on = {}',
+      'const keys = {}',
       'reporter({',
       '  on: (event, handler) => { on[event] = handler },',
       '  exec: (cmd, args) => new Promise((done, fail) => execFile(cmd, args, (e) => (e ? fail(e) : done()))),',
+      '  registerShortcut: (key, shortcut) => { keys[key] = shortcut },',
+      `  sendUserMessage: (text, opts) => appendFileSync(${JSON.stringify(calls)}, 'sent ' + JSON.stringify([text, opts]) + '\\n'),`,
       '})',
       "on.session_start({ reason: 'startup' }, {",
       "  model: { provider: 'openrouter', id: 'z-ai/glm-5' },",
       "  sessionManager: { getSessionId: () => 'pi-1', getSessionFile: () => '/h/.pi/agent/sessions/t_pi-1.jsonl' },",
       '})',
+      `await keys[${JSON.stringify(PI_MESSAGE_KEY)}].handler({ isIdle: () => false })`,
+      // Nothing waiting: the key does nothing.
+      `await keys[${JSON.stringify(PI_MESSAGE_KEY)}].handler({ isIdle: () => true })`,
       "on.model_select({ model: { provider: 'openrouter', id: 'moonshot/kimi-k3' } })",
       "on.session_shutdown({ reason: 'new' })",
       "await on.session_shutdown({ reason: 'quit' })",
     ])).toEqual([
+      // Mid-turn, the message waits for the turn.
+      'sent ["Sent from w via yaac-mama:\\n\\nhi",{"deliverAs":"followUp"}]',
       'yaac-agent-links /h/.pi|pi|pi-1|/h/.pi/agent/sessions/t_pi-1.jsonl',
       'yaac-agent-report openrouter/z-ai/glm-5|||',
       'yaac-agent-report openrouter/moonshot/kimi-k3|||',
@@ -160,6 +174,8 @@ describe('ensureAgentReporters', () => {
       'yaac-agent-links |pi|pi-1|--end',
       'yaac-agent-links |pi|pi-1|--end',
     ])
+    // Taken, so the sender sees it delivered.
+    await expect(fs.access(path.join(messages, 'pi-1.txt'))).rejects.toThrow()
   })
 
   // Against opencode 2.0.21's events. An agent switch arrives with the next

@@ -23,7 +23,7 @@
  */
 
 import { StringDecoder } from 'node:string_decoder'
-import type { StreamChild } from '#drivers/contract'
+import { WorkspaceExecError, type StreamChild } from '#drivers/contract'
 import { serverLog } from '#log'
 import {
   ControlModeClient,
@@ -43,7 +43,7 @@ import {
   splitAgentReport,
   type PaneSession,
 } from './agent-tools'
-import { buildAgentCmd, buildPromptPasteBgCmd } from './agent-command'
+import { buildAgentCmd, buildMessageCmd, buildPromptPasteBgCmd } from './agent-command'
 import { workspaceDriver } from '#drivers/driver'
 import type {
   AgentConnectDeps,
@@ -391,6 +391,16 @@ class TuiConnection implements AgentConnection {
   }
 }
 
+/** What each `buildMessageCmd` exit code tells the sender. */
+const MESSAGE_REFUSALS: Partial<Record<number, string>> = {
+  1: 'the message never showed in the agent\'s input; nothing was submitted',
+  3: 'the agent is showing a prompt (a permission request, a question or another dialog); '
+    + 'nothing was typed, so try again once it is answered',
+  4: 'the agent is showing a prompt (a permission request, a question or another dialog) that '
+    + 'opened after the message was typed, which sits unsubmitted in its input',
+  5: 'its user\'s draft could not be set aside, so nothing was typed',
+}
+
 export const tuiDriver: AgentDriver = {
   mode: 'tui',
 
@@ -410,10 +420,23 @@ export const tuiDriver: AgentDriver = {
     return new TuiConnection(session, sink, deps)
   },
 
-  async deliverPrompt(session: DrivenWorkspace, handle: string, text: string): Promise<void> {
+  async deliverPrompt(session: DrivenWorkspace, handle: string, text: string, opts = {}): Promise<void> {
     // The handle is a pane id, a valid paste target.
     const driver = workspaceDriver()
-    const cmd = buildPromptPasteBgCmd(handle, text, driver.workspacePaths(session.jobName))
-    await driver.exec(session.jobName, cmd, { maxAttempts: 1, timeout: 15_000 })
+    const paths = driver.workspacePaths(session.jobName)
+    if (opts.running === undefined) {
+      await driver.exec(session.jobName, buildPromptPasteBgCmd(handle, text, paths), { maxAttempts: 1, timeout: 15_000 })
+      return
+    }
+    const cmd = buildMessageCmd(handle, text, paths, { tool: session.tool, agentSessionId: opts.running.agentSessionId })
+    await driver.exec(session.jobName, cmd, {
+      maxAttempts: 1,
+      timeout: 30_000,
+    }).catch((err: unknown) => {
+      if (!(err instanceof WorkspaceExecError) || MESSAGE_REFUSALS[err.code] === undefined) throw err
+      // The script's own last line names the cause where there are several.
+      const detail = err.stderr.trim().split('\n').at(-1) ?? ''
+      throw new Error(err.code === 5 && detail !== '' ? `${MESSAGE_REFUSALS[5]}: ${detail}` : MESSAGE_REFUSALS[err.code])
+    })
   },
 }
