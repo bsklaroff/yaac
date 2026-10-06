@@ -33,7 +33,7 @@ const LAYOUTS = { s1: addColumn(singleColumn('agent'), 'shell:shell'), s2: [] }
 const CASES: { field: keyof typeof initial; key: string; value: unknown; stored: string; loads: [string, unknown][] }[] = [
   { field: 'soundEnabled', key: 'yaac.sound.v1', value: false, stored: '0', loads: [['1', true], ['x', undefined]] },
   { field: 'chatFullWidth', key: 'yaac.chatfullwidth.v1', value: true, stored: '1', loads: [['0', false]] },
-  { field: 'chatCondensed', key: 'yaac.chatcondensed.v1', value: true, stored: '1', loads: [['0', false]] },
+  { field: 'chatCondensed', key: 'yaac.chatcondensed.v1', value: false, stored: '0', loads: [['1', true]] },
   {
     field: 'sidebarWidth', key: 'yaac.sidebarwidth.v1', value: 300, stored: '300',
     loads: [['4000', MAX_SIDEBAR_WIDTH], ['wide please', undefined], [' ', undefined]],
