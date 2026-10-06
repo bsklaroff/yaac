@@ -597,7 +597,7 @@ describe('deployServerWorkload', () => {
     // Deploying while a host server runs would put two servers on one
     // database, and the old server would answer the origin probe.
     await writeLock({
-      pid: process.pid, port: 8787, startedAt: Date.now(), buildId: 'b',
+      pid: process.ppid, port: 8787, startedAt: Date.now(), buildId: 'b',
       instance: 'inst-1', host: os.hostname(), heartbeatAt: Date.now(),
     })
     // /health answers and the lock's pid is alive: a host server is running.
@@ -626,7 +626,7 @@ describe('deployServerWorkload', () => {
     // A stale lock from a crashed server is ignored.
     const DEAD_PORT = 1
     await writeLock({
-      pid: process.pid, port: DEAD_PORT, startedAt: Date.now(), buildId: 'b',
+      pid: process.ppid, port: DEAD_PORT, startedAt: Date.now(), buildId: 'b',
       instance: 'inst-1', host: os.hostname(), heartbeatAt: Date.now(),
     })
     // Nothing answers on the lock's port, so the server is gone even

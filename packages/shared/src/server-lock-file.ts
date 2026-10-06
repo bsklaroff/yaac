@@ -81,14 +81,14 @@ export function parseServerLock(raw: string): ServerLock | null {
 }
 
 /**
- * A lock is live if its pid exists and its port answers HTTP within 500ms.
- * Any response counts, even a 404: an old server without `/api/health`
- * still holds the database and must be stopped, not reclaimed. A lock from
- * another host is judged by its lease instead.
+ * A lock is live if its pid is another running process and its port
+ * answers HTTP within 500ms. Any response counts, even a 404: an old server
+ * without `/api/health` still holds the database and must be stopped, not
+ * reclaimed. A lock from another host is judged by its lease instead.
  */
 export async function isLockLive(lock: ServerLock): Promise<boolean> {
   if (!isSameHostLock(lock)) return isLeaseFresh(lock)
-  if (!pidExists(lock.pid)) return false
+  if (!isOtherLivePid(lock.pid)) return false
   try {
     const ctl = new AbortController()
     const timer = setTimeout(() => ctl.abort(), 500)
@@ -112,7 +112,7 @@ export async function isLockLive(lock: ServerLock): Promise<boolean> {
  */
 export async function isLockReady(lock: ServerLock): Promise<boolean> {
   if (!isSameHostLock(lock)) return isLeaseFresh(lock)
-  if (!pidExists(lock.pid)) return false
+  if (!isOtherLivePid(lock.pid)) return false
   try {
     const ctl = new AbortController()
     const timer = setTimeout(() => ctl.abort(), 500)
@@ -129,7 +129,15 @@ export async function isLockReady(lock: ServerLock): Promise<boolean> {
   }
 }
 
-function pidExists(pid: number): boolean {
+/**
+ * Whether `pid` is a running process other than this one. A lock naming our
+ * own pid is stale: a container restarted in place keeps its hostname and
+ * reuses the pid (its entrypoint forks the same way on every start), so the
+ * lock left by the killed server would otherwise read as live and the new
+ * one would exit.
+ */
+function isOtherLivePid(pid: number): boolean {
+  if (pid === process.pid) return false
   try {
     process.kill(pid, 0)
     return true
