@@ -449,6 +449,14 @@ config option: codex sends both, and its block's ids carry a reasoning effort
 the row through the same `onModel` path as a model the adapter reports itself
 (see "State").
 
+## Context usage
+
+Beside Send, the composer shows how full the context window is, as a ring
+and a percentage. It turns amber at 75% and red at 90%. Every adapter yaac
+runs sends ACP's `usage_update` (`used` and `size` in tokens), which becomes
+a `usage` event; the pane shows the latest one from the main conversation.
+A subagent's report carries its `thread` and is not shown.
+
 ## Subagents and background tasks
 
 A TUI lists the subagents and background shells its agent started, and lets

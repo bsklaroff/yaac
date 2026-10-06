@@ -916,6 +916,12 @@ export function translateSessionUpdate(params: unknown): TranslatedUpdate | unde
       const models = sessionModels(update)
       return models === undefined ? undefined : event({ type: 'models', ...models })
     }
+    case 'usage_update': {
+      const { used, size } = update
+      return typeof used === 'number' && typeof size === 'number' && size > 0
+        ? event({ type: 'usage', used, size })
+        : undefined
+    }
     case 'tool_call':
     case 'tool_call_update': {
       const patch = toToolCallPatch(update)

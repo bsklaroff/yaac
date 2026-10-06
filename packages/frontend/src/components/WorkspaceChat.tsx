@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react'
+import clsx from 'clsx'
 import { useAcpStream } from '#lib/acp'
 import { AcpTranscript, active, groupEvents, SUBAGENT_CATEGORY, taskCategory } from '#components/AcpTranscript'
 import {
@@ -12,7 +13,7 @@ import {
 } from '#lib/icons'
 import { chatDraftKey, useUiStore } from '#lib/store'
 import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
-import type { AcpContent, AcpImage, AcpQueuedPrompt } from '@yaac/shared/acp'
+import type { AcpContent, AcpEvent, AcpImage, AcpQueuedPrompt } from '@yaac/shared/acp'
 
 /**
  * The chat pane for an `acp` conversation; `WorkspaceTerminal` fills the
@@ -95,6 +96,7 @@ export function WorkspaceChat({
    *  the stream no longer has (a restarted agent) falls back to it. */
   const [opened, setOpened] = useState<ActivityTarget | undefined>()
   const activity = useMemo(() => latestActivity(events), [events])
+  const usage = useMemo(() => contextUsage(events), [events])
   const subagent = opened?.kind === 'subagent' ? activity.subagents.get(opened.id) : undefined
   const task = opened?.kind === 'task' ? activity.tasks.get(opened.id) : undefined
   const view = subagent !== undefined || task !== undefined ? opened : undefined
@@ -485,6 +487,7 @@ export function WorkspaceChat({
                   />
                   {/* One group, so Stop stays beside Send however the row spreads. */}
                   <div className="flex items-center">
+                    {usage !== undefined && <ContextMeter used={usage.used} size={usage.size} />}
                     {busy && (
                       <button
                         type="button"
@@ -523,6 +526,59 @@ export function WorkspaceChat({
  *  toggle shows only in a pane wider than this cap plus the `px-4` padding
  *  (66rem), since in a narrower one both widths look the same. */
 const COLUMN = 'mx-auto w-full max-w-5xl'
+
+/** The main conversation's latest context report. */
+function contextUsage(events: readonly AcpEvent[]): { used: number; size: number } | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]
+    if (e.type === 'usage' && e.thread === undefined) return e
+  }
+  return undefined
+}
+
+/** A token count as the TUIs print one: 53.2k, 1M. */
+function tokens(n: number): string {
+  if (n >= 1e6) return `${String(Math.round(n / 1e5) / 10)}M`
+  if (n >= 1e3) return `${String(Math.round(n / 100) / 10)}k`
+  return String(n)
+}
+
+/** How full the main conversation's context window is, as a ring and a
+ *  percentage, from the agent's last `usage` report. */
+function ContextMeter({ used, size }: { used: number; size: number }): JSX.Element {
+  const fraction = Math.min(1, used / size)
+  const percent = Math.round(fraction * 100)
+  const label = `Context: ${tokens(used)} of ${tokens(size)} tokens (${String(percent)}%)`
+  const circumference = 2 * Math.PI * 6
+  return (
+    <div
+      role="meter"
+      aria-label="Context used"
+      aria-valuenow={percent}
+      aria-valuetext={label}
+      title={label}
+      className={clsx(
+        'mr-2 flex items-center gap-1 text-xs tabular-nums',
+        percent >= 90 ? 'text-error' : percent >= 75 ? 'text-warning' : 'text-text-faint',
+      )}
+    >
+      <svg width="16" height="16" viewBox="0 0 16 16" className="-rotate-90">
+        <circle cx="8" cy="8" r="6" fill="none" strokeWidth="2" className="stroke-surface-3" />
+        <circle
+          cx="8"
+          cy="8"
+          r="6"
+          fill="none"
+          strokeWidth="2"
+          stroke="currentColor"
+          strokeDasharray={circumference}
+          strokeDashoffset={circumference * (1 - fraction)}
+        />
+      </svg>
+      {percent}%
+    </div>
+  )
+}
 
 /**
  * A message waiting for the running turn to end, drawn like the user bubble
