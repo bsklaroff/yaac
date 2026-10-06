@@ -184,6 +184,7 @@ These were checked against its source, not just its README:
 - **Snapshots** (checkpoint/restore) are not implemented there; it only
   wraps GKE's own snapshot CRDs. On a kind or self-managed gVisor cluster
   suspend/resume means pod delete plus PVC retain, not hibernation.
+  `docs/plans/snapshot-warm-pool.md` covers memory snapshots for spares.
 
 ### Mapping
 
