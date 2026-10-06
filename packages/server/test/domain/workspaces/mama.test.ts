@@ -18,9 +18,15 @@ vi.mock('#domain/workspaces/create', async (importOriginal) => ({
   createWorkspace: vi.fn(),
 }))
 vi.mock('#domain/workspaces/cleanup', () => ({ cleanupWorkspaceDetached: vi.fn() }))
+vi.mock('#drivers/k8s/substrate/stream-relay', async (importOriginal) => ({
+  ...(await importOriginal<typeof streamRelayModule>()),
+  podExec: vi.fn(),
+}))
 
 import { listWorkspacePods } from '#drivers/k8s/substrate/pods'
 import type * as podsModule from '#drivers/k8s/substrate/pods'
+import type * as streamRelayModule from '#drivers/k8s/substrate/stream-relay'
+import { podExec } from '#drivers/k8s/substrate/stream-relay'
 import type * as createModule from '#domain/workspaces/create'
 import { createWorkspace } from '#domain/workspaces/create'
 import { cleanupWorkspaceDetached } from '#domain/workspaces/cleanup'
@@ -35,7 +41,9 @@ import { runMamaCommand, type MamaCaller } from '#domain/workspaces/mama'
 import { queueWorkspace } from '#domain/workspaces/queued-workspaces'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { agentHistoryDir, opencodeCheckpointDir, workspaceDir } from '@yaac/shared/project-paths'
-import { recordAgentSessions } from '#db/agent-session-store'
+import { recordAgentSessions, setActiveAgentSessions } from '#db/agent-session-store'
+import { _resetWorkspaceStatusStoreForTests, setLiveAgents } from '#runtime/status/status-store'
+import { WorkspaceExecError } from '#drivers/contract'
 import { git } from '@yaac/test-utils/git'
 import { buildPeerReader } from '@yaac/test-utils/peer-reader'
 import { setPeerReaderEntry } from '#domain/git/peer-bundle'
@@ -568,6 +576,149 @@ describe('runMamaCommand', () => {
       // typed too little of it.
       if (!outcome.ok) expect(outcome.error).toContain('use a longer prefix')
       expect(vi.mocked(cleanupWorkspaceDetached)).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('send', () => {
+    beforeEach(async () => {
+      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'caller-workspace', permissionMode: 'accept-edits' })
+      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'sibling-workspace', permissionMode: 'manual' })
+      vi.mocked(listWorkspacePods).mockResolvedValue([podFor('caller-workspace'), podFor('sibling-workspace')])
+      await recordAgentSessions('proj', 'sibling-workspace', [
+        { tool: 'claude', agentSessionId: 'first-conv' },
+        { tool: 'claude', agentSessionId: 'second-conv' },
+      ])
+      await setActiveAgentSessions('proj', 'sibling-workspace', [
+        { tool: 'claude', agentSessionId: 'first-conv', paneId: '%3' },
+        { tool: 'claude', agentSessionId: 'second-conv', paneId: '%7' },
+      ])
+      vi.mocked(podExec).mockReset().mockResolvedValue({ stdout: '', stderr: '' })
+      _resetWorkspaceStatusStoreForTests()
+    })
+
+    /** The delivery script a command carries, base64-encoded. */
+    const scriptOf = (cmd: string): string =>
+      Buffer.from(/^sh -c "\$\(printf %s (\S+) \| base64 -d\)"$/.exec(cmd)![1], 'base64').toString('utf8')
+
+    /** The pane the paste script targets, and whether it carries the
+     *  message. It runs in the foreground, so the reply can say whether the
+     *  message landed. */
+    const delivered = (message: string): { jobName: string; pane?: string; carries: boolean } => {
+      const [jobName, cmd] = vi.mocked(podExec).mock.calls.at(-1)!
+      const script = scriptOf(cmd)
+      return {
+        jobName,
+        pane: / -t (%\d+)/.exec(script)?.[1],
+        carries: script.includes(Buffer.from(message, 'utf8').toString('base64')),
+      }
+    }
+
+    it('pastes into a sibling\'s first live conversation, or the one named', async () => {
+      const text = await output('send', 'rebase onto main\nthen push', { workspace: 'sibling' })
+
+      // Headed with the sender, so the agent knows who is asking.
+      expect(delivered('Sent from caller-workspace via yaac-mama:\n\nrebase onto main\nthen push')).toEqual({
+        jobName: 'yaac-proj-sibling-workspace', pane: '%3', carries: true,
+      })
+      expect(text).toContain('Sent to sibling-')
+      expect(text).toContain('first-co')
+
+      // Each delivery checks its own conversation for a dialog first.
+      expect(scriptOf(vi.mocked(podExec).mock.calls.at(-1)![1])).toContain('first-conv')
+
+      await output('send', 'and you', { workspace: 'sibling', conversation: 'second' })
+      expect(delivered('Sent from caller-workspace via yaac-mama:\n\nand you').pane).toBe('%7')
+      expect(scriptOf(vi.mocked(podExec).mock.calls.at(-1)![1])).toContain('second-conv')
+    })
+
+    it('strips control characters before any tool sees them, pi\'s editor-free path included', async () => {
+      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'pi-workspace', permissionMode: 'manual' })
+      await recordAgentSessions('proj', 'pi-workspace', [{ tool: 'pi', agentSessionId: 'pi-conv' }])
+      await setActiveAgentSessions('proj', 'pi-workspace', [{ tool: 'pi', agentSessionId: 'pi-conv', paneId: '%5' }])
+      vi.mocked(listWorkspacePods).mockResolvedValue([podFor('caller-workspace'), podFor('pi-workspace')])
+
+      await output('send', 'look\x1b]52;c;cGF5bG9hZA==\x07 here\x1b[6n', { workspace: 'pi-workspace' })
+
+      // An OSC clipboard write and a cursor query, rendered by pi's TUI,
+      // would reach the terminal; only their printable remains arrive.
+      expect(delivered('Sent from caller-workspace via yaac-mama:\n\nlook]52;c;cGF5bG9hZA== here[6n'))
+        .toMatchObject({ pane: '%5', carries: true })
+    })
+
+    it('reports a message the agent could not take as not delivered', async () => {
+      vi.mocked(podExec).mockRejectedValue(new WorkspaceExecError('paste', 1, '', 'prompt never appeared'))
+
+      const outcome = await run('send', 'go', { workspace: 'sibling' })
+
+      expect(outcome.ok).toBe(false)
+      if (!outcome.ok) expect(outcome.error).toMatch(/^not delivered to sibling-'s claude conversation first-co: .*nothing was submitted/)
+
+      // The paste script found a dialog up, so it typed nothing.
+      vi.mocked(podExec).mockRejectedValue(new WorkspaceExecError('paste', 3, '', 'showing a prompt'))
+      const asking = await run('send', 'go', { workspace: 'sibling' })
+      expect(asking.ok === false && asking.error).toContain('nothing was typed')
+    })
+
+    it('delivers one message at a time per sender and per conversation', async () => {
+      let release!: () => void
+      vi.mocked(podExec).mockReturnValueOnce(new Promise((resolve) => {
+        release = () => resolve({ stdout: '', stderr: '' })
+      }))
+      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'third-workspace', permissionMode: 'manual' })
+      vi.mocked(listWorkspacePods).mockResolvedValue([
+        podFor('caller-workspace'), podFor('sibling-workspace'), podFor('third-workspace'),
+      ])
+      const third = { ...CALLER, workspaceId: 'third-workspace' }
+
+      const first = run('send', 'one', { workspace: 'sibling' })
+      await vi.waitFor(() => { expect(vi.mocked(podExec)).toHaveBeenCalledTimes(1) })
+      const again = await run('send', 'two', { workspace: 'sibling', conversation: 'second' })
+      const other = await runMamaCommand(third, { command: 'send', args: { workspace: 'sibling' }, body: 'three' })
+      release()
+
+      expect(again.ok === false && again.error).toContain('previous send is still being delivered')
+      expect(other.ok === false && other.error).toContain('another message to sibling-')
+      expect((await first).ok).toBe(true)
+      expect(vi.mocked(podExec)).toHaveBeenCalledTimes(1)
+      // Both free again once it lands.
+      expect((await run('send', 'two', { workspace: 'sibling' })).ok).toBe(true)
+    })
+
+    it('refuses a target it must not or cannot message, sending nothing', async () => {
+      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'bypass-workspace', permissionMode: 'bypass' })
+      await recordAgentSessions('proj', 'bypass-workspace', [{ tool: 'claude', agentSessionId: 'bypass-conv' }])
+      await setActiveAgentSessions('proj', 'bypass-workspace', [{ tool: 'claude', agentSessionId: 'bypass-conv', paneId: '%1' }])
+      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'stopped-workspace', permissionMode: 'plan' })
+      await recordWorkspaceCreated({ projectSlug: 'other', workspaceId: 'foreign-workspace', permissionMode: 'plan' })
+      vi.mocked(listWorkspacePods).mockResolvedValue([
+        podFor('caller-workspace'), podFor('sibling-workspace'), podFor('bypass-workspace'),
+        podFor('foreign-workspace', 'other'),
+      ])
+      const refusal = async (body: string, args: Record<string, string>): Promise<string> => {
+        const outcome = await run('send', body, args)
+        if (outcome.ok) throw new Error(`expected a refusal for ${JSON.stringify(args)}`)
+        return outcome.error
+      }
+
+      // A message is as good as a prompt, so the caller's posture caps it:
+      // the row's, and the conversation's own when it reported one.
+      expect(await refusal('go', { workspace: 'bypass' })).toContain('more than this workspace\'s own')
+      setLiveAgents('proj', 'sibling-workspace', [
+        { handle: '%3', tool: 'claude', agentSessionId: 'first-conv', reportedMode: 'bypassPermissions' },
+        { handle: '%7', tool: 'claude', agentSessionId: 'second-conv', reportedMode: 'mystery' },
+      ])
+      expect(await refusal('go', { workspace: 'sibling' })).toContain('runs in permission mode \'bypass\'')
+      expect(await refusal('go', { workspace: 'sibling', conversation: 'second' })).toContain('cannot tell which permission mode')
+      _resetWorkspaceStatusStoreForTests()
+
+      expect(await refusal('go', { workspace: 'caller-workspace' })).toContain('itself')
+      expect(await refusal('go', { workspace: 'stopped' })).toBe('workspace stopped- is not running')
+      expect(await refusal('go', { workspace: 'foreign-workspace' })).toContain('no workspace')
+      expect(await refusal('go', { workspace: 'sibling', conversation: 'nope' })).toContain('no running conversation')
+      expect(await refusal('  ', { workspace: 'sibling' })).toContain('needs a message')
+      await setActiveAgentSessions('proj', 'sibling-workspace', [])
+      expect(await refusal('go', { workspace: 'sibling' })).toContain('has no running conversation yet')
+      expect(vi.mocked(podExec)).not.toHaveBeenCalled()
     })
   })
 

@@ -1358,7 +1358,8 @@ export const MAX_MODEL_LENGTH = 128
  * group and conversation are kept, so the user can restart it. Anything that
  * deletes, restarts or reconfigures stays the user's. `fetch` reads another
  * workspace's branches into the caller's checkout, and `history` its
- * conversations, never writing to theirs.
+ * conversations, never writing to theirs. `send` messages a running one's
+ * agent, held to the caller's permission mode.
  */
 export const MAMA_COMMANDS = [
   'list',
@@ -1372,5 +1373,6 @@ export const MAMA_COMMANDS = [
   'edit-queued',
   'fetch',
   'history',
+  'send',
 ] as const
 export type MamaCommand = (typeof MAMA_COMMANDS)[number]

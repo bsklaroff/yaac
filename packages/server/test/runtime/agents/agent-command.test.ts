@@ -22,7 +22,7 @@ interface OpencodeConfig {
 
 /** The config document an opencode launch carries in OPENCODE_CONFIG_CONTENT. */
 function opencodeConfigOf(cmd: string): OpencodeConfig {
-  const json = /OPENCODE_CONFIG_CONTENT="(\{.*\})" opencode /.exec(cmd)?.[1]
+  const json = /OPENCODE_CONFIG_CONTENT="(\{.*?\})" /.exec(cmd)?.[1]
   return JSON.parse((json ?? '{}').replace(/\\"/g, '"')) as OpencodeConfig
 }
 
@@ -106,6 +106,8 @@ describe('buildAgentCmd', () => {
       const cmd = buildAgentCmd({ tool: 'opencode', workspaceId: 'sess-1', resume: false, model: 'anthropic/claude-opus-4-8', permissionMode: 'bypass' })
       expect(cmd).not.toContain('--model')
       expect(opencodeConfigOf(cmd).model).toBe('anthropic/claude-opus-4-8')
+      // Its prompt stash ships unbound; a message to it needs keys for it.
+      expect(cmd).toContain('OPENCODE_CLI_CONFIG_CONTENT="{\\"keybinds\\":{\\"prompt.stash\\":\\"f9\\",\\"prompt.stash.pop\\":\\"f10\\"}}"')
     })
   })
 

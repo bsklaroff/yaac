@@ -196,6 +196,20 @@ person (see "Following the agent") and shows as waiting.
   ceiling is refused, unless the edit changes the tool, which re-resolves it
   as unnamed.
 
+`yaac-mama send`, which hands a running workspace's agent a message, holds
+the **target's** posture to the same ceiling: a message is as good as a
+prompt, so an agent may message only a conversation at or below its own.
+Both the target's row and the conversation's own reported mode are checked,
+since the row records only the last change any of its agents reported; a
+reported mode that maps to no posture is refused.
+
+The check sees a mode as the agent reported it, and a `tui` agent reports a
+change late: claude on its next prompt or stop, codex in its next turn's
+rollout, opencode's agent with its next prompt. So a mode the target's user
+raises is enforced from the target's next prompt on, and the first message
+sent before then runs under it. The raise is that user's own grant, which is
+why this is accepted.
+
 The ceiling applies only to agents; the webapp and `/workspace/queue/*`
 routes are the user's. It is the caller's current row value, which follows
 the running agent: a caller that moved into plan mode caps siblings at

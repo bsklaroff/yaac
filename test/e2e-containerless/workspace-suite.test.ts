@@ -92,7 +92,12 @@ const CAN_RUN_PORTS = CAN_RUN
  * prompt it reports the conversation (with its rollout path) through the
  * SessionStart hook, then the throwaway title session (no rollout). A resume
  * reports nothing. Each launch's arguments are logged per workspace for the
- * restart case. With `--model sick` it fails to start.
+ * restart case, and each later line it is sent for `yaac-mama send`. It keeps
+ * reading, as a real TUI does: some terminals echo nothing typed behind an
+ * unread line, and the paste submits only once it sees its text. Below each
+ * line it prints a footer and an empty codex composer, leaving the cursor in
+ * it as codex does, which a message to a running agent looks for
+ * (`buildMessageCmd`). With `--model sick` it fails to start.
  *
  * It calls the hook script directly; that real codex runs it is checked
  * against the pinned binary (see `ensureAgentReporters`).
@@ -110,6 +115,8 @@ const FAKE_CODEX = [
   ': > "$rollout"',
   'printf \'{"session_id":"thread-%s","transcript_path":"%s"}\' $$ "$rollout" | yaac-agent-links "$CODEX_HOME" codex',
   'printf \'{"session_id":"title-%s","transcript_path":null}\' $$ | yaac-agent-links "$CODEX_HOME" codex',
+  "printf '  ? for shortcuts\\n› '",
+  'while read -r line; do printf \'%s\\n\' "$line" >> "$CODEX_HOME/sent-${PWD##*/}"; printf \'  ? for shortcuts\\n› \'; done',
   'exec sleep infinity',
   '',
 ].join('\n')
@@ -1991,6 +1998,22 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
       )
       expect(launches).toContain('--sandbox read-only')
       expect(launches).toContain('--model gpt-5.5')
+
+      // A running sibling messages the child's agent, which receives it as a
+      // submitted line of input.
+      const sender = await createWorkspace('--permission-mode', 'accept-edits')
+      try {
+        const child = childWorkspace!
+        expect(await mamaAs(sender, 'send', child.slice(0, 8), 'a message from a peer'))
+          .toMatch(new RegExp(`^Sent to ${child.slice(0, 8)}'s codex conversation thread-`))
+        const sent = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'codex', `sent-${child}`)
+        await vi.waitFor(async () => {
+          expect(await fs.readFile(sent, 'utf8').catch(() => ''))
+            .toContain(`Sent from ${sender} via yaac-mama:\n\na message from a peer\n`)
+        }, { timeout: 30_000, interval: 500 })
+      } finally {
+        await runYaac(serverEnv, 'workspace', 'stop', sender)
+      }
 
       // The grandchild waits for the child's own stop.
       const entry = latest().queuedWorkspaces.find((q) => q.id === grandchild)

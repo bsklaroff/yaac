@@ -173,6 +173,16 @@ export interface AgentDriver {
   /**
    * Deliver a user message to a live conversation, addressed by handle.
    * `tui` pastes it into the pane and submits; `acp` sends `session/prompt`.
+   * `running` is for an agent already past its startup, in the conversation
+   * named, whose user may be someone else: `tui` then pastes in the
+   * foreground, refuses while the agent shows a dialog the text could answer
+   * (`agentAtInputTest`), submits with one Enter, and rejects when nothing
+   * was submitted.
    */
-  deliverPrompt(session: DrivenWorkspace, handle: string, text: string): Promise<void>
+  deliverPrompt(
+    session: DrivenWorkspace,
+    handle: string,
+    text: string,
+    opts?: { running?: { agentSessionId: string } },
+  ): Promise<void>
 }

@@ -331,12 +331,12 @@ options the server's own git uses; see "Egress control" below.
 ## `yaac-mama`: how a workspace reaches its server
 
 `yaac-mama` lets an agent run a small subset of the yaac CLI against its own
-server: list the project's workspaces, start one, retitle one, stop one
-(including itself), and manage sidebar groups. Stop is allowed because it is
-reversible; delete, restart and reconfigure are not. Both drivers support it
-with different transports. A workspace stopping itself gets a best-effort
-reply, since the stop tears down what the reply travels over; the session
-ending is the confirmation.
+server: list the project's workspaces, start one, message a running one's
+agent, retitle one, stop one (including itself), and manage sidebar groups.
+Stop is allowed because it is reversible; delete, restart and reconfigure are
+not. Both drivers support it with different transports. A workspace stopping
+itself gets a best-effort reply, since the stop tears down what the reply
+travels over; the session ending is the confirmation.
 
 **Under k8s** a pod cannot dial the server: the server's ingress policy
 admits no workspace pod (docs/server-in-cluster.md), and the pod holds no

@@ -1,6 +1,6 @@
 ---
 name: yaac-mama
-description: Ask the yaac server running this workspace to list the project's workspaces, start a sibling workspace with a prompt (now, or queued to start when a workspace stops), edit a queued workspace's prompt or settings, retitle a workspace, stop a workspace (a sibling, or this one), file workspaces into named groups, or fetch another workspace's branches into this checkout — via the in-workspace `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac workspace (or "session"), queue a follow-up to run after this one (or change one already queued), farm a task out to a parallel one, see what else is running, rename/retitle a workspace, stop/shut down/wind down a workspace or this one when its work is done, organize workspaces into groups, read what another workspace committed (its branches, log, diffs), or read another workspace's agent conversations (full session transcripts, subagents included), running or stopped.
+description: Ask the yaac server running this workspace to list the project's workspaces, start a sibling workspace with a prompt (now, or queued to start when a workspace stops), edit a queued workspace's prompt or settings, send a message to a running workspace's agent, retitle a workspace, stop a workspace (a sibling, or this one), file workspaces into named groups, or fetch another workspace's branches into this checkout — via the in-workspace `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac workspace (or "session"), queue a follow-up to run after this one (or change one already queued), send/tell/nudge/steer a running workspace (or "session") with a message or follow-up instruction, farm a task out to a parallel one, see what else is running, rename/retitle a workspace, stop/shut down/wind down a workspace or this one when its work is done, organize workspaces into groups, read what another workspace committed (its branches, log, diffs), or read another workspace's agent conversations (full session transcripts, subagents included), running or stopped.
 ---
 
 You are running **inside a yaac workspace**. The `yaac-mama` command (already on
@@ -15,6 +15,7 @@ yaac-mama create [opts] "<prompt>"
 yaac-mama queue --parent-workspace W [opts] "<prompt>"
 yaac-mama edit-queued [--parent-workspace W] [opts] <queued> ["<prompt>"]
   # opts: [--tool T] [--model M] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]
+yaac-mama send [--conversation C] <workspace> "<message>"  # to its running agent
 yaac-mama rename [<workspace>] "<title>"            # omit the workspace to rename yourself
 yaac-mama stop [<workspace>]                        # omit the workspace to stop yourself
 yaac-mama group create "<name>"
@@ -29,10 +30,11 @@ yaac-mama --help
 
 That list is the whole surface. `yaac-mama` is a **strict subset** of the
 `yaac` CLI, enforced by the server: it observes, labels, makes one new thing
-(now or queued for later), and stops one. Stopping is in reach precisely because it is reversible — a
-stopped workspace keeps its checkout and its conversation, and the user can
-restart it. There is no delete, no restart, no config. If a task needs one of
-those, ask the user rather than looking for a way around it.
+(now or queued for later), messages a running one, and stops one. Stopping
+is in reach precisely because it is reversible — a stopped workspace keeps
+its checkout and its conversation, and the user can restart it. There is no
+delete, no restart, no config. If a task needs one of those, ask the user
+rather than looking for a way around it.
 
 Everything is scoped to **this workspace's project**, which is not a flag you
 pass — the server resolves who is calling and answers for that project only.
@@ -105,6 +107,35 @@ pass — the server resolves who is calling and answers for that project only.
   yours — or a new `--tool`, whose permission mode is then worked out afresh,
   at or below yours. One that is already starting cannot be edited. Prints
   the result.
+
+- **`send <workspace> "<message>"`** — hand a message to another **running**
+  workspace's agent, exactly as if the user had typed it into its terminal or
+  chat pane. It goes to the workspace's first running conversation, or the
+  one **`--conversation`** names (an id or unique prefix from `history`).
+  - An agent mid-turn is not interrupted: a chat-pane (`acp`) agent folds it
+    into the turn or queues it, and a terminal (`tui`) agent's own UI queues
+    what is typed while it works. Anything its user left unsent in the input
+    box is set aside and put back afterwards. A terminal agent showing a
+    dialog (a permission prompt, say) cannot take it: the send fails with
+    "not delivered" and nothing is typed. Try again later. So does a claude
+    one whose user has both a stashed prompt and a draft holding a paste or
+    an image, which only the stash keeps whole. If your message itself makes
+    the agent ask for permission, the draft stays set aside until its user
+    answers: in claude's stash, codex's history (Up) or opencode's stash, or,
+    for a claude user who also had a stash, only in claude's kill ring
+    (Ctrl+Y). Mention that to the user if you know they were typing.
+  - The reply says the message was handed over, not that it was answered.
+    Read the answer with `yaac-mama history <workspace> <conversation>`.
+  - The conversation may run in **at most your own permission mode**:
+    messaging a more permissive one is refused, as is messaging yourself. A
+    terminal agent reports a mode its user changes only with its next
+    prompt, so the check follows from then on.
+  - One message at a time: while one of yours is being delivered, or one
+    to the same conversation, another is refused; send it once the first
+    returns.
+  - It arrives headed `Sent from <your workspace id> via yaac-mama:`, so the
+    agent knows who is asking and can `send` back. Otherwise write it
+    self-contained, like a `create` prompt; control characters are dropped.
 
 - **`rename [<workspace>] "<title>"`** — set the label the sidebar shows in
   place of a workspace's id. **Omit the workspace to rename yourself**, which is
