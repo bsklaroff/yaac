@@ -1,8 +1,10 @@
 import { useMemo, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
-import { AcpTranscript, groupEvents, SUBAGENT_CATEGORY } from '#components/AcpTranscript'
-import { ActivityHeader, latestActivity } from '#components/AcpActivity'
+import { AcpTranscript, groupEvents, SUBAGENT_CATEGORY, taskCategory } from '#components/AcpTranscript'
+import {
+  ActivityHeader, callOf, latestActivity, SubagentPrompt, TaskView, type ActivityTarget,
+} from '#components/AcpActivity'
 import { TOOL_LABEL } from '#lib/icons'
 import { ServerError } from '@yaac/shared/errors'
 import {
@@ -17,8 +19,8 @@ import type { AgentSessionEntry, AgentTool } from '@yaac/shared/types'
  *
  * A workspace can have several (`/clear`, or more than one agent); they show
  * as tabs in restore order. Fetched once and cached forever, since a stopped
- * conversation cannot change. A subagent's card opens its own transcript, as
- * in the live pane.
+ * conversation cannot change. A subagent's card opens its own transcript and
+ * a task's card what the record kept of it, as in the live pane.
  */
 export function StoppedTranscript({
   workspaceId,
@@ -51,15 +53,18 @@ export function StoppedTranscript({
     staleTime: Infinity,
   })
 
-  /** The subagent being read instead of the conversation, if any. */
-  const [opened, setOpened] = useState<string | null>(null)
-  const subagent = opened === null || !Array.isArray(data)
-    ? undefined
-    : latestActivity(data).subagents.get(opened)
+  /** The subagent or task being read instead of the conversation, if any. */
+  const [opened, setOpened] = useState<ActivityTarget | null>(null)
+  const activity = Array.isArray(data) ? latestActivity(data) : undefined
+  const subagent = opened?.kind === 'subagent' ? activity?.subagents.get(opened.id) : undefined
+  const task = opened?.kind === 'task' ? activity?.tasks.get(opened.id) : undefined
   const groups = useMemo(
     () => (Array.isArray(data) ? groupEvents(data, subagent?.id) : []),
     [data, subagent?.id],
   )
+  const taskCall = Array.isArray(data) && task?.toolCallId !== undefined
+    ? callOf(data, task.toolCallId)
+    : { output: '' }
 
   // Nothing readable: a `tui` conversation of a tool whose history the server
   // cannot read after the pod is gone (opencode keeps it in an in-container
@@ -121,6 +126,15 @@ export function StoppedTranscript({
           onBack={() => setOpened(null)}
         />
       )}
+      {task !== undefined && (
+        <ActivityHeader
+          category={taskCategory(task)}
+          title={task.name}
+          state={task.state}
+          live={false}
+          onBack={() => setOpened(null)}
+        />
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto rounded bg-bg/80 p-2.5">
         {isPending && <p className="text-xs text-text-faint">Loading the conversation…</p>}
         {/* Prefer the server's message, e.g. a conversation too large to send. */}
@@ -134,7 +148,24 @@ export function StoppedTranscript({
         {!isPending && !isError && groups.length === 0 && (
           <p className="text-xs text-text-faint">This conversation has no messages.</p>
         )}
-        <AcpTranscript groups={groups} className="text-xs" onOpenSubagent={setOpened} />
+        {task !== undefined ? (
+          <TaskView
+            task={task}
+            {...(taskCall.call !== undefined ? { call: taskCall.call } : {})}
+            streamed={taskCall.output}
+            live={false}
+          />
+        ) : (
+          <>
+            {subagent !== undefined && <SubagentPrompt task={subagent.task} />}
+            <AcpTranscript
+              groups={groups}
+              className="text-xs"
+              onOpenSubagent={(id) => setOpened({ kind: 'subagent', id })}
+              onOpenTask={(id) => setOpened({ kind: 'task', id })}
+            />
+          </>
+        )}
       </div>
     </div>
   )
