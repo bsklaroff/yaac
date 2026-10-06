@@ -11,6 +11,7 @@ same project**. Use it directly — this skill is just the manual.
 
 ```
 yaac-mama list                                    # workspaces + groups here
+yaac-mama list <workspace>...                     # just those, with full prompts
 yaac-mama create [opts] "<prompt>"
 yaac-mama queue --parent-workspace W [opts] "<prompt>"
 yaac-mama edit-queued [--parent-workspace W] [opts] <queued> ["<prompt>"]
@@ -45,7 +46,11 @@ pass — the server resolves who is calling and answers for that project only.
   filed under and the prompt it started from; your own row is marked
   `(you)`. Then a line naming the project's groups. This is how you find a
   workspace id to pass to `group move`; ids print as their first 8 characters,
-  and that prefix is what the other commands accept.
+  and that prefix is what the other commands accept. `list <workspace>...`
+  (running or queued ids) shows only those rows, then each one's full prompt,
+  which the table cuts to 60 characters: a `Prompt of <id>:` line, then the
+  prompt with every line indented two spaces. Only an unindented header line
+  is the server's; a prompt's own text is always indented.
 
 - **`create "<prompt>"`** — start a **new sibling workspace** in this project
   and deliver the prompt to its agent. Prints the new workspace's id on stdout

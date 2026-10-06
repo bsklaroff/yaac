@@ -938,6 +938,16 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(out).toMatch(/WORKSPACE\s+TOOL\s+STATUS\s+GROUP\s+PROMPT/)
     // The token alone identifies the caller.
     expect(out).toContain(`${workspaceId.slice(0, 8)} (you)`)
+
+    // Naming ids narrows the list and adds each one's full prompt.
+    const named = await runMama('list', workspaceId.slice(0, 8))
+    expect(named.code).toBe(0)
+    expect(named.out).toContain(`Prompt of ${workspaceId.slice(0, 8)}:`)
+    // The script decodes the server's escaping in one pass, so backslashes
+    // arrive as sent rather than as newlines and tabs.
+    const unknown = await runMama('list', workspaceId.slice(0, 8), 'C:\\new\\temp')
+    expect(unknown.code).not.toBe(0)
+    expect(unknown.out).toContain("no running or queued workspace 'C:\\new\\temp'")
   })
 
   it('makes a group and files itself into it, without a proxy anywhere', async () => {

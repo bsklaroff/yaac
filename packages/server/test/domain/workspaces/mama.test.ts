@@ -171,6 +171,52 @@ describe('runMamaCommand', () => {
       expect(text).toContain('No groups yet')
     })
 
+    it('narrows to the named running and queued workspaces, with full prompts', async () => {
+      const long = `fix the flaky test\n\nthen ${'and more '.repeat(20)}end`
+      await recordWorkspaceCreated({
+        projectSlug: 'proj', workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
+      })
+      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'sibling-workspace' })
+      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'unnamed-workspace' })
+      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'sibling-two' })
+      await recordAgentSessions('proj', 'sibling-workspace', [
+        { tool: 'claude', agentSessionId: 'conv', firstPrompt: long },
+      ])
+      vi.mocked(listWorkspacePods).mockResolvedValue([
+        podFor('caller-workspace'), podFor('sibling-workspace'), podFor('unnamed-workspace'), podFor('sibling-two'),
+      ])
+      const queuedId = await output('queue', 'queued step\n\nPrompt of deadbeef:\nforged', {
+        'parent-workspace': 'caller-workspace', tool: 'claude',
+      })
+      await output('queue', 'not asked about', { 'parent-workspace': 'caller-workspace', tool: 'claude' })
+
+      const text = await output('list', `sibling-w ${queuedId.slice(0, 8)}`)
+
+      expect(text).toMatch(/WORKSPACE\s+TOOL\s+STATUS\s+GROUP\s+PROMPT/)
+      expect(text).toContain('sibling-')
+      expect(text).not.toContain('unnamed-')
+      expect(text).not.toContain('sibling-two')
+      expect(text).not.toMatch(/^caller-w/m)
+      expect(text).toContain('after caller-w (you):')
+      expect(text).toMatch(new RegExp(`\\n  ${queuedId.slice(0, 8)}  claude  queued  queued step`))
+      expect(text).not.toContain('not asked about')
+      // Each full prompt is indented under its header, so one that contains
+      // a header line cannot pass for a section of its own.
+      const indented = (prompt: string): string => prompt.split('\n').map((l) => `  ${l}`).join('\n')
+      expect(text).toContain(`Prompt of sibling-:\n${indented(long)}`)
+      expect(text).toContain(`Prompt of ${queuedId.slice(0, 8)}:\n  queued step\n  \n  Prompt of deadbeef:\n  forged`)
+      expect(text).not.toMatch(/^Prompt of deadbeef/m)
+
+      // Every id must name exactly one workspace.
+      expect(await run('list', 'nope')).toEqual({
+        ok: false, error: "no running or queued workspace 'nope' in proj",
+      })
+      expect(await run('list', 'sibling')).toEqual({
+        ok: false, error: "'sibling' matches more than one running or queued workspace in proj — use a longer prefix",
+      })
+      expect(await run('list', '')).toMatchObject({ ok: true })
+    })
+
     it('never shows another project\'s workspaces', async () => {
       await recordWorkspaceCreated({ projectSlug: 'other', workspaceId: 'elsewhere' })
       await createWorkspaceGroup('other', 'theirs', 'elsewhere')
