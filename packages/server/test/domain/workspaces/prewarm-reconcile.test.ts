@@ -64,8 +64,7 @@ function pod(o: Partial<PodInfo> & { prewarmed?: boolean } = {}): RuntimeHandle 
     jobName: 'yaac-p-s1',
     podName: 'yaac-p-s1-x',
     workspaceId: 's1',
-    projectSlug: 'p',
-    projectId: '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
+    projectId: 'p',
     tool: 'claude',
     phase: 'Running',
     running: true,
@@ -106,7 +105,7 @@ describe('reconcilePrewarmPool', () => {
   it('reaps a spare for an idle project', async () => {
     mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true })])
     await pass()
-    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectSlug: 'p', workspaceId: 's2' })
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2' })
     expect(mockCreate).not.toHaveBeenCalled()
   })
 
@@ -262,16 +261,16 @@ describe('reconcilePrewarmPool', () => {
     ])
     await pass()
     expect(mockCleanup).toHaveBeenCalledTimes(1)
-    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-old', projectSlug: 'p', workspaceId: 'old' })
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-old', projectId: 'p', workspaceId: 'old' })
     expect(mockCreate).not.toHaveBeenCalled()
   })
 
   it('handles multiple projects independently, ignoring pods with no project', async () => {
     mockWorkspaces.mockResolvedValue([
-      pod({ jobName: 'yaac-a-real', workspaceId: 'a1', projectSlug: 'a' }),
-      pod({ jobName: 'yaac-a-spare', workspaceId: 'a2', projectSlug: 'a', prewarmed: true }),
-      pod({ jobName: 'yaac-b-real', workspaceId: 'b1', projectSlug: 'b' }),
-      pod({ jobName: 'orphan', workspaceId: 'o1', projectSlug: '' }),
+      pod({ jobName: 'yaac-a-real', workspaceId: 'a1', projectId: 'a' }),
+      pod({ jobName: 'yaac-a-spare', workspaceId: 'a2', projectId: 'a', prewarmed: true }),
+      pod({ jobName: 'yaac-b-real', workspaceId: 'b1', projectId: 'b' }),
+      pod({ jobName: 'orphan', workspaceId: 'o1', projectId: '' }),
     ])
     await pass()
     expect(mockCreate.mock.calls).toEqual([['b', WARM]])
@@ -290,7 +289,7 @@ describe('reconcilePrewarmPool', () => {
   // respawn at claim time.
   it('replaces a spare warmed in another agent mode than the project now uses', async () => {
     vi.mocked(listProjectRows).mockResolvedValue([
-      { slug: 'p', lastTool: 'codex', createDefaults: { codex: { mode: 'acp' } } } as unknown as ProjectRow,
+      { id: 'p', lastTool: 'codex', createDefaults: { codex: { mode: 'acp' } } } as unknown as ProjectRow,
     ])
     vi.mocked(getWorkspaceRow).mockResolvedValue({ mode: 'tui' } as WorkspaceRow)
     mockWorkspaces.mockResolvedValue([
@@ -298,7 +297,7 @@ describe('reconcilePrewarmPool', () => {
       pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true }),
     ])
     await pass()
-    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectSlug: 'p', workspaceId: 's2' })
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2' })
     expect(mockCreate).toHaveBeenCalledWith('p', WARM)
   })
 
@@ -306,7 +305,7 @@ describe('reconcilePrewarmPool', () => {
   // changed (or was first reported) is replaced rather than left unclaimable.
   it('replaces a spare warmed in another zone than the user\'s current one', async () => {
     vi.mocked(listProjectRows).mockResolvedValue([
-      { slug: 'p', createDefaults: {} } as unknown as ProjectRow,
+      { id: 'p', createDefaults: {} } as unknown as ProjectRow,
     ])
     vi.mocked(getTimeZone).mockResolvedValue({ timeZone: 'Asia/Tokyo', pinned: false })
     vi.mocked(getWorkspaceRow).mockResolvedValue({ mode: 'tui' } as WorkspaceRow)
@@ -315,13 +314,13 @@ describe('reconcilePrewarmPool', () => {
       pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true }),
     ])
     await pass()
-    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectSlug: 'p', workspaceId: 's2' })
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2' })
     expect(mockCreate).toHaveBeenCalledWith('p', WARM)
   })
 
   it('keeps a spare whose mode matches, or whose row cannot be read', async () => {
     vi.mocked(listProjectRows).mockResolvedValue([
-      { slug: 'p', createDefaults: {} } as unknown as ProjectRow,
+      { id: 'p', createDefaults: {} } as unknown as ProjectRow,
     ])
     vi.mocked(getWorkspaceRow).mockResolvedValue({ mode: 'acp' } as WorkspaceRow)
     mockWorkspaces.mockResolvedValue([
@@ -375,7 +374,7 @@ describe('reconcilePrewarmPool', () => {
 
     inFlight.clear()
     await pass()
-    expect(mockCleanup).toHaveBeenCalledWith({ jobName: `yaac-p-${workspaceId}`, projectSlug: 'p', workspaceId })
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: `yaac-p-${workspaceId}`, projectId: 'p', workspaceId })
   })
 
   // A restart takes its pod down before the new one runs. The project is not
@@ -385,14 +384,14 @@ describe('reconcilePrewarmPool', () => {
       pod({ jobName: 'yaac-p-real', workspaceId: 'r1', running: false, terminating: true }),
       pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true }),
     ])
-    registerProvisioning({ workspaceId: 'r1', projectSlug: 'p', tool: 'claude', kind: 'restart' })
+    registerProvisioning({ workspaceId: 'r1', projectId: 'p', tool: 'claude', kind: 'restart' })
     await pass()
     expect(mockCleanup).not.toHaveBeenCalled()
     expect(mockCreate).not.toHaveBeenCalled()
 
     failProvisioning('r1', 'boom')
     await pass()
-    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectSlug: 'p', workspaceId: 's2' })
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2' })
   })
 
   it('swallows a failed reap — the stale-session reaper retries', async () => {

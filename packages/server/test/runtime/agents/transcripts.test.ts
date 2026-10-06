@@ -25,17 +25,17 @@ import {
   transcriptLastActiveMs,
 } from '#runtime/agents/transcripts'
 
-const slug = 'demo'
+const projectId = 'demo'
 const wt = 'wt-a'
 
 /** Host path of a claude transcript, written out so a layout change fails. */
 function claudeLog(workspaceId: string): string {
-  return path.join(claudeDir(slug), 'projects', '-workspace', `${workspaceId}.jsonl`)
+  return path.join(claudeDir(projectId), 'projects', '-workspace', `${workspaceId}.jsonl`)
 }
 
 /** The same log, relative to the tool's home. */
 function claudeFile(workspaceId: string) {
-  return { slug, dir: claudeDir(slug), rel: `projects/-workspace/${workspaceId}.jsonl` }
+  return { projectId, dir: claudeDir(projectId), rel: `projects/-workspace/${workspaceId}.jsonl` }
 }
 
 async function write(file: string, body = '{}\n'): Promise<string> {
@@ -85,52 +85,52 @@ describe('transcripts', () => {
 
   describe('sessionTranscriptPath', () => {
     it('resolves claude by session id, once the file exists', async () => {
-      expect(await sessionTranscriptPath(slug, 'sid', 'claude')).toBeUndefined()
+      expect(await sessionTranscriptPath(projectId, 'sid', 'claude')).toBeUndefined()
       await write(claudeLog('sid'))
-      expect(await sessionTranscriptPath(slug, 'sid', 'claude')).toEqual(claudeFile('sid'))
+      expect(await sessionTranscriptPath(projectId, 'sid', 'claude')).toEqual(claudeFile('sid'))
     })
 
     it('looks in the workspace\'s own history first, and only its own', async () => {
-      const own = path.join(agentHistoryDir(slug, wt, 'claude'), '-workspace', 'conv.jsonl')
+      const own = path.join(agentHistoryDir(projectId, wt, 'claude'), '-workspace', 'conv.jsonl')
       await write(own)
-      await write(path.join(claudeDir(slug), 'projects', '-workspace', 'conv.jsonl'))
-      await write(path.join(agentHistoryDir(slug, 'wt-b', 'claude'), '-workspace', 'theirs.jsonl'))
-      expect(await sessionTranscriptPath(slug, wt, 'claude', 'conv'))
-        .toEqual({ slug, dir: agentHistoryDir(slug, wt, 'claude'), rel: '-workspace/conv.jsonl' })
+      await write(path.join(claudeDir(projectId), 'projects', '-workspace', 'conv.jsonl'))
+      await write(path.join(agentHistoryDir(projectId, 'wt-b', 'claude'), '-workspace', 'theirs.jsonl'))
+      expect(await sessionTranscriptPath(projectId, wt, 'claude', 'conv'))
+        .toEqual({ projectId, dir: agentHistoryDir(projectId, wt, 'claude'), rel: '-workspace/conv.jsonl' })
       // Other workspaces' history is never searched.
-      expect(await sessionTranscriptPath(slug, wt, 'claude', 'theirs')).toBeUndefined()
+      expect(await sessionTranscriptPath(projectId, wt, 'claude', 'theirs')).toBeUndefined()
     })
 
     it('finds a claude transcript filed under any cwd, but never through a link', async () => {
-      await write(path.join(claudeDir(slug), 'projects', '-home-x', 'other.jsonl'))
-      expect(await sessionTranscriptPath(slug, 'other', 'claude'))
-        .toEqual({ slug, dir: claudeDir(slug), rel: 'projects/-home-x/other.jsonl' })
+      await write(path.join(claudeDir(projectId), 'projects', '-home-x', 'other.jsonl'))
+      expect(await sessionTranscriptPath(projectId, 'other', 'claude'))
+        .toEqual({ projectId, dir: claudeDir(projectId), rel: 'projects/-home-x/other.jsonl' })
       // A symlink in place of a conversation is ignored.
       const elsewhere = await write(path.join(tmpDir, 'elsewhere.jsonl'))
       await fs.mkdir(path.dirname(claudeLog('linked')), { recursive: true })
       await fs.symlink(elsewhere, claudeLog('linked'))
-      expect(await sessionTranscriptPath(slug, 'linked', 'claude')).toBeUndefined()
+      expect(await sessionTranscriptPath(projectId, 'linked', 'claude')).toBeUndefined()
     })
 
     it('has none for codex, whose rollout name follows from no id', async () => {
       // A codex rollout's filename cannot be derived from its id, so only a
       // recorded path finds it.
-      await write(path.join(codexDir(slug), 'sessions', 'sid.jsonl'))
-      expect(await sessionTranscriptPath(slug, 'sid', 'codex')).toBeUndefined()
+      await write(path.join(codexDir(projectId), 'sessions', 'sid.jsonl'))
+      expect(await sessionTranscriptPath(projectId, 'sid', 'codex')).toBeUndefined()
     })
 
     it('picks pi\'s newest log for the id from the history, one folder down too', async () => {
-      const dir = agentHistoryDir(slug, wt, 'pi')
+      const dir = agentHistoryDir(projectId, wt, 'pi')
       await write(path.join(dir, '100_sid.jsonl'))
       await write(path.join(dir, 'workspace', '150_sid.jsonl'))
       await write(path.join(dir, '300_other.jsonl'))
-      expect(await sessionTranscriptPath(slug, wt, 'pi', 'sid'))
-        .toEqual({ slug, dir, rel: 'workspace/150_sid.jsonl' })
-      expect(await sessionTranscriptPath(slug, wt, 'pi', 'unknown')).toBeUndefined()
+      expect(await sessionTranscriptPath(projectId, wt, 'pi', 'sid'))
+        .toEqual({ projectId, dir, rel: 'workspace/150_sid.jsonl' })
+      expect(await sessionTranscriptPath(projectId, wt, 'pi', 'unknown')).toBeUndefined()
     })
 
     it('has none for opencode, which leaves no host transcript', async () => {
-      expect(await sessionTranscriptPath(slug, 'sid', 'opencode')).toBeUndefined()
+      expect(await sessionTranscriptPath(projectId, 'sid', 'opencode')).toBeUndefined()
     })
   })
 
@@ -139,43 +139,43 @@ describe('transcripts', () => {
 
     it('maps a reported path into the workspace\'s history first, then the shared home', async () => {
       // Not written yet; a later pass will find it.
-      expect(await locateTranscript(slug, wt, 'claude', 'conv', reported)).toBeUndefined()
-      await write(path.join(projectDir(slug), reported))
-      expect(await locateTranscript(slug, wt, 'claude', 'conv', reported)).toBe(reported)
-      await write(path.join(agentHistoryDir(slug, wt, 'claude'), '-workspace', 'conv.jsonl'))
-      expect(await locateTranscript(slug, wt, 'claude', 'conv', reported))
+      expect(await locateTranscript(projectId, wt, 'claude', 'conv', reported)).toBeUndefined()
+      await write(path.join(projectDir(projectId), reported))
+      expect(await locateTranscript(projectId, wt, 'claude', 'conv', reported)).toBe(reported)
+      await write(path.join(agentHistoryDir(projectId, wt, 'claude'), '-workspace', 'conv.jsonl'))
+      expect(await locateTranscript(projectId, wt, 'claude', 'conv', reported))
         .toBe(path.join('history', wt, 'claude', '-workspace', 'conv.jsonl'))
-      await write(path.join(agentHistoryDir(slug, wt, 'codex'), '2026', 'rollout-x.jsonl'))
-      expect(await locateTranscript(slug, wt, 'codex', 'x', 'codex/sessions/2026/rollout-x.jsonl'))
+      await write(path.join(agentHistoryDir(projectId, wt, 'codex'), '2026', 'rollout-x.jsonl'))
+      expect(await locateTranscript(projectId, wt, 'codex', 'x', 'codex/sessions/2026/rollout-x.jsonl'))
         .toBe(path.join('history', wt, 'codex', '2026', 'rollout-x.jsonl'))
     })
 
     it('names the file a host link leads to, and refuses one leading to a sibling', async () => {
       // On a host, history is reached through a directory symlink.
-      const history = path.join(agentHistoryDir(slug, wt, 'claude'), '-workspace')
+      const history = path.join(agentHistoryDir(projectId, wt, 'claude'), '-workspace')
       await write(path.join(history, 'host.jsonl'))
-      await fs.mkdir(path.join(claudeDir(slug), 'projects'), { recursive: true })
-      await fs.symlink(history, path.join(claudeDir(slug), 'projects', '-host-checkout'))
-      expect(await locateTranscript(slug, wt, 'claude', 'host', 'claude/projects/-host-checkout/host.jsonl'))
+      await fs.mkdir(path.join(claudeDir(projectId), 'projects'), { recursive: true })
+      await fs.symlink(history, path.join(claudeDir(projectId), 'projects', '-host-checkout'))
+      expect(await locateTranscript(projectId, wt, 'claude', 'host', 'claude/projects/-host-checkout/host.jsonl'))
         .toBe(path.join('history', wt, 'claude', '-workspace', 'host.jsonl'))
 
-      const sibling = path.join(agentHistoryDir(slug, 'wt-b', 'claude'), '-workspace')
+      const sibling = path.join(agentHistoryDir(projectId, 'wt-b', 'claude'), '-workspace')
       await write(path.join(sibling, 'theirs.jsonl'))
-      await fs.symlink(sibling, path.join(claudeDir(slug), 'projects', '-sibling'))
-      expect(await locateTranscript(slug, wt, 'claude', 'theirs', 'claude/projects/-sibling/theirs.jsonl'))
+      await fs.symlink(sibling, path.join(claudeDir(projectId), 'projects', '-sibling'))
+      expect(await locateTranscript(projectId, wt, 'claude', 'theirs', 'claude/projects/-sibling/theirs.jsonl'))
         .toBeUndefined()
-      await fs.symlink(path.join(projectDir(slug), 'known_hosts'), path.join(history, 'kh.jsonl'))
-      await write(path.join(projectDir(slug), 'known_hosts'))
-      expect(await locateTranscript(slug, wt, 'claude', 'kh', 'claude/projects/-workspace/kh.jsonl'))
+      await fs.symlink(path.join(projectDir(projectId), 'known_hosts'), path.join(history, 'kh.jsonl'))
+      await write(path.join(projectDir(projectId), 'known_hosts'))
+      expect(await locateTranscript(projectId, wt, 'claude', 'kh', 'claude/projects/-workspace/kh.jsonl'))
         .toBeUndefined()
     })
 
     it('drops any prefix the reporter never emits, and finds pi by id', async () => {
-      await write(path.join(projectDir(slug), 'claude', 'settings.json'))
-      expect(await locateTranscript(slug, wt, 'claude', 'x', 'claude/settings.json')).toBeUndefined()
-      expect(await locateTranscript(slug, wt, 'claude', 'x', undefined)).toBeUndefined()
-      await write(path.join(agentHistoryDir(slug, wt, 'pi'), '100_psid.jsonl'))
-      expect(await locateTranscript(slug, wt, 'pi', 'psid', undefined))
+      await write(path.join(projectDir(projectId), 'claude', 'settings.json'))
+      expect(await locateTranscript(projectId, wt, 'claude', 'x', 'claude/settings.json')).toBeUndefined()
+      expect(await locateTranscript(projectId, wt, 'claude', 'x', undefined)).toBeUndefined()
+      await write(path.join(agentHistoryDir(projectId, wt, 'pi'), '100_psid.jsonl'))
+      expect(await locateTranscript(projectId, wt, 'pi', 'psid', undefined))
         .toBe(path.join('history', wt, 'pi', '100_psid.jsonl'))
     })
   })
@@ -195,13 +195,13 @@ describe('transcripts', () => {
     it('strips the project directory, whatever tool wrote the path', () => {
       expect(toProjectRelative(claudeFile('sid')))
         .toBe(path.join('claude', 'projects', '-workspace', 'sid.jsonl'))
-      expect(toProjectRelative({ slug, dir: codexDir(slug), rel: 'sessions/2026/rollout-x.jsonl' }))
+      expect(toProjectRelative({ projectId, dir: codexDir(projectId), rel: 'sessions/2026/rollout-x.jsonl' }))
         .toBe(path.join('codex', 'sessions', '2026', 'rollout-x.jsonl'))
     })
 
     it('refuses a path with no project-relative form', () => {
-      expect(toProjectRelative({ slug, dir: '/tmp', rel: 'elsewhere.jsonl' })).toBeNull()
-      expect(toProjectRelative({ slug, dir: claudeDir('other'), rel: 't.jsonl' })).toBeNull()
+      expect(toProjectRelative({ projectId, dir: '/tmp', rel: 'elsewhere.jsonl' })).toBeNull()
+      expect(toProjectRelative({ projectId, dir: claudeDir('other'), rel: 't.jsonl' })).toBeNull()
     })
   })
 
@@ -216,32 +216,32 @@ describe('transcripts', () => {
     it('gathers each tool\'s transcripts with their subagents, and acpd\'s record of a chat conversation', async () => {
       // claude: the recorded path is stale (converge moved the file), so the
       // conversation is found by id in the history, with its companion dir.
-      const claudeHistory = path.join(agentHistoryDir(slug, wt, 'claude'), '-workspace')
+      const claudeHistory = path.join(agentHistoryDir(projectId, wt, 'claude'), '-workspace')
       await write(path.join(claudeHistory, 'cl.jsonl'))
       await write(path.join(claudeHistory, 'cl', 'subagents', 'agent-b.jsonl'))
       await write(path.join(claudeHistory, 'cl', 'subagents', 'agent-a.jsonl'))
       await write(path.join(claudeHistory, 'cl', 'tool-results', 'r1.txt'), 'out')
       // A link the workspace planted is not handed out.
       await fs.symlink(await write(path.join(tmpDir, 'secret')), path.join(claudeHistory, 'cl', 'subagents', 'agent-z.jsonl'))
-      await write(path.join(acpLogDir(slug, wt), 'cl.jsonl'))
+      await write(path.join(acpLogDir(projectId, wt), 'cl.jsonl'))
 
       // codex: a child and a grandchild in the history, a fork still in the
       // shared home, and an unrelated thread.
-      const codexHistory = agentHistoryDir(slug, wt, 'codex')
+      const codexHistory = agentHistoryDir(projectId, wt, 'codex')
       await rollout(codexHistory, 'cx')
       await rollout(codexHistory, 'cx-child', 'cx')
       await rollout(codexHistory, 'cx-grandchild', 'cx-child')
-      await rollout(path.join(codexDir(slug), 'sessions'), 'cx-fork', 'cx')
+      await rollout(path.join(codexDir(projectId), 'sessions'), 'cx-fork', 'cx')
       await rollout(codexHistory, 'unrelated')
 
-      await write(path.join(agentHistoryDir(slug, wt, 'pi'), '100_pi.jsonl'))
-      await write(path.join(acpLogDir(slug, wt), 'oc.jsonl'))
+      await write(path.join(agentHistoryDir(projectId, wt, 'pi'), '100_pi.jsonl'))
+      await write(path.join(acpLogDir(projectId, wt), 'oc.jsonl'))
       // The workspace's opencode database, beside a backup the pod's stop
       // cut short.
-      await write(path.join(opencodeCheckpointDir(slug, wt), 'opencode.db'))
-      await write(path.join(opencodeCheckpointDir(slug, wt), '.tmp-12.db'))
+      await write(path.join(opencodeCheckpointDir(projectId, wt), 'opencode.db'))
+      await write(path.join(opencodeCheckpointDir(projectId, wt), '.tmp-12.db'))
 
-      const files = await conversationFiles(slug, wt, [
+      const files = await conversationFiles(projectId, wt, [
         { tool: 'claude', mode: 'acp', agentSessionId: 'cl', transcriptPath: 'claude/projects/-home-x/cl.jsonl' },
         { tool: 'codex', mode: 'tui', agentSessionId: 'cx' },
         { tool: 'pi', mode: 'tui', agentSessionId: 'pi' },
@@ -253,7 +253,7 @@ describe('transcripts', () => {
       expect(names('cl')).toEqual([
         'cl.jsonl', 'cl/subagents/agent-a.jsonl', 'cl/subagents/agent-b.jsonl', 'cl/tool-results/r1.txt', 'acpd.jsonl',
       ])
-      expect(files.get('cl')?.[0].file).toEqual({ slug, dir: agentHistoryDir(slug, wt, 'claude'), rel: '-workspace/cl.jsonl' })
+      expect(files.get('cl')?.[0].file).toEqual({ projectId, dir: agentHistoryDir(projectId, wt, 'claude'), rel: '-workspace/cl.jsonl' })
       expect(names('cx')).toEqual([
         'rollout-2026-10-03T12-00-00-cx.jsonl',
         'rollout-2026-10-03T12-00-00-cx-child.jsonl',
@@ -265,7 +265,7 @@ describe('transcripts', () => {
       expect(names('oc')).toEqual(['opencode.db', 'acpd.jsonl'])
       expect(files.get('oc-tui')).toMatchObject([{
         name: 'opencode.db',
-        file: { slug, dir: opencodeCheckpointDir(slug, wt), rel: 'opencode.db' },
+        file: { projectId, dir: opencodeCheckpointDir(projectId, wt), rel: 'opencode.db' },
         sqlite: true,
         size: 3,
       }])
@@ -276,16 +276,16 @@ describe('transcripts', () => {
       // holds siblings' checkouts.
       installFakeWorkspaceDriver({ kind: 'containerless' })
       try {
-        const sibling = path.join(projectDir(slug), 'workspaces', 'wt-b')
+        const sibling = path.join(projectDir(projectId), 'workspaces', 'wt-b')
         await write(path.join(sibling, '.git', 'config'))
-        const conversations = path.join(agentHistoryDir(slug, wt, 'claude'), '-workspace')
+        const conversations = path.join(agentHistoryDir(projectId, wt, 'claude'), '-workspace')
         await write(path.join(conversations, 'cl.jsonl'))
         await fs.symlink(sibling, path.join(conversations, 'cl'))
         await write(path.join(conversations, 'cl2.jsonl'))
         await fs.mkdir(path.join(conversations, 'cl2'))
         await fs.symlink(sibling, path.join(conversations, 'cl2', 'subagents'))
 
-        const files = await conversationFiles(slug, wt, [
+        const files = await conversationFiles(projectId, wt, [
           { tool: 'claude', mode: 'tui', agentSessionId: 'cl' },
           { tool: 'claude', mode: 'tui', agentSessionId: 'cl2' },
         ])
@@ -300,8 +300,8 @@ describe('transcripts', () => {
   describe('openConversationFile', () => {
     afterEach(() => { resetWorkspaceDriver() })
 
-    const dir = (): string => opencodeCheckpointDir(slug, wt)
-    const database = { name: 'opencode.db', file: { slug, dir: '', rel: 'opencode.db' }, sqlite: true, size: 0, mtimeMs: 0 }
+    const dir = (): string => opencodeCheckpointDir(projectId, wt)
+    const database = { name: 'opencode.db', file: { projectId, dir: '', rel: 'opencode.db' }, sqlite: true, size: 0, mtimeMs: 0 }
     const opened = async (): Promise<Buffer | null> => {
       const fh = await openConversationFile({ ...database, file: { ...database.file, dir: dir() } })
       try {
@@ -376,7 +376,7 @@ describe('transcripts', () => {
     })
 
     it('opens any other file as it is, and none that is gone or reached through a link', async () => {
-      const plain = (rel: string) => ({ name: rel, file: { slug, dir: dir(), rel }, size: 0, mtimeMs: 0 })
+      const plain = (rel: string) => ({ name: rel, file: { projectId, dir: dir(), rel }, size: 0, mtimeMs: 0 })
       await write(path.join(dir(), 'notes.txt'), 'plain')
       const fh = await openConversationFile(plain('notes.txt'))
       expect((await fh?.readFile())?.toString()).toBe('plain')
@@ -391,31 +391,31 @@ describe('transcripts', () => {
     it('resolves under the recording tool\'s home or its part of this workspace\'s history', () => {
       const files = {
         claude: claudeFile('sid'),
-        codex: { slug, dir: codexDir(slug), rel: 'sessions/rollout-x.jsonl' },
-        pi: { slug, dir: agentHistoryDir(slug, wt, 'pi'), rel: '20260101-120000_sid.jsonl' },
+        codex: { projectId, dir: codexDir(projectId), rel: 'sessions/rollout-x.jsonl' },
+        pi: { projectId, dir: agentHistoryDir(projectId, wt, 'pi'), rel: '20260101-120000_sid.jsonl' },
       } as const
       for (const [tool, file] of Object.entries(files)) {
         const stored = toProjectRelative(file)
         expect(stored).not.toBeNull()
-        expect(resolveProjectPath(slug, wt, tool as keyof typeof files, stored ?? '')).toEqual(file)
+        expect(resolveProjectPath(projectId, wt, tool as keyof typeof files, stored ?? '')).toEqual(file)
       }
-      expect(resolveProjectPath(slug, wt, 'claude', `history/${wt}/claude/-workspace/sid.jsonl`))
-        .toEqual({ slug, dir: agentHistoryDir(slug, wt, 'claude'), rel: '-workspace/sid.jsonl' })
+      expect(resolveProjectPath(projectId, wt, 'claude', `history/${wt}/claude/-workspace/sid.jsonl`))
+        .toEqual({ projectId, dir: agentHistoryDir(projectId, wt, 'claude'), rel: '-workspace/sid.jsonl' })
     })
 
     it('refuses what is not under those: another tool\'s, a sibling\'s, the project\'s own files, a way out', () => {
       // The workspace controls this value, so it must not reach arbitrary
       // project files.
-      expect(resolveProjectPath(slug, wt, 'claude', 'codex/sessions/r.jsonl')).toBeUndefined()
-      expect(resolveProjectPath(slug, wt, 'claude', `history/${wt}/codex/r.jsonl`)).toBeUndefined()
-      expect(resolveProjectPath(slug, wt, 'claude', 'history/wt-b/claude/-workspace/t.jsonl')).toBeUndefined()
-      expect(resolveProjectPath(slug, wt, 'claude', 'known_hosts')).toBeUndefined()
-      expect(resolveProjectPath(slug, wt, 'claude', 'repo/.git/config')).toBeUndefined()
-      expect(resolveProjectPath(slug, wt, 'claude', 'claude/../../../etc/passwd')).toBeUndefined()
-      expect(resolveProjectPath(slug, wt, 'opencode', 'opencode-config/x.jsonl')).toBeUndefined()
-      expect(resolveProjectPath(slug, wt, 'pi', 'pi/agent/sessions/x.jsonl')).toBeUndefined()
+      expect(resolveProjectPath(projectId, wt, 'claude', 'codex/sessions/r.jsonl')).toBeUndefined()
+      expect(resolveProjectPath(projectId, wt, 'claude', `history/${wt}/codex/r.jsonl`)).toBeUndefined()
+      expect(resolveProjectPath(projectId, wt, 'claude', 'history/wt-b/claude/-workspace/t.jsonl')).toBeUndefined()
+      expect(resolveProjectPath(projectId, wt, 'claude', 'known_hosts')).toBeUndefined()
+      expect(resolveProjectPath(projectId, wt, 'claude', 'repo/.git/config')).toBeUndefined()
+      expect(resolveProjectPath(projectId, wt, 'claude', 'claude/../../../etc/passwd')).toBeUndefined()
+      expect(resolveProjectPath(projectId, wt, 'opencode', 'opencode-config/x.jsonl')).toBeUndefined()
+      expect(resolveProjectPath(projectId, wt, 'pi', 'pi/agent/sessions/x.jsonl')).toBeUndefined()
       // Only project-relative values are accepted.
-      expect(resolveProjectPath(slug, wt, 'claude', '/old/home/t.jsonl')).toBeUndefined()
+      expect(resolveProjectPath(projectId, wt, 'claude', '/old/home/t.jsonl')).toBeUndefined()
     })
   })
 })

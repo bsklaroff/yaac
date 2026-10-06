@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type * as dbModule from '#db'
 
+const P = '83878c91-1713-4890-8e0f-e0fb97a8c47a'
+const PROJ_A = '35f146e4-c6e4-40e3-8dcf-ae8471558e9f'
+const PROJ_B = '59f56625-001b-4df1-8d07-9b32191dc0a0'
+const WEB = '2567a5ec-9705-4b7a-82c9-84033e06189d'
+
 vi.mock('#db', async (importOriginal) => {
   const actual = await importOriginal<typeof dbModule>()
   return {
@@ -85,7 +90,7 @@ vi.mocked(applyWorkspaceEvent).mockImplementation((event) => {
 const clearWorkspaceEvents = (): void => { appliedEvents.length = 0 }
 const stopsReported = (): Array<[string, string, unknown]> => appliedEvents
   .filter((e) => e.type === 'workspace-stopped')
-  .map((e) => [e.projectSlug, e.workspaceId, e.cause])
+  .map((e) => [e.projectId, e.workspaceId, e.cause])
 
 /**
  * What cleanup asked the runtime to do, in order.
@@ -147,11 +152,11 @@ describe('cleanupWorkspace', () => {
 
   it('hands the runtime the workspace to destroy, and relays its verdict', async () => {
     await expect(cleanupWorkspace({
-      jobName: 'yaac-p-s-casc', projectSlug: 'p', workspaceId: 's-casc',
+      jobName: 'yaac-p-s-casc', projectId: P, workspaceId: 's-casc',
     })).resolves.toBe(true)
 
     expect(runtime.destroyed).toEqual([
-      { projectSlug: 'p', workspaceId: 's-casc', unitName: 'yaac-p-s-casc' },
+      { projectId: P, workspaceId: 's-casc', unitName: 'yaac-p-s-casc' },
     ])
   })
 
@@ -161,18 +166,18 @@ describe('cleanupWorkspace', () => {
     runtime = installRuntime({ destroy: () => Promise.resolve(false) })
 
     await expect(cleanupWorkspace({
-      jobName: 'yaac-p-s-slow', projectSlug: 'p', workspaceId: 's-slow',
+      jobName: 'yaac-p-s-slow', projectId: P, workspaceId: 's-slow',
     })).resolves.toBe(false)
   })
 
-  // The liveness caches are process-global and keyed by (slug, workspaceId).
+  // The liveness caches are process-global and keyed by (projectId, workspaceId).
   // Without eviction, a restarted session would silently read its
   // predecessor's result. liveness.test.ts cannot check that cleanup evicts.
   it('evicts the liveness cache so a reused session id cannot read a stale verdict', async () => {
     _clearTmuxAliveCacheForTests()
     _resetWorkspaceStatusStoreForTests()
 
-    const target = { projectSlug: 'p', workspaceId: 's-stale', jobName: 'yaac-p-s-stale' }
+    const target = { projectId: P, workspaceId: 's-stale', jobName: 'yaac-p-s-stale' }
     const exec = vi.fn<WorkspaceDriver['exec']>()
       .mockResolvedValue({ stdout: '', stderr: '' })
     installFakeWorkspaceDriver({ exec })
@@ -182,7 +187,7 @@ describe('cleanupWorkspace', () => {
 
     // Within the TTL a second probe would hit the cache; teardown must evict
     // it.
-    await cleanupWorkspace({ jobName: 'yaac-p-s-stale', projectSlug: 'p', workspaceId: 's-stale' })
+    await cleanupWorkspace({ jobName: 'yaac-p-s-stale', projectId: P, workspaceId: 's-stale' })
 
     exec.mockRejectedValue(new WorkspaceExecError('exit 1', 1, '', "can't find session: yaac"))
     await expect(probeTmuxLiveness(target)).resolves.toBe('dead')
@@ -192,12 +197,12 @@ describe('cleanupWorkspace', () => {
   it('reports the death cause with the stop', async () => {
     await cleanupWorkspace({
       jobName: 'yaac-p-s-cause',
-      projectSlug: 'p',
+      projectId: P,
       workspaceId: 's-cause',
       cause: { reason: 'crashed', detail: 'exit code 1' },
     })
     expect(stopsReported()).toEqual([
-      ['p', 's-cause', { reason: 'crashed', detail: 'exit code 1' }],
+      [P, 's-cause', { reason: 'crashed', detail: 'exit code 1' }],
     ])
   })
 
@@ -209,7 +214,7 @@ describe('cleanupWorkspace', () => {
     try {
       // A containerless workspace keeps ephemeral paths in the checkout.
       // Those are removed; the rest stays for a restart.
-      const checkout = workspaceDir('p', 's-dirs')
+      const checkout = workspaceDir(P, 's-dirs')
       const modules = path.join(checkout, 'node_modules')
       await fs.mkdir(path.join(modules, 'left-pad'), { recursive: true })
       await fs.mkdir(path.join(checkout, 'src'), { recursive: true })
@@ -221,7 +226,7 @@ describe('cleanupWorkspace', () => {
         },
       })
 
-      await cleanupWorkspace({ jobName: 'yaac-p-s-dirs', projectSlug: 'p', workspaceId: 's-dirs' })
+      await cleanupWorkspace({ jobName: 'yaac-p-s-dirs', projectId: P, workspaceId: 's-dirs' })
 
       expect(existedDuringDestroy).toBe(true)
       await expect(fs.access(modules)).rejects.toThrow()
@@ -240,17 +245,17 @@ describe('cleanupWorkspace', () => {
     try {
       const outside = path.join(dataDir, 'outside')
       await fs.mkdir(path.join(outside, 'node_modules', 'kept'), { recursive: true })
-      const checkout = workspaceDir('p', 's-link')
+      const checkout = workspaceDir(P, 's-link')
       await fs.mkdir(checkout, { recursive: true })
       await fs.symlink(path.join(outside, 'node_modules'), path.join(checkout, 'node_modules'))
-      await fs.symlink(outside, path.join(checkout, 'web'))
-      await fs.mkdir(projectConfigDir('p'), { recursive: true })
-      await fs.writeFile(path.join(projectConfigDir('p'), 'yaac-config.json'), JSON.stringify({
+      await fs.symlink(outside, path.join(checkout, WEB))
+      await fs.mkdir(projectConfigDir(P), { recursive: true })
+      await fs.writeFile(path.join(projectConfigDir(P), 'yaac-config.json'), JSON.stringify({
         ephemeralModulesPaths: ['node_modules', 'web/node_modules'],
       }))
       installRuntime({ destroy: () => Promise.resolve(true) })
 
-      await cleanupWorkspace({ jobName: 'yaac-p-s-link', projectSlug: 'p', workspaceId: 's-link' })
+      await cleanupWorkspace({ jobName: 'yaac-p-s-link', projectId: P, workspaceId: 's-link' })
 
       await expect(fs.access(path.join(outside, 'node_modules', 'kept'))).resolves.toBeUndefined()
       expect((await fs.lstat(path.join(checkout, 'node_modules'))).isSymbolicLink()).toBe(true)
@@ -266,14 +271,14 @@ describe('cleanupWorkspace', () => {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-cleanup-keep-'))
     setDataDir(dataDir)
     try {
-      const stateDir = workspaceStateDir('p', 's-kept')
-      const checkoutModules = path.join(workspaceDir('p', 's-kept'), 'node_modules')
+      const stateDir = workspaceStateDir(P, 's-kept')
+      const checkoutModules = path.join(workspaceDir(P, 's-kept'), 'node_modules')
       await fs.mkdir(checkoutModules, { recursive: true })
       await fs.mkdir(stateDir, { recursive: true })
       installRuntime({ destroy: () => Promise.resolve(false) })
 
       await expect(cleanupWorkspace({
-        jobName: 'yaac-p-s-kept', projectSlug: 'p', workspaceId: 's-kept',
+        jobName: 'yaac-p-s-kept', projectId: P, workspaceId: 's-kept',
       })).resolves.toBe(false)
 
       await expect(fs.access(checkoutModules)).resolves.toBeUndefined()
@@ -297,22 +302,22 @@ describe('deleteWorkspaceState', () => {
   })
 
   it('removes the checkout and confirms it', async () => {
-    const slug = 'dws'
-    const wt = path.join(dataDir, 'global', 'projects', slug, 'workspaces', 'w1')
+    const projectId = 'dws'
+    const wt = path.join(dataDir, 'global', 'projects', projectId, 'workspaces', 'w1')
     await fs.mkdir(wt, { recursive: true })
 
-    await expect(deleteWorkspaceState(slug, 'w1')).resolves.toBe(true)
+    await expect(deleteWorkspaceState(projectId, 'w1')).resolves.toBe(true)
     await expect(fs.access(wt)).rejects.toThrow()
   })
 
   // Ids are server-minted today, but an empty id would resolve to the
   // workspaces root, i.e. every workspace of the project.
   it('refuses an empty workspace id instead of resolving to the workspaces root', async () => {
-    const slug = 'dws-empty'
-    const root = path.join(dataDir, 'global', 'projects', slug, 'workspaces')
+    const projectId = 'dws-empty'
+    const root = path.join(dataDir, 'global', 'projects', projectId, 'workspaces')
     await fs.mkdir(path.join(root, 'keeper'), { recursive: true })
 
-    await expect(deleteWorkspaceState(slug, '')).resolves.toBe(false)
+    await expect(deleteWorkspaceState(projectId, '')).resolves.toBe(false)
     expect(await fs.readdir(root)).toEqual(['keeper'])
   })
 })
@@ -339,10 +344,10 @@ describe('cleanupWorkspaceDetached', () => {
   // The runtime's teardown runs before this layer removes its dirs, since
   // the workspace has those dirs mounted.
   it('composes the runtime teardown ahead of the dirs this layer owns', async () => {
-    const checkoutModules = path.join(workspaceDir('p', 's-script'), 'node_modules')
+    const checkoutModules = path.join(workspaceDir(P, 's-script'), 'node_modules')
     await fs.mkdir(checkoutModules, { recursive: true })
     await cleanupWorkspaceDetached({
-      jobName: 'yaac-p-s-script', projectSlug: 'p', workspaceId: 's-script',
+      jobName: 'yaac-p-s-script', projectId: P, workspaceId: 's-script',
     })
     await vi.waitFor(() => { expect(spawnedScript()).toBeDefined() })
 
@@ -356,7 +361,7 @@ describe('cleanupWorkspaceDetached', () => {
   // port forwards or egress registration.
   it('stops routing before it spawns anything', async () => {
     await cleanupWorkspaceDetached({
-      jobName: 'yaac-p-s-dereg', projectSlug: 'p', workspaceId: 's-dereg',
+      jobName: 'yaac-p-s-dereg', projectId: P, workspaceId: 's-dereg',
     })
 
     expect(runtime.deregistered).toEqual(['s-dereg'])
@@ -367,11 +372,11 @@ describe('cleanupWorkspaceDetached', () => {
   it('completes the image salvage before spawning the teardown script', async () => {
     runtime = installRuntime({ blockSalvage: true })
     await cleanupWorkspaceDetached({
-      jobName: 'yaac-p-s-detached', projectSlug: 'p', workspaceId: 's-detached',
+      jobName: 'yaac-p-s-detached', projectId: P, workspaceId: 's-detached',
     })
 
     expect(runtime.salvaged).toEqual([
-      { projectSlug: 'p', workspaceId: 's-detached', unitName: 'yaac-p-s-detached' },
+      { projectId: P, workspaceId: 's-detached', unitName: 'yaac-p-s-detached' },
     ])
     // The salvage reads from the workspace, so nothing is spawned until it
     // finishes.
@@ -387,26 +392,26 @@ describe('cleanupWorkspaceDetached', () => {
       detachedTeardownCommand: () => TEARDOWN_SENTINEL,
     })
     await cleanupWorkspaceDetached({
-      jobName: 'yaac-p-s-salvfail', projectSlug: 'p', workspaceId: 's-salvfail',
+      jobName: 'yaac-p-s-salvfail', projectId: P, workspaceId: 's-salvfail',
     })
     await vi.waitFor(() => { expect(spawnedScript()).toBeDefined() })
   })
 
   it('audits the teardown so a reaped session is never silent', async () => {
     await cleanupWorkspaceDetached({
-      jobName: 'yaac-p-s-audit', projectSlug: 'proj-a', workspaceId: 's-audit',
+      jobName: 'yaac-p-s-audit', projectId: PROJ_A, workspaceId: 's-audit',
     })
 
     const logged = mockServerLog.mock.calls.map(([m]) => m).join('\n')
     expect(logged).toContain('session teardown')
     expect(logged).toContain('session=s-audit')
     expect(logged).toContain('job=yaac-p-s-audit')
-    expect(logged).toContain('project=proj-a')
+    expect(logged).toContain(`project=${PROJ_A}`)
   })
 
   it('marks the session terminating so the display path can render it', async () => {
     await cleanupWorkspaceDetached({
-      jobName: 'yaac-p-s-mark', projectSlug: 'proj-a', workspaceId: 's-mark',
+      jobName: 'yaac-p-s-mark', projectId: PROJ_A, workspaceId: 's-mark',
     })
     expect(isWorkspaceTerminating('s-mark')).toBe(true)
   })
@@ -414,13 +419,13 @@ describe('cleanupWorkspaceDetached', () => {
   it('reports the death cause and includes it in the audit line', async () => {
     await cleanupWorkspaceDetached({
       jobName: 'yaac-p-s-cause',
-      projectSlug: 'proj-a',
+      projectId: PROJ_A,
       workspaceId: 's-cause',
       cause: { reason: 'oom', detail: 'exit code 137' },
     })
 
     expect(stopsReported()).toEqual([
-      ['proj-a', 's-cause', { reason: 'oom', detail: 'exit code 137' }],
+      [PROJ_A, 's-cause', { reason: 'oom', detail: 'exit code 137' }],
     ])
     const logged = mockServerLog.mock.calls.map(([m]) => m).join('\n')
     expect(logged).toContain('cause=oom (exit code 137)')
@@ -428,10 +433,10 @@ describe('cleanupWorkspaceDetached', () => {
 
   it('a causeless teardown reports no cause and keeps the audit line bare', async () => {
     await cleanupWorkspaceDetached({
-      jobName: 'yaac-p-s-nocause', projectSlug: 'proj-a', workspaceId: 's-nocause',
+      jobName: 'yaac-p-s-nocause', projectId: PROJ_A, workspaceId: 's-nocause',
     })
 
-    expect(stopsReported()).toEqual([['proj-a', 's-nocause', undefined]])
+    expect(stopsReported()).toEqual([[PROJ_A, 's-nocause', undefined]])
     const logged = mockServerLog.mock.calls.map(([m]) => m).join('\n')
     expect(logged).not.toContain('cause=')
   })
@@ -441,7 +446,7 @@ describe('cleanupWorkspaceDetached', () => {
     // re-report, which would overwrite the real cause.
     await cleanupWorkspaceDetached({
       jobName: 'yaac-p-s-resume',
-      projectSlug: 'proj-a',
+      projectId: PROJ_A,
       workspaceId: 's-resume',
       preserveDeletedRecord: true,
     })
@@ -474,12 +479,12 @@ describe('teardownForRestart', () => {
   // restart would relaunch into a checkout the script is still cleaning.
   it('waits for the workspace\'s detached teardown to exit before a relaunch', async () => {
     await cleanupWorkspaceDetached({
-      jobName: 'yaac-p-s-race', projectSlug: 'p', workspaceId: 's-race',
+      jobName: 'yaac-p-s-race', projectId: P, workspaceId: 's-race',
     })
     await vi.waitFor(() => { expect(spawnMock).toHaveBeenCalled() })
 
     let settled = false
-    const restart = teardownForRestart({ jobName: null, projectSlug: 'p', workspaceId: 's-race' })
+    const restart = teardownForRestart({ jobName: null, projectId: P, workspaceId: 's-race' })
       .then(() => { settled = true })
     await new Promise((r) => setTimeout(r, 50))
     expect(settled).toBe(false)
@@ -493,7 +498,7 @@ describe('teardownForRestart', () => {
   })
 
   it('returns at once for a workspace with no teardown in flight', async () => {
-    await teardownForRestart({ jobName: null, projectSlug: 'p', workspaceId: 's-idle' })
+    await teardownForRestart({ jobName: null, projectId: P, workspaceId: 's-idle' })
     expect(spawnMock).not.toHaveBeenCalled()
   })
 
@@ -508,16 +513,16 @@ describe('teardownForRestart', () => {
       installFakeWorkspaceDriver({
         destroy: () => Promise.resolve(false),
         findForTeardown: () => Promise.resolve(unitLeft-- > 0
-          ? { projectSlug: 'p', workspaceId: 's-slow', unitName: 'yaac-p-s-slow' }
+          ? { projectId: P, workspaceId: 's-slow', unitName: 'yaac-p-s-slow' }
           : undefined),
       })
-      const restart = teardownForRestart({ jobName: 'yaac-p-s-slow', projectSlug: 'p', workspaceId: 's-slow' })
+      const restart = teardownForRestart({ jobName: 'yaac-p-s-slow', projectId: P, workspaceId: 's-slow' })
       await vi.advanceTimersByTimeAsync(5_000)
       await expect(restart).resolves.toBeUndefined()
       expect(isWorkspaceTerminating('s-slow')).toBe(false)
 
       unitLeft = Infinity
-      const refused = teardownForRestart({ jobName: 'yaac-p-s-slow', projectSlug: 'p', workspaceId: 's-slow' })
+      const refused = teardownForRestart({ jobName: 'yaac-p-s-slow', projectId: P, workspaceId: 's-slow' })
       const settled = expect(refused).rejects.toThrow('still shutting down')
       await vi.advanceTimersByTimeAsync(100_000)
       await settled
@@ -534,7 +539,7 @@ let gcDataDir: string
 function publishInFlight(provisioning: string[] = []): void {
   clearAllProvisioningForTests()
   for (const workspaceId of provisioning) {
-    registerProvisioning({ workspaceId, projectSlug: 'proj-a', tool: 'claude', kind: 'create' })
+    registerProvisioning({ workspaceId, projectId: PROJ_A, tool: 'claude', kind: 'create' })
   }
 }
 
@@ -578,15 +583,15 @@ async function tearDownSweep(): Promise<void> {
 // (a create staging into it).
 const STALE = new Date(Date.now() - 3_600_000)
 
-async function seedModulesDir(slug: string, sid: string): Promise<string> {
-  const dir = path.join(gcDataDir, 'node-local', 'projects', slug, '.cached-packages', 'modules', sid)
+async function seedModulesDir(projectId: string, sid: string): Promise<string> {
+  const dir = path.join(gcDataDir, 'node-local', 'projects', projectId, '.cached-packages', 'modules', sid)
   await fs.mkdir(dir, { recursive: true })
   await fs.utimes(dir, STALE, STALE)
   return dir
 }
 
-async function seedWorkspacesDir(slug: string, sid: string): Promise<string> {
-  const dir = path.join(gcDataDir, 'global', 'projects', slug, 'sessions', sid)
+async function seedWorkspacesDir(projectId: string, sid: string): Promise<string> {
+  const dir = path.join(gcDataDir, 'global', 'projects', projectId, 'sessions', sid)
   await fs.mkdir(dir, { recursive: true })
   await fs.utimes(dir, STALE, STALE)
   return dir
@@ -597,11 +602,11 @@ describe('gcOrphanEphemeralModuleDirs', () => {
   afterEach(tearDownSweep)
 
   it('removes orphan per-session dirs and leaves node-local ones to the runtime', async () => {
-    const liveTmux = await seedWorkspacesDir('proj-a', 'live-1')
-    const deadTmux = await seedWorkspacesDir('proj-a', 'dead-1')
-    const deadModules = await seedModulesDir('proj-a', 'dead-1')
+    const liveTmux = await seedWorkspacesDir(PROJ_A, 'live-1')
+    const deadTmux = await seedWorkspacesDir(PROJ_A, 'dead-1')
+    const deadModules = await seedModulesDir(PROJ_A, 'dead-1')
 
-    seeRunning([handleFixture({ workspaceId: 'live-1', projectSlug: 'proj-a' })])
+    seeRunning([handleFixture({ workspaceId: 'live-1', projectId: PROJ_A })])
 
     await gcOrphanEphemeralModuleDirs(view)
 
@@ -614,28 +619,28 @@ describe('gcOrphanEphemeralModuleDirs', () => {
   // Only a dead spare's checkout is disposable; a stopped workspace's is
   // kept.
   it('collects a dead spare, and keeps a stopped workspace', async () => {
-    await recordWorkspaceCreated({ projectSlug: 'proj-a', workspaceId: 'stopped-1' })
-    await recordWorkspaceCreated({ projectSlug: 'proj-a', workspaceId: 'spare-1', spare: true })
+    await recordWorkspaceCreated({ projectId: PROJ_A, workspaceId: 'stopped-1' })
+    await recordWorkspaceCreated({ projectId: PROJ_A, workspaceId: 'spare-1', spare: true })
     // Both checkouts are stale, so only the spare flag tells them apart.
     const [spareCheckout, stoppedCheckout] = await Promise.all(['spare-1', 'stopped-1'].map(async (sid) => {
-      const dir = workspaceDir('proj-a', sid)
+      const dir = workspaceDir(PROJ_A, sid)
       await fs.mkdir(dir, { recursive: true })
       await fs.utimes(dir, STALE, STALE)
       return dir
     }))
-    seeRunning([handleFixture({ workspaceId: 'live-1', projectSlug: 'proj-a' })])
+    seeRunning([handleFixture({ workspaceId: 'live-1', projectId: PROJ_A })])
 
     await gcOrphanEphemeralModuleDirs(view)
 
     await expect(fs.access(stoppedCheckout)).resolves.toBeUndefined()
     await expect(fs.access(spareCheckout)).rejects.toThrow()
-    expect([...(await listProjectWorkspaceIds('proj-a')).keys()]).toEqual(['stopped-1'])
+    expect([...(await listProjectWorkspaceIds(PROJ_A)).keys()]).toEqual(['stopped-1'])
   })
 
   it('spares a session the process is still provisioning', async () => {
     // The create records its row before anything is launched, so no
     // listing shows it yet; sweeping would delete dirs it is about to mount.
-    const staging = await seedWorkspacesDir('proj-a', 'creating-1')
+    const staging = await seedWorkspacesDir(PROJ_A, 'creating-1')
     publishInFlight(['creating-1'])
 
     await gcOrphanEphemeralModuleDirs(view)
@@ -646,7 +651,7 @@ describe('gcOrphanEphemeralModuleDirs', () => {
   it('spares a dir written since the sweep took its listing', async () => {
     // The same race for a create with no provisioning row (a spare): a
     // fresh dir is left for the next sweep.
-    const fresh = await seedWorkspacesDir('proj-a', 'staging-1')
+    const fresh = await seedWorkspacesDir(PROJ_A, 'staging-1')
     await fs.utimes(fresh, new Date(), new Date())
 
     await gcOrphanEphemeralModuleDirs(view)
@@ -656,7 +661,7 @@ describe('gcOrphanEphemeralModuleDirs', () => {
 
   // An unreadable view must not read as empty.
   it('fails without removing anything when the runtime view cannot be read', async () => {
-    const dead = await seedWorkspacesDir('proj-a', 'would-be-removed')
+    const dead = await seedWorkspacesDir(PROJ_A, 'would-be-removed')
     seeNothing()
 
     await expect(gcOrphanEphemeralModuleDirs(view)).rejects.toThrow('cluster offline')
@@ -672,8 +677,8 @@ describe('reapOrphanNodeLocal', () => {
   // This layer only hands over the live set: recorded project ids,
   // workspaces, stray units and in-flight creates.
   it('hands the runtime the live project ids and workspaces, and removes no node-local dir itself', async () => {
-    await recordProject({ slug: 'proj-a', remoteUrl: 'https://x/proj-a', addedAt: '2026-01-01' })
-    await recordProject({ slug: 'proj-b', remoteUrl: 'https://x/proj-b', addedAt: '2026-01-01' })
+    await recordProject({ id: PROJ_A, name: 'demo', remoteUrl: 'https://x/proj-a', addedAt: '2026-01-01' })
+    await recordProject({ id: PROJ_B, name: 'demo', remoteUrl: 'https://x/proj-b', addedAt: '2026-01-01' })
     const ids = (await listProjectRows()).map((r) => r.id)
     const live = await seedModulesDir(ids[0], 'live-1')
     const dead = await seedModulesDir(ids[0], 'dead-1')
@@ -682,10 +687,10 @@ describe('reapOrphanNodeLocal', () => {
     publishInFlight(['creating-1'])
 
     seeRunning(
-      [handleFixture({ workspaceId: 'live-1', projectSlug: 'proj-a' })],
+      [handleFixture({ workspaceId: 'live-1', projectId: PROJ_A })],
       // A unit mid-recreate appears only as a stray, and its replacement is
       // about to mount its dirs.
-      [{ workspaceId: 'job-only-1', unitName: 'yaac-proj-b-job-only-1', projectSlug: 'proj-b', createdAtMs: 0 }],
+      [{ workspaceId: 'job-only-1', unitName: 'yaac-proj-b-job-only-1', projectId: PROJ_B, createdAtMs: 0 }],
     )
 
     await reapOrphanNodeLocal(view)

@@ -181,8 +181,8 @@ export function handleMitm(
     delete headers['proxy-authorization']
     delete headers['proxy-connection']
     const dynamicRules = buildDynamicRules(objects, workspaceId, hostname, req.headers)
-    const projectSlug = objects.registration(workspaceId)?.projectSlug
-    const allRules = [...resolveRegisteredRules(objects, rules, projectSlug), ...dynamicRules]
+    const projectId = objects.registration(workspaceId)?.projectId
+    const allRules = [...resolveRegisteredRules(objects, rules, projectId), ...dynamicRules]
     const headerCount = applyInjections(headers, reqPath, allRules)
     const bodyInjections = withBody ? collectBodyInjections(reqPath, allRules) : []
     if (headerCount + bodyInjections.length > 0) {

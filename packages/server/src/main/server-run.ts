@@ -405,14 +405,14 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
             } catch { /* socket already gone */ }
             ws.close(1011, message)
           }
-          let projectSlug: string
+          let projectId: string
           try {
-            projectSlug = (await resolveWorkspaceContainer(id, { requireRunning: true, exact: true })).projectSlug
+            projectId = (await resolveWorkspaceContainer(id, { requireRunning: true, exact: true })).projectId
           } catch {
             fail('session not found or not running')
             return
           }
-          attachAcp(projectSlug, id, agentSessionId, socketOf(ws))
+          attachAcp(projectId, id, agentSessionId, socketOf(ws))
           serverLog(`[server] acp attach: session=${id} conversation=${agentSessionId}`)
         })()
       },
@@ -568,15 +568,15 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
  *  Best-effort per project, so one failure does not block the rest. */
 async function convergeRuntimeCredentials(): Promise<void> {
   await pushCredentialsToRuntime()
-  for (const { slug } of await listProjectRows()) {
+  for (const { id: projectId } of await listProjectRows()) {
     try {
-      const { secrets } = await resolveProjectEnv(slug)
+      const { secrets } = await resolveProjectEnv(projectId)
       await workspaceDriver().syncProjectSecrets(
-        slug,
+        projectId,
         Object.fromEntries(Object.entries(secrets).map(([name, { value }]) => [name, value])),
       )
     } catch (err) {
-      serverLog(`[server] secret push for project "${slug}" failed: ${String(err)}`)
+      serverLog(`[server] secret push for project "${projectId}" failed: ${String(err)}`)
     }
   }
 }

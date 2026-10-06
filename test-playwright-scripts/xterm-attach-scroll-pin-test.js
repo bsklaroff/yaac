@@ -71,7 +71,7 @@ for (let i = 1; i <= trials; i++) {
     }
     requestAnimationFrame(tick)
   })
-  await page.goto(`${origin}/?project=${ws.projectSlug}&workspace=${ws.workspaceId}`)
+  await page.goto(`${origin}/?project=${ws.projectId}&workspace=${ws.workspaceId}`)
   await until(page, () => window.__samples.length > 0, undefined, 60_000)
   await page.waitForTimeout(2500)
 

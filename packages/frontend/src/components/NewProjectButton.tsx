@@ -1,7 +1,7 @@
 import { useEffect, useState, type JSX } from 'react'
 import { Dialog } from '@base-ui/react/dialog'
 import { useQueryClient } from '@tanstack/react-query'
-import { GitCredentialPicker, remoteKind, remoteSlug, TrustedHostKey } from '#components/GitCredentialPicker'
+import { GitCredentialPicker, remoteKind, remoteProjectName, TrustedHostKey } from '#components/GitCredentialPicker'
 import { AddIcon } from '#lib/icons'
 import { api } from '#lib/api'
 import { Modal } from '#components/ui/Modal'
@@ -38,18 +38,18 @@ export function NewProjectButton(
   }
 
   const add = async (credentialId: string): Promise<void> => {
-    const { project: { slug }, knownHostsEntry } = await api.project.add.$post({
+    const { project, knownHostsEntry } = await api.project.add.$post({
       json: { remoteUrl, gitCredentialId: credentialId },
     })
     // Refresh the credential's project list.
     void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
-    setAdded(slug)
+    setAdded(project.id)
     if (knownHostsEntry !== null) setTrusted(knownHostsEntry)
     else onOpenChange(false)
   }
 
   useEffect(() => {
-    if (added === null || !projects?.some((p) => p.slug === added)) return
+    if (added === null || !projects?.some((p) => p.id === added)) return
     setActiveProject(added)
     setAdded(null)
   }, [added, projects, setActiveProject])
@@ -87,7 +87,7 @@ export function NewProjectButton(
             />
             <GitCredentialPicker
               kind={remoteKind(remoteUrl)}
-              project={remoteSlug(remoteUrl)}
+              projectName={remoteProjectName(remoteUrl)}
               actionLabel="Add"
               disabled={remoteUrl === ''}
               onSubmit={add}

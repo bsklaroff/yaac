@@ -8,7 +8,7 @@ import type { AgentTool } from '@yaac/shared/types'
 export interface ResolvedWorkspace {
   jobName: string
   workspaceId: string
-  projectSlug: string
+  projectId: string
   state: string
 }
 
@@ -34,13 +34,13 @@ export async function resolveWorkspaceContainer(
   return {
     jobName: match.jobName,
     workspaceId: match.workspaceId,
-    projectSlug: match.projectSlug,
+    projectId: match.projectId,
     state: match.state,
   }
 }
 
 export interface ResolvedWorkspaceRecord {
-  projectSlug: string
+  projectId: string
   workspaceId: string
   /** Absent when resolved from the row only (nothing running). */
   jobName?: string
@@ -59,7 +59,7 @@ export async function resolveWorkspaceRecord(
     const match = await workspaceDriver().find(id)
     if (match) {
       return {
-        projectSlug: match.projectSlug,
+        projectId: match.projectId,
         workspaceId: match.workspaceId,
         jobName: match.jobName,
         tool: match.tool,
@@ -69,7 +69,7 @@ export async function resolveWorkspaceRecord(
     // Substrate unreachable; fall back to the row.
   }
   const row = await findWorkspaceRow(id)
-  if (row) return { projectSlug: row.projectSlug, workspaceId: row.workspaceId }
+  if (row) return { projectId: row.projectId, workspaceId: row.workspaceId }
   throw new ServerError('NOT_FOUND', `workspace ${idOrPrefix} not found`)
 }
 
@@ -85,28 +85,28 @@ export type WorkspaceResolution =
 /**
  * Resolve a workspace id or unique prefix against rows (any state). The only
  * place prefixes are expanded; drivers take exact ids. An exact id beats a
- * prefix match. Unclaimed spares never match. `projectSlug` limits the
+ * prefix match. Unclaimed spares never match. `projectId` limits the
  * search to one project (for `yaac-mama` and the group routes).
  * `provisioning` also matches creates still in flight, whose row may not
  * exist yet (for a stop).
  */
 export async function resolveWorkspace(
   idOrPrefix: string,
-  opts: { projectSlug?: string; provisioning?: boolean } = {},
+  opts: { projectId?: string; provisioning?: boolean } = {},
 ): Promise<WorkspaceResolution> {
   const trimmed = idOrPrefix.trim()
   if (trimmed === '') return { ok: false, reason: 'not-found' }
   const inFlight = opts.provisioning !== true ? [] : listProvisioning()
     .filter((p) => p.error === undefined
-      && (opts.projectSlug === undefined || p.projectSlug === opts.projectSlug))
+      && (opts.projectId === undefined || p.projectId === opts.projectId))
     .map((p) => p.workspaceId)
   // Exact ids are the common case and hit the primary key.
   const exact = await findWorkspaceRow(trimmed)
   if (inFlight.includes(trimmed)
-    || (exact && (opts.projectSlug === undefined || exact.projectSlug === opts.projectSlug))) {
+    || (exact && (opts.projectId === undefined || exact.projectId === opts.projectId))) {
     return { ok: true, workspaceId: trimmed }
   }
-  const matches = new Set([...(await listWorkspaceRows(opts.projectSlug)).map((r) => r.workspaceId), ...inFlight]
+  const matches = new Set([...(await listWorkspaceRows(opts.projectId)).map((r) => r.workspaceId), ...inFlight]
     .filter((id) => id.startsWith(trimmed)))
   if (matches.size === 1) return { ok: true, workspaceId: [...matches][0] }
   return { ok: false, reason: matches.size > 1 ? 'ambiguous' : 'not-found' }

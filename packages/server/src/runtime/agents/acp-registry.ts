@@ -17,12 +17,12 @@ const named = new Set<string>()
 /** Callers of `whenAcpConversation` waiting on a handle key. */
 const waiters = new Map<string, Set<(conversation: AcpConversation) => void>>()
 
-function sessionKey(slug: string, workspaceId: string, agentSessionId: string): string {
-  return `${slug}/${workspaceId}/id:${agentSessionId}`
+function sessionKey(projectId: string, workspaceId: string, agentSessionId: string): string {
+  return `${projectId}/${workspaceId}/id:${agentSessionId}`
 }
 
-function handleKey(slug: string, workspaceId: string, handle: string): string {
-  return `${slug}/${workspaceId}/handle:${handle}`
+function handleKey(projectId: string, workspaceId: string, handle: string): string {
+  return `${projectId}/${workspaceId}/handle:${handle}`
 }
 
 /**
@@ -30,50 +30,50 @@ function handleKey(slug: string, workspaceId: string, handle: string): string {
  * again once `session/new` supplies its id.
  */
 export function registerAcpConversation(
-  slug: string,
+  projectId: string,
   workspaceId: string,
   names: { handle: string; agentSessionId?: string },
   conversation: AcpConversation,
 ): void {
-  const handle = handleKey(slug, workspaceId, names.handle)
+  const handle = handleKey(projectId, workspaceId, names.handle)
   byName.set(handle, conversation)
   if (names.agentSessionId === undefined) return
-  byName.set(sessionKey(slug, workspaceId, names.agentSessionId), conversation)
+  byName.set(sessionKey(projectId, workspaceId, names.agentSessionId), conversation)
   named.add(handle)
   for (const wake of waiters.get(handle) ?? []) wake(conversation)
   waiters.delete(handle)
 }
 
 export function unregisterAcpConversation(
-  slug: string,
+  projectId: string,
   workspaceId: string,
   names: { handle: string; agentSessionId?: string },
 ): void {
-  byName.delete(handleKey(slug, workspaceId, names.handle))
-  named.delete(handleKey(slug, workspaceId, names.handle))
+  byName.delete(handleKey(projectId, workspaceId, names.handle))
+  named.delete(handleKey(projectId, workspaceId, names.handle))
   if (names.agentSessionId !== undefined) {
-    byName.delete(sessionKey(slug, workspaceId, names.agentSessionId))
+    byName.delete(sessionKey(projectId, workspaceId, names.agentSessionId))
   }
 }
 
 /** The live conversation for a pane's `acp:<id>` target, or undefined when
  *  none is connected (booting, or reconnecting). */
 export function acpConversation(
-  slug: string,
+  projectId: string,
   workspaceId: string,
   agentSessionId: string,
 ): AcpConversation | undefined {
-  return byName.get(sessionKey(slug, workspaceId, agentSessionId))
+  return byName.get(sessionKey(projectId, workspaceId, agentSessionId))
 }
 
 /** The live conversation by the driver's handle, which a fresh one has
  *  before its handshake mints an id. */
 export function acpConversationByHandle(
-  slug: string,
+  projectId: string,
   workspaceId: string,
   handle: string,
 ): AcpConversation | undefined {
-  return byName.get(handleKey(slug, workspaceId, handle))
+  return byName.get(handleKey(projectId, workspaceId, handle))
 }
 
 /**
@@ -82,12 +82,12 @@ export function acpConversationByHandle(
  * if none is registered within `timeoutMs`.
  */
 export function whenAcpConversation(
-  slug: string,
+  projectId: string,
   workspaceId: string,
   handle: string,
   timeoutMs: number,
 ): Promise<AcpConversation | undefined> {
-  const key = handleKey(slug, workspaceId, handle)
+  const key = handleKey(projectId, workspaceId, handle)
   const found = byName.get(key)
   if (found !== undefined && named.has(key)) return Promise.resolve(found)
   return new Promise((resolve) => {
@@ -123,9 +123,9 @@ export function _resetAcpRegistryForTests(): void {
  */
 const parkedQueues = new Map<string, QueuedTurn[]>()
 
-export function parkAcpQueue(slug: string, workspaceId: string, agentSessionId: string, queue: QueuedTurn[]): void {
+export function parkAcpQueue(projectId: string, workspaceId: string, agentSessionId: string, queue: QueuedTurn[]): void {
   if (queue.length === 0) return
-  const key = sessionKey(slug, workspaceId, agentSessionId)
+  const key = sessionKey(projectId, workspaceId, agentSessionId)
   parkedQueues.set(key, [...(parkedQueues.get(key) ?? []), ...queue])
 }
 
@@ -134,16 +134,16 @@ export function parkAcpQueue(slug: string, workspaceId: string, agentSessionId: 
  * message so its sender logs it. Used when the workspace stops and when a
  * conversation's window is gone, since nothing will reattach to take them.
  */
-export function dropAcpQueues(slug: string, workspaceId: string, keep: ReadonlySet<string> = new Set()): void {
+export function dropAcpQueues(projectId: string, workspaceId: string, keep: ReadonlySet<string> = new Set()): void {
   for (const [key, queue] of parkedQueues) {
-    if (!key.startsWith(`${slug}/${workspaceId}/id:`) || keep.has(key.slice(key.indexOf('/id:') + 4))) continue
+    if (!key.startsWith(`${projectId}/${workspaceId}/id:`) || keep.has(key.slice(key.indexOf('/id:') + 4))) continue
     parkedQueues.delete(key)
     for (const turn of queue) turn.reject(new Error('the conversation ended before the queued message was sent'))
   }
 }
 
-export function takeAcpQueue(slug: string, workspaceId: string, agentSessionId: string): QueuedTurn[] {
-  const key = sessionKey(slug, workspaceId, agentSessionId)
+export function takeAcpQueue(projectId: string, workspaceId: string, agentSessionId: string): QueuedTurn[] {
+  const key = sessionKey(projectId, workspaceId, agentSessionId)
   const queue = parkedQueues.get(key) ?? []
   parkedQueues.delete(key)
   return queue

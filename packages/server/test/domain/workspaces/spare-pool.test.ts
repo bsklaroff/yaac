@@ -10,7 +10,7 @@ import type { YaacConfig } from '@yaac/shared/types'
 
 const PATHS = workspacePathsFixture()
 const TMUX = `tmux -S ${PATHS.tmuxSock}`
-const SPARE = { jobName: 'yaac-demo-spare1', workspaceId: 'spare1', projectSlug: 'demo', tool: 'claude' }
+const SPARE = { jobName: 'yaac-demo-spare1', workspaceId: 'spare1', projectId: 'demo', tool: 'claude' }
 
 let tmpDir: string
 /** Commands run in the spare, in order, with their exec options. */

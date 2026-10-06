@@ -19,7 +19,7 @@ import {
   normalizeServerUrl, probeServer, readServerConfig, withServerSelected, writeServerConfig,
 } from '@yaac/shared/server-config'
 import { env } from '@yaac/shared/env'
-import type { WorkspaceListEntry } from '@yaac/shared/types'
+import type { ProjectSummary, WorkspaceListEntry } from '@yaac/shared/types'
 import { AttentionMonitor, badgeText, notificationFor } from '#attention'
 import { startEventsMonitor } from '@yaac/shared/events'
 import { startForwarder, type DesktopForwarder } from '#forwarder'
@@ -170,7 +170,7 @@ async function showConnectPage(w: BrowserWindow, error: LaunchError): Promise<vo
   forwarder?.stop()
   forwarder = null
   attention = new AttentionMonitor()
-  applyAttention(0, [])
+  applyAttention(0, [], [])
   const targets = await getServerTargets(serverSwitchDeps)
   await w.loadURL(connectPageUrl({ error, targets }))
     .catch((err: unknown) => {
@@ -215,12 +215,16 @@ function updateTray(waitingCount: number): void {
   ]))
 }
 
-function applyAttention(waitingCount: number, toNotify: WorkspaceListEntry[]): void {
+function applyAttention(
+  waitingCount: number,
+  toNotify: WorkspaceListEntry[],
+  projects: ProjectSummary[],
+): void {
   if (process.platform === 'darwin') app.dock?.setBadge(badgeText(waitingCount))
   updateTray(waitingCount)
   if (!Notification.isSupported()) return
   for (const s of toNotify) {
-    const n = new Notification(notificationFor(s))
+    const n = new Notification(notificationFor(s, projects))
     n.on('click', () => showWindow())
     n.show()
   }
@@ -236,7 +240,7 @@ function startEvents(): void {
     resolveTarget,
     onSnapshot: (snapshot) => {
       const { waitingCount, toNotify } = attention.update(snapshot)
-      applyAttention(waitingCount, toNotify)
+      applyAttention(waitingCount, toNotify, snapshot.projects)
       forwarder?.apply(snapshot)
     },
   })
@@ -248,7 +252,7 @@ function startEvents(): void {
  */
 function relandOnNewServer(): void {
   attention = new AttentionMonitor()
-  applyAttention(0, [])
+  applyAttention(0, [], [])
   void openWindow()
 }
 

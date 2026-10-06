@@ -49,7 +49,7 @@ function seedRegistration(
     metadata: {
       name: `yaac-proxy-reg-${workspaceId}`,
       namespace: k8sNamespace(),
-      labels: { 'app': 'yaac-proxy', 'yaac.proxy-input': 'registration', 'yaac.workspace-id': workspaceId, 'yaac.project': registration.projectSlug },
+      labels: { 'app': 'yaac-proxy', 'yaac.proxy-input': 'registration', 'yaac.workspace-id': workspaceId, 'yaac.project-id': registration.projectId },
       creationTimestamp,
     },
     data: { 'registration.json': JSON.stringify(registration) },
@@ -57,7 +57,7 @@ function seedRegistration(
 }
 
 const REG: ProxyRegistration = {
-  rules: [], allowedHosts: ['api.example.com'], tool: 'claude', projectSlug: 'demo',
+  rules: [], allowedHosts: ['api.example.com'], tool: 'claude', projectId: 'demo',
 }
 
 beforeEach(() => {
@@ -76,7 +76,7 @@ describe('buildProxyRegistration', () => {
       config: {},
       remoteUrl: 'https://github.com/acme/repo',
       tool: 'claude',
-      projectSlug: 'acme-repo',
+      projectId: 'acme-repo',
       secretRules: {
         MY_KEY: { hosts: ['api.example.com'], header: 'x-api-key' },
         BODY: { hosts: ['*.example.org'], bodyParam: 'api_key', path: '/v1/*' },
@@ -126,7 +126,7 @@ describe('buildProxyRegistration', () => {
     expect(JSON.stringify(reg)).not.toContain('sekrit')
     expect(reg.repoUrl).toBe('https://github.com/acme/repo')
     expect(reg.tool).toBe('claude')
-    expect(reg.projectSlug).toBe('acme-repo')
+    expect(reg.projectId).toBe('acme-repo')
   })
 
   it('resolves the default allowlist when config has no overrides', () => {
@@ -134,7 +134,7 @@ describe('buildProxyRegistration', () => {
       config: {},
       remoteUrl: 'https://github.com/acme/repo',
       tool: 'codex',
-      projectSlug: 'acme-repo',
+      projectId: 'acme-repo',
       secretRules: {},
       env: {},
     })
@@ -145,18 +145,18 @@ describe('buildProxyRegistration', () => {
   it('honors setAllowedUrls and addAllowedUrls from config', () => {
     expect(buildProxyRegistration({
       config: { setAllowedUrls: ['only.example.com'] },
-      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretRules: {}, env: {},
+      remoteUrl: 'u', tool: 'claude', projectId: 'p', secretRules: {}, env: {},
     }).allowedHosts).toEqual(['only.example.com'])
     expect(buildProxyRegistration({
       config: { addAllowedUrls: ['extra.example.com'] },
-      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretRules: {}, env: {},
+      remoteUrl: 'u', tool: 'claude', projectId: 'p', secretRules: {}, env: {},
     }).allowedHosts).toContain('extra.example.com')
   })
 
   it('auto-appends the registry/CDN pull hosts for nestedContainers sessions', () => {
     const reg = buildProxyRegistration({
       config: { nestedContainers: true },
-      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretRules: {}, env: {},
+      remoteUrl: 'u', tool: 'claude', projectId: 'p', secretRules: {}, env: {},
     })
     for (const host of NESTED_PULL_HOSTS) {
       expect(reg.allowedHosts).toContain(host)
@@ -172,7 +172,7 @@ describe('buildProxyRegistration', () => {
   it('still appends the pull hosts on top of addAllowedUrls', () => {
     const reg = buildProxyRegistration({
       config: { nestedContainers: true, addAllowedUrls: ['extra.example.com'] },
-      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretRules: {}, env: {},
+      remoteUrl: 'u', tool: 'claude', projectId: 'p', secretRules: {}, env: {},
     })
     expect(reg.allowedHosts).toContain('extra.example.com')
     expect(reg.allowedHosts).toContain('registry-1.docker.io')
@@ -181,7 +181,7 @@ describe('buildProxyRegistration', () => {
   it('does NOT append the pull hosts under setAllowedUrls (full override)', () => {
     const reg = buildProxyRegistration({
       config: { nestedContainers: true, setAllowedUrls: ['only.example.com'] },
-      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretRules: {}, env: {},
+      remoteUrl: 'u', tool: 'claude', projectId: 'p', secretRules: {}, env: {},
     })
     expect(reg.allowedHosts).toEqual(['only.example.com'])
   })
@@ -189,7 +189,7 @@ describe('buildProxyRegistration', () => {
   it('leaves the allowlist untouched when nestedContainers is off', () => {
     const reg = buildProxyRegistration({
       config: {},
-      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretRules: {}, env: {},
+      remoteUrl: 'u', tool: 'claude', projectId: 'p', secretRules: {}, env: {},
     })
     expect(reg.allowedHosts).toEqual([...DEFAULT_ALLOWED_HOSTS])
     expect(reg.allowedHosts).not.toContain('cdn01.quay.io')
@@ -201,7 +201,7 @@ describe('buildProxyRegistration', () => {
       config: {},
       remoteUrl: 'u',
       tool: 'opencode',
-      projectSlug: 'p',
+      projectId: 'p',
       secretRules: {},
       env: {
         YAAC_E2E_UPSTREAM_REDIRECTS:
@@ -222,7 +222,7 @@ describe('applyProxyRegistration', () => {
     expect(cm.metadata).toEqual({
       name: 'yaac-proxy-reg-w1',
       namespace: k8sNamespace(),
-      labels: { 'app': 'yaac-proxy', 'yaac.proxy-input': 'registration', 'yaac.workspace-id': 'w1', 'yaac.project': 'demo' },
+      labels: { 'app': 'yaac-proxy', 'yaac.proxy-input': 'registration', 'yaac.workspace-id': 'w1', 'yaac.project-id': 'demo' },
     })
     expect(payloadOf(cm)).toEqual({ ...REG, upstreamRedirects: { 'h': { host: 'mock', port: 1 } } })
   })
@@ -234,7 +234,7 @@ describe('registerWorkspaceEgress', () => {
   it('assembles the registration from the caller’s decisions, applies it, and answers with it', async () => {
     const written = await registerWorkspaceEgress({
       workspaceId: 'w1',
-      projectSlug: 'demo',
+      projectId: 'demo',
       tool: 'codex',
       config: { addAllowedUrls: ['api.example.com'] },
       remoteUrl: 'https://github.com/example/repo.git',
@@ -246,7 +246,7 @@ describe('registerWorkspaceEgress', () => {
     expect(cm.metadata.labels['yaac.workspace-id']).toBe('w1')
     const state = payloadOf(cm)
     expect(state.tool).toBe('codex')
-    expect(state.projectSlug).toBe('demo')
+    expect(state.projectId).toBe('demo')
     expect(state.repoUrl).toBe('https://github.com/example/repo.git')
     expect(state.allowedHosts).toContain('api.example.com')
     // A registration is the whole allowlist, not a patch, so it must
@@ -261,7 +261,7 @@ describe('registerWorkspaceEgress', () => {
     fakeCluster.intercept(() => { throw apiError(503, 'apiserver down') })
     await expect(registerWorkspaceEgress({
       workspaceId: 'w1',
-      projectSlug: 'demo',
+      projectId: 'demo',
       tool: 'claude',
       config: {},
       remoteUrl: '',
@@ -295,33 +295,33 @@ describe('allowWorkspaceHost', () => {
 
   it('appends the host to the named workspace’s registration and pushes a snapshot', async () => {
     seedRegistration('w1', REG)
-    await allowWorkspaceHost({ workspaceId: 'w1', projectSlug: 'demo' }, 'new.example.com', { fanOutToProject: false })
+    await allowWorkspaceHost({ workspaceId: 'w1', projectId: 'demo' }, 'new.example.com', { fanOutToProject: false })
 
     const [cm] = applied()
     expect(cm.metadata.name).toBe('yaac-proxy-reg-w1')
     expect(payloadOf(cm).allowedHosts).toEqual(['api.example.com', 'new.example.com'])
     // The rest of the registration is kept.
-    expect(payloadOf(cm)).toMatchObject({ tool: 'claude', projectSlug: 'demo' })
+    expect(payloadOf(cm)).toMatchObject({ tool: 'claude', projectId: 'demo' })
     expect(notified).toBe(1)
   })
 
   it('rewrites nothing for a host already allowed', async () => {
     seedRegistration('w1', REG)
-    await allowWorkspaceHost({ workspaceId: 'w1', projectSlug: 'demo' }, 'api.example.com', { fanOutToProject: false })
+    await allowWorkspaceHost({ workspaceId: 'w1', projectId: 'demo' }, 'api.example.com', { fanOutToProject: false })
     expect(applied()).toEqual([])
   })
 
   it('surfaces a missing registration on the named target as an error', async () => {
     // The user asked for this, so a miss is reported to them.
-    await expect(allowWorkspaceHost({ workspaceId: 'w1', projectSlug: 'demo' }, 'h.com', { fanOutToProject: false }))
+    await expect(allowWorkspaceHost({ workspaceId: 'w1', projectId: 'demo' }, 'h.com', { fanOutToProject: false }))
       .rejects.toThrow('not registered with the egress proxy')
   })
 
   it('fans out over every registration of the project, by label', async () => {
     seedRegistration('w1', REG)
     seedRegistration('w2', { ...REG, allowedHosts: ['h.com'] })
-    seedRegistration('w3', { ...REG, projectSlug: 'other' })
-    await allowWorkspaceHost({ workspaceId: 'w1', projectSlug: 'demo' }, 'h.com', { fanOutToProject: true })
+    seedRegistration('w3', { ...REG, projectId: 'other' })
+    await allowWorkspaceHost({ workspaceId: 'w1', projectId: 'demo' }, 'h.com', { fanOutToProject: true })
 
     // Listed by project label, not via pods: each registration is a
     // workspace, and the proxy prunes its blocked record once widened.
@@ -340,7 +340,7 @@ describe('reconcileRegistrationGc', () => {
       snapshot: () => ({
         workspaces: () => Promise.resolve(live.map((workspaceId) => ({ workspaceId }))),
       }) as unknown as ReturnType<PassContext['snapshot']>,
-      projects: () => Promise.resolve([]),
+      projectIds: () => Promise.resolve([]),
       projectConfig: () => Promise.resolve(undefined),
       terminating: (id) => terminating.includes(id),
     }
@@ -375,9 +375,9 @@ describe('reconcileRegistrationGc', () => {
       apiVersion: 'batch/v1',
       kind: 'Job',
       metadata: {
-        name: 'yaac-demo-job-only',
+        name: 'yaac-job-only',
         namespace: k8sNamespace(),
-        labels: { [LABEL_DATA_DIR_HASH]: dataDirHash(), 'yaac.workspace-id': 'job-only', 'yaac.project': 'demo' },
+        labels: { [LABEL_DATA_DIR_HASH]: dataDirHash(), 'yaac.workspace-id': 'job-only', 'yaac.project-id': 'demo' },
         creationTimestamp: OLD,
       },
     })

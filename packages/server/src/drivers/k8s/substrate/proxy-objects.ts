@@ -15,7 +15,7 @@ import { claudeOAuthBundleSchema, codexOAuthBundleSchema } from '@yaac/shared/ty
 export interface ProxyState {
   /** workspaceId -> blocked hostnames */
   blockedHosts: Record<string, string[]>
-  /** projectSlug -> failures */
+  /** project id -> failures */
   gitAuthFailures: Record<string, GitAuthFailure[]>
 }
 
@@ -58,14 +58,14 @@ export function mapProxyStateObject(obj: unknown): ProxyState | null {
   }
   const failures = parseJson(raw.data?.['git-auth-failures.json'])
   if (failures) {
-    for (const [slug, entries] of Object.entries(failures)) {
+    for (const [projectId, entries] of Object.entries(failures)) {
       if (!Array.isArray(entries)) continue
       const valid = entries.filter((e): e is GitAuthFailure => {
         if (!e || typeof e !== 'object') return false
         const { host, status, atMs } = e as Record<string, unknown>
         return typeof host === 'string' && typeof status === 'number' && typeof atMs === 'number'
       })
-      if (valid.length > 0) state.gitAuthFailures[slug] = valid
+      if (valid.length > 0) state.gitAuthFailures[projectId] = valid
     }
   }
   return state

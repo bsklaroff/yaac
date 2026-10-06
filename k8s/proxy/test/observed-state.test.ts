@@ -56,6 +56,20 @@ describe('ObservedState', () => {
     expect(writes.at(-1)!.blockedHosts).toEqual({ ws: ['b.com'] })
   })
 
+  it('seeds git auth failures keyed by project id, dropping and rewriting away slug-keyed ones', async () => {
+    const { state, writes, flush } = observed()
+    const id = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
+    const failure = { host: 'github.com', status: 401, atMs: 1 }
+    state.seed({ blockedHosts: {}, gitAuthFailures: { [id]: [failure] } })
+    await flush()
+    expect(writes).toHaveLength(0)
+
+    state.seed({ blockedHosts: {}, gitAuthFailures: { [id]: [failure], demo: [failure] } })
+    expect(state.current().gitAuthFailures).toEqual({ [id]: [failure] })
+    await flush()
+    expect(writes.at(-1)!.gitAuthFailures).toEqual({ [id]: [failure] })
+  })
+
   it('retries a failed write', async () => {
     const write = vi.fn().mockRejectedValueOnce(new Error('conflict')).mockResolvedValue(undefined)
     const state = new ObservedState(write)

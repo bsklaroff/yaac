@@ -22,7 +22,7 @@ function register(overrides: Partial<Parameters<typeof registerImageBuild>[0]> =
   return registerImageBuild({
     tag: 'yaac-base:abc123',
     layer: 'base',
-    project: { slug: 'proj-a', id: '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f' },
+    projectId: 'proj-a',
     reason: 'prewarm',
     ...overrides,
   })
@@ -41,7 +41,7 @@ describe('registerImageBuild', () => {
     expect(entry.id).toBe(id)
     expect(entry.tag).toBe('yaac-base:abc123')
     expect(entry.layer).toBe('base')
-    expect(entry.projectSlugs).toEqual(['proj-a'])
+    expect(entry.projectIds).toEqual(['proj-a'])
     expect(entry.reason).toBe('prewarm')
     expect(entry.status).toBe('running')
     expect(entry.startedAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)

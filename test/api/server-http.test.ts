@@ -80,8 +80,8 @@ describe('yaac server HTTP surface (real server)', () => {
     expect(await res.json()).toEqual({ gitCredentials: [], toolAuth: [] })
   })
 
-  it('GET /project/:slug 404s for an unknown project', async () => {
-    const res = await client.project[':slug'].$get({ param: { slug: 'nope' } })
+  it('GET /project/:projectId 404s for an unknown project', async () => {
+    const res = await client.project[':projectId'].$get({ param: { projectId: 'nope' } })
     expect(res.status).toBe(404)
   })
 })

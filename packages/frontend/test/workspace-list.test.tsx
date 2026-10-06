@@ -56,7 +56,7 @@ let server: FetchMock
 /** The JSON bodies posted to a route so far. */
 const posted = (route: string): unknown[] => server.called(route).map((c) => c.body)
 /** A set-group body filing `workspaceId` under `groupId` (null: ungrouped). */
-const filed = (workspaceId: string, groupId: string | null): unknown => ({ projectSlug: 'proj', workspaceId, groupId })
+const filed = (workspaceId: string, groupId: string | null): unknown => ({ projectId: 'proj', workspaceId, groupId })
 
 beforeEach(() => {
   localStorage.clear()
@@ -84,7 +84,7 @@ afterEach(() => {
 
 const entry = (over: Partial<WorkspaceListEntry> = {}): WorkspaceListEntry => ({
   workspaceId: 's1',
-  projectSlug: 'proj',
+  projectId: 'proj',
   tool: 'claude',
   status: 'running',
   createdAt: '2026-08-10 00:00:00',
@@ -97,7 +97,7 @@ const entry = (over: Partial<WorkspaceListEntry> = {}): WorkspaceListEntry => ({
 
 const group = (over: Partial<WorkspaceGroupSummary> = {}): WorkspaceGroupSummary => ({
   groupId: 'g1',
-  projectSlug: 'proj',
+  projectId: 'proj',
   name: 'Release',
   pinned: false,
   createdAt: '2026-08-10 00:00:00',
@@ -106,7 +106,7 @@ const group = (over: Partial<WorkspaceGroupSummary> = {}): WorkspaceGroupSummary
 
 const provisioning = (over: Partial<ProvisioningWorkspaceEntry> = {}): ProvisioningWorkspaceEntry => ({
   workspaceId: 'p1',
-  projectSlug: 'proj',
+  projectId: 'proj',
   tool: 'claude',
   kind: 'restart',
   message: 'Starting…',
@@ -116,7 +116,7 @@ const provisioning = (over: Partial<ProvisioningWorkspaceEntry> = {}): Provision
 
 const queuedEntry = (id: string, over: Partial<QueuedWorkspaceEntry> = {}): QueuedWorkspaceEntry => ({
   id,
-  projectSlug: 'proj',
+  projectId: 'proj',
   parentWorkspaceId: 'a',
   prompt: `Step ${id}\nmore detail`,
   tool: 'claude',
@@ -131,7 +131,7 @@ const queuedEntry = (id: string, over: Partial<QueuedWorkspaceEntry> = {}): Queu
 
 interface ListOpts {
   groups?: WorkspaceGroupSummary[]
-  projectSlug?: string | null
+  projectId?: string | null
   provisioning?: ProvisioningWorkspaceEntry[]
   queued?: QueuedWorkspaceEntry[]
   held?: HeldWorkspaceEntry[]
@@ -148,7 +148,7 @@ function renderList(
   const element = (w: WorkspaceListEntry[], o: ListOpts): JSX.Element => (
     <QueryClientProvider client={client}>
       <WorkspaceList
-        projectSlug={o.projectSlug === undefined ? 'proj' : o.projectSlug}
+        projectId={o.projectId === undefined ? 'proj' : o.projectId}
         workspaces={w}
         groups={o.groups ?? []}
         provisioning={o.provisioning ?? []}
@@ -232,7 +232,7 @@ describe('WorkspaceList', () => {
   it('counts a group\'s stopped members in its header, and shows them only when asked', async () => {
     const stoppedMember = (workspaceId: string, title: string): StoppedWorkspaceEntry => ({
       workspaceId,
-      projectSlug: 'proj',
+      projectId: 'proj',
       tool: 'claude',
       createdAt: '2026-08-10 00:00:00',
       stoppedAt: '2026-08-10 01:00:00',
@@ -265,7 +265,7 @@ describe('WorkspaceList', () => {
   it('makes the caret the show/hide toggle for a group with only stopped members', async () => {
     stoppedRows.push({
       workspaceId: 'gone',
-      projectSlug: 'proj',
+      projectId: 'proj',
       tool: 'claude',
       createdAt: '2026-08-10 00:00:00',
       stoppedAt: '2026-08-10 01:00:00',
@@ -300,7 +300,7 @@ describe('WorkspaceList', () => {
     // ...then it stops, leaving only stopped members, and the caret opens it.
     stoppedRows.push({
       workspaceId: 'gone',
-      projectSlug: 'proj',
+      projectId: 'proj',
       tool: 'claude',
       createdAt: '2026-08-10 00:00:00',
       stoppedAt: '2026-08-10 01:00:00',
@@ -325,7 +325,7 @@ describe('WorkspaceList', () => {
   it('keeps a held member on screen as its queue comes and goes', async () => {
     const stoppedMember = (workspaceId: string, over: Partial<StoppedWorkspaceEntry> = {}): StoppedWorkspaceEntry => ({
       workspaceId,
-      projectSlug: 'proj',
+      projectId: 'proj',
       tool: 'claude',
       createdAt: '2026-08-10 00:00:00',
       stoppedAt: '2026-08-10 01:00:00',
@@ -336,7 +336,7 @@ describe('WorkspaceList', () => {
       ...over,
     })
     const live = [entry({ workspaceId: 'b', title: 'Filed one', groupId: 'g1' })]
-    const held = [{ workspaceId: 's', projectSlug: 'proj', tool: 'claude' as const, groupId: 'g1',
+    const held = [{ workspaceId: 's', projectId: 'proj', tool: 'claude' as const, groupId: 'g1',
       stoppedAt: '2026-08-10 01:00:00' }]
     stoppedRows.push(stoppedMember('s'))
     const rerender = renderList(live, { groups: [group()], queued: [queuedEntry('q1', { parentWorkspaceId: 's' })], held })
@@ -374,7 +374,7 @@ describe('WorkspaceList', () => {
     // until a restart, and on a phone selecting would leave the list.
     stoppedRows.push({
       workspaceId: 'gone',
-      projectSlug: 'proj',
+      projectId: 'proj',
       tool: 'claude',
       createdAt: '2026-08-10 00:00:00',
       stoppedAt: '2026-08-10 01:00:00',
@@ -457,14 +457,14 @@ describe('WorkspaceList', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Discard' })[0])
     await waitFor(() => expect(posted(QUEUE_DISCARD)).toEqual([{ id: 'q1' }]))
     fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[1])
-    expect(useUiStore.getState().createWorkspaceDialog).toEqual({ projectSlug: 'proj', editId: 'q2' })
+    expect(useUiStore.getState().createWorkspaceDialog).toEqual({ projectId: 'proj', editId: 'q2' })
   })
 
   it('opens the create dialog queued after a row', async () => {
     renderList([entry({ workspaceId: 'a', title: 'Fix parser' })])
     await pickAction('Queue workspace after this…')
     await waitFor(() => expect(useUiStore.getState().createWorkspaceDialog)
-      .toEqual({ projectSlug: 'proj', parent: 'a', focus: 'prompt' }))
+      .toEqual({ projectId: 'proj', parent: 'a', focus: 'prompt' }))
   })
 
   describe('queued workspaces', () => {
@@ -506,7 +506,7 @@ describe('WorkspaceList', () => {
         groups: [group()],
       })
       expect(screen.getByRole('group', { name: group().name }).textContent).toContain('Step q1')
-      const held = [{ workspaceId: 'a', projectSlug: 'proj', tool: 'claude' as const, title: 'Parent',
+      const held = [{ workspaceId: 'a', projectId: 'proj', tool: 'claude' as const, title: 'Parent',
         stoppedAt: '2026-08-10 00:00:00' }]
       rerender([], { queued, held })
       expect(screen.getByText('Parent')).toBeTruthy()
@@ -558,7 +558,7 @@ describe('WorkspaceList', () => {
           queuedEntry('q9', { parentWorkspaceId: 'never', orphaned: true }),
         ],
         held: [{
-          workspaceId: 'dead', projectSlug: 'proj', tool: 'claude', title: 'Crashed one',
+          workspaceId: 'dead', projectId: 'proj', tool: 'claude', title: 'Crashed one',
           stoppedAt: '2026-08-10 00:00:00', deathReason: 'oom',
         }],
       })
@@ -572,7 +572,7 @@ describe('WorkspaceList', () => {
       renderList([], {
         groups: [group()],
         queued: [queuedEntry('q1', { parentWorkspaceId: 'dead' })],
-        held: [{ workspaceId: 'dead', projectSlug: 'proj', tool: 'claude', groupId: 'g1', stoppedAt: '' }],
+        held: [{ workspaceId: 'dead', projectId: 'proj', tool: 'claude', groupId: 'g1', stoppedAt: '' }],
       })
       fireEvent.click(screen.getByRole('button', { name: '1 queued workspace' }))
       expect(screen.getByRole('group', { name: 'Release' }).textContent).toContain('Step q1')
@@ -584,14 +584,14 @@ describe('WorkspaceList', () => {
       })
       fireEvent.click(screen.getByRole('button', { name: '2 queued workspaces' }))
       fireEvent.click(screen.getByText('Step q1'))
-      expect(useUiStore.getState().createWorkspaceDialog).toEqual({ projectSlug: 'proj', editId: 'q1' })
+      expect(useUiStore.getState().createWorkspaceDialog).toEqual({ projectId: 'proj', editId: 'q1' })
 
       await pickAction('Run now', 'Queued workspace actions')
       await waitFor(() => expect(posted(QUEUE_RUN)).toEqual([{ id: 'q1' }]))
 
       await pickAction('Queue workspace after this…', 'Queued workspace actions')
       await waitFor(() => expect(useUiStore.getState().createWorkspaceDialog)
-        .toEqual({ projectSlug: 'proj', parent: 'q1', focus: 'prompt' }))
+        .toEqual({ projectId: 'proj', parent: 'q1', focus: 'prompt' }))
 
       await pickAction('Discard…', 'Queued workspace actions')
       // The confirmation says where its chain goes, and that it still runs.
@@ -605,7 +605,7 @@ describe('WorkspaceList', () => {
 
   describe('draft workspaces', () => {
     const draft = (id: string, over: Partial<DraftWorkspaceEntry> = {}): DraftWorkspaceEntry => ({
-      id, projectSlug: 'proj', prompt: `Idea ${id}\nmore detail`, tool: 'codex', mode: 'tui',
+      id, projectId: 'proj', prompt: `Idea ${id}\nmore detail`, tool: 'codex', mode: 'tui',
       permissionMode: 'manual', createdAt: '2026-08-10 00:00:00', updatedAt: '2026-08-10 00:00:00', ...over,
     })
 
@@ -640,7 +640,7 @@ describe('WorkspaceList', () => {
       expect(screen.queryByText('No workspaces yet')).toBeNull()
       fireEvent.click(screen.getByText('Idea d1'))
       expect(useUiStore.getState().createWorkspaceDialog)
-        .toEqual({ projectSlug: 'proj', draftId: 'd1', focus: 'prompt' })
+        .toEqual({ projectId: 'proj', draftId: 'd1', focus: 'prompt' })
 
       await pickAction('Discard…', 'Draft actions')
       fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
@@ -669,7 +669,7 @@ describe('WorkspaceList', () => {
     expect(screen.getByText('No workspaces yet')).toBeTruthy()
 
     cleanup()
-    renderList([], { projectSlug: null })
+    renderList([], { projectId: null })
     expect(screen.getByText('No project selected')).toBeTruthy()
     // jsdom's matchMedia stub reports desktop, so the copy points at the rail.
     expect(screen.getByText('Pick a project from the rail on the left.')).toBeTruthy()
@@ -684,7 +684,7 @@ describe('WorkspaceList', () => {
       })
       fireEvent.click(screen.getByRole('button', { name: 'Create group' }))
 
-      await waitFor(() => expect(posted(GROUP_CREATE)).toEqual([{ projectSlug: 'proj', workspaceId: 'a', name: 'Release' }]))
+      await waitFor(() => expect(posted(GROUP_CREATE)).toEqual([{ projectId: 'proj', workspaceId: 'a', name: 'Release' }]))
     })
 
     it('offers only the groups the sidebar is showing', async () => {
@@ -725,17 +725,17 @@ describe('WorkspaceList', () => {
     it('pins, deletes, and renames the group inline', async () => {
       renderGrouped()
       await pickAction('Pin', 'Group actions')
-      await waitFor(() => expect(posted(GROUP_PIN)).toEqual([{ projectSlug: 'proj', groupId: 'g1', pinned: true }]))
+      await waitFor(() => expect(posted(GROUP_PIN)).toEqual([{ projectId: 'proj', groupId: 'g1', pinned: true }]))
 
       await pickAction('Rename', 'Group actions')
       const input = await screen.findByRole<HTMLInputElement>('textbox', { name: 'Group name' })
       expect(input.value).toBe('Release')
       fireEvent.change(input, { target: { value: 'Shipping' } })
       fireEvent.keyDown(input, { key: 'Enter' })
-      await waitFor(() => expect(posted(GROUP_RENAME)).toEqual([{ projectSlug: 'proj', groupId: 'g1', name: 'Shipping' }]))
+      await waitFor(() => expect(posted(GROUP_RENAME)).toEqual([{ projectId: 'proj', groupId: 'g1', name: 'Shipping' }]))
 
       await pickAction('Delete group', 'Group actions')
-      await waitFor(() => expect(posted(GROUP_DELETE)).toEqual([{ projectSlug: 'proj', groupId: 'g1' }]))
+      await waitFor(() => expect(posted(GROUP_DELETE)).toEqual([{ projectId: 'proj', groupId: 'g1' }]))
     })
   })
 

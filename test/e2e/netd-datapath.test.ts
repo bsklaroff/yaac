@@ -291,15 +291,15 @@ describe('netd datapath gates', () => {
     await client.ensureRunning()
     proxyHost = await proxyServiceClusterIp()
     await applyProxyRegistration(workspaceA, {
-      rules: [], allowedHosts: [MITM_HOST], tool: 'claude', projectSlug: 'netd-a',
+      rules: [], allowedHosts: [MITM_HOST], tool: 'claude', projectId: 'netd-a',
     })
     await applyProxyRegistration(sessionLate, {
-      rules: [], allowedHosts: [MITM_HOST], tool: 'claude', projectSlug: 'netd-late',
+      rules: [], allowedHosts: [MITM_HOST], tool: 'claude', projectId: 'netd-late',
     })
     // The forger's allowlist is empty, so any success in the spoof case is
     // a real attribution failure.
     await applyProxyRegistration(sessionRaw, {
-      rules: [], allowedHosts: [], tool: 'claude', projectSlug: 'netd-raw',
+      rules: [], allowedHosts: [], tool: 'claude', projectId: 'netd-raw',
     })
     await startWorkspacePod(podA, workspaceA, proxyHost)
     await focusNetdOnPod(podA)

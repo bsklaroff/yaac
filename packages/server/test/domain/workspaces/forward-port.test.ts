@@ -14,14 +14,14 @@ const mockPersist = vi.mocked(addPortForwardToProjectConfig)
 const mockUnforwarded = vi.fn<(workspaceId: string) => Promise<number[]>>()
 const mockForwardPort = vi.fn<
   (
-    t: { workspaceId: string; projectSlug: string; jobName: string },
+    t: { workspaceId: string; projectId: string; jobName: string },
     p: number,
     o: { fanOutToProject: boolean },
   ) => Promise<PortMapping>
 >()
 
 const HANDLE = handleFixture({
-  workspaceId: 'sid-1', projectSlug: 'proj', jobName: 'yaac-proj-sid-1', state: 'running',
+  workspaceId: 'sid-1', projectId: 'proj', jobName: 'yaac-proj-sid-1', state: 'running',
 })
 
 beforeEach(() => {
@@ -43,7 +43,7 @@ describe('forwardWorkspacePort', () => {
     expect(mapping).toEqual({ containerPort: 8090, hostPort: 8090 })
     expect(mockPersist).not.toHaveBeenCalled()
     expect(mockForwardPort).toHaveBeenCalledExactlyOnceWith(
-      { workspaceId: 'sid-1', projectSlug: 'proj', jobName: 'yaac-proj-sid-1' },
+      { workspaceId: 'sid-1', projectId: 'proj', jobName: 'yaac-proj-sid-1' },
       8090,
       { fanOutToProject: false },
     )
@@ -65,7 +65,7 @@ describe('forwardWorkspacePort', () => {
     expect(order).toEqual(['config', 'runtime'])
     expect(mockPersist).toHaveBeenCalledExactlyOnceWith('proj', 8090)
     expect(mockForwardPort).toHaveBeenCalledExactlyOnceWith(
-      { workspaceId: 'sid-1', projectSlug: 'proj', jobName: 'yaac-proj-sid-1' },
+      { workspaceId: 'sid-1', projectId: 'proj', jobName: 'yaac-proj-sid-1' },
       8090,
       { fanOutToProject: true },
     )

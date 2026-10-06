@@ -11,11 +11,11 @@ import { ServerError } from '@yaac/shared/errors'
 
 const mockPersist = vi.mocked(addAllowedHostToProjectConfig)
 const mockAllowHost = vi.fn<
-  (t: { workspaceId: string; projectSlug: string }, h: string, o: { fanOutToProject: boolean }) => Promise<void>
+  (t: { workspaceId: string; projectId: string }, h: string, o: { fanOutToProject: boolean }) => Promise<void>
 >()
 
 const HANDLE = handleFixture({
-  workspaceId: 'sid-1', projectSlug: 'proj', jobName: 'yaac-proj-sid-1', state: 'running',
+  workspaceId: 'sid-1', projectId: 'proj', jobName: 'yaac-proj-sid-1', state: 'running',
 })
 
 beforeEach(() => {
@@ -34,7 +34,7 @@ describe('allowWorkspaceHost', () => {
 
     expect(mockPersist).not.toHaveBeenCalled()
     expect(mockAllowHost).toHaveBeenCalledExactlyOnceWith(
-      { workspaceId: 'sid-1', projectSlug: 'proj' }, 'h.com', { fanOutToProject: false },
+      { workspaceId: 'sid-1', projectId: 'proj' }, 'h.com', { fanOutToProject: false },
     )
   })
 
@@ -56,7 +56,7 @@ describe('allowWorkspaceHost', () => {
     expect(order).toEqual(['config', 'runtime'])
     expect(mockPersist).toHaveBeenCalledExactlyOnceWith('proj', 'h.com')
     expect(mockAllowHost).toHaveBeenCalledExactlyOnceWith(
-      { workspaceId: 'sid-1', projectSlug: 'proj' }, 'h.com', { fanOutToProject: true },
+      { workspaceId: 'sid-1', projectId: 'proj' }, 'h.com', { fanOutToProject: true },
     )
   })
 

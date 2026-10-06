@@ -18,7 +18,7 @@ import { applyWorkspaceEvent, clearWorkspaceStopped, createWorkspaceGroup, getWo
 import { closeDb } from '#db/client'
 import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
-import { seedProject } from '@yaac/test-utils/project-fixture'
+import { DEMO_PROJECT_ID, seedProject } from '@yaac/test-utils/project-fixture'
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
 
 /**
@@ -36,7 +36,7 @@ function installDriver(overrides: Partial<WorkspaceDriver> = {}): void {
   installFakeWorkspaceDriver({
     find: (id) => Promise.resolve(live?.workspaceId === id ? live : undefined),
     findForTeardown: (id) => Promise.resolve(live?.workspaceId === id
-      ? { workspaceId: id, projectSlug: live.projectSlug, unitName: live.jobName }
+      ? { workspaceId: id, projectId: live.projectId, unitName: live.jobName }
       : undefined),
     destroy: (target) => {
       calls.push(`destroy ${target.unitName} in-flight=${inFlightWorkspaceIds().join(',')}`)
@@ -44,7 +44,7 @@ function installDriver(overrides: Partial<WorkspaceDriver> = {}): void {
     },
     launch: (spec) => {
       calls.push(`launch ${spec.workspaceId}`)
-      return Promise.resolve(handleFixture({ workspaceId: spec.workspaceId, jobName: `yaac-demo-${spec.workspaceId}` }))
+      return Promise.resolve(handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: spec.workspaceId, jobName: `yaac-${spec.workspaceId}` }))
     },
     exec: (_jobName, cmd) => {
       calls.push(cmd)
@@ -56,8 +56,8 @@ function installDriver(overrides: Partial<WorkspaceDriver> = {}): void {
 
 /** A workspace created and then stopped, with its unit gone. */
 async function stoppedWorkspace(workspaceId: string): Promise<void> {
-  await createWorkspace('demo', { mode: 'tui', workspaceId })
-  await applyWorkspaceEvent({ type: 'workspace-stopped', projectSlug: 'demo', workspaceId })
+  await createWorkspace(DEMO_PROJECT_ID, { mode: 'tui', workspaceId })
+  await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId })
   calls = []
 }
 
@@ -86,8 +86,8 @@ describe('restartWorkspace', () => {
       { tool: 'codex' as const, agentSessionId: 'wt-1', mode: 'tui' as const },
       { tool: 'claude' as const, agentSessionId: 'conv-2', mode: 'tui' as const },
     ]
-    await applyWorkspaceEvent({ type: 'sessions-launched', projectSlug: 'demo', workspaceId: 'wt-1', sessions })
-    live = handleFixture({ workspaceId: 'wt-1', jobName: 'yaac-demo-wt-1', tool: 'codex' })
+    await applyWorkspaceEvent({ type: 'sessions-launched', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1', sessions })
+    live = handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1', jobName: 'yaac-wt-1', tool: 'codex' })
     const progress: string[] = []
 
     // Addressed by prefix, as the CLI usually does.
@@ -96,16 +96,16 @@ describe('restartWorkspace', () => {
     expect(result).toMatchObject({ workspaceId: 'wt-1', tool: 'codex' })
     // `inFlightWorkspaceIds` is all that keeps the stale reaper from
     // deleting the dirs the create is about to mount.
-    expect(calls[0]).toBe('destroy yaac-demo-wt-1 in-flight=wt-1')
+    expect(calls[0]).toBe('destroy yaac-wt-1 in-flight=wt-1')
     expect(calls).toContain('launch wt-1')
     // Each conversation comes back in its own window, in order.
     const windows = calls.find((c) => c.includes('respawn-window'))!
     expect(windows).toContain('-t yaac:codex')
     expect(windows).toContain('-n claude-2')
     expect(progress).toEqual(expect.arrayContaining([
-      'Stopping session job yaac-demo-wt-1...', 'Restoring 2 agent sessions...',
+      'Stopping session job yaac-wt-1...', 'Restoring 2 agent sessions...',
     ]))
-    expect((await getWorkspaceRow('demo', 'wt-1'))?.stoppedAt).toBeUndefined()
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-1'))?.stoppedAt).toBeUndefined()
     // `buildSnapshot` hides a workspace that still has a row, so a leftover
     // would show "Starting…" forever.
     expect(listProvisioning()).toEqual([])
@@ -121,15 +121,15 @@ describe('restartWorkspace', () => {
   })
 
   it('relaunches a stopped workspace with no unit to tear down, in its recorded posture', async () => {
-    await createWorkspace('demo', { mode: 'tui', workspaceId: 'wt-2', permissionMode: 'plan' })
-    await applyWorkspaceEvent({ type: 'workspace-stopped', projectSlug: 'demo', workspaceId: 'wt-2' })
+    await createWorkspace(DEMO_PROJECT_ID, { mode: 'tui', workspaceId: 'wt-2', permissionMode: 'plan' })
+    await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-2' })
     calls = []
 
     await restartWorkspace('wt-2')
 
     expect(calls.some((c) => c.startsWith('destroy'))).toBe(false)
     expect(calls.find((c) => c.includes('respawn-window'))).toContain('--permission-mode plan')
-    expect((await getWorkspaceRow('demo', 'wt-2'))?.stoppedAt).toBeUndefined()
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-2'))?.stoppedAt).toBeUndefined()
   })
 
   it('keeps the stop record, and a failed provisioning row, when the resume fails', async () => {
@@ -138,7 +138,7 @@ describe('restartWorkspace', () => {
 
     await expect(restartWorkspace('wt-3')).rejects.toThrow('image pull failed')
 
-    expect((await getWorkspaceRow('demo', 'wt-3'))?.stoppedAt).toBeInstanceOf(Date)
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-3'))?.stoppedAt).toBeInstanceOf(Date)
     expect(listProvisioning()).toEqual([expect.objectContaining({ workspaceId: 'wt-3', error: 'image pull failed' })])
     // The rollback already tore everything down, so it no longer shields
     // anything from the reaper.
@@ -150,14 +150,14 @@ describe('restartWorkspace', () => {
   // the row.
   it('registers itself under the resolved project and the row\'s group', async () => {
     await stoppedWorkspace('wt-4')
-    const group = await createWorkspaceGroup('demo', 'Reviews', 'wt-4')
+    const group = await createWorkspaceGroup(DEMO_PROJECT_ID, 'Reviews', 'wt-4')
     let rows: ReturnType<typeof listProvisioning> = []
     installDriver({ prepareSubstrate: () => { rows = listProvisioning(); return Promise.reject(new Error('stop here')) } })
 
     await expect(restartWorkspace('wt-4')).rejects.toThrow('stop here')
 
     expect(rows).toEqual([expect.objectContaining({
-      workspaceId: 'wt-4', projectSlug: 'demo', tool: 'claude', kind: 'restart', groupId: group.groupId,
+      workspaceId: 'wt-4', projectId: DEMO_PROJECT_ID, tool: 'claude', kind: 'restart', groupId: group.groupId,
     })])
   })
 
@@ -165,8 +165,8 @@ describe('restartWorkspace', () => {
   // re-registering would move the row to the bottom.
   it('leaves a pre-registered row in its original sidebar position', async () => {
     await stoppedWorkspace('wt-5')
-    registerProvisioning({ workspaceId: 'wt-5', projectSlug: 'demo', tool: 'claude', kind: 'restart' })
-    registerProvisioning({ workspaceId: 'younger', projectSlug: 'demo', tool: 'claude', kind: 'create' })
+    registerProvisioning({ workspaceId: 'wt-5', projectId: DEMO_PROJECT_ID, tool: 'claude', kind: 'restart' })
+    registerProvisioning({ workspaceId: 'younger', projectId: DEMO_PROJECT_ID, tool: 'claude', kind: 'create' })
     let order: string[] = []
     installDriver({
       prepareSubstrate: () => { order = listProvisioning().map((r) => r.workspaceId); return Promise.reject(new Error('stop')) },
@@ -188,12 +188,12 @@ describe('resolveRestartTarget', () => {
   // Prefixes are expanded over rows first; the runtime sees only exact ids.
   it('expands a unique prefix before asking the runtime, and refuses an ambiguous one', async () => {
     await stoppedWorkspace('sid-1')
-    const group = await createWorkspaceGroup('demo', 'Reviews', 'sid-1')
+    const group = await createWorkspaceGroup(DEMO_PROJECT_ID, 'Reviews', 'sid-1')
     // A live unit names the tool it runs, whatever the row's first
     // conversation was; the group lives only on the row.
-    live = handleFixture({ workspaceId: 'sid-1', jobName: 'yaac-demo-sid-1', tool: 'opencode' })
+    live = handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: 'sid-1', jobName: 'yaac-sid-1', tool: 'opencode' })
     expect(await resolveRestartTarget('sid')).toEqual({
-      projectSlug: 'demo', workspaceId: 'sid-1', tool: 'opencode', jobName: 'yaac-demo-sid-1', groupId: group.groupId,
+      projectId: DEMO_PROJECT_ID, workspaceId: 'sid-1', tool: 'opencode', jobName: 'yaac-sid-1', groupId: group.groupId,
     })
 
     await stoppedWorkspace('sid-2')
@@ -202,10 +202,10 @@ describe('resolveRestartTarget', () => {
 
   it('answers a stopped workspace from its row: the first conversation\'s tool, and its group', async () => {
     // opencode leaves no transcript to read the tool back from.
-    await createWorkspace('demo', { mode: 'tui', workspaceId: 'oc-1', tool: 'opencode' })
-    const group = await createWorkspaceGroup('demo', 'Reviews', 'oc-1')
+    await createWorkspace(DEMO_PROJECT_ID, { mode: 'tui', workspaceId: 'oc-1', tool: 'opencode' })
+    const group = await createWorkspaceGroup(DEMO_PROJECT_ID, 'Reviews', 'oc-1')
     expect(await resolveRestartTarget('oc-1')).toEqual({
-      projectSlug: 'demo', workspaceId: 'oc-1', tool: 'opencode', jobName: null, groupId: group.groupId,
+      projectId: DEMO_PROJECT_ID, workspaceId: 'oc-1', tool: 'opencode', jobName: null, groupId: group.groupId,
     })
   })
 

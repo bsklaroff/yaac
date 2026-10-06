@@ -22,7 +22,7 @@ type ProvisionOp = (
  * create launches with, so the row can show them from the start.
  */
 export function useProvisionWorkspace(): (
-  projectSlug: string,
+  projectId: string,
   tool: AgentTool,
   kind: ProvisioningWorkspaceEntry['kind'],
   workspaceId: string,
@@ -37,10 +37,10 @@ export function useProvisionWorkspace(): (
   const setProvisionInFlight = useUiStore((s) => s.setProvisionInFlight)
   const openWorkspace = useUiStore((s) => s.openWorkspace)
 
-  return useCallback((projectSlug, tool, kind, workspaceId, op, groupId, named) => {
+  return useCallback((projectId, tool, kind, workspaceId, op, groupId, named) => {
     const filed = { ...(groupId !== undefined ? { groupId } : {}), ...named }
-    addOptimisticProvisioning({ workspaceId, projectSlug, tool, kind, ...filed, message: 'Starting…', createdAt: formatUtcTimestamp(Date.now()) })
-    openWorkspace(projectSlug, workspaceId)
+    addOptimisticProvisioning({ workspaceId, projectId, tool, kind, ...filed, message: 'Starting…', createdAt: formatUtcTimestamp(Date.now()) })
+    openWorkspace(projectId, workspaceId)
     setProvisionInFlight(workspaceId, true)
     void op(workspaceId, (message) => updateOptimisticProvisioning(workspaceId, { message }))
       .then((res) => {

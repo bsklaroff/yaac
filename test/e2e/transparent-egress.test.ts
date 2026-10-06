@@ -244,11 +244,11 @@ describe('node-level transparent egress (source-IP identity)', () => {
       rules: [],
       allowedHosts: [MITM_HOST, echoHost],
       tool: 'claude',
-      projectSlug: 'egress-a',
+      projectId: 'egress-a',
       upstreamRedirects: { [MITM_HOST]: { host: echoHost, port: ECHO_PORT, tls: false } },
     })
     await applyProxyRegistration(workspaceB, {
-      rules: [], allowedHosts: [tlsHost], tool: 'claude', projectSlug: 'egress-b',
+      rules: [], allowedHosts: [tlsHost], tool: 'claude', projectId: 'egress-b',
     })
 
     await Promise.all([
@@ -313,7 +313,7 @@ describe('node-level transparent egress (source-IP identity)', () => {
     // Widen the running workspace's allowlist in place by rewriting its
     // registration.
     await allowWorkspaceHost(
-      { workspaceId: workspaceB, projectSlug: 'egress-b' }, echoHost, { fanOutToProject: false },
+      { workspaceId: workspaceB, projectId: 'egress-b' }, echoHost, { fanOutToProject: false },
     )
 
     const after = await curlUntilSuccess(

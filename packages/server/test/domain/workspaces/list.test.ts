@@ -13,7 +13,10 @@ import {
   _clearListActiveInflightForTests,
 } from '#domain/workspaces/list'
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
-import { recordTestProject } from '@yaac/test-utils/project-fixture'
+import { DEMO_PROJECT_ID, recordTestProject } from '@yaac/test-utils/project-fixture'
+
+const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
+const VALID = '9f7d0ee8-2b6a-4ca7-8dea-e841f3253059'
 
 /** Install a runtime listing `handles`. */
 function running(handles: RuntimeHandle[], overrides: Partial<WorkspaceDriver> = {}): void {
@@ -22,7 +25,7 @@ function running(handles: RuntimeHandle[], overrides: Partial<WorkspaceDriver> =
 
 /** A running workspace of project demo. */
 const live = (workspaceId: string, over: Partial<RuntimeHandle> = {}): RuntimeHandle =>
-  handleFixture({ workspaceId, jobName: `yaac-demo-${workspaceId}`, ...over })
+  handleFixture({ workspaceId, projectId: DEMO_PROJECT_ID, jobName: `yaac-${workspaceId}`, ...over })
 
 describe('listActiveWorkspaces', () => {
   let tmpDir: string
@@ -43,15 +46,15 @@ describe('listActiveWorkspaces', () => {
   })
 
   it('filters by a recorded project, and refuses an unknown one', async () => {
-    await recordTestProject('valid')
-    expect((await listActiveWorkspaces('valid')).workspaces).toEqual([])
-    await expect(listActiveWorkspaces('does-not-exist')).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await recordTestProject(VALID)
+    expect((await listActiveWorkspaces(VALID)).workspaces).toEqual([])
+    await expect(listActiveWorkspaces('00000000-0000-4000-8000-000000000000')).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 
   it('renders a stopping pod as a non-interactive stopping row, not stale', async () => {
-    await recordTestProject('demo')
-    await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'dying' })
-    await recordAgentSessions('demo', 'dying', [
+    await recordTestProject(DEMO_PROJECT_ID)
+    await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'dying' })
+    await recordAgentSessions(DEMO_PROJECT_ID, 'dying', [
       { tool: 'claude', agentSessionId: 'dying', model: 'claude-sonnet-5' },
     ])
     running([live('dying', { running: false, terminating: true })])
@@ -93,14 +96,14 @@ describe('listActiveWorkspaces', () => {
   })
 
   it('surfaces the base branch recorded at create time', async () => {
-    await recordTestProject('demo')
+    await recordTestProject(DEMO_PROJECT_ID)
     await recordWorkspaceCreated({
-      projectSlug: 'demo', workspaceId: 'tracked', baseBranch: 'release/2.x',
+      projectId: DEMO_PROJECT_ID, workspaceId: 'tracked', baseBranch: 'release/2.x',
     })
-    await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'norecord' })
+    await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'norecord' })
 
     running([live('tracked'), live('norecord')])
-    const result = await listActiveWorkspaces('demo')
+    const result = await listActiveWorkspaces(DEMO_PROJECT_ID)
     const bySession = new Map(result.workspaces.map((s) => [s.workspaceId, s]))
     expect(bySession.get('tracked')?.baseBranch).toBe('release/2.x')
     expect(bySession.get('norecord')?.baseBranch).toBeUndefined()
@@ -132,25 +135,25 @@ describe('listActiveWorkspaces', () => {
 
     vi.useFakeTimers()
     vi.setSystemTime(1_000)
-    setAgentStatus('demo', 's1', '%0', 'waiting')
+    setAgentStatus(DEMO_PROJECT_ID, 's1', '%0', 'waiting')
     vi.setSystemTime(60_000)
     expect(await stamp()).toEqual(['waiting', 1_000])
 
     // Running is unstamped; a fresh wait restamps.
-    setAgentStatus('demo', 's1', '%0', 'running')
+    setAgentStatus(DEMO_PROJECT_ID, 's1', '%0', 'running')
     expect(await stamp()).toEqual(['running', undefined])
     vi.setSystemTime(2_000)
-    setAgentStatus('demo', 's1', '%0', 'waiting')
+    setAgentStatus(DEMO_PROJECT_ID, 's1', '%0', 'waiting')
     expect(await stamp()).toEqual(['waiting', 2_000])
 
     // An ask lists as waiting with a flag, so a client that predates the
     // flag still alerts on it; background lists as itself.
-    setAgentStatus('demo', 's1', '%0', 'running')
+    setAgentStatus(DEMO_PROJECT_ID, 's1', '%0', 'running')
     vi.setSystemTime(3_000)
-    setAgentStatus('demo', 's1', '%0', 'asking')
+    setAgentStatus(DEMO_PROJECT_ID, 's1', '%0', 'asking')
     _clearListActiveInflightForTests()
     expect((await listActiveWorkspaces()).workspaces[0]).toMatchObject({ status: 'waiting', asking: true, waitingSinceMs: 3_000 })
-    setAgentStatus('demo', 's1', '%0', 'background')
+    setAgentStatus(DEMO_PROJECT_ID, 's1', '%0', 'background')
     _clearListActiveInflightForTests()
     const [quiet] = (await listActiveWorkspaces()).workspaces
     expect(quiet.status).toBe('background')
@@ -158,11 +161,11 @@ describe('listActiveWorkspaces', () => {
   })
 
   it('shares one listing between overlapping calls with the same filter, and only those', async () => {
-    await recordTestProject('other')
+    await recordTestProject(OTHER)
     const pending: Array<(handles: RuntimeHandle[]) => void> = []
     running([], { list: () => new Promise((resolve) => { pending.push(resolve) }) })
 
-    const [a, b, other] = [listActiveWorkspaces(), listActiveWorkspaces(), listActiveWorkspaces('other')]
+    const [a, b, other] = [listActiveWorkspaces(), listActiveWorkspaces(), listActiveWorkspaces(OTHER)]
     // The filtered call checks its project first.
     await vi.waitFor(() => { expect(pending).toHaveLength(2) })
     for (const finish of pending) finish([])

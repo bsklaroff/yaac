@@ -91,7 +91,7 @@ const updateLine = (u: unknown): unknown => ({
  */
 function liveConversation(profile?: AcpAdapterProfile, extra: Partial<AcpConversationDeps> = {}): AcpConversation {
   transport = new FakeTransport()
-  const record = { slug: 'demo', workspaceId: 'wt-1', agentSessionId: 'acp-1' }
+  const record = { projectId: 'demo', workspaceId: 'wt-1', agentSessionId: 'acp-1' }
   const c = new AcpConversation({
     transport,
     cwd: '/workspace',
@@ -428,7 +428,7 @@ describe('attachAcp', () => {
       { jsonrpc: '2.0', id: 's1', method: '_session/steering', params: { sessionId: 'acp-1', prompt: [{ type: 'text', text: 'x' }] } },
       { jsonrpc: '2.0', id: 's1', result: { outcome: 'startedNewTurn' } },
     ]
-    const ref = { slug: 'demo', workspaceId: 'wt-1', agentSessionId: 'acp-1' }
+    const ref = { projectId: 'demo', workspaceId: 'wt-1', agentSessionId: 'acp-1' }
     await record(life)
     expect(await readAcpInFlight(ref)).toEqual({ prompt: false, agentRunning: true })
     await record([...life, JSON.parse(threadStatus('idle')) as unknown])

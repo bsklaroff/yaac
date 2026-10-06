@@ -108,9 +108,9 @@ export const CODEX_MODEL_FORMAT = '#{?#{m/r: [|] ,#{pane_title}},#{s/^.* [|] //:
  * fetch) or stale, so a miss falls back to the catalogs' naming rule
  * (lowercase, spaces to dashes), which leaves a slug unchanged.
  */
-export async function codexModelSlug(slug: string, shown: string): Promise<string> {
+export async function codexModelSlug(projectId: string, shown: string): Promise<string> {
   try {
-    const home = await openSandboxDir(slug, codexDir(slug))
+    const home = await openSandboxDir(projectId, codexDir(projectId))
     const raw = await home.readFile('models_cache.json', { maxBytes: MODELS_CACHE_MAX_BYTES })
     const cache = JSON.parse(raw?.toString('utf8') ?? '{}') as {
       models?: Array<{ slug?: unknown; display_name?: unknown }>

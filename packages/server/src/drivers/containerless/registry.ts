@@ -19,7 +19,7 @@ import type { RuntimeHandle, RuntimeSnapshot, StrayUnit, TeardownTarget } from '
 
 /** The marker file: what only the launch knew. */
 export interface WorkspaceMarker {
-  projectSlug: string
+  projectId: string
   workspaceId: string
   tool: AgentTool
   declaredTool?: AgentTool
@@ -118,8 +118,8 @@ function toHandle(entry: Entry): RuntimeHandle {
   const { marker } = entry
   return {
     workspaceId: marker.workspaceId,
-    projectSlug: marker.projectSlug,
-    jobName: containerlessJobName(marker.projectSlug, marker.workspaceId),
+    projectId: marker.projectId,
+    jobName: containerlessJobName(marker.projectId, marker.workspaceId),
     tool: marker.tool,
     ...(marker.declaredTool !== undefined ? { declaredTool: marker.declaredTool } : {}),
     mode: marker.mode,
@@ -156,15 +156,15 @@ export function findForTeardown(
   const handle = findWorkspace(workspaceId, opts)
   if (!handle) return undefined
   return {
-    projectSlug: handle.projectSlug,
+    projectId: handle.projectId,
     workspaceId: handle.workspaceId,
     unitName: handle.jobName,
   }
 }
 
-export function listWorkspaces(projectSlug?: string): RuntimeHandle[] {
+export function listWorkspaces(projectId?: string): RuntimeHandle[] {
   return [...entries.values()]
-    .filter((e) => projectSlug === undefined || e.marker.projectSlug === projectSlug)
+    .filter((e) => projectId === undefined || e.marker.projectId === projectId)
     .map(toHandle)
 }
 
@@ -173,7 +173,7 @@ export function countWorkspaces(): Record<string, number> {
   const counts: Record<string, number> = {}
   for (const e of entries.values()) {
     if (e.marker.prewarm || !e.running) continue
-    counts[e.marker.projectSlug] = (counts[e.marker.projectSlug] ?? 0) + 1
+    counts[e.marker.projectId] = (counts[e.marker.projectId] ?? 0) + 1
   }
   return counts
 }
@@ -191,7 +191,7 @@ export function createRuntimeSnapshot(resync = false): RuntimeSnapshot {
 
 /** Write the marker atomically. */
 export async function writeMarker(marker: WorkspaceMarker): Promise<void> {
-  const file = markerPath(marker.projectSlug, marker.workspaceId)
+  const file = markerPath(marker.projectId, marker.workspaceId)
   await fs.mkdir(path.dirname(file), { recursive: true })
   // A torn marker would be skipped at recovery, leaving its tmux server
   // running untracked.
@@ -200,8 +200,8 @@ export async function writeMarker(marker: WorkspaceMarker): Promise<void> {
   await fs.rename(tmp, file)
 }
 
-export async function removeMarker(projectSlug: string, workspaceId: string): Promise<void> {
-  await fs.rm(containerlessStateDir(projectSlug, workspaceId), { recursive: true, force: true })
+export async function removeMarker(projectId: string, workspaceId: string): Promise<void> {
+  await fs.rm(containerlessStateDir(projectId, workspaceId), { recursive: true, force: true })
 }
 
 /**
@@ -211,19 +211,19 @@ export async function removeMarker(projectSlug: string, workspaceId: string): Pr
  */
 export async function readMarkers(): Promise<WorkspaceMarker[]> {
   const root = getProjectsDir()
-  let slugs: string[]
+  let projectIds: string[]
   try {
-    slugs = (await fs.readdir(root, { withFileTypes: true }))
+    projectIds = (await fs.readdir(root, { withFileTypes: true }))
       .filter((d) => d.isDirectory())
       .map((d) => d.name)
   } catch {
     return []
   }
   const found: WorkspaceMarker[] = []
-  for (const slug of slugs) {
+  for (const projectId of projectIds) {
     let ids: string[]
     try {
-      ids = (await fs.readdir(path.join(root, slug, 'sessions'), { withFileTypes: true }))
+      ids = (await fs.readdir(path.join(root, projectId, 'sessions'), { withFileTypes: true }))
         .filter((d) => d.isDirectory())
         .map((d) => d.name)
     } catch {
@@ -231,14 +231,14 @@ export async function readMarkers(): Promise<WorkspaceMarker[]> {
     }
     for (const id of ids) {
       try {
-        const raw = await fs.readFile(markerPath(slug, id), 'utf8')
+        const raw = await fs.readFile(markerPath(projectId, id), 'utf8')
         const marker = JSON.parse(raw) as WorkspaceMarker
         // Identity comes from the path, so a copied marker cannot claim to
         // be its original.
-        found.push({ ...marker, projectSlug: slug, workspaceId: id })
+        found.push({ ...marker, projectId, workspaceId: id })
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-          serverLog(`[server] containerless: unreadable marker ${slug}/${id}: ${String(err)}`)
+          serverLog(`[server] containerless: unreadable marker ${projectId}/${id}: ${String(err)}`)
         }
       }
     }

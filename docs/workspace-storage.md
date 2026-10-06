@@ -267,7 +267,7 @@ SQLite does not work on a network filesystem, so a k8s pod runs opencode
 against a **node-local working copy**
 (`node-local/projects/<project id>/opencode-data/<id>`, mounted at
 `~/.local/share/opencode`). The durable copy is the **checkpoint** on the
-global tier, `global/projects/<slug>/opencode-data/<id>`
+global tier, `global/projects/<project id>/opencode-data/<id>`
 (`opencodeCheckpointDir`, mounted at `~/.yaac/opencode-checkpoint`).
 
 - `workspace-bin/yaac-opencode-checkpoint` copies the working copy into the
@@ -501,11 +501,11 @@ demand and saves the result.
 ## The node-local tree
 
 The node-local tier (`node-local/projects/<project id>/…` and
-`node-local/shared-images/<project id>/…`) is keyed by the project's immutable
-id (`projects.id`, never reused), not by slug like the global tree. A node's
-copy cannot be removed reliably, since the node may be gone when the project is
-removed. Keyed by slug, a project re-added under the same name would mount the
-old one's caches and image store; keyed by id, it starts empty.
+`node-local/shared-images/<project id>/…`) is keyed, like the global tree, by
+the project's immutable id (`projects.id`, never reused). A node's copy cannot
+be removed reliably, since the node may be gone when the project is removed;
+because ids are never reused, a project added again starts empty rather than
+mounting the old one's caches and image store.
 
 The node-local sweep (`reapNodeLocal`) collects by the same key. It is given the
 live project ids and workspace ids, and removes any project tree no live id

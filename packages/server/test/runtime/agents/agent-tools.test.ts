@@ -121,7 +121,7 @@ describe('getAgentSessionFirstMessage', () => {
     const rel = `t-${String(n++)}.jsonl`
     const lines = entries.map((e) => typeof e === 'string' ? e : JSON.stringify(e))
     await fs.writeFile(path.join(dir, rel), lines.map((l) => l + '\n').join(''))
-    return { slug: 'demo', dir, rel }
+    return { projectId: 'demo', dir, rel }
   }
   const user = (content: unknown, extra: object = {}) => ({ type: 'user', ...extra, message: { role: 'user', content } })
   const codexEvent = (payload: object) => ({ type: 'event_msg', payload })
@@ -193,7 +193,7 @@ describe('getAgentSessionFirstMessage', () => {
     // codex rollout's filename cannot be derived from one.
     for (const tool of ['claude', 'codex', 'pi'] as const) {
       await expect(getAgentSessionFirstMessage(tool, undefined)).resolves.toBeUndefined()
-      await expect(getAgentSessionFirstMessage(tool, { slug: 'demo', dir, rel: 'missing.jsonl' })).resolves.toBeUndefined()
+      await expect(getAgentSessionFirstMessage(tool, { projectId: 'demo', dir, rel: 'missing.jsonl' })).resolves.toBeUndefined()
     }
   })
 
@@ -217,7 +217,7 @@ describe('getAgentSessionFirstMessage', () => {
     })
     installFakeWorkspaceDriver({ exec })
     const first = (id: string | undefined, job: string | undefined = 'container') =>
-      getAgentSessionFirstMessage('opencode', { slug: 'demo', dir, rel: 'ignored.jsonl' }, job, id)
+      getAgentSessionFirstMessage('opencode', { projectId: 'demo', dir, rel: 'ignored.jsonl' }, job, id)
 
     expect(await first('ses_titled')).toBe('OLIVE')
     expect(exec.mock.calls[0]?.slice(0, 2)).toEqual(['container', 'opencode api --standalone session.get --param sessionID=ses_titled'])

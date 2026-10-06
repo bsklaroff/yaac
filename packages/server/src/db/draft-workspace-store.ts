@@ -21,7 +21,7 @@ const toRow = (r: Row): DraftWorkspaceRow => nullsToUndefined(r)
 
 /** Every column a save writes: an absent optional is stored as null, so a
  *  save replaces the whole draft rather than merging into it. */
-function columns(s: DraftWorkspaceSettings): Omit<typeof draftWorkspaces.$inferInsert, 'projectSlug'> {
+function columns(s: DraftWorkspaceSettings): Omit<typeof draftWorkspaces.$inferInsert, 'projectId'> {
   return {
     prompt: s.prompt,
     tool: s.tool,
@@ -36,11 +36,11 @@ function columns(s: DraftWorkspaceSettings): Omit<typeof draftWorkspaces.$inferI
 }
 
 export async function insertDraftWorkspace(
-  projectSlug: string,
+  projectId: string,
   settings: DraftWorkspaceSettings,
 ): Promise<DraftWorkspaceRow> {
   const db = await getDb()
-  const [row] = await db.insert(draftWorkspaces).values({ projectSlug, ...columns(settings) }).returning()
+  const [row] = await db.insert(draftWorkspaces).values({ projectId, ...columns(settings) }).returning()
   notifyWorkspaceListChanged()
   return toRow(row)
 }
@@ -51,7 +51,7 @@ export async function insertDraftWorkspace(
  * discarded since the dialog opened).
  */
 export async function updateDraftWorkspace(
-  projectSlug: string,
+  projectId: string,
   id: string,
   settings: DraftWorkspaceSettings,
 ): Promise<DraftWorkspaceRow | undefined> {
@@ -59,7 +59,7 @@ export async function updateDraftWorkspace(
   const db = await getDb()
   const rows = await db.transaction(async (tx) => {
     const [prev] = await tx.select().from(draftWorkspaces)
-      .where(and(eq(draftWorkspaces.id, id), eq(draftWorkspaces.projectSlug, projectSlug)))
+      .where(and(eq(draftWorkspaces.id, id), eq(draftWorkspaces.projectId, projectId)))
     if (!prev) return []
     return await tx.update(draftWorkspaces)
       .set({
@@ -109,7 +109,7 @@ export async function setDraftWorkspaceTitle(id: string, prompt: string, title: 
 }
 
 /** Delete a project's drafts when the project is removed. */
-export async function deleteProjectDraftWorkspaces(projectSlug: string): Promise<void> {
+export async function deleteProjectDraftWorkspaces(projectId: string): Promise<void> {
   const db = await getDb()
-  await db.delete(draftWorkspaces).where(eq(draftWorkspaces.projectSlug, projectSlug))
+  await db.delete(draftWorkspaces).where(eq(draftWorkspaces.projectId, projectId))
 }

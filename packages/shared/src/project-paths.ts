@@ -110,8 +110,8 @@ export function secretKeyPath(): string {
  * GLOBAL: the project's state tree, holding everything a workspace pod
  * mounts plus the project's metadata.
  */
-export function projectDir(slug: string): string {
-  return globalProjectPath(slug)
+export function projectDir(projectId: string): string {
+  return globalProjectPath(projectId)
 }
 
 /**
@@ -130,8 +130,8 @@ export function imageStoreDir(projectId: string): string {
 
 /** GLOBAL: the project's main clone. Its `.git` is mounted read-only into
  *  every workspace pod, whose checkout borrows its objects. */
-export function repoDir(slug: string): string {
-  return globalProjectPath(slug, 'repo')
+export function repoDir(projectId: string): string {
+  return globalProjectPath(projectId, 'repo')
 }
 
 /**
@@ -140,8 +140,8 @@ export function repoDir(slug: string): string {
  * it. Its `projects/` (except the shared auto-memory) and `file-history/`
  * are per-workspace, mounted over it from {@link agentHistoryDir}.
  */
-export function claudeDir(slug: string): string {
-  return globalProjectPath(slug, 'claude')
+export function claudeDir(projectId: string): string {
+  return globalProjectPath(projectId, 'claude')
 }
 
 /**
@@ -149,14 +149,14 @@ export function claudeDir(slug: string): string {
  * `/home/yaac/.claude/.credentials.json`. Holds placeholder tokens so
  * Claude Code finds a credentials file with no real secrets in it.
  */
-export function projectClaudeCredentialsFile(slug: string): string {
-  return path.join(claudeDir(slug), '.credentials.json')
+export function projectClaudeCredentialsFile(projectId: string): string {
+  return path.join(claudeDir(projectId), '.credentials.json')
 }
 
 /** GLOBAL: mounted at `/home/yaac/.codex`. Its `sessions/` is the workspace's
  *  own history, mounted over it (`agentHistoryDir`). */
-export function codexDir(slug: string): string {
-  return globalProjectPath(slug, 'codex')
+export function codexDir(projectId: string): string {
+  return globalProjectPath(projectId, 'codex')
 }
 
 /**
@@ -166,8 +166,8 @@ export function codexDir(slug: string): string {
  * to the protocol, not a tool, and outside {@link workspaceStateDir} so a
  * stopped workspace's conversation stays readable.
  */
-export function acpLogDir(slug: string, workspaceId: string): string {
-  return globalProjectPath(slug, 'acp', workspaceId)
+export function acpLogDir(projectId: string, workspaceId: string): string {
+  return globalProjectPath(projectId, 'acp', workspaceId)
 }
 
 /**
@@ -185,8 +185,8 @@ export function cachedPackagesDir(projectId: string): string {
  * GLOBAL. Directory backing a `cacheVolumes` entry. It persists across
  * workspaces so the next one starts with a warm cache on any node.
  */
-export function cacheVolumeDir(slug: string, key: string): string {
-  return globalProjectPath(slug, 'cache-volumes', key)
+export function cacheVolumeDir(projectId: string, key: string): string {
+  return globalProjectPath(projectId, 'cache-volumes', key)
 }
 
 /**
@@ -194,8 +194,8 @@ export function cacheVolumeDir(slug: string, key: string): string {
  * `/home/yaac/.codex/auth.json`. Holds placeholder tokens so Codex finds a
  * valid bundle without seeing the real ones.
  */
-export function projectCodexAuthFile(slug: string): string {
-  return path.join(codexDir(slug), 'auth.json')
+export function projectCodexAuthFile(projectId: string): string {
+  return path.join(codexDir(projectId), 'auth.json')
 }
 
 /**
@@ -204,8 +204,8 @@ export function projectCodexAuthFile(slug: string): string {
  * across workspaces. Each workspace's data stays separate
  * ({@link opencodeCheckpointDir}).
  */
-export function opencodeConfigDir(slug: string): string {
-  return globalProjectPath(slug, 'opencode-config')
+export function opencodeConfigDir(projectId: string): string {
+  return globalProjectPath(projectId, 'opencode-config')
 }
 
 /**
@@ -217,8 +217,8 @@ export function opencodeConfigDir(slug: string): string {
  * concurrent-write issues (sst/opencode#5241). Renaming this path requires
  * migrating every stopped opencode workspace's history.
  */
-export function opencodeCheckpointDir(slug: string, workspaceId: string): string {
-  return globalProjectPath(slug, 'opencode-data', workspaceId)
+export function opencodeCheckpointDir(projectId: string, workspaceId: string): string {
+  return globalProjectPath(projectId, 'opencode-data', workspaceId)
 }
 
 /**
@@ -238,8 +238,8 @@ export function opencodeDataDir(projectId: string, workspaceId: string): string 
  * and extensions are shared by all its workspaces. Session logs go to
  * each workspace's own {@link agentHistoryDir}.
  */
-export function piDir(slug: string): string {
-  return globalProjectPath(slug, 'pi')
+export function piDir(projectId: string): string {
+  return globalProjectPath(projectId, 'pi')
 }
 
 /**
@@ -250,16 +250,16 @@ export function piDir(slug: string): string {
  * and linked into them on a host. Survives stops; deleted with the
  * workspace.
  */
-export function agentHistoryDir(slug: string, workspaceId: string, part?: AgentHistoryPart): string {
-  return globalProjectPath(slug, 'history', workspaceId, ...(part === undefined ? [] : [part]))
+export function agentHistoryDir(projectId: string, workspaceId: string, part?: AgentHistoryPart): string {
+  return globalProjectPath(projectId, 'history', workspaceId, ...(part === undefined ? [] : [part]))
 }
 
 export const AGENT_HISTORY_PARTS = ['claude', 'claude-file-history', 'codex', 'codex-sqlite', 'pi'] as const
 export type AgentHistoryPart = typeof AGENT_HISTORY_PARTS[number]
 
 /** GLOBAL — see {@link workspaceDir}. */
-export function workspacesDir(slug: string): string {
-  return globalProjectPath(slug, 'workspaces')
+export function workspacesDir(projectId: string): string {
+  return globalProjectPath(projectId, 'workspaces')
 }
 
 /**
@@ -267,8 +267,8 @@ export function workspacesDir(slug: string): string {
  * faster node-local, but the server creates it (a clone borrowing
  * `repo/.git`'s objects) from its own filesystem.
  */
-export function workspaceDir(slug: string, workspaceId: string): string {
-  return path.join(workspacesDir(slug), workspaceId)
+export function workspaceDir(projectId: string, workspaceId: string): string {
+  return path.join(workspacesDir(projectId), workspaceId)
 }
 
 /**
@@ -276,8 +276,8 @@ export function workspaceDir(slug: string, workspaceId: string): string {
  * staged builtin skills and workspace bin scripts), mounted into the pod.
  * Removed by workspace cleanup and the orphan-workspace GC.
  */
-export function workspaceStateDir(slug: string, workspaceId: string): string {
-  return globalProjectPath(slug, 'sessions', workspaceId)
+export function workspaceStateDir(projectId: string, workspaceId: string): string {
+  return globalProjectPath(projectId, 'sessions', workspaceId)
 }
 
 /**
@@ -285,8 +285,8 @@ export function workspaceStateDir(slug: string, workspaceId: string): string {
  * deleted with the state dir when the workspace stops, which is fine
  * because the agent reads an image as soon as its path is pasted.
  */
-export function workspaceAttachmentsDir(slug: string, workspaceId: string): string {
-  return path.join(workspaceStateDir(slug, workspaceId), 'attachments')
+export function workspaceAttachmentsDir(projectId: string, workspaceId: string): string {
+  return path.join(workspaceStateDir(projectId, workspaceId), 'attachments')
 }
 
 

@@ -18,8 +18,8 @@ export const USER_DOCKERFILE = 'Dockerfile.user'
  * files. Everything in this dir ships to the build; nothing outside it
  * does.
  */
-export function projectBuildDir(slug: string): string {
-  return path.join(projectConfigDir(slug), 'build')
+export function projectBuildDir(projectId: string): string {
+  return path.join(projectConfigDir(projectId), 'build')
 }
 
 /**

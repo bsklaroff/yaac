@@ -27,7 +27,7 @@ function pod(over: Partial<PodInfo> = {}): PodInfo {
     podName: 'yaac-proj-abc123-xyz',
     jobName: 'yaac-proj-abc123',
     workspaceId: 'abc123def456',
-    projectSlug: 'proj',
+    projectId: 'proj',
     tool: 'claude',
     phase: 'Running',
     running: true,
@@ -35,7 +35,7 @@ function pod(over: Partial<PodInfo> = {}): PodInfo {
     createdAtMs: 1_700_000_000_000,
     labels: {},
     ...over,
-  } as PodInfo
+  }
 }
 
 /** A cluster cache whose workspace-pods informer is connected and seeded. */
@@ -64,7 +64,7 @@ describe('findWorkspace', () => {
     mockList.mockResolvedValue([pod({ tool: 'Claude', labels: { 'yaac.nested': 'true' } })])
     expect(await findWorkspace('abc123def456')).toEqual({
       workspaceId: 'abc123def456',
-      projectSlug: 'proj',
+      projectId: 'proj',
       jobName: 'yaac-proj-abc123',
       // 'Claude' is not a known tool name, so it runs as claude but sets no
       // `declaredTool` for spawned workspaces to inherit.
@@ -152,10 +152,10 @@ describe('findWorkspaceForTeardown', () => {
   it('reaches a spare by its exact id only when asked for spares', async () => {
     mockList.mockResolvedValue([pod({ labels: { [LABEL_PREWARMED]: 'true' } })])
     mockJobs.mockResolvedValue([
-      { jobName: 'yaac-proj-abc123', workspaceId: 'abc123def456', projectSlug: 'proj', createdAtMs: 0 },
+      { jobName: 'yaac-proj-abc123', workspaceId: 'abc123def456', projectId: 'proj', createdAtMs: 0 },
     ])
     expect(await findWorkspaceForTeardown('abc123def456', { spares: true })).toEqual({
-      projectSlug: 'proj', workspaceId: 'abc123def456', unitName: 'yaac-proj-abc123',
+      projectId: 'proj', workspaceId: 'abc123def456', unitName: 'yaac-proj-abc123',
     })
     expect(await findWorkspaceForTeardown('abc123def456')).toBeUndefined()
     expect(await findWorkspaceForTeardown('abc123', { spares: true })).toBeUndefined()
@@ -164,10 +164,10 @@ describe('findWorkspaceForTeardown', () => {
   // A pod deleted out-of-band leaves its Job, which still needs deleting.
   it('falls through to the Job when the pod is gone, matching it exactly', async () => {
     mockJobs.mockResolvedValue([
-      { jobName: 'yaac-proj-orphan', workspaceId: 'orphan-1', projectSlug: 'proj', createdAtMs: 0 },
+      { jobName: 'yaac-proj-orphan', workspaceId: 'orphan-1', projectId: 'proj', createdAtMs: 0 },
     ])
     expect(await findWorkspaceForTeardown('orphan-1')).toEqual({
-      projectSlug: 'proj', workspaceId: 'orphan-1', unitName: 'yaac-proj-orphan',
+      projectId: 'proj', workspaceId: 'orphan-1', unitName: 'yaac-proj-orphan',
     })
     expect(await findWorkspaceForTeardown('orphan')).toBeUndefined()
     expect(await findWorkspaceForTeardown('yaac-proj-orphan')).toBeUndefined()
@@ -198,11 +198,11 @@ describe('listWorkspaces', () => {
 describe('countWorkspaces', () => {
   it('counts per project, ignoring spares and unlabelled pods', async () => {
     mockList.mockResolvedValue([
-      pod({ projectSlug: 'foo' }),
-      pod({ projectSlug: 'foo' }),
-      pod({ projectSlug: 'bar' }),
-      pod({ projectSlug: 'bar', labels: { [LABEL_PREWARMED]: 'true' } }),
-      pod({ projectSlug: '' }),
+      pod({ projectId: 'foo' }),
+      pod({ projectId: 'foo' }),
+      pod({ projectId: 'bar' }),
+      pod({ projectId: 'bar', labels: { [LABEL_PREWARMED]: 'true' } }),
+      pod({ projectId: '' }),
     ])
     expect(await countWorkspaces()).toEqual({ foo: 2, bar: 1 })
   })

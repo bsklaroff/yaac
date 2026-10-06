@@ -16,29 +16,29 @@ type Live = { workspaceId: string }[]
  * stays shown while that fetch is in flight.
  */
 export function useStoppedWorkspaces(
-  projectSlug: string | null,
+  projectId: string | null,
   workspaces: Live,
   provisioning: Live,
 ): StoppedWorkspaceEntry[] {
   const optimistic = useUiStore((s) => s.optimisticStopped)
   const removeOptimistic = useUiStore((s) => s.removeOptimisticStopped)
   const { data = [] } = useQuery({
-    queryKey: ['stopped', projectSlug, workspaces.map((w) => w.workspaceId).sort().join(',')],
+    queryKey: ['stopped', projectId, workspaces.map((w) => w.workspaceId).sort().join(',')],
     queryFn: async () => {
-      const list = await api.workspace['list-stopped'].$get({ query: { project: projectSlug ?? '', limit: '100' } })
+      const list = await api.workspace['list-stopped'].$get({ query: { project: projectId ?? '', limit: '100' } })
       // An optimistic entry is no longer needed once the server lists it.
       for (const e of list) removeOptimistic(e.workspaceId)
       return list
     },
-    enabled: projectSlug !== null,
+    enabled: projectId !== null,
     staleTime: 2000,
-    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === projectSlug ? prev : undefined),
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === projectId ? prev : undefined),
   })
 
   const fetched = new Set(data.map((d) => d.workspaceId))
   const live = new Set([...workspaces, ...provisioning].map((w) => w.workspaceId))
   return [
-    ...optimistic.filter((e) => e.projectSlug === projectSlug && !fetched.has(e.workspaceId)),
+    ...optimistic.filter((e) => e.projectId === projectId && !fetched.has(e.workspaceId)),
     ...data,
   ].filter((d) => !live.has(d.workspaceId))
 }
@@ -47,8 +47,8 @@ export function useStoppedWorkspaces(
  *  seen, regrouping) shows before the server write returns. */
 export function patchStopped(
   queryClient: QueryClient,
-  projectSlug: string,
+  projectId: string,
   patch: (e: StoppedWorkspaceEntry) => StoppedWorkspaceEntry,
 ): void {
-  queryClient.setQueriesData<StoppedWorkspaceEntry[]>({ queryKey: ['stopped', projectSlug] }, (old) => old?.map(patch))
+  queryClient.setQueriesData<StoppedWorkspaceEntry[]>({ queryKey: ['stopped', projectId] }, (old) => old?.map(patch))
 }

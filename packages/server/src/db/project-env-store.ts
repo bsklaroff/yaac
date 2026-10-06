@@ -24,7 +24,7 @@ import type { SecretProxyRule } from '@yaac/shared/types'
 /** One row, with a secret's value already opened. */
 export interface ProjectEnvVarRow {
   id: string
-  projectSlug: string
+  projectId: string
   name: string
   /** Plaintext either way. Undefined for a secret whose value will not open. */
   value: string | undefined
@@ -49,7 +49,7 @@ async function toRow(r: Selected): Promise<ProjectEnvVarRow> {
   const rule = (r.rule ?? undefined) as SecretProxyRule | undefined
   const base = {
     id: r.id,
-    projectSlug: r.projectSlug,
+    projectId: r.projectId,
     name: r.name,
     secret: r.secret,
     rule,
@@ -61,7 +61,7 @@ async function toRow(r: Selected): Promise<ProjectEnvVarRow> {
     return { ...base, value: await symmetricDecrypt({ key: await secretConfig(), data: r.sealedValue }), unreadable: false }
   } catch (err) {
     serverLog(
-      `[secrets] ${r.projectSlug}/${r.name} could not be decrypted `
+      `[secrets] ${r.projectId}/${r.name} could not be decrypted `
       + `(${err instanceof Error ? err.message : String(err)}); re-enter it in project settings`,
     )
     return { ...base, value: undefined, unreadable: true }
@@ -69,10 +69,10 @@ async function toRow(r: Selected): Promise<ProjectEnvVarRow> {
 }
 
 /** Every variable of a project, plain and secret, in name order. */
-export async function listProjectEnvVars(projectSlug: string): Promise<ProjectEnvVarRow[]> {
+export async function listProjectEnvVars(projectId: string): Promise<ProjectEnvVarRow[]> {
   const db = await getDb()
   const rows = await db.select().from(projectEnvVars)
-    .where(eq(projectEnvVars.projectSlug, projectSlug))
+    .where(eq(projectEnvVars.projectId, projectId))
     .orderBy(projectEnvVars.name)
   return await Promise.all(rows.map(toRow))
 }
@@ -83,7 +83,7 @@ export async function listProjectEnvVars(projectSlug: string): Promise<ProjectEn
  * turning a plain variable into a secret without a value.)
  */
 export async function upsertProjectEnvVar(
-  projectSlug: string,
+  projectId: string,
   input: ProjectEnvVarInput,
 ): Promise<ProjectEnvVarRow> {
   const db = await getDb()
@@ -102,14 +102,14 @@ export async function upsertProjectEnvVar(
     : { value: input.value ?? '', sealedValue: null }
   const rows = await db.insert(projectEnvVars)
     .values({
-      projectSlug,
+      projectId,
       name: input.name,
       value: input.secret ? null : input.value ?? '',
       sealedValue: sealed ?? null,
       ...shared,
     })
     .onConflictDoUpdate({
-      target: [projectEnvVars.projectSlug, projectEnvVars.name],
+      target: [projectEnvVars.projectId, projectEnvVars.name],
       set: { ...written, ...shared },
     })
     .returning()
@@ -117,16 +117,16 @@ export async function upsertProjectEnvVar(
 }
 
 /** Remove one variable by id. False when the id is not this project's. */
-export async function deleteProjectEnvVar(projectSlug: string, id: string): Promise<boolean> {
+export async function deleteProjectEnvVar(projectId: string, id: string): Promise<boolean> {
   const db = await getDb()
   const rows = await db.delete(projectEnvVars)
-    .where(and(eq(projectEnvVars.projectSlug, projectSlug), eq(projectEnvVars.id, id)))
+    .where(and(eq(projectEnvVars.projectId, projectId), eq(projectEnvVars.id, id)))
     .returning({ id: projectEnvVars.id })
   return rows.length > 0
 }
 
 /** Delete every variable of a project, on project removal. */
-export async function deleteProjectEnvVars(projectSlug: string): Promise<void> {
+export async function deleteProjectEnvVars(projectId: string): Promise<void> {
   const db = await getDb()
-  await db.delete(projectEnvVars).where(eq(projectEnvVars.projectSlug, projectSlug))
+  await db.delete(projectEnvVars).where(eq(projectEnvVars.projectId, projectId))
 }

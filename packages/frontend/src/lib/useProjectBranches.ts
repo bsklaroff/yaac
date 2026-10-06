@@ -8,8 +8,8 @@ export interface ProjectBranches {
   defaultBranch: string
 }
 
-const fetchBranches = (slug: string, refresh: boolean): Promise<ProjectBranches> =>
-  api.project[':slug'].branches.$get({ param: { slug }, query: refresh ? { refresh: '1' } : {} })
+const fetchBranches = (projectId: string, refresh: boolean): Promise<ProjectBranches> =>
+  api.project[':projectId'].branches.$get({ param: { projectId }, query: refresh ? { refresh: '1' } : {} })
 
 /**
  * A project's branches, cached for every branch picker. The server's local
@@ -17,22 +17,22 @@ const fetchBranches = (slug: string, refresh: boolean): Promise<ProjectBranches>
  * remote follows, so a just-pushed branch appears. If that fetch fails the
  * local list stays.
  */
-export function useProjectBranches(slug: string, enabled = true): UseQueryResult<ProjectBranches> {
+export function useProjectBranches(projectId: string, enabled = true): UseQueryResult<ProjectBranches> {
   const queryClient = useQueryClient()
-  const on = enabled && slug !== ''
+  const on = enabled && projectId !== ''
   const query = useQuery({
-    queryKey: ['project-branches', slug],
-    queryFn: () => fetchBranches(slug, false),
+    queryKey: ['project-branches', projectId],
+    queryFn: () => fetchBranches(projectId, false),
     enabled: on,
   })
   useEffect(() => {
     if (!on) return
     let cancelled = false
-    fetchBranches(slug, true).then(
-      (fresh) => { if (!cancelled) queryClient.setQueryData(['project-branches', slug], fresh) },
+    fetchBranches(projectId, true).then(
+      (fresh) => { if (!cancelled) queryClient.setQueryData(['project-branches', projectId], fresh) },
       () => {},
     )
     return () => { cancelled = true }
-  }, [on, slug, queryClient])
+  }, [on, projectId, queryClient])
   return query
 }

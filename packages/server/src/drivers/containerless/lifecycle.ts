@@ -65,14 +65,14 @@ async function recoverWorkspaces(): Promise<void> {
  */
 async function sweepDeadWorkspaceSecrets(marker: WorkspaceMarker): Promise<void> {
   const paths = containerlessWorkspacePaths(
-    containerlessJobName(marker.projectSlug, marker.workspaceId),
+    containerlessJobName(marker.projectId, marker.workspaceId),
   )
   // After a reboot the pid may belong to an unrelated process.
   if (marker.sshAgentPid !== undefined
     && await isSshAgentFor(marker.sshAgentPid, paths.sshAgentSock)) {
     killPids([marker.sshAgentPid], 'SIGTERM')
   }
-  const home = workspaceHome(marker.projectSlug, marker.workspaceId)
+  const home = workspaceHome(marker.projectId, marker.workspaceId)
   for (const file of [path.join(home, '.git-credentials'), paths.sshAgentSock]) {
     await fs.rm(file, { force: true }).catch((err: unknown) => {
       serverLog(
@@ -84,7 +84,7 @@ async function sweepDeadWorkspaceSecrets(marker: WorkspaceMarker): Promise<void>
 
 function socketAnswers(marker: WorkspaceMarker): Promise<boolean> {
   return tmuxAnswers(containerlessWorkspacePaths(
-    containerlessJobName(marker.projectSlug, marker.workspaceId),
+    containerlessJobName(marker.projectId, marker.workspaceId),
   ).tmuxSock)
 }
 

@@ -23,7 +23,7 @@ function buildEntry(overrides: Partial<ImageBuildEntry> = {}): ImageBuildEntry {
     id: 'b1',
     tag: 'yaac-base:abc',
     layer: 'base',
-    projectSlugs: ['p'],
+    projectIds: ['p'],
     reason: 'session',
     status: 'running',
     startedAt: '2026-01-01 00:00:00',
@@ -33,7 +33,7 @@ function buildEntry(overrides: Partial<ImageBuildEntry> = {}): ImageBuildEntry {
 
 const mockDismiss = vi.fn<(id: string) => boolean>()
 const mockRetry = vi.fn<
-  (id: string, cfg: (slug: string) => Promise<YaacConfig | undefined>) => boolean
+  (id: string, cfg: (projectId: string) => Promise<YaacConfig | undefined>) => boolean
 >()
 
 describe('image routes', () => {

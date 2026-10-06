@@ -18,11 +18,11 @@
  *
  * Needs a running server with a project.
  * Run: YAAC_DATA_DIR=<data dir> node test-playwright-scripts/row-menu-dialog-focus-test.js
- * (PROJECT defaults to yaac)
+ * (PROJECT, a project name or id, defaults to yaac)
  */
-import { requirePlaywright, origin, check, finish } from './lib.js'
+import { requirePlaywright, origin, check, finish, resolveProject } from './lib.js'
 
-const PROJECT = process.env.PROJECT ?? 'yaac'
+const PROJECT = await resolveProject(process.env.PROJECT ?? 'yaac')
 const idea = `pw focus ${Date.now()}`
 
 const { chromium } = requirePlaywright()
@@ -30,7 +30,7 @@ const browser = await chromium.launch()
 try {
   const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
-  await page.goto(`${origin}/?project=${PROJECT}`)
+  await page.goto(`${origin}/?project=${PROJECT.id}`)
 
   const aside = page.locator('aside')
   const prompt = page.getByLabel('Prompt')
@@ -154,7 +154,7 @@ try {
   await expectFocusedVisible('keyboard Discard… + Escape returns focus to the … trigger')
 
   // (4) An ordinary menu: the project header's Remove project.
-  const projectMenu = aside.getByRole('button', { name: PROJECT, exact: true })
+  const projectMenu = aside.getByRole('button', { name: PROJECT.name, exact: true })
   const removeDialog = page.getByRole('alertdialog', { name: 'Remove project?' })
   const escapeRemove = async (name) => {
     await removeDialog.waitFor({ state: 'visible' })

@@ -8,6 +8,8 @@ import {
 } from '#db/workspace-store'
 import { recordAgentSessions } from '#db/agent-session-store'
 
+const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
+
 describe('desiredWorkspaces', () => {
   let tmpDir: string
 
@@ -21,27 +23,27 @@ describe('desiredWorkspaces', () => {
   })
 
   it('answers the live workspaces and the ids already recorded as stopped', async () => {
-    await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'live-1' })
-    await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'gone-1' })
-    await recordWorkspaceStopped('proj', 'gone-1')
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'live-1' })
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'gone-1' })
+    await recordWorkspaceStopped(PROJ, 'gone-1')
 
     const desired = await desiredWorkspaces()
     expect(desired.live.map((w) => w.workspaceId)).toEqual(['live-1'])
-    expect(desired.stopped).toEqual(['proj/gone-1'])
+    expect(desired.stopped).toEqual([`${PROJ}/gone-1`])
   })
 
   // `ran` is what separates an interrupted create from a workspace with real
   // history whose runtime went away — the difference between the reaper
   // recording `never-started` and `orphaned`.
   it('marks a workspace whose agent got going as having run', async () => {
-    await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'wt-1' })
-    await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'wt-2' })
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'wt-1' })
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'wt-2' })
     // A link alone proves nothing — create writes one before the agent
     // launches. A captured opening message is the evidence.
-    await recordAgentSessions('proj', 'wt-1', [
+    await recordAgentSessions(PROJ, 'wt-1', [
       { tool: 'claude', agentSessionId: 'conv-a', firstPrompt: 'do the thing' },
     ])
-    await recordAgentSessions('proj', 'wt-2', [
+    await recordAgentSessions(PROJ, 'wt-2', [
       { tool: 'claude', agentSessionId: 'conv-b' },
     ])
 
@@ -52,9 +54,9 @@ describe('desiredWorkspaces', () => {
   // A whole set every time, straight off the rows — a workspace recorded as
   // stopped since the last read leaves the live set on the very next one.
   it('answers fresh on every read', async () => {
-    await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'wt-1' })
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'wt-1' })
     expect((await desiredWorkspaces()).live).toHaveLength(1)
-    await recordWorkspaceStopped('proj', 'wt-1')
+    await recordWorkspaceStopped(PROJ, 'wt-1')
 
     expect((await desiredWorkspaces()).live).toEqual([])
   })

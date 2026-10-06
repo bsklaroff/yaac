@@ -112,7 +112,7 @@ describe('buildRegistrationConfigMapManifest', () => {
         'app': 'yaac-proxy',
         'yaac.proxy-input': 'registration',
         'yaac.workspace-id': 'w1',
-        'yaac.project': 'demo',
+        'yaac.project-id': 'demo',
       },
     })
     expect(JSON.parse(cm.data['registration.json'])).toEqual({ rules: [], allowedHosts: ['h'] })

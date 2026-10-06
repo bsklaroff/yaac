@@ -37,7 +37,7 @@ import type { AgentMode, PermissionMode, WorkspaceDeathCause } from '@yaac/share
 
 /** Fields `recordWorkspaceCreated` stamps on a fresh workspace. */
 export interface WorkspaceCreatedInput {
-  projectSlug: string
+  projectId: string
   workspaceId: string
   /** Branch the workspace forked from. */
   baseBranch?: string
@@ -67,8 +67,8 @@ function toRow({ mamaTokenHash: _, ...r }: Row): WorkspaceRow {
  *  workspaces yet. */
 const notSpare = eq(workspaces.spare, false)
 
-const key = (projectSlug: string, workspaceId: string) =>
-  and(eq(workspaces.projectSlug, projectSlug), eq(workspaces.workspaceId, workspaceId))
+const key = (projectId: string, workspaceId: string) =>
+  and(eq(workspaces.projectId, projectId), eq(workspaces.workspaceId, workspaceId))
 
 /**
  * Record a workspace as created: a plain INSERT, since an id is claimed once.
@@ -82,7 +82,7 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
   const db = await getDb()
   const rows = await db.insert(workspaces)
     .values({
-      projectSlug: input.projectSlug,
+      projectId: input.projectId,
       workspaceId: input.workspaceId,
       ...(input.baseBranch !== undefined ? { baseBranch: input.baseBranch } : {}),
       ...(input.spare === true ? { spare: true } : {}),
@@ -110,7 +110,7 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
 export async function recordWorkspaceResumed(
   input: Pick<
     WorkspaceCreatedInput,
-    'projectSlug' | 'workspaceId' | 'permissionMode' | 'model' | 'mode' | 'timeZone'
+    'projectId' | 'workspaceId' | 'permissionMode' | 'model' | 'mode' | 'timeZone'
   >,
 ): Promise<void> {
   const db = await getDb()
@@ -120,7 +120,7 @@ export async function recordWorkspaceResumed(
     ...(input.mode !== undefined ? { mode: input.mode } : {}),
     // A resume launches a new process, in the zone the create read now.
     timeZone: input.timeZone ?? null,
-  }).where(key(input.projectSlug, input.workspaceId))
+  }).where(key(input.projectId, input.workspaceId))
     .returning({ workspaceId: workspaces.workspaceId })
   if (!rows[0]) {
     throw new ServerError('NOT_FOUND', `workspace ${input.workspaceId} has no record to resume`)
@@ -140,7 +140,7 @@ export async function recordWorkspaceResumed(
  * create.
  */
 export async function claimSpareWorkspace(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
   claim: Pick<WorkspaceCreatedInput, 'permissionMode' | 'model' | 'mode'> = {},
 ): Promise<void> {
@@ -155,7 +155,7 @@ export async function claimSpareWorkspace(
     ...(claim.permissionMode !== undefined ? { permissionMode: claim.permissionMode } : {}),
     ...(claim.model !== undefined ? { model: claim.model } : {}),
     ...(claim.mode !== undefined ? { mode: claim.mode } : {}),
-  }).where(and(key(projectSlug, workspaceId), eq(workspaces.spare, true)))
+  }).where(and(key(projectId, workspaceId), eq(workspaces.spare, true)))
     .returning({ workspaceId: workspaces.workspaceId })
   if (!rows[0]) {
     throw new ServerError('CONFLICT', `workspace ${workspaceId} is not an unclaimed spare`)
@@ -168,11 +168,11 @@ export async function claimSpareWorkspace(
  * it can never delete a real workspace's row.
  */
 export async function deleteSpareWorkspaceRow(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
 ): Promise<void> {
   const db = await getDb()
-  await db.delete(workspaces).where(and(key(projectSlug, workspaceId), eq(workspaces.spare, true)))
+  await db.delete(workspaces).where(and(key(projectId, workspaceId), eq(workspaces.spare, true)))
 }
 
 /**
@@ -190,7 +190,7 @@ export async function deleteSpareWorkspaceRow(
  * Restores the flag first, since that is what makes the spare reapable.
  */
 export async function restoreSpareWorkspace(warmed: WorkspaceRow): Promise<void> {
-  const { projectSlug, workspaceId } = warmed
+  const { projectId, workspaceId } = warmed
   const db = await getDb()
   await db.update(workspaces).set({
     spare: true,
@@ -199,8 +199,8 @@ export async function restoreSpareWorkspace(warmed: WorkspaceRow): Promise<void>
     permissionMode: warmed.permissionMode,
     model: warmed.model ?? null,
     mode: warmed.mode ?? null,
-  }).where(key(projectSlug, workspaceId))
-  await deleteWorkspaceAgentSessions(projectSlug, workspaceId)
+  }).where(key(projectId, workspaceId))
+  await deleteWorkspaceAgentSessions(projectId, workspaceId)
 }
 
 /**
@@ -212,18 +212,18 @@ export async function restoreSpareWorkspace(warmed: WorkspaceRow): Promise<void>
  * (`recordedConversationHandles`).
  */
 export async function recordWorkspaceLife(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
 ): Promise<void> {
   const db = await getDb()
   await db.transaction(async (tx) => {
     await tx.update(workspaces)
       .set({ lifeStartedAt: new Date() })
-      .where(key(projectSlug, workspaceId))
+      .where(key(projectId, workspaceId))
     await tx.update(workspaceAgentSessions)
       .set({ paneId: null })
       .where(and(
-        eq(workspaceAgentSessions.projectSlug, projectSlug),
+        eq(workspaceAgentSessions.projectId, projectId),
         eq(workspaceAgentSessions.workspaceId, workspaceId),
       ))
   })
@@ -238,7 +238,7 @@ export async function recordWorkspaceLife(
  * what a restart brings back.
  */
 export async function recordWorkspaceStopped(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
   cause?: WorkspaceDeathCause,
 ): Promise<void> {
@@ -248,12 +248,12 @@ export async function recordWorkspaceStopped(
     deathReason: cause?.reason ?? null,
     deathDetail: cause?.detail ?? null,
     deathSeen: false,
-  }).where(key(projectSlug, workspaceId))
+  }).where(key(projectId, workspaceId))
 }
 
 /** Clear a workspace's stop (its id is live again after a restart). */
 export async function clearWorkspaceStopped(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
 ): Promise<void> {
   const db = await getDb()
@@ -262,23 +262,23 @@ export async function clearWorkspaceStopped(
     deathReason: null,
     deathDetail: null,
     deathSeen: false,
-  }).where(key(projectSlug, workspaceId))
+  }).where(key(projectId, workspaceId))
 }
 
 /** Mark an abnormal death as seen (the user opened its detail). */
-export async function recordDeathSeen(projectSlug: string, workspaceId: string): Promise<void> {
+export async function recordDeathSeen(projectId: string, workspaceId: string): Promise<void> {
   const db = await getDb()
-  await db.update(workspaces).set({ deathSeen: true }).where(key(projectSlug, workspaceId))
+  await db.update(workspaces).set({ deathSeen: true }).where(key(projectId, workspaceId))
 }
 
 /**
  * Mark every recorded abnormal death in a project as seen ("mark all as
  * read"). Only rows that actually died are touched.
  */
-export async function recordAllDeathsSeen(projectSlug: string): Promise<void> {
+export async function recordAllDeathsSeen(projectId: string): Promise<void> {
   const db = await getDb()
   await db.update(workspaces).set({ deathSeen: true }).where(and(
-    eq(workspaces.projectSlug, projectSlug),
+    eq(workspaces.projectId, projectId),
     isNotNull(workspaces.deathReason),
   ))
 }
@@ -289,12 +289,12 @@ export async function recordAllDeathsSeen(projectSlug: string): Promise<void> {
  * directly (containerless). No notification, since nothing rendered changes.
  */
 export async function setWorkspaceMamaTokenHash(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
   hash: string,
 ): Promise<void> {
   const db = await getDb()
-  await db.update(workspaces).set({ mamaTokenHash: hash }).where(key(projectSlug, workspaceId))
+  await db.update(workspaces).set({ mamaTokenHash: hash }).where(key(projectId, workspaceId))
 }
 
 /**
@@ -305,12 +305,12 @@ export async function setWorkspaceMamaTokenHash(
  */
 export async function findWorkspaceByMamaToken(
   token: string,
-): Promise<{ projectSlug: string; workspaceId: string } | undefined> {
+): Promise<{ projectId: string; workspaceId: string } | undefined> {
   if (token === '') return undefined
   const hash = createHash('sha256').update(token).digest('hex')
   const db = await getDb()
   const rows = await db.select({
-    projectSlug: workspaces.projectSlug,
+    projectId: workspaces.projectId,
     workspaceId: workspaces.workspaceId,
   }).from(workspaces).where(eq(workspaces.mamaTokenHash, hash))
   return rows[0]
@@ -323,7 +323,7 @@ export async function findWorkspaceByMamaToken(
  * ran.
  */
 export async function setWorkspaceTitle(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
   title: string,
   { ifUntitled = false }: { ifUntitled?: boolean } = {},
@@ -333,28 +333,28 @@ export async function setWorkspaceTitle(
   await db.update(workspaces)
     .set({ title: normalized === '' ? null : normalized })
     .where(ifUntitled
-      ? and(key(projectSlug, workspaceId), isNull(workspaces.title))
-      : key(projectSlug, workspaceId))
+      ? and(key(projectId, workspaceId), isNull(workspaces.title))
+      : key(projectId, workspaceId))
   notifyWorkspaceListChanged()
 }
 
 /** Every row of a project, keyed by workspace id, in one query. */
 export async function getProjectWorkspaceRows(
-  projectSlug: string,
+  projectId: string,
 ): Promise<Map<string, WorkspaceRow>> {
   const db = await getDb()
   const rows = await db.select().from(workspaces)
-    .where(and(eq(workspaces.projectSlug, projectSlug), notSpare))
+    .where(and(eq(workspaces.projectId, projectId), notSpare))
   return new Map(rows.map((r) => [r.workspaceId, toRow(r)]))
 }
 
 /** Rows across every project (or one), for the stopped-workspace listing. */
-export async function listWorkspaceRows(projectSlug?: string): Promise<WorkspaceRow[]> {
+export async function listWorkspaceRows(projectId?: string): Promise<WorkspaceRow[]> {
   const db = await getDb()
-  const rows = projectSlug === undefined
+  const rows = projectId === undefined
     ? await db.select().from(workspaces).where(notSpare)
     : await db.select().from(workspaces)
-      .where(and(eq(workspaces.projectSlug, projectSlug), notSpare))
+      .where(and(eq(workspaces.projectId, projectId), notSpare))
   return rows.map(toRow)
 }
 
@@ -373,23 +373,23 @@ export async function findWorkspaceRow(workspaceId: string): Promise<WorkspaceRo
 
 /** One workspace's row, or undefined. Includes spares. */
 export async function getWorkspaceRow(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
 ): Promise<WorkspaceRow | undefined> {
   const db = await getDb()
-  const rows = await db.select().from(workspaces).where(key(projectSlug, workspaceId))
+  const rows = await db.select().from(workspaces).where(key(projectId, workspaceId))
   return rows[0] ? toRow(rows[0]) : undefined
 }
 
-/** `<slug>/<id>` of workspaces with a recorded stop, which the stale reaper
+/** `<projectId>/<id>` of workspaces with a recorded stop, which the stale reaper
  *  uses to tell its own teardowns from out-of-band ones. */
 export async function listStoppedWorkspaceIds(): Promise<Set<string>> {
   const db = await getDb()
   const rows = await db.select({
-    projectSlug: workspaces.projectSlug,
+    projectId: workspaces.projectId,
     workspaceId: workspaces.workspaceId,
   }).from(workspaces).where(and(isNotNull(workspaces.stoppedAt), notSpare))
-  return new Set(rows.map((r) => `${r.projectSlug}/${r.workspaceId}`))
+  return new Set(rows.map((r) => `${r.projectId}/${r.workspaceId}`))
 }
 
 /**
@@ -397,32 +397,32 @@ export async function listStoppedWorkspaceIds(): Promise<Set<string>> {
  * up; one that ran is recorded as stopped instead.
  */
 export async function deleteWorkspaceRow(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
 ): Promise<void> {
   const db = await getDb()
-  await db.delete(workspaces).where(key(projectSlug, workspaceId))
+  await db.delete(workspaces).where(key(projectId, workspaceId))
 }
 
 /** Record the branch the workspace forked from, for a claimed spare that was
  *  re-branched. */
 export async function setWorkspaceBaseBranch(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
   baseBranch: string,
 ): Promise<void> {
   const db = await getDb()
-  await db.update(workspaces).set({ baseBranch }).where(key(projectSlug, workspaceId))
+  await db.update(workspaces).set({ baseBranch }).where(key(projectId, workspaceId))
 }
 
 /** Record the permission mode the running agent moved to. */
 export async function setWorkspacePermissionMode(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
   permissionMode: PermissionMode,
 ): Promise<void> {
   const db = await getDb()
-  await db.update(workspaces).set({ permissionMode }).where(key(projectSlug, workspaceId))
+  await db.update(workspaces).set({ permissionMode }).where(key(projectId, workspaceId))
 }
 
 /**
@@ -436,34 +436,34 @@ export async function setWorkspacePermissionMode(
  * (`listProjectWorkspaceIds`).
  */
 export async function listLiveWorkspaceRows(): Promise<Array<{
-  projectSlug: string
+  projectId: string
   workspaceId: string
   ran: boolean
 }>> {
   const db = await getDb()
   const rows = await db.select({
-    projectSlug: workspaces.projectSlug,
+    projectId: workspaces.projectId,
     workspaceId: workspaces.workspaceId,
   }).from(workspaces).where(and(isNull(workspaces.stoppedAt), notSpare))
   // A link alone proves nothing, since create records one before launching
   // the agent; a prompt or transcript does.
   const links = await db.select({
-    projectSlug: workspaceAgentSessions.projectSlug,
+    projectId: workspaceAgentSessions.projectId,
     workspaceId: workspaceAgentSessions.workspaceId,
     firstPrompt: agentSessions.firstPrompt,
     transcriptPath: agentSessions.transcriptPath,
   }).from(workspaceAgentSessions).innerJoin(agentSessions, and(
-    eq(workspaceAgentSessions.projectSlug, agentSessions.projectSlug),
+    eq(workspaceAgentSessions.projectId, agentSessions.projectId),
     eq(workspaceAgentSessions.tool, agentSessions.tool),
     eq(workspaceAgentSessions.agentSessionId, agentSessions.agentSessionId),
   ))
   const ran = new Set(links
     .filter((l) => l.firstPrompt !== null || l.transcriptPath !== null)
-    .map((l) => `${l.projectSlug}/${l.workspaceId}`))
+    .map((l) => `${l.projectId}/${l.workspaceId}`))
   return rows.map((r) => ({
-    projectSlug: r.projectSlug,
+    projectId: r.projectId,
     workspaceId: r.workspaceId,
-    ran: ran.has(`${r.projectSlug}/${r.workspaceId}`),
+    ran: ran.has(`${r.projectId}/${r.workspaceId}`),
   }))
 }
 
@@ -476,11 +476,11 @@ export async function listLiveWorkspaceRows(): Promise<Array<{
  * One query for the whole project, since PGlite runs on the event loop and a
  * query per candidate would stall terminal relaying.
  */
-export async function listProjectWorkspaceIds(projectSlug: string): Promise<Map<string, boolean>> {
+export async function listProjectWorkspaceIds(projectId: string): Promise<Map<string, boolean>> {
   const db = await getDb()
   const rows = await db.select({ workspaceId: workspaces.workspaceId, spare: workspaces.spare })
     .from(workspaces)
-    .where(eq(workspaces.projectSlug, projectSlug))
+    .where(eq(workspaces.projectId, projectId))
   return new Map(rows.map((r) => [r.workspaceId, r.spare]))
 }
 
@@ -488,7 +488,7 @@ export async function listProjectWorkspaceIds(projectSlug: string): Promise<Map<
  * Delete a project's workspace rows, on project removal (which also deletes
  * the checkouts). The caller also runs `deleteProjectAgentSessions`.
  */
-export async function deleteProjectWorkspaces(projectSlug: string): Promise<void> {
+export async function deleteProjectWorkspaces(projectId: string): Promise<void> {
   const db = await getDb()
-  await db.delete(workspaces).where(eq(workspaces.projectSlug, projectSlug))
+  await db.delete(workspaces).where(eq(workspaces.projectId, projectId))
 }

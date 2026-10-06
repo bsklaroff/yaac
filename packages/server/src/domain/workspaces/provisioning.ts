@@ -20,7 +20,7 @@ export type ProvisioningKind = 'create' | 'restart'
 
 interface ProvisioningEntry {
   workspaceId: string
-  projectSlug: string
+  projectId: string
   tool: AgentTool
   kind: ProvisioningKind
   message: string
@@ -61,7 +61,7 @@ const stoppedIds = new Set<string>()
 
 interface ProvisioningInput {
   workspaceId: string
-  projectSlug: string
+  projectId: string
   tool: AgentTool
   kind: ProvisioningKind
   message?: string
@@ -85,7 +85,7 @@ export function registerProvisioning(input: ProvisioningInput): void {
   }
   entries.set(input.workspaceId, {
     workspaceId: input.workspaceId,
-    projectSlug: input.projectSlug,
+    projectId: input.projectId,
     tool: input.tool,
     kind: input.kind,
     message: input.message ?? 'Starting…',
@@ -170,7 +170,7 @@ export function failProvisioning(workspaceId: string, error: string): void {
  */
 export async function reportAgentLaunchFailure(input: {
   workspaceId: string
-  projectSlug: string
+  projectId: string
   tool: AgentTool
   kind: ProvisioningKind
   error: string
@@ -181,7 +181,7 @@ export async function reportAgentLaunchFailure(input: {
   if (entries.has(input.workspaceId) || stoppedIds.has(input.workspaceId)) return
   registerProvisioning({
     workspaceId: input.workspaceId,
-    projectSlug: input.projectSlug,
+    projectId: input.projectId,
     tool: input.tool,
     kind: input.kind,
     message: input.error,
@@ -215,13 +215,13 @@ async function settledRun(workspaceId: string): Promise<void> {
  * checkpoint finishes anyway, and the caller stops it as a running one.
  */
 export function stopProvisioning(workspaceId: string): {
-  projectSlug: string
+  projectId: string
   ranAs: Promise<string | undefined>
 } | undefined {
   const e = entries.get(workspaceId)
   if (e === undefined || e.error !== undefined) return undefined
   // A repeat stop: the first already waits on the run.
-  if (e.stopping === true) return { projectSlug: e.projectSlug, ranAs: Promise.resolve(undefined) }
+  if (e.stopping === true) return { projectId: e.projectId, ranAs: Promise.resolve(undefined) }
   e.stopping = true
   e.message = 'Stopping…'
   notifyWorkspaceListChanged()
@@ -229,7 +229,7 @@ export function stopProvisioning(workspaceId: string): {
   const ranAs = runs.get(workspaceId) ?? Promise.resolve(undefined)
   // A claimed spare comes up under its own id.
   void ranAs.then((id) => { if (id !== undefined) stoppedIds.add(id) })
-  return { projectSlug: e.projectSlug, ranAs }
+  return { projectId: e.projectId, ranAs }
 }
 
 /** Whether the user stopped this provision. */
@@ -297,7 +297,7 @@ export async function runProvisioned<T extends { workspaceId: string }>(
  * exists.
  */
 export function inFlightCreate(workspaceId: string): {
-  projectSlug: string
+  projectId: string
   tool: AgentTool
   model?: string
   branch?: string
@@ -308,7 +308,7 @@ export function inFlightCreate(workspaceId: string): {
     return undefined
   }
   return {
-    projectSlug: e.projectSlug,
+    projectId: e.projectId,
     tool: e.tool,
     ...(e.model !== undefined ? { model: e.model } : {}),
     ...(e.branch !== undefined ? { branch: e.branch } : {}),
@@ -322,7 +322,7 @@ export function listProvisioning(): ProvisioningWorkspaceEntry[] {
     .sort((a, b) => a.startedAt - b.startedAt || a.seq - b.seq)
     .map((e) => ({
       workspaceId: e.workspaceId,
-      projectSlug: e.projectSlug,
+      projectId: e.projectId,
       tool: e.tool,
       kind: e.kind,
       message: e.message,

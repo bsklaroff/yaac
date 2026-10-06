@@ -111,7 +111,7 @@ function ResizeHandle(): JSX.Element {
  * that.
  */
 export function Sidebar({
-  projectSlug,
+  projectId,
   projectRemoteUrl,
   workspaces,
   groups,
@@ -122,7 +122,7 @@ export function Sidebar({
   connected,
   gitAuthFailures,
 }: {
-  projectSlug: string | null
+  projectId: string | null
   /** Active project's git remote ('' until the snapshot loads), typed to
    *  confirm project removal. */
   projectRemoteUrl: string
@@ -153,14 +153,14 @@ export function Sidebar({
         <div className="shrink-0">
           <div className="titlebar-drag flex h-11 items-center gap-2 pl-4 pr-2">
             <div className="no-drag flex min-w-0 flex-1 items-center">
-              {projectSlug
-                ? <ProjectActionsMenu slug={projectSlug} remoteUrl={projectRemoteUrl} />
+              {projectId
+                ? <ProjectActionsMenu projectId={projectId} remoteUrl={projectRemoteUrl} />
                 : <span className="font-semibold tracking-tight">yaac</span>}
             </div>
             <div className="flex shrink-0 items-center gap-2 no-drag">
               {!connected && <span className="text-xs text-amber-400">reconnecting…</span>}
-              {projectSlug && <SkillsButton projectSlug={projectSlug} />}
-              {projectSlug && <NewWorkspaceButton projectSlug={projectSlug} />}
+              {projectId && <SkillsButton projectId={projectId} />}
+              {projectId && <NewWorkspaceButton projectId={projectId} />}
               <button
                 onClick={toggleSidebar}
                 title="Hide sidebar"
@@ -177,10 +177,10 @@ export function Sidebar({
           <div className="flex items-center gap-2 px-4 pb-2 empty:hidden">
             <UsageBadge />
             <ServerBadge />
-            <ImageBuildIndicator projectSlug={projectSlug} />
-            {projectSlug && gitAuthFailures.length > 0 && (
+            <ImageBuildIndicator projectId={projectId} />
+            {projectId && gitAuthFailures.length > 0 && (
               <GitAuthFailureBadge
-                projectSlug={projectSlug}
+                projectId={projectId}
                 failures={gitAuthFailures}
                 iconSize={11}
                 className="hover:bg-danger/25"
@@ -190,7 +190,7 @@ export function Sidebar({
         </div>
 
         <WorkspaceList
-          projectSlug={projectSlug}
+          projectId={projectId}
           workspaces={workspaces}
           groups={groups}
           provisioning={provisioning}

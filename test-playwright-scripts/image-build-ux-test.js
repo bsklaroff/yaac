@@ -33,11 +33,11 @@
  * registered. Screenshots: $SCREENSHOT_DIR/ibux-*.png.
  */
 import path from 'node:path'
-import { api, check, finish, origin, requirePlaywright, SHOTS } from './lib.js'
+import { api, check, finish, origin, requirePlaywright, resolveProject, SHOTS } from './lib.js'
 
-const PROJECT = process.argv.includes('--project')
+const PROJECT = (await resolveProject(process.argv.includes('--project')
   ? process.argv[process.argv.indexOf('--project') + 1]
-  : 'hello-world'
+  : 'hello-world')).id
 const dockerfileRoute = `/project/${PROJECT}/dockerfile`
 const writeDockerfile = (content) => api(dockerfileRoute, { method: 'PUT', body: { content } })
 

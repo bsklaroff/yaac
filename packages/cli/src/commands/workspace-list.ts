@@ -1,4 +1,4 @@
-import { api } from '#commands/api'
+import { api, projectNames } from '#commands/api'
 import type {
   GitAuthFailure,
   StoppedWorkspaceEntry,
@@ -13,38 +13,44 @@ export interface WorkspaceListOptions {
 
 export const STOPPED_DEFAULT_LIMIT = 25
 
+/** `project` is a name, id or id prefix, resolved by the server. */
 export async function workspaceList(
-  projectSlug?: string,
+  project?: string,
   options: WorkspaceListOptions = {},
 ): Promise<void> {
   if (options.stopped) {
     const limit = resolveStoppedLimit(options)
     const query: { project?: string; limit?: string } = {}
-    if (projectSlug) query.project = projectSlug
+    if (project) query.project = project
     if (limit !== undefined) query.limit = String(limit)
-    const stopped = await api.workspace['list-stopped'].$get({ query })
-    renderStopped(stopped, projectSlug, limit)
+    const [stopped, names] = await Promise.all([api.workspace['list-stopped'].$get({ query }), projectNames()])
+    renderStopped(stopped, project, limit, names)
     return
   }
 
-  const query = projectSlug ? { project: projectSlug } : {}
-  const [result, { groups }] = await Promise.all([
+  const query = project ? { project } : {}
+  const [result, { groups }, names] = await Promise.all([
     api.workspace.list.$get({ query }),
     api.workspace.group.list.$get({ query }),
+    projectNames(),
   ])
 
   if (result.workspaces.length === 0) {
-    const suffix = projectSlug ? ` for project "${projectSlug}"` : ''
+    const suffix = project ? ` for project "${project}"` : ''
     console.log(`No running workspaces${suffix}. Create one with: yaac workspace create <project>`)
   } else {
-    renderRunning(result.workspaces, new Map(groups.map((g) => [g.groupId, g.name])))
+    renderRunning(result.workspaces, new Map(groups.map((g) => [g.groupId, g.name])), names)
     renderBlockedHosts(result.workspaces)
   }
   // Shown even with no workspaces: a rejected credential also blocks creates.
-  renderGitAuthFailures(result.gitAuthFailures)
+  renderGitAuthFailures(result.gitAuthFailures, names)
 }
 
-function renderRunning(workspaces: WorkspaceListEntry[], groupNames: Map<string, string>): void {
+function renderRunning(
+  workspaces: WorkspaceListEntry[],
+  groupNames: Map<string, string>,
+  projectNames: Map<string, string>,
+): void {
   const statusOrder: Record<string, number> = { waiting: 0, background: 1, running: 2 }
   const sorted = [...workspaces].sort((a, b) =>
     (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9)
@@ -53,7 +59,7 @@ function renderRunning(workspaces: WorkspaceListEntry[], groupNames: Map<string,
 
   const rows = sorted.map((w) => ({
     shortId: (w.workspaceId || '?').slice(0, 8),
-    project: w.projectSlug || '?',
+    project: projectNames.get(w.projectId) ?? w.projectId,
     tool: w.tool,
     status: w.status,
     agents: String(w.agentSessions.filter((a) => a.active).length || 1),
@@ -95,13 +101,16 @@ function renderRunning(workspaces: WorkspaceListEntry[], groupNames: Map<string,
   console.log('')
 }
 
-function renderGitAuthFailures(failuresByProject: Record<string, GitAuthFailure[]>): void {
-  const slugs = Object.keys(failuresByProject).sort()
-  if (slugs.length === 0) return
+function renderGitAuthFailures(
+  failuresByProject: Record<string, GitAuthFailure[]>,
+  projectNames: Map<string, string>,
+): void {
+  const projectIds = Object.keys(failuresByProject).sort()
+  if (projectIds.length === 0) return
   console.log('GIT AUTH FAILED — the project\'s credential was rejected (expired or revoked token?):')
-  for (const slug of slugs) {
-    for (const f of failuresByProject[slug]) {
-      console.log(`  ${slug}  ${f.host} returned HTTP ${f.status}`)
+  for (const projectId of projectIds) {
+    for (const f of failuresByProject[projectId]) {
+      console.log(`  ${projectNames.get(projectId) ?? projectId}  ${f.host} returned HTTP ${f.status}`)
     }
   }
   console.log('Assign the project a new credential in the web app (Settings → Git credentials);')
@@ -136,16 +145,18 @@ export function resolveStoppedLimit(options: WorkspaceListOptions): number | und
 
 function renderStopped(
   stopped: StoppedWorkspaceEntry[],
-  projectSlug: string | undefined,
+  project: string | undefined,
   limit: number | undefined,
+  projectNames: Map<string, string>,
 ): void {
   if (stopped.length === 0) {
-    const suffix = projectSlug ? ` for project "${projectSlug}"` : ''
+    const suffix = project ? ` for project "${project}"` : ''
     console.log(`No stopped workspaces${suffix}.`)
     return
   }
 
-  const projectWidth = Math.max('PROJECT'.length, ...stopped.map((s) => s.projectSlug.length))
+  const nameOf = (s: StoppedWorkspaceEntry): string => projectNames.get(s.projectId) ?? s.projectId
+  const projectWidth = Math.max('PROJECT'.length, ...stopped.map((s) => nameOf(s).length))
   const toolWidth = Math.max('TOOL'.length, ...stopped.map((s) => s.tool.length))
   // DIED (the reaper's recorded reason) and TITLE appear only when some row
   // has a value.
@@ -177,7 +188,7 @@ function renderStopped(
     const when = s.stoppedAt ?? s.lastActiveAt ?? s.createdAt
     const diedCell = hasDeaths ? ` ${(s.deathReason ?? '').padEnd(diedWidth)}` : ''
     const titleCell = hasTitles ? ` ${(s.title ?? '').padEnd(titleWidth)}` : ''
-    console.log(`${s.workspaceId.slice(0, 8).padEnd(10)} ${s.projectSlug.padEnd(projectWidth)} ${s.tool.padEnd(toolWidth)} ${when}${diedCell}${titleCell}  ${promptText}`)
+    console.log(`${s.workspaceId.slice(0, 8).padEnd(10)} ${nameOf(s).padEnd(projectWidth)} ${s.tool.padEnd(toolWidth)} ${when}${diedCell}${titleCell}  ${promptText}`)
   }
   if (limit !== undefined && stopped.length >= limit) {
     console.log(`(showing most recent ${limit}; pass --all or -n <num> to see more)`)

@@ -59,13 +59,13 @@ workspace, since all workspaces share one filesystem.
 
 | | k8s | containerless |
 |---|---|---|
-| checkout | `/workspace` | `~/.yaac/global/projects/<slug>/workspaces/<id>` |
-| project main clone | the server's own path, read-only | `~/.yaac/global/projects/<slug>/repo/.git` |
+| checkout | `/workspace` | `~/.yaac/global/projects/<project-id>/workspaces/<id>` |
+| project main clone | the server's own path, read-only | `~/.yaac/global/projects/<project-id>/repo/.git` |
 | tmux socket | `/tmp/yaac-tmux/server` (pod-local) | `$TMPDIR/yaac-<hash>/<short-id>.sock` |
 | scratch | `/tmp` | `<state dir>/containerless/scratch` |
-| ACP record | `/home/yaac/.yaac-acp` (mounted) | `~/.yaac/global/projects/<slug>/acp/<id>` |
+| ACP record | `/home/yaac/.yaac-acp` (mounted) | `~/.yaac/global/projects/<project-id>/acp/<id>` |
 
-The state dir is `~/.yaac/global/projects/<slug>/sessions/<id>`.
+The state dir is `~/.yaac/global/projects/<project-id>/sessions/<id>`.
 
 The ACP record is not driver-private: under k8s the container path is a
 mount of the shared project location, and every reader (the chat pane, the
@@ -204,7 +204,7 @@ same on both drivers so an install can switch.
 In a pod, yaac's skills are a per-workspace staging dir mounted read-only
 over each tool's skills root. Here a create links them into the project's
 shared skills roots instead:
-`<data>/projects/<slug>/{claude,codex,…}/skills/<name>` points at the
+`<data>/projects/<project-id>/{claude,codex,…}/skills/<name>` points at the
 install's `builtin-skills/<name>`. All four tools' roots are written. They
 are per project because those dirs are already shared, and links rather than
 copies keep them in step with the running yaac version.
@@ -381,7 +381,7 @@ server dies, so the client's exit is the workspace's death. Its stdin must be
 a pipe held open, because a control-mode client exits when stdin closes.
 
 Recovery is the normal path. On start the server reads the marker files it
-wrote (`global/projects/<slug>/sessions/<id>/containerless/workspace.json`,
+wrote (`global/projects/<project-id>/sessions/<id>/containerless/workspace.json`,
 the equivalent of a Job object) and probes each socket. A live socket is a
 running workspace, recovered with its agents still working. A dead one is
 recorded as a dead workspace, not dropped, so the stale reaper marks its row

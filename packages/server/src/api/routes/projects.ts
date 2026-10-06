@@ -3,7 +3,6 @@ import { zv } from '#routes/validator'
 import { z } from 'zod'
 import {
   addProject,
-  assertProjectExists,
   assignProjectCredential,
   getProjectBranches,
   getProjectDetail,
@@ -19,6 +18,7 @@ import {
   writeProjectConfig,
   writeProjectDockerfile,
   resolveProjectEnv,
+  resolveProjectId,
 } from '#domain/projects'
 import { removeProject } from '#domain/workspaces'
 import { pushCredentialsToRuntime } from '#domain/auth'
@@ -36,11 +36,11 @@ import { workspaceDriver } from '#drivers/driver'
  * silent failed delete would leave the proxy injecting the old value. The
  * next server start fixes it.
  */
-async function syncRunningWorkspaces(slug: string, applied: string): Promise<void> {
+async function syncRunningWorkspaces(projectId: string, applied: string): Promise<void> {
   try {
-    const { secrets } = await resolveProjectEnv(slug)
+    const { secrets } = await resolveProjectEnv(projectId)
     await workspaceDriver().syncProjectSecrets(
-      slug,
+      projectId,
       Object.fromEntries(Object.entries(secrets).map(([name, { value }]) => [name, value])),
     )
   } catch (err) {
@@ -75,59 +75,55 @@ export const projectApp = new Hono()
   // without cloning. Tests use this to add a local repo.
   .post(
     '/register',
-    zv('json', z.object({ slug: z.string().min(1), remoteUrl: z.string().min(1) })),
+    zv('json', z.object({ id: z.uuid(), name: z.string().min(1), remoteUrl: z.string().min(1) })),
     async (c) => {
-      const { slug, remoteUrl } = c.req.valid('json')
-      return c.json(await registerStagedProject(slug, remoteUrl))
+      const { id, name, remoteUrl } = c.req.valid('json')
+      return c.json(await registerStagedProject(id, name, remoteUrl))
     },
   )
-  .get('/:slug', async (c) => c.json(await getProjectDetail(c.req.param('slug'))))
-  .get('/:slug/exists', async (c) => {
-    await assertProjectExists(c.req.param('slug'))
-    return c.body(null, 204)
-  })
+  .get('/:projectId', async (c) => c.json(await getProjectDetail(await resolveProjectId(c.req.param('projectId')))))
   // Assign the project its git credential. For an SSH key, returns the host
   // key that was trusted so the user can compare it.
   .put(
-    '/:slug/git-credential',
+    '/:projectId/git-credential',
     zv('json', z.object({ credentialId: z.uuid() })),
     async (c) => {
-      const result = await assignProjectCredential(c.req.param('slug'), c.req.valid('json').credentialId)
+      const result = await assignProjectCredential(await resolveProjectId(c.req.param('projectId')), c.req.valid('json').credentialId)
       await pushCredentialsToRuntime()
       return c.json(result)
     },
   )
-  .delete('/:slug', async (c) => {
-    await removeProject(c.req.param('slug'))
+  .delete('/:projectId', async (c) => {
+    await removeProject(await resolveProjectId(c.req.param('projectId')))
     return c.body(null, 204)
   })
-  .get('/:slug/config', async (c) => c.json(await resolveProjectConfigWithSource(c.req.param('slug'))))
+  .get('/:projectId/config', async (c) => c.json(await resolveProjectConfigWithSource(await resolveProjectId(c.req.param('projectId')))))
   // Raw text for the CLI's $EDITOR flow: unlike the parsed GET above it
   // returns malformed content verbatim so it can be repaired.
-  .get('/:slug/config/raw', async (c) =>
-    c.json({ content: await readProjectConfigRaw(c.req.param('slug')) }))
+  .get('/:projectId/config/raw', async (c) =>
+    c.json({ content: await readProjectConfigRaw(await resolveProjectId(c.req.param('projectId'))) }))
   .put(
-    '/:slug/config',
+    '/:projectId/config',
     zv('json', z.object({ config: z.unknown() }).refine(
       (b) => b.config !== undefined,
       { message: 'Expected { config } body.', path: ['config'] },
     )),
     async (c) => {
       const { config } = c.req.valid('json')
-      const saved = await writeProjectConfig(c.req.param('slug'), config)
+      const saved = await writeProjectConfig(await resolveProjectId(c.req.param('projectId')), config)
       return c.json({ config: saved })
     },
   )
-  .delete('/:slug/config', async (c) => {
-    await removeProjectConfig(c.req.param('slug'))
+  .delete('/:projectId/config', async (c) => {
+    await removeProjectConfig(await resolveProjectId(c.req.param('projectId')))
     return c.body(null, 204)
   })
   // The project's environment: variables its workspaces launch with, and
   // secrets the egress proxy injects. Secret values are write-only: set by
   // PUT, never returned by GET.
-  .get('/:slug/env', async (c) => c.json({ vars: await listProjectEnv(c.req.param('slug')) }))
+  .get('/:projectId/env', async (c) => c.json({ vars: await listProjectEnv(await resolveProjectId(c.req.param('projectId'))) }))
   .put(
-    '/:slug/env',
+    '/:projectId/env',
     zv('json', z.object({
       name: z.string().min(1),
       // Optional so a secret's rule can be edited without resending the
@@ -137,36 +133,33 @@ export const projectApp = new Hono()
       rule: z.unknown().optional(),
     })),
     async (c) => {
-      const slug = c.req.param('slug')
-      const saved = await setProjectEnvVar(slug, c.req.valid('json'))
-      await syncRunningWorkspaces(slug, `${saved.name} was saved`)
+      const projectId = await resolveProjectId(c.req.param('projectId'))
+      const saved = await setProjectEnvVar(projectId, c.req.valid('json'))
+      await syncRunningWorkspaces(projectId, `${saved.name} was saved`)
       return c.json({ var: saved })
     },
   )
-  .delete('/:slug/env/:id', async (c) => {
-    const slug = c.req.param('slug')
-    await removeProjectEnvVar(slug, c.req.param('id'))
-    await syncRunningWorkspaces(slug, 'the variable was removed')
+  .delete('/:projectId/env/:id', async (c) => {
+    const projectId = await resolveProjectId(c.req.param('projectId'))
+    await removeProjectEnvVar(projectId, c.req.param('id'))
+    await syncRunningWorkspaces(projectId, 'the variable was removed')
     return c.body(null, 204)
   })
   // Branch data for the new-workspace picker: local remote-tracking refs
   // (instant), or freshly fetched with ?refresh=1.
   .get(
-    '/:slug/branches',
+    '/:projectId/branches',
     zv('query', z.object({ refresh: z.string().optional() })),
     async (c) => {
-      const slug = c.req.param('slug')
-      // Check the row first so an unknown slug 404s instead of probing a
-      // missing repo dir.
-      await assertProjectExists(slug)
+      const projectId = await resolveProjectId(c.req.param('projectId'))
       const refresh = c.req.valid('query').refresh === '1'
-      return c.json(await getProjectBranches(slug, { refresh }))
+      return c.json(await getProjectBranches(projectId, { refresh }))
     },
   )
   // Personal, plugin and project SKILL.md files the given tool (default
   // claude) can use. Read on the host, so no running workspace is needed.
   .get(
-    '/:slug/skills',
+    '/:projectId/skills',
     zv('query', z.object({
       tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
       // Origin branch to read repo skills and repo plugin settings from
@@ -174,51 +167,46 @@ export const projectApp = new Hono()
       branch: z.string().optional(),
     })),
     async (c) => {
-      const slug = c.req.param('slug')
-      await assertProjectExists(slug)
+      const projectId = await resolveProjectId(c.req.param('projectId'))
       const { tool, branch } = c.req.valid('query')
-      return c.json(await getProjectSkills(tool ?? 'claude', slug, branch))
+      return c.json(await getProjectSkills(tool ?? 'claude', projectId, branch))
     },
   )
   // The full SKILL.md for one skill, fetched on demand when a row is expanded.
   .get(
-    '/:slug/skills/body',
+    '/:projectId/skills/body',
     zv('query', z.object({
       id: z.string().min(1),
       tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
       branch: z.string().optional(),
     })),
     async (c) => {
-      const slug = c.req.param('slug')
-      await assertProjectExists(slug)
+      const projectId = await resolveProjectId(c.req.param('projectId'))
       const { id, tool, branch } = c.req.valid('query')
-      return c.json(await getSkillDetail(tool ?? 'claude', slug, id, branch))
+      return c.json(await getSkillDetail(tool ?? 'claude', projectId, id, branch))
     },
   )
   // Support files next to Dockerfile.yaac in the project's build dir: its
   // build context, which feeds the image tag.
-  .route('/:slug/build-files', buildFilesApp(async (c) => {
-    // The generic Context can't see the mount path's :slug, so param() is
-    // string | undefined here; the mount guarantees it exists.
-    const slug = c.req.param('slug') ?? ''
-    await assertProjectExists(slug)
-    return projectBuildDir(slug)
+  .route('/:projectId/build-files', buildFilesApp(async (c) => {
+    // The generic Context can't see the mount path's :projectId, so param()
+    // is string | undefined here; the mount guarantees it exists.
+    return projectBuildDir(await resolveProjectId(c.req.param('projectId') ?? ''))
   }))
   // The project's image layer. Both check the driver feature before the
   // project (see `requireDriverFeature`).
-  .get('/:slug/dockerfile', async (c) => {
+  .get('/:projectId/dockerfile', async (c) => {
     requireDriverFeature('images')
-    await assertProjectExists(c.req.param('slug'))
-    return c.json({ content: await readProjectDockerfile(c.req.param('slug')) })
+    return c.json({ content: await readProjectDockerfile(await resolveProjectId(c.req.param('projectId'))) })
   })
   .put(
-    '/:slug/dockerfile',
+    '/:projectId/dockerfile',
     zv('json', z.object({ content: z.string() })),
     async (c) => {
       requireDriverFeature('images')
-      await assertProjectExists(c.req.param('slug'))
+      const projectId = await resolveProjectId(c.req.param('projectId'))
       const { content } = c.req.valid('json')
-      await writeProjectDockerfile(c.req.param('slug'), content)
+      await writeProjectDockerfile(projectId, content)
       return c.json({ content })
     },
   )

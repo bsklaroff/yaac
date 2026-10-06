@@ -51,14 +51,14 @@ if (!wt) {
   console.error('usage: node test-playwright-scripts/file-pane-find.js <live-workspace-id>')
   process.exit(1)
 }
-const checkout = path.join(DATA_DIR, 'global', 'projects', wt.projectSlug, 'workspaces', wt.workspaceId)
+const checkout = path.join(DATA_DIR, 'global', 'projects', wt.projectId, 'workspaces', wt.workspaceId)
 const long = `${'word '.repeat(80)}needle\nshort needle line\nthird needle\n${'a'.repeat(5000)}\n`
 fs.writeFileSync(path.join(checkout, 'pw-long.md'), long)
 
 const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1400, height: 800 } })
 const load = async () => {
-  const query = new URLSearchParams({ project: wt.projectSlug, workspace: wt.workspaceId })
+  const query = new URLSearchParams({ project: wt.projectId, workspace: wt.workspaceId })
   await page.goto(`${origin}/?${query}`)
   await page.waitForSelector('[aria-label="Browse files"]', { timeout: 20000 })
 }

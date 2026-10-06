@@ -4,7 +4,6 @@ import {
   LABEL_NESTED,
   LABEL_NPM_CACHE,
   LABEL_PREWARMED,
-  LABEL_PROJECT,
   LABEL_PROJECT_ID,
   LABEL_TOOL,
   buildPodJobManifest,
@@ -62,9 +61,6 @@ import type {
  * Opaque to callers: it travels on the spec and is narrowed here.
  */
 interface K8sWorkspaceSubstrate extends WorkspaceSubstrate {
-  /** The project's id, labelled on the pod so the project registry's
-   *  NetworkPolicies can select it. */
-  projectId: string
   /** Proxy Service ClusterIP: the pod's DNS resolver and egress target. */
   proxyHost: string
   /** The per-workspace token streamd's handshake requires. */
@@ -106,8 +102,7 @@ function narrow(substrate: WorkspaceSubstrate): K8sWorkspaceSubstrate {
 export async function prepareWorkspaceSubstrate(
   intent: SubstrateIntent,
 ): Promise<WorkspaceSubstrate> {
-  const { projectSlug, projectId, workspaceId, config } = intent
-  const project = { slug: projectSlug, id: projectId }
+  const { projectId, workspaceId, config } = intent
   const emit = (m: string): void => intent.onProgress?.(m)
 
   // The proxy injects GitHub / Claude / Codex tokens into outbound HTTPS.
@@ -122,7 +117,7 @@ export async function prepareWorkspaceSubstrate(
   const storeMounts: PodMount[] = []
   if (projectRegistry) {
     emit('Ensuring project registry...')
-    await ensureProjectRegistry(project)
+    await ensureProjectRegistry(projectId)
 
     // Mount the node-local image store read-only at /var/lib/shared-images
     // so the project's warm layers are available without a pull
@@ -132,7 +127,7 @@ export async function prepareWorkspaceSubstrate(
     // next workspace, since this pod's mount is already chosen.
     const storeMount = await nodeImageStoreMount(projectId)
     if (storeMount) storeMounts.push(storeMount)
-    void ensureNodeImageStore(project)
+    void ensureNodeImageStore(projectId)
   }
 
   // netd's per-pod DNAT rules (k8s/netd) redirect the pod's outbound 443/80
@@ -154,7 +149,7 @@ export async function prepareWorkspaceSubstrate(
     config,
     remoteUrl: intent.remoteUrl,
     tool: intent.tool,
-    projectSlug,
+    projectId,
     secretRules: intent.proxySecretRules,
   })
 
@@ -164,7 +159,6 @@ export async function prepareWorkspaceSubstrate(
 
   const receipt: K8sWorkspaceSubstrate = {
     kind: 'workspace-substrate',
-    projectId,
     proxyHost,
     streamToken,
     storeMounts,
@@ -213,7 +207,7 @@ export function npmCacheApplies(
  */
 export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandle> {
   const substrate = narrow(spec.substrate)
-  const jobName = workspaceJobName(spec.projectSlug, spec.workspaceId)
+  const jobName = workspaceJobName(spec.workspaceId)
   // The contract makes `image` optional for runtimes that run none; here a
   // missing one means `prepareImage` was skipped, a wiring bug.
   if (!spec.image) {
@@ -241,7 +235,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   if (spec.nestedContainers && substrate.projectRegistry) {
     // Written by the in-pod init script before the engine starts. Base64
     // avoids quoting issues. Needed because the registry is plain HTTP.
-    const conf = Buffer.from(projectRegistryConfDropIn(substrate.projectId), 'utf8')
+    const conf = Buffer.from(projectRegistryConfDropIn(spec.projectId), 'utf8')
       .toString('base64')
     env.push(`YAAC_REGISTRY_CONF_B64=${conf}`)
   }
@@ -259,8 +253,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   const mounts = declared.map(resolveMountSource)
 
   const labels: Record<string, string> = {
-    [LABEL_PROJECT]: spec.projectSlug,
-    [LABEL_PROJECT_ID]: substrate.projectId,
+    [LABEL_PROJECT_ID]: spec.projectId,
     ...workspaceIdLabels(spec.workspaceId),
     [LABEL_DATA_DIR_HASH]: dataDirHash(),
     [LABEL_TOOL]: spec.tool,
@@ -312,7 +305,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
 
   return {
     workspaceId: spec.workspaceId,
-    projectSlug: spec.projectSlug,
+    projectId: spec.projectId,
     jobName,
     tool: spec.tool,
     declaredTool: spec.tool,

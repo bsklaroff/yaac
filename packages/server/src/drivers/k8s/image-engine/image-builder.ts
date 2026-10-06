@@ -7,7 +7,6 @@ import { imageExists, runTrackedPodman } from '#drivers/k8s/container'
 import { collectContextFiles, isLayered, parseContainerIgnore } from '#lib/build-context'
 import { serverLog } from '#log'
 import type { ImageLayerName } from '@yaac/shared/types'
-import type { ProjectRef } from '#drivers/contract'
 
 export function stringHash(content: string): string {
   return crypto.createHash('sha256').update(content).digest('hex').slice(0, 16)
@@ -199,17 +198,17 @@ export async function resolveTrustedLayers(prefix = 'yaac'): Promise<TrustedLaye
  *
  * Project and user layers live in repos named by project id
  * (`<prefix>-proj-<id>`, `<prefix>-user-<id>`): a repo is what a registry
- * grant can scope, and a project re-added under a reused slug must not
- * pick up the old project's tags.
+ * grant can scope, and ids are never reused, so a project added again
+ * never picks up the old project's tags.
  */
 export async function resolveImageChain(
-  project: ProjectRef,
+  projectId: string,
   prefix: string,
   nestedContainers = false,
 ): Promise<{ layers: ImageLayer[]; finalTag: string }> {
   const layers: ImageLayer[] = []
 
-  const projectBuild = projectBuildDir(project.slug)
+  const projectBuild = projectBuildDir(projectId)
   const localDockerfile = path.join(projectBuild, PROJECT_DOCKERFILE)
   let yaacDockerfile: string | null = null
   let yaacContent: string | null = null
@@ -249,7 +248,7 @@ export async function resolveImageChain(
       ? stringHash(projectContextHash!)
       : parentHash!
   const baseTag = yaacDockerfile
-    ? `${prefix}-proj-${project.id}:${baseHash}`
+    ? `${prefix}-proj-${projectId}:${baseHash}`
     : parentTag!
 
   if (yaacDockerfile) {
@@ -278,7 +277,7 @@ export async function resolveImageChain(
       )
     }
     const userHash = stringHash(`${effectiveHash}:${await contextHash(userBuild)}`)
-    const userTag = `${prefix}-user-${project.id}:${userHash}`
+    const userTag = `${prefix}-user-${projectId}:${userHash}`
     layers.push({
       tag: userTag,
       name: 'user',

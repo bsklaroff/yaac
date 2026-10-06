@@ -12,6 +12,10 @@ import {
 import { insertGitCredential } from '#db/git-credential-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#notify'
 
+const APP = '0a0a0a0a-0000-4000-8000-000000000001'
+const P = '0a0a0a0a-0000-4000-8000-000000000002'
+const Q = '0a0a0a0a-0000-4000-8000-000000000003'
+
 describe('recordProject', () => {
   let tmpDir: string
   let pushes: number
@@ -29,11 +33,11 @@ describe('recordProject', () => {
   })
 
   it('records a project and reads it back', async () => {
-    await recordProject({ slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' })
+    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' })
 
-    expect(await getProjectRow('app')).toEqual({
-      slug: 'app',
-      id: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/) as string,
+    expect(await getProjectRow(APP)).toEqual({
+      id: APP,
+      name: 'app',
       remoteUrl: 'https://x/app.git',
       addedAt: '2026-01-01',
       createDefaults: {},
@@ -47,47 +51,31 @@ describe('recordProject', () => {
   it('records the credential it was added with, and drops its host key when the remote changes', async () => {
     const cred = await insertGitCredential({ name: 'k', kind: 'ssh', secret: 'c2VlZA==', publicKey: 'ssh-ed25519 AAAA yaac k' })
     await recordProject(
-      { slug: 'app', remoteUrl: 'git@x:app.git', addedAt: '2026-01-01' },
+      { id: APP, name: 'app', remoteUrl: 'git@x:app.git', addedAt: '2026-01-01' },
       { id: cred.id, knownHostsEntry: 'x ssh-ed25519 HOST' },
     )
-    await recordProject({ slug: 'app', remoteUrl: 'git@x:app.git', addedAt: '2026-01-01' })
-    expect(await getProjectRow('app')).toMatchObject({ gitCredentialId: cred.id, knownHostsEntry: 'x ssh-ed25519 HOST' })
+    await recordProject({ id: APP, name: 'app', remoteUrl: 'git@x:app.git', addedAt: '2026-01-01' })
+    expect(await getProjectRow(APP)).toMatchObject({ gitCredentialId: cred.id, knownHostsEntry: 'x ssh-ed25519 HOST' })
 
-    await recordProject({ slug: 'app', remoteUrl: 'git@y:app.git', addedAt: '2026-01-01' })
-    expect(await getProjectRow('app')).toMatchObject({ gitCredentialId: cred.id, knownHostsEntry: null })
+    await recordProject({ id: APP, name: 'app', remoteUrl: 'git@y:app.git', addedAt: '2026-01-01' })
+    expect(await getProjectRow(APP)).toMatchObject({ gitCredentialId: cred.id, knownHostsEntry: null })
   })
 
-  // Re-adding the same slug is how a re-clone lands; the original addedAt is
+  // Re-recording the same id is how a re-clone lands; the original addedAt is
   // the project's age and must not be reset by it.
-  it('keeps the original addedAt when the same slug is recorded again', async () => {
-    await recordProject({ slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' })
-    await recordProject({ slug: 'app', remoteUrl: 'https://y/app.git', addedAt: '2026-06-01' })
+  it('keeps the original addedAt when the same projectId is recorded again', async () => {
+    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' })
+    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://y/app.git', addedAt: '2026-06-01' })
 
-    expect(await getProjectRow('app')).toMatchObject({
+    expect(await getProjectRow(APP)).toMatchObject({
       remoteUrl: 'https://y/app.git', addedAt: '2026-01-01',
     })
-  })
-
-  // The id names the project's substrate objects, so it must never follow
-  // the slug: re-recording keeps it, and a project re-added under a freed
-  // slug gets one of its own rather than inheriting the old one's objects.
-  it('mints an id that survives a re-record and is never reused by a re-add', async () => {
-    await recordProject({ slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' })
-    const first = (await getProjectRow('app'))?.id
-    await recordProject({ slug: 'app', remoteUrl: 'https://y/app.git', addedAt: '2026-01-01' })
-    expect((await getProjectRow('app'))?.id).toBe(first)
-
-    await deleteProjectRow('app')
-    await recordProject({ slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-02-01' })
-    const second = (await getProjectRow('app'))?.id
-    expect(second).toBeDefined()
-    expect(second).not.toBe(first)
   })
 
   // The project list is a snapshot input and this is its only INSERT, so
   // this is where a new project notifies.
   it('pushes a fresh snapshot', async () => {
-    await recordProject({ slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' })
+    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' })
     expect(pushes).toBe(1)
   })
 })
@@ -103,20 +91,20 @@ describe('deleteProjectRow', () => {
   })
 
   it('removes the row and its create memory, and pushes a fresh snapshot', async () => {
-    await recordProject({ slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' })
-    await recordProjectCreate('app', 'codex', { model: 'gpt-6-sol' })
+    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' })
+    await recordProjectCreate(APP, 'codex', { model: 'gpt-6-sol' })
     _resetWorkspaceListChangedForTests()
     let pushes = 0
     onWorkspaceListChanged(() => { pushes += 1 })
 
-    await deleteProjectRow('app')
-    expect(await getProjectRow('app')).toBeUndefined()
+    await deleteProjectRow(APP)
+    expect(await getProjectRow(APP)).toBeUndefined()
     expect(pushes).toBe(1)
-    // A project re-added under the same slug starts with no memory rather
+    // A project re-added under the same id starts with no memory rather
     // than inheriting the removed one's.
-    await recordProject({ slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-02-01' })
-    expect(await getProjectRow('app')).toMatchObject({ createDefaults: {} })
-    expect((await getProjectRow('app'))?.lastTool).toBeUndefined()
+    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-02-01' })
+    expect(await getProjectRow(APP)).toMatchObject({ createDefaults: {} })
+    expect((await getProjectRow(APP))?.lastTool).toBeUndefined()
   })
 })
 
@@ -131,11 +119,11 @@ describe('listProjectRows', () => {
 
   it('is empty on a fresh data dir, and lists what was recorded', async () => {
     expect(await listProjectRows()).toEqual([])
-    await recordProject({ slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' })
+    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' })
     expect(await listProjectRows()).toEqual([
       {
-        slug: 'app',
-        id: (await getProjectRow('app'))?.id,
+        id: APP,
+        name: 'app',
         remoteUrl: 'https://x/app.git',
         addedAt: '2026-01-01',
         createDefaults: {},
@@ -159,16 +147,16 @@ describe('recordProjectCreate', () => {
   })
 
   it('remembers the agent and what it was created with, per agent and per project', async () => {
-    await recordProject({ slug: 'p', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
-    await recordProject({ slug: 'q', remoteUrl: 'git@h:o/s.git', addedAt: 'now' })
+    await recordProject({ id: P, name: 'p', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
+    await recordProject({ id: Q, name: 'q', remoteUrl: 'git@h:o/s.git', addedAt: 'now' })
     let pushes = 0
     onWorkspaceListChanged(() => { pushes += 1 })
 
-    await recordProjectCreate('p', 'claude', { model: 'claude-opus-5-5', permissionMode: 'plan', mode: 'acp' })
-    await recordProjectCreate('p', 'codex', { model: 'gpt-6-sol' })
+    await recordProjectCreate(P, 'claude', { model: 'claude-opus-5-5', permissionMode: 'plan', mode: 'acp' })
+    await recordProjectCreate(P, 'codex', { model: 'gpt-6-sol' })
     expect(pushes).toBe(2)
 
-    expect(await getProjectRow('p')).toMatchObject({
+    expect(await getProjectRow(P)).toMatchObject({
       lastTool: 'codex',
       createDefaults: {
         claude: { model: 'claude-opus-5-5', permissionMode: 'plan', mode: 'acp' },
@@ -176,24 +164,24 @@ describe('recordProjectCreate', () => {
       },
     })
     // Another project is untouched: the memory is per project.
-    const q = await getProjectRow('q')
+    const q = await getProjectRow(Q)
     expect(q?.lastTool).toBeUndefined()
     expect(q?.createDefaults).toEqual({})
     // And the list read carries the same memory as the point read.
-    expect((await listProjectRows()).find((r) => r.slug === 'p')?.createDefaults)
-      .toEqual((await getProjectRow('p'))?.createDefaults)
+    expect((await listProjectRows()).find((r) => r.id === P)?.createDefaults)
+      .toEqual((await getProjectRow(P))?.createDefaults)
   })
 
   // A create that took the resolved default for a field names nothing for
   // it, and must not overwrite what a person picked — while the agent itself
   // is always the one this project was last created with.
   it('writes only the fields it is given', async () => {
-    await recordProject({ slug: 'p', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
-    await recordProjectCreate('p', 'claude', { model: 'claude-opus-5-5', permissionMode: 'plan' }, 'develop')
-    await recordProjectCreate('p', 'claude', { mode: 'acp' })
-    await recordProjectCreate('p', 'claude', {})
+    await recordProject({ id: P, name: 'p', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
+    await recordProjectCreate(P, 'claude', { model: 'claude-opus-5-5', permissionMode: 'plan' }, 'develop')
+    await recordProjectCreate(P, 'claude', { mode: 'acp' })
+    await recordProjectCreate(P, 'claude', {})
 
-    expect(await getProjectRow('p')).toMatchObject({
+    expect(await getProjectRow(P)).toMatchObject({
       lastTool: 'claude',
       lastBranch: 'develop',
       createDefaults: { claude: { model: 'claude-opus-5-5', permissionMode: 'plan', mode: 'acp' } },
@@ -201,8 +189,8 @@ describe('recordProjectCreate', () => {
 
     // It survives a re-record of the project itself, which only rewrites the
     // remote (an `add` of a project that already exists).
-    await recordProject({ slug: 'p', remoteUrl: 'git@h:o/moved.git', addedAt: 'now' })
-    expect((await getProjectRow('p'))?.lastTool).toBe('claude')
+    await recordProject({ id: P, name: 'p', remoteUrl: 'git@h:o/moved.git', addedAt: 'now' })
+    expect((await getProjectRow(P))?.lastTool).toBe('claude')
   })
 })
 
@@ -217,14 +205,14 @@ describe('setProjectGitCredential', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  it('assigns the credential with its host key, replacing both, and reports an unknown slug', async () => {
+  it('assigns the credential with its host key, replacing both, and reports an unknown projectId', async () => {
     const a = await insertGitCredential({ name: 'a', kind: 'ssh', secret: 'c2VlZA==', publicKey: 'ssh-ed25519 AAAA yaac a' })
     const b = await insertGitCredential({ name: 'b', kind: 'ssh', secret: 'c2VlZA==', publicKey: 'ssh-ed25519 BBBB yaac b' })
-    await recordProject({ slug: 'app', remoteUrl: 'git@x:app.git', addedAt: '2026-01-01' })
+    await recordProject({ id: APP, name: 'app', remoteUrl: 'git@x:app.git', addedAt: '2026-01-01' })
 
-    expect(await setProjectGitCredential('app', a.id, 'x ssh-ed25519 ONE')).toBe(true)
-    expect(await setProjectGitCredential('app', b.id, 'x ssh-ed25519 TWO')).toBe(true)
-    expect(await getProjectRow('app')).toMatchObject({ gitCredentialId: b.id, knownHostsEntry: 'x ssh-ed25519 TWO' })
-    expect(await setProjectGitCredential('nope', a.id, null)).toBe(false)
+    expect(await setProjectGitCredential(APP, a.id, 'x ssh-ed25519 ONE')).toBe(true)
+    expect(await setProjectGitCredential(APP, b.id, 'x ssh-ed25519 TWO')).toBe(true)
+    expect(await getProjectRow(APP)).toMatchObject({ gitCredentialId: b.id, knownHostsEntry: 'x ssh-ed25519 TWO' })
+    expect(await setProjectGitCredential('0a0a0a0a-0000-4000-8000-0000000000ff', a.id, null)).toBe(false)
   })
 })

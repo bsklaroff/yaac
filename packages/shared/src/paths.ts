@@ -105,9 +105,9 @@ export function globalPath(...rest: string[]): string {
   return path.join(globalRoot(), ...rest)
 }
 
-/** A GLOBAL per-project path: `<globalRoot>/projects/<slug>/<…rest>`. */
-export function globalProjectPath(slug: string, ...rest: string[]): string {
-  return path.join(getProjectsDir(), slug, ...rest)
+/** A GLOBAL per-project path: `<globalRoot>/projects/<id>/<…rest>`. */
+export function globalProjectPath(projectId: string, ...rest: string[]): string {
+  return path.join(getProjectsDir(), projectId, ...rest)
 }
 
 /** A NODE-LOCAL path outside the project tree: `<nodeLocalRoot>/<…rest>`. */
@@ -117,9 +117,9 @@ export function nodeLocalPath(...rest: string[]): string {
 
 /**
  * A NODE-LOCAL per-project path: `<nodeLocalRoot>/projects/<id>/<…rest>`.
- * Keyed by project id rather than slug because a node may miss the
- * project's removal, and a later project with the same slug must not
- * inherit its files. The node-local sweep removes ids of deleted projects.
+ * A node may miss the project's removal; ids are never reused, so no later
+ * project inherits its files. The node-local sweep removes ids of deleted
+ * projects.
  */
 export function nodeLocalProjectPath(projectId: string, ...rest: string[]): string {
   return path.join(nodeLocalRoot(), 'projects', projectId, ...rest)
@@ -208,8 +208,8 @@ export const CONTAINER_ATTACHMENTS_DIR = '/home/yaac/.yaac-attachments'
  * GLOBAL: per-project config (yaac-config.json, the project Dockerfile and
  * its build context).
  */
-export function projectConfigDir(slug: string): string {
-  return globalProjectPath(slug, 'config')
+export function projectConfigDir(projectId: string): string {
+  return globalProjectPath(projectId, 'config')
 }
 
 /** SERVER-LOCAL: the server's own log file. */

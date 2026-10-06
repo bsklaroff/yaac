@@ -22,6 +22,8 @@ import {
 import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/shared/types'
 import type { CredentialBundle } from '#drivers/contract'
 
+const WEB = '2567a5ec-9705-4b7a-82c9-84033e06189d'
+
 /**
  * Pushing the host credential store to the runtime. The credential files and
  * git credential rows are real, in a temp data dir; only the driver that
@@ -71,8 +73,8 @@ describe('pushCredentialsToRuntime', () => {
     await saveOpencodeCredentialsFile({ kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'sk-or' })
     // Only credentials a project uses are sent, each with its projects.
     // runtimeGitCredentials' tests cover ssh keys.
-    await recordProject({ slug: 'web', remoteUrl: 'https://github.com/acme/web', addedAt: 'x' })
-    await assignProjectCredential('web', (await addHttpsCredential({ name: 'gh', token: 'ghp' })).id)
+    await recordProject({ id: WEB, name: 'demo', remoteUrl: 'https://github.com/acme/web', addedAt: 'x' })
+    await assignProjectCredential(WEB, (await addHttpsCredential({ name: 'gh', token: 'ghp' })).id)
     await addHttpsCredential({ name: 'unused', token: 'ghp_unused' })
 
     await pushCredentialsToRuntime()
@@ -85,7 +87,7 @@ describe('pushCredentialsToRuntime', () => {
     // Signed out is sent as null; the runtime replaces its whole set, so it
     // must learn about absences too.
     expect(bundle.pi).toBeNull()
-    expect(bundle.git).toEqual([{ token: 'ghp', projects: ['web'] }])
+    expect(bundle.git).toEqual([{ token: 'ghp', projects: [WEB] }])
     expect(bundle.ssh).toEqual([])
   })
 

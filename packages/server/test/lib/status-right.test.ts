@@ -3,19 +3,19 @@ import { buildStatusRight, setStatusRightCmd } from '#lib/status-right'
 
 describe('buildStatusRight', () => {
   it('omits port info when no ports forwarded', () => {
-    expect(buildStatusRight('myproj', 'abcdef0123456789', [])).toBe(' myproj abcdef01 ')
+    expect(buildStatusRight('abcdef0123456789', [])).toBe(' abcdef01 ')
   })
 
   it('includes host->container mappings for each port', () => {
-    const result = buildStatusRight('myproj', 'abcdef0123456789', [
+    const result = buildStatusRight('abcdef0123456789', [
       { hostPort: 3000, containerPort: 3000 },
       { hostPort: 5432, containerPort: 5432 },
     ])
-    expect(result).toBe(' myproj abcdef01 :3000->3000 :5432->5432 ')
+    expect(result).toBe(' abcdef01 :3000->3000 :5432->5432 ')
   })
 
   it('truncates the session id to 8 characters', () => {
-    expect(buildStatusRight('p', 'xxxxxxxxyyyyyyyy', [])).toBe(' p xxxxxxxx ')
+    expect(buildStatusRight('xxxxxxxxyyyyyyyy', [])).toBe(' xxxxxxxx ')
   })
 })
 
@@ -32,7 +32,7 @@ describe('setStatusRightCmd', () => {
   })
 
   it('escapes a value that would otherwise close the quoting', () => {
-    // The value includes a project slug, which may not be shell-safe.
+    // Escaping holds for any value, not just the ones built today.
     const cmd = setStatusRightCmd(" it's ", '/tmp/yaac-tmux/server')
     expect(cmd).toContain("'\\''")
     expect(cmd.startsWith("tmux -S /tmp/yaac-tmux/server set-option -t yaac status-right '")).toBe(true)

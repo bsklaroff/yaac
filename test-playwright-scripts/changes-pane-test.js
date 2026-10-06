@@ -25,7 +25,7 @@ if (!wt) {
   console.error('usage: node test-playwright-scripts/changes-pane-test.js <live-workspace-id>')
   process.exit(1)
 }
-const checkout = path.join(DATA_DIR, 'global', 'projects', wt.projectSlug, 'workspaces', wt.workspaceId)
+const checkout = path.join(DATA_DIR, 'global', 'projects', wt.projectId, 'workspaces', wt.workspaceId)
 const scratch = ['pw-colors.ts', 'pw-other.txt'].map((f) => path.join(checkout, f))
 fs.writeFileSync(scratch[0], 'const answer = 42 // meaning\nexport const s = "hello world"\n')
 fs.writeFileSync(scratch[1], 'plain text\n')
@@ -35,7 +35,7 @@ const focused = () => page.evaluate((sel) => document.activeElement === document
 const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
 page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
-await page.goto(`${origin}/?${new URLSearchParams({ project: wt.projectSlug, workspace: wt.workspaceId })}`)
+await page.goto(`${origin}/?${new URLSearchParams({ project: wt.projectId, workspace: wt.workspaceId })}`)
 await page.locator('.xterm').first().waitFor({ timeout: 20_000 })
 
 // 1. Lowercase 'g': a capital adds shiftKey, which the chord rejects.

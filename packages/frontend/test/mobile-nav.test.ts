@@ -18,7 +18,7 @@ describe('mobile screen navigation', () => {
   it('a project tap moves to that project’s workspace list', () => {
     useUiStore.getState().setActiveProject('proj')
     expect(useUiStore.getState().mobileScreen).toBe('workspaces')
-    expect(useUiStore.getState().activeProjectSlug).toBe('proj')
+    expect(useUiStore.getState().activeProjectId).toBe('proj')
     // Switching projects still drops the old project's workspace.
     expect(useUiStore.getState().selectedWorkspaceId).toBeNull()
   })
@@ -58,7 +58,7 @@ describe('mobile screen navigation', () => {
 
   it('openWorkspace — a deep link or a just-created workspace — lands on the pane', () => {
     useUiStore.getState().openWorkspace('other', 's9')
-    expect(useUiStore.getState().activeProjectSlug).toBe('other')
+    expect(useUiStore.getState().activeProjectId).toBe('other')
     expect(useUiStore.getState().selectedWorkspaceId).toBe('s9')
     expect(useUiStore.getState().mobileScreen).toBe('pane')
   })

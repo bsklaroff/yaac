@@ -38,7 +38,7 @@ layer is reusable either way: it is the shape a controller consumes.
 apiVersion: yaac.dev/v1alpha1
 kind: Session
 spec:
-  project: my-app            # slug; resolves repo + storage paths
+  project: 7d4e2a1c-…        # project id; resolves repo + storage paths
   tool: claude
   image: <registry>/yaac-proj-<id>:<hash>   # built before the CR is written
   branch: {base: main, agent: agent/<id>}

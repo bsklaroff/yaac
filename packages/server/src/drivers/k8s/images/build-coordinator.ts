@@ -10,7 +10,6 @@ import { BuilderPodLease, buildLayerInPod } from './builder-pod'
 import { registryHasTag } from '#drivers/k8s/container'
 import { serverLog } from '#log'
 import type { ImageLayerName } from '@yaac/shared/types'
-import type { ProjectRef } from '#drivers/contract'
 import {
   attachImageBuildProject,
   failImageBuild,
@@ -24,7 +23,7 @@ import {
 } from '#drivers/k8s/image-engine'
 
 interface BuildContext {
-  project: ProjectRef
+  projectId: string
   reason: ImageBuildReason
   /**
    * Builder pod shared by the untrusted layers of one `ensureImage` call,
@@ -76,14 +75,14 @@ export function forgetVerifiedTags(): void {
 function buildLayerShared(layer: ImageLayer, ctx: BuildContext): Promise<void> {
   const existing = inflightBuilds.get(layer.tag)
   if (existing) {
-    attachImageBuildProject(existing.id, ctx.project)
+    attachImageBuildProject(existing.id, ctx.projectId)
     return existing.promise
   }
 
   const id = registerImageBuild({
     tag: layer.tag,
     layer: layer.name,
-    project: ctx.project,
+    projectId: ctx.projectId,
     reason: ctx.reason,
   })
   const promise = runBuild(id, layer, ctx)
@@ -102,7 +101,7 @@ async function runBuild(
     if (TRUSTED_LAYERS.has(layer.name)) throw missingPrebuiltImage(layer.name, layer.tag)
     serverLog(`[build] starting ${layer.tag}`)
     await buildLayerInPod(layer, {
-      project: ctx.project,
+      projectId: ctx.projectId,
       lease: ctx.lease,
       onLog: (line) => ingestImageBuildLine(id, line),
     })
@@ -143,14 +142,14 @@ interface EnsureImageOpts {
  * @param nestedContainers - Include the nestable layer.
  */
 export async function ensureImage(
-  project: ProjectRef,
+  projectId: string,
   imagePrefix?: string,
   requirePrebuilt = false,
   nestedContainers = false,
   opts: EnsureImageOpts = {},
 ): Promise<string> {
   const prefix = imagePrefix ?? 'yaac'
-  const { layers, finalTag } = await resolveImageChain(project, prefix, nestedContainers)
+  const { layers, finalTag } = await resolveImageChain(projectId, prefix, nestedContainers)
   const reason = opts.reason ?? 'session'
 
   // One builder pod per call, created only if a layer needs building.
@@ -175,7 +174,7 @@ export async function ensureImage(
       }
 
       opts.onLayerStart?.(i + 1, layers.length, layer.name)
-      await buildLayerShared(layer, { project, reason, lease })
+      await buildLayerShared(layer, { projectId, reason, lease })
     }
   } finally {
     await lease.release()

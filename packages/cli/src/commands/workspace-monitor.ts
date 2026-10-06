@@ -4,7 +4,7 @@ export interface WorkspaceMonitorOptions {
   interval?: string
 }
 
-export async function workspaceMonitor(projectSlug?: string, options: WorkspaceMonitorOptions = {}): Promise<void> {
+export async function workspaceMonitor(project?: string, options: WorkspaceMonitorOptions = {}): Promise<void> {
   const intervalSec = Math.max(1, parseInt(options.interval ?? '5', 10))
 
   // Swallow keyboard input so it doesn't corrupt the display. Raw mode
@@ -36,7 +36,7 @@ export async function workspaceMonitor(projectSlug?: string, options: WorkspaceM
     try {
       const now = new Date().toLocaleTimeString()
       console.log(`yaac workspace monitor  (every ${intervalSec}s, ${now})  Press Ctrl+C to exit\n`)
-      await workspaceList(projectSlug)
+      await workspaceList(project)
     } finally {
       process.stdout.write = origWrite
     }

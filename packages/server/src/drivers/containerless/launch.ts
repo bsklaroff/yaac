@@ -123,10 +123,10 @@ function gitconfigPathFor(home: string): string {
  * commands need them).
  */
 export function workspaceRunEnvironment(jobName: string): NodeJS.ProcessEnv {
-  const { projectSlug, workspaceId } = refFromJobName(jobName)
+  const { projectId, workspaceId } = refFromJobName(jobName)
   const held = workspaceEnv(workspaceId)
   if (held !== undefined) return held
-  const home = workspaceHome(projectSlug, workspaceId)
+  const home = workspaceHome(projectId, workspaceId)
   const env = workspaceEnvironment(
     { env: [], mounts: [] },
     home,
@@ -298,9 +298,9 @@ async function resolveShell(): Promise<string> {
 
 /** See `WorkspaceDriver.launch`. */
 export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandle> {
-  const jobName = containerlessJobName(spec.projectSlug, spec.workspaceId)
+  const jobName = containerlessJobName(spec.projectId, spec.workspaceId)
   const paths = containerlessWorkspacePaths(jobName)
-  const home = workspaceHome(spec.projectSlug, spec.workspaceId)
+  const home = workspaceHome(spec.projectId, spec.workspaceId)
 
   // Before creating anything; both failures are otherwise obscure.
   assertSocketPathsFit(paths)
@@ -425,7 +425,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   })
 
   const marker: WorkspaceMarker = {
-    projectSlug: spec.projectSlug,
+    projectId: spec.projectId,
     workspaceId: spec.workspaceId,
     tool: spec.tool,
     declaredTool: spec.tool,

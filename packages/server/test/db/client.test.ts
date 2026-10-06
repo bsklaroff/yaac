@@ -88,21 +88,22 @@ describe('openDb', () => {
         INSERT INTO preferences (key, value) VALUES ('default_tool', 'codex');
       `)
     try {
-      const memory = await db.$client.query<{ project_slug: string; tool: string; permission_mode: string }>(
-        'SELECT project_slug, tool, permission_mode FROM project_tool_defaults ORDER BY project_slug, tool',
+      const memory = await db.$client.query<{ name: string; tool: string; permission_mode: string }>(
+        `SELECT p.name, t.tool, t.permission_mode FROM project_tool_defaults t
+          JOIN projects p ON p.id = t.project_id ORDER BY p.name, t.tool`,
       )
       // `auto` reaches the tools that have it — never opencode (no reviewer
       // posture) and never pi, whose only posture says nothing about taste.
       expect(memory.rows).toEqual([
-        { project_slug: 'p', tool: 'claude', permission_mode: 'auto' },
-        { project_slug: 'p', tool: 'codex', permission_mode: 'auto' },
+        { name: 'p', tool: 'claude', permission_mode: 'auto' },
+        { name: 'p', tool: 'codex', permission_mode: 'auto' },
       ])
-      const lastTools = await db.$client.query<{ slug: string; last_tool: string | null }>(
-        'SELECT slug, last_tool FROM projects ORDER BY slug',
+      const lastTools = await db.$client.query<{ name: string; last_tool: string | null }>(
+        'SELECT name, last_tool FROM projects ORDER BY name',
       )
       expect(lastTools.rows).toEqual([
-        { slug: 'p', last_tool: 'codex' },
-        { slug: 'q', last_tool: 'codex' },
+        { name: 'p', last_tool: 'codex' },
+        { name: 'q', last_tool: 'codex' },
       ])
       const prefs = await db.$client.query('SELECT key FROM preferences')
       expect(prefs.rows).toEqual([])
@@ -120,6 +121,7 @@ describe('openDb', () => {
       `('${id}', 'p', ${parent}, 'go', 'claude', 'opus', 'tui', 'bypass', 'main')`
     const uuid = (n: number): string => `00000000-0000-4000-8000-00000000000${n}`
     const db = await seedBefore('queued_and_draft_titles_and_groups', `
+      INSERT INTO projects (slug, remote_url, added_at) VALUES ('p', 'git@h:o/p.git', 'now');
       INSERT INTO draft_worktrees (id, project_slug, prompt, title, tool, mode, permission_mode) VALUES
         ('${uuid(1)}', 'p', 'x', 'Gen one', 'claude', 'tui', 'bypass'),
         ('${uuid(2)}', 'p', 'y', NULL, 'claude', 'tui', 'bypass');
@@ -144,6 +146,29 @@ describe('openDb', () => {
         'SELECT group_id FROM queued_workspaces ORDER BY id',
       )
       expect(queued.rows.map((r) => r.group_id)).toEqual(['g1', 'g1', 'g1', null, null, null, null, null])
+    } finally {
+      await db.$client.close()
+    }
+  })
+
+  // Every project reference moves from the slug to the project's id, the
+  // slug stays on as the display name, and a row naming no project goes.
+  it('re-keys project references by id and keeps the slug as the name', async () => {
+    const id = '11111111-2222-4333-8444-555555555555'
+    const db = await seedBefore('key_projects_by_id', `
+      INSERT INTO projects (id, slug, remote_url, added_at) VALUES ('${id}', 'demo', 'git@h:o/demo.git', 'now');
+      INSERT INTO workspaces (project_slug, workspace_id) VALUES ('demo', 'w1'), ('gone', 'w2');
+      INSERT INTO project_env_vars (project_slug, name, value) VALUES ('demo', 'A', 'x'), ('gone', 'B', 'y');
+      INSERT INTO workspace_groups (project_slug, group_id, name) VALUES ('demo', 'g1', 'G'), ('gone', 'g2', 'H');
+    `)
+    try {
+      const projects = await db.$client.query('SELECT id, name FROM projects')
+      expect(projects.rows).toEqual([{ id, name: 'demo' }])
+      const keys = async (table: string, key: string): Promise<unknown[]> =>
+        (await db.$client.query(`SELECT project_id, ${key} AS key FROM ${table}`)).rows
+      expect(await keys('workspaces', 'workspace_id')).toEqual([{ project_id: id, key: 'w1' }])
+      expect(await keys('project_env_vars', 'name')).toEqual([{ project_id: id, key: 'A' }])
+      expect(await keys('workspace_groups', 'group_id')).toEqual([{ project_id: id, key: 'g1' }])
     } finally {
       await db.$client.close()
     }

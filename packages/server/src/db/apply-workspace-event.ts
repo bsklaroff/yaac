@@ -33,34 +33,34 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
       await applyCreateFailed(event)
       return
     case 'workspace-life-started':
-      await recordWorkspaceLife(event.projectSlug, event.workspaceId)
+      await recordWorkspaceLife(event.projectId, event.workspaceId)
       return
     case 'base-branch-resolved':
-      await setWorkspaceBaseBranch(event.projectSlug, event.workspaceId, event.baseBranch)
+      await setWorkspaceBaseBranch(event.projectId, event.workspaceId, event.baseBranch)
       return
     case 'sessions-launched': {
-      const { projectSlug, workspaceId, sessions } = event
-      await recordAgentSessions(projectSlug, workspaceId, sessions)
-      await setActiveAgentSessions(projectSlug, workspaceId, sessions)
+      const { projectId, workspaceId, sessions } = event
+      await recordAgentSessions(projectId, workspaceId, sessions)
+      await setActiveAgentSessions(projectId, workspaceId, sessions)
       return
     }
     case 'sessions-discovered':
-      await recordAgentSessions(event.projectSlug, event.workspaceId, event.sessions)
+      await recordAgentSessions(event.projectId, event.workspaceId, event.sessions)
       return
     case 'sessions-active':
-      await setActiveAgentSessions(event.projectSlug, event.workspaceId, event.active)
+      await setActiveAgentSessions(event.projectId, event.workspaceId, event.active)
       return
     case 'permission-mode-changed':
-      await setWorkspacePermissionMode(event.projectSlug, event.workspaceId, event.permissionMode)
+      await setWorkspacePermissionMode(event.projectId, event.workspaceId, event.permissionMode)
       return
     case 'workspace-stopped':
-      await recordWorkspaceStopped(event.projectSlug, event.workspaceId, event.cause)
+      await recordWorkspaceStopped(event.projectId, event.workspaceId, event.cause)
       return
   }
 }
 
 async function applyCreated(event: WorkspaceCreated): Promise<void> {
-  const { projectSlug, workspaceId, baseBranch, resume, permissionMode, model, mode, timeZone } = event
+  const { projectId, workspaceId, baseBranch, resume, permissionMode, model, mode, timeZone } = event
   const launch = {
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(model !== undefined ? { model } : {}),
@@ -70,11 +70,11 @@ async function applyCreated(event: WorkspaceCreated): Promise<void> {
   // A fresh create inserts the row (refusing a taken id); a resume updates
   // the existing row.
   if (resume) {
-    await recordWorkspaceResumed({ projectSlug, workspaceId, ...launch })
+    await recordWorkspaceResumed({ projectId, workspaceId, ...launch })
     return
   }
   await recordWorkspaceCreated({
-    projectSlug,
+    projectId,
     workspaceId,
     ...(baseBranch !== undefined ? { baseBranch } : {}),
     ...(event.spare === true ? { spare: true } : {}),
@@ -87,9 +87,9 @@ async function applyCreated(event: WorkspaceCreated): Promise<void> {
  * prunes these). A failed resume needs no undo: its row keeps the stop it
  * had until the restart succeeds.
  */
-async function applyCreateFailed({ projectSlug, workspaceId, resume }: WorkspaceCreateFailed): Promise<void> {
+async function applyCreateFailed({ projectId, workspaceId, resume }: WorkspaceCreateFailed): Promise<void> {
   if (resume) return
   // The row first, since it is what makes the workspace visible.
-  await deleteWorkspaceRow(projectSlug, workspaceId)
-  await deleteWorkspaceAgentSessions(projectSlug, workspaceId)
+  await deleteWorkspaceRow(projectId, workspaceId)
+  await deleteWorkspaceAgentSessions(projectId, workspaceId)
 }

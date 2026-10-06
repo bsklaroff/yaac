@@ -45,7 +45,7 @@ const browser = await chromium.launch()
 try {
   const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
-  await page.goto(`${origin}/?project=${workspace.projectSlug}&workspace=${workspace.workspaceId}`)
+  await page.goto(`${origin}/?project=${workspace.projectId}&workspace=${workspace.workspaceId}`)
   await page.getByPlaceholder('Message the agent…').waitFor({ state: 'visible', timeout: 60_000 })
   const strip = page.getByRole('group', { name: 'Running in the background' })
   // By category: running subagents are listed before the shells.

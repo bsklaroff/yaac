@@ -81,7 +81,7 @@ const live = (mode) => {
 }
 const tui = live('tui')
 const acp = live('acp')
-const open = (w) => `${origin}/?project=${w.projectSlug}&workspace=${w.workspaceId}`
+const open = (w) => `${origin}/?project=${w.projectId}&workspace=${w.workspaceId}`
 
 const { chromium } = requirePlaywright()
 const browser = await chromium.launch()

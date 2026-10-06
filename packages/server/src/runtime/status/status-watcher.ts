@@ -114,7 +114,7 @@ export class WorkspaceStatusWatcher {
     if (this.respawnTimer) clearTimeout(this.respawnTimer)
     this.respawnTimer = null
     this.teardown()
-    dropAcpQueues(this.session.slug, this.session.workspaceId)
+    dropAcpQueues(this.session.projectId, this.session.workspaceId)
   }
 
   private connect(): void {
@@ -141,18 +141,18 @@ export class WorkspaceStatusWatcher {
 
   private onObservation(generation: number, obs: AgentObservation): void {
     if (generation !== this.generation || this.stopped) return
-    const { slug, workspaceId } = this.session
+    const { projectId, workspaceId } = this.session
     switch (obs.kind) {
       case 'up':
-        setWorkspaceStreamHealth(slug, workspaceId, true)
+        setWorkspaceStreamHealth(projectId, workspaceId, true)
         this.backoffMs = this.respawnDelayMs
         this.consecutiveFailures = 0
         return
       case 'status':
-        setAgentStatus(slug, workspaceId, obs.handle, obs.status)
+        setAgentStatus(projectId, workspaceId, obs.handle, obs.status)
         return
       case 'live-agents':
-        setLiveAgents(slug, workspaceId, obs.agents)
+        setLiveAgents(projectId, workspaceId, obs.agents)
         return
       case 'command-channel':
         this.send = obs.send
@@ -173,9 +173,9 @@ export class WorkspaceStatusWatcher {
     const send = this.send
     if (!send) return
     const listing = ++this.listing
-    const { slug, workspaceId } = this.session
+    const { projectId, workspaceId } = this.session
     void listTerminals(send).then((entries) => {
-      if (listing === this.listing && send === this.send) setWorkspaceTerminals(slug, workspaceId, entries)
+      if (listing === this.listing && send === this.send) setWorkspaceTerminals(projectId, workspaceId, entries)
     }, () => { /* see above */ })
   }
 
@@ -186,7 +186,7 @@ export class WorkspaceStatusWatcher {
     this.consecutiveFailures++
     this.log(`[server] status-watcher ${this.session.workspaceId}: ${reason}`)
     this.teardown()
-    setWorkspaceStreamHealth(this.session.slug, this.session.workspaceId, false)
+    setWorkspaceStreamHealth(this.session.projectId, this.session.workspaceId, false)
     this.scheduleRespawn()
   }
 
@@ -235,19 +235,19 @@ export class StatusWatcherManager {
   sync(workspaces: RuntimeHandle[]): void {
     const wanted = new Map<string, RuntimeHandle>()
     for (const p of workspaces) {
-      if (!p.running || !p.workspaceId || !p.projectSlug || p.prewarmed) continue
+      if (!p.running || !p.workspaceId || !p.projectId || p.prewarmed) continue
       wanted.set(p.workspaceId, p)
     }
     for (const [workspaceId, watcher] of this.watchers) {
       if (wanted.has(workspaceId)) continue
       watcher.stop()
       this.watchers.delete(workspaceId)
-      evictWorkspaceStatus(watcher.session.slug, workspaceId)
+      evictWorkspaceStatus(watcher.session.projectId, workspaceId)
     }
     for (const [workspaceId, workspace] of wanted) {
       if (this.watchers.has(workspaceId)) continue
       const watcher = new WorkspaceStatusWatcher({
-        slug: workspace.projectSlug,
+        projectId: workspace.projectId,
         workspaceId,
         jobName: workspace.jobName,
         tool: workspace.tool,

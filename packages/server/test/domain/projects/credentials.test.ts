@@ -24,6 +24,13 @@ import { closeDb, recordProject } from '#db'
 import { forgetSecretConfig } from '#db/secret-key'
 import { secretKeyPath } from '@yaac/shared/project-paths'
 
+const NOPE = '4101bef8-794f-4d98-8e95-dfb54850c68b'
+
+const WEB = '2567a5ec-9705-4b7a-82c9-84033e06189d'
+const SVC = '961e38b5-146c-4b07-8078-f53dec9b699a'
+const BARE = '8604aeca-e9ee-44a7-8c52-d4c1965bb0ef'
+const API = '8a5da52e-d126-447d-859e-70c05721a8aa'
+
 // A host-key fetch runs `ssh`, which writes the negotiated key into the
 // known_hosts file it is given. The mock writes HOST_KEY there instead, so no
 // network is used.
@@ -59,8 +66,8 @@ afterEach(async () => {
   await cleanupTempDir(tmpDir)
 })
 
-function project(slug: string, remoteUrl: string): Promise<void> {
-  return recordProject({ slug, remoteUrl, addedAt: '2026-01-01' })
+function project(id: string, remoteUrl: string): Promise<void> {
+  return recordProject({ id, name: 'demo', remoteUrl, addedAt: '2026-01-01' })
 }
 
 describe('addHttpsCredential', () => {
@@ -109,50 +116,50 @@ describe('renameCredential', () => {
 
 describe('assignProjectCredential', () => {
   it('assigns a matching credential — fetching an ssh remote\'s host key — and refuses a mismatched kind', async () => {
-    await project('web', 'https://github.com/acme/web.git')
-    await project('svc', 'git@git.example.com:acme/svc.git')
+    await project(WEB, 'https://github.com/acme/web.git')
+    await project(SVC, 'git@git.example.com:acme/svc.git')
     const token = await addHttpsCredential({ name: 'gh', token: 'ghp_abcd1234' })
     const key = await generateSshCredential({ name: 'deploy' })
 
-    expect(await assignProjectCredential('web', token.id)).toEqual({ knownHostsEntry: null })
+    expect(await assignProjectCredential(WEB, token.id)).toEqual({ knownHostsEntry: null })
     expect(sshRuns).toEqual([])
-    expect(await assignProjectCredential('svc', key.id)).toEqual({ knownHostsEntry: HOST_KEY })
+    expect(await assignProjectCredential(SVC, key.id)).toEqual({ knownHostsEntry: HOST_KEY })
     expect(sshRuns.at(-1)).toContain('nobody@git.example.com')
 
-    await expect(assignProjectCredential('web', key.id)).rejects.toThrow(/needs a token, not an SSH key/)
-    await expect(assignProjectCredential('svc', token.id)).rejects.toThrow(/needs an SSH key, not a token/)
-    await expect(assignProjectCredential('nope', token.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await expect(assignProjectCredential(WEB, key.id)).rejects.toThrow(/needs a token, not an SSH key/)
+    await expect(assignProjectCredential(SVC, token.id)).rejects.toThrow(/needs an SSH key, not a token/)
+    await expect(assignProjectCredential(NOPE, token.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
     expect((await listCredentialSummaries()).map((c) => [c.name, c.projects]))
-      .toEqual([['gh', ['web']], ['deploy', ['svc']]])
+      .toEqual([['gh', [WEB]], ['deploy', [SVC]]])
   })
 })
 
 describe('resolveProjectCredential', () => {
   it('resolves the assigned credential for git, and nothing for a project without a usable one', async () => {
-    await project('web', 'https://github.com/acme/web.git')
-    await project('svc', 'git@git.example.com:acme/svc.git')
-    await project('bare', 'https://github.com/acme/bare.git')
+    await project(WEB, 'https://github.com/acme/web.git')
+    await project(SVC, 'git@git.example.com:acme/svc.git')
+    await project(BARE, 'https://github.com/acme/bare.git')
     const token = await addHttpsCredential({ name: 'gh', token: 'ghp_abcd1234' })
     const key = await generateSshCredential({ name: 'deploy' })
-    await assignProjectCredential('web', token.id)
-    await assignProjectCredential('svc', key.id)
+    await assignProjectCredential(WEB, token.id)
+    await assignProjectCredential(SVC, key.id)
 
-    expect(await resolveProjectCredential('web')).toEqual({ kind: 'https', token: 'ghp_abcd1234' })
-    expect(await resolveProjectCredential('svc')).toEqual({
+    expect(await resolveProjectCredential(WEB)).toEqual({ kind: 'https', token: 'ghp_abcd1234' })
+    expect(await resolveProjectCredential(SVC)).toEqual({
       kind: 'ssh', id: key.id, publicKey: key.publicKey, knownHostsEntry: HOST_KEY,
     })
-    expect(await resolveProjectCredential('bare')).toBeNull()
-    expect(await resolveProjectCredential('nope')).toBeNull()
+    expect(await resolveProjectCredential(BARE)).toBeNull()
+    expect(await resolveProjectCredential(NOPE)).toBeNull()
 
     // Changing the remote drops the host key, and so the credential, until
     // the key is assigned again.
-    await project('svc', 'git@other.example.com:acme/svc.git')
-    expect(await resolveProjectCredential('svc')).toBeNull()
+    await project(SVC, 'git@other.example.com:acme/svc.git')
+    expect(await resolveProjectCredential(SVC)).toBeNull()
 
     // A secret that no longer decrypts resolves to null.
     await fs.writeFile(secretKeyPath(), 'a-completely-different-key\n', { mode: 0o600 })
     forgetSecretConfig()
-    expect(await resolveProjectCredential('web')).toBeNull()
+    expect(await resolveProjectCredential(WEB)).toBeNull()
     expect((await listCredentialSummaries())[0].preview).toMatch(/unreadable/)
   })
 })
@@ -169,13 +176,13 @@ describe('missingCredentialError', () => {
 describe('removeCredential', () => {
   it('deletes a credential in use, stranding its projects with none', async () => {
     // A leaked credential has to be removable at once.
-    await project('web', 'https://github.com/acme/web.git')
+    await project(WEB, 'https://github.com/acme/web.git')
     const a = await addHttpsCredential({ name: 'a', token: 'ghp_aaaa' })
-    await assignProjectCredential('web', a.id)
+    await assignProjectCredential(WEB, a.id)
 
     await removeCredential(a.id)
     expect(await listCredentialSummaries()).toEqual([])
-    expect(await resolveProjectCredential('web')).toBeNull()
+    expect(await resolveProjectCredential(WEB)).toBeNull()
     expect((await runtimeGitCredentials()).git).toEqual([])
     await expect(removeCredential(a.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
@@ -183,49 +190,49 @@ describe('removeCredential', () => {
 
 describe('replaceCredential', () => {
   it('replaces a token or a key in place for every project that used it', async () => {
-    await project('web', 'https://github.com/acme/web.git')
-    await project('svc', 'git@git.example.com:acme/svc.git')
+    await project(WEB, 'https://github.com/acme/web.git')
+    await project(SVC, 'git@git.example.com:acme/svc.git')
     const token = await addHttpsCredential({ name: 'gh', token: 'ghp_leaked' })
     const key = await generateSshCredential({ name: 'deploy' })
-    await assignProjectCredential('web', token.id)
-    await assignProjectCredential('svc', key.id)
+    await assignProjectCredential(WEB, token.id)
+    await assignProjectCredential(SVC, key.id)
     sshRuns.length = 0
 
     await expect(replaceCredential(token.id, {})).rejects.toMatchObject({ code: 'VALIDATION' })
     await replaceCredential(token.id, { token: 'ghp_fresh' })
-    expect(await resolveProjectCredential('web')).toEqual({ kind: 'https', token: 'ghp_fresh' })
+    expect(await resolveProjectCredential(WEB)).toEqual({ kind: 'https', token: 'ghp_fresh' })
 
     const replaced = await replaceCredential(key.id, {})
     expect(replaced.publicKey).toMatch(PUBLIC_KEY_RE)
     expect(replaced.publicKey).not.toBe(key.publicKey)
     // Same host, so the trusted host key carries over without a fetch.
-    expect(await resolveProjectCredential('svc')).toEqual({
+    expect(await resolveProjectCredential(SVC)).toEqual({
       kind: 'ssh', id: replaced.id, publicKey: replaced.publicKey, knownHostsEntry: HOST_KEY,
     })
     expect(sshRuns).toEqual([])
-    expect((await listCredentialSummaries()).map((c) => [c.name, c.projects])).toEqual([['gh', ['web']], ['deploy', ['svc']]])
+    expect((await listCredentialSummaries()).map((c) => [c.name, c.projects])).toEqual([['gh', [WEB]], ['deploy', [SVC]]])
     await expect(replaceCredential(key.id, {})).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 })
 
 describe('runtimeGitCredentials', () => {
   it('hands the runtime each used credential with the projects entitled to it', async () => {
-    await project('web', 'https://github.com/acme/web.git')
-    await project('api', 'https://github.com/acme/api.git')
-    await project('svc', 'git@git.example.com:acme/svc.git')
+    await project(WEB, 'https://github.com/acme/web.git')
+    await project(API, 'https://github.com/acme/api.git')
+    await project(SVC, 'git@git.example.com:acme/svc.git')
     const token = await addHttpsCredential({ name: 'gh', token: 'ghp_abcd1234' })
     await addHttpsCredential({ name: 'unused', token: 'ghp_zzzz' })
     const key = await generateSshCredential({ name: 'deploy' })
-    await assignProjectCredential('web', token.id)
-    await assignProjectCredential('api', token.id)
-    await assignProjectCredential('svc', key.id)
+    await assignProjectCredential(WEB, token.id)
+    await assignProjectCredential(API, token.id)
+    await assignProjectCredential(SVC, key.id)
 
     const { git, ssh } = await runtimeGitCredentials()
-    expect(git).toEqual([{ token: 'ghp_abcd1234', projects: ['web', 'api'] }])
+    expect(git).toEqual([{ token: 'ghp_abcd1234', projects: [WEB, API] }])
     expect(ssh).toEqual([{
       privateKey: expect.stringContaining('BEGIN OPENSSH PRIVATE KEY') as string,
       publicKey: key.publicKey,
-      projects: [{ slug: 'svc', host: 'git.example.com', knownHostsEntry: HOST_KEY }],
+      projects: [{ projectId: SVC, host: 'git.example.com', knownHostsEntry: HOST_KEY }],
     }])
   })
 })
@@ -244,12 +251,12 @@ describe('sshKeyMaterial', () => {
 
 describe('listCredentialSummaries', () => {
   it('never carries a secret, and lists each credential with its projects', async () => {
-    await project('web', 'https://github.com/acme/web.git')
+    await project(WEB, 'https://github.com/acme/web.git')
     const token = await addHttpsCredential({ name: 'gh', token: 'ghp_secret_abcd' })
-    await assignProjectCredential('web', token.id)
+    await assignProjectCredential(WEB, token.id)
     const listing = await listCredentialSummaries()
     expect(JSON.stringify(listing)).not.toContain('ghp_secret')
-    expect(listing).toEqual([{ id: token.id, name: 'gh', kind: 'https', preview: '***abcd', projects: ['web'] }])
+    expect(listing).toEqual([{ id: token.id, name: 'gh', kind: 'https', preview: '***abcd', projects: [WEB] }])
   })
 })
 

@@ -19,7 +19,7 @@ import type { WorkspaceCreateResult } from './create'
 import { DEFAULT_AGENT_MODE, type AgentTool } from '@yaac/shared/types'
 
 export interface RestartResolution {
-  projectSlug: string
+  projectId: string
   workspaceId: string
   tool: AgentTool
   jobName: string | null
@@ -39,7 +39,7 @@ export async function resolveRestartTarget(idOrPrefix: string): Promise<RestartR
       // The group is only in the row; a failed read just means no group.
       const row = await findWorkspaceRow(match.workspaceId).catch(() => undefined)
       return {
-        projectSlug: match.projectSlug,
+        projectId: match.projectId,
         workspaceId: match.workspaceId,
         tool: match.tool,
         jobName: match.jobName,
@@ -53,9 +53,9 @@ export async function resolveRestartTarget(idOrPrefix: string): Promise<RestartR
   const row = await findWorkspaceRow(id)
   if (row) {
     // The tool is the first conversation's; claude if none was recorded.
-    const first = await firstAgentSession(row.projectSlug, row.workspaceId)
+    const first = await firstAgentSession(row.projectId, row.workspaceId)
     return {
-      projectSlug: row.projectSlug,
+      projectId: row.projectId,
       workspaceId: row.workspaceId,
       tool: first?.tool ?? 'claude',
       jobName: null,
@@ -84,7 +84,7 @@ export async function restartWorkspace(
   idOrPrefix: string,
   opts: RestartWorkspaceOptions = {},
 ): Promise<WorkspaceCreateResult> {
-  const { projectSlug, workspaceId, tool, jobName, groupId } = await resolveRestartTarget(idOrPrefix)
+  const { projectId, workspaceId, tool, jobName, groupId } = await resolveRestartTarget(idOrPrefix)
 
   // Register before teardown, whoever the caller is: `inFlightWorkspaceIds`
   // is what keeps the stale reaper from deleting the dirs the new launch is
@@ -92,7 +92,7 @@ export async function restartWorkspace(
   // The remove/fail calls below are explicit for the same reason.
   ensureProvisioning({
     workspaceId,
-    projectSlug,
+    projectId,
     tool,
     kind: 'restart',
     ...(groupId !== undefined ? { groupId } : {}),
@@ -107,10 +107,10 @@ export async function restartWorkspace(
   try {
     if (jobName) onProgress(`Stopping session job ${jobName}...`)
     // Always: it also clears a leftover terminating mark.
-    await teardownForRestart({ jobName, projectSlug, workspaceId: workspaceId })
+    await teardownForRestart({ jobName, projectId, workspaceId: workspaceId })
 
     // Each conversation resumes under its own tool.
-    const active = await listActiveAgentSessions(projectSlug, workspaceId).catch(() => [])
+    const active = await listActiveAgentSessions(projectId, workspaceId).catch(() => [])
     if (active.length > 1) onProgress(`Restoring ${active.length} agent sessions...`)
 
     // Relaunch in the recorded permission mode (e.g. `plan` must not come
@@ -119,7 +119,7 @@ export async function restartWorkspace(
     // whose handshake failed records no conversation.
     const recorded = await findWorkspaceRow(workspaceId).catch(() => undefined)
 
-    const result = await createWorkspace(projectSlug, {
+    const result = await createWorkspace(projectId, {
       resume: true,
       workspaceId,
       tool,
@@ -131,8 +131,8 @@ export async function restartWorkspace(
 
     // Only after success, so a failed restart keeps its stop record. The
     // workspace is running either way, so a lost clear is only logged.
-    await clearWorkspaceStopped(projectSlug, workspaceId).catch((err: unknown) => {
-      serverLog(`[server] restart ${projectSlug}/${workspaceId}: clear stop: ${String(err)}`)
+    await clearWorkspaceStopped(projectId, workspaceId).catch((err: unknown) => {
+      serverLog(`[server] restart ${projectId}/${workspaceId}: clear stop: ${String(err)}`)
     })
 
     // `buildSnapshot` hides a workspace while its row exists.

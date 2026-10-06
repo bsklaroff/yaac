@@ -13,14 +13,14 @@ import type { ProjectSummary } from '@yaac/shared/types'
  */
 export function ProjectRail({
   projects,
-  activeProjectSlug,
-  attentionBySlug,
+  activeProjectId,
+  attentionByProject,
   onSelect,
 }: {
   projects: ProjectSummary[]
-  activeProjectSlug: string | null
-  attentionBySlug: Record<string, number>
-  onSelect: (slug: string) => void
+  activeProjectId: string | null
+  attentionByProject: Record<string, number>
+  onSelect: (projectId: string) => void
 }): JSX.Element {
   return (
     <div className={clsx(
@@ -31,15 +31,15 @@ export function ProjectRail({
     )}>
       {isElectron() && <WindowControls className="h-5" />}
       {projects.map((p) => {
-        const active = p.slug === activeProjectSlug
-        const color = projectColor(p.slug)
-        const waiting = attentionBySlug[p.slug] ?? 0
+        const active = p.id === activeProjectId
+        const color = projectColor(p.id)
+        const waiting = attentionByProject[p.id] ?? 0
         return (
           <button
-            key={p.slug}
-            onClick={() => onSelect(p.slug)}
+            key={p.id}
+            onClick={() => onSelect(p.id)}
             className="group relative flex items-center justify-center"
-            title={p.slug}
+            title={p.name}
           >
             <span
               className={clsx(
@@ -63,7 +63,7 @@ export function ProjectRail({
                   : `color-mix(in oklab, ${color} 45%, var(--color-text-dim))`,
               }}
             >
-              {projectInitial(p.slug)}
+              {projectInitial(p.name)}
             </span>
             {waiting > 0 && (
               <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-amber-500 ring-2 ring-base" />

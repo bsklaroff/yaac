@@ -21,7 +21,7 @@ export async function recordProject(
     gitCredentialId: gitCredential?.id ?? null,
     knownHostsEntry: gitCredential?.knownHostsEntry ?? null,
   }).onConflictDoUpdate({
-    target: projects.slug,
+    target: projects.id,
     set: {
       remoteUrl: meta.remoteUrl,
       // A trusted host key belongs to one remote; a new remote needs its own.
@@ -38,13 +38,13 @@ export async function recordProject(
  * False when there is no such project.
  */
 export async function setProjectGitCredential(
-  slug: string,
+  projectId: string,
   gitCredentialId: string,
   knownHostsEntry: string | null,
 ): Promise<boolean> {
   const db = await getDb()
   const rows = await db.update(projects).set({ gitCredentialId, knownHostsEntry })
-    .where(eq(projects.slug, slug)).returning({ slug: projects.slug })
+    .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
   notifyWorkspaceListChanged()
   return rows.length > 0
 }
@@ -54,9 +54,6 @@ export async function setProjectGitCredential(
  * create-form defaults and the git credential).
  */
 export interface ProjectRow extends ProjectMeta {
-  /** Immutable id the substrate names this project's objects by (see the
-   *  `projects.id` column). */
-  id: string
   lastTool?: AgentTool
   lastBranch?: string
   createDefaults: Partial<Record<AgentTool, ToolCreateDefaults>>
@@ -82,12 +79,12 @@ function toProjectRow(
   }
 }
 
-export async function getProjectRow(slug: string): Promise<ProjectRow | undefined> {
+export async function getProjectRow(projectId: string): Promise<ProjectRow | undefined> {
   const db = await getDb()
-  const rows = await db.select().from(projects).where(eq(projects.slug, slug))
+  const rows = await db.select().from(projects).where(eq(projects.id, projectId))
   if (rows[0] === undefined) return undefined
   const defaults = await db.select().from(projectToolDefaults)
-    .where(eq(projectToolDefaults.projectSlug, slug))
+    .where(eq(projectToolDefaults.projectId, projectId))
   return toProjectRow(rows[0], defaults)
 }
 
@@ -97,7 +94,7 @@ export async function listProjectRows(): Promise<ProjectRow[]> {
     db.select().from(projects),
     db.select().from(projectToolDefaults),
   ])
-  return rows.map((r) => toProjectRow(r, defaults.filter((d) => d.projectSlug === r.slug)))
+  return rows.map((r) => toProjectRow(r, defaults.filter((d) => d.projectId === r.id)))
 }
 
 /**
@@ -109,7 +106,7 @@ export async function listProjectRows(): Promise<ProjectRow[]> {
  * be the user's (not a restart, prewarm or spawn policy).
  */
 export async function recordProjectCreate(
-  slug: string,
+  projectId: string,
   tool: AgentTool,
   picked: ToolCreateDefaults,
   branch?: string,
@@ -123,16 +120,15 @@ export async function recordProjectCreate(
   await db.transaction(async (tx) => {
     const updated = await tx.update(projects)
       .set({ lastTool: tool, ...(branch !== undefined ? { lastBranch: branch } : {}) })
-      .where(eq(projects.slug, slug)).returning({ slug: projects.slug })
-    // No such project: skip, or a later project with the same slug would
-    // inherit the row.
+      .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
+    // No such project: skip rather than leave an orphan defaults row.
     if (updated.length === 0) return
-    const insert = tx.insert(projectToolDefaults).values({ projectSlug: slug, tool, ...set })
+    const insert = tx.insert(projectToolDefaults).values({ projectId, tool, ...set })
     // drizzle rejects an empty `set`, so with nothing to update just ensure
     // the row exists.
     await (Object.keys(set).length > 0
       ? insert.onConflictDoUpdate({
-        target: [projectToolDefaults.projectSlug, projectToolDefaults.tool],
+        target: [projectToolDefaults.projectId, projectToolDefaults.tool],
         set,
       })
       : insert.onConflictDoNothing())
@@ -140,11 +136,11 @@ export async function recordProjectCreate(
   notifyWorkspaceListChanged()
 }
 
-export async function deleteProjectRow(slug: string): Promise<void> {
+export async function deleteProjectRow(projectId: string): Promise<void> {
   const db = await getDb()
   await db.transaction(async (tx) => {
-    await tx.delete(projectToolDefaults).where(eq(projectToolDefaults.projectSlug, slug))
-    await tx.delete(projects).where(eq(projects.slug, slug))
+    await tx.delete(projectToolDefaults).where(eq(projectToolDefaults.projectId, projectId))
+    await tx.delete(projects).where(eq(projects.id, projectId))
   })
   notifyWorkspaceListChanged()
 }

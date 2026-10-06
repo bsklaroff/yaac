@@ -53,7 +53,7 @@ import type { RuntimeHandle } from '#drivers/contract'
 export const claiming = new Set<string>()
 
 /**
- * In-flight spawns, workspace id → projectSlug. A spawn is not listed by the
+ * In-flight spawns, workspace id → project id. A spawn is not listed by the
  * runtime for seconds, so this stops ticks from spawning duplicates. Its pod
  * is also never reaped while the create is still running.
  */
@@ -76,12 +76,12 @@ export function clearPrewarmStateForTests(): void {
 }
 
 export interface PrewarmSpawn {
-  projectSlug: string
+  projectId: string
 }
 
 export interface PrewarmReapTarget {
   jobName: string
-  projectSlug: string
+  projectId: string
   workspaceId: string
 }
 
@@ -92,7 +92,7 @@ export interface PrewarmPlan {
 
 /** What the planner reads besides the listing and the pool size. */
 export interface PrewarmState {
-  /** In-flight spawns, workspace id → projectSlug (`inFlight`). */
+  /** In-flight spawns, workspace id → project id (`inFlight`). */
   inFlight: ReadonlyMap<string, string>
   /** Job names of spares mid-claim (`claiming`). */
   claiming: ReadonlySet<string>
@@ -125,23 +125,23 @@ export function computePrewarmPlan(
   const toSpawn: PrewarmSpawn[] = []
   const toReap: PrewarmReapTarget[] = []
   const reap = (p: RuntimeHandle): void => {
-    toReap.push({ jobName: p.jobName, projectSlug: p.projectSlug, workspaceId: p.workspaceId })
+    toReap.push({ jobName: p.jobName, projectId: p.projectId, workspaceId: p.workspaceId })
   }
   const claimedByProject = new Map<string, number>()
   const sparesByProject = new Map<string, RuntimeHandle[]>()
   for (const p of pods) {
-    if (!p.projectSlug) continue
+    if (!p.projectId) continue
     if (p.prewarmed) {
       if (state.claiming.has(p.jobName) || state.inFlight.has(p.workspaceId)) continue
       if (state.stale.has(p.jobName)) {
         reap(p)
         continue
       }
-      const arr = sparesByProject.get(p.projectSlug)
+      const arr = sparesByProject.get(p.projectId)
       if (arr) arr.push(p)
-      else sparesByProject.set(p.projectSlug, [p])
+      else sparesByProject.set(p.projectId, [p])
     } else if (p.running) {
-      claimedByProject.set(p.projectSlug, (claimedByProject.get(p.projectSlug) ?? 0) + 1)
+      claimedByProject.set(p.projectId, (claimedByProject.get(p.projectId) ?? 0) + 1)
     }
   }
   const inFlightByProject = new Map<string, number>()
@@ -165,7 +165,7 @@ export function computePrewarmPlan(
     }
     // Spawn to fill, counting in-flight spawns so ticks don't stampede.
     const current = spares.length + (inFlightByProject.get(project) ?? 0)
-    for (let i = current; i < poolSize; i++) toSpawn.push({ projectSlug: project })
+    for (let i = current; i < poolSize; i++) toSpawn.push({ projectId: project })
   }
   return { toSpawn, toReap }
 }
@@ -185,9 +185,9 @@ export function resolveRebranchTarget(params: {
 }
 
 /** Fetch the project's origin (skipped in e2e, like the cold path). */
-async function fetchSpareOrigin(projectSlug: string): Promise<void> {
+async function fetchSpareOrigin(projectId: string): Promise<void> {
   if (testEnv.e2eSkipFetch) return
-  await fetchProjectOrigin(projectSlug)
+  await fetchProjectOrigin(projectId)
 }
 
 /** How long a claim keeping its spare's branch waits for the fetch before
@@ -240,7 +240,7 @@ async function refreshTarget(
  * case it is reaped.
  */
 export async function tryClaimPrewarmed(
-  projectSlug: string,
+  projectId: string,
   /** The create's provisioning entry, which the spare is listed under until
    *  the create resolves. */
   requestId: string,
@@ -260,12 +260,12 @@ export async function tryClaimPrewarmed(
   // Whether this claim wrote the workspace row a failure must undo.
   let recordedRow = false
   try {
-    const workspaces = await runtime.list(projectSlug)
+    const workspaces = await runtime.list(projectId)
     const spares = workspaces.filter((p) => p.prewarmed && p.running)
     // Each spare's launch settings are on its row. Read before reserving, so
     // a reservation never spans an unneeded await.
     const launched = new Map(await Promise.all(spares.map(async (p) =>
-      [p.jobName, await getWorkspaceRow(projectSlug, p.workspaceId).catch(() => undefined)] as const)))
+      [p.jobName, await getWorkspaceRow(projectId, p.workspaceId).catch(() => undefined)] as const)))
     const timeZone = (await getTimeZone()).timeZone ?? undefined
     const matches = (p: RuntimeHandle): boolean => {
       const row = launched.get(p.jobName)
@@ -301,7 +301,7 @@ export async function tryClaimPrewarmed(
     const asWarmed = matches(chosen)
     // Start the fetch now so it overlaps the steps below; awaited at the
     // branch prep.
-    const fetched = fetchSpareOrigin(projectSlug)
+    const fetched = fetchSpareOrigin(projectId)
     fetched.catch(() => { /* observed below */ })
 
     // The commands below need the agent transport. The liveness check above
@@ -309,7 +309,7 @@ export async function tryClaimPrewarmed(
     // is untouched and the claim falls back to a cold create.
     await runtime.awaitAgentTransport(chosen.jobName, { timeoutMs: 10_000 })
 
-    const repo = repoDir(projectSlug)
+    const repo = repoDir(projectId)
     const spareUpstreamBranch = warmed?.baseBranch ?? null
     const defaultBranch = await getDefaultBranch(repo)
     const rebranchTo = resolveRebranchTarget({
@@ -328,7 +328,7 @@ export async function tryClaimPrewarmed(
     // List the spare under the create's provisioning entry, so the sidebar
     // does not show both.
     claimProvisioning(requestId, claimedId)
-    await claimSpareWorkspace(projectSlug, claimedId, {
+    await claimSpareWorkspace(projectId, claimedId, {
       permissionMode: setup.permissionMode,
       mode: setup.mode,
       ...(setup.model !== undefined ? { model: setup.model } : {}),
@@ -339,7 +339,7 @@ export async function tryClaimPrewarmed(
     if (setup.mode === 'tui') {
       await applyWorkspaceEvent({
         type: 'sessions-launched',
-        projectSlug,
+        projectId,
         workspaceId: claimedId,
         sessions: [{
           tool,
@@ -380,12 +380,12 @@ export async function tryClaimPrewarmed(
     // read fresh here so an allow-host during the fetch is not overwritten.
     const registration = {
       workspaceId: claimedId,
-      projectSlug,
+      projectId,
       tool,
-      config: await resolveProjectConfig(projectSlug) ?? {},
-      remoteUrl: await projectRemoteUrl(projectSlug),
+      config: await resolveProjectConfig(projectId) ?? {},
+      remoteUrl: await projectRemoteUrl(projectId),
       proxySecretRules: Object.fromEntries(
-        Object.entries((await resolveProjectEnv(projectSlug)).secrets)
+        Object.entries((await resolveProjectEnv(projectId)).secrets)
           .map(([name, { rule }]) => [name, rule]),
       ),
     }
@@ -432,7 +432,7 @@ export async function tryClaimPrewarmed(
     if (rebranchTo !== null) {
       await applyWorkspaceEvent({
         type: 'base-branch-resolved',
-        projectSlug,
+        projectId,
         workspaceId: chosen.workspaceId,
         baseBranch: rebranchTo,
       })
@@ -440,7 +440,7 @@ export async function tryClaimPrewarmed(
 
     // Non-fatal (e.g. the group was deleted meanwhile): land ungrouped.
     if (request.groupId !== undefined) {
-      await setWorkspaceGroup(projectSlug, claimedId, request.groupId).catch((err: unknown) => {
+      await setWorkspaceGroup(projectId, claimedId, request.groupId).catch((err: unknown) => {
         console.warn(
           `Claimed session ${claimedId} not filed in group ${request.groupId ?? ''}: `
           + (err as Error).message,
@@ -448,11 +448,11 @@ export async function tryClaimPrewarmed(
       })
     }
     // Before the prompt, so the title sweep never sees it untitled.
-    if (request.title !== undefined) await setWorkspaceTitle(projectSlug, claimedId, request.title)
+    if (request.title !== undefined) await setWorkspaceTitle(projectId, claimedId, request.title)
 
     emit('Using prewarmed session...')
     await handOverAgent({
-      projectSlug,
+      projectId,
       workspaceId: claimedId,
       jobName: chosen.jobName,
       tool,
@@ -472,11 +472,11 @@ export async function tryClaimPrewarmed(
     // step succeeded; what is left surfaces via the stale reaper. Not
     // awaited, so the caller falls back to a cold create at once.
     if (chosen && mutated) {
-      const { jobName, projectSlug: slug, workspaceId: workspaceId } = chosen
-      void cleanupWorkspace({ jobName, projectSlug: slug, workspaceId })
-        .then((gone) => gone && deleteWorkspaceState(slug, workspaceId))
+      const { jobName, projectId, workspaceId } = chosen
+      void cleanupWorkspace({ jobName, projectId, workspaceId })
+        .then((gone) => gone && deleteWorkspaceState(projectId, workspaceId))
         .then((removed) => (removed && recordedRow
-          ? applyWorkspaceEvent({ type: 'workspace-create-failed', projectSlug, workspaceId })
+          ? applyWorkspaceEvent({ type: 'workspace-create-failed', projectId, workspaceId })
           : undefined))
         .catch(() => { /* best-effort; the stale-session reaper retries */ })
       reserved = undefined

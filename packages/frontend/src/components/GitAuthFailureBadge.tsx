@@ -13,12 +13,12 @@ import type { GitAuthFailure } from '@yaac/shared/types'
  * own <button>, so inside a clickable row mount it as an overlaid sibling.
  */
 export function GitAuthFailureBadge({
-  projectSlug,
+  projectId,
   failures,
   iconSize,
   className,
 }: {
-  projectSlug: string
+  projectId: string
   failures: GitAuthFailure[]
   iconSize: number
   /** Positioning and the context-appropriate hover highlight for the trigger. */
@@ -59,7 +59,7 @@ export function GitAuthFailureBadge({
             <div className="p-1">
               <button
                 type="button"
-                onClick={() => { setOpen(false); openSettings('credentials', undefined, projectSlug) }}
+                onClick={() => { setOpen(false); openSettings('credentials', undefined, projectId) }}
                 className="w-full rounded-md border border-border-strong bg-surface-3 px-2 py-1.5 text-xs font-medium
                   text-text transition hover:bg-border-strong"
               >

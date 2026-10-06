@@ -11,7 +11,7 @@ import type { AgentTool, GitAuthFailure, WorkspaceChanges } from '@yaac/shared/t
 
 export interface WorkspaceDetail {
   workspaceId: string
-  projectSlug: string
+  projectId: string
   jobName: string
   state: string
   tool: AgentTool
@@ -35,12 +35,12 @@ export async function getWorkspaceDetail(idOrPrefix: string): Promise<WorkspaceD
   const blocked = match.workspaceId
     ? await runtime.blockedHosts(match.workspaceId)
     : []
-  const gitAuthFailures = match.projectSlug
-    ? (await runtime.gitAuthFailures())[match.projectSlug] ?? []
+  const gitAuthFailures = match.projectId
+    ? (await runtime.gitAuthFailures())[match.projectId] ?? []
     : []
   return {
     workspaceId: match.workspaceId,
-    projectSlug: match.projectSlug,
+    projectId: match.projectId,
     jobName: match.jobName,
     state: match.state,
     tool: match.tool,
@@ -66,10 +66,10 @@ export async function getWorkspaceChanges(
   idOrPrefix: string,
   base?: string,
 ): Promise<WorkspaceChanges> {
-  const { jobName, workspaceId, projectSlug } = await resolveWorkspaceContainer(
+  const { jobName, workspaceId, projectId } = await resolveWorkspaceContainer(
     idOrPrefix, { requireRunning: true },
   )
-  const forkBranch = await workspaceForkBranch(projectSlug, workspaceId)
+  const forkBranch = await workspaceForkBranch(projectId, workspaceId)
   // The runtime treats a blank `base` as unset.
   const named = base?.trim()
   try {
@@ -97,11 +97,11 @@ export async function getWorkspaceBlockedHosts(idOrPrefix: string): Promise<stri
  * the opencode fallback needs a running one.
  */
 export async function getWorkspacePrompt(idOrPrefix: string): Promise<string | undefined> {
-  const { projectSlug, workspaceId, jobName, tool } = await resolveWorkspaceRecord(idOrPrefix)
-  if (!workspaceId || !projectSlug) return undefined
+  const { projectId, workspaceId, jobName, tool } = await resolveWorkspaceRecord(idOrPrefix)
+  if (!workspaceId || !projectId) return undefined
   // Prefer the captured row: this route is polled, and the opencode lookup
   // costs an exec.
-  const first = await firstAgentSession(projectSlug, workspaceId).catch(() => undefined)
+  const first = await firstAgentSession(projectId, workspaceId).catch(() => undefined)
   if (first?.firstPrompt !== undefined) return first.firstPrompt
   const which = first?.tool ?? tool
   if (which === undefined) return undefined

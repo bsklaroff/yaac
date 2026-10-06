@@ -17,9 +17,9 @@ export async function allowWorkspaceHost(
   opts: { persist: boolean },
 ): Promise<void> {
   const target = await resolveWorkspaceContainer(idOrName, { requireRunning: true })
-  if (opts.persist) await addAllowedHostToProjectConfig(target.projectSlug, host)
+  if (opts.persist) await addAllowedHostToProjectConfig(target.projectId, host)
   await workspaceDriver().allowHost(
-    { workspaceId: target.workspaceId, projectSlug: target.projectSlug },
+    { workspaceId: target.workspaceId, projectId: target.projectId },
     host,
     { fanOutToProject: opts.persist },
   )

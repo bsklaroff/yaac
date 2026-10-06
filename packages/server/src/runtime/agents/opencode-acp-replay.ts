@@ -75,20 +75,20 @@ type Row = Record<string, unknown>
 
 /** A conversation's history, as read by `getAgentSessionTranscript`. */
 export async function opencodeTranscriptAsAcp(
-  slug: string,
+  projectId: string,
   workspaceId: string,
   agentSessionId: string,
 ): Promise<AcpEvent[]> {
   if (!SESSION_ID.test(agentSessionId)) return []
   const rows = sandboxLinkPolicy() === 'inside'
-    ? await databaseRows(slug, workspaceId, agentSessionId)
-    : await exportRows(slug, workspaceId, agentSessionId)
+    ? await databaseRows(projectId, workspaceId, agentSessionId)
+    : await exportRows(projectId, workspaceId, agentSessionId)
   return synthesizeAcpRecord(rows, agentSessionId).replay()
 }
 
 /** The export's rows, or none before the checkpoint has written one. */
-async function exportRows(slug: string, workspaceId: string, root: string): Promise<Row[]> {
-  const file = { slug, dir: opencodeCheckpointDir(slug, workspaceId), rel: `${OPENCODE_EXPORT_DIR}/${root}.jsonl` }
+async function exportRows(projectId: string, workspaceId: string, root: string): Promise<Row[]> {
+  const file = { projectId, dir: opencodeCheckpointDir(projectId, workspaceId), rel: `${OPENCODE_EXPORT_DIR}/${root}.jsonl` }
   let raw: Buffer | null
   try {
     raw = await readSandboxFile(file, MAX_ACP_RECORD_BYTES)
@@ -106,8 +106,8 @@ async function exportRows(slug: string, workspaceId: string, root: string): Prom
  * file is the whole database, and is opened immutable so that nothing (not
  * even a lock file) is written beside it.
  */
-async function databaseRows(slug: string, workspaceId: string, root: string): Promise<Row[]> {
-  const [listed] = (await conversationFiles(slug, workspaceId, [{ tool: 'opencode', mode: 'tui', agentSessionId: root }]))
+async function databaseRows(projectId: string, workspaceId: string, root: string): Promise<Row[]> {
+  const [listed] = (await conversationFiles(projectId, workspaceId, [{ tool: 'opencode', mode: 'tui', agentSessionId: root }]))
     .get(root) ?? []
   if (listed === undefined) return []
   const file = path.join(listed.file.dir, listed.file.rel)

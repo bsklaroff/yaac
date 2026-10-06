@@ -6,6 +6,7 @@ import { MasterDetail } from '#components/ui/MasterDetail'
 import { Modal } from '#components/ui/Modal'
 import { api } from '#lib/api'
 import { useIsMobile } from '#lib/viewport'
+import { useProjectName } from '#lib/projectIdentity'
 import type { ImageBuildEntry } from '@yaac/shared/types'
 import { relativeAge } from '#lib/time'
 
@@ -38,6 +39,7 @@ export function ImageBuildsOverlay({
 }): JSX.Element {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const isMobile = useIsMobile()
+  const projectName = useProjectName()
 
   // The user's pick, else (desktop only) the newest running build, else the
   // newest. On mobile the list and log are separate screens, so nothing is
@@ -107,7 +109,7 @@ export function ImageBuildsOverlay({
                       <span className="truncate font-mono text-text-faint">{shortTag(b.tag)}</span>
                     </span>
                     <span className="truncate text-[11px] text-text-dim">
-                      {b.projectSlugs.join(', ')} · {b.reason} · {relativeAge(b.startedAt)}
+                      {b.projectIds.map(projectName).join(', ')} · {b.reason} · {relativeAge(b.startedAt)}
                       {b.stepCurrent !== undefined && b.stepTotal !== undefined && (
                         <> · step {b.stepCurrent}/{b.stepTotal}</>
                       )}

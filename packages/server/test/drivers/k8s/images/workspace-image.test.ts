@@ -9,7 +9,7 @@ vi.mock('#drivers/k8s/images/build-coordinator', () => ({
 
 import { prepareWorkspaceImage } from '#drivers/k8s/images/workspace-image'
 
-const DEMO = { slug: 'demo', id: '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f' }
+const DEMO = '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -19,13 +19,13 @@ beforeEach(() => {
 describe('prepareWorkspaceImage', () => {
   it('answers with the registry ref, not the bare tag the build produced', async () => {
     // Nodes pull from the registry and cannot resolve a bare tag.
-    const ref = await prepareWorkspaceImage({ project: DEMO, nestedContainers: false })
+    const ref = await prepareWorkspaceImage({ projectId: DEMO, nestedContainers: false })
 
     expect(ref).toBe('yaac-registry.yaac.svc.cluster.local:5000/yaac-demo:abc123')
   })
 
   it('builds the nestable chain when the workspace runs its own engine', async () => {
-    await prepareWorkspaceImage({ project: DEMO, nestedContainers: true })
+    await prepareWorkspaceImage({ projectId: DEMO, nestedContainers: true })
 
     expect(mockEnsureImage).toHaveBeenCalledWith(
       DEMO, undefined, false, true, expect.objectContaining({ reason: 'session' }),
@@ -43,7 +43,7 @@ describe('prepareWorkspaceImage', () => {
     const messages: string[] = []
 
     await prepareWorkspaceImage({
-      project: DEMO,
+      projectId: DEMO,
       nestedContainers: false,
       onProgress: (m) => messages.push(m),
     })

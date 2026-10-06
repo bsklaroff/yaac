@@ -22,7 +22,7 @@ export interface SpawnRequest {
   /** The workspace that called. */
   callerWorkspaceId: string
   /** The caller's project, where the new workspace is created. */
-  callerProjectSlug: string
+  callerProjectId: string
   /** The caller's own tool, if known; second in the tool precedence. */
   callerTool?: AgentTool
   /** The caller's permission mode: the default, and the most it may
@@ -64,7 +64,7 @@ const inFlightByCaller = new Map<string, number>()
 
 export interface SpawnPolicyDeps {
   /** Injected for tests — the agent the project was last created with. */
-  lastToolFn?: (projectSlug: string) => Promise<AgentTool | undefined>
+  lastToolFn?: (projectId: string) => Promise<AgentTool | undefined>
   mintIdFn?: () => string
 }
 
@@ -94,7 +94,7 @@ export async function decideSpawn(
   // the project was last created with > claude.
   const tool = request.tool
     ?? request.callerTool
-    ?? await (deps.lastToolFn ?? lastTool)(request.callerProjectSlug)
+    ?? await (deps.lastToolFn ?? lastTool)(request.callerProjectId)
     ?? 'claude'
   const uiMode = request.uiMode ?? request.callerMode
   const posture = agentPermissionMode(tool, request.callerPermissionMode, request.permissionMode)
@@ -102,23 +102,23 @@ export async function decideSpawn(
   // Last, so a refused spawn creates no group.
   const groupId = request.group === undefined
     ? undefined
-    : (await resolveGroup(request.callerProjectSlug, request.group, { create: true })).groupId
+    : (await resolveGroup(request.callerProjectId, request.group, { create: true })).groupId
 
   const workspaceId = (deps.mintIdFn ?? (() => crypto.randomUUID()))()
-  const projectSlug = request.callerProjectSlug
+  const projectId = request.callerProjectId
   inFlightByCaller.set(request.callerWorkspaceId, inFlight + 1)
   // Register the provisioning row before detaching: it shows progress and
   // failures, and makes the id usable as a queue parent right away.
   registerProvisioning({
     workspaceId: workspaceId,
-    projectSlug,
+    projectId,
     tool,
     kind: 'create',
     ...(groupId !== undefined ? { groupId } : {}),
     ...(request.branch !== undefined ? { branch: request.branch } : {}),
   })
   void runProvisioned(workspaceId, (onProgress) => startWorkspace({
-    projectSlug,
+    projectId,
     workspaceId: workspaceId,
     tool,
     ...(uiMode !== undefined ? { mode: uiMode } : {}),
@@ -135,7 +135,7 @@ export async function decideSpawn(
     claimSpare: false,
     draftOnStop: {},
   }, onProgress)).then(
-    (created) => serverLog(`[spawn] ${request.callerWorkspaceId.slice(0, 8)}... spawned workspace ${created.workspaceId.slice(0, 8)}... in ${projectSlug}`),
+    (created) => serverLog(`[spawn] ${request.callerWorkspaceId.slice(0, 8)}... spawned workspace ${created.workspaceId.slice(0, 8)}... in ${projectId}`),
     (err: unknown) => serverLog(`[spawn] workspace create for ${request.callerWorkspaceId.slice(0, 8)}... failed: ${String(err)}`),
   ).finally(() => {
     const n = (inFlightByCaller.get(request.callerWorkspaceId) ?? 1) - 1
@@ -189,6 +189,6 @@ export function agentPermissionMode(
     }
 }
 
-async function lastTool(projectSlug: string): Promise<AgentTool | undefined> {
-  return (await getProjectRow(projectSlug))?.lastTool
+async function lastTool(projectId: string): Promise<AgentTool | undefined> {
+  return (await getProjectRow(projectId))?.lastTool
 }

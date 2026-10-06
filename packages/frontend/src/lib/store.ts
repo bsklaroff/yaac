@@ -68,7 +68,7 @@ const SELECTION_LS_KEY = 'yaac.selection.v1'
 /** The selected project and workspace, saved so a reload or a shared link
  *  reopens the same view. */
 export interface PersistedSelection {
-  projectSlug: string | null
+  projectId: string | null
   workspaceId: string | null
 }
 
@@ -81,8 +81,8 @@ export function loadSelection(): PersistedSelection {
   try {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search)
-      const projectSlug = params.get('project')
-      if (projectSlug) return { projectSlug, workspaceId: params.get('workspace') }
+      const projectId = params.get('project')
+      if (projectId) return { projectId, workspaceId: params.get('workspace') }
     }
   } catch { /* fall through to localStorage */ }
   try {
@@ -93,14 +93,14 @@ export function loadSelection(): PersistedSelection {
         if (parsed && typeof parsed === 'object') {
           const p = parsed as Record<string, unknown>
           return {
-            projectSlug: typeof p.projectSlug === 'string' ? p.projectSlug : null,
+            projectId: typeof p.projectId === 'string' ? p.projectId : null,
             workspaceId: typeof p.workspaceId === 'string' ? p.workspaceId : null,
           }
         }
       }
     }
   } catch { /* fall through to the empty default */ }
-  return { projectSlug: null, workspaceId: null }
+  return { projectId: null, workspaceId: null }
 }
 
 /**
@@ -108,16 +108,16 @@ export function loadSelection(): PersistedSelection {
  * params (with replaceState; other params are kept). Query params rather
  * than a path, because the SPA is only served at `/`. Best-effort.
  */
-export function persistSelection(projectSlug: string | null, workspaceId: string | null): void {
+export function persistSelection(projectId: string | null, workspaceId: string | null): void {
   try {
     if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(SELECTION_LS_KEY, JSON.stringify({ projectSlug, workspaceId }))
+      localStorage.setItem(SELECTION_LS_KEY, JSON.stringify({ projectId, workspaceId }))
     }
   } catch { /* quota/serialization failures are non-fatal */ }
   try {
     if (typeof window !== 'undefined' && window.history) {
       const url = new URL(window.location.href)
-      if (projectSlug) url.searchParams.set('project', projectSlug)
+      if (projectId) url.searchParams.set('project', projectId)
       else url.searchParams.delete('project')
       if (workspaceId) url.searchParams.set('workspace', workspaceId)
       else url.searchParams.delete('workspace')
@@ -319,8 +319,8 @@ export function isUnseenDeath(
  * stays open until answered. Stopping workspaces (per the server or
  * `pendingDeleteIds`) don't count.
  */
-export function unreadWaitingBySlug(
-  workspaces: Pick<WorkspaceListEntry, 'workspaceId' | 'projectSlug' | 'status' | 'waitingSinceMs' | 'stopping' | 'asking'>[],
+export function unreadWaitingByProject(
+  workspaces: Pick<WorkspaceListEntry, 'workspaceId' | 'projectId' | 'status' | 'waitingSinceMs' | 'stopping' | 'asking'>[],
   readWaiting: Record<string, number>,
   pendingDeleteIds: string[] = [],
 ): Record<string, number> {
@@ -328,7 +328,7 @@ export function unreadWaitingBySlug(
   for (const s of workspaces) {
     if (s.stopping || pendingDeleteIds.includes(s.workspaceId)) continue
     if (s.asking || isUnreadWaiting(s, readWaiting)) {
-      out[s.projectSlug] = (out[s.projectSlug] ?? 0) + 1
+      out[s.projectId] = (out[s.projectId] ?? 0) + 1
     }
   }
   return out
@@ -349,19 +349,19 @@ export function unreadWaitingBySlug(
  */
 export function resolveVacantSelection(args: {
   /** The active project as of the previous render; null before there was one. */
-  previousProjectSlug: string | null
-  activeProjectSlug: string | null
+  previousProjectId: string | null
+  activeProjectId: string | null
   selectedWorkspaceId: string | null
   /** The sidebar's selectable rows in display order (`sidebarRowIds`). */
   rowIds: string[]
   claims: Record<string, string>
   inFlight: string[]
 }): string | null {
-  const { previousProjectSlug, activeProjectSlug, selectedWorkspaceId, rowIds, claims, inFlight } = args
-  if (!activeProjectSlug) return null
+  const { previousProjectId, activeProjectId, selectedWorkspaceId, rowIds, claims, inFlight } = args
+  if (!activeProjectId) return null
   if (selectedWorkspaceId && rowIds.includes(selectedWorkspaceId)) return null
   const vanished = selectedWorkspaceId !== null
-  const switchedProject = previousProjectSlug !== null && previousProjectSlug !== activeProjectSlug
+  const switchedProject = previousProjectId !== null && previousProjectId !== activeProjectId
   if (!vanished && !switchedProject) return null
   if (vanished && !switchedProject) {
     const claimed = claims[selectedWorkspaceId]
@@ -381,7 +381,7 @@ export type SettingsSection =
  * stops; with neither, Start is "Now".
  */
 export interface CreateWorkspaceDialogOpts {
-  projectSlug: string
+  projectId: string
   parent?: string
   editId?: string
   /** Reopen a saved draft (docs/draft-workspaces.md) on its fields. */
@@ -393,7 +393,7 @@ export interface CreateWorkspaceDialogOpts {
 /** Client-side UI state. Server state lives in the snapshot. */
 interface UiState {
   /** Project whose workspaces the sidebar is scoped to (rail selection). */
-  activeProjectSlug: string | null
+  activeProjectId: string | null
   /** Workspace shown in the main pane. */
   selectedWorkspaceId: string | null
   /** Bumped when a workspace is selected or opened; the view then focuses
@@ -581,17 +581,17 @@ interface UiState {
    * failed or listed under its own id.
    */
   reconcileSnapshot: (snapshot: Pick<ServerSnapshot, 'workspaces' | 'provisioning'>) => void
-  setActiveProject: (slug: string | null) => void
+  setActiveProject: (projectId: string | null) => void
   /** Like `setActiveProject`, for when App picks a project itself. Leaves
    *  the mobile screen alone (see MobileScreen). */
-  restoreActiveProject: (slug: string) => void
+  restoreActiveProject: (projectId: string) => void
   /** The user picked a workspace; on mobile this moves to the pane screen. */
   selectWorkspace: (id: string | null) => void
   /** Like `selectWorkspace`, for when the app picks a workspace itself (see
    *  resolveVacantSelection, successorRow). Leaves the mobile screen alone. */
   autoSelectWorkspace: (id: string) => void
   /** Jump to a specific workspace, switching the active project to match. */
-  openWorkspace: (projectSlug: string, workspaceId: string) => void
+  openWorkspace: (projectId: string, workspaceId: string) => void
   reconnectTerminal: (workspaceId: string) => void
   /** Replace a workspace's layout (see #lib/layout). */
   setWorkspaceLayout: (workspaceId: string, layout: PaneLayout) => void
@@ -643,7 +643,7 @@ export function shortcutsSuspended(state: Pick<UiState, 'recordingShortcut' | 'c
 }
 
 export const useUiStore = create<UiState>((set) => ({
-  activeProjectSlug: initialSelection.projectSlug,
+  activeProjectId: initialSelection.projectId,
   selectedWorkspaceId: initialSelection.workspaceId,
   focusNonce: 0,
   terminalNonces: {},
@@ -768,12 +768,12 @@ export const useUiStore = create<UiState>((set) => ({
   )),
   // Switching projects clears the selection. On mobile it shows the
   // project's workspace list, or the project list when cleared.
-  setActiveProject: (slug) => set({
-    activeProjectSlug: slug,
+  setActiveProject: (projectId) => set({
+    activeProjectId: projectId,
     selectedWorkspaceId: null,
-    mobileScreen: slug ? 'workspaces' : 'projects',
+    mobileScreen: projectId ? 'workspaces' : 'projects',
   }),
-  restoreActiveProject: (slug) => set({ activeProjectSlug: slug, selectedWorkspaceId: null }),
+  restoreActiveProject: (projectId) => set({ activeProjectId: projectId, selectedWorkspaceId: null }),
   // A deselect (null) doesn't change the mobile screen.
   selectWorkspace: (id) => set((s) => ({
     selectedWorkspaceId: id,
@@ -781,8 +781,8 @@ export const useUiStore = create<UiState>((set) => ({
     mobileScreen: id ? 'pane' : s.mobileScreen,
   })),
   autoSelectWorkspace: (id) => set((s) => ({ selectedWorkspaceId: id, focusNonce: s.focusNonce + 1 })),
-  openWorkspace: (projectSlug, workspaceId) => set((s) => ({
-    activeProjectSlug: projectSlug,
+  openWorkspace: (projectId, workspaceId) => set((s) => ({
+    activeProjectId: projectId,
     selectedWorkspaceId: workspaceId,
     focusNonce: s.focusNonce + 1,
     mobileScreen: 'pane',
@@ -971,10 +971,10 @@ useUiStore.subscribe((state, prev) => {
     if (field !== 'chatDrafts' && state[field] !== prev[field]) savePersisted(field, state[field])
   }
   if (
-    state.activeProjectSlug !== prev.activeProjectSlug
+    state.activeProjectId !== prev.activeProjectId
     || state.selectedWorkspaceId !== prev.selectedWorkspaceId
   ) {
-    persistSelection(state.activeProjectSlug, state.selectedWorkspaceId)
+    persistSelection(state.activeProjectId, state.selectedWorkspaceId)
   }
 })
 

@@ -306,8 +306,8 @@ describe('codex oauth helpers', () => {
       await fs.mkdir(codexDir('alpha'), { recursive: true })
       await fs.mkdir(codexDir('beta'), { recursive: true })
       await fanOutCodexPlaceholders(SAMPLE_BUNDLE)
-      for (const slug of ['alpha', 'beta']) {
-        const raw = await fs.readFile(projectCodexAuthFile(slug), 'utf8')
+      for (const projectId of ['alpha', 'beta']) {
+        const raw = await fs.readFile(projectCodexAuthFile(projectId), 'utf8')
         const parsed = JSON.parse(raw) as Record<string, unknown>
         const tokens = parsed.tokens as Record<string, unknown>
         expect(tokens.access_token).toBe(PLACEHOLDER_ACCESS_TOKEN)

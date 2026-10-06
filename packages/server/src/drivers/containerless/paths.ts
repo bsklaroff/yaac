@@ -20,17 +20,17 @@ import type { WorkspacePaths } from '#drivers/contract'
  * (the last 36 chars are the UUID), so `workspacePaths` and a detached
  * teardown work from the name alone.
  */
-export function containerlessJobName(projectSlug: string, workspaceId: string): string {
-  return `cl-${projectSlug}-${workspaceId}`
+export function containerlessJobName(projectId: string, workspaceId: string): string {
+  return `cl-${projectId}-${workspaceId}`
 }
 
 /** Decode `containerlessJobName`. Throws on anything else (a wiring bug). */
-export function refFromJobName(jobName: string): { projectSlug: string; workspaceId: string } {
+export function refFromJobName(jobName: string): { projectId: string; workspaceId: string } {
   const body = jobName.startsWith('cl-') ? jobName.slice(3) : ''
-  // 36 for the UUID, 1 for the dash before it, and at least 1 slug character.
+  // 36 for the UUID, 1 for the dash before it, and the project id.
   if (body.length < 38) throw new Error(`not a containerless workspace handle: ${jobName}`)
   return {
-    projectSlug: body.slice(0, body.length - 37),
+    projectId: body.slice(0, body.length - 37),
     workspaceId: body.slice(-36),
   }
 }
@@ -95,37 +95,37 @@ export function assertSocketPathsFit(paths: WorkspacePaths): void {
 
 /** This driver's per-workspace state, under the workspace state dir so
  *  teardown removes it. */
-export function containerlessStateDir(projectSlug: string, workspaceId: string): string {
-  return path.join(workspaceStateDir(projectSlug, workspaceId), 'containerless')
+export function containerlessStateDir(projectId: string, workspaceId: string): string {
+  return path.join(workspaceStateDir(projectId, workspaceId), 'containerless')
 }
 
 /** The marker recording that this driver launched a workspace (the
  *  equivalent of a Job object), read on server start. */
-export function markerPath(projectSlug: string, workspaceId: string): string {
-  return path.join(containerlessStateDir(projectSlug, workspaceId), 'workspace.json')
+export function markerPath(projectId: string, workspaceId: string): string {
+  return path.join(containerlessStateDir(projectId, workspaceId), 'workspace.json')
 }
 
 /** The workspace's private `$HOME`; mounts under `/home/yaac` become
  *  symlinks in it. */
-export function workspaceHome(projectSlug: string, workspaceId: string): string {
-  return path.join(containerlessStateDir(projectSlug, workspaceId), 'home')
+export function workspaceHome(projectId: string, workspaceId: string): string {
+  return path.join(containerlessStateDir(projectId, workspaceId), 'home')
 }
 
 /** See `WorkspaceDriver.workspacePaths`. */
 export function containerlessWorkspacePaths(jobName: string): WorkspacePaths {
-  const { projectSlug, workspaceId } = refFromJobName(jobName)
-  const state = containerlessStateDir(projectSlug, workspaceId)
+  const { projectId, workspaceId } = refFromJobName(jobName)
+  const state = containerlessStateDir(projectId, workspaceId)
   return {
     tmuxSock: path.join(tmuxSockDir(), `${shortId(workspaceId)}.sock`),
-    workspaceDir: workspaceDir(projectSlug, workspaceId),
+    workspaceDir: workspaceDir(projectId, workspaceId),
     scratchDir: path.join(state, 'scratch'),
     // Socket paths go in the temp dir, for SUN_PATH_MAX.
     acpSockDir: path.join(tmuxSockDir(), shortId(workspaceId)),
     sshAgentSock: path.join(tmuxSockDir(), `${shortId(workspaceId)}-ssh.sock`),
     // The shared project location the layers above read, which also
     // survives stop.
-    acpLogDir: acpLogDir(projectSlug, workspaceId),
-    attachmentsDir: workspaceAttachmentsDir(projectSlug, workspaceId),
+    acpLogDir: acpLogDir(projectId, workspaceId),
+    attachmentsDir: workspaceAttachmentsDir(projectId, workspaceId),
     acpdEntry: acpdEntry(),
   }
 }

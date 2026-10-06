@@ -32,9 +32,9 @@ const HEX = 'a'.repeat(64)
 const HEX2 = 'b'.repeat(64)
 const HEX3 = 'c'.repeat(64)
 
-const PROJECT = { slug: 'demo', id: '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c' }
-const PARAMS = { jobName: 'yaac-demo-job', project: PROJECT, workspaceId: SID }
-const REG = projectRegistryHost(PROJECT.id)
+const PROJECT = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
+const PARAMS = { jobName: 'yaac-demo-job', projectId: PROJECT, workspaceId: SID }
+const REG = projectRegistryHost(PROJECT)
 
 /** A three-image engine: a named leaf on two unnamed ancestors. */
 const CHAIN =

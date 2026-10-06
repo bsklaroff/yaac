@@ -1,5 +1,5 @@
 import {
-  LABEL_PROJECT,
+  LABEL_PROJECT_ID,
   LABEL_PROXY_INPUT,
   LABEL_WORKSPACE_ID,
   PROXY_APP_NAME,
@@ -32,7 +32,7 @@ export interface Injection {
   name: string
   value?: string
   /**
-   * `<projectSlug>/<NAME>`, naming a value in the project's secrets Secret
+   * `<projectId>/<NAME>`, naming a value in the project's secrets Secret
    * in place of a literal `value`. The proxy resolves it at injection time,
    * so rotations apply to live workspaces immediately. The project prefix
    * stops one project's rule from injecting another project's secret.
@@ -60,7 +60,7 @@ export interface UpstreamRedirect {
 }
 
 /**
- * The registration ConfigMap's payload. `tool` and `projectSlug` are
+ * The registration ConfigMap's payload. `tool` and `projectId` are
  * required (the proxy drops a registration without them): all
  * agent-credential injection is gated on the registered tool, and
  * git-auth-failure records are keyed by the owning project.
@@ -70,13 +70,13 @@ export interface ProxyRegistration {
   allowedHosts: string[]
   repoUrl?: string
   tool: AgentTool
-  projectSlug: string
+  projectId: string
   upstreamRedirects?: Record<string, UpstreamRedirect>
 }
 
 /** The key a rule's `secretRef` names, scoped to its project. */
-function proxySecretRef(projectSlug: string, name: string): string {
-  return `${projectSlug}/${name}`
+function proxySecretRef(projectId: string, name: string): string {
+  return `${projectId}/${name}`
 }
 
 /**
@@ -84,12 +84,12 @@ function proxySecretRef(projectSlug: string, name: string): string {
  * variable name. The caller passes only secrets that have a value.
  */
 function buildRulesFromSecrets(
-  projectSlug: string,
+  projectId: string,
   secretRules: Record<string, SecretProxyRule>,
 ): InjectionRule[] {
   const rules: InjectionRule[] = []
   for (const [envVar, rule] of Object.entries(secretRules)) {
-    const secretRef = proxySecretRef(projectSlug, envVar)
+    const secretRef = proxySecretRef(projectId, envVar)
     const pathPattern = rule.path ?? '/*'
     let injections: Injection[]
     if (rule.bodyParam) {
@@ -152,7 +152,7 @@ export function buildProxyRegistration(input: {
   config: YaacConfig
   remoteUrl: string
   tool: AgentTool
-  projectSlug: string
+  projectId: string
   secretRules: Record<string, SecretProxyRule>
   env?: NodeJS.ProcessEnv
 }): ProxyRegistration {
@@ -166,11 +166,11 @@ export function buildProxyRegistration(input: {
     allowedHosts.push(...NESTED_PULL_HOSTS.filter((h) => !allowedHosts.includes(h)))
   }
   return {
-    rules: buildRulesFromSecrets(input.projectSlug, input.secretRules),
+    rules: buildRulesFromSecrets(input.projectId, input.secretRules),
     allowedHosts,
     repoUrl: input.remoteUrl,
     tool: input.tool,
-    projectSlug: input.projectSlug,
+    projectId: input.projectId,
     upstreamRedirects: parseUpstreamRedirectsEnv(env.YAAC_E2E_UPSTREAM_REDIRECTS),
   }
 }
@@ -181,7 +181,7 @@ export async function applyProxyRegistration(
   registration: ProxyRegistration,
 ): Promise<void> {
   await applyObject(
-    buildRegistrationConfigMapManifest(workspaceId, registration.projectSlug, registration),
+    buildRegistrationConfigMapManifest(workspaceId, registration.projectId, registration),
   )
 }
 
@@ -198,7 +198,7 @@ export async function registerWorkspaceEgress(
     config: reg.config,
     remoteUrl: reg.remoteUrl,
     tool: reg.tool,
-    projectSlug: reg.projectSlug,
+    projectId: reg.projectId,
     secretRules: reg.proxySecretRules,
   })
   await applyProxyRegistration(reg.workspaceId, registration)
@@ -222,11 +222,11 @@ interface RegistrationObject {
   data?: Record<string, string>
 }
 
-function registrationSelector(projectSlug?: string): string {
+function registrationSelector(projectId?: string): string {
   return [
     `app=${PROXY_APP_NAME}`,
     `${LABEL_PROXY_INPUT}=registration`,
-    ...(projectSlug !== undefined ? [`${LABEL_PROJECT}=${projectSlug}`] : []),
+    ...(projectId !== undefined ? [`${LABEL_PROJECT_ID}=${projectId}`] : []),
   ].join(',')
 }
 
@@ -234,9 +234,9 @@ function registrationRef(workspaceId: string): ObjectRef {
   return { apiVersion: 'v1', kind: 'ConfigMap', name: proxyRegistrationName(workspaceId), namespace: k8sNamespace() }
 }
 
-async function listRegistrations(projectSlug?: string): Promise<RegistrationObject[]> {
+async function listRegistrations(projectId?: string): Promise<RegistrationObject[]> {
   return listObjects<RegistrationObject>('v1', 'ConfigMap', {
-    namespace: k8sNamespace(), labelSelector: registrationSelector(projectSlug),
+    namespace: k8sNamespace(), labelSelector: registrationSelector(projectId),
   })
 }
 
@@ -274,7 +274,7 @@ async function widen(obj: RegistrationObject, host: string): Promise<boolean> {
  * lands.
  */
 export async function allowWorkspaceHost(
-  target: { workspaceId: string; projectSlug: string },
+  target: { workspaceId: string; projectId: string },
   host: string,
   opts: { fanOutToProject: boolean },
 ): Promise<void> {
@@ -287,7 +287,7 @@ export async function allowWorkspaceHost(
       )
     }
   } else {
-    for (const obj of await listRegistrations(target.projectSlug)) await widen(obj, host)
+    for (const obj of await listRegistrations(target.projectId)) await widen(obj, host)
   }
   // Push now rather than wait for the proxy's record update.
   notifyWorkspaceListChanged()

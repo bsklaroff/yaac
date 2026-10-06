@@ -65,7 +65,6 @@ const NODE_ROOT = `/var/lib/yaac/node/${dataDirHash()}`
 
 const PROJECT_ID = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
 const INTENT = {
-  projectSlug: 'proj',
   projectId: PROJECT_ID,
   workspaceId: 's1',
   tool: 'claude' as const,
@@ -80,7 +79,7 @@ function specOf(
   overrides: Partial<WorkspaceSpec> = {},
 ): WorkspaceSpec {
   return {
-    projectSlug: 'proj',
+    projectId: PROJECT_ID,
     workspaceId: 's1',
     tool: 'claude',
     mode: 'tui',
@@ -88,7 +87,7 @@ function specOf(
     image: 'localhost:5000/img:tag',
     env: ['CALLER_SAID=yes'],
     secretEnvKeys: [],
-    mounts: [{ source: { kind: 'hostPath', path: workspaceDir('proj', 's1') }, mountPath: '/workspace' }],
+    mounts: [{ source: { kind: 'hostPath', path: workspaceDir(PROJECT_ID, 's1') }, mountPath: '/workspace' }],
     moduleDirs: [],
     resources: {
       memoryRequestBytes: 1, memoryLimitBytes: 2,
@@ -180,18 +179,18 @@ describe('prepareWorkspaceSubstrate', () => {
     const reg = appliedRegistration()
     expect(reg?.name).toBe('yaac-proxy-reg-s1')
     expect(reg?.labels).toMatchObject({
-      app: 'yaac-proxy', 'yaac.proxy-input': 'registration', 'yaac.workspace-id': 's1', 'yaac.project': 'proj',
+      app: 'yaac-proxy', 'yaac.proxy-input': 'registration', 'yaac.workspace-id': 's1', 'yaac.project-id': PROJECT_ID,
     })
     expect(reg?.payload).toMatchObject({
       tool: 'claude',
-      projectSlug: 'proj',
+      projectId: PROJECT_ID,
       repoUrl: 'https://github.com/example/repo.git',
     })
     // Only a reference to the secret, never its value.
     expect(reg?.payload.rules).toEqual([{
       hostPattern: 'api.example.com',
       pathPattern: '/*',
-      injections: [{ action: 'set_header', name: 'Authorization', secretRef: 'proj/TOKEN' }],
+      injections: [{ action: 'set_header', name: 'Authorization', secretRef: `${PROJECT_ID}/TOKEN` }],
     }])
   })
 
@@ -212,10 +211,10 @@ describe('prepareWorkspaceSubstrate', () => {
     const substrate = await prepareWorkspaceSubstrate({ ...INTENT, nestedContainers: true })
     await launchWorkspace(specOf(substrate, { nestedContainers: true }))
 
-    expect(mockEnsureProjectRegistry).toHaveBeenCalledWith({ slug: 'proj', id: PROJECT_ID })
+    expect(mockEnsureProjectRegistry).toHaveBeenCalledWith(PROJECT_ID)
     expect(mockStoreMount).toHaveBeenCalledWith(PROJECT_ID)
     // A refresh for the next workspace runs in the background.
-    expect(mockEnsureStore).toHaveBeenCalledWith({ slug: 'proj', id: PROJECT_ID })
+    expect(mockEnsureStore).toHaveBeenCalledWith(PROJECT_ID)
     const mounts = appliedJob().spec.template.spec.containers[0].volumeMounts
     const store = mounts.find((m) => m.mountPath === '/var/lib/shared-images')
     expect(store).toMatchObject({ readOnly: true })
@@ -237,11 +236,9 @@ describe('launchWorkspace', () => {
     const handle = await launchWorkspace(specOf(substrate))
 
     const job = appliedJob()
-    expect(job.metadata.name).toBe('yaac-proj-s1')
+    expect(job.metadata.name).toBe('yaac-s1')
     expect(job.metadata.namespace).toBe('yaac')
     expect(job.metadata.labels).toMatchObject({
-      'yaac.project': 'proj',
-      // Selected by the project registry's network policies.
       'yaac.project-id': PROJECT_ID,
       'yaac.workspace-id': 's1',
       'yaac.data-dir-hash': dataDirHash(),
@@ -254,7 +251,7 @@ describe('launchWorkspace', () => {
     expect(job.metadata.labels['yaac.nested']).toBeUndefined()
 
     expect(handle).toMatchObject({
-      workspaceId: 's1', projectSlug: 'proj', jobName: 'yaac-proj-s1',
+      workspaceId: 's1', projectId: PROJECT_ID, jobName: 'yaac-s1',
       tool: 'claude', declaredTool: 'claude', mode: 'tui',
       running: false, prewarmed: false, terminating: false,
     })
@@ -357,7 +354,7 @@ describe('launchWorkspace', () => {
   it('routes an SSH workspace through the tunnel sentinel, with no key in the pod', async () => {
     const substrate = await prepareWorkspaceSubstrate(INTENT)
     await launchWorkspace(specOf(substrate, {
-      ssh: { knownHostsFile: path.join(projectDir('proj'), 'known_hosts') },
+      ssh: { knownHostsFile: path.join(projectDir(PROJECT_ID), 'known_hosts') },
     }))
 
     const env = containerEnv()
@@ -376,7 +373,7 @@ describe('launchWorkspace', () => {
   it('builds the same env twice from one spec, because a retry relaunches it', async () => {
     // Retries reuse the spec, so it must not be mutated.
     const substrate = await prepareWorkspaceSubstrate(INTENT)
-    const spec = specOf(substrate, { ssh: { knownHostsFile: path.join(projectDir('proj'), 'known_hosts') } })
+    const spec = specOf(substrate, { ssh: { knownHostsFile: path.join(projectDir(PROJECT_ID), 'known_hosts') } })
 
     await launchWorkspace(spec)
     const first = appliedJob().spec.template.spec.containers[0].env
@@ -392,9 +389,9 @@ describe('launchWorkspace', () => {
     const substrate = await prepareWorkspaceSubstrate(INTENT)
     await launchWorkspace(specOf(substrate, {
       mounts: [
-        { source: { kind: 'hostPath', path: workspaceDir('proj', 's1') }, mountPath: '/workspace' },
+        { source: { kind: 'hostPath', path: workspaceDir(PROJECT_ID, 's1') }, mountPath: '/workspace' },
         {
-          source: { kind: 'hostPath', path: path.join(claudeDir('proj'), 'settings.json'), type: 'File' },
+          source: { kind: 'hostPath', path: path.join(claudeDir(PROJECT_ID), 'settings.json'), type: 'File' },
           mountPath: '/home/yaac/.claude/settings.json',
         },
         { source: { kind: 'hostPath', path: cachedPackagesDir(PROJECT_ID) }, mountPath: '/home/yaac/.cached-packages' },
@@ -412,8 +409,8 @@ describe('launchWorkspace', () => {
     const volume = (name: string) => pod.volumes.find((v) => v.name === name)
     // GLOBAL: subPaths of the one claim, including a file.
     expect(volume(byMount['/workspace'].name)?.persistentVolumeClaim).toEqual({ claimName: 'yaac-global' })
-    expect(byMount['/workspace'].subPath).toBe('projects/proj/workspaces/s1')
-    expect(byMount['/home/yaac/.claude/settings.json'].subPath).toBe('projects/proj/claude/settings.json')
+    expect(byMount['/workspace'].subPath).toBe(`projects/${PROJECT_ID}/workspaces/s1`)
+    expect(byMount['/home/yaac/.claude/settings.json'].subPath).toBe(`projects/${PROJECT_ID}/claude/settings.json`)
     // NODE-LOCAL: the pod's own node tree.
     expect(volume(byMount['/home/yaac/.cached-packages'].name)?.hostPath)
       .toEqual({ path: `${NODE_ROOT}/projects/${PROJECT_ID}/.cached-packages`, type: 'DirectoryOrCreate' })

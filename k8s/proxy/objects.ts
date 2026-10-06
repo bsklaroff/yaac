@@ -57,13 +57,13 @@ export type CodexCreds =
 /** opencode and pi keys, with the provider host the server resolved. */
 export type ApiKeyCreds = { kind: 'api-key'; apiKey: string; apiHost: string }
 
-/** One HTTPS token and the slugs of the projects it is assigned to — a
+/** One HTTPS token and the ids of the projects it is assigned to — a
  *  workspace is handed it only when its registration names one of them. */
 export type HttpsCredentialEntry = { token: string; projects: string[] }
 
 /** One project an ssh key is assigned to: the host its remote names, and the
  *  known_hosts line that project trusts for it. */
-export type SshProjectGrant = { slug: string; host: string; knownHostsEntry: string }
+export type SshProjectGrant = { projectId: string; host: string; knownHostsEntry: string }
 
 /** One ssh identity: the OpenSSH private key, its public line
  *  (`<type> <base64 blob> <comment>`; the agent protocol identifies keys by
@@ -120,7 +120,7 @@ export type ProxyRegistration = {
   allowedHosts: string[]
   repoUrl?: string
   tool: string
-  projectSlug: string
+  projectId: string
   upstreamRedirects?: Record<string, UpstreamRedirect>
 }
 
@@ -136,7 +136,7 @@ export interface GitAuthFailureRecord {
 export type ProxyState = {
   /** workspaceId -> blocked hostnames */
   blockedHosts: Record<string, string[]>
-  /** projectSlug -> failures by host */
+  /** project id -> failures by host */
   gitAuthFailures: Record<string, Array<{ host: string } & GitAuthFailureRecord>>
 }
 
@@ -272,8 +272,8 @@ function decodeGit(entries: unknown[]): HttpsCredentialEntry[] {
 
 function decodeSshGrant(grant: unknown): SshProjectGrant | null {
   if (!grant || typeof grant !== 'object') return null
-  const { slug, host, knownHostsEntry } = grant as Record<string, unknown>
-  return nonEmpty(slug) && nonEmpty(host) && nonEmpty(knownHostsEntry) ? { slug, host, knownHostsEntry } : null
+  const { projectId, host, knownHostsEntry } = grant as Record<string, unknown>
+  return nonEmpty(projectId) && nonEmpty(host) && nonEmpty(knownHostsEntry) ? { projectId, host, knownHostsEntry } : null
 }
 
 /** Keys whose public line has no blob are dropped; the relay can't use them. */
@@ -290,15 +290,15 @@ function decodeSsh(entries: unknown[]): SshCredentialEntry[] {
   return out
 }
 
-/** project slug → the key blobs (publicKeyBlob) assigned to it. */
+/** project id → the key blobs (publicKeyBlob) assigned to it. */
 export function sshKeyBlobsByProject(ssh: SshCredentialEntry[]): Map<string, Set<string>> {
   const out = new Map<string, Set<string>>()
   for (const entry of ssh) {
     const blob = publicKeyBlob(entry.publicKey)
     if (blob === null) continue
-    for (const { slug } of entry.projects) {
-      let blobs = out.get(slug)
-      if (!blobs) out.set(slug, blobs = new Set())
+    for (const { projectId } of entry.projects) {
+      let blobs = out.get(projectId)
+      if (!blobs) out.set(projectId, blobs = new Set())
       blobs.add(blob)
     }
   }
@@ -323,7 +323,7 @@ export function decodeCredentials(secret: RawObject): ProxyCredentials {
   }
 }
 
-/** A project's secrets Secret: `values.json` is `{ "<slug>/<NAME>": value }`.
+/** A project's secrets Secret: `values.json` is `{ "<projectId>/<NAME>": value }`.
  *  Empty or non-string values are dropped — never inject an empty credential. */
 export function decodeProjectSecrets(secret: RawObject): Record<string, string> {
   const o = parseJson(secretString(secret, 'values.json'))
@@ -350,7 +350,7 @@ function decodeRedirects(raw: unknown): Record<string, UpstreamRedirect> | undef
 
 /**
  * A registration ConfigMap: the workspace id from its label and the payload
- * from `registration.json`. A registration missing `tool` or `projectSlug` is
+ * from `registration.json`. A registration missing `tool` or `projectId` is
  * dropped, so that workspace fails closed.
  */
 export function decodeRegistration(
@@ -362,7 +362,7 @@ export function decodeRegistration(
   if (!o) return null
   if (!Array.isArray(o.rules) || !Array.isArray(o.allowedHosts)) return null
   if (typeof o.tool !== 'string' || !o.tool) return null
-  if (typeof o.projectSlug !== 'string' || !o.projectSlug) return null
+  if (typeof o.projectId !== 'string' || !o.projectId) return null
   return {
     workspaceId,
     registration: {
@@ -370,7 +370,7 @@ export function decodeRegistration(
       allowedHosts: (o.allowedHosts as unknown[]).filter((h): h is string => typeof h === 'string'),
       repoUrl: typeof o.repoUrl === 'string' && o.repoUrl ? o.repoUrl : undefined,
       tool: o.tool,
-      projectSlug: o.projectSlug,
+      projectId: o.projectId,
       upstreamRedirects: decodeRedirects(o.upstreamRedirects),
     },
   }
@@ -406,7 +406,7 @@ export function decodeState(cm: RawObject): ProxyState {
   }
   const failures = parseJson(cm.data?.['git-auth-failures.json'])
   if (failures) {
-    for (const [slug, entries] of Object.entries(failures)) {
+    for (const [projectId, entries] of Object.entries(failures)) {
       if (!Array.isArray(entries)) continue
       const valid: Array<{ host: string } & GitAuthFailureRecord> = []
       for (const e of entries as unknown[]) {
@@ -415,7 +415,7 @@ export function decodeState(cm: RawObject): ProxyState {
         if (typeof host !== 'string' || typeof status !== 'number' || typeof atMs !== 'number') continue
         valid.push({ host, status, atMs })
       }
-      if (valid.length > 0) state.gitAuthFailures[slug] = valid
+      if (valid.length > 0) state.gitAuthFailures[projectId] = valid
     }
   }
   return state

@@ -77,9 +77,9 @@ function toWire(row: ProjectEnvVarRow): ProjectEnvVar {
 }
 
 /** Every variable a project has, for the settings UI. */
-export async function listProjectEnv(slug: string): Promise<ProjectEnvVar[]> {
-  await assertProjectExists(slug)
-  return (await listProjectEnvVars(slug)).map(toWire)
+export async function listProjectEnv(projectId: string): Promise<ProjectEnvVar[]> {
+  await assertProjectExists(projectId)
+  return (await listProjectEnvVars(projectId)).map(toWire)
 }
 
 /**
@@ -87,13 +87,13 @@ export async function listProjectEnv(slug: string): Promise<ProjectEnvVar[]> {
  * already stored (to edit just the rule); otherwise the row would look saved
  * but be skipped at create.
  */
-export async function setProjectEnvVar(slug: string, input: {
+export async function setProjectEnvVar(projectId: string, input: {
   name: string
   value?: string
   secret?: boolean
   rule?: unknown
 }): Promise<ProjectEnvVar> {
-  await assertProjectExists(slug)
+  await assertProjectExists(projectId)
   const name = input.name.trim()
   if (!ENV_NAME_PATTERN.test(name)) {
     throw new ServerError(
@@ -110,7 +110,7 @@ export async function setProjectEnvVar(slug: string, input: {
     if (input.value === undefined) {
       throw new ServerError('VALIDATION', `${name}: a value is required`)
     }
-    const row = await upsertProjectEnvVar(slug, { name, value: input.value, secret: false })
+    const row = await upsertProjectEnvVar(projectId, { name, value: input.value, secret: false })
     return toWire(row)
   }
 
@@ -118,21 +118,21 @@ export async function setProjectEnvVar(slug: string, input: {
   if (input.value === undefined || input.value === '') {
     // A stored `''` counts as no value, since `resolveProjectEnv` drops it; a
     // rule-only edit on it must not report success.
-    const existing = (await listProjectEnvVars(slug))
+    const existing = (await listProjectEnvVars(projectId))
       .find((r) => r.name === name && r.secret && r.value !== undefined && r.value !== '')
     if (!existing) {
       throw new ServerError('VALIDATION', `${name}: a value is required for a new secret`)
     }
-    return toWire(await upsertProjectEnvVar(slug, { name, secret: true, rule }))
+    return toWire(await upsertProjectEnvVar(projectId, { name, secret: true, rule }))
   }
-  return toWire(await upsertProjectEnvVar(slug, { name, value: input.value, secret: true, rule }))
+  return toWire(await upsertProjectEnvVar(projectId, { name, value: input.value, secret: true, rule }))
 }
 
 /** Remove one variable by id. */
-export async function removeProjectEnvVar(slug: string, id: string): Promise<void> {
-  await assertProjectExists(slug)
-  if (!await deleteProjectEnvVar(slug, id)) {
-    throw new ServerError('NOT_FOUND', `no environment variable ${id} in project ${slug}`)
+export async function removeProjectEnvVar(projectId: string, id: string): Promise<void> {
+  await assertProjectExists(projectId)
+  if (!await deleteProjectEnvVar(projectId, id)) {
+    throw new ServerError('NOT_FOUND', `no environment variable ${id} in project ${projectId}`)
   }
 }
 
@@ -149,8 +149,8 @@ export interface ResolvedProjectEnv {
  * dropped rather than injected blank, which upstreams would report as a bad
  * credential instead of a missing one.
  */
-export async function resolveProjectEnv(slug: string): Promise<ResolvedProjectEnv> {
-  const rows = await listProjectEnvVars(slug)
+export async function resolveProjectEnv(projectId: string): Promise<ResolvedProjectEnv> {
+  const rows = await listProjectEnvVars(projectId)
   const plain: Record<string, string> = {}
   const secrets: Record<string, { value: string; rule: SecretProxyRule }> = {}
   for (const row of rows) {

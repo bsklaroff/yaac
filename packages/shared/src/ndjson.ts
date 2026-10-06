@@ -1,7 +1,7 @@
 /**
  * Consumer side of the server's NDJSON operation streams
  * (`POST /workspace/create`, `POST /workspace/restart`,
- * `POST /project/:slug/rebuild`): zero or more `{type:'progress'}` events
+ * `POST /project/:projectId/rebuild`): zero or more `{type:'progress'}` events
  * followed by exactly one terminal `{type:'result'}` or `{type:'error'}`.
  *
  * Browser-safe (no node imports), since the webapp reads these streams too.

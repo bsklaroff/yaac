@@ -1,7 +1,8 @@
 import { zValidator } from '@hono/zod-validator'
 import { bodyLimit } from 'hono/body-limit'
 import type { MiddlewareHandler, ValidationTargets } from 'hono'
-import type { z } from 'zod'
+import { z } from 'zod'
+import { resolveProjectId } from '#domain/projects'
 import { ServerError } from '@yaac/shared/errors'
 
 /**
@@ -47,3 +48,14 @@ function firstIssueMessage(error: { issues: Array<{ path: PropertyKey[]; message
   const path = issue.path.map(String).join('.')
   return path ? `${path}: ${issue.message}` : issue.message
 }
+
+/**
+ * A project as a client names it (a name, a full id, or an id prefix),
+ * resolved to its id while validating, so a handler only ever sees an id
+ * and an unknown or ambiguous name fails before it runs.
+ */
+export const projectRef = z.string().min(1).transform((ref) => resolveProjectId(ref))
+
+/** `projectRef` for an optional filter, where an empty value means none. */
+export const optionalProjectRef = z.string().optional()
+  .transform((ref) => ref ? resolveProjectId(ref) : undefined)

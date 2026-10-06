@@ -37,10 +37,10 @@ import type { AgentMode } from '@yaac/shared/types'
  */
 export async function reconcileAgentSessions(view: RuntimeSnapshot): Promise<void> {
   const running = (await view.workspaces()).filter((p) => p.running && !p.prewarmed
-    && !p.terminating && p.projectSlug && p.workspaceId && !isWorkspaceTerminating(p.workspaceId))
+    && !p.terminating && p.projectId && p.workspaceId && !isWorkspaceTerminating(p.workspaceId))
   await Promise.all(running.map(async (pod) => {
     try {
-      await reconcileWorkspaceAgentSessions(pod.projectSlug, pod.workspaceId, pod.mode, pod.jobName)
+      await reconcileWorkspaceAgentSessions(pod.projectId, pod.workspaceId, pod.mode, pod.jobName)
     } catch (err) {
       serverLog(`[server] agent-sessions ${pod.workspaceId}: ${String(err)}`)
     }
@@ -53,27 +53,27 @@ export async function reconcileAgentSessions(view: RuntimeSnapshot): Promise<voi
  * chat pane) exists when the create returns.
  */
 export async function reconcileWorkspaceAgentSessions(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
   mode: AgentMode,
   jobName: string,
 ): Promise<void> {
   // No live set yet (stream not attached): leave the rows alone so a gap
   // does not look like every agent exited.
-  const reported = liveAgents(projectSlug, workspaceId)
+  const reported = liveAgents(projectId, workspaceId)
   if (reported === undefined) return
   // Map each reported transcript path to where the file really is, or drop it.
   const observed = await Promise.all(reported.map(async (a): Promise<LiveAgent> => {
     const { transcriptPath, ...rest } = a
     const located = a.agentSessionId === undefined
       ? undefined
-      : await locateTranscript(projectSlug, workspaceId, a.tool, a.agentSessionId, transcriptPath)
+      : await locateTranscript(projectId, workspaceId, a.tool, a.agentSessionId, transcriptPath)
     return located === undefined ? rest : { ...rest, transcriptPath: located }
   }))
-  const row = await getWorkspaceRow(projectSlug, workspaceId)
-  const links = await listWorkspaceAgentSessions(projectSlug, workspaceId)
+  const row = await getWorkspaceRow(projectId, workspaceId)
+  const links = await listWorkspaceAgentSessions(projectId, workspaceId)
   if (row !== undefined) {
-    await followReportedModes(projectSlug, workspaceId, mode, row, await withRolloutModes(row, observed, links))
+    await followReportedModes(projectId, workspaceId, mode, row, await withRolloutModes(row, observed, links))
   }
 
   // Skip agents that have not named their conversation yet (ACP handshake in
@@ -83,14 +83,14 @@ export async function reconcileWorkspaceAgentSessions(
     const agentSessionId = a.agentSessionId
     if (agentSessionId === undefined) return []
     const recorded = links.find((l) => l.tool === a.tool && l.agentSessionId === agentSessionId)
-    return [describe(projectSlug, workspaceId, mode, jobName, a, agentSessionId, recorded)]
+    return [describe(projectId, workspaceId, mode, jobName, a, agentSessionId, recorded)]
   }))
   if (live.length > 0) {
-    await applyWorkspaceEvent({ type: 'sessions-discovered', projectSlug, workspaceId, sessions: live })
+    await applyWorkspaceEvent({ type: 'sessions-discovered', projectId, workspaceId, sessions: live })
   }
   await applyWorkspaceEvent({
     type: 'sessions-active',
-    projectSlug,
+    projectId,
     workspaceId,
     active: live.map((c) => ({ tool: c.tool, agentSessionId: c.agentSessionId, paneId: c.paneId })),
   })
@@ -106,7 +106,7 @@ export async function reconcileWorkspaceAgentSessions(
  * own naming.
  */
 async function describe(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
   mode: AgentMode,
   jobName: string,
@@ -115,13 +115,13 @@ async function describe(
   recorded: AgentSessionLinkRow | undefined,
 ): Promise<DiscoveredSession & { paneId: string }> {
   const { tool, transcriptPath } = agent
-  const record = { slug: projectSlug, workspaceId, agentSessionId }
+  const record = { projectId, workspaceId, agentSessionId }
   const transcript = transcriptPath ?? recorded?.transcriptPath
   const firstPrompt = recorded?.firstPrompt !== undefined ? undefined
     : mode === 'acp' ? await readAcpFirstPrompt(record)
     : await captureFirstPrompt(
-      projectSlug, tool, agentSessionId,
-      transcript !== undefined ? resolveProjectPath(projectSlug, workspaceId, tool, transcript) : undefined, jobName,
+      projectId, tool, agentSessionId,
+      transcript !== undefined ? resolveProjectPath(projectId, workspaceId, tool, transcript) : undefined, jobName,
     )
   const recordFile = mode === 'acp' ? acpRecord(record) : undefined
   const lastActiveMs = recordFile !== undefined ? await transcriptLastActiveMs(recordFile) : undefined
@@ -159,13 +159,13 @@ export function _resetReportedModesForTests(): void {
  * while no server was watching.
  */
 async function followReportedModes(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
   mode: AgentMode,
   row: WorkspaceRow,
   observed: LiveAgent[],
 ): Promise<void> {
-  const key = `${projectSlug}/${workspaceId}`
+  const key = `${projectId}/${workspaceId}`
   const life = row.lifeStartedAt?.getTime() ?? 0
   let seen = reportedModes.get(key)
   if (seen?.life !== life) {
@@ -177,8 +177,8 @@ async function followReportedModes(
     seen.byHandle.set(a.handle, a.reportedMode)
     const posture = resolveAgentPermissionMode(mode, a.tool, a.reportedMode, row.permissionMode)
     if (posture === undefined || posture === row.permissionMode) continue
-    await applyWorkspaceEvent({ type: 'permission-mode-changed', projectSlug, workspaceId, permissionMode: posture })
-    setAcpPermissionMode(projectSlug, workspaceId, posture)
+    await applyWorkspaceEvent({ type: 'permission-mode-changed', projectId, workspaceId, permissionMode: posture })
+    setAcpPermissionMode(projectId, workspaceId, posture)
   }
 }
 
@@ -202,7 +202,7 @@ async function withRolloutModes(
     const recorded = links.find((l) => l.tool === a.tool && l.agentSessionId === a.agentSessionId)
     const transcript = a.transcriptPath ?? recorded?.transcriptPath
     const rollout = a.tool === 'codex' && transcript !== undefined
-      ? resolveProjectPath(row.projectSlug, row.workspaceId, 'codex', transcript)
+      ? resolveProjectPath(row.projectId, row.workspaceId, 'codex', transcript)
       : undefined
     const read = rollout !== undefined ? await getCodexPermissionMode(rollout) : undefined
     return read !== undefined && read.atMs >= life ? { ...a, reportedMode: read.permissionMode } : a

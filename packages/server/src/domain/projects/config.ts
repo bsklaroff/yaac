@@ -251,8 +251,8 @@ export async function loadProjectConfig(repoPath: string): Promise<YaacConfig | 
   return parseProjectConfig(raw)
 }
 
-export async function resolveProjectConfig(projectSlug: string): Promise<YaacConfig | null> {
-  return loadProjectConfig(projectConfigDir(projectSlug))
+export async function resolveProjectConfig(projectId: string): Promise<YaacConfig | null> {
+  return loadProjectConfig(projectConfigDir(projectId))
 }
 
 /**
@@ -264,6 +264,6 @@ export async function resolveProjectConfig(projectSlug: string): Promise<YaacCon
 export function retryImageBuild(id: string): boolean {
   return workspaceDriver().retryImageBuild(
     id,
-    (slug) => resolveProjectConfig(slug).then((cfg) => cfg ?? undefined),
+    (projectId) => resolveProjectConfig(projectId).then((cfg) => cfg ?? undefined),
   )
 }

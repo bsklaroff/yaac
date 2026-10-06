@@ -29,6 +29,7 @@ import type { ProjectMeta, ClaudeOAuthBundle } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
 import { makeTestApiClient } from '@yaac/test-utils/api'
 import { workspaceDriver } from '@yaac/server/drivers/driver'
+import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
 
 vi.mock('@yaac/server/domain/workspaces/create', async () => {
   const actual = await vi.importActual<typeof sessionCreateModule>('@yaac/server/domain/workspaces/create')
@@ -156,11 +157,16 @@ function rawInit(init: RequestInit = {}): RequestInit {
   return { ...init, headers }
 }
 
-async function writeProject(slug: string, remoteUrl = 'https://example.com/foo'): Promise<void> {
-  const dir = path.join(getProjectsDir(), slug)
+/** Every test starts with this project recorded; requests name it by id or name. */
+const DEMO = DEMO_PROJECT_ID
+const WEB = '0b0b0b0b-0000-4000-8000-000000000001'
+
+async function writeProject(id: string, remoteUrl = 'https://example.com/foo', name = 'demo'): Promise<void> {
+  const dir = path.join(getProjectsDir(), id)
   await fs.mkdir(dir, { recursive: true })
   const meta: ProjectMeta = {
-    slug,
+    id,
+    name,
     remoteUrl,
     addedAt: '2026-01-01T00:00:00.000Z',
   }
@@ -174,6 +180,7 @@ describe('write routes', () => {
     tmpDir = await createTempDataDir()
     vi.resetAllMocks()
     clearAllProvisioningForTests()
+    await writeProject(DEMO)
   })
 
   afterEach(async () => {
@@ -201,7 +208,7 @@ describe('write routes', () => {
 
     it('delegates to addProject and returns 200 on success', async () => {
       mockAddProject.mockResolvedValue({
-        project: { slug: 'foo', remoteUrl: 'https://github.com/x/foo', addedAt: 'now' },
+        project: { id: DEMO, name: 'foo', remoteUrl: 'https://github.com/x/foo', addedAt: 'now' },
         knownHostsEntry: null,
       })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
@@ -212,17 +219,17 @@ describe('write routes', () => {
     })
   })
 
-  describe('DELETE /project/:slug', () => {
+  describe('DELETE /project/:projectId', () => {
     it('delegates to removeProject and returns 204', async () => {
       mockRemoveProject.mockResolvedValue(undefined)
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':slug'].$delete({ param: { slug: 'demo' } })
+      const res = await client.project[':projectId'].$delete({ param: { projectId: DEMO } })
       expect(res.status).toBe(204)
-      expect(mockRemoveProject).toHaveBeenCalledWith('demo')
+      expect(mockRemoveProject).toHaveBeenCalledWith(DEMO)
     })
   })
 
-  describe('PUT /project/:slug/config', () => {
+  describe('PUT /project/:projectId/config', () => {
     it('rejects requests with no config field', async () => {
       const app = buildApp({ buildId: 'test' })
       const res = await app.request('/api/project/demo/config', rawInit({
@@ -233,48 +240,45 @@ describe('write routes', () => {
     })
 
     it('writes the config and returns it', async () => {
-      await writeProject('demo')
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':slug'].config.$put({
-        param: { slug: 'demo' },
+      const res = await client.project[':projectId'].config.$put({
+        param: { projectId: DEMO },
         json: { config: { initCommands: ['pnpm install'] } },
       })
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ config: { initCommands: ['pnpm install'] } })
       const raw = await fs.readFile(
-        path.join(projectConfigDir('demo'), 'yaac-config.json'),
+        path.join(projectConfigDir(DEMO), 'yaac-config.json'),
         'utf8',
       )
       expect(JSON.parse(raw)).toEqual({ initCommands: ['pnpm install'] })
     })
   })
 
-  describe('DELETE /project/:slug/config', () => {
+  describe('DELETE /project/:projectId/config', () => {
     it('returns 204 when the project exists', async () => {
-      await writeProject('demo')
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':slug'].config.$delete({ param: { slug: 'demo' } })
+      const res = await client.project[':projectId'].config.$delete({ param: { projectId: DEMO } })
       expect(res.status).toBe(204)
     })
 
     it('returns 404 for an unknown project', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':slug'].config.$delete({ param: { slug: 'nope' } })
+      const res = await client.project[':projectId'].config.$delete({ param: { projectId: 'nope' } })
       expect(res.status).toBe(404)
     })
   })
 
   describe('project env routes', () => {
     it('round-trips a plain variable and never gives a secret back', async () => {
-      await writeProject('demo')
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
 
-      await client.project[':slug'].env.$put({
-        param: { slug: 'demo' },
+      await client.project[':projectId'].env.$put({
+        param: { projectId: DEMO },
         json: { name: 'NODE_ENV', value: 'development' },
       })
-      await client.project[':slug'].env.$put({
-        param: { slug: 'demo' },
+      await client.project[':projectId'].env.$put({
+        param: { projectId: DEMO },
         json: {
           name: 'API_KEY',
           value: 'sekrit',
@@ -283,7 +287,7 @@ describe('write routes', () => {
         },
       })
 
-      const { vars } = await (await client.project[':slug'].env.$get({ param: { slug: 'demo' } })).json()
+      const { vars } = await (await client.project[':projectId'].env.$get({ param: { projectId: DEMO } })).json()
       expect(vars).toEqual([
         expect.objectContaining({ name: 'API_KEY', secret: true, hasValue: true }),
         expect.objectContaining({ name: 'NODE_ENV', value: 'development', secret: false }),
@@ -293,7 +297,6 @@ describe('write routes', () => {
     })
 
     it('surfaces a rule the proxy could not act on as VALIDATION', async () => {
-      await writeProject('demo')
       const app = buildApp({ buildId: 'test' })
       const res = await app.request('/api/project/demo/env', rawInit({
         method: 'PUT',
@@ -303,22 +306,21 @@ describe('write routes', () => {
     })
 
     it('deletes by id, and 404s for one the project does not have', async () => {
-      await writeProject('demo')
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const saved = await (await client.project[':slug'].env.$put({
-        param: { slug: 'demo' },
+      const saved = await (await client.project[':projectId'].env.$put({
+        param: { projectId: DEMO },
         json: { name: 'A', value: '1' },
       })).json()
 
-      expect((await client.project[':slug'].env[':id'].$delete({
-        param: { slug: 'demo', id: '00000000-0000-4000-8000-000000000000' },
+      expect((await client.project[':projectId'].env[':id'].$delete({
+        param: { projectId: DEMO, id: '00000000-0000-4000-8000-000000000000' },
       })).status).toBe(404)
 
-      expect((await client.project[':slug'].env[':id'].$delete({
-        param: { slug: 'demo', id: saved.var.id },
+      expect((await client.project[':projectId'].env[':id'].$delete({
+        param: { projectId: DEMO, id: saved.var.id },
       })).status).toBe(204)
-      expect((await (await client.project[':slug'].env.$get({
-        param: { slug: 'demo' },
+      expect((await (await client.project[':projectId'].env.$get({
+        param: { projectId: DEMO },
       })).json()).vars).toEqual([])
     })
   })
@@ -390,10 +392,10 @@ describe('write routes', () => {
   describe('project branches routes', () => {
     // A real repo behind the project: source with main + develop, cloned to
     // the project's repo dir so origin/* remote-tracking refs exist.
-    async function writeProjectWithRepo(slug: string): Promise<string> {
-      const sourceRepo = path.join(getProjectsDir(), `${slug}-source`)
+    async function writeProjectWithRepo(projectId: string): Promise<string> {
+      const sourceRepo = path.join(getProjectsDir(), `${projectId}-source`)
       // The row's remote is what a refresh fetches, so it names the source.
-      await writeProject(slug, sourceRepo)
+      await writeProject(projectId, sourceRepo)
       await fs.mkdir(sourceRepo, { recursive: true })
       await git(sourceRepo, ['init', '-b', 'main'])
       await git(sourceRepo, ['config', 'user.email', 't@t.co'])
@@ -402,14 +404,14 @@ describe('write routes', () => {
       await git(sourceRepo, ['add', '.'])
       await git(sourceRepo, ['commit', '-m', 'initial'])
       await git(sourceRepo, ['branch', 'develop'])
-      await cloneRepo(sourceRepo, repoDir(slug), null)
+      await cloneRepo(sourceRepo, repoDir(projectId), null)
       return sourceRepo
     }
 
-    it('GET /project/:slug/branches lists branches with the default branch', async () => {
-      await writeProjectWithRepo('demo')
+    it('GET /project/:projectId/branches lists branches with the default branch', async () => {
+      await writeProjectWithRepo(DEMO)
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':slug'].branches.$get({ param: { slug: 'demo' }, query: {} })
+      const res = await client.project[':projectId'].branches.$get({ param: { projectId: DEMO }, query: {} })
       expect(res.status).toBe(200)
       const body = await res.json()
       expect(body.branches).toContain('main')
@@ -417,12 +419,12 @@ describe('write routes', () => {
       expect(body.defaultBranch).toBe('main')
     })
 
-    it('GET /project/:slug/branches?refresh=1 fetches new branches first', async () => {
-      const sourceRepo = await writeProjectWithRepo('demo')
+    it('GET /project/:projectId/branches?refresh=1 fetches new branches first', async () => {
+      const sourceRepo = await writeProjectWithRepo(DEMO)
       await git(sourceRepo, ['branch', 'feature/late'])
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':slug'].branches.$get({
-        param: { slug: 'demo' },
+      const res = await client.project[':projectId'].branches.$get({
+        param: { projectId: DEMO },
         query: { refresh: '1' },
       })
       expect(res.status).toBe(200)
@@ -431,28 +433,27 @@ describe('write routes', () => {
 
     it('GET returns 404 for an unknown project', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':slug'].branches.$get({ param: { slug: 'nope' }, query: {} })
+      const res = await client.project[':projectId'].branches.$get({ param: { projectId: 'nope' }, query: {} })
       expect(res.status).toBe(404)
     })
   })
 
-  describe('GET /project/:slug/dockerfile', () => {
+  describe('GET /project/:projectId/dockerfile', () => {
     it('returns empty content when the project has none', async () => {
-      await writeProject('demo')
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':slug'].dockerfile.$get({ param: { slug: 'demo' } })
+      const res = await client.project[':projectId'].dockerfile.$get({ param: { projectId: DEMO } })
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ content: '' })
     })
 
     it('returns 404 for an unknown project', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':slug'].dockerfile.$get({ param: { slug: 'nope' } })
+      const res = await client.project[':projectId'].dockerfile.$get({ param: { projectId: 'nope' } })
       expect(res.status).toBe(404)
     })
   })
 
-  describe('PUT /project/:slug/dockerfile', () => {
+  describe('PUT /project/:projectId/dockerfile', () => {
     it('rejects requests with no content field', async () => {
       const app = buildApp({ buildId: 'test' })
       const res = await app.request('/api/project/demo/dockerfile', rawInit({
@@ -463,16 +464,15 @@ describe('write routes', () => {
     })
 
     it('writes the Dockerfile and returns it', async () => {
-      await writeProject('demo')
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':slug'].dockerfile.$put({
-        param: { slug: 'demo' },
+      const res = await client.project[':projectId'].dockerfile.$put({
+        param: { projectId: DEMO },
         json: { content: 'FROM ubuntu:24.04\n' },
       })
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ content: 'FROM ubuntu:24.04\n' })
       const raw = await fs.readFile(
-        path.join(projectConfigDir('demo'), 'build', 'Dockerfile.yaac'),
+        path.join(projectConfigDir(DEMO), 'build', 'Dockerfile.yaac'),
         'utf8',
       )
       expect(raw).toBe('FROM ubuntu:24.04\n')
@@ -506,53 +506,50 @@ describe('write routes', () => {
 
   describe('project build files', () => {
     it('round-trips save → list → read → delete', async () => {
-      await writeProject('demo')
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const bf = client.project[':slug']['build-files']
+      const bf = client.project[':projectId']['build-files']
 
       const put = await bf.file.$put({
-        param: { slug: 'demo' },
+        param: { projectId: DEMO },
         json: { path: 'nvim/init.lua', content: 'print(1)\n' },
       })
       expect(put.status).toBe(200)
       expect(await put.json()).toEqual({ path: 'nvim/init.lua', size: 9, binary: false })
 
-      const list = await bf.$get({ param: { slug: 'demo' } })
+      const list = await bf.$get({ param: { projectId: DEMO } })
       expect(await list.json()).toEqual({
         files: [{ path: 'nvim/init.lua', size: 9, binary: false }],
       })
 
-      const read = await bf.file.$get({ param: { slug: 'demo' }, query: { path: 'nvim/init.lua' } })
+      const read = await bf.file.$get({ param: { projectId: DEMO }, query: { path: 'nvim/init.lua' } })
       expect(await read.json()).toEqual({
         path: 'nvim/init.lua', size: 9, binary: false, content: 'print(1)\n',
       })
 
-      const del = await bf.file.$delete({ param: { slug: 'demo' }, query: { path: 'nvim' } })
+      const del = await bf.file.$delete({ param: { projectId: DEMO }, query: { path: 'nvim' } })
       expect(del.status).toBe(204)
-      const relist = await bf.$get({ param: { slug: 'demo' } })
+      const relist = await bf.$get({ param: { projectId: DEMO } })
       expect(await relist.json()).toEqual({ files: [] })
     })
 
     it('stores a base64 upload and reads it back as binary', async () => {
-      await writeProject('demo')
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const bf = client.project[':slug']['build-files']
+      const bf = client.project[':projectId']['build-files']
       const bytes = Buffer.from([0, 1, 2, 3])
 
       const put = await bf.file.$put({
-        param: { slug: 'demo' },
+        param: { projectId: DEMO },
         json: { path: 'blob.bin', contentBase64: bytes.toString('base64') },
       })
       expect(await put.json()).toEqual({ path: 'blob.bin', size: 4, binary: true })
 
-      const read = await bf.file.$get({ param: { slug: 'demo' }, query: { path: 'blob.bin' } })
+      const read = await bf.file.$get({ param: { projectId: DEMO }, query: { path: 'blob.bin' } })
       expect(await read.json()).toEqual({ path: 'blob.bin', size: 4, binary: true, content: null })
-      const raw = await fs.readFile(path.join(projectConfigDir('demo'), 'build', 'blob.bin'))
+      const raw = await fs.readFile(path.join(projectConfigDir(DEMO), 'build', 'blob.bin'))
       expect(raw.equals(bytes)).toBe(true)
     })
 
     it('rejects traversal, reserved names, and ambiguous bodies with 400', async () => {
-      await writeProject('demo')
       const app = buildApp({ buildId: 'test' })
 
       const traverse = await app.request(
@@ -575,11 +572,10 @@ describe('write routes', () => {
     })
 
     it('returns 404 for an unknown project or missing file', async () => {
-      await writeProject('demo')
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const bf = client.project[':slug']['build-files']
-      expect((await bf.$get({ param: { slug: 'nope' } })).status).toBe(404)
-      expect((await bf.file.$get({ param: { slug: 'demo' }, query: { path: 'nope' } })).status).toBe(404)
+      const bf = client.project[':projectId']['build-files']
+      expect((await bf.$get({ param: { projectId: 'nope' } })).status).toBe(404)
+      expect((await bf.file.$get({ param: { projectId: DEMO }, query: { path: 'nope' } })).status).toBe(404)
     })
   })
 
@@ -615,7 +611,7 @@ describe('write routes', () => {
       const app = buildApp({ buildId: 'test' })
       const res = await app.request('/api/workspace/create', rawInit({
         method: 'POST',
-        body: JSON.stringify({ project: 'demo', tool: 'mystery' }),
+        body: JSON.stringify({ project: DEMO, tool: 'mystery' }),
       }))
       expect(res.status).toBe(400)
       const body = await res.json() as { error: { code: string } }
@@ -626,21 +622,20 @@ describe('write routes', () => {
     // the request named, stored per agent. Omitted fields keep their
     // previous values.
     it('remembers the agent and what the request named for it', async () => {
-      await recordProject({ slug: 'demo', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
       mockCreateWorkspace.mockResolvedValue({
         workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
       })
       const app = buildApp({ buildId: 'test' })
       const create = async (body: Record<string, unknown>): Promise<void> => {
         const res = await app.request('/api/workspace/create', rawInit({
-          method: 'POST', body: JSON.stringify({ project: 'demo', ...body }),
+          method: 'POST', body: JSON.stringify({ project: DEMO, ...body }),
         }))
         await res.text() // drain the NDJSON stream so the handler finishes
       }
 
       await create({ tool: 'claude', model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp' })
       await create({ tool: 'pi', permissionMode: 'bypass' })
-      expect(await getProjectRow('demo')).toMatchObject({
+      expect(await getProjectRow(DEMO)).toMatchObject({
         lastTool: 'pi',
         createDefaults: {
           claude: { model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp' },
@@ -657,28 +652,27 @@ describe('write routes', () => {
       await create({ tool: 'pi' })
       expect(mockCreateWorkspace.mock.calls.at(-1)?.[1]).toMatchObject({ tool: 'pi', mode: 'acp' })
       // ...and records only the agent.
-      expect((await getProjectRow('demo'))?.createDefaults.claude)
+      expect((await getProjectRow(DEMO))?.createDefaults.claude)
         .toEqual({ model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp' })
-      expect((await getProjectRow('demo'))?.createDefaults.pi).toEqual({ permissionMode: 'bypass' })
+      expect((await getProjectRow(DEMO))?.createDefaults.pi).toEqual({ permissionMode: 'bypass' })
     })
 
     it('names the launch model on the provisioning row', async () => {
-      await recordProject({ slug: 'demo', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
       let rowModel: unknown
-      mockCreateWorkspace.mockImplementation((_slug, opts) => {
+      mockCreateWorkspace.mockImplementation((_projectId, opts) => {
         rowModel = listProvisioning().find((p) => p.workspaceId === opts.workspaceId)
         return Promise.resolve({ workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' as const })
       })
       const app = buildApp({ buildId: 'test' })
       const res = await app.request('/api/workspace/create', rawInit({
-        method: 'POST', body: JSON.stringify({ project: 'demo', tool: 'claude', model: 'claude-opus-5-5' }),
+        method: 'POST', body: JSON.stringify({ project: DEMO, tool: 'claude', model: 'claude-opus-5-5' }),
       }))
       await res.text()
       expect(rowModel).toMatchObject({ model: 'claude-opus-5-5', modelName: 'Opus 5.5' })
     })
 
     it('streams progress and a terminal result event from createWorkspace', async () => {
-      mockCreateWorkspace.mockImplementation((_slug, opts) => {
+      mockCreateWorkspace.mockImplementation((_projectId, opts) => {
         opts.onProgress?.('Fetching latest from remote...')
         opts.onProgress?.('Creating session job yaac-demo-sess-x...')
         return Promise.resolve({
@@ -692,7 +686,7 @@ describe('write routes', () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.workspace.create.$post({
         json: {
-          project: 'demo',
+          project: DEMO,
         },
       })
       expect(res.status).toBe(200)
@@ -715,14 +709,14 @@ describe('write routes', () => {
           },
         },
       ])
-      expect(mockCreateWorkspace).toHaveBeenCalledWith('demo', expect.objectContaining({
+      expect(mockCreateWorkspace).toHaveBeenCalledWith(DEMO, expect.objectContaining({
       }))
     })
 
     it('emits a terminal error event when createWorkspace throws', async () => {
       mockCreateWorkspace.mockRejectedValue(new ServerError('VALIDATION', 'no github token'))
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.workspace.create.$post({ json: { project: 'demo' } })
+      const res = await client.workspace.create.$post({ json: { project: DEMO } })
       expect(res.status).toBe(200)
       const events = (await res.text()).trim().split('\n').map((l) => JSON.parse(l) as unknown)
       expect(events).toEqual([
@@ -735,17 +729,44 @@ describe('write routes', () => {
         workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
       })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.workspace.create.$post({ json: { project: 'demo', branch: 'dev' } })
+      const res = await client.workspace.create.$post({ json: { project: DEMO, branch: 'dev' } })
       expect(res.status).toBe(200)
       await res.text()
-      expect(mockCreateWorkspace).toHaveBeenCalledWith('demo', expect.objectContaining({ branch: 'dev' }))
+      expect(mockCreateWorkspace).toHaveBeenCalledWith(DEMO, expect.objectContaining({ branch: 'dev' }))
+    })
+
+    // What the CLI sends as typed: a name, an id or an id prefix.
+    it('resolves the project a create names, and refuses an ambiguous or unknown one', async () => {
+      mockCreateWorkspace.mockResolvedValue({
+        workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
+      })
+      const app = buildApp({ buildId: 'test' })
+      const create = async (project: string): Promise<{ status: number; text: string }> => {
+        const res = await app.request('/api/workspace/create', rawInit({
+          method: 'POST', body: JSON.stringify({ project }),
+        }))
+        return { status: res.status, text: await res.text() }
+      }
+      for (const ref of ['demo', DEMO, DEMO.slice(0, 8)]) {
+        expect((await create(ref)).status, ref).toBe(200)
+        expect(mockCreateWorkspace.mock.calls.at(-1)?.[0]).toBe(DEMO)
+      }
+      expect((await create('nope')).status).toBe(404)
+
+      // Adding the same remote twice gives two projects with one name.
+      const twin = '0b0b0b0b-0000-4000-8000-000000000002'
+      await writeProject(twin)
+      const ambiguous = await create('demo')
+      expect(ambiguous.status).toBe(400)
+      expect(ambiguous.text).toContain(twin)
+      expect(mockCreateWorkspace).toHaveBeenCalledTimes(3)
     })
 
     it('rejects an empty branch with VALIDATION', async () => {
       const app = buildApp({ buildId: 'test' })
       const res = await app.request('/api/workspace/create', rawInit({
         method: 'POST',
-        body: JSON.stringify({ project: 'demo', branch: '' }),
+        body: JSON.stringify({ project: DEMO, branch: '' }),
       }))
       expect(res.status).toBe(400)
     })
@@ -756,21 +777,22 @@ describe('write routes', () => {
       })
       const id = '11111111-1111-4111-8111-111111111111'
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.workspace.create.$post({ json: { project: 'demo', workspaceId: id } })
+      const res = await client.workspace.create.$post({ json: { project: DEMO, workspaceId: id } })
       expect(res.status).toBe(200)
       await res.text()
-      expect(mockCreateWorkspace).toHaveBeenCalledWith('demo', expect.objectContaining({ workspaceId: id }))
+      expect(mockCreateWorkspace).toHaveBeenCalledWith(DEMO, expect.objectContaining({ workspaceId: id }))
     })
 
     // Reusing a live id would overwrite its row, and a failed create would
     // then tear down the live workspace as if it were its own.
     it('answers 409 for an id a workspace already holds, touching nothing', async () => {
       const id = '22222222-2222-4222-8222-222222222222'
-      await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: id, baseBranch: 'main' })
-      const before = (await getProjectWorkspaceRows('demo')).get(id)
+      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: id, baseBranch: 'main' })
+      const before = (await getProjectWorkspaceRows(DEMO)).get(id)
+      await writeProject(WEB, 'https://github.com/acme/web', 'web')
       const app = buildApp({ buildId: 'test' })
 
-      for (const project of ['demo', 'elsewhere']) {
+      for (const project of [DEMO, WEB]) {
         const res = await app.request('/api/workspace/create', rawInit({
           method: 'POST', body: JSON.stringify({ project, workspaceId: id }),
         }))
@@ -779,16 +801,16 @@ describe('write routes', () => {
 
       expect(mockCreateWorkspace).not.toHaveBeenCalled()
       expect(listProvisioning()).toEqual([])
-      expect((await getProjectWorkspaceRows('demo')).get(id)).toEqual(before)
+      expect((await getProjectWorkspaceRows(DEMO)).get(id)).toEqual(before)
     })
 
     // Still provisioning: no row yet, but the id is taken all the same.
     it('answers 409 for an id a create is still provisioning, leaving its row alone', async () => {
       const id = '33333333-3333-4333-8333-333333333333'
-      registerProvisioning({ workspaceId: id, projectSlug: 'demo', tool: 'claude', kind: 'create' })
+      registerProvisioning({ workspaceId: id, projectId: DEMO, tool: 'claude', kind: 'create' })
       const app = buildApp({ buildId: 'test' })
       const res = await app.request('/api/workspace/create', rawInit({
-        method: 'POST', body: JSON.stringify({ project: 'demo', workspaceId: id }),
+        method: 'POST', body: JSON.stringify({ project: DEMO, workspaceId: id }),
       }))
       expect(res.status).toBe(409)
       expect(mockCreateWorkspace).not.toHaveBeenCalled()
@@ -800,7 +822,7 @@ describe('write routes', () => {
       const app = buildApp({ buildId: 'test' })
       const res = await app.request('/api/workspace/create', rawInit({
         method: 'POST',
-        body: JSON.stringify({ project: 'demo', workspaceId: 'not-a-uuid' }),
+        body: JSON.stringify({ project: DEMO, workspaceId: 'not-a-uuid' }),
       }))
       expect(res.status).toBe(400)
       const body = await res.json() as { error: { code: string } }
@@ -810,7 +832,7 @@ describe('write routes', () => {
 
   describe('POST /workspace/provisioning/:id/dismiss', () => {
     it('removes the registry entry and returns 204', async () => {
-      registerProvisioning({ workspaceId: 'dz-1', projectSlug: 'demo', tool: 'claude', kind: 'create' })
+      registerProvisioning({ workspaceId: 'dz-1', projectId: DEMO, tool: 'claude', kind: 'create' })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.workspace.provisioning[':id'].dismiss.$post({ param: { id: 'dz-1' } })
       expect(res.status).toBe(204)
@@ -844,7 +866,7 @@ describe('write routes', () => {
     })
 
     it('streams progress and a result event from restartWorkspace, by the resolved id', async () => {
-      await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'sess-x' })
+      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'sess-x' })
       mockRestartSession.mockImplementation((_id, opts) => {
         opts?.onProgress?.('Stopping session job yaac-demo-sess-x...')
         opts?.onProgress?.('Reusing existing workspace at /wt/sess-x')
@@ -887,7 +909,7 @@ describe('write routes', () => {
     })
 
     it('emits a terminal error event when restartWorkspace throws', async () => {
-      await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'sess-y' })
+      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'sess-y' })
       mockRestartSession.mockRejectedValue(new ServerError('INTERNAL', 'image pull failed'))
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.workspace.restart.$post({ json: { workspaceId: 'sess-y' } })
@@ -899,8 +921,8 @@ describe('write routes', () => {
     })
 
     it('answers 409 for a workspace already provisioning', async () => {
-      await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'sess-z' })
-      registerProvisioning({ workspaceId: 'sess-z', projectSlug: 'demo', tool: 'claude', kind: 'restart' })
+      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'sess-z' })
+      registerProvisioning({ workspaceId: 'sess-z', projectId: DEMO, tool: 'claude', kind: 'restart' })
       const app = buildApp({ buildId: 'test' })
       const res = await app.request('/api/workspace/restart', rawInit({
         method: 'POST', body: JSON.stringify({ workspaceId: 'sess-z' }),
@@ -923,7 +945,7 @@ describe('write routes', () => {
     it('delegates to stopWorkspace and returns the result', async () => {
       mockDeleteSession.mockResolvedValue({
         workspaceId: 'sess-x',
-        projectSlug: 'demo',
+        projectId: DEMO,
       })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.workspace.stop.$post({ json: { workspaceId: 'sess-x' } })
@@ -947,10 +969,10 @@ describe('write routes', () => {
       })
 
     it('runs the command for the workspace the proxy names', async () => {
-      await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'sess-a' })
+      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'sess-a' })
       const res = await relay('proxy-secret', 'sess-a', JSON.stringify({ command: 'rename', body: 'Relayed' }))
       expect(res.status).toBe(200)
-      expect((await getProjectWorkspaceRows('demo')).get('sess-a')?.title).toBe('Relayed')
+      expect((await getProjectWorkspaceRows(DEMO)).get('sess-a')?.title).toBe('Relayed')
 
       // A refusal comes back as 422, like the containerless route's.
       const refused = await relay('proxy-secret', 'sess-a', JSON.stringify({ command: 'delete' }))
@@ -958,11 +980,11 @@ describe('write routes', () => {
     })
 
     it('refuses a caller that is not the proxy, or a workspace that does not exist', async () => {
-      await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'sess-a' })
+      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'sess-a' })
       const body = JSON.stringify({ command: 'rename', body: 'Forged' })
       expect((await relay('guess', 'sess-a', body)).status).toBe(401)
       expect((await relay('proxy-secret', 'sess-gone', body)).status).toBe(401)
-      expect((await getProjectWorkspaceRows('demo')).get('sess-a')?.title).not.toBe('Forged')
+      expect((await getProjectWorkspaceRows(DEMO)).get('sess-a')?.title).not.toBe('Forged')
     })
   })
 
@@ -975,14 +997,14 @@ describe('write routes', () => {
 
     const seed = async (...workspaceIds: string[]): Promise<void> => {
       for (const workspaceId of workspaceIds) {
-        await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId })
+        await recordWorkspaceCreated({ projectId: DEMO, workspaceId })
       }
     }
 
     /** Create a group around `workspaceId` and hand back its new id. */
     const createGroup = async (workspaceId: string, name = 'Release'): Promise<string> => {
       const res = await client().workspace.group.create.$post({
-        json: { projectSlug: 'demo', workspaceId, name },
+        json: { projectId: DEMO, workspaceId, name },
       })
       expect(res.status).toBe(200)
       return (await res.json()).groupId
@@ -992,25 +1014,25 @@ describe('write routes', () => {
       await seed('sess-a')
       const groupId = await createGroup('sess-a')
 
-      expect(await listWorkspaceGroups('demo')).toEqual([expect.objectContaining({
-        groupId, projectSlug: 'demo', name: 'Release', pinned: false,
+      expect(await listWorkspaceGroups(DEMO)).toEqual([expect.objectContaining({
+        groupId, projectId: DEMO, name: 'Release', pinned: false,
       })])
-      expect((await getProjectWorkspaceRows('demo')).get('sess-a')?.groupId).toBe(groupId)
+      expect((await getProjectWorkspaceRows(DEMO)).get('sess-a')?.groupId).toBe(groupId)
     })
 
     it('renames, pins and deletes it, releasing its workspaces', async () => {
       await seed('sess-a')
       const groupId = await createGroup('sess-a')
 
-      await client().workspace.group.rename.$post({ json: { projectSlug: 'demo', groupId, name: 'Shipping' } })
-      await client().workspace.group['set-pinned'].$post({ json: { projectSlug: 'demo', groupId, pinned: true } })
-      expect(await listWorkspaceGroups('demo')).toEqual([expect.objectContaining({
+      await client().workspace.group.rename.$post({ json: { projectId: DEMO, groupId, name: 'Shipping' } })
+      await client().workspace.group['set-pinned'].$post({ json: { projectId: DEMO, groupId, pinned: true } })
+      expect(await listWorkspaceGroups(DEMO)).toEqual([expect.objectContaining({
         name: 'Shipping', pinned: true,
       })])
 
-      await client().workspace.group.delete.$post({ json: { projectSlug: 'demo', groupId } })
-      expect(await listWorkspaceGroups('demo')).toEqual([])
-      expect((await getProjectWorkspaceRows('demo')).get('sess-a')?.groupId).toBeUndefined()
+      await client().workspace.group.delete.$post({ json: { projectId: DEMO, groupId } })
+      expect(await listWorkspaceGroups(DEMO)).toEqual([])
+      expect((await getProjectWorkspaceRows(DEMO)).get('sess-a')?.groupId).toBeUndefined()
     })
 
     it('moves a workspace in and out of a group, and 404s an unknown one', async () => {
@@ -1018,20 +1040,20 @@ describe('write routes', () => {
       const groupId = await createGroup('sess-a')
 
       await client().workspace['set-group'].$post({
-        json: { projectSlug: 'demo', workspaceId: 'sess-b', groupId },
+        json: { projectId: DEMO, workspaceId: 'sess-b', groupId },
       })
-      expect((await getProjectWorkspaceRows('demo')).get('sess-b')?.groupId).toBe(groupId)
+      expect((await getProjectWorkspaceRows(DEMO)).get('sess-b')?.groupId).toBe(groupId)
 
       await client().workspace['set-group'].$post({
-        json: { projectSlug: 'demo', workspaceId: 'sess-b', groupId: null },
+        json: { projectId: DEMO, workspaceId: 'sess-b', groupId: null },
       })
-      expect((await getProjectWorkspaceRows('demo')).get('sess-b')?.groupId).toBeUndefined()
+      expect((await getProjectWorkspaceRows(DEMO)).get('sess-b')?.groupId).toBeUndefined()
 
       // A drop onto a group another client has already deleted.
       const app = buildApp({ buildId: 'test' })
       const res = await app.request('/api/workspace/set-group', rawInit({
         method: 'POST',
-        body: JSON.stringify({ projectSlug: 'demo', workspaceId: 'sess-b', groupId: 'gone' }),
+        body: JSON.stringify({ projectId: DEMO, workspaceId: 'sess-b', groupId: 'gone' }),
       }))
       expect(res.status).toBe(404)
     })
@@ -1042,10 +1064,10 @@ describe('write routes', () => {
       const app = buildApp({ buildId: 'test' })
       const res = await app.request('/api/workspace/group/create', rawInit({
         method: 'POST',
-        body: JSON.stringify({ projectSlug: 'demo', workspaceId: 'nope', name: 'Release' }),
+        body: JSON.stringify({ projectId: DEMO, workspaceId: 'nope', name: 'Release' }),
       }))
       expect(res.status).toBe(404)
-      expect(await listWorkspaceGroups('demo')).toEqual([])
+      expect(await listWorkspaceGroups(DEMO)).toEqual([])
     })
 
     it('rejects a group name longer than the store keeps', async () => {
@@ -1055,20 +1077,20 @@ describe('write routes', () => {
       const res = await app.request('/api/workspace/group/create', rawInit({
         method: 'POST',
         body: JSON.stringify({
-          projectSlug: 'demo',
+          projectId: DEMO,
           workspaceId: 'sess-a',
           name: 'x'.repeat(MAX_TITLE_LENGTH + 1),
         }),
       }))
       expect(res.status).toBe(400)
-      expect(await listWorkspaceGroups('demo')).toEqual([])
+      expect(await listWorkspaceGroups(DEMO)).toEqual([])
     })
 
     it('rejects a blank group name', async () => {
       const app = buildApp({ buildId: 'test' })
       const res = await app.request('/api/workspace/group/create', rawInit({
         method: 'POST',
-        body: JSON.stringify({ projectSlug: 'demo', workspaceId: 'sess-a', name: '' }),
+        body: JSON.stringify({ projectId: DEMO, workspaceId: 'sess-a', name: '' }),
       }))
       expect(res.status).toBe(400)
     })
@@ -1085,16 +1107,15 @@ describe('write routes', () => {
       })))
 
     beforeEach(async () => {
-      await writeProject('demo')
-      await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'parent', baseBranch: 'main', permissionMode: 'plan' })
+      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'parent', baseBranch: 'main', permissionMode: 'plan' })
     })
 
     it('queues, edits and runs one — once', async () => {
       const { groupId } = await (await client().workspace.group.create.$post({
-        json: { projectSlug: 'demo', name: 'review' },
+        json: { projectId: DEMO, name: 'review' },
       })).json()
       const queued = await (await client().workspace.queue.create.$post({
-        json: { project: 'demo', parent: 'parent', prompt: 'follow up', tool: 'claude', title: 'Named', group: 'review' },
+        json: { project: DEMO, parent: 'parent', prompt: 'follow up', tool: 'claude', title: 'Named', group: 'review' },
       })).json()
       expect(queued).toMatchObject({
         parentWorkspaceId: 'parent', branch: 'main', permissionMode: 'plan', title: 'Named', groupId,
@@ -1109,16 +1130,16 @@ describe('write routes', () => {
         json: { id: queued.id, group: 'fresh group' },
       })).json()
       expect(refiled.groupId).not.toBe(groupId)
-      expect(await listWorkspaceGroups('demo')).toContainEqual(
+      expect(await listWorkspaceGroups(DEMO)).toContainEqual(
         expect.objectContaining({ groupId: refiled.groupId, name: 'fresh group' }))
 
       // A launch still in flight: a second Run now loses the claim.
       let finish!: () => void
       // Records the workspace row like the real create; the launched entry
       // has a foreign key to it.
-      mockCreateWorkspace.mockImplementation((slug, opts) => new Promise((resolve) => {
+      mockCreateWorkspace.mockImplementation((projectId, opts) => new Promise((resolve) => {
         finish = () => {
-          void recordWorkspaceCreated({ projectSlug: slug, workspaceId: opts.workspaceId ?? 'x' }).then(() =>
+          void recordWorkspaceCreated({ projectId: projectId, workspaceId: opts.workspaceId ?? 'x' }).then(() =>
             resolve({ workspaceId: opts.workspaceId ?? 'x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' }))
         }
       }))
@@ -1146,7 +1167,7 @@ describe('write routes', () => {
     it('refuses a cycle in a chain, and splices a discarded link\'s children up', async () => {
       const queue = async (parent: string, prompt: string): Promise<string> =>
         (await (await client().workspace.queue.create.$post({
-          json: { project: 'demo', parent, prompt },
+          json: { project: DEMO, parent, prompt },
         })).json()).id
       const top = await queue('parent', 'top')
       const middle = await queue(top, 'middle')
@@ -1157,7 +1178,7 @@ describe('write routes', () => {
       expect((await getQueuedWorkspaceRow(bottom))?.parentQueuedId).toBe(top)
       expect((await post('discard', { id: middle })).status).toBe(404)
       // An entry with no prompt would launch an agent nobody is watching.
-      expect((await post('create', { project: 'demo', parent: 'parent', prompt: '' })).status).toBe(400)
+      expect((await post('create', { project: DEMO, parent: 'parent', prompt: '' })).status).toBe(400)
     })
   })
 
@@ -1170,17 +1191,15 @@ describe('write routes', () => {
       })))
     const settings = { prompt: 'someday', tool: 'claude', mode: 'tui', permissionMode: 'plan' }
 
-    beforeEach(async () => { await writeProject('demo') })
-
     it('saves, replaces and discards a draft', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const saved = await (await client.workspace.draft.save.$post({
-        json: { project: 'demo', prompt: 'someday', tool: 'codex', mode: 'acp', permissionMode: 'plan', branch: 'dev' },
+        json: { project: DEMO, prompt: 'someday', tool: 'codex', mode: 'acp', permissionMode: 'plan', branch: 'dev' },
       })).json()
-      expect(saved).toMatchObject({ projectSlug: 'demo', tool: 'codex', mode: 'acp', branch: 'dev' })
+      expect(saved).toMatchObject({ projectId: DEMO, tool: 'codex', mode: 'acp', branch: 'dev' })
 
       const replaced = await (await client.workspace.draft.save.$post({
-        json: { id: saved.id, project: 'demo', prompt: 'someday', tool: 'claude', mode: 'tui', permissionMode: 'plan', startAfter: 'w1' },
+        json: { id: saved.id, project: DEMO, prompt: 'someday', tool: 'claude', mode: 'tui', permissionMode: 'plan', startAfter: 'w1' },
       })).json()
       expect(replaced).toMatchObject({ id: saved.id, tool: 'claude', startAfter: 'w1' })
       expect(replaced).not.toHaveProperty('branch')
@@ -1189,9 +1208,9 @@ describe('write routes', () => {
       expect((await post('discard', { id: saved.id })).status).toBe(204)
       expect((await post('discard', { id: saved.id })).status).toBe(404)
       // A draft that is gone is not silently re-created by a save naming it.
-      expect((await post('save', { id: saved.id, project: 'demo', ...settings })).status).toBe(404)
+      expect((await post('save', { id: saved.id, project: DEMO, ...settings })).status).toBe(404)
       // An empty prompt has nothing to keep.
-      expect((await post('save', { project: 'demo', ...settings, prompt: '' })).status).toBe(400)
+      expect((await post('save', { project: DEMO, ...settings, prompt: '' })).status).toBe(400)
       expect((await listDraftWorkspaces())).toEqual([])
     })
 
@@ -1200,13 +1219,13 @@ describe('write routes', () => {
     it('drops the draft a create or queue names, once it has succeeded', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const draft = async (): Promise<string> => (await (await client.workspace.draft.save.$post({
-        json: { project: 'demo', prompt: 'someday', tool: 'claude', mode: 'tui', permissionMode: 'plan' },
+        json: { project: DEMO, prompt: 'someday', tool: 'claude', mode: 'tui', permissionMode: 'plan' },
       })).json()).id
       const ids = async (): Promise<string[]> => (await listDraftWorkspaces()).map((d) => d.id)
 
       const failed = await draft()
       mockCreateWorkspace.mockRejectedValueOnce(new ServerError('VALIDATION', 'no github token'))
-      await (await client.workspace.create.$post({ json: { project: 'demo', draftId: failed } })).text()
+      await (await client.workspace.create.$post({ json: { project: DEMO, draftId: failed } })).text()
       expect(await ids()).toEqual([failed])
 
       // An untitled create keeps the draft's generated title while the
@@ -1219,13 +1238,13 @@ describe('write routes', () => {
         finish = () => resolve({ workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' })
       }))
       const created = client.workspace.create.$post({
-        json: { project: 'demo', prompt: 'someday', draftId: failed },
+        json: { project: DEMO, prompt: 'someday', draftId: failed },
       }).then((res) => res.text())
       await vi.waitFor(() => expect(mockCreateWorkspace).toHaveBeenCalledTimes(2))
       expect(await ids()).toEqual([])
       expect(listProvisioning().filter((p) => p.error === undefined)).toEqual([expect.objectContaining({ title: 'Someday' })])
       // A second run of the same draft is refused before it reserves a row.
-      expect((await client.workspace.create.$post({ json: { project: 'demo', draftId: failed } })).status).toBe(409)
+      expect((await client.workspace.create.$post({ json: { project: DEMO, draftId: failed } })).status).toBe(409)
       expect(listProvisioning().filter((p) => p.error === undefined)).toHaveLength(1)
       finish()
       await created
@@ -1235,24 +1254,24 @@ describe('write routes', () => {
       const queued = await draft()
       await setDraftWorkspaceTitle(queued, 'someday', 'Someday')
       expect((await client.workspace.queue.create.$post({
-        json: { project: 'demo', parent: 'nope', prompt: 'p', draftId: queued },
+        json: { project: DEMO, parent: 'nope', prompt: 'p', draftId: queued },
       })).status).toBe(404)
       expect(await ids()).toEqual([queued])
-      await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: 'parent', baseBranch: 'main', permissionMode: 'plan' })
+      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'parent', baseBranch: 'main', permissionMode: 'plan' })
       expect((await client.workspace.queue.create.$post({
-        json: { project: 'demo', parent: 'parent', prompt: 'someday', draftId: queued },
+        json: { project: DEMO, parent: 'parent', prompt: 'someday', draftId: queued },
       })).status).toBe(200)
       expect(await ids()).toEqual([])
-      expect((await listQueuedWorkspaceRows('demo'))[0]).toMatchObject({ generatedTitle: 'Someday' })
-      expect((await listQueuedWorkspaceRows('demo'))[0]).not.toHaveProperty('title')
+      expect((await listQueuedWorkspaceRows(DEMO))[0]).toMatchObject({ generatedTitle: 'Someday' })
+      expect((await listQueuedWorkspaceRows(DEMO))[0]).not.toHaveProperty('title')
 
       // An edited prompt leaves the draft's title behind.
       const edited = await draft()
       await setDraftWorkspaceTitle(edited, 'someday', 'Someday')
       await client.workspace.queue.create.$post({
-        json: { project: 'demo', parent: 'parent', prompt: 'another day', draftId: edited },
+        json: { project: DEMO, parent: 'parent', prompt: 'another day', draftId: edited },
       })
-      expect((await listQueuedWorkspaceRows('demo'))[1]).not.toHaveProperty('generatedTitle')
+      expect((await listQueuedWorkspaceRows(DEMO))[1]).not.toHaveProperty('generatedTitle')
     })
   })
 
@@ -1348,9 +1367,9 @@ describe('write routes', () => {
 
   describe('DELETE /auth/git/credentials/:id', () => {
     it('deletes a credential in use and takes it from the runtime at once', async () => {
-      await recordProject({ slug: 'web', remoteUrl: 'https://github.com/acme/web', addedAt: 'now' })
+      await writeProject(WEB, 'https://github.com/acme/web', 'web')
       const a = await addHttpsCredential({ name: 'a', token: 'ghp_a' })
-      await assignProjectCredential('web', a.id)
+      await assignProjectCredential(WEB, a.id)
       const synced = vi.spyOn(workspaceDriver(), 'syncCredentials').mockResolvedValue(undefined)
       try {
         const client = makeTestApiClient(buildApp({ buildId: 'test' }))
@@ -1390,9 +1409,9 @@ describe('write routes', () => {
 
   describe('POST /auth/git/credentials/:id/replace', () => {
     it('replaces the secret under the same name and projects, and pushes it', async () => {
-      await recordProject({ slug: 'web', remoteUrl: 'https://github.com/acme/web', addedAt: 'now' })
+      await writeProject(WEB, 'https://github.com/acme/web', 'web')
       const { id } = await addHttpsCredential({ name: 'gh', token: 'ghp_leaked' })
-      await assignProjectCredential('web', id)
+      await assignProjectCredential(WEB, id)
       const synced = vi.spyOn(workspaceDriver(), 'syncCredentials').mockResolvedValue(undefined)
       try {
         const client = makeTestApiClient(buildApp({ buildId: 'test' }))
@@ -1400,43 +1419,43 @@ describe('write routes', () => {
         expect(res.status).toBe(200)
         const body = await res.json()
         expect(await listCredentialSummaries()).toEqual([
-          { id: body.id, name: 'gh', kind: 'https', preview: '***resh', projects: ['web'] },
+          { id: body.id, name: 'gh', kind: 'https', preview: '***resh', projects: [WEB] },
         ])
-        expect(synced.mock.calls.at(-1)?.[0].git).toEqual([{ token: 'ghp_fresh', projects: ['web'] }])
+        expect(synced.mock.calls.at(-1)?.[0].git).toEqual([{ token: 'ghp_fresh', projects: [WEB] }])
       } finally {
         synced.mockRestore()
       }
     })
   })
 
-  describe('PUT /project/:slug/git-credential', () => {
+  describe('PUT /project/:projectId/git-credential', () => {
     it('assigns the credential and hands the runtime what the project may now use', async () => {
-      await recordProject({ slug: 'web', remoteUrl: 'https://github.com/acme/web', addedAt: 'now' })
+      await writeProject(WEB, 'https://github.com/acme/web', 'web')
       const { id } = await addHttpsCredential({ name: 'gh', token: 'ghp_web' })
       const synced = vi.spyOn(workspaceDriver(), 'syncCredentials').mockResolvedValue(undefined)
       try {
         const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-        const res = await client.project[':slug']['git-credential'].$put({
-          param: { slug: 'web' }, json: { credentialId: id },
+        const res = await client.project[':projectId']['git-credential'].$put({
+          param: { projectId: WEB }, json: { credentialId: id },
         })
         expect(res.status).toBe(200)
         expect(await res.json()).toEqual({ knownHostsEntry: null })
         // The runtime injects from what it was last told, never from the store.
-        expect(synced.mock.calls.at(-1)?.[0].git).toEqual([{ token: 'ghp_web', projects: ['web'] }])
+        expect(synced.mock.calls.at(-1)?.[0].git).toEqual([{ token: 'ghp_web', projects: [WEB] }])
       } finally {
         synced.mockRestore()
       }
     })
 
     it('404s an unknown project or credential', async () => {
-      await recordProject({ slug: 'web', remoteUrl: 'https://github.com/acme/web', addedAt: 'now' })
+      await writeProject(WEB, 'https://github.com/acme/web', 'web')
       const { id } = await addHttpsCredential({ name: 'gh', token: 'ghp_web' })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      expect((await client.project[':slug']['git-credential'].$put({
-        param: { slug: 'nope' }, json: { credentialId: id },
+      expect((await client.project[':projectId']['git-credential'].$put({
+        param: { projectId: 'nope' }, json: { credentialId: id },
       })).status).toBe(404)
-      expect((await client.project[':slug']['git-credential'].$put({
-        param: { slug: 'web' }, json: { credentialId: '00000000-0000-4000-8000-000000000000' },
+      expect((await client.project[':projectId']['git-credential'].$put({
+        param: { projectId: WEB }, json: { credentialId: '00000000-0000-4000-8000-000000000000' },
       })).status).toBe(404)
     })
   })
@@ -1623,7 +1642,8 @@ describe('write routes', () => {
   })
 
   it('write routes do not touch state before invocation', async () => {
-    expect(await fs.readdir(getProjectsDir()).catch(() => [])).toEqual([])
+    // Only the project every test starts with.
+    expect(await fs.readdir(getProjectsDir())).toEqual([DEMO])
     expect(projectDir('never')).toContain('never')
     expect(claudeDir('never')).toContain('claude')
     expect(codexDir('never')).toContain('codex')

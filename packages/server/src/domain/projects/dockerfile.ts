@@ -10,8 +10,8 @@ import {
 import { ServerError } from '@yaac/shared/errors'
 
 /** Per-project layered/standalone Dockerfile (config/build/Dockerfile.yaac). */
-function projectDockerfilePath(slug: string): string {
-  return path.join(projectBuildDir(slug), PROJECT_DOCKERFILE)
+function projectDockerfilePath(projectId: string): string {
+  return path.join(projectBuildDir(projectId), PROJECT_DOCKERFILE)
 }
 
 /** Global user Dockerfile applied as the top layer of every project image. */
@@ -31,8 +31,8 @@ async function readFileOrEmpty(filePath: string): Promise<string> {
  * Read the per-project Dockerfile.yaac. Returns '' when the project has
  * none — the image then builds from the bundled base stack.
  */
-export async function readProjectDockerfile(slug: string): Promise<string> {
-  return readFileOrEmpty(projectDockerfilePath(slug))
+export async function readProjectDockerfile(projectId: string): Promise<string> {
+  return readFileOrEmpty(projectDockerfilePath(projectId))
 }
 
 /**
@@ -40,8 +40,8 @@ export async function readProjectDockerfile(slug: string): Promise<string> {
  * (reverting to the bundled base). The next workspace create rebuilds, since
  * the layer's content hash changes.
  */
-export async function writeProjectDockerfile(slug: string, content: string): Promise<void> {
-  const filePath = projectDockerfilePath(slug)
+export async function writeProjectDockerfile(projectId: string, content: string): Promise<void> {
+  const filePath = projectDockerfilePath(projectId)
   if (content.trim().length === 0) {
     await fs.rm(filePath, { force: true })
     return

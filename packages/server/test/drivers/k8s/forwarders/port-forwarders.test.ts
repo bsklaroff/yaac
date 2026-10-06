@@ -139,7 +139,7 @@ describe('addWorkspaceForwarder', () => {
   })
 
   it('offers the container port itself, creating the entry, and restates the bar', async () => {
-    const mapping = await addWorkspaceForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8090)
+    const mapping = await addWorkspaceForwarder('sess-1', 'yaac-proj-sess-1', 8090)
 
     expect(mapping).toEqual({ containerPort: 8090, hostPort: 8090 })
     expect(getWorkspacePorts('sess-1')).toEqual([{ containerPort: 8090, hostPort: 8090 }])
@@ -149,7 +149,7 @@ describe('addWorkspaceForwarder', () => {
   it('appends to an existing entry, and both go down together', async () => {
     declareWorkspaceForwards('sess-1', [{ containerPort: 3000, hostPortStart: 3000 }])
 
-    await addWorkspaceForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8091)
+    await addWorkspaceForwarder('sess-1', 'yaac-proj-sess-1', 8091)
 
     expect(getWorkspacePorts('sess-1')).toEqual([
       { containerPort: 3000, hostPort: 3000 },
@@ -162,14 +162,14 @@ describe('addWorkspaceForwarder', () => {
   it('walks past a host port another workspace holds', async () => {
     declareWorkspaceForwards('sess-1', [{ containerPort: 8090, hostPortStart: 8090 }])
 
-    const mapping = await addWorkspaceForwarder('proj', 'sess-2', 'yaac-proj-sess-2', 8090)
+    const mapping = await addWorkspaceForwarder('sess-2', 'yaac-proj-sess-2', 8090)
 
     expect(mapping).toEqual({ containerPort: 8090, hostPort: 8091 })
   })
 
   it('is idempotent per container port', async () => {
-    const first = await addWorkspaceForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8090)
-    const again = await addWorkspaceForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8090)
+    const first = await addWorkspaceForwarder('sess-1', 'yaac-proj-sess-1', 8090)
+    const again = await addWorkspaceForwarder('sess-1', 'yaac-proj-sess-1', 8090)
 
     expect(again).toEqual(first)
     expect(getWorkspacePorts('sess-1')).toHaveLength(1)
@@ -179,8 +179,8 @@ describe('addWorkspaceForwarder', () => {
     // Allocating and recording is one synchronous step, so concurrent
     // declares cannot race.
     const [a, b] = await Promise.all([
-      addWorkspaceForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8090),
-      addWorkspaceForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8090),
+      addWorkspaceForwarder('sess-1', 'yaac-proj-sess-1', 8090),
+      addWorkspaceForwarder('sess-1', 'yaac-proj-sess-1', 8090),
     ])
 
     expect(a).toEqual(b)
@@ -196,14 +196,14 @@ describe('addWorkspaceForwarder', () => {
     )
 
     await expect(
-      addWorkspaceForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8093),
+      addWorkspaceForwarder('sess-1', 'yaac-proj-sess-1', 8093),
     ).rejects.toThrow(/already holds/)
   })
 
   it('keeps the offer when the cosmetic status-bar refresh fails', async () => {
     mockExec.mockRejectedValue(new Error('pod is gone'))
 
-    const mapping = await addWorkspaceForwarder('proj', 'sess-1', 'yaac-proj-sess-1', 8090)
+    const mapping = await addWorkspaceForwarder('sess-1', 'yaac-proj-sess-1', 8090)
 
     expect(getWorkspacePorts('sess-1')).toEqual([mapping])
   })

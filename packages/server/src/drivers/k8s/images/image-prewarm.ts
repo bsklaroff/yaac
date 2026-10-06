@@ -12,12 +12,11 @@ import { ensureImage } from './build-coordinator'
 import { serverLog } from '#log'
 import { env, testEnv } from '@yaac/shared/env'
 import type { YaacConfig } from '@yaac/shared/types'
-import type { ProjectRef } from '#drivers/contract'
 import {
   forgetImageBuild,
   getImageBuild,
   hasBlockingFailure,
-  imageBuildProjects,
+  imageBuildProjectIds,
   resolveImageChain,
 } from '#drivers/k8s/image-engine'
 
@@ -38,16 +37,16 @@ const prewarming = new Set<string>()
  * chain, dropping the nestable layer for a `nestedContainers` project.
  */
 export async function prewarmProjectImage(
-  project: ProjectRef,
+  projectId: string,
   config: YaacConfig,
 ): Promise<void> {
   const nestedContainers = config.nestedContainers === true
   const prefix = testEnv.imagePrefix ?? 'yaac'
 
-  const { layers } = await resolveImageChain(project, prefix, nestedContainers)
+  const { layers } = await resolveImageChain(projectId, prefix, nestedContainers)
   if (hasBlockingFailure(layers.map((l) => l.tag), FAILED_RETRY_MS)) return
 
-  await ensureImage(project, testEnv.imagePrefix, false, nestedContainers, {
+  await ensureImage(projectId, testEnv.imagePrefix, false, nestedContainers, {
     reason: 'prewarm',
   })
 }
@@ -57,21 +56,21 @@ export async function prewarmProjectImage(
  * failed build row holds off retries for FAILED_RETRY_MS.
  */
 export function reconcileImagePrewarm(
-  projects: ProjectRef[],
-  projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
+  projectIds: string[],
+  projectConfig: (projectId: string) => Promise<YaacConfig | undefined>,
 ): void {
   if (!env.imagePrewarm) return
   if (testEnv.requirePrebuiltImages) return
 
-  for (const project of projects) {
-    if (prewarming.has(project.id)) continue
-    prewarming.add(project.id)
-    void projectConfig(project.slug)
-      .then((config) => prewarmProjectImage(project, config ?? {}))
+  for (const projectId of projectIds) {
+    if (prewarming.has(projectId)) continue
+    prewarming.add(projectId)
+    void projectConfig(projectId)
+      .then((config) => prewarmProjectImage(projectId, config ?? {}))
       .catch((err: unknown) => {
-        serverLog(`[image-prewarm] ${project.slug}: ${String(err)}`)
+        serverLog(`[image-prewarm] ${projectId}: ${String(err)}`)
       })
-      .finally(() => prewarming.delete(project.id))
+      .finally(() => prewarming.delete(projectId))
   }
 }
 
@@ -88,16 +87,16 @@ export function _resetImagePrewarmForTests(): void {
  */
 export function retryImageBuild(
   id: string,
-  projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
+  projectConfig: (projectId: string) => Promise<YaacConfig | undefined>,
 ): boolean {
   const entry = getImageBuild(id)
   if (!entry || entry.status === 'running') return false
-  const projects = imageBuildProjects(id)
+  const projectIds = imageBuildProjectIds(id)
   forgetImageBuild(id)
-  for (const project of projects) {
-    void projectConfig(project.slug)
-      .then((config) => prewarmProjectImage(project, config ?? {}))
-      .catch((err: unknown) => serverLog(`[image-retry] ${project.slug}: ${String(err)}`))
+  for (const projectId of projectIds) {
+    void projectConfig(projectId)
+      .then((config) => prewarmProjectImage(projectId, config ?? {}))
+      .catch((err: unknown) => serverLog(`[image-retry] ${projectId}: ${String(err)}`))
   }
   return true
 }

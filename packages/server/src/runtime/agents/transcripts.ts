@@ -39,7 +39,7 @@ import { openSandboxDir, sandboxLinkPolicy, type SandboxFile } from './sandbox-f
  *  holding them, and the shared-home subdirectory it stands in for (the one
  *  a pod's mount covers). */
 const TRANSCRIPT_LAYOUT: Record<'claude' | 'codex', {
-  home: (slug: string) => string
+  home: (projectId: string) => string
   part: AgentHistoryPart
   shared: string
 }> = {
@@ -50,11 +50,11 @@ const TRANSCRIPT_LAYOUT: Record<'claude' | 'codex', {
 /** The dirs a tool's transcripts are read under for one workspace, history
  *  first, each as the dir plus the subpath holding transcripts. Empty for a
  *  tool with none on the host; pi writes only to the history. */
-function transcriptRoots(slug: string, workspaceId: string, tool: AgentTool): Array<{ dir: string; sub: string }> {
+function transcriptRoots(projectId: string, workspaceId: string, tool: AgentTool): Array<{ dir: string; sub: string }> {
   if (tool === 'opencode') return []
-  if (tool === 'pi') return [{ dir: agentHistoryDir(slug, workspaceId, 'pi'), sub: '' }]
+  if (tool === 'pi') return [{ dir: agentHistoryDir(projectId, workspaceId, 'pi'), sub: '' }]
   const { home, part, shared } = TRANSCRIPT_LAYOUT[tool]
-  return [{ dir: agentHistoryDir(slug, workspaceId, part), sub: '' }, { dir: home(slug), sub: shared }]
+  return [{ dir: agentHistoryDir(projectId, workspaceId, part), sub: '' }, { dir: home(projectId), sub: shared }]
 }
 
 const under = (sub: string, rel: string): string => sub === '' ? rel : `${sub}/${rel}`
@@ -96,19 +96,19 @@ export const CLAUDE_POD_REPO = claudeProjectDirName('/repo')
  * same file every time.
  */
 async function findClaudeTranscript(
-  slug: string,
+  projectId: string,
   workspaceId: string,
   sessionId: string,
 ): Promise<SandboxFile | undefined> {
   // Validate the id before joining it into a path.
   if (!agentSessionIdSchema.safeParse(sessionId).success) return undefined
   const name = `${sessionId}.jsonl`
-  for (const { dir, sub } of transcriptRoots(slug, workspaceId, 'claude')) {
-    const home = await openSandboxDir(slug, dir).catch(() => null)
+  for (const { dir, sub } of transcriptRoots(projectId, workspaceId, 'claude')) {
+    const home = await openSandboxDir(projectId, dir).catch(() => null)
     if (home === null) continue
     const found = async (cwd: string): Promise<SandboxFile | undefined> => {
       const rel = under(sub, `${cwd}/${name}`)
-      return (await home.stat(rel))?.isFile() ? { slug, dir, rel } : undefined
+      return (await home.stat(rel))?.isFile() ? { projectId, dir, rel } : undefined
     }
     const conventional = await found(CLAUDE_POD_CWD)
     if (conventional) return conventional
@@ -149,7 +149,7 @@ function escapesRoot(rel: string): boolean {
  * conversation is real but its path cannot be expressed.
  */
 export function toProjectRelative(file: SandboxFile): string | null {
-  const rel = path.relative(projectDir(file.slug), path.join(file.dir, file.rel))
+  const rel = path.relative(projectDir(file.projectId), path.join(file.dir, file.rel))
   return escapesRoot(rel) ? null : rel
 }
 
@@ -165,20 +165,20 @@ export function toProjectRelative(file: SandboxFile): string | null {
  * encoder could store one, which is a bug.
  */
 export function resolveProjectPath(
-  slug: string,
+  projectId: string,
   workspaceId: string,
   tool: AgentTool,
   stored: string,
 ): SandboxFile | undefined {
   if (path.isAbsolute(stored)) {
-    serverLog(`[transcripts] refusing absolute recorded path for ${slug}: ${stored}`)
+    serverLog(`[transcripts] refusing absolute recorded path for ${projectId}: ${stored}`)
     return undefined
   }
   // `path.join` resolves embedded `..`, so a crafted value cannot escape.
-  const abs = path.join(projectDir(slug), stored)
-  for (const { dir } of transcriptRoots(slug, workspaceId, tool)) {
+  const abs = path.join(projectDir(projectId), stored)
+  for (const { dir } of transcriptRoots(projectId, workspaceId, tool)) {
     const rel = path.relative(dir, abs)
-    if (!escapesRoot(rel)) return { slug, dir, rel }
+    if (!escapesRoot(rel)) return { projectId, dir, rel }
   }
   return undefined
 }
@@ -199,14 +199,14 @@ export function resolveProjectPath(
  * since on a host a link could point anywhere.
  */
 export async function locateTranscript(
-  slug: string,
+  projectId: string,
   workspaceId: string,
   tool: AgentTool,
   agentSessionId: string,
   reported: string | undefined,
 ): Promise<string | undefined> {
   if (tool === 'pi') {
-    const logs = await piSessionLogs(slug, workspaceId, agentSessionId)
+    const logs = await piSessionLogs(projectId, workspaceId, agentSessionId)
     const newest = logs[logs.length - 1]
     return newest === undefined ? undefined : toProjectRelative(newest) ?? undefined
   }
@@ -215,12 +215,12 @@ export async function locateTranscript(
   const prefix = `${tool}/${shared}/`
   if (!reported.startsWith(prefix)) return undefined
   const rest = reported.slice(prefix.length)
-  const project = projectDir(slug)
-  for (const candidate of [path.join(agentHistoryDir(slug, workspaceId, part), rest), path.join(project, reported)]) {
+  const project = projectDir(projectId)
+  for (const candidate of [path.join(agentHistoryDir(projectId, workspaceId, part), rest), path.join(project, reported)]) {
     const real = await fs.realpath(candidate).catch(() => null)
     if (real === null) continue
     const rel = path.relative(await fs.realpath(project), real)
-    if (escapesRoot(rel) || resolveProjectPath(slug, workspaceId, tool, rel) === undefined) return undefined
+    if (escapesRoot(rel) || resolveProjectPath(projectId, workspaceId, tool, rel) === undefined) return undefined
     return rel
   }
   return undefined
@@ -232,15 +232,15 @@ export async function locateTranscript(
  * level of subdirectories is walked. The timestamp prefix makes a basename
  * sort chronological (mtime would change as pi appends).
  */
-async function listPiJsonlFiles(slug: string, workspaceId: string): Promise<SandboxFile[]> {
+async function listPiJsonlFiles(projectId: string, workspaceId: string): Promise<SandboxFile[]> {
   const found: SandboxFile[] = []
-  for (const { dir, sub } of transcriptRoots(slug, workspaceId, 'pi')) {
-    const home = await openSandboxDir(slug, dir).catch(() => null)
+  for (const { dir, sub } of transcriptRoots(projectId, workspaceId, 'pi')) {
+    const home = await openSandboxDir(projectId, dir).catch(() => null)
     if (home === null) continue
     const walk = async (rel: string, depth: number): Promise<void> => {
       for (const e of await home.readdir(rel)) {
         const child = under(rel, e.name)
-        if (e.isFile() && e.name.endsWith('.jsonl')) found.push({ slug, dir, rel: child })
+        if (e.isFile() && e.name.endsWith('.jsonl')) found.push({ projectId, dir, rel: child })
         else if (e.isDirectory() && depth > 0) await walk(child, depth - 1)
       }
     }
@@ -264,11 +264,11 @@ export function sessionIdFromPiLog(file: string): string | undefined {
 
 /** A conversation's pi logs (oldest first), matched by id. */
 export async function piSessionLogs(
-  slug: string,
+  projectId: string,
   workspaceId: string,
   agentSessionId: string,
 ): Promise<SandboxFile[]> {
-  const files = await listPiJsonlFiles(slug, workspaceId)
+  const files = await listPiJsonlFiles(projectId, workspaceId)
   return files.filter((f) => sessionIdFromPiLog(f.rel) === agentSessionId)
 }
 
@@ -280,23 +280,23 @@ export async function piSessionLogs(
  * filename is not derivable from any id, so only a recorded path finds it.
  */
 export async function sessionTranscriptPath(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
   tool: AgentTool,
   agentSessionId = workspaceId,
 ): Promise<SandboxFile | undefined> {
   if (tool === 'opencode' || tool === 'codex') return undefined
   if (tool === 'pi') {
-    const logs = await piSessionLogs(projectSlug, workspaceId, agentSessionId)
+    const logs = await piSessionLogs(projectId, workspaceId, agentSessionId)
     return logs[logs.length - 1]
   }
-  return findClaudeTranscript(projectSlug, workspaceId, agentSessionId)
+  return findClaudeTranscript(projectId, workspaceId, agentSessionId)
 }
 
 /** When the agent last appended to a transcript (or conversation record),
  *  or undefined if it is gone. */
 export async function transcriptLastActiveMs(file: SandboxFile): Promise<number | undefined> {
-  const root = await openSandboxDir(file.slug, file.dir).catch(() => null)
+  const root = await openSandboxDir(file.projectId, file.dir).catch(() => null)
   const st = await root?.stat(file.rel)
   return st?.isFile() ? st.mtimeMs : undefined
 }
@@ -351,21 +351,21 @@ export const OPENCODE_DB_NAME = 'opencode.db'
  * was planted, and following one could hand out a sibling's checkout.
  */
 export async function conversationFiles(
-  slug: string,
+  projectId: string,
   workspaceId: string,
   sessions: ConversationRef[],
 ): Promise<Map<string, ConversationFile[]>> {
-  const rollouts = sessions.some((s) => s.tool === 'codex') ? await codexRollouts(slug, workspaceId) : []
-  const opencode = sessions.some((s) => s.tool === 'opencode') ? await opencodeDatabase(slug, workspaceId) : undefined
+  const rollouts = sessions.some((s) => s.tool === 'codex') ? await codexRollouts(projectId, workspaceId) : []
+  const opencode = sessions.some((s) => s.tool === 'opencode') ? await opencodeDatabase(projectId, workspaceId) : undefined
   const out = new Map<string, ConversationFile[]>()
   for (const s of sessions) {
-    const files: Candidate[] = s.tool === 'claude' ? await claudeFiles(slug, workspaceId, s)
+    const files: Candidate[] = s.tool === 'claude' ? await claudeFiles(projectId, workspaceId, s)
       : s.tool === 'codex' ? codexFiles(s.agentSessionId, rollouts)
-      : s.tool === 'pi' ? (await piSessionLogs(slug, workspaceId, s.agentSessionId))
+      : s.tool === 'pi' ? (await piSessionLogs(projectId, workspaceId, s.agentSessionId))
         .map((file) => ({ name: path.basename(file.rel), file }))
       : opencode !== undefined ? [{ name: OPENCODE_DB_NAME, file: opencode, sqlite: true }]
       : []
-    const record = s.mode === 'acp' ? acpRecord({ slug, workspaceId, agentSessionId: s.agentSessionId }) : undefined
+    const record = s.mode === 'acp' ? acpRecord({ projectId, workspaceId, agentSessionId: s.agentSessionId }) : undefined
     if (record !== undefined) files.push({ name: ACP_RECORD_NAME, file: record })
     out.set(s.agentSessionId, (await Promise.all(files.map(async (f) => {
       const st = await (await openRoot(f.file.dir, 'no-links').catch(() => null))?.stat(f.file.rel)
@@ -375,12 +375,12 @@ export async function conversationFiles(
   return out
 }
 
-async function claudeFiles(slug: string, workspaceId: string, s: ConversationRef): Promise<Candidate[]> {
+async function claudeFiles(projectId: string, workspaceId: string, s: ConversationRef): Promise<Candidate[]> {
   const recorded = s.transcriptPath === undefined ? undefined
-    : resolveProjectPath(slug, workspaceId, 'claude', s.transcriptPath)
+    : resolveProjectPath(projectId, workspaceId, 'claude', s.transcriptPath)
   const main = recorded !== undefined && await transcriptLastActiveMs(recorded) !== undefined
     ? recorded
-    : await findClaudeTranscript(slug, workspaceId, s.agentSessionId)
+    : await findClaudeTranscript(projectId, workspaceId, s.agentSessionId)
   if (main === undefined) return []
   const companion = main.rel.replace(/\.jsonl$/, '')
   const root = await openRoot(main.dir, 'no-links').catch(() => null)
@@ -398,7 +398,7 @@ async function claudeFiles(slug: string, workspaceId: string, s: ConversationRef
   const name = path.basename(companion)
   return [
     { name: path.basename(main.rel), file: main },
-    ...below.sort().map((rel) => ({ name: `${name}/${rel.slice(companion.length + 1)}`, file: { slug, dir: main.dir, rel } })),
+    ...below.sort().map((rel) => ({ name: `${name}/${rel.slice(companion.length + 1)}`, file: { projectId, dir: main.dir, rel } })),
   ]
 }
 
@@ -413,16 +413,16 @@ interface Rollout {
  * (a host's shared home links to the history's files, and links are not
  * listed).
  */
-async function codexRollouts(slug: string, workspaceId: string): Promise<Rollout[]> {
+async function codexRollouts(projectId: string, workspaceId: string): Promise<Rollout[]> {
   const found = new Map<string, SandboxFile>()
-  for (const { dir, sub } of transcriptRoots(slug, workspaceId, 'codex')) {
-    const home = await openSandboxDir(slug, dir).catch(() => null)
+  for (const { dir, sub } of transcriptRoots(projectId, workspaceId, 'codex')) {
+    const home = await openSandboxDir(projectId, dir).catch(() => null)
     if (home === null) continue
     const walk = async (rel: string, depth: number): Promise<void> => {
       for (const e of await home.readdir(rel)) {
         const child = under(rel, e.name)
         const thread = e.isFile() ? codexRolloutThreadId(e.name) : undefined
-        if (thread !== undefined && !found.has(thread)) found.set(thread, { slug, dir, rel: child })
+        if (thread !== undefined && !found.has(thread)) found.set(thread, { projectId, dir, rel: child })
         else if (e.isDirectory() && depth > 0) await walk(child, depth - 1)
       }
     }
@@ -461,11 +461,11 @@ function codexFiles(thread: string, rollouts: Rollout[]): Candidate[] {
  * pod refreshes every few minutes and at stop, under containerless the live
  * working copy.
  */
-async function opencodeDatabase(slug: string, workspaceId: string): Promise<SandboxFile | undefined> {
-  const dir = opencodeCheckpointDir(slug, workspaceId)
-  const root = await openSandboxDir(slug, dir).catch(() => null)
+async function opencodeDatabase(projectId: string, workspaceId: string): Promise<SandboxFile | undefined> {
+  const dir = opencodeCheckpointDir(projectId, workspaceId)
+  const root = await openSandboxDir(projectId, dir).catch(() => null)
   const db = (await root?.readdir(''))?.find((e) => e.isFile() && e.name.endsWith('.db') && !e.name.startsWith('.'))
-  return db === undefined ? undefined : { slug, dir, rel: db.name }
+  return db === undefined ? undefined : { projectId, dir, rel: db.name }
 }
 
 /**

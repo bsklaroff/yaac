@@ -38,24 +38,21 @@ export const shortcutOverrides = snakeCase.table('shortcut_overrides', {
 })
 
 /**
- * Every project yaac has cloned, one row per slug. The clone, config and tool
- * homes live on the substrate; these rows let the server list projects,
- * refuse duplicates and 404 unknown slugs without reaching it
- * (docs/layered-server.md).
+ * Every project yaac has cloned, keyed by an immutable id that is never
+ * reused. The id names the project everywhere: its rows, its data dir, and
+ * its objects on the substrate, so a project removed and added again can't
+ * inherit an old one's leftovers. The clone, config and tool homes live on
+ * the substrate; these rows let the server list projects and 404 unknown
+ * ids without reaching it (docs/layered-server.md).
  *
  * `addedAt` is text because it is passed to clients verbatim as an ISO
  * string.
  */
 export const projects = snakeCase.table('projects', {
-  slug: text().primaryKey(),
-  /**
-   * Immutable id, never reused, that names the project's objects on the
-   * substrate (push registry, registry repos, node-local tree). A project
-   * re-added under a freed slug can't inherit an old project's leftovers.
-   * The slug stays the key for rows and the data dir, which are removed
-   * reliably.
-   */
-  id: uuid().notNull().unique().defaultRandom(),
+  id: uuid().primaryKey().defaultRandom(),
+  /** Display name derived from the repo path (`projectNameFor`). Not
+   *  unique: the same remote can be added twice. */
+  name: text().notNull(),
   remoteUrl: text().notNull(),
   addedAt: text().notNull(),
   /**
@@ -94,12 +91,12 @@ export const projects = snakeCase.table('projects', {
  */
 export const projectToolDefaults = snakeCase.table('project_tool_defaults', {
   id: uuid().primaryKey().defaultRandom(),
-  projectSlug: text().notNull(),
+  projectId: uuid().notNull(),
   tool: text().$type<AgentTool>().notNull(),
   model: text(),
   permissionMode: text().$type<PermissionMode>(),
   mode: text().$type<AgentMode>(),
-}, (t) => [uniqueIndex().on(t.projectSlug, t.tool)])
+}, (t) => [uniqueIndex().on(t.projectId, t.tool)])
 
 /**
  * Every workspace yaac has created (see workspace-store.ts). The runtime is
@@ -116,7 +113,7 @@ export const projectToolDefaults = snakeCase.table('project_tool_defaults', {
  * user viewed that detail (the "Stopped workspaces" dot).
  */
 export const workspaces = snakeCase.table('workspaces', {
-  projectSlug: text().notNull(),
+  projectId: uuid().notNull(),
   /** Unique across projects: provisioning, runtime registries, the proxy and
    *  the relay are keyed on the id alone, so a duplicate would mix two
    *  workspaces' egress rules and traffic. */
@@ -182,7 +179,7 @@ export const workspaces = snakeCase.table('workspaces', {
    * outlives the server process; a workspace restart gets a new one.
    */
   mamaTokenHash: text(),
-}, (t) => [index().on(t.projectSlug)])
+}, (t) => [index().on(t.projectId)])
 
 /**
  * A named sidebar group, one row per (project, group id); membership is
@@ -196,13 +193,13 @@ export const workspaces = snakeCase.table('workspaces', {
  * No foreign keys; group-store.ts maintains integrity.
  */
 export const workspaceGroups = snakeCase.table('workspace_groups', {
-  projectSlug: text().notNull(),
+  projectId: uuid().notNull(),
   groupId: text().notNull(),
   name: text().notNull(),
   /** Keep the group listed even with no live workspace in it. */
   pinned: boolean().notNull().default(false),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
-}, (t) => [primaryKey({ columns: [t.projectSlug, t.groupId] })])
+}, (t) => [primaryKey({ columns: [t.projectId, t.groupId] })])
 
 /**
  * One row per agent conversation, keyed by the tool's own session id. A
@@ -219,7 +216,7 @@ export const workspaceGroups = snakeCase.table('workspace_groups', {
  * and once a transcript is removed.
  */
 export const agentSessions = snakeCase.table('agent_sessions', {
-  projectSlug: text().notNull(),
+  projectId: uuid().notNull(),
   tool: text().$type<AgentTool>().notNull(),
   agentSessionId: text().notNull(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
@@ -247,7 +244,7 @@ export const agentSessions = snakeCase.table('agent_sessions', {
    * docs/workspace-storage.md for when each tool reports).
    */
   model: text(),
-}, (t) => [primaryKey({ columns: [t.projectSlug, t.tool, t.agentSessionId] })])
+}, (t) => [primaryKey({ columns: [t.projectId, t.tool, t.agentSessionId] })])
 
 /**
  * Which agent sessions belong to which workspace (many-to-many: a
@@ -260,7 +257,7 @@ export const agentSessions = snakeCase.table('agent_sessions', {
  * is where it was last seen.
  */
 export const workspaceAgentSessions = snakeCase.table('workspace_agent_sessions', {
-  projectSlug: text().notNull(),
+  projectId: uuid().notNull(),
   workspaceId: text().notNull(),
   tool: text().$type<AgentTool>().notNull(),
   agentSessionId: text().notNull(),
@@ -270,7 +267,7 @@ export const workspaceAgentSessions = snakeCase.table('workspace_agent_sessions'
   firstSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   lastSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 }, (t) => [primaryKey({
-  columns: [t.projectSlug, t.workspaceId, t.tool, t.agentSessionId],
+  columns: [t.projectId, t.workspaceId, t.tool, t.agentSessionId],
 })])
 
 /**
@@ -288,7 +285,7 @@ export const workspaceAgentSessions = snakeCase.table('workspace_agent_sessions'
  */
 export const projectEnvVars = snakeCase.table('project_env_vars', {
   id: uuid().primaryKey().defaultRandom(),
-  projectSlug: text().notNull(),
+  projectId: uuid().notNull(),
   name: text().notNull(),
   /** Plain variables only; null for a secret. */
   value: text(),
@@ -305,7 +302,7 @@ export const projectEnvVars = snakeCase.table('project_env_vars', {
   rule: jsonb(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
-}, (t) => [uniqueIndex().on(t.projectSlug, t.name)])
+}, (t) => [uniqueIndex().on(t.projectId, t.name)])
 
 /**
  * Named git credentials: an HTTPS token the user pasted, or an SSH key the
@@ -338,7 +335,7 @@ export const gitCredentials = snakeCase.table('git_credentials', {
  */
 export const queuedWorkspaces = snakeCase.table('queued_workspaces', {
   id: uuid().primaryKey().defaultRandom(),
-  projectSlug: text().notNull(),
+  projectId: uuid().notNull(),
   /** Exactly one is set: the workspace this entry waits on, or the entry it
    *  is chained after. Claiming a parent entry's launch re-points its
    *  children at the launching workspace. */
@@ -374,7 +371,7 @@ export const queuedWorkspaces = snakeCase.table('queued_workspaces', {
    *  Deleted with that workspace's row. */
   launchedWorkspaceId: text().references(() => workspaces.workspaceId, { onDelete: 'cascade' }),
 }, (t) => [
-  index().on(t.projectSlug, t.parentWorkspaceId),
+  index().on(t.projectId, t.parentWorkspaceId),
   index().on(t.parentQueuedId),
 ])
 
@@ -386,7 +383,7 @@ export const queuedWorkspaces = snakeCase.table('queued_workspaces', {
  */
 export const draftWorkspaces = snakeCase.table('draft_workspaces', {
   id: uuid().primaryKey().defaultRandom(),
-  projectSlug: text().notNull(),
+  projectId: uuid().notNull(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   prompt: text().notNull(),
@@ -408,4 +405,4 @@ export const draftWorkspaces = snakeCase.table('draft_workspaces', {
   startAfter: text(),
   /** The dialog's Group field; cleared when the group is deleted. */
   groupId: text(),
-}, (t) => [index().on(t.projectSlug)])
+}, (t) => [index().on(t.projectId)])

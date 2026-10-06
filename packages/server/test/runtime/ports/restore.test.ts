@@ -13,7 +13,7 @@ import { handleFixture, installFakeWorkspaceDriver } from '@yaac/test-utils/fake
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
 
 const mockTmuxAlive = vi.mocked(isTmuxSessionAlive)
-const projectConfig = vi.fn<(slug: string) => Promise<YaacConfig | undefined>>()
+const projectConfig = vi.fn<(projectId: string) => Promise<YaacConfig | undefined>>()
 
 const list = vi.fn<WorkspaceDriver['list']>()
 const forwardedPorts = vi.fn<WorkspaceDriver['forwardedPorts']>()
@@ -25,7 +25,7 @@ function workspace(overrides: Partial<RuntimeHandle> = {}): RuntimeHandle {
   return handleFixture({
     jobName: 'yaac-proj-sess',
     workspaceId: 'sess-1',
-    projectSlug: 'proj',
+    projectId: 'proj',
     ...overrides,
   })
 }
@@ -87,14 +87,14 @@ describe('restoreAllWorkspaceForwarders', () => {
     await restoreAllWorkspaceForwarders(projectConfig)
 
     expect(declared).toEqual([])
-    expect(statusRightFor('yaac-proj-sess')).toContain("status-right ' proj sess-1 '")
+    expect(statusRightFor('yaac-proj-sess')).toContain("status-right ' sess-1 '")
   })
 
   it('skips a workspace that is not running, or is missing its identity', async () => {
     list.mockResolvedValue([
       workspace({ running: false, state: 'failed' }),
       workspace({ workspaceId: '' }),
-      workspace({ projectSlug: '' }),
+      workspace({ projectId: '' }),
       workspace({ jobName: '' }),
     ])
     await restoreAllWorkspaceForwarders(projectConfig)

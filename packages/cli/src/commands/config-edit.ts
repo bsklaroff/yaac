@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { api } from '#commands/api'
+import { api, resolveProjectId } from '#commands/api'
 import { editFile } from '#commands/edit-file'
 
 /**
@@ -47,13 +47,14 @@ function failKeepingEdits(err: unknown, edit: ScratchEdit): void {
  * the raw file, so malformed content can be repaired; the save is validated
  * by the server. Emptying the buffer clears the config.
  */
-export async function configEditProject(slug: string): Promise<void> {
-  const { content } = await api.project[':slug'].config.raw.$get({ param: { slug } })
+export async function configEditProject(project: string): Promise<void> {
+  const projectId = await resolveProjectId(project)
+  const { content } = await api.project[':projectId'].config.raw.$get({ param: { projectId } })
   const edit = await editInScratch('yaac-config.json', content)
   if (!edit) return
 
   if (edit.text.trim() === '') {
-    await api.project[':slug'].config.$delete({ param: { slug } })
+    await api.project[':projectId'].config.$delete({ param: { projectId } })
     await discardScratch(edit)
     console.log('Cleared project config — defaults apply.')
     return
@@ -70,7 +71,7 @@ export async function configEditProject(slug: string): Promise<void> {
     return
   }
   try {
-    await api.project[':slug'].config.$put({ param: { slug }, json: { config: parsed } })
+    await api.project[':projectId'].config.$put({ param: { projectId }, json: { config: parsed } })
   } catch (err) {
     failKeepingEdits(err, edit)
     return
@@ -80,14 +81,15 @@ export async function configEditProject(slug: string): Promise<void> {
 }
 
 /** `yaac config edit-dockerfile <project>`: the project's Dockerfile.yaac. */
-export async function configEditDockerfile(slug: string): Promise<void> {
-  const { content } = await api.project[':slug'].dockerfile.$get({ param: { slug } })
+export async function configEditDockerfile(project: string): Promise<void> {
+  const projectId = await resolveProjectId(project)
+  const { content } = await api.project[':projectId'].dockerfile.$get({ param: { projectId } })
   const edit = await editInScratch('Dockerfile.yaac', content)
   if (!edit) return
 
   try {
-    await api.project[':slug'].dockerfile.$put({
-      param: { slug },
+    await api.project[':projectId'].dockerfile.$put({
+      param: { projectId },
       json: { content: edit.text },
     })
   } catch (err) {

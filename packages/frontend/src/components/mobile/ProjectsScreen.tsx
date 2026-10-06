@@ -13,17 +13,17 @@ import type { ProjectSummary } from '@yaac/shared/types'
  */
 export function ProjectsScreen({
   projects,
-  activeProjectSlug,
-  attentionBySlug,
+  activeProjectId,
+  attentionByProject,
   connected,
   onSelect,
 }: {
   projects: ProjectSummary[]
-  activeProjectSlug: string | null
+  activeProjectId: string | null
   /** Per-project count of workspaces waiting and not yet looked at. */
-  attentionBySlug: Record<string, number>
+  attentionByProject: Record<string, number>
   connected: boolean
-  onSelect: (slug: string) => void
+  onSelect: (projectId: string) => void
 }): JSX.Element {
   return (
     <>
@@ -44,12 +44,12 @@ export function ProjectsScreen({
           />
         )}
         {projects.map((p) => {
-          const color = projectColor(p.slug)
-          const waiting = attentionBySlug[p.slug] ?? 0
+          const color = projectColor(p.id)
+          const waiting = attentionByProject[p.id] ?? 0
           return (
             <button
-              key={p.slug}
-              onClick={() => onSelect(p.slug)}
+              key={p.id}
+              onClick={() => onSelect(p.id)}
               className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition
                 active:bg-surface-2"
             >
@@ -61,9 +61,9 @@ export function ProjectsScreen({
                   color: `color-mix(in oklab, ${color} 42%, var(--color-text))`,
                 }}
               >
-                {projectInitial(p.slug)}
+                {projectInitial(p.name)}
               </span>
-              <span className="min-w-0 flex-1 truncate text-sm font-medium text-text">{p.slug}</span>
+              <span className="min-w-0 flex-1 truncate text-sm font-medium text-text">{p.name}</span>
               {waiting > 0 && (
                 <span
                   title={`${waiting} workspace${waiting > 1 ? 's' : ''} waiting for input`}
@@ -74,7 +74,7 @@ export function ProjectsScreen({
                 </span>
               )}
               {/* Marks the active project. */}
-              {p.slug === activeProjectSlug && waiting === 0 && (
+              {p.id === activeProjectId && waiting === 0 && (
                 <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-text-faint" aria-hidden />
               )}
               <ChevronIcon size={16} className="shrink-0 text-text-faint" />

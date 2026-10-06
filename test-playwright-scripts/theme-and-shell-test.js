@@ -76,7 +76,7 @@ try {
   // 5. Changes pane.
   const [ws] = (await api('/workspace/list')).workspaces
   if (ws) {
-    await page.goto(`${origin}/?project=${ws.projectSlug}&workspace=${ws.workspaceId}`)
+    await page.goto(`${origin}/?project=${ws.projectId}&workspace=${ws.workspaceId}`)
     await page.getByRole('button', { name: 'Review changes' }).click()
     const shown = await page.getByText(/^(No changes yet|Nothing uncommitted)$/).or(page.locator('.group\\/row'))
       .first().waitFor({ timeout: 15_000 }).then(() => true, () => false)

@@ -19,13 +19,13 @@
  * Creates no workspace. Drafts it saves are discarded by the end; if a check
  * fails midway, discard leftovers from the sidebar.
  *
- * Run: YAAC_DATA_DIR=<data dir> PROJECT=<slug> node test-playwright-scripts/draft-workspaces-ui-test.js
+ * Run: YAAC_DATA_DIR=<data dir> PROJECT=<name or id> node test-playwright-scripts/draft-workspaces-ui-test.js
  */
 import path from 'node:path'
-import { check, finish, origin, requirePlaywright, SHOTS } from './lib.js'
+import { check, finish, origin, requirePlaywright, SHOTS, resolveProject } from './lib.js'
 
-const PROJECT = process.env.PROJECT
-if (!PROJECT) throw new Error('set PROJECT=<slug>')
+if (!process.env.PROJECT) throw new Error('set PROJECT=<name or id>')
+const PROJECT = (await resolveProject(process.env.PROJECT)).id
 const stamp = Date.now()
 const idea = `pw draft ${stamp}`
 

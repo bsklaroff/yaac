@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest'
+import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
 import fs from 'node:fs/promises'
 import { eq } from 'drizzle-orm'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
@@ -12,6 +13,8 @@ import {
 } from '#db'
 import { forgetSecretConfig } from '#db/secret-key'
 import { secretKeyPath } from '@yaac/shared/project-paths'
+
+const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
 
 /**
  * The env rows, and with them the encryption every secret this server stores
@@ -57,19 +60,19 @@ const RULE = { hosts: ['api.example.com'], header: 'x-api-key' }
 
 describe('listProjectEnvVars', () => {
   it('is empty for a project with nothing set, and scoped to one project', async () => {
-    expect(await listProjectEnvVars('demo')).toEqual([])
+    expect(await listProjectEnvVars(DEMO_PROJECT_ID)).toEqual([])
 
-    await upsertProjectEnvVar('demo', { name: 'MINE', value: 'a', secret: false })
-    await upsertProjectEnvVar('other', { name: 'THEIRS', value: 'b', secret: false })
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'MINE', value: 'a', secret: false })
+    await upsertProjectEnvVar(OTHER, { name: 'THEIRS', value: 'b', secret: false })
 
-    expect((await listProjectEnvVars('demo')).map((r) => r.name)).toEqual(['MINE'])
+    expect((await listProjectEnvVars(DEMO_PROJECT_ID)).map((r) => r.name)).toEqual(['MINE'])
   })
 
   it('returns rows in name order, with a secret opened for the caller', async () => {
-    await upsertProjectEnvVar('demo', { name: 'ZED', value: 'z', secret: false })
-    await upsertProjectEnvVar('demo', { name: 'ALPHA', value: 'sekrit', secret: true, rule: RULE })
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'ZED', value: 'z', secret: false })
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'ALPHA', value: 'sekrit', secret: true, rule: RULE })
 
-    expect(await listProjectEnvVars('demo')).toMatchObject([
+    expect(await listProjectEnvVars(DEMO_PROJECT_ID)).toMatchObject([
       { name: 'ALPHA', value: 'sekrit', secret: true, rule: RULE, unreadable: false },
       { name: 'ZED', value: 'z', secret: false, unreadable: false },
     ])
@@ -79,11 +82,11 @@ describe('listProjectEnvVars', () => {
     // A key file replaced or lost: the row is still listed, so the settings
     // page can say which secret needs re-entering, and resolves to nothing,
     // so a workspace launches without it rather than with an empty header.
-    await upsertProjectEnvVar('demo', { name: 'SECRET', value: 'sekrit', secret: true, rule: RULE })
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'SECRET', value: 'sekrit', secret: true, rule: RULE })
     await fs.writeFile(secretKeyPath(), 'a-completely-different-key\n', { mode: 0o600 })
     forgetSecretConfig()
 
-    expect(await listProjectEnvVars('demo')).toMatchObject([
+    expect(await listProjectEnvVars(DEMO_PROJECT_ID)).toMatchObject([
       { name: 'SECRET', value: undefined, unreadable: true },
     ])
   })
@@ -91,7 +94,7 @@ describe('listProjectEnvVars', () => {
 
 describe('upsertProjectEnvVar', () => {
   it('stores a plain value as it is, in the clear', async () => {
-    await upsertProjectEnvVar('demo', { name: 'NODE_ENV', value: 'development', secret: false })
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'NODE_ENV', value: 'development', secret: false })
 
     const row = await storedRow('NODE_ENV')
     expect(row.value).toBe('development')
@@ -99,7 +102,7 @@ describe('upsertProjectEnvVar', () => {
   })
 
   it('seals a secret, so the column is not the secret', async () => {
-    await upsertProjectEnvVar('demo', { name: 'API_KEY', value: 'sekrit', secret: true, rule: RULE })
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'API_KEY', value: 'sekrit', secret: true, rule: RULE })
 
     const row = await storedRow('API_KEY')
     expect(row.value).toBeNull()
@@ -108,23 +111,23 @@ describe('upsertProjectEnvVar', () => {
     // The envelope the scheme writes: a version, so a key can be rotated
     // without re-encrypting anything, and hex after it.
     expect(row.sealedValue).toMatch(/^\$ba\$0\$[0-9a-f]+$/)
-    expect((await listProjectEnvVars('demo'))[0].value).toBe('sekrit')
+    expect((await listProjectEnvVars(DEMO_PROJECT_ID))[0].value).toBe('sekrit')
   })
 
   it('gives the same secret a different ciphertext every time', async () => {
     // A fresh nonce per encryption, so equal values are not visibly equal in
     // the database.
-    await upsertProjectEnvVar('demo', { name: 'A', value: 'same', secret: true, rule: RULE })
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'A', value: 'same', secret: true, rule: RULE })
     const first = (await storedRow('A')).sealedValue
-    await upsertProjectEnvVar('demo', { name: 'A', value: 'same', secret: true, rule: RULE })
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'A', value: 'same', secret: true, rule: RULE })
     expect((await storedRow('A')).sealedValue).not.toBe(first)
   })
 
   it('replaces by (project, name) rather than accumulating', async () => {
-    const first = await upsertProjectEnvVar('demo', { name: 'A', value: '1', secret: false })
-    const second = await upsertProjectEnvVar('demo', { name: 'A', value: '2', secret: false })
+    const first = await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'A', value: '1', secret: false })
+    const second = await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'A', value: '2', secret: false })
 
-    expect(await listProjectEnvVars('demo')).toHaveLength(1)
+    expect(await listProjectEnvVars(DEMO_PROJECT_ID)).toHaveLength(1)
     expect(second.value).toBe('2')
     // The row keeps its identity across the edit — the id is what a client
     // addresses it by.
@@ -132,22 +135,22 @@ describe('upsertProjectEnvVar', () => {
   })
 
   it('keeps the stored secret when a rule is edited with no new value', async () => {
-    await upsertProjectEnvVar('demo', { name: 'A', value: 'sekrit', secret: true, rule: RULE })
-    await upsertProjectEnvVar('demo', {
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'A', value: 'sekrit', secret: true, rule: RULE })
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, {
       name: 'A',
       secret: true,
       rule: { hosts: ['other.example.com'], bodyParam: 'client_secret' },
     })
 
-    expect(await listProjectEnvVars('demo')).toMatchObject([{
+    expect(await listProjectEnvVars(DEMO_PROJECT_ID)).toMatchObject([{
       value: 'sekrit',
       rule: { hosts: ['other.example.com'], bodyParam: 'client_secret' },
     }])
   })
 
   it('leaves no plaintext behind when a plain variable becomes a secret', async () => {
-    await upsertProjectEnvVar('demo', { name: 'A', value: 'was-plain', secret: false })
-    await upsertProjectEnvVar('demo', { name: 'A', value: 'now-secret', secret: true, rule: RULE })
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'A', value: 'was-plain', secret: false })
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'A', value: 'now-secret', secret: true, rule: RULE })
 
     const row = await storedRow('A')
     expect(row.value).toBeNull()
@@ -158,42 +161,42 @@ describe('upsertProjectEnvVar', () => {
     // Rotation is a restart, not a re-encrypt pass: state the new key first
     // and keep the old one, and every existing row goes on opening under the
     // version its envelope names.
-    await upsertProjectEnvVar('demo', { name: 'A', value: 'old-days', secret: true, rule: RULE })
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'A', value: 'old-days', secret: true, rule: RULE })
     const original = await fs.readFile(secretKeyPath(), 'utf8')
 
     vi.stubEnv('YAAC_SECRETS', `2:a-new-key-of-adequate-length-here,0:${original.trim()}`)
     forgetSecretConfig()
 
-    expect((await listProjectEnvVars('demo'))[0].value).toBe('old-days')
+    expect((await listProjectEnvVars(DEMO_PROJECT_ID))[0].value).toBe('old-days')
     // A write after the rotation takes the new version.
-    await upsertProjectEnvVar('demo', { name: 'B', value: 'new-days', secret: true, rule: RULE })
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'B', value: 'new-days', secret: true, rule: RULE })
     expect((await storedRow('B')).sealedValue).toMatch(/^\$ba\$2\$/)
-    expect((await listProjectEnvVars('demo')).map((r) => r.value)).toEqual(['old-days', 'new-days'])
+    expect((await listProjectEnvVars(DEMO_PROJECT_ID)).map((r) => r.value)).toEqual(['old-days', 'new-days'])
   })
 })
 
 describe('deleteProjectEnvVar', () => {
   it('removes by id, and refuses an id belonging to another project', async () => {
-    const mine = await upsertProjectEnvVar('demo', { name: 'A', value: '1', secret: false })
-    const theirs = await upsertProjectEnvVar('other', { name: 'B', value: '2', secret: false })
+    const mine = await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'A', value: '1', secret: false })
+    const theirs = await upsertProjectEnvVar(OTHER, { name: 'B', value: '2', secret: false })
 
-    expect(await deleteProjectEnvVar('demo', theirs.id)).toBe(false)
-    expect(await listProjectEnvVars('other')).toHaveLength(1)
+    expect(await deleteProjectEnvVar(DEMO_PROJECT_ID, theirs.id)).toBe(false)
+    expect(await listProjectEnvVars(OTHER)).toHaveLength(1)
 
-    expect(await deleteProjectEnvVar('demo', mine.id)).toBe(true)
-    expect(await listProjectEnvVars('demo')).toEqual([])
+    expect(await deleteProjectEnvVar(DEMO_PROJECT_ID, mine.id)).toBe(true)
+    expect(await listProjectEnvVars(DEMO_PROJECT_ID)).toEqual([])
   })
 })
 
 describe('deleteProjectEnvVars', () => {
   it('takes one project’s environment with it, and leaves the rest', async () => {
-    await upsertProjectEnvVar('demo', { name: 'A', value: '1', secret: false })
-    await upsertProjectEnvVar('demo', { name: 'B', value: 'sekrit', secret: true, rule: RULE })
-    await upsertProjectEnvVar('other', { name: 'C', value: '3', secret: false })
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'A', value: '1', secret: false })
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'B', value: 'sekrit', secret: true, rule: RULE })
+    await upsertProjectEnvVar(OTHER, { name: 'C', value: '3', secret: false })
 
-    await deleteProjectEnvVars('demo')
+    await deleteProjectEnvVars(DEMO_PROJECT_ID)
 
-    expect(await listProjectEnvVars('demo')).toEqual([])
-    expect(await listProjectEnvVars('other')).toHaveLength(1)
+    expect(await listProjectEnvVars(DEMO_PROJECT_ID)).toEqual([])
+    expect(await listProjectEnvVars(OTHER)).toHaveLength(1)
   })
 })

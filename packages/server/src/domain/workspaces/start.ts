@@ -9,7 +9,7 @@ import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 
 /** A request to start a workspace. */
 export interface StartWorkspaceRequest {
-  projectSlug: string
+  projectId: string
   /** The provisioning row's id, and the workspace's unless a spare is
    *  claimed. */
   workspaceId: string
@@ -48,8 +48,8 @@ export async function startWorkspace(
   request: StartWorkspaceRequest,
   onProgress: (message: string) => void,
 ): Promise<WorkspaceCreateResult> {
-  const { projectSlug, workspaceId, groupId, prompt, title, branch } = request
-  const setup = await resolveCreate(projectSlug, {
+  const { projectId, workspaceId, groupId, prompt, title, branch } = request
+  const setup = await resolveCreate(projectId, {
     ...(request.tool !== undefined ? { tool: request.tool } : {}),
     ...(request.model !== undefined ? { model: request.model } : {}),
     ...(request.permissionMode !== undefined ? { permissionMode: request.permissionMode } : {}),
@@ -58,7 +58,7 @@ export async function startWorkspace(
   const { tool } = setup
   if (request.rememberDefaults) {
     // Only the named fields, so a resolved default never overwrites a pick.
-    await recordProjectCreate(projectSlug, tool, {
+    await recordProjectCreate(projectId, tool, {
       ...(request.model !== undefined ? { model: request.model } : {}),
       ...(request.permissionMode !== undefined ? { permissionMode: request.permissionMode } : {}),
       ...(request.mode !== undefined ? { mode: request.mode } : {}),
@@ -69,7 +69,7 @@ export async function startWorkspace(
   const modelName = setup.model !== undefined ? modelDisplayName(tool, setup.model) : undefined
   ensureProvisioning({
     workspaceId,
-    projectSlug,
+    projectId,
     tool,
     kind: 'create',
     ...(groupId !== undefined ? { groupId } : {}),
@@ -82,7 +82,7 @@ export async function startWorkspace(
   try {
     throwIfProvisionStopped(workspaceId)
     if (request.claimSpare) {
-      const claimed = await tryClaimPrewarmed(projectSlug, workspaceId, setup, onProgress, {
+      const claimed = await tryClaimPrewarmed(projectId, workspaceId, setup, onProgress, {
         ...(branch !== undefined ? { branch } : {}),
         ...(prompt !== undefined ? { prompt } : {}),
         ...(title !== undefined ? { title } : {}),
@@ -91,7 +91,7 @@ export async function startWorkspace(
       if (claimed) return claimed
     }
 
-    return await createWorkspace(projectSlug, {
+    return await createWorkspace(projectId, {
       workspaceId,
       onProgress,
       tool,
@@ -121,9 +121,9 @@ export async function startWorkspace(
     }
     // The draft may have been discarded meanwhile; then save a new one.
     await (draftOnStop.id === undefined
-      ? saveDraftWorkspace(projectSlug, settings)
-      : saveDraftWorkspace(projectSlug, settings, draftOnStop.id)
-        .catch(() => saveDraftWorkspace(projectSlug, settings)))
+      ? saveDraftWorkspace(projectId, settings)
+      : saveDraftWorkspace(projectId, settings, draftOnStop.id)
+        .catch(() => saveDraftWorkspace(projectId, settings)))
     throw new ServerError('CONFLICT', 'stopped before its agent started; its prompt is kept as a draft')
   }
 }

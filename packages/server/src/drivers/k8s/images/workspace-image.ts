@@ -1,7 +1,6 @@
 import { ensureImage } from './build-coordinator'
 import { registryRef } from '#drivers/k8s/container'
 import { testEnv } from '@yaac/shared/env'
-import type { ProjectRef } from '#drivers/contract'
 
 /**
  * Build (or reuse) a project's workspace image and return the registry ref
@@ -10,7 +9,7 @@ import type { ProjectRef } from '#drivers/contract'
  * from the environment here, so callers need not know about them.
  */
 export async function prepareWorkspaceImage(opts: {
-  project: ProjectRef
+  projectId: string
   nestedContainers: boolean
   onProgress?: (message: string) => void
 }): Promise<string> {
@@ -18,7 +17,7 @@ export async function prepareWorkspaceImage(opts: {
 
   emit('Ensuring container images are built...')
   return registryRef(await ensureImage(
-    opts.project,
+    opts.projectId,
     testEnv.imagePrefix,
     testEnv.requirePrebuiltImages,
     opts.nestedContainers,

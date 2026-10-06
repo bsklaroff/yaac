@@ -40,10 +40,10 @@ export async function findWorkspace(
  * snapshot).
  */
 export async function listWorkspaces(
-  projectSlug?: string,
+  projectId?: string,
   opts: { preferCache?: boolean } = {},
 ): Promise<RuntimeHandle[]> {
-  const pods = opts.preferCache ? await readPods(projectSlug) : await listPods(projectSlug)
+  const pods = opts.preferCache ? await readPods(projectId) : await listPods(projectId)
   return pods.map(runtimeHandleFromPod)
 }
 
@@ -60,7 +60,7 @@ export async function findWorkspaceForTeardown(
   const pods = await listPods()
   const pod = findWorkspacePod(pods, workspaceId, opts)
   if (pod) {
-    return { projectSlug: pod.projectSlug, workspaceId: pod.workspaceId, unitName: pod.jobName }
+    return { projectId: pod.projectId, workspaceId: pod.workspaceId, unitName: pod.jobName }
   }
 
   // The pod exists but was skipped as a spare; don't match its Job instead.
@@ -68,7 +68,7 @@ export async function findWorkspaceForTeardown(
 
   const job = (await unavailableOnFailure(listWorkspaceJobs())).find((j) => j.workspaceId === workspaceId)
   return job
-    ? { projectSlug: job.projectSlug, workspaceId: job.workspaceId, unitName: job.jobName }
+    ? { projectId: job.projectId, workspaceId: job.workspaceId, unitName: job.jobName }
     : undefined
 }
 
@@ -82,7 +82,7 @@ export async function countWorkspaces(): Promise<Record<string, number>> {
   try {
     for (const p of await readWorkspacePods()) {
       if (isPrewarmed(p)) continue
-      if (p.projectSlug) counts[p.projectSlug] = (counts[p.projectSlug] ?? 0) + 1
+      if (p.projectId) counts[p.projectId] = (counts[p.projectId] ?? 0) + 1
     }
   } catch {
     // substrate not available — leave counts empty
@@ -100,10 +100,10 @@ async function unavailableOnFailure<T>(listing: Promise<T>): Promise<T> {
   }
 }
 
-function listPods(projectSlug?: string): Promise<PodInfo[]> {
-  return unavailableOnFailure(listWorkspacePods(projectSlug))
+function listPods(projectId?: string): Promise<PodInfo[]> {
+  return unavailableOnFailure(listWorkspacePods(projectId))
 }
 
-function readPods(projectSlug?: string): Promise<PodInfo[]> {
-  return unavailableOnFailure(readWorkspacePods(projectSlug))
+function readPods(projectId?: string): Promise<PodInfo[]> {
+  return unavailableOnFailure(readWorkspacePods(projectId))
 }

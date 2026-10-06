@@ -19,7 +19,7 @@ import type { StaleWorkspaceInfo } from '@yaac/shared/types'
  */
 const PODLESS_ROW_GRACE_MS = 30 * 60_000
 
-/** `<projectSlug>/<workspaceId>` → when the row was first seen with no pod.
+/** `<projectId>/<workspaceId>` → when the row was first seen with no pod.
  *  Cleared as soon as a pod appears. */
 const missingSince = new Map<string, number>()
 
@@ -66,13 +66,13 @@ export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<v
   // Past the grace window, reap only on a conclusive `placeholder` verdict.
   const placeholderStale: StaleWorkspaceInfo[] = []
   await Promise.all(running.map(async (p) => {
-    if (!p.projectSlug || !p.workspaceId) return
+    if (!p.projectId || !p.workspaceId) return
     if (provisioningIds.has(p.workspaceId)) return
     const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
     if (ageMs < graceMs) return
     if (await probeAgentPaneState(p) !== 'placeholder') return
     placeholderStale.push({
-      jobName: p.jobName, projectSlug: p.projectSlug, workspaceId: p.workspaceId, zombie: true,
+      jobName: p.jobName, projectId: p.projectId, workspaceId: p.workspaceId, zombie: true,
     })
   }))
 
@@ -80,7 +80,7 @@ export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<v
   // snapshot.
   // A failed read stops only this sweep: the workspaces already read are
   // still conclusive.
-  const orphanTargets: Array<{ jobName: string; projectSlug: string; workspaceId: string }> = []
+  const orphanTargets: Array<{ jobName: string; projectId: string; workspaceId: string }> = []
   const strays = await view.strayUnits().catch((err: unknown) => {
     serverLog(`[server] stale-reaper: skipping the orphan sweep: ${String(err)}`)
     return []
@@ -89,22 +89,22 @@ export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<v
     if (provisioningIds.has(u.workspaceId)) continue
     if (nowMs - u.createdAtMs < graceMs) continue
     orphanTargets.push({
-      jobName: u.unitName, projectSlug: u.projectSlug, workspaceId: u.workspaceId,
+      jobName: u.unitName, projectId: u.projectId, workspaceId: u.workspaceId,
     })
   }
 
   // Pods terminating past the grace window with no in-memory mark: an
   // external delete, or ours with the mark lost (server restart, TTL).
   // Re-issuing the idempotent teardown resumes either.
-  const stuckTerminating: Array<{ jobName: string; projectSlug: string; workspaceId: string }> = []
+  const stuckTerminating: Array<{ jobName: string; projectId: string; workspaceId: string }> = []
   for (const p of terminating) {
-    if (!p.terminating || !p.projectSlug || !p.workspaceId) continue
+    if (!p.terminating || !p.projectId || !p.workspaceId) continue
     if (isWorkspaceTerminating(p.workspaceId)) continue
     // A failed create leaves this shape while it tears its launch down.
     if (provisioningIds.has(p.workspaceId)) continue
     const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
     if (ageMs < graceMs) continue
-    stuckTerminating.push({ jobName: p.jobName, projectSlug: p.projectSlug, workspaceId: p.workspaceId })
+    stuckTerminating.push({ jobName: p.jobName, projectId: p.projectId, workspaceId: p.workspaceId })
   }
 
   // A row with a recorded stop means yaac issued the delete: resume it but
@@ -114,7 +114,7 @@ export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<v
   if (stuckTerminating.length > 0) {
     const recorded = new Set(desired.stopped)
     for (const t of stuckTerminating) {
-      if (recorded.has(`${t.projectSlug}/${t.workspaceId}`)) ourStuck.push(t)
+      if (recorded.has(`${t.projectId}/${t.workspaceId}`)) ourStuck.push(t)
       else externalStuck.push(t)
     }
   }
@@ -126,7 +126,7 @@ export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<v
   {
     const seen = new Set<string>()
     for (const row of desired.live) {
-      const rowKey = `${row.projectSlug}/${row.workspaceId}`
+      const rowKey = `${row.projectId}/${row.workspaceId}`
       seen.add(rowKey)
       if (livePodIds.has(row.workspaceId) || provisioningIds.has(row.workspaceId)) {
         missingSince.delete(rowKey)
@@ -149,7 +149,7 @@ export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<v
       )
       await applyWorkspaceEvent({
         type: 'workspace-stopped',
-        projectSlug: row.projectSlug,
+        projectId: row.projectId,
         workspaceId: row.workspaceId,
         cause,
       }).catch((err: unknown) => {
@@ -165,13 +165,13 @@ export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<v
   const targets = [
     ...stale.map((s) => ({
       jobName: s.jobName,
-      projectSlug: s.projectSlug,
+      projectId: s.projectId,
       workspaceId: s.workspaceId,
       cause: s.deathCause,
     })),
     ...placeholderStale.map((s) => ({
       jobName: s.jobName,
-      projectSlug: s.projectSlug,
+      projectId: s.projectId,
       workspaceId: s.workspaceId,
       cause: { reason: 'never-started' as const },
     })),

@@ -23,8 +23,8 @@ beforeEach(() => {
   notify.mockClear()
 })
 
-function register(id: string, over: Partial<{ projectSlug: string; tool: 'claude' | 'codex' | 'opencode'; kind: 'create' | 'restart'; message: string; model: string; modelName: string }> = {}): void {
-  registerProvisioning({ workspaceId: id, projectSlug: 'p', tool: 'claude', kind: 'create', ...over })
+function register(id: string, over: Partial<{ projectId: string; tool: 'claude' | 'codex' | 'opencode'; kind: 'create' | 'restart'; message: string; model: string; modelName: string }> = {}): void {
+  registerProvisioning({ workspaceId: id, projectId: 'p', tool: 'claude', kind: 'create', ...over })
 }
 
 /** Fail a registered entry the way a create does: its run rejects. */
@@ -38,7 +38,7 @@ describe('registerProvisioning', () => {
     register('a')
     const list = listProvisioning()
     expect(list).toHaveLength(1)
-    expect(list[0]).toMatchObject({ workspaceId: 'a', projectSlug: 'p', tool: 'claude', kind: 'create', message: 'Starting…' })
+    expect(list[0]).toMatchObject({ workspaceId: 'a', projectId: 'p', tool: 'claude', kind: 'create', message: 'Starting…' })
     expect(typeof list[0].createdAt).toBe('string')
     expect(notify).toHaveBeenCalledTimes(1)
     for (let i = 0; i < 60; i++) register(`s${i}`)
@@ -126,13 +126,13 @@ describe('runProvisioned', () => {
   // its error already reached the caller. A run that started leaves the usual
   // failed row.
   it('drops a reservation the run never took over, and fails one it did', async () => {
-    registerProvisioning({ workspaceId: 'a', projectSlug: 'p', tool: 'claude', kind: 'create', reserved: true })
+    registerProvisioning({ workspaceId: 'a', projectId: 'p', tool: 'claude', kind: 'create', reserved: true })
     await expect(runProvisioned('a', () => Promise.reject(new Error('no such group')))).rejects.toThrow()
     expect(listProvisioning()).toEqual([])
 
-    registerProvisioning({ workspaceId: 'b', projectSlug: 'p', tool: 'claude', kind: 'create', reserved: true })
+    registerProvisioning({ workspaceId: 'b', projectId: 'p', tool: 'claude', kind: 'create', reserved: true })
     await expect(runProvisioned('b', () => {
-      ensureProvisioning({ workspaceId: 'b', projectSlug: 'p', tool: 'codex', kind: 'create', model: 'gpt-6' })
+      ensureProvisioning({ workspaceId: 'b', projectId: 'p', tool: 'codex', kind: 'create', model: 'gpt-6' })
       return Promise.reject(new Error('image pull failed'))
     })).rejects.toThrow()
     expect(listProvisioning()).toEqual([
@@ -179,8 +179,8 @@ describe('listProvisioning', () => {
 
 describe('inFlightWorkspaceIds', () => {
   it('reports every entry the server is still provisioning', () => {
-    registerProvisioning({ workspaceId: 'a', projectSlug: 'p', tool: 'claude', kind: 'create' })
-    registerProvisioning({ workspaceId: 'b', projectSlug: 'p', tool: 'claude', kind: 'restart' })
+    registerProvisioning({ workspaceId: 'a', projectId: 'p', tool: 'claude', kind: 'create' })
+    registerProvisioning({ workspaceId: 'b', projectId: 'p', tool: 'claude', kind: 'restart' })
     expect(inFlightWorkspaceIds().sort()).toEqual(['a', 'b'])
   })
 
@@ -188,8 +188,8 @@ describe('inFlightWorkspaceIds', () => {
   // lingers until dismissed, so counting it would shield the leftovers
   // forever.
   it('drops a failed entry, which is not still running', async () => {
-    registerProvisioning({ workspaceId: 'a', projectSlug: 'p', tool: 'claude', kind: 'create' })
-    registerProvisioning({ workspaceId: 'gone', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    registerProvisioning({ workspaceId: 'a', projectId: 'p', tool: 'claude', kind: 'create' })
+    registerProvisioning({ workspaceId: 'gone', projectId: 'p', tool: 'claude', kind: 'create' })
     await fail('gone', 'image build exploded')
     expect(inFlightWorkspaceIds()).toEqual(['a'])
     // The row survives for the user to dismiss.

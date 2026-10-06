@@ -155,12 +155,12 @@ export function buildRebranchPrep(params: {
  * `awaitAgentTransport`. Each command is idempotent, so retries are safe.
  */
 export async function rebranchSpare(
-  spare: { jobName: string; workspaceId: string; projectSlug: string; tool: string },
+  spare: { jobName: string; workspaceId: string; projectId: string; tool: string },
   branch: string,
   sha: string,
   respawn: SpareAgent | null,
 ): Promise<void> {
-  const config: YaacConfig = await resolveProjectConfig(spare.projectSlug) ?? {}
+  const config: YaacConfig = await resolveProjectConfig(spare.projectId) ?? {}
   const prep = buildRebranchPrep({
     branch,
     sha,

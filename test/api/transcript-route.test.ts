@@ -8,6 +8,7 @@ import { recordWorkspaceCreated } from '@yaac/server/db/workspace-store'
 import { recordAgentSessions } from '@yaac/server/db/agent-session-store'
 import { closeDb } from '@yaac/server/db/client'
 import { acpLogDir, claudeDir } from '@yaac/shared/project-paths'
+import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
 import type { AcpEvent } from '@yaac/shared/acp'
 
 /**
@@ -19,7 +20,6 @@ import type { AcpEvent } from '@yaac/shared/acp'
  * that a transcript is readable with no pod.
  */
 
-const SLUG = 'demo'
 const WORKSPACE = 'wt-1'
 const ACP_SESSION = '11111111-1111-1111-1111-111111111111'
 const TUI_SESSION = '22222222-2222-2222-2222-222222222222'
@@ -28,7 +28,7 @@ let tmpDir: string
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  await recordWorkspaceCreated({ projectSlug: SLUG, workspaceId: WORKSPACE })
+  await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: WORKSPACE })
 })
 
 afterEach(async () => {
@@ -49,10 +49,10 @@ async function get(sessionId: string): Promise<{ status: number; events?: AcpEve
 
 describe('GET /workspace/:id/agent-sessions/:sessionId/transcript', () => {
   it('serves an acp conversation from the record acpd wrote', async () => {
-    await recordAgentSessions(SLUG, WORKSPACE, [
+    await recordAgentSessions(DEMO_PROJECT_ID, WORKSPACE, [
       { tool: 'claude', agentSessionId: ACP_SESSION, mode: 'acp' },
     ])
-    const dir = acpLogDir(SLUG, WORKSPACE)
+    const dir = acpLogDir(DEMO_PROJECT_ID, WORKSPACE)
     await fs.mkdir(dir, { recursive: true })
     await fs.writeFile(path.join(dir, `${ACP_SESSION}.jsonl`), [
       { jsonrpc: '2.0', method: '_acpd/life', params: { id: 'life-1' } },
@@ -78,10 +78,10 @@ describe('GET /workspace/:id/agent-sessions/:sessionId/transcript', () => {
   it('serves a tui claude conversation from claude\'s own transcript', async () => {
     // yaac records no events for a TUI conversation; claude's transcript
     // is replayed through the ACP adapter's translation.
-    await recordAgentSessions(SLUG, WORKSPACE, [
+    await recordAgentSessions(DEMO_PROJECT_ID, WORKSPACE, [
       { tool: 'claude', agentSessionId: TUI_SESSION, mode: 'tui' },
     ])
-    const file = path.join(claudeDir(SLUG), 'projects', '-workspace', `${TUI_SESSION}.jsonl`)
+    const file = path.join(claudeDir(DEMO_PROJECT_ID), 'projects', '-workspace', `${TUI_SESSION}.jsonl`)
     await fs.mkdir(path.dirname(file), { recursive: true })
     await fs.writeFile(file, [
       {
@@ -107,7 +107,7 @@ describe('GET /workspace/:id/agent-sessions/:sessionId/transcript', () => {
   })
 
   it('answers 404 for a conversation the workspace never had', async () => {
-    await recordAgentSessions(SLUG, WORKSPACE, [
+    await recordAgentSessions(DEMO_PROJECT_ID, WORKSPACE, [
       { tool: 'claude', agentSessionId: TUI_SESSION, mode: 'tui' },
     ])
     expect((await get('never-happened')).status).toBe(404)
@@ -120,7 +120,7 @@ describe('GET /workspace/:id/agent-sessions/:sessionId/transcript', () => {
       { tool: 'pi', agentSessionId: '01a1110b-f851-758d-ba08-45c4ee75613f' },
       { tool: 'opencode', agentSessionId: 'ses_eeef51727ffedBWQdWdy0dzOE2' },
     ] as const
-    await recordAgentSessions(SLUG, WORKSPACE, sessions.map((s) => ({ ...s, mode: 'tui' as const })))
+    await recordAgentSessions(DEMO_PROJECT_ID, WORKSPACE, sessions.map((s) => ({ ...s, mode: 'tui' as const })))
     for (const s of sessions) expect(await get(s.agentSessionId), s.tool).toEqual({ status: 200, events: [] })
   })
 })

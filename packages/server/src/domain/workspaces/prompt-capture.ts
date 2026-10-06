@@ -13,13 +13,13 @@ import type { AgentTool } from '@yaac/shared/types'
 const known = new Map<string, string>()
 
 export async function captureFirstPrompt(
-  projectSlug: string,
+  projectId: string,
   tool: AgentTool,
   agentSessionId: string,
   transcript: SandboxFile | undefined,
   jobName: string | undefined,
 ): Promise<string | undefined> {
-  const key = `${projectSlug}/${tool}/${agentSessionId}`
+  const key = `${projectId}/${tool}/${agentSessionId}`
   const cached = known.get(key)
   if (cached !== undefined) return cached
   const prompt = await getAgentSessionFirstMessage(tool, transcript, jobName, agentSessionId)

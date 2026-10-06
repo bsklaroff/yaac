@@ -17,7 +17,7 @@ beforeEach(() => {
 
 const session = (over: Partial<WorkspaceListEntry> = {}): WorkspaceListEntry => ({
   workspaceId: 'sid-1',
-  projectSlug: 'proj',
+  projectId: 'proj',
   tool: 'claude',
   status: 'waiting',
   createdAt: '2026-07-02 10:00:00',
@@ -83,7 +83,7 @@ describe('stopWorkspaceOptimistic', () => {
   it('shows the session in the Deleted group only when it has history', () => {
     stopWorkspaceOptimistic(session({ prompt: 'do a thing', title: 'Thing' }), [])
     expect(useUiStore.getState().optimisticStopped).toMatchObject([
-      { workspaceId: 'sid-1', projectSlug: 'proj', tool: 'claude', prompt: 'do a thing', title: 'Thing' },
+      { workspaceId: 'sid-1', projectId: 'proj', tool: 'claude', prompt: 'do a thing', title: 'Thing' },
     ])
 
     useUiStore.setState(initial, true)

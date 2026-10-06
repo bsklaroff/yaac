@@ -12,6 +12,9 @@ import {
 import { ServerError } from '@yaac/shared/errors'
 import type { RuntimeHandle } from '#drivers/contract'
 
+const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
+const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
+
 /**
  * The driver's `find` is faked. Which workspace an id names and whether it
  * runs is tested in test/drivers/k8s/workspaces/locate.test.ts; these tests
@@ -22,7 +25,7 @@ const find = vi.fn()
 function handle(over: Partial<RuntimeHandle> = {}): RuntimeHandle {
   return {
     workspaceId: 'abc123def456',
-    projectSlug: 'proj',
+    projectId: PROJ,
     jobName: 'yaac-proj-abc123',
     tool: 'claude',
     mode: 'tui',
@@ -66,12 +69,12 @@ describe('resolveWorkspaceContainer', () => {
   // cache over a subprocess. Prefixes are expanded over rows first, so the
   // driver only sees exact ids.
   it('asks for the cache-preferred match by exact id and returns the container', async () => {
-    await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'abc123def456' })
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'abc123def456' })
     find.mockResolvedValue(handle())
     expect(await resolveWorkspaceContainer('abc123', { requireRunning: true })).toEqual({
       jobName: 'yaac-proj-abc123',
       workspaceId: 'abc123def456',
-      projectSlug: 'proj',
+      projectId: PROJ,
       state: 'running',
     })
     expect(find).toHaveBeenCalledWith('abc123def456', { preferCache: true })
@@ -79,7 +82,7 @@ describe('resolveWorkspaceContainer', () => {
 
   // WebSocket attaches hold full ids, so they get no prefix expansion.
   it('hands an exact-only input to the driver untouched', async () => {
-    await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'abc123def456' })
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'abc123def456' })
     await expect(resolveWorkspaceContainer('abc123', { exact: true })).rejects.toMatchObject({ code: 'NOT_FOUND' })
     expect(find).toHaveBeenCalledWith('abc123', { preferCache: true })
   })
@@ -112,7 +115,7 @@ describe('resolveWorkspaceRecord', () => {
     installFakeWorkspaceDriver({ find })
     tmpDir = await createTempDataDir()
     find.mockReset().mockResolvedValue(undefined)
-    await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'abc123def456' })
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'abc123def456' })
   })
 
   afterEach(async () => {
@@ -126,7 +129,7 @@ describe('resolveWorkspaceRecord', () => {
     find.mockResolvedValue(handle())
     expect(await resolveWorkspaceRecord('abc123')).toEqual({
       workspaceId: 'abc123def456',
-      projectSlug: 'proj',
+      projectId: PROJ,
       jobName: 'yaac-proj-abc123',
       tool: 'claude',
     })
@@ -141,7 +144,7 @@ describe('resolveWorkspaceRecord', () => {
 
     expect(await resolveWorkspaceRecord('abc123')).toEqual({
       workspaceId: 'abc123def456',
-      projectSlug: 'proj',
+      projectId: PROJ,
     })
   })
 
@@ -155,14 +158,14 @@ describe('resolveWorkspace', () => {
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
-    for (const [projectSlug, workspaceId] of [
-      ['proj', 'abc'],
-      ['proj', 'abcdef-1'],
-      ['proj', 'abcdef-2'],
-      ['proj', 'feed-1'],
-      ['other', 'fe11-2'],
-    ]) await recordWorkspaceCreated({ projectSlug, workspaceId })
-    await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'spare-1', spare: true })
+    for (const [projectId, workspaceId] of [
+      [PROJ, 'abc'],
+      [PROJ, 'abcdef-1'],
+      [PROJ, 'abcdef-2'],
+      [PROJ, 'feed-1'],
+      [OTHER, 'fe11-2'],
+    ]) await recordWorkspaceCreated({ projectId, workspaceId })
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'spare-1', spare: true })
   })
 
   afterEach(async () => {
@@ -179,8 +182,8 @@ describe('resolveWorkspace', () => {
     expect(await resolveWorkspace('abcdef')).toEqual({ ok: false, reason: 'ambiguous' })
     expect(await resolveWorkspace('fe')).toEqual({ ok: false, reason: 'ambiguous' })
     // Scoped to a project, other projects' rows are ignored.
-    expect(await resolveWorkspace('fe', { projectSlug: 'proj' })).toEqual({ ok: true, workspaceId: 'feed-1' })
-    expect(await resolveWorkspace('fe11-2', { projectSlug: 'proj' })).toEqual({ ok: false, reason: 'not-found' })
+    expect(await resolveWorkspace('fe', { projectId: PROJ })).toEqual({ ok: true, workspaceId: 'feed-1' })
+    expect(await resolveWorkspace('fe11-2', { projectId: PROJ })).toEqual({ ok: false, reason: 'not-found' })
   })
 
   it('finds nothing for an empty input or an unclaimed spare, even by its exact id', async () => {
@@ -195,8 +198,8 @@ describe('resolveWorkspaceId', () => {
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
-    await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'abcdef-1' })
-    await recordWorkspaceCreated({ projectSlug: 'other', workspaceId: 'abcdef-2' })
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'abcdef-1' })
+    await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'abcdef-2' })
   })
 
   afterEach(async () => {

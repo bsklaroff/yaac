@@ -36,11 +36,11 @@ export async function reconcileGeneratedTitles(): Promise<void> {
   const untitled = (await listWorkspaceRows())
     .filter((r) => r.stoppedAt === undefined && r.title === undefined)
   const firsts = await firstAgentSessionsFor(untitled)
-  for (const { projectSlug, workspaceId } of untitled) {
-    const key = `${projectSlug}/${workspaceId}`
+  for (const { projectId, workspaceId } of untitled) {
+    const key = `${projectId}/${workspaceId}`
     const prompt = firsts.get(key)?.firstPrompt
     if (prompt === undefined) continue
-    void generateOnce(key, key, prompt, (t) => setWorkspaceTitle(projectSlug, workspaceId, t, { ifUntitled: true }))
+    void generateOnce(key, key, prompt, (t) => setWorkspaceTitle(projectId, workspaceId, t, { ifUntitled: true }))
   }
   // Drafts and entries are keyed on the prompt too, so an edited prompt gets
   // its own attempt.

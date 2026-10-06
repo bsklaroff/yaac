@@ -7,7 +7,6 @@ vi.mock('#log', () => ({ serverLog: mockLog }))
 import {
   LABEL_DATA_DIR_HASH,
   LABEL_PREWARMED,
-  LABEL_PROJECT,
   LABEL_PROJECT_ID,
   LABEL_TOOL,
   LABEL_WORKSPACE_ID,
@@ -30,48 +29,18 @@ function serve(items: unknown[]): void {
 }
 
 describe('workspaceJobName', () => {
-  const SID = '01234567-89ab-cdef-0123-456789abcdef'
-
-  it('builds yaac-<slug>-<workspaceId>', () => {
-    expect(workspaceJobName('demo', 'abcd1234')).toBe('yaac-demo-abcd1234')
-  })
-
-  it('lowercases the project slug', () => {
-    expect(workspaceJobName('MyProj', 'abcd')).toBe('yaac-myproj-abcd')
-  })
-
-  it('replaces DNS-1123-invalid characters with dashes', () => {
-    expect(workspaceJobName('my_proj.x', 'abcd')).toBe('yaac-my-proj-x-abcd')
-  })
-
-  it('trims leading/trailing dashes from the slug', () => {
-    expect(workspaceJobName('-foo-', 'abcd')).toBe('yaac-foo-abcd')
-  })
-
-  it('truncates the slug to 21 chars so the total stays within 63', () => {
-    const longSlug = 'a'.repeat(40)
-    const name = workspaceJobName(longSlug, SID)
-    expect(name).toBe(`yaac-${'a'.repeat(21)}-${SID}`)
-    expect(name.length).toBeLessThanOrEqual(63)
-  })
-
-  it('keeps the full yaac- prefix + UUID shape at exactly 63 chars for max slugs', () => {
-    const name = workspaceJobName('exactly-twenty-one-ch', SID)
-    expect(name).toHaveLength(63)
-  })
-
-  it('collapses double dashes', () => {
-    expect(workspaceJobName('a--b', 'abcd')).toBe('yaac-a-b-abcd')
+  it('builds yaac-<workspaceId>, which fits the 63-char DNS label cap', () => {
+    const SID = '01234567-89ab-cdef-0123-456789abcdef'
+    expect(workspaceJobName(SID)).toBe(`yaac-${SID}`)
+    expect(workspaceJobName(SID).length).toBeLessThanOrEqual(63)
   })
 })
 
 describe('workspaceIdFromJobName', () => {
   const SID = '01234567-89ab-cdef-0123-456789abcdef'
 
-  it('recovers the UUID tail for any slug shape', () => {
-    for (const slug of ['demo', 'MyProj', 'my_proj.x', '-foo-', 'a'.repeat(40)]) {
-      expect(workspaceIdFromJobName(workspaceJobName(slug, SID))).toBe(SID)
-    }
+  it('recovers the workspace id from its Job name', () => {
+    expect(workspaceIdFromJobName(workspaceJobName(SID))).toBe(SID)
   })
 
   it('rejects names too short to carry a session UUID', () => {
@@ -98,7 +67,6 @@ function rawPod(overrides: {
       labels: overrides.labels ?? {
         [JOB_NAME_LABEL]: 'yaac-demo-s1',
         ...workspaceIdLabels('s1'),
-        [LABEL_PROJECT]: 'demo',
         [LABEL_PROJECT_ID]: 'id-demo',
         [LABEL_TOOL]: 'codex',
         [LABEL_DATA_DIR_HASH]: dataDirHash(),
@@ -117,7 +85,7 @@ describe('listWorkspacePods', () => {
   it('lists this install\'s workspace pods, optionally for one project, and maps them', async () => {
     const pod = (name: string, project: string) => {
       const raw = rawPod({ name }) as unknown as RawPod
-      raw.metadata.labels[LABEL_PROJECT] = project
+      raw.metadata.labels[LABEL_PROJECT_ID] = project
       return { apiVersion: 'v1', kind: 'Pod', ...raw, metadata: { ...raw.metadata, name, namespace: k8sNamespace() } }
     }
     const foreign = pod('other-install', 'demo')
@@ -134,7 +102,6 @@ describe('listWorkspacePods', () => {
       jobName: 'yaac-demo-s1',
       podName: 'yaac-demo-s1-x1y2z',
       workspaceId: 's1',
-      projectSlug: 'demo',
       projectId: 'id-demo',
       tool: 'codex',
       phase: 'Running',
@@ -250,7 +217,6 @@ describe('findWorkspacePod', () => {
       jobName: 'yaac-demo-abcd1234',
       podName: 'yaac-demo-abcd1234-x7k2p',
       workspaceId: 'abcd1234',
-      projectSlug: 'demo',
       projectId: 'id-demo',
       tool: 'claude',
       phase: 'Running',
@@ -290,7 +256,7 @@ describe('listWorkspaceJobs', () => {
     serve([{
       metadata: {
         name: 'yaac-demo-s1',
-        labels: { ...workspaceIdLabels('s1'), [LABEL_PROJECT]: 'demo' },
+        labels: { ...workspaceIdLabels('s1'), [LABEL_PROJECT_ID]: 'demo' },
         creationTimestamp: '2026-06-01T00:00:00Z',
       },
     }])
@@ -301,7 +267,7 @@ describe('listWorkspaceJobs', () => {
     expect(jobs).toEqual([{
       jobName: 'yaac-demo-s1',
       workspaceId: 's1',
-      projectSlug: 'demo',
+      projectId: 'demo',
       createdAtMs: Date.parse('2026-06-01T00:00:00Z'),
     }])
   })
@@ -311,7 +277,7 @@ describe('listWorkspaceJobs', () => {
     const meta = { creationTimestamp: '2026-06-01T00:00:00Z' }
     serve([
       {},
-      { metadata: { ...meta, name: 'a', labels: { [LABEL_PROJECT]: 'demo' } } },
+      { metadata: { ...meta, name: 'a', labels: { [LABEL_PROJECT_ID]: 'demo' } } },
       { metadata: { ...meta, name: 'b', labels: workspaceIdLabels('s1') } },
     ])
     await expect(listWorkspaceJobs()).resolves.toEqual([])
@@ -325,7 +291,6 @@ describe('isPrewarmed', () => {
       jobName: 'yaac-p-s1',
       podName: 'yaac-p-s1-x',
       workspaceId: 's1',
-      projectSlug: 'p',
       projectId: '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
       tool: 'claude',
       phase: 'Running',

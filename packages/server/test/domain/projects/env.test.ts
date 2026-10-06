@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { projectDir } from '@yaac/shared/project-paths'
@@ -10,6 +11,8 @@ import {
   resolveProjectEnv,
   setProjectEnvVar,
 } from '#domain/projects'
+
+const NOPE = '4101bef8-794f-4d98-8e95-dfb54850c68b'
 
 /**
  * A project's environment above the store: validating what a client sends (a
@@ -23,8 +26,8 @@ const RULE = { hosts: ['api.example.com'], header: 'x-api-key' }
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  await fs.mkdir(projectDir('demo'), { recursive: true })
-  await recordProject({ slug: 'demo', remoteUrl: 'https://github.com/o/r.git', addedAt: 'now' })
+  await fs.mkdir(projectDir(DEMO_PROJECT_ID), { recursive: true })
+  await recordProject({ id: DEMO_PROJECT_ID, name: 'demo', remoteUrl: 'https://github.com/o/r.git', addedAt: 'now' })
 })
 
 afterEach(async () => {
@@ -46,7 +49,7 @@ describe('parseSecretProxyRule', () => {
   it('refuses a rule that would be dropped silently inside the proxy', () => {
     // Otherwise each fails later inside the proxy, where the credential
     // silently never arrives.
-    expect(() => parseSecretProxyRule('K', 'nope')).toThrow(/needs a rule/)
+    expect(() => parseSecretProxyRule('K', NOPE)).toThrow(/needs a rule/)
     expect(() => parseSecretProxyRule('K', { hosts: [] })).toThrow(/non-empty list/)
     expect(() => parseSecretProxyRule('K', { hosts: ['a.com'], path: 5 })).toThrow(/path must be/)
     expect(() => parseSecretProxyRule('K', {
@@ -71,61 +74,61 @@ describe('parseSecretProxyRule', () => {
 
 describe('setProjectEnvVar', () => {
   it('stores a plain variable and hands it straight back', async () => {
-    expect(await setProjectEnvVar('demo', { name: 'NODE_ENV', value: 'development' }))
+    expect(await setProjectEnvVar(DEMO_PROJECT_ID, { name: 'NODE_ENV', value: 'development' }))
       .toMatchObject({ name: 'NODE_ENV', value: 'development', secret: false, hasValue: true })
   })
 
   it('refuses a name no shell would take', async () => {
-    await expect(setProjectEnvVar('demo', { name: '9LIVES', value: 'x' }))
+    await expect(setProjectEnvVar(DEMO_PROJECT_ID, { name: '9LIVES', value: 'x' }))
       .rejects.toThrow(/not a valid environment variable name/)
-    await expect(setProjectEnvVar('demo', { name: 'has space', value: 'x' }))
+    await expect(setProjectEnvVar(DEMO_PROJECT_ID, { name: 'has space', value: 'x' }))
       .rejects.toThrow(/not a valid environment variable name/)
   })
 
   it('requires a value for a new secret, and a rule for any secret', async () => {
     // A valueless secret would show as saved but be skipped at create.
-    await expect(setProjectEnvVar('demo', { name: 'K', secret: true, rule: RULE }))
+    await expect(setProjectEnvVar(DEMO_PROJECT_ID, { name: 'K', secret: true, rule: RULE }))
       .rejects.toThrow(/value is required for a new secret/)
-    await expect(setProjectEnvVar('demo', { name: 'K', value: 'v', secret: true }))
+    await expect(setProjectEnvVar(DEMO_PROJECT_ID, { name: 'K', value: 'v', secret: true }))
       .rejects.toThrow(/needs a rule/)
   })
 
   it('still demands a value for a secret imported without one', async () => {
     // The legacy importer stores an unresolvable secret as `''`, which
     // `resolveProjectEnv` drops, so a rule-only edit must not succeed.
-    await upsertProjectEnvVar('demo', { name: 'IMPORTED', value: '', secret: true, rule: RULE })
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'IMPORTED', value: '', secret: true, rule: RULE })
 
-    await expect(setProjectEnvVar('demo', { name: 'IMPORTED', secret: true, rule: RULE }))
+    await expect(setProjectEnvVar(DEMO_PROJECT_ID, { name: 'IMPORTED', secret: true, rule: RULE }))
       .rejects.toThrow(/value is required for a new secret/)
   })
 
   it('lets a rule be edited without the secret travelling again', async () => {
-    await setProjectEnvVar('demo', { name: 'K', value: 'sekrit', secret: true, rule: RULE })
-    const saved = await setProjectEnvVar('demo', {
+    await setProjectEnvVar(DEMO_PROJECT_ID, { name: 'K', value: 'sekrit', secret: true, rule: RULE })
+    const saved = await setProjectEnvVar(DEMO_PROJECT_ID, {
       name: 'K',
       secret: true,
       rule: { hosts: ['other.example.com'], bodyParam: 'client_secret' },
     })
 
     expect(saved.hasValue).toBe(true)
-    expect((await resolveProjectEnv('demo')).secrets.K).toEqual({
+    expect((await resolveProjectEnv(DEMO_PROJECT_ID)).secrets.K).toEqual({
       value: 'sekrit',
       rule: { hosts: ['other.example.com'], bodyParam: 'client_secret' },
     })
   })
 
   it('404s for a project that does not exist', async () => {
-    await expect(setProjectEnvVar('nope', { name: 'A', value: '1' }))
+    await expect(setProjectEnvVar(NOPE, { name: 'A', value: '1' }))
       .rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 })
 
 describe('listProjectEnv', () => {
   it('gives a plain value back and a secret’s never', async () => {
-    await setProjectEnvVar('demo', { name: 'PLAIN', value: 'visible' })
-    await setProjectEnvVar('demo', { name: 'SECRET', value: 'sekrit', secret: true, rule: RULE })
+    await setProjectEnvVar(DEMO_PROJECT_ID, { name: 'PLAIN', value: 'visible' })
+    await setProjectEnvVar(DEMO_PROJECT_ID, { name: 'SECRET', value: 'sekrit', secret: true, rule: RULE })
 
-    const vars = await listProjectEnv('demo')
+    const vars = await listProjectEnv(DEMO_PROJECT_ID)
     expect(vars).toEqual([
       { id: expect.any(String) as string, name: 'PLAIN', secret: false, hasValue: true, value: 'visible' },
       { id: expect.any(String) as string, name: 'SECRET', secret: true, hasValue: true, rule: RULE },
@@ -136,29 +139,29 @@ describe('listProjectEnv', () => {
   it('says a secret has no usable value when its key is gone', async () => {
     // The UI asks to re-enter a value when `hasValue` is false, which covers
     // both "never supplied" and "no longer decrypts".
-    await upsertProjectEnvVar('demo', { name: 'BLANK', value: '', secret: true, rule: RULE })
-    expect(await listProjectEnv('demo')).toMatchObject([{ name: 'BLANK', hasValue: false }])
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'BLANK', value: '', secret: true, rule: RULE })
+    expect(await listProjectEnv(DEMO_PROJECT_ID)).toMatchObject([{ name: 'BLANK', hasValue: false }])
   })
 })
 
 describe('removeProjectEnvVar', () => {
   it('removes by id and 404s for one this project does not have', async () => {
-    const saved = await setProjectEnvVar('demo', { name: 'A', value: '1' })
+    const saved = await setProjectEnvVar(DEMO_PROJECT_ID, { name: 'A', value: '1' })
 
-    await expect(removeProjectEnvVar('demo', '00000000-0000-4000-8000-000000000000'))
+    await expect(removeProjectEnvVar(DEMO_PROJECT_ID, '00000000-0000-4000-8000-000000000000'))
       .rejects.toMatchObject({ code: 'NOT_FOUND' })
 
-    await removeProjectEnvVar('demo', saved.id)
-    expect(await listProjectEnv('demo')).toEqual([])
+    await removeProjectEnvVar(DEMO_PROJECT_ID, saved.id)
+    expect(await listProjectEnv(DEMO_PROJECT_ID)).toEqual([])
   })
 })
 
 describe('resolveProjectEnv', () => {
   it('splits what a workspace gets from what the proxy injects', async () => {
-    await setProjectEnvVar('demo', { name: 'PLAIN', value: 'v' })
-    await setProjectEnvVar('demo', { name: 'SECRET', value: 'sekrit', secret: true, rule: RULE })
+    await setProjectEnvVar(DEMO_PROJECT_ID, { name: 'PLAIN', value: 'v' })
+    await setProjectEnvVar(DEMO_PROJECT_ID, { name: 'SECRET', value: 'sekrit', secret: true, rule: RULE })
 
-    expect(await resolveProjectEnv('demo')).toEqual({
+    expect(await resolveProjectEnv(DEMO_PROJECT_ID)).toEqual({
       plain: { PLAIN: 'v' },
       secrets: { SECRET: { value: 'sekrit', rule: RULE } },
     })
@@ -167,9 +170,9 @@ describe('resolveProjectEnv', () => {
   it('drops a secret with nothing behind it rather than injecting empty', async () => {
     // An empty header would fail upstream as a bad credential rather than a
     // missing one, which misleads debugging.
-    await upsertProjectEnvVar('demo', { name: 'BLANK', value: '', secret: true, rule: RULE })
-    await upsertProjectEnvVar('demo', { name: 'NO_RULE', value: 'v', secret: true })
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'BLANK', value: '', secret: true, rule: RULE })
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'NO_RULE', value: 'v', secret: true })
 
-    expect(await resolveProjectEnv('demo')).toEqual({ plain: {}, secrets: {} })
+    expect(await resolveProjectEnv(DEMO_PROJECT_ID)).toEqual({ plain: {}, secrets: {} })
   })
 })

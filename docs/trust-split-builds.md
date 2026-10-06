@@ -36,7 +36,7 @@ the untrusted end of the chain.
 
 Untrusted layers go into repos named by the project's immutable id,
 `yaac-proj-<id>` and `yaac-user-<id>`, never next to the trusted chain or
-another project's repos. A project re-added under a freed slug therefore
+another project's repos. Ids are never reused, so a project added again
 sees none of the old project's tags. The main registry's GC removes project
 repos whose id no live project holds (docs/image-gc.md).
 

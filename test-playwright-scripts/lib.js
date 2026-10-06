@@ -66,6 +66,17 @@ export async function api(route, init = {}) {
 }
 
 /**
+ * The project `ref` names, as `{ id, name }`. `ref` is an id, an id prefix
+ * or a name, resolved by the server as the CLI's project arguments are. The
+ * SPA's `?project=` and every comparison take the id; visible text shows the
+ * name.
+ */
+export async function resolveProject(ref) {
+  const { id, name } = await api(`/project/${encodeURIComponent(ref)}`)
+  return { id, name }
+}
+
+/**
  * Create a workspace and wait for its provisioning stream to finish; returns
  * the new workspace's id. `body` is the `/api/workspace/create` request.
  */

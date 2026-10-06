@@ -58,7 +58,7 @@ class FakeAttachChild implements StreamChild {
 }
 
 function session(tool: WatchedWorkspace['tool']): WatchedWorkspace {
-  return { slug: 'demo', workspaceId: 's1', jobName: 'yaac-demo-s1', tool, mode: 'tui' }
+  return { projectId: 'demo', workspaceId: 's1', jobName: 'yaac-demo-s1', tool, mode: 'tui' }
 }
 
 function makeWatcher(tool: WatchedWorkspace['tool'], deps: {
@@ -352,16 +352,16 @@ describe('WorkspaceStatusWatcher (pane tools)', () => {
 
 function workspace(opts: {
   workspaceId: string
-  slug?: string
+  projectId?: string
   running?: boolean
   prewarmed?: boolean
   tool?: AgentTool
 }): RuntimeHandle {
-  const slug = opts.slug ?? 'demo'
+  const projectId = opts.projectId ?? 'demo'
   return handleFixture({
     workspaceId: opts.workspaceId,
-    projectSlug: slug,
-    jobName: `yaac-${slug}-${opts.workspaceId}`,
+    projectId: projectId,
+    jobName: `yaac-${projectId}-${opts.workspaceId}`,
     tool: opts.tool ?? 'claude',
     running: opts.running !== false,
     state: opts.running === false ? 'pending' : 'running',

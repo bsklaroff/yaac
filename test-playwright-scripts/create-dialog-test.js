@@ -38,14 +38,14 @@
  * one workspace (check 8) and stops it at the end; check 7's and 9's drafts
  * and entries are discarded.
  *
- * Run: YAAC_DATA_DIR=<data dir> PROJECT=<slug> node test-playwright-scripts/create-dialog-test.js
+ * Run: YAAC_DATA_DIR=<data dir> PROJECT=<name or id> node test-playwright-scripts/create-dialog-test.js
  */
 import { execSync } from 'node:child_process'
 import path from 'node:path'
-import { api, check, finish, origin, requirePlaywright, SHOTS, until } from './lib.js'
+import { api, check, finish, origin, requirePlaywright, SHOTS, until, resolveProject } from './lib.js'
 
-const PROJECT = process.env.PROJECT
-if (!PROJECT) throw new Error('set PROJECT=<slug>')
+if (!process.env.PROJECT) throw new Error('set PROJECT=<name or id>')
+const PROJECT = (await resolveProject(process.env.PROJECT)).id
 const tools = (await api('/auth/list')).toolAuth.map((t) => t.tool)
 if (!tools.includes('claude')) throw new Error('needs a claude credential')
 

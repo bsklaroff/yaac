@@ -21,7 +21,7 @@ beforeAll(() => {
 
 const workspace: WorkspaceListEntry = {
   workspaceId: 's1',
-  projectSlug: 'proj',
+  projectId: 'proj',
   tool: 'claude',
   status: 'running',
   createdAt: '2026-08-10 00:00:00',
@@ -89,7 +89,7 @@ describe('WorkspaceView: open-files', () => {
 describe('window shortcuts while the create dialog is open', () => {
   it('leave the keypress to the dialog, and resume once it closes', () => {
     renderView()
-    useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', focus: 'prompt' })
+    useUiStore.getState().openCreateWorkspace({ projectId: 'proj', focus: 'prompt' })
     altE()
     expect(tabsOf()).not.toContain('files')
 
@@ -102,6 +102,6 @@ describe('window shortcuts while the create dialog is open', () => {
     const base = { recordingShortcut: false, createWorkspaceDialog: null }
     expect(shortcutsSuspended(base)).toBe(false)
     expect(shortcutsSuspended({ ...base, recordingShortcut: true })).toBe(true)
-    expect(shortcutsSuspended({ ...base, createWorkspaceDialog: { projectSlug: 'proj' } })).toBe(true)
+    expect(shortcutsSuspended({ ...base, createWorkspaceDialog: { projectId: 'proj' } })).toBe(true)
   })
 })

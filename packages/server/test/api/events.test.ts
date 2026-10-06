@@ -44,10 +44,10 @@ function emptySnapshot(): ServerSnapshot {
   }
 }
 
-function snapshotWithProject(slug: string): ServerSnapshot {
+function snapshotWithProject(projectId: string): ServerSnapshot {
   return {
     ...emptySnapshot(),
-    projects: [{ slug, remoteUrl: 'https://example.com/r.git', addedAt: '2026-01-01', workspaceCount: 0, createDefaults: {}, gitCredential: null }],
+    projects: [{ id: projectId, name: 'demo', remoteUrl: 'https://example.com/r.git', addedAt: '2026-01-01', workspaceCount: 0, createDefaults: {}, gitCredential: null }],
   }
 }
 
@@ -81,7 +81,7 @@ describe('EventHub', () => {
     expect(ws.sent).toHaveLength(1)
     const event = JSON.parse(ws.sent[0]) as { type: string; data: ServerSnapshot }
     expect(event.type).toBe('snapshot')
-    expect(event.data.projects[0].slug).toBe('p1')
+    expect(event.data.projects[0].id).toBe('p1')
   })
 
   it('does not build or broadcast when no one is connected', async () => {
@@ -134,10 +134,10 @@ describe('EventHub', () => {
     const releases: Array<() => void> = []
     let n = 0
     const hub = new EventHub(() => {
-      const slug = `p${++n}`
+      const projectId = `p${++n}`
       // First build resolves LAST — the inversion the ordering must survive.
       return new Promise<ServerSnapshot>((resolve) => {
-        releases.push(() => resolve(snapshotWithProject(slug)))
+        releases.push(() => resolve(snapshotWithProject(projectId)))
       })
     })
     const ws = new FakeWs()
@@ -159,7 +159,7 @@ describe('EventHub', () => {
     await publish
 
     const last = JSON.parse(ws.sent[ws.sent.length - 1]) as { data: ServerSnapshot }
-    expect(last.data.projects[0].slug).toBe('p2')
+    expect(last.data.projects[0].id).toBe('p2')
   })
 
   // The trailing call of a coalesced burst often lands mid-build; folding
@@ -209,7 +209,7 @@ describe('buildSnapshot image builds', () => {
         tag: 'yaac-base:abc',
         layer: 'base',
         reason: 'prewarm',
-        projectSlugs: ['p'],
+        projectIds: ['p'],
         status: 'running',
         startedAt: '2026-01-01 00:00:00',
       }],
@@ -225,7 +225,7 @@ describe('buildSnapshot provisioning', () => {
   afterEach(() => { clearAllProvisioningForTests() })
 
   it('includes a provisioning entry that has no live session yet', async () => {
-    registerProvisioning({ workspaceId: 'prov-1', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    registerProvisioning({ workspaceId: 'prov-1', projectId: 'p', tool: 'claude', kind: 'create' })
     const snap = await buildSnapshot()
     expect(snap.provisioning.map((e) => e.workspaceId)).toEqual(['prov-1'])
   })
@@ -236,14 +236,14 @@ describe('buildSnapshot provisioning', () => {
     // removes it, or clients attach to a half-built workspace.
     vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
       workspaces: [{
-        workspaceId: 'prov-2', projectSlug: 'p', tool: 'claude',
+        workspaceId: 'prov-2', projectId: 'p', tool: 'claude',
         status: 'waiting', createdAt: '2026-01-01 00:00:00', agentSessions: [],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
       gitAuthFailures: {},
     })
-    registerProvisioning({ workspaceId: 'prov-2', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    registerProvisioning({ workspaceId: 'prov-2', projectId: 'p', tool: 'claude', kind: 'create' })
     const snap = await buildSnapshot()
     expect(snap.workspaces).toEqual([])
     expect(snap.provisioning.map((e) => e.workspaceId)).toEqual(['prov-2'])
@@ -253,9 +253,9 @@ describe('buildSnapshot provisioning', () => {
     // A restart keeps the row's stop until it succeeds, so the workspace is
     // still held; the provisioning row stands in for it meanwhile.
     vi.mocked(listHeldWorkspaces).mockResolvedValueOnce([{
-      workspaceId: 'held-1', projectSlug: 'p', tool: 'claude', stoppedAt: '2026-01-01 00:00:00',
+      workspaceId: 'held-1', projectId: 'p', tool: 'claude', stoppedAt: '2026-01-01 00:00:00',
     }])
-    registerProvisioning({ workspaceId: 'held-1', projectSlug: 'p', tool: 'claude', kind: 'restart' })
+    registerProvisioning({ workspaceId: 'held-1', projectId: 'p', tool: 'claude', kind: 'restart' })
     const snap = await buildSnapshot()
     expect(snap.heldWorkspaces).toEqual([])
     expect(snap.provisioning.map((e) => e.workspaceId)).toEqual(['held-1'])
@@ -266,14 +266,14 @@ describe('buildSnapshot provisioning', () => {
     // would show it beside the row still creating it.
     vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
       workspaces: [{
-        workspaceId: 'spare-1', projectSlug: 'p', tool: 'claude',
+        workspaceId: 'spare-1', projectId: 'p', tool: 'claude',
         status: 'waiting', createdAt: '2026-01-01 00:00:00', agentSessions: [],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
       gitAuthFailures: {},
     })
-    registerProvisioning({ workspaceId: 'req-1', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    registerProvisioning({ workspaceId: 'req-1', projectId: 'p', tool: 'claude', kind: 'create' })
     claimProvisioning('req-1', 'spare-1')
     const snap = await buildSnapshot()
     expect(snap.workspaces).toEqual([])
@@ -286,14 +286,14 @@ describe('buildSnapshot provisioning', () => {
     // the claimed workspace must not stay hidden with it.
     vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
       workspaces: [{
-        workspaceId: 'spare-2', projectSlug: 'p', tool: 'claude',
+        workspaceId: 'spare-2', projectId: 'p', tool: 'claude',
         status: 'waiting', createdAt: '2026-01-01 00:00:00', agentSessions: [],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
       gitAuthFailures: {},
     })
-    registerProvisioning({ workspaceId: 'req-2', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    registerProvisioning({ workspaceId: 'req-2', projectId: 'p', tool: 'claude', kind: 'create' })
     claimProvisioning('req-2', 'spare-2')
     failProvisioning('req-2', 'prompt delivery timed out')
     const snap = await buildSnapshot()
@@ -305,14 +305,14 @@ describe('buildSnapshot provisioning', () => {
   it('lists the session once its provisioning entry is removed (the hand-off)', async () => {
     vi.mocked(listActiveWorkspaces).mockResolvedValue({
       workspaces: [{
-        workspaceId: 'prov-3', projectSlug: 'p', tool: 'claude',
+        workspaceId: 'prov-3', projectId: 'p', tool: 'claude',
         status: 'waiting', createdAt: '2026-01-01 00:00:00', agentSessions: [],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
       gitAuthFailures: {},
     })
-    registerProvisioning({ workspaceId: 'prov-3', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    registerProvisioning({ workspaceId: 'prov-3', projectId: 'p', tool: 'claude', kind: 'create' })
     removeProvisioning('prov-3')
     const snap = await buildSnapshot()
     expect(snap.workspaces.map((s) => s.workspaceId)).toEqual(['prov-3'])

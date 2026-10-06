@@ -13,20 +13,20 @@
  *  5. After a reload, the shell's history is back, from the snapshot.
  *
  * Needs a running server (see lib.js) with a running claude workspace:
- * WORKSPACE=<id> picks one, else the first running one of PROJECT (default
- * yaac). It opens one shell window in it and leaves it open; a fresh
+ * WORKSPACE=<id> picks one, else the first running one of PROJECT (a name or
+ * id, default yaac). It opens one shell window in it and leaves it open; a fresh
  * HOME's zsh new-user menu is dismissed first.
  * Screenshots: $SCREENSHOT_DIR/mirror-*.png.
  *
  * Run: node test-playwright-scripts/terminal-mirror-scroll-test.js
  */
 import path from 'node:path'
-import { api, check, finish, origin, requirePlaywright, SHOTS, until } from './lib.js'
+import { api, check, finish, origin, requirePlaywright, resolveProject, SHOTS, until } from './lib.js'
 
-const PROJECT = process.env.PROJECT ?? 'yaac'
+const PROJECT = (await resolveProject(process.env.PROJECT ?? 'yaac')).id
 const { workspaces } = await api('/workspace/list')
 const ws = workspaces.find((w) => w.workspaceId.startsWith(process.env.WORKSPACE ?? '')
-  && w.projectSlug === PROJECT && w.status !== 'stopped')
+  && w.projectId === PROJECT && w.status !== 'stopped')
 if (!ws) {
   console.log(`no running workspace in ${PROJECT}`)
   process.exit(1)
@@ -47,7 +47,7 @@ try {
       return send.call(this, data)
     }
   })
-  await page.goto(`${origin}/?project=${ws.projectSlug}&workspace=${ws.workspaceId}`)
+  await page.goto(`${origin}/?project=${ws.projectId}&workspace=${ws.workspaceId}`)
 
   // 1. The agent pane: fullscreen claude, restored with its modes.
   await until(page, () => [...(window.__xterms ?? [])].some((t) => t.buffer.active.type === 'alternate'))

@@ -30,7 +30,7 @@ import {
   readProjectCodexBundle,
   isPlaceholderClaudeBundle,
   isPlaceholderCodexBundle,
-  listCredentialProjectSlugs,
+  listCredentialProjectIds,
   fanOutClaudePlaceholders,
   persistToolAuthPayload,
   PLACEHOLDER_ACCESS_TOKEN,
@@ -234,8 +234,8 @@ describe('tool-auth', () => {
       await fs.mkdir(claudeDir('alpha'), { recursive: true })
       await fs.mkdir(claudeDir('beta'), { recursive: true })
       await fanOutClaudePlaceholders(SAMPLE_BUNDLE)
-      for (const slug of ['alpha', 'beta']) {
-        const raw = await fs.readFile(projectClaudeCredentialsFile(slug), 'utf8')
+      for (const projectId of ['alpha', 'beta']) {
+        const raw = await fs.readFile(projectClaudeCredentialsFile(projectId), 'utf8')
         const parsed = JSON.parse(raw) as { claudeAiOauth: ClaudeOAuthBundle }
         expect(parsed.claudeAiOauth.accessToken).toBe(PLACEHOLDER_ACCESS_TOKEN)
       }
@@ -290,11 +290,11 @@ describe('tool-auth', () => {
       expect(await readProjectClaudeBundle('broken')).toBeNull()
     })
 
-    it('lists every tracked project slug, and none before any project exists', async () => {
-      expect(await listCredentialProjectSlugs()).toEqual([])
+    it('lists every tracked project projectId, and none before any project exists', async () => {
+      expect(await listCredentialProjectIds()).toEqual([])
       await fs.mkdir(claudeDir('alpha'), { recursive: true })
       await fs.mkdir(claudeDir('beta'), { recursive: true })
-      expect((await listCredentialProjectSlugs()).sort()).toEqual(['alpha', 'beta'])
+      expect((await listCredentialProjectIds()).sort()).toEqual(['alpha', 'beta'])
     })
   })
 

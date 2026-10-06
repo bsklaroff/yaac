@@ -38,12 +38,12 @@ import { waitFor } from '#lib/wait-for'
  * stamp degrades a listing, while a skipped teardown leaks a runtime.
  */
 async function recordStop(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
   cause: WorkspaceDeathCause | undefined,
 ): Promise<void> {
-  await applyWorkspaceEvent({ type: 'workspace-stopped', projectSlug, workspaceId, cause })
-    .catch((err: unknown) => serverLog(`[server] record stop ${projectSlug}/${workspaceId}: ${String(err)}`))
+  await applyWorkspaceEvent({ type: 'workspace-stopped', projectId, workspaceId, cause })
+    .catch((err: unknown) => serverLog(`[server] record stop ${projectId}/${workspaceId}: ${String(err)}`))
 }
 
 /**
@@ -69,12 +69,12 @@ function detachedTeardownSettled(workspaceId: string): Promise<void> {
  * `rm -rf` through a link would delete host files.
  */
 async function checkoutEphemeralPaths(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
 ): Promise<Array<{ abs: string; remove: () => Promise<void> }>> {
-  const checkout = await openRoot(workspaceDir(projectSlug, workspaceId), 'inside').catch(() => null)
+  const checkout = await openRoot(workspaceDir(projectId, workspaceId), 'inside').catch(() => null)
   if (checkout === null) return []
-  const config = await resolveProjectConfig(projectSlug).catch(() => null)
+  const config = await resolveProjectConfig(projectId).catch(() => null)
   const paths: Array<{ abs: string; remove: () => Promise<void> }> = []
   for (const rel of resolveEphemeralModulesPaths(config)) {
     const at = await checkout.parent(rel).catch(() => null)
@@ -106,21 +106,21 @@ async function checkoutEphemeralPaths(
  * reaper surfaces it as a stopped workspace the user can delete.
  */
 export async function deleteWorkspaceState(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
 ): Promise<boolean> {
   // An empty id would resolve to the workspaces root and delete them all.
   if (!workspaceId) {
-    serverLog(`[server] delete workspace state ${projectSlug}: refused an empty workspace id`)
+    serverLog(`[server] delete workspace state ${projectId}: refused an empty workspace id`)
     return false
   }
   const outcomes = await Promise.all([
-    fs.rm(workspaceDir(projectSlug, workspaceId), { recursive: true, force: true }),
-    fs.rm(opencodeCheckpointDir(projectSlug, workspaceId), { recursive: true, force: true }),
-    fs.rm(acpLogDir(projectSlug, workspaceId), { recursive: true, force: true }),
-    removeAgentHistory(projectSlug, workspaceId),
+    fs.rm(workspaceDir(projectId, workspaceId), { recursive: true, force: true }),
+    fs.rm(opencodeCheckpointDir(projectId, workspaceId), { recursive: true, force: true }),
+    fs.rm(acpLogDir(projectId, workspaceId), { recursive: true, force: true }),
+    removeAgentHistory(projectId, workspaceId),
   ].map((p) => p.then(() => true, (err: unknown) => {
-    serverLog(`[server] delete workspace state ${projectSlug}/${workspaceId}: ${String(err)}`)
+    serverLog(`[server] delete workspace state ${projectId}/${workspaceId}: ${String(err)}`)
     return false
   })))
   return outcomes.every(Boolean)
@@ -134,17 +134,17 @@ export async function deleteWorkspaceState(
  */
 async function beginTeardown(params: {
   jobName: string
-  projectSlug: string
+  projectId: string
   workspaceId: string
   cause?: WorkspaceDeathCause
   recordStop: boolean
 }): Promise<TeardownTarget> {
-  const { jobName, projectSlug, workspaceId, cause } = params
+  const { jobName, projectId, workspaceId, cause } = params
   markWorkspaceTerminating(workspaceId)
-  if (params.recordStop) await recordStop(projectSlug, workspaceId, cause)
-  forgetLiveness(projectSlug, workspaceId)
-  evictWorkspaceStatus(projectSlug, workspaceId)
-  return { projectSlug, workspaceId, unitName: jobName }
+  if (params.recordStop) await recordStop(projectId, workspaceId, cause)
+  forgetLiveness(projectId, workspaceId)
+  evictWorkspaceStatus(projectId, workspaceId)
+  return { projectId, workspaceId, unitName: jobName }
 }
 
 /**
@@ -157,13 +157,13 @@ async function beginTeardown(params: {
  */
 export async function cleanupWorkspace(params: {
   jobName: string
-  projectSlug: string
+  projectId: string
   workspaceId: string
   /** Why the workspace died, when a reaper is tearing it down. Shown in the
    *  deleted-workspace view. */
   cause?: WorkspaceDeathCause
 }): Promise<boolean> {
-  const { projectSlug, workspaceId } = params
+  const { projectId, workspaceId } = params
   const target = await beginTeardown({ ...params, recordStop: true })
   const runtimeGone = await workspaceDriver().destroy(target)
 
@@ -173,12 +173,12 @@ export async function cleanupWorkspace(params: {
   // startup orphan sweep remove them later.
   if (runtimeGone) {
     // Best-effort: a node still unmounting answers EBUSY.
-    for (const p of await checkoutEphemeralPaths(projectSlug, workspaceId)) {
+    for (const p of await checkoutEphemeralPaths(projectId, workspaceId)) {
       await p.remove().catch((err: unknown) => {
         serverLog(`[server] remove ${p.abs} at stop: ${String(err)}`)
       })
     }
-    await fs.rm(workspaceStateDir(projectSlug, workspaceId), { recursive: true, force: true })
+    await fs.rm(workspaceStateDir(projectId, workspaceId), { recursive: true, force: true })
   }
 
   console.log(`Session ${workspaceId} cleaned up.`)
@@ -191,7 +191,7 @@ export async function cleanupWorkspace(params: {
  */
 export async function cleanupWorkspaceDetached(params: {
   jobName: string
-  projectSlug: string
+  projectId: string
   workspaceId: string
   /** Why the workspace died, when a reaper is tearing it down. */
   cause?: WorkspaceDeathCause
@@ -200,7 +200,7 @@ export async function cleanupWorkspaceDetached(params: {
    *  restart), which would otherwise overwrite the real cause. */
   preserveDeletedRecord?: boolean
 }): Promise<void> {
-  const { jobName, projectSlug, workspaceId, cause, preserveDeletedRecord } = params
+  const { jobName, projectId, workspaceId, cause, preserveDeletedRecord } = params
 
   // Register before the first await so a restart always waits for it.
   let settle: () => void = () => undefined
@@ -212,7 +212,7 @@ export async function cleanupWorkspaceDetached(params: {
   try {
     // The detached script's output is discarded, so log the teardown here.
     serverLog(
-      `[server] session teardown: session=${workspaceId} job=${jobName} project=${projectSlug}`
+      `[server] session teardown: session=${workspaceId} job=${jobName} project=${projectId}`
       + (cause ? ` cause=${cause.reason}${cause.detail ? ` (${cause.detail})` : ''}` : ''),
     )
 
@@ -223,11 +223,11 @@ export async function cleanupWorkspaceDetached(params: {
     // cannot reach.
     await runtime.deregisterWorkspace(workspaceId)
 
-    const ephemeralModulesRms = (await checkoutEphemeralPaths(projectSlug, workspaceId))
+    const ephemeralModulesRms = (await checkoutEphemeralPaths(projectId, workspaceId))
       .map((p) => `rm -rf ${shellQuote(p.abs)} 2>/dev/null || true`)
 
     const workspaceDirRm =
-      `rm -rf ${shellQuote(workspaceStateDir(projectSlug, workspaceId))} 2>/dev/null || true`
+      `rm -rf ${shellQuote(workspaceStateDir(projectId, workspaceId))} 2>/dev/null || true`
 
     // The runtime's teardown, then the workspace's own dirs. Every command is
     // idempotent, so a resumed teardown can re-run it all.
@@ -288,19 +288,19 @@ async function inUseBySweep(dir: string, sid: string, sweepStartedAtMs: number):
  * real workspaces are never touched.
  */
 async function gcOrphanSpares(
-  slug: string,
+  projectId: string,
   liveWorkspaceIds: Set<string>,
   sweepStartedAtMs: number,
 ): Promise<void> {
-  const rows = await listProjectWorkspaceIds(slug).catch(() => undefined)
+  const rows = await listProjectWorkspaceIds(projectId).catch(() => undefined)
   if (rows === undefined) return
   for (const [sid, spare] of rows) {
     if (!spare || liveWorkspaceIds.has(sid)) continue
-    if (await inUseBySweep(workspaceDir(slug, sid), sid, sweepStartedAtMs)) continue
+    if (await inUseBySweep(workspaceDir(projectId, sid), sid, sweepStartedAtMs)) continue
     // Keep the row if the delete failed, so the next sweep can retry.
-    if (!await deleteWorkspaceState(slug, sid)) continue
-    await deleteSpareWorkspaceRow(slug, sid).catch(() => { /* next sweep */ })
-    console.log(`Removed orphan prewarmed spare ${slug}/${sid}`)
+    if (!await deleteWorkspaceState(projectId, sid)) continue
+    await deleteSpareWorkspaceRow(projectId, sid).catch(() => { /* next sweep */ })
+    console.log(`Removed orphan prewarmed spare ${projectId}/${sid}`)
   }
 }
 
@@ -341,13 +341,13 @@ export async function gcOrphanEphemeralModuleDirs(view: RuntimeSnapshot): Promis
   const sweepStartedAtMs = Date.now()
   const live = await liveWorkspaceIds(view)
 
-  const projectSlugs = await fs.readdir(getProjectsDir()).catch((): string[] => [])
+  const projectIds = await fs.readdir(getProjectsDir()).catch((): string[] => [])
 
-  for (const slug of projectSlugs) {
-    await gcOrphanSpares(slug, live, sweepStartedAtMs)
+  for (const projectId of projectIds) {
+    await gcOrphanSpares(projectId, live, sweepStartedAtMs)
 
     // Per-workspace staging dirs (skills, workspace bin), one per id.
-    const workspacesRoot = globalProjectPath(slug, 'sessions')
+    const workspacesRoot = globalProjectPath(projectId, 'sessions')
     let workspaceEntries: string[] = []
     try {
       workspaceEntries = await fs.readdir(workspacesRoot)
@@ -385,13 +385,13 @@ const RESTART_TEARDOWN_WAIT_MS = 90_000
  */
 export async function teardownForRestart(params: {
   jobName: string | null
-  projectSlug: string
+  projectId: string
   workspaceId: string
 }): Promise<void> {
-  const { jobName, projectSlug, workspaceId } = params
+  const { jobName, projectId, workspaceId } = params
   // A detached teardown may still be running even when `jobName` is null.
   await detachedTeardownSettled(workspaceId)
-  const gone = !jobName || await cleanupWorkspace({ jobName, projectSlug, workspaceId })
+  const gone = !jobName || await cleanupWorkspace({ jobName, projectId, workspaceId })
     || await waitFor(async () => await workspaceDriver().findForTeardown(workspaceId) === undefined,
       { timeoutMs: RESTART_TEARDOWN_WAIT_MS, intervalMs: 1_000 })
   if (!gone) {

@@ -15,8 +15,8 @@
  *  3. The unassigned project's picker: "New HTTPS token…", a pasted token,
  *     Assign — the project moves under the new credential and out of the
  *     unassigned list.
- *  4. Add project with a new HTTPS token (named `<slug>-token` for the slug
- *     the remote becomes). The token is stored exactly once whatever the
+ *  4. Add project with a new HTTPS token (named `<name>-token` for the
+ *     project name the remote becomes). The token is stored exactly once whatever the
  *     clone does. A clone that succeeds adds and selects the project; one the
  *     host refuses shows the error, with the picker now holding the stored
  *     token for a retry.
@@ -37,6 +37,7 @@
  * be a project), GIT_TOKEN (default a fake one).
  */
 import { execFileSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { api, check, DATA_DIR, finish, origin, requirePlaywright, SHOTS, until } from './lib.js'
@@ -46,22 +47,27 @@ const ADD_URL = process.env.ADD_URL ?? 'https://github.com/octocat/Spoon-Knife'
 const GIT_TOKEN = process.env.GIT_TOKEN ?? 'ghp_fakefakefakefakefakefakefakefake0000'
 /** `until` as a boolean, for checks that report a timeout as a failure. */
 const holds = (...args) => until(...args).then(() => true, () => false)
-const slugOf = (url) => url.replace(/\.git$/, '').split('/').pop().toLowerCase()
+/** The name the server derives for a remote's project. */
+const nameOf = (url) => url.replace(/\.git$/, '').split('/').pop().toLowerCase()
 
 const projects = async () => await api('/project/list')
 const credentials = async () => (await api('/auth/list')).gitCredentials
 
 // Setup: a project with no credential, staged on disk and recorded as is.
-const unassigned = slugOf(UNASSIGNED_URL)
-if (!(await projects()).some((p) => p.slug === unassigned)) {
+// Projects are found by remote, since a name can be shared.
+let unassigned = (await projects()).find((p) => p.remoteUrl === UNASSIGNED_URL)?.id
+if (unassigned === undefined) {
+  unassigned = randomUUID()
   const dir = path.join(DATA_DIR, 'global', 'projects', unassigned)
   execFileSync('git', ['clone', '--quiet', UNASSIGNED_URL, path.join(dir, 'repo')])
   fs.mkdirSync(path.join(dir, 'claude'), { recursive: true })
-  await api('/project/register', { method: 'POST', body: { slug: unassigned, remoteUrl: UNASSIGNED_URL } })
+  await api('/project/register', {
+    method: 'POST', body: { id: unassigned, name: nameOf(UNASSIGNED_URL), remoteUrl: UNASSIGNED_URL },
+  })
 }
-if ((await projects()).some((p) => p.slug === slugOf(ADD_URL))) {
-  throw new Error(`${slugOf(ADD_URL)} is already a project — pick another ADD_URL`)
-}
+const unassignedName = (await projects()).find((p) => p.id === unassigned).name
+const addedProject = async () => (await projects()).find((p) => p.remoteUrl === ADD_URL)
+if (await addedProject()) throw new Error(`${ADD_URL} is already a project — pick another ADD_URL`)
 
 const { chromium } = requirePlaywright()
 const browser = await chromium.launch()
@@ -81,9 +87,9 @@ try {
   })
   await page.goto(`${origin}/?project=${unassigned}`)
 
-  const row = (slug) => page.locator(`[data-project="${slug}"]`)
-  const highlighted = (slug) => row(slug).waitFor({ timeout: 10_000 }).then(
-    async () => /ring-accent/.test(await row(slug).getAttribute('class') ?? ''),
+  const row = (projectId) => page.locator(`[data-project="${projectId}"]`)
+  const highlighted = (projectId) => row(projectId).waitFor({ timeout: 10_000 }).then(
+    async () => /ring-accent/.test(await row(projectId).getAttribute('class') ?? ''),
     () => false,
   )
   const unassignedList = page.locator('div.mt-6', { hasText: 'Projects without git authentication' })
@@ -135,17 +141,17 @@ try {
   const picker = unassignedList.locator(`[data-project="${unassigned}"]`)
   await picker.getByLabel('Git credential').selectOption('new')
   const tokenName = await picker.getByLabel('Credential name').inputValue()
-  check('the token\'s name defaults to the project\'s', tokenName === `${unassigned}-token`, tokenName)
+  check('the token\'s name defaults to the project\'s', tokenName === `${unassignedName}-token`, tokenName)
   await picker.getByLabel('Token').fill(GIT_TOKEN)
   await picker.getByRole('button', { name: 'Assign' }).click()
-  const moved = await holds(page, (slug) => {
+  const moved = await holds(page, (projectId) => {
     const lists = [...document.querySelectorAll('div.mt-6')]
     const bottom = lists.find((d) => d.textContent?.includes('Projects without git authentication'))
-    return !bottom?.querySelector(`[data-project="${slug}"]`) && document.querySelector(`[data-project="${slug}"]`) !== null
+    return !bottom?.querySelector(`[data-project="${projectId}"]`) && document.querySelector(`[data-project="${projectId}"]`) !== null
   }, unassigned, 10_000)
   check('the project moves under its new credential', moved)
   check('with no picker reopened on it', await row(unassigned).getByRole('button', { name: 'Change' }).isVisible())
-  const assigned = (await projects()).find((p) => p.slug === unassigned)
+  const assigned = (await projects()).find((p) => p.id === unassigned)
   const creds = await credentials()
   const token = creds.find((c) => c.name === tokenName)
   check('the server has it assigned', token !== undefined && token.projects.includes(unassigned),
@@ -159,7 +165,7 @@ try {
   const dialog = page.getByRole('dialog')
   await dialog.getByLabel('Git credential').selectOption('new')
   const newName = await dialog.getByLabel('Credential name').inputValue()
-  check('the new token\'s default name is the new project\'s', newName === `${slugOf(ADD_URL)}-token`, newName)
+  check('the new token\'s default name is the new project\'s', newName === `${nameOf(ADD_URL)}-token`, newName)
   await dialog.getByLabel('Token').fill(GIT_TOKEN)
   await page.screenshot({ path: path.join(SHOTS, 'add-project-new-token.png') })
   await dialog.getByRole('button', { name: 'Add' }).click()
@@ -171,12 +177,13 @@ try {
   check('the add settles within 60s', settled)
   const stored = (await credentials()).filter((c) => c.name === newName)
   check('the token is stored exactly once', stored.length === 1, `${stored.length}`)
-  if ((await projects()).some((p) => p.slug === slugOf(ADD_URL))) {
-    check('the project is added with it', stored[0]?.projects.includes(slugOf(ADD_URL)) === true,
+  const added = await addedProject()
+  if (added) {
+    check('the project is added with it', stored[0]?.projects.includes(added.id) === true,
       JSON.stringify(stored[0]?.projects))
     check('the dialog closes', await dialog.count() === 0)
     check('and the new project is selected', await holds(page,
-      (slug) => new URLSearchParams(location.search).get('project') === slug, slugOf(ADD_URL), 5_000))
+      (projectId) => new URLSearchParams(location.search).get('project') === projectId, added.id, 5_000))
   } else {
     console.log(`      clone refused: ${await error.textContent().catch(() => '(no error shown)')}`)
     check('the clone\'s refusal shows', await error.isVisible())
@@ -205,7 +212,7 @@ try {
   const confirm = page.getByRole('alertdialog')
   await confirm.waitFor({ timeout: 5_000 })
   check('the delete confirmation names the stranded project',
-    (await confirm.textContent()).includes(`${unassigned} will be left with no git credential`))
+    (await confirm.textContent()).includes(`${unassignedName} will be left with no git credential`))
   await page.screenshot({ path: path.join(SHOTS, 'git-credentials-delete-confirm.png') })
   check('focus starts on Cancel, not Delete',
     await holds(page, () => document.activeElement?.textContent === 'Cancel', null, 2_000))

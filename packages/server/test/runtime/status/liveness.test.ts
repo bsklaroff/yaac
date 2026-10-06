@@ -25,12 +25,12 @@ const execMock = vi.fn<WorkspaceDriver['exec']>()
 const transportFailure = (msg: string): Error => new Error(msg)
 
 /** The identity + unit name a probe addresses, by this suite's convention. */
-function target(slug: string, sid: string): {
-  projectSlug: string
+function target(projectId: string, sid: string): {
+  projectId: string
   workspaceId: string
   jobName: string
 } {
-  return { projectSlug: slug, workspaceId: sid, jobName: `yaac-${slug}-${sid}` }
+  return { projectId: projectId, workspaceId: sid, jobName: `yaac-${projectId}-${sid}` }
 }
 
 describe('isTmuxSessionAlive', () => {
@@ -48,8 +48,8 @@ describe('isTmuxSessionAlive', () => {
     await fs.rm(dataDir, { recursive: true, force: true })
   })
 
-  function setProbeResult(slug: string, sid: string, alive: boolean): void {
-    const job = `yaac-${slug}-${sid}`
+  function setProbeResult(projectId: string, sid: string, alive: boolean): void {
+    const job = `yaac-${projectId}-${sid}`
     execMock.mockImplementation((jobName, cmd) => {
       if (jobName === job && cmd.includes('has-session')) {
         return alive
@@ -92,7 +92,7 @@ describe('isTmuxSessionAlive', () => {
     expect(execMock).toHaveBeenCalledTimes(1)
   })
 
-  it('caches per (slug, sid), not globally', async () => {
+  it('caches per (projectId, sid), not globally', async () => {
     execMock.mockImplementation((jobName) => {
       return jobName === 'yaac-p-s-a'
         ? Promise.resolve({ stdout: '', stderr: '' })
@@ -128,8 +128,8 @@ describe('probeAgentPaneState', () => {
     await fs.rm(dataDir, { recursive: true, force: true })
   })
 
-  function setPaneCommand(slug: string, sid: string, command: string | Error): void {
-    const job = `yaac-${slug}-${sid}`
+  function setPaneCommand(projectId: string, sid: string, command: string | Error): void {
+    const job = `yaac-${projectId}-${sid}`
     execMock.mockImplementation((jobName, cmd) => {
       if (jobName === job && cmd.includes('display-message')) {
         return command instanceof Error

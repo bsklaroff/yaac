@@ -40,13 +40,13 @@ export interface WorkspaceCreateOptions {
  * Options left unset are omitted so the server fills them from what the
  * project last used, matching the web app's form and the prewarmed spare.
  */
-export async function workspaceCreate(projectSlug: string, options: WorkspaceCreateOptions): Promise<void> {
+export async function workspaceCreate(project: string, options: WorkspaceCreateOptions): Promise<void> {
   // Best-effort, so a CLI-only user's workspaces get their zone too.
   await reportDeviceTimeZone().catch(() => {})
 
   await attachStarted(await api.workspace.create.$post({
     json: {
-      project: projectSlug,
+      project,
       tool: options.tool,
       branch: options.branch,
       prompt: options.prompt,

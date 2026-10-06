@@ -16,11 +16,11 @@ describe('useProvisionWorkspace', () => {
     })
 
     expect(useUiStore.getState().optimisticProvisioning).toMatchObject([
-      { workspaceId: 'sid-1', projectSlug: 'proj', tool: 'claude', kind: 'create', message: 'Starting…' },
+      { workspaceId: 'sid-1', projectId: 'proj', tool: 'claude', kind: 'create', message: 'Starting…' },
     ])
     // Auto-open: selected and the project switched so progress shows immediately.
     expect(useUiStore.getState().selectedWorkspaceId).toBe('sid-1')
-    expect(useUiStore.getState().activeProjectSlug).toBe('proj')
+    expect(useUiStore.getState().activeProjectId).toBe('proj')
   })
 
   // A restart starts from a ghost row inside a group. The optimistic row must

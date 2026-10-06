@@ -78,8 +78,8 @@ afterEach(async () => {
 })
 
 /** Put a project on disk by giving it a claude tool home. */
-async function seedProject(slug: string, bundle: ClaudeOAuthBundle): Promise<void> {
-  await writeProjectClaudeCredentials(slug, bundle)
+async function seedProject(projectId: string, bundle: ClaudeOAuthBundle): Promise<void> {
+  await writeProjectClaudeCredentials(projectId, bundle)
 }
 
 describe('runtimeMediatesEgress', () => {
@@ -184,12 +184,12 @@ describe('harvestToolCredentials', () => {
     expect(await loadClaudeCredentialsFile()).toMatchObject({ kind: 'api-key', apiKey: 'sk-ant-key' })
   })
 
-  it('sweeps one project when given a slug, and every project otherwise', async () => {
+  it('sweeps one project when given a projectId, and every project otherwise', async () => {
     await saveClaudeOAuthBundle(claudeBundle())
     await seedProject('alpha', claudeBundle({ accessToken: 'a-fresh', expiresAt: BASE_EXPIRY + HOUR }))
     await seedProject('beta', claudeBundle({ accessToken: 'b-fresher', expiresAt: BASE_EXPIRY + 2 * HOUR }))
 
-    await harvestToolCredentials({ slug: 'alpha' })
+    await harvestToolCredentials({ projectId: 'alpha' })
     expect(await loadClaudeCredentialsFile()).toMatchObject({ claudeAiOauth: { accessToken: 'a-fresh' } })
 
     // The sweep takes the newest bundle, not the first it sees.
@@ -376,8 +376,8 @@ describe('fanOutToolCredentials', () => {
 
     await fanOutToolCredentials('claude', { mediatedEgress: false })
 
-    for (const slug of ['alpha', 'beta']) {
-      expect(await readProjectClaudeBundle(slug)).toMatchObject({
+    for (const projectId of ['alpha', 'beta']) {
+      expect(await readProjectClaudeBundle(projectId)).toMatchObject({
         accessToken: 'claude-access-new-account',
       })
     }

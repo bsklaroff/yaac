@@ -19,20 +19,19 @@ import { dropProjectClaudeKeychainItem } from '@yaac/shared/tool-auth'
  * again. Lives here rather than in #domain/projects to avoid an import
  * cycle.
  */
-export async function removeProject(slug: string): Promise<void> {
-  const row = await getProjectRow(slug)
-  if (!row) throw new ServerError('NOT_FOUND', `project ${slug} not found`)
+export async function removeProject(projectId: string): Promise<void> {
+  if (!await getProjectRow(projectId)) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
 
-  await purgeProjectBytes({ slug, id: row.id })
-  // The macOS Keychain item containerless claude keys on the tool home path;
-  // otherwise a new project with this slug would find it. No-op elsewhere.
-  dropProjectClaudeKeychainItem(slug)
+  await purgeProjectBytes(projectId)
+  // The macOS Keychain item containerless claude keys on the tool home path.
+  // No-op elsewhere.
+  dropProjectClaudeKeychainItem(projectId)
 
-  await deleteProjectWorkspaces(slug)
-  await deleteProjectAgentSessions(slug)
-  await deleteProjectWorkspaceGroups(slug)
-  await deleteProjectQueuedWorkspaces(slug)
-  await deleteProjectDraftWorkspaces(slug)
-  await deleteProjectEnvVars(slug)
-  await deleteProjectRow(slug)
+  await deleteProjectWorkspaces(projectId)
+  await deleteProjectAgentSessions(projectId)
+  await deleteProjectWorkspaceGroups(projectId)
+  await deleteProjectQueuedWorkspaces(projectId)
+  await deleteProjectDraftWorkspaces(projectId)
+  await deleteProjectEnvVars(projectId)
+  await deleteProjectRow(projectId)
 }

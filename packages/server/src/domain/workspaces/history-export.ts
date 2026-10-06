@@ -34,11 +34,11 @@ const UNLISTABLE = /[\x00-\x1f\x7f\\"]/
 /** Each conversation with the files it left (none for one with none on the
  *  host). */
 export async function withFiles(
-  slug: string,
+  projectId: string,
   workspaceId: string,
   rows: AgentSessionLinkRow[],
 ): Promise<HistoryConversation[]> {
-  const files = await conversationFiles(slug, workspaceId, rows)
+  const files = await conversationFiles(projectId, workspaceId, rows)
   return rows.map((row) => ({
     row,
     files: (files.get(row.agentSessionId) ?? []).filter((f) => !UNLISTABLE.test(f.name)),

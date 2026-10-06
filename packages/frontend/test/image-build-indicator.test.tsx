@@ -33,7 +33,7 @@ function build(overrides: Partial<ImageBuildEntry> = {}): ImageBuildEntry {
     id: 'build-1',
     tag: 'yaac-base:abc123',
     layer: 'base',
-    projectSlugs: ['proj'],
+    projectIds: ['proj'],
     reason: 'prewarm',
     status: 'running',
     startedAt: '2026-07-06 00:00:00',
@@ -57,68 +57,68 @@ describe('ImageBuildIndicator', () => {
     // Finished rows stay until dismissed, so the pill stays too, as the way
     // to reach them.
     stubSnapshot([build({ status: 'succeeded' })])
-    renderWithClient(<ImageBuildIndicator projectSlug="proj" />)
+    renderWithClient(<ImageBuildIndicator projectId="proj" />)
     const pill = screen.getByRole('button', { name: 'Show image build history' })
     expect(pill.textContent).toBe('builds')
   })
 
   it('renders nothing when there are no builds in scope', () => {
     stubSnapshot([])
-    renderWithClient(<ImageBuildIndicator projectSlug="proj" />)
+    renderWithClient(<ImageBuildIndicator projectId="proj" />)
     expect(screen.queryByRole('button')).toBeNull()
   })
 
   it('renders nothing when the snapshot has not arrived yet', () => {
     vi.mocked(useSnapshot).mockReturnValue(undefined)
-    renderWithClient(<ImageBuildIndicator projectSlug="proj" />)
+    renderWithClient(<ImageBuildIndicator projectId="proj" />)
     expect(screen.queryByRole('button')).toBeNull()
   })
 
   it('shows a building pill while a build runs', () => {
     stubSnapshot([build()])
-    renderWithClient(<ImageBuildIndicator projectSlug="proj" />)
+    renderWithClient(<ImageBuildIndicator projectId="proj" />)
     const pill = screen.getByRole('button', { name: 'Show image build progress' })
     expect(pill.textContent).toBe('building')
   })
 
   it('counts multiple concurrent builds', () => {
     stubSnapshot([build(), build({ id: 'build-2', tag: 'yaac-tools:def' })])
-    renderWithClient(<ImageBuildIndicator projectSlug="proj" />)
+    renderWithClient(<ImageBuildIndicator projectId="proj" />)
     const pill = screen.getByRole('button', { name: 'Show image build progress' })
     expect(pill.textContent).toBe('building 2')
   })
 
   it('shows a failure pill when nothing runs but a build failed', () => {
     stubSnapshot([build({ status: 'failed', error: 'boom' })])
-    renderWithClient(<ImageBuildIndicator projectSlug="proj" />)
+    renderWithClient(<ImageBuildIndicator projectId="proj" />)
     const pill = screen.getByRole('button', { name: 'Show failed image builds' })
     expect(pill.textContent).toBe('build failed')
   })
 
   it('prefers the building pill over the failure pill', () => {
     stubSnapshot([build(), build({ id: 'build-2', status: 'failed' })])
-    renderWithClient(<ImageBuildIndicator projectSlug="proj" />)
+    renderWithClient(<ImageBuildIndicator projectId="proj" />)
     expect(screen.getByRole('button', { name: 'Show image build progress' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Show failed image builds' })).toBeNull()
   })
 
   it('opens the builds overlay on click', () => {
     stubSnapshot([build()])
-    renderWithClient(<ImageBuildIndicator projectSlug="proj" />)
+    renderWithClient(<ImageBuildIndicator projectId="proj" />)
     expect(screen.queryByText('Image builds')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Show image build progress' }))
     expect(screen.getByText('Image builds')).toBeTruthy()
   })
 
   it('hides a build that belongs to a different project', () => {
-    stubSnapshot([build({ projectSlugs: ['other'] })])
-    renderWithClient(<ImageBuildIndicator projectSlug="proj" />)
+    stubSnapshot([build({ projectIds: ['other'] })])
+    renderWithClient(<ImageBuildIndicator projectId="proj" />)
     expect(screen.queryByRole('button')).toBeNull()
   })
 
   it('shows nothing with no active project', () => {
     stubSnapshot([build()])
-    renderWithClient(<ImageBuildIndicator projectSlug={null} />)
+    renderWithClient(<ImageBuildIndicator projectId={null} />)
     expect(screen.queryByRole('button')).toBeNull()
   })
 })

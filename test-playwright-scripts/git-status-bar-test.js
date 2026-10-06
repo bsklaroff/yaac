@@ -50,7 +50,7 @@ await page.addInitScript(() => {
   }
   requestAnimationFrame(sample)
 })
-await page.goto(`${origin}/?${new URLSearchParams({ project: wt.projectSlug, workspace: wt.workspaceId })}`)
+await page.goto(`${origin}/?${new URLSearchParams({ project: wt.projectId, workspace: wt.workspaceId })}`)
 
 const want = expectedLine(status)
 const bar = page.locator('span.truncate', { hasText: want }).first()

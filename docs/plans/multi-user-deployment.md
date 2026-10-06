@@ -69,7 +69,7 @@ single place to authorize.
 - **Projects are keyed by uuid.** `projects.id` replaces the slug as the key
   everywhere (rows, data dir, routes, proxy registrations, secret refs,
   labels); the repo-derived `name` is display-only and not unique. This
-  lands first, as its own change.
+  landed first, as its own change.
 - **No admin role.** With private projects and per-user settings, the only
   shared writes left are retrying and dismissing builds of the shared images
   (base, tools, nestable, proxy, netd), which are harmless and open to every
@@ -234,7 +234,7 @@ stays per workspace.
 
 ## Work, in landing order
 
-1. **Key projects by uuid** (in progress as its own change).
+1. **Key projects by uuid** — shipped.
 2. **Access modes**: the recorded mode, `--tailnet`/`--owner` on `yaac
    server start` and `yaac cluster install`, the refusals, the containerless
    mama loopback exception, the built-in `local` user.

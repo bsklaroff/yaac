@@ -30,14 +30,14 @@ function registrationObject(workspaceId: string, reg: Partial<ProxyRegistration>
   return {
     metadata: { name: `yaac-proxy-reg-${workspaceId}`, labels: { [LABEL_WORKSPACE_ID]: workspaceId } },
     data: { 'registration.json': JSON.stringify({
-      rules: [], allowedHosts: ['api.example.com'], tool: 'claude', projectSlug: 'demo', ...reg,
+      rules: [], allowedHosts: ['api.example.com'], tool: 'claude', projectId: 'demo', ...reg,
     }) },
   }
 }
 
 const PUBLIC_KEY = `ssh-ed25519 ${Buffer.from('blob').toString('base64')} yaac`
-const grant = (slug: string, host = 'github.com') =>
-  ({ slug, host, knownHostsEntry: `${host} ssh-ed25519 H` })
+const grant = (projectId: string, host = 'github.com') =>
+  ({ projectId, host, knownHostsEntry: `${host} ssh-ed25519 H` })
 const sshKey = (...projects: SshCredentialEntry['projects']): SshCredentialEntry =>
   ({ privateKey: 'K', publicKey: PUBLIC_KEY, projects })
 
@@ -97,7 +97,7 @@ describe('ProxyObjects', () => {
       'ssh-keys.json': [sshKey(grant('other'), grant('demo'))],
     }))
     expect(loads).toHaveLength(1)
-    expect(objects.credentials.ssh[0].projects.map((p) => p.slug)).toEqual(['other', 'demo'])
+    expect(objects.credentials.ssh[0].projects.map((p) => p.projectId)).toEqual(['other', 'demo'])
 
     // A new host is a new constraint, which needs a reload…
     await objects.applyCredentials(credentialsSecret({

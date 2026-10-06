@@ -6,7 +6,7 @@ import { requireDriverFeature } from '#http'
 
 /**
  * Routes over one build dir's support files, mounted under
- * `/project/:slug/build-files` and `/config/user-build-files`; `resolveRoot`
+ * `/project/:projectId/build-files` and `/config/user-build-files`; `resolveRoot`
  * gives the build dir per request.
  *
  * Writes take JSON (`content` for text, `contentBase64` for uploads) rather

@@ -116,7 +116,7 @@ export function WorkspaceView({
   const setWorkspaceLayout = useUiStore((s) => s.setWorkspaceLayout)
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
   const sidebarOpen = useUiStore((s) => s.sidebarOpen)
-  const activeProjectSlug = useUiStore((s) => s.activeProjectSlug)
+  const activeProjectId = useUiStore((s) => s.activeProjectId)
   const viewMode = useUiStore((s) => s.viewMode)
   const setViewMode = useUiStore((s) => s.setViewMode)
   const activeTabs = useUiStore((s) => s.activeTabs)
@@ -136,7 +136,7 @@ export function WorkspaceView({
   const workspace = workspaces.find((s) => s.workspaceId === selectedWorkspaceId)
   const sid = workspace?.workspaceId ?? null
   // Project-wide, but shown here since it breaks git in this workspace too.
-  const gitAuthFailures = (workspace && snapshot?.gitAuthFailures?.[workspace.projectSlug]) || []
+  const gitAuthFailures = (workspace && snapshot?.gitAuthFailures?.[workspace.projectId]) || []
 
   // Forwarded ports open in the embedded preview in the desktop app, and as
   // external-link chips in a browser.
@@ -501,7 +501,7 @@ export function WorkspaceView({
           )}
           {gitAuthFailures.length > 0 && (
             <GitAuthFailureBadge
-              projectSlug={workspace.projectSlug}
+              projectId={workspace.projectId}
               failures={gitAuthFailures}
               iconSize={12}
               className="hover:bg-danger/25"
@@ -539,8 +539,8 @@ export function WorkspaceView({
             icon={TerminalIcon}
             title="No workspaces yet"
             description="Start a coding-agent workspace and it opens right here."
-            action={activeProjectSlug
-              ? <NewWorkspaceButton projectSlug={activeProjectSlug} variant="cta" />
+            action={activeProjectId
+              ? <NewWorkspaceButton projectId={activeProjectId} variant="cta" />
               : undefined}
           />
         )}
@@ -669,7 +669,7 @@ export function WorkspaceView({
                     return (
                       <WorkspaceChanges
                         workspaceId={id}
-                        projectSlug={cs?.projectSlug ?? ''}
+                        projectId={cs?.projectId ?? ''}
                         baseBranch={cs?.baseBranch}
                         focusKey={id === sid && target === focusTarget ? focusNonce : undefined}
                       />

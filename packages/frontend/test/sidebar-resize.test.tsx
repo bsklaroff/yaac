@@ -50,7 +50,7 @@ afterEach(() => {
 function renderSidebar(): HTMLElement {
   renderWithClient(
     <Sidebar
-      projectSlug={null}
+      projectId={null}
       projectRemoteUrl=""
       workspaces={[]}
       groups={[]}

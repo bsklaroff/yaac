@@ -14,12 +14,14 @@ const mockRunHost = vi.hoisted(() => vi.fn())
 const mockKillPids = vi.hoisted(() => vi.fn())
 const mockDescendants = vi.hoisted(() => vi.fn())
 const mockIsSshAgentFor = vi.hoisted(() => vi.fn())
+const mockLivePids = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/containerless/host', async (importOriginal) => ({
   ...(await importOriginal<typeof hostModule>()),
   runHost: mockRunHost,
   killPids: mockKillPids,
   descendantPids: mockDescendants,
   isSshAgentFor: mockIsSshAgentFor,
+  livePids: mockLivePids,
 }))
 import {
   destroyProjectSubstrate,
@@ -38,7 +40,7 @@ import {
 
 const UUID = '4bfc59c6-1e83-4dd0-80f1-735294d5d2bb'
 const TARGET = {
-  projectSlug: 'demo',
+  projectId: 'demo',
   workspaceId: UUID,
   unitName: containerlessJobName('demo', UUID),
 }
@@ -48,7 +50,7 @@ let dataDir: string
  *  ssh-agent pid for a project with an SSH remote. */
 function registered(extra: { sshAgentPid?: number } = {}): void {
   rememberWorkspace({
-    projectSlug: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
+    projectId: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
     prewarm: false, createdAtMs: 1_000, launchEnv: {}, tmuxPid: 4242, ...extra,
   })
 }
@@ -68,6 +70,7 @@ beforeEach(() => {
   _resetRegistryForTests()
   mockRunHost.mockReset()
   mockKillPids.mockReset()
+  mockLivePids.mockReset().mockReturnValue([])
   mockDescendants.mockReset()
   mockDescendants.mockResolvedValue([4242])
   mockIsSshAgentFor.mockReset()
@@ -126,6 +129,27 @@ describe('destroyWorkspace', () => {
     expect(mockKillPids).toHaveBeenCalledWith([5150, 5151], 'SIGTERM')
   })
 
+  it('waits for every process under tmux to exit, and says so when one outlives the wait', async () => {
+    // An agent still exiting writes its last lines into paths the caller is
+    // about to delete or move.
+    registered()
+    mockDescendants.mockResolvedValue([4242, 5150])
+    mockLivePids.mockReturnValueOnce([5150]).mockReturnValue([])
+    await expect(destroyWorkspace(TARGET)).resolves.toBe(true)
+    expect(mockLivePids).toHaveBeenCalledTimes(2)
+
+    registered()
+    mockLivePids.mockReturnValue([5150])
+    vi.useFakeTimers()
+    try {
+      const verdict = destroyWorkspace(TARGET)
+      await vi.advanceTimersByTimeAsync(11_000)
+      await expect(verdict).resolves.toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('is a no-op against a workspace that is already gone', async () => {
     // Teardowns are re-issued (the reaper, a resumed stop), so an absent
     // workspace must still succeed.
@@ -161,7 +185,7 @@ describe('destroyWorkspace ssh-agent', () => {
     // workspace running; otherwise a workspace whose tmux died would leave
     // the agent holding its key until reboot.
     restoreWorkspace({
-      projectSlug: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
+      projectId: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
       prewarm: false, createdAtMs: 1_000, launchEnv: {}, tmuxPid: 4242, sshAgentPid: 777,
     }, false, { reason: 'agent-exited' })
 
@@ -191,13 +215,13 @@ describe('destroyWorkspace ssh-agent', () => {
   })
 })
 
-const DEMO = { slug: 'demo', id: '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d' }
+const DEMO = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d'
 const KEEPER_ID = '1f2e3d4c-5b6a-4978-8a6b-5c4d3e2f1a0b'
 
 describe('destroyProjectSubstrate', () => {
   it('removes the project\'s node-local tree and image store on this host, by id', async () => {
-    const tree = nodeLocalProjectPath(DEMO.id)
-    const store = imageStoreDir(DEMO.id)
+    const tree = nodeLocalProjectPath(DEMO)
+    const store = imageStoreDir(DEMO)
     await fsp.mkdir(path.join(tree, '.cached-packages', 'pnpm-store'), { recursive: true })
     await fsp.mkdir(path.join(store, 'gen-1'), { recursive: true })
     await fsp.mkdir(nodeLocalProjectPath(KEEPER_ID), { recursive: true })
@@ -221,15 +245,15 @@ describe('reapNodeLocal', () => {
   // Keyed on ids, so leftovers from a failed removal are collected, except a
   // tree written since the sweep began.
   it('removes node-local trees no live project id owns', async () => {
-    const live = await seed(nodeLocalProjectPath(DEMO.id))
-    const liveStore = await seed(imageStoreDir(DEMO.id))
+    const live = await seed(nodeLocalProjectPath(DEMO))
+    const liveStore = await seed(imageStoreDir(DEMO))
     const removed = await seed(nodeLocalProjectPath(KEEPER_ID))
     const removedStore = await seed(imageStoreDir(KEEPER_ID))
     const unknown = await seed(nodeLocalProjectPath('other'))
     const fresh = nodeLocalProjectPath('staging')
     await fsp.mkdir(fresh, { recursive: true })
 
-    await reapNodeLocal({ projectIds: new Set([DEMO.id]), workspaceIds: new Set([UUID]) })
+    await reapNodeLocal({ projectIds: new Set([DEMO]), workspaceIds: new Set([UUID]) })
 
     for (const dir of [live, liveStore, fresh]) {
       await expect(fsp.access(dir)).resolves.toBeUndefined()

@@ -23,9 +23,9 @@ import type { WorkspaceChange } from '@yaac/shared/types'
  * Files form an accordion; clicking one expands its diff inline. Polls the
  * server so it updates as work lands.
  */
-export function WorkspaceChanges({ workspaceId, projectSlug, baseBranch, focusKey }: {
+export function WorkspaceChanges({ workspaceId, projectId, baseBranch, focusKey }: {
   workspaceId: string
-  projectSlug: string
+  projectId: string
   baseBranch?: string
   /** Bumped when the pane is opened or cycled to, so it takes focus and
    *  Cmd/Ctrl-F works without the mouse. */
@@ -106,7 +106,7 @@ export function WorkspaceChanges({ workspaceId, projectSlug, baseBranch, focusKe
   // Base picker; its branches load when it opens.
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerQuery, setPickerQuery] = useState('')
-  const { data: branchData } = useProjectBranches(projectSlug, pickerOpen)
+  const { data: branchData } = useProjectBranches(projectId, pickerOpen)
 
   // Always send an explicit base, even the workspace's own fork branch. The
   // server default reads the workspace's git config, which `git push -u`

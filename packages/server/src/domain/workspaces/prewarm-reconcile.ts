@@ -26,12 +26,12 @@ import type { RuntimeHandle } from '#drivers/contract'
  * Spawn a spare under `workspaceId` with what the create form would submit
  * by default, then drop it from `inFlight`.
  */
-async function spawnSpare(projectSlug: string, workspaceId: string): Promise<void> {
+async function spawnSpare(projectId: string, workspaceId: string): Promise<void> {
   try {
-    const setup = await resolveCreate(projectSlug, {})
-    await createWorkspace(projectSlug, { ...setup, prewarm: true, workspaceId })
+    const setup = await resolveCreate(projectId, {})
+    await createWorkspace(projectId, { ...setup, prewarm: true, workspaceId })
   } catch (err) {
-    serverLog(`[prewarm] spawn for ${projectSlug} failed: ${String(err)}`)
+    serverLog(`[prewarm] spawn for ${projectId} failed: ${String(err)}`)
   } finally {
     inFlight.delete(workspaceId)
   }
@@ -48,7 +48,7 @@ export async function reconcilePrewarmPool(view: RuntimeSnapshot): Promise<void>
   const { toSpawn, toReap } = computePrewarmPlan(pods, poolSize, {
     inFlight,
     claiming,
-    provisioning: new Set(listProvisioning().filter((e) => e.error === undefined).map((e) => e.projectSlug)),
+    provisioning: new Set(listProvisioning().filter((e) => e.error === undefined).map((e) => e.projectId)),
     stale: await staleSpares(pods),
   })
 
@@ -61,9 +61,9 @@ export async function reconcilePrewarmPool(view: RuntimeSnapshot): Promise<void>
     // tick.
     reaping.add(target.workspaceId)
     void cleanupWorkspace(target)
-      .then((podGone) => podGone && deleteWorkspaceState(target.projectSlug, target.workspaceId))
+      .then((podGone) => podGone && deleteWorkspaceState(target.projectId, target.workspaceId))
       .then(async (removed) => {
-        if (removed) await deleteSpareWorkspaceRow(target.projectSlug, target.workspaceId)
+        if (removed) await deleteSpareWorkspaceRow(target.projectId, target.workspaceId)
       })
       .catch((err: unknown) => {
         // gcOrphanSpares in cleanup.ts retries what is left.
@@ -75,8 +75,8 @@ export async function reconcilePrewarmPool(view: RuntimeSnapshot): Promise<void>
   for (const spawn of toSpawn) {
     // Recorded before any await so a concurrent tick sees it.
     const workspaceId = crypto.randomUUID()
-    inFlight.set(workspaceId, spawn.projectSlug)
-    void spawnSpare(spawn.projectSlug, workspaceId)
+    inFlight.set(workspaceId, spawn.projectId)
+    void spawnSpare(spawn.projectId, workspaceId)
   }
 }
 
@@ -88,19 +88,19 @@ export async function reconcilePrewarmPool(view: RuntimeSnapshot): Promise<void>
  * stale.
  */
 async function staleSpares(pods: RuntimeHandle[]): Promise<Set<string>> {
-  const spares = pods.filter((p) => p.prewarmed && p.projectSlug && !claiming.has(p.jobName))
+  const spares = pods.filter((p) => p.prewarmed && p.projectId && !claiming.has(p.jobName))
   if (spares.length === 0) return new Set()
   const projects = await listProjectRows()
   const timeZone = (await getTimeZone()).timeZone ?? undefined
   const wanted = new Map(projects.map((p) =>
-    [p.slug, p.createDefaults[p.lastTool ?? 'claude']?.mode ?? DEFAULT_AGENT_MODE]))
+    [p.id, p.createDefaults[p.lastTool ?? 'claude']?.mode ?? DEFAULT_AGENT_MODE]))
   const stale = new Set<string>()
   await Promise.all(spares.map(async (p) => {
-    const row = await getWorkspaceRow(p.projectSlug, p.workspaceId).catch((err: unknown) => {
+    const row = await getWorkspaceRow(p.projectId, p.workspaceId).catch((err: unknown) => {
       serverLog(`[prewarm] reading spare ${p.workspaceId} failed: ${String(err)}`)
       return null
     })
-    const want = wanted.get(p.projectSlug)
+    const want = wanted.get(p.projectId)
     if (row && want !== undefined && (row.mode !== want || row.timeZone !== timeZone)) stale.add(p.jobName)
   }))
   return stale

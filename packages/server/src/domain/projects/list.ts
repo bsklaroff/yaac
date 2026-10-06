@@ -15,15 +15,16 @@ export async function listProjects(): Promise<ProjectSummary[]> {
   ])
   const credentials = await projectCredentialNames(rows)
   return rows.map((meta) => ({
-    slug: meta.slug,
+    id: meta.id,
+    name: meta.name,
     remoteUrl: meta.remoteUrl,
     addedAt: meta.addedAt,
-    workspaceCount: workspaceCounts[meta.slug] ?? 0,
+    workspaceCount: workspaceCounts[meta.id] ?? 0,
     // Remembered create defaults, so the create form opens on what an
     // untouched create would run (see `resolveToolCreateDefaults`).
     ...(meta.lastTool !== undefined ? { lastTool: meta.lastTool } : {}),
     ...(meta.lastBranch !== undefined ? { lastBranch: meta.lastBranch } : {}),
     createDefaults: meta.createDefaults,
-    gitCredential: credentials.get(meta.slug) ?? null,
+    gitCredential: credentials.get(meta.id) ?? null,
   }))
 }

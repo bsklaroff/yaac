@@ -28,13 +28,13 @@
  * makes are discarded by the end; if a check fails midway, discard leftovers
  * from the sidebar.
  *
- * Run: YAAC_DATA_DIR=<data dir> PROJECT=<slug> node test-playwright-scripts/queued-workspaces-ui-test.js
+ * Run: YAAC_DATA_DIR=<data dir> PROJECT=<name or id> node test-playwright-scripts/queued-workspaces-ui-test.js
  */
 import path from 'node:path'
-import { api, check, finish, origin, requirePlaywright, SHOTS } from './lib.js'
+import { api, check, finish, origin, requirePlaywright, SHOTS, resolveProject } from './lib.js'
 
-const PROJECT = process.env.PROJECT
-if (!PROJECT) throw new Error('set PROJECT=<slug> to a project with a running workspace')
+if (!process.env.PROJECT) throw new Error('set PROJECT=<name or id> to a project with a running workspace')
+const PROJECT = (await resolveProject(process.env.PROJECT)).id
 const { workspaces } = await api(`/workspace/list?project=${PROJECT}`)
 const parent = process.env.WORKSPACE
   ? workspaces.find((w) => w.workspaceId.startsWith(process.env.WORKSPACE))

@@ -23,7 +23,7 @@ import type {
  * screen instead of the hide-sidebar toggle.
  */
 export function WorkspacesScreen({
-  projectSlug,
+  projectId,
   projectRemoteUrl,
   workspaces,
   groups,
@@ -35,7 +35,7 @@ export function WorkspacesScreen({
   gitAuthFailures,
   onBack,
 }: {
-  projectSlug: string | null
+  projectId: string | null
   /** Active project's git remote ('' until the first snapshot); typed back
    *  to confirm removing the project. */
   projectRemoteUrl: string
@@ -56,14 +56,14 @@ export function WorkspacesScreen({
       <MobileHeader
         onBack={onBack}
         backLabel="Back to projects"
-        title={projectSlug
-          ? <ProjectActionsMenu slug={projectSlug} remoteUrl={projectRemoteUrl} />
+        title={projectId
+          ? <ProjectActionsMenu projectId={projectId} remoteUrl={projectRemoteUrl} />
           : <span>yaac</span>}
         actions={
           <>
             {!connected && <span className="pr-1 text-xs text-amber-400">reconnecting…</span>}
-            {projectSlug && <SkillsButton projectSlug={projectSlug} />}
-            {projectSlug && <NewWorkspaceButton projectSlug={projectSlug} />}
+            {projectId && <SkillsButton projectId={projectId} />}
+            {projectId && <NewWorkspaceButton projectId={projectId} />}
           </>
         }
       />
@@ -71,10 +71,10 @@ export function WorkspacesScreen({
       {/* Status badges; the row hides when all are empty. */}
       <div className="flex shrink-0 items-center gap-2 px-3 py-2 empty:hidden">
         <UsageBadge />
-        <ImageBuildIndicator projectSlug={projectSlug} />
-        {projectSlug && gitAuthFailures.length > 0 && (
+        <ImageBuildIndicator projectId={projectId} />
+        {projectId && gitAuthFailures.length > 0 && (
           <GitAuthFailureBadge
-            projectSlug={projectSlug}
+            projectId={projectId}
             failures={gitAuthFailures}
             iconSize={11}
             className="hover:bg-danger/25"
@@ -83,7 +83,7 @@ export function WorkspacesScreen({
       </div>
 
       <WorkspaceList
-        projectSlug={projectSlug}
+        projectId={projectId}
         workspaces={workspaces}
         groups={groups}
         provisioning={provisioning}

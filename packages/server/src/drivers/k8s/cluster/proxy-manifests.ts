@@ -1,9 +1,8 @@
-import crypto from 'node:crypto'
 import {
   BUILDER_ROLE_GUARD_NAME,
   DNS_STUB_PORT,
   LABEL_DATA_DIR_HASH,
-  LABEL_PROJECT,
+  LABEL_PROJECT_ID,
   LABEL_PROXY_INPUT,
   LABEL_PROXY_OUTPUT,
   LABEL_ROLE,
@@ -281,7 +280,7 @@ function secretData(files: Record<string, string>): Record<string, string> {
 /**
  * The credentials Secret: each signed-in tool's credential file, plus
  * `git-tokens.json` (`[{token, projects}]`) and `ssh-keys.json`
- * (`[{privateKey, publicKey, projects: [{slug, host, knownHostsEntry}]}]`).
+ * (`[{privateKey, publicKey, projects: [{projectId, host, knownHostsEntry}]}]`).
  * The opencode and pi files also carry `apiHost`, the provider's host the
  * proxy swaps the key in on; a provider with no known host gets no file, so
  * the key goes nowhere. Replaced whole on every push, so a removed key
@@ -313,44 +312,28 @@ export function buildProxyCredentialsSecretManifest(bundle: CredentialBundle): R
   }
 }
 
-/**
- * A project's secret-values Secret name: `yaac-proxy-secrets-<safeSlug
- * ≤21>-<hash8>`, as for project registries (slugs are not DNS-safe, and the
- * hash includes the data dir so installs cannot collide).
- */
-export function proxyProjectSecretsName(projectSlug: string): string {
-  return installScopedName(PROXY_PROJECT_SECRETS_PREFIX, projectSlug)
-}
-
-function installScopedName(prefix: string, projectSlug: string): string {
-  const safeSlug = projectSlug
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 21)
-  const hash8 = crypto.createHash('sha256')
-    .update(`${dataDirHash()}/${projectSlug}`)
-    .digest('hex')
-    .slice(0, 8)
-  return `${prefix}-${safeSlug}-${hash8}`.replace(/--+/g, '-')
+/** A project's secret-values Secret name. Project ids are random, so
+ *  installs sharing a namespace cannot collide. */
+export function proxyProjectSecretsName(projectId: string): string {
+  return `${PROXY_PROJECT_SECRETS_PREFIX}-${projectId}`
 }
 
 /** One project's decrypted secret values, keyed as its registration's
- *  `secretRef`s name them (`<slug>/<NAME>`). One object per project. */
+ *  `secretRef`s name them (`<projectId>/<NAME>`). One object per project. */
 export function buildProjectSecretsManifest(
-  projectSlug: string,
+  projectId: string,
   values: Record<string, string>,
 ): Record<string, unknown> {
   const scoped = Object.fromEntries(
-    Object.entries(values).map(([name, value]) => [`${projectSlug}/${name}`, value]),
+    Object.entries(values).map(([name, value]) => [`${projectId}/${name}`, value]),
   )
   return {
     apiVersion: 'v1',
     kind: 'Secret',
     metadata: {
-      name: proxyProjectSecretsName(projectSlug),
+      name: proxyProjectSecretsName(projectId),
       namespace: k8sNamespace(),
-      labels: proxyLabels({ [LABEL_PROXY_INPUT]: 'secrets', [LABEL_PROJECT]: projectSlug }),
+      labels: proxyLabels({ [LABEL_PROXY_INPUT]: 'secrets', [LABEL_PROJECT_ID]: projectId }),
     },
     type: 'Opaque',
     data: secretData({ 'values.json': JSON.stringify(scoped) }),
@@ -370,7 +353,7 @@ export function proxyRegistrationName(workspaceId: string): string {
  */
 export function buildRegistrationConfigMapManifest(
   workspaceId: string,
-  projectSlug: string,
+  projectId: string,
   registration: object,
 ): Record<string, unknown> {
   return {
@@ -382,7 +365,7 @@ export function buildRegistrationConfigMapManifest(
       labels: proxyLabels({
         [LABEL_PROXY_INPUT]: 'registration',
         [LABEL_WORKSPACE_ID]: workspaceId,
-        [LABEL_PROJECT]: projectSlug,
+        [LABEL_PROJECT_ID]: projectId,
       }),
     },
     data: { 'registration.json': JSON.stringify(registration) },

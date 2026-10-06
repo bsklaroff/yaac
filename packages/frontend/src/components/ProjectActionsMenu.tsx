@@ -7,18 +7,20 @@ import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { MENU_ITEM, POPUP } from '#components/ui/menu'
 import { api } from '#lib/api'
 import { useUiStore } from '#lib/store'
+import { useProjectName } from '#lib/projectIdentity'
 
 /** The project name as a menu trigger. The only action is Remove, which
  *  asks for confirmation. */
-export function ProjectActionsMenu({ slug, remoteUrl }: {
-  slug: string
+export function ProjectActionsMenu({ projectId, remoteUrl }: {
+  projectId: string
   /** The project's git remote, typed back to confirm removal. */
   remoteUrl: string
 }): JSX.Element {
   const setActiveProject = useUiStore((s) => s.setActiveProject)
   const [confirm, setConfirm] = useState(false)
+  const name = useProjectName()(projectId)
   const remove = useMutation({
-    mutationFn: () => api.project[':slug'].$delete({ param: { slug } }),
+    mutationFn: () => api.project[':projectId'].$delete({ param: { projectId } }),
     onSuccess: () => { setActiveProject(null); setConfirm(false) },
   })
 
@@ -27,7 +29,7 @@ export function ProjectActionsMenu({ slug, remoteUrl }: {
       <Menu.Root>
         <Menu.Trigger className="-ml-2 flex min-w-0 items-center rounded-md px-2 py-1 font-semibold
           tracking-tight text-text outline-none transition hover:bg-surface-2 data-[popup-open]:bg-surface-2">
-          <span className="truncate">{slug}</span>
+          <span className="truncate">{name}</span>
         </Menu.Trigger>
         <Menu.Portal>
           <Menu.Positioner side="bottom" align="start" sideOffset={6}>
@@ -50,7 +52,7 @@ export function ProjectActionsMenu({ slug, remoteUrl }: {
         busy={remove.isPending}
         error={remove.error?.message}
         title="Remove project?"
-        description={`Removes "${slug}" and all its workspaces. This can't be undone.`}
+        description={`Removes "${name}" and all its workspaces. This can't be undone.`}
         confirmText={remoteUrl}
         confirmLabel="Remove"
         onConfirm={() => remove.mutate()}

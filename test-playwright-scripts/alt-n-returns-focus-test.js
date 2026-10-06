@@ -9,15 +9,15 @@
  *     in the composer.
  *
  * Needs a running claude workspace of each UI in PROJECT on a containerless
- * server (`yaac workspace create <slug> --mode tui|acp`): check 1 finds the
+ * server (`yaac workspace create <project> --mode tui|acp`): check 1 finds the
  * tui workspace's tmux socket from `ps`. The first of each listed is used;
  * set TUI=<id> / ACP=<id> to pick others. It types a marker into the agent's
  * input line and the composer without sending it, then clears both.
  *
- * Run: YAAC_DATA_DIR=<data dir> PROJECT=<slug> node test-playwright-scripts/alt-n-returns-focus-test.js
+ * Run: YAAC_DATA_DIR=<data dir> PROJECT=<name or id> node test-playwright-scripts/alt-n-returns-focus-test.js
  */
 import { execSync } from 'node:child_process'
-import { api, check, finish, origin, requirePlaywright } from './lib.js'
+import { api, check, finish, origin, requirePlaywright, resolveProject } from './lib.js'
 
 /**
  * The tmux socket of a containerless workspace, found via `ps`: its tmux
@@ -30,8 +30,8 @@ function tmuxSocket(workspaceId) {
   return line.match(/tmux -S (\S+)/)[1]
 }
 
-const PROJECT = process.env.PROJECT
-if (!PROJECT) throw new Error('set PROJECT=<slug>')
+if (!process.env.PROJECT) throw new Error('set PROJECT=<name or id>')
+const PROJECT = (await resolveProject(process.env.PROJECT)).id
 const { workspaces } = await api(`/workspace/list?project=${PROJECT}`)
 const pickId = (mode, want) => {
   const w = workspaces.find((x) => want ? x.workspaceId.startsWith(want)

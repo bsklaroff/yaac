@@ -28,19 +28,19 @@ import { git } from '@yaac/test-utils/git'
  * for a containerless workspace.
  */
 
-const SLUG = 'demo'
+const PROJECT = '7d4e2a1c-5b3f-4e8a-9c6d-1f2e3a4b5c6d'
 let tmp: string
 /** A folder outside the data dir, the target of escaping symlinks. */
 let outside: string
 
 async function makeCheckout(id: string): Promise<string> {
-  const dir = workspaceDir(SLUG, id)
-  await createCheckout(repoDir(SLUG), dir, { branch: `agent/${id}`, baseBranch: 'main', remoteUrl: 'https://example.invalid/r.git' })
+  const dir = workspaceDir(PROJECT, id)
+  await createCheckout(repoDir(PROJECT), dir, { branch: `agent/${id}`, baseBranch: 'main', remoteUrl: 'https://example.invalid/r.git' })
   return dir
 }
 
 function wtGit(id: string): (args: string[]) => Promise<string> {
-  return (args) => git(workspaceDir(SLUG, id), args)
+  return (args) => git(workspaceDir(PROJECT, id), args)
 }
 
 async function refusal(p: Promise<unknown>): Promise<{ code: string; message: string }> {
@@ -60,7 +60,7 @@ beforeAll(async () => {
   outside = path.join(tmp, 'outside')
   await write(outside, 'secret.txt', 'secret\n')
 
-  const repo = repoDir(SLUG)
+  const repo = repoDir(PROJECT)
   await fs.mkdir(repo, { recursive: true })
   await git(repo, ['init', '-b', 'main'])
   await git(repo, ['config', 'user.email', 'test@test.com'])
@@ -82,10 +82,10 @@ beforeAll(async () => {
 beforeEach(() => {
   installFakeWorkspaceDriver({
     find: (id) => Promise.resolve(handleFixture({
-      workspaceId: id, projectSlug: SLUG, jobName: id,
+      workspaceId: id, projectId: PROJECT, jobName: id,
       ...(id === 'stopped' ? { running: false, state: 'stopped' } : {}),
     })),
-    workspacePaths: (jobName) => workspacePathsFixture({ workspaceDir: workspaceDir(SLUG, jobName) }),
+    workspacePaths: (jobName) => workspacePathsFixture({ workspaceDir: workspaceDir(PROJECT, jobName) }),
     exec: async (_jobName, cmd) => execFileAsync('sh', ['-c', cmd], { maxBuffer: 64 << 20 }),
   })
 })
@@ -155,17 +155,17 @@ describe('listWorkspaceFiles', () => {
   it('reports git status against HEAD without writing the index', async () => {
     await makeCheckout('status')
     const inWt = wtGit('status')
-    const wt = workspaceDir(SLUG, 'status')
+    const wt = workspaceDir(PROJECT, 'status')
     // Create a merge conflict first, while the tree is clean.
-    await git(repoDir(SLUG), ['commit', '--allow-empty', '-m', 'noop'])
-    await write(repoDir(SLUG), 'conflict.txt', 'theirs\n')
-    await git(repoDir(SLUG), ['add', 'conflict.txt'])
-    await git(repoDir(SLUG), ['commit', '-m', 'theirs'])
+    await git(repoDir(PROJECT), ['commit', '--allow-empty', '-m', 'noop'])
+    await write(repoDir(PROJECT), 'conflict.txt', 'theirs\n')
+    await git(repoDir(PROJECT), ['add', 'conflict.txt'])
+    await git(repoDir(PROJECT), ['commit', '-m', 'theirs'])
     await write(wt, 'conflict.txt', 'ours\n')
     await inWt(['add', 'conflict.txt'])
     await inWt(['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-m', 'ours'])
     // The checkout sees main's objects through its alternate.
-    const theirs = (await git(repoDir(SLUG), ['rev-parse', 'main'])).trim()
+    const theirs = (await git(repoDir(PROJECT), ['rev-parse', 'main'])).trim()
     await inWt(['-c', 'user.email=t@t', '-c', 'user.name=T', 'merge', theirs]).catch(() => { /* conflicts, as intended */ })
 
     await write(wt, 'a.txt', 'changed\n')
@@ -215,14 +215,14 @@ describe('getWorkspaceGitStatus', () => {
   // One commit on the checkout's branch, and one on main after the fork,
   // fetched into the checkout.
   beforeAll(async () => {
-    await git(repoDir(SLUG), ['update-ref', 'refs/remotes/origin/main', 'main'])
+    await git(repoDir(PROJECT), ['update-ref', 'refs/remotes/origin/main', 'main'])
     await makeCheckout('gs')
     const run = wtGit('gs')
     await run(['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '--allow-empty', '-m', 'agent work'])
-    await git(repoDir(SLUG), ['commit', '--allow-empty', '-m', 'landed on main'])
-    await git(repoDir(SLUG), ['update-ref', 'refs/remotes/origin/main', 'main'])
-    await run(['fetch', '-q', path.join(repoDir(SLUG), '.git'), 'refs/remotes/origin/*:refs/remotes/origin/*'])
-    await recordWorkspaceCreated({ projectSlug: SLUG, workspaceId: 'gs', baseBranch: 'main' })
+    await git(repoDir(PROJECT), ['commit', '--allow-empty', '-m', 'landed on main'])
+    await git(repoDir(PROJECT), ['update-ref', 'refs/remotes/origin/main', 'main'])
+    await run(['fetch', '-q', path.join(repoDir(PROJECT), '.git'), 'refs/remotes/origin/*:refs/remotes/origin/*'])
+    await recordWorkspaceCreated({ projectId: PROJECT, workspaceId: 'gs', baseBranch: 'main' })
   })
 
   it('counts against the fork branch by default and an explicit base on request', async () => {

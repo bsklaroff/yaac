@@ -41,7 +41,8 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  * with a prompt, listing workspaces, managing groups, and stopping.
  */
 describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () => {
-  const SLUG = 'spawner'
+  const NAME = 'spawner'
+  const PROJECT_ID = crypto.randomUUID()
   let testEnv: YaacTestEnv
   let server: SpawnedServer | null = null
   let mockLLM: MockLLM | null = null
@@ -93,21 +94,21 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
 
     // Stage the project as `yaac project add` would: a local bare repo with
     // a github-shaped remote.
-    await seedMockGitRepo(mockGit, SLUG, { files: { 'README.md': '# demo\n' } })
-    const projectPath = path.join(testEnv.dataDir, 'global', 'projects', SLUG)
+    await seedMockGitRepo(mockGit, NAME, { files: { 'README.md': '# demo\n' } })
+    const projectPath = path.join(testEnv.dataDir, 'global', 'projects', PROJECT_ID)
     const repoPath = path.join(projectPath, 'repo')
     await fs.mkdir(path.join(projectPath, 'claude'), { recursive: true })
-    await cloneRepo(path.join(mockGit.reposDir, `${SLUG}.git`), repoPath, null)
-    const fakeRemote = `https://github.com/test-org/${SLUG}.git`
+    await cloneRepo(path.join(mockGit.reposDir, `${NAME}.git`), repoPath, null)
+    const fakeRemote = `https://github.com/test-org/${NAME}.git`
     await git(repoPath, ['remote', 'set-url', 'origin', fakeRemote])
-    await registerTestProject(server, SLUG, fakeRemote)
-    await assignTestGitCredential(server, SLUG, 'fake-ghp-token')
+    await registerTestProject(server, PROJECT_ID, NAME, fakeRemote)
+    await assignTestGitCredential(server, NAME, 'fake-ghp-token')
 
-    const { stdout, stderr, exitCode } = await runYaac(serverEnv, 'workspace', 'create', SLUG)
+    const { stdout, stderr, exitCode } = await runYaac(serverEnv, 'workspace', 'create', NAME)
     if (exitCode !== 0) {
       throw new Error(`workspace create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
     }
-    const pods = await listWorkspacePods(SLUG)
+    const pods = await listWorkspacePods(PROJECT_ID)
     if (pods.length !== 1) throw new Error(`expected 1 workspace pod, found ${pods.length}`)
     jobA = pods[0].jobName
     callerWorkspaceId = pods[0].workspaceId
@@ -189,7 +190,7 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
       const row = sub.latest()?.provisioning.find((p) => p.workspaceId === newWorkspaceId)
       if (row) {
         expect(row.kind).toBe('create')
-        expect(row.projectSlug).toBe(SLUG)
+        expect(row.projectId).toBe(PROJECT_ID)
         sawRow = true
       } else await sleep(200)
     }
@@ -197,12 +198,12 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
 
     let spawned: PodInfo | undefined
     for (let i = 0; i < 120 && !spawned?.running; i++) {
-      const pods = await listWorkspacePods(SLUG)
+      const pods = await listWorkspacePods(PROJECT_ID)
       spawned = pods.find((p) => p.workspaceId === newWorkspaceId)
       if (!spawned?.running) await sleep(1000)
     }
     expect(spawned?.running).toBe(true)
-    expect(spawned?.projectSlug).toBe(SLUG)
+    expect(spawned?.projectId).toBe(PROJECT_ID)
     // No --tool, so it inherits the caller's (claude).
     expect(spawned?.tool).toBe('claude')
 
@@ -389,7 +390,7 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     // Teardown is detached, so the pod goes after the reply.
     let gone = false
     for (let i = 0; i < 120 && !gone; i++) {
-      const pods = await listWorkspacePods(SLUG)
+      const pods = await listWorkspacePods(PROJECT_ID)
       gone = !pods.some((p) => p.workspaceId === spawnedWorkspaceId)
       if (!gone) await sleep(1000)
     }
@@ -425,7 +426,7 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
 
     let gone = false
     for (let i = 0; i < 120 && !gone; i++) {
-      const pods = await listWorkspacePods(SLUG)
+      const pods = await listWorkspacePods(PROJECT_ID)
       gone = !pods.some((p) => p.jobName === jobA)
       if (!gone) await sleep(1000)
     }
@@ -439,7 +440,7 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     // The queued workspace started: a pod that is neither caller nor sibling.
     let child: PodInfo | undefined
     for (let i = 0; i < 180 && !child?.running; i++) {
-      const pods = await listWorkspacePods(SLUG)
+      const pods = await listWorkspacePods(PROJECT_ID)
       child = pods.find((p) => p.workspaceId !== callerWorkspaceId && p.workspaceId !== spawnedWorkspaceId)
       if (!child?.running) await sleep(1000)
     }

@@ -1,7 +1,6 @@
 import { workspaceDriver } from '#drivers/driver'
 import type {
   PassContext,
-  ProjectRef,
   ReconcileStep,
   ReconcileTrigger,
   RuntimeSnapshot,
@@ -83,7 +82,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         [...taken].filter((t): t is ReconcileTrigger => t !== 'resync'),
       )
       let snapshot: RuntimeSnapshot | null = null
-      let projects: Promise<ProjectRef[]> | null = null
+      let projectIds: Promise<string[]> | null = null
       const projectConfigs = new Map<string, Promise<YaacConfig | undefined>>()
       const ctx: PassContext = {
         triggers,
@@ -93,19 +92,18 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         // Resolved here so runtime steps never read the db. A failed read
         // rejects rather than returning empty, because the orphan
         // collectors would treat an empty list as "collect everything".
-        projects: () => (projects ??= listProjectRows()
-          .then((rows) => rows.map(({ slug, id }) => ({ slug, id })))),
+        projectIds: () => (projectIds ??= listProjectRows().then((rows) => rows.map((r) => r.id))),
         // Memoized per project. No catch: a missing config resolves
         // `undefined` (all defaults), but an unreadable one (malformed,
         // invalid, mid-save) must reject. Returning `{}` instead would let
         // a step build and push the wrong image (e.g. a nestedContainers
         // chain without its nestable layer). The step skips this pass and
         // the next pass retries.
-        projectConfig: (slug) => {
-          let pending = projectConfigs.get(slug)
+        projectConfig: (projectId) => {
+          let pending = projectConfigs.get(projectId)
           if (!pending) {
-            pending = resolveProjectConfig(slug).then((c) => c ?? undefined)
-            projectConfigs.set(slug, pending)
+            pending = resolveProjectConfig(projectId).then((c) => c ?? undefined)
+            projectConfigs.set(projectId, pending)
           }
           return pending
         },

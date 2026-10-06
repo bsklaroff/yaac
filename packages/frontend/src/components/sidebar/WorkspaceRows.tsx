@@ -341,7 +341,7 @@ export function WorkspaceRow({
               {
                 label: 'Queue workspace after this…',
                 onSelect: () => openCreateWorkspace({
-                  projectSlug: workspace.projectSlug, parent: workspace.workspaceId, focus: 'prompt',
+                  projectId: workspace.projectId, parent: workspace.workspaceId, focus: 'prompt',
                 }),
               },
               'separator',
@@ -387,16 +387,16 @@ function GroupDialog({
     onSuccess: () => onOpenChange(false),
   })
   const busy = move.isPending
-  const { projectSlug, workspaceId } = workspace
+  const { projectId, workspaceId } = workspace
 
   const create = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault()
     const raw = new FormData(event.currentTarget).get('name')
     const name = (typeof raw === 'string' ? raw : '').trim()
-    if (name) move.mutate(() => api.workspace.group.create.$post({ json: { projectSlug, workspaceId, name } }))
+    if (name) move.mutate(() => api.workspace.group.create.$post({ json: { projectId, workspaceId, name } }))
   }
   const moveTo = (groupId: string | null): void => {
-    move.mutate(() => api.workspace['set-group'].$post({ json: { projectSlug, workspaceId, groupId } }))
+    move.mutate(() => api.workspace['set-group'].$post({ json: { projectId, workspaceId, groupId } }))
   }
 
   const others = shownGroups.filter((g) => g.groupId !== workspace.groupId)
@@ -491,7 +491,7 @@ export function DeletedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry })
     setConfirmRestart(false)
     removeOptimisticStopped(entry.workspaceId)
     // Pass the group so the restarting row appears in the same place.
-    provision(entry.projectSlug, entry.tool, 'restart', entry.workspaceId,
+    provision(entry.projectId, entry.tool, 'restart', entry.workspaceId,
       (sid, onProgress) => restartWorkspace(sid, onProgress),
       entry.groupId)
   }
@@ -499,10 +499,10 @@ export function DeletedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry })
   // The stopped list isn't in the snapshot, so update the cached list
   // directly to show the change right away.
   const ungroup = (): void => {
-    patchStopped(queryClient, entry.projectSlug,
+    patchStopped(queryClient, entry.projectId,
       (e) => (e.workspaceId === entry.workspaceId ? { ...e, groupId: undefined } : e))
     removeOptimisticStopped(entry.workspaceId)
-    api.workspace['set-group'].$post({ json: { projectSlug: entry.projectSlug, workspaceId: entry.workspaceId, groupId: null } })
+    api.workspace['set-group'].$post({ json: { projectId: entry.projectId, workspaceId: entry.workspaceId, groupId: null } })
       .catch((e: unknown) => console.error('group move failed', e))
   }
 

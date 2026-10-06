@@ -51,7 +51,7 @@ describe('streamProvisioned', () => {
   })
 
   it('mirrors progress into a registered provisioning row and drops it on success', async () => {
-    registerProvisioning({ workspaceId: 'sid-1', projectSlug: 'demo', tool: 'claude', kind: 'create' })
+    registerProvisioning({ workspaceId: 'sid-1', projectId: 'demo', tool: 'claude', kind: 'create' })
     let messageDuringRun: string | undefined
     await request('sid-1', (onProgress) => {
       onProgress('Creating job...')
@@ -65,7 +65,7 @@ describe('streamProvisioned', () => {
   })
 
   it('emits a terminal error event and marks the row failed (kept until dismissed)', async () => {
-    registerProvisioning({ workspaceId: 'sid-1', projectSlug: 'demo', tool: 'claude', kind: 'restart' })
+    registerProvisioning({ workspaceId: 'sid-1', projectId: 'demo', tool: 'claude', kind: 'restart' })
     const { events } = await request('sid-1', () =>
       Promise.reject(new ServerError('NOT_FOUND', 'missing')))
     expect(events).toEqual([

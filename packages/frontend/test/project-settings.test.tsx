@@ -21,47 +21,51 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-const project = (slug: string, remoteUrl: string): ProjectSummary =>
-  ({ slug, remoteUrl, addedAt: '', workspaceCount: 0, createDefaults: {}, gitCredential: null })
+/** A project keyed by `id-<name>`, so a test can tell the key from the
+ *  displayed name. */
+const project = (name: string, remoteUrl: string): ProjectSummary =>
+  ({ id: `id-${name}`, name, remoteUrl, addedAt: '', workspaceCount: 0, createDefaults: {}, gitCredential: null })
 
 /** Show settings for `alpha` (and `beta`) on a containerless server, whose
  *  env routes keep `vars` in memory. */
 function renderAlpha(vars: ProjectEnvVar[] = []): FetchMock {
-  useUiStore.setState({ activeProjectSlug: 'alpha' })
+  useUiStore.setState({ activeProjectId: 'id-alpha' })
   snapshot.mockReturnValue({
     driver: 'containerless',
     projects: [project('alpha', 'https://github.com/o/alpha.git'), project('beta', 'git@gitlab.com:o/beta.git')],
   })
   const server = mockFetch({
-    'GET /api/project/alpha/env': () => ({ vars }),
-    'PUT /api/project/alpha/env': ({ body }: FetchCall) => {
+    'GET /api/project/id-alpha/env': () => ({ vars }),
+    'PUT /api/project/id-alpha/env': ({ body }: FetchCall) => {
       const { name, value, secret, rule } = body as ProjectEnvVar
       const saved = { id: `id-${name}`, name, secret, hasValue: true, ...(secret ? { rule } : { value }) }
       vars = [...vars.filter((v) => v.name !== name), saved]
       return { var: saved }
     },
-    'DELETE /api/project/alpha/env/v1': () => {
+    'DELETE /api/project/id-alpha/env/v1': () => {
       vars = vars.filter((v) => v.id !== 'v1')
       return undefined
     },
-    'GET /api/project/alpha/config': { config: { a: 1 } },
-    'GET /api/project/beta/env': { vars: [] },
-    'GET /api/project/beta/config': { config: null },
+    'GET /api/project/id-alpha/config': { config: { a: 1 } },
+    'GET /api/project/id-beta/env': { vars: [] },
+    'GET /api/project/id-beta/config': { config: null },
   })
   renderWithClient(<ProjectSettings />)
   return server
 }
 
 describe('ProjectSettings', () => {
-  it('shows the picked project\'s remote, with its scheme, above the environment', () => {
+  it('picks a project by name and shows its remote, with its scheme, above the environment', () => {
     renderAlpha()
+    expect([...screen.getByRole<HTMLSelectElement>('combobox').options].map((o) => [o.value, o.textContent]))
+      .toEqual([['id-alpha', 'alpha'], ['id-beta', 'beta']])
 
     const remote = screen.getByText('https://github.com/o/alpha.git')
     expect(remote.previousElementSibling?.textContent).toBe('HTTPS')
     // Directly under the project picker, ahead of the environment section.
     expect(remote.closest('div')?.querySelector('select')).toBeTruthy()
 
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'beta' } })
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'id-beta' } })
     expect(screen.getByText('git@gitlab.com:o/beta.git').previousElementSibling?.textContent).toBe('SSH')
   })
 
@@ -77,7 +81,7 @@ describe('ProjectSettings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
 
     await screen.findByText('TOKEN')
-    expect(server.called('PUT /api/project/alpha/env').map((c) => c.body)).toEqual([
+    expect(server.called('PUT /api/project/id-alpha/env').map((c) => c.body)).toEqual([
       { name: 'TOKEN', value: 's3cret', secret: true, rule: { hosts: ['api.example.com'] } },
     ])
     // A secret shows masked, with where it is injected.
@@ -87,6 +91,6 @@ describe('ProjectSettings', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete FOO' }))
     await waitFor(() => expect(screen.queryByText('FOO')).toBeNull())
-    expect(server.called('DELETE /api/project/alpha/env/v1')).toHaveLength(1)
+    expect(server.called('DELETE /api/project/id-alpha/env/v1')).toHaveLength(1)
   })
 })

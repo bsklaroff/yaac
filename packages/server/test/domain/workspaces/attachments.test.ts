@@ -17,7 +17,7 @@ beforeEach(async () => {
   await fs.mkdir(workspaceAttachmentsDir('proj', 'wt-1'), { recursive: true })
   installFakeWorkspaceDriver({
     find: () => Promise.resolve(handleFixture({
-      workspaceId: 'wt-1', projectSlug: 'proj', jobName: 'yaac-proj-wt-1', state: 'running',
+      workspaceId: 'wt-1', projectId: 'proj', jobName: 'yaac-proj-wt-1', state: 'running',
     })),
     workspacePaths: () => workspacePathsFixture({ attachmentsDir: '/in/the/workspace' }),
   })

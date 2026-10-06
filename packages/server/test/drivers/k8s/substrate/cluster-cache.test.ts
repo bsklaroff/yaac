@@ -45,7 +45,7 @@ vi.mock('@kubernetes/client-node', async (importOriginal) => {
 
 import {
   ClusterCache,
-  LABEL_PROJECT,
+  LABEL_PROJECT_ID,
   LABEL_TOOL,
   getActiveClusterCache,
   k8sNamespace,
@@ -116,8 +116,7 @@ function rawPod(name: string, project = 'proj'): unknown {
       labels: {
         [JOB_NAME_LABEL]: `yaac-${project}-${name}`,
         ...workspaceIdLabels(`sid-${name}`),
-        [LABEL_PROJECT]: project,
-        'yaac.project-id': `id-${project}`,
+        [LABEL_PROJECT_ID]: project,
         [LABEL_TOOL]: 'claude',
       },
       creationTimestamp: '2026-07-21T00:00:00Z',
@@ -194,7 +193,7 @@ describe('ClusterCache', () => {
     listNamespacedJobMock.mockImplementation(() => listOf({
       metadata: {
         name: 'yaac-alpha-p1',
-        labels: { ...workspaceIdLabels('sid-p1'), [LABEL_PROJECT]: 'alpha' },
+        labels: { ...workspaceIdLabels('sid-p1'), [LABEL_PROJECT_ID]: 'alpha' },
         creationTimestamp: created,
       },
       status: {},
@@ -224,7 +223,7 @@ describe('ClusterCache', () => {
       podName: 'p1', createdAtMs: created.getTime(),
     })])
     expect(cache.workspaceJobs()).toEqual([{
-      jobName: 'yaac-alpha-p1', workspaceId: 'sid-p1', projectSlug: 'alpha',
+      jobName: 'yaac-alpha-p1', workspaceId: 'sid-p1', projectId: 'alpha',
       createdAtMs: created.getTime(),
     }])
     cache.stop()
@@ -467,7 +466,7 @@ describe('readWorkspacePods', () => {
       setActiveClusterCache(cache)
       await expect(readWorkspacePods('demo')).resolves.toEqual([])
       expect(fakeCluster.calls).toEqual([expect.objectContaining({
-        verb: 'list', kind: 'Pod', labelSelector: expect.stringMatching(/yaac\.project=demo$/) as unknown,
+        verb: 'list', kind: 'Pod', labelSelector: expect.stringMatching(/yaac\.project-id=demo$/) as unknown,
       })])
     },
   )

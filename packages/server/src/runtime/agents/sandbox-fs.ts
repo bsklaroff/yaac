@@ -20,17 +20,17 @@ export function sandboxLinkPolicy(): LinkPolicy {
   return hasWorkspaceDriver() && workspaceDriver().kind === 'containerless' ? 'inside' : 'no-links'
 }
 
-/** `dir` of `slug`'s project, opened as `sandboxLinkPolicy` says. Paths are
+/** `dir` of `projectId`'s project, opened as `sandboxLinkPolicy` says. Paths are
  *  taken relative to `dir` either way. */
-export function openSandboxDir(slug: string, dir: string): Promise<ConfinedRoot> {
+export function openSandboxDir(projectId: string, dir: string): Promise<ConfinedRoot> {
   return sandboxLinkPolicy() === 'inside'
-    ? openRoot(projectDir(slug), 'inside', { base: dir })
+    ? openRoot(projectDir(projectId), 'inside', { base: dir })
     : openRoot(dir, 'no-links')
 }
 
 /** A file in one of those dirs: the dir, and the path below it. */
 export interface SandboxFile {
-  slug: string
+  projectId: string
   dir: string
   rel: string
 }
@@ -38,14 +38,14 @@ export interface SandboxFile {
 /** A regular file's bytes, or null when there is none to read (see
  *  `ConfinedRoot.readFile`, which also says what too large does). */
 export async function readSandboxFile(file: SandboxFile, maxBytes: number): Promise<Buffer | null> {
-  const root = await openSandboxDir(file.slug, file.dir).catch(() => null)
+  const root = await openSandboxDir(file.projectId, file.dir).catch(() => null)
   return root === null ? null : root.readFile(file.rel, { maxBytes })
 }
 
 /** A regular file opened for reading, or null when there is none. */
 export async function openSandboxFile(file: SandboxFile): Promise<FileHandle | null> {
   try {
-    return await (await openSandboxDir(file.slug, file.dir)).open(file.rel, C.O_RDONLY)
+    return await (await openSandboxDir(file.projectId, file.dir)).open(file.rel, C.O_RDONLY)
   } catch {
     return null
   }

@@ -3,7 +3,7 @@ import {
   setActiveClusterCache,
   type WorkspaceDeltaSource,
 } from '#drivers/k8s/substrate'
-import { ensureMainRegistry } from '#drivers/k8s/cluster'
+import { deleteSlugNamedProjectSecrets, ensureMainRegistry } from '#drivers/k8s/cluster'
 import {
   PortDetectorManager,
   stopAllWorkspaceForwarders,
@@ -62,7 +62,7 @@ let portDetector: PortDetectorManager | null = null
  * Rewrite the per-project credential files with placeholders.
  *
  * A containerless server writes real OAuth tokens into
- * `projects/<slug>/{claude,codex}`, and those are the files a workspace pod
+ * `projects/<id>/{claude,codex}`, and those are the files a workspace pod
  * hostPath-mounts. If a data dir once run containerless is served by k8s,
  * sandboxed pods would see real tokens. Re-seeding at every k8s start
  * closes that window. On an install that never ran containerless this
@@ -91,6 +91,8 @@ export async function startK8sDriver(sinks: DriverSinks): Promise<void> {
     // could keep from scheduling. Its failure must not skip the rest.
     await deleteLeakedBuilderPods().catch((err: unknown) =>
       serverLog(`[server] leaked builder pod delete failed: ${String(err)}`))
+    await deleteSlugNamedProjectSecrets().catch((err: unknown) =>
+      serverLog(`[server] slug-named project secrets delete failed: ${String(err)}`))
     // A healthy registry costs one HTTP ping here. The node-address
     // policies are re-rendered by the reconcile pass's node-sync step.
     await ensureMainRegistry()

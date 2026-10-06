@@ -9,7 +9,7 @@ import { useEvents } from './lib/useEvents'
 import { useSnapshot } from './lib/useSnapshot'
 import {
   mergeProvisioning, persistSelection, resolveVacantSelection,
-  shortcutsSuspended, unreadWaitingBySlug, useUiStore,
+  shortcutsSuspended, unreadWaitingByProject, useUiStore,
 } from './lib/store'
 import { ProjectRail } from './components/ProjectRail'
 import { Sidebar, sidebarRowIds } from './components/Sidebar'
@@ -93,7 +93,7 @@ function App(): JSX.Element {
  */
 function Shell({ connected }: { connected: boolean }): JSX.Element {
   const snapshot = useSnapshot()
-  const activeProjectSlug = useUiStore((s) => s.activeProjectSlug)
+  const activeProjectId = useUiStore((s) => s.activeProjectId)
   const setActiveProject = useUiStore((s) => s.setActiveProject)
   const restoreActiveProject = useUiStore((s) => s.restoreActiveProject)
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
@@ -125,25 +125,30 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   // subscription.
   useEffect(() => {
     const s = useUiStore.getState()
-    persistSelection(s.activeProjectSlug, s.selectedWorkspaceId)
+    persistSelection(s.activeProjectId, s.selectedWorkspaceId)
   }, [])
 
-  // Fall back to the first project when none is active or the active one no
-  // longer exists. Uses restoreActiveProject because the user did not choose
-  // it, so on mobile it must not navigate into the project.
+  // An active project that is no id here may be a link naming the project
+  // instead; else the selected workspace says which project it is in. Failing both, fall back to the
+  // first project, with restoreActiveProject because the user did not
+  // choose it, so on mobile it must not navigate into the project.
   useEffect(() => {
     if (projects.length === 0) return
-    if (activeProjectSlug && projects.some((p) => p.slug === activeProjectSlug)) return
-    restoreActiveProject(projects[0].slug)
-  }, [activeProjectSlug, projects, restoreActiveProject])
+    if (activeProjectId && projects.some((p) => p.id === activeProjectId)) return
+    const { selectedWorkspaceId } = useUiStore.getState()
+    const found = projects.find((p) => p.name === activeProjectId)?.id
+      ?? workspaces.find((w) => w.workspaceId === selectedWorkspaceId)?.projectId
+    if (found !== undefined) useUiStore.setState({ activeProjectId: found })
+    else restoreActiveProject(projects[0].id)
+  }, [activeProjectId, projects, workspaces, restoreActiveProject])
 
-  const scoped = workspaces.filter((s) => s.projectSlug === activeProjectSlug)
-  const scopedProvisioning = provisioning.filter((p) => p.projectSlug === activeProjectSlug)
+  const scoped = workspaces.filter((s) => s.projectId === activeProjectId)
+  const scopedProvisioning = provisioning.filter((p) => p.projectId === activeProjectId)
   const scopedGroups = (snapshot?.workspaceGroups ?? [])
-    .filter((g) => g.projectSlug === activeProjectSlug)
-  const scopedQueued = (snapshot?.queuedWorkspaces ?? []).filter((e) => e.projectSlug === activeProjectSlug)
-  const scopedHeld = (snapshot?.heldWorkspaces ?? []).filter((h) => h.projectSlug === activeProjectSlug)
-  const scopedDrafts = (snapshot?.draftWorkspaces ?? []).filter((d) => d.projectSlug === activeProjectSlug)
+    .filter((g) => g.projectId === activeProjectId)
+  const scopedQueued = (snapshot?.queuedWorkspaces ?? []).filter((e) => e.projectId === activeProjectId)
+  const scopedHeld = (snapshot?.heldWorkspaces ?? []).filter((h) => h.projectId === activeProjectId)
+  const scopedDrafts = (snapshot?.draftWorkspaces ?? []).filter((d) => d.projectId === activeProjectId)
 
   // Project-scoped shortcuts (next/prev workspace, new, stop). They listen
   // on window in the capture phase so xterm never forwards the chord to the
@@ -153,7 +158,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   const rowIds = sidebarRowIds(scopedProvisioning, scoped, scopedGroups, pendingDeleteIds)
   const openCreateWorkspace = useUiStore((s) => s.openCreateWorkspace)
   const newWorkspace = (): void => {
-    if (activeProjectSlug) openCreateWorkspace({ projectSlug: activeProjectSlug, focus: 'prompt' })
+    if (activeProjectId) openCreateWorkspace({ projectId: activeProjectId, focus: 'prompt' })
   }
   const [confirmDelete, setConfirmDelete] = useState<WorkspaceListEntry | null>(null)
   const selectedWorkspace = selectedWorkspaceId && !pendingDeleteIds.includes(selectedWorkspaceId)
@@ -207,13 +212,13 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   // row" is the one the user sees first. autoSelectWorkspace, not
   // selectWorkspace, so mobile fills the pane without navigating onto it. A
   // layout effect so the pane never paints empty during a hand-off.
-  const lastProjectSlug = useRef(activeProjectSlug)
+  const lastProjectId = useRef(activeProjectId)
   useLayoutEffect(() => {
-    const previousProjectSlug = lastProjectSlug.current
-    lastProjectSlug.current = activeProjectSlug
+    const previousProjectId = lastProjectId.current
+    lastProjectId.current = activeProjectId
     const pick = resolveVacantSelection({
-      previousProjectSlug,
-      activeProjectSlug,
+      previousProjectId,
+      activeProjectId,
       selectedWorkspaceId,
       rowIds,
       claims,
@@ -222,7 +227,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
     if (!pick) return
     if (selectedWorkspaceId !== null && claims[selectedWorkspaceId] === pick) forgetClaim(selectedWorkspaceId)
     autoSelectWorkspace(pick)
-  }, [activeProjectSlug, rowIds, selectedWorkspaceId, claims, inFlightProvisions, forgetClaim, autoSelectWorkspace])
+  }, [activeProjectId, rowIds, selectedWorkspaceId, claims, inFlightProvisions, forgetClaim, autoSelectWorkspace])
   // Viewing a waiting workspace marks its current waiting spell as read,
   // whether it was selected while waiting or started waiting while open.
   useEffect(() => {
@@ -252,10 +257,10 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
     ])
   }, [snapshot, workspaces, provisioning, syncChatDrafts])
 
-  const attention = unreadWaitingBySlug(workspaces, readWaiting, pendingDeleteIds)
+  const attention = unreadWaitingByProject(workspaces, readWaiting, pendingDeleteIds)
 
-  const projectRemoteUrl = projects.find((p) => p.slug === activeProjectSlug)?.remoteUrl ?? ''
-  const scopedGitAuthFailures = (activeProjectSlug && snapshot?.gitAuthFailures?.[activeProjectSlug]) || []
+  const projectRemoteUrl = projects.find((p) => p.id === activeProjectId)?.remoteUrl ?? ''
+  const scopedGitAuthFailures = (activeProjectId && snapshot?.gitAuthFailures?.[activeProjectId]) || []
 
   return (
     // Desktop: rail and sidebar beside an inset workspace card. Mobile: three
@@ -270,8 +275,8 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
         <MobileScreenLayer active={mobileScreen === 'projects'}>
           <ProjectsScreen
             projects={projects}
-            activeProjectSlug={activeProjectSlug}
-            attentionBySlug={attention}
+            activeProjectId={activeProjectId}
+            attentionByProject={attention}
             connected={connected}
             onSelect={setActiveProject}
           />
@@ -279,8 +284,8 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
       ) : (
         <ProjectRail
           projects={projects}
-          activeProjectSlug={activeProjectSlug}
-          attentionBySlug={attention}
+          activeProjectId={activeProjectId}
+          attentionByProject={attention}
           onSelect={setActiveProject}
         />
       )}
@@ -288,7 +293,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
       {isMobile ? (
         <MobileScreenLayer active={mobileScreen === 'workspaces'}>
           <WorkspacesScreen
-            projectSlug={activeProjectSlug}
+            projectId={activeProjectId}
             projectRemoteUrl={projectRemoteUrl}
             workspaces={scoped}
             groups={scopedGroups}
@@ -303,7 +308,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
         </MobileScreenLayer>
       ) : sidebarOpen && (
         <Sidebar
-          projectSlug={activeProjectSlug}
+          projectId={activeProjectId}
           projectRemoteUrl={projectRemoteUrl}
           workspaces={scoped}
           groups={scopedGroups}

@@ -39,35 +39,37 @@ export function asTailnet(login: string | null, host: string): Record<string, st
 
 /**
  * Register a project whose checkout the test staged at
- * `<projects>/<slug>/repo`: `project add` without the clone.
+ * `<projects>/<id>/repo`: `project add` without the clone.
  */
 export async function registerTestProject(
   server: SpawnedServer,
-  slug: string,
+  id: string,
+  name: string,
   remoteUrl: string,
 ): Promise<void> {
-  const res = await makeServerApiClient(server).project.register.$post({ json: { slug, remoteUrl } })
-  if (!res.ok) throw new Error(`registering project ${slug} failed: ${await res.text()}`)
+  const res = await makeServerApiClient(server).project.register.$post({ json: { id, name, remoteUrl } })
+  if (!res.ok) throw new Error(`registering project ${name} (${id}) failed: ${await res.text()}`)
 }
 
 /**
  * Give a project a git credential as the webapp's Settings does: store an
  * HTTPS token under a name, then assign it. Throws on any non-2xx.
- * Credential names are unique and outlive projects, so a project re-added
- * under the same slug must pass its own `name`.
+ * `project` is anything the routes resolve (a name or an id). Credential
+ * names are unique and outlive projects, so a second project with the same
+ * name must pass its own `name`.
  */
 export async function assignTestGitCredential(
   server: SpawnedServer,
-  slug: string,
+  project: string,
   token: string,
-  name = `${slug} token`,
+  name = `${project} token`,
 ): Promise<void> {
   const client = makeServerApiClient(server)
   const created = await client.auth.git.credentials.$post({ json: { name, token } })
   if (!created.ok) throw new Error(`creating the git credential failed: ${await created.text()}`)
   const { id } = await created.json()
-  const assigned = await client.project[':slug']['git-credential'].$put({
-    param: { slug }, json: { credentialId: id },
+  const assigned = await client.project[':projectId']['git-credential'].$put({
+    param: { projectId: project }, json: { credentialId: id },
   })
   if (!assigned.ok) throw new Error(`assigning the git credential failed: ${await assigned.text()}`)
 }

@@ -19,18 +19,18 @@ function pod(workspaceId: string): PodInfo {
     podName: `yaac-p-${workspaceId}-x`,
     jobName: `yaac-p-${workspaceId}`,
     workspaceId,
-    projectSlug: 'p',
+    projectId: 'p',
     tool: 'claude',
     phase: 'Running',
     running: true,
     terminating: false,
     createdAtMs: 1_700_000_000_000,
     labels: {},
-  } as PodInfo
+  }
 }
 
 function job(workspaceId: string): JobInfo {
-  return { jobName: `yaac-p-${workspaceId}`, workspaceId, projectSlug: 'p', createdAtMs: 1_700_000_000_000 }
+  return { jobName: `yaac-p-${workspaceId}`, workspaceId, projectId: 'p', createdAtMs: 1_700_000_000_000 }
 }
 
 beforeEach(() => {
@@ -46,7 +46,7 @@ describe('createRuntimeSnapshot', () => {
     expect((await snap.workspaces()).map((w) => w.workspaceId)).toEqual(['live'])
     // A Job whose pod is gone is a stray unit; one with a live pod is not.
     expect(await snap.strayUnits()).toEqual([{
-      workspaceId: 'stray', unitName: 'yaac-p-stray', projectSlug: 'p', createdAtMs: 1_700_000_000_000,
+      workspaceId: 'stray', unitName: 'yaac-p-stray', projectId: 'p', createdAtMs: 1_700_000_000_000,
     }])
     await snap.workspaces()
     expect(mockPods).toHaveBeenCalledTimes(1)

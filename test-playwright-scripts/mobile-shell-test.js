@@ -26,10 +26,10 @@
  * other live rows. It changes nothing on the server. Serves the SPA from the server's `dist/`, so rebuild and restart the
  * server after frontend changes.
  *
- * Run: YAAC_DATA_DIR=<data dir> [PROJECT=<slug>] node test-playwright-scripts/mobile-shell-test.js
+ * Run: YAAC_DATA_DIR=<data dir> [PROJECT=<name or id>] node test-playwright-scripts/mobile-shell-test.js
  */
 import path from 'node:path'
-import { requirePlaywright, origin, api, until, check, finish, SHOTS } from './lib.js'
+import { requirePlaywright, origin, api, until, check, finish, SHOTS, resolveProject } from './lib.js'
 
 /*
  * The workspace driven: its key bar is step 4's subject, so it must be tui.
@@ -37,10 +37,13 @@ import { requirePlaywright, origin, api, until, check, finish, SHOTS } from './l
  */
 const live = (await api('/workspace/list')).workspaces
 const rowText = (w) => w.title || w.prompt || 'New workspace'
-const target = live.find((w) => (!process.env.PROJECT || w.projectSlug === process.env.PROJECT)
+const only = process.env.PROJECT && (await resolveProject(process.env.PROJECT)).id
+const target = live.find((w) => (!only || w.projectId === only)
   && w.agentSessions?.[0]?.mode === 'tui'
-  && !live.some((o) => o !== w && o.projectSlug === w.projectSlug && o.tool === w.tool && rowText(o) === rowText(w)))
+  && !live.some((o) => o !== w && o.projectId === w.projectId && o.tool === w.tool && rowText(o) === rowText(w)))
 if (!target) throw new Error('no live tui workspace with a distinguishable row — create or retitle one')
+/** The target's project, whose row on the projects screen shows its name. */
+const targetProject = await resolveProject(target.projectId)
 
 const PHONE = { width: 390, height: 844 }
 const DESKTOP = { width: 1400, height: 900 }
@@ -50,7 +53,7 @@ const FONT_FLOOR = 16
 const USABLE = 48
 
 const stopped = (id, title, extra = {}) => ({
-  workspaceId: id, projectSlug: 'yaac', tool: 'claude', title,
+  workspaceId: id, projectId: target.projectId, tool: 'claude', title,
   createdAt: '2026-08-01 09:00:00', stoppedAt: '2026-08-01 18:00:00', seen: true, agentSessions: [], ...extra,
 })
 const STOPPED = [
@@ -196,7 +199,7 @@ try {
   await page.goto(`${origin}/`)
   const addProject = projectsLayer.getByText('Add project', { exact: true })
   await addProject.waitFor({ state: 'visible', timeout: 15_000 })
-  const projectRow = projectsLayer.locator('button:has(> span.truncate)', { hasText: target.projectSlug }).first()
+  const projectRow = projectsLayer.locator('button:has(> span.truncate)', { hasText: targetProject.name }).first()
   await projectRow.waitFor({ state: 'visible', timeout: 15_000 })
   check('no desktop sidebar at phone width', await page.locator('aside').count() === 0)
   const layers = await page.evaluate(layerReport)

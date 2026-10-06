@@ -32,7 +32,7 @@ export type WorkspaceEvent =
  */
 export interface WorkspaceCreated {
   type: 'workspace-created'
-  projectSlug: string
+  projectId: string
   workspaceId: string
   /** The branch it forks from, resolved before provisioning. Absent on a
    *  resume, which keeps the recorded base. */
@@ -62,7 +62,7 @@ export interface WorkspaceCreated {
  */
 export interface WorkspaceCreateFailed {
   type: 'workspace-create-failed'
-  projectSlug: string
+  projectId: string
   workspaceId: string
   resume?: boolean
 }
@@ -75,14 +75,14 @@ export interface WorkspaceCreateFailed {
  */
 export interface WorkspaceLifeStarted {
   type: 'workspace-life-started'
-  projectSlug: string
+  projectId: string
   workspaceId: string
 }
 
 /** A claimed spare was re-branched: the branch it now forks from. */
 export interface BaseBranchResolved {
   type: 'base-branch-resolved'
-  projectSlug: string
+  projectId: string
   workspaceId: string
   baseBranch: string
 }
@@ -98,7 +98,7 @@ export interface BaseBranchResolved {
  */
 export interface SessionsLaunched {
   type: 'sessions-launched'
-  projectSlug: string
+  projectId: string
   workspaceId: string
   sessions: LaunchedSession[]
 }
@@ -126,7 +126,7 @@ export interface LaunchedSession {
  */
 export interface SessionsDiscovered {
   type: 'sessions-discovered'
-  projectSlug: string
+  projectId: string
   workspaceId: string
   sessions: DiscoveredSession[]
 }
@@ -163,7 +163,7 @@ export interface DiscoveredSession {
  */
 export interface SessionsActive {
   type: 'sessions-active'
-  projectSlug: string
+  projectId: string
   workspaceId: string
   active: ActiveSession[]
 }
@@ -182,7 +182,7 @@ export interface ActiveSession {
  */
 export interface PermissionModeChanged {
   type: 'permission-mode-changed'
-  projectSlug: string
+  projectId: string
   workspaceId: string
   permissionMode: PermissionMode
 }
@@ -195,7 +195,7 @@ export interface PermissionModeChanged {
  */
 export interface WorkspaceStopped {
   type: 'workspace-stopped'
-  projectSlug: string
+  projectId: string
   workspaceId: string
   cause?: WorkspaceDeathCause
 }

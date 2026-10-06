@@ -96,7 +96,7 @@ try {
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
 
   // On a first visit, a ?workspace= link opens the phone layout on its pane.
-  await page.goto(`${origin}/?project=${workspace.projectSlug}&workspace=${workspace.workspaceId}`)
+  await page.goto(`${origin}/?project=${workspace.projectId}&workspace=${workspace.workspaceId}`)
 
   // The placeholder reads "Reconnecting…" until the chat socket attaches.
   const box = page.getByPlaceholder('Message the agent…')

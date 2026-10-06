@@ -29,18 +29,18 @@ import type { AcpEvent } from '@yaac/shared/acp'
  * link), gives an empty history.
  */
 export async function getAgentSessionTranscript(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
   agentSessionId: string,
 ): Promise<AcpEvent[]> {
-  const links = await listWorkspaceAgentSessions(projectSlug, workspaceId)
+  const links = await listWorkspaceAgentSessions(projectId, workspaceId)
   const session = links.find((l) => l.agentSessionId === agentSessionId)
   if (session === undefined) {
     throw new ServerError('NOT_FOUND', `conversation ${agentSessionId} not found`)
   }
 
   if (session.mode === 'acp') {
-    const raw = await readTranscript(acpRecord({ slug: projectSlug, workspaceId, agentSessionId }))
+    const raw = await readTranscript(acpRecord({ projectId, workspaceId, agentSessionId }))
     return raw === null ? [] : replayAcpLog(raw)
   }
 
@@ -48,21 +48,21 @@ export async function getAgentSessionTranscript(
     case 'claude': {
       // Fall back to the conventional path, as `stoppedPrompt` does.
       const file = recordedTranscript(session)
-        ?? await sessionTranscriptPath(projectSlug, workspaceId, session.tool, agentSessionId)
+        ?? await sessionTranscriptPath(projectId, workspaceId, session.tool, agentSessionId)
       const raw = await readTranscript(file)
       return raw === null ? [] : claudeTranscriptAsAcp(raw, agentSessionId)
     }
     case 'codex': {
-      const files = (await conversationFiles(projectSlug, workspaceId, [session])).get(agentSessionId) ?? []
+      const files = (await conversationFiles(projectId, workspaceId, [session])).get(agentSessionId) ?? []
       const raws = await readTranscripts(files.map((f) => f.file))
       return raws.length === 0 ? [] : codexTranscriptAsAcp(raws)
     }
     case 'pi': {
-      const raw = await readTranscript(await sessionTranscriptPath(projectSlug, workspaceId, session.tool, agentSessionId))
+      const raw = await readTranscript(await sessionTranscriptPath(projectId, workspaceId, session.tool, agentSessionId))
       return raw === null ? [] : piTranscriptAsAcp(raw)
     }
     case 'opencode':
-      return opencodeTranscriptAsAcp(projectSlug, workspaceId, agentSessionId)
+      return opencodeTranscriptAsAcp(projectId, workspaceId, agentSessionId)
   }
 }
 

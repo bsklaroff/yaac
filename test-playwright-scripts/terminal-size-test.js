@@ -15,7 +15,7 @@
  *     agent's tmux window ends each step at the xterm's size.
  *
  * Containerless only: it reads tmux over the workspace's host socket. Needs
- * a server with the `yaac` project (PROJECT picks another); it creates two
+ * a server with the `yaac` project (PROJECT, a name or id, picks another); it creates two
  * workspaces and stops them at the end. Screenshots go to
  * $SCREENSHOT_DIR/size-*.png.
  *
@@ -23,9 +23,9 @@
  */
 import { execSync } from 'node:child_process'
 import path from 'node:path'
-import { requirePlaywright, origin, api, until, check, finish, SHOTS, createWorkspace } from './lib.js'
+import { requirePlaywright, origin, api, until, check, finish, SHOTS, createWorkspace, resolveProject } from './lib.js'
 
-const PROJECT = process.env.PROJECT ?? 'yaac'
+const PROJECT = (await resolveProject(process.env.PROJECT ?? 'yaac')).id
 
 /** The agent window's size, read over the socket of the tmux server started in the workspace's checkout. */
 function tmuxAgentSize(workspaceId) {

@@ -1,5 +1,5 @@
 import { newlyWaiting, waitingKeys } from '@yaac/shared/waiting'
-import type { ServerSnapshot, WorkspaceListEntry } from '@yaac/shared/types'
+import type { ProjectSummary, ServerSnapshot, WorkspaceListEntry } from '@yaac/shared/types'
 
 /**
  * Turns server snapshots into the "needs attention" signal the shell shows
@@ -11,10 +11,14 @@ export function badgeText(waitingCount: number): string {
   return waitingCount > 0 ? String(waitingCount) : ''
 }
 
-/** Title + body for a "workspace is waiting" OS notification, labelled by
- *  title, else prompt, else id. */
-export function notificationFor(s: WorkspaceListEntry): { title: string; body: string } {
-  return { title: 'Workspace waiting for you', body: `${s.projectSlug} · ${s.title ?? s.prompt ?? s.workspaceId}` }
+/** Title + body for a "workspace is waiting" OS notification: the project's
+ *  name, then the workspace's title, else prompt, else id. */
+export function notificationFor(
+  s: WorkspaceListEntry,
+  projects: ProjectSummary[],
+): { title: string; body: string } {
+  const project = projects.find((p) => p.id === s.projectId)?.name ?? s.projectId
+  return { title: 'Workspace waiting for you', body: `${project} · ${s.title ?? s.prompt ?? s.workspaceId}` }
 }
 
 /**

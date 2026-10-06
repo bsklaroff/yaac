@@ -57,7 +57,7 @@ export function StopWorkspaceDialog({
         </span>
         <button
           type="button"
-          onClick={() => openCreateWorkspace({ projectSlug: entry.projectSlug, editId: entry.id })}
+          onClick={() => openCreateWorkspace({ projectId: entry.projectId, editId: entry.id })}
           className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-text-dim transition hover:bg-surface-3 hover:text-text"
         >
           Edit

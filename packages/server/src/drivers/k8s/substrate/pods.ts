@@ -2,12 +2,12 @@ import { z } from 'zod'
 import { dataDirHash, k8sNamespace, listObjects } from './api'
 import { serverLog } from '#log'
 
-/** Label keys attached to every workspace Job and its Pod. */
-export const LABEL_PROJECT = 'yaac.project'
+// Label keys attached to every workspace Job and its Pod.
+
 /**
- * The project's immutable id (`ProjectRef`), on workspace pods and on the
- * project's registry and image-store objects. Registry NetworkPolicies and
- * the orphan GCs key on it, so a later project with the same slug can never
+ * The project's id, on workspace pods and on the project's registry,
+ * image-store and egress proxy objects. Registry NetworkPolicies and the
+ * orphan GCs key on it; ids are never reused, so a later project can never
  * claim an object.
  */
 export const LABEL_PROJECT_ID = 'yaac.project-id'
@@ -43,19 +43,11 @@ export function workspaceIdLabels(workspaceId: string): Record<string, string> {
   return { [LABEL_WORKSPACE_ID]: workspaceId }
 }
 
-/**
- * Job name for a workspace. Names must be lowercase DNS-1123, and the
- * pods' `job-name` label caps them at 63 chars, leaving 21 for the slug
- * after `yaac-`, the UUID and a separator. The UUID makes it unique; the
- * full slug is in the `yaac.project` label.
- */
-export function workspaceJobName(projectSlug: string, workspaceId: string): string {
-  const safeSlug = projectSlug
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 21)
-  return `yaac-${safeSlug}-${workspaceId}`.replace(/--+/g, '-')
+/** Job name for a workspace. The project is in the `yaac.project-id`
+ *  label; the id alone keeps the name inside the 63 chars the pods'
+ *  `job-name` label allows. */
+export function workspaceJobName(workspaceId: string): string {
+  return `yaac-${workspaceId}`
 }
 
 /**
@@ -85,12 +77,11 @@ export interface PodTerminalState {
 }
 
 export interface PodInfo {
-  /** Job name (`yaac-<slug>-<workspaceId>`) — the stable workspace handle. */
+  /** Job name (`yaac-<workspaceId>`) — the stable workspace handle. */
   jobName: string
   /** Concrete Pod name (Job name + random suffix); needed for logs etc. */
   podName: string
   workspaceId: string
-  projectSlug: string
   /** See LABEL_PROJECT_ID. */
   projectId: string
   tool: string
@@ -147,7 +138,6 @@ const podItemSchema = z.object({
     labels: z.object({
       [JOB_NAME_LABEL]: z.string().min(1),
       [LABEL_WORKSPACE_ID]: z.string().min(1),
-      [LABEL_PROJECT]: z.string().min(1),
       [LABEL_PROJECT_ID]: z.string().min(1),
       [LABEL_TOOL]: z.string().min(1),
     }).catchall(z.string()),
@@ -194,7 +184,6 @@ function mapPodItem({ metadata, status }: PodItem): PodInfo {
     jobName: metadata.labels[JOB_NAME_LABEL],
     podName: metadata.name,
     workspaceId: metadata.labels[LABEL_WORKSPACE_ID],
-    projectSlug: metadata.labels[LABEL_PROJECT],
     projectId: metadata.labels[LABEL_PROJECT_ID],
     tool: metadata.labels[LABEL_TOOL],
     ...(metadata.labels[LABEL_MODE] !== undefined ? { mode: metadata.labels[LABEL_MODE] } : {}),
@@ -234,7 +223,7 @@ const jobItemSchema = z.object({
     name: z.string().min(1),
     labels: z.object({
       [LABEL_WORKSPACE_ID]: z.string().min(1),
-      [LABEL_PROJECT]: z.string().min(1),
+      [LABEL_PROJECT_ID]: z.string().min(1),
     }).catchall(z.string()),
     creationTimestamp: timestampSchema,
   }),
@@ -248,7 +237,7 @@ export function mapJobObject(obj: unknown): JobInfo | null {
   return {
     jobName: metadata.name,
     workspaceId: metadata.labels[LABEL_WORKSPACE_ID],
-    projectSlug: metadata.labels[LABEL_PROJECT],
+    projectId: metadata.labels[LABEL_PROJECT_ID],
     createdAtMs: toEpochMs(metadata.creationTimestamp),
   }
 }
@@ -270,7 +259,7 @@ export function workspacePodSelector(projectFilter?: string): string {
   return [
     `${LABEL_DATA_DIR_HASH}=${dataDirHash()}`,
     `${LABEL_WORKSPACE_ID}`,
-    ...(projectFilter ? [`${LABEL_PROJECT}=${projectFilter}`] : []),
+    ...(projectFilter ? [`${LABEL_PROJECT_ID}=${projectFilter}`] : []),
   ].join(',')
 }
 
@@ -289,7 +278,7 @@ export function findWorkspacePod(
 export interface JobInfo {
   jobName: string
   workspaceId: string
-  projectSlug: string
+  projectId: string
   createdAtMs: number
 }
 

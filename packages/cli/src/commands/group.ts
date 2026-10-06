@@ -1,4 +1,4 @@
-import { api } from '#commands/api'
+import { api, projectNames, resolveProjectId } from '#commands/api'
 import { normalizeTitle } from '@yaac/shared/titles'
 import type { WorkspaceGroupSummary, WorkspaceListEntry } from '@yaac/shared/types'
 
@@ -8,37 +8,41 @@ import type { WorkspaceGroupSummary, WorkspaceListEntry } from '@yaac/shared/typ
  *
  * Groups are addressed by name, since that is all a user (or an agent using
  * `yaac-mama`) sees. The server resolves names (`resolveGroup`) and refuses
- * an ambiguous one.
+ * an ambiguous one. `project` arguments are a name, id or id prefix, which
+ * the server resolves the same way.
  */
 
-export async function groupCreate(projectSlug: string, name: string): Promise<void> {
+export async function groupCreate(project: string, name: string): Promise<void> {
   // Idempotent, like `yaac-mama group create`. A duplicate name would make
   // later `move` and `delete` calls ambiguous.
-  const { groups } = await api.workspace.group.list.$get({ query: { project: projectSlug } })
+  const projectId = await resolveProjectId(project)
+  const { groups } = await api.workspace.group.list.$get({ query: { project: projectId } })
   const existing = resolveLocally(groups, name)
   if (existing.length > 0) {
-    console.log(`Group "${existing[0].name}" already exists in ${projectSlug} (${existing[0].groupId}).`)
+    console.log(`Group "${existing[0].name}" already exists in ${project} (${existing[0].groupId}).`)
     return
   }
   const created = await api.workspace.group.create.$post({
-    json: { projectSlug, name },
+    json: { projectId, name },
   })
   // Print the server's normalized name, not the typed one.
-  console.log(`Created group "${created.name}" in ${projectSlug} (${created.groupId}).`)
+  console.log(`Created group "${created.name}" in ${project} (${created.groupId}).`)
 }
 
-export async function groupList(projectSlug?: string): Promise<void> {
-  const [{ groups }, running] = await Promise.all([
-    api.workspace.group.list.$get({ query: projectSlug ? { project: projectSlug } : {} }),
-    api.workspace.list.$get({ query: projectSlug ? { project: projectSlug } : {} }),
+export async function groupList(project?: string): Promise<void> {
+  const query = project ? { project } : {}
+  const [{ groups }, running, names] = await Promise.all([
+    api.workspace.group.list.$get({ query }),
+    api.workspace.list.$get({ query }),
+    projectNames(),
   ])
 
   if (groups.length === 0) {
-    const suffix = projectSlug ? ` in project "${projectSlug}"` : ''
+    const suffix = project ? ` in project "${project}"` : ''
     console.log(`No workspace groups${suffix}. Create one with: yaac group create <project> <name>`)
     return
   }
-  renderGroups(groups, running.workspaces)
+  renderGroups(groups, running.workspaces, names)
 }
 
 export async function groupMove(
@@ -46,10 +50,10 @@ export async function groupMove(
   group: string | undefined,
   options: { project?: string } = {},
 ): Promise<void> {
-  const projectSlug = options.project ?? await projectOfWorkspace(workspaceId)
-  if (!projectSlug) {
+  const projectId = options.project ?? await projectOfWorkspace(workspaceId)
+  if (!projectId) {
     throw new Error(
-      `Could not find a running workspace "${workspaceId}". Pass --project <slug> to move a `
+      `Could not find a running workspace "${workspaceId}". Pass --project <project> to move a `
       + 'stopped one.',
     )
   }
@@ -57,7 +61,7 @@ export async function groupMove(
   // name creates the group, as `--group` does on workspace create.
   const target = group === undefined || group === '--' ? null : group
   const moved = await api.workspace.group.move.$post({
-    json: { projectSlug, workspaceId, group: target, create: true },
+    json: { projectId, workspaceId, group: target, create: true },
   })
   // Print the resolved name, so a group passed by id doesn't echo a uuid.
   console.log(target === null
@@ -65,18 +69,19 @@ export async function groupMove(
     : `Moved ${workspaceId.slice(0, 8)} into "${moved.name ?? target}".`)
 }
 
-export async function groupDelete(projectSlug: string, group: string): Promise<void> {
-  const { groups } = await api.workspace.group.list.$get({ query: { project: projectSlug } })
+export async function groupDelete(project: string, group: string): Promise<void> {
+  const projectId = await resolveProjectId(project)
+  const { groups } = await api.workspace.group.list.$get({ query: { project: projectId } })
   const matches = resolveLocally(groups, group)
-  if (matches.length === 0) throw new Error(`No such group in ${projectSlug}: ${group}`)
+  if (matches.length === 0) throw new Error(`No such group in ${project}: ${group}`)
   if (matches.length > 1) {
     throw new Error(
-      `"${group}" names ${matches.length} groups in ${projectSlug} — pass the group id instead `
+      `"${group}" names ${matches.length} groups in ${project} — pass the group id instead `
       + `(${matches.map((g) => g.groupId).join(', ')})`,
     )
   }
   const match = matches[0]
-  await api.workspace.group.delete.$post({ json: { projectSlug, groupId: match.groupId } })
+  await api.workspace.group.delete.$post({ json: { projectId, groupId: match.groupId } })
   console.log(`Deleted group "${match.name}". Its workspaces are back in the default list.`)
 }
 
@@ -91,10 +96,10 @@ async function projectOfWorkspace(workspaceId: string): Promise<string | undefin
 
   const { workspaces } = await api.workspace.list.$get({ query: {} })
   const running = workspaces.find(matches)
-  if (running) return running.projectSlug
+  if (running) return running.projectId
 
   const stopped = await api.workspace['list-stopped'].$get({ query: {} })
-  return stopped.find(matches)?.projectSlug
+  return stopped.find(matches)?.projectId
 }
 
 /**
@@ -113,7 +118,11 @@ function resolveLocally(
   return groups.filter((g) => g.name.toLowerCase() === wanted)
 }
 
-function renderGroups(groups: WorkspaceGroupSummary[], workspaces: WorkspaceListEntry[]): void {
+function renderGroups(
+  groups: WorkspaceGroupSummary[],
+  workspaces: WorkspaceListEntry[],
+  projectNames: Map<string, string>,
+): void {
   const counts = new Map<string, number>()
   for (const w of workspaces) {
     if (w.groupId === undefined) continue
@@ -121,11 +130,12 @@ function renderGroups(groups: WorkspaceGroupSummary[], workspaces: WorkspaceList
   }
 
   const rows = [...groups]
-    .sort((a, b) => a.projectSlug.localeCompare(b.projectSlug)
+    .map((g) => ({ ...g, project: projectNames.get(g.projectId) ?? g.projectId }))
+    .sort((a, b) => a.project.localeCompare(b.project)
       || a.createdAt.localeCompare(b.createdAt))
     .map((g) => ({
       name: g.name,
-      project: g.projectSlug,
+      project: g.project,
       running: String(counts.get(g.groupId) ?? 0),
       pinned: g.pinned ? 'yes' : '',
       created: g.createdAt,

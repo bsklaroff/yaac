@@ -33,7 +33,7 @@ function params(overrides: Partial<PodJobParams> = {}): PodJobParams {
     jobName: 'yaac-demo-abcd',
     namespace: 'test-ns',
     labels: {
-      'yaac.project': 'demo',
+      'yaac.project-id': 'demo',
       'yaac.workspace-id': 'abcd',
       'yaac.data-dir-hash': 'ddh',
       'yaac.tool': 'claude',

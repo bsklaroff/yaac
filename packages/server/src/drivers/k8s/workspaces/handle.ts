@@ -11,7 +11,7 @@ import type { WorkspaceDeathCause } from '@yaac/shared/types'
 export function runtimeHandleFromPod(pod: PodInfo): RuntimeHandle {
   return {
     workspaceId: pod.workspaceId,
-    projectSlug: pod.projectSlug,
+    projectId: pod.projectId,
     jobName: pod.jobName,
     tool: normalizeTool(pod.tool),
     ...((AGENT_TOOLS as readonly string[]).includes(pod.tool)

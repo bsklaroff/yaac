@@ -49,7 +49,7 @@ export type InjectionRule = {
 export function resolveRegisteredRules(
   objects: ProxyObjects,
   rules: HostInjectionRule[],
-  projectSlug: string | undefined,
+  projectId: string | undefined,
 ): InjectionRule[] {
   const out: InjectionRule[] = []
   for (const rule of rules) {
@@ -61,7 +61,7 @@ export function resolveRegisteredRules(
       }
       let value = inj.value
       if (typeof value !== 'string' && inj.secretRef
-        && projectSlug !== undefined && inj.secretRef.startsWith(`${projectSlug}/`)) {
+        && projectId !== undefined && inj.secretRef.startsWith(`${projectId}/`)) {
         const secret = objects.secret(inj.secretRef)
         if (secret !== undefined) value = (inj.prefix ?? '') + secret
       }
@@ -94,7 +94,7 @@ function httpsRemoteHost(remoteUrl: string | undefined): string | null {
 function resolveHttpsCredentialForWorkspace(objects: ProxyObjects, workspaceId: string): { token: string; host: string } | null {
   const registration = objects.registration(workspaceId)
   if (!registration) return null
-  const entry = objects.credentials.git.find((e) => e.projects.includes(registration.projectSlug))
+  const entry = objects.credentials.git.find((e) => e.projects.includes(registration.projectId))
   if (!entry) return null
   const host = httpsRemoteHost(registration.repoUrl)
   return host ? { token: entry.token, host } : null

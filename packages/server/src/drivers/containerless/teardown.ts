@@ -4,7 +4,7 @@ import { imageStoreDir, nodeLocalPath, nodeLocalProjectPath } from '@yaac/shared
 import { serverLog } from '#log'
 import { shellQuote } from '#lib/shell'
 import { waitFor } from '#lib/wait-for'
-import { descendantPids, isSshAgentFor, killPids, runHost } from './host'
+import { descendantPids, isSshAgentFor, killPids, livePids, runHost } from './host'
 import { tmuxAnswers } from './exec'
 import {
   containerlessWorkspacePaths,
@@ -18,7 +18,7 @@ import {
   sshAgentPidOf,
   tmuxPidOf,
 } from './registry'
-import type { NodeLocalLiveSet, ProjectRef, TeardownTarget } from '#drivers/contract'
+import type { NodeLocalLiveSet, TeardownTarget } from '#drivers/contract'
 
 /**
  * Taking a workspace down: `kill-server` (tmux SIGHUPs every pane), then a
@@ -26,16 +26,18 @@ import type { NodeLocalLiveSet, ProjectRef, TeardownTarget } from '#drivers/cont
  * from tmux and would hold its port forever), the ssh-agent, and the marker.
  */
 
-/** How long to wait for the tmux server to exit. */
+/** How long to wait for the tmux server, then its descendants, to exit. */
 const CONFIRM_TIMEOUT_MS = 10_000
 
-/** See `WorkspaceDriver.destroy`. `true` only when tmux is confirmed gone,
- *  since the caller then deletes the checkout. */
+/** See `WorkspaceDriver.destroy`. `true` only when tmux and every process
+ *  under it are confirmed gone, since the caller then deletes or moves what
+ *  they write to; an agent still exiting writes its last lines on the way
+ *  out. */
 export async function destroyWorkspace(
   target: TeardownTarget,
   opts?: { unitOnly?: boolean },
 ): Promise<boolean> {
-  const { projectSlug, workspaceId } = target
+  const { projectId, workspaceId } = target
   const wasRunning = findWorkspace(workspaceId)?.running === true
   // Read before the marker is removed below.
   const agentPid = sshAgentPidOf(workspaceId)
@@ -61,11 +63,13 @@ export async function destroyWorkspace(
     // TERM only: a hard kill could leave build output half-written.
     killPids(strays.filter((pid) => pid !== rootPid), 'SIGTERM')
   }
+  const exited = await waitFor(() => Promise.resolve(livePids(strays).length === 0),
+    { timeoutMs: CONFIRM_TIMEOUT_MS, intervalMs: 200 })
 
   // With `unitOnly` (a create retrying), keep the marker for the next
   // attempt.
   if (opts?.unitOnly !== true) {
-    await removeMarker(projectSlug, workspaceId).catch((err: unknown) => {
+    await removeMarker(projectId, workspaceId).catch((err: unknown) => {
       serverLog(`[server] containerless: marker cleanup for ${workspaceId}: ${String(err)}`)
     })
     // Socket files outlive the processes that bound them.
@@ -75,7 +79,7 @@ export async function destroyWorkspace(
       .catch(() => { /* already gone */ })
     forgetWorkspace(workspaceId)
   }
-  return gone
+  return gone && exited
 }
 
 /** Kill the workspace's ssh-agent if the pid is still that agent. */
@@ -98,7 +102,7 @@ function confirmGone(sock: string): Promise<boolean> {
  */
 export function detachedTeardownCommand(target: TeardownTarget): string {
   const paths = containerlessWorkspacePaths(target.unitName)
-  const state = containerlessStateDir(target.projectSlug, target.workspaceId)
+  const state = containerlessStateDir(target.projectId, target.workspaceId)
   // All paths are quoted: the data dir may contain spaces.
   //
   // The ssh-agent is found by its socket path in `ps` (no registry here).
@@ -123,8 +127,8 @@ export function detachedTeardownCommand(target: TeardownTarget): string {
 
 /** See `WorkspaceDriver.destroyProjectSubstrate`. Only the project's
  *  node-local dirs on this host. */
-export async function destroyProjectSubstrate(project: ProjectRef): Promise<void> {
-  for (const dir of [nodeLocalProjectPath(project.id), imageStoreDir(project.id)]) {
+export async function destroyProjectSubstrate(projectId: string): Promise<void> {
+  for (const dir of [nodeLocalProjectPath(projectId), imageStoreDir(projectId)]) {
     await fs.rm(dir, { recursive: true, force: true }).catch((err: unknown) => {
       serverLog(`[server] containerless: remove ${dir}: ${String(err)}`)
     })

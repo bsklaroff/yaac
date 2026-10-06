@@ -113,7 +113,7 @@ export class ClusterCache {
 
   workspacePods(projectFilter?: string): PodInfo[] {
     const all = this.pods.items()
-    return projectFilter ? all.filter((p) => p.projectSlug === projectFilter) : all
+    return projectFilter ? all.filter((p) => p.projectId === projectFilter) : all
   }
 
   workspaceJobs(): JobInfo[] {
@@ -182,11 +182,11 @@ export function getActiveClusterCache(): ClusterCache | null {
  * unhealthy cache is never read; unseeded it would look like an empty
  * cluster, and with a dropped watch it would be stale.
  */
-export async function readWorkspacePods(projectSlug?: string): Promise<PodInfo[]> {
+export async function readWorkspacePods(projectId?: string): Promise<PodInfo[]> {
   const cache = activeClusterCache
   return cache?.healthy('workspace-pods')
-    ? cache.workspacePods(projectSlug)
-    : listWorkspacePods(projectSlug)
+    ? cache.workspacePods(projectId)
+    : listWorkspacePods(projectId)
 }
 
 /** This install's workspace Jobs, read as `readWorkspacePods` reads pods. */

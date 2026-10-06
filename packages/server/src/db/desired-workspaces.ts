@@ -10,13 +10,13 @@ import { listLiveWorkspaceRows, listStoppedWorkspaceIds } from './workspace-stor
  */
 export interface DesiredWorkspaces {
   live: DesiredWorkspace[]
-  /** `<projectSlug>/<workspaceId>` of workspaces recorded as stopped, which
+  /** `<projectId>/<workspaceId>` of workspaces recorded as stopped, which
    *  tells a teardown yaac issued apart from an unexpected one. */
   stopped: string[]
 }
 
 export interface DesiredWorkspace {
-  projectSlug: string
+  projectId: string
   workspaceId: string
   /** Whether its agent ever started: separates an interrupted create
    *  (`never-started`) from a workspace whose runtime vanished (`orphaned`). */
