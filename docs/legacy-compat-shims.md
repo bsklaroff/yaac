@@ -131,3 +131,23 @@ pi key.
 - **When it is safe to remove.** Once no workspace pod is older than the
   change (`kubectl get pods -n yaac` ages, or every workspace restarted), and
   every inner install has re-run `yaac auth fake` for opencode and pi.
+
+## Inferred run starts and held messages for an older pi-acp
+
+pi-acp as yaac patches it (`dockerfiles/agent-patches/pi-acp.js`, revision 3
+on) adopts a run an extension starts: it reports the run's start and queues
+prompts behind it. An older install reports only the run's end and fails a
+`session/prompt` sent during the run, so yaac compensates for it.
+
+- **What it reads.** pi's `infersRunStart` and `refusesPromptMidRun` in
+  `packages/server/src/runtime/agents/acp-adapters.ts`: `AcpClient` treats
+  a work update while idle as a run's start and holds messages while such a
+  run goes on. Both are harmless against the patched adapter.
+- **What breaks silently if it goes too early.** In a pi acp workspace still
+  on an older pi-acp (a k8s workspace on an older image, a containerless one
+  started before the upgrade), an extension-started run shows as idle until
+  it ends, and a message sent during it fails with stop reason `error`
+  instead of waiting.
+- **When it is safe to remove.** Once every running pi acp workspace was
+  started on patch revision 3 or later: restart any older one. Then delete
+  both flags, the code reading them, and their tests.

@@ -1144,8 +1144,9 @@ export function sessionStateModeId(state: unknown): string | undefined {
  *    `CLAUDE_SDK_MESSAGE` notification, once asked for it in the session's
  *    `_meta` (`CLAUDE_SESSION_META`).
  *  - codex-acp sends `session_info_update` with `_meta.codex.threadStatus`.
- *  - pi-acp sends `session_info_update` with `_meta.piAcp.running`, but only
- *    `false` for a run it did not start; see `AcpAdapterProfile.infersRunStart`.
+ *  - pi-acp sends `session_info_update` with `_meta.piAcp.running`. An
+ *    install older than yaac's patch sends only `false` for a run it did not
+ *    start; see `AcpAdapterProfile.infersRunStart`.
  *
  * opencode's ACP server forwards nothing from a turn it did not start, so
  * there is nothing to read.

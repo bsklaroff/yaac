@@ -26,10 +26,15 @@ const PI_ACP = path.dirname(require.resolve('pi-acp/package.json'))
  * window (4 lines here, 2000 in pi), then the latest window without its
  * trailing newline, slid by one line, by two, and past line 8, which no
  * snapshot shows.
+ *
+ * Like pi's extension commands, `/status` starts no run, `/ask` starts one
+ * before answering and `/ask-later` 100ms after, and all answer the prompt
+ * with disposition `handled`. Like pi, it refuses a prompt mid-run.
  */
 const FAKE_PI = `#!/usr/bin/env node
 const SETTLE_DELAY_MS = 400
 const queue = []
+let streaming = false
 const out = (m) => process.stdout.write(JSON.stringify(m) + '\\n')
 const text = (delta) => out({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta } })
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -48,12 +53,14 @@ function bash() {
   out({ type: 'agent_settled' })
 }
 async function run(message) {
+  streaming = true
   out({ type: 'agent_start' })
   text('run:' + message + ';')
   await wait(400)
   while (queue.length > 0) text('steer:' + queue.shift() + ';')
   out({ type: 'agent_end' })
   await wait(SETTLE_DELAY_MS)
+  streaming = false
   out({ type: 'agent_settled' })
 }
 let buf = ''
@@ -63,7 +70,11 @@ process.stdin.on('data', (c) => {
     const cmd = JSON.parse(buf.slice(0, i))
     buf = buf.slice(i + 1)
     const reply = (data) => out({ type: 'response', id: cmd.id, command: cmd.type, success: true, data })
-    if (cmd.type === 'prompt') { reply(); if (cmd.message === 'bash') bash(); else void run(cmd.message) }
+    if (cmd.type === 'prompt' && streaming) out({ type: 'response', id: cmd.id, command: 'prompt', success: false, error: 'Agent is already processing.' })
+    else if (cmd.type === 'prompt' && cmd.message === '/status') reply({ disposition: 'handled' })
+    else if (cmd.type === 'prompt' && cmd.message === '/ask') { void run('asked'); reply({ disposition: 'handled' }) }
+    else if (cmd.type === 'prompt' && cmd.message === '/ask-later') { setTimeout(() => void run('later'), 100); reply({ disposition: 'handled' }) }
+    else if (cmd.type === 'prompt') { reply({ disposition: 'started' }); if (cmd.message === 'bash') bash(); else void run(cmd.message) }
     else if (cmd.type === 'steer') { queue.push(cmd.message); reply() }
     else if (cmd.type === 'clear_queue') reply({ steering: queue.splice(0), followUp: [] })
     else if (cmd.type === 'get_available_models') reply({ models: [{ provider: 'fake', id: 'fake', name: 'fake' }] })
@@ -112,7 +123,8 @@ async function start(): Promise<string> {
   log.length = 0
   adapter = spawn(process.execPath, [path.join(dir, 'pi-acp', 'dist', 'index.js')], {
     cwd: dir,
-    env: { ...process.env, PI_ACP_PI_COMMAND: path.join(dir, 'pi'), PI_CODING_AGENT_DIR: dir },
+    // HOME too, so pi-acp's session map stays off the real home.
+    env: { ...process.env, PI_ACP_PI_COMMAND: path.join(dir, 'pi'), PI_CODING_AGENT_DIR: dir, HOME: dir },
   })
   let buf = ''
   adapter.stdout!.on('data', (chunk: Buffer) => {
@@ -133,9 +145,12 @@ async function start(): Promise<string> {
       }
       const update = msg.params?.update
       terminalOutput += update?._meta?.terminal_output?.data ?? ''
-      if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.text?.includes(':')) {
-        agentText += update.content.text
-        log.push(update.content.text)
+      // Only the stand-in's own text: pi-acp adds a prelude whose content
+      // depends on the host (its update notice runs the real pi and npm).
+      const own = update?.sessionUpdate === 'agent_message_chunk' ? update.content?.text?.match(/(run|steer):[^;]*;/g) : null
+      if (own) {
+        agentText += own.join('')
+        log.push(...own)
       }
     }
   })
@@ -197,6 +212,21 @@ describe('patchPiAcp', () => {
     expect(turn.result).toEqual({ stopReason: 'end_turn' })
     const lines = Array.from({ length: 12 }, (_, i) => `line-${String(i + 1)}`)
     expect(terminalOutput).toBe(lines.filter((l) => l !== 'line-8').join('\n'))
+  })
+
+  it('ends an extension command\'s turn, waiting out a run it started, and queues prompts behind a later run', async () => {
+    const sessionId = await start()
+    const prompt = (text: string) => request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] })
+    expect((await prompt('/status')).result).toEqual({ stopReason: 'end_turn' })
+    expect((await prompt('/ask')).result).toEqual({ stopReason: 'end_turn' })
+    expect(agentText).toBe('run:asked;')
+
+    // The run starts after its turn ended; pi-acp holds the next prompt until
+    // it settles, where pi would refuse it.
+    expect((await prompt('/ask-later')).result).toEqual({ stopReason: 'end_turn' })
+    await until(() => agentText.includes('run:later;'))
+    expect((await prompt('next')).result).toEqual({ stopReason: 'end_turn' })
+    expect(agentText).toBe('run:asked;run:later;run:next;')
   })
 
   it('is tested against the release the image installs', () => {
