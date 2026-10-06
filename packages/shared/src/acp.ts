@@ -187,6 +187,9 @@ export type AcpEvent =
   /** The models this session offers and the one it runs, pushed by the
    *  handshake and again whenever the model changes. */
   | { type: 'models'; seq: number; current?: string; models: AcpModel[] }
+  /** How full the context window is, in tokens, as the agent last reported.
+   *  A subagent's own window carries its `thread`. */
+  | { type: 'usage'; seq: number; thread?: string; used: number; size: number }
   /** A prompt turn began, including one already running when the server
    *  reattached, which this pane did not start. */
   | { type: 'turn-start'; seq: number }

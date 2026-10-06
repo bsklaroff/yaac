@@ -836,7 +836,7 @@ describe('replayAcpLog', () => {
     ])
   })
 
-  it('projects the commands and models the session offers, and each model switch', () => {
+  it('projects the commands and models the session offers, each model switch, and context usage', () => {
     // Shapes as the pinned adapters send them: claude's `model` config
     // option, codex's `models` block whose ids carry an effort (the config
     // option wins), and a command list with an argument hint.
@@ -871,9 +871,13 @@ describe('replayAcpLog', () => {
       line({ jsonrpc: '2.0', id: 'x-2', result: { configOptions: [modelOption('sonnet')] } }),
       // A reply to a mode switch carries no model.
       line({ jsonrpc: '2.0', id: 'x-3', result: {} }),
+      update({ sessionUpdate: 'usage_update', used: 53168, size: 1000000, cost: { amount: 0.4, currency: 'USD' } }),
+      // A report without a window size has no fraction to show.
+      update({ sessionUpdate: 'usage_update', used: 10 }),
     ].join('\n'))
 
-    expect(events.map((e) => e.type)).toEqual(['models', 'commands', 'models'])
+    expect(events.map((e) => e.type)).toEqual(['models', 'commands', 'models', 'usage'])
+    expect(events[3]).toEqual({ type: 'usage', seq: 3, used: 53168, size: 1000000 })
     expect(events[0]).toMatchObject({
       current: 'default',
       models: [

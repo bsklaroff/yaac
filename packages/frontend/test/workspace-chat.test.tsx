@@ -259,6 +259,39 @@ describe('WorkspaceChat width', () => {
   })
 })
 
+describe('WorkspaceChat context meter', () => {
+  afterEach(() => {
+    cleanup()
+    stream.events = []
+  })
+
+  it("shows the main conversation's latest context report, not a subagent's", () => {
+    show()
+    expect(screen.queryByRole('meter')).toBeNull()
+    cleanup()
+
+    stream.events = [
+      { type: 'usage', seq: 0, used: 10_000, size: 200_000 },
+      user(1, 'hi'),
+      { type: 'usage', seq: 2, used: 160_000, size: 200_000 },
+      { type: 'usage', seq: 3, thread: 'sub-1', used: 5_000, size: 200_000 },
+    ]
+    show()
+    const meter = screen.getByRole('meter', { name: 'Context used' })
+    expect(meter.textContent).toBe('80%')
+    expect(meter.getAttribute('title')).toBe('Context: 160k of 200k tokens (80%)')
+    expect(meter.getAttribute('aria-valuetext')).toBe(meter.getAttribute('title'))
+    expect(meter.className).toContain('text-warning')
+    cleanup()
+
+    // The colour follows the number shown, so 74.6% reads amber as "75%".
+    stream.events = [{ type: 'usage', seq: 0, used: 149_200, size: 200_000 }]
+    show()
+    expect(screen.getByRole('meter').textContent).toBe('75%')
+    expect(screen.getByRole('meter').className).toContain('text-warning')
+  })
+})
+
 describe('WorkspaceChat condensed view', () => {
   const agent = (seq: number, text: string): AcpEvent =>
     ({ type: 'agent', seq, content: [{ type: 'text', text }] })

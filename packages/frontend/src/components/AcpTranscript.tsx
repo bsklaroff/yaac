@@ -197,7 +197,7 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
       else if (turnAt !== undefined) woken = e.causes
       continue
     }
-    if (e.type === 'commands' || e.type === 'models' || e.type === 'turn-start' || e.type === 'agent-turn') continue
+    if (e.type === 'commands' || e.type === 'models' || e.type === 'usage' || e.type === 'turn-start' || e.type === 'agent-turn') continue
     if (e.type === 'permission-request') {
       permissionIndex.set(e.requestId, groups.length)
       groups.push({
