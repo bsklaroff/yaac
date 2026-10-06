@@ -384,6 +384,70 @@ describe('replayAcpLog', () => {
     expect(events.map((e) => e.type)).toEqual(['user', 'agent-turn', 'agent', 'agent-turn', 'agent'])
   })
 
+  it('names what woke the agent into a run it started itself', () => {
+    // As claude-agent-acp 0.84.0 sends them: a finished task's notification
+    // comes after a run's result, just before the run it starts; a monitor's
+    // event comes with nothing before the run, whose result names a task
+    // notification as its origin. While a background subagent works, claude
+    // stays running and holds the prompt open between runs.
+    const sdk = (message: Record<string, unknown>): string =>
+      line({ jsonrpc: '2.0', method: '_claude/sdkMessage', params: { sessionId: 'acp-1', message: { type: 'system', ...message } } })
+    const state = (s: string): string => sdk({ subtype: 'session_state_changed', state: s })
+    const result = (kind: string): string => update({ sessionUpdate: 'usage_update', used: 1, size: 2, _meta: { '_claude/origin': { kind } } })
+    const started = (taskId: string, toolUseId: string, description: string, type = 'local_bash', more = {}): string => sdk({
+      subtype: 'task_started', task_id: taskId, tool_use_id: toolUseId, description, is_backgrounded: true, task_type: type, ...more,
+    })
+    const text = (t: string): string => update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: t } })
+    const done = (taskId: string): string => sdk({ subtype: 'task_notification', task_id: taskId, status: 'completed' })
+    const events = replayAcpLog([
+      prompt('start the background work'),
+      state('running'),
+      update({ sessionUpdate: 'tool_call', toolCallId: 'toolu_mon', title: 'Monitor', kind: 'other', status: 'pending', _meta: { claudeCode: { toolName: 'Monitor' } } }),
+      started('b1', 'toolu_bash', 'Run tests'),
+      started('m1', 'toolu_mon', 'deploy events'),
+      started('a1', 'toolu_agent', 'count files', 'local_agent'),
+      // A watch the agent did not ask for is never credited.
+      sdk({ subtype: 'task_started', task_id: 'ws1', description: 'artifact updates', task_type: 'monitor_ws', ambient: true }),
+      // The subagent's own task tells the subagent, not the agent.
+      started('s1', 'toolu_sub_bash', 'sleep', 'local_bash', { owned_by_subagent: true }),
+      // A notification mid-run joins the run and wakes nothing.
+      done('f1'),
+      text('Launched.'), result('human'),
+      done('s1'), done('a1'), text('The subagent reported.'), result('task-notification'), state('idle'),
+      // Two finishing together wake one run.
+      done('b1'), done('a1'), state('running'), result('task-notification'), state('idle'),
+      // Nothing before a run: the running monitor's event woke it.
+      state('running'), result('task-notification'), state('idle'),
+      // An ambient watch's news is not the agent's, and is not a monitor's.
+      done('ws1'), state('running'), result('task-notification'), state('idle'),
+      // A notification the prompt's run took in wakes nothing.
+      done('b1'), prompt('thanks'), state('running'), result('human'), state('idle'),
+      // A steer aborts the cycle it interrupts, which sends a result of its
+      // own; the steered reply goes on in the same run.
+      prompt('count'), state('running'), text('1, 2'),
+      line({ jsonrpc: '2.0', id: 's-1', method: '_session/steering', params: { sessionId: 'acp-1', prompt: [{ type: 'text', text: 'and 3' }] } }),
+      line({ jsonrpc: '2.0', id: 's-1', result: { outcome: 'injected' } }),
+      result('human'), text('3'), result('human'), state('idle'),
+    ].join('\n') + '\n')
+    expect(events.filter((e) => e.type === 'agent-turn' || e.type === 'woken').map((e) => (e.type === 'woken' ? e.causes : e.type)))
+      .toEqual([
+        'agent-turn',
+        'agent-turn',
+        [{ kind: 'subagent', id: 'toolu_agent', name: 'count files' }],
+        'agent-turn',
+        [{ kind: 'task', id: 'b1', name: 'Run tests' }, { kind: 'subagent', id: 'toolu_agent', name: 'count files' }],
+        'agent-turn',
+        [{ kind: 'monitor', id: 'm1', name: 'deploy events' }],
+        'agent-turn',
+        'agent-turn',
+        'agent-turn',
+      ])
+    // Credited at the run's result, once its origin says a notification
+    // started it.
+    const credited = events.findIndex((e) => e.type === 'woken')
+    expect(events[credited - 1]).toMatchObject({ type: 'agent', content: [{ text: 'The subagent reported.' }] })
+  })
+
   it('replays a message\'s images with its words', () => {
     // User turns exist only as `session/prompt` lines, images included.
     const raw = (line({
