@@ -118,16 +118,23 @@ client, and the server keeps no copy.
 workspace, so the stopped-workspaces view can show the whole conversation.
 
 - An `acp` conversation is a replay of its acpd record.
-- A `tui` claude conversation has no record, so claude's own session
-  transcript is translated on demand. The server calls `claude-agent-acp`'s
-  `toAcpNotifications` (the function its `session/load` uses) as a library,
-  then feeds the result through the same replay as an acpd record. No adapter
+- A `tui` conversation has no record, so the tool's own history is
+  translated on demand into the `session/update` lines its adapter would have
+  sent live, then fed through the same replay as an acpd record. No adapter
   process, pod or credential is involved, and a stopped conversation renders
-  the same way it looked live. The package the server imports must match the
-  version `dockerfiles/Dockerfile.tools` installs; a unit test fails if they
-  drift.
-- A `tui` conversation of any other tool returns `NOT_SUPPORTED`, because only
-  claude's adapter exposes its translation as a library.
+  the same way it would have looked in an `acp` pane.
+  - claude: the server calls `claude-agent-acp`'s `toAcpNotifications` (the
+    function its `session/load` uses) as a library over claude's transcript.
+    The package the server imports must match the version
+    `dockerfiles/Dockerfile.tools` installs; a unit test fails if they drift.
+  - codex, pi and opencode: their adapters export no translation, so yaac
+    carries its own (`codex-acp-replay.ts`, `pi-acp-replay.ts`,
+    `opencode-acp-replay.ts`), written against the pinned versions and
+    matching what each adapter streams live rather than its `session/load`
+    replay, which is lossier. codex reads the rollout and its subagents'
+    rollouts; pi its session log; opencode its database (see
+    docs/workspace-storage.md, "opencode", for how a sandboxed workspace's
+    database is read without the server opening it).
 
 ### How content reaches a pane
 
@@ -670,7 +677,7 @@ the image.
 | JSON-RPC peer | `packages/server/src/runtime/agents/acp-jsonrpc.ts` |
 | Conversation state | `packages/server/src/runtime/agents/acp-client.ts` |
 | Pane bridge (`/acp/attach`) | `packages/server/src/runtime/agents/acp-bridge.ts` |
-| Claude TUI transcript replay | `packages/server/src/runtime/agents/claude-acp-replay.ts` |
+| TUI transcript replay (one per tool) | `packages/server/src/runtime/agents/*-acp-replay.ts` |
 | Agent supervisor | `dockerfiles/acpd/` (baked into the base image; run from the install under containerless) |
 | Record location | `acpLogDir()` in `packages/shared/src/project-paths.ts` |
 | Wire types | `packages/shared/src/acp.ts` |

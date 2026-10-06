@@ -7,12 +7,12 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { recordAgentSessions, setAgentSessionCapture } from '#db/agent-session-store'
 import { closeDb } from '#db/client'
-import { acpLogDir, agentHistoryDir, claudeDir } from '@yaac/shared/project-paths'
+import { acpLogDir, agentHistoryDir, claudeDir, opencodeCheckpointDir } from '@yaac/shared/project-paths'
 import { getAgentSessionTranscript } from '#domain/workspaces/transcript'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 
 /**
- * Which file a conversation's history is read from. Both readers run for
+ * Which file a conversation's history is read from. The readers run for
  * real against files on disk, since the feature exists to read a
  * conversation with no pod.
  */
@@ -143,13 +143,53 @@ describe('getAgentSessionTranscript', () => {
     expect(await getAgentSessionTranscript(SLUG, WORKSPACE, ACP_SESSION)).toEqual([])
   })
 
-  it('refuses a conversation this install cannot read', async () => {
-    // opencode keeps history in a sqlite database inside the container, so
-    // nothing is left on the host. An empty answer would wrongly suggest
-    // nothing was said.
-    await seedSession('oc-1', { tool: 'opencode' })
-    await expect(getAgentSessionTranscript(SLUG, WORKSPACE, 'oc-1'))
-      .rejects.toMatchObject({ code: 'NOT_SUPPORTED' })
+  it('translates a tui conversation of every other tool from its own history', async () => {
+    // Each tool keeps its history in its own format and place: codex a
+    // rollout named for its thread, pi a log named for its session, and
+    // opencode (sandboxed, as with no driver) the export its checkpoint
+    // writes. Each comes back as the same events.
+    const line = (o: unknown): string => JSON.stringify(o)
+    const CODEX = '01a1111c-de75-7ce3-8999-3257b2615db0'
+    const codexItem = (item: unknown, ms: number): string => line({
+      timestamp: new Date(ms).toISOString(), type: 'event_msg',
+      payload: { type: 'item_completed', thread_id: CODEX, turn_id: 't1', item, started_at_ms: ms, completed_at_ms: ms },
+    })
+    const rollouts = path.join(agentHistoryDir(SLUG, WORKSPACE, 'codex'), '2026', '10', '06')
+    await fs.mkdir(rollouts, { recursive: true })
+    await fs.writeFile(path.join(rollouts, `rollout-2026-10-06T12-07-47-${CODEX}.jsonl`), [
+      line({ timestamp: '2026-10-06T12:07:47.000Z', type: 'session_meta', payload: { id: CODEX, cwd: '/workspace' } }),
+      line({ timestamp: '2026-10-06T12:07:47.001Z', type: 'event_msg', payload: { type: 'task_started', turn_id: 't1' } }),
+      codexItem({ type: 'UserMessage', id: 'u1', content: [{ type: 'text', text: 'what changed?' }] }, 1791288467002),
+      codexItem({ type: 'AgentMessage', id: 'a1', content: [{ type: 'Text', text: 'the router' }] }, 1791288467003),
+    ].join('\n') + '\n')
+
+    const PI = '01a1110b-f851-758d-ba08-45c4ee75613f'
+    const pi = agentHistoryDir(SLUG, WORKSPACE, 'pi')
+    await fs.mkdir(pi, { recursive: true })
+    await fs.writeFile(path.join(pi, `2026-10-06T11-49-19-571Z_${PI}.jsonl`), [
+      line({ type: 'session', version: 3, id: PI, cwd: '/workspace' }),
+      line({ type: 'message', id: 'm1', parentId: null, message: { role: 'user', content: [{ type: 'text', text: 'what changed?' }] } }),
+      line({ type: 'message', id: 'm2', parentId: 'm1', message: { role: 'assistant', content: [{ type: 'text', text: 'the router' }] } }),
+    ].join('\n') + '\n')
+
+    const OPENCODE = 'ses_eeef51727ffedBWQdWdy0dzOE2'
+    const exported = path.join(opencodeCheckpointDir(SLUG, WORKSPACE), 'yaac-transcripts')
+    await fs.mkdir(exported, { recursive: true })
+    await fs.writeFile(path.join(exported, `${OPENCODE}.jsonl`), [
+      line({ session: OPENCODE, type: 'session', parent: null, directory: '/workspace' }),
+      line({ session: OPENCODE, type: 'user', seq: 1, data: { text: 'what changed?', files: [] } }),
+      line({ session: OPENCODE, type: 'assistant', seq: 2, data: { content: [{ type: 'text', text: 'the router' }] } }),
+    ].join('\n') + '\n')
+
+    for (const [tool, id] of [['codex', CODEX], ['pi', PI], ['opencode', OPENCODE]] as const) {
+      await seedSession(id, { tool })
+      const said = (await getAgentSessionTranscript(SLUG, WORKSPACE, id))
+        .flatMap((e) => (e.type === 'user' || e.type === 'agent' ? [`${e.type}: ${JSON.stringify(e.content)}`] : []))
+      expect(said, tool).toEqual([
+        'user: [{"type":"text","text":"what changed?"}]',
+        'agent: [{"type":"text","text":"the router"}]',
+      ])
+    }
   })
 
   it('finds a claude transcript filed under a cwd that is not the pod\'s', async () => {

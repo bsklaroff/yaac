@@ -278,4 +278,3 @@ stays per workspace.
 - Live read-only chat (issue #326) and terminal views; presence; handoff;
   comments.
 - Team projects: `owner` naming a team, with roles.
-- codex and pi `tui` transcripts (they keep answering `NOT_SUPPORTED`).

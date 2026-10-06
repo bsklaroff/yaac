@@ -30,8 +30,12 @@ export { parkAcpLaunchModel, setAcpPermissionMode } from './acp-driver'
 // The status watcher discards a stopped workspace's queued messages.
 export { acpConversation, dropAcpQueues, whenAcpConversation } from './acp-registry'
 export { acpRecord, readAcpFirstPrompt, replayAcpLog } from './acp-log'
-// A tui claude conversation rendered as acp events (see the module header).
+// A tui conversation rendered as acp events, one translator per tool (see
+// each module's header).
 export { claudeTranscriptAsAcp } from './claude-acp-replay'
+export { codexTranscriptAsAcp } from './codex-acp-replay'
+export { opencodeTranscriptAsAcp } from './opencode-acp-replay'
+export { piTranscriptAsAcp } from './pi-acp-replay'
 export type { AcpConversation } from './acp-client'
 export {
   agentStatusFormat,

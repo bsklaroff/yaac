@@ -15,8 +15,9 @@
  * credentials or claude binary, under either driver.
  */
 
-import { replayAcpLog } from './acp-log'
+import { AcpRecordWriter } from './acp-log'
 import { ACP } from './acp-protocol'
+import { jsonObjects } from './jsonl'
 import { isUuid } from '#lib/uuid'
 import { serverLog } from '#log'
 import type { AcpEvent } from '@yaac/shared/acp'
@@ -36,17 +37,19 @@ const PLACEHOLDER_SESSION_ID = '00000000-0000-0000-0000-000000000000'
  * (see `getAgentSessionTranscript`).
  */
 export async function claudeTranscriptAsAcp(raw: string, agentSessionId: string): Promise<AcpEvent[]> {
-  return replayAcpLog(await synthesizeAcpRecord(raw, agentSessionId))
+  const record = new AcpRecordWriter()
+  await synthesizeAcpRecord(raw, agentSessionId, record)
+  return record.replay()
 }
 
 /**
- * A transcript's lines as the record acpd would have written over ACP. A
- * record rather than events, so `replayAcpLog` also handles tool-call
+ * Write a transcript's lines as the record acpd would have written over
+ * ACP. A record rather than events, so `replayAcpLog` also handles tool-call
  * merging, sequencing and defensive drops for synthesized conversations.
  */
-async function synthesizeAcpRecord(raw: string, agentSessionId: string): Promise<string> {
-  const entries = raw.split('\n').flatMap(parseLine)
-  if (entries.length === 0) return ''
+async function synthesizeAcpRecord(raw: string, agentSessionId: string, record: AcpRecordWriter): Promise<void> {
+  const entries = jsonObjects(raw)
+  if (entries.length === 0) return
 
   // Loaded on demand: these packages are megabytes, needed only for the
   // rare transcript read.
@@ -71,14 +74,13 @@ async function synthesizeAcpRecord(raw: string, agentSessionId: string): Promise
   } catch (err) {
     // An unparseable transcript yields an empty conversation, not an error.
     serverLog(`[server] claude transcript replay failed: ${String(err)}`)
-    return ''
+    return
   }
 
   // The adapter's `replaySessionHistory` loop minus live-session parts.
   // `toolUseCache` spans messages so a `tool_result` finds its `tool_use`
   // (and so a tool call gets its title and kind).
   const toolUseCache = {}
-  const lines: string[] = []
   for (const message of messages) {
     const api = (message as { message?: { role?: unknown; content?: unknown } }).message
     const role = api?.role
@@ -98,25 +100,8 @@ async function synthesizeAcpRecord(raw: string, agentSessionId: string): Promise
       // them through a client.
       { registerHooks: false },
     )) {
-      lines.push(JSON.stringify({
-        jsonrpc: '2.0',
-        method: ACP.sessionUpdate,
-        params: notification,
-      }))
+      record.write({ method: ACP.sessionUpdate, params: notification })
     }
-  }
-  return lines.join('\n')
-}
-
-/** One transcript line as an object; unparseable lines (a mid-write end,
- *  stray output) are skipped. */
-function parseLine(line: string): unknown[] {
-  if (line.trim() === '') return []
-  try {
-    const parsed: unknown = JSON.parse(line)
-    return typeof parsed === 'object' && parsed !== null ? [parsed] : []
-  } catch {
-    return []
   }
 }
 

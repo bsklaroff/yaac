@@ -533,8 +533,7 @@ export const workspaceApp = new Hono()
     return c.json(links.map((l) => toAgentSessionEntry(l)))
   })
   // One conversation's history as chat-pane events. Resolved from the record
-  // so the stopped-workspaces view can read it. A tool that leaves no host
-  // transcript gets a 501.
+  // so the stopped-workspaces view can read it.
   .get('/:id/agent-sessions/:sessionId/transcript', async (c) => {
     const { projectSlug, workspaceId } = await resolveWorkspaceRecord(c.req.param('id'))
     const events = await getAgentSessionTranscript(

@@ -241,7 +241,6 @@ export function StoppedWorkspacesButton({
                       key={selected.workspaceId}
                       workspaceId={selected.workspaceId}
                       sessions={selected.agentSessions}
-                      tool={selected.tool}
                       prompt={selected.prompt}
                     />
                     <button
