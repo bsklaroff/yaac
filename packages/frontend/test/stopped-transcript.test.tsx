@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { screen, fireEvent, cleanup } from '@testing-library/react'
 import type { AcpEvent } from '@yaac/shared/acp'
 import type { AgentSessionEntry } from '@yaac/shared/types'
 import { StoppedTranscript } from '#components/StoppedTranscript'
@@ -10,7 +10,7 @@ import { mockFetch, renderWithClient, serverError, type FetchMock } from './harn
  * The stopped-workspace pane's conversation view. The server is answered at
  * `fetch` and rendering is real, so the tests check what the reader sees:
  * the conversation, a picker when there are several, and the founding prompt
- * when the tool left nothing readable.
+ * when there is nothing to read.
  */
 
 const TRANSCRIPT = 'GET /api/workspace/w1/agent-sessions/c1/transcript'
@@ -48,7 +48,6 @@ function renderPane(props: Partial<Parameters<typeof StoppedTranscript>[0]> = {}
     <StoppedTranscript
       workspaceId="w1"
       sessions={[session()]}
-      tool="claude"
       prompt="what changed?"
       {...props}
     />,
@@ -80,35 +79,30 @@ describe('StoppedTranscript', () => {
     expect(await screen.findByText('the first answer')).toBeTruthy()
   })
 
-  it('shows the founding ask, and why, when the tool left no readable history', async () => {
-    // opencode keeps its history in a sqlite database inside the container.
-    // Nothing to fetch, so nothing is fetched.
-    renderPane({ sessions: [session({ tool: 'opencode' })], tool: 'opencode', prompt: 'port it' })
-
-    expect(screen.getByText('port it')).toBeTruthy()
-    expect(screen.getByText(/keeps its history inside the workspace/)).toBeTruthy()
-    await waitFor(() => expect(server.calls).toEqual([]))
+  it('reads a tui conversation of any tool', async () => {
+    // The server translates each tool's own history, so none is skipped.
+    renderPane({ sessions: [session({ tool: 'opencode' })] })
+    expect(await screen.findByText('the router')).toBeTruthy()
   })
 
-  it('does not blame the tool for a workspace whose conversations are not listed yet', () => {
-    // A workspace stopped a moment ago: its conversations are still loading,
-    // so "this tool keeps no history" would be wrong.
+  it('falls back to the founding ask when there is no conversation to read', async () => {
+    // A workspace stopped a moment ago has none listed yet; a conversation
+    // the server has no record of answers 404.
     renderPane({ sessions: [], prompt: 'what changed?' })
-
     expect(screen.getByText('what changed?')).toBeTruthy()
-    expect(screen.queryByText(/keeps its history inside the workspace/)).toBeNull()
-  })
+    cleanup()
 
-  it('falls back to the founding ask when the server cannot produce a transcript', async () => {
-    // A 501 (a tool the server won't read) or a 404 (a server too old for the
-    // route) falls back to the founding prompt rather than an error.
-    server.route(TRANSCRIPT, serverError('NOT_SUPPORTED', 'not readable', 501))
+    server.route(TRANSCRIPT, serverError('NOT_FOUND', 'gone', 404))
     renderPane({ prompt: 'port it' })
-
     expect(await screen.findByText('port it')).toBeTruthy()
-    // ...but must not blame claude, whose history is readable. Landing here
-    // for a viewable conversation means the server is too old for the route.
-    expect(screen.queryByText(/keeps its history inside the workspace/)).toBeNull()
+    cleanup()
+
+    // A history the server found nothing in, such as an opencode checkpoint
+    // not yet exported, shows the prompt rather than "no messages".
+    transcript([])
+    renderPane({ prompt: 'port it again' })
+    expect(await screen.findByText('port it again')).toBeTruthy()
+    expect(screen.queryByText(/no messages/)).toBeNull()
   })
 
   it('passes on the server\'s reason when it refuses to show a conversation', async () => {
@@ -122,9 +116,9 @@ describe('StoppedTranscript', () => {
     expect(await screen.findByText(/past the 64 MB/)).toBeTruthy()
   })
 
-  it('says so when the conversation is empty rather than showing a blank pane', async () => {
+  it('says so when the conversation is empty and there is no prompt to show instead', async () => {
     transcript([])
-    renderPane()
+    renderPane({ prompt: undefined })
     expect(await screen.findByText(/no messages/i)).toBeTruthy()
   })
 

@@ -284,6 +284,38 @@ function toToolContent(value: unknown): AcpToolContent[] {
   return out
 }
 
+/**
+ * Each hunk of a one-file unified diff as before/after text, the shape a
+ * `diff` tool content entry takes. A "No newline at end of file" marker
+ * strips the line break off the side it follows.
+ */
+export function unifiedDiffHunks(diff: string): Array<{ oldText: string; newText: string }> {
+  const hunks: Array<{ old: string[]; new: string[]; previous: string }> = []
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('@@')) {
+      hunks.push({ old: [], new: [], previous: ' ' })
+      continue
+    }
+    const hunk = hunks.at(-1)
+    const sign = line[0]
+    if (hunk === undefined || sign === undefined) continue
+    if (sign === '\\') {
+      if (hunk.previous !== '+') stripBreak(hunk.old)
+      if (hunk.previous !== '-') stripBreak(hunk.new)
+      continue
+    }
+    if (sign !== '+') hunk.old.push(`${line.slice(1)}\n`)
+    if (sign !== '-') hunk.new.push(`${line.slice(1)}\n`)
+    hunk.previous = sign
+  }
+  return hunks.map((h) => ({ oldText: h.old.join(''), newText: h.new.join('') }))
+}
+
+function stripBreak(lines: string[]): void {
+  const last = lines.at(-1)
+  if (last !== undefined) lines[lines.length - 1] = last.slice(0, -1)
+}
+
 function toLocations(value: unknown): Array<{ path: string; line?: number }> | undefined {
   if (!Array.isArray(value)) return undefined
   const out = value.flatMap((raw) => {
@@ -471,6 +503,16 @@ export class AcpProjection {
   private runCauses: AcpWake[] = []
   /** claude tasks a subagent started. Their notifications go to it. */
   private readonly subagentOwned = new Set<string>()
+  /**
+   * Indexes `setTask` keeps over the shown tasks, so that no update scans
+   * them all (a record is workspace-written and may hold any number): the
+   * running monitors the agent asked for (`monitorCauses`), the task each
+   * tool call still owes an output file (`claimOutputFile`), and claude's
+   * running tasks (its live set).
+   */
+  private readonly runningMonitors = new Map<string, AcpTask>()
+  private readonly awaitingOutputFile = new Map<string, string>()
+  private readonly runningClaudeTasks = new Set<string>()
 
   /** Follow a state report; a run starting is an `agent-turn` boundary. */
   agentState(running: boolean): AcpEventInit[] {
@@ -500,10 +542,9 @@ export class AcpProjection {
    * not one the agent asked for, so it is not counted.
    */
   private monitorCauses(): AcpWake[] {
-    const monitors = [...this.tasks.values()].filter((t) => t.kind === 'monitor' && t.state === 'running' && t.ambient === undefined)
-    if (monitors.length === 0) return []
-    const [only] = monitors
-    return [monitors.length === 1 ? { kind: 'monitor', id: only.id, name: only.name } : { kind: 'monitor' }]
+    const [only] = this.runningMonitors.values()
+    if (only === undefined) return []
+    return [this.runningMonitors.size === 1 ? { kind: 'monitor', id: only.id, name: only.name } : { kind: 'monitor' }]
   }
 
   /** Hold a `_session/steering` request line until its reply. */
@@ -634,13 +675,17 @@ export class AcpProjection {
       // The live set is authoritative: a task or background subagent missing
       // from it is gone, even if its own end was never reported. A later
       // notification of how it ended still corrects the state.
+      // One no longer running is dropped from the set, so each message looks
+      // only at those that still are.
       const subagents = [...this.backgroundSubagents].flatMap((id) => {
         const s = this.subagents.get(this.subagentTasks.get(id) ?? '')
+        if (s?.state !== 'running') this.backgroundSubagents.delete(id)
         return s?.state === 'running' && !live.has(id) ? [this.setSubagent({ ...s, state: 'cancelled' })] : []
       })
-      return subagents.concat([...this.tasks.values()]
-        .filter((t) => this.claudeTasks.has(t.id) && t.state === 'running' && !live.has(t.id))
-        .map((t) => this.setTask({ ...t, state: 'stopped' })))
+      return subagents.concat([...this.runningClaudeTasks].flatMap((id) => {
+        const t = this.tasks.get(id)
+        return t === undefined || live.has(id) ? [] : [this.setTask({ ...t, state: 'stopped' })]
+      }))
     }
     const taskId = asString(m.task_id)
     if (taskId === undefined) return []
@@ -726,7 +771,7 @@ export class AcpProjection {
    * the call arriving second.
    */
   private claimOutputFile(call: AcpToolCall): AcpEventInit[] {
-    const task = [...this.tasks.values()].find((t) => t.toolCallId === call.toolCallId && t.outputFile === undefined)
+    const task = this.tasks.get(this.awaitingOutputFile.get(call.toolCallId) ?? '')
     const outputFile = task === undefined ? undefined : outputFileOf(call, task.id)
     return task === undefined || outputFile === undefined ? [] : [this.setTask({ ...task, outputFile })]
   }
@@ -762,6 +807,17 @@ export class AcpProjection {
 
   private setTask(task: AcpTask): AcpEventInit {
     this.tasks.set(task.id, task)
+    const running = task.state === 'running'
+    if (running && task.kind === 'monitor' && task.ambient === undefined) this.runningMonitors.set(task.id, task)
+    else this.runningMonitors.delete(task.id)
+    if (running && this.claudeTasks.has(task.id)) this.runningClaudeTasks.add(task.id)
+    else this.runningClaudeTasks.delete(task.id)
+    const call = task.toolCallId
+    if (call !== undefined && task.outputFile === undefined) {
+      if (!this.awaitingOutputFile.has(call)) this.awaitingOutputFile.set(call, task.id)
+    } else if (call !== undefined && this.awaitingOutputFile.get(call) === task.id) {
+      this.awaitingOutputFile.delete(call)
+    }
     return { type: 'task', task }
   }
 
@@ -865,8 +921,7 @@ export class AcpProjection {
           ...(summary !== undefined ? { summary } : {}),
           ...(update.canStop === true ? { canStop: true as const } : {}),
         }
-        this.tasks.set(id, task)
-        return { type: 'task', task }
+        return this.setTask(task)
       }
       default:
         return null

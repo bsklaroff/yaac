@@ -3,6 +3,24 @@ import { openSandboxFile, type SandboxFile } from './sandbox-fs'
 
 const CHUNK_SIZE = 64 * 1024
 
+/** A JSON value, or undefined for text that is not JSON (a line cut short
+ *  mid-write, stray output). */
+export function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return undefined
+  }
+}
+
+/** A JSONL text's object lines, in order; blank and unparseable lines are
+ *  skipped. */
+export function jsonObjects(raw: string): Array<Record<string, unknown>> {
+  return raw.split('\n')
+    .map((line): unknown => (line.trim() === '' ? undefined : parseJson(line)))
+    .filter((v): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v))
+}
+
 /** How far into a transcript a scan reads. The target (an opening message)
  *  is near the top; this bounds the cost of an agent-grown file. */
 const MAX_SCAN_BYTES = 64 * 1024 * 1024

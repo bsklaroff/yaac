@@ -17,6 +17,11 @@
 # database, which is produced by sqlite's backup API (consistent under a
 # live writer) into a temp file and renamed into place.
 #
+# Beside it goes an export of every conversation as JSONL (EXPORT), which
+# is how the server reads a sandboxed workspace's history without opening a
+# database the workspace wrote. Keep its name and row shape in sync with
+# OPENCODE_EXPORT_DIR in packages/server/src/runtime/agents/opencode-acp-replay.ts.
+#
 # No-op unless the data dir holds a SQLite file: every other tool's pod
 # runs this too, and has nothing to save.
 set -u
@@ -26,6 +31,7 @@ set -u
 HOME="${HOME:-/home/yaac}"
 DATA="$HOME/.local/share/opencode"
 CHECKPOINT="$HOME/.yaac/opencode-checkpoint"
+EXPORT=yaac-transcripts
 
 db=""
 for f in "$DATA"/*.db; do
@@ -60,18 +66,62 @@ mv -f "$tmp" "$CHECKPOINT/$name" || { rm -f "$tmp"; exit 1; }
 rm -f "$CHECKPOINT/$name-wal" "$CHECKPOINT/$name-shm" "$CHECKPOINT/$name-journal"
 
 # Everything beside the database, file for file; the working copy's WAL
-# sidecars are excluded, since the backup above already folded them in.
+# sidecars are excluded, since the backup above already folded them in, and
+# so is the copy of the export a restore left there. A file already in the
+# checkpoint is replaced rather than written over, since opencode's snapshot
+# repo keeps its git objects read-only.
 ok=1
 for entry in "$DATA"/* "$DATA"/.[!.]*; do
   [ -e "$entry" ] || continue
   case "$(basename "$entry")" in
-    "$name"|*.db|*-wal|*-shm|*-journal) continue ;;
+    "$name"|*.db|*-wal|*-shm|*-journal|"$EXPORT") continue ;;
   esac
-  cp -a "$entry" "$CHECKPOINT"/ || ok=0
+  cp -a --remove-destination "$entry" "$CHECKPOINT"/ || ok=0
 done
-[ "$ok" = 1 ] || { echo "yaac-opencode-checkpoint: copying $DATA failed" >&2; exit 1; }
-
-if [ "${1:-}" = stop ]; then
+if [ "$ok" != 1 ]; then
+  echo "yaac-opencode-checkpoint: copying $DATA failed" >&2
+elif [ "${1:-}" = stop ]; then
   rm -rf "$DATA"/* "$DATA"/.[!.]* 2>/dev/null || true
 fi
-exit 0
+
+# One `<session id>.jsonl` per conversation: a line for its session and for
+# each session below it (parent, title, directory), then each one's
+# messages in order. Each file is written whole and renamed into place, and
+# the files of deleted conversations are removed. It runs last, since it
+# rewrites every conversation and a preStop hook has a short grace period:
+# a stale export costs less than opencode's other files. It runs whether or
+# not that copy succeeded, since it reads only the database backed up above.
+# A failed export costs only the transcript view, so it does not fail the
+# checkpoint.
+python3 - "$CHECKPOINT/$name" "$CHECKPOINT/$EXPORT" <<'PY' || echo "yaac-opencode-checkpoint: exporting conversations failed" >&2
+import json, os, pathlib, re, sqlite3, sys
+db, out = sys.argv[1], sys.argv[2]
+conn = sqlite3.connect(pathlib.Path(db).absolute().as_uri() + "?immutable=1", uri=True)
+os.makedirs(out, exist_ok=True)
+roots = [r for (r,) in conn.execute("select id from session_v2 where parent_id is null") if re.fullmatch(r"ses_[A-Za-z0-9]+", r)]
+for root in roots:
+    tmp = os.path.join(out, f".tmp-{root}.jsonl")
+    with open(tmp, "w") as f:
+        sessions, seen = [root], {root}
+        for sid in sessions:
+            parent, title, directory = conn.execute(
+                "select parent_id, title, directory from session_v2 where id = ?", (sid,)).fetchone()
+            f.write(json.dumps({"session": sid, "type": "session", "parent": parent, "title": title, "directory": directory}) + "\n")
+            for (child,) in conn.execute("select id from session_v2 where parent_id = ? order by time_created", (sid,)):
+                if child not in seen:
+                    seen.add(child)
+                    sessions.append(child)
+            for (kind, seq, created, data) in conn.execute(
+                    "select type, seq, time_created, data from session_message where session_id = ? order by seq", (sid,)):
+                try:
+                    data = json.loads(data)
+                except ValueError:
+                    pass
+                f.write(json.dumps({"session": sid, "type": kind, "seq": seq, "time": created, "data": data}) + "\n")
+    os.replace(tmp, os.path.join(out, root + ".jsonl"))
+keep = {root + ".jsonl" for root in roots}
+for entry in os.listdir(out):
+    if entry not in keep:
+        os.remove(os.path.join(out, entry))
+PY
+[ "$ok" = 1 ]

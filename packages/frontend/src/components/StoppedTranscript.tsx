@@ -5,17 +5,14 @@ import { AcpTranscript, groupEvents, SUBAGENT_CATEGORY, taskCategory } from '#co
 import {
   ActivityHeader, callOf, latestActivity, SubagentPrompt, TaskView, type ActivityTarget,
 } from '#components/AcpActivity'
-import { TOOL_LABEL } from '#lib/icons'
 import { ServerError } from '@yaac/shared/errors'
-import {
-  getSessionTranscript, transcriptViewable, TRANSCRIPT_UNAVAILABLE,
-} from '#lib/transcriptApi'
-import type { AgentSessionEntry, AgentTool } from '@yaac/shared/types'
+import { getSessionTranscript, TRANSCRIPT_UNAVAILABLE } from '#lib/transcriptApi'
+import type { AgentSessionEntry } from '@yaac/shared/types'
 
 /**
  * A stopped workspace's conversations, rendered with the same `AcpTranscript`
  * as the live chat pane. They survive the container: an `acp` one as acpd's
- * record, a `tui` claude one as claude's own transcript.
+ * record, a `tui` one as the tool's own history, translated server-side.
  *
  * A workspace can have several (`/clear`, or more than one agent); they show
  * as tabs in restore order. Fetched once and cached forever, since a stopped
@@ -25,18 +22,15 @@ import type { AgentSessionEntry, AgentTool } from '@yaac/shared/types'
 export function StoppedTranscript({
   workspaceId,
   sessions,
-  tool,
   prompt,
 }: {
   workspaceId: string
   sessions: AgentSessionEntry[]
-  /** The workspace's tool, for the note shown when nothing is readable. */
-  tool: AgentTool
   /** The starting prompt, shown when there is no readable transcript. */
   prompt?: string
 }): JSX.Element | null {
   const viewable = useMemo(
-    () => sessions.filter(transcriptViewable).sort((a, b) => a.ordinal - b.ordinal),
+    () => [...sessions].sort((a, b) => a.ordinal - b.ordinal),
     [sessions],
   )
   const [picked, setPicked] = useState<string | null>(null)
@@ -66,29 +60,18 @@ export function StoppedTranscript({
     ? callOf(data, task.toolCallId)
     : { output: '' }
 
-  // Nothing readable: a `tui` conversation of a tool whose history the server
-  // cannot read after the pod is gone (opencode keeps it in an in-container
-  // sqlite db; codex names rollouts by a thread id yaac never sees). Show the
-  // starting prompt instead.
-  if (selected === undefined || data === TRANSCRIPT_UNAVAILABLE) {
+  // Nothing readable: no conversation recorded yet (a just-stopped
+  // workspace), one the server has no record of, or a history it found
+  // nothing in (a checkpoint not yet exported, a tool's format changed).
+  // Show the starting prompt instead.
+  const empty = Array.isArray(data) && data.length === 0
+  if (selected === undefined || data === TRANSCRIPT_UNAVAILABLE || (empty && prompt)) {
     if (!prompt) return null
-    // Blame the tool only when conversations are known and none is readable.
-    // An empty list is a just-stopped workspace, and an unavailable viewable
-    // one is an older server; both resolve on their own.
-    const explain = sessions.length > 0 && viewable.length === 0
     return (
-      <div className="mt-4 flex min-h-0 flex-1 flex-col gap-1.5">
-        <p className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap rounded bg-bg/80 p-2.5
-          text-xs leading-relaxed text-text-dim">
-          {prompt}
-        </p>
-        {explain && (
-          <p className="shrink-0 text-[11px] text-text-faint">
-            {TOOL_LABEL[tool]} keeps its history inside the workspace, so only the
-            opening message is readable once it has stopped.
-          </p>
-        )}
-      </div>
+      <p className="mt-4 min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap rounded bg-bg/80 p-2.5
+        text-xs leading-relaxed text-text-dim">
+        {prompt}
+      </p>
     )
   }
 

@@ -80,6 +80,38 @@ export function replayAcpLog(raw: string): AcpEvent[] {
     .map((event, seq) => ({ ...event, seq }))
 }
 
+/**
+ * A record built from a tool's own history (the `*-acp-replay` modules), as
+ * acpd would have written it. A translation can repeat what it read, such
+ * as one large file write in every result naming its call, so its output is
+ * capped near a record read from disk: past `MAX_ACP_RECORD_BYTES`
+ * characters the record ends and every later message is dropped unread, so
+ * the conversation shows up to that point. A message too deeply nested to
+ * serialize is skipped.
+ */
+export class AcpRecordWriter {
+  private readonly lines: string[] = []
+  private left = MAX_ACP_RECORD_BYTES
+  private full = false
+
+  write(msg: Record<string, unknown>): void {
+    if (this.full) return
+    let line: string
+    try {
+      line = JSON.stringify({ jsonrpc: '2.0', ...msg })
+    } catch {
+      return
+    }
+    this.left -= line.length + 1
+    if (this.left < 0) this.full = true
+    else this.lines.push(line)
+  }
+
+  replay(): AcpEvent[] {
+    return replayAcpLog(this.lines.join('\n'))
+  }
+}
+
 /** Tail poll interval: short enough for streaming to look live, cheap when
  *  idle (one open and two small reads). */
 const TAIL_INTERVAL_MS = 150

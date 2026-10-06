@@ -272,7 +272,12 @@ global tier, `global/projects/<slug>/opencode-data/<id>`
 
 - `workspace-bin/yaac-opencode-checkpoint` copies the working copy into the
   checkpoint: the database through SQLite's backup API (consistent under a live
-  writer), other files one by one.
+  writer), other files one by one. It then exports every conversation from
+  that copy as `yaac-transcripts/<session id>.jsonl`: a line per session (the
+  conversation's and its subagents', with parent and title), then each
+  session's `session_message` rows. This export is how the server shows a
+  sandboxed workspace's conversation, since it never opens a database the
+  workspace wrote; a checkpoint with no export shows an empty transcript.
 - `yaac-workspace-init` runs it every five minutes. The pod's preStop hook runs
   it once more with `stop`, which also empties the working copy, so a cleanly
   stopped workspace leaves nothing on its node. A crashed one leaves a copy for
@@ -391,19 +396,25 @@ line can be partial. A file over 256 MB is never sent, since a workspace can
 make one as large as it likes (a sparse file costs it nothing) and the caller
 would write every byte; `-o` skips it and says so.
 
-opencode's database is handed out as a consistent copy, but the server never
-queries it (`openConversationFile`). A sandboxed workspace wrote it, so it is
-never opened with SQLite there: its checkpoint is already a backup-API copy
-with no sidecars, at most five minutes behind while the pod runs. A host
-workspace's is the live working copy, so when a `-wal` beside it says a writer
-may be active, the server backs it up through a read-only connection
-(`node:sqlite`), once it has checked that the database is where it was listed
-and neither sidecar is a link; without one, the file is the whole database.
-SQLite opens by path, so a link swapped in after that check is followed,
-which is accepted because a host workspace has no sandbox: it could read
-what the link names itself. The caller's
-`yaac-mama` turns the copy into JSONL, its session and its subagents'
-sessions, with `python3` in its own sandbox.
+opencode's database is handed out as a consistent copy
+(`openConversationFile`). A sandboxed workspace wrote it, so it is never
+opened with SQLite there: its checkpoint is already a backup-API copy with no
+sidecars, at most five minutes behind while the pod runs. A host workspace's
+is the live working copy, so when a `-wal` beside it says a writer may be
+active, the server backs it up through a read-only connection (`node:sqlite`),
+once it has checked that the database is where it was listed and neither
+sidecar is a link; without one, the file is the whole database. SQLite opens
+by path, so a link swapped in after that check is followed, which is accepted
+because a host workspace has no sandbox: it could read what the link names
+itself. The caller's `yaac-mama` turns the copy into JSONL, its session and
+its subagents' sessions, with `python3` in its own sandbox.
+
+A `tui` opencode conversation's transcript view (`opencodeTranscriptAsAcp`)
+follows the same split. A sandboxed workspace's is read from the checkpoint's
+JSONL export, with the size cap and link refusal of any agent-written file.
+Only a host workspace's database is queried, read-only and in place: through
+its `-wal` when one says opencode may be writing, and otherwise opened
+immutable, so no lock file or sidecar appears beside it.
 
 ### Converging at create
 

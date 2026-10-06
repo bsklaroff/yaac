@@ -113,19 +113,14 @@ describe('GET /workspace/:id/agent-sessions/:sessionId/transcript', () => {
     expect((await get('never-happened')).status).toBe(404)
   })
 
-  it('answers 501 for a tool whose history is not readable from the host', async () => {
-    // opencode's history is a sqlite database inside the container. An
-    // empty conversation would wrongly read as "nothing was said".
-    await recordAgentSessions(SLUG, WORKSPACE, [
-      { tool: 'opencode', agentSessionId: 'oc-1', mode: 'tui' },
-    ])
-    expect((await get('oc-1')).status).toBe(501)
-  })
-
-  it('answers with an empty conversation when the agent never wrote one', async () => {
-    await recordAgentSessions(SLUG, WORKSPACE, [
-      { tool: 'claude', agentSessionId: TUI_SESSION, mode: 'tui' },
-    ])
-    expect(await get(TUI_SESSION)).toEqual({ status: 200, events: [] })
+  it('answers with an empty conversation when the agent never wrote one, whatever its tool', async () => {
+    const sessions = [
+      { tool: 'claude', agentSessionId: TUI_SESSION },
+      { tool: 'codex', agentSessionId: '01a1111c-de75-7ce3-8999-3257b2615db0' },
+      { tool: 'pi', agentSessionId: '01a1110b-f851-758d-ba08-45c4ee75613f' },
+      { tool: 'opencode', agentSessionId: 'ses_eeef51727ffedBWQdWdy0dzOE2' },
+    ] as const
+    await recordAgentSessions(SLUG, WORKSPACE, sessions.map((s) => ({ ...s, mode: 'tui' as const })))
+    for (const s of sessions) expect(await get(s.agentSessionId), s.tool).toEqual({ status: 200, events: [] })
   })
 })
