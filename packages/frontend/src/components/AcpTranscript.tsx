@@ -1,4 +1,4 @@
-import { useMemo, useState, type JSX, type ReactNode } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode, type RefObject } from 'react'
 import clsx from 'clsx'
 import { CodeView } from '#components/CodeView'
 import { DiffView } from '#components/DiffView'
@@ -49,12 +49,17 @@ export type Group = ({ turn?: true; woken?: AcpWake[] } & (
   | { kind: 'task'; seq: number; task: AcpTask }
   | { kind: 'error'; seq: number; message: string }
   | { kind: 'turn-end'; seq: number; stopReason: string }
-  /** A permission ask, merged with its answer once one arrives. */
+  /** A permission ask, merged with its answer once one arrives. `toolCall`
+   *  and `output` follow the call's later updates, which may run in a
+   *  subagent's thread this one does not show; `inView` marks a call that
+   *  has its own row in this one. */
   | {
     kind: 'permission'
     seq: number
     requestId: string
     toolCall?: AcpToolCall
+    output?: string
+    inView?: true
     options: AcpPermissionOption[]
     decided?: { outcome: 'selected' | 'cancelled'; optionId?: string }
   }
@@ -113,7 +118,9 @@ export function active(item: AcpSubagent | AcpTask): boolean {
  *   replayed history has no turn boundaries, so the next `user` message also
  *   ends the turn before it, unless it was steered into that turn;
  * - a permission answer replaces its ask in place (an answer with no ask in
- *   the stream, i.e. a truncated record, is dropped);
+ *   the stream, i.e. a truncated record, is dropped), and the ask keeps its
+ *   call's latest state and output from whichever thread ran it, marking a
+ *   call this thread shows itself;
  * - `turn-end` is kept only for an unusual stop reason, and `turn-start`
  *   and the session's `commands` and `models` are dropped;
  * - `agent-turn` (a run the agent may have started itself) keeps the text
@@ -124,6 +131,8 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
   const groups: Group[] = []
   const toolIndex = new Map<string, number>()
   const permissionIndex = new Map<string, number>()
+  /** Asks by the call they are about. */
+  const askIndex = new Map<string, number>()
   let split = false
   /** Where the run an `agent-turn` reported begins, until a group lands there. */
   let turnAt: number | undefined
@@ -165,6 +174,15 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
   }
   for (const e of events) {
     startTurn()
+    if (e.type === 'tool' || e.type === 'tool-output') {
+      const at = askIndex.get(e.type === 'tool' ? e.call.toolCallId : e.toolCallId)
+      const ask = at === undefined ? undefined : groups[at]
+      if (at !== undefined && ask?.kind === 'permission') {
+        groups[at] = e.type === 'tool'
+          ? { ...ask, toolCall: e.call }
+          : { ...ask, output: ((ask.output ?? '') + e.data).slice(-MAX_TOOL_OUTPUT_CHARS) }
+      }
+    }
     if (e.type === 'subagent' && e.subagent.id === thread) self = e.subagent
     if (e.type === 'subagent') {
       if (e.subagent.parent !== thread) continue
@@ -200,6 +218,7 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
     if (e.type === 'commands' || e.type === 'models' || e.type === 'usage' || e.type === 'turn-start' || e.type === 'agent-turn') continue
     if (e.type === 'permission-request') {
       permissionIndex.set(e.requestId, groups.length)
+      if (e.toolCall !== undefined) askIndex.set(e.toolCall.toolCallId, groups.length)
       groups.push({
         kind: 'permission',
         seq: e.seq,
@@ -275,6 +294,10 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
     })
   }
   startTurn()
+  for (const [id, at] of askIndex) {
+    const g = groups[at]
+    if (toolIndex.has(id) && g.kind === 'permission') groups[at] = { ...g, inView: true }
+  }
   const tasks = new Map<string, AcpTask>()
   for (const e of events) if (e.type === 'task') tasks.set(e.task.id, e.task)
   for (const task of tasks.values()) {
@@ -467,10 +490,32 @@ const KIND_ICON: Record<AcpToolKind, Icon> = {
 }
 
 /**
- * The header line shared by tool calls and thinking: a disclosure caret on
- * the left, then an icon and label. Rows with nothing to expand keep the
- * caret's space so their icons line up with their neighbours'. A `busy` row
- * shows a spinner in the icon's place.
+ * Whether a one-line label is cut off at its end, re-checked when its text
+ * changes or it is resized, so a row can offer to show it in full.
+ */
+function useClipped(text: string): [RefObject<HTMLSpanElement | null>, boolean] {
+  const ref = useRef<HTMLSpanElement>(null)
+  const [clipped, setClipped] = useState(false)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (el === null) return
+    const check = (): void => setClipped(el.scrollWidth > el.clientWidth)
+    check()
+    // Absent under jsdom.
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(check)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [text])
+  return [ref, clipped]
+}
+
+/**
+ * The header line shared by tool calls, thinking and answered asks: a
+ * disclosure caret on the left, then an icon and label. Rows with nothing to
+ * expand keep the caret's space so their icons line up with their
+ * neighbours'. A `busy` row shows a spinner in the icon's place; `tint`
+ * colors the icon instead of the faint default.
  */
 function DisclosureRow({
   open,
@@ -478,6 +523,7 @@ function DisclosureRow({
   expandable,
   icon: Icon,
   busy = false,
+  tint,
   children,
 }: {
   open: boolean
@@ -485,6 +531,7 @@ function DisclosureRow({
   expandable: boolean
   icon: Icon
   busy?: boolean
+  tint?: string
   children: ReactNode
 }): JSX.Element {
   return (
@@ -507,7 +554,7 @@ function DisclosureRow({
       />
       {busy
         ? <LoadingIcon size={13} aria-label="running" className="shrink-0 animate-spin text-text-faint" />
-        : <Icon size={13} className="shrink-0 text-text-faint group-enabled:group-hover:text-text-dim" />}
+        : <Icon size={13} className={clsx('shrink-0', tint ?? 'text-text-faint group-enabled:group-hover:text-text-dim')} />}
       {children}
     </button>
   )
@@ -517,6 +564,10 @@ function DisclosureRow({
  * One tool call. `progress` is how to mark an unfinished call: `running`
  * spins, `interrupted` says its turn ended first. Omitted (a call awaiting
  * permission) it gets no mark.
+ *
+ * The row's label is one line, so whatever it cuts off is repeated in full
+ * at the top of the expanded panel: a shell call's command, or any label too
+ * long for the row.
  */
 export function ToolRow({
   call,
@@ -547,10 +598,13 @@ export function ToolRow({
    *  which would repeat the row's label. */
   const body = description !== undefined && text.trim() === description.trim() ? '' : text
   const isRead = call.kind === 'read'
-  /** The row shows a shell call's description, or its command truncated, so
-   *  a call that runs one always expands to show the command in full above
-   *  any output. */
-  const hasContent = call.shell === true || body !== '' || output !== '' || edits.length > 0
+  const label = description ?? call.title
+  const [labelRef, clipped] = useClipped(label)
+  /** A label the panel must spell out, unless it is the command the panel
+   *  shows anyway. */
+  const fullLabel = clipped && !(call.shell === true && description === undefined)
+  /** A shell call always expands, to show its command above any output. */
+  const hasContent = call.shell === true || fullLabel || body !== '' || output !== '' || edits.length > 0
   /** The user's expand/collapse choice, or `null` if they haven't made one.
    *  Edits default open. The default is derived each render because a call
    *  arrives empty and gains content in later updates. */
@@ -575,13 +629,12 @@ export function ToolRow({
         icon={KIND_ICON[call.kind]}
         busy={unfinished(call) && progress === 'running'}
       >
-        {description !== undefined
-          ? <span className="truncate">{description}</span>
-          : (
-            <span className={clsx('truncate', call.kind === 'execute' && 'font-mono text-[11px]')}>
-              {call.title}
-            </span>
-          )}
+        <span
+          ref={labelRef}
+          className={clsx('truncate', description === undefined && call.kind === 'execute' && 'font-mono text-[11px]')}
+        >
+          {label}
+        </span>
         {edits.length > 0 && (
           <span className="shrink-0 font-mono text-[10px]">
             {stats.additions > 0 && <span className="text-success">+{stats.additions}</span>}
@@ -601,6 +654,14 @@ export function ToolRow({
       </DisclosureRow>
       {open && (
         <div className="mt-1 mb-1.5 ml-[18px] max-h-96 overflow-auto rounded-lg border border-hairline bg-surface">
+          {fullLabel && (
+            <p className={clsx(
+              'px-2.5 py-1.5 text-[11px] leading-snug whitespace-pre-wrap text-text',
+              (call.shell === true || body !== '' || output !== '' || edits.length > 0) && 'border-b border-hairline',
+            )}>
+              {label}
+            </p>
+          )}
           {call.shell === true && (
             /* Capped on its own so a long command leaves its output in view. */
             <pre className={clsx(
@@ -665,7 +726,8 @@ function isAllow(option: AcpPermissionOption | undefined): boolean {
 
 /**
  * A permission ask, showing the tool call as a `ToolRow`, with answer
- * buttons. Once answered it collapses to one line naming the choice.
+ * buttons. Once answered it collapses to one line naming the choice, which
+ * expands to the call as it ran unless the call has a row of its own.
  *
  * Buttons disable on click, but the card changes only when the server's
  * `permission-resolved` arrives; a send that fails re-enables them. Without
@@ -674,17 +736,22 @@ function isAllow(option: AcpPermissionOption | undefined): boolean {
 function PermissionRow({
   requestId,
   toolCall,
+  output,
+  inView = false,
   options,
   decided,
   onAnswer,
 }: {
   requestId: string
   toolCall?: AcpToolCall
+  output?: string
+  inView?: boolean
   options: AcpPermissionOption[]
   decided?: { outcome: 'selected' | 'cancelled'; optionId?: string }
   onAnswer?: (requestId: string, optionId?: string) => boolean
 }): JSX.Element {
   const [sending, setSending] = useState(false)
+  const [open, setOpen] = useState(false)
   const answer = (optionId?: string): void => {
     if (onAnswer === undefined) return
     setSending(true)
@@ -695,16 +762,26 @@ function PermissionRow({
     const chosen = options.find((o) => o.optionId === decided.optionId)
     const allowed = decided.outcome === 'selected' && isAllow(chosen)
     return (
-      <div className="flex items-center gap-1.5 py-1 pl-[18px] text-xs text-text-faint">
-        {allowed
-          ? <DoneIcon size={13} className="shrink-0 text-success" />
-          : <FailedIcon size={13} className="shrink-0 text-error" />}
-        <span className="truncate">
-          {decided.outcome === 'cancelled'
-            ? 'permission dismissed'
-            : chosen?.name ?? decided.optionId ?? 'answered'}
-          {toolCall !== undefined && ` — ${toolCall.title}`}
-        </span>
+      <div>
+        <DisclosureRow
+          open={open}
+          onToggle={() => setOpen((v) => !v)}
+          expandable={toolCall !== undefined && !inView}
+          icon={allowed ? DoneIcon : FailedIcon}
+          tint={allowed ? 'text-success' : 'text-error'}
+        >
+          <span className="truncate">
+            {decided.outcome === 'cancelled'
+              ? 'permission dismissed'
+              : chosen?.name ?? decided.optionId ?? 'answered'}
+            {toolCall !== undefined && ` — ${toolCall.title}`}
+          </span>
+        </DisclosureRow>
+        {open && toolCall !== undefined && !inView && (
+          <div className="ml-[18px]">
+            <ToolRow call={toolCall} {...(output !== undefined ? { output } : {})} defaultOpen />
+          </div>
+        )}
       </div>
     )
   }
@@ -1073,6 +1150,8 @@ function GroupView({
       <PermissionRow
         requestId={g.requestId}
         {...(g.toolCall !== undefined ? { toolCall: g.toolCall } : {})}
+        {...(g.output !== undefined ? { output: g.output } : {})}
+        inView={g.inView === true}
         options={g.options}
         {...(g.decided !== undefined ? { decided: g.decided } : {})}
         {...(onAnswerPermission !== undefined ? { onAnswer: onAnswerPermission } : {})}

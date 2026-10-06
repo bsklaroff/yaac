@@ -160,6 +160,29 @@ describe('StoppedTranscript', () => {
     expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
   })
 
+  it('opens a subagent with what it was asked, and a task with the command that started it', async () => {
+    transcript([
+      { type: 'subagent', seq: 0, subagent: { id: 's1', name: 'Explore', task: 'find the router', state: 'completed' } },
+      {
+        type: 'tool',
+        seq: 1,
+        call: { toolCallId: 't9', title: 'npm run dev', shell: true, kind: 'execute', status: 'completed' },
+      },
+      {
+        type: 'task',
+        seq: 2,
+        task: { id: 'b1', name: 'dev server', kind: 'shell', description: '', state: 'completed', toolCallId: 't9' },
+      },
+    ])
+    renderPane()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Explore/ }))
+    expect(screen.getByText('find the router')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /Back/ }))
+    fireEvent.click(screen.getByRole('button', { name: /dev server/ }))
+    expect(screen.getByText('npm run dev', { selector: 'pre' })).toBeTruthy()
+  })
+
   it('shows a decided ask as the decision, the same as a live pane would', async () => {
     transcript([
       {

@@ -864,6 +864,20 @@ describe('WorkspaceChat rendering', () => {
     expect(screen.getAllByText('Show working tree status')).toHaveLength(1)
   })
 
+  it('spells out a label too long for its row, and only then offers to expand', () => {
+    // jsdom lays nothing out, so every element reads as overflowing here.
+    const scroll = vi.spyOn(Element.prototype, 'scrollWidth', 'get').mockReturnValue(100)
+    try {
+      const pattern = `grep -rn "${'very long pattern '.repeat(10)}" src`
+      stream.events = [toolCall(0, { toolCallId: 't1', title: pattern, kind: 'search', status: 'completed' })]
+      show()
+      fireEvent.click(screen.getByText(pattern))
+      expect(screen.getAllByText(pattern).map((el) => el.tagName)).toEqual(['SPAN', 'P'])
+    } finally {
+      scroll.mockRestore()
+    }
+  })
+
   it('shows a read as the file, highlighted for its path', () => {
     stream.events = [toolCall(0, {
       toolCallId: 't1',
@@ -1117,6 +1131,46 @@ describe('WorkspaceChat permission asks', () => {
     expect(screen.queryByRole('button', { name: 'Allow Once' })).toBeNull()
     // The decision is shown, so a manual-mode transcript records it.
     expect(screen.getByText(/Allow Once/)).toBeTruthy()
+  })
+
+  it('expands an answered ask to the call as it ran, even one a subagent made', () => {
+    // The main conversation shows a subagent's asks but not its calls, so
+    // the answered ask is the only place the command and its output appear.
+    const command = `cd ~/scratch${'; node fake.mjs'.repeat(20)}`
+    stream.events = [
+      {
+        ...(ask(0) as Extract<AcpEvent, { type: 'permission-request' }>),
+        thread: 'sub-1',
+        toolCall: { toolCallId: 'c1', title: command, shell: true, kind: 'execute', status: 'pending' },
+      },
+      { type: 'permission-resolved', seq: 1, requestId: '5', outcome: 'selected', optionId: 'allow' },
+      {
+        type: 'tool',
+        seq: 2,
+        thread: 'sub-1',
+        call: {
+          toolCallId: 'c1', title: command, shell: true, kind: 'execute', status: 'completed',
+          content: [{ type: 'text', text: 'listening on 18923' }],
+        },
+      },
+      { type: 'tool-output', seq: 3, thread: 'sub-1', toolCallId: 'c1', data: 'request served\n' },
+    ]
+    show()
+    expect(screen.queryByText('listening on 18923')).toBeNull()
+    fireEvent.click(screen.getByText(/Allow Once/))
+    expect(screen.getByText(command, { selector: 'pre' })).toBeTruthy()
+    expect(screen.getByText('listening on 18923')).toBeTruthy()
+    expect(screen.getByText('request served')).toBeTruthy()
+  })
+
+  it('does not repeat a call the conversation already shows under its answered ask', () => {
+    stream.events = [
+      { type: 'tool', seq: 0, call: { toolCallId: 'c1', title: 'rm -rf build', kind: 'execute', status: 'pending' } },
+      ask(1),
+      { type: 'permission-resolved', seq: 2, requestId: '5', outcome: 'selected', optionId: 'allow' },
+    ]
+    show()
+    expect(screen.getByText(/Allow Once/).closest('button')?.disabled).toBe(true)
   })
 
   it('says the agent is waiting on the user rather than working', () => {

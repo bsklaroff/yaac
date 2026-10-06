@@ -3,7 +3,7 @@ import clsx from 'clsx'
 import { useAcpStream } from '#lib/acp'
 import { AcpTranscript, active, groupEvents, SUBAGENT_CATEGORY, taskCategory } from '#components/AcpTranscript'
 import {
-  ActivityBar, ActivityHeader, callOf, latestActivity, StopTaskButton, TaskView, type ActivityTarget,
+  ActivityBar, ActivityHeader, callOf, latestActivity, StopTaskButton, SubagentPrompt, TaskView, type ActivityTarget,
 } from '#components/AcpActivity'
 import { useComposerMenu } from '#components/ComposerMenu'
 import { imageBytes, imageFiles, prepareImage, toAcpImage, useImageSrc } from '#lib/attachments'
@@ -327,12 +327,7 @@ export function WorkspaceChat({
         <div className={column}>
           {subagent !== undefined ? (
             <>
-              {subagent.task !== '' && (
-                <p className="mb-4 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-xl border border-hairline
-                  bg-surface px-3 py-2 text-xs text-text-dim">
-                  {subagent.task}
-                </p>
-              )}
+              <SubagentPrompt task={subagent.task} />
               <AcpTranscript
                 groups={threadGroups}
                 busy={subagent.state === 'running'}

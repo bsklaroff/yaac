@@ -138,10 +138,21 @@ export function ActivityHeader({
       </button>
       <Icon size={14} className={clsx('shrink-0', tint)} />
       <span className="shrink-0 text-text-faint">{label}</span>
-      <span className="min-w-0 flex-1 truncate text-text">{title}</span>
+      <span className="min-w-0 flex-1 wrap-anywhere text-text">{title}</span>
       {children}
       <StateMark state={state} live={live} />
     </div>
+  )
+}
+
+/** What a subagent was asked to do, atop its own view. */
+export function SubagentPrompt({ task }: { task: string }): JSX.Element | null {
+  if (task === '') return null
+  return (
+    <p className="mb-4 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-xl border border-hairline
+      bg-surface px-3 py-2 text-xs text-text-dim">
+      {task}
+    </p>
   )
 }
 
