@@ -10,7 +10,7 @@
  * patch's `revision` in `@yaac/shared/tool-install` whenever this file
  * changes.
  *
- * Two changes, each deletable on its own once a pi-acp release makes it
+ * Three changes, each deletable on its own once a pi-acp release makes it
  * unnecessary:
  *
  * 1. Steering. pi-acp gains the `_session/steering` extension claude's and
@@ -35,6 +35,22 @@
  *
  * 2. Bash output as appends (`bashOutputDelta` below). Goes once pi-acp's
  *    own `terminal_output` stays an append past pi's tail window.
+ *
+ * 3. Turns for extension commands and the runs extensions start. pi runs
+ *    a prompt naming an extension's slash command without starting a run:
+ *    it answers the `prompt` RPC with disposition `handled` and never
+ *    reports `agent_settled`, the event pi-acp ends a turn on. So a turn
+ *    ends on `handled` unless pi already reported `agent_start` for it, in
+ *    which case that run's `agent_settled` ends it. A command can also start
+ *    a run after pi answers (`sendUserMessage`, or any async hook before the
+ *    run), and an extension can start one at any time. pi gives no notice
+ *    of such a run before its `agent_start`, so pi-acp adopts it then as a
+ *    turn of its own, with no `session/prompt` to answer: it reports the
+ *    run as running, prompts queue behind it, and its `agent_settled` ends
+ *    it rather than some other turn. A prompt sent between `handled` and a
+ *    late run's `agent_start` still reaches pi, where it races that run.
+ *    Goes once pi-acp reads the disposition and owns the runs it did not
+ *    start.
  */
 
 import fs from 'node:fs'
@@ -75,6 +91,14 @@ function bashOutputDelta(previous, next) {
 /** Each edit: an exact anchor in pi-acp's bundled dist, and its replacement. */
 const EDITS = [
   {
+    name: 'pi RPC prompt returns its disposition',
+    anchor: `    if (!res.success) throw new Error(\`pi prompt failed: \${res.error ?? JSON.stringify(res.data)}\`);
+`,
+    insert: 'after',
+    text: `    return res.data?.disposition;
+`,
+  },
+  {
     name: 'pi RPC steer and clear_queue',
     anchor: `  async abort() {
     const res = await this.request({ type: "abort" });
@@ -94,12 +118,14 @@ const EDITS = [
 `,
   },
   {
-    name: 'session steering state',
+    name: 'session run and steering state',
     anchor: `  // Current in-flight turn (if any). Additional prompts are queued.
   pendingTurn = null;
 `,
     insert: 'after',
-    text: `  // Whether the running turn still takes steers: false from agent_settled.
+    text: `  // Whether pi is in a run: from agent_start to agent_settled.
+  piRunning = false;
+  // Whether the running turn still takes steers: false from agent_settled.
   steerable = false;
   // Steers sent during the running turn, for recovering undelivered ones.
   steeredThisTurn = [];
@@ -115,11 +141,15 @@ const EDITS = [
 `,
   },
   {
-    name: 'failed turn closes steering',
+    name: 'handled turn ends, failed turn closes steering',
     anchor: `    this.proc.prompt(t.message, t.images).catch((err) => {
 `,
-    insert: 'after',
-    text: `      this.steerable = false;
+    insert: 'replace',
+    text: `    const turn = this.pendingTurn;
+    this.proc.prompt(t.message, t.images).then((disposition) => {
+      if (disposition === "handled" && !turn.runSeen) void this.endTurn(turn);
+    }, (err) => {
+      this.steerable = false;
 `,
   },
   {
@@ -148,17 +178,49 @@ const EDITS = [
     this.startTurn({ message: stranded.join("\\n\\n"), images, ...this.pendingTurn });
     return true;
   }
+  async endTurn(turn = this.pendingTurn) {
+    if (!turn || turn !== this.pendingTurn || turn.ending) return;
+    turn.ending = true;
+    this.steerable = false;
+    if (!(await this.continueWithStrandedSteers())) await this.settleTurn();
+  }
+  adoptRun() {
+    this.pendingTurn = { resolve() {}, reject() {}, runSeen: true };
+    this.emit({
+      sessionUpdate: "session_info_update",
+      _meta: { piAcp: { queueDepth: this.turnQueue.length, running: true } }
+    });
+  }
 `,
   },
   {
-    name: 'settle closes steering and recovers stranded steers',
+    name: 'settle ends the turn',
     anchor: `      case "agent_settled": {
         void this.settleTurn();
 `,
     insert: 'replace',
     text: `      case "agent_settled": {
-        this.steerable = false;
-        void this.continueWithStrandedSteers().then((continued) => continued || this.settleTurn());
+        this.piRunning = false;
+        void this.endTurn();
+`,
+  },
+  {
+    name: 'a run marks its turn, or is adopted as one',
+    anchor: `      case "agent_start": {
+        this.inAgentLoop = true;
+`,
+    insert: 'after',
+    text: `        this.piRunning = true;
+        if (this.pendingTurn) this.pendingTurn.runSeen = true;
+        else this.adoptRun();
+`,
+  },
+  {
+    name: 'a run that starts while a turn ends is adopted',
+    anchor: `    const next = this.turnQueue.shift();
+`,
+    insert: 'before',
+    text: `    if (this.piRunning) return this.adoptRun();
 `,
   },
   {

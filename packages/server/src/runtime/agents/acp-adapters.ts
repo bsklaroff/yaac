@@ -180,14 +180,11 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    * not postures, so pi is `bypass`-only. Its asks are extension questions, so they are
    * forwarded even under `bypass`.
    *
-   * An extension can start a run (`sendMessage` with `triggerTurn`). pi-acp
-   * forwards it, and reports `running: false` when it settles but nothing
-   * when it starts, so its first thought or tool update stands in for the
-   * start (`isWorkUpdate`). A message cannot join such a run: the steering patch
-   * only steers into a turn pi-acp started, and a `session/prompt` fails
-   * with stop reason `error` (pi-acp sends it without pi's
-   * `streamingBehavior`), after which pi-acp reports `running: false` while
-   * the run goes on.
+   * An extension can start a run (`sendMessage` with `triggerTurn`). The
+   * pi-acp patch adopts it, reporting its start and queueing prompts behind
+   * it. An older pi-acp reports only its end and fails a `session/prompt`
+   * sent during it, so `infersRunStart` and `refusesPromptMidRun` stay for
+   * workspaces still on one (docs/legacy-compat-shims.md).
    */
   pi: {
     argv: [ACP_ADAPTERS.pi.binary],

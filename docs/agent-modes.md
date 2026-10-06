@@ -275,12 +275,14 @@ this (v2's `state_update` is still a draft), so each adapter's own is read
   `_claude/sdkMessage` notification, which the handshake asks for in `_meta`.
 - codex-acp sends `session_info_update` carrying `_meta.codex.threadStatus`
   (`active`/`idle`) for every turn.
-- pi-acp sends `session_info_update` carrying `_meta.piAcp.running`, but for
-  a run it did not start only the closing `false`. The first thought, tool
-  call or plan update while idle stands in for the start. Plain text does
-  not, since pi-acp also sends text outside any run (an extension's
-  `notify`, its startup prelude) that no `false` would follow, so a run
-  that only writes text shows as `running` late or not at all.
+- pi-acp sends `session_info_update` carrying `_meta.piAcp.running`. As yaac
+  patches it, that covers a run pi-acp did not start too: pi-acp adopts the
+  run at pi's `agent_start` as a turn with no `session/prompt` to answer,
+  and queues prompts behind it. An older install reports only the closing
+  `false` for such a run, so the first thought, tool call or plan update
+  while idle stands in for the start (docs/legacy-compat-shims.md). Plain
+  text does not, since pi-acp also sends text outside any run (an
+  extension's `notify`, its startup prelude) that no `false` would follow.
 - opencode's ACP server forwards nothing from a turn it did not start, not
   even its content, so such a turn never reaches the record or the pane
   (bsklaroff/yaac#288 tracks the upstream fix).
@@ -288,9 +290,8 @@ this (v2's `state_update` is still a draft), so each adapter's own is read
 A conversation is working while either signal says so. The pane's busy
 indicator, Stop and steering follow the combination: a message sent during a
 turn the agent started itself steers into it like any other. pi-acp is the
-exception: its steering patch reaches only turns pi-acp started, and it
-fails a `session/prompt` sent mid-run, so under pi such a message queues
-until pi reports the run settled.
+exception: its steering patch reaches only turns pi-acp started, so under
+pi such a message queues until pi reports the run settled.
 
 A report the adapter never follows up would pin the conversation running:
 claude's adapter sends no idle once the CLI under it exits, and a start
@@ -462,6 +463,9 @@ resolves inside the message. So the composer also opens on `$` and inserts a
 
 Enter runs a command that takes no argument (it is sent as the message text,
 which is how ACP invokes one) and completes one that does; Tab completes.
+pi runs an extension's command without starting a run of the agent, and
+pi-acp ends that prompt's turn only as yaac patches it
+(`dockerfiles/agent-patches/pi-acp.js`).
 
 The model list is the session's `model` config option, read from the
 `session/new` or `session/load` reply, from any `session/set_config_option`
