@@ -365,6 +365,20 @@ select {
 }
 
 /*
+ * A hidden pane (`invisible`, i.e. `visibility: hidden`) shares its rect
+ * with the pane on screen, and xterm's scrollbar carries `z-index: 11` with
+ * no stacking context above it, so it sits over that pane. Its slider is a
+ * composited layer that GPU-composited Chromium (Electron) sometimes leaves
+ * painted after the pane is hidden: a wide bar on the visible pane's right
+ * edge that takes no input. `display: none` drops the layer outright.
+ * FitAddon reserves the scrollbar's width as a constant, so terminal sizing
+ * is unaffected.
+ */
+.invisible .xterm-scrollable-element > .scrollbar {
+  display: none;
+}
+
+/*
  * `--app-height` is the *visual* viewport height and `--app-top` is how far
  * that viewport has slid down the layout one, both published by
  * useVisualViewportHeight() while the mobile shell is active. The layout
