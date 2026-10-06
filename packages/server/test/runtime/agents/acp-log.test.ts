@@ -597,6 +597,33 @@ describe('replayAcpLog', () => {
     expect(size(2000) / size(1000)).toBeLessThan(2.1)
   })
 
+  it('projects pi\'s bash output, which it sends as `terminal_output` without being asked', () => {
+    // Captured from pi-acp 0.0.34 running pi 0.99.2 against a mock model.
+    const events = replayAcpLog([
+      update({
+        sessionUpdate: 'tool_call', toolCallId: 'call_1', title: 'echo hello-from-bash; echo line2', kind: 'execute', status: 'pending',
+        content: [{ type: 'terminal', terminalId: 'call_1' }], _meta: { terminal_info: { terminal_id: 'call_1', cwd: '/home/yaac/cwd' } },
+      }),
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 'call_1', title: 'echo hello-from-bash; echo line2', kind: 'execute', status: 'in_progress' }),
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 'call_1', status: 'in_progress', _meta: {} }),
+      update({
+        sessionUpdate: 'tool_call_update', toolCallId: 'call_1', status: 'in_progress',
+        _meta: { terminal_output: { terminal_id: 'call_1', data: 'hello-from-bash\nline2\n' } },
+      }),
+      update({
+        sessionUpdate: 'tool_call_update', toolCallId: 'call_1', status: 'completed',
+        _meta: { terminal_exit: { terminal_id: 'call_1', exit_code: 0, signal: null } },
+      }),
+    ].join('\n'))
+
+    expect(events.filter((e) => e.type === 'tool-output')).toMatchObject([
+      { toolCallId: 'call_1', data: 'hello-from-bash\nline2\n' },
+    ])
+    expect(events.at(-1)).toMatchObject({
+      call: { toolCallId: 'call_1', title: 'echo hello-from-bash; echo line2', shell: true, status: 'completed' },
+    })
+  })
+
   it('builds claude\'s subagents and background shells from the Agent SDK messages it forwards', () => {
     // Shapes as claude-agent-acp 0.84.0 sends them to a client that is not
     // AIR, with the task messages asked for in the session's `_meta`.

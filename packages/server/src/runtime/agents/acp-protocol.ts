@@ -326,9 +326,12 @@ export interface AcpToolCallPatch {
   status?: AcpToolStatus
   content?: AcpToolContent[]
   locations?: Array<{ path: string; line?: number }>
-  /** Terminal output to append, projected as a `tool-output` event: codex
-   *  streams a command's output this way, including a background shell's
-   *  after its turn has ended. */
+  /** Terminal output to append, projected as a `tool-output` event. codex
+   *  streams a command's output as `_meta.terminal_output_delta`, including a
+   *  background shell's after its turn has ended. pi sends it, unasked, as
+   *  `_meta.terminal_output`, which is only ever new text because yaac
+   *  patches pi-acp to make it so (`bashOutputDelta` in
+   *  dockerfiles/agent-patches/pi-acp.js). */
   output?: string
 }
 
@@ -367,7 +370,8 @@ function toToolCallPatch(update: Record<string, unknown>): AcpToolCallPatch | un
   const shell = isShellCall(update, kind)
   const description = asString(rawInput?.description)
   const title = monitorCommand ?? asString(update.title)
-  const output = asString(asRecord(asRecord(update._meta)?.terminal_output_delta)?.data)
+  const meta = asRecord(update._meta)
+  const output = asString(asRecord(meta?.terminal_output_delta ?? meta?.terminal_output)?.data)
   return {
     toolCallId,
     ...(title !== undefined ? { title } : {}),

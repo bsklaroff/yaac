@@ -20,6 +20,12 @@ const PI_ACP = path.dirname(require.resolve('pi-acp/package.json'))
  * any queued steers as `steer:<text>` (as pi does before its next model
  * call), then ends. Like pi, it awaits `SETTLE_DELAY_MS` between ending and
  * reporting `agent_settled`; a steer arriving then stays queued.
+ *
+ * The prompt `bash` instead runs one bash call whose partial results are
+ * snapshots as pi takes them: the whole output until it passes the tail
+ * window (4 lines here, 2000 in pi), then the latest window without its
+ * trailing newline, slid by one line, by two, and past line 8, which no
+ * snapshot shows.
  */
 const FAKE_PI = `#!/usr/bin/env node
 const SETTLE_DELAY_MS = 400
@@ -27,6 +33,20 @@ const queue = []
 const out = (m) => process.stdout.write(JSON.stringify(m) + '\\n')
 const text = (delta) => out({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta } })
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
+const LINES = Array.from({ length: 12 }, (_, i) => 'line-' + (i + 1))
+const whole = (n) => ({ content: [{ type: 'text', text: LINES.slice(0, n).map((l) => l + '\\n').join('') }] })
+const window = (n) => ({ content: [{ type: 'text', text: LINES.slice(n - 4, n).join('\\n') }] })
+function bash() {
+  const call = { toolCallId: 'call_1', toolName: 'bash', args: { command: 'tail-window' } }
+  out({ type: 'agent_start' })
+  out({ type: 'tool_execution_start', ...call })
+  for (const partialResult of [whole(1), whole(4), window(4), window(5), window(7)]) {
+    out({ type: 'tool_execution_update', ...call, partialResult })
+  }
+  out({ type: 'tool_execution_end', ...call, result: window(12), isError: false })
+  out({ type: 'agent_end' })
+  out({ type: 'agent_settled' })
+}
 async function run(message) {
   out({ type: 'agent_start' })
   text('run:' + message + ';')
@@ -43,7 +63,7 @@ process.stdin.on('data', (c) => {
     const cmd = JSON.parse(buf.slice(0, i))
     buf = buf.slice(i + 1)
     const reply = (data) => out({ type: 'response', id: cmd.id, command: cmd.type, success: true, data })
-    if (cmd.type === 'prompt') { reply(); void run(cmd.message) }
+    if (cmd.type === 'prompt') { reply(); if (cmd.message === 'bash') bash(); else void run(cmd.message) }
     else if (cmd.type === 'steer') { queue.push(cmd.message); reply() }
     else if (cmd.type === 'clear_queue') reply({ steering: queue.splice(0), followUp: [] })
     else if (cmd.type === 'get_available_models') reply({ models: [{ provider: 'fake', id: 'fake', name: 'fake' }] })
@@ -61,6 +81,7 @@ let adapter: ChildProcess
 let nextId = 1
 const replies = new Map<number, (msg: { result?: Record<string, unknown> }) => void>()
 let agentText = ''
+let terminalOutput = ''
 const log: string[] = []
 
 beforeAll(() => {
@@ -87,6 +108,7 @@ function request(method: string, params: unknown): Promise<{ result?: Record<str
 /** Start the patched adapter and open a session; returns its id. */
 async function start(): Promise<string> {
   agentText = ''
+  terminalOutput = ''
   log.length = 0
   adapter = spawn(process.execPath, [path.join(dir, 'pi-acp', 'dist', 'index.js')], {
     cwd: dir,
@@ -100,7 +122,9 @@ async function start(): Promise<string> {
         id?: number
         method?: string
         result?: Record<string, unknown>
-        params?: { update?: { sessionUpdate?: string; content?: { text?: string } } }
+        params?: {
+          update?: { sessionUpdate?: string; content?: { text?: string }; _meta?: { terminal_output?: { data: string } } }
+        }
       }
       buf = buf.slice(i + 1)
       if (msg.method === undefined && msg.id !== undefined) {
@@ -108,6 +132,7 @@ async function start(): Promise<string> {
         replies.get(msg.id)?.(msg)
       }
       const update = msg.params?.update
+      terminalOutput += update?._meta?.terminal_output?.data ?? ''
       if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.text?.includes(':')) {
         agentText += update.content.text
         log.push(update.content.text)
@@ -164,6 +189,14 @@ describe('patchPiAcp', () => {
     await until(() => agentText.includes('run:just in time;'))
     expect(replied).toBe(false)
     expect((await turn).result).toEqual({ stopReason: 'end_turn' })
+  })
+
+  it('sends a bash call\'s output as appends, each line once, past pi\'s tail window', async () => {
+    const sessionId = await start()
+    const turn = await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'bash' }] })
+    expect(turn.result).toEqual({ stopReason: 'end_turn' })
+    const lines = Array.from({ length: 12 }, (_, i) => `line-${String(i + 1)}`)
+    expect(terminalOutput).toBe(lines.filter((l) => l !== 'line-8').join('\n'))
   })
 
   it('is tested against the release the image installs', () => {
