@@ -83,7 +83,7 @@ describe('stopServer', () => {
 
   it('treats a lock naming THIS host as its own, whatever its lease says', async () => {
     // Judged by pid and /health; nothing answers on the port, so it is stale.
-    await podLock({ pid: process.pid, port: 1, host: os.hostname(), heartbeatAt: 0 })
+    await podLock({ pid: process.ppid, port: 1, host: os.hostname(), heartbeatAt: 0 })
 
     await stopServer()
 
@@ -112,7 +112,7 @@ describe('startServer registration', () => {
     const server = await fakeServer()
     try {
       await writeLock({
-        pid: process.pid,
+        pid: process.ppid,
         port: server.port,
         startedAt: Date.now(),
         buildId: 'test-build',

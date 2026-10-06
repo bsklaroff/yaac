@@ -58,7 +58,13 @@ export async function removeAuthDaemonLock(): Promise<void> {
   await fs.rm(authDaemonLockPath(), { force: true })
 }
 
+/**
+ * Whether `pid` is a running process other than this one. A lock naming our
+ * own pid belongs to a dead daemon whose pid was reused; counting it as live
+ * would make a caller signal itself.
+ */
 export function isPidLive(pid: number): boolean {
+  if (pid === process.pid) return false
   try {
     process.kill(pid, 0)
     return true

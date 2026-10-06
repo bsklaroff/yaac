@@ -52,8 +52,10 @@ describe('auth server lock', () => {
 })
 
 describe('isPidLive', () => {
-  it('sees the current process and not a certainly-dead pid', () => {
-    expect(isPidLive(process.pid)).toBe(true)
+  it('sees another live process, but not this one or a certainly-dead pid', () => {
+    expect(isPidLive(process.ppid)).toBe(true)
+    // A stale lock naming our own pid must not make us signal ourselves.
+    expect(isPidLive(process.pid)).toBe(false)
     // PID guaranteed unused: beyond typical pid_max on test hosts.
     expect(isPidLive(2 ** 30)).toBe(false)
   })

@@ -85,7 +85,7 @@ describe('ensureAuthDaemonSpawned', () => {
     expect(killImpl).not.toHaveBeenCalled()
   })
   it('live daemon at the same baseUrl → no spawn, no kill', async () => {
-    await writeAuthDaemonLock({ pid: process.pid, baseUrl: TARGET.baseUrl, startedAt: 1 })
+    await writeAuthDaemonLock({ pid: process.ppid, baseUrl: TARGET.baseUrl, startedAt: 1 })
     const { impl, calls } = fakeSpawn()
     const killImpl = vi.fn()
     await ensureAuthDaemonSpawned({ target: TARGET, invocation: INVOCATION, spawnImpl: impl, killImpl })
@@ -102,11 +102,11 @@ describe('ensureAuthDaemonSpawned', () => {
     expect(killImpl).not.toHaveBeenCalled()
   })
   it('live daemon at a different baseUrl → SIGTERM, lock removed, respawn', async () => {
-    await writeAuthDaemonLock({ pid: process.pid, baseUrl: 'http://other:1', startedAt: 1 })
+    await writeAuthDaemonLock({ pid: process.ppid, baseUrl: 'http://other:1', startedAt: 1 })
     const { impl, calls } = fakeSpawn()
     const killImpl = vi.fn()
     await ensureAuthDaemonSpawned({ target: TARGET, invocation: INVOCATION, spawnImpl: impl, killImpl })
-    expect(killImpl).toHaveBeenCalledWith(process.pid, 'SIGTERM')
+    expect(killImpl).toHaveBeenCalledWith(process.ppid, 'SIGTERM')
     expect(await readAuthDaemonLock()).toBeNull()
     expect(calls).toHaveLength(1)
   })
@@ -127,7 +127,7 @@ describe('ensureAuthDaemon', () => {
   beforeEach(async () => {
     dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-authd-connect-'))
     setDataDir(dir)
-    await writeAuthDaemonLock({ pid: process.pid, baseUrl: TARGET.baseUrl, startedAt: 1 })
+    await writeAuthDaemonLock({ pid: process.ppid, baseUrl: TARGET.baseUrl, startedAt: 1 })
   })
 
   afterEach(async () => {

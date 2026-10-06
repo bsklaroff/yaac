@@ -147,8 +147,8 @@ describe('server lock', () => {
     })
 
     it('returns false when the pid is alive but no server listens', async () => {
-      // Use the test runner pid (definitely alive) with an unbound port.
-      const lock: ServerLock = { pid: process.pid, port: 1, startedAt: 0, buildId: 'b', ...LEASE }
+      // Our parent pid is alive and not ours; the port is unbound.
+      const lock: ServerLock = { pid: process.ppid, port: 1, startedAt: 0, buildId: 'b', ...LEASE }
       expect(await isLockLive(lock)).toBe(false)
     })
 
@@ -158,8 +158,25 @@ describe('server lock', () => {
       const addr = server.address()
       if (!addr || typeof addr === 'string') throw new Error('bad address')
       try {
-        const lock: ServerLock = { pid: process.pid, port: addr.port, startedAt: 0, buildId: 'b', ...LEASE }
+        const lock: ServerLock = { pid: process.ppid, port: addr.port, startedAt: 0, buildId: 'b', ...LEASE }
         expect(await isLockLive(lock)).toBe(true)
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()))
+      }
+    })
+
+    it('treats a same-host lock naming our own pid as stale, even if its port answers', async () => {
+      // A container restarted in place keeps its hostname and pid, so the
+      // killed server's lock names the process now reading it.
+      const server = http.createServer((_req, res) => { res.writeHead(200).end('{"ok":true,"ready":true}') })
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+      const addr = server.address()
+      if (!addr || typeof addr === 'string') throw new Error('bad address')
+      try {
+        const lock: ServerLock = { pid: process.pid, port: addr.port, startedAt: 0, buildId: 'b', ...LEASE }
+        expect(await isLockLive(lock)).toBe(false)
+        expect(await isLockReady(lock)).toBe(false)
+        expect(await isLockLive({ ...lock, pid: process.ppid })).toBe(true)
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()))
       }
@@ -211,7 +228,7 @@ describe('server lock', () => {
     it('moves the heartbeat forward while we hold the lock', async () => {
       const lease = newLeaseFields()
       const lock: ServerLock = {
-        pid: process.pid, port: 1, startedAt: 0, buildId: 'b', ...lease,
+        pid: process.ppid, port: 1, startedAt: 0, buildId: 'b', ...lease,
         heartbeatAt: Date.now() - 10_000,
       }
       await writeLock(lock)
@@ -254,7 +271,7 @@ describe('server lock', () => {
       const addr = server.address()
       if (!addr || typeof addr === 'string') throw new Error('bad address')
       try {
-        await run({ pid: process.pid, port: addr.port, startedAt: 0, buildId: 'b', ...LEASE })
+        await run({ pid: process.ppid, port: addr.port, startedAt: 0, buildId: 'b', ...LEASE })
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()))
       }
@@ -266,7 +283,7 @@ describe('server lock', () => {
     })
 
     it('returns false when the pid is alive but no server listens', async () => {
-      const lock: ServerLock = { pid: process.pid, port: 1, startedAt: 0, buildId: 'b', ...LEASE }
+      const lock: ServerLock = { pid: process.ppid, port: 1, startedAt: 0, buildId: 'b', ...LEASE }
       expect(await isLockReady(lock)).toBe(false)
     })
 
@@ -292,7 +309,7 @@ describe('server lock', () => {
 
   describe('acquireLock', () => {
     const mkLock = (overrides: Partial<ServerLock> = {}): ServerLock => ({
-      pid: process.pid,
+      pid: process.ppid,
       port: 1,
       startedAt: Date.now(),
       buildId: 'b',
@@ -318,7 +335,7 @@ describe('server lock', () => {
       const addr = server.address()
       if (!addr || typeof addr === 'string') throw new Error('bad address')
       try {
-        const held = mkLock({ port: addr.port, pid: process.pid })
+        const held = mkLock({ port: addr.port, pid: process.ppid })
         await writeLock(held)
         const result = await acquireLock(mkLock())
         expect(result).toEqual({ acquired: false, existing: held })
