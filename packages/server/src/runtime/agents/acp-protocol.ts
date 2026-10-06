@@ -27,6 +27,7 @@ import type {
   AcpToolContent,
   AcpToolKind,
   AcpToolStatus,
+  AcpWake,
 } from '@yaac/shared/acp'
 
 /** The ACP revision this client negotiates. */
@@ -409,6 +410,10 @@ export function mergeToolCall(
   }
 }
 
+/** Updates only a run's own output starts with: claude's first sign of a
+ *  run it begins while still reporting `running` (`AcpProjection.runEnded`). */
+const RUN_STARTS = new Set(['agent_message_chunk', 'agent_thought_chunk', 'tool_call', 'plan'])
+
 /**
  * State for projecting one `session/update` stream into complete events.
  * Tool calls arrive as incremental patches and must be merged. The live
@@ -445,12 +450,56 @@ export class AcpProjection {
 
   /** The adapter's last state report (`agentRunningReport`). */
   private agentRunning = false
+  /**
+   * claude finished a run and has not begun another. It can stay `running`
+   * meanwhile, holding our prompt open while a background subagent works,
+   * so a run woken then is found by its first output instead (`apply`).
+   */
+  private runEnded = false
+  /** claude's task notifications since its last run ended: what may wake it
+   *  into the next one. */
+  private wakes: AcpWake[] = []
+  /** Any notification came since the last run ended, named in `wakes` or
+   *  not (an ambient watch's, a subagent's own task's). */
+  private notified = false
+  /** What may have woken the current run, taken when it started: the
+   *  notifications before it, and failing those the monitors running. */
+  private runCauses: AcpWake[] = []
+  /** claude tasks a subagent started. Their notifications go to it. */
+  private readonly subagentOwned = new Set<string>()
 
   /** Follow a state report; a run starting is an `agent-turn` boundary. */
-  agentState(running: boolean): AcpEventInit | undefined {
+  agentState(running: boolean): AcpEventInit[] {
     const started = running && !this.agentRunning
     this.agentRunning = running
-    return started ? { type: 'agent-turn' } : undefined
+    return started ? this.startRun() : []
+  }
+
+  /** Drop notifications no run has claimed: a prompt or a new agent life
+   *  starts a run they did not wake. */
+  forgetWakes(): void {
+    this.wakes = []
+    this.notified = false
+  }
+
+  private startRun(): AcpEventInit[] {
+    this.runEnded = false
+    this.runCauses = this.wakes.length > 0 ? this.wakes : this.notified ? [] : this.monitorCauses()
+    this.forgetWakes()
+    return [{ type: 'agent-turn' }]
+  }
+
+  /**
+   * A monitor's event wakes claude with nothing before the run, so a run
+   * with no notification at all before it is credited to the running
+   * monitor, or monitors in general when several run. An ambient watch is
+   * not one the agent asked for, so it is not counted.
+   */
+  private monitorCauses(): AcpWake[] {
+    const monitors = [...this.tasks.values()].filter((t) => t.kind === 'monitor' && t.state === 'running' && t.ambient === undefined)
+    if (monitors.length === 0) return []
+    const [only] = monitors
+    return [monitors.length === 1 ? { kind: 'monitor', id: only.id, name: only.name } : { kind: 'monitor' }]
   }
 
   /** Hold a `_session/steering` request line until its reply. */
@@ -533,6 +582,14 @@ export class AcpProjection {
     }
     const thread = this.threadOf(params) ?? parentToolUseId
     if (update !== undefined) {
+      // Only a notification starts a run inside a held prompt; output after
+      // any other result (a steer aborting the cycle it interrupts) goes on.
+      const held = this.runEnded && this.agentRunning && this.wakes.length > 0
+      if (thread === undefined && held && RUN_STARTS.has(String(update.sessionUpdate))) {
+        out.push(...this.startRun())
+      }
+      const ended = this.endRun(update)
+      if (ended !== undefined) out.push(ended)
       const lifecycle = this.applyLifecycle(update, thread)
       if (lifecycle !== null) return lifecycle === undefined ? out : [...out, lifecycle]
     }
@@ -586,6 +643,7 @@ export class AcpProjection {
     const toolUseId = asString(m.tool_use_id)
     const patch = asRecord(m.patch)
     if (m.subtype === 'task_started') {
+      if (m.owned_by_subagent === true) this.subagentOwned.add(taskId)
       if (m.task_type === 'local_agent' || m.subagent_type !== undefined) {
         if (toolUseId === undefined) return []
         this.subagentTasks.set(taskId, toolUseId)
@@ -616,6 +674,12 @@ export class AcpProjection {
       return backgrounded ? this.announceClaudeTask(started) : []
     }
     const subagentId = this.subagentTasks.get(taskId)
+    if (m.subtype === 'task_notification' && (!this.agentRunning || this.runEnded)) {
+      this.notified = true
+      if (!this.subagentOwned.has(taskId) && this.claudeTasks.get(taskId)?.ambient === undefined) {
+        this.wakes.push(this.wakeOf(taskId, subagentId))
+      }
+    }
     const status = asString(patch?.status) ?? (m.subtype === 'task_notification' ? asString(m.status) : undefined)
     if (subagentId !== undefined) {
       if (patch?.is_backgrounded === true) this.backgroundSubagents.add(taskId)
@@ -661,6 +725,30 @@ export class AcpProjection {
     const task = [...this.tasks.values()].find((t) => t.toolCallId === call.toolCallId && t.outputFile === undefined)
     const outputFile = task === undefined ? undefined : outputFileOf(call, task.id)
     return task === undefined || outputFile === undefined ? [] : [this.setTask({ ...task, outputFile })]
+  }
+
+  private wakeOf(taskId: string, subagentId: string | undefined): AcpWake {
+    if (subagentId !== undefined) {
+      const name = this.subagents.get(subagentId)?.name
+      return { kind: 'subagent', id: subagentId, ...(name !== undefined ? { name } : {}) }
+    }
+    const task = this.claudeTasks.get(taskId)
+    return { kind: task?.kind === 'monitor' ? 'monitor' : 'task', id: taskId, ...(task !== undefined ? { name: task.name } : {}) }
+  }
+
+  /**
+   * End a claude run at its result, the `usage_update` that names what
+   * started it. Only a run started by a task notification is credited, with
+   * the causes taken when it began.
+   */
+  private endRun(update: Record<string, unknown>): AcpEventInit | undefined {
+    if (update.sessionUpdate !== 'usage_update') return undefined
+    const origin = asRecord(asRecord(update._meta)?.['_claude/origin'])?.kind
+    if (origin === undefined) return undefined
+    this.runEnded = true
+    const causes = this.runCauses
+    this.runCauses = []
+    return origin === 'task-notification' && causes.length > 0 ? { type: 'woken', causes } : undefined
   }
 
   private setSubagent(subagent: AcpSubagent): AcpEventInit {

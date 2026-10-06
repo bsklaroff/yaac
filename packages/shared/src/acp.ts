@@ -111,6 +111,17 @@ export interface AcpSubagent {
   summary?: string
 }
 
+/**
+ * Background work whose news woke the agent: a task or subagent that
+ * finished, or a monitor that saw an event. `id` is the task's or subagent's
+ * id; absent when which of several monitors fired is unknown.
+ */
+export interface AcpWake {
+  kind: 'task' | 'monitor' | 'subagent'
+  id?: string
+  name?: string
+}
+
 /** Where a background task is in its life, as the adapter reports it. */
 export type AcpTaskState = 'running' | 'paused' | 'completed' | 'failed' | 'stopped'
 
@@ -188,6 +199,9 @@ export type AcpEvent =
    * which `turn-start`/`turn-end` own.
    */
   | { type: 'agent-turn'; seq: number }
+  /** What woke the agent into the run the last `agent-turn` began, when it
+   *  started that run itself. */
+  | { type: 'woken'; seq: number; causes: AcpWake[] }
   /** The agent, adapter, or transport failed. Ends the turn, not the
    *  conversation; the user can retry. */
   | { type: 'error'; seq: number; message: string }

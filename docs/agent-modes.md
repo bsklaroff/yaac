@@ -304,6 +304,33 @@ event. It moves no status; the transcript uses it to keep a self-started
 reply from running on from the reply before, which has no user message
 between them.
 
+For claude, a `woken` event names what started such a run, and the pane
+captions the run's first row with it, in the condensed view too. A claude
+run ends at its result, the `usage_update` whose `_meta["_claude/origin"]`
+says what started it. Causes are credited there, and only when that origin
+is `task-notification`, so a run the user started is never captioned. They
+are taken when the run began:
+
+- A finished background task or background subagent sends its
+  `task_notification` between runs, just before the run it starts. The
+  notifications seen since the last run ended are the cause. A task that a
+  subagent started (`owned_by_subagent`) notifies that subagent, and an
+  ambient watch is not the agent's, so both are skipped. A prompt or a new
+  agent life drops notifications no run has claimed.
+- A monitor's event wakes the agent with nothing before the run. A run with
+  no notification at all before it, skipped ones included, is credited to
+  the one monitor running when it began, or "a monitor" when several were.
+
+The adapter does not always report idle between runs. While a background
+subagent works it stays `running` and holds our prompt open, so a run that
+a notification starts then is found by its first output after a result.
+Without a notification waiting, output after a result continues the run:
+a steer aborts the cycle it interrupts, which sends a result of its own. A
+monitor event during such a hold therefore joins the run before it. A
+notification that arrives mid-run joins that run and wakes nothing. The
+notification text the agent itself received is not available: the CLI
+replays it only when it joins a running turn.
+
 **Busy state is recovered from the record.** The protocol has no status
 query. A connection taking over a live agent reads the record, which shows
 whether the last prompt was answered and what state the adapter last

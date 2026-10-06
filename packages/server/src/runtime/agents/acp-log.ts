@@ -280,15 +280,16 @@ function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
   if (msg === undefined) return []
   // An adapter's own state report, the only boundary a run the agent
   // started itself has. A new agent life starts idle.
-  if (msg.method === ACPD.exit) projection.agentState(false)
-  const running = agentRunningReport(msg.method, msg.params)
-  if (running !== undefined) {
-    const event = projection.agentState(running)
-    return event === undefined ? [] : [event]
+  if (msg.method === ACPD.exit) {
+    projection.agentState(false)
+    projection.forgetWakes()
   }
+  const running = agentRunningReport(msg.method, msg.params)
+  if (running !== undefined) return projection.agentState(running)
   // The client's own prompts. The agent echoes user messages only when
   // replaying under `session/load`, so live prompts appear only here.
   if (msg.method === ACP.sessionPrompt) {
+    projection.forgetWakes()
     const content = toContentList(asRecord(msg.params)?.prompt)
     return content.length === 0 ? [] : [{ type: 'user', content }]
   }

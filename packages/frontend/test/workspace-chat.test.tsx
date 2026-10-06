@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, afterEach, beforeAll, beforeEach, vi } from 'vitest'
+import { describe, it, expect, afterEach, beforeAll, beforeEach, onTestFinished, vi } from 'vitest'
 import { render, screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react'
 import type { AcpClientMessage, AcpEvent, AcpQueuedPrompt, AcpToolCall } from '@yaac/shared/acp'
 
@@ -200,10 +200,14 @@ describe('WorkspaceChat mid-turn', () => {
     fireEvent.keyDown(box(), { key: 'Enter' })
     expect(stream.send).toHaveBeenCalledWith({ type: 'prompt', text: 'use the staging config' })
 
-    // A steered message echoes like any other and clears the box.
+    // A steered message echoes like any other, labelled as sent mid-turn,
+    // and clears the box.
+    expect(screen.queryByText('sent mid-turn')).toBeNull()
     stream.events = [...stream.events, { type: 'user', seq: 1, content: [{ type: 'text', text: 'use the staging config' }], steered: true }]
     rerender(<WorkspaceChat workspaceId="w1" agentSessionId="acp-1" />)
     await waitFor(() => expect(box().value).toBe(''))
+    expect(screen.getAllByText('sent mid-turn')).toHaveLength(1)
+    expect(screen.getByText('use the staging config')).toBeTruthy()
   })
 
   it('clears the box once the message is queued, shows it, and lets it be dropped', async () => {
@@ -636,8 +640,14 @@ describe('WorkspaceChat rendering', () => {
     const { container } = show()
     expect(screen.getByText('**not bold**')).toBeTruthy()
     expect(container.querySelector('strong')).toBeNull()
-    expect(container.querySelector('.justify-end')).toBeNull()
-    expect(container.querySelector('.justify-start')).toBeTruthy()
+    expect(container.querySelector('.items-end')).toBeNull()
+    expect(container.querySelector('.items-start')).toBeTruthy()
+  })
+
+  it('skips an event type it does not know, as a server newer than the page sends', () => {
+    stream.events = [user(0, 'hi'), { type: 'from-the-future', seq: 1 } as unknown as AcpEvent, agent(2, 'hello')]
+    show()
+    expect(screen.getByText('hello')).toBeTruthy()
   })
 
   it('renders the agent’s markdown as a document', () => {
@@ -1252,6 +1262,38 @@ describe('WorkspaceChat subagents and background tasks', () => {
     expect(screen.getByText('Looked in src/router.ts.')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /Back/ }))
     expect(screen.getByText('Delegating.')).toBeTruthy()
+  })
+
+  it('names what woke the agent into a run it started itself, through the condensed view, and opens it', () => {
+    stream.busy = false
+    stream.events = [
+      ...stream.events,
+      subagent(5, 'completed'),
+      shell(6, 'stopped'),
+      { type: 'agent-turn', seq: 7 },
+      {
+        type: 'woken', seq: 8,
+        causes: [{ kind: 'task', id: 'b1', name: 'npm run dev' }, { kind: 'subagent', id: 'sub-1', name: 'Explore' }],
+      },
+      agent(9, 'Both finished.'),
+      { type: 'agent-turn', seq: 10 },
+      { type: 'tool', seq: 11, call: { toolCallId: 't10', title: 'curl /health', kind: 'execute', status: 'completed' } },
+      agent(12, 'Deploy looks healthy.'),
+      // A monitor's wake is known only once its run ends.
+      { type: 'woken', seq: 13, causes: [{ kind: 'monitor' }] },
+    ]
+    useUiStore.getState().setChatCondensed(true)
+    onTestFinished(() => useUiStore.getState().setChatCondensed(false))
+    show()
+    const [first, late] = screen.getAllByText('Woken by').map((el) => el.parentElement)
+    expect(first?.textContent).toBe('Woken bybackground task npm run dev,subagent Explore')
+    expect(first?.parentElement?.textContent).toContain('Both finished.')
+    // Credited to the run's first step, which stays out though it would fold.
+    expect(late?.textContent).toBe('Woken bya monitor')
+    expect(late?.parentElement?.textContent).toContain('curl /health')
+
+    fireEvent.click(screen.getByRole('button', { name: 'subagent Explore' }))
+    expect(screen.getByText('Looked in src/router.ts.')).toBeTruthy()
   })
 
   it('reads a background shell\'s output, with the command that started it, and stops it', () => {

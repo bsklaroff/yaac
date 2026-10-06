@@ -15,7 +15,7 @@ import {
 import { stripAnsi } from '@yaac/shared/ansi'
 import type {
   AcpContent, AcpDiff, AcpEvent, AcpImage, AcpPermissionOption, AcpPlanEntry, AcpSubagent, AcpTask, AcpToolCall,
-  AcpToolContent, AcpToolKind,
+  AcpToolContent, AcpToolKind, AcpWake,
 } from '@yaac/shared/acp'
 
 /**
@@ -32,8 +32,9 @@ import type {
 
 /** One rendered unit of a conversation. Text groups keep images separate so
  *  they can be drawn rather than named. `turn` marks the first group of a run
- *  the agent started by itself (`agent-turn`), which ends the turn before it. */
-export type Group = ({ turn?: true } & (
+ *  the agent started by itself (`agent-turn`), which ends the turn before it,
+ *  and `woken` what woke the agent into that run, when known. */
+export type Group = ({ turn?: true; woken?: AcpWake[] } & (
   /** `steered` marks a message added to a running turn, which it does not end. */
   | { kind: 'user'; seq: number; text: string; images: AcpImage[]; steered?: true }
   | { kind: 'agent'; seq: number; text: string; images: AcpImage[] }
@@ -104,7 +105,8 @@ export function active(item: AcpSubagent | AcpTask): boolean {
  * - a call's streamed output is appended to it, keeping the end;
  * - a call that started a task still running is not interrupted by its turn
  *   ending: it runs on in the background;
- * - consecutive text chunks of one kind merge into one group;
+ * - consecutive text chunks of one kind merge into one group, except that a
+ *   steered message stands alone;
  * - a tool call's, subagent's or task's updates replace its group in place,
  *   keeping the latest;
  * - a tool call still unfinished when its turn ends is marked interrupted. A
@@ -116,7 +118,7 @@ export function active(item: AcpSubagent | AcpTask): boolean {
  *   and the session's `commands` and `models` are dropped;
  * - `agent-turn` (a run the agent may have started itself) keeps the text
  *   after it from joining the text before, and marks the group after it as
- *   a turn's first.
+ *   a turn's first. `woken` marks that same group, whenever it arrives.
  */
 export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
   const groups: Group[] = []
@@ -125,6 +127,17 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
   let split = false
   /** Where the run an `agent-turn` reported begins, until a group lands there. */
   let turnAt: number | undefined
+  /** That run's first group, once one has landed. */
+  let turnFirst: number | undefined
+  /** What woke the agent into that run, until its first group lands. */
+  let woken: AcpWake[] | undefined
+  const startTurn = (): void => {
+    if (turnAt === undefined || groups.length <= turnAt) return
+    groups[turnAt] = { ...groups[turnAt], turn: true, ...(woken !== undefined ? { woken } : {}) }
+    turnFirst = turnAt
+    turnAt = undefined
+    woken = undefined
+  }
   const cardIndex = new Map<string, number>()
   /** Calls a subagent's card stands in for. */
   const absorbed = new Set<string>()
@@ -135,7 +148,10 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
   const card = (key: string, group: Extract<Group, { kind: 'subagent' | 'task' }>): void => {
     const at = cardIndex.get(key)
     if (at !== undefined) {
-      groups[at] = { ...group, seq: groups[at].seq, ...(groups[at].turn ? { turn: true } : {}) }
+      const { turn, woken: wake } = groups[at]
+      groups[at] = {
+        ...group, seq: groups[at].seq, ...(turn ? { turn } : {}), ...(wake !== undefined ? { woken: wake } : {}),
+      }
       return
     }
     cardIndex.set(key, groups.length)
@@ -148,10 +164,7 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
     }
   }
   for (const e of events) {
-    if (turnAt !== undefined && groups.length > turnAt) {
-      groups[turnAt] = { ...groups[turnAt], turn: true }
-      turnAt = undefined
-    }
+    startTurn()
     if (e.type === 'subagent' && e.subagent.id === thread) self = e.subagent
     if (e.type === 'subagent') {
       if (e.subagent.parent !== thread) continue
@@ -175,6 +188,14 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
     if (e.type === 'agent-turn') {
       split = true
       turnAt = groups.length
+      turnFirst = undefined
+      woken = undefined
+    }
+    if (e.type === 'woken') {
+      if (!main) continue
+      if (turnFirst !== undefined) groups[turnFirst] = { ...groups[turnFirst], woken: e.causes }
+      else if (turnAt !== undefined) woken = e.causes
+      continue
     }
     if (e.type === 'commands' || e.type === 'models' || e.type === 'turn-start' || e.type === 'agent-turn') continue
     if (e.type === 'permission-request') {
@@ -235,10 +256,14 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
       groups.push({ kind: 'tool', seq: e.seq, call: e.call })
       continue
     }
+    // An event type this build does not know (a server newer than the
+    // loaded page) is skipped rather than read as text.
+    if (!('content' in e)) continue
     const last = groups[groups.length - 1]
     const text = e.content.map((c) => (c.type === 'text' ? c.text : '')).join('')
     const images = e.content.filter((c) => c.type === 'image')
-    if (last !== undefined && last.kind === e.type && !split) {
+    const steer = e.type === 'user' && (e.steered === true || (last?.kind === 'user' && last.steered === true))
+    if (last !== undefined && last.kind === e.type && !split && !steer) {
       groups[groups.length - 1] = {
         ...last, kind: e.type, text: last.text + text, images: [...last.images, ...images],
       }
@@ -249,7 +274,7 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
       kind: e.type, seq: e.seq, text, images, ...(e.type === 'user' && e.steered === true ? { steered: true } : {}),
     })
   }
-  if (turnAt !== undefined && groups.length > turnAt) groups[turnAt] = { ...groups[turnAt], turn: true }
+  startTurn()
   const tasks = new Map<string, AcpTask>()
   for (const e of events) if (e.type === 'task') tasks.set(e.task.id, e.task)
   for (const task of tasks.values()) {
@@ -272,10 +297,10 @@ interface Folded {
   groups: Group[]
 }
 
-/** Groups the condensed view never hides: the user's prompts, and what the
- *  user must see or answer. */
+/** Groups the condensed view never hides: the user's prompts, what woke the
+ *  agent into a run, and what the user must see or answer. */
 function alwaysShown(g: Group): boolean {
-  return g.kind === 'user' || g.kind === 'error' || g.kind === 'turn-end'
+  return g.kind === 'user' || g.kind === 'error' || g.kind === 'turn-end' || g.woken !== undefined
     || (g.kind === 'permission' && g.decided === undefined)
 }
 
@@ -919,6 +944,13 @@ export function AcpTranscript({
           key={g.kind === 'folded' ? `f${String(g.seq)}` : g.seq}
           className={clsx(i > 0 && (isStep(g) && isStep(rows[i - 1]) ? 'mt-0.5' : 'mt-4'))}
         >
+          {g.kind !== 'folded' && g.woken !== undefined && (
+            <WokenCaption
+              causes={g.woken}
+              {...(onOpenSubagent !== undefined ? { onOpenSubagent } : {})}
+              {...(onOpenTask !== undefined ? { onOpenTask } : {})}
+            />
+          )}
           {g.kind === 'folded' ? (
             <DisclosureRow open={unfolded.has(g.seq)} onToggle={() => toggle(g.seq)} expandable icon={MoreIcon}>
               {foldedLabel(g.groups)}
@@ -954,6 +986,41 @@ export function AcpTranscript({
   )
 }
 
+const WAKE_NOUNS: Record<AcpWake['kind'], string> = { task: 'background task', monitor: 'monitor', subagent: 'subagent' }
+
+/** What woke the agent into a run it started itself, each cause opening
+ *  the task's or subagent's own view. */
+function WokenCaption({
+  causes,
+  onOpenSubagent,
+  onOpenTask,
+}: {
+  causes: AcpWake[]
+  onOpenSubagent?: (id: string) => void
+  onOpenTask?: (id: string) => void
+}): JSX.Element {
+  return (
+    <div className="mb-1 flex flex-wrap items-center gap-x-1 text-[11px] text-text-faint">
+      <span>Woken by</span>
+      {causes.map((c, i) => {
+        const { id } = c
+        const open = c.kind === 'subagent' ? onOpenSubagent : onOpenTask
+        const label = c.name === undefined ? `a ${WAKE_NOUNS[c.kind]}` : `${WAKE_NOUNS[c.kind]} ${c.name}`
+        const sep = i < causes.length - 1 ? ',' : ''
+        return open === undefined || id === undefined ? (
+          <span key={i}>{label}{sep}</span>
+        ) : (
+          <span key={i}>
+            <button type="button" className="hover:text-text-dim hover:underline" onClick={() => open(id)}>
+              {label}
+            </button>{sep}
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
 /** Tool calls, thinking and folded runs: one-line rows that stack tightly
  *  into a run of steps, set apart from the messages around them. */
 function isStep(g: Group | Folded): boolean {
@@ -973,7 +1040,8 @@ function GroupView({
   if (g.kind === 'user') {
     // Rendered as plain text, not markdown.
     return (
-      <div className="flex justify-start">
+      <div className="flex flex-col items-start gap-0.5">
+        {g.steered === true && <span className="px-1 text-[11px] text-text-faint">sent mid-turn</span>}
         <div className="max-w-[85%] whitespace-pre-wrap rounded-xl border border-accent/20 bg-accent/10 px-3 py-2 text-text">
           <MessageImages images={g.images} />
           {g.text}
