@@ -719,6 +719,23 @@ export interface GitAuthFailure {
 }
 
 /**
+ * What an agent is doing. `asking` is mid-turn, stopped on a permission
+ * prompt or question the user must answer (ACP only). `background` is
+ * between turns with work the agent started still live (a background shell,
+ * a monitor, a background subagent), which will usually wake it again, so it
+ * does not count as waiting for the user; only claude's ACP adapter reports
+ * that work.
+ */
+export type AgentStatus = 'running' | 'background' | 'waiting' | 'asking'
+
+/**
+ * `AgentStatus` as listings send it: `asking` goes out as `waiting` plus an
+ * `asking` flag, so a client that predates the flag (a desktop app is
+ * installed on its own schedule) still alerts on an ask.
+ */
+export type ListedAgentStatus = Exclude<AgentStatus, 'asking'>
+
+/**
  * One agent conversation inside a workspace. Several can be live at once
  * (a second terminal, or a `/clear` that left the old window open); the
  * rest are the workspace's history.
@@ -735,8 +752,11 @@ export interface AgentSessionEntry {
   /** Had a live agent process when the workspace was last seen running, so
    *  a restart brings it back. */
   active: boolean
-  /** Live only: this conversation's own busy/idle, from its pane. */
-  status?: 'running' | 'waiting'
+  /** Live only: this conversation's own status, from its pane. */
+  status?: ListedAgentStatus
+  /** Live only: stopped on an ask the user must answer (`status` is then
+   *  `waiting`). */
+  asking?: true
   /** Live only: epoch ms when this conversation's waiting spell began. */
   waitingSinceMs?: number
   /** This conversation's first user message (differs from the workspace's
@@ -761,9 +781,13 @@ export interface WorkspaceListEntry {
   projectSlug: string
   tool: AgentTool
   /**
-   * `waiting` if any of its agent sessions is waiting, else `running`.
+   * The most pressing of its agent sessions' statuses: `waiting` (including
+   * an ask), then `running`, then `background`.
    */
-  status: 'running' | 'waiting'
+  status: ListedAgentStatus
+  /** Some agent session is stopped on an ask the user must answer (`status`
+   *  is then `waiting`). */
+  asking?: true
   /** The workspace is being torn down (its pod has a deletion timestamp,
    *  or a stop was just issued). Render a non-interactive "stopping…"
    *  placeholder. */

@@ -32,6 +32,43 @@ describe('readWorkspaceStatus', () => {
     expect(readWorkspaceStatus('demo', 's2')).toBe('waiting')
   })
 
+  it('reads background only when every agent is, with waiting and then running ahead of it', () => {
+    setAgentStatus('demo', 's1', '%0', 'background')
+    expect(readWorkspaceStatus('demo', 's1')).toBe('background')
+    // Background is not a waiting spell.
+    expect(readWorkspaceWaitingSince('demo', 's1')).toBeUndefined()
+    setAgentStatus('demo', 's1', '%1', 'running')
+    expect(readWorkspaceStatus('demo', 's1')).toBe('running')
+    setAgentStatus('demo', 's1', '%2', 'waiting')
+    expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
+  })
+
+  it('puts an ask ahead of everything, within the spell already running', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(1_000)
+      setAgentStatus('demo', 's1', '%0', 'waiting')
+      setAgentStatus('demo', 's1', '%1', 'running')
+      expect(readWorkspaceWaitingSince('demo', 's1')).toBe(1_000)
+      // A sibling stopping on an ask outranks the waiting agent.
+      vi.setSystemTime(2_000)
+      setAgentStatus('demo', 's1', '%1', 'asking')
+      expect(readWorkspaceStatus('demo', 's1')).toBe('asking')
+      // Answering it leaves the spell the user already saw, so nothing
+      // alerts again.
+      setAgentStatus('demo', 's1', '%1', 'running')
+      expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
+      expect(readWorkspaceWaitingSince('demo', 's1')).toBe(1_000)
+      // An ask alone starts a spell, like any wait.
+      setAgentStatus('demo', 's1', '%0', 'running')
+      vi.setSystemTime(3_000)
+      setAgentStatus('demo', 's1', '%1', 'asking')
+      expect(readWorkspaceWaitingSince('demo', 's1')).toBe(3_000)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('announces a change on each flip, never on a re-set', () => {
     const listener = vi.fn()
     onWorkspaceListChanged(listener)

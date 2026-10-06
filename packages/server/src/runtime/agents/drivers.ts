@@ -19,10 +19,9 @@
 
 import { acpDriver } from './acp-driver'
 import { tuiDriver } from './tui-driver'
-import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
+import type { AgentMode, AgentStatus, AgentTool, PermissionMode } from '@yaac/shared/types'
 import type { PiProvider } from '@yaac/shared/tool-providers'
 import type { StreamChild, WorkspacePaths } from '#drivers/contract'
-import type { AgentPaneStatus } from './agent-tools'
 
 /** The session a driver is connected to. */
 export interface DrivenWorkspace {
@@ -80,7 +79,7 @@ export type AgentObservation =
    *  starts, since an empty set means "every agent exited" and deactivates
    *  the workspace's conversations. */
   | { kind: 'live-agents'; agents: LiveAgent[] }
-  | { kind: 'status'; handle: string; status: AgentPaneStatus }
+  | { kind: 'status'; handle: string; status: AgentStatus }
   /**
    * A read-only command channel into the workspace, or null when it goes
    * away. Both drivers publish their control-mode client, which the status

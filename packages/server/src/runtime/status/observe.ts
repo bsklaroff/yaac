@@ -11,6 +11,7 @@ import {
 import { pruneTerminating } from './terminating'
 import type { AgentLiveness, RuntimeHandle } from '#drivers/contract'
 import type {
+  AgentStatus,
   AgentTool,
   GitAuthFailure,
   PortMapping,
@@ -42,8 +43,8 @@ export interface WorkspaceRuntimeReport {
   /** When the runtime came up. The join prefers the recorded time (which
    *  survives restarts); this is the fallback when there is no row. */
   createdAtMs: number
-  /** The workspace's aggregate over every live agent: `waiting` if any is. */
-  status: 'running' | 'waiting'
+  /** The workspace's aggregate over every live agent (`readWorkspaceStatus`). */
+  status: AgentStatus
   waitingSinceMs?: number
   /** Per-agent liveness, keyed by the driver's handle (tmux pane id under
    *  `tui`, acpd window name under `acp`). The join attaches conversations by

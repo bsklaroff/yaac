@@ -11,7 +11,7 @@
  */
 import path from 'node:path'
 import { AGENT_TOOLS, MAX_MODEL_LENGTH, PERMISSION_MODES, agentSessionIdSchema } from '@yaac/shared/types'
-import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
+import type { AgentMode, AgentStatus, AgentTool, PermissionMode } from '@yaac/shared/types'
 import { acpAdapterFor, acpPermissionModeFor } from './acp-adapters'
 import { classifyClaudeTitle, claudePermissionMode, getFirstUserMessage } from './claude'
 import {
@@ -27,9 +27,6 @@ import {
 } from './opencode'
 import { PI_BUSY_MARKERS, getPiFirstUserMessage } from './pi'
 import type { SandboxFile } from './sandbox-fs'
-
-/** What an agent pane is doing, as every display path reads it. */
-export type AgentPaneStatus = 'running' | 'waiting'
 
 /**
  * A conversation's first user message, read from its recorded transcript.
@@ -229,7 +226,7 @@ export function agentStatusFormat(tool: AgentTool): string {
  * Classify a pushed subscription value: claude/codex push the title
  * (classified by spinner prefix); opencode/pi push a resolved verdict.
  */
-export function classifyAgentObservation(tool: AgentTool, observed: string): AgentPaneStatus {
+export function classifyAgentObservation(tool: AgentTool, observed: string): AgentStatus {
   if (tool === 'codex') return classifyCodexTitle(observed)
   if (tool === 'opencode' || tool === 'pi') return observed.trim() === 'running' ? 'running' : 'waiting'
   return classifyClaudeTitle(observed)

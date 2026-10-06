@@ -40,7 +40,6 @@ export {
   classifyAgentObservation,
   getAgentSessionFirstMessage,
   resolveAgentPermissionMode,
-  type AgentPaneStatus,
 } from './agent-tools'
 export {
   buildAgentCmd,

@@ -146,6 +146,20 @@ function MarqueeTitle({ text, hovered }: { text: string; hovered: boolean }): JS
   )
 }
 
+/** The six-dot grid the row's activity indicators animate (index.css). */
+function BrailleDots({ className, title }: { className: string; title?: string }): JSX.Element {
+  return (
+    <span className={clsx('shrink-0', className)} title={title} aria-hidden>
+      <i />
+      <i />
+      <i />
+      <i />
+      <i />
+      <i />
+    </span>
+  )
+}
+
 /** How many of a workspace's agent sessions are active. Zero reads as the
  *  ordinary single-agent case. */
 function openAgentCount(workspace: WorkspaceListEntry): number {
@@ -277,19 +291,25 @@ export function WorkspaceRow({
             {/* On hover (always on mobile) the title insets to clear the
                 actions menu. */}
             <span className="flex items-center gap-2 group-hover:pr-8 max-md:pr-10">
-              {/* Spinner while the agent is running. */}
-              {workspace.status === 'running' && (
-                <span className="braille-spinner shrink-0 text-emerald-400" aria-hidden>
-                  <i />
-                  <i />
-                  <i />
-                  <i />
-                  <i />
-                  <i />
+              {/* One marker per status: an ask waiting on an answer (which
+                  wins over the rest), a spinner while running, a slow swell
+                  while only background work runs, or the unread dot. */}
+              {workspace.asking && (
+                <span
+                  className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-rose-500
+                    text-[9px] font-bold leading-none text-white"
+                  title="Waiting for your answer"
+                  aria-label="Waiting for your answer"
+                >
+                  ?
                 </span>
               )}
+              {workspace.status === 'running' && <BrailleDots className="braille-spinner text-emerald-400" />}
+              {workspace.status === 'background' && (
+                <BrailleDots className="braille-spinner braille-breathe text-sky-400" title="Background work running" />
+              )}
               {/* Unread dot: waiting and not yet viewed. */}
-              {unread && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
+              {unread && !workspace.asking && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
               <MarqueeTitle
                 text={workspace.title || workspace.prompt || 'New workspace'}
                 hovered={hovered && !isMobile}

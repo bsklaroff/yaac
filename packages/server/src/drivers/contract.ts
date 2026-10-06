@@ -1,6 +1,7 @@
 import type { Duplex } from 'node:stream'
 import type {
   AgentMode,
+  AgentStatus,
   AgentTool,
   DriverKind,
   GitAuthFailure,
@@ -84,7 +85,7 @@ export interface RuntimeHandle {
 
 export interface AgentLiveness {
   handle: string
-  status: 'running' | 'waiting'
+  status: AgentStatus
   waitingSinceMs?: number
 }
 

@@ -1,7 +1,13 @@
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import { modelDisplayName } from '#domain/auth'
 import type { AgentSessionLinkRow } from '#db'
-import type { AgentSessionEntry } from '@yaac/shared/types'
+import type { AgentSessionEntry, AgentStatus, ListedAgentStatus } from '@yaac/shared/types'
+
+/** A status in wire form (`ListedAgentStatus`): an ask is `waiting` with a
+ *  flag. */
+export function listedStatus(status: AgentStatus): { status: ListedAgentStatus; asking?: true } {
+  return status === 'asking' ? { status: 'waiting', asking: true } : { status }
+}
 
 /**
  * One linked conversation in wire form. Every surface that serializes a link
@@ -15,7 +21,7 @@ import type { AgentSessionEntry } from '@yaac/shared/types'
  */
 export function toAgentSessionEntry(
   l: AgentSessionLinkRow,
-  live?: { status: 'running' | 'waiting'; waitingSinceMs?: number },
+  live?: { status: AgentStatus; waitingSinceMs?: number },
 ): AgentSessionEntry {
   const modelName = l.model !== undefined ? modelDisplayName(l.tool, l.model) : undefined
   return {
@@ -24,7 +30,7 @@ export function toAgentSessionEntry(
     mode: l.mode,
     ordinal: l.ordinal,
     active: l.active,
-    ...(live !== undefined ? { status: live.status } : {}),
+    ...(live !== undefined ? listedStatus(live.status) : {}),
     ...(live?.waitingSinceMs !== undefined ? { waitingSinceMs: live.waitingSinceMs } : {}),
     ...(l.firstPrompt !== undefined ? { prompt: l.firstPrompt } : {}),
     ...(l.model !== undefined ? { model: l.model } : {}),
