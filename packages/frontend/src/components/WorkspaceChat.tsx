@@ -531,29 +531,33 @@ function contextUsage(events: readonly AcpEvent[]): { used: number; size: number
   return undefined
 }
 
-/** A token count as the TUIs print one: 53.2k, 1M. */
+/** A token count in short form: 53.2k, 1m. */
 function tokens(n: number): string {
-  if (n >= 1e6) return `${String(Math.round(n / 1e5) / 10)}M`
+  if (n >= 1e6) return `${String(Math.round(n / 1e5) / 10)}m`
   if (n >= 1e3) return `${String(Math.round(n / 100) / 10)}k`
   return String(n)
 }
 
 /** How full the main conversation's context window is, as a ring and a
- *  percentage, from the agent's last `usage` report. */
+ *  token count, from the agent's last `usage` report. Clicking it toggles
+ *  the longer form with the percentage. */
 function ContextMeter({ used, size }: { used: number; size: number }): JSX.Element {
+  const [expanded, setExpanded] = useState(false)
   const fraction = Math.min(1, used / size)
   const percent = Math.round(fraction * 100)
   const label = `Context: ${tokens(used)} of ${tokens(size)} tokens (${String(percent)}%)`
   const circumference = 2 * Math.PI * 6
   return (
-    <div
+    <button
+      type="button"
       role="meter"
       aria-label="Context used"
       aria-valuenow={percent}
       aria-valuetext={label}
-      title={label}
+      aria-expanded={expanded}
+      onClick={() => setExpanded((e) => !e)}
       className={clsx(
-        'mr-2 flex items-center gap-1 text-xs tabular-nums',
+        'mr-2 flex items-center gap-1 rounded-md px-1 py-0.5 text-xs tabular-nums hover:bg-surface-2',
         percent >= 90 ? 'text-error' : percent >= 75 ? 'text-warning' : 'text-text-faint',
       )}
     >
@@ -570,8 +574,8 @@ function ContextMeter({ used, size }: { used: number; size: number }): JSX.Eleme
           strokeDashoffset={circumference * (1 - fraction)}
         />
       </svg>
-      {percent}%
-    </div>
+      {expanded ? label : `${tokens(used)} / ${tokens(size)}`}
+    </button>
   )
 }
 

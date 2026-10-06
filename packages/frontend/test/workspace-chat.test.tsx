@@ -278,16 +278,19 @@ describe('WorkspaceChat context meter', () => {
     ]
     show()
     const meter = screen.getByRole('meter', { name: 'Context used' })
-    expect(meter.textContent).toBe('80%')
-    expect(meter.getAttribute('title')).toBe('Context: 160k of 200k tokens (80%)')
-    expect(meter.getAttribute('aria-valuetext')).toBe(meter.getAttribute('title'))
+    expect(meter.textContent).toBe('160k / 200k')
+    expect(meter.getAttribute('aria-valuetext')).toBe('Context: 160k of 200k tokens (80%)')
     expect(meter.className).toContain('text-warning')
+    fireEvent.click(meter)
+    expect(meter.textContent).toBe('Context: 160k of 200k tokens (80%)')
+    fireEvent.click(meter)
+    expect(meter.textContent).toBe('160k / 200k')
     cleanup()
 
-    // The colour follows the number shown, so 74.6% reads amber as "75%".
+    // The colour follows the rounded percentage, so 74.6% reads amber as 75%.
     stream.events = [{ type: 'usage', seq: 0, used: 149_200, size: 200_000 }]
     show()
-    expect(screen.getByRole('meter').textContent).toBe('75%')
+    expect(screen.getByRole('meter').getAttribute('aria-valuenow')).toBe('75')
     expect(screen.getByRole('meter').className).toContain('text-warning')
   })
 })
