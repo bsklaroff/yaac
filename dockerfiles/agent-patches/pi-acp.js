@@ -1,39 +1,76 @@
 /**
- * Patches pi-acp (the pinned release, see `ACP_ADAPTERS.pi`) to support the
- * `_session/steering` extension claude's and codex's adapters implement, so
- * a message sent mid-turn joins the running turn as Enter does in pi's TUI
- * (docs/agent-modes.md, "Sending mid-turn").
+ * Patches pi-acp (the pinned release, see `ACP_ADAPTERS.pi`).
  *
  *   node pi-acp.js <pi-acp>/dist/index.js
  *
  * Run by `dockerfiles/Dockerfile.tools` and by the containerless driver's
- * install, right after npm installs pi-acp. The edit is made by anchored
+ * install, right after npm installs pi-acp. The edits are made by anchored
  * string replacement; an anchor that is missing or not unique fails the
- * install, so a pi-acp bump cannot silently drop the patch.
+ * install, so a pi-acp bump cannot silently drop the patch. Bump the
+ * patch's `revision` in `@yaac/shared/tool-install` whenever this file
+ * changes.
  *
- * The shape follows svkozak/pi-acp#115 (unmerged): advertise
- * `_meta.steering.supported`, answer `injected` by sending pi's `steer` RPC
- * while a turn runs, and `promptRequired` when idle if the client opted in.
- * Two fixes on top of it:
+ * Two changes, each deletable on its own once a pi-acp release makes it
+ * unnecessary:
  *
- *  - A turn stops taking steers when pi reports `agent_settled`, not when
- *    pi-acp later resolves the prompt, which it does only after fetching
- *    usage stats.
- *  - pi awaits its extensions between its last queue check and emitting
- *    `agent_settled`, so a steer landing there is accepted but never
- *    delivered. On settle, `clear_queue` recovers any such message and the
- *    same turn continues with it, so the steer still answers `injected`
- *    truthfully and the turn's `session/prompt` reply comes after it.
+ * 1. Steering. pi-acp gains the `_session/steering` extension claude's and
+ *    codex's adapters implement, so a message sent mid-turn joins the running
+ *    turn as Enter does in pi's TUI (docs/agent-modes.md, "Sending
+ *    mid-turn"). The shape follows svkozak/pi-acp#115 (unmerged): advertise
+ *    `_meta.steering.supported`, answer `injected` by sending pi's `steer`
+ *    RPC while a turn runs, and `promptRequired` when idle if the client
+ *    opted in. Two fixes on top of it:
  *
- * Delete this file, its callers, and pi's `steers: true` dependency on it
- * once a pi-acp release implements `_session/steering`.
+ *    - A turn stops taking steers when pi reports `agent_settled`, not when
+ *      pi-acp later resolves the prompt, which it does only after fetching
+ *      usage stats.
+ *    - pi awaits its extensions between its last queue check and emitting
+ *      `agent_settled`, so a steer landing there is accepted but never
+ *      delivered. On settle, `clear_queue` recovers any such message and the
+ *      same turn continues with it, so the steer still answers `injected`
+ *      truthfully and the turn's `session/prompt` reply comes after it.
+ *
+ *    Goes once a pi-acp release implements `_session/steering`, along with
+ *    pi's `steers: true` dependency on it.
+ *
+ * 2. Bash output as appends (`bashOutputDelta` below). Goes once pi-acp's
+ *    own `terminal_output` stays an append past pi's tail window.
  */
 
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 /** Marks a patched file, so a second run is a no-op. */
-const MARKER = '/* yaac: _session/steering patch */'
+const MARKER = '/* yaac: pi-acp patch */'
+
+/**
+ * What a bash call's `terminal_output` carries: the text that follows
+ * `previous` in `next`, two successive snapshots of its output. yaac appends
+ * each one to the call's output (`AcpProjection`), so it must be only what is
+ * new. A snapshot is the whole output until it passes pi's tail window
+ * (2000 lines or 50KB); from then on each one is the latest window, which
+ * starts later than the one before and drops the output's trailing newline.
+ * pi-acp's own version sends such a window whole. This one compares both
+ * snapshots without a trailing newline, so a line's newline is sent with the
+ * text after it, finds the longest end of `previous` that `next` starts
+ * with, and returns the rest of `next`. A window with no such overlap
+ * follows more output than the window holds, so the lines between are lost;
+ * it starts on a line of its own. Output that repeats one line can overlap
+ * more than it really did, so a few new lines may go unshown; a resent
+ * window would duplicate thousands.
+ */
+function bashOutputDelta(previous, next) {
+  const trim = (text) => text.endsWith("\n") ? text.slice(0, -1) : text;
+  const [before, after] = [trim(previous), trim(next)];
+  let overlap = 0;
+  for (let at = before.indexOf(after[0]); after !== "" && at !== -1; at = before.indexOf(after[0], at + 1)) {
+    if (after.startsWith(before.slice(at))) {
+      overlap = before.length - at;
+      break;
+    }
+  }
+  return overlap === 0 && before !== "" && after !== "" ? "\n" + after : after.slice(overlap);
+}
 
 /** Each edit: an exact anchor in pi-acp's bundled dist, and its replacement. */
 const EDITS = [
@@ -155,6 +192,15 @@ const EDITS = [
     insert: 'after',
     text: `      _meta: { steering: { supported: true } },
 `,
+  },
+  {
+    name: 'bash output as appends',
+    anchor: `function bashOutputDelta(previous, next) {
+  return next.startsWith(previous) ? next.slice(previous.length) : next;
+}
+`,
+    insert: 'replace',
+    text: `${bashOutputDelta}\n`,
   },
 ]
 
