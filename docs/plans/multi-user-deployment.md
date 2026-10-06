@@ -129,16 +129,18 @@ one `identify()` resolved. Internal callers (the reconcile loop, prewarm,
 queued-workspace starts, the stale reaper, the title sweep) pass a `system`
 principal that `identify()` never returns.
 
-A sealed `domain/access` folder owns `authorize(principal, verb,
-resource)`, with three verbs:
+A sealed `domain/access` folder owns `authorize(principal, level,
+resource)`, with two access levels:
 
-- **`read`**: any user, any resource. Workspace lists, details,
+- **`reader`**: any user, any resource. Workspace lists, details,
   transcripts, diffs, project pages.
-- **`act`**: owner only. Reads that grant execution or reach: every
-  `/pty/attach` target, `/acp/attach` (its `prompt`, `cancel` and
-  `permission` frames), `/forward/attach` (a tunnel into the workspace's
-  listeners, and into a nested yaac's full API).
-- **`write`**: owner only. Everything else a user can change.
+- **`owner`**: the resource's owner only. Everything a user can change,
+  and the reads that grant execution or reach: every `/pty/attach` target,
+  `/acp/attach` (its `prompt`, `cancel` and `permission` frames),
+  `/forward/attach` (a tunnel into the workspace's listeners, and into a
+  nested yaac's full API). The attaches are GETs and WebSocket upgrades
+  that change no rows, so they are classed by what they grant, not by
+  their HTTP method.
 
 The owner of a workspace, queued workspace, draft, group, agent session or
 tool default is its project's owner; only `projects` and the user-scoped
@@ -237,7 +239,7 @@ stays per workspace.
    server start` and `yaac cluster install`, the refusals, the containerless
    mama loopback exception, the built-in `local` user.
 3. **Principal plumbing**: `domain/access`, the `system` principal, domain
-   verbs taking the principal, `act` on the three attach upgrades. Every
+   verbs taking the principal, `owner` on the three attach upgrades. Every
    principal still resolves to the one owner, so behavior is unchanged.
 4. **Users and owners**: the `users` table, `projects.owner`, per-user
    preferences, shortcuts and git credentials, with backfill to the built-in
@@ -258,8 +260,8 @@ stays per workspace.
 ## Testing
 
 - `domain/access` gets its barrel-function tests.
-- `test/api/route-matrix.ts` gains an `access` column (`public`, `read`,
-  `act`, `write`), and a check drives every gated route as a second,
+- `test/api/route-matrix.ts` gains an `access` column (`public`, `reader`,
+  `owner`), and a check drives every gated route as a second,
   non-owner principal and expects 403, so a new route cannot land without
   stating who may call it. A second principal is only request headers
   (`Tailscale-User-Login` with an allowed host).
